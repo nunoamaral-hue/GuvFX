@@ -34,7 +34,7 @@ jobs:
       - name: Run tests
         if: steps.detect.outputs.path != ''
         env:
-          DJANGO_SECRET_KEY: "dummy-secret-key"
+          DJANGO_SECRET_KEY: "ci-insecure-test-secret"
         run: |
           cd "${{ steps.detect.outputs.path }}"
           python manage.py test
