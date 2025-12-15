@@ -1,0 +1,17 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Treat lockfiles as text
+package-lock.json text
+pnpm-lock.yaml text
+poetry.lock text
+Pipfile.lock text
+
+# Common binaries
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.gz binary

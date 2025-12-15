@@ -7,7 +7,7 @@
 
 ## Current state (source of truth)
 - Branch: `feat/broker-autocomplete-flow`
-- Last commit: <fill after committing continuity activation changes>
+- Last commit: b4f8bec + message
 - PR: <fill if/when opened>
 - Backend: tests ✅ (2 tests passing via `make check`), migrations N/A (not run this session), server N/A (not required)
 - Frontend: lint ✅, build ✅ (both via `make check`)

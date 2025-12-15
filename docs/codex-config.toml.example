@@ -1,0 +1,15 @@
+# Example Codex config. Location on your machine:
+#   ~/.codex/config.toml
+#
+# Recommended safe defaults for a version-controlled repo.
+
+model = "gpt-5"
+approval_policy = "untrusted"      # ask before running untrusted commands
+sandbox_mode = "workspace-write"    # can edit files, sandboxed command execution
+
+# Strongly recommended: keep network OFF by default inside sandbox.
+sandbox_workspace_write.network_access = false
+
+# Make sure Codex loads project guidance.
+project_doc_fallback_filenames = ["docs/WORKFLOW.md", "CONTRIBUTING.md"]
+project_doc_max_bytes = 65536
