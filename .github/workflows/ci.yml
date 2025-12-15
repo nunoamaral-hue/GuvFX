@@ -45,6 +45,31 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f pyproject.toml ] && [ -f poetry.lock ]; then pip install poetry && poetry install; fi
 
+      - name: Wait for Postgres
+        if: steps.detect.outputs.path != ''
+        run: |
+          for i in {1..15}; do
+            if python - <<'PY'
+import socket
+import sys
+
+try:
+    socket.create_connection(("postgres", 5432), timeout=1).close()
+except Exception:
+    sys.exit(1)
+
+sys.exit(0)
+PY
+            then
+              echo "Postgres is ready"
+              exit 0
+            fi
+            echo "Waiting for Postgres..."
+            sleep 2
+          done
+          echo "Postgres is still unavailable"
+          exit 1
+
       - name: Run tests
         if: steps.detect.outputs.path != ''
         env:
