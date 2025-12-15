@@ -35,6 +35,11 @@ jobs:
         if: steps.detect.outputs.path != ''
         env:
           DJANGO_SECRET_KEY: "ci-insecure-test-secret"
+          DB_NAME: "ci_test_db"
+          DB_USER: "ci_test_user"
+          DB_PASSWORD: "ci_test_password"
+          DB_HOST: "localhost"
+          DB_PORT: "5432"
         run: |
           cd "${{ steps.detect.outputs.path }}"
           python manage.py test
