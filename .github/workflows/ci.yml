@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           for i in {1..30}; do
-            (echo > /dev/tcp/postgres/5432) >/dev/null 2>&1 && echo "Postgres is ready" && exit 0
+            (echo > /dev/tcp/127.0.0.1/5432) >/dev/null 2>&1 && echo "Postgres is ready" && exit 0
             echo "Waiting for Postgres..."
             sleep 1
           done
@@ -65,7 +65,7 @@ jobs:
           DB_NAME: "ci"
           DB_USER: "ci"
           DB_PASSWORD: "ci"
-          DB_HOST: "postgres"
+          DB_HOST: "127.0.0.1"
           DB_PORT: "5432"
         run: |
           cd "${{ steps.detect.outputs.path }}"
