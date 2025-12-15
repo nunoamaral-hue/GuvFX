@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ["main", "master", "develop", "feat/**", "fix/**", "chore/**"]
+  workflow_dispatch:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ci
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd=pg_isready
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect backend
+        id: detect
+        run: |
+          if [ -f backend/manage.py ]; then echo "path=backend" >> $GITHUB_OUTPUT; exit 0; fi
+          if [ -f manage.py ]; then echo "path=." >> $GITHUB_OUTPUT; exit 0; fi
+          echo "path=" >> $GITHUB_OUTPUT
+
+      - name: Setup Python
+        if: steps.detect.outputs.path != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        if: steps.detect.outputs.path != ''
+        run: |
+          cd "${{ steps.detect.outputs.path }}"
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ] && [ -f poetry.lock ]; then pip install poetry && poetry install; fi
+
+      - name: Wait for Postgres
+        if: steps.detect.outputs.path != ''
+        shell: bash
+        run: |
+          for i in {1..30}; do
+            (echo > /dev/tcp/127.0.0.1/5432) >/dev/null 2>&1 && echo "Postgres is ready" && exit 0
+            echo "Waiting for Postgres..."
+            sleep 1
+          done
+          echo "Postgres is still unavailable"
+          exit 1
+
+      - name: Run tests
+        if: steps.detect.outputs.path != ''
+        env:
+          DJANGO_SECRET_KEY: "ci-insecure-test-secret"
+          DB_NAME: "ci"
+          DB_USER: "ci"
+          DB_PASSWORD: "ci"
+          DB_HOST: "127.0.0.1"
+          DB_PORT: "5432"
+        run: |
+          cd "${{ steps.detect.outputs.path }}"
+          python manage.py test
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect frontend
+        id: detect
+        run: |
+          if [ -f frontend/package.json ]; then echo "path=frontend" >> $GITHUB_OUTPUT; exit 0; fi
+          if [ -f package.json ]; then echo "path=." >> $GITHUB_OUTPUT; exit 0; fi
+          echo "path=" >> $GITHUB_OUTPUT
+
+      - name: Setup Node
+        if: steps.detect.outputs.path != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        if: steps.detect.outputs.path != ''
+        run: |
+          cd "${{ steps.detect.outputs.path }}"
+          npm ci || npm install
+
+      - name: Lint
+        if: steps.detect.outputs.path != ''
+        run: |
+          cd "${{ steps.detect.outputs.path }}"
+          npm run lint
+
+      - name: Build
+        if: steps.detect.outputs.path != ''
+        run: |
+          cd "${{ steps.detect.outputs.path }}"
+          npm run build
