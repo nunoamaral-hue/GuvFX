@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ["main", "master", "develop"]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect backend
+        id: detect
+        run: |
+          if [ -f backend/manage.py ]; then echo "path=backend" >> $GITHUB_OUTPUT; exit 0; fi
+          if [ -f manage.py ]; then echo "path=." >> $GITHUB_OUTPUT; exit 0; fi
+          echo "path=" >> $GITHUB_OUTPUT
+
+      - name: Setup Python
+        if: steps.detect.outputs.path != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        if: steps.detect.outputs.path != ''
+        run: |
+          cd "${{ steps.detect.outputs.path }}"
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ] && [ -f poetry.lock ]; then pip install poetry && poetry install; fi
+
+      - name: Run tests
+        if: steps.detect.outputs.path != ''
+        run: |
+          cd "${{ steps.detect.outputs.path }}"
+          python manage.py test
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect frontend
+        id: detect
+        run: |
+          if [ -f frontend/package.json ]; then echo "path=frontend" >> $GITHUB_OUTPUT; exit 0; fi
+          if [ -f package.json ]; then echo "path=." >> $GITHUB_OUTPUT; exit 0; fi
+          echo "path=" >> $GITHUB_OUTPUT
+
+      - name: Setup Node
+        if: steps.detect.outputs.path != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        if: steps.detect.outputs.path != ''
+        run: |
+          cd "${{ steps.detect.outputs.path }}"
+          npm ci || npm install
+
+      - name: Lint
+        if: steps.detect.outputs.path != ''
+        run: |
+          cd "${{ steps.detect.outputs.path }}"
+          npm run lint
+
+      - name: Build
+        if: steps.detect.outputs.path != ''
+        run: |
+          cd "${{ steps.detect.outputs.path }}"
+          npm run build

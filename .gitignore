@@ -1,0 +1,24 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/*.pyc
+
+# Django DB
+backend/db.sqlite3
+
+# Next.js / Node
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# Other
+.env
+backend/.env
+frontend/.env
+*.env

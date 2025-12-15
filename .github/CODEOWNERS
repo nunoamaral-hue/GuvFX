@@ -1,0 +1,6 @@
+# Example CODEOWNERS (adjust usernames/teams)
+* @your-org/guvfx-core
+
+/docs/ @your-org/guvfx-pm
+/backend/ @your-org/guvfx-backend
+/frontend/ @your-org/guvfx-frontend
