@@ -3,13 +3,9 @@
 > Update this file **whenever** project state changes.
 
 ## TL;DR
-- Current focus: Broker autocomplete MVP improvements
-- Current branch: `feat/broker-autocomplete-flow`
-- Next milestone: Make `make check` run without manual venv activation + update CI backend path detection
-- Last green `make check`: 2025-12-15 16:00 UTC (backend tests + frontend lint/build)
-- Recent update: login client now initializes `reason` state via a lazy `useState` initializer so window access only happens client-side.
-- Recent update: accounts, backtests, and profile pages now use targeted ESLint suppressions/unused-var hints so the frontend checks stay green after the login change.
-- Recent update: the broker server autocomplete now has keyboard navigation, debounced/cancelled fetches, error messaging, and a dedicated "No matches" message when nothing fits.
+- Current focus: GuvFX codebase imported into GitHub repo + CI stabilized (backend + frontend green)
+- Current branch: `main` (work branches: `feat/import-guvfx-code`)
+- Next milestone: Cleanup import noise (.trash_duplicates/ + duplicate files) + resume broker-autocomplete-flow on a fresh branch off main
 
 ## Repo layout (confirm paths)
 - Backend: Django — `backend/`
@@ -17,12 +13,12 @@
 - Docs: `docs/`
 
 ## Last known green checks
-- Backend: 2025-12-15 — `make check` (Django tests: OK)
-- Frontend: 2025-12-15 — `make check` (eslint: OK, `next build`: OK)
+- Backend: 2025-12-15 — GitHub Actions CI ✅ (Django tests) + `make check` local ✅
+- Frontend: 2025-12-15 — GitHub Actions CI ✅ (lint + build) + `make check` local ✅
 
 ## Active blockers
-- _None_ (or list)
+- Cleanup needed: remove `.trash_duplicates/` and duplicate “(1)” / “ 2” files from the import (follow-up PR)
 
 ## Owners
 - PM: Nuno Amaral
-- Active coder: Nuno (current) → Clive (next handoff)
+- Active coder: Nuno (current) → Clive (next)
