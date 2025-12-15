@@ -33,6 +33,8 @@ jobs:
 
       - name: Run tests
         if: steps.detect.outputs.path != ''
+        env:
+          DJANGO_SECRET_KEY: "dummy-secret-key"
         run: |
           cd "${{ steps.detect.outputs.path }}"
           python manage.py test
