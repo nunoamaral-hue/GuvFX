@@ -74,9 +74,9 @@ PY
         if: steps.detect.outputs.path != ''
         env:
           DJANGO_SECRET_KEY: "ci-insecure-test-secret"
-          DB_NAME: "ci_test_db"
-          DB_USER: "ci_test_user"
-          DB_PASSWORD: "ci_test_password"
+          DB_NAME: "ci"
+          DB_USER: "ci"
+          DB_PASSWORD: "ci"
           DB_HOST: "postgres"
           DB_PORT: "5432"
         run: |
