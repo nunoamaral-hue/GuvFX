@@ -6,9 +6,9 @@
 - [x] Activate the coder replacement/continuity workflow and validate that the project health checks run successfully (backend tests + frontend lint/build).
 
 ## Current state (source of truth)
-- Branch: `feat/broker-autocomplete-flow`
-- Last commit: b4f8bec + message
-- PR: <fill if/when opened>
+- Branch: `chore/continuity-system`
+- Last commit: a85a02a — chore: add continuity system files (docs, templates, make check)
+- PR: Open PR from chore/continuity-system → master titled "chore: continuity system + make check"
 - Backend: tests ✅ (2 tests passing via `make check`), migrations N/A (not run this session), server N/A (not required)
 - Frontend: lint ✅, build ✅ (both via `make check`)
 
@@ -25,7 +25,7 @@
 
 ## How to verify
 - Commands run + results:
-  - `make check` → backend tests OK (2 tests), frontend `npm run lint` OK, `npm run build` OK`
+  - `make check` → backend tests OK (2 tests), frontend `npm run lint` OK, `npm run build` OK
 
 ## Known issues / blockers
 - Issue: `pyenv: python: command not found` when running `make check` without an active venv (resolved)
@@ -35,11 +35,12 @@
   - Next debugging step: none; change already applied.
 
 ## Exactly what to do next (in order)
-1) Patch `Makefile` backend-test to use `backend/.venv/bin/python` if present, otherwise `python3` (so `make check` works without manual activation).
-2) Update `.github/workflows/ci.yml` backend detection from `backend/django/manage.py` to `backend/manage.py` and set backend path to `backend`.
-3) Re-run `make check` (without activating venv) to confirm it’s fully self-contained; update `docs/KNOWN_ISSUES.md` if anything remains.
-4) Commit changes and update this handoff with the real commit hash and PR link (if created).
+1) Push branch `chore/continuity-system`.
+2) Open PR from `chore/continuity-system` → `master` titled "chore: continuity system + make check".
+3) Confirm CI (lint/build/test) succeeds.
+4) Merge the PR.
+5) Switch back to `feat/broker-autocomplete-flow`.
 
 ## Notes for the next coder
 - Things NOT to refactor right now: Avoid unrelated refactors/formatting; do not edit `frontend/.next/` (build output).
-- Sharp edges / risks: `make check` currently depends on venv activation until Makefile is patched; keep diffs minimal per `AGENTS.md`.
+- Sharp edges / risks: `make check` no longer requires manual venv activation, but backend still requires `backend/.venv` to exist; keep diffs minimal per `AGENTS.md`.
