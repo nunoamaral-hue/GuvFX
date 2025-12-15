@@ -3,7 +3,8 @@ name: CI
 on:
   pull_request:
   push:
-    branches: ["main", "master", "develop"]
+    branches: ["main", "master", "develop", "feat/**", "fix/**", "chore/**"]
+  workflow_dispatch:
 
 jobs:
   backend:
@@ -47,25 +48,12 @@ jobs:
 
       - name: Wait for Postgres
         if: steps.detect.outputs.path != ''
+        shell: bash
         run: |
-          for i in {1..15}; do
-            if python - <<'PY'
-import socket
-import sys
-
-try:
-    socket.create_connection(("postgres", 5432), timeout=1).close()
-except Exception:
-    sys.exit(1)
-
-sys.exit(0)
-PY
-            then
-              echo "Postgres is ready"
-              exit 0
-            fi
+          for i in {1..30}; do
+            (echo > /dev/tcp/postgres/5432) >/dev/null 2>&1 && echo "Postgres is ready" && exit 0
             echo "Waiting for Postgres..."
-            sleep 2
+            sleep 1
           done
           echo "Postgres is still unavailable"
           exit 1
