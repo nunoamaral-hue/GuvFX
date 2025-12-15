@@ -8,6 +8,20 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ci
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready -U ci -d ci
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -38,7 +52,7 @@ jobs:
           DB_NAME: "ci_test_db"
           DB_USER: "ci_test_user"
           DB_PASSWORD: "ci_test_password"
-          DB_HOST: "localhost"
+          DB_HOST: "postgres"
           DB_PORT: "5432"
         run: |
           cd "${{ steps.detect.outputs.path }}"
