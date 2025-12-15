@@ -25,6 +25,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> One-time setup: you only need to create the venv and install requirements once. After that, `make check` runs tests using `backend/.venv/bin/python` and does **not** require manually activating the venv.
+
 ### Migrations
 ```bash
 python manage.py migrate
@@ -49,7 +51,7 @@ python manage.py test
 ### Install
 ```bash
 cd frontend
-npm install
+npm install  # or: npm ci (if you have a lockfile and want reproducible installs)
 ```
 
 ### Dev
@@ -66,8 +68,26 @@ npm run build
 ---
 
 ## One-command checks (recommended)
-This repo includes a `Makefile`. Use:
-```
+This repo includes a `Makefile`. After one-time setup (venv + npm deps), run checks from the repo root:
+
+```bash
 make check
 ```
+
+### One-time setup (required before the first `make check`)
+
+```bash
+# Backend deps
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cd ..
+
+# Frontend deps
+cd frontend
+npm install
+cd ..
+```
+
 If `make check` fails, record the error and workaround in `docs/KNOWN_ISSUES.md` and keep this runbook updated.
