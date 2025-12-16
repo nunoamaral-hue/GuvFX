@@ -70,9 +70,10 @@
 
 ## feat/broker-autocomplete-flow wrap-up (2025-12-16)
 - Branch: `feat/broker-autocomplete-flow`
-- Last commit: 9d03dea45b6e1f1f13f7c5a80f84836ada054020
-- What changed: broker server autocomplete MVP improvements + targeted frontend lint fixes; docs updated to reflect the latest state.
-- Verification: `make check` (green as of Tue 16 Dec 2025 06:26:44 UTC; backend tests + frontend lint/build are passing again).
+- Last commit: d130546
+- PR: https://github.com/nunoamaral-hue/GuvPay/pull/new/feat/broker-autocomplete-flow
+- What changed: broker server autocomplete MVP improvements + targeted frontend lint fixes; docs updated (HANDOFF dedupe + status/known issues).
+- Verification: make check ✅ (green as of Tue 16 Dec 2025 06:26:44 UTC; backend tests + frontend lint/build pass).
 - Next steps:
   1. Proceed with the remaining P0 tasks in `docs/NEXT.md` (CI detection, verify CI, commit + PR, bootstrap Clive) so the handoff work completes.
   2. Monitor the follow-up P1 entry about keyboard edge cases and log findings before the next release.
