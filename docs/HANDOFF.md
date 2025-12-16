@@ -27,6 +27,8 @@
   - Continuity PR (v2) merged into `main` (handoff workflow, docs system).
 - Broker autocomplete:
   - Edgecases branch fixed/cleaned (removed merge marker fallout) and merged into `main` with checks passing.
+- Broker autocomplete verification:
+  - Seeded `BrokerServer` entries (IS6FX, IC Markets, TradersWay, XM, Exness) and confirmed `/accounts` autocomplete (demo/live selections plus ↑/↓/Enter/Esc navigation) behaves as expected.
 
 ## How to verify
 - From repo root:
