@@ -28,7 +28,7 @@
 
 ## How to verify
   - Commands run + results:
-    - `make check` → backend tests ✅ (2 tests) + frontend lint/build ✅ (green as of Tue 16 Dec 2025 06:26:44 UTC).
+    - `make check` → fails immediately because Postgres on `127.0.0.1:5432` is unreachable (same network permission error noted in `docs/KNOWN_ISSUES.md`).
 
 ## Known issues / blockers
 - Issue: `pyenv: python: command not found` when running `make check` without an active venv (resolved)
@@ -49,31 +49,11 @@
 - Sharp edges / risks: `make check` no longer requires manual venv activation, but backend still requires `backend/.venv` to exist; keep diffs minimal per `AGENTS.md`.
 
 ## feat/broker-autocomplete-flow session (2025-12-15)
-  - NOTE: Superseded by the wrap-up entry below; reference the newer section for the authoritative record.
-  - Branch: `feat/broker-autocomplete-flow`
-  - Last commit: 05fa09201d6cd8f13903116c884904bb59e33ff2
-  - What changed: `frontend/src/app/accounts/page.tsx` (broker autocomplete UX improvements) + doc updates (`docs/STATUS.md`, `docs/NEXT.md`, `docs/HANDOFF.md`)
-  - How to verify: `make check`
-  - Next steps: See wrap-up (2025-12-16) below.
-
-## feat/broker-autocomplete-flow wrap-up (2025-12-15)
 - Branch: `feat/broker-autocomplete-flow`
 - Last commit: 05fa09201d6cd8f13903116c884904bb59e33ff2
-- What changed: broker server autocomplete MVP improvements + targeted frontend lint fixes.
- - NOTE: Superseded by 2025-12-16 wrap-up below.
- - Verification: superseded; see 2025-12-16 wrap-up.
+- What changed: `frontend/src/app/accounts/page.tsx` (broker autocomplete UX improvements) + doc updates (`docs/STATUS.md`, `docs/NEXT.md`, `docs/HANDOFF.md`)
+- How to verify: `make check`
 - Next steps:
-  1. Patch the CI backend detection so it centres on `backend/manage.py` (`docs/NEXT.md` P0 #1).
-  2. Re-run CI (lint/build/test) after that detection change (`docs/NEXT.md` P0 #2).
-  3. Commit the continuity activation work and open the PR (`docs/NEXT.md` P0 #3).
-  4. Bootstrap Clive using `docs/CODEX_PROMPTS.md` as the starting guide (`docs/NEXT.md` P0 #4).
-
-## feat/broker-autocomplete-flow wrap-up (2025-12-16)
-- Branch: `feat/broker-autocomplete-flow`
-- Last commit: d130546
-- PR: https://github.com/nunoamaral-hue/GuvPay/pull/new/feat/broker-autocomplete-flow
-- What changed: broker server autocomplete MVP improvements + targeted frontend lint fixes; docs updated (HANDOFF dedupe + status/known issues).
-- Verification: make check ✅ (green as of Tue 16 Dec 2025 06:26:44 UTC; backend tests + frontend lint/build pass).
-- Next steps:
-  1. Proceed with the remaining P0 tasks in `docs/NEXT.md` (CI detection, verify CI, commit + PR, bootstrap Clive) so the handoff work completes.
-  2. Monitor the follow-up P1 entry about keyboard edge cases and log findings before the next release.
+  1. Ensure a local Postgres instance is reachable on `127.0.0.1:5432` (or update Django DB settings), then rerun `make check`.
+  2. Manually validate the new broker autocomplete keyboard workflow and "No matches"/error messaging.
+  3. Confirm `docs/NEXT.md` follow-ups (keyboard edge cases) before tagging this feature complete.
