@@ -13,21 +13,22 @@
 - Frontend: lint ✅, build ✅ (both via `make check`)
 
 ## What changed this session
-- Files added (continuity system):
-  - `AGENTS.md`, `CONTRIBUTING.md`, `docs/*`, `.github/*`, `.editorconfig`, `.gitattributes`, `Makefile` (and templates)
-- Files updated to match repo paths:
-  - `docs/RUNBOOK.md` — set backend path to `backend/`, frontend path to `frontend/`, added warning to ignore `frontend/.next/`
-  - `docs/STATUS.md` — set branch, repo paths, and recorded green checks (2025-12-15)
-- Makefile backend-test now runs `backend/.venv/bin/python` when present so `make check` works without manually sourcing the venv.
-- DB migrations: none run in this session
-- API changes: none in this session
-- UI changes:
-  - login client now reads the `reason` query parameter via a lazy `useState` initializer instead of an effect so it only touches `window` on the client
-  - targeted ESLint suppressions/unused-var hints in `accounts`, `backtests`, and `profile` pages so the frontend checks remain quiet after the login change
+  - Files added (continuity system):
+    - `AGENTS.md`, `CONTRIBUTING.md`, `docs/*`, `.github/*`, `.editorconfig`, `.gitattributes`, `Makefile` (and templates)
+  - Files updated to match repo paths:
+    - `docs/RUNBOOK.md` — set backend path to `backend/`, frontend path to `frontend/`, added warning to ignore `frontend/.next/`
+    - `docs/STATUS.md` — set branch, repo paths, and recorded green checks (2025-12-15)
+  - Makefile backend-test now runs `backend/.venv/bin/python` when present so `make check` works without manually sourcing the venv.
+  - DB migrations: none run in this session
+  - API changes: none in this session
+  - UI changes:
+    - login client now reads the `reason` query parameter via a lazy `useState` initializer instead of an effect so it only touches `window` on the client
+    - targeted ESLint suppressions/unused-var hints in `accounts`, `backtests`, and `profile` pages so the frontend checks remain quiet after the login change
+    - broker server autocomplete now has keyboard navigation, debounced + abortable suggestions, an explicit "No matches" state, and user-visible error messaging when the suggest API fails
 
 ## How to verify
-- Commands run + results:
-  - `make check` → fails immediately because Postgres on `127.0.0.1:5432` is unreachable (same network permission error noted in `docs/KNOWN_ISSUES.md`).
+  - Commands run + results:
+    - `make check` → fails immediately because Postgres on `127.0.0.1:5432` is unreachable (same network permission error noted in `docs/KNOWN_ISSUES.md`).
 
 ## Known issues / blockers
 - Issue: `pyenv: python: command not found` when running `make check` without an active venv (resolved)
@@ -46,3 +47,13 @@
 ## Notes for the next coder
 - Things NOT to refactor right now: Avoid unrelated refactors/formatting; do not edit `frontend/.next/` (build output).
 - Sharp edges / risks: `make check` no longer requires manual venv activation, but backend still requires `backend/.venv` to exist; keep diffs minimal per `AGENTS.md`.
+
+## feat/broker-autocomplete-flow session (2025-12-15)
+- Branch: `feat/broker-autocomplete-flow`
+- Last commit: 05fa09201d6cd8f13903116c884904bb59e33ff2
+- What changed: `frontend/src/app/accounts/page.tsx` (broker autocomplete UX improvements) + doc updates (`docs/STATUS.md`, `docs/NEXT.md`, `docs/HANDOFF.md`)
+- How to verify: `make check`
+- Next steps:
+  1. Ensure a local Postgres instance is reachable on `127.0.0.1:5432` (or update Django DB settings), then rerun `make check`.
+  2. Manually validate the new broker autocomplete keyboard workflow and "No matches"/error messaging.
+  3. Confirm `docs/NEXT.md` follow-ups (keyboard edge cases) before tagging this feature complete.
