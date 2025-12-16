@@ -145,9 +145,17 @@ export default function AccountsPage() {
   // New account form
   const [name, setName] = useState("");
   const [brokerName, setBrokerName] = useState(""); // user-typed query OR selected server_name
-  const [selectedBrokerServer, setSelectedBrokerServer] = useState<BrokerServerSuggestion | null>(null);
-  const [brokerSuggestions, setBrokerSuggestions] = useState<BrokerServerSuggestion[]>([]);
+  const [selectedBrokerServer, setSelectedBrokerServer] =
+    useState<BrokerServerSuggestion | null>(null);
+  const [brokerSuggestions, setBrokerSuggestions] = useState<
+    BrokerServerSuggestion[]
+  >([]);
+  const [activeIdx, setActiveIdx] = useState<number>(-1);
+  const visibleBrokerSuggestions = brokerSuggestions.slice(0, 8);
   const [brokerSuggestLoading, setBrokerSuggestLoading] = useState(false);
+  const [brokerSuggestError, setBrokerSuggestError] = useState<string | null>(
+    null
+  );
   const [accountNumber, setAccountNumber] = useState("");
   const [platformPassword, setPlatformPassword] = useState("");
   const [isDemo, setIsDemo] = useState(true);
@@ -335,26 +343,90 @@ export default function AccountsPage() {
 
     if (q.length < 2) {
       setBrokerSuggestions([]);
+      setBrokerSuggestError(null);
       return;
     }
 
-    const handle = setTimeout(async () => {
+    setBrokerSuggestError(null);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(async () => {
       setBrokerSuggestLoading(true);
       try {
         const demoParam = isDemo ? "true" : "false";
-        const url = `/api/trading/broker-servers/suggest/?q=${encodeURIComponent(q)}&demo=${demoParam}`;
-        const data = await apiFetch<BrokerServerSuggestion[]>(url, {}, accessToken);
+        const url = `/api/trading/broker-servers/suggest/?q=${encodeURIComponent(
+          q
+        )}&demo=${demoParam}`;
+        const data = await apiFetch<BrokerServerSuggestion[]>(
+          url,
+          { signal: controller.signal },
+          accessToken
+        );
         setBrokerSuggestions(data);
       } catch (err) {
+        if ((err as { name?: string }).name === "AbortError") {
+          return;
+        }
         console.error("Failed to fetch broker suggestions:", err);
         setBrokerSuggestions([]);
+        setBrokerSuggestError("Unable to load broker servers.");
       } finally {
         setBrokerSuggestLoading(false);
       }
-    }, 250);
+    }, 300);
 
-    return () => clearTimeout(handle);
+    return () => {
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
   }, [accessToken, brokerName, isDemo, selectedBrokerServer]);
+
+  useEffect(() => {
+    setActiveIdx(-1);
+  }, [brokerName, brokerSuggestions]);
+
+  const handleSelectBrokerSuggestion = (suggestion: BrokerServerSuggestion) => {
+    setSelectedBrokerServer(suggestion);
+    setBrokerName(suggestion.server_name);
+    setBrokerSuggestions([]);
+    setActiveIdx(-1);
+    setBrokerSuggestError(null);
+  };
+
+  const handleBrokerInputKeyDown = (
+    e: React.KeyboardEvent<HTMLInputElement>
+  ) => {
+    const suggestionsCount = visibleBrokerSuggestions.length;
+
+    if (e.key === "ArrowDown") {
+      if (suggestionsCount > 0) {
+        e.preventDefault();
+        setActiveIdx((prev) => Math.min(suggestionsCount - 1, prev + 1));
+      }
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      if (suggestionsCount > 0) {
+        e.preventDefault();
+        setActiveIdx((prev) => Math.max(-1, prev - 1));
+      }
+      return;
+    }
+
+    if (e.key === "Enter") {
+      if (activeIdx >= 0 && activeIdx < suggestionsCount) {
+        e.preventDefault();
+        handleSelectBrokerSuggestion(visibleBrokerSuggestions[activeIdx]);
+      }
+      return;
+    }
+
+    if (e.key === "Escape") {
+      setBrokerSuggestions([]);
+      setActiveIdx(-1);
+    }
+  };
 
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -589,6 +661,7 @@ export default function AccountsPage() {
                     setBrokerName(e.target.value);
                     setSelectedBrokerServer(null);
                   }}
+                  onKeyDown={handleBrokerInputKeyDown}
                   placeholder="e.g. Broker-Live01 or Broker-Demo02"
                   style={{
                     width: "100%",
@@ -609,7 +682,7 @@ export default function AccountsPage() {
                   </div>
                 )}
 
-                {!brokerSuggestLoading && brokerSuggestions.length > 0 && (
+                {!brokerSuggestLoading && visibleBrokerSuggestions.length > 0 && (
                   <div
                     style={{
                       marginTop: 6,
@@ -619,55 +692,97 @@ export default function AccountsPage() {
                       overflow: "hidden",
                     }}
                   >
-                    {brokerSuggestions.slice(0, 8).map((s) => (
-                      <div
-                        key={s.id}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          setSelectedBrokerServer(s);
-                          setBrokerName(s.server_name);
-                          setBrokerSuggestions([]);
-                        }}
-                        style={{
-                          padding: "0.55rem 0.7rem",
-                          cursor: "pointer",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          gap: 10,
-                          borderTop: "1px solid rgba(148,163,184,0.12)",
-                        }}
-                      >
-                        <div style={{ display: "flex", flexDirection: "column" }}>
-                          <span style={{ color: "#e5f4ff", fontSize: "0.86rem", fontWeight: 600 }}>
-                            {s.server_name}
-                          </span>
-                          <span style={{ color: "#94a3b8", fontSize: "0.78rem" }}>
-                            {s.broker_display_name}
-                          </span>
-                        </div>
-                        <span
+                    {visibleBrokerSuggestions.map((s, index) => {
+                      const isActive = index === activeIdx;
+                      return (
+                        <div
+                          key={s.id}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            handleSelectBrokerSuggestion(s);
+                          }}
                           style={{
-                            fontSize: "0.75rem",
-                            color: s.environment === "demo" ? "#60a5fa" : "#4ade80",
-                            border: "1px solid rgba(148,163,184,0.25)",
-                            padding: "0.08rem 0.45rem",
-                            borderRadius: 999,
-                            height: 20,
-                            alignSelf: "center",
-                            display: "inline-flex",
-                            alignItems: "center",
+                            padding: "0.55rem 0.7rem",
+                            cursor: "pointer",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: 10,
+                            borderTop: "1px solid rgba(148,163,184,0.12)",
+                            background: isActive
+                              ? "rgba(59,130,246,0.2)"
+                              : "transparent",
                           }}
                         >
-                          {s.environment.toUpperCase()}
-                        </span>
-                      </div>
-                    ))}
+                          <div style={{ display: "flex", flexDirection: "column" }}>
+                            <span
+                              style={{
+                                color: "#e5f4ff",
+                                fontSize: "0.86rem",
+                                fontWeight: 600,
+                              }}
+                            >
+                              {s.server_name}
+                            </span>
+                            <span style={{ color: "#94a3b8", fontSize: "0.78rem" }}>
+                              {s.broker_display_name}
+                            </span>
+                          </div>
+                          <span
+                            style={{
+                              fontSize: "0.75rem",
+                              color: s.environment === "demo" ? "#60a5fa" : "#4ade80",
+                              border: "1px solid rgba(148,163,184,0.25)",
+                              padding: "0.08rem 0.45rem",
+                              borderRadius: 999,
+                              height: 20,
+                              alignSelf: "center",
+                              display: "inline-flex",
+                              alignItems: "center",
+                            }}
+                          >
+                            {s.environment.toUpperCase()}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
 
+                {brokerSuggestError && (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      fontSize: "0.8rem",
+                      color: "#f87171",
+                    }}
+                  >
+                    {brokerSuggestError}
+                  </div>
+                )}
+
+                {!brokerSuggestLoading &&
+                  !brokerSuggestError &&
+                  brokerName.trim().length >= 2 &&
+                  brokerSuggestions.length === 0 &&
+                  (!selectedBrokerServer ||
+                    brokerName.trim() !== selectedBrokerServer.server_name) && (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        fontSize: "0.8rem",
+                        color: "#94a3b8",
+                      }}
+                    >
+                      No matching broker servers found.
+                    </div>
+                  )}
+
                 {selectedBrokerServer && (
                   <div style={{ marginTop: 6, fontSize: "0.78rem", color: "#94a3b8" }}>
-                    Selected: <span style={{ color: "#e5f4ff" }}>{selectedBrokerServer.broker_display_name}</span>
+                    Selected:{" "}
+                    <span style={{ color: "#e5f4ff" }}>
+                      {selectedBrokerServer.broker_display_name}
+                    </span>
                   </div>
                 )}
               </div>
@@ -818,8 +933,8 @@ export default function AccountsPage() {
               const accountAssignments =
                 assignmentsByAccount.get(acc.id) ?? [];
               const serverName =
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                (acc as any).server_name || acc.broker_name;
+                ((acc as { server_name?: string }).server_name ||
+                  acc.broker_name);
               return (
                 <div
                   key={acc.id}

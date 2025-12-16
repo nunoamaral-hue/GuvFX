@@ -1,5 +1,7 @@
 # Workflow — Coder Replacement / Chat Continuity
 
+See also: `docs/CLIVE_RUNBOOK.md` (Clive’s day-to-day workflow + Codex usage).
+
 This workflow ensures any new developer (or new Codex/ChatGPT session) can continue work safely.
 
 ## Start-of-session checklist (incoming coder)
