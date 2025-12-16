@@ -1,46 +1,61 @@
-# HANDOFF (2025-12-15)
+# HANDOFF (2025-12-16)
 
 > Outgoing coder updates this at the end of **every** session.
 
 ## What we were trying to achieve
-- [x] Activate the coder replacement/continuity workflow and validate that the project health checks run successfully (backend tests + frontend lint/build).
+- [x] Move all work to **GuvFX** (and prevent accidental pushes to GuvPay).
+- [x] Merge continuity workflow PR (handoff system + docs/process).
+- [x] Merge broker autocomplete edgecases PR with green CI + green `make check`.
+- [x] Keep repo health green on `main` (`make check` passes).
 
 ## Current state (source of truth)
-- Branch: `main`
-- Last commit: latest merge of continuity/CI updates
-- PR: None (all changes merged)
-- Backend: tests ✅ (2 tests passing via `make check`), migrations N/A (not run this session), server N/A (not required)
+- Repo: **GuvFX**
+- Default branch: `main`
+- Remote safety:
+  - `origin` must be `https://github.com/nunoamaral-hue/GuvFX.git`
+  - Any GuvPay remote (if present) must be push-disabled (or removed).
+- Last commit on `main`: _run_ `git rev-parse --short HEAD` _and paste here_
+- CI status (latest): ✅ backend + ✅ frontend
+- Backend: tests ✅ (2 tests passing via `make check`)
 - Frontend: lint ✅, build ✅ (both via `make check`)
 
 ## What changed this session
-- Files added (continuity system):
-  - `AGENTS.md`, `CONTRIBUTING.md`, `docs/*`, `.github/*`, `.editorconfig`, `.gitattributes`, `Makefile` (and templates)
-- Files updated to match repo paths:
-  - `docs/RUNBOOK.md` — set backend path to `backend/`, frontend path to `frontend/`, added warning to ignore `frontend/.next/`
-  - `docs/STATUS.md` — set branch, repo paths, and recorded green checks (2025-12-15)
-- Makefile backend-test now runs `backend/.venv/bin/python` when present so `make check` works without manually sourcing the venv.
-- DB migrations: none run in this session
-- API changes: none in this session
-- UI changes: none in this session
-- Continuity docs + CI detection work merged; verification: `make check` → backend tests ✅ (2 tests) + frontend lint/build ✅ (green as of Tue 16 Dec 2025).
+- Repo hygiene / safety:
+  - Ensured `origin` points to GuvFX (not GuvPay).
+  - Removed accidental nested folder `GuvPay-pr/` and added `GuvPay-pr/` to `.gitignore`.
+- Continuity workflow:
+  - Continuity PR (v2) merged into `main` (handoff workflow, docs system).
+- Broker autocomplete:
+  - Edgecases branch fixed/cleaned (removed merge marker fallout) and merged into `main` with checks passing.
 
 ## How to verify
-- Commands run + results:
-  - `make check` → backend tests OK (2 tests), frontend `npm run lint` OK, `npm run build` OK`
+- From repo root:
+  - `git remote -v` (confirm `origin` is GuvFX)
+  - `make check` (backend tests + frontend lint/build all green)
 
 ## Known issues / blockers
-- Issue: `pyenv: python: command not found` when running `make check` without an active venv (resolved)
-  - Symptom: backend-test failed because the global `python` shim wasn’t available.
-  - Fix: Makefile backend-test directly invokes `backend/.venv/bin/python` when present.
-  - Remaining requirement: ensure `backend/.venv` exists (e.g., `python -m venv backend/.venv` + install deps).
-  - Next debugging step: none; change already applied.
+- Local git corruption risk (historical):
+  - Some machines previously had a broken local ref named `master 2` which caused fetch/pull errors.
+  - Fix (local only): remove `.git/refs/heads/master 2`, then `git pack-refs --all --prune`, then `git fetch origin --prune`.
+- Product verification pending:
+  - Broker autocomplete/keyboard navigation needs **verification with real broker server data** (see next steps).
 
 ## Exactly what to do next (in order)
-1) Patch `Makefile` backend-test to use `backend/.venv/bin/python` if present, otherwise `python3` (so `make check` works without manual activation).
-2) Update `.github/workflows/ci.yml` backend detection from `backend/django/manage.py` to `backend/manage.py` and set backend path to `backend`.
-3) Re-run `make check` (without activating venv) to confirm it’s fully self-contained; update `docs/KNOWN_ISSUES.md` if anything remains.
-4) Commit changes and update this handoff with the real commit hash and PR link (if created).
+1) **Clive start-of-session sanity check**
+   - `git checkout main && git pull`
+   - `git remote -v` (origin must be GuvFX)
+   - `make check`
+2) **Verify broker autocomplete on real data**
+   - Go to `/accounts`
+   - Type 2+ chars in “Broker server name”
+   - Confirm: debounce, cancellation, correct suggestions, ↑/↓ highlight, Enter selects, Esc closes, mouse click selects, “No matches” state, error state.
+   - If issues found: open a small `fix/...` branch, keep diff minimal, ensure `make check` green, PR into `main`.
+3) **P1 cleanup follow-ups**
+   - Confirm `.trash_duplicates/` is ignored and no duplicate “(1)” / “ 2” files are reintroduced.
+4) **Retire risky old branches**
+   - Avoid resurrecting old `feat/broker-autocomplete-flow` if it causes rebase conflicts; create fresh branches off `main`.
 
-## Notes for the next coder
-- Things NOT to refactor right now: Avoid unrelated refactors/formatting; do not edit `frontend/.next/` (build output).
-- Sharp edges / risks: `make check` currently depends on venv activation until Makefile is patched; keep diffs minimal per `AGENTS.md`.
+## Notes for the next coder (Clive)
+- Follow `docs/CLIVE_RUNBOOK.md` and `AGENTS.md` rules.
+- No unrelated refactors; no editing build output (`frontend/.next/`).
+- Every session ends by updating: `docs/HANDOFF.md`, `docs/STATUS.md`, `docs/NEXT.md`, `docs/KNOWN_ISSUES.md` (if needed).
