@@ -930,11 +930,15 @@ export default function AccountsPage() {
             }}
           >
             {accounts.map((acc) => {
+              const maybeServerName = (acc as unknown as {
+                server_name?: unknown;
+              }).server_name;
               const accountAssignments =
                 assignmentsByAccount.get(acc.id) ?? [];
               const serverName =
-                ((acc as { server_name?: string }).server_name ||
-                  acc.broker_name);
+                typeof maybeServerName === "string"
+                  ? maybeServerName
+                  : acc.broker_name;
               return (
                 <div
                   key={acc.id}
