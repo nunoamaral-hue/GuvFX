@@ -30,7 +30,6 @@ jobs:
         id: detect
         run: |
           if [ -f backend/manage.py ]; then echo "path=backend" >> $GITHUB_OUTPUT; exit 0; fi
-          if [ -f manage.py ]; then echo "path=." >> $GITHUB_OUTPUT; exit 0; fi
           echo "path=" >> $GITHUB_OUTPUT
 
       - name: Setup Python
@@ -80,7 +79,6 @@ jobs:
         id: detect
         run: |
           if [ -f frontend/package.json ]; then echo "path=frontend" >> $GITHUB_OUTPUT; exit 0; fi
-          if [ -f package.json ]; then echo "path=." >> $GITHUB_OUTPUT; exit 0; fi
           echo "path=" >> $GITHUB_OUTPUT
 
       - name: Setup Node
