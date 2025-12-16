@@ -23,3 +23,11 @@ backend/.env
 frontend/.env
 *.env
 GuvPay-pr/
+
+# Local cleanup trash + accidental duplicate files
+.trash_duplicates/
+* 2.py
+* 2.ts
+* 2.tsx
+* 2.json
+* 2.md
