@@ -2,10 +2,11 @@
 
 > Update this file **whenever** project state changes.
 
-## TL;DR
-- Current focus: GuvFX codebase imported into GitHub repo + CI stabilized (backend + frontend green)
-- Current branch: `main` (work branches: `feat/import-guvfx-code`)
-- Next milestone: Cleanup import noise (.trash_duplicates/ + duplicate files) + resume broker-autocomplete-flow on a fresh branch off main
+-## TL;DR
+- Current focus: Track keyboard navigation edge cases (wrap, visibility, focus) before the next release.
+- Current branch: `main`
+- Next milestone: Complete the keyboard-edge-case follow-up (P1 #4) and lock in the release narrative.
+- Open PRs: 0
 
 ## Repo layout (confirm paths)
 - Backend: Django — `backend/`
@@ -17,7 +18,7 @@
 - Frontend: 2025-12-15 — GitHub Actions CI ✅ (lint + build) + `make check` local ✅
 
 ## Active blockers
-- Cleanup needed: remove `.trash_duplicates/` and duplicate “(1)” / “ 2” files from the import (follow-up PR)
+- _None_
 
 ## Owners
 - PM: Nuno Amaral

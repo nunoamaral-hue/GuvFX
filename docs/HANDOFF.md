@@ -6,9 +6,9 @@
 - [x] Activate the coder replacement/continuity workflow and validate that the project health checks run successfully (backend tests + frontend lint/build).
 
 ## Current state (source of truth)
-- Branch: `feat/broker-autocomplete-flow`
-- Last commit: <fill after committing continuity activation changes>
-- PR: <fill if/when opened>
+- Branch: `main`
+- Last commit: latest merge of continuity/CI updates
+- PR: None (all changes merged)
 - Backend: tests ✅ (2 tests passing via `make check`), migrations N/A (not run this session), server N/A (not required)
 - Frontend: lint ✅, build ✅ (both via `make check`)
 
@@ -22,6 +22,7 @@
 - DB migrations: none run in this session
 - API changes: none in this session
 - UI changes: none in this session
+- Continuity docs + CI detection work merged; verification: `make check` → backend tests ✅ (2 tests) + frontend lint/build ✅ (green as of Tue 16 Dec 2025).
 
 ## How to verify
 - Commands run + results:

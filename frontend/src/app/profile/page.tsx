@@ -437,6 +437,7 @@ export default function ProfilePage() {
                 const disabled = requestingPlan || isCurrent;
 
                 let badgeLabel = "";
+                void badgeLabel; // intentionally unused
                 let hostingModeLabel = "";
                 let planTone = "#38bdf8";
                 let isRecommended = false;
