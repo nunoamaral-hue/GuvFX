@@ -933,13 +933,12 @@ export default function AccountsPage() {
               const maybeServerName = (acc as unknown as {
                 server_name?: unknown;
               }).server_name;
-              const serverName =
-                typeof maybeServerName === "string" ? maybeServerName : undefined;
               const accountAssignments =
                 assignmentsByAccount.get(acc.id) ?? [];
               const serverName =
-                ((acc as { server_name?: string }).server_name ||
-                  acc.broker_name);
+                typeof maybeServerName === "string"
+                  ? maybeServerName
+                  : acc.broker_name;
               return (
                 <div
                   key={acc.id}
@@ -986,11 +985,7 @@ export default function AccountsPage() {
                         }}
                       >
                         <span style={labelStyle}>Broker server:</span>
-<<<<<<< Updated upstream
                         <span style={valueStyle}>{serverName}</span>
-=======
-                        <span style={valueStyle}>{serverName || acc.broker_name}</span>
->>>>>>> Stashed changes
                       </p>
                     </div>
                     <div

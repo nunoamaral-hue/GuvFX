@@ -28,15 +28,6 @@ type BacktestSummary = {
   last_metrics: BacktestMetricsSummary | null;
 };
 
-const coerceNumber = (value: unknown, fallback = 0) => {
-  if (typeof value === "number") return value;
-  if (typeof value === "string") {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : fallback;
-  }
-  return fallback;
-};
-
 export default function BacktestsPage() {
   const [accessToken, setAccessToken] = useState<string>("");
   const [configs, setConfigs] = useState<BacktestConfig[]>([]);
@@ -258,7 +249,6 @@ export default function BacktestsPage() {
           >
             {configs.map((cfg) => {
               const summary = summaries[cfg.id];
-<<<<<<< Updated upstream
               const metrics: BacktestMetricsSummary =
                 summary?.last_metrics ?? ({} as BacktestMetricsSummary);
               /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -267,19 +257,6 @@ export default function BacktestsPage() {
               const maxDD = (metrics as any).max_drawdown_pct ?? (metrics as any).max_drawdown ?? 0;
               /* eslint-enable @typescript-eslint/no-explicit-any */
               void winRate; // intentionally unused
-=======
-              const metrics = summary?.last_metrics ?? {};
-              const winRate = coerceNumber(
-                metrics.win_rate_pct ?? metrics.win_rate
-              );
-              void winRate; // intentionally unused
-              const totalReturn = coerceNumber(
-                metrics.total_return_pct ?? metrics.total_return
-              );
-              const maxDD = coerceNumber(
-                metrics.max_drawdown_pct ?? metrics.max_drawdown
-              );
->>>>>>> Stashed changes
 
               return (
                 <div
