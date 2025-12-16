@@ -13,8 +13,8 @@
 - Default branch: `main`
 - Remote safety:
   - `origin` must be `https://github.com/nunoamaral-hue/GuvFX.git`
-  - Any GuvPay remote (if present) must be push-disabled (or removed).
-- Last commit on `main`: _run_ `git rev-parse --short HEAD` _and paste here_
+  - No GuvPay remote should exist in this repo (or it must be push-disabled)
+- Last commit on `main`: `818ac4c`
 - CI status (latest): ✅ backend + ✅ frontend
 - Backend: tests ✅ (2 tests passing via `make check`)
 - Frontend: lint ✅, build ✅ (both via `make check`)
