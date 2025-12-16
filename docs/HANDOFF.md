@@ -28,7 +28,7 @@
 
 ## How to verify
   - Commands run + results:
-    - `make check` → backend tests ✅ (2 tests) + frontend lint/build ✅ (green as of Tue 16 Dec 2025 06:26:44 UTC; currently fails intermittently with Postgres `127.0.0.1:5432` `Operation not permitted`, see `docs/KNOWN_ISSUES.md`).
+    - `make check` → backend tests ✅ (2 tests) + frontend lint/build ✅ (green as of Tue 16 Dec 2025 06:26:44 UTC).
 
 ## Known issues / blockers
 - Issue: `pyenv: python: command not found` when running `make check` without an active venv (resolved)
@@ -49,21 +49,19 @@
 - Sharp edges / risks: `make check` no longer requires manual venv activation, but backend still requires `backend/.venv` to exist; keep diffs minimal per `AGENTS.md`.
 
 ## feat/broker-autocomplete-flow session (2025-12-15)
-- Branch: `feat/broker-autocomplete-flow`
-- Last commit: 05fa09201d6cd8f13903116c884904bb59e33ff2
-- What changed: `frontend/src/app/accounts/page.tsx` (broker autocomplete UX improvements) + doc updates (`docs/STATUS.md`, `docs/NEXT.md`, `docs/HANDOFF.md`)
-- How to verify: `make check`
-- Next steps:
-  1. Ensure a local Postgres instance is reachable on `127.0.0.1:5432` (or update Django DB settings), then rerun `make check`.
-  2. Manually validate the new broker autocomplete keyboard workflow and "No matches"/error messaging.
-  3. Confirm `docs/NEXT.md` follow-ups (keyboard edge cases) before tagging this feature complete.
   - NOTE: Superseded by the wrap-up entry below; reference the newer section for the authoritative record.
+  - Branch: `feat/broker-autocomplete-flow`
+  - Last commit: 05fa09201d6cd8f13903116c884904bb59e33ff2
+  - What changed: `frontend/src/app/accounts/page.tsx` (broker autocomplete UX improvements) + doc updates (`docs/STATUS.md`, `docs/NEXT.md`, `docs/HANDOFF.md`)
+  - How to verify: `make check`
+  - Next steps: See wrap-up (2025-12-16) below.
 
 ## feat/broker-autocomplete-flow wrap-up (2025-12-15)
 - Branch: `feat/broker-autocomplete-flow`
 - Last commit: 05fa09201d6cd8f13903116c884904bb59e33ff2
 - What changed: broker server autocomplete MVP improvements + targeted frontend lint fixes.
-- Verification: `make check` (green once Postgres at `127.0.0.1:5432` is accessible; see `docs/KNOWN_ISSUES.md`).
+ - NOTE: Superseded by 2025-12-16 wrap-up below.
+ - Verification: superseded; see 2025-12-16 wrap-up.
 - Next steps:
   1. Patch the CI backend detection so it centres on `backend/manage.py` (`docs/NEXT.md` P0 #1).
   2. Re-run CI (lint/build/test) after that detection change (`docs/NEXT.md` P0 #2).
