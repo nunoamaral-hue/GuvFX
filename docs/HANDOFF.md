@@ -30,6 +30,33 @@
 - Broker autocomplete verification:
   - Seeded `BrokerServer` entries (IS6FX, IC Markets, TradersWay, XM, Exness) and confirmed `/accounts` autocomplete (demo/live selections plus ↑/↓/Enter/Esc navigation) behaves as expected.
 
+## VPS + MT5 handoff session (2025-12-16)
+
+### What changed
+- Production VPS is live: Traefik routes `https://guvfx.com`, `https://api.guvfx.com`, and `https://guac.guvfx.com/guacamole/` with Let’s Encrypt certificates on ports 80/443.
+- Stacks run from `/home/ubuntu/guvfx-prod` (Traefik + backend + frontend + Postgres) and `/home/ubuntu/guacamole-stack` (Guacamole UI, `guacd`, `guac-db`, `mt5free-desktop`).
+- Shared handoff directory `/srv/guvfx/mt5_handoff` (owner `10001`, group `1000`, mode `2770`) is mounted into `/app/.guvfx_handoff` (backend) and `/home/mt5free/.guvfx` (MT5); JSON configs like `account_1.json` sync between the services.
+- MT5 automation runs via Openbox autostart: wallpaper + MT5 start + maximize + `$HOME/bin/apply-account-config` (fills login/server, optional password, no default submit).
+
+### How to verify
+- `docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"`
+- `docker compose -f /home/ubuntu/guvfx-prod/docker-compose.yml ps`
+- `docker compose -f /home/ubuntu/guacamole-stack/docker-compose.yml ps`
+- `docker logs --tail 80 traefik | egrep -i "acme|letsencrypt|certificate|error" || true`
+- `curl -Ik https://guvfx.com --max-time 10 || true`
+- `curl -Ik https://api.guvfx.com --max-time 10 || true`
+- `curl -Ik https://guac.guvfx.com/guacamole/ --max-time 10 || true`
+- `docker exec -it guvfx-backend sh -lc 'ls -la /app/.guvfx_handoff | tail'`
+- `docker exec -it mt5free-desktop bash -lc 'ls -la $HOME/.guvfx | tail'`
+
+### Known issues
+- MT5 mouse input via Guacamole is still flaky; refer to `docs/KNOWN_ISSUES.md` for symptoms and log-based next steps.
+
+### Next steps
+- Fix the MT5 mouse input issue so automation clicks consistently reach the app.
+- Harden `apply-account-config` (secure password handling and add optional `SUBMIT=1` flag to press OK when desired) and document the gating behavior.
+- Consider baking the `apply-account-config` automation into the `mt5free-desktop` image so the pipeline can be versioned with the container.
+
 ## How to verify
 - From repo root:
   - `git remote -v` (confirm `origin` is GuvFX)

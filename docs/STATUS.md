@@ -2,10 +2,12 @@
 
 > Update this file **whenever** project state changes.
 
--## TL;DR
-- Current focus: Reapply broker autocomplete edge-case improvements (debounce, abort, keyboard nav) and keep client-only login parsing safe ahead of the next release.
+## TL;DR
+- Current focus: VPS production rollout (Traefik+Let’s Encrypt) + MT5 handoff automation and MT5 mouse reliability.
 - Current branch: `fix/broker-autocomplete-edgecases`
-- Next milestone: Resolve the navigation/focus follow-up for broker autocomplete (P1 #4) and lock in the release narrative.
+- Next milestone: Resolve the navigation/focus follow-up for broker autocomplete (P1 #4) while keeping the VPS/MT5 flow stable.
+- Production URLs: `https://guvfx.com` (frontend), `https://api.guvfx.com` (backend API), `https://guac.guvfx.com/guacamole/` (Guacamole UI).
+- Last green verification: `make check` on `main` (local; blocked by Postgres + Guacamole mouse flake).
 - Open PRs: 0
 
 ## Repo layout (confirm paths)
@@ -18,7 +20,8 @@
 - Frontend: 2025-12-15 — GitHub Actions CI ✅ (lint + build) + `make check` local ✅
 
 ## Active blockers
-- `make check` cannot finish because Django/postgres cannot open `127.0.0.1:5432` (Operation not permitted); tests will need a reachable PostgreSQL server.
+- `make check` cannot finish because Django/postgres cannot open `127.0.0.1:5432` (Operation not permitted); tests need a reachable PostgreSQL server.
+- MT5 mouse input via Guacamole is still unreliable; clicks sometimes drop until menu hotkeys or restarts re-enable input.
 
 ## Owners
 - PM: Nuno Amaral
