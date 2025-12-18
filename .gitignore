@@ -31,3 +31,22 @@ GuvPay-pr/
 * 2.tsx
 * 2.json
 * 2.md
+* 3.py
+* 3.ts
+* 3.tsx
+* 3.json
+* 3.md
+# Accidental numbered duplicates (Finder copies)
+* [0-9].py
+* [0-9].ts
+* [0-9].tsx
+* [0-9].json
+* [0-9].md
+
+# Accidental numbered duplicates like "eslint (1).config.mjs"
+* ([0-9]).py
+* ([0-9]).ts
+* ([0-9]).tsx
+* ([0-9]).json
+* ([0-9]).md
+* ([0-9]).config.mjs

@@ -8,6 +8,12 @@
 - Next milestone: Resolve the navigation/focus follow-up for broker autocomplete (P1 #4) while keeping the VPS/MT5 flow steady.
 - Production URLs: `https://guvfx.com` (frontend), `https://api.guvfx.com` (backend), `https://guac.guvfx.com/guacamole/` (Guacamole).
 - Last verification: `curl -Ik https://guvfx.com`, `curl -Ik https://api.guvfx.com`, `curl -Ik https://guac.guvfx.com/guacamole/`, and `docker logs --tail 200 traefik | egrep -i "acme|certificate|error"` (post-`make check` still blocked on PostgreSQL connectivity).
+## TL;DR
+- Current focus: VPS production rollout (Traefik+Let’s Encrypt) + MT5 handoff automation and MT5 mouse reliability.
+- Current branch: `fix/broker-autocomplete-edgecases`
+- Next milestone: Resolve the navigation/focus follow-up for broker autocomplete (P1 #4) while keeping the VPS/MT5 flow stable.
+- Production URLs: `https://guvfx.com` (frontend), `https://api.guvfx.com` (backend API), `https://guac.guvfx.com/guacamole/` (Guacamole UI).
+- Last green verification: `make check` on `main` (local; blocked by Postgres + Guacamole mouse flake).
 - Open PRs: 0
 
 ## Repo layout (confirm paths)
@@ -22,6 +28,8 @@
 ## Active blockers
 - `make check` cannot finish because Django/postgres cannot open `127.0.0.1:5432` (Operation not permitted); tests will need a reachable PostgreSQL server.
 - MT5 mouse input via Guacamole is still unreliable (mouse clicks intermittently dead even though keyboard navigation works); needs deeper investigation before we rely on automation clicks.
+- `make check` cannot finish because Django/postgres cannot open `127.0.0.1:5432` (Operation not permitted); tests need a reachable PostgreSQL server.
+- MT5 mouse input via Guacamole is still unreliable; clicks sometimes drop until menu hotkeys or restarts re-enable input.
 
 ## Owners
 - PM: Nuno Amaral
