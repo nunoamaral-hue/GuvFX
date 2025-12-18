@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     "ai_helper",
     "execution",  # NEW
     "hosting",
+    "mt5",
 ]
 
 MIDDLEWARE = [
@@ -225,3 +226,6 @@ LOGGING = {
         "level": env("DJANGO_LOG_LEVEL", "INFO"),
     },
 }
+# --- Behind Traefik (TLS terminated upstream) ---
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
