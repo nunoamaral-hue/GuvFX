@@ -61,3 +61,28 @@
 - Follow `docs/CLIVE_RUNBOOK.md` and `AGENTS.md` rules.
 - No unrelated refactors; no editing build output (`frontend/.next/`).
 - Every session ends by updating: `docs/HANDOFF.md`, `docs/STATUS.md`, `docs/NEXT.md`, `docs/KNOWN_ISSUES.md` (if needed).
+
+## VPS / MT5 handoff update (2025-12-18)
+
+### What changed
+- Production VPS is live with Traefik on `traefik-public` routing `https://guvfx.com`, `https://api.guvfx.com`, and `https://guac.guvfx.com/guacamole/` over Let’s Encrypt.
+- Stacks live in `/home/ubuntu/guvfx-prod` (Traefik + GuvFX backend + GuvFX frontend + guvfx-postgres) and `/home/ubuntu/guacamole-stack` (`guacd`, Guacamole, `guac-db`, `mt5-free-vnc`).
+- Shared mount `/srv/guvfx/mt5_handoff` (owner 10001, group 1000, mode 2770) is bind-mounted into `/app/.guvfx_handoff` and `/home/mt5free/.guvfx`; files are 660 so both containers share configs.
+- Openbox autostart now draws the wallpaper, launches/maximizes MT5, and runs `$HOME/bin/apply-account-config` (uses `xdotool`/`wmctrl` on `$HOME/.guvfx/account_1.json`) to pre-fill the Login dialog without pressing OK.
+
+### How to verify
+- `docker ps`
+- `docker logs --tail 200 traefik | egrep -i "acme|certificate|error" || true`
+- `curl -Ik https://guvfx.com --max-time 10 || true`
+- `curl -Ik https://api.guvfx.com --max-time 10 || true`
+- `curl -Ik https://guac.guvfx.com/guacamole/ --max-time 10 || true`
+- `stat /srv/guvfx/mt5_handoff`
+- `docker exec -it guvfx-backend sh -lc 'ls -la /app/.guvfx_handoff | tail'`
+- `docker exec -it mt5free-desktop bash -lc 'ls -la $HOME/.guvfx | tail'`
+
+### Known issues
+- MT5 mouse input via Guacamole remains flaky; see `docs/KNOWN_ISSUES.md` for the latest observations and log-based troubleshooting.
+
+### Next steps
+- Investigate the Guacamole mouse issue (logs, VNC flags, focus) so automation clicks can be trusted.
+- Harden `apply-account-config` (per-account JSON flows, secure passwords, optional `SUBMIT=1` gate) and cook it into the `mt5free-desktop` image if that proves stable.
