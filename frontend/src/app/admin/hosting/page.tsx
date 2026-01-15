@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
@@ -83,7 +82,7 @@ export default function HostingAdminPage() {
     } finally {
       setRequestsLoading(false);
     }
-  }, [accessToken]);
+  }, []);
 
   useEffect(() => {
     

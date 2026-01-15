@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ReactNode, useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 
 type Me = {
@@ -31,20 +32,42 @@ type NavSection = {
 const navSections: NavSection[] = [
   {
     label: "Dashboard",
+    items: [{ label: "Overview", href: "/dashboard" }],
+  },
+  {
+    label: "Markets",
+    items: [{ label: "Charts", href: "/charts" }],
+  },
+  {
+    label: "Strategies",
     items: [
-      { label: "Trading overview", href: "/dashboard" },
-      { label: "Charts", href: "/dashboard/charts" },
-      { label: "Performance", href: "/dashboard/performance" },
+      { label: "My Strategies", href: "/strategies" },
+      { label: "Marketplace", href: "/strategies/marketplace" },
+      { label: "Create Strategy", href: "/strategies/create" },
+      { label: "Backtests", href: "/backtests" },
     ],
   },
   {
     label: "Trading",
     items: [
-      { label: "Create Strategy", href: "/strategies/create" }, // <— update this
-      { label: "My Strategies", href: "/strategies" },
-      { label: "Backtests", href: "/backtests" },
-      { label: "Performance", href: "/backtests/performance" },
+      { label: "Accounts", href: "/accounts" },
+      { label: "Trade History", href: "/trading/trade-history" },
     ],
+  },
+  {
+    label: "Analytics",
+    items: [
+      { label: "Performance", href: "/dashboard/performance" },
+      { label: "Strategy Metrics", href: "/analytics/strategy-metrics" },
+    ],
+  },
+  {
+    label: "Backtesting",
+    items: [{ label: "Backtests", href: "/backtests" }],
+  },
+  {
+    label: "AI",
+    items: [{ label: "Strategy Advisor", href: "/ai/strategy-advisor" }],
   },
   {
     label: "Settings",
@@ -58,21 +81,16 @@ const navSections: NavSection[] = [
 
 function isActive(pathname: string, href: string) {
   const [hrefPath] = href.split("?");
-
-  if (hrefPath === "/strategies" || hrefPath === "/strategies/create") {
-    return pathname === hrefPath;
-  }
-
   return pathname === hrefPath || pathname.startsWith(hrefPath + "/");
 }
 
 export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
 
-const [currentUser, setCurrentUser] = useState<Me | null>(null);
+  const [currentUser, setCurrentUser] = useState<Me | null>(null);
 
   useEffect(() => {
-        let cancelled = false;
+    let cancelled = false;
 
     apiFetch<Me>("/api/auth/me/", {})
       .then((data) => {
