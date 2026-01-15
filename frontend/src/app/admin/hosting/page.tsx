@@ -55,23 +55,21 @@ export default function HostingAdminPage() {
       if (stored) {
         setAccessToken(stored);
       } else {
-        setError("No token found. Please log in again.");
+        setError("");
       }
     }
   }, []);
 
   // Fetch hosting data
   const fetchRequests = useCallback(async () => {
-    if (!accessToken) return;
+    
 
     setRequestsLoading(true);
     setRequestError(null);
     try {
       const data = await apiFetch<HostingRequest[]>(
         "/api/hosting/requests/",
-        {},
-        accessToken
-      );
+        {});
       const list = Array.isArray(data)
         ? data
         : (data as { results?: HostingRequest[] }).results ?? [];
@@ -87,7 +85,7 @@ export default function HostingAdminPage() {
   }, [accessToken]);
 
   useEffect(() => {
-    if (!accessToken) return;
+    
 
     const fetchData = async () => {
       setLoading(true);
@@ -95,9 +93,9 @@ export default function HostingAdminPage() {
 
       try {
         const [providersRes, plansRes, instancesRes] = await Promise.all([
-          apiFetch<HostingProvider[]>("/api/hosting/providers/", {}, accessToken),
-          apiFetch<VPSPlan[]>("/api/hosting/plans/", {}, accessToken),
-          apiFetch<VpsInstance[]>("/api/hosting/vps/", {}, accessToken),
+          apiFetch<HostingProvider[]>("/api/hosting/providers/", {}),
+          apiFetch<VPSPlan[]>("/api/hosting/plans/", {}),
+          apiFetch<VpsInstance[]>("/api/hosting/vps/", {}),
         ]);
 
         setProviders(providersRes);
@@ -484,7 +482,7 @@ export default function HostingAdminPage() {
                           variant="secondary"
                           disabled={rejectingId === req.id || !accessToken}
                           onClick={async () => {
-                            if (!accessToken) return;
+                            
                             setRejectingId(req.id);
                             setRequestError(null);
                             try {
@@ -493,9 +491,8 @@ export default function HostingAdminPage() {
                                 {
                                   method: "POST",
                                   body: JSON.stringify({}),
-                                },
-                                accessToken
-                              );
+                                }
+);
                               await fetchRequests();
                             } catch (err: unknown) {
                               console.error(err);
@@ -523,7 +520,7 @@ export default function HostingAdminPage() {
                         <Button
                           disabled={approvingId === req.id || !accessToken}
                           onClick={async () => {
-                            if (!accessToken) return;
+                            
                             setApprovingId(req.id);
                             setRequestError(null);
                             try {
@@ -532,9 +529,8 @@ export default function HostingAdminPage() {
                                 {
                                   method: "POST",
                                   body: JSON.stringify({}),
-                                },
-                                accessToken
-                              );
+                                }
+);
                               await fetchRequests();
                             } catch (err: unknown) {
                               console.error(err);

@@ -45,7 +45,7 @@ export default function StrategiesListPage() {
   }, []);
 
   useEffect(() => {
-    if (!accessToken) return;
+    
 
     const fetchStrategies = async () => {
       setLoading(true);
@@ -53,9 +53,7 @@ export default function StrategiesListPage() {
       try {
         const data = await apiFetch<Strategy[]>(
           "/api/strategies/strategies/",
-          {},
-          accessToken
-        );
+          {});
         setStrategies(data);
       } catch (err: unknown) {
         console.error(err);
@@ -85,7 +83,7 @@ export default function StrategiesListPage() {
         <Card title="Strategies">
           {!accessToken && (
             <p style={{ fontStyle: "italic", fontSize: "0.9rem" }}>
-              No token found. Please log in again.
+              
             </p>
           )}
 

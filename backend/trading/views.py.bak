@@ -1,0 +1,69 @@
+from rest_framework import viewsets
+from rest_framework.permissions import IsAuthenticated
+from mt5.models import Mt5Credential
+from .models import TradingAccount, Trade
+from .serializers import TradingAccountSerializer, TradeSerializer
+from rest_framework.exceptions import APIException
+
+class Mt5NotValidated(APIException):
+    status_code = 409
+    default_detail = "MT5 credentials not validated. Please validate credentials first."
+    default_code = "mt5_not_validated"
+
+
+class TradingAccountViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for trading accounts.
+
+    - Non-staff users see and manage only their own accounts.
+    - Staff users can see all accounts.
+    """
+
+    serializer_class = TradingAccountSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = TradingAccount.objects.select_related("user", "broker_server").all()
+        if not user.is_staff:
+            qs = qs.filter(user=user)
+        return qs.order_by("-created_at")
+
+    def perform_create(self, serializer):
+        user = self.request.user if not self.request.user.is_staff else serializer.validated_data.get("user", self.request.user)
+
+        cred = Mt5Credential.objects.filter(user=user).first()
+        if not cred or cred.last_status != "SUCCESS":
+            raise Mt5NotValidated()
+
+        serializer.save(user=user)
+
+class TradeViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Read-only access to trades.
+
+    - Non-staff users see trades only from their own accounts.
+    - Staff can see all trades.
+    - Optional filters: ?account=<id>&symbol=EURUSD
+    """
+
+    serializer_class = TradeSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Trade.objects.select_related("account", "account__user", "account__broker_server").all()
+
+        if not user.is_staff:
+            qs = qs.filter(account__user=user)
+
+        account_id = self.request.query_params.get("account")
+        symbol = self.request.query_params.get("symbol")
+
+        if account_id:
+            qs = qs.filter(account_id=account_id)
+
+        if symbol:
+            qs = qs.filter(symbol__iexact=symbol)
+
+        return qs

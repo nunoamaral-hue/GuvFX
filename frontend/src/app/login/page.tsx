@@ -46,24 +46,22 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
-      // SimpleJWT email-based login
       const body = {
         email,
-        username: email,  // <-- added
+        username: email,
         password,
       };
 
-      const data = await apiFetch<LoginResponse>(
-        "/api/auth/token/",
-        {
-          method: "POST",
-          body: JSON.stringify(body),
-        }
-      );
+      const res = await fetch("https://api.guvfx.com/api/auth/cookie/login/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(body),
+      });
 
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("guvfx_access_token", data.access);
-        window.localStorage.setItem("guvfx_refresh_token", data.refresh);
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(t || "Login failed. Please check your credentials.");
       }
 
       setSuccess("Logged in successfully. Redirecting…");

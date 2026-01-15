@@ -1,0 +1,85 @@
+import base64
+import hashlib
+import hmac
+import json
+import os
+import time
+from urllib.parse import quote
+
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+
+def _key_bytes_from_hex(hex_key: str) -> bytes:
+    hex_key = (hex_key or "").strip().lower()
+    if len(hex_key) != 32:
+        raise ValueError("GUAC_JSON_SECRET_KEY_HEX must be 32 hex chars (128-bit)")
+    return bytes.fromhex(hex_key)
+
+
+def sign_and_encrypt_json(payload: dict, *, secret_hex: str) -> str:
+    """
+    Encrypted JSON auth (guacamole-auth-json):
+    - HMAC-SHA256 over JSON plaintext using secret key bytes
+    - prepend signature bytes to plaintext bytes
+    - AES-128-CBC encrypt with IV=all zero bytes
+    - base64 encode ciphertext
+    """
+    key = _key_bytes_from_hex(secret_hex)
+
+    plaintext = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    sig = hmac.new(key, plaintext, hashlib.sha256).digest()
+    signed = sig + plaintext
+
+    padder = padding.PKCS7(128).padder()
+    padded = padder.update(signed) + padder.finalize()
+
+    iv = b"\x00" * 16
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+    enc = cipher.encryptor()
+    ciphertext = enc.update(padded) + enc.finalize()
+
+    return base64.b64encode(ciphertext).decode("ascii")
+
+
+def build_guac_data_url(*, base_url: str, data_b64: str) -> str:
+    base_url = base_url.rstrip("/")
+    # Force direct open of the connection (no Home/Recent UI):
+    # "c/<id>" where <id> is the connection identifier in the JSON payload.
+    data_q = quote(data_b64, safe="")
+    return f"{base_url}/#/client/c/mt5-rdp?data={data_q}"
+
+
+def build_mt5_desktop_payload(*, username: str, host_override: str | None = None) -> dict:
+    expires_ms = int(time.time() * 1000) + 3_600_000
+
+    proto = os.getenv("GUAC_MT5_PROTOCOL", "rdp")
+    host = (host_override or os.getenv("GUAC_MT5_HOST", "mt5-free-vnc"))
+    port = os.getenv("GUAC_MT5_PORT", "3389")
+    rdp_user = os.getenv("GUAC_MT5_USER", "mt5free")
+    rdp_pass = os.getenv("GUAC_MT5_PASS", "")
+
+    if not rdp_pass:
+        raise RuntimeError("GUAC_MT5_PASS is not set")
+
+    conn_id = "mt5-rdp"
+
+    return {
+        "username": username,
+        "expires": expires_ms,
+        "connections": {
+            conn_id: {
+                "protocol": proto,
+                "parameters": {
+                    "hostname": host,
+                    "port": str(port),
+                    "username": rdp_user,
+                    "password": rdp_pass,
+                    "ignore-cert": "true",
+                    "security": "any",
+		    "color-depth": "24",          # try 24 first (32 is also OK)
+    		    "resize-method": "display-update",
+                },
+            }
+        },
+    }

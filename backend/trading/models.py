@@ -5,12 +5,10 @@ from django.db.models import Q
 
 
 class BrokerServer(models.Model):
-    """A directory of broker/MT5 server names used for autocomplete and validation."""
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
-    broker_display_name = models.CharField(max_length=120, help_text="Broker name shown to users (e.g. TradersWay)")
-    server_name = models.CharField(max_length=160, unique=True, help_text="Exact MT5 server name (e.g. TradersWay-Demo)")
+    broker_display_name = models.CharField(max_length=120)
+    server_name = models.CharField(max_length=160, unique=True)
 
     DEMO = "demo"
     LIVE = "live"
@@ -20,7 +18,7 @@ class BrokerServer(models.Model):
     ]
     environment = models.CharField(max_length=10, choices=ENV_CHOICES, default=DEMO)
 
-    aliases = models.JSONField(default=list, blank=True, help_text="Alternative names users might type (e.g. traders way, tw)")
+    aliases = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -32,49 +30,38 @@ class BrokerServer(models.Model):
     def __str__(self) -> str:
         return f"{self.broker_display_name} / {self.server_name} ({self.environment})"
 
-class TradingAccount(models.Model):
-    """
-    A trading account linked to a GuvFX user (e.g., MT5 account at a broker).
-    """
 
+class TradingAccount(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="trading_accounts",
     )
 
-    name = models.CharField(max_length=100, help_text="Friendly name (e.g. Main MT5)")
+    # NEW: bind this trading account to ONE MT5 instance
+    mt5_instance = models.ForeignKey(
+        "mt5.Mt5Instance",
+        on_delete=models.PROTECT,
+        related_name="trading_accounts",
+        null=True,
+        blank=True,
+    )
 
-    # NEW: normalized broker/server directory reference (preferred)
+    name = models.CharField(max_length=100)
+
     broker_server = models.ForeignKey(
         BrokerServer,
         on_delete=models.PROTECT,
         related_name="trading_accounts",
         null=True,
         blank=True,
-        help_text="Selected BrokerServer record (preferred).",
     )
 
-    # Legacy / fallback: free-text broker or server name (deprecated; keep for backward compatibility)
-    broker_name = models.CharField(
-        max_length=100,
-        blank=True,
-        help_text="DEPRECATED: free-text broker or server name. Prefer broker_server.server_name",
-    )
-    account_number = models.CharField(max_length=64, help_text="External account ID / login")
+    broker_name = models.CharField(max_length=100, blank=True)
+    account_number = models.CharField(max_length=64)
 
-    # Legacy / fallback: plaintext password (deprecated). Prefer storing encrypted password_enc.
-    broker_password = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text="DEPRECATED: plaintext password for the broker platform account. Prefer password_enc.",
-    )
-
-    # NEW: encrypted password storage (MVP: store encrypted string; later rotate to KMS/envelope)
-    password_enc = models.TextField(
-        blank=True,
-        help_text="Encrypted password for MT5/broker login. Do not store plaintext.",
-    )
+    broker_password = models.CharField(max_length=255, blank=True)
+    password_enc = models.TextField(blank=True)
 
     is_demo = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
@@ -94,6 +81,12 @@ class TradingAccount(models.Model):
                 condition=Q(broker_server__isnull=False),
                 name="uniq_user_brokerserver_accountnumber",
             ),
+            # ONE ACTIVE per (user, mt5_instance)
+            models.UniqueConstraint(
+                fields=["user", "mt5_instance"],
+                condition=Q(is_active=True) & Q(mt5_instance__isnull=False),
+                name="uniq_active_account_per_instance",
+            ),
         ]
         ordering = ["-created_at"]
 
@@ -105,14 +98,8 @@ class TradingAccount(models.Model):
         )
         return f"{self.user} | {server} | {self.account_number}"
 
+
 class Trade(models.Model):
-    """
-    A single trade executed on a TradingAccount.
-
-    Initially this can be created manually or via admin/import;
-    later it will be fed by broker/MT5 integrations.
-    """
-
     BUY = "BUY"
     SELL = "SELL"
     SIDE_CHOICES = [
@@ -125,10 +112,12 @@ class Trade(models.Model):
         on_delete=models.CASCADE,
         related_name="trades",
     )
-    ticket = models.CharField(max_length=64, help_text="Broker trade ticket / ID")
+
+    ticket = models.CharField(max_length=64)
     symbol = models.CharField(max_length=32)
     side = models.CharField(max_length=4, choices=SIDE_CHOICES)
-    volume = models.DecimalField(max_digits=12, decimal_places=2, help_text="Lots or units")
+    volume = models.DecimalField(max_digits=12, decimal_places=2)
+
     open_time = models.DateTimeField()
     close_time = models.DateTimeField(null=True, blank=True)
 
@@ -141,11 +130,7 @@ class Trade(models.Model):
 
     magic_number = models.IntegerField(null=True, blank=True)
     comment = models.CharField(max_length=255, blank=True)
-    opened_by = models.CharField(
-        max_length=64,
-        blank=True,
-        help_text="Strategy/bot name or identifier",
-    )
+    opened_by = models.CharField(max_length=64, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

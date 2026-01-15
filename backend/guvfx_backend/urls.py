@@ -1,7 +1,8 @@
 from django.contrib import admin
 from django.urls import path, include
+from users.auth_cookie_views import cookie_login, cookie_refresh, cookie_logout, cookie_csrf
 from rest_framework.routers import DefaultRouter
-
+from .health import health
 from execution.views import (
     ExecutionJobViewSet,
     WorkerAccountCredentialsView,
@@ -33,4 +34,13 @@ urlpatterns = [
     path("api/", include(router.urls)),
     path("api/hosting/", include("hosting.urls")),
     path("api/mt5/", include("mt5.urls")),
+    path("health/", health),
+]
+
+# Cookie-based JWT auth (HttpOnly)
+urlpatterns += [
+    path("api/auth/cookie/login/", cookie_login),
+    path("api/auth/cookie/csrf/", cookie_csrf),
+    path("api/auth/cookie/refresh/", cookie_refresh),
+    path("api/auth/cookie/logout/", cookie_logout),
 ]
