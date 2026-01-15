@@ -273,7 +273,7 @@ class StrategyAssignment(models.Model):
             # One active assignment per MT5 instance (per user implicitly)
             models.UniqueConstraint(
                 fields=["account"],
-                condition=Q(is_active=True) & Q(account__mt5_instance__isnull=False),
+                condition=Q(is_active=True),  # CI: removed join-based constraint (account__mt5_instance__isnull)
                 name="uniq_active_strategy_assignment_per_instance",
             ),
         ]
