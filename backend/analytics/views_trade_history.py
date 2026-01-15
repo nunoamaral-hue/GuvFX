@@ -17,16 +17,25 @@ def _strategy_name_from_comment(comment: str) -> str:
     c = comment.strip()
     if "guvfx:" not in c:
         return "Unattributed"
-    # Very lightweight parse (Phase A2.1)
-    # Look for "name="
-    idx = c.find("name=")
-    if idx >= 0:
-        tail = c[idx + len("name="):]
-        # stop at ; if exists
-        end = tail.find(";")
-        name = tail[:end] if end >= 0 else tail
-        name = name.strip()
-        return name if name else "Unattributed"
+
+    def extract_value(key: str) -> str:
+        idx = c.find(key)
+        if idx >= 0:
+            tail = c[idx + len(key):]
+            end = tail.find(";")
+            value = tail[:end] if end >= 0 else tail
+            return value.strip()
+        return ""
+
+    sid = extract_value("guvfx:sid=")
+    if sid:
+        return f"sid:{sid}"
+    strategy_id = extract_value("guvfx:strategy_id=")
+    if strategy_id:
+        return f"sid:{strategy_id}"
+    name = extract_value("name=")
+    if name:
+        return name
     return "Unattributed"
 
 
