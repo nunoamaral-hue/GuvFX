@@ -33,7 +33,7 @@ export default function TradeHistoryPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/analytics/trade-history/?account=${accountId}`, {
+      const res = await fetch(`https://api.guvfx.com/api/analytics/trade-history/?account=${accountId}`, {
         credentials: "include",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
