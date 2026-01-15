@@ -1,0 +1,157 @@
+import secrets
+import string
+from django.utils import timezone
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+from .models import Mt5Credential, Mt5Instance
+from .services.windows_agent import provision_windows_user
+from .services.guac_db import ensure_rdp_connection
+from .services.guac_api import guac_token, launch_url
+
+
+def _rand_password(length=20):
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _win_username_for_user(user_id) -> str:
+    short = str(user_id).replace("-", "")[:10]
+    return f"guvfx_u_{short}"
+
+
+def _get_or_create_windows_instance():
+    inst, _ = Mt5Instance.objects.get_or_create(
+        hostname="WIN-FH-01",
+        defaults={"platform": "WINDOWS", "rdp_host": "10.50.0.2"},
+    )
+    if inst.platform != "WINDOWS":
+        inst.platform = "WINDOWS"
+        inst.rdp_host = "10.50.0.2"
+        inst.save(update_fields=["platform", "rdp_host", "updated_at"])
+    return inst
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def account_add_verify(request):
+    """
+    Add Trading Account + validate MT5 credentials before saving.
+
+    Flow:
+      - Write validate request into HANDOFF_VALIDATE (same as /api/mt5/validate/)
+      - Wait up to ~12s for validate_result.json to appear
+      - If SUCCESS -> create/save TradingAccount
+      - If FAILED/TIMEOUT -> return 400 with reason
+    """
+    from time import sleep
+    from pathlib import Path
+    import json
+    from django.utils import timezone
+    from rest_framework import status as drf_status
+
+    # ---- Inputs from the UI form ----
+    name = str(request.data.get("name", "")).strip()
+    login = str(request.data.get("login", "")).strip()
+    server = str(request.data.get("server", "")).strip()
+    password = str(request.data.get("password", "")).strip()
+    is_demo = bool(request.data.get("is_demo", True))
+
+    if not name:
+        return Response({"ok": False, "error": "name required"}, status=400)
+    if not (login and server and password):
+        return Response({"ok": False, "error": "login, server, password required"}, status=400)
+
+    # ---- Persist credential (encrypted) ----
+    cred, _ = Mt5Credential.objects.get_or_create(
+        user=request.user,
+        defaults={"login": login, "server": server, "password_enc": encrypt_password(password)},
+    )
+    cred.login = login
+    cred.server = server
+    cred.password_enc = encrypt_password(password)
+    cred.last_status = "PENDING"
+    cred.last_error = ""
+    cred.last_verified_at = timezone.now()
+    cred.save(update_fields=["login","server","password_enc","last_status","last_error","last_verified_at","updated_at"])
+
+    # ---- Kick validator (write EPHEMERAL request same as ValidateMt5View) ----
+    HANDOFF_VALIDATE = Path("/app/.guvfx_handoff_validate")
+    udir = HANDOFF_VALIDATE / "free" / str(request.user.id)
+    udir.mkdir(parents=True, exist_ok=True)
+
+    (udir / "validate_cred.json").write_text(json.dumps({
+        "login": login,
+        "password": password,   # EPHEMERAL plaintext for worker only
+        "server": server,
+    }), encoding="utf-8")
+
+    (udir / "validate_request.json").write_text(json.dumps({
+        "ts": timezone.now().isoformat(),
+    }), encoding="utf-8")
+
+    # ---- Wait for result (short poll) ----
+    res_path = udir / "validate_result.json"
+    timeout_sec = 12
+    for _ in range(timeout_sec):
+        if res_path.exists():
+            break
+        sleep(1)
+
+    if not res_path.exists():
+        cred.last_status = "TIMEOUT"
+        cred.last_error = "Validation timed out"
+        cred.last_verified_at = timezone.now()
+        cred.save(update_fields=["last_status","last_error","last_verified_at","updated_at"])
+        return Response(
+            {"ok": False, "status": "TIMEOUT", "message": "Validation timed out. Please try again."},
+            status=400,
+        )
+
+    # ---- Consume result ----
+    try:
+        data = json.loads(res_path.read_text(encoding="utf-8"))
+    finally:
+        try:
+            res_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    ok = bool(data.get("ok"))
+    err = str(data.get("error") or "")
+
+    if not ok:
+        cred.last_status = "FAILED"
+        cred.last_error = err or "Invalid credentials"
+        cred.last_verified_at = timezone.now()
+        cred.save(update_fields=["last_status","last_error","last_verified_at","updated_at"])
+        return Response(
+            {"ok": False, "status": "FAILED", "message": cred.last_error},
+            status=400,
+        )
+
+    # ---- Mark credential verified ----
+    cred.last_status = "SUCCESS"
+    cred.last_error = ""
+    cred.last_verified_at = timezone.now()
+    cred.save(update_fields=["last_status","last_error","last_verified_at","updated_at"])
+
+    # ---- Create TradingAccount (adjust fields to match your model) ----
+    # IMPORTANT: You must adapt this import + fields to your trading app.
+    from trading.models import TradingAccount  # <-- if your model is named differently, change this.
+
+    account = TradingAccount.objects.create(
+        user=request.user,
+        name=name,
+        broker_server_name=server,
+        account_number=login,
+        platform_password=password,  # TODO: encrypt in trading model if you have a field
+        is_demo=is_demo,
+        mt5_credential=cred if hasattr(TradingAccount, "mt5_credential") else None,
+    )
+
+    return Response(
+        {"ok": True, "status": "SUCCESS", "message": "Verified and account added", "account_id": account.id},
+        status=drf_status.HTTP_201_CREATED,
+    )

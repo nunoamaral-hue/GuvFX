@@ -51,9 +51,7 @@ export default function BacktestDetailPage() {
       try {
         const data = await apiFetch<BacktestConfig>(
           `/api/backtests/configs/${configId}/`,
-          {},
-          accessToken
-        );
+          {});
         setConfig(data);
       } catch (err: unknown) {
         console.error(err);
@@ -80,9 +78,7 @@ export default function BacktestDetailPage() {
       try {
         const allRuns = await apiFetch<BacktestRun[]>(
           "/api/backtests/runs/",
-          {},
-          accessToken
-        );
+          {});
         const filtered = allRuns.filter((r) => r.config === configId);
         setRuns(filtered);
       } catch (err: unknown) {
@@ -124,7 +120,7 @@ export default function BacktestDetailPage() {
         >
           {!accessToken && (
             <p style={{ fontStyle: "italic", fontSize: "0.9rem" }}>
-              No token found. Please log in again.
+              
             </p>
           )}
 

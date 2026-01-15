@@ -146,7 +146,7 @@ export default function CreateStrategyPage() {
     setInfo(null);
 
     if (!accessToken) {
-      setError("No token found. Please log in again.");
+      setError("");
       return;
     }
     if (!name.trim()) {
@@ -261,9 +261,8 @@ export default function CreateStrategyPage() {
         {
           method: "POST",
           body: JSON.stringify(body),
-        },
-        accessToken
-      );
+        }
+);
 
       setInfo("Strategy created successfully.");
       // Redirect to strategies list
@@ -298,7 +297,7 @@ export default function CreateStrategyPage() {
         >
           {!accessToken && (
             <p style={{ fontStyle: "italic", fontSize: "0.9rem" }}>
-              No token found. Please log in again.
+              
             </p>
           )}
 

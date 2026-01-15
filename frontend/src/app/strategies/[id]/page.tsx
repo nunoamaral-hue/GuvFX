@@ -284,9 +284,7 @@ export default function StrategyDetailPage() {
       try {
         const jobs = await apiFetch<StrategyExecutionJob[]>(
           `/api/execution/jobs/?strategy=${strategy.id}`,
-          {},
-          accessToken
-        );
+          {});
 
         const sorted = [...jobs].sort((a, b) => {
           const aTime = Date.parse(a.created_at);
@@ -320,9 +318,7 @@ export default function StrategyDetailPage() {
       try {
         const logs = await apiFetch<StrategyChangeLog[]>(
           `/api/strategies/changes/?strategy=${strategyId}`,
-          {},
-          accessToken
-        );
+          {});
         setChangeLogs(logs);
       } catch (err) {
         console.error("Failed to fetch change logs:", err);
@@ -404,9 +400,7 @@ export default function StrategyDetailPage() {
       try {
         const data = await apiFetch<Strategy>(
           `/api/strategies/strategies/${strategyId}/`,
-          {},
-          accessToken
-        );
+          {});
         setStrategy(data);
 
         // initialise edit fields
@@ -464,12 +458,10 @@ export default function StrategyDetailPage() {
       setLinkMessage(null);
       try {
         const [accs, assigns] = await Promise.all([
-          apiFetch<TradingAccount[]>("/api/trading/accounts/", {}, accessToken),
+          apiFetch<TradingAccount[]>("/api/trading/accounts/", {}),
           apiFetch<StrategyAssignment[]>(
             "/api/strategies/assignments/",
-            {},
-            accessToken
-          ),
+            {}),
         ]);
 
         setAccounts(accs);
@@ -498,9 +490,7 @@ export default function StrategyDetailPage() {
       try {
         const runs = await apiFetch<BacktestRun[]>(
           `/api/backtests/runs/?strategy=${strategy.id}`,
-          {},
-          accessToken
-        );
+          {});
         const sorted = [...runs].sort((a, b) => {
           const aTime = a.started_at ? Date.parse(a.started_at) : 0;
           const bTime = b.started_at ? Date.parse(b.started_at) : 0;
@@ -542,9 +532,8 @@ export default function StrategyDetailPage() {
         {
           method: "POST",
           body: JSON.stringify(payload),
-        },
-        accessToken
-      );
+        }
+);
       setInsights(data);
     } catch (err: unknown) {
       console.error(err);
@@ -585,18 +574,16 @@ export default function StrategyDetailPage() {
         {
           method: "POST",
           body: JSON.stringify(configPayload),
-        },
-        accessToken
-      );
+        }
+);
 
       const run = await apiFetch<BacktestRun>(
         "/api/backtests/runs/",
         {
           method: "POST",
           body: JSON.stringify({ config: config.id }),
-        },
-        accessToken
-      );
+        }
+);
 
       router.push(`/backtests/${run.id}`);
     } catch (err: unknown) {
@@ -612,7 +599,7 @@ export default function StrategyDetailPage() {
   const handleLinkAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!accessToken) {
-      setError("No token found. Please log in again.");
+      setError("");
       return;
     }
     if (!selectedAccountId) {
@@ -634,9 +621,8 @@ export default function StrategyDetailPage() {
         {
           method: "POST",
           body: JSON.stringify(body),
-        },
-        accessToken
-      );
+        }
+);
 
       setLinkMessage("Account linked to strategy.");
       setSelectedAccountId("");
@@ -644,9 +630,7 @@ export default function StrategyDetailPage() {
       // refresh assignments
       const assigns = await apiFetch<StrategyAssignment[]>(
         "/api/strategies/assignments/",
-        {},
-        accessToken
-      );
+        {});
       const filtered = assigns.filter(
         (a) => a.strategy === strategyId
       );
@@ -663,16 +647,14 @@ export default function StrategyDetailPage() {
   };
 
   const handleRemoveLink = async (assignmentId: number) => {
-    if (!accessToken) return;
+    
     setRemovingId(assignmentId);
     setLinkMessage(null);
 
     try {
       await apiFetch<void>(
         `/api/strategies/assignments/${assignmentId}/`,
-        { method: "DELETE" },
-        accessToken
-      );
+        { method: "DELETE" });
 
       setAssignments((prev) => {
         const updated = prev.filter((a) => a.id !== assignmentId);
@@ -697,7 +679,7 @@ export default function StrategyDetailPage() {
   // NEW: save per-account risk override for a specific assignment
   const handleSaveOverride = async (assignmentId: number) => {
     if (!accessToken) {
-      setError("No token found. Please log in again.");
+      setError("");
       return;
     }
 
@@ -725,9 +707,8 @@ export default function StrategyDetailPage() {
         {
           method: "PATCH",
           body: JSON.stringify(body),
-        },
-        accessToken
-      );
+        }
+);
 
       setAssignments((prev) => {
         const next = prev.map((a) => (a.id === assignmentId ? updated : a));
@@ -752,7 +733,7 @@ export default function StrategyDetailPage() {
     currentActive: boolean
   ) => {
     if (!accessToken) {
-      setError("No token found. Please log in again.");
+      setError("");
       return;
     }
 
@@ -767,9 +748,8 @@ export default function StrategyDetailPage() {
         {
           method: "PATCH",
           body: JSON.stringify(body),
-        },
-        accessToken
-      );
+        }
+);
 
       setAssignments((prev) => {
         const next = prev.map((a) => (a.id === assignmentId ? updated : a));
@@ -793,7 +773,7 @@ export default function StrategyDetailPage() {
   // NEW: queue a dev/test OPEN_TRADE job for a specific assignment
   const handleOpenTestTrade = async (assignment: StrategyAssignment) => {
     if (!accessToken) {
-      setError("No token found. Please log in again.");
+      setError("");
       return;
     }
     if (!strategy) {
@@ -846,9 +826,8 @@ export default function StrategyDetailPage() {
         {
           method: "POST",
           body: JSON.stringify(body),
-        },
-        accessToken
-      );
+        }
+);
 
       setLinkMessage(
         `Test trade job queued for ${symbol} on account #${assignment.account}.`
@@ -858,9 +837,7 @@ export default function StrategyDetailPage() {
       try {
         const jobs = await apiFetch<StrategyExecutionJob[]>(
           `/api/execution/jobs/?strategy=${strategy.id}`,
-          {},
-          accessToken
-        );
+          {});
         const sorted = [...jobs].sort((a, b) => {
           const aTime = Date.parse(a.created_at);
           const bTime = Date.parse(b.created_at);
@@ -887,7 +864,7 @@ export default function StrategyDetailPage() {
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!accessToken) {
-      setError("No token found. Please log in again.");
+      setError("");
       return;
     }
 
@@ -915,9 +892,8 @@ export default function StrategyDetailPage() {
         {
           method: "PATCH",
           body: JSON.stringify(body),
-        },
-        accessToken
-      );
+        }
+);
 
       setStrategy(updated);
       setSettingsMessage("Strategy settings updated.");
@@ -935,7 +911,7 @@ export default function StrategyDetailPage() {
 
   const handleAutoTune = async () => {
     if (!accessToken) {
-      setError("No token found. Please log in again.");
+      setError("");
       return;
     }
 
@@ -954,16 +930,12 @@ export default function StrategyDetailPage() {
         } | null;
       }>(
         `/api/strategies/strategies/${strategyId}/auto-tune/`,
-        { method: "POST" },
-        accessToken
-      );
+        { method: "POST" });
 
       // Always refresh the strategy from backend to reflect any changes
       const updated = await apiFetch<Strategy>(
         `/api/strategies/strategies/${strategyId}/`,
-        {},
-        accessToken
-      );
+        {});
       setStrategy(updated);
 
       // Sync editable fields with updated strategy
@@ -1031,7 +1003,7 @@ export default function StrategyDetailPage() {
         <Card title={strategy ? strategy.name : `Strategy #${strategyId}`}>
           {!accessToken && (
             <p style={{ fontStyle: "italic", fontSize: "0.9rem" }}>
-              No token found. Please log in again.
+              
             </p>
           )}
 

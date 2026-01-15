@@ -110,13 +110,13 @@ export default function ProfilePage() {
 
   // Fetch /me
   useEffect(() => {
-    if (!accessToken) return;
+    
 
     const fetchMe = async () => {
       setLoadingMe(true);
       setError(null);
       try {
-        const data = await apiFetch<MeResponse>("/api/auth/me/", {}, accessToken);
+        const data = await apiFetch<MeResponse>("/api/auth/me/", {});
         setMe(data);
       } catch (err: unknown) {
         console.error(err);
@@ -133,7 +133,7 @@ export default function ProfilePage() {
 
   // Fetch hosting info, plans, requests, consoles
   useEffect(() => {
-    if (!accessToken) return;
+    
 
     let cancelled = false;
 
@@ -147,18 +147,14 @@ export default function ProfilePage() {
       try {
         const meData = await apiFetch<HostingMe>(
           "/api/hosting/me/",
-          {},
-          accessToken
-        );
+          {});
         if (!cancelled) {
           setHostingMe(meData);
         }
 
         const plansData = await apiFetch<HostingPlan[]>(
           "/api/hosting/plans/",
-          {},
-          accessToken
-        );
+          {});
         if (!cancelled) {
           const normalized = plansData.map((plan) => ({
             ...plan,
@@ -175,18 +171,14 @@ export default function ProfilePage() {
 
         const requestsData = await apiFetch<HostingRequest[]>(
           "/api/hosting/requests/",
-          {},
-          accessToken
-        );
+          {});
         if (!cancelled) {
           setHostingRequests(requestsData);
         }
 
         const consolesData = await apiFetch<UserConsole[]>(
           "/api/hosting/my-consoles/",
-          {},
-          accessToken
-        );
+          {});
         if (!cancelled) {
           setUserConsoles(consolesData);
         }
@@ -229,7 +221,7 @@ export default function ProfilePage() {
       return;
     }
     if (!accessToken) {
-      setPwError("No token found. Please log in again.");
+      setPwError("");
       return;
     }
 
@@ -245,9 +237,8 @@ export default function ProfilePage() {
         {
           method: "POST",
           body: JSON.stringify(body),
-        },
-        accessToken
-      );
+        }
+);
 
       setPwSuccess(res.detail || "Password updated successfully.");
       setOldPassword("");
@@ -288,9 +279,8 @@ export default function ProfilePage() {
         {
           method: "POST",
           body: JSON.stringify({ note }),
-        },
-        accessToken
-      );
+        }
+);
 
       setHostingInfo(
         "Your hosting request has been submitted. An admin will review and activate it."
@@ -298,9 +288,7 @@ export default function ProfilePage() {
 
       const requests = await apiFetch<HostingRequest[]>(
         "/api/hosting/requests/",
-        {},
-        accessToken
-      );
+        {});
       setHostingRequests(requests);
     } catch (err: unknown) {
       console.error("Failed to request hosting plan:", err);
@@ -327,7 +315,7 @@ export default function ProfilePage() {
         <Card title="Account Details">
           {!accessToken && (
             <p style={{ fontStyle: "italic", fontSize: "0.9rem" }}>
-              No token found. Please log in again.
+              
             </p>
           )}
 

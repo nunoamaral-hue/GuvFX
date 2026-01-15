@@ -133,6 +133,16 @@ class StrategySerializer(serializers.ModelSerializer):
 
 
 class StrategyAssignmentSerializer(serializers.ModelSerializer):
+
+    def validate(self, attrs):
+        is_active = attrs.get("is_active", getattr(self.instance, "is_active", True))
+        account = attrs.get("account", getattr(self.instance, "account", None))
+
+        if is_active and account and not account.is_active:
+            raise serializers.ValidationError("Cannot activate assignment on an inactive TradingAccount.")
+
+        return attrs
+
     class Meta:
         model = StrategyAssignment
         fields = [

@@ -69,20 +69,12 @@ function isActive(pathname: string, href: string) {
 export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
 
-  const [accessToken] = useState<string>(() => {
-    if (typeof window === "undefined") return "";
-    return window.localStorage.getItem("guvfx_access_token") ?? "";
-  });
-  const [currentUser, setCurrentUser] = useState<Me | null>(null);
+const [currentUser, setCurrentUser] = useState<Me | null>(null);
 
   useEffect(() => {
-    if (!accessToken) {
-      return;
-    }
+        let cancelled = false;
 
-    let cancelled = false;
-
-    apiFetch<Me>("/api/auth/me/", {}, accessToken)
+    apiFetch<Me>("/api/auth/me/", {})
       .then((data) => {
         if (!cancelled) {
           setCurrentUser(data);
@@ -101,7 +93,7 @@ export function AppShell({ children }: AppShellProps) {
     return () => {
       cancelled = true;
     };
-  }, [accessToken]);
+  }, []);
 
   const isStaff =
     !!currentUser && (currentUser.is_staff === true || currentUser.is_superuser === true);

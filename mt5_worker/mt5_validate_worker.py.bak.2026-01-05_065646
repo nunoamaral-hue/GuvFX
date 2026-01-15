@@ -1,0 +1,132 @@
+import json
+import time
+import glob
+import subprocess
+import os
+from pathlib import Path
+
+HANDOFF = Path("/app/.guvfx_handoff_validate")
+APPLY = HANDOFF / "bin" / "apply-account-config"
+LOG = HANDOFF / "apply-account.log"
+
+DEFAULT_TIMEOUT = 70
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    tmp.replace(path)
+
+def _tail_log(max_lines: int = 120) -> str:
+    try:
+        lines = LOG.read_text(encoding="utf-8", errors="ignore").splitlines()
+        return "\n".join(lines[-max_lines:])
+    except Exception:
+        return ""
+
+def _run_apply(cfg_path: Path, timeout_s: int = DEFAULT_TIMEOUT) -> tuple[int, str]:
+    if not APPLY.exists():
+        return 127, f"Missing apply script: {APPLY}"
+    if not cfg_path.exists():
+        return 2, f"Missing cfg: {cfg_path}"
+
+    env = dict(os.environ)
+    env["SUBMIT"] = "1"
+    env.setdefault("DISPLAY", ":99")
+
+    try:
+        proc = subprocess.run(
+            [str(APPLY), str(cfg_path)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+        out = (proc.stdout or "").strip()
+        tail = _tail_log()
+        return proc.returncode, (out + "\n--- log tail ---\n" + tail).strip()
+    except subprocess.TimeoutExpired:
+        tail = _tail_log()
+        return 124, ("TIMEOUT running apply-account-config\n--- log tail ---\n" + tail).strip()
+
+def _infer_result(exit_code: int, output: str) -> tuple[bool, str]:
+    lower = output.lower()
+
+    if "no such file or directory" in lower and "start-mt5.sh" in lower:
+        return False, "MT5 not running and start-mt5.sh missing (cannot start MT5 for validation)"
+    if "warn: mt5 window not found" in lower:
+        return False, "MT5 window not found (MT5 not running or not detectable)"
+    if "warn: login dialog not detected" in lower:
+        return False, "Login dialog not detected (UI automation failed)"
+
+    if exit_code == 124:
+        return False, "Validation timed out (MT5/UI not responding)"
+    if exit_code != 0:
+        return False, f"Validation failed (apply-account-config exit {exit_code})"
+
+    if "submitted (submit=1)" in lower:
+        return True, ""
+
+    return False, "Unknown validation outcome; check logs"
+
+def handle_validate_once() -> None:
+    base = HANDOFF / "free"
+    if not base.exists():
+        return
+
+    for req_str in glob.glob(str(base / "*" / "validate_request.json")):
+        req = Path(req_str)
+        udir = req.parent
+        cred_path = udir / "validate_cred.json"
+        res_path = udir / "validate_result.json"
+        cfg_path = udir / "account_validate.json"
+
+        print(f"[validate] found request={req}", flush=True)
+
+        try:
+            if not cred_path.exists():
+                _write_json_atomic(res_path, {"ok": False, "error": "missing validate_cred.json"})
+                print(f"[validate] missing cred -> wrote result={res_path}", flush=True)
+                continue
+
+            cred = json.loads(cred_path.read_text(encoding="utf-8"))
+            login = str(cred.get("login", "")).strip()
+            password = str(cred.get("password", "")).strip()
+            server = str(cred.get("server", "")).strip()
+
+            if not (login and password and server):
+                _write_json_atomic(res_path, {"ok": False, "error": "missing login/password/server"})
+                print(f"[validate] missing fields -> wrote result={res_path}", flush=True)
+                continue
+
+            _write_json_atomic(cfg_path, {"login": login, "server": server, "password": password})
+
+            exit_code, out = _run_apply(cfg_path)
+            ok, err = _infer_result(exit_code, out)
+
+            _write_json_atomic(res_path, {"ok": ok, "error": err})
+            print(f"[validate] wrote result={res_path} ok={ok} exit={exit_code}", flush=True)
+            if not ok:
+                print(f"[validate] error={err}", flush=True)
+
+        except Exception as e:
+            _write_json_atomic(res_path, {"ok": False, "error": f"validate_worker_error: {type(e).__name__}: {e}"})
+            print(f"[validate] exception {type(e).__name__}: {e}", flush=True)
+
+        finally:
+            # EPHEMERAL cleanup: request + cred + cfg
+            for p in (req, cred_path, cfg_path):
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    pass
+
+def main() -> None:
+    print("[validate] mt5_validate_worker starting (REAL)", flush=True)
+    while True:
+        handle_validate_once()
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()

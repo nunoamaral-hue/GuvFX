@@ -1,0 +1,104 @@
+from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+from mt5.models import Mt5Credential
+from .models import TradingAccount, Trade
+from .serializers import TradingAccountSerializer, TradeSerializer
+from rest_framework.exceptions import APIException
+
+class Mt5NotValidated(APIException):
+    status_code = 409
+    default_detail = "MT5 credentials not validated. Please validate credentials first."
+    default_code = "mt5_not_validated"
+
+
+class TradingAccountViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for trading accounts.
+
+    - Non-staff users see and manage only their own accounts.
+    - Staff users can see all accounts.
+    """
+
+    serializer_class = TradingAccountSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = TradingAccount.objects.select_related("user", "broker_server").all()
+        if not user.is_staff:
+            qs = qs.filter(user=user)
+        return qs.order_by("-created_at")
+
+    def perform_create(self, serializer):
+        """Ensure non-staff users can only create accounts for themselves."""
+        # Non-staff users: always force ownership.
+        if not self.request.user.is_staff:
+            obj = serializer.save(user=self.request.user)
+        else:
+            # Staff users: allow creating for a specified user if present, else default to staff user.
+            if "user" in getattr(serializer, "validated_data", {}):
+                obj = serializer.save()
+            else:
+                obj = serializer.save(user=self.request.user)
+
+        # Option A: at most ONE active account per user
+        if getattr(obj, "is_active", False):
+            TradingAccount.objects.filter(user=obj.user).exclude(id=obj.id).update(is_active=False)
+        cred = Mt5Credential.objects.filter(user=user).first()
+        if not cred or cred.last_status != "SUCCESS":
+            raise Mt5NotValidated()
+
+        serializer.save(user=user)
+
+
+    @action(detail=True, methods=["POST"], url_path="set-active")
+    def set_active(self, request, pk=None):
+        """Toggle this trading account active/inactive. If activating, deactivate all other accounts for the user."""
+        acc = self.get_object()
+
+        raw = request.data.get("is_active", True)
+        if isinstance(raw, str):
+            is_active = raw.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            is_active = bool(raw)
+
+        if is_active:
+            TradingAccount.objects.filter(user=acc.user).exclude(id=acc.id).update(is_active=False)
+
+        acc.is_active = is_active
+        acc.save(update_fields=["is_active", "updated_at"])
+
+        return Response({"ok": True, "id": acc.id, "is_active": acc.is_active}, status=status.HTTP_200_OK)
+
+class TradeViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Read-only access to trades.
+
+    - Non-staff users see trades only from their own accounts.
+    - Staff can see all trades.
+    - Optional filters: ?account=<id>&symbol=EURUSD
+    """
+
+    serializer_class = TradeSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Trade.objects.select_related("account", "account__user", "account__broker_server").all()
+
+        if not user.is_staff:
+            qs = qs.filter(account__user=user)
+
+        account_id = self.request.query_params.get("account")
+        symbol = self.request.query_params.get("symbol")
+
+        if account_id:
+            qs = qs.filter(account_id=account_id)
+
+        if symbol:
+            qs = qs.filter(symbol__iexact=symbol)
+
+        return qs

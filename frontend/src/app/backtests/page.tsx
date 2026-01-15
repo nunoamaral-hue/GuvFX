@@ -62,7 +62,7 @@ export default function BacktestsPage() {
 
   // Fetch configs + summaries
   useEffect(() => {
-    if (!accessToken) return;
+    
 
     const fetchData = async () => {
       setLoading(true);
@@ -70,12 +70,10 @@ export default function BacktestsPage() {
       setInfo(null);
       try {
         const [cfgs, sums] = await Promise.all([
-          apiFetch<BacktestConfig[]>("/api/backtests/configs/", {}, accessToken),
+          apiFetch<BacktestConfig[]>("/api/backtests/configs/", {}),
           apiFetch<BacktestSummary[]>(
             "/api/analytics/strategy-backtests/",
-            {},
-            accessToken
-          ),
+            {}),
         ]);
 
         setConfigs(cfgs);
@@ -98,7 +96,7 @@ export default function BacktestsPage() {
   }, [accessToken]);
 
   const handleRunBacktest = async (configId: number) => {
-    if (!accessToken) return;
+    
     setError(null);
     setInfo(null);
     setRunningId(configId);
@@ -109,16 +107,13 @@ export default function BacktestsPage() {
         {
           method: "POST",
           body: JSON.stringify({ config: configId }),
-        },
-        accessToken
-      );
+        }
+);
       setInfo("Backtest run created. Process it with the worker when ready.");
 
       const sums = await apiFetch<BacktestSummary[]>(
         "/api/analytics/strategy-backtests/",
-        {},
-        accessToken
-      );
+        {});
       const map: Record<number, BacktestSummary> = {};
       for (const s of sums) {
         map[s.config_id] = s;
@@ -137,7 +132,7 @@ export default function BacktestsPage() {
   };
 
   const handleProcessPending = async () => {
-    if (!accessToken) return;
+    
     setError(null);
     setInfo(null);
     setProcessingPending(true);
@@ -145,9 +140,7 @@ export default function BacktestsPage() {
     try {
       const res = await apiFetch<{ processed_runs: number; processed_at: string }>(
         "/api/backtests/process-pending/",
-        { method: "POST" },
-        accessToken
-      );
+        { method: "POST" });
 
       setInfo(`Processed ${res.processed_runs} pending backtest run(s).`);
       setLastProcessedAt(new Date(res.processed_at).toLocaleString());
@@ -155,9 +148,7 @@ export default function BacktestsPage() {
       // Refresh summaries after processing
       const sums = await apiFetch<BacktestSummary[]>(
         "/api/analytics/strategy-backtests/",
-        {},
-        accessToken
-      );
+        {});
       const map: Record<number, BacktestSummary> = {};
       for (const s of sums) {
         map[s.config_id] = s;
@@ -228,7 +219,7 @@ export default function BacktestsPage() {
 
           {!accessToken && (
             <p style={{ fontStyle: "italic", fontSize: "0.9rem" }}>
-              No token found. Please log in again.
+              
             </p>
           )}
 

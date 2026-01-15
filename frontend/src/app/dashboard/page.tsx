@@ -49,7 +49,7 @@ export default function DashboardPage() {
 
   // Fetch strategies + accounts for summary
   useEffect(() => {
-    if (!accessToken) return;
+    
 
     const fetchData = async () => {
       setLoading(true);
@@ -58,14 +58,10 @@ export default function DashboardPage() {
         const [strategyData, accountData] = await Promise.all([
           apiFetch<StrategySummary[]>(
             "/api/strategies/strategies/",
-            {},
-            accessToken
-          ),
+            {}),
           apiFetch<{ id: number }[]>(
             "/api/trading/accounts/",
-            {},
-            accessToken
-          ),
+            {}),
         ]);
 
         setStrategies(strategyData);

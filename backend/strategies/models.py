@@ -1,6 +1,6 @@
 from django.conf import settings
 from django.db import models
-
+from django.db.models import Q
 from trading.models import TradingAccount
 
 
@@ -269,10 +269,24 @@ class StrategyAssignment(models.Model):
     class Meta:
         unique_together = ("strategy", "account")
         ordering = ["-created_at"]
+        constraints = [
+            # One active assignment per MT5 instance (per user implicitly)
+            models.UniqueConstraint(
+                fields=["account"],
+                condition=Q(is_active=True),  # CI: removed join-based constraint (account__mt5_instance__isnull)
+                name="uniq_active_strategy_assignment_per_instance",
+            ),
+        ]
+
+    def clean(self):
+        # Strategy should only be active on an active account
+        if self.is_active and self.account and (not self.account.is_active):
+            from django.core.exceptions import ValidationError
+            raise ValidationError({"is_active": "Cannot activate a strategy on an inactive TradingAccount."})
 
     def __str__(self) -> str:
         return f"{self.strategy} -> {self.account}"
-    
+
 class StrategyChangeLog(models.Model):
     """
     Records changes to Strategy settings, either manual edits or AI auto-tunes.
@@ -313,3 +327,4 @@ class StrategyChangeLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.strategy.name} | {self.source} @ {self.created_at}"
+
