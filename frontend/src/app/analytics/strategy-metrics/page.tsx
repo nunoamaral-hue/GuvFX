@@ -26,7 +26,7 @@ export default function StrategyMetricsPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/analytics/strategy-metrics/?account=${accountId}`, {
+      const res = await fetch(`https://api.guvfx.com/api/analytics/strategy-metrics/?account=${accountId}`, {
         credentials: "include",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
