@@ -2,12 +2,6 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api";
-
-type LoginResponse = {
-  access: string;
-  refresh: string;
-};
 
 export default function LoginPage() {
   const router = useRouter();

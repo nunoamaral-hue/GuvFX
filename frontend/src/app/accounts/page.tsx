@@ -7,13 +7,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import React, { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Card } from "@/components/ui/Card";
 import { Alert } from "@/components/ui/Alert";
-import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type {
@@ -149,12 +147,11 @@ export default function AccountsPage() {
 
   useEffect(() => {
     loadAccounts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const [assignments, setAssignments] = useState<StrategyAssignment[]>([]);
+  const [assignments, _setAssignments] = useState<StrategyAssignment[]>([]);
 
-  const assignmentsByAccount = useMemo(() => {
+  const _assignmentsByAccount = useMemo(() => {
     const m = new Map<number, StrategyAssignment[]>();
     for (const a of assignments) {
       const accountId: number | undefined = (a as any).account ?? (a as any).account_id;
@@ -168,10 +165,10 @@ export default function AccountsPage() {
 
 
 
-  const router = useRouter();
-  const [strategies, setStrategies] = useState<StrategySummary[]>([]);
+  const _router = useRouter();
+  const [strategies, _setStrategies] = useState<StrategySummary[]>([]);
 
-  const strategyLookup = useMemo(() => {
+  const _strategyLookup = useMemo(() => {
     const m = new Map<number, StrategySummary>();
     for (const st of strategies) {
       m.set(st.id, st);
@@ -180,28 +177,28 @@ export default function AccountsPage() {
   }, [strategies]);
 
   const [testingId, setTestingId] = useState<number | null>(null);
-  const [activeTogglingId, setActiveTogglingId] = useState<number | null>(null);
+  const [_activeTogglingId, _setActiveTogglingId] = useState<number | null>(null);
   // UI helpers (restored after refactor)
   const labelStyle: React.CSSProperties = { fontSize: "0.85rem", color: "#94a3b8" };
   const valueStyle: React.CSSProperties = { fontSize: "0.85rem", color: "#e5f4ff" };
 
   const [loading, setLoading] = useState<boolean>(false);
-  const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
-  const [assignmentsLoading, setAssignmentsLoading] = useState<boolean>(false);
-  const [jobsLoading, setJobsLoading] = useState<boolean>(false);
-  const [jobsError, setJobsError] = useState<string | null>(null);
-  const [jobs, setJobs] = useState<ExecutionJob[]>([]);
+  const [assignmentsError, _setAssignmentsError] = useState<string | null>(null);
+  const [assignmentsLoading, _setAssignmentsLoading] = useState<boolean>(false);
+  const [_jobsLoading, _setJobsLoading] = useState<boolean>(false);
+  const [_jobsError, _setJobsError] = useState<string | null>(null);
+  const [_jobs, _setJobs] = useState<ExecutionJob[]>([]);
 
   // Derived: account_id -> execution jobs[]
-  const jobsByAccount = useMemo(() => {
+  const _jobsByAccount = useMemo(() => {
     const out: Record<number, ExecutionJob[]> = {};
-    for (const j of jobs) {
+    for (const j of _jobs) {
       const accountId = (j as any).account;
       if (typeof accountId !== "number") continue;
       (out[accountId] ||= []).push(j);
     }
     return out;
-  }, [jobs]);
+  }, [_jobs]);
 
   const [info, setInfo] = useState<string | null>(null);
   const [testMessage, setTestMessage] = useState<string | null>(null);
@@ -225,8 +222,29 @@ export default function AccountsPage() {
 
   const [activeIdx, setActiveIdx] = useState<number>(0);
 
-  const [brokerSuggestLoading, setBrokerSuggestLoading] = useState<boolean>(false);
-  const [brokerSuggestError, setBrokerSuggestError] = useState<string | null>(null);
+  const [brokerSuggestLoading, _setBrokerSuggestLoading] = useState<boolean>(false);
+  const [brokerSuggestError, _setBrokerSuggestError] = useState<string | null>(null);
+
+  // Lint: placeholders kept for next iterations (strategy/jobs wiring)
+  void [
+    _setAssignments,
+    _assignmentsByAccount,
+    _router,
+    _setStrategies,
+    _strategyLookup,
+    _activeTogglingId,
+    _setActiveTogglingId,
+    _setAssignmentsError,
+    _setAssignmentsLoading,
+    _jobsLoading,
+    _setJobsLoading,
+    _jobsError,
+    _setJobsError,
+    _setJobs,
+    _jobsByAccount,
+    _setBrokerSuggestLoading,
+    _setBrokerSuggestError,
+  ];
 
   // Handles broker input keyboard UX (stubbed for now).
   // - Enter: pick the first suggested server (if any)
@@ -356,7 +374,7 @@ export default function AccountsPage() {
     }
   };
 
-  const toggleActive = async (accId: number, next: boolean) => {
+  const _toggleActive = async (accId: number, next: boolean) => {
     setError(null);
     try {
       await apiFetch(`/api/trading/accounts/${accId}/set-active/`, {
@@ -371,111 +389,13 @@ export default function AccountsPage() {
       setError(err?.message || "Failed to update active account");
     }
   };
+  void _toggleActive;
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
-  
-  // --- MT5 RDP session (Guacamole hidden) ---
-  
-  // --- MT5 RDP session (Guacamole hidden) ---
-  const [mt5Url, setMt5Url] = useState<string>("");
-  const [mt5Loading, setMt5Loading] = useState(false);
-  const [mt5Error, setMt5Error] = useState<string | null>(null);
-
-  // Fetch a fresh Guacamole URL (does NOT change the iframe URL)
-  const getMt5Url = async (): Promise<string> => {
-    const data = await apiFetch<{ ok: boolean; launch_url: string; expires_in_seconds: number }>(
-      "/api/mt5/launch/",
-      { method: "POST" }
-    );
-    return data.launch_url;
-  };
-
-  // Preview MT5 in the embedded iframe (sets mt5Url)
-  const launchMt5 = async (): Promise<string> => {
-    setMt5Error(null);
-    setMt5Loading(true);
-    try {
-      const url = await getMt5Url();
-      setMt5Url(url);
-      return url;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to launch MT5.";
-      setMt5Error(msg);
-      throw err;
-    } finally {
-      setMt5Loading(false);
-    }
-  };
 
 return (
     <AppShell>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-      
-      {/* --- MT5 Terminal (Preview + Fullscreen) --- */}
-      <div style={{ marginBottom: "1.25rem", padding: "1rem", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontSize: "0.95rem", fontWeight: 600 }}>MT5 Terminal</div>
-            <div style={{ fontSize: "0.85rem", opacity: 0.8 }}>
-              Preview embedded. For best trading experience, open fullscreen.
-            </div>
-          </div>
-
-          <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button
-              type="button"
-              onClick={() => launchMt5()}
-              disabled={mt5Loading}
-              style={{
-                padding: "0.55rem 0.9rem",
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "rgba(74,179,255,0.12)",
-                color: "#e5f4ff",
-                cursor: mt5Loading ? "not-allowed" : "pointer",
-              }}
-            >
-              {mt5Loading ? "Launching…" : "Preview MT5"}
-            </button>
-
-            <button
-              type="button"
-              onClick={async () => {
-                const url = await getMt5Url();
-                window.open(url, "_blank", "noopener,noreferrer");
-              }}
-              disabled={mt5Loading}
-              style={{
-                padding: "0.55rem 0.9rem",
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "rgba(255,255,255,0.06)",
-                color: "#e5f4ff",
-                cursor: mt5Loading ? "not-allowed" : "pointer",
-              }}
-            >
-              Open Fullscreen
-            </button>
-          </div>
-        </div>
-
-        <div style={{ marginTop: "0.75rem", borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.10)" }}>
-          {mt5Url ? (
-            <iframe
-              key={mt5Url}
-              src={mt5Url}
-              title="MT5 Terminal"
-              style={{ width: "100%", height: 520, border: 0, display: "block", background: "black" }}
-              allow="clipboard-read; clipboard-write"
-            />
-          ) : (
-            <div style={{ height: 520, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.7 }}>
-              Click “Preview MT5” to start.
-            </div>
-          )}
-        </div>
-      </div>
-
 <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
           Trading Accounts
         </h1>
