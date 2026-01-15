@@ -1,7 +1,14 @@
 import os
 import requests
 
-AGENT_URL = os.environ["GUVFX_AGENT_URL"].rstrip("/")
+AGENT_URL = os.environ.get("GUVFX_AGENT_URL")
+
+if AGENT_URL:
+    AGENT_URL = AGENT_URL.rstrip("/")
+if not AGENT_URL:
+    # Agent URL is required only when MT5 Windows agent is used
+    pass
+
 AGENT_TOKEN = os.environ["GUVFX_AGENT_TOKEN"]
 
 def provision_windows_user(username: str, password: str) -> None:
