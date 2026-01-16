@@ -1,8 +1,10 @@
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from typing import Optional
 
 from trading.models import TradingAccount, Trade
+from strategies.models import Strategy
 
 
 def _strategy_name_from_comment(comment: str) -> str:
@@ -37,6 +39,21 @@ def _strategy_name_from_comment(comment: str) -> str:
     if name:
         return name
     return "Unattributed"
+
+
+def _sid_int(label: str) -> Optional[int]:
+    """Convert 'sid:12345' -> 12345, else None."""
+    if not label:
+        return None
+    if not label.startswith("sid:"):
+        return None
+    raw = label[4:].strip()
+    if not raw.isdigit():
+        return None
+    try:
+        return int(raw)
+    except Exception:
+        return None
 
 
 class TradeHistoryView(APIView):
@@ -74,11 +91,34 @@ class TradeHistoryView(APIView):
 
         # Strategy filter (derived from comment)
         strategy = request.query_params.get("strategy")
+
+        trades = list(qs.order_by("-close_time")[:2000])
+
+        raw_labels: dict[str, str] = {}
+        sids: set[int] = set()
+        for t in trades:
+            raw = _strategy_name_from_comment(t.comment or "")
+            raw_labels[t.ticket] = raw
+            sid = _sid_int(raw)
+            if sid is not None:
+                sids.add(sid)
+
+        sid_to_name: dict[int, str] = {}
+        if sids:
+            strat_qs = Strategy.objects.filter(id__in=sids)
+            if not user.is_staff:
+                strat_qs = strat_qs.filter(owner=user)
+            sid_to_name = {s.id: s.name for s in strat_qs}
+
         rows = []
-        for t in qs.order_by("-close_time")[:2000]:
-            strat = _strategy_name_from_comment(t.comment or "")
+        for t in trades:
+            raw = raw_labels.get(t.ticket, "Unattributed")
+            sid = _sid_int(raw)
+            strat = sid_to_name.get(sid, raw) if sid is not None else raw
+
             if strategy and strat != strategy:
                 continue
+
             rows.append({
                 "ticket": t.ticket,
                 "symbol": t.symbol,
@@ -123,9 +163,30 @@ class StrategyMetricsView(APIView):
 
         trades = Trade.objects.filter(account_id=account_id).order_by("-close_time")
 
+        trades_list = list(trades)
+
+        raw_labels: dict[str, str] = {}
+        sids: set[int] = set()
+        for t in trades_list:
+            raw = _strategy_name_from_comment(t.comment or "")
+            raw_labels[t.ticket] = raw
+            sid = _sid_int(raw)
+            if sid is not None:
+                sids.add(sid)
+
+        sid_to_name: dict[int, str] = {}
+        if sids:
+            strat_qs = Strategy.objects.filter(id__in=sids)
+            if not user.is_staff:
+                strat_qs = strat_qs.filter(owner=user)
+            sid_to_name = {s.id: s.name for s in strat_qs}
+
         bucket = {}
-        for t in trades:
-            name = _strategy_name_from_comment(t.comment or "")
+        for t in trades_list:
+            raw = raw_labels.get(t.ticket, "Unattributed")
+            sid = _sid_int(raw)
+            name = sid_to_name.get(sid, raw) if sid is not None else raw
+
             net = (t.profit or 0) + (t.commission or 0) + (t.swap or 0)
             b = bucket.setdefault(name, {"strategy_name": name, "trades": 0, "net_pnl": 0, "wins": 0, "losses": 0})
             b["trades"] += 1
