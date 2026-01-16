@@ -234,6 +234,14 @@ class Strategy(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            # Strategy magic_number must be unique per owner when set (enables deterministic MT5 attribution)
+            models.UniqueConstraint(
+                fields=["owner", "magic_number"],
+                condition=Q(magic_number__isnull=False),
+                name="uniq_owner_magic_number",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.owner} | {self.name}"
