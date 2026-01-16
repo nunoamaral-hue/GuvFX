@@ -332,6 +332,7 @@ export default function StrategyDetailPage() {
   }, [accessToken, strategyId]);
   const [tfEdit, setTfEdit] = useState("");
   const [symbolsEdit, setSymbolsEdit] = useState("");
+  const [magicEdit, setMagicEdit] = useState<string>("");
   const [maFastEdit, setMaFastEdit] = useState<string>("");
   const [maSlowEdit, setMaSlowEdit] = useState<string>("");
   const [maTypeEdit, setMaTypeEdit] = useState<string>("");
@@ -406,6 +407,7 @@ export default function StrategyDetailPage() {
         // initialise edit fields
         setTfEdit(data.timeframe || "");
         setSymbolsEdit(data.symbol_universe || "");
+        setMagicEdit(data.magic_number != null ? String(data.magic_number) : "");
         setMaFastEdit(
           typeof data.ma_fast_period === "number"
             ? String(data.ma_fast_period)
@@ -447,6 +449,7 @@ export default function StrategyDetailPage() {
     setBtDateFrom(start);
     setBtDateTo(end);
     setBtInitialBalance("10000");
+    setMagicEdit(strategy.magic_number != null ? String(strategy.magic_number) : "");
   }, [strategy]);
 
   // Fetch accounts + assignments
@@ -875,8 +878,21 @@ export default function StrategyDetailPage() {
       const body: Partial<Strategy> = {
         timeframe: tfEdit,
         symbol_universe: symbolsEdit,
+        magic_number: null,
         auto_optimize_by_ai: autoAiEdit,
       };
+
+      // Magic number: optional integer
+      const magicTrim = magicEdit.trim();
+      if (magicTrim === "") {
+        body.magic_number = null;
+      } else {
+        const magicParsed = Number(magicTrim);
+        if (!Number.isInteger(magicParsed) || magicParsed < 0) {
+          throw new Error("Magic number must be a non-negative integer (or blank). ");
+        }
+        body.magic_number = magicParsed;
+      }
 
       if (maFastEdit) body.ma_fast_period = Number(maFastEdit);
       else body.ma_fast_period = null;
@@ -941,6 +957,7 @@ export default function StrategyDetailPage() {
       // Sync editable fields with updated strategy
       setTfEdit(updated.timeframe || "");
       setSymbolsEdit(updated.symbol_universe || "");
+      setMagicEdit(updated.magic_number != null ? String(updated.magic_number) : "");
       setMaFastEdit(
         typeof updated.ma_fast_period === "number"
           ? String(updated.ma_fast_period)
@@ -1352,6 +1369,43 @@ export default function StrategyDetailPage() {
                   }}
                   disabled={autoAiEdit}
                 />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="magic-edit"
+                  style={{
+                    display: "block",
+                    fontSize: "0.85rem",
+                    color: "#cbd5f5",
+                    marginBottom: "0.25rem",
+                  }}
+                >
+                  Magic number (optional)
+                </label>
+                <input
+                  id="magic-edit"
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={magicEdit}
+                  onChange={(e) => setMagicEdit(e.target.value)}
+                  placeholder="e.g. 12345"
+                  style={{
+                    width: "100%",
+                    padding: "0.6rem 0.8rem",
+                    borderRadius: 8,
+                    border: "1px solid rgba(148,163,184,0.65)",
+                    background: "rgba(3, 7, 18, 0.9)",
+                    color: "#e5f4ff",
+                    fontSize: "0.9rem",
+                    outline: "none",
+                    boxSizing: "border-box",
+                  }}
+                />
+                <p style={{ fontSize: "0.78rem", color: "#7c8ca4", marginTop: "0.25rem" }}>
+                  Used for MT5 trade attribution. Set this to match the EA magic number for this strategy.
+                </p>
               </div>
 
               <div>
