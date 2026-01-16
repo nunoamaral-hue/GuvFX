@@ -2,6 +2,7 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from typing import Optional
+from django.db.models import Q
 
 from trading.models import TradingAccount, Trade
 from strategies.models import Strategy
@@ -105,10 +106,15 @@ class TradeHistoryView(APIView):
 
         sid_to_name: dict[int, str] = {}
         if sids:
-            strat_qs = Strategy.objects.filter(id__in=sids)
+            strat_qs = Strategy.objects.filter(Q(id__in=sids) | Q(magic_number__in=sids))
             if not user.is_staff:
                 strat_qs = strat_qs.filter(owner=user)
-            sid_to_name = {s.id: s.name for s in strat_qs}
+
+            # Map BOTH id and magic_number to the same name (magic is optional)
+            for s in strat_qs:
+                sid_to_name[s.id] = s.name
+                if s.magic_number is not None:
+                    sid_to_name[int(s.magic_number)] = s.name
 
         rows = []
         for t in trades:
@@ -176,10 +182,15 @@ class StrategyMetricsView(APIView):
 
         sid_to_name: dict[int, str] = {}
         if sids:
-            strat_qs = Strategy.objects.filter(id__in=sids)
+            strat_qs = Strategy.objects.filter(Q(id__in=sids) | Q(magic_number__in=sids))
             if not user.is_staff:
                 strat_qs = strat_qs.filter(owner=user)
-            sid_to_name = {s.id: s.name for s in strat_qs}
+
+            # Map BOTH id and magic_number to the same name (magic is optional)
+            for s in strat_qs:
+                sid_to_name[s.id] = s.name
+                if s.magic_number is not None:
+                    sid_to_name[int(s.magic_number)] = s.name
 
         bucket = {}
         for t in trades_list:
