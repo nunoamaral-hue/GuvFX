@@ -206,6 +206,15 @@ type StrategyChangeLog = {
   after_settings: Record<string, unknown> | null;
 };
 
+type StrategyHasTrades = {
+  strategy_id: number;
+  strategy_name: string;
+  magic_number: number | null;
+  canonical_id: number;
+  has_trades: boolean;
+  trade_count: number;
+};
+
 // Execution jobs for this strategy (MT5 actions)
 
 type StrategyExecutionJob = {
@@ -324,6 +333,7 @@ export default function StrategyDetailPage() {
 
   const [changeLogs, setChangeLogs] = useState<StrategyChangeLog[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [hasTradesInfo, setHasTradesInfo] = useState<StrategyHasTrades | null>(null);
 
   // Execution jobs state
   const [execJobs, setExecJobs] = useState<StrategyExecutionJob[]>([]);
@@ -383,6 +393,25 @@ export default function StrategyDetailPage() {
     };
 
     fetchLogs();
+  }, [accessToken, strategyId]);
+  // Fetch whether this strategy already has attributed trades (locks magic number)
+  useEffect(() => {
+    if (!accessToken || !strategyId) return;
+
+    const fetchHasTrades = async () => {
+      try {
+        const info = await apiFetch<StrategyHasTrades>(
+          `/api/analytics/strategy-has-trades/?strategy=${strategyId}`,
+          {}
+        );
+        setHasTradesInfo(info);
+      } catch (err) {
+        console.error("Failed to fetch strategy has-trades:", err);
+        setHasTradesInfo(null);
+      }
+    };
+
+    fetchHasTrades();
   }, [accessToken, strategyId]);
   const [tfEdit, setTfEdit] = useState("");
   const [symbolsEdit, setSymbolsEdit] = useState("");
@@ -931,6 +960,16 @@ export default function StrategyDetailPage() {
     setSettingsMessage(null);
     setError(null);
 
+    if (hasTradesInfo?.has_trades) {
+      const currentMagic =
+        strategy?.magic_number != null ? String(strategy.magic_number) : "";
+      if ((magicEdit || "").trim() !== currentMagic.trim()) {
+        throw new Error(
+          "Magic number is locked because trades already exist for this strategy."
+        );
+      }
+    }
+
     try {
       const body: Partial<Strategy> = {
         timeframe: tfEdit,
@@ -970,6 +1009,15 @@ export default function StrategyDetailPage() {
 
       setStrategy(updated);
       setSettingsMessage("Strategy settings updated.");
+      try {
+        const info = await apiFetch<StrategyHasTrades>(
+          `/api/analytics/strategy-has-trades/?strategy=${strategyId}`,
+          {}
+        );
+        setHasTradesInfo(info);
+      } catch {
+        // ignore
+      }
     } catch (err: unknown) {
       console.error(err);
       setError(formatApiErrorMessage(err) || "Failed to update strategy settings.");
@@ -1455,10 +1503,25 @@ export default function StrategyDetailPage() {
                     outline: "none",
                     boxSizing: "border-box",
                   }}
+                  disabled={Boolean(hasTradesInfo?.has_trades)}
                 />
                 <p style={{ fontSize: "0.78rem", color: "#7c8ca4", marginTop: "0.25rem" }}>
                   Used for MT5 trade attribution. Set this to match the EA magic number for this strategy.
                 </p>
+                {hasTradesInfo?.has_trades && (
+                  <div style={{ marginTop: "0.35rem" }}>
+                    <Badge color="gray">Magic number locked</Badge>
+                    <div
+                      style={{
+                        fontSize: "0.78rem",
+                        color: "#9ca3af",
+                        marginTop: "0.25rem",
+                      }}
+                    >
+                      This strategy already has {hasTradesInfo.trade_count} attributed trade(s). To keep analytics consistent, the magic number cannot be changed.
+                    </div>
+                  </div>
+                )}
                 <p style={{ fontSize: "0.78rem", color: "#7c8ca4", marginTop: "0.25rem" }}>
                   Attribution tag: <span style={{ color: "#cbd5f5" }}>guvfx:sid={magicEdit.trim() || "&lt;magic&gt;"};name={strategy?.name || "&lt;strategy&gt;"}</span>
                 </p>
@@ -2373,6 +2436,7 @@ export default function StrategyDetailPage() {
                 const trackedKeys = [
                   "timeframe",
                   "symbol_universe",
+                  "magic_number",
                   "ma_fast_period",
                   "ma_slow_period",
                   "ma_type",
@@ -2391,7 +2455,16 @@ export default function StrategyDetailPage() {
                       afterVal === undefined || afterVal === null
                         ? "—"
                         : String(afterVal);
-                    changes.push(`${key}: ${from} → ${to}`);
+                    const keyLabelMap: Record<string, string> = {
+                      timeframe: "Timeframe",
+                      symbol_universe: "Symbols",
+                      magic_number: "Magic number",
+                      ma_fast_period: "Fast MA",
+                      ma_slow_period: "Slow MA",
+                      ma_type: "MA type",
+                    };
+                    const label = keyLabelMap[key] || key;
+                    changes.push(`${label}: ${from} → ${to}`);
                   }
                 });
 
