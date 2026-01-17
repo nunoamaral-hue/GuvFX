@@ -10,14 +10,14 @@ type AlertProps = {
 export const Alert: React.FC<AlertProps> = ({ children, type = "info" }) => {
   const styles: Record<string, React.CSSProperties> = {
     error: {
-      backgroundColor: "#ffecec",
-      borderColor: "#f3b3b3",
-      color: "#8b0000",
+      backgroundColor: "rgba(248,113,113,0.10)",
+      borderColor: "rgba(248,113,113,0.45)",
+      color: "#fecaca",
     },
     info: {
-      backgroundColor: "#eef5ff",
-      borderColor: "#c2d3ff",
-      color: "#10418a",
+      backgroundColor: "rgba(59,130,246,0.12)",
+      borderColor: "rgba(59,130,246,0.45)",
+      color: "#e5f4ff",
     },
   };
 

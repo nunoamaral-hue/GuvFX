@@ -57,6 +57,26 @@ class StrategySerializer(serializers.ModelSerializer):
                 "Risk per trade must be between 0 and 10%."
             )
 
+        # Magic number: optional, must be non-negative integer if provided,
+        # and must be unique per owner (to enable deterministic MT5 attribution).
+        if "magic_number" in attrs:
+            magic = attrs.get("magic_number")
+            if magic is not None:
+                try:
+                    magic_int = int(magic)
+                except Exception:
+                    errors["magic_number"] = "Magic number must be an integer."
+                else:
+                    if magic_int < 0:
+                        errors["magic_number"] = "Magic number must be a non-negative integer."
+                    else:
+                        owner = self.context["request"].user
+                        qs = Strategy.objects.filter(owner=owner, magic_number=magic_int)
+                        if self.instance is not None:
+                            qs = qs.exclude(pk=self.instance.pk)
+                        if qs.exists():
+                            errors["magic_number"] = "This magic number is already used by another strategy. Choose a different value."
+
         sl_rules = attrs.get("sl_rules") or {}
         sl_method = sl_rules.get("method")
         valid_sl_methods = {"SWING_HIGH_LOW", "FIXED_PIPS", "ATR_MULTIPLE"}
