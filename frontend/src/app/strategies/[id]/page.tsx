@@ -1,5 +1,12 @@
 "use client";
 
+// Helper types and functions for safe property access (no-explicit-any)
+type AnyRecord = Record<string, unknown>;
+
+const asRecord = (v: unknown): AnyRecord => (v && typeof v === "object" ? (v as AnyRecord) : {});
+
+const readString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
 import type { CSSProperties } from "react";
 import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
@@ -200,6 +207,7 @@ type StrategyChangeLog = {
 };
 
 // Execution jobs for this strategy (MT5 actions)
+
 type StrategyExecutionJob = {
   id: number;
   job_type: string;
@@ -209,6 +217,52 @@ type StrategyExecutionJob = {
   created_at: string;
   result?: Record<string, unknown>;
   payload?: Record<string, unknown>;
+};
+
+// Helper to extract a user-friendly error message from API errors (esp. DRF/duplicate magic_number)
+const formatApiErrorMessage = (err: unknown): string => {
+  // apiFetch may throw Error(message), or something else.
+  if (err instanceof Error) {
+    const msg = err.message || "";
+
+    // If the message looks like JSON, try to extract field errors.
+    const trimmed = msg.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        // DRF typical: { field: ["..."] } or { detail: "..." }
+        if (parsed && typeof parsed === "object") {
+          const obj = parsed as Record<string, unknown>;
+
+          if (typeof obj.detail === "string") return obj.detail;
+
+          const mn = obj.magic_number;
+          if (mn !== undefined) {
+            if (Array.isArray(mn) && typeof mn[0] === "string") return mn[0];
+            if (typeof mn === "string") return mn;
+          }
+
+          // Fallback: stringify first field
+          for (const k of Object.keys(obj)) {
+            const v = obj[k];
+            if (Array.isArray(v) && typeof v[0] === "string") return `${k}: ${v[0]}`;
+            if (typeof v === "string") return `${k}: ${v}`;
+          }
+        }
+      } catch {
+        // ignore JSON parse failures
+      }
+    }
+
+    // Common backend text cases
+    if (msg.toLowerCase().includes("magic number") && msg.toLowerCase().includes("already")) {
+      return msg;
+    }
+
+    return msg || "Request failed.";
+  }
+
+  return "Request failed.";
 };
 
 export default function StrategyDetailPage() {
@@ -817,7 +871,9 @@ export default function StrategyDetailPage() {
         entry_type: "MARKET",
         sl_price: 0, // dev dummy; worker is in dummy mode
         tp_price: null,
-        comment: `Dev test trade for strategy ${strategy.name}`,
+        // Strategy attribution for MT5 deal comments (read by analytics ingestion)
+        // Prefer magic_number if set, else fall back to strategy.id
+        comment: `guvfx:sid=${strategy.magic_number ?? strategy.id};name=${strategy.name}`,
       };
 
       if (riskPct !== undefined && !Number.isNaN(riskPct)) {
@@ -873,6 +929,7 @@ export default function StrategyDetailPage() {
 
     setSavingSettings(true);
     setSettingsMessage(null);
+    setError(null);
 
     try {
       const body: Partial<Strategy> = {
@@ -915,11 +972,7 @@ export default function StrategyDetailPage() {
       setSettingsMessage("Strategy settings updated.");
     } catch (err: unknown) {
       console.error(err);
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to update strategy settings."
-      );
+      setError(formatApiErrorMessage(err) || "Failed to update strategy settings.");
     } finally {
       setSavingSettings(false);
     }
@@ -1405,6 +1458,9 @@ export default function StrategyDetailPage() {
                 />
                 <p style={{ fontSize: "0.78rem", color: "#7c8ca4", marginTop: "0.25rem" }}>
                   Used for MT5 trade attribution. Set this to match the EA magic number for this strategy.
+                </p>
+                <p style={{ fontSize: "0.78rem", color: "#7c8ca4", marginTop: "0.25rem" }}>
+                  Attribution tag: <span style={{ color: "#cbd5f5" }}>guvfx:sid={magicEdit.trim() || "&lt;magic&gt;"};name={strategy?.name || "&lt;strategy&gt;"}</span>
                 </p>
               </div>
 
@@ -2179,7 +2235,7 @@ export default function StrategyDetailPage() {
                   typeof job.result === "object" &&
                   "message" in job.result
                 ) {
-                  const maybeMessage = (job.result as Record<string, unknown>).message;
+                  const maybeMessage = asRecord(job.result).message;
                   if (typeof maybeMessage === "string") {
                     message = maybeMessage;
                   }
@@ -2193,16 +2249,16 @@ export default function StrategyDetailPage() {
                   job.payload &&
                   typeof job.payload === "object"
                 ) {
-                  const payload = job.payload as Record<string, unknown>;
+                  const payload = asRecord(job.payload);
                   const symbolVal = payload["symbol"];
                   const directionVal = payload["direction"];
                   const symbol =
-                    typeof symbolVal === "string" && symbolVal.trim() !== ""
-                      ? symbolVal.trim()
+                    readString(symbolVal)?.trim() !== ""
+                      ? readString(symbolVal)?.trim()
                       : undefined;
                   const directionRaw =
-                    typeof directionVal === "string" && directionVal.trim() !== ""
-                      ? directionVal.trim().toUpperCase()
+                    readString(directionVal)?.trim() !== ""
+                      ? readString(directionVal)!.trim().toUpperCase()
                       : undefined;
 
                   if (symbol || directionRaw) {
