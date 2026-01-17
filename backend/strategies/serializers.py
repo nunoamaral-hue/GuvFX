@@ -1,6 +1,8 @@
 from rest_framework import serializers
 
+
 from .models import Strategy, StrategyAssignment, StrategyChangeLog
+from trading.models import Trade
 
 
 class StrategySerializer(serializers.ModelSerializer):
@@ -61,12 +63,44 @@ class StrategySerializer(serializers.ModelSerializer):
         # and must be unique per owner (to enable deterministic MT5 attribution).
         if "magic_number" in attrs:
             magic = attrs.get("magic_number")
+            # Server-side lock (clear): once trades exist for this strategy, magic_number cannot be cleared.
+            if magic is None and self.instance is not None:
+                current_magic = self.instance.magic_number
+                legacy_ids = [int(self.instance.pk)]
+                if current_magic is not None:
+                    try:
+                        legacy_ids.append(int(current_magic))
+                    except Exception:
+                        pass
+
+                has_trades = Trade.objects.filter(magic_number__in=legacy_ids).exists()
+                if has_trades:
+                    errors["magic_number"] = (
+                        "Magic number is locked because trades already exist for this strategy."
+                    )
             if magic is not None:
                 try:
                     magic_int = int(magic)
                 except Exception:
                     errors["magic_number"] = "Magic number must be an integer."
                 else:
+                    # Server-side lock: once trades exist for this strategy, magic_number cannot change.
+                    if self.instance is not None:
+                        current_magic = self.instance.magic_number
+                        current_magic_int = int(current_magic) if current_magic is not None else None
+                        incoming_magic_int = magic_int
+
+                        # Only enforce if value is changing
+                        if current_magic_int != incoming_magic_int:
+                            legacy_ids = [int(self.instance.pk)]
+                            if current_magic_int is not None:
+                                legacy_ids.append(current_magic_int)
+
+                            has_trades = Trade.objects.filter(magic_number__in=legacy_ids).exists()
+                            if has_trades:
+                                errors["magic_number"] = (
+                                    "Magic number is locked because trades already exist for this strategy."
+                                )
                     if magic_int < 0:
                         errors["magic_number"] = "Magic number must be a non-negative integer."
                     else:

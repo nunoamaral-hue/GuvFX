@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from typing import Optional
 from django.db.models import Q
+from django.http import Http404
 
 from trading.models import TradingAccount, Trade
 from strategies.models import Strategy
@@ -218,3 +219,70 @@ class StrategyMetricsView(APIView):
 
         out.sort(key=lambda x: x["net_pnl"], reverse=True)
         return Response({"account_id": int(account_id), "strategies": out})
+
+
+class StrategyHasTradesView(APIView):
+    """
+    GET /api/analytics/strategy-has-trades/?strategy=<id>
+
+    Returns whether a strategy already has attributed trades in the DB.
+
+    This is used by the frontend to lock magic_number once trades exist.
+
+    Response shape:
+      {
+        "strategy_id": 1,
+        "strategy_name": "MVP Sync Strategy",
+        "magic_number": 12345,
+        "canonical_id": 12345,
+        "has_trades": true,
+        "trade_count": 12
+      }
+
+    Notes:
+    - We treat BOTH Strategy.id and Strategy.magic_number as potential attribution IDs,
+      because older trades may have been tagged with id before magic_number was set.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        strategy_id = request.query_params.get("strategy")
+        if not strategy_id:
+            return Response({"detail": "strategy is required"}, status=400)
+
+        try:
+            sid = int(strategy_id)
+        except Exception:
+            return Response({"detail": "strategy must be an integer"}, status=400)
+
+        qs = Strategy.objects.filter(id=sid)
+        if not user.is_staff:
+            qs = qs.filter(owner=user)
+
+        strategy = qs.first()
+        if not strategy:
+            raise Http404("strategy not found")
+
+        ids: set[int] = {int(strategy.id)}
+        if strategy.magic_number is not None:
+            try:
+                ids.add(int(strategy.magic_number))
+            except Exception:
+                # ignore invalid magic_number shapes
+                pass
+
+        # Count attributed trades by magic_number matching either strategy.id or strategy.magic_number
+        trade_count = Trade.objects.filter(magic_number__in=list(ids)).count()
+
+        canonical_id = int(strategy.magic_number) if strategy.magic_number is not None else int(strategy.id)
+
+        return Response({
+            "strategy_id": int(strategy.id),
+            "strategy_name": strategy.name,
+            "magic_number": int(strategy.magic_number) if strategy.magic_number is not None else None,
+            "canonical_id": canonical_id,
+            "has_trades": trade_count > 0,
+            "trade_count": int(trade_count),
+        })
