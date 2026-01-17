@@ -34,7 +34,6 @@ type VpsInstance = {
 };
 
 export default function HostingAdminPage() {
-  const [accessToken, setAccessToken] = useState("");
   const [providers, setProviders] = useState<HostingProvider[]>([]);
   const [plans, setPlans] = useState<VPSPlan[]>([]);
   const [instances, setInstances] = useState<VpsInstance[]>([]);
@@ -48,36 +47,36 @@ export default function HostingAdminPage() {
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const pendingRequests = requests.filter((req) => req.status === "PENDING");
 
-  // Load token from localStorage
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const stored = window.localStorage.getItem("guvfx_access_token");
-      if (stored) {
-        setAccessToken(stored);
-      } else {
-        setError("");
-      }
+  const toFriendlyAuthError = (err: unknown): string | null => {
+    const msg = err instanceof Error ? err.message : String(err || "");
+    if (msg.includes("401") || msg.toLowerCase().includes("unauthorized")) {
+      return "You are not logged in (cookie auth). Please log in at /login and reload this page.";
     }
-  }, []);
+    if (msg.includes("403") || msg.toLowerCase().includes("forbidden")) {
+      return "You do not have permission to view hosting admin. This page is staff-only.";
+    }
+    return null;
+  };
 
   // Fetch hosting data
   const fetchRequests = useCallback(async () => {
-    
-
     setRequestsLoading(true);
     setRequestError(null);
     try {
       const data = await apiFetch<HostingRequest[]>(
         "/api/hosting/requests/",
-        {});
+        {}
+      );
       const list = Array.isArray(data)
         ? data
         : (data as { results?: HostingRequest[] }).results ?? [];
       setRequests(list);
     } catch (err: unknown) {
       console.error(err);
+      const friendly = toFriendlyAuthError(err);
       setRequestError(
-        err instanceof Error ? err.message : "Failed to load hosting requests."
+        friendly ||
+          (err instanceof Error ? err.message : "Failed to load hosting requests.")
       );
     } finally {
       setRequestsLoading(false);
@@ -85,37 +84,31 @@ export default function HostingAdminPage() {
   }, []);
 
   useEffect(() => {
-    
-
     const fetchData = async () => {
       setLoading(true);
       setError(null);
-
       try {
         const [providersRes, plansRes, instancesRes] = await Promise.all([
           apiFetch<HostingProvider[]>("/api/hosting/providers/", {}),
           apiFetch<VPSPlan[]>("/api/hosting/plans/", {}),
           apiFetch<VpsInstance[]>("/api/hosting/vps/", {}),
         ]);
-
         setProviders(providersRes);
         setPlans(plansRes);
         setInstances(instancesRes);
       } catch (err: unknown) {
         console.error(err);
+        const friendly = toFriendlyAuthError(err);
         const message =
-          err instanceof Error
-            ? err.message
-            : "Failed to load hosting data.";
+          friendly || (err instanceof Error ? err.message : "Failed to load hosting data.");
         setError(message);
       } finally {
         setLoading(false);
       }
       fetchRequests();
     };
-
     fetchData();
-  }, [accessToken, fetchRequests]);
+  }, [fetchRequests]);
 
   const memoryLabel = (mb: number) =>
     mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
@@ -480,9 +473,8 @@ export default function HostingAdminPage() {
                       >
                         <Button
                           variant="secondary"
-                          disabled={rejectingId === req.id || !accessToken}
+                          disabled={rejectingId === req.id}
                           onClick={async () => {
-                            
                             setRejectingId(req.id);
                             setRequestError(null);
                             try {
@@ -492,7 +484,7 @@ export default function HostingAdminPage() {
                                   method: "POST",
                                   body: JSON.stringify({}),
                                 }
-);
+                              );
                               await fetchRequests();
                             } catch (err: unknown) {
                               console.error(err);
@@ -518,9 +510,8 @@ export default function HostingAdminPage() {
                         }}
                       >
                         <Button
-                          disabled={approvingId === req.id || !accessToken}
+                          disabled={approvingId === req.id}
                           onClick={async () => {
-                            
                             setApprovingId(req.id);
                             setRequestError(null);
                             try {
@@ -530,7 +521,7 @@ export default function HostingAdminPage() {
                                   method: "POST",
                                   body: JSON.stringify({}),
                                 }
-);
+                              );
                               await fetchRequests();
                             } catch (err: unknown) {
                               console.error(err);

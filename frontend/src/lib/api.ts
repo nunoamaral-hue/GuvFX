@@ -1,9 +1,29 @@
+
 const API_BASE = "https://api.guvfx.com";
 
+function getCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/[$()*+./?[\\\]^{|}-]/g, "\\$&")}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function ensureCsrfCookieOnce(): Promise<void> {
+  // This endpoint sets the CSRF cookie for subsequent POSTs.
+  await fetch(`${API_BASE}/api/auth/cookie/csrf/`, {
+    method: "GET",
+    credentials: "include",
+  });
+}
+
 async function refreshCookiesOnce(): Promise<void> {
+  // Refresh endpoint may require CSRF depending on backend settings.
+  await ensureCsrfCookieOnce();
+
+  const csrf = getCookie("csrftoken");
   await fetch(`${API_BASE}/api/auth/cookie/refresh/`, {
     method: "POST",
     credentials: "include",
+    headers: csrf ? { "X-CSRFToken": csrf } : undefined,
   });
 }
 
@@ -21,6 +41,16 @@ export async function apiFetch<T>(
     // Ensure JSON content type when body is a string
     if (typeof opts.body === "string" && !headers["Content-Type"]) {
       headers["Content-Type"] = "application/json";
+    }
+
+    const method = (opts.method || "GET").toUpperCase();
+    const needsCsrf = !["GET", "HEAD", "OPTIONS"].includes(method);
+    if (needsCsrf) {
+      // Ensure CSRF cookie exists, then attach it.
+      // (No-op if backend exempts the endpoint.)
+      await ensureCsrfCookieOnce();
+      const csrf = getCookie("csrftoken");
+      if (csrf && !headers["X-CSRFToken"]) headers["X-CSRFToken"] = csrf;
     }
 
     return fetch(url, {
