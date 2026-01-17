@@ -39,6 +39,7 @@ class StrategyViewSet(viewsets.ModelViewSet):
             "ma_fast_period": instance.ma_fast_period,
             "ma_slow_period": instance.ma_slow_period,
             "ma_type": instance.ma_type,
+            "magic_number": instance.magic_number,
         }
 
         updated: Strategy = serializer.save()
@@ -49,6 +50,7 @@ class StrategyViewSet(viewsets.ModelViewSet):
             "ma_fast_period": updated.ma_fast_period,
             "ma_slow_period": updated.ma_slow_period,
             "ma_type": updated.ma_type,
+            "magic_number": updated.magic_number,
         }
 
         # Only log if something actually changed
@@ -202,6 +204,7 @@ class StrategyAutoTuneView(APIView):
                     "ma_fast_period": strategy.ma_fast_period,
                     "ma_slow_period": strategy.ma_slow_period,
                     "ma_type": strategy.ma_type,
+                    "magic_number": strategy.magic_number,
                 }
 
                 # Apply recommended settings to the strategy
@@ -214,6 +217,8 @@ class StrategyAutoTuneView(APIView):
                     strategy.ma_slow_period = rec["ma_slow_period"]
                 if "ma_type" in rec and rec["ma_type"] is not None:
                     strategy.ma_type = rec["ma_type"]
+                if "magic_number" in rec and rec["magic_number"] is not None:
+                    strategy.magic_number = rec["magic_number"]
 
                 strategy.save()
                 applied_settings = rec
@@ -225,6 +230,7 @@ class StrategyAutoTuneView(APIView):
                     "ma_fast_period": strategy.ma_fast_period,
                     "ma_slow_period": strategy.ma_slow_period,
                     "ma_type": strategy.ma_type,
+                    "magic_number": strategy.magic_number,
                 }
 
                 # Log change if there were actual modifications
