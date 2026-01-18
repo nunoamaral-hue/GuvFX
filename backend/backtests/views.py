@@ -249,6 +249,8 @@ class WindowsBacktestRunView(APIView):
         agent_payload = {
             "username": data["username"],
             "datadir": data.get("datadir", ""),
+            "account_id": data["account_id"],
+            "strategy_id": data["strategy_id"],
             "symbol": data["symbol"],
             "timeframe": data["timeframe"],
             "date_from": str(data["date_from"]),
