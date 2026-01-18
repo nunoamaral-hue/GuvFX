@@ -4,6 +4,7 @@ import { AppShell } from "@/components/AppShell";
 import { Button } from "@/components/ui/Button";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { useRouter } from "next/navigation";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -180,12 +181,18 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
 // Main Component
 // ─────────────────────────────────────────────────────────────────────
 export default function StrategyMarketplacePage() {
+  const router = useRouter();
+
+  const LS_DEFAULT_ACCOUNT_KEY = "guvfx_marketplace_default_account_id";
+
   const [search, setSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<MarketCategory | "All">("All");
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [assigning, setAssigning] = useState<Record<string, boolean>>({});
   const [selectedAccount, setSelectedAccount] = useState<Record<string, number | "">>({});
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [defaultAccountId, setDefaultAccountId] = useState<number | null>(null);
   const [alert, setAlert] = useState<string | null>(null);
   const [alertType, setAlertType] = useState<"info" | "error" | "success">("info");
 
@@ -212,6 +219,23 @@ export default function StrategyMarketplacePage() {
       }
     };
     fetchAccounts();
+  }, []);
+
+  // Load saved default account for marketplace dropdowns
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const raw = window.localStorage.getItem(LS_DEFAULT_ACCOUNT_KEY);
+    if (!raw) return;
+
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) {
+      setDefaultAccountId(n);
+      // Preselect this account for all seed strategies
+      const map: Record<string, number> = {};
+      for (const s of MARKETPLACE_SEED) map[s.id] = n;
+      setSelectedAccount(map);
+    }
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────
@@ -263,6 +287,15 @@ export default function StrategyMarketplacePage() {
       setAlert(null); // Clear any previous errors
       setAlert("Assigned successfully.");
       setAlertType("success");
+
+      // Keep the selected account as the default for next time
+      if (typeof window !== "undefined") {
+        const v = selectedAccount[strategyId];
+        if (typeof v === "number" && v > 0) {
+          window.localStorage.setItem(LS_DEFAULT_ACCOUNT_KEY, String(v));
+          setDefaultAccountId(v);
+        }
+      }
     } catch (err) {
       const e = err as { status?: number; message?: string };
       const msg = (e?.message || "").trim();
@@ -349,7 +382,28 @@ export default function StrategyMarketplacePage() {
               alignItems: "center",
             }}
           >
-            <span>{alert}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+              <span>{alert}</span>
+
+              {alertType === "success" && (
+                <button
+                  type="button"
+                  onClick={() => router.push("/strategies")}
+                  style={{
+                    background: "rgba(59,130,246,0.18)",
+                    border: "1px solid rgba(59,130,246,0.40)",
+                    color: "#93c5fd",
+                    padding: "0.25rem 0.6rem",
+                    borderRadius: 999,
+                    fontSize: "0.78rem",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  View in My Strategies →
+                </button>
+              )}
+            </div>
             <button
               onClick={() => setAlert(null)}
               style={{
@@ -497,12 +551,23 @@ export default function StrategyMarketplacePage() {
               <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
                 <select
                   value={selectedAccount[strategy.id] || ""}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const nextVal = e.target.value ? Number(e.target.value) : "";
                     setSelectedAccount({
                       ...selectedAccount,
-                      [strategy.id]: e.target.value ? Number(e.target.value) : "",
-                    })
-                  }
+                      [strategy.id]: nextVal,
+                    });
+
+                    if (typeof window !== "undefined") {
+                      if (nextVal === "") {
+                        window.localStorage.removeItem(LS_DEFAULT_ACCOUNT_KEY);
+                        setDefaultAccountId(null);
+                      } else {
+                        window.localStorage.setItem(LS_DEFAULT_ACCOUNT_KEY, String(nextVal));
+                        setDefaultAccountId(nextVal);
+                      }
+                    }
+                  }}
                   disabled={loadingAccounts}
                   style={{
                     flex: 1,
