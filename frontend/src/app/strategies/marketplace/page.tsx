@@ -196,10 +196,36 @@ export default function StrategyMarketplacePage() {
   const [alert, setAlert] = useState<string | null>(null);
   const [alertType, setAlertType] = useState<"info" | "error" | "success">("info");
 
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isAuthed, setIsAuthed] = useState(false);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Auth Check (cookie auth)
+  // ─────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        await apiFetch("/api/auth/me/", { method: "GET" });
+        setIsAuthed(true);
+      } catch {
+        setIsAuthed(false);
+      } finally {
+        setAuthChecked(true);
+      }
+    };
+
+    checkAuth();
+  }, []);
+
   // ─────────────────────────────────────────────────────────────────────
   // Fetch Accounts
   // ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!authChecked || !isAuthed) {
+      setLoadingAccounts(false);
+      return;
+    }
+
     const fetchAccounts = async () => {
       try {
         // Try primary endpoint
@@ -219,7 +245,7 @@ export default function StrategyMarketplacePage() {
       }
     };
     fetchAccounts();
-  }, []);
+  }, [authChecked, isAuthed]);
 
   // Load saved default account for marketplace dropdowns
   useEffect(() => {
@@ -307,6 +333,13 @@ export default function StrategyMarketplacePage() {
         msg.toLowerCase().includes("<html") ||
         msg.toLowerCase().includes("<body");
 
+      if (e?.status === 401 || msg.toLowerCase().includes("unauthorized")) {
+        setAlert("Your session with the API has expired. Please login again.");
+        setAlertType("error");
+        setIsAuthed(false);
+        return;
+      }
+
       if (e?.status === 404 || msg.includes("404")) {
         setAlert("Marketplace assign endpoint not found. This usually means the frontend is calling the wrong URL or the server is not yet deployed with the endpoint.");
         setAlertType("error");
@@ -351,6 +384,45 @@ export default function StrategyMarketplacePage() {
         <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1.5rem" }}>
           Browse and deploy pre-built strategies to your trading accounts.
         </p>
+
+        {authChecked && !isAuthed && (
+          <div
+            style={{
+              marginBottom: "1rem",
+              padding: "0.75rem 1rem",
+              borderRadius: 8,
+              border: "1px solid rgba(239,68,68,0.35)",
+              background: "rgba(239,68,68,0.08)",
+              color: "#fca5a5",
+              fontSize: "0.9rem",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "0.75rem",
+              flexWrap: "wrap",
+            }}
+          >
+            <div>
+              You are not authenticated to the API. Please login again to assign marketplace strategies.
+            </div>
+            <button
+              type="button"
+              onClick={() => router.push("/login?reason=unauthenticated")}
+              style={{
+                background: "rgba(59,130,246,0.18)",
+                border: "1px solid rgba(59,130,246,0.40)",
+                color: "#93c5fd",
+                padding: "0.35rem 0.75rem",
+                borderRadius: 999,
+                fontSize: "0.85rem",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Go to Login →
+            </button>
+          </div>
+        )}
 
         {/* Alert */}
         {alert && (
@@ -589,7 +661,7 @@ export default function StrategyMarketplacePage() {
                 <Button
                   variant="primary"
                   onClick={() => handleAssign(strategy.id)}
-                  disabled={!selectedAccount[strategy.id] || assigning[strategy.id]}
+                  disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
                 >
                   {assigning[strategy.id] ? "Assigning..." : "Assign"}
                 </Button>
