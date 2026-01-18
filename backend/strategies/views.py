@@ -146,19 +146,30 @@ class StrategyViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             strategy = Strategy.objects.create(**create_kwargs)
 
+            # IMPORTANT: Deactivate any existing active assignments that would violate
+            # the uniq_active_strategy_assignment_per_instance constraint BEFORE creating a new one.
+            #
+            # 1) Always ensure no active assignment remains for this specific account.
+            StrategyAssignment.objects.filter(
+                account=account,
+                is_active=True,
+            ).update(is_active=False)
+
+            # 2) If the account is tied to an MT5 instance, ensure only one active assignment
+            # per user per instance (mirror the same safety rule used elsewhere).
+            if account.mt5_instance_id:
+                StrategyAssignment.objects.filter(
+                    account__mt5_instance_id=account.mt5_instance_id,
+                    account__user_id=account.user_id,
+                    is_active=True,
+                ).update(is_active=False)
+
+            # Now it's safe to create the new active assignment
             assignment = StrategyAssignment.objects.create(
                 strategy=strategy,
                 account=account,
                 is_active=True,
             )
-
-            # Mirror existing safety rule: if active assignment + mt5 instance, deactivate other active assignments on same instance
-            if assignment.is_active and assignment.account.mt5_instance_id:
-                StrategyAssignment.objects.filter(
-                    account__mt5_instance_id=assignment.account.mt5_instance_id,
-                    account__user_id=assignment.account.user_id,
-                    is_active=True,
-                ).exclude(id=assignment.id).update(is_active=False)
 
         return Response(
             {
