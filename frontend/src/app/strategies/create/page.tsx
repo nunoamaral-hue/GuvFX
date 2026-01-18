@@ -512,8 +512,8 @@ export default function CreateStrategyPage() {
     setNewsPreMinutes(tpl.defaults.newsPreMinutes);
     setNewsPostMinutes(tpl.defaults.newsPostMinutes);
     setMaxTradesPerDay(tpl.defaults.maxTradesPerDay);
-    setPreSessionChecklist(tpl.defaults.preSessionChecklist);
-    setPostSessionChecklist(tpl.defaults.postSessionChecklist);
+    setPreSessionChecklist(tpl.defaults.preSessionChecklist.split('\n').map(text => ({ text, checked: false })));
+    setPostSessionChecklist(tpl.defaults.postSessionChecklist.split('\n').map(text => ({ text, checked: false })));
     setPsychAfterBigWinR(tpl.defaults.psychAfterBigWinR);
     setPsychCooldownMinutes(tpl.defaults.psychCooldownMinutes);
     setPsychMaxConsecLosses(tpl.defaults.psychMaxConsecLosses);
@@ -593,12 +593,16 @@ export default function CreateStrategyPage() {
   const [maxOpenRiskPct, setMaxOpenRiskPct] = useState("5.0");
 
   // 11–12. Plan & Psychology
-  const [preSessionChecklist, setPreSessionChecklist] = useState(
-    "Check economic calendar\nMark key levels\nDefine directional bias"
-  );
-  const [postSessionChecklist, setPostSessionChecklist] = useState(
-    "Review trades\nCapture screenshots\nUpdate journal"
-  );
+  const [preSessionChecklist, setPreSessionChecklist] = useState<{text: string; checked: boolean}[]>([
+    { text: "Check economic calendar", checked: false },
+    { text: "Mark key levels", checked: false },
+    { text: "Define directional bias", checked: false }
+  ]);
+  const [postSessionChecklist, setPostSessionChecklist] = useState<{text: string; checked: boolean}[]>([
+    { text: "Review trades", checked: false },
+    { text: "Capture screenshots", checked: false },
+    { text: "Update journal", checked: false }
+  ]);
   const [psychAfterBigWinR, setPsychAfterBigWinR] = useState("3.0");
   const [psychCooldownMinutes, setPsychCooldownMinutes] = useState("30");
   const [psychMaxConsecLosses, setPsychMaxConsecLosses] = useState("3");
@@ -715,14 +719,8 @@ export default function CreateStrategyPage() {
     };
 
     const plan_meta = {
-      pre_session_checklist: preSessionChecklist
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean),
-      post_session_checklist: postSessionChecklist
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean),
+      pre_session_checklist: preSessionChecklist.map(item => item.text).filter(Boolean),
+      post_session_checklist: postSessionChecklist.map(item => item.text).filter(Boolean),
       psychology_rules: {
         after_big_win_r: Number(psychAfterBigWinR),
         cooldown_minutes_after_big_win: Number(psychCooldownMinutes),
@@ -1175,11 +1173,11 @@ export default function CreateStrategyPage() {
               </div>
             </Card>
 
-            {showAdvanced && (
+            {false && (
             <>
-            {/* 4) Indicators & patterns */}
+            {/* 5) Indicators & patterns */}
             <Card
-              title="4) Indicators & patterns"
+              title="5) Indicators & patterns"
             >
               <div style={{ marginBottom: 10 }}>
                 <div style={{ fontWeight: 500, color: "#cbd5f5", fontSize: "0.93rem", marginBottom: 3 }}>
@@ -1393,9 +1391,11 @@ export default function CreateStrategyPage() {
             </>
             )}
 
-            {/* 5) Stops & take profit */}
+            {!showAdvanced && (
+            <>
+            {/* 4) Stops & take profit */}
             <Card
-              title="5) Stops & take profit"
+              title="4) Stops & take profit"
             >
               <div
                 style={{
@@ -1805,12 +1805,14 @@ export default function CreateStrategyPage() {
                 </div>
               </div>
             </Card>
+            </>
+            )}
 
-            {showAdvanced && (
+            {false && (
             <>
-            {/* 6) Risk limits & trade management */}
+            {/* 7) Risk limits & trade management */}
             <Card
-              title="6) Risk limits & trade management"
+              title="7) Risk limits & trade management"
             >
               <div
                 style={{
@@ -2224,11 +2226,11 @@ export default function CreateStrategyPage() {
             </>
             )}
 
-            {showAdvanced && (
+            {false && (
             <>
-            {/* 7) Plan & psychology */}
+            {/* 8) Trading plan & psychology */}
             <Card
-              title="7) Plan & psychology"
+              title="8) Trading plan & psychology"
             >
               <div
                 style={{
@@ -2238,66 +2240,94 @@ export default function CreateStrategyPage() {
                 }}
               >
                 <div>
-                  <label
-                    htmlFor="preSession"
+                  <div
                     style={{
                       display: "block",
                       fontSize: "0.85rem",
                       color: "#cbd5f5",
-                      marginBottom: "0.25rem",
+                      marginBottom: "0.5rem",
+                      fontWeight: 500,
                     }}
                   >
-                    Pre-session checklist (one item per line)
-                  </label>
-                  <textarea
-                    id="preSession"
-                    rows={4}
-                    value={preSessionChecklist}
-                    onChange={(e) => setPreSessionChecklist(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "0.6rem 0.8rem",
-                      borderRadius: 8,
-                      border: "1px solid rgba(148,163,184,0.65)",
-                      background: "rgba(3,7,18,0.9)",
-                      color: "#e5f4ff",
-                      fontSize: "0.9rem",
-                      outline: "none",
-                      boxSizing: "border-box",
-                      resize: "vertical",
-                    }}
-                  />
+                    Pre-session checklist
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    {preSessionChecklist.map((item, idx) => (
+                      <label
+                        key={idx}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.5rem",
+                          cursor: "pointer",
+                          fontSize: "0.88rem",
+                          color: "#e5f4ff",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={item.checked}
+                          onChange={(e) => {
+                            const updated = [...preSessionChecklist];
+                            updated[idx].checked = e.target.checked;
+                            setPreSessionChecklist(updated);
+                          }}
+                          style={{
+                            width: 16,
+                            height: 16,
+                            cursor: "pointer",
+                            accentColor: "#a855f7",
+                          }}
+                        />
+                        <span>{item.text}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
                 <div>
-                  <label
-                    htmlFor="postSession"
+                  <div
                     style={{
                       display: "block",
                       fontSize: "0.85rem",
                       color: "#cbd5f5",
-                      marginBottom: "0.25rem",
+                      marginBottom: "0.5rem",
+                      fontWeight: 500,
                     }}
                   >
-                    Post-session checklist (one item per line)
-                  </label>
-                  <textarea
-                    id="postSession"
-                    rows={4}
-                    value={postSessionChecklist}
-                    onChange={(e) => setPostSessionChecklist(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "0.6rem 0.8rem",
-                      borderRadius: 8,
-                      border: "1px solid rgba(148,163,184,0.65)",
-                      background: "rgba(3,7,18,0.9)",
-                      color: "#e5f4ff",
-                      fontSize: "0.9rem",
-                      outline: "none",
-                      boxSizing: "border-box",
-                      resize: "vertical",
-                    }}
-                  />
+                    Post-session checklist
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    {postSessionChecklist.map((item, idx) => (
+                      <label
+                        key={idx}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.5rem",
+                          cursor: "pointer",
+                          fontSize: "0.88rem",
+                          color: "#e5f4ff",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={item.checked}
+                          onChange={(e) => {
+                            const updated = [...postSessionChecklist];
+                            updated[idx].checked = e.target.checked;
+                            setPostSessionChecklist(updated);
+                          }}
+                          style={{
+                            width: 16,
+                            height: 16,
+                            cursor: "pointer",
+                            accentColor: "#a855f7",
+                          }}
+                        />
+                        <span>{item.text}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               </div>
               <div
@@ -2445,40 +2475,10 @@ export default function CreateStrategyPage() {
             </>
             )}
 
-            {/* Review & Create Bar */}
-            <Card
-              title="Review & create"
-              subtitle="Quick preview before saving."
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 25, flexWrap: "wrap", marginBottom: 12 }}>
-                <div>
-                  <span style={{ fontWeight: 700, color: "#e5f4ff", fontSize: "1.1rem" }}>
-                    {selectedArchetype.label}
-                  </span>
-                  <span style={{ marginLeft: 10, fontSize: "0.9rem", color: "#7dd3fc" }}>
-                    ({selectedArchetype.category})
-                  </span>
-                </div>
-                <div style={{ color: "#b7c5dd", fontSize: "0.97rem" }}>
-                  Timeframe: <b>{timeframe || selectedArchetype.defaults.timeframe}</b>
-                </div>
-                <div style={{ color: "#b7c5dd", fontSize: "0.97rem" }}>
-                  Symbols: <b>{selectedSymbols.length}</b>
-                </div>
-                <div style={{ color: "#b7c5dd", fontSize: "0.97rem" }}>
-                  Risk/trade: <b>{riskPerTradePct}%</b>
-                </div>
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <Button type="submit" disabled={creating || !accessToken}>
-                  {creating ? "Creating…" : "Create strategy"}
-                </Button>
-              </div>
-            </Card>
-
+            {showAdvanced && (
             <Card>
               <div>
-              {/* 3. Trade Idea (Edge) */}
+              {/* 4) Trade idea (edge) */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <div
                   style={{
@@ -2495,7 +2495,7 @@ export default function CreateStrategyPage() {
                       margin: 0,
                     }}
                   >
-                    3. Trade idea (edge)
+                    4) Trade idea (edge)
                   </h3>
                   <span
                     style={{ fontSize: "0.75rem", color: "#9ca3af" }}
@@ -2582,7 +2582,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 4. Setup & Indicators */}
+              {/* 5) Indicators & patterns */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <div
                   style={{
@@ -2599,7 +2599,7 @@ export default function CreateStrategyPage() {
                       margin: 0,
                     }}
                   >
-                    4. Setup & indicators
+                    5) Indicators & patterns
                   </h3>
                   <span
                     style={{ fontSize: "0.75rem", color: "#9ca3af" }}
@@ -2786,7 +2786,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 5. Stop Loss Rules */}
+              {/* 6) Stops & take profit */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -2795,7 +2795,7 @@ export default function CreateStrategyPage() {
                     margin: "0 0 0.4rem 0",
                   }}
                 >
-                  5. Stop loss rules
+                  6) Stop loss rules
                 </h3>
                 <div
                   style={{
@@ -2981,7 +2981,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 6. Take Profit Rules */}
+              {/* 6) Stops & take profit (continued) */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -2990,7 +2990,7 @@ export default function CreateStrategyPage() {
                     margin: "0 0 0.4rem 0",
                   }}
                 >
-                  6. Take profit rules
+                  6) Take profit rules
                 </h3>
                 <div
                   style={{
@@ -3217,7 +3217,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 7. Position Sizing */}
+              {/* 7) Risk limits & trade management */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -3226,7 +3226,7 @@ export default function CreateStrategyPage() {
                     margin: "0 0 0.4rem 0",
                   }}
                 >
-                  7. Position sizing
+                  7) Position sizing
                 </h3>
                 <div
                   style={{
@@ -3270,7 +3270,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 8. Trade Management */}
+              {/* 8) Risk limits & trade management (continued) */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -3279,7 +3279,7 @@ export default function CreateStrategyPage() {
                     margin: "0 0 0.4rem 0",
                   }}
                 >
-                  8. Trade management
+                  8) Trade management
                 </h3>
                 <div
                   style={{
@@ -3425,7 +3425,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 9. Filters & Conditions */}
+              {/* 9) Filters & conditions */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -3434,7 +3434,7 @@ export default function CreateStrategyPage() {
                     margin: "0 0 0.4rem 0",
                   }}
                 >
-                  9. Filters & conditions
+                  9) Filters & conditions
                 </h3>
                 <div
                   style={{
@@ -3582,7 +3582,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 10. Risk & Money Management */}
+              {/* 10) Risk & money management */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -3591,7 +3591,7 @@ export default function CreateStrategyPage() {
                     margin: "0 0 0.4rem 0",
                   }}
                 >
-                  10. Risk & money management (overall)
+                  10) Risk & money management (overall)
                 </h3>
                 <div
                   style={{
@@ -3700,7 +3700,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 11–12. Trading Plan & Psychology */}
+              {/* 11) Trading plan & psychology */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -3709,7 +3709,7 @@ export default function CreateStrategyPage() {
                     margin: "0 0 0.4rem 0",
                   }}
                 >
-                  11–12. Trading plan & psychology
+                  11) Trading plan & psychology
                 </h3>
                 <div
                   style={{
@@ -3719,66 +3719,94 @@ export default function CreateStrategyPage() {
                   }}
                 >
                   <div>
-                    <label
-                      htmlFor="preSession"
+                    <div
                       style={{
                         display: "block",
                         fontSize: "0.85rem",
                         color: "#cbd5f5",
-                        marginBottom: "0.25rem",
+                        marginBottom: "0.5rem",
+                        fontWeight: 500,
                       }}
                     >
-                      Pre-session checklist (one item per line)
-                    </label>
-                    <textarea
-                      id="preSession"
-                      rows={4}
-                      value={preSessionChecklist}
-                      onChange={(e) => setPreSessionChecklist(e.target.value)}
-                      style={{
-                        width: "100%",
-                        padding: "0.6rem 0.8rem",
-                        borderRadius: 8,
-                        border: "1px solid rgba(148,163,184,0.65)",
-                        background: "rgba(3,7,18,0.9)",
-                        color: "#e5f4ff",
-                        fontSize: "0.9rem",
-                        outline: "none",
-                        boxSizing: "border-box",
-                        resize: "vertical",
-                      }}
-                    />
+                      Pre-session checklist
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                      {preSessionChecklist.map((item, idx) => (
+                        <label
+                          key={idx}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "0.5rem",
+                            cursor: "pointer",
+                            fontSize: "0.88rem",
+                            color: "#e5f4ff",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={item.checked}
+                            onChange={(e) => {
+                              const updated = [...preSessionChecklist];
+                              updated[idx].checked = e.target.checked;
+                              setPreSessionChecklist(updated);
+                            }}
+                            style={{
+                              width: 16,
+                              height: 16,
+                              cursor: "pointer",
+                              accentColor: "#a855f7",
+                            }}
+                          />
+                          <span>{item.text}</span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
                   <div>
-                    <label
-                      htmlFor="postSession"
+                    <div
                       style={{
                         display: "block",
                         fontSize: "0.85rem",
                         color: "#cbd5f5",
-                        marginBottom: "0.25rem",
+                        marginBottom: "0.5rem",
+                        fontWeight: 500,
                       }}
                     >
-                      Post-session checklist (one item per line)
-                    </label>
-                    <textarea
-                      id="postSession"
-                      rows={4}
-                      value={postSessionChecklist}
-                      onChange={(e) => setPostSessionChecklist(e.target.value)}
-                      style={{
-                        width: "100%",
-                        padding: "0.6rem 0.8rem",
-                        borderRadius: 8,
-                        border: "1px solid rgba(148,163,184,0.65)",
-                        background: "rgba(3,7,18,0.9)",
-                        color: "#e5f4ff",
-                        fontSize: "0.9rem",
-                        outline: "none",
-                        boxSizing: "border-box",
-                        resize: "vertical",
-                      }}
-                    />
+                      Post-session checklist
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                      {postSessionChecklist.map((item, idx) => (
+                        <label
+                          key={idx}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "0.5rem",
+                            cursor: "pointer",
+                            fontSize: "0.88rem",
+                            color: "#e5f4ff",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={item.checked}
+                            onChange={(e) => {
+                              const updated = [...postSessionChecklist];
+                              updated[idx].checked = e.target.checked;
+                              setPostSessionChecklist(updated);
+                            }}
+                            style={{
+                              width: 16,
+                              height: 16,
+                              cursor: "pointer",
+                              accentColor: "#a855f7",
+                            }}
+                          />
+                          <span>{item.text}</span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
                 </div>
                 <div
@@ -3925,7 +3953,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 13. Backtesting & Metrics (informational) */}
+              {/* 12) Backtesting & metrics */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -3934,7 +3962,7 @@ export default function CreateStrategyPage() {
                     margin: "0 0 0.4rem 0",
                   }}
                 >
-                  13. Backtesting & metrics
+                  12) Backtesting & metrics
                 </h3>
                 <p
                   style={{
@@ -3948,20 +3976,49 @@ export default function CreateStrategyPage() {
                   performance metrics. Use those numbers before scaling risk.
                 </p>
               </section>
-
-              <div
-                style={{
-                  marginTop: "1.25rem",
-                  display: "flex",
-                  justifyContent: "flex-end",
-                }}
-              >
-                <Button type="submit" disabled={creating || !accessToken}>
-                  {creating ? "Creating…" : "Create strategy"}
-                </Button>
-              </div>
               </div>
             </Card>
+            )}
+            {/* Review & Create Bar */}
+            <Card
+              title={showAdvanced ? "13) Review & create" : "5) Review & create"}
+              subtitle="Quick preview before saving."
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 25, flexWrap: "wrap", marginBottom: 12 }}>
+                <div>
+                  <span style={{ fontWeight: 700, color: "#e5f4ff", fontSize: "1.1rem" }}>
+                    {selectedArchetype.label}
+                  </span>
+                  <span style={{ marginLeft: 10, fontSize: "0.9rem", color: "#7dd3fc" }}>
+                    ({selectedArchetype.category})
+                  </span>
+                </div>
+                <div style={{ color: "#b7c5dd", fontSize: "0.97rem" }}>
+                  Timeframe: <b>{timeframe || selectedArchetype.defaults.timeframe}</b>
+                </div>
+                <div style={{ color: "#b7c5dd", fontSize: "0.97rem" }}>
+                  Symbols: <b>{selectedSymbols.length}</b>
+                </div>
+                <div style={{ color: "#b7c5dd", fontSize: "0.97rem" }}>
+                  Risk/trade: <b>{riskPerTradePct}%</b>
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "0.5rem" }}>
+                <Button type="submit" disabled={creating || !accessToken || !name.trim()}>
+                  {creating ? "Creating…" : "Create strategy"}
+                </Button>
+                {(!accessToken || !name.trim()) && (
+                  <span style={{ fontSize: "0.8rem", color: "#f87171", fontStyle: "italic" }}>
+                    {!accessToken
+                      ? "Please login to create strategies."
+                      : !name.trim()
+                      ? "Strategy name is required."
+                      : ""}
+                  </span>
+                )}
+              </div>
+            </Card>
+
           </div>
         </form>
       </div>
