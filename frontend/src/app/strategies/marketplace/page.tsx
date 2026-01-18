@@ -253,25 +253,41 @@ export default function StrategyMarketplacePage() {
     setAssigning({ ...assigning, [strategyId]: true });
 
     try {
-      await apiFetch("/api/strategies/marketplace/assign/", {
+      await apiFetch("/api/strategies/strategies/marketplace/assign/", {
         method: "POST",
         body: JSON.stringify({
           marketplace_strategy_id: strategyId,
           account_id: accountId,
         }),
       });
+      setAlert(null); // Clear any previous errors
       setAlert("Assigned successfully.");
       setAlertType("success");
     } catch (err) {
-      // Graceful fallback if endpoint not ready
-      const error = err as { status?: number; message?: string };
-      if (error?.status === 404 || error?.message?.includes("404")) {
-        setAlert("Assignment endpoint not live yet. UI is ready; backend will be wired next.");
-        setAlertType("info");
-      } else {
-        setAlert(error?.message || "Assignment failed");
+      const e = err as { status?: number; message?: string };
+      const msg = (e?.message || "").trim();
+
+      // If backend returned an HTML 404 page (common when hitting wrong route),
+      // don't dump HTML into the UI.
+      const looksLikeHtml =
+        msg.toLowerCase().includes("<!doctype") ||
+        msg.toLowerCase().includes("<html") ||
+        msg.toLowerCase().includes("<body");
+
+      if (e?.status === 404 || msg.includes("404")) {
+        setAlert("Marketplace assign endpoint not found. This usually means the frontend is calling the wrong URL or the server is not yet deployed with the endpoint.");
         setAlertType("error");
+        return;
       }
+
+      if (looksLikeHtml) {
+        setAlert("Assignment failed (server returned an unexpected HTML response). Please refresh and try again.");
+        setAlertType("error");
+        return;
+      }
+
+      setAlert(msg || "Assignment failed");
+      setAlertType("error");
     } finally {
       setAssigning({ ...assigning, [strategyId]: false });
     }
