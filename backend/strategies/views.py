@@ -137,53 +137,76 @@ class StrategyViewSet(viewsets.ModelViewSet):
         if "owner" in allowed_fields:
             create_kwargs["owner"] = user
 
+        template_name = tpl.get("name") or "Marketplace Strategy"
+
         if "name" in allowed_fields:
-            create_kwargs["name"] = tpl.get("name") or "Marketplace Strategy"
+            create_kwargs["name"] = template_name
 
         if "description" in allowed_fields:
             create_kwargs["description"] = tpl.get("description") or ""
 
         with transaction.atomic():
-            # A. Lock and fetch existing assignment row(s) for this account
-            existing_active = (
+            # 1. Lock and fetch existing active assignment for this account
+            existing = (
                 StrategyAssignment.objects
                 .select_for_update()
                 .filter(account=account, is_active=True)
                 .first()
             )
 
-            # B. Prevent duplicates of the same marketplace template
-            if existing_active and getattr(existing_active.strategy, "name", "") == (tpl.get("name") or ""):
+            # 2. Try to find an existing Strategy for this user with the marketplace template name
+            if "owner" in allowed_fields:
+                existing_strategy = (
+                    Strategy.objects
+                    .filter(owner=user, name=template_name)
+                    .order_by("-id")
+                    .first()
+                )
+            else:
+                # Fallback for staff or if owner field isn't present
+                existing_strategy = (
+                    Strategy.objects
+                    .filter(name=template_name)
+                    .order_by("-id")
+                    .first()
+                )
+
+            # 3. Idempotency: if assignment exists and already points to this template, return early
+            if existing and getattr(existing.strategy, "name", "") == template_name:
                 return Response(
                     {
                         "ok": True,
                         "marketplace_strategy_id": marketplace_strategy_id,
-                        "strategy_id": existing_active.strategy_id,
-                        "assignment_id": existing_active.id,
-                        "strategy_name": getattr(existing_active.strategy, "name", ""),
+                        "strategy_id": existing.strategy_id,
+                        "assignment_id": existing.id,
+                        "strategy_name": getattr(existing.strategy, "name", ""),
                         "account_id": account.id,
-                        "note": "Already assigned",
+                        "already_assigned": True,
                     },
                     status=status.HTTP_200_OK,
                 )
 
-            # C. Create the Strategy
-            strategy = Strategy.objects.create(**create_kwargs)
-
-            # D. Re-use the existing assignment row if it exists, otherwise create
-            if existing_active:
-                existing_active.strategy = strategy
-                existing_active.is_active = True
-                existing_active.save(update_fields=["strategy", "is_active", "updated_at"])
-                assignment = existing_active
+            # 4/5. Choose strategy_to_use: prefer existing_strategy, else create new
+            if existing_strategy:
+                strategy_to_use = existing_strategy
             else:
+                strategy_to_use = Strategy.objects.create(**create_kwargs)
+
+            # 4. If assignment exists but points to different strategy, update it
+            if existing:
+                existing.strategy = strategy_to_use
+                existing.is_active = True
+                existing.save(update_fields=["strategy", "is_active", "updated_at"])
+                assignment = existing
+            else:
+                # 5. No assignment exists, create one
                 assignment = StrategyAssignment.objects.create(
-                    strategy=strategy,
+                    strategy=strategy_to_use,
                     account=account,
                     is_active=True,
                 )
 
-            # E. Deactivate other active assignments on the same MT5 instance
+            # Deactivate other active assignments on the same MT5 instance
             if assignment.account.mt5_instance_id:
                 StrategyAssignment.objects.filter(
                     account__mt5_instance_id=assignment.account.mt5_instance_id,
@@ -191,14 +214,16 @@ class StrategyViewSet(viewsets.ModelViewSet):
                     is_active=True,
                 ).exclude(id=assignment.id).update(is_active=False)
 
+        # 6. Return payload
         return Response(
             {
                 "ok": True,
                 "marketplace_strategy_id": marketplace_strategy_id,
-                "strategy_id": strategy.id,
+                "strategy_id": strategy_to_use.id,
                 "assignment_id": assignment.id,
-                "strategy_name": getattr(strategy, "name", ""),
+                "strategy_name": getattr(strategy_to_use, "name", ""),
                 "account_id": account.id,
+                "already_assigned": False,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -451,4 +476,4 @@ class StrategyChangeLogViewSet(viewsets.ReadOnlyModelViewSet):
         if not user.is_staff:
             qs = qs.filter(strategy__owner=user)
 
-        return qs
+        return qs 
