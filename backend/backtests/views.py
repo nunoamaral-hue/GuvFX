@@ -280,7 +280,8 @@ class WindowsBacktestRunView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        if resp.status_code != 200:
+        # Agent may return 202 Accepted for queued jobs (still a success)
+        if resp.status_code not in (200, 202):
             return Response(
                 {"ok": False, "error": f"Agent returned status {resp.status_code}", "detail": resp.text},
                 status=status.HTTP_502_BAD_GATEWAY,
