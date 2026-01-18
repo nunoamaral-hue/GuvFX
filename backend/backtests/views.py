@@ -402,7 +402,13 @@ class WindowsBacktestStatusView(APIView):
             )
 
         # Update local job state
-        agent_state = agent_resp.get("state", "").lower()
+        # Prefer agent_resp["status"]["state"], fallback to agent_resp["state"]
+        agent_state = None
+        if isinstance(agent_resp.get("status"), dict):
+            agent_state = agent_resp["status"].get("state", "").lower()
+        if not agent_state:
+            agent_state = agent_resp.get("state", "").lower()
+
         if agent_state in ["queued", "running", "completed", "failed"]:
             job.state = agent_state
         job.status_json = agent_resp
@@ -486,14 +492,26 @@ class WindowsBacktestResultView(APIView):
 
         # Update local job with result
         job.result_json = agent_resp
-        # Mark completed if result indicates success
-        if agent_resp.get("ok"):
+
+        # Read state from agent_resp["result"]["state"] if available, else fallback
+        agent_state = None
+        if isinstance(agent_resp.get("result"), dict):
+            agent_state = agent_resp["result"].get("state", "").lower()
+        if not agent_state:
+            agent_state = agent_resp.get("state", "").lower()
+
+        if agent_state in ["queued", "running", "completed", "failed"]:
+            job.state = agent_state
+        elif agent_resp.get("ok"):
+            # Fallback: mark completed if result indicates success
             job.state = WindowsBacktestJob.STATE_COMPLETED
+
         job.save(update_fields=["state", "result_json", "updated_at"])
 
         return Response({
             "ok": True,
             "job_id": job.job_id,
+            "state": job.state,
             "result_json": job.result_json,
         })
 
