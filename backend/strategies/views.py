@@ -1,5 +1,6 @@
 from django.utils import timezone
-from rest_framework import permissions, viewsets
+from rest_framework import permissions, viewsets, status
+from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, PermissionDenied
@@ -15,6 +16,44 @@ from .serializers import (
     StrategyChangeLogSerializer,
 )
 from backtests.models import BacktestConfig, BacktestRun
+
+# Marketplace templates (server-side catalog)
+# NOTE: marketplace_strategy_id must match the frontend seed ids.
+MARKETPLACE_STRATEGIES = {
+    "mp-001": {
+        "name": "London Session Box Breakout",
+        "description": "Trades Asian session range breakouts during the London open with spread guardrails.",
+        "defaults": {
+            "timeframe": "M15",
+            "symbol_universe": "GBPUSD,EURUSD,GBPJPY",
+            "edge_type": "BREAKOUT",
+            "risk_per_trade_pct": 0.5,
+            "auto_optimize_by_ai": False,
+        },
+    },
+    "mp-002": {
+        "name": "Trend EMA Crossover (HTF filter)",
+        "description": "EMA crossover with a higher timeframe trend filter.",
+        "defaults": {
+            "timeframe": "H1",
+            "symbol_universe": "EURUSD,USDJPY,AUDUSD",
+            "edge_type": "TREND_FOLLOWING",
+            "risk_per_trade_pct": 0.5,
+            "auto_optimize_by_ai": True,
+        },
+    },
+    "mp-004": {
+        "name": "Head & Shoulders Reversal (Beta)",
+        "description": "Chart-pattern reversal strategy template (beta).",
+        "defaults": {
+            "timeframe": "H1",
+            "symbol_universe": "EURUSD,GBPUSD,USDJPY,AUDUSD",
+            "edge_type": "PATTERN_REVERSAL",
+            "risk_per_trade_pct": 0.25,
+            "auto_optimize_by_ai": False,
+        },
+    },
+}
 
 class StrategyViewSet(viewsets.ModelViewSet):
     queryset = Strategy.objects.all()
@@ -62,6 +101,76 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 before_settings=before_settings,
                 after_settings=after_settings,
             )
+
+    @action(detail=False, methods=["post"], url_path="marketplace/assign")
+    def marketplace_assign(self, request):
+        user = request.user
+
+        marketplace_strategy_id = request.data.get("marketplace_strategy_id")
+        account_id = request.data.get("account_id")
+
+        if not marketplace_strategy_id:
+            return Response({"detail": "marketplace_strategy_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        tpl = MARKETPLACE_STRATEGIES.get(marketplace_strategy_id)
+        if not tpl:
+            return Response({"detail": "Unknown marketplace_strategy_id"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not account_id:
+            return Response({"detail": "account_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Ownership gate for account
+        acc_qs = TradingAccount.objects.filter(id=account_id)
+        if not user.is_staff:
+            acc_qs = acc_qs.filter(user=user)
+        account = acc_qs.first()
+        if not account:
+            return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        defaults = tpl.get("defaults") or {}
+
+        # Only apply fields that exist on Strategy
+        allowed_fields = {f.name for f in Strategy._meta.fields}
+        create_kwargs = {k: v for k, v in defaults.items() if k in allowed_fields}
+
+        # Ensure required ownership fields
+        if "owner" in allowed_fields:
+            create_kwargs["owner"] = user
+
+        if "name" in allowed_fields:
+            create_kwargs["name"] = tpl.get("name") or "Marketplace Strategy"
+
+        if "description" in allowed_fields:
+            create_kwargs["description"] = tpl.get("description") or ""
+
+        with transaction.atomic():
+            strategy = Strategy.objects.create(**create_kwargs)
+
+            assignment = StrategyAssignment.objects.create(
+                strategy=strategy,
+                account=account,
+                is_active=True,
+            )
+
+            # Mirror existing safety rule: if active assignment + mt5 instance, deactivate other active assignments on same instance
+            if assignment.is_active and assignment.account.mt5_instance_id:
+                StrategyAssignment.objects.filter(
+                    account__mt5_instance_id=assignment.account.mt5_instance_id,
+                    account__user_id=assignment.account.user_id,
+                    is_active=True,
+                ).exclude(id=assignment.id).update(is_active=False)
+
+        return Response(
+            {
+                "ok": True,
+                "marketplace_strategy_id": marketplace_strategy_id,
+                "strategy_id": strategy.id,
+                "assignment_id": assignment.id,
+                "strategy_name": getattr(strategy, "name", ""),
+                "account_id": account.id,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 class StrategyAssignmentViewSet(viewsets.ModelViewSet):
     queryset = StrategyAssignment.objects.select_related("strategy", "account")
