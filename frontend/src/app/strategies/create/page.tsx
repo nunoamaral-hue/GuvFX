@@ -61,7 +61,7 @@ type ArchetypeTemplate = {
   id: ArchetypeId;
   label: string;
   category: ArchetypeCategory;
-  accent: "blue" | "green" | "purple";
+  accent: "blue" | "green" | "purple" | "yellow";
   description: string;
   recommended?: boolean;
   defaults: {
@@ -352,7 +352,7 @@ const ARCHETYPES: ArchetypeTemplate[] = [
     id: "SWING_BOS_RETEST",
     label: "Swing BOS + Retest",
     category: "Structure",
-    accent: "blue",
+    accent: "yellow",
     description: "Break of structure + retest confirmation using ATR buffers.",
     defaults: {
       style: "SWING",
@@ -445,11 +445,12 @@ const ARCHETYPES: ArchetypeTemplate[] = [
   },
 ];
 
-const accentPill = (accent: "blue" | "green" | "purple") => {
+const accentPill = (accent: "blue" | "green" | "purple" | "yellow") => {
   const map = {
     blue: { bg: "rgba(59,130,246,0.16)", border: "rgba(59,130,246,0.35)", text: "#93c5fd" },
     green: { bg: "rgba(34,197,94,0.14)", border: "rgba(34,197,94,0.35)", text: "#86efac" },
     purple: { bg: "rgba(168,85,247,0.14)", border: "rgba(168,85,247,0.35)", text: "#d8b4fe" },
+    yellow: { bg: "rgba(250,204,21,0.14)", border: "rgba(250,204,21,0.40)", text: "#fde047" },
   } as const;
   return map[accent];
 };
@@ -461,7 +462,7 @@ const glassCardStyle: React.CSSProperties = {
   boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
 };
 
-const pillStyle = (accent: "blue" | "green" | "purple"): React.CSSProperties => {
+const pillStyle = (accent: "blue" | "green" | "purple" | "yellow"): React.CSSProperties => {
   const a = accentPill(accent);
   return {
     display: "inline-flex",
@@ -613,12 +614,23 @@ export default function CreateStrategyPage() {
 
   // Load token
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const stored = window.localStorage.getItem("guvfx_access_token");
-      if (stored) {
-        setAccessToken(stored);
+    const checkAuth = async () => {
+      if (typeof window !== "undefined") {
+        const stored = window.localStorage.getItem("guvfx_access_token");
+        if (stored) {
+          setAccessToken(stored);
+        } else {
+          // Try cookie-based auth
+          try {
+            await apiFetch("/api/auth/me/", { method: "GET" });
+            setAccessToken("cookie"); // Set any non-empty string to enable UI
+          } catch {
+            // User not logged in, leave accessToken empty
+          }
+        }
       }
-    }
+    };
+    checkAuth();
   }, []);
 
   // Apply archetype defaults when archetype changes (keeps builder fast)
@@ -905,7 +917,7 @@ export default function CreateStrategyPage() {
             {/* 1) Archetype */}
             <Card
               title="1) Strategy archetype"
-              subtitle="Pick a proven template (Ted’s 7 archetypes). Defaults auto-fill below."
+              subtitle="Pick a proven template. Defaults auto-fill below."
             >
               <div
                 style={{
