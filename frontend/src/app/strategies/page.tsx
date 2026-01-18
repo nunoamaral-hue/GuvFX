@@ -52,12 +52,26 @@ export default function StrategiesListPage() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
+    const checkAuth = async () => {
+      if (typeof window === "undefined") return;
+
       const stored = window.localStorage.getItem("guvfx_access_token");
       if (stored) {
         setAccessToken(stored);
+        return;
       }
-    }
+
+      // Fallback: cookie-based auth (apiFetch includes credentials)
+      try {
+        await apiFetch("/api/auth/me/", { method: "GET" });
+        // Any non-empty value enables UI controls guarded by accessToken
+        setAccessToken("cookie");
+      } catch {
+        // Not authenticated; keep empty
+      }
+    };
+
+    checkAuth();
   }, []);
 
   useEffect(() => {
