@@ -1,4 +1,3 @@
-
 const API_BASE = "https://api.guvfx.com";
 
 function getCookie(name: string): string | null {
@@ -108,5 +107,23 @@ export async function apiFetch<T>(
     }
   }
 
-  return (await res.json()) as T;
+  // Some endpoints (e.g. DELETE) return 204 No Content (empty body).
+  // Avoid calling res.json() on an empty response.
+  if (res.status === 204 || res.status === 205) {
+    return undefined as unknown as T;
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+  const text = await res.text();
+
+  if (!text) {
+    return undefined as unknown as T;
+  }
+
+  // Prefer JSON when the server says it's JSON; otherwise return raw text.
+  if (contentType.includes("application/json")) {
+    return JSON.parse(text) as T;
+  }
+
+  return text as unknown as T;
 }
