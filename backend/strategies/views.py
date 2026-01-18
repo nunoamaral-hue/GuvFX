@@ -1,3 +1,7 @@
+import logging
+import requests
+
+from django.conf import settings
 from django.utils import timezone
 from rest_framework import permissions, viewsets, status
 from rest_framework.decorators import action
@@ -16,6 +20,8 @@ from .serializers import (
     StrategyChangeLogSerializer,
 )
 from backtests.models import BacktestConfig, BacktestRun
+
+logger = logging.getLogger(__name__)
 
 # Marketplace templates (server-side catalog)
 # NOTE: marketplace_strategy_id must match the frontend seed ids.
@@ -476,4 +482,167 @@ class StrategyChangeLogViewSet(viewsets.ReadOnlyModelViewSet):
         if not user.is_staff:
             qs = qs.filter(strategy__owner=user)
 
-        return qs 
+        return qs
+
+
+# =============================================================================
+# Windows Agent Strategy Assignment (MVP)
+# =============================================================================
+
+
+def _get_agent_headers():
+    """
+    Build headers for Windows agent requests.
+    Raises ValueError if token is not configured.
+    """
+    token = getattr(settings, "GUVFX_WINDOWS_AGENT_TOKEN", "")
+    if not token:
+        raise ValueError("GUVFX_WINDOWS_AGENT_TOKEN is not configured.")
+    return {
+        "X-GuvFX-Agent-Token": token,
+        "Content-Type": "application/json",
+    }
+
+
+def _get_agent_base_url():
+    """Get the Windows agent base URL from settings."""
+    return getattr(settings, "GUVFX_WINDOWS_AGENT_BASE_URL", "http://10.50.0.2:8787")
+
+
+class WindowsStrategyAssignView(APIView):
+    """
+    POST /api/strategies/windows/assign/
+
+    Assigns a strategy to an MT5 instance via the Windows agent.
+
+    Request body:
+    {
+        "strategy_id": <int>,
+        "account_id": <int>,
+        "username": "<str>",
+        "datadir": "<str>",
+        "magic_number": <int>  (optional, uses strategy.magic_number if not provided)
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        data = request.data
+
+        # Validate required fields
+        strategy_id = data.get("strategy_id")
+        account_id = data.get("account_id")
+        username = data.get("username")
+        datadir = data.get("datadir", "")
+
+        if not strategy_id:
+            return Response(
+                {"ok": False, "error": "strategy_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not account_id:
+            return Response(
+                {"ok": False, "error": "account_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not username:
+            return Response(
+                {"ok": False, "error": "username is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Fetch strategy
+        try:
+            strategy = Strategy.objects.get(id=strategy_id)
+        except Strategy.DoesNotExist:
+            raise NotFound(f"Strategy with id {strategy_id} not found.")
+
+        # Fetch account
+        try:
+            account = TradingAccount.objects.get(id=account_id)
+        except TradingAccount.DoesNotExist:
+            raise NotFound(f"TradingAccount with id {account_id} not found.")
+
+        # Ownership check (non-staff must own both)
+        if not user.is_staff:
+            if strategy.owner != user:
+                raise PermissionDenied("You do not own this strategy.")
+            if account.user != user:
+                raise PermissionDenied("You do not own this account.")
+
+        # Determine magic number
+        magic_number = data.get("magic_number")
+        if magic_number is None:
+            magic_number = strategy.magic_number
+        if magic_number is None:
+            # Generate a default magic number if none exists
+            magic_number = strategy.id * 1000
+
+        # Parse symbol_universe into list
+        symbols = []
+        if strategy.symbol_universe:
+            symbols = [s.strip() for s in strategy.symbol_universe.split(",") if s.strip()]
+
+        # Build agent payload
+        agent_payload = {
+            "username": username,
+            "datadir": datadir,
+            "account_id": account_id,
+            "strategy_id": strategy_id,
+            "strategy": {
+                "name": strategy.name,
+                "symbols": symbols,
+                "timeframe": strategy.timeframe or "",
+                "magic": magic_number,
+            },
+        }
+
+        # Call agent
+        try:
+            headers = _get_agent_headers()
+        except ValueError as e:
+            return Response(
+                {"ok": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        agent_url = f"{_get_agent_base_url()}/mt5/strategy/assign"
+
+        try:
+            resp = requests.post(agent_url, json=agent_payload, headers=headers, timeout=10)
+        except requests.RequestException as e:
+            logger.error(f"Windows agent assign request failed: {e}")
+            return Response(
+                {"ok": False, "error": f"Agent connection failed: {e}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if resp.status_code != 200:
+            return Response(
+                {"ok": False, "error": f"Agent returned status {resp.status_code}", "detail": resp.text},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        try:
+            agent_resp = resp.json()
+        except ValueError:
+            return Response(
+                {"ok": False, "error": "Agent returned invalid JSON"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if not agent_resp.get("ok"):
+            return Response(
+                {"ok": False, "error": agent_resp.get("error", "Unknown agent error")},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Return success with agent response fields
+        return Response({
+            "ok": True,
+            "request_path": agent_resp.get("request_path"),
+            "launch": agent_resp.get("launch"),
+            "strategy_id": strategy_id,
+            "account_id": account_id,
+        })

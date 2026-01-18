@@ -110,6 +110,13 @@ GUAC_BASE_URL = os.environ.get(
     "http://127.0.0.1:8081/guacamole",
 )
 
+# Windows Agent Configuration (for MT5 backtests + strategy assignment)
+GUVFX_WINDOWS_AGENT_BASE_URL = env(
+    "GUVFX_WINDOWS_AGENT_BASE_URL",
+    "http://10.50.0.2:8787",
+)
+GUVFX_WINDOWS_AGENT_TOKEN = env("GUVFX_WINDOWS_AGENT_TOKEN", "")
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators

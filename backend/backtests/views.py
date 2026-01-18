@@ -1,10 +1,25 @@
+import logging
+import requests
+
+from django.conf import settings
 from django.utils import timezone
-from rest_framework import permissions, viewsets
+from rest_framework import permissions, viewsets, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.exceptions import PermissionDenied, NotFound
 
-from .models import BacktestConfig, BacktestRun
-from .serializers import BacktestConfigSerializer, BacktestRunSerializer
+from .models import BacktestConfig, BacktestRun, WindowsBacktestJob
+from .serializers import (
+    BacktestConfigSerializer,
+    BacktestRunSerializer,
+    WindowsBacktestRunRequestSerializer,
+    WindowsBacktestJobSerializer,
+    AIBacktestRecommendationRequestSerializer,
+)
+from strategies.models import Strategy
+from trading.models import TradingAccount
+
+logger = logging.getLogger(__name__)
 
 
 class BacktestConfigViewSet(viewsets.ModelViewSet):
@@ -178,3 +193,409 @@ class ProcessPendingBacktestsView(APIView):
         }
 
         return metrics, equity_curve
+
+
+# =============================================================================
+# Windows Agent Backtest Views (MVP)
+# =============================================================================
+
+
+def _get_agent_headers():
+    """
+    Build headers for Windows agent requests.
+    Raises ValueError if token is not configured.
+    """
+    token = getattr(settings, "GUVFX_WINDOWS_AGENT_TOKEN", "")
+    if not token:
+        raise ValueError("GUVFX_WINDOWS_AGENT_TOKEN is not configured.")
+    return {
+        "X-GuvFX-Agent-Token": token,
+        "Content-Type": "application/json",
+    }
+
+
+def _get_agent_base_url():
+    """Get the Windows agent base URL from settings."""
+    return getattr(settings, "GUVFX_WINDOWS_AGENT_BASE_URL", "http://10.50.0.2:8787")
+
+
+class WindowsBacktestRunView(APIView):
+    """
+    POST /api/backtests/windows/run/
+
+    Creates a new backtest job on the Windows agent and persists it locally.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = WindowsBacktestRunRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = request.user
+
+        # Fetch strategy and account
+        strategy = Strategy.objects.filter(id=data["strategy_id"]).first()
+        account = TradingAccount.objects.filter(id=data["account_id"]).first()
+
+        # Ownership check (non-staff must own both)
+        if not user.is_staff:
+            if strategy and strategy.owner != user:
+                raise PermissionDenied("You do not own this strategy.")
+            if account and account.user != user:
+                raise PermissionDenied("You do not own this account.")
+
+        # Build agent request payload
+        agent_payload = {
+            "username": data["username"],
+            "datadir": data.get("datadir", ""),
+            "symbol": data["symbol"],
+            "timeframe": data["timeframe"],
+            "date_from": str(data["date_from"]),
+            "date_to": str(data["date_to"]),
+            "deposit": float(data["deposit"]),
+            "leverage": data["leverage"],
+            "mode": data.get("mode", "real_ticks"),
+        }
+
+        # Call agent
+        try:
+            headers = _get_agent_headers()
+        except ValueError as e:
+            return Response(
+                {"ok": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        agent_url = f"{_get_agent_base_url()}/mt5/backtest/run"
+
+        try:
+            resp = requests.post(agent_url, json=agent_payload, headers=headers, timeout=10)
+        except requests.RequestException as e:
+            logger.error(f"Windows agent request failed: {e}")
+            return Response(
+                {"ok": False, "error": f"Agent connection failed: {e}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if resp.status_code != 200:
+            return Response(
+                {"ok": False, "error": f"Agent returned status {resp.status_code}", "detail": resp.text},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        try:
+            agent_resp = resp.json()
+        except ValueError:
+            return Response(
+                {"ok": False, "error": "Agent returned invalid JSON"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if not agent_resp.get("ok"):
+            return Response(
+                {"ok": False, "error": agent_resp.get("error", "Unknown agent error")},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        job_id = agent_resp.get("job_id")
+        if not job_id:
+            return Response(
+                {"ok": False, "error": "Agent did not return job_id"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Persist job locally
+        job = WindowsBacktestJob.objects.create(
+            job_id=job_id,
+            owner=user,
+            strategy=strategy,
+            account=account,
+            username=data["username"],
+            datadir=data.get("datadir", ""),
+            symbol=data["symbol"],
+            timeframe=data["timeframe"],
+            date_from=data["date_from"],
+            date_to=data["date_to"],
+            deposit=data["deposit"],
+            leverage=data["leverage"],
+            mode=data.get("mode", "real_ticks"),
+            state=WindowsBacktestJob.STATE_QUEUED,
+        )
+
+        return Response({
+            "ok": True,
+            "job_id": job.job_id,
+            "state": job.state,
+        }, status=status.HTTP_201_CREATED)
+
+
+class WindowsBacktestStatusView(APIView):
+    """
+    GET /api/backtests/windows/status/?job_id=<id>
+
+    Polls the Windows agent for job status and updates local record.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        job_id = request.query_params.get("job_id")
+        if not job_id:
+            return Response(
+                {"ok": False, "error": "job_id query parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+
+        # Look up job
+        try:
+            job = WindowsBacktestJob.objects.get(job_id=job_id)
+        except WindowsBacktestJob.DoesNotExist:
+            raise NotFound(f"Job with job_id '{job_id}' not found.")
+
+        # Ownership check
+        if not user.is_staff and job.owner != user:
+            raise PermissionDenied("You do not have access to this job.")
+
+        # Call agent
+        try:
+            headers = _get_agent_headers()
+        except ValueError as e:
+            return Response(
+                {"ok": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        agent_url = f"{_get_agent_base_url()}/mt5/backtest/status"
+
+        try:
+            resp = requests.get(agent_url, params={"job_id": job_id}, headers=headers, timeout=10)
+        except requests.RequestException as e:
+            logger.error(f"Windows agent status request failed: {e}")
+            return Response(
+                {"ok": False, "error": f"Agent connection failed: {e}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if resp.status_code != 200:
+            return Response(
+                {"ok": False, "error": f"Agent returned status {resp.status_code}", "detail": resp.text},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        try:
+            agent_resp = resp.json()
+        except ValueError:
+            return Response(
+                {"ok": False, "error": "Agent returned invalid JSON"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if not agent_resp.get("ok"):
+            return Response(
+                {"ok": False, "error": agent_resp.get("error", "Unknown agent error")},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Update local job state
+        agent_state = agent_resp.get("state", "").lower()
+        if agent_state in ["queued", "running", "completed", "failed"]:
+            job.state = agent_state
+        job.status_json = agent_resp
+        job.save(update_fields=["state", "status_json", "updated_at"])
+
+        return Response({
+            "ok": True,
+            "job_id": job.job_id,
+            "state": job.state,
+            "status_json": job.status_json,
+        })
+
+
+class WindowsBacktestResultView(APIView):
+    """
+    GET /api/backtests/windows/result/?job_id=<id>
+
+    Fetches the backtest result from the Windows agent and stores it.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        job_id = request.query_params.get("job_id")
+        if not job_id:
+            return Response(
+                {"ok": False, "error": "job_id query parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+
+        # Look up job
+        try:
+            job = WindowsBacktestJob.objects.get(job_id=job_id)
+        except WindowsBacktestJob.DoesNotExist:
+            raise NotFound(f"Job with job_id '{job_id}' not found.")
+
+        # Ownership check
+        if not user.is_staff and job.owner != user:
+            raise PermissionDenied("You do not have access to this job.")
+
+        # Call agent
+        try:
+            headers = _get_agent_headers()
+        except ValueError as e:
+            return Response(
+                {"ok": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        agent_url = f"{_get_agent_base_url()}/mt5/backtest/result"
+
+        try:
+            resp = requests.get(agent_url, params={"job_id": job_id}, headers=headers, timeout=10)
+        except requests.RequestException as e:
+            logger.error(f"Windows agent result request failed: {e}")
+            return Response(
+                {"ok": False, "error": f"Agent connection failed: {e}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if resp.status_code != 200:
+            return Response(
+                {"ok": False, "error": f"Agent returned status {resp.status_code}", "detail": resp.text},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        try:
+            agent_resp = resp.json()
+        except ValueError:
+            return Response(
+                {"ok": False, "error": "Agent returned invalid JSON"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if not agent_resp.get("ok"):
+            return Response(
+                {"ok": False, "error": agent_resp.get("error", "Unknown agent error")},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Update local job with result
+        job.result_json = agent_resp
+        # Mark completed if result indicates success
+        if agent_resp.get("ok"):
+            job.state = WindowsBacktestJob.STATE_COMPLETED
+        job.save(update_fields=["state", "result_json", "updated_at"])
+
+        return Response({
+            "ok": True,
+            "job_id": job.job_id,
+            "result_json": job.result_json,
+        })
+
+
+class AIBacktestRecommendationsView(APIView):
+    """
+    POST /api/ai/backtest-recommendations/
+
+    Computes minimal AI recommendations based on backtest result.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = AIBacktestRecommendationRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        job_id = serializer.validated_data["job_id"]
+
+        user = request.user
+
+        # Look up job
+        try:
+            job = WindowsBacktestJob.objects.get(job_id=job_id)
+        except WindowsBacktestJob.DoesNotExist:
+            raise NotFound(f"Job with job_id '{job_id}' not found.")
+
+        # Ownership check
+        if not user.is_staff and job.owner != user:
+            raise PermissionDenied("You do not have access to this job.")
+
+        # Check if result exists
+        if not job.result_json:
+            return Response(
+                {"ok": False, "error": "No result_json available for this job. Fetch result first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Compute recommendations
+        result = job.result_json
+        recommendations = self._compute_recommendations(result)
+
+        return Response({
+            "ok": True,
+            "job_id": job.job_id,
+            **recommendations,
+        })
+
+    def _compute_recommendations(self, result: dict) -> dict:
+        """
+        Compute minimal AI recommendations from backtest result.
+        """
+        reasons = []
+
+        # Extract deals if present
+        deals = result.get("deals", [])
+        num_deals = len(deals)
+
+        # Calculate net PnL from deals
+        net_pnl = 0.0
+        if deals:
+            for deal in deals:
+                # Try common field names for profit
+                profit = deal.get("profit", 0) or deal.get("pnl", 0) or 0
+                try:
+                    net_pnl += float(profit)
+                except (TypeError, ValueError):
+                    pass
+
+        # Extract balance/equity if present
+        balance = result.get("balance")
+        equity = result.get("equity")
+        initial_deposit = result.get("deposit") or result.get("initial_deposit")
+
+        # Determine go_live recommendation
+        go_live = False
+        confidence = "low"
+
+        if net_pnl > 0 and num_deals >= 3:
+            go_live = True
+            confidence = "medium"
+            reasons.append(f"Positive net PnL of {net_pnl:.2f}")
+            reasons.append(f"Sufficient trade count ({num_deals} deals)")
+        else:
+            if net_pnl <= 0:
+                reasons.append(f"Net PnL is not positive ({net_pnl:.2f})")
+            if num_deals < 3:
+                reasons.append(f"Insufficient trade count ({num_deals} deals, need at least 3)")
+
+        # Additional confidence boost if we have more trades
+        if num_deals >= 10 and net_pnl > 0:
+            confidence = "high"
+            reasons.append(f"Good sample size with {num_deals} trades")
+
+        # Suggested risk per trade
+        suggested_risk_per_trade_pct = 0.5 if go_live else 0.25
+
+        return {
+            "go_live": go_live,
+            "suggested_risk_per_trade_pct": suggested_risk_per_trade_pct,
+            "confidence": confidence,
+            "reasons": reasons,
+            "metrics": {
+                "net_pnl": net_pnl,
+                "num_deals": num_deals,
+                "balance": balance,
+                "equity": equity,
+                "initial_deposit": initial_deposit,
+            },
+        }

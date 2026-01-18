@@ -9,6 +9,10 @@ from execution.views import (
     CreateOpenTradeJobView,
 )
 
+# Windows Agent views (MVP)
+from backtests.views import AIBacktestRecommendationsView
+from strategies.views import WindowsStrategyAssignView
+
 router = DefaultRouter()
 router.register("execution/jobs", ExecutionJobViewSet, basename="execution-job")
 
@@ -35,6 +39,17 @@ urlpatterns = [
     path("api/hosting/", include("hosting.urls")),
     path("api/mt5/", include("mt5.urls")),
     path("health/", health),
+    # Windows Agent MVP endpoints (direct wiring)
+    path(
+        "api/ai/backtest-recommendations/",
+        AIBacktestRecommendationsView.as_view(),
+        name="ai-backtest-recommendations",
+    ),
+    path(
+        "api/strategies/windows/assign/",
+        WindowsStrategyAssignView.as_view(),
+        name="windows-strategy-assign",
+    ),
 ]
 
 # Cookie-based JWT auth (HttpOnly)

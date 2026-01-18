@@ -1,6 +1,8 @@
 from rest_framework import serializers
 
-from .models import BacktestConfig, BacktestRun
+from .models import BacktestConfig, BacktestRun, WindowsBacktestJob
+from strategies.models import Strategy
+from trading.models import TradingAccount
 
 
 class BacktestConfigSerializer(serializers.ModelSerializer):
@@ -86,3 +88,128 @@ class BacktestRunSerializer(serializers.ModelSerializer):
             "equity_curve",
             "created_at",
         ]
+
+
+# =============================================================================
+# Windows Agent Backtest Serializers (MVP)
+# =============================================================================
+
+
+class WindowsBacktestRunRequestSerializer(serializers.Serializer):
+    """
+    Validates the request body for creating a Windows backtest job.
+    """
+
+    strategy_id = serializers.IntegerField(required=True)
+    account_id = serializers.IntegerField(required=True)
+    username = serializers.CharField(max_length=128, required=True)
+    datadir = serializers.CharField(max_length=512, required=False, allow_blank=True, default="")
+    symbol = serializers.CharField(max_length=32, required=True)
+    timeframe = serializers.CharField(max_length=20, required=True)
+    date_from = serializers.DateField(required=True)
+    date_to = serializers.DateField(required=True)
+    deposit = serializers.DecimalField(max_digits=20, decimal_places=2, required=True)
+    leverage = serializers.IntegerField(required=True)
+    mode = serializers.CharField(max_length=32, required=False, default="real_ticks")
+
+    def validate_strategy_id(self, value):
+        """Ensure strategy exists."""
+        if not Strategy.objects.filter(id=value).exists():
+            raise serializers.ValidationError(f"Strategy with id {value} does not exist.")
+        return value
+
+    def validate_account_id(self, value):
+        """Ensure account exists."""
+        if not TradingAccount.objects.filter(id=value).exists():
+            raise serializers.ValidationError(f"TradingAccount with id {value} does not exist.")
+        return value
+
+    def validate(self, attrs):
+        """Cross-field validation."""
+        if attrs["date_from"] > attrs["date_to"]:
+            raise serializers.ValidationError({
+                "date_from": "date_from must be before or equal to date_to."
+            })
+        if attrs["deposit"] <= 0:
+            raise serializers.ValidationError({
+                "deposit": "deposit must be a positive number."
+            })
+        if attrs["leverage"] <= 0:
+            raise serializers.ValidationError({
+                "leverage": "leverage must be a positive integer."
+            })
+        return attrs
+
+
+class WindowsBacktestJobSerializer(serializers.ModelSerializer):
+    """
+    Serializes WindowsBacktestJob for API responses.
+    """
+
+    strategy_id = serializers.PrimaryKeyRelatedField(
+        source="strategy",
+        read_only=True,
+    )
+    account_id = serializers.PrimaryKeyRelatedField(
+        source="account",
+        read_only=True,
+    )
+
+    class Meta:
+        model = WindowsBacktestJob
+        fields = [
+            "id",
+            "job_id",
+            "owner",
+            "strategy_id",
+            "account_id",
+            "username",
+            "datadir",
+            "symbol",
+            "timeframe",
+            "date_from",
+            "date_to",
+            "deposit",
+            "leverage",
+            "mode",
+            "state",
+            "status_json",
+            "result_json",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "job_id",
+            "owner",
+            "strategy_id",
+            "account_id",
+            "username",
+            "datadir",
+            "symbol",
+            "timeframe",
+            "date_from",
+            "date_to",
+            "deposit",
+            "leverage",
+            "mode",
+            "state",
+            "status_json",
+            "result_json",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class AIBacktestRecommendationRequestSerializer(serializers.Serializer):
+    """
+    Validates the request body for AI backtest recommendations.
+    """
+
+    job_id = serializers.CharField(max_length=64, required=True)
+
+    def validate_job_id(self, value):
+        """Ensure job exists."""
+        if not WindowsBacktestJob.objects.filter(job_id=value).exists():
+            raise serializers.ValidationError(f"WindowsBacktestJob with job_id '{value}' does not exist.")
+        return value
