@@ -144,32 +144,52 @@ class StrategyViewSet(viewsets.ModelViewSet):
             create_kwargs["description"] = tpl.get("description") or ""
 
         with transaction.atomic():
+            # A. Lock and fetch existing assignment row(s) for this account
+            existing_active = (
+                StrategyAssignment.objects
+                .select_for_update()
+                .filter(account=account, is_active=True)
+                .first()
+            )
+
+            # B. Prevent duplicates of the same marketplace template
+            if existing_active and getattr(existing_active.strategy, "name", "") == (tpl.get("name") or ""):
+                return Response(
+                    {
+                        "ok": True,
+                        "marketplace_strategy_id": marketplace_strategy_id,
+                        "strategy_id": existing_active.strategy_id,
+                        "assignment_id": existing_active.id,
+                        "strategy_name": getattr(existing_active.strategy, "name", ""),
+                        "account_id": account.id,
+                        "note": "Already assigned",
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            # C. Create the Strategy
             strategy = Strategy.objects.create(**create_kwargs)
 
-            # IMPORTANT: Deactivate any existing active assignments that would violate
-            # the uniq_active_strategy_assignment_per_instance constraint BEFORE creating a new one.
-            #
-            # 1) Always ensure no active assignment remains for this specific account.
-            StrategyAssignment.objects.filter(
-                account=account,
-                is_active=True,
-            ).update(is_active=False)
-
-            # 2) If the account is tied to an MT5 instance, ensure only one active assignment
-            # per user per instance (mirror the same safety rule used elsewhere).
-            if account.mt5_instance_id:
-                StrategyAssignment.objects.filter(
-                    account__mt5_instance_id=account.mt5_instance_id,
-                    account__user_id=account.user_id,
+            # D. Re-use the existing assignment row if it exists, otherwise create
+            if existing_active:
+                existing_active.strategy = strategy
+                existing_active.is_active = True
+                existing_active.save(update_fields=["strategy", "is_active", "updated_at"])
+                assignment = existing_active
+            else:
+                assignment = StrategyAssignment.objects.create(
+                    strategy=strategy,
+                    account=account,
                     is_active=True,
-                ).update(is_active=False)
+                )
 
-            # Now it's safe to create the new active assignment
-            assignment = StrategyAssignment.objects.create(
-                strategy=strategy,
-                account=account,
-                is_active=True,
-            )
+            # E. Deactivate other active assignments on the same MT5 instance
+            if assignment.account.mt5_instance_id:
+                StrategyAssignment.objects.filter(
+                    account__mt5_instance_id=assignment.account.mt5_instance_id,
+                    account__user_id=assignment.account.user_id,
+                    is_active=True,
+                ).exclude(id=assignment.id).update(is_active=False)
 
         return Response(
             {
