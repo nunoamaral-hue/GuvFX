@@ -3,6 +3,21 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+/**
+ * Validates returnTo parameter for safe redirect.
+ * Must start with "/" and NOT contain protocol, domain, or "//".
+ */
+function isValidReturnTo(value: string | null): boolean {
+  if (!value) return false;
+  // Must start with single /
+  if (!value.startsWith("/")) return false;
+  // Must not contain // (prevents //evil.com)
+  if (value.includes("//")) return false;
+  // Must not contain protocol
+  if (value.includes(":")) return false;
+  return true;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   
@@ -12,10 +27,18 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [returnTo, setReturnTo] = useState<string | null>(null);
 
   useEffect(() => {
     // Avoid next/navigation useSearchParams build requirement by reading from location directly.
-    const reason = new URLSearchParams(window.location.search).get("reason");
+    const params = new URLSearchParams(window.location.search);
+    const reason = params.get("reason");
+    const returnToParam = params.get("returnTo");
+
+    // Validate and store returnTo
+    if (isValidReturnTo(returnToParam)) {
+      setReturnTo(returnToParam);
+    }
 
     if (reason === "expired" || reason === "token_expired") {
       setInfoMessage("Your token has expired, please login again.");
@@ -59,9 +82,13 @@ export default function LoginPage() {
       }
 
       setSuccess("Logged in successfully. Redirecting…");
-      // Small delay to show message, then go to strategies list
+      
+      // Post-login redirect: use validated returnTo or default to /dashboard
+      const redirectPath = returnTo || "/dashboard";
+      
+      // Small delay to show message, then redirect
       setTimeout(() => {
-        router.push("/strategies");
+        router.push(redirectPath);
       }, 700);
     } catch (err: unknown) {
       console.error(err);
@@ -214,7 +241,7 @@ export default function LoginPage() {
               marginBottom: "1.2rem",
             }}
           >
-            Welcome back – enter your GuvFX credentials.
+            Welcome back — enter your GuvFX credentials.
           </p>
 
           {/* Progress bar (full for login) */}
