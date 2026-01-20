@@ -17,24 +17,23 @@ import { AppShell } from "@/components/AppShell";
 export default function DashboardPage() {
   const router = useRouter();
   const pathname = usePathname();
-  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 
-  // Auth gating using existing localStorage pattern
+  // Derive auth state once on mount via lazy initializer (avoids setState in effect)
+  const [hasToken] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return !!window.localStorage.getItem("guvfx_access_token");
+  });
+
+  // Redirect if unauthenticated (effect only redirects, no setState)
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const token = window.localStorage.getItem("guvfx_access_token");
-      if (!token) {
-        // Redirect to login with returnTo param (validated path)
-        const returnTo = encodeURIComponent(pathname);
-        router.replace(`/login?reason=unauthenticated&returnTo=${returnTo}`);
-        return;
-      }
-      setIsCheckingAuth(false);
+    if (!hasToken) {
+      const returnTo = encodeURIComponent(pathname);
+      router.replace(`/login?reason=unauthenticated&returnTo=${returnTo}`);
     }
-  }, [router, pathname]);
+  }, [hasToken, router, pathname]);
 
-  // Show nothing while checking auth (prevents flash)
-  if (isCheckingAuth) {
+  // Show nothing while redirect is pending
+  if (!hasToken) {
     return null;
   }
 
