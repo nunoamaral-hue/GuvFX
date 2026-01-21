@@ -19,9 +19,12 @@ export default function DashboardPage() {
   const pathname = usePathname();
 
   // Derive auth state once on mount via lazy initializer (avoids setState in effect)
+  // User is authenticated if EITHER access token OR refresh token exists
   const [hasToken] = useState(() => {
     if (typeof window === "undefined") return false;
-    return !!window.localStorage.getItem("guvfx_access_token");
+    const hasAccess = !!window.localStorage.getItem("guvfx_access_token");
+    const hasRefresh = !!window.localStorage.getItem("guvfx_refresh_token");
+    return hasAccess || hasRefresh;
   });
 
   // Redirect if unauthenticated (effect only redirects, no setState)
