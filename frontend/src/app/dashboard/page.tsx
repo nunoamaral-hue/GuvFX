@@ -269,7 +269,11 @@ function QuickAction({ href, icon, label }: QuickActionProps) {
 // MAIN COMPONENT
 // =============================================================================
 
-export default function DashboardPage() {
+/**
+ * Inner dashboard content that uses lang from context.
+ * Must be rendered INSIDE AppShell to access LangContext.
+ */
+function DashboardContent() {
   const pathname = usePathname();
   const lang = useLang();
 
@@ -379,10 +383,8 @@ export default function DashboardPage() {
           ? "warning"
           : "error";
 
-  // Always render AppShell + content (investor-stable, no redirects)
   return (
-    <AppShell>
-      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         {/* Auth banner for unauthenticated users */}
         {sessionState === "unauthenticated" && (
           <div
@@ -789,6 +791,17 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+  );
+}
+
+/**
+ * Page wrapper that renders AppShell first, then DashboardContent inside.
+ * This ensures useLang() in DashboardContent reads from LangContext.Provider.
+ */
+export default function DashboardPage() {
+  return (
+    <AppShell>
+      <DashboardContent />
     </AppShell>
   );
 }
