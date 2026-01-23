@@ -45,7 +45,7 @@ export default function DashboardPage() {
       try {
         // Use raw fetch to avoid apiFetch's built-in 401 redirect behavior.
         // We want to handle 401 gracefully without redirecting.
-        const res = await fetch("/api/auth/me/", {
+        const res = await fetch("https://api.guvfx.com/api/auth/me/", {
           method: "GET",
           credentials: "include", // Include cookies for session auth
         });
