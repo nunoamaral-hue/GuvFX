@@ -346,6 +346,7 @@ const dictionary: Dictionary = {
   // -----------------------------------------------------------------------------
   "landing.logoAlt": { en: "GuvFX Logo", ja: "GuvFXロゴ" },
   "landing.login": { en: "Log in", ja: "ログイン" },
+  "landing.navLogin": { en: "Investor Login", ja: "投資家ログイン" },
   "landing.getStarted": { en: "Get Started", ja: "始める" },
 
   // -----------------------------------------------------------------------------
@@ -356,8 +357,58 @@ const dictionary: Dictionary = {
     en: "Design algorithmic strategies, run backtests, and deploy with AI-powered analysis. Built for serious traders.",
     ja: "アルゴリズム戦略の設計、バックテストの実行、AIによる分析を活用した展開。本格的なトレーダーのために構築。",
   },
+  "landing.heroProof": {
+    en: "Built for discretionary and systematic traders. No hype. Full control.",
+    ja: "裁量・システムトレーダー向け。誇張なし。完全なコントロール。",
+  },
+  "landing.ctaPrimary": { en: "Get Started (Free)", ja: "無料で始める" },
+  "landing.ctaSecondary": { en: "View Platform", ja: "プラットフォームを見る" },
+  "landing.ctaMicro": {
+    en: "No credit card • Cancel anytime • Demo supported",
+    ja: "クレジットカード不要・いつでも解約・デモ対応",
+  },
   "landing.heroCTA": { en: "Start Building", ja: "戦略を始める" },
   "landing.heroSecondaryCTA": { en: "Learn More", ja: "詳細を見る" },
+
+  // -----------------------------------------------------------------------------
+  // Landing Page - Capability Section (What You Can Do)
+  // -----------------------------------------------------------------------------
+  "landing.capTitle": { en: "What you can do with GuvFX", ja: "GuvFXでできること" },
+  "landing.cap1Title": { en: "Design Strategies", ja: "戦略を設計" },
+  "landing.cap1Body": {
+    en: "Build rule-based and discretionary systems with full control.",
+    ja: "完全なコントロールでルール型・裁量型戦略を構築。",
+  },
+  "landing.cap2Title": { en: "Test Before Risk", ja: "リスク前に検証" },
+  "landing.cap2Body": {
+    en: "Backtest and forward-test before touching live capital.",
+    ja: "実運用前にバックテスト・フォワードテスト。",
+  },
+  "landing.cap3Title": { en: "Deploy with Confidence", ja: "安全に実行" },
+  "landing.cap3Body": {
+    en: "Connect MT5 accounts and manage execution safely.",
+    ja: "MT5口座と接続し、安全に運用管理。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Landing Page - Trust Section
+  // -----------------------------------------------------------------------------
+  "landing.trustTitle": { en: "Built for execution discipline", ja: "実行規律のための設計" },
+  "landing.trustBody": {
+    en: "Designed with capital protection, auditability, and execution discipline in mind.",
+    ja: "資本保護、監査性、実行規律を重視して設計。",
+  },
+  "landing.trustB1": { en: "No black-box strategies", ja: "ブラックボックス戦略なし" },
+  "landing.trustB2": { en: "Deterministic execution", ja: "決定的な実行" },
+  "landing.trustB3": { en: "Manual + automated workflows", ja: "裁量 + 自動の両立" },
+  "landing.trustB4": { en: "Full account separation", ja: "口座の完全分離" },
+
+  // -----------------------------------------------------------------------------
+  // Landing Page - Language Suggestion Prompt
+  // -----------------------------------------------------------------------------
+  "landing.langPrompt": { en: "Prefer Japanese?", ja: "日本語で表示しますか？" },
+  "landing.langYes": { en: "Switch to Japanese", ja: "日本語に切り替える" },
+  "landing.langNo": { en: "Not now", ja: "後で" },
 
   // -----------------------------------------------------------------------------
   // Landing Page - Features Section

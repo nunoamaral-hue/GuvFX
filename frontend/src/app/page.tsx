@@ -1,16 +1,57 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 
+// Session storage key for tracking CTA pulse and lang prompt dismissal
+const PULSE_SHOWN_KEY = "guvfx_cta_pulse_shown";
+const LANG_PROMPT_DISMISSED_KEY = "guvfx_lang_prompt_dismissed";
+const COOKIE_NAME = "guvfx_lang";
+
+// Helper to check if cookie exists
+function hasCookie(name: string): boolean {
+  if (typeof document === "undefined") return false;
+  return document.cookie.includes(`${name}=`);
+}
+
 export default function LandingPage() {
   const router = useRouter();
+
   // Lazy initialization: detectLang runs once on first render (client-side)
   const [lang, setLangState] = useState<Lang>(() => {
     if (typeof window === "undefined") return "en";
     return detectLang();
   });
+
+  // State for CTA pulse animation (once per session) - lazy initialized
+  const [showPulse, setShowPulse] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    const pulseShown = sessionStorage.getItem(PULSE_SHOWN_KEY);
+    if (!pulseShown) {
+      sessionStorage.setItem(PULSE_SHOWN_KEY, "1");
+      return true;
+    }
+    return false;
+  });
+
+  // State for language suggestion prompt - lazy initialized
+  const [showLangPrompt, setShowLangPrompt] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    const dismissed = sessionStorage.getItem(LANG_PROMPT_DISMISSED_KEY);
+    const hasLangCookie = hasCookie(COOKIE_NAME);
+    const browserIsJapanese = navigator.language?.toLowerCase().startsWith("ja");
+    // Show prompt if: no cookie, browser is Japanese, not dismissed this session
+    return !hasLangCookie && browserIsJapanese && !dismissed;
+  });
+
+  // Stop pulse after animation completes
+  useEffect(() => {
+    if (showPulse) {
+      const timer = setTimeout(() => setShowPulse(false), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [showPulse]);
 
   const toggleLang = () => {
     const next: Lang = lang === "en" ? "ja" : "en";
@@ -18,8 +59,20 @@ export default function LandingPage() {
     setLangState(next);
   };
 
-  const scrollToFeatures = () => {
-    const el = document.getElementById("features");
+  const switchToJapanese = () => {
+    persistLang("ja");
+    setLangState("ja");
+    setShowLangPrompt(false);
+    sessionStorage.setItem(LANG_PROMPT_DISMISSED_KEY, "1");
+  };
+
+  const dismissLangPrompt = () => {
+    setShowLangPrompt(false);
+    sessionStorage.setItem(LANG_PROMPT_DISMISSED_KEY, "1");
+  };
+
+  const scrollToCapabilities = () => {
+    const el = document.getElementById("capabilities");
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
@@ -34,6 +87,69 @@ export default function LandingPage() {
         fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
       }}
     >
+      {/* ======================================================================
+          LANGUAGE SUGGESTION PROMPT (first-visit only)
+          ====================================================================== */}
+      {showLangPrompt && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: "1.5rem",
+            right: "1.5rem",
+            zIndex: 200,
+            background: "rgba(5, 8, 22, 0.95)",
+            border: "1px solid rgba(74, 179, 255, 0.25)",
+            borderRadius: 12,
+            padding: "1rem 1.25rem",
+            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+            maxWidth: 280,
+          }}
+        >
+          <p
+            style={{
+              margin: "0 0 0.75rem",
+              fontSize: "0.9rem",
+              color: "#e5f4ff",
+            }}
+          >
+            {t(lang, "landing.langPrompt")}
+          </p>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <button
+              onClick={switchToJapanese}
+              style={{
+                flex: 1,
+                padding: "0.5rem 0.75rem",
+                borderRadius: 6,
+                border: "none",
+                background: "linear-gradient(135deg, #2979ff 0%, #3fe0ff 100%)",
+                color: "#fff",
+                fontSize: "0.8rem",
+                fontWeight: 500,
+                cursor: "pointer",
+              }}
+            >
+              {t(lang, "landing.langYes")}
+            </button>
+            <button
+              onClick={dismissLangPrompt}
+              style={{
+                padding: "0.5rem 0.75rem",
+                borderRadius: 6,
+                border: "1px solid rgba(255,255,255,0.15)",
+                background: "transparent",
+                color: "#9ab0c5",
+                fontSize: "0.8rem",
+                fontWeight: 500,
+                cursor: "pointer",
+              }}
+            >
+              {t(lang, "landing.langNo")}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ======================================================================
           NAVBAR
           ====================================================================== */}
@@ -104,7 +220,7 @@ export default function LandingPage() {
             {lang === "en" ? "日本語" : "EN"}
           </button>
 
-          {/* Login */}
+          {/* Investor Login */}
           <button
             onClick={() => router.push("/login")}
             style={{
@@ -118,22 +234,23 @@ export default function LandingPage() {
               cursor: "pointer",
             }}
           >
-            {t(lang, "landing.login")}
+            {t(lang, "landing.navLogin")}
           </button>
 
-          {/* Get Started CTA */}
+          {/* Get Started CTA - Enhanced with stronger glow + optional pulse */}
           <button
             onClick={() => router.push("/register")}
+            className={showPulse ? "cta-pulse" : ""}
             style={{
               padding: "0.5rem 1.25rem",
               borderRadius: 999,
               border: "none",
-              background: "linear-gradient(135deg, #2979ff 0%, #3fe0ff 100%)",
+              background: "linear-gradient(135deg, #1e6fff 0%, #00d4ff 50%, #1e6fff 100%)",
               color: "#fff",
               fontSize: "0.9rem",
-              fontWeight: 500,
+              fontWeight: 600,
               cursor: "pointer",
-              boxShadow: "0 4px 15px rgba(41, 121, 255, 0.3)",
+              boxShadow: "0 4px 20px rgba(30, 111, 255, 0.5), 0 0 40px rgba(0, 212, 255, 0.2)",
             }}
           >
             {t(lang, "landing.getStarted")}
@@ -183,6 +300,19 @@ export default function LandingPage() {
           {t(lang, "landing.heroSubtitle")}
         </p>
 
+        {/* Value proof line */}
+        <p
+          style={{
+            fontSize: "0.95rem",
+            marginTop: "1rem",
+            maxWidth: 550,
+            color: "#6b8299",
+            fontStyle: "italic",
+          }}
+        >
+          {t(lang, "landing.heroProof")}
+        </p>
+
         <div
           style={{
             marginTop: "2.5rem",
@@ -203,17 +333,17 @@ export default function LandingPage() {
               fontWeight: 600,
               cursor: "pointer",
               background:
-                "linear-gradient(135deg, #2979ff 0%, #3fe0ff 50%, #2979ff 100%)",
+                "linear-gradient(135deg, #1e6fff 0%, #00d4ff 50%, #1e6fff 100%)",
               color: "#ffffff",
-              boxShadow: "0 12px 30px rgba(0, 0, 0, 0.5)",
+              boxShadow: "0 12px 30px rgba(0, 0, 0, 0.5), 0 0 50px rgba(30, 111, 255, 0.3)",
             }}
           >
-            {t(lang, "landing.heroCTA")}
+            {t(lang, "landing.ctaPrimary")}
           </button>
 
           {/* Secondary CTA */}
           <button
-            onClick={scrollToFeatures}
+            onClick={() => router.push("/dashboard")}
             style={{
               padding: "1rem 2rem",
               borderRadius: 999,
@@ -225,17 +355,30 @@ export default function LandingPage() {
               color: "#c2d5ff",
             }}
           >
-            {t(lang, "landing.heroSecondaryCTA")}
+            {t(lang, "landing.ctaSecondary")}
           </button>
         </div>
+
+        {/* Micro-reassurance line */}
+        <p
+          style={{
+            marginTop: "1.25rem",
+            fontSize: "0.8rem",
+            color: "#5a6d82",
+          }}
+        >
+          {t(lang, "landing.ctaMicro")}
+        </p>
 
         {/* Scroll indicator */}
         <div
           style={{
-            marginTop: "4rem",
+            marginTop: "3rem",
             opacity: 0.5,
             animation: "bounce 2s infinite",
+            cursor: "pointer",
           }}
+          onClick={scrollToCapabilities}
         >
           <svg
             width="24"
@@ -247,6 +390,130 @@ export default function LandingPage() {
           >
             <path d="M12 5v14M5 12l7 7 7-7" />
           </svg>
+        </div>
+      </section>
+
+      {/* ======================================================================
+          CAPABILITIES SECTION (What You Can Do)
+          ====================================================================== */}
+      <section
+        id="capabilities"
+        style={{
+          padding: "5rem 2rem",
+          background: "rgba(5, 8, 22, 0.6)",
+        }}
+      >
+        <div style={{ maxWidth: 1000, margin: "0 auto" }}>
+          <h2
+            style={{
+              fontSize: "1.8rem",
+              fontWeight: 700,
+              textAlign: "center",
+              marginBottom: "2.5rem",
+              color: "#e9f4ff",
+            }}
+          >
+            {t(lang, "landing.capTitle")}
+          </h2>
+
+          {/* 3-card grid */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+              gap: "1.5rem",
+            }}
+          >
+            {/* Card 1: Design Strategies */}
+            <CapabilityCard
+              lang={lang}
+              icon={
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2">
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
+                  <path d="M8 12h8M12 8v8" />
+                </svg>
+              }
+              titleKey="landing.cap1Title"
+              bodyKey="landing.cap1Body"
+            />
+
+            {/* Card 2: Test Before Risk */}
+            <CapabilityCard
+              lang={lang}
+              icon={
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2">
+                  <path d="M3 3v18h18" />
+                  <path d="M7 14l4-4 4 4 5-5" />
+                </svg>
+              }
+              titleKey="landing.cap2Title"
+              bodyKey="landing.cap2Body"
+            />
+
+            {/* Card 3: Deploy with Confidence */}
+            <CapabilityCard
+              lang={lang}
+              icon={
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                  <path d="M2 17l10 5 10-5" />
+                  <path d="M2 12l10 5 10-5" />
+                </svg>
+              }
+              titleKey="landing.cap3Title"
+              bodyKey="landing.cap3Body"
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* ======================================================================
+          TRUST / CREDIBILITY SECTION
+          ====================================================================== */}
+      <section
+        style={{
+          padding: "4rem 2rem",
+          background: "rgba(10, 15, 30, 0.5)",
+        }}
+      >
+        <div style={{ maxWidth: 700, margin: "0 auto", textAlign: "center" }}>
+          <h2
+            style={{
+              fontSize: "1.6rem",
+              fontWeight: 700,
+              marginBottom: "1rem",
+              color: "#e9f4ff",
+            }}
+          >
+            {t(lang, "landing.trustTitle")}
+          </h2>
+
+          <p
+            style={{
+              fontSize: "1rem",
+              color: "#8fa0b7",
+              marginBottom: "1.5rem",
+              lineHeight: 1.6,
+            }}
+          >
+            {t(lang, "landing.trustBody")}
+          </p>
+
+          {/* Bullet list */}
+          <div
+            style={{
+              display: "inline-flex",
+              flexDirection: "column",
+              alignItems: "flex-start",
+              gap: "0.6rem",
+              textAlign: "left",
+            }}
+          >
+            <TrustBullet text={t(lang, "landing.trustB1")} />
+            <TrustBullet text={t(lang, "landing.trustB2")} />
+            <TrustBullet text={t(lang, "landing.trustB3")} />
+            <TrustBullet text={t(lang, "landing.trustB4")} />
+          </div>
         </div>
       </section>
 
@@ -454,7 +721,7 @@ export default function LandingPage() {
         </p>
       </footer>
 
-      {/* Keyframe animation for bounce */}
+      {/* Keyframe animations */}
       <style jsx global>{`
         @keyframes bounce {
           0%,
@@ -471,7 +738,108 @@ export default function LandingPage() {
             transform: translateY(-4px);
           }
         }
+
+        @keyframes ctaPulse {
+          0% {
+            box-shadow: 0 4px 20px rgba(30, 111, 255, 0.5), 0 0 40px rgba(0, 212, 255, 0.2);
+          }
+          50% {
+            box-shadow: 0 4px 30px rgba(30, 111, 255, 0.8), 0 0 60px rgba(0, 212, 255, 0.4);
+          }
+          100% {
+            box-shadow: 0 4px 20px rgba(30, 111, 255, 0.5), 0 0 40px rgba(0, 212, 255, 0.2);
+          }
+        }
+
+        .cta-pulse {
+          animation: ctaPulse 0.8s ease-in-out 2;
+        }
       `}</style>
+    </div>
+  );
+}
+
+// =============================================================================
+// CAPABILITY CARD COMPONENT (for "What you can do" section)
+// =============================================================================
+
+function CapabilityCard({
+  lang,
+  icon,
+  titleKey,
+  bodyKey,
+}: {
+  lang: Lang;
+  icon: React.ReactNode;
+  titleKey: string;
+  bodyKey: string;
+}) {
+  return (
+    <div
+      style={{
+        background: "rgba(5, 8, 22, 0.85)",
+        borderRadius: 14,
+        padding: "1.75rem",
+        border: "1px solid rgba(74, 179, 255, 0.1)",
+        textAlign: "center",
+      }}
+    >
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: 12,
+          background: "rgba(74, 179, 255, 0.08)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          margin: "0 auto 1rem",
+        }}
+      >
+        {icon}
+      </div>
+      <h3
+        style={{
+          fontSize: "1.15rem",
+          fontWeight: 600,
+          margin: "0 0 0.5rem",
+          color: "#e9f4ff",
+        }}
+      >
+        {t(lang, titleKey)}
+      </h3>
+      <p
+        style={{
+          fontSize: "0.9rem",
+          color: "#8fa0b7",
+          margin: 0,
+          lineHeight: 1.5,
+        }}
+      >
+        {t(lang, bodyKey)}
+      </p>
+    </div>
+  );
+}
+
+// =============================================================================
+// TRUST BULLET COMPONENT
+// =============================================================================
+
+function TrustBullet({ text }: { text: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#4ab3ff"
+        strokeWidth="2.5"
+      >
+        <path d="M20 6L9 17l-5-5" />
+      </svg>
+      <span style={{ fontSize: "0.9rem", color: "#c2d5ff" }}>{text}</span>
     </div>
   );
 }
