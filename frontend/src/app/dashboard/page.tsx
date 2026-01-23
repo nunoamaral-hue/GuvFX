@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
@@ -8,68 +8,82 @@ import { AppShell } from "@/components/AppShell";
 /**
  * Phase 1: Dashboard / Overview
  *
- * Scope: Routing, auth gating, redirect logic, stable shell only.
+ * Scope: Routing, auth gating, stable shell only.
  * NO data fetching, NO KPIs, NO metrics.
  *
  * References:
  * - D-04: Navigation Contract (page always renders, no errors)
  * - D-09: Empty/first-time states handled gracefully
  *
- * AUTH BEHAVIOR (Updated):
- * - localStorage tokens are checked as an INFORMATIONAL signal only.
- * - If tokens are missing, we show a non-blocking banner (no redirect).
- * - The shell always renders to avoid redirect loops on live (cookie-based auth).
- * - This keeps the dashboard investor-stable and consistent with /accounts behavior.
+ * AUTH BEHAVIOR (Investor-Grade):
+ * - Best-effort session probe via /api/auth/me/ on mount.
+ * - 200 response = authenticated, hide banner.
+ * - 401 response = unauthenticated, show login banner.
+ * - Network/CORS/other error = show soft "session unavailable" banner (not "not logged in").
+ * - NEVER redirects. Shell always renders to avoid redirect loops.
+ * - Does NOT use apiFetch to avoid its built-in 401 redirect behavior.
  */
+
+// Auth session states
+type SessionState =
+  | "checking"      // Initial state, probe in progress
+  | "authenticated" // 200 from /api/auth/me/
+  | "unauthenticated" // 401 from /api/auth/me/
+  | "unavailable";  // Network error, CORS, or other failure
+
 export default function DashboardPage() {
   const pathname = usePathname();
 
-  // null = still checking, true = has token, false = no token
-  // This is INFORMATIONAL ONLY — not used for redirects.
-  const [hasLocalToken, setHasLocalToken] = useState<boolean | null>(null);
+  // Session state from best-effort probe
+  const [sessionState, setSessionState] = useState<SessionState>("checking");
 
-  // Helper to check tokens (memoized for use in listeners)
-  const checkTokens = useCallback(() => {
-    if (typeof window === "undefined") return false;
-    const hasAccess = !!window.localStorage.getItem("guvfx_access_token");
-    const hasRefresh = !!window.localStorage.getItem("guvfx_refresh_token");
-    return hasAccess || hasRefresh;
-  }, []);
-
-  // Check token state after hydration
+  // Best-effort session probe on mount
   useEffect(() => {
-    // Use setTimeout to avoid React state-update-during-render warnings
-    const timerId = setTimeout(() => {
-      setHasLocalToken(checkTokens());
-    }, 0);
+    let cancelled = false;
 
-    // Listen for storage changes (e.g., login/logout in another tab)
-    const handleStorage = () => {
-      setTimeout(() => {
-        setHasLocalToken(checkTokens());
-      }, 0);
+    const probeSession = async () => {
+      try {
+        // Use raw fetch to avoid apiFetch's built-in 401 redirect behavior.
+        // We want to handle 401 gracefully without redirecting.
+        const res = await fetch("/api/auth/me/", {
+          method: "GET",
+          credentials: "include", // Include cookies for session auth
+        });
+
+        if (cancelled) return;
+
+        if (res.status === 200) {
+          setSessionState("authenticated");
+        } else if (res.status === 401) {
+          setSessionState("unauthenticated");
+        } else {
+          // Unexpected status (403, 500, etc.) — treat as unavailable
+          setSessionState("unavailable");
+        }
+      } catch {
+        // Network error, CORS block, or other failure
+        if (!cancelled) {
+          setSessionState("unavailable");
+        }
+      }
     };
-    window.addEventListener("storage", handleStorage);
+
+    probeSession();
 
     return () => {
-      clearTimeout(timerId);
-      window.removeEventListener("storage", handleStorage);
+      cancelled = true;
     };
-  }, [checkTokens]);
+  }, []);
 
-  // REMOVED: Hard redirect to /login when tokens are missing.
-  // Live auth may be cookie-based, so localStorage absence is not authoritative.
-  // The shell always renders to avoid redirect loops.
-
-  // Build the returnTo URL for the login link (informational banner)
+  // Build the returnTo URL for the login link
   const returnTo = encodeURIComponent(pathname);
 
-  // Always render AppShell + content (investor-stable)
+  // Always render AppShell + content (investor-stable, no redirects)
   return (
     <AppShell>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        {/* Non-blocking auth banner (only shown if localStorage tokens are missing) */}
-        {hasLocalToken === false && (
+        {/* Auth banner: only shown for unauthenticated or unavailable states */}
+        {sessionState === "unauthenticated" && (
           <div
             style={{
               padding: "0.75rem 1rem",
@@ -101,7 +115,7 @@ export default function DashboardPage() {
                 <line x1="12" y1="17" x2="12.01" y2="17" />
               </svg>
               <span style={{ fontSize: "0.85rem", color: "#fbbf24" }}>
-                You may not be logged in. Some features may be unavailable.
+                You are not logged in. Please sign in to access all features.
               </span>
             </div>
             <Link
@@ -121,6 +135,40 @@ export default function DashboardPage() {
             >
               Log in
             </Link>
+          </div>
+        )}
+
+        {sessionState === "unavailable" && (
+          <div
+            style={{
+              padding: "0.75rem 1rem",
+              marginBottom: "1.25rem",
+              borderRadius: 8,
+              border: "1px solid rgba(148, 163, 184, 0.3)",
+              background: "rgba(148, 163, 184, 0.05)",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+            }}
+          >
+            {/* Info icon */}
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#94a3b8"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="16" x2="12" y2="12" />
+              <line x1="12" y1="8" x2="12.01" y2="8" />
+            </svg>
+            <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>
+              Session status unavailable. Some features may require login.
+            </span>
           </div>
         )}
 
