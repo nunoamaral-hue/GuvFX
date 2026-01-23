@@ -346,7 +346,7 @@ const dictionary: Dictionary = {
   // -----------------------------------------------------------------------------
   "landing.logoAlt": { en: "GuvFX Logo", ja: "GuvFXロゴ" },
   "landing.login": { en: "Log in", ja: "ログイン" },
-  "landing.navLogin": { en: "Investor Login", ja: "投資家ログイン" },
+  "landing.navLogin": { en: "Trader Login", ja: "トレーダーログイン" },
   "landing.getStarted": { en: "Get Started", ja: "始める" },
 
   // -----------------------------------------------------------------------------
