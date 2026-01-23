@@ -811,12 +811,13 @@ export function AppShell({ children }: AppShellProps) {
         html, body {
           overflow-x: hidden;
         }
-        /* Mobile breakpoint: hide sidebar, show hamburger */
+        /* Mobile breakpoint: hide sidebar, show hamburger and brand */
         @media (max-width: 980px) {
           .appshell-sidebar {
             display: none !important;
           }
-          .appshell-hamburger {
+          .appshell-hamburger,
+          .appshell-brand {
             display: flex !important;
           }
           .appshell-main {
@@ -825,29 +826,43 @@ export function AppShell({ children }: AppShellProps) {
           }
           .appshell-topbar {
             left: 0 !important;
+            padding: 0 1rem !important;
           }
           .appshell-search {
             display: none !important;
           }
           .appshell-content {
-            padding-left: 1rem !important;
-            padding-right: 1rem !important;
+            padding: 1rem 1rem 1.5rem 1rem !important;
+          }
+          .appshell-brand-text {
+            max-width: 120px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
           }
         }
         /* Extra small screens: tighter padding */
         @media (max-width: 480px) {
           .appshell-content {
-            padding-left: 0.75rem !important;
-            padding-right: 0.75rem !important;
-            padding-top: 1rem !important;
+            padding: 1rem 0.75rem 1.5rem 0.75rem !important;
+          }
+          .appshell-topbar {
+            padding: 0 0.75rem !important;
+          }
+          .appshell-brand-text {
+            max-width: 80px;
+          }
+          .appshell-topbar-right {
+            gap: 0.5rem !important;
           }
         }
-        /* Desktop: show sidebar, hide hamburger */
+        /* Desktop: show sidebar, hide hamburger and mobile brand */
         @media (min-width: 981px) {
           .appshell-sidebar {
             display: flex !important;
           }
-          .appshell-hamburger {
+          .appshell-hamburger,
+          .appshell-brand {
             display: none !important;
           }
         }
@@ -902,7 +917,7 @@ export function AppShell({ children }: AppShellProps) {
               alt="GuvFX"
               style={{ width: 32, height: 32, objectFit: "contain" }}
             />
-            <div>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
               <div style={{ fontSize: "1.2rem", fontWeight: 600, color: "#ffffff" }}>GuvFX</div>
               <div style={{ fontSize: "0.7rem", color: "#6b7280", marginTop: "2px" }}>
                 Trading Intelligence
@@ -1030,23 +1045,29 @@ export function AppShell({ children }: AppShellProps) {
                 <HamburgerIcon />
               </button>
 
-              {/* Mobile logo (visible only via hamburger context) */}
+              {/* Mobile logo (visible only on mobile) */}
               <Link
                 href="/dashboard"
-                className="appshell-hamburger"
+                className="appshell-brand"
                 style={{
                   display: "none",
                   alignItems: "center",
                   gap: "0.5rem",
                   textDecoration: "none",
+                  minWidth: 0,
                 }}
               >
                 <img
                   src="/brand/logo.png"
                   alt="GuvFX"
-                  style={{ width: 32, height: 32, objectFit: "contain" }}
+                  style={{ width: 32, height: 32, objectFit: "contain", flexShrink: 0 }}
                 />
-                <span style={{ fontSize: "1.1rem", fontWeight: 600, color: "#ffffff" }}>GuvFX</span>
+                <span
+                  className="appshell-brand-text"
+                  style={{ fontSize: "1.1rem", fontWeight: 600, color: "#ffffff" }}
+                >
+                  GuvFX
+                </span>
               </Link>
             </div>
 
@@ -1100,7 +1121,10 @@ export function AppShell({ children }: AppShellProps) {
             </div>
 
             {/* Right section: Language toggle, Notifications, Profile */}
-            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <div
+              className="appshell-topbar-right"
+              style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexShrink: 0 }}
+            >
               <LanguageToggle />
               <NotificationsButton />
               <ProfileDropdown
