@@ -132,6 +132,14 @@ function ServerIcon() {
   );
 }
 
+function ActivityIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+    </svg>
+  );
+}
+
 // =============================================================================
 // COMPONENT: Status Badge
 // =============================================================================
@@ -417,7 +425,7 @@ export default function DashboardPage() {
         {/* Header */}
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Dashboard</h1>
         <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "1.5rem" }}>
-          Your trading command center. Monitor, manage, and execute.
+          Unified trading intelligence across accounts and strategies.
         </p>
 
         {/* Responsive grid: 2 columns on desktop, stacked on mobile */}
@@ -483,14 +491,116 @@ export default function DashboardPage() {
             </div>
           </Card>
 
+          {/* Signals Card - account summary metrics */}
+          <Card title="Signals" icon={<ActivityIcon />}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>Accounts linked</span>
+                <span style={{ fontSize: "0.85rem", fontWeight: 500, color: "#e5f4ff" }}>
+                  {accountsState === "loaded" ? accounts.length : "—"}
+                </span>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>Active accounts</span>
+                <span style={{ fontSize: "0.85rem", fontWeight: 500, color: "#e5f4ff" }}>
+                  {accountsState === "loaded"
+                    ? accounts.some((a) => a.is_active !== undefined)
+                      ? accounts.filter((a) => a.is_active === true).length
+                      : "—"
+                    : "—"}
+                </span>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>Demo accounts</span>
+                <span style={{ fontSize: "0.85rem", fontWeight: 500, color: "#e5f4ff" }}>
+                  {accountsState === "loaded"
+                    ? accounts.some((a) => a.is_demo !== undefined)
+                      ? accounts.filter((a) => a.is_demo === true).length
+                      : "—"
+                    : "—"}
+                </span>
+              </div>
+            </div>
+          </Card>
+
           {/* Accounts Card - spans full width on larger screens */}
           <div style={{ gridColumn: "1 / -1" }}>
             <Card title="Trading Accounts" icon={<UserIcon />}>
-              {/* Loading state */}
+              {/* Loading state - skeleton placeholder */}
               {(accountsState === "idle" || accountsState === "loading") &&
                 sessionState === "authenticated" && (
-                  <div style={{ color: "#64748b", fontSize: "0.85rem" }}>
-                    Loading accounts...
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    {[1, 2].map((i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          padding: "0.6rem 0.75rem",
+                          borderRadius: 8,
+                          background: "rgba(255, 255, 255, 0.02)",
+                          border: "1px solid rgba(255, 255, 255, 0.04)",
+                        }}
+                      >
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div
+                            style={{
+                              height: 14,
+                              width: "40%",
+                              background: "rgba(255, 255, 255, 0.06)",
+                              borderRadius: 4,
+                              marginBottom: 6,
+                              animation: "pulse 1.5s ease-in-out infinite",
+                            }}
+                          />
+                          <div
+                            style={{
+                              height: 10,
+                              width: "60%",
+                              background: "rgba(255, 255, 255, 0.04)",
+                              borderRadius: 3,
+                              animation: "pulse 1.5s ease-in-out infinite",
+                              animationDelay: "0.2s",
+                            }}
+                          />
+                        </div>
+                        <div
+                          style={{
+                            height: 22,
+                            width: 60,
+                            background: "rgba(255, 255, 255, 0.04)",
+                            borderRadius: 6,
+                            animation: "pulse 1.5s ease-in-out infinite",
+                            animationDelay: "0.4s",
+                          }}
+                        />
+                      </div>
+                    ))}
+                    <style>{`
+                      @keyframes pulse {
+                        0%, 100% { opacity: 1; }
+                        50% { opacity: 0.4; }
+                      }
+                    `}</style>
                   </div>
                 )}
 
@@ -541,26 +651,39 @@ export default function DashboardPage() {
               {accountsState === "loaded" && accounts.length === 0 && (
                 <div
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    flexWrap: "wrap",
-                    gap: "0.75rem",
+                    padding: "1.5rem",
+                    textAlign: "center",
+                    borderRadius: 8,
+                    background: "rgba(255, 255, 255, 0.02)",
+                    border: "1px dashed rgba(255, 255, 255, 0.1)",
                   }}
                 >
-                  <span style={{ color: "#94a3b8", fontSize: "0.85rem" }}>
-                    No accounts linked yet.
-                  </span>
+                  <div style={{ marginBottom: "0.5rem" }}>
+                    <UserIcon />
+                  </div>
+                  <div style={{ color: "#e5f4ff", fontSize: "0.9rem", fontWeight: 500, marginBottom: "0.35rem" }}>
+                    No trading accounts linked
+                  </div>
+                  <p style={{ color: "#64748b", fontSize: "0.8rem", marginBottom: "1rem", lineHeight: 1.5 }}>
+                    Connect your first broker account to start tracking performance and deploying strategies.
+                  </p>
                   <Link
                     href="/accounts"
                     style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "0.35rem",
                       fontSize: "0.8rem",
                       fontWeight: 500,
-                      color: "#3b82f6",
+                      color: "#e5f4ff",
+                      padding: "0.5rem 1rem",
+                      borderRadius: 6,
+                      background: "rgba(59, 130, 246, 0.15)",
+                      border: "1px solid rgba(59, 130, 246, 0.3)",
                       textDecoration: "none",
                     }}
                   >
-                    Link your first account →
+                    <PlusIcon /> Link Account
                   </Link>
                 </div>
               )}
@@ -604,8 +727,12 @@ export default function DashboardPage() {
                           justifyContent: "space-between",
                           padding: "0.6rem 0.75rem",
                           borderRadius: 8,
-                          background: "rgba(255, 255, 255, 0.03)",
-                          border: "1px solid rgba(255, 255, 255, 0.06)",
+                          background: acc.is_active
+                            ? "rgba(34, 197, 94, 0.06)"
+                            : "rgba(255, 255, 255, 0.03)",
+                          border: acc.is_active
+                            ? "1px solid rgba(34, 197, 94, 0.2)"
+                            : "1px solid rgba(255, 255, 255, 0.06)",
                         }}
                       >
                         <div style={{ minWidth: 0 }}>
