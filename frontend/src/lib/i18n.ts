@@ -340,6 +340,92 @@ const dictionary: Dictionary = {
   "login.errorEmptyFields": { en: "Please enter your email and password.", ja: "メールアドレスとパスワードを入力してください。" },
   "login.errorDefault": { en: "Login failed. Please check your credentials.", ja: "ログインに失敗しました。認証情報を確認してください。" },
   "login.success": { en: "Logged in successfully. Redirecting…", ja: "ログイン成功。リダイレクト中…" },
+
+  // -----------------------------------------------------------------------------
+  // Landing Page - Navbar
+  // -----------------------------------------------------------------------------
+  "landing.logoAlt": { en: "GuvFX Logo", ja: "GuvFXロゴ" },
+  "landing.login": { en: "Log in", ja: "ログイン" },
+  "landing.getStarted": { en: "Get Started", ja: "始める" },
+
+  // -----------------------------------------------------------------------------
+  // Landing Page - Hero Section
+  // -----------------------------------------------------------------------------
+  "landing.heroTitle": { en: "Automated Trading Intelligence", ja: "自動トレーディングインテリジェンス" },
+  "landing.heroSubtitle": {
+    en: "Design algorithmic strategies, run backtests, and deploy with AI-powered analysis. Built for serious traders.",
+    ja: "アルゴリズム戦略の設計、バックテストの実行、AIによる分析を活用した展開。本格的なトレーダーのために構築。",
+  },
+  "landing.heroCTA": { en: "Start Building", ja: "戦略を始める" },
+  "landing.heroSecondaryCTA": { en: "Learn More", ja: "詳細を見る" },
+
+  // -----------------------------------------------------------------------------
+  // Landing Page - Features Section
+  // -----------------------------------------------------------------------------
+  "landing.featuresTitle": { en: "Platform Features", ja: "プラットフォーム機能" },
+  "landing.featuresSubtitle": {
+    en: "Everything you need to develop, test, and run algorithmic trading strategies.",
+    ja: "アルゴリズム取引戦略の開発、テスト、実行に必要なすべてが揃っています。",
+  },
+
+  "landing.feature1Title": { en: "Strategy Builder", ja: "戦略ビルダー" },
+  "landing.feature1Desc": {
+    en: "Visual and code-based tools to create trading strategies without complexity.",
+    ja: "複雑さなしに取引戦略を作成するためのビジュアルおよびコードベースのツール。",
+  },
+
+  "landing.feature2Title": { en: "Backtesting Engine", ja: "バックテストエンジン" },
+  "landing.feature2Desc": {
+    en: "Test strategies against historical data with detailed performance metrics.",
+    ja: "詳細なパフォーマンス指標で過去のデータに対して戦略をテスト。",
+  },
+
+  "landing.feature3Title": { en: "AI Strategy Advisor", ja: "AI戦略アドバイザー" },
+  "landing.feature3Desc": {
+    en: "Get AI-powered insights and recommendations to refine your approach.",
+    ja: "AIによる洞察と推奨事項でアプローチを改善。",
+  },
+
+  "landing.feature4Title": { en: "Multi-Broker Support", ja: "マルチブローカー対応" },
+  "landing.feature4Desc": {
+    en: "Connect to MT5 and major brokers. Manage multiple accounts in one place.",
+    ja: "MT5と主要ブローカーに接続。複数の口座を一元管理。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Landing Page - Footer
+  // -----------------------------------------------------------------------------
+  "landing.footerTagline": { en: "Trading Intelligence Platform", ja: "トレーディングインテリジェンスプラットフォーム" },
+  "landing.footerCopyright": { en: "© 2025 GuvFX. All rights reserved.", ja: "© 2025 GuvFX. All rights reserved." },
+  "landing.footerDisclaimer": {
+    en: "Trading involves risk. Past performance does not guarantee future results.",
+    ja: "取引にはリスクが伴います。過去の実績は将来の結果を保証するものではありません。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Register Page
+  // -----------------------------------------------------------------------------
+  "register.welcomeTo": { en: "Welcome to", ja: "ようこそ" },
+  "register.subtitle": {
+    en: "Start automating your trading with ease. Design strategies, run backtests, and get AI-powered insights.",
+    ja: "取引の自動化を簡単に始めましょう。戦略の設計、バックテストの実行、AIによる洞察を取得。",
+  },
+  "register.getStarted": { en: "Get started", ja: "始める" },
+  "register.login": { en: "Log in", ja: "ログイン" },
+  "register.signUp": { en: "Sign up", ja: "新規登録" },
+  "register.createAccount": { en: "Create an Account", ja: "アカウント作成" },
+  "register.step": { en: "Step 1 of 12", ja: "ステップ 1/12" },
+  "register.email": { en: "Email", ja: "メールアドレス" },
+  "register.emailPlaceholder": { en: "Email", ja: "メールアドレス" },
+  "register.password": { en: "Password", ja: "パスワード" },
+  "register.passwordPlaceholder": { en: "Must be at least 3 characters", ja: "3文字以上" },
+  "register.username": { en: "Username (optional)", ja: "ユーザー名（任意）" },
+  "register.usernamePlaceholder": { en: "Defaults to your email if left empty", ja: "空欄の場合はメールアドレスが使用されます" },
+  "register.continue": { en: "Continue", ja: "続行" },
+  "register.creating": { en: "Creating account...", ja: "アカウント作成中..." },
+  "register.passwordTooShort": { en: "Password must be at least 3 characters.", ja: "パスワードは3文字以上必要です。" },
+  "register.success": { en: "Account created for {email}. You can now log in.", ja: "{email}のアカウントが作成されました。ログインできます。" },
+  "register.errorDefault": { en: "Registration failed.", ja: "登録に失敗しました。" },
 };
 
 // =============================================================================
