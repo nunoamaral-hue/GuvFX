@@ -48,7 +48,7 @@ const navGroups: NavGroup[] = [
       { label: "My Strategies", href: "/strategies" },
       { label: "Marketplace", href: "/strategies/marketplace" },
       { label: "Create Strategy", href: "/strategies/create" },
-      { label: "Strategy Advisor", href: "/ai/strategy-advisor" },
+      { label: "Strategy Advisor", href: "/ai/strategy-advisor", soon: true },
     ],
   },
   {
@@ -65,7 +65,7 @@ const navGroups: NavGroup[] = [
     defaultOpen: false,
     items: [
       { label: "Overview", href: "/dashboard" },
-      { label: "Performance", href: "/dashboard/performance" },
+      { label: "Performance", href: "/dashboard/performance", soon: true },
       { label: "Strategy Metrics", href: "/analytics/strategy-metrics" },
       { label: "Charts", href: "/charts" },
     ],
