@@ -1,35 +1,264 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 
 /**
- * Phase 1: Dashboard / Overview
+ * Dashboard v1 — Control Center → Insight
  *
- * Scope: Routing, auth gating, stable shell only.
- * NO data fetching, NO KPIs, NO metrics.
- *
- * References:
- * - D-04: Navigation Contract (page always renders, no errors)
- * - D-09: Empty/first-time states handled gracefully
+ * Real data dashboard with:
+ * - System status (API + session state)
+ * - Accounts overview (fetched from API)
+ * - Quick actions
  *
  * AUTH BEHAVIOR (Investor-Grade):
  * - Best-effort session probe via /api/auth/me/ on mount.
- * - 200 response = authenticated, hide banner.
- * - 401 response = unauthenticated, show login banner.
- * - Network/CORS/other error = show soft "session unavailable" banner (not "not logged in").
+ * - 200 response = authenticated, fetch accounts.
+ * - 401 response = unauthenticated, show login prompts.
+ * - Network/CORS/other error = show soft "unavailable" state.
  * - NEVER redirects. Shell always renders to avoid redirect loops.
  * - Does NOT use apiFetch to avoid its built-in 401 redirect behavior.
  */
 
-// Auth session states
+const API_BASE = "https://api.guvfx.com";
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
 type SessionState =
-  | "checking"      // Initial state, probe in progress
-  | "authenticated" // 200 from /api/auth/me/
-  | "unauthenticated" // 401 from /api/auth/me/
-  | "unavailable";  // Network error, CORS, or other failure
+  | "checking"
+  | "authenticated"
+  | "unauthenticated"
+  | "unavailable";
+
+type AccountsState =
+  | "idle"
+  | "loading"
+  | "loaded"
+  | "unauthorized"
+  | "error";
+
+type TradingAccount = {
+  id: number;
+  name: string;
+  broker_name?: string;
+  server_name?: string;
+  account_number: string;
+  is_active?: boolean;
+  is_demo?: boolean;
+};
+
+// =============================================================================
+// INLINE ICONS
+// =============================================================================
+
+function CheckCircleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+      <polyline points="22 4 12 14.01 9 11.01" />
+    </svg>
+  );
+}
+
+function XCircleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="15" y1="9" x2="9" y2="15" />
+      <line x1="9" y1="9" x2="15" y2="15" />
+    </svg>
+  );
+}
+
+function AlertCircleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
+function UserIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  );
+}
+
+function ZapIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    </svg>
+  );
+}
+
+function GridIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="3" width="7" height="7" />
+      <rect x="14" y="3" width="7" height="7" />
+      <rect x="14" y="14" width="7" height="7" />
+      <rect x="3" y="14" width="7" height="7" />
+    </svg>
+  );
+}
+
+function ServerIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
+      <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
+      <line x1="6" y1="6" x2="6.01" y2="6" />
+      <line x1="6" y1="18" x2="6.01" y2="18" />
+    </svg>
+  );
+}
+
+// =============================================================================
+// COMPONENT: Status Badge
+// =============================================================================
+
+type StatusBadgeProps = {
+  status: "good" | "warning" | "error" | "neutral";
+  label: string;
+};
+
+function StatusBadge({ status, label }: StatusBadgeProps) {
+  const colors = {
+    good: { bg: "rgba(34, 197, 94, 0.15)", border: "rgba(34, 197, 94, 0.4)", text: "#22c55e" },
+    warning: { bg: "rgba(251, 191, 36, 0.15)", border: "rgba(251, 191, 36, 0.4)", text: "#fbbf24" },
+    error: { bg: "rgba(239, 68, 68, 0.15)", border: "rgba(239, 68, 68, 0.4)", text: "#ef4444" },
+    neutral: { bg: "rgba(148, 163, 184, 0.1)", border: "rgba(148, 163, 184, 0.3)", text: "#94a3b8" },
+  };
+
+  const c = colors[status];
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "0.35rem",
+        padding: "0.25rem 0.6rem",
+        borderRadius: 6,
+        fontSize: "0.75rem",
+        fontWeight: 500,
+        background: c.bg,
+        border: `1px solid ${c.border}`,
+        color: c.text,
+      }}
+    >
+      {status === "good" && <CheckCircleIcon />}
+      {status === "warning" && <AlertCircleIcon />}
+      {status === "error" && <XCircleIcon />}
+      {status === "neutral" && <AlertCircleIcon />}
+      {label}
+    </span>
+  );
+}
+
+// =============================================================================
+// COMPONENT: Dashboard Card
+// =============================================================================
+
+type CardProps = {
+  title: string;
+  icon?: ReactNode;
+  children: ReactNode;
+};
+
+function Card({ title, icon, children }: CardProps) {
+  return (
+    <div
+      style={{
+        padding: "1.25rem",
+        borderRadius: 12,
+        border: "1px solid rgba(255, 255, 255, 0.08)",
+        background: "rgba(15, 23, 42, 0.5)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "0.5rem",
+          marginBottom: "1rem",
+          color: "#e5f4ff",
+          fontSize: "0.95rem",
+          fontWeight: 600,
+        }}
+      >
+        {icon && <span style={{ color: "#64748b" }}>{icon}</span>}
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// =============================================================================
+// COMPONENT: Quick Action Button
+// =============================================================================
+
+type QuickActionProps = {
+  href: string;
+  icon: ReactNode;
+  label: string;
+};
+
+function QuickAction({ href, icon, label }: QuickActionProps) {
+  return (
+    <Link
+      href={href}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "0.5rem",
+        padding: "0.6rem 0.9rem",
+        borderRadius: 8,
+        border: "1px solid rgba(255, 255, 255, 0.1)",
+        background: "rgba(255, 255, 255, 0.03)",
+        color: "#e5f4ff",
+        fontSize: "0.85rem",
+        textDecoration: "none",
+        transition: "background 150ms ease, border-color 150ms ease",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = "rgba(255, 255, 255, 0.06)";
+        e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.15)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "rgba(255, 255, 255, 0.03)";
+        e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.1)";
+      }}
+    >
+      <span style={{ color: "#64748b" }}>{icon}</span>
+      {label}
+    </Link>
+  );
+}
+
+// =============================================================================
+// MAIN COMPONENT
+// =============================================================================
 
 export default function DashboardPage() {
   const pathname = usePathname();
@@ -37,17 +266,19 @@ export default function DashboardPage() {
   // Session state from best-effort probe
   const [sessionState, setSessionState] = useState<SessionState>("checking");
 
+  // Accounts state
+  const [accountsState, setAccountsState] = useState<AccountsState>("idle");
+  const [accounts, setAccounts] = useState<TradingAccount[]>([]);
+
   // Best-effort session probe on mount
   useEffect(() => {
     let cancelled = false;
 
     const probeSession = async () => {
       try {
-        // Use raw fetch to avoid apiFetch's built-in 401 redirect behavior.
-        // We want to handle 401 gracefully without redirecting.
-        const res = await fetch("https://api.guvfx.com/api/auth/me/", {
+        const res = await fetch(`${API_BASE}/api/auth/me/`, {
           method: "GET",
-          credentials: "include", // Include cookies for session auth
+          credentials: "include",
         });
 
         if (cancelled) return;
@@ -57,11 +288,9 @@ export default function DashboardPage() {
         } else if (res.status === 401) {
           setSessionState("unauthenticated");
         } else {
-          // Unexpected status (403, 500, etc.) — treat as unavailable
           setSessionState("unavailable");
         }
       } catch {
-        // Network error, CORS block, or other failure
         if (!cancelled) {
           setSessionState("unavailable");
         }
@@ -75,14 +304,76 @@ export default function DashboardPage() {
     };
   }, []);
 
+  // Fetch accounts when authenticated
+  useEffect(() => {
+    if (sessionState !== "authenticated") {
+      return;
+    }
+
+    let cancelled = false;
+
+    const fetchAccounts = async () => {
+      // Set loading state inside async function to satisfy lint
+      if (!cancelled) {
+        setAccountsState("loading");
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/api/trading/accounts/`, {
+          method: "GET",
+          credentials: "include",
+        });
+
+        if (cancelled) return;
+
+        if (res.status === 200) {
+          const data = await res.json();
+          setAccounts(Array.isArray(data) ? data : []);
+          setAccountsState("loaded");
+        } else if (res.status === 401 || res.status === 403) {
+          setAccountsState("unauthorized");
+        } else {
+          setAccountsState("error");
+        }
+      } catch {
+        if (!cancelled) {
+          setAccountsState("error");
+        }
+      }
+    };
+
+    fetchAccounts();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionState]);
+
   // Build the returnTo URL for the login link
   const returnTo = encodeURIComponent(pathname);
+
+  // Derive statuses for display
+  const apiStatus: "good" | "warning" | "error" | "neutral" =
+    sessionState === "checking"
+      ? "neutral"
+      : sessionState === "unavailable"
+        ? "error"
+        : "good";
+
+  const sessionStatus: "good" | "warning" | "error" | "neutral" =
+    sessionState === "checking"
+      ? "neutral"
+      : sessionState === "authenticated"
+        ? "good"
+        : sessionState === "unauthenticated"
+          ? "warning"
+          : "error";
 
   // Always render AppShell + content (investor-stable, no redirects)
   return (
     <AppShell>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        {/* Auth banner: only shown for unauthenticated or unavailable states */}
+        {/* Auth banner for unauthenticated users */}
         {sessionState === "unauthenticated" && (
           <div
             style={{
@@ -99,21 +390,7 @@ export default function DashboardPage() {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              {/* Warning icon */}
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="#fbbf24"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                <line x1="12" y1="9" x2="12" y2="13" />
-                <line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
+              <AlertCircleIcon />
               <span style={{ fontSize: "0.85rem", color: "#fbbf24" }}>
                 You are not logged in. Please sign in to access all features.
               </span>
@@ -130,7 +407,6 @@ export default function DashboardPage() {
                 border: "1px solid rgba(251, 191, 36, 0.4)",
                 textDecoration: "none",
                 whiteSpace: "nowrap",
-                transition: "background 150ms ease",
               }}
             >
               Log in
@@ -138,65 +414,250 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {sessionState === "unavailable" && (
-          <div
-            style={{
-              padding: "0.75rem 1rem",
-              marginBottom: "1.25rem",
-              borderRadius: 8,
-              border: "1px solid rgba(148, 163, 184, 0.3)",
-              background: "rgba(148, 163, 184, 0.05)",
-              display: "flex",
-              alignItems: "center",
-              gap: "0.5rem",
-            }}
-          >
-            {/* Info icon */}
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#94a3b8"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="16" x2="12" y2="12" />
-              <line x1="12" y1="8" x2="12.01" y2="8" />
-            </svg>
-            <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>
-              Session status unavailable. Some features may require login.
-            </span>
-          </div>
-        )}
-
+        {/* Header */}
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Dashboard</h1>
-        <p
-          style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1.5rem" }}
-        >
-          Welcome to GuvFX. This is your trading overview.
+        <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "1.5rem" }}>
+          Your trading command center. Monitor, manage, and execute.
         </p>
 
-        {/* Stable placeholder content - Phase 1 only */}
+        {/* Responsive grid: 2 columns on desktop, stacked on mobile */}
         <div
           style={{
-            padding: "2rem",
-            borderRadius: 12,
-            border: "1px solid #1f2937",
-            background: "rgba(15, 23, 42, 0.5)",
-            textAlign: "center",
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+            gap: "1rem",
           }}
         >
-          <p style={{ color: "#9ca3af", fontSize: "0.9rem", margin: 0 }}>
-            Your dashboard overview will appear here.
-          </p>
-          <p
-            style={{ color: "#6b7280", fontSize: "0.8rem", marginTop: "0.5rem" }}
-          >
-            Use the navigation to explore strategies, accounts, and backtests.
-          </p>
+          {/* System Status Card */}
+          <Card title="System Status" icon={<ServerIcon />}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>API</span>
+                <StatusBadge
+                  status={apiStatus}
+                  label={
+                    sessionState === "checking"
+                      ? "Checking..."
+                      : sessionState === "unavailable"
+                        ? "Unavailable"
+                        : "Online"
+                  }
+                />
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>Session</span>
+                <StatusBadge
+                  status={sessionStatus}
+                  label={
+                    sessionState === "checking"
+                      ? "Checking..."
+                      : sessionState === "authenticated"
+                        ? "Authenticated"
+                        : sessionState === "unauthenticated"
+                          ? "Login required"
+                          : "Unknown"
+                  }
+                />
+              </div>
+            </div>
+          </Card>
+
+          {/* Quick Actions Card */}
+          <Card title="Quick Actions" icon={<ZapIcon />}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              <QuickAction href="/accounts" icon={<PlusIcon />} label="Link Account" />
+              <QuickAction href="/strategies/create" icon={<ZapIcon />} label="Create Strategy" />
+              <QuickAction href="/strategies/marketplace" icon={<GridIcon />} label="Explore Marketplace" />
+            </div>
+          </Card>
+
+          {/* Accounts Card - spans full width on larger screens */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <Card title="Trading Accounts" icon={<UserIcon />}>
+              {/* Loading state */}
+              {(accountsState === "idle" || accountsState === "loading") &&
+                sessionState === "authenticated" && (
+                  <div style={{ color: "#64748b", fontSize: "0.85rem" }}>
+                    Loading accounts...
+                  </div>
+                )}
+
+              {/* Unauthorized state */}
+              {(accountsState === "unauthorized" ||
+                (sessionState === "unauthenticated" && accountsState === "idle")) && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: "0.75rem",
+                  }}
+                >
+                  <span style={{ color: "#94a3b8", fontSize: "0.85rem" }}>
+                    Login required to view accounts.
+                  </span>
+                  <Link
+                    href={`/login?returnTo=${returnTo}`}
+                    style={{
+                      fontSize: "0.8rem",
+                      fontWeight: 500,
+                      color: "#3b82f6",
+                      textDecoration: "none",
+                    }}
+                  >
+                    Sign in →
+                  </Link>
+                </div>
+              )}
+
+              {/* Session unavailable state */}
+              {sessionState === "unavailable" && accountsState === "idle" && (
+                <div style={{ color: "#94a3b8", fontSize: "0.85rem" }}>
+                  Unable to load accounts right now.
+                </div>
+              )}
+
+              {/* Error state */}
+              {accountsState === "error" && (
+                <div style={{ color: "#ef4444", fontSize: "0.85rem" }}>
+                  Unable to load accounts right now.
+                </div>
+              )}
+
+              {/* Loaded state - empty */}
+              {accountsState === "loaded" && accounts.length === 0 && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: "0.75rem",
+                  }}
+                >
+                  <span style={{ color: "#94a3b8", fontSize: "0.85rem" }}>
+                    No accounts linked yet.
+                  </span>
+                  <Link
+                    href="/accounts"
+                    style={{
+                      fontSize: "0.8rem",
+                      fontWeight: 500,
+                      color: "#3b82f6",
+                      textDecoration: "none",
+                    }}
+                  >
+                    Link your first account →
+                  </Link>
+                </div>
+              )}
+
+              {/* Loaded state - with accounts */}
+              {accountsState === "loaded" && accounts.length > 0 && (
+                <div>
+                  {/* Summary */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: "0.75rem",
+                    }}
+                  >
+                    <span style={{ color: "#94a3b8", fontSize: "0.85rem" }}>
+                      {accounts.length} account{accounts.length !== 1 ? "s" : ""} linked
+                    </span>
+                    <Link
+                      href="/accounts"
+                      style={{
+                        fontSize: "0.8rem",
+                        fontWeight: 500,
+                        color: "#3b82f6",
+                        textDecoration: "none",
+                      }}
+                    >
+                      Manage →
+                    </Link>
+                  </div>
+
+                  {/* Account list (up to 3) */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    {accounts.slice(0, 3).map((acc) => (
+                      <div
+                        key={acc.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          padding: "0.6rem 0.75rem",
+                          borderRadius: 8,
+                          background: "rgba(255, 255, 255, 0.03)",
+                          border: "1px solid rgba(255, 255, 255, 0.06)",
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontSize: "0.85rem",
+                              fontWeight: 500,
+                              color: "#e5f4ff",
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {acc.name}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: "0.75rem",
+                              color: "#64748b",
+                              marginTop: "0.15rem",
+                            }}
+                          >
+                            {acc.server_name || acc.broker_name || "—"} · {acc.account_number}
+                          </div>
+                        </div>
+                        {acc.is_active !== undefined && (
+                          <StatusBadge
+                            status={acc.is_active ? "good" : "neutral"}
+                            label={acc.is_active ? "Active" : "Inactive"}
+                          />
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Show "and X more" if there are more than 3 */}
+                    {accounts.length > 3 && (
+                      <div
+                        style={{
+                          fontSize: "0.8rem",
+                          color: "#64748b",
+                          textAlign: "center",
+                          paddingTop: "0.25rem",
+                        }}
+                      >
+                        and {accounts.length - 3} more...
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </Card>
+          </div>
         </div>
       </div>
     </AppShell>
