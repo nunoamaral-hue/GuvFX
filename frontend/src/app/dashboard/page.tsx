@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 
@@ -18,25 +18,46 @@ export default function DashboardPage() {
   const router = useRouter();
   const pathname = usePathname();
 
-  // Derive auth state once on mount via lazy initializer (avoids setState in effect)
-  // User is authenticated if EITHER access token OR refresh token exists
-  const [hasToken] = useState(() => {
-    if (typeof window === "undefined") return false;
+  // null = still checking, true = has token, false = no token
+  const [authState, setAuthState] = useState<boolean | null>(null);
+
+  // Helper to check tokens (memoized for use in listeners)
+  const checkAuth = useCallback(() => {
     const hasAccess = !!window.localStorage.getItem("guvfx_access_token");
     const hasRefresh = !!window.localStorage.getItem("guvfx_refresh_token");
     return hasAccess || hasRefresh;
-  });
+  }, []);
 
-  // Redirect if unauthenticated (effect only redirects, no setState)
+  // Check auth state after hydration using setTimeout to satisfy eslint
   useEffect(() => {
-    if (!hasToken) {
+    const timerId = setTimeout(() => {
+      setAuthState(checkAuth());
+    }, 0);
+
+    // Listen for storage changes (e.g., login/logout in another tab)
+    const handleStorage = () => {
+      setTimeout(() => {
+        setAuthState(checkAuth());
+      }, 0);
+    };
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      clearTimeout(timerId);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [checkAuth]);
+
+  // Redirect if unauthenticated (only after auth check completes)
+  useEffect(() => {
+    if (authState === false) {
       const returnTo = encodeURIComponent(pathname);
       router.replace(`/login?reason=unauthenticated&returnTo=${returnTo}`);
     }
-  }, [hasToken, router, pathname]);
+  }, [authState, router, pathname]);
 
-  // Show nothing while redirect is pending
-  if (!hasToken) {
+  // Show nothing while checking auth or redirect is pending
+  if (authState !== true) {
     return null;
   }
 

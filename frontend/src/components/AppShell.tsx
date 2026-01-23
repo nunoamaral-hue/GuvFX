@@ -90,6 +90,25 @@ export function AppShell({ children }: AppShellProps) {
   const [currentUser, setCurrentUser] = useState<Me | null>(null);
 
   useEffect(() => {
+    // AppShell should never hard-fail if /auth/me is unavailable.
+    // In local development, calling the live API often triggers CORS and noisy overlays.
+    // Treat /auth/me as best-effort enrichment only.
+    const isLocalhost =
+      typeof window !== "undefined" &&
+      (window.location.hostname === "localhost" ||
+        window.location.hostname === "127.0.0.1" ||
+        window.location.hostname === "0.0.0.0");
+
+    const hasToken =
+      typeof window !== "undefined" &&
+      (!!window.localStorage.getItem("guvfx_access_token") ||
+        !!window.localStorage.getItem("guvfx_refresh_token"));
+
+    // If we cannot reasonably determine auth, keep currentUser as null and render the shell.
+    if (isLocalhost || !hasToken) {
+      return;
+    }
+
     let cancelled = false;
 
     apiFetch<Me>("/api/auth/me/", {})
@@ -99,13 +118,11 @@ export function AppShell({ children }: AppShellProps) {
         }
       })
       .catch((err) => {
-        console.error("Failed to load current user:", err);
+        // Best-effort only: do not spam console.error (Next dev overlay) or block rendering.
+        console.warn("AppShell: failed to load current user (non-blocking):", err);
         if (!cancelled) {
           setCurrentUser(null);
         }
-      })
-      .finally(() => {
-        // no-op for now; currentUser stays as last resolved value
       });
 
     return () => {
@@ -257,6 +274,7 @@ export function AppShell({ children }: AppShellProps) {
             onClick={() => {
               if (typeof window !== "undefined") {
                 window.localStorage.removeItem("guvfx_access_token");
+                window.localStorage.removeItem("guvfx_refresh_token");
                 window.location.href = "/login?reason=logged_out";
               }
             }}
