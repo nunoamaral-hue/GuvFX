@@ -210,6 +210,99 @@ const dictionary: Dictionary = {
   "dashboard.more": { en: "more...", ja: "件..." },
   "dashboard.active": { en: "Active", ja: "アクティブ" },
   "dashboard.inactive": { en: "Inactive", ja: "非アクティブ" },
+
+  // -----------------------------------------------------------------------------
+  // Accounts - Page Header
+  // -----------------------------------------------------------------------------
+  "accounts.title": { en: "Trading Accounts", ja: "取引口座" },
+  "accounts.subtitle": {
+    en: "Link your broker / MT5 accounts so GuvFX can map strategies and trades.",
+    ja: "ブローカー/MT5口座を連携し、GuvFXで戦略と取引を紐付けます。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Accounts - Add Account Card
+  // -----------------------------------------------------------------------------
+  "accounts.addTitle": { en: "Add Trading Account", ja: "取引口座を追加" },
+  "accounts.addSubtitle": {
+    en: "Create a link to a broker or MT5 account. GuvFX will use this for mapping strategies and trades.",
+    ja: "ブローカーまたはMT5口座へのリンクを作成します。GuvFXは戦略と取引の紐付けに使用します。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Accounts - Form Labels
+  // -----------------------------------------------------------------------------
+  "accounts.accountName": { en: "Account name", ja: "口座名" },
+  "accounts.accountNameHelp": {
+    en: "This is a friendly name for you to recognise the account on your list.",
+    ja: "リストで口座を識別するための表示名です。",
+  },
+  "accounts.accountNamePlaceholder": { en: "e.g. Main MT5", ja: "例: メインMT5" },
+  "accounts.brokerServerName": { en: "Broker server name", ja: "ブローカーサーバー名" },
+  "accounts.brokerServerNameHelp": {
+    en: "This is the server name of your broker! If you are unsure, check directly with your broker what this is. It is usually in the email you receive from your broker with your access details.",
+    ja: "ブローカーのサーバー名です。不明な場合はブローカーに直接確認してください。通常、アクセス情報と一緒にブローカーから届くメールに記載されています。",
+  },
+  "accounts.brokerServerPlaceholder": { en: "e.g. Broker-Live01 or Broker-Demo02", ja: "例: Broker-Live01 または Broker-Demo02" },
+  "accounts.accountNumber": { en: "Account number / login", ja: "口座番号 / ログインID" },
+  "accounts.accountNumberHelp": {
+    en: "This is the account number used to login via your broker's MetaTrader account.",
+    ja: "ブローカーのMetaTrader口座にログインするための口座番号です。",
+  },
+  "accounts.accountNumberPlaceholder": { en: "e.g. 123456", ja: "例: 123456" },
+  "accounts.platformPassword": { en: "Platform password", ja: "プラットフォームパスワード" },
+  "accounts.platformPasswordHelp": {
+    en: "This is the password for your broker's trading platform account (e.g. MetaTrader 5). It will be stored securely and used later to connect to your account.",
+    ja: "ブローカーの取引プラットフォーム（例: MetaTrader 5）のパスワードです。安全に保存され、口座への接続に使用されます。",
+  },
+  "accounts.platformPasswordPlaceholder": {
+    en: "Password used in MetaTrader / broker platform",
+    ja: "MetaTrader/ブローカープラットフォームのパスワード",
+  },
+  "accounts.accountType": { en: "Account type", ja: "口座タイプ" },
+  "accounts.demoAccount": { en: "Demo account", ja: "デモ口座" },
+
+  // -----------------------------------------------------------------------------
+  // Accounts - Broker Suggestions
+  // -----------------------------------------------------------------------------
+  "accounts.searchingBrokers": { en: "Searching broker servers…", ja: "ブローカーサーバーを検索中…" },
+  "accounts.noBrokersFound": { en: "No matching broker servers found.", ja: "一致するブローカーサーバーが見つかりません。" },
+  "accounts.selected": { en: "Selected:", ja: "選択中:" },
+
+  // -----------------------------------------------------------------------------
+  // Accounts - Buttons
+  // -----------------------------------------------------------------------------
+  "accounts.addAccount": { en: "Add account", ja: "口座を追加" },
+  "accounts.creating": { en: "Creating…", ja: "作成中…" },
+  "accounts.testConnection": { en: "Test MT5 connection", ja: "MT5接続テスト" },
+  "accounts.testing": { en: "Testing…", ja: "テスト中…" },
+  "accounts.activeClickDeactivate": { en: "Active (click to deactivate)", ja: "有効（クリックで無効化）" },
+  "accounts.inactiveClickActivate": { en: "Inactive (click to activate)", ja: "無効（クリックで有効化）" },
+
+  // -----------------------------------------------------------------------------
+  // Accounts - Linked Accounts Card
+  // -----------------------------------------------------------------------------
+  "accounts.linkedTitle": { en: "Linked Accounts", ja: "連携済み口座" },
+  "accounts.loadingAssignments": { en: "Loading strategy assignments…", ja: "戦略割り当てを読み込み中…" },
+  "accounts.loadingAccounts": { en: "Loading accounts…", ja: "口座を読み込み中…" },
+  "accounts.noLinkedAccounts": {
+    en: "No trading accounts linked yet. Use the form above to add one.",
+    ja: "連携済みの取引口座がありません。上のフォームから追加してください。",
+  },
+  "accounts.accountNumberLabel": { en: "Account number:", ja: "口座番号:" },
+  "accounts.brokerServerLabel": { en: "Broker server:", ja: "ブローカーサーバー:" },
+  "accounts.createdLabel": { en: "Created:", ja: "作成日:" },
+
+  // -----------------------------------------------------------------------------
+  // Accounts - Messages
+  // -----------------------------------------------------------------------------
+  "accounts.failedToLoad": { en: "Failed to load trading accounts", ja: "取引口座の読み込みに失敗しました" },
+  "accounts.accountAdded": { en: "✅ Account added / MT5 login successful.", ja: "✅ 口座追加 / MT5ログイン成功" },
+  "accounts.testSuccess": { en: "✅ MT5 session matches this account (EA validation OK).", ja: "✅ MT5セッションがこの口座と一致（EA検証OK）" },
+  "accounts.testFailed": { en: "❌ Not matched:", ja: "❌ 不一致:" },
+  "accounts.setActive": { en: "Account set to ACTIVE.", ja: "口座を有効に設定しました。" },
+  "accounts.setInactive": { en: "Account set to INACTIVE.", ja: "口座を無効に設定しました。" },
+  "accounts.failedActiveStatus": { en: "Failed to change active status", ja: "有効/無効の切り替えに失敗しました" },
 };
 
 // =============================================================================

@@ -9,11 +9,12 @@
 
 import { useRouter } from "next/navigation";
 import React, { useEffect, useMemo, useState } from "react";
-import { AppShell } from "@/components/AppShell";
+import { AppShell, useLang } from "@/components/AppShell";
 import { Card } from "@/components/ui/Card";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
+import { t } from "@/lib/i18n";
 import type {
   StrategyAssignment,
   TradingAccount,
@@ -127,8 +128,12 @@ const HelpIcon: React.FC<HelpIconProps> = ({ text }) => {
     );
   };
 
-export default function AccountsPage() {
-
+/**
+ * Inner accounts content that uses lang from context.
+ * Must be rendered INSIDE AppShell to access LangContext.
+ */
+function AccountsContent() {
+  const lang = useLang();
 
   const loadAccounts = async () => {
     setLoading(true);
@@ -137,7 +142,7 @@ export default function AccountsPage() {
       const list = await apiFetch<any[]>("/api/trading/accounts/");
       setAccounts(Array.isArray(list) ? list : []);
     } catch (err: any) {
-      setError(err?.message || "Failed to load trading accounts");
+      setError(err?.message || t(lang, "accounts.failedToLoad"));
       setAccounts([]);
     } finally {
       setLoading(false);
@@ -321,9 +326,9 @@ export default function AccountsPage() {
       setSelectedBrokerServer(null);
       setBrokerSuggestions([]);
 
-      setInfo("✅ Account added / MT5 login successful.");
+      setInfo(t(lang, "accounts.accountAdded"));
     } catch (err: any) {
-      setError(err?.message || "Failed to create account");
+      setError(err?.message || t(lang, "accounts.failedToLoad"));
     } finally {
       setCreating(false);
     }
@@ -344,9 +349,9 @@ export default function AccountsPage() {
      );
 
      if (res.valid) {
-       setTestMessage("✅ MT5 session matches this account (EA validation OK).");
+       setTestMessage(t(lang, "accounts.testSuccess"));
      } else {
-       setTestMessage(`❌ Not matched: ${res.reason || "invalid"}`);
+       setTestMessage(`${t(lang, "accounts.testFailed")} ${res.reason || "invalid"}`);
      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Test failed.";
@@ -368,9 +373,9 @@ export default function AccountsPage() {
       // refresh list
       const list = await apiFetch<any[]>("/api/trading/accounts/");
       setAccounts(Array.isArray(list) ? list : []);
-      setInfo(nextActive ? "Account set to ACTIVE." : "Account set to INACTIVE.");
+      setInfo(nextActive ? t(lang, "accounts.setActive") : t(lang, "accounts.setInactive"));
     } catch (err: any) {
-      setError(err?.message || "Failed to change active status");
+      setError(err?.message || t(lang, "accounts.failedActiveStatus"));
     }
   };
 
@@ -394,13 +399,12 @@ export default function AccountsPage() {
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
 
 return (
-    <AppShell>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-<h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
-          Trading Accounts
+        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
+          {t(lang, "accounts.title")}
         </h1>
         <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
-          Link your broker / MT5 accounts so GuvFX can map strategies and trades.
+          {t(lang, "accounts.subtitle")}
         </p>
 
         {error && <Alert type="error">{error}</Alert>}
@@ -409,8 +413,8 @@ return (
 
         {/* New account form */}
         <Card
-          title="Add Trading Account"
-          subtitle="Create a link to a broker or MT5 account. GuvFX will use this for mapping strategies and trades."
+          title={t(lang, "accounts.addTitle")}
+          subtitle={t(lang, "accounts.addSubtitle")}
         >
 
           <form onSubmit={handleCreateAccount}>
@@ -431,8 +435,8 @@ return (
                     marginBottom: "0.25rem",
                   }}
                 >
-                  Account name
-                  <HelpIcon text="This is a friendly name for you to recognise the account on your list." />
+                  {t(lang, "accounts.accountName")}
+                  <HelpIcon text={t(lang, "accounts.accountNameHelp")} />
                 </label>
                 <input
                   id="acc-name"
@@ -440,7 +444,7 @@ return (
                   required
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Main MT5"
+                  placeholder={t(lang, "accounts.accountNamePlaceholder")}
                   style={{
                     width: "100%",
                     padding: "0.6rem 0.8rem",
@@ -465,8 +469,8 @@ return (
                     marginBottom: "0.25rem",
                   }}
                 >
-                  Broker server name
-                  <HelpIcon text="This is the server name of your broker! If you are unsure, check directly with your broker what this is. It is usually in the email you receive from your broker with your access details." />
+                  {t(lang, "accounts.brokerServerName")}
+                  <HelpIcon text={t(lang, "accounts.brokerServerNameHelp")} />
                 </label>
 
                 <input
@@ -478,7 +482,7 @@ return (
                     setSelectedBrokerServer(null);
                   }}
                   onKeyDown={handleBrokerInputKeyDown}
-                  placeholder="e.g. Broker-Live01 or Broker-Demo02"
+                  placeholder={t(lang, "accounts.brokerServerPlaceholder")}
                   style={{
                     width: "100%",
                     padding: "0.6rem 0.8rem",
@@ -494,7 +498,7 @@ return (
 
                 {brokerSuggestLoading && brokerName.trim().length >= 2 && (
                   <div style={{ marginTop: 6, fontSize: "0.8rem", color: "#94a3b8" }}>
-                    Searching broker servers…
+                    {t(lang, "accounts.searchingBrokers")}
                   </div>
                 )}
 
@@ -589,13 +593,13 @@ return (
                         color: "#94a3b8",
                       }}
                     >
-                      No matching broker servers found.
+                      {t(lang, "accounts.noBrokersFound")}
                     </div>
                   )}
 
                 {selectedBrokerServer && (
                   <div style={{ marginTop: 6, fontSize: "0.78rem", color: "#94a3b8" }}>
-                    Selected:{" "}
+                    {t(lang, "accounts.selected")}{" "}
                     <span style={{ color: "#e5f4ff" }}>
                       {selectedBrokerServer.broker_display_name}
                     </span>
@@ -613,8 +617,8 @@ return (
                     marginBottom: "0.25rem",
                   }}
                 >
-                  Account number / login
-                  <HelpIcon text="This is the account number used to login via your broker's MetaTrader account." />
+                  {t(lang, "accounts.accountNumber")}
+                  <HelpIcon text={t(lang, "accounts.accountNumberHelp")} />
                 </label>
                 <input
                   id="account-number"
@@ -622,7 +626,7 @@ return (
                   required
                   value={accountNumber}
                   onChange={(e) => setAccountNumber(e.target.value)}
-                  placeholder="e.g. 123456"
+                  placeholder={t(lang, "accounts.accountNumberPlaceholder")}
                   style={{
                     width: "100%",
                     padding: "0.6rem 0.8rem",
@@ -647,15 +651,15 @@ return (
                     marginBottom: "0.25rem",
                   }}
                 >
-                  Platform password
-                  <HelpIcon text="This is the password for your broker's trading platform account (e.g. MetaTrader 5). It will be stored securely and used later to connect to your account." />
+                  {t(lang, "accounts.platformPassword")}
+                  <HelpIcon text={t(lang, "accounts.platformPasswordHelp")} />
                 </label>
                 <input
                   id="platform-password"
                   type="password"
                   value={platformPassword}
                   onChange={(e) => setPlatformPassword(e.target.value)}
-                  placeholder="Password used in MetaTrader / broker platform"
+                  placeholder={t(lang, "accounts.platformPasswordPlaceholder")}
                   style={{
                     width: "100%",
                     padding: "0.6rem 0.8rem",
@@ -679,7 +683,7 @@ return (
                     marginBottom: "0.25rem",
                   }}
                 >
-                  Account type
+                  {t(lang, "accounts.accountType")}
                 </span>
                 <label
                   style={{
@@ -701,7 +705,7 @@ return (
                     }}
                     style={{ cursor: "pointer" }}
                   />
-                  Demo account
+                  {t(lang, "accounts.demoAccount")}
                 </label>
               </div>
             </div>
@@ -714,27 +718,27 @@ return (
               }}
             >
               <Button type="submit" disabled={creating}>
-                {creating ? "Creating…" : "Add account"}
+                {creating ? t(lang, "accounts.creating") : t(lang, "accounts.addAccount")}
               </Button>
             </div>
           </form>
         </Card>
 
         {/* Accounts list */}
-        <Card title="Linked Accounts">
+        <Card title={t(lang, "accounts.linkedTitle")}>
           {assignmentsError && (
             <Alert type="error">{assignmentsError}</Alert>
           )}
           {assignmentsLoading && (
             <p style={{ fontSize: "0.9rem", color: "#cbd5f5" }}>
-              Loading strategy assignments…
+              {t(lang, "accounts.loadingAssignments")}
             </p>
           )}
-          {loading && <p>Loading accounts…</p>}
+          {loading && <p>{t(lang, "accounts.loadingAccounts")}</p>}
 
           {!loading && accounts.length === 0 && !error && (
             <p style={{ fontSize: "0.9rem" }}>
-              No trading accounts linked yet. Use the form above to add one.
+              {t(lang, "accounts.noLinkedAccounts")}
             </p>
           )}
 
@@ -776,24 +780,24 @@ return (
                         disabled={accounts.filter((a) => a.is_active).length <= 1 && acc.is_active}
                         style={{ padding: "0.25rem 0.6rem", fontSize: "0.8rem" }}
                     >
-                        {acc.is_active ? "Active (click to deactivate)" : "Inactive (click to activate)"}
+                        {acc.is_active ? t(lang, "accounts.activeClickDeactivate") : t(lang, "accounts.inactiveClickActivate")}
                       </Button>
                     </div>
 
                     <div style={{ marginTop: 6, fontSize: "0.85rem", color: "#c9d7f2" }}>
-                      <span style={labelStyle}>Account number:</span>{" "}
+                      <span style={labelStyle}>{t(lang, "accounts.accountNumberLabel")}</span>{" "}
                       <span style={valueStyle}>{acc.account_number}</span>
                     </div>
 
                     <div style={{ marginTop: 4, fontSize: "0.85rem", color: "#c9d7f2" }}>
-                      <span style={labelStyle}>Broker server:</span>{" "}
+                      <span style={labelStyle}>{t(lang, "accounts.brokerServerLabel")}</span>{" "}
                       <span style={valueStyle}>
                         {(acc as any).server_name || acc.broker_name || ""}
                       </span>
                     </div>
 
                     <div style={{ marginTop: 4, fontSize: "0.78rem", color: "#7c8ca4" }}>
-                      <span style={labelStyle}>Created:</span>{" "}
+                      <span style={labelStyle}>{t(lang, "accounts.createdLabel")}</span>{" "}
                       <span style={valueStyle}>{new Date(acc.created_at).toLocaleString()}</span>
                     </div>
                   </div>
@@ -813,7 +817,7 @@ return (
                       disabled={testingId === acc.id}
                       style={{ padding: "0.25rem 0.6rem", fontSize: "0.8rem" }}
                     >
-                      {testingId === acc.id ? "Testing…" : "Test MT5 connection"}
+                      {testingId === acc.id ? t(lang, "accounts.testing") : t(lang, "accounts.testConnection")}
                     </Button>
 
                     {/* Option A toggle will go here next (cleanly) */}
@@ -825,6 +829,17 @@ return (
           </div>
         </Card>
       </div>
+  );
+}
+
+/**
+ * Page wrapper that renders AppShell first, then AccountsContent inside.
+ * This ensures useLang() in AccountsContent reads from LangContext.Provider.
+ */
+export default function AccountsPage() {
+  return (
+    <AppShell>
+      <AccountsContent />
     </AppShell>
   );
 }
