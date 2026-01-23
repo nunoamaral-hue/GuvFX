@@ -85,35 +85,6 @@ const navGroups: NavGroup[] = [
 // INLINE SVG ICONS (no external dependencies)
 // =============================================================================
 
-function LogoIcon() {
-  return (
-    <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-      <rect width="32" height="32" rx="8" fill="url(#logoGrad)" />
-      <path
-        d="M8 16L12 10L16 16L20 10L24 16"
-        stroke="#fff"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M8 20L12 14L16 20L20 14L24 20"
-        stroke="#fff"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        opacity="0.6"
-      />
-      <defs>
-        <linearGradient id="logoGrad" x1="0" y1="0" x2="32" y2="32">
-          <stop stopColor="#1d4ed8" />
-          <stop offset="1" stopColor="#22c1c3" />
-        </linearGradient>
-      </defs>
-    </svg>
-  );
-}
-
 function SearchIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -683,8 +654,12 @@ function MobileDrawer({ isOpen, onClose, pathname, isStaff }: MobileDrawerProps)
               textDecoration: "none",
             }}
           >
-            <LogoIcon />
-            <span style={{ fontSize: "1.2rem", fontWeight: 600, color: "#e5f4ff" }}>GuvFX</span>
+            <img
+              src="/brand/logo.png"
+              alt="GuvFX"
+              style={{ width: 32, height: 32, objectFit: "contain" }}
+            />
+            <span style={{ fontSize: "1.2rem", fontWeight: 600, color: "#ffffff" }}>GuvFX</span>
           </Link>
           <button
             type="button"
@@ -832,6 +807,10 @@ export function AppShell({ children }: AppShellProps) {
     <>
       {/* CSS for responsive behavior */}
       <style>{`
+        /* Prevent horizontal overflow globally */
+        html, body {
+          overflow-x: hidden;
+        }
         /* Mobile breakpoint: hide sidebar, show hamburger */
         @media (max-width: 980px) {
           .appshell-sidebar {
@@ -842,12 +821,25 @@ export function AppShell({ children }: AppShellProps) {
           }
           .appshell-main {
             margin-left: 0 !important;
+            min-width: 0;
           }
           .appshell-topbar {
             left: 0 !important;
           }
           .appshell-search {
             display: none !important;
+          }
+          .appshell-content {
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+          }
+        }
+        /* Extra small screens: tighter padding */
+        @media (max-width: 480px) {
+          .appshell-content {
+            padding-left: 0.75rem !important;
+            padding-right: 0.75rem !important;
+            padding-top: 1rem !important;
           }
         }
         /* Desktop: show sidebar, hide hamburger */
@@ -868,6 +860,9 @@ export function AppShell({ children }: AppShellProps) {
           background:
             "radial-gradient(circle at top left, #0b1020, #050713 55%, #030612 100%)",
           color: "#e5f4ff",
+          minWidth: 0,
+          maxWidth: "100vw",
+          overflowX: "hidden",
         }}
       >
         {/* ===================================================================
@@ -902,9 +897,13 @@ export function AppShell({ children }: AppShellProps) {
               textDecoration: "none",
             }}
           >
-            <LogoIcon />
+            <img
+              src="/brand/logo.png"
+              alt="GuvFX"
+              style={{ width: 32, height: 32, objectFit: "contain" }}
+            />
             <div>
-              <div style={{ fontSize: "1.2rem", fontWeight: 600, color: "#e5f4ff" }}>GuvFX</div>
+              <div style={{ fontSize: "1.2rem", fontWeight: 600, color: "#ffffff" }}>GuvFX</div>
               <div style={{ fontSize: "0.7rem", color: "#6b7280", marginTop: "2px" }}>
                 Trading Intelligence
               </div>
@@ -985,6 +984,7 @@ export function AppShell({ children }: AppShellProps) {
             display: "flex",
             flexDirection: "column",
             minHeight: "100vh",
+            minWidth: 0,
           }}
         >
           {/* ===================================================================
@@ -1041,8 +1041,12 @@ export function AppShell({ children }: AppShellProps) {
                   textDecoration: "none",
                 }}
               >
-                <LogoIcon />
-                <span style={{ fontSize: "1.1rem", fontWeight: 600, color: "#e5f4ff" }}>GuvFX</span>
+                <img
+                  src="/brand/logo.png"
+                  alt="GuvFX"
+                  style={{ width: 32, height: 32, objectFit: "contain" }}
+                />
+                <span style={{ fontSize: "1.1rem", fontWeight: 600, color: "#ffffff" }}>GuvFX</span>
               </Link>
             </div>
 
@@ -1112,9 +1116,11 @@ export function AppShell({ children }: AppShellProps) {
               PAGE CONTENT
           =================================================================== */}
           <main
+            className="appshell-content"
             style={{
               flex: 1,
               padding: "1.5rem 2rem 2.5rem 2rem",
+              minWidth: 0,
             }}
           >
             {children}
