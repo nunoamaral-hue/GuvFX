@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, createContext, useContext } from "react";
 import { apiFetch } from "@/lib/api";
+import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 
 // =============================================================================
 // TYPES
@@ -23,17 +24,24 @@ type AppShellProps = {
 };
 
 type NavItem = {
-  label: string;
+  labelKey: string; // i18n key
   href: string;
   adminOnly?: boolean;
   soon?: boolean; // Marks features not yet implemented
 };
 
 type NavGroup = {
-  label: string;
+  labelKey: string; // i18n key
   items: NavItem[];
   defaultOpen?: boolean;
 };
+
+// =============================================================================
+// LANGUAGE CONTEXT (for child components to access lang)
+// =============================================================================
+
+const LangContext = createContext<Lang>("en");
+export const useLang = () => useContext(LangContext);
 
 // =============================================================================
 // NAVIGATION CONFIGURATION
@@ -42,41 +50,41 @@ type NavGroup = {
 
 const navGroups: NavGroup[] = [
   {
-    label: "Strategy",
+    labelKey: "nav.strategy",
     defaultOpen: true,
     items: [
-      { label: "My Strategies", href: "/strategies" },
-      { label: "Marketplace", href: "/strategies/marketplace" },
-      { label: "Create Strategy", href: "/strategies/create" },
-      { label: "Strategy Advisor", href: "/ai/strategy-advisor", soon: true },
+      { labelKey: "nav.myStrategies", href: "/strategies" },
+      { labelKey: "nav.marketplace", href: "/strategies/marketplace" },
+      { labelKey: "nav.createStrategy", href: "/strategies/create" },
+      { labelKey: "nav.strategyAdvisor", href: "/ai/strategy-advisor", soon: true },
     ],
   },
   {
-    label: "Run",
+    labelKey: "nav.run",
     defaultOpen: true,
     items: [
-      { label: "Backtests", href: "/backtests" },
-      { label: "Live Trading", href: "/trading/live", soon: true },
-      { label: "Trade History", href: "/trading/trade-history" },
+      { labelKey: "nav.backtests", href: "/backtests" },
+      { labelKey: "nav.liveTrading", href: "/trading/live", soon: true },
+      { labelKey: "nav.tradeHistory", href: "/trading/trade-history" },
     ],
   },
   {
-    label: "Analytics",
+    labelKey: "nav.analytics",
     defaultOpen: false,
     items: [
-      { label: "Overview", href: "/dashboard" },
-      { label: "Performance", href: "/dashboard/performance", soon: true },
-      { label: "Strategy Metrics", href: "/analytics/strategy-metrics" },
-      { label: "Charts", href: "/charts" },
+      { labelKey: "nav.overview", href: "/dashboard" },
+      { labelKey: "nav.performance", href: "/dashboard/performance", soon: true },
+      { labelKey: "nav.strategyMetrics", href: "/analytics/strategy-metrics" },
+      { labelKey: "nav.charts", href: "/charts" },
     ],
   },
   {
-    label: "Settings",
+    labelKey: "nav.settings",
     defaultOpen: false,
     items: [
-      { label: "Broker Accounts", href: "/accounts" },
-      { label: "User Settings", href: "/profile" },
-      { label: "Hosting", href: "/admin/hosting", adminOnly: true },
+      { labelKey: "nav.brokerAccounts", href: "/accounts" },
+      { labelKey: "nav.userSettings", href: "/profile" },
+      { labelKey: "nav.hosting", href: "/admin/hosting", adminOnly: true },
     ],
   },
 ];
@@ -204,10 +212,11 @@ type NavGroupComponentProps = {
   group: NavGroup;
   pathname: string;
   isStaff: boolean;
+  lang: Lang;
   onNavigate?: () => void; // For closing mobile drawer on nav
 };
 
-function NavGroupComponent({ group, pathname, isStaff, onNavigate }: NavGroupComponentProps) {
+function NavGroupComponent({ group, pathname, isStaff, lang, onNavigate }: NavGroupComponentProps) {
   const [isOpen, setIsOpen] = useState(group.defaultOpen ?? false);
 
   // Filter out admin-only items if user is not staff
@@ -247,7 +256,7 @@ function NavGroupComponent({ group, pathname, isStaff, onNavigate }: NavGroupCom
           e.currentTarget.style.background = "transparent";
         }}
       >
-        <span>{group.label}</span>
+        <span>{t(lang, group.labelKey)}</span>
         <ChevronDownIcon open={isOpen} />
       </button>
 
@@ -291,7 +300,7 @@ function NavGroupComponent({ group, pathname, isStaff, onNavigate }: NavGroupCom
                   transition: "background 140ms ease, color 140ms ease",
                 }}
               >
-                <span>{item.label}</span>
+                <span>{t(lang, item.labelKey)}</span>
                 {item.soon && (
                   <span
                     style={{
@@ -303,7 +312,7 @@ function NavGroupComponent({ group, pathname, isStaff, onNavigate }: NavGroupCom
                       fontWeight: 500,
                     }}
                   >
-                    Soon
+                    {t(lang, "ui.soon")}
                   </span>
                 )}
                 {active && !item.soon && (
@@ -332,11 +341,12 @@ function NavGroupComponent({ group, pathname, isStaff, onNavigate }: NavGroupCom
 type ProfileDropdownProps = {
   currentUser: Me | null;
   isOpen: boolean;
+  lang: Lang;
   onToggle: () => void;
   onClose: () => void;
 };
 
-function ProfileDropdown({ currentUser, isOpen, onToggle, onClose }: ProfileDropdownProps) {
+function ProfileDropdown({ currentUser, isOpen, lang, onToggle, onClose }: ProfileDropdownProps) {
   return (
     <div style={{ position: "relative" }}>
       <button
@@ -357,7 +367,7 @@ function ProfileDropdown({ currentUser, isOpen, onToggle, onClose }: ProfileDrop
       >
         <UserIcon />
         <span style={{ fontSize: "0.85rem", maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {currentUser?.username || "Account"}
+          {currentUser?.username || t(lang, "ui.account")}
         </span>
         <ChevronDownIcon open={isOpen} />
       </button>
@@ -431,7 +441,7 @@ function ProfileDropdown({ currentUser, isOpen, onToggle, onClose }: ProfileDrop
                 }}
               >
                 <ProfileIcon />
-                <span>Profile</span>
+                <span>{t(lang, "ui.profile")}</span>
               </Link>
               <Link
                 href="/profile"
@@ -457,7 +467,7 @@ function ProfileDropdown({ currentUser, isOpen, onToggle, onClose }: ProfileDrop
                 }}
               >
                 <SettingsIcon />
-                <span>Settings</span>
+                <span>{t(lang, "ui.settings")}</span>
               </Link>
               <div style={{ height: "1px", background: "rgba(255,255,255,0.1)", margin: "0.5rem 0" }} />
               <button
@@ -488,7 +498,7 @@ function ProfileDropdown({ currentUser, isOpen, onToggle, onClose }: ProfileDrop
                 }}
               >
                 <LogoutIcon />
-                <span>Logout</span>
+                <span>{t(lang, "ui.logout")}</span>
               </button>
             </div>
           </div>
@@ -499,16 +509,25 @@ function ProfileDropdown({ currentUser, isOpen, onToggle, onClose }: ProfileDrop
 }
 
 // =============================================================================
-// COMPONENT: Language Toggle (UI only, no functionality)
+// COMPONENT: Language Toggle (functional, persists to cookie + localStorage)
 // =============================================================================
 
-function LanguageToggle() {
-  const [lang, setLang] = useState<"EN" | "JP">("EN");
+type LanguageToggleProps = {
+  lang: Lang;
+  onLangChange: (lang: Lang) => void;
+};
+
+function LanguageToggle({ lang, onLangChange }: LanguageToggleProps) {
+  const handleToggle = () => {
+    const newLang = lang === "en" ? "ja" : "en";
+    persistLang(newLang); // Persist to cookie + localStorage
+    onLangChange(newLang); // Update state
+  };
 
   return (
     <button
       type="button"
-      onClick={() => setLang(lang === "EN" ? "JP" : "EN")}
+      onClick={handleToggle}
       style={{
         display: "flex",
         alignItems: "center",
@@ -532,9 +551,9 @@ function LanguageToggle() {
         e.currentTarget.style.color = "#9ca3af";
       }}
     >
-      <span style={{ opacity: lang === "EN" ? 1 : 0.5 }}>EN</span>
+      <span style={{ opacity: lang === "en" ? 1 : 0.5 }}>EN</span>
       <span style={{ opacity: 0.3 }}>/</span>
-      <span style={{ opacity: lang === "JP" ? 1 : 0.5 }}>JP</span>
+      <span style={{ opacity: lang === "ja" ? 1 : 0.5 }}>JP</span>
     </button>
   );
 }
@@ -543,7 +562,11 @@ function LanguageToggle() {
 // COMPONENT: Notifications Button (UI only, no badge logic)
 // =============================================================================
 
-function NotificationsButton() {
+type NotificationsButtonProps = {
+  lang: Lang;
+};
+
+function NotificationsButton({ lang }: NotificationsButtonProps) {
   return (
     <button
       type="button"
@@ -568,7 +591,7 @@ function NotificationsButton() {
         e.currentTarget.style.background = "rgba(255,255,255,0.05)";
         e.currentTarget.style.color = "#9ca3af";
       }}
-      title="Notifications"
+      title={t(lang, "ui.notifications")}
     >
       <BellIcon />
     </button>
@@ -584,9 +607,10 @@ type MobileDrawerProps = {
   onClose: () => void;
   pathname: string;
   isStaff: boolean;
+  lang: Lang;
 };
 
-function MobileDrawer({ isOpen, onClose, pathname, isStaff }: MobileDrawerProps) {
+function MobileDrawer({ isOpen, onClose, pathname, isStaff, lang }: MobileDrawerProps) {
   // Prevent body scroll when drawer is open
   useEffect(() => {
     if (isOpen) {
@@ -684,10 +708,11 @@ function MobileDrawer({ isOpen, onClose, pathname, isStaff }: MobileDrawerProps)
         <nav style={{ flex: 1, padding: "1rem 0.75rem" }}>
           {navGroups.map((group) => (
             <NavGroupComponent
-              key={group.label}
+              key={group.labelKey}
               group={group}
               pathname={pathname}
               isStaff={isStaff}
+              lang={lang}
               onNavigate={onClose}
             />
           ))}
@@ -724,7 +749,7 @@ function MobileDrawer({ isOpen, onClose, pathname, isStaff }: MobileDrawerProps)
             }}
           >
             <LogoutIcon />
-            <span>Logout</span>
+            <span>{t(lang, "ui.logout")}</span>
           </button>
         </div>
       </div>
@@ -738,6 +763,20 @@ function MobileDrawer({ isOpen, onClose, pathname, isStaff }: MobileDrawerProps)
 
 export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
+
+  // Language state (persisted via cookie + localStorage)
+  // Using lazy initial state to avoid calling detectLang() on every render
+  // detectLang() is safe to call during SSR (returns "en" when window is undefined)
+  const [lang, setLangState] = useState<Lang>(() => {
+    // On server, default to "en"; on client, detect from storage
+    if (typeof window === "undefined") return "en";
+    return detectLang();
+  });
+
+  // Handler for language changes
+  const handleLangChange = useCallback((newLang: Lang) => {
+    setLangState(newLang);
+  }, []);
 
   // Auth state (best-effort only)
   const [currentUser, setCurrentUser] = useState<Me | null>(null);
@@ -804,7 +843,7 @@ export function AppShell({ children }: AppShellProps) {
   const closeMobileDrawer = useCallback(() => setMobileDrawerOpen(false), []);
 
   return (
-    <>
+    <LangContext.Provider value={lang}>
       {/* CSS for responsive behavior */}
       <style>{`
         /* Prevent horizontal overflow globally */
@@ -929,7 +968,7 @@ export function AppShell({ children }: AppShellProps) {
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
               <div style={{ fontSize: "1.2rem", fontWeight: 600, color: "#ffffff", letterSpacing: "0.01em" }}>GuvFX</div>
               <div style={{ fontSize: "0.7rem", color: "#6b7280", marginTop: "2px", letterSpacing: "0.02em" }}>
-                Trading Intelligence
+                {t(lang, "ui.tradingIntelligence")}
               </div>
             </div>
           </Link>
@@ -945,10 +984,11 @@ export function AppShell({ children }: AppShellProps) {
           >
             {navGroups.map((group) => (
               <NavGroupComponent
-                key={group.label}
+                key={group.labelKey}
                 group={group}
                 pathname={pathname}
                 isStaff={isStaff}
+                lang={lang}
               />
             ))}
           </nav>
@@ -962,7 +1002,7 @@ export function AppShell({ children }: AppShellProps) {
             }}
           >
             <div style={{ fontSize: "0.75rem", color: "#6b7280", marginBottom: "0.5rem" }}>
-              {currentUser ? currentUser.email : "Logged in"}
+              {currentUser ? currentUser.email : t(lang, "ui.loggedIn")}
             </div>
             <button
               type="button"
@@ -992,7 +1032,7 @@ export function AppShell({ children }: AppShellProps) {
               }}
             >
               <LogoutIcon />
-              <span>Log out</span>
+              <span>{t(lang, "ui.logout")}</span>
             </button>
           </div>
         </aside>
@@ -1105,7 +1145,7 @@ export function AppShell({ children }: AppShellProps) {
                 <SearchIcon />
                 <input
                   type="text"
-                  placeholder="Search strategies, backtests..."
+                  placeholder={t(lang, "ui.search")}
                   disabled
                   style={{
                     flex: 1,
@@ -1125,7 +1165,7 @@ export function AppShell({ children }: AppShellProps) {
                     color: "#6b7280",
                   }}
                 >
-                  Soon
+                  {t(lang, "ui.soon")}
                 </span>
               </div>
             </div>
@@ -1135,11 +1175,12 @@ export function AppShell({ children }: AppShellProps) {
               className="appshell-topbar-right"
               style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexShrink: 0 }}
             >
-              <LanguageToggle />
-              <NotificationsButton />
+              <LanguageToggle lang={lang} onLangChange={handleLangChange} />
+              <NotificationsButton lang={lang} />
               <ProfileDropdown
                 currentUser={currentUser}
                 isOpen={profileDropdownOpen}
+                lang={lang}
                 onToggle={() => setProfileDropdownOpen(!profileDropdownOpen)}
                 onClose={closeProfileDropdown}
               />
@@ -1169,8 +1210,9 @@ export function AppShell({ children }: AppShellProps) {
           onClose={closeMobileDrawer}
           pathname={pathname}
           isStaff={isStaff}
+          lang={lang}
         />
       </div>
-    </>
+    </LangContext.Provider>
   );
 }

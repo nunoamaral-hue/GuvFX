@@ -3,7 +3,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { AppShell } from "@/components/AppShell";
+import { AppShell, useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 /**
  * Dashboard v1 — Control Center → Insight
@@ -270,6 +271,7 @@ function QuickAction({ href, icon, label }: QuickActionProps) {
 
 export default function DashboardPage() {
   const pathname = usePathname();
+  const lang = useLang();
 
   // Session state from best-effort probe
   const [sessionState, setSessionState] = useState<SessionState>("checking");
@@ -400,7 +402,7 @@ export default function DashboardPage() {
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <AlertCircleIcon />
               <span style={{ fontSize: "0.85rem", color: "#fbbf24" }}>
-                You are not logged in. Please sign in to access all features.
+                {t(lang, "dashboard.notLoggedIn")}
               </span>
             </div>
             <Link
@@ -417,15 +419,15 @@ export default function DashboardPage() {
                 whiteSpace: "nowrap",
               }}
             >
-              Log in
+              {t(lang, "dashboard.logIn")}
             </Link>
           </div>
         )}
 
         {/* Header */}
-        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Dashboard</h1>
+        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>{t(lang, "dashboard.title")}</h1>
         <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "1.5rem" }}>
-          Unified trading intelligence across accounts and strategies.
+          {t(lang, "dashboard.subtitle")}
         </p>
 
         {/* Responsive grid: 2 columns on desktop, stacked on mobile */}
@@ -437,7 +439,7 @@ export default function DashboardPage() {
           }}
         >
           {/* System Status Card */}
-          <Card title="System Status" icon={<ServerIcon />}>
+          <Card title={t(lang, "dashboard.systemStatus")} icon={<ServerIcon />}>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
               <div
                 style={{
@@ -446,15 +448,15 @@ export default function DashboardPage() {
                   justifyContent: "space-between",
                 }}
               >
-                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>API</span>
+                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>{t(lang, "dashboard.api")}</span>
                 <StatusBadge
                   status={apiStatus}
                   label={
                     sessionState === "checking"
-                      ? "Checking..."
+                      ? t(lang, "dashboard.checking")
                       : sessionState === "unavailable"
-                        ? "Unavailable"
-                        : "Online"
+                        ? t(lang, "dashboard.unavailable")
+                        : t(lang, "dashboard.online")
                   }
                 />
               </div>
@@ -465,17 +467,17 @@ export default function DashboardPage() {
                   justifyContent: "space-between",
                 }}
               >
-                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>Session</span>
+                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>{t(lang, "dashboard.session")}</span>
                 <StatusBadge
                   status={sessionStatus}
                   label={
                     sessionState === "checking"
-                      ? "Checking..."
+                      ? t(lang, "dashboard.checking")
                       : sessionState === "authenticated"
-                        ? "Authenticated"
+                        ? t(lang, "dashboard.authenticated")
                         : sessionState === "unauthenticated"
-                          ? "Login required"
-                          : "Unknown"
+                          ? t(lang, "dashboard.loginRequired")
+                          : t(lang, "dashboard.unknown")
                   }
                 />
               </div>
@@ -483,16 +485,16 @@ export default function DashboardPage() {
           </Card>
 
           {/* Quick Actions Card */}
-          <Card title="Quick Actions" icon={<ZapIcon />}>
+          <Card title={t(lang, "dashboard.quickActions")} icon={<ZapIcon />}>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-              <QuickAction href="/accounts" icon={<PlusIcon />} label="Link Account" />
-              <QuickAction href="/strategies/create" icon={<ZapIcon />} label="Create Strategy" />
-              <QuickAction href="/strategies/marketplace" icon={<GridIcon />} label="Explore Marketplace" />
+              <QuickAction href="/accounts" icon={<PlusIcon />} label={t(lang, "dashboard.linkAccount")} />
+              <QuickAction href="/strategies/create" icon={<ZapIcon />} label={t(lang, "dashboard.createStrategy")} />
+              <QuickAction href="/strategies/marketplace" icon={<GridIcon />} label={t(lang, "dashboard.exploreMarketplace")} />
             </div>
           </Card>
 
           {/* Signals Card - account summary metrics */}
-          <Card title="Signals" icon={<ActivityIcon />}>
+          <Card title={t(lang, "dashboard.signals")} icon={<ActivityIcon />}>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
               <div
                 style={{
@@ -501,7 +503,7 @@ export default function DashboardPage() {
                   justifyContent: "space-between",
                 }}
               >
-                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>Accounts linked</span>
+                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>{t(lang, "dashboard.accountsLinked")}</span>
                 <span style={{ fontSize: "0.85rem", fontWeight: 500, color: "#e5f4ff" }}>
                   {accountsState === "loaded" ? accounts.length : "—"}
                 </span>
@@ -513,7 +515,7 @@ export default function DashboardPage() {
                   justifyContent: "space-between",
                 }}
               >
-                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>Active accounts</span>
+                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>{t(lang, "dashboard.activeAccounts")}</span>
                 <span style={{ fontSize: "0.85rem", fontWeight: 500, color: "#e5f4ff" }}>
                   {accountsState === "loaded"
                     ? accounts.some((a) => a.is_active !== undefined)
@@ -529,7 +531,7 @@ export default function DashboardPage() {
                   justifyContent: "space-between",
                 }}
               >
-                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>Demo accounts</span>
+                <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>{t(lang, "dashboard.demoAccounts")}</span>
                 <span style={{ fontSize: "0.85rem", fontWeight: 500, color: "#e5f4ff" }}>
                   {accountsState === "loaded"
                     ? accounts.some((a) => a.is_demo !== undefined)
@@ -543,7 +545,7 @@ export default function DashboardPage() {
 
           {/* Accounts Card - spans full width on larger screens */}
           <div style={{ gridColumn: "1 / -1" }}>
-            <Card title="Trading Accounts" icon={<UserIcon />}>
+            <Card title={t(lang, "dashboard.tradingAccounts")} icon={<UserIcon />}>
               {/* Loading state - skeleton placeholder */}
               {(accountsState === "idle" || accountsState === "loading") &&
                 sessionState === "authenticated" && (
@@ -617,7 +619,7 @@ export default function DashboardPage() {
                   }}
                 >
                   <span style={{ color: "#94a3b8", fontSize: "0.85rem" }}>
-                    Login required to view accounts.
+                    {t(lang, "dashboard.loginToViewAccounts")}
                   </span>
                   <Link
                     href={`/login?returnTo=${returnTo}`}
@@ -628,7 +630,7 @@ export default function DashboardPage() {
                       textDecoration: "none",
                     }}
                   >
-                    Sign in →
+                    {t(lang, "dashboard.signIn")}
                   </Link>
                 </div>
               )}
@@ -636,14 +638,14 @@ export default function DashboardPage() {
               {/* Session unavailable state */}
               {sessionState === "unavailable" && accountsState === "idle" && (
                 <div style={{ color: "#94a3b8", fontSize: "0.85rem" }}>
-                  Unable to load accounts right now.
+                  {t(lang, "dashboard.unableToLoad")}
                 </div>
               )}
 
               {/* Error state */}
               {accountsState === "error" && (
                 <div style={{ color: "#ef4444", fontSize: "0.85rem" }}>
-                  Unable to load accounts right now.
+                  {t(lang, "dashboard.unableToLoad")}
                 </div>
               )}
 
@@ -662,10 +664,10 @@ export default function DashboardPage() {
                     <UserIcon />
                   </div>
                   <div style={{ color: "#e5f4ff", fontSize: "0.9rem", fontWeight: 500, marginBottom: "0.35rem" }}>
-                    No trading accounts linked
+                    {t(lang, "dashboard.noAccountsLinked")}
                   </div>
                   <p style={{ color: "#64748b", fontSize: "0.8rem", marginBottom: "1rem", lineHeight: 1.5 }}>
-                    Connect your first broker account to start tracking performance and deploying strategies.
+                    {t(lang, "dashboard.connectFirstAccount")}
                   </p>
                   <Link
                     href="/accounts"
@@ -683,7 +685,7 @@ export default function DashboardPage() {
                       textDecoration: "none",
                     }}
                   >
-                    <PlusIcon /> Link Account
+                    <PlusIcon /> {t(lang, "dashboard.linkAccount")}
                   </Link>
                 </div>
               )}
@@ -701,7 +703,7 @@ export default function DashboardPage() {
                     }}
                   >
                     <span style={{ color: "#94a3b8", fontSize: "0.85rem" }}>
-                      {accounts.length} account{accounts.length !== 1 ? "s" : ""} linked
+                      {accounts.length} {accounts.length !== 1 ? t(lang, "dashboard.accountsCountPlural") : t(lang, "dashboard.accountsCount")} {t(lang, "dashboard.linked")}
                     </span>
                     <Link
                       href="/accounts"
@@ -712,7 +714,7 @@ export default function DashboardPage() {
                         textDecoration: "none",
                       }}
                     >
-                      Manage →
+                      {t(lang, "dashboard.manage")}
                     </Link>
                   </div>
 
@@ -761,7 +763,7 @@ export default function DashboardPage() {
                         {acc.is_active !== undefined && (
                           <StatusBadge
                             status={acc.is_active ? "good" : "neutral"}
-                            label={acc.is_active ? "Active" : "Inactive"}
+                            label={acc.is_active ? t(lang, "dashboard.active") : t(lang, "dashboard.inactive")}
                           />
                         )}
                       </div>
@@ -777,7 +779,7 @@ export default function DashboardPage() {
                           paddingTop: "0.25rem",
                         }}
                       >
-                        and {accounts.length - 3} more...
+                        {t(lang, "dashboard.andMore")} {accounts.length - 3} {t(lang, "dashboard.more")}
                       </div>
                     )}
                   </div>
