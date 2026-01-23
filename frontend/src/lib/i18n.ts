@@ -303,6 +303,43 @@ const dictionary: Dictionary = {
   "accounts.setActive": { en: "Account set to ACTIVE.", ja: "口座を有効に設定しました。" },
   "accounts.setInactive": { en: "Account set to INACTIVE.", ja: "口座を無効に設定しました。" },
   "accounts.failedActiveStatus": { en: "Failed to change active status", ja: "有効/無効の切り替えに失敗しました" },
+
+  // -----------------------------------------------------------------------------
+  // Login - Page Header
+  // -----------------------------------------------------------------------------
+  "login.welcomeBack": { en: "Welcome back to", ja: "おかえりなさい" },
+  "login.subtitle": {
+    en: "Log in to manage strategies, review backtests, and get AI-powered guidance on your trading.",
+    ja: "ログインして戦略の管理、バックテストの確認、AIによる取引ガイダンスを利用しましょう。",
+  },
+  "login.logIn": { en: "Log in", ja: "ログイン" },
+  "login.goToSignUp": { en: "Go to Sign up", ja: "新規登録へ" },
+
+  // -----------------------------------------------------------------------------
+  // Login - Form Panel
+  // -----------------------------------------------------------------------------
+  "login.panelTitle": { en: "Log in", ja: "ログイン" },
+  "login.panelSubtitle": { en: "Welcome back — enter your GuvFX credentials.", ja: "おかえりなさい — GuvFXの認証情報を入力してください。" },
+  "login.email": { en: "Email", ja: "メールアドレス" },
+  "login.emailPlaceholder": { en: "Email", ja: "メールアドレス" },
+  "login.password": { en: "Password", ja: "パスワード" },
+  "login.passwordPlaceholder": { en: "Your password", ja: "パスワード" },
+  "login.continue": { en: "Continue", ja: "続行" },
+  "login.loggingIn": { en: "Logging in...", ja: "ログイン中..." },
+
+  // -----------------------------------------------------------------------------
+  // Login - Reason Messages
+  // -----------------------------------------------------------------------------
+  "login.reasonExpired": { en: "Your token has expired, please login again.", ja: "トークンの有効期限が切れました。再度ログインしてください。" },
+  "login.reasonUnauthenticated": { en: "Please log in to continue.", ja: "続行するにはログインしてください。" },
+  "login.reasonLoggedOut": { en: "You have been logged out.", ja: "ログアウトしました。" },
+
+  // -----------------------------------------------------------------------------
+  // Login - Validation & Success Messages
+  // -----------------------------------------------------------------------------
+  "login.errorEmptyFields": { en: "Please enter your email and password.", ja: "メールアドレスとパスワードを入力してください。" },
+  "login.errorDefault": { en: "Login failed. Please check your credentials.", ja: "ログインに失敗しました。認証情報を確認してください。" },
+  "login.success": { en: "Logged in successfully. Redirecting…", ja: "ログイン成功。リダイレクト中…" },
 };
 
 // =============================================================================

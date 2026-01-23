@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { type Lang, detectLang, t } from "@/lib/i18n";
 
 /**
  * Validates returnTo parameter for safe redirect.
@@ -20,7 +21,10 @@ function isValidReturnTo(value: string | null): boolean {
 
 export default function LoginPage() {
   const router = useRouter();
-  
+
+  // Language detection (not inside AppShell, so use detectLang directly)
+  const [lang, setLang] = useState<Lang>("en");
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
@@ -30,6 +34,9 @@ export default function LoginPage() {
   const [returnTo, setReturnTo] = useState<string | null>(null);
 
   useEffect(() => {
+    // Detect language from cookie/localStorage/navigator
+    setLang(detectLang());
+
     // Avoid next/navigation useSearchParams build requirement by reading from location directly.
     const params = new URLSearchParams(window.location.search);
     const reason = params.get("reason");
@@ -40,12 +47,13 @@ export default function LoginPage() {
       setReturnTo(returnToParam);
     }
 
+    // Set reason message (will be translated in render using current lang)
     if (reason === "expired" || reason === "token_expired") {
-      setInfoMessage("Your token has expired, please login again.");
+      setInfoMessage("expired");
     } else if (reason === "unauthenticated") {
-      setInfoMessage("Please log in to continue.");
+      setInfoMessage("unauthenticated");
     } else if (reason === "logged_out") {
-      setInfoMessage("You have been logged out.");
+      setInfoMessage("logged_out");
     } else {
       setInfoMessage(null);
     }
@@ -57,7 +65,7 @@ export default function LoginPage() {
     setSuccess(null);
 
     if (!email || !password) {
-      setError("Please enter your email and password.");
+      setError(t(lang, "login.errorEmptyFields"));
       return;
     }
 
@@ -77,11 +85,11 @@ export default function LoginPage() {
       });
 
       if (!res.ok) {
-        const t = await res.text();
-        throw new Error(t || "Login failed. Please check your credentials.");
+        const text = await res.text();
+        throw new Error(text || t(lang, "login.errorDefault"));
       }
 
-      setSuccess("Logged in successfully. Redirecting…");
+      setSuccess(t(lang, "login.success"));
       
       // Post-login redirect: use validated returnTo or default to /dashboard
       const redirectPath = returnTo || "/dashboard";
@@ -95,7 +103,7 @@ export default function LoginPage() {
       const message =
         err instanceof Error
           ? err.message
-          : "Login failed. Please check your credentials.";
+          : t(lang, "login.errorDefault");
       setError(message);
     } finally {
       setLoading(false);
@@ -134,7 +142,7 @@ export default function LoginPage() {
               marginBottom: "0.5rem",
             }}
           >
-            Welcome back to
+            {t(lang, "login.welcomeBack")}
           </p>
           <h1
             style={{
@@ -156,8 +164,7 @@ export default function LoginPage() {
               color: "#9ab0c5",
             }}
           >
-            Log in to manage strategies, review backtests, and get AI-powered
-            guidance on your trading.
+            {t(lang, "login.subtitle")}
           </p>
 
           <div style={{ marginTop: "2.5rem", display: "flex", gap: "1rem" }}>
@@ -179,7 +186,7 @@ export default function LoginPage() {
                 if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
               }}
             >
-              Log in
+              {t(lang, "login.logIn")}
             </button>
             <button
               style={{
@@ -194,7 +201,7 @@ export default function LoginPage() {
               }}
               onClick={() => router.push("/")}
             >
-              Go to Sign up
+              {t(lang, "login.goToSignUp")}
             </button>
           </div>
         </div>
@@ -231,7 +238,7 @@ export default function LoginPage() {
               color: "#e9f4ff",
             }}
           >
-            Log in
+            {t(lang, "login.panelTitle")}
           </h2>
           <p
             style={{
@@ -241,7 +248,7 @@ export default function LoginPage() {
               marginBottom: "1.2rem",
             }}
           >
-            Welcome back — enter your GuvFX credentials.
+            {t(lang, "login.panelSubtitle")}
           </p>
 
           {/* Progress bar (full for login) */}
@@ -277,7 +284,9 @@ export default function LoginPage() {
                 color: "#c9ecff",
               }}
             >
-              {infoMessage}
+              {infoMessage === "expired" && t(lang, "login.reasonExpired")}
+              {infoMessage === "unauthenticated" && t(lang, "login.reasonUnauthenticated")}
+              {infoMessage === "logged_out" && t(lang, "login.reasonLoggedOut")}
             </div>
           )}
 
@@ -324,13 +333,13 @@ export default function LoginPage() {
                 marginBottom: "0.3rem",
               }}
             >
-              Email
+              {t(lang, "login.email")}
             </label>
             <input
               id="email"
               type="email"
               required
-              placeholder="Email"
+              placeholder={t(lang, "login.emailPlaceholder")}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               style={{
@@ -355,13 +364,13 @@ export default function LoginPage() {
                 marginBottom: "0.3rem",
               }}
             >
-              Password
+              {t(lang, "login.password")}
             </label>
             <input
               id="password"
               type="password"
               required
-              placeholder="Your password"
+              placeholder={t(lang, "login.passwordPlaceholder")}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               style={{
@@ -397,7 +406,7 @@ export default function LoginPage() {
                 opacity: loading ? 0.8 : 1,
               }}
             >
-              {loading ? "Logging in..." : "Continue"}
+              {loading ? t(lang, "login.loggingIn") : t(lang, "login.continue")}
             </button>
           </form>
         </div>
