@@ -840,6 +840,10 @@ export function AppShell({ children }: AppShellProps) {
             text-overflow: ellipsis;
             white-space: nowrap;
           }
+          .appshell-brand-logo {
+            width: 28px !important;
+            height: 28px !important;
+          }
         }
         /* Extra small screens: tighter padding */
         @media (max-width: 480px) {
@@ -851,9 +855,14 @@ export function AppShell({ children }: AppShellProps) {
           }
           .appshell-brand-text {
             max-width: 80px;
+            font-size: 1rem !important;
           }
           .appshell-topbar-right {
             gap: 0.5rem !important;
+          }
+          .appshell-brand-logo {
+            width: 26px !important;
+            height: 26px !important;
           }
         }
         /* Desktop: show sidebar, hide hamburger and mobile brand */
@@ -917,9 +926,9 @@ export function AppShell({ children }: AppShellProps) {
               alt="GuvFX"
               style={{ width: 32, height: 32, objectFit: "contain" }}
             />
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-              <div style={{ fontSize: "1.2rem", fontWeight: 600, color: "#ffffff" }}>GuvFX</div>
-              <div style={{ fontSize: "0.7rem", color: "#6b7280", marginTop: "2px" }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
+              <div style={{ fontSize: "1.2rem", fontWeight: 600, color: "#ffffff", letterSpacing: "0.01em" }}>GuvFX</div>
+              <div style={{ fontSize: "0.7rem", color: "#6b7280", marginTop: "2px", letterSpacing: "0.02em" }}>
                 Trading Intelligence
               </div>
             </div>
@@ -1060,6 +1069,7 @@ export function AppShell({ children }: AppShellProps) {
                 <img
                   src="/brand/logo.png"
                   alt="GuvFX"
+                  className="appshell-brand-logo"
                   style={{ width: 32, height: 32, objectFit: "contain", flexShrink: 0 }}
                 />
                 <span
