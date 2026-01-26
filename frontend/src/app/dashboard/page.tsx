@@ -428,8 +428,11 @@ function DashboardContent() {
 
         {/* Header */}
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>{t(lang, "dashboard.title")}</h1>
-        <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "1.5rem" }}>
+        <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "0.5rem" }}>
           {t(lang, "dashboard.subtitle")}
+        </p>
+        <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "1.5rem" }}>
+          {t(lang, "legal.microDisclaimer")}
         </p>
 
         {/* Responsive grid: 2 columns on desktop, stacked on mobile */}

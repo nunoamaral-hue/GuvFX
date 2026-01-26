@@ -499,6 +499,10 @@ const dictionary: Dictionary = {
     en: "GuvFX is a strategy management platform and does not provide investment advice.",
     ja: "GuvFXは戦略管理プラットフォームであり、投資助言を提供するものではありません。",
   },
+  "legal.microDisclaimer": {
+    en: "Platform tools only — not financial advice.",
+    ja: "本プラットフォームはツール提供のみで、投資助言ではありません。",
+  },
 };
 
 // =============================================================================

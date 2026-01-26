@@ -6,7 +6,8 @@ import { apiFetch } from "@/lib/api";
 import { Card } from "@/components/ui/Card";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
-import { AppShell } from "@/components/AppShell";
+import { AppShell, useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 const FOREX_SYMBOLS = [
   // Majors
@@ -481,6 +482,7 @@ const pillStyle = (accent: "blue" | "green" | "purple" | "yellow"): React.CSSPro
 
 export default function CreateStrategyPage() {
   const router = useRouter();
+  const lang = useLang();
 
   const [archetypeId, setArchetypeId] = useState<ArchetypeId>("TREND_EMA_CROSSOVER");
   const selectedArchetype = ARCHETYPES.find((a) => a.id === archetypeId) || ARCHETYPES[0];
@@ -794,9 +796,12 @@ export default function CreateStrategyPage() {
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
           Create Strategy
         </h1>
-        <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
+        <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "0.5rem" }}>
           Build a complete trading strategy from edge to execution. You can
           refine details later on the strategy page.
+        </p>
+        <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "1rem" }}>
+          {t(lang, "legal.microDisclaimer")}
         </p>
 
         <div

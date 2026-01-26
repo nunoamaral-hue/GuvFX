@@ -1,7 +1,8 @@
 "use client";
 
-import { AppShell } from "@/components/AppShell";
+import { AppShell, useLang } from "@/components/AppShell";
 import { Button } from "@/components/ui/Button";
+import { t } from "@/lib/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { useRouter } from "next/navigation";
@@ -182,6 +183,7 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
 // ─────────────────────────────────────────────────────────────────────
 export default function StrategyMarketplacePage() {
   const router = useRouter();
+  const lang = useLang();
 
   const LS_DEFAULT_ACCOUNT_KEY = "guvfx_marketplace_default_account_id";
 
@@ -381,8 +383,11 @@ export default function StrategyMarketplacePage() {
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         {/* Header */}
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Strategy Marketplace</h1>
-        <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1.5rem" }}>
+        <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "0.5rem" }}>
           Browse and deploy pre-built strategies to your trading accounts.
+        </p>
+        <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "1.5rem" }}>
+          {t(lang, "legal.microDisclaimer")}
         </p>
 
         {authChecked && !isAuthed && (
