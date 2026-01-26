@@ -223,6 +223,39 @@ export default function RegisterPage() {
             border: "1px solid rgba(74,179,255,0.18)",
           }}
         >
+          {/* Step indicator header */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              marginBottom: "0.5rem",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "0.7rem",
+                fontWeight: 600,
+                color: "#4ab3ff",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
+              {t(lang, "register.stepIndicator")}
+            </span>
+            <span style={{ color: "#4a5568", fontSize: "0.7rem" }}>—</span>
+            <span
+              style={{
+                fontSize: "0.7rem",
+                color: "#8fa0b7",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
+              {t(lang, "register.stepTitle")}
+            </span>
+          </div>
+
           <h2
             style={{
               fontSize: "1.6rem",
@@ -233,16 +266,6 @@ export default function RegisterPage() {
           >
             {t(lang, "register.createAccount")}
           </h2>
-          <p
-            style={{
-              fontSize: "0.8rem",
-              color: "#8fa0b7",
-              margin: 0,
-              marginBottom: "1.2rem",
-            }}
-          >
-            {t(lang, "register.step")}
-          </p>
 
           {/* Progress bar */}
           <div
@@ -251,17 +274,33 @@ export default function RegisterPage() {
               borderRadius: 999,
               background: "rgba(255,255,255,0.06)",
               overflow: "hidden",
-              marginBottom: "1.5rem",
+              marginBottom: "0.75rem",
             }}
           >
             <div
               style={{
-                width: "8.5%",
+                width: "20%",
                 height: "100%",
                 background:
                   "linear-gradient(90deg, #4ab3ff 0%, #7af0ff 100%)",
               }}
             />
+          </div>
+
+          {/* Step note info box */}
+          <div
+            style={{
+              background: "rgba(74, 179, 255, 0.06)",
+              border: "1px solid rgba(74, 179, 255, 0.15)",
+              borderRadius: 8,
+              padding: "0.6rem 0.75rem",
+              marginBottom: "1.25rem",
+              fontSize: "0.75rem",
+              color: "#9ab0c5",
+              lineHeight: 1.5,
+            }}
+          >
+            {t(lang, "register.stepNote")}
           </div>
 
           {/* Feedback messages */}
@@ -414,10 +453,81 @@ export default function RegisterPage() {
               {loading ? t(lang, "register.creating") : t(lang, "register.continue")}
             </button>
           </form>
+
+          {/* Coming Next panel */}
+          <div
+            style={{
+              marginTop: "1.5rem",
+              paddingTop: "1rem",
+              borderTop: "1px solid rgba(255, 255, 255, 0.06)",
+            }}
+          >
+            <p
+              style={{
+                fontSize: "0.75rem",
+                fontWeight: 600,
+                color: "#6b7c91",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+                margin: "0 0 0.75rem",
+              }}
+            >
+              {t(lang, "register.nextTitle")}
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              <ComingNextItem label={t(lang, "register.nextEmailVerify")} />
+              <ComingNextItem label={t(lang, "register.nextHosting")} />
+              <ComingNextItem label={t(lang, "register.nextProfile")} />
+              <ComingNextItem label={t(lang, "register.nextSecurity")} />
+            </div>
+          </div>
         </div>
       </div>
       </div>
       <LegalFooter lang={lang} />
+    </div>
+  );
+}
+
+// =============================================================================
+// COMING NEXT ITEM COMPONENT (visual-only, disabled)
+// =============================================================================
+
+function ComingNextItem({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "0.5rem",
+        padding: "0.4rem 0.6rem",
+        borderRadius: 6,
+        background: "rgba(255, 255, 255, 0.02)",
+        border: "1px solid rgba(255, 255, 255, 0.04)",
+      }}
+    >
+      {/* Lock icon */}
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#4a5568"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+      </svg>
+      <span
+        style={{
+          fontSize: "0.8rem",
+          color: "#5a6a7e",
+        }}
+      >
+        {label}
+      </span>
     </div>
   );
 }
