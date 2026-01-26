@@ -489,6 +489,86 @@ const dictionary: Dictionary = {
   "register.errorDefault": { en: "Registration failed.", ja: "登録に失敗しました。" },
 
   // -----------------------------------------------------------------------------
+  // Register Page — Step 2: Email Verification (RESERVED)
+  // -----------------------------------------------------------------------------
+  "register.step2Title": { en: "Verify Your Email", ja: "メールアドレスの確認" },
+  "register.step2Subtitle": { en: "Check your inbox for a verification link.", ja: "受信トレイの確認リンクをクリックしてください。" },
+  "register.step2Note": {
+    en: "Email verification is required to link live trading accounts.",
+    ja: "ライブ取引口座を連携するにはメール認証が必要です。",
+  },
+  "register.verifyEmail": { en: "Verify email", ja: "メールを確認" },
+  "register.verificationSent": { en: "Verification email sent to {email}.", ja: "{email}に確認メールを送信しました。" },
+  "register.resendVerification": { en: "Resend verification email", ja: "確認メールを再送信" },
+
+  // -----------------------------------------------------------------------------
+  // Register Page — Step 3: Hosting Selection (RESERVED)
+  // -----------------------------------------------------------------------------
+  "register.step3Title": { en: "Hosting Selection", ja: "ホスティング選択" },
+  "register.step3Subtitle": { en: "Choose where your strategies will execute.", ja: "戦略を実行する場所を選択してください。" },
+  "register.step3Note": {
+    en: "Hosting is required to deploy strategies. You can change this later.",
+    ja: "戦略をデプロイするにはホスティングが必要です。後で変更できます。",
+  },
+  "register.selectRegion": { en: "Select region", ja: "リージョンを選択" },
+  "register.selectTier": { en: "Select tier", ja: "ティアを選択" },
+  "register.hostingTerms": {
+    en: "I acknowledge that hosting resources are subject to the hosting terms of service.",
+    ja: "ホスティングリソースはホスティング利用規約に従うことを了承します。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Register Page — Step 4: Profile & Compliance (RESERVED)
+  // -----------------------------------------------------------------------------
+  "register.step4Title": { en: "Profile & Compliance", ja: "プロフィール・コンプライアンス" },
+  "register.step4Subtitle": { en: "Complete your profile and acknowledge platform terms.", ja: "プロフィールを完成させ、プラットフォーム規約を確認してください。" },
+  "register.step4Note": {
+    en: "Required for full platform access. All information is kept confidential.",
+    ja: "全機能へのアクセスに必要です。すべての情報は機密として扱われます。",
+  },
+  "register.riskDisclosure": {
+    en: "I understand that trading in financial instruments carries risk and past performance does not guarantee future results.",
+    ja: "金融商品の取引にはリスクが伴い、過去の実績は将来の結果を保証しないことを理解しています。",
+  },
+  "register.platformTerms": {
+    en: "I accept the platform terms of service.",
+    ja: "プラットフォーム利用規約に同意します。",
+  },
+  "register.notAdviceAck": {
+    en: "I understand that GuvFX provides strategy management tools only and does not provide investment advice. I am solely responsible for all trading decisions.",
+    ja: "GuvFXは戦略管理ツールのみを提供し、投資助言は行わないことを理解しています。すべての取引判断は自己責任です。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Register Page — Step 5: Security Setup (RESERVED)
+  // -----------------------------------------------------------------------------
+  "register.step5Title": { en: "Security Setup", ja: "セキュリティ設定" },
+  "register.step5Subtitle": { en: "Protect your account with additional security.", ja: "追加のセキュリティでアカウントを保護してください。" },
+  "register.step5Note": {
+    en: "Two-factor authentication is optional but recommended for account security.",
+    ja: "二要素認証は任意ですが、アカウントのセキュリティのために推奨されます。",
+  },
+  "register.setup2FA": { en: "Set up two-factor authentication", ja: "二要素認証を設定" },
+  "register.skipForNow": { en: "Skip for now", ja: "今はスキップ" },
+  "register.generateRecoveryCodes": { en: "Generate recovery codes", ja: "リカバリーコードを生成" },
+
+  // -----------------------------------------------------------------------------
+  // Register Page — Completion (RESERVED)
+  // -----------------------------------------------------------------------------
+  "register.registrationComplete": {
+    en: "Registration complete. Welcome to GuvFX.",
+    ja: "登録完了。GuvFXへようこそ。",
+  },
+  "register.resumeRegistration": {
+    en: "Resume registration",
+    ja: "登録を再開",
+  },
+  "register.incompleteRegistration": {
+    en: "Complete your registration to unlock all features.",
+    ja: "すべての機能をアンロックするには登録を完了してください。",
+  },
+
+  // -----------------------------------------------------------------------------
   // Legal Footer Disclaimer
   // -----------------------------------------------------------------------------
   "legal.footerLine1": {
