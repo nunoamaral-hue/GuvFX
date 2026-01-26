@@ -210,6 +210,10 @@ const dictionary: Dictionary = {
   "dashboard.more": { en: "more...", ja: "件..." },
   "dashboard.active": { en: "Active", ja: "アクティブ" },
   "dashboard.inactive": { en: "Inactive", ja: "非アクティブ" },
+  "dashboard.trustMiniBody": {
+    en: "You control all trading decisions. This platform does not execute trades without your action.",
+    ja: "すべての取引判断はあなたが行います。操作なしに取引が実行されることはありません。",
+  },
 
   // -----------------------------------------------------------------------------
   // Accounts - Page Header
@@ -404,6 +408,54 @@ const dictionary: Dictionary = {
   "landing.trustB4": { en: "Full account separation", ja: "口座の完全分離" },
 
   // -----------------------------------------------------------------------------
+  // Landing Page - Trust & Clarity Section (Legal-first)
+  // -----------------------------------------------------------------------------
+  "landing.trustHeadline": {
+    en: "Trust & Clarity",
+    ja: "信頼と透明性",
+  },
+  "landing.trustSub": {
+    en: "GuvFX is a technology platform for strategy management. We do not provide investment advice.",
+    ja: "GuvFXは戦略管理のための技術プラットフォームです。投資助言は行いません。",
+  },
+  "landing.trustPoint1Title": { en: "Full Transparency", ja: "完全な透明性" },
+  "landing.trustPoint1Body": {
+    en: "Every rule and parameter is visible. No hidden logic or black-box decisions.",
+    ja: "すべてのルールとパラメータが確認可能。隠されたロジックやブラックボックスはありません。",
+  },
+  "landing.trustPoint2Title": { en: "You Stay in Control", ja: "あなたが主導権を持つ" },
+  "landing.trustPoint2Body": {
+    en: "Nothing runs without your explicit action. Review, approve, and execute on your terms.",
+    ja: "明示的な操作なしに実行されることはありません。確認・承認・実行はすべてあなた次第。",
+  },
+  "landing.trustPoint3Title": { en: "Test Before Execution", ja: "実行前にテスト" },
+  "landing.trustPoint3Body": {
+    en: "Backtest strategies against historical data. Understand behavior before any live execution.",
+    ja: "過去データで戦略をバックテスト。ライブ実行前に動作を把握。",
+  },
+  "landing.trustPoint4Title": { en: "Account Separation", ja: "口座の分離" },
+  "landing.trustPoint4Body": {
+    en: "Each broker account is isolated. Strategies operate only where you assign them.",
+    ja: "各ブローカー口座は独立。戦略は指定した場所でのみ動作します。",
+  },
+  "landing.blackBoxHeadline": { en: "Not a black box", ja: "ブラックボックスではない" },
+  "landing.blackBoxBody": {
+    en: "Every strategy parameter is explicit and editable. You see exactly what the system will do.",
+    ja: "すべての戦略パラメータは明示的で編集可能。システムの動作を正確に確認できます。",
+  },
+  "landing.controlHeadline": { en: "You control execution", ja: "実行はあなたが管理" },
+  "landing.controlBody": {
+    en: "No trades are placed without your approval. Automated execution requires explicit setup and confirmation.",
+    ja: "承認なしに取引が行われることはありません。自動実行には明示的な設定と確認が必要です。",
+  },
+  "landing.learnCTA": { en: "How it works", ja: "仕組みを見る" },
+  "landing.viewDemoCTA": { en: "Explore dashboard", ja: "ダッシュボードを見る" },
+  "landing.disclaimerInline": {
+    en: "Platform tools only — not financial advice.",
+    ja: "ツール提供のみ — 投資助言ではありません。",
+  },
+
+  // -----------------------------------------------------------------------------
   // Landing Page - Language Suggestion Prompt
   // -----------------------------------------------------------------------------
   "landing.langPrompt": { en: "Prefer Japanese?", ja: "日本語で表示しますか？" },
@@ -487,6 +539,11 @@ const dictionary: Dictionary = {
   "register.passwordTooShort": { en: "Password must be at least 3 characters.", ja: "パスワードは3文字以上必要です。" },
   "register.success": { en: "Account created for {email}. You can now log in.", ja: "{email}のアカウントが作成されました。ログインできます。" },
   "register.errorDefault": { en: "Registration failed.", ja: "登録に失敗しました。" },
+  "register.trustMiniTitle": { en: "Your control, your decisions", ja: "あなたの主導、あなたの判断" },
+  "register.trustMiniBody": {
+    en: "GuvFX provides strategy tools only. No trades execute without your explicit action. You remain in control.",
+    ja: "GuvFXは戦略ツールのみを提供します。明示的な操作なしに取引は実行されません。主導権は常にあなたにあります。",
+  },
 
   // -----------------------------------------------------------------------------
   // Register Page — Step 2: Email Verification (RESERVED)

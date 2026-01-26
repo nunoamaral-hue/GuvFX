@@ -77,6 +77,11 @@ export default function LandingPage() {
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const scrollToTrustClarity = () => {
+    const el = document.getElementById("trust-clarity");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <div
       style={{
@@ -371,6 +376,35 @@ export default function LandingPage() {
           {t(lang, "landing.ctaMicro")}
         </p>
 
+        {/* Inline disclaimer */}
+        <p
+          style={{
+            marginTop: "0.75rem",
+            fontSize: "0.75rem",
+            color: "#4a5568",
+          }}
+        >
+          {t(lang, "landing.disclaimerInline")}
+        </p>
+
+        {/* Learn more CTA */}
+        <button
+          onClick={scrollToTrustClarity}
+          style={{
+            marginTop: "1.5rem",
+            padding: "0.5rem 1.25rem",
+            borderRadius: 999,
+            border: "1px solid rgba(74, 179, 255, 0.25)",
+            background: "transparent",
+            color: "#7eb8e0",
+            fontSize: "0.85rem",
+            fontWeight: 500,
+            cursor: "pointer",
+          }}
+        >
+          {t(lang, "landing.learnCTA")}
+        </button>
+
         {/* Scroll indicator */}
         <div
           style={{
@@ -391,6 +425,177 @@ export default function LandingPage() {
           >
             <path d="M12 5v14M5 12l7 7 7-7" />
           </svg>
+        </div>
+      </section>
+
+      {/* ======================================================================
+          TRUST & CLARITY SECTION (Legal-first)
+          ====================================================================== */}
+      <section
+        id="trust-clarity"
+        style={{
+          padding: "5rem 2rem",
+          background: "rgba(8, 12, 28, 0.7)",
+          borderTop: "1px solid rgba(74, 179, 255, 0.08)",
+          borderBottom: "1px solid rgba(74, 179, 255, 0.08)",
+        }}
+      >
+        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+          {/* Section header */}
+          <div style={{ textAlign: "center", marginBottom: "3rem" }}>
+            <h2
+              style={{
+                fontSize: "1.8rem",
+                fontWeight: 700,
+                marginBottom: "0.75rem",
+                color: "#e9f4ff",
+              }}
+            >
+              {t(lang, "landing.trustHeadline")}
+            </h2>
+            <p
+              style={{
+                fontSize: "1rem",
+                color: "#8fa0b7",
+                maxWidth: 600,
+                margin: "0 auto",
+                lineHeight: 1.6,
+              }}
+            >
+              {t(lang, "landing.trustSub")}
+            </p>
+          </div>
+
+          {/* Two-column layout: explanation + trust cards */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+              gap: "2.5rem",
+              alignItems: "start",
+            }}
+          >
+            {/* Left column: Black box + Control explanation */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+              {/* Not a black box */}
+              <div
+                style={{
+                  padding: "1.25rem",
+                  borderRadius: 12,
+                  background: "rgba(5, 8, 22, 0.6)",
+                  border: "1px solid rgba(74, 179, 255, 0.1)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                  <h4 style={{ margin: 0, fontSize: "1rem", fontWeight: 600, color: "#e5f4ff" }}>
+                    {t(lang, "landing.blackBoxHeadline")}
+                  </h4>
+                </div>
+                <p style={{ margin: 0, fontSize: "0.9rem", color: "#8fa0b7", lineHeight: 1.5 }}>
+                  {t(lang, "landing.blackBoxBody")}
+                </p>
+              </div>
+
+              {/* You control execution */}
+              <div
+                style={{
+                  padding: "1.25rem",
+                  borderRadius: 12,
+                  background: "rgba(5, 8, 22, 0.6)",
+                  border: "1px solid rgba(74, 179, 255, 0.1)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  </svg>
+                  <h4 style={{ margin: 0, fontSize: "1rem", fontWeight: 600, color: "#e5f4ff" }}>
+                    {t(lang, "landing.controlHeadline")}
+                  </h4>
+                </div>
+                <p style={{ margin: 0, fontSize: "0.9rem", color: "#8fa0b7", lineHeight: 1.5 }}>
+                  {t(lang, "landing.controlBody")}
+                </p>
+              </div>
+
+              {/* Explore dashboard CTA */}
+              <button
+                onClick={() => router.push("/dashboard")}
+                style={{
+                  padding: "0.6rem 1.25rem",
+                  borderRadius: 8,
+                  border: "1px solid rgba(74, 179, 255, 0.2)",
+                  background: "rgba(74, 179, 255, 0.08)",
+                  color: "#7eb8e0",
+                  fontSize: "0.85rem",
+                  fontWeight: 500,
+                  cursor: "pointer",
+                  alignSelf: "flex-start",
+                }}
+              >
+                {t(lang, "landing.viewDemoCTA")}
+              </button>
+            </div>
+
+            {/* Right column: 4 trust point cards */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(2, 1fr)",
+                gap: "1rem",
+              }}
+            >
+              <TrustPointCard
+                lang={lang}
+                titleKey="landing.trustPoint1Title"
+                bodyKey="landing.trustPoint1Body"
+                icon={
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                }
+              />
+              <TrustPointCard
+                lang={lang}
+                titleKey="landing.trustPoint2Title"
+                bodyKey="landing.trustPoint2Body"
+                icon={
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  </svg>
+                }
+              />
+              <TrustPointCard
+                lang={lang}
+                titleKey="landing.trustPoint3Title"
+                bodyKey="landing.trustPoint3Body"
+                icon={
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2">
+                    <path d="M3 3v18h18" />
+                    <path d="M7 14l4-4 4 4 5-5" />
+                  </svg>
+                }
+              />
+              <TrustPointCard
+                lang={lang}
+                titleKey="landing.trustPoint4Title"
+                bodyKey="landing.trustPoint4Body"
+                icon={
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2">
+                    <rect x="3" y="3" width="7" height="7" rx="1" />
+                    <rect x="14" y="3" width="7" height="7" rx="1" />
+                    <rect x="3" y="14" width="7" height="7" rx="1" />
+                    <rect x="14" y="14" width="7" height="7" rx="1" />
+                  </svg>
+                }
+              />
+            </div>
+          </div>
         </div>
       </section>
 
@@ -818,6 +1023,68 @@ function CapabilityCard({
           color: "#8fa0b7",
           margin: 0,
           lineHeight: 1.5,
+        }}
+      >
+        {t(lang, bodyKey)}
+      </p>
+    </div>
+  );
+}
+
+// =============================================================================
+// TRUST POINT CARD COMPONENT (for Trust & Clarity section)
+// =============================================================================
+
+function TrustPointCard({
+  lang,
+  icon,
+  titleKey,
+  bodyKey,
+}: {
+  lang: Lang;
+  icon: React.ReactNode;
+  titleKey: string;
+  bodyKey: string;
+}) {
+  return (
+    <div
+      style={{
+        background: "rgba(5, 8, 22, 0.6)",
+        borderRadius: 10,
+        padding: "1rem",
+        border: "1px solid rgba(74, 179, 255, 0.08)",
+      }}
+    >
+      <div
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 8,
+          background: "rgba(74, 179, 255, 0.08)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          marginBottom: "0.75rem",
+        }}
+      >
+        {icon}
+      </div>
+      <h4
+        style={{
+          fontSize: "0.9rem",
+          fontWeight: 600,
+          margin: "0 0 0.35rem",
+          color: "#e5f4ff",
+        }}
+      >
+        {t(lang, titleKey)}
+      </h4>
+      <p
+        style={{
+          fontSize: "0.8rem",
+          color: "#7a8fa3",
+          margin: 0,
+          lineHeight: 1.45,
         }}
       >
         {t(lang, bodyKey)}

@@ -303,6 +303,29 @@ export default function RegisterPage() {
             {t(lang, "register.stepNote")}
           </div>
 
+          {/* Trust mini-reassurance */}
+          <div
+            style={{
+              background: "rgba(74, 179, 255, 0.04)",
+              border: "1px solid rgba(74, 179, 255, 0.15)",
+              borderRadius: 8,
+              padding: "0.75rem",
+              marginBottom: "1.25rem",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginBottom: "0.35rem" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              </svg>
+              <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#a8c8e8" }}>
+                {t(lang, "register.trustMiniTitle")}
+              </span>
+            </div>
+            <p style={{ margin: 0, fontSize: "0.75rem", color: "#7a8fa3", lineHeight: 1.45 }}>
+              {t(lang, "register.trustMiniBody")}
+            </p>
+          </div>
+
           {/* Feedback messages */}
           {error && (
             <div

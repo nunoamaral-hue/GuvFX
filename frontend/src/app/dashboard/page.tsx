@@ -432,8 +432,11 @@ function DashboardContent() {
         <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "0.5rem" }}>
           {t(lang, "dashboard.subtitle")}
         </p>
-        <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "1.5rem" }}>
+        <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "0.5rem" }}>
           {t(lang, "legal.microDisclaimer")}
+        </p>
+        <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "1.5rem" }}>
+          {t(lang, "dashboard.trustMiniBody")}
         </p>
 
         {/* First-time user onboarding (dismissible) */}
