@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
+import { LegalFooter } from "@/components/LegalFooter";
 
 type RegisterResponse = {
   id: number;
@@ -87,12 +88,14 @@ export default function RegisterPage() {
         minHeight: "100vh",
         width: "100%",
         display: "flex",
+        flexDirection: "column",
         background:
           "radial-gradient(circle at 0 0, #12263f 0, #050816 40%, #050816 100%)",
         color: "#e5f4ff",
         fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
       }}
     >
+      <div style={{ flex: 1, display: "flex" }}>
       {/* Left panel */}
       <div
         style={{
@@ -413,6 +416,8 @@ export default function RegisterPage() {
           </form>
         </div>
       </div>
+      </div>
+      <LegalFooter lang={lang} />
     </div>
   );
 }

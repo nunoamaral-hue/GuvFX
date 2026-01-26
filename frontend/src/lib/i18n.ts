@@ -477,6 +477,18 @@ const dictionary: Dictionary = {
   "register.passwordTooShort": { en: "Password must be at least 3 characters.", ja: "パスワードは3文字以上必要です。" },
   "register.success": { en: "Account created for {email}. You can now log in.", ja: "{email}のアカウントが作成されました。ログインできます。" },
   "register.errorDefault": { en: "Registration failed.", ja: "登録に失敗しました。" },
+
+  // -----------------------------------------------------------------------------
+  // Legal Footer Disclaimer
+  // -----------------------------------------------------------------------------
+  "legal.footerLine1": {
+    en: "Trading in financial instruments carries risk. Past performance does not guarantee future results.",
+    ja: "金融商品の取引にはリスクが伴います。過去の実績は将来の結果を保証するものではありません。",
+  },
+  "legal.footerLine2": {
+    en: "GuvFX is a strategy management platform and does not provide investment advice.",
+    ja: "GuvFXは戦略管理プラットフォームであり、投資助言を提供するものではありません。",
+  },
 };
 
 // =============================================================================

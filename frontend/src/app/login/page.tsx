@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { type Lang, detectLang, t } from "@/lib/i18n";
+import { LegalFooter } from "@/components/LegalFooter";
 
 /**
  * Validates returnTo parameter for safe redirect.
@@ -116,12 +117,14 @@ export default function LoginPage() {
         minHeight: "100vh",
         width: "100%",
         display: "flex",
+        flexDirection: "column",
         background:
           "radial-gradient(circle at 0 0, #12263f 0, #050816 40%, #050816 100%)",
         color: "#e5f4ff",
         fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
       }}
     >
+      <div style={{ flex: 1, display: "flex" }}>
       {/* Left panel */}
       <div
         style={{
@@ -411,6 +414,8 @@ export default function LoginPage() {
           </form>
         </div>
       </div>
+      </div>
+      <LegalFooter lang={lang} />
     </div>
   );
 }

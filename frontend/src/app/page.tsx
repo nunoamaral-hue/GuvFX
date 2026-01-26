@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
+import { LegalFooter } from "@/components/LegalFooter";
 
 // Session storage key for tracking CTA pulse and lang prompt dismissal
 const PULSE_SHOWN_KEY = "guvfx_cta_pulse_shown";
@@ -720,6 +721,9 @@ export default function LandingPage() {
           {t(lang, "landing.footerDisclaimer")}
         </p>
       </footer>
+
+      {/* Legal Footer */}
+      <LegalFooter lang={lang} />
 
       {/* Keyframe animations */}
       <style jsx global>{`

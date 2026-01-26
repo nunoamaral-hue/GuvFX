@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useEffect, useState, useCallback, createContext, useContext } from "react";
 import { apiFetch } from "@/lib/api";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
+import { LegalFooter } from "@/components/LegalFooter";
 
 // =============================================================================
 // TYPES
@@ -1200,6 +1201,11 @@ export function AppShell({ children }: AppShellProps) {
           >
             {children}
           </main>
+
+          {/* ===================================================================
+              LEGAL FOOTER
+          =================================================================== */}
+          <LegalFooter lang={lang} />
         </div>
 
         {/* ===================================================================
