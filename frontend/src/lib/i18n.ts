@@ -503,6 +503,38 @@ const dictionary: Dictionary = {
     en: "Platform tools only — not financial advice.",
     ja: "本プラットフォームはツール提供のみで、投資助言ではありません。",
   },
+
+  // -----------------------------------------------------------------------------
+  // Onboarding Checklist (Dashboard)
+  // -----------------------------------------------------------------------------
+  "onboarding.title": {
+    en: "Getting started with GuvFX",
+    ja: "GuvFXの始め方",
+  },
+  "onboarding.step1": {
+    en: "Link a trading account",
+    ja: "取引口座を連携する",
+  },
+  "onboarding.step2": {
+    en: "Create your first strategy",
+    ja: "最初の戦略を作成する",
+  },
+  "onboarding.step3": {
+    en: "Run a backtest",
+    ja: "バックテストを実行する",
+  },
+  "onboarding.step4": {
+    en: "Review results before execution",
+    ja: "実行前に結果を確認する",
+  },
+  "onboarding.footerNote": {
+    en: "You control all decisions. GuvFX does not place trades on your behalf.",
+    ja: "すべての判断はユーザーが行います。GuvFXが取引を実行することはありません。",
+  },
+  "onboarding.dismiss": {
+    en: "Got it, don't show again",
+    ja: "了解、次回から表示しない",
+  },
 };
 
 // =============================================================================

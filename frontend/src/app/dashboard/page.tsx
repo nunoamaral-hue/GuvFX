@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { AppShell, useLang } from "@/components/AppShell";
+import { OnboardingChecklist } from "@/components/OnboardingChecklist";
 import { t } from "@/lib/i18n";
 
 /**
@@ -434,6 +435,9 @@ function DashboardContent() {
         <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "1.5rem" }}>
           {t(lang, "legal.microDisclaimer")}
         </p>
+
+        {/* First-time user onboarding (dismissible) */}
+        <OnboardingChecklist lang={lang} />
 
         {/* Responsive grid: 2 columns on desktop, stacked on mobile */}
         <div
