@@ -194,23 +194,45 @@ function isActive(pathname: string, href: string) {
 }
 
 // =============================================================================
-// HELPER: Logout handler (clears ALL auth state)
+// HELPER: Logout handler (clears ALL auth state — server + client)
 // =============================================================================
 
-function handleLogout() {
-  if (typeof window !== "undefined") {
-    // 1. Clear localStorage tokens
-    window.localStorage.removeItem("guvfx_access_token");
-    window.localStorage.removeItem("guvfx_refresh_token");
+const API_BASE = "https://api.guvfx.com";
 
-    // 2. Clear auth cookies (httpOnly cookies require server-side clearing,
-    //    but we can expire any client-visible cookies)
-    document.cookie = "csrftoken=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+async function handleLogout() {
+  if (typeof window === "undefined") return;
 
-    // 3. Hard redirect — window.location.href forces full page reload,
-    //    destroying all React state (sidebar, dropdowns, auth context).
-    window.location.href = "/login?reason=logged_out";
+  // 1. Server-side logout — clears HttpOnly session cookies.
+  //    POST /api/auth/cookie/logout/ returns 200 and expires guvfx_access + guvfx_refresh cookies.
+  //    Best-effort: if this fails we still clear client state and redirect.
+  try {
+    // Grab CSRF token for the POST
+    const csrfMatch = document.cookie.match(/(?:^|; )csrftoken=([^;]*)/);
+    const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : "";
+
+    await fetch(`${API_BASE}/api/auth/cookie/logout/`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrf ? { "X-CSRFToken": csrf } : {}),
+      },
+    });
+  } catch {
+    // Network error — proceed with client-side cleanup anyway
   }
+
+  // 2. Clear localStorage tokens
+  window.localStorage.removeItem("guvfx_access_token");
+  window.localStorage.removeItem("guvfx_refresh_token");
+
+  // 3. Expire non-HttpOnly cookies we control (best effort)
+  document.cookie = "csrftoken=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+
+  // 4. Replace history entry — prevents back-button access to app pages.
+  //    window.location.replace() removes the current entry from history,
+  //    so pressing Back after logout won't land on the protected page.
+  window.location.replace("/login?reason=logged_out");
 }
 
 // =============================================================================
