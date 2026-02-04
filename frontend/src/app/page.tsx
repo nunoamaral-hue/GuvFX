@@ -77,11 +77,6 @@ export default function LandingPage() {
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const scrollToTrustClarity = () => {
-    const el = document.getElementById("trust-clarity");
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-
   return (
     <div
       style={{
@@ -389,7 +384,7 @@ export default function LandingPage() {
 
         {/* Learn more CTA */}
         <button
-          onClick={scrollToTrustClarity}
+          onClick={() => router.push("/how-it-works")}
           style={{
             marginTop: "1.5rem",
             padding: "0.5rem 1.25rem",

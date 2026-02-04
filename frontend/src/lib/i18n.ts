@@ -506,6 +506,118 @@ const dictionary: Dictionary = {
   },
 
   // -----------------------------------------------------------------------------
+  // How It Works Page
+  // -----------------------------------------------------------------------------
+  "howItWorks.title": {
+    en: "How GuvFX Works",
+    ja: "GuvFXの仕組み",
+  },
+  "howItWorks.subtitle": {
+    en: "GuvFX is a technology platform for building, testing, and managing trading strategies. It is not a broker, not an investment advisor, and does not provide financial advice.",
+    ja: "GuvFXは取引戦略の構築・テスト・管理のための技術プラットフォームです。ブローカーでも投資顧問でもなく、金融助言は行いません。",
+  },
+  "howItWorks.sectionWhatIsTitle": {
+    en: "What GuvFX provides",
+    ja: "GuvFXが提供するもの",
+  },
+  "howItWorks.sectionWhatIsBody": {
+    en: "GuvFX gives you tools to define, test, and manage rule-based trading strategies. You configure every parameter, review every result, and decide when and how to execute.",
+    ja: "GuvFXはルールベースの取引戦略を定義・テスト・管理するツールを提供します。すべてのパラメータを設定し、結果を確認し、実行の判断はあなたが行います。",
+  },
+  "howItWorks.toolDesign": {
+    en: "Strategy design tools — define rules, indicators, and risk parameters",
+    ja: "戦略設計ツール — ルール、指標、リスクパラメータの定義",
+  },
+  "howItWorks.toolTest": {
+    en: "Backtesting engine — test strategies against historical data",
+    ja: "バックテストエンジン — 過去データで戦略をテスト",
+  },
+  "howItWorks.toolExecute": {
+    en: "Execution controls — user-configured, user-approved deployment",
+    ja: "実行制御 — ユーザーが設定し、ユーザーが承認するデプロイ",
+  },
+  "howItWorks.sectionWhatNotTitle": {
+    en: "What GuvFX is not",
+    ja: "GuvFXではないもの",
+  },
+  "howItWorks.bullet1": {
+    en: "Not a black-box bot — every rule is visible and editable",
+    ja: "ブラックボックスではない — すべてのルールが確認・編集可能",
+  },
+  "howItWorks.bullet2": {
+    en: "Not a signal service — no trade recommendations are provided",
+    ja: "シグナルサービスではない — 取引推奨は行いません",
+  },
+  "howItWorks.bullet3": {
+    en: "Not financial advice — platform tools only",
+    ja: "金融助言ではない — ツール提供のみ",
+  },
+  "howItWorks.bullet4": {
+    en: "Not a guarantee of outcomes — past results do not predict future performance",
+    ja: "結果の保証ではない — 過去の結果は将来のパフォーマンスを予測しません",
+  },
+  "howItWorks.sectionControlTitle": {
+    en: "Control & Transparency",
+    ja: "制御と透明性",
+  },
+  "howItWorks.sectionControlBody": {
+    en: "GuvFX is designed so that you remain in full control at every step. Nothing happens without your explicit action.",
+    ja: "GuvFXはすべてのステップであなたが完全に制御できるよう設計されています。明示的な操作なしには何も実行されません。",
+  },
+  "howItWorks.control1": {
+    en: "Nothing runs by default — all execution requires explicit setup",
+    ja: "デフォルトでは何も実行されない — すべての実行に明示的な設定が必要",
+  },
+  "howItWorks.control2": {
+    en: "User enables execution — you choose what runs and where",
+    ja: "ユーザーが実行を有効化 — 何をどこで実行するか選択",
+  },
+  "howItWorks.control3": {
+    en: "User can stop or disable at any time",
+    ja: "いつでも停止・無効化が可能",
+  },
+  "howItWorks.control4": {
+    en: "All strategy rules are visible and auditable",
+    ja: "すべての戦略ルールが確認・監査可能",
+  },
+  "howItWorks.sectionWorkflowTitle": {
+    en: "Safe Workflow",
+    ja: "安全なワークフロー",
+  },
+  "howItWorks.workflowStep1": {
+    en: "Define — Build your strategy with explicit rules and parameters",
+    ja: "定義 — 明確なルールとパラメータで戦略を構築",
+  },
+  "howItWorks.workflowStep2": {
+    en: "Test — Run backtests against historical data to observe behavior",
+    ja: "テスト — 過去データでバックテストし動作を観察",
+  },
+  "howItWorks.workflowStep3": {
+    en: "Review — Examine results and understand risk characteristics",
+    ja: "確認 — 結果を精査しリスク特性を理解",
+  },
+  "howItWorks.workflowStep4": {
+    en: "Decide — You choose whether to proceed with live execution",
+    ja: "判断 — ライブ実行に進むかどうかはあなたが決定",
+  },
+  "howItWorks.nextTitle": {
+    en: "Get started",
+    ja: "始める",
+  },
+  "howItWorks.ctaDashboard": {
+    en: "Explore dashboard",
+    ja: "ダッシュボードを見る",
+  },
+  "howItWorks.ctaCreateStrategy": {
+    en: "Create a strategy",
+    ja: "戦略を作成する",
+  },
+  "howItWorks.ctaLinkAccount": {
+    en: "Link a trading account",
+    ja: "取引口座を連携する",
+  },
+
+  // -----------------------------------------------------------------------------
   // Register Page
   // -----------------------------------------------------------------------------
   "register.welcomeTo": { en: "Welcome to", ja: "ようこそ" },
