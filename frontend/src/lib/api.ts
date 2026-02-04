@@ -71,11 +71,14 @@ export async function apiFetch<T>(
     }
   }
 
-  // Hard redirect only for identity checks
+  // Session is fully dead (access + refresh both invalid).
+  // Redirect to login so the user can re-authenticate.
+  // Uses replace() so the protected page is removed from browser history —
+  // pressing Back after session expiry won't land on the gated page.
   if (res.status === 401 && typeof window !== "undefined") {
-    if (url.includes("/api/auth/me/")) {
-      window.location.href = "/login?reason=unauthenticated";
-    }
+    const reason = url.includes("/api/auth/me/") ? "unauthenticated" : "expired";
+    window.location.replace(`/login?reason=${reason}`);
+    // Throw to abort any calling code while redirect is in flight
     throw new Error("Unauthorized");
   }
 
