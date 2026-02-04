@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
+
+const API_BASE = "https://api.guvfx.com";
 
 export default function HowItWorksPage() {
   const router = useRouter();
@@ -14,6 +16,49 @@ export default function HowItWorksPage() {
     if (typeof window === "undefined") return "en";
     return detectLang();
   });
+
+  // ---------------------------------------------------------------------------
+  // Lightweight auth probe (best-effort, fail-closed).
+  // This page is public — the check only decides CTA routing:
+  //   authed  => navigate directly to app route (AuthGate will pass)
+  //   !authed => route via /login?returnTo=<target>
+  // ---------------------------------------------------------------------------
+  const [isAuthed, setIsAuthed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Skip on localhost — treat as not-authed (CTAs go to /login, harmless)
+    const isLocalhost =
+      typeof window !== "undefined" &&
+      (window.location.hostname === "localhost" ||
+        window.location.hostname === "127.0.0.1" ||
+        window.location.hostname === "0.0.0.0");
+
+    if (isLocalhost) return;
+
+    fetch(`${API_BASE}/api/auth/me/`, { method: "GET", credentials: "include" })
+      .then((res) => {
+        if (!cancelled && res.ok) setIsAuthed(true);
+      })
+      .catch(() => {
+        // Network error — stay false (fail closed)
+      });
+
+    return () => { cancelled = true; };
+  }, []);
+
+  /** Route CTA targets through login when not authenticated. */
+  const navTo = useCallback(
+    (target: string) => {
+      if (isAuthed) {
+        router.push(target);
+      } else {
+        router.push(`/login?reason=unauthenticated&returnTo=${encodeURIComponent(target)}`);
+      }
+    },
+    [isAuthed, router],
+  );
 
   const toggleLang = () => {
     const next: Lang = lang === "en" ? "ja" : "en";
@@ -346,9 +391,9 @@ export default function HowItWorksPage() {
               gap: "0.75rem",
             }}
           >
-            <CTALink href="/dashboard" label={t(lang, "howItWorks.ctaDashboard")} />
-            <CTALink href="/strategies/create" label={t(lang, "howItWorks.ctaCreateStrategy")} />
-            <CTALink href="/accounts" label={t(lang, "howItWorks.ctaLinkAccount")} />
+            <CTAButton onClick={() => navTo("/dashboard")} label={t(lang, "howItWorks.ctaDashboard")} />
+            <CTAButton onClick={() => navTo("/strategies/create")} label={t(lang, "howItWorks.ctaCreateStrategy")} />
+            <CTAButton onClick={() => navTo("/accounts")} label={t(lang, "howItWorks.ctaLinkAccount")} />
           </div>
         </section>
       </main>
@@ -458,10 +503,11 @@ function WorkflowStep({ step, text }: { step: number; text: string }) {
   );
 }
 
-function CTALink({ href, label }: { href: string; label: string }) {
+function CTAButton({ onClick, label }: { onClick: () => void; label: string }) {
   return (
-    <Link
-      href={href}
+    <button
+      type="button"
+      onClick={onClick}
       style={{
         padding: "0.5rem 1rem",
         borderRadius: 8,
@@ -470,10 +516,10 @@ function CTALink({ href, label }: { href: string; label: string }) {
         color: "#7eb8e0",
         fontSize: "0.85rem",
         fontWeight: 500,
-        textDecoration: "none",
+        cursor: "pointer",
       }}
     >
       {label}
-    </Link>
+    </button>
   );
 }
