@@ -257,7 +257,7 @@ export default function StrategyMarketplacePage() {
   const handleAssign = async (strategyId: string) => {
     const accountId = selectedAccount[strategyId];
     if (!accountId) {
-      setAlert("Please select an account first");
+      setAlert(t(lang, "marketplace.alertSelectAccount"));
       setAlertType("error");
       return;
     }
@@ -273,7 +273,7 @@ export default function StrategyMarketplacePage() {
         }),
       });
       setAlert(null); // Clear any previous errors
-      setAlert("Assigned successfully.");
+      setAlert(t(lang, "marketplace.alertAssigned"));
       setAlertType("success");
 
       // Keep the selected account as the default for next time
@@ -296,25 +296,25 @@ export default function StrategyMarketplacePage() {
         msg.toLowerCase().includes("<body");
 
       if (e?.status === 401 || msg.toLowerCase().includes("unauthorized")) {
-        setAlert("Your session with the API has expired. Please login again.");
+        setAlert(t(lang, "marketplace.alertSessionExpired"));
         setAlertType("error");
         setIsAuthed(false);
         return;
       }
 
       if (e?.status === 404 || msg.includes("404")) {
-        setAlert("Marketplace assign endpoint not found. This usually means the frontend is calling the wrong URL or the server is not yet deployed with the endpoint.");
+        setAlert(t(lang, "marketplace.alertEndpointNotFound"));
         setAlertType("error");
         return;
       }
 
       if (looksLikeHtml) {
-        setAlert("Assignment failed (server returned an unexpected HTML response). Please refresh and try again.");
+        setAlert(t(lang, "marketplace.alertUnexpectedResponse"));
         setAlertType("error");
         return;
       }
 
-      setAlert(msg || "Assignment failed");
+      setAlert(msg || t(lang, "marketplace.alertAssignFailed"));
       setAlertType("error");
     } finally {
       setAssigning({ ...assigning, [strategyId]: false });
@@ -322,7 +322,7 @@ export default function StrategyMarketplacePage() {
   };
 
   const handlePreview = () => {
-    setAlert("Preview coming soon");
+    setAlert(t(lang, "marketplace.alertPreviewSoon"));
     setAlertType("info");
   };
 
@@ -361,7 +361,7 @@ export default function StrategyMarketplacePage() {
             }}
           >
             <div>
-              You are not authenticated to the API. Please login again to assign marketplace strategies.
+              {t(lang, "marketplace.unauthMessage")}
             </div>
             <button
               type="button"
@@ -377,7 +377,7 @@ export default function StrategyMarketplacePage() {
                 cursor: "pointer",
               }}
             >
-              Go to Login →
+              {t(lang, "marketplace.goToLogin")}
             </button>
           </div>
         )}
@@ -430,7 +430,7 @@ export default function StrategyMarketplacePage() {
                     cursor: "pointer",
                   }}
                 >
-                  View in My Strategies →
+                  {t(lang, "marketplace.viewMyStrategies")}
                 </button>
               )}
             </div>
@@ -455,7 +455,7 @@ export default function StrategyMarketplacePage() {
         <div style={{ marginBottom: "1.5rem" }}>
           <input
             type="text"
-            placeholder="Search strategies, pairs..."
+            placeholder={t(lang, "marketplace.searchPlaceholder")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{
@@ -473,6 +473,7 @@ export default function StrategyMarketplacePage() {
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
             {(["All", "Trend", "Breakout", "Reversion", "Structure", "Patterns"] as const).map((cat) => {
               const isActive = activeFilter === cat;
+              const filterKey = `marketplace.filter${cat}` as const;
               return (
                 <button
                   key={cat}
@@ -489,7 +490,7 @@ export default function StrategyMarketplacePage() {
                     transition: "all 0.2s",
                   }}
                 >
-                  {cat}
+                  {t(lang, filterKey)}
                 </button>
               );
             })}
@@ -530,10 +531,10 @@ export default function StrategyMarketplacePage() {
 
               {/* Pairs + Timeframes */}
               <div style={{ marginBottom: "1rem" }}>
-                <div style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "0.3rem" }}>Pairs</div>
+                <div style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "0.3rem" }}>{t(lang, "marketplace.pairsLabel")}</div>
                 <div style={{ fontSize: "0.8rem", color: "#cbd5e1" }}>{strategy.pairs.join(", ")}</div>
                 <div style={{ fontSize: "0.75rem", color: "#64748b", marginTop: "0.5rem", marginBottom: "0.3rem" }}>
-                  Timeframes
+                  {t(lang, "marketplace.timeframesLabel")}
                 </div>
                 <div style={{ fontSize: "0.8rem", color: "#cbd5e1" }}>{strategy.timeframes.join(", ")}</div>
               </div>
@@ -608,7 +609,7 @@ export default function StrategyMarketplacePage() {
                     fontSize: "0.85rem",
                   }}
                 >
-                  <option value="">Select account</option>
+                  <option value="">{t(lang, "marketplace.selectAccount")}</option>
                   {accounts.map((acc) => (
                     <option key={acc.id} value={acc.id}>
                       {acc.name}
@@ -620,10 +621,10 @@ export default function StrategyMarketplacePage() {
                   onClick={() => handleAssign(strategy.id)}
                   disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
                 >
-                  {assigning[strategy.id] ? "Assigning..." : "Assign"}
+                  {assigning[strategy.id] ? t(lang, "marketplace.assigning") : t(lang, "marketplace.assign")}
                 </Button>
                 <Button variant="secondary" onClick={handlePreview}>
-                  Preview
+                  {t(lang, "marketplace.preview")}
                 </Button>
               </div>
             </div>
@@ -633,8 +634,8 @@ export default function StrategyMarketplacePage() {
         {/* Empty State */}
         {filteredStrategies.length === 0 && (
           <div style={{ textAlign: "center", padding: "3rem 1rem", color: "#64748b" }}>
-            <p style={{ fontSize: "1rem" }}>No strategies match your filters.</p>
-            <p style={{ fontSize: "0.85rem", marginTop: "0.5rem" }}>Try adjusting your search or category filter.</p>
+            <p style={{ fontSize: "1rem" }}>{t(lang, "marketplace.emptyTitle")}</p>
+            <p style={{ fontSize: "0.85rem", marginTop: "0.5rem" }}>{t(lang, "marketplace.emptyHint")}</p>
           </div>
         )}
       </div>

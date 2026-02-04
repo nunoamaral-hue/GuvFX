@@ -793,11 +793,10 @@ export default function CreateStrategyPage() {
   return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
-          Create Strategy
+          {t(lang, "createStrategy.title")}
         </h1>
         <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "0.5rem" }}>
-          Build a complete trading strategy from edge to execution. You can
-          refine details later on the strategy page.
+          {t(lang, "createStrategy.subtitle")}
         </p>
         <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "1rem" }}>
           {t(lang, "legal.microDisclaimer")}
@@ -822,10 +821,10 @@ export default function CreateStrategyPage() {
                 : "rgba(255,255,255,0.06)",
             }}
           >
-            {showAdvanced ? "Hide advanced" : "Show advanced"}
+            {showAdvanced ? t(lang, "createStrategy.hideAdvanced") : t(lang, "createStrategy.showAdvanced")}
           </Button>
           <span style={{ fontSize: "0.85rem", color: "#9ca3af" }}>
-            Advanced = indicators, filters, psychology, and extra risk controls.
+            {t(lang, "createStrategy.advancedHint")}
           </span>
         </div>
 

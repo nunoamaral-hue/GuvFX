@@ -835,6 +835,126 @@ const dictionary: Dictionary = {
     en: "Execution",
     ja: "実行",
   },
+  "marketplace.pairsLabel": {
+    en: "Pairs",
+    ja: "通貨ペア",
+  },
+  "marketplace.searchPlaceholder": {
+    en: "Search templates, pairs\u2026",
+    ja: "テンプレート・通貨ペアを検索\u2026",
+  },
+  "marketplace.filterAll": {
+    en: "All",
+    ja: "すべて",
+  },
+  "marketplace.filterTrend": {
+    en: "Trend",
+    ja: "トレンド",
+  },
+  "marketplace.filterBreakout": {
+    en: "Breakout",
+    ja: "ブレイクアウト",
+  },
+  "marketplace.filterReversion": {
+    en: "Reversion",
+    ja: "リバージョン",
+  },
+  "marketplace.filterStructure": {
+    en: "Structure",
+    ja: "ストラクチャー",
+  },
+  "marketplace.filterPatterns": {
+    en: "Patterns",
+    ja: "パターン",
+  },
+  "marketplace.selectAccount": {
+    en: "Select account",
+    ja: "口座を選択",
+  },
+  "marketplace.assign": {
+    en: "Assign",
+    ja: "割当",
+  },
+  "marketplace.assigning": {
+    en: "Assigning\u2026",
+    ja: "割当中\u2026",
+  },
+  "marketplace.preview": {
+    en: "Preview",
+    ja: "プレビュー",
+  },
+  "marketplace.unauthMessage": {
+    en: "You are not authenticated. Please log in again to assign marketplace templates.",
+    ja: "認証されていません。マーケットプレイスのテンプレートを割り当てるには再ログインしてください。",
+  },
+  "marketplace.goToLogin": {
+    en: "Go to Login \u2192",
+    ja: "ログインへ \u2192",
+  },
+  "marketplace.viewMyStrategies": {
+    en: "View in My Strategies \u2192",
+    ja: "マイ戦略で確認 \u2192",
+  },
+  "marketplace.alertSelectAccount": {
+    en: "Please select an account first.",
+    ja: "先に口座を選択してください。",
+  },
+  "marketplace.alertAssigned": {
+    en: "Assigned successfully.",
+    ja: "割り当てが完了しました。",
+  },
+  "marketplace.alertSessionExpired": {
+    en: "Your session has expired. Please log in again.",
+    ja: "セッションが切れました。再ログインしてください。",
+  },
+  "marketplace.alertEndpointNotFound": {
+    en: "Assign endpoint not found. The server may not yet support this feature.",
+    ja: "割当エンドポイントが見つかりません。サーバーがこの機能に未対応の可能性があります。",
+  },
+  "marketplace.alertUnexpectedResponse": {
+    en: "Assignment failed (unexpected server response). Please refresh and try again.",
+    ja: "割り当てに失敗しました（予期しないサーバー応答）。ページを更新して再度お試しください。",
+  },
+  "marketplace.alertAssignFailed": {
+    en: "Assignment failed.",
+    ja: "割り当てに失敗しました。",
+  },
+  "marketplace.alertPreviewSoon": {
+    en: "Preview coming soon.",
+    ja: "プレビューは近日公開予定です。",
+  },
+  "marketplace.emptyTitle": {
+    en: "No templates match your filters.",
+    ja: "フィルターに一致するテンプレートがありません。",
+  },
+  "marketplace.emptyHint": {
+    en: "Try adjusting your search or category filter.",
+    ja: "検索条件やカテゴリーフィルターを変更してみてください。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Create Strategy
+  // -----------------------------------------------------------------------------
+  "createStrategy.title": {
+    en: "Create Strategy",
+    ja: "戦略を作成",
+  },
+  "createStrategy.subtitle": {
+    en: "Build a strategy template from edge to execution. You can refine details later on the strategy page.",
+    ja: "エッジから実行まで戦略テンプレートを構築します。詳細は戦略ページで後から調整できます。",
+  },
+  "createStrategy.showAdvanced": {
+    en: "Show advanced",
+    ja: "詳細設定を表示",
+  },
+  "createStrategy.hideAdvanced": {
+    en: "Hide advanced",
+    ja: "詳細設定を非表示",
+  },
+  "createStrategy.advancedHint": {
+    en: "Advanced = indicators, filters, psychology, and extra risk controls.",
+    ja: "詳細設定 = インジケーター、フィルター、心理管理、追加リスク管理。",
+  },
 };
 
 // =============================================================================
