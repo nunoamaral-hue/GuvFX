@@ -98,6 +98,22 @@ type Dictionary = {
 
 const dictionary: Dictionary = {
   // -----------------------------------------------------------------------------
+  // Auth Gate — session verification / error states
+  // -----------------------------------------------------------------------------
+  "auth.sessionError": {
+    en: "Session Unavailable",
+    ja: "セッションが利用できません",
+  },
+  "auth.sessionErrorBody": {
+    en: "We could not verify your session. This may be a temporary network issue. Please try logging in again.",
+    ja: "セッションを確認できませんでした。一時的なネットワークの問題の可能性があります。再度ログインしてください。",
+  },
+  "auth.goToLogin": {
+    en: "Go to Login",
+    ja: "ログインへ",
+  },
+
+  // -----------------------------------------------------------------------------
   // AppShell - Navigation Groups
   // -----------------------------------------------------------------------------
   "nav.strategy": { en: "Strategy", ja: "戦略" },
@@ -317,6 +333,7 @@ const dictionary: Dictionary = {
     ja: "ログインして戦略の管理、バックテストの確認、AIによる取引ガイダンスを利用しましょう。",
   },
   "login.logIn": { en: "Log in", ja: "ログイン" },
+  "login.home": { en: "Home", ja: "ホーム" },
   "login.goToSignUp": { en: "Go to Sign up", ja: "新規登録へ" },
 
   // -----------------------------------------------------------------------------

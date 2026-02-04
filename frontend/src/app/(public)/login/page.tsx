@@ -175,6 +175,21 @@ export default function LoginPage() {
               style={{
                 padding: "0.9rem 2.4rem",
                 borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.18)",
+                fontSize: "1rem",
+                fontWeight: 500,
+                cursor: "pointer",
+                background: "transparent",
+                color: "#c2d5ff",
+              }}
+              onClick={() => router.push("/")}
+            >
+              {t(lang, "login.home")}
+            </button>
+            <button
+              style={{
+                padding: "0.9rem 1.8rem",
+                borderRadius: 999,
                 border: "none",
                 fontSize: "1rem",
                 fontWeight: 500,
@@ -184,25 +199,7 @@ export default function LoginPage() {
                 color: "#ffffff",
                 boxShadow: "0 12px 30px rgba(0, 0, 0, 0.5)",
               }}
-              onClick={() => {
-                const el = document.getElementById("login-panel");
-                if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}
-            >
-              {t(lang, "login.logIn")}
-            </button>
-            <button
-              style={{
-                padding: "0.9rem 1.8rem",
-                borderRadius: 999,
-                border: "1px solid rgba(255,255,255,0.18)",
-                fontSize: "1rem",
-                fontWeight: 500,
-                cursor: "pointer",
-                background: "transparent",
-                color: "#c2d5ff",
-              }}
-              onClick={() => router.push("/")}
+              onClick={() => router.push("/register")}
             >
               {t(lang, "login.goToSignUp")}
             </button>
