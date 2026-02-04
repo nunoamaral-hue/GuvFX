@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useCallback, useRef, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
+import { LanguageDropdown } from "@/components/LanguageDropdown";
 
 type RegisterResponse = {
   id: number;
@@ -27,40 +28,6 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-
-  // Language dropdown state
-  const [langMenuOpen, setLangMenuOpen] = useState(false);
-  const langMenuRef = useRef<HTMLDivElement>(null);
-
-  const selectLang = useCallback(
-    (next: Lang) => {
-      persistLang(next);
-      setLangState(next);
-      setLangMenuOpen(false);
-    },
-    [],
-  );
-
-  // Close language menu on outside click or Escape
-  useEffect(() => {
-    if (!langMenuOpen) return;
-
-    function handleClickOutside(e: MouseEvent) {
-      if (langMenuRef.current && !langMenuRef.current.contains(e.target as Node)) {
-        setLangMenuOpen(false);
-      }
-    }
-    function handleEscape(e: KeyboardEvent) {
-      if (e.key === "Escape") setLangMenuOpen(false);
-    }
-
-    document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleEscape);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleEscape);
-    };
-  }, [langMenuOpen]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -178,76 +145,10 @@ export default function RegisterPage() {
             </button>
 
             {/* Language dropdown */}
-            <div ref={langMenuRef} style={{ position: "relative" }}>
-              <button
-                type="button"
-                onClick={() => setLangMenuOpen((v) => !v)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.45rem",
-                  padding: "0.7rem 1rem",
-                  borderRadius: 999,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  fontSize: "0.9rem",
-                  fontWeight: 500,
-                  cursor: "pointer",
-                  background: "rgba(255,255,255,0.04)",
-                  color: "#c2d5ff",
-                  transition: "background 150ms ease",
-                }}
-              >
-                <span>{lang === "en" ? "🇬🇧" : "🇯🇵"}</span>
-                <span>{lang === "en" ? t(lang, "ui.langEnglish") : t(lang, "ui.langJapanese")}</span>
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  style={{
-                    transform: langMenuOpen ? "rotate(180deg)" : "rotate(0deg)",
-                    transition: "transform 200ms ease",
-                    marginLeft: "0.15rem",
-                  }}
-                >
-                  <path d="M6 9l6 6 6-6" />
-                </svg>
-              </button>
-
-              {/* Dropdown menu */}
-              {langMenuOpen && (
-                <div
-                  style={{
-                    position: "absolute",
-                    top: "calc(100% + 6px)",
-                    left: 0,
-                    minWidth: "160px",
-                    background: "rgba(10, 15, 30, 0.95)",
-                    backdropFilter: "blur(12px)",
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    borderRadius: 10,
-                    boxShadow: "0 10px 40px rgba(0,0,0,0.6)",
-                    zIndex: 1000,
-                    overflow: "hidden",
-                  }}
-                >
-                  <LangMenuItem
-                    flag="🇬🇧"
-                    label={t(lang, "ui.langEnglish")}
-                    active={lang === "en"}
-                    onClick={() => selectLang("en")}
-                  />
-                  <LangMenuItem
-                    flag="🇯🇵"
-                    label={t(lang, "ui.langJapanese")}
-                    active={lang === "ja"}
-                    onClick={() => selectLang("ja")}
-                  />
-                </div>
-              )}
-            </div>
+            <LanguageDropdown
+              lang={lang}
+              onChange={(next) => { persistLang(next); setLangState(next); }}
+            />
           </div>
 
           {/* Footer link — Log in only (Sign up is redundant on /register) */}
@@ -577,68 +478,6 @@ export default function RegisterPage() {
       </div>
       <LegalFooter lang={lang} />
     </div>
-  );
-}
-
-// =============================================================================
-// LANGUAGE MENU ITEM COMPONENT
-// =============================================================================
-
-function LangMenuItem({
-  flag,
-  label,
-  active,
-  onClick,
-}: {
-  flag: string;
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "0.5rem",
-        width: "100%",
-        padding: "0.6rem 0.9rem",
-        background: active ? "rgba(74, 179, 255, 0.1)" : "transparent",
-        border: "none",
-        color: active ? "#e5f4ff" : "#9ca3af",
-        fontSize: "0.85rem",
-        cursor: "pointer",
-        transition: "background 150ms ease, color 150ms ease",
-      }}
-      onMouseEnter={(e) => {
-        if (!active) {
-          e.currentTarget.style.background = "rgba(255,255,255,0.05)";
-          e.currentTarget.style.color = "#e5f4ff";
-        }
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = active ? "rgba(74, 179, 255, 0.1)" : "transparent";
-        e.currentTarget.style.color = active ? "#e5f4ff" : "#9ca3af";
-      }}
-    >
-      <span style={{ fontSize: "1.1rem" }}>{flag}</span>
-      <span>{label}</span>
-      {active && (
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#4ab3ff"
-          strokeWidth="2.5"
-          style={{ marginLeft: "auto" }}
-        >
-          <path d="M20 6L9 17l-5-5" />
-        </svg>
-      )}
-    </button>
   );
 }
 

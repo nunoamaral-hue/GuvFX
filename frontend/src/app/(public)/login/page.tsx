@@ -2,8 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { type Lang, detectLang, t } from "@/lib/i18n";
+import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
+import { LanguageDropdown } from "@/components/LanguageDropdown";
 
 /**
  * Validates returnTo parameter for safe redirect.
@@ -170,7 +171,7 @@ export default function LoginPage() {
             {t(lang, "login.subtitle")}
           </p>
 
-          <div style={{ marginTop: "2.5rem", display: "flex", gap: "1rem" }}>
+          <div style={{ marginTop: "2.5rem", display: "flex", gap: "1rem", alignItems: "center" }}>
             <button
               style={{
                 padding: "0.9rem 2.4rem",
@@ -203,6 +204,10 @@ export default function LoginPage() {
             >
               {t(lang, "login.goToSignUp")}
             </button>
+            <LanguageDropdown
+              lang={lang}
+              onChange={(next) => { persistLang(next); setLang(next); }}
+            />
           </div>
         </div>
       </div>

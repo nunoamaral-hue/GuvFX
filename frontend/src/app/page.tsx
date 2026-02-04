@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
+import { LanguageDropdown } from "@/components/LanguageDropdown";
 
 // Session storage key for tracking CTA pulse and lang prompt dismissal
 const PULSE_SHOWN_KEY = "guvfx_cta_pulse_shown";
@@ -53,12 +54,6 @@ export default function LandingPage() {
       return () => clearTimeout(timer);
     }
   }, [showPulse]);
-
-  const toggleLang = () => {
-    const next: Lang = lang === "en" ? "ja" : "en";
-    persistLang(next);
-    setLangState(next);
-  };
 
   const switchToJapanese = () => {
     persistLang("ja");
@@ -204,22 +199,12 @@ export default function LandingPage() {
 
         {/* Right side: Lang toggle + Login + CTA */}
         <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-          {/* Language toggle */}
-          <button
-            onClick={toggleLang}
-            style={{
-              padding: "0.4rem 0.8rem",
-              borderRadius: 6,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "transparent",
-              color: "#c2d5ff",
-              fontSize: "0.85rem",
-              fontWeight: 500,
-              cursor: "pointer",
-            }}
-          >
-            {lang === "en" ? "日本語" : "EN"}
-          </button>
+          {/* Language dropdown */}
+          <LanguageDropdown
+            lang={lang}
+            onChange={(next) => { persistLang(next); setLangState(next); }}
+            variant="compact"
+          />
 
           {/* Investor Login */}
           <button

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
+import { LanguageDropdown } from "@/components/LanguageDropdown";
 
 const API_BASE = "https://api.guvfx.com";
 
@@ -59,12 +60,6 @@ export default function HowItWorksPage() {
     },
     [isAuthed, router],
   );
-
-  const toggleLang = () => {
-    const next: Lang = lang === "en" ? "ja" : "en";
-    persistLang(next);
-    setLangState(next);
-  };
 
   return (
     <div
@@ -131,23 +126,13 @@ export default function HowItWorksPage() {
           </span>
         </Link>
 
-        {/* Right: lang toggle + login */}
+        {/* Right: lang dropdown + login */}
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-          <button
-            onClick={toggleLang}
-            style={{
-              padding: "0.4rem 0.8rem",
-              borderRadius: 6,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "transparent",
-              color: "#c2d5ff",
-              fontSize: "0.85rem",
-              fontWeight: 500,
-              cursor: "pointer",
-            }}
-          >
-            {lang === "en" ? "日本語" : "EN"}
-          </button>
+          <LanguageDropdown
+            lang={lang}
+            onChange={(next) => { persistLang(next); setLangState(next); }}
+            variant="compact"
+          />
           <button
             onClick={() => router.push("/login")}
             style={{

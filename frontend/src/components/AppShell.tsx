@@ -7,6 +7,7 @@ import { useEffect, useState, useCallback, createContext, useContext } from "rea
 import { apiFetch } from "@/lib/api";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
+import { LanguageDropdown } from "@/components/LanguageDropdown";
 
 // =============================================================================
 // TYPES
@@ -540,54 +541,9 @@ function ProfileDropdown({ currentUser, isOpen, lang, onToggle, onClose }: Profi
 }
 
 // =============================================================================
-// COMPONENT: Language Toggle (functional, persists to cookie + localStorage)
+// COMPONENT: Language Toggle — now delegates to shared LanguageDropdown
+// See: frontend/src/components/LanguageDropdown.tsx
 // =============================================================================
-
-type LanguageToggleProps = {
-  lang: Lang;
-  onLangChange: (lang: Lang) => void;
-};
-
-function LanguageToggle({ lang, onLangChange }: LanguageToggleProps) {
-  const handleToggle = () => {
-    const newLang = lang === "en" ? "ja" : "en";
-    persistLang(newLang); // Persist to cookie + localStorage
-    onLangChange(newLang); // Update state
-  };
-
-  return (
-    <button
-      type="button"
-      onClick={handleToggle}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "0.25rem",
-        padding: "0.35rem 0.6rem",
-        background: "rgba(255,255,255,0.05)",
-        border: "1px solid rgba(255,255,255,0.1)",
-        borderRadius: "6px",
-        color: "#9ca3af",
-        fontSize: "0.75rem",
-        fontWeight: 600,
-        cursor: "pointer",
-        transition: "background 150ms ease, color 150ms ease",
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.background = "rgba(255,255,255,0.08)";
-        e.currentTarget.style.color = "#e5f4ff";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = "rgba(255,255,255,0.05)";
-        e.currentTarget.style.color = "#9ca3af";
-      }}
-    >
-      <span style={{ opacity: lang === "en" ? 1 : 0.5 }}>EN</span>
-      <span style={{ opacity: 0.3 }}>/</span>
-      <span style={{ opacity: lang === "ja" ? 1 : 0.5 }}>JP</span>
-    </button>
-  );
-}
 
 // =============================================================================
 // COMPONENT: Notifications Button (UI only, no badge logic)
@@ -804,8 +760,9 @@ export function AppShell({ children }: AppShellProps) {
     return detectLang();
   });
 
-  // Handler for language changes
+  // Handler for language changes (persist + update state)
   const handleLangChange = useCallback((newLang: Lang) => {
+    persistLang(newLang);
     setLangState(newLang);
   }, []);
 
@@ -1206,7 +1163,7 @@ export function AppShell({ children }: AppShellProps) {
               className="appshell-topbar-right"
               style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexShrink: 0 }}
             >
-              <LanguageToggle lang={lang} onLangChange={handleLangChange} />
+              <LanguageDropdown lang={lang} onChange={handleLangChange} variant="compact" />
               <NotificationsButton lang={lang} />
               <ProfileDropdown
                 currentUser={currentUser}
