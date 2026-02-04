@@ -194,13 +194,21 @@ function isActive(pathname: string, href: string) {
 }
 
 // =============================================================================
-// HELPER: Logout handler (clears BOTH tokens)
+// HELPER: Logout handler (clears ALL auth state)
 // =============================================================================
 
 function handleLogout() {
   if (typeof window !== "undefined") {
+    // 1. Clear localStorage tokens
     window.localStorage.removeItem("guvfx_access_token");
     window.localStorage.removeItem("guvfx_refresh_token");
+
+    // 2. Clear auth cookies (httpOnly cookies require server-side clearing,
+    //    but we can expire any client-visible cookies)
+    document.cookie = "csrftoken=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+
+    // 3. Hard redirect — window.location.href forces full page reload,
+    //    destroying all React state (sidebar, dropdowns, auth context).
     window.location.href = "/login?reason=logged_out";
   }
 }
