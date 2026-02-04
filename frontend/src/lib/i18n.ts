@@ -152,6 +152,9 @@ const dictionary: Dictionary = {
   "ui.soon": { en: "Soon", ja: "近日" },
   "ui.notifications": { en: "Notifications", ja: "通知" },
   "ui.home": { en: "Home", ja: "ホーム" },
+  "ui.languageLabel": { en: "Language", ja: "言語" },
+  "ui.english": { en: "English", ja: "英語" },
+  "ui.japanese": { en: "Japanese", ja: "日本語" },
   "ui.langEnglish": { en: "English", ja: "English" },
   "ui.langJapanese": { en: "日本語", ja: "日本語" },
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { type Lang } from "@/lib/i18n";
+import { type Lang, t } from "@/lib/i18n";
 
 // =============================================================================
 // LANGUAGE DROPDOWN — reusable across public pages + AppShell topbar
@@ -17,6 +17,8 @@ import { type Lang } from "@/lib/i18n";
 //   - Active-item checkmark
 //   - Chevron rotation animation
 //   - Dark neon theme consistent with the rest of the UI
+//   - i18n: all labels are translatable via ui.* keys
+//   - Extensible: add a new entry to LANG_OPTIONS for future languages
 // =============================================================================
 
 type LanguageDropdownProps = {
@@ -28,13 +30,16 @@ type LanguageDropdownProps = {
 type LangOption = {
   code: Lang;
   flag: string;
-  label: string;
+  /** i18n key for the translated language name (e.g. ui.english → "English" / "英語") */
+  nameKey: string;
+  /** Native-script label shown in the button and menu (always the same regardless of current lang) */
+  nativeLabel: string;
   shortLabel: string;
 };
 
 const LANG_OPTIONS: LangOption[] = [
-  { code: "en", flag: "🇬🇧", label: "English", shortLabel: "EN" },
-  { code: "ja", flag: "🇯🇵", label: "日本語", shortLabel: "JP" },
+  { code: "en", flag: "🇬🇧", nameKey: "ui.english", nativeLabel: "English", shortLabel: "EN" },
+  { code: "ja", flag: "🇯🇵", nameKey: "ui.japanese", nativeLabel: "日本語", shortLabel: "JP" },
 ];
 
 export function LanguageDropdown({ lang, onChange, variant = "full" }: LanguageDropdownProps) {
@@ -65,6 +70,7 @@ export function LanguageDropdown({ lang, onChange, variant = "full" }: LanguageD
   }, [open]);
 
   const isCompact = variant === "compact";
+  const tooltipLabel = t(lang, "ui.languageLabel");
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
@@ -72,6 +78,8 @@ export function LanguageDropdown({ lang, onChange, variant = "full" }: LanguageD
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        title={tooltipLabel}
+        aria-label={tooltipLabel}
         style={{
           display: "flex",
           alignItems: "center",
@@ -96,7 +104,7 @@ export function LanguageDropdown({ lang, onChange, variant = "full" }: LanguageD
         }}
       >
         <span style={{ fontSize: isCompact ? "0.85rem" : "1rem" }}>{current.flag}</span>
-        <span>{isCompact ? current.shortLabel : current.label}</span>
+        <span>{isCompact ? current.shortLabel : current.nativeLabel}</span>
         <svg
           width="12"
           height="12"
@@ -123,7 +131,7 @@ export function LanguageDropdown({ lang, onChange, variant = "full" }: LanguageD
             top: "calc(100% + 6px)",
             right: isCompact ? 0 : undefined,
             left: isCompact ? undefined : 0,
-            minWidth: 160,
+            minWidth: 180,
             background: "rgba(10, 15, 30, 0.95)",
             backdropFilter: "blur(12px)",
             border: "1px solid rgba(255,255,255,0.12)",
@@ -133,8 +141,32 @@ export function LanguageDropdown({ lang, onChange, variant = "full" }: LanguageD
             overflow: "hidden",
           }}
         >
+          {/* Header row — shown in full variant for clarity */}
+          {!isCompact && (
+            <div
+              style={{
+                padding: "0.45rem 0.9rem",
+                fontSize: "0.7rem",
+                fontWeight: 600,
+                color: "#64748b",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+                borderBottom: "1px solid rgba(255,255,255,0.06)",
+              }}
+            >
+              {tooltipLabel}
+            </div>
+          )}
+
           {LANG_OPTIONS.map((opt) => {
             const isActive = opt.code === lang;
+            // Show translated name + native name: e.g. "Japanese — 日本語"
+            const translatedName = t(lang, opt.nameKey);
+            const displayLabel =
+              translatedName !== opt.nativeLabel
+                ? `${translatedName} — ${opt.nativeLabel}`
+                : opt.nativeLabel;
+
             return (
               <button
                 key={opt.code}
@@ -170,7 +202,7 @@ export function LanguageDropdown({ lang, onChange, variant = "full" }: LanguageD
                 }}
               >
                 <span style={{ fontSize: "1.1rem" }}>{opt.flag}</span>
-                <span>{opt.label}</span>
+                <span>{displayLabel}</span>
                 {isActive && (
                   <svg
                     width="14"
