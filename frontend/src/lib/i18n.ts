@@ -151,6 +151,9 @@ const dictionary: Dictionary = {
   "ui.search": { en: "Search strategies, backtests...", ja: "戦略・バックテストを検索..." },
   "ui.soon": { en: "Soon", ja: "近日" },
   "ui.notifications": { en: "Notifications", ja: "通知" },
+  "ui.home": { en: "Home", ja: "ホーム" },
+  "ui.langEnglish": { en: "English", ja: "English" },
+  "ui.langJapanese": { en: "日本語", ja: "日本語" },
 
   // -----------------------------------------------------------------------------
   // Dashboard - Page
