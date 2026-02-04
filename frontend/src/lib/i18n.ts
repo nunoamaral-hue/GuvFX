@@ -807,6 +807,34 @@ const dictionary: Dictionary = {
     en: "Got it, don't show again",
     ja: "了解、次回から表示しない",
   },
+
+  // -----------------------------------------------------------------------------
+  // Strategy Marketplace
+  // -----------------------------------------------------------------------------
+  "marketplace.title": {
+    en: "Strategy Marketplace",
+    ja: "戦略マーケットプレイス",
+  },
+  "marketplace.subtitle": {
+    en: "Browse and deploy strategy templates to your trading accounts.",
+    ja: "戦略テンプレートを閲覧し、取引口座に展開できます。",
+  },
+  "marketplace.disclaimerLine1": {
+    en: "Templates and examples only. No financial advice. Any figures shown are illustrative and not a guarantee of outcomes.",
+    ja: "テンプレート・例示のみ。投資助言ではありません。表示される数値は例示であり、結果を保証するものではありません。",
+  },
+  "marketplace.styleLabel": {
+    en: "Style",
+    ja: "スタイル",
+  },
+  "marketplace.timeframesLabel": {
+    en: "Timeframes",
+    ja: "時間足",
+  },
+  "marketplace.executionLabel": {
+    en: "Execution",
+    ja: "実行",
+  },
 };
 
 // =============================================================================

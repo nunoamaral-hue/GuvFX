@@ -19,14 +19,11 @@ type MarketplaceStrategy = {
   name: string;
   category: MarketCategory;
   accent: Accent;
-  risk: "Low" | "Medium" | "High";
+  style: string;
+  execution: string;
   summary: string;
   timeframes: string[];
   pairs: string[];
-  backtest_window?: string;
-  win_rate?: number;
-  avg_r?: number;
-  max_dd?: number;
   tags?: string[];
 };
 
@@ -74,43 +71,18 @@ const pillStyle = (accent: Accent): React.CSSProperties => {
   };
 };
 
-const badgeStyle = (type: "low" | "medium" | "high" | "default"): React.CSSProperties => {
-  const styles = {
-    low: {
-      bg: "rgba(34,197,94,0.14)",
-      border: "rgba(34,197,94,0.35)",
-      text: "#86efac",
-    },
-    medium: {
-      bg: "rgba(168,85,247,0.14)",
-      border: "rgba(168,85,247,0.35)",
-      text: "#d8b4fe",
-    },
-    high: {
-      bg: "rgba(250,204,21,0.14)",
-      border: "rgba(250,204,21,0.40)",
-      text: "#fde047",
-    },
-    default: {
-      bg: "rgba(100,116,139,0.14)",
-      border: "rgba(100,116,139,0.35)",
-      text: "#94a3b8",
-    },
-  };
-  const s = styles[type];
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "0.15rem 0.5rem",
-    borderRadius: 999,
-    border: `1px solid ${s.border}`,
-    background: s.bg,
-    color: s.text,
-    fontSize: "0.7rem",
-    fontWeight: 600,
-    whiteSpace: "nowrap",
-  };
-};
+const badgeStyle = (): React.CSSProperties => ({
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "0.15rem 0.5rem",
+  borderRadius: 999,
+  border: "1px solid rgba(100,116,139,0.35)",
+  background: "rgba(100,116,139,0.14)",
+  color: "#94a3b8",
+  fontSize: "0.7rem",
+  fontWeight: 600,
+  whiteSpace: "nowrap",
+});
 
 // ─────────────────────────────────────────────────────────────────────
 // Seeded Marketplace Strategies
@@ -121,59 +93,47 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     name: "London Session Box Breakout",
     category: "Breakout",
     accent: "purple",
-    risk: "Medium",
-    summary: "Trades Asian session range breakouts during London open with volatility confirmation.",
+    style: "Volatility Breakout",
+    execution: "Manual review required",
+    summary: "Example ruleset for Asian session range breakouts during London open. Review and test before use.",
     timeframes: ["M15", "M30"],
     pairs: ["GBPUSD", "EURUSD", "GBPJPY"],
-    backtest_window: "12m",
-    win_rate: 58,
-    avg_r: 0.42,
-    max_dd: 9.2,
-    tags: ["Verified"],
+    tags: ["Template"],
   },
   {
     id: "mp-002",
     name: "Trend EMA Crossover (HTF filter)",
     category: "Trend",
     accent: "blue",
-    risk: "Low",
-    summary: "20/50 EMA cross on M15 with H4 trend alignment. Designed for steady equity curve.",
+    style: "Trend Following",
+    execution: "Manual review required",
+    summary: "20/50 EMA cross on M15 with H4 trend alignment. Designed to be configured and tested by the user.",
     timeframes: ["M15", "H1"],
     pairs: ["EURUSD", "USDJPY", "AUDUSD"],
-    backtest_window: "18m",
-    win_rate: 54,
-    avg_r: 0.35,
-    max_dd: 6.8,
-    tags: ["Verified"],
+    tags: ["Template"],
   },
   {
     id: "mp-003",
     name: "Bollinger Mean Reversion",
     category: "Reversion",
     accent: "green",
-    risk: "Medium",
-    summary: "Enters on 2σ touches with RSI divergence, targeting middle band. Works best in ranging markets.",
+    style: "Mean Reversion",
+    execution: "Manual review required",
+    summary: "Enters on 2σ touches with RSI divergence. Example template — review and test before use.",
     timeframes: ["M5", "M15"],
     pairs: ["EURUSD", "GBPUSD", "USDCHF"],
-    backtest_window: "12m",
-    win_rate: 62,
-    avg_r: 0.28,
-    max_dd: 11.5,
-    tags: ["Verified"],
+    tags: ["Example"],
   },
   {
     id: "mp-004",
-    name: "Head & Shoulders Reversal (Beta)",
+    name: "Head & Shoulders Reversal",
     category: "Patterns",
     accent: "yellow",
-    risk: "High",
-    summary: "Automated chart pattern recognition for H&S reversals with volume confirmation. Currently in beta testing.",
+    style: "Chart Patterns",
+    execution: "User-controlled execution",
+    summary: "Automated chart pattern recognition for H&S reversals with volume confirmation. Currently in beta — review and test before use.",
     timeframes: ["H1", "H4"],
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"],
-    backtest_window: "6m",
-    win_rate: 48,
-    avg_r: 0.65,
-    max_dd: 15.3,
     tags: ["Beta"],
   },
 ];
@@ -367,26 +327,20 @@ export default function StrategyMarketplacePage() {
   };
 
   // ─────────────────────────────────────────────────────────────────────
-  // Risk Badge Type
-  // ─────────────────────────────────────────────────────────────────────
-  const riskBadgeType = (risk: string): "low" | "medium" | "high" => {
-    if (risk === "Low") return "low";
-    if (risk === "High") return "high";
-    return "medium";
-  };
-
-  // ─────────────────────────────────────────────────────────────────────
   // Render
   // ─────────────────────────────────────────────────────────────────────
   return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         {/* Header */}
-        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Strategy Marketplace</h1>
+        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>{t(lang, "marketplace.title")}</h1>
         <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "0.5rem" }}>
-          Browse and deploy pre-built strategies to your trading accounts.
+          {t(lang, "marketplace.subtitle")}
         </p>
-        <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "1.5rem" }}>
+        <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "0.35rem" }}>
           {t(lang, "legal.microDisclaimer")}
+        </p>
+        <p style={{ fontSize: "0.72rem", color: "#64748b", marginBottom: "1.5rem", lineHeight: 1.5 }}>
+          {t(lang, "marketplace.disclaimerLine1")}
         </p>
 
         {authChecked && !isAuthed && (
@@ -556,9 +510,8 @@ export default function StrategyMarketplacePage() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
                 <span style={pillStyle(strategy.accent)}>{strategy.category}</span>
                 <div style={{ display: "flex", gap: "0.4rem" }}>
-                  <span style={badgeStyle(riskBadgeType(strategy.risk))}>{strategy.risk}</span>
                   {strategy.tags?.map((tag) => (
-                    <span key={tag} style={badgeStyle("default")}>
+                    <span key={tag} style={badgeStyle()}>
                       {tag}
                     </span>
                   ))}
@@ -585,11 +538,11 @@ export default function StrategyMarketplacePage() {
                 <div style={{ fontSize: "0.8rem", color: "#cbd5e1" }}>{strategy.timeframes.join(", ")}</div>
               </div>
 
-              {/* Stats Strip */}
+              {/* Template Info */}
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "repeat(4, 1fr)",
+                  gridTemplateColumns: "repeat(3, 1fr)",
                   gap: "0.75rem",
                   padding: "0.75rem",
                   borderRadius: 8,
@@ -598,27 +551,27 @@ export default function StrategyMarketplacePage() {
                 }}
               >
                 <div>
-                  <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>Win Rate</div>
-                  <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#e2e8f0" }}>
-                    {strategy.win_rate !== undefined ? `${strategy.win_rate}%` : "—"}
+                  <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
+                    {t(lang, "marketplace.styleLabel")}
+                  </div>
+                  <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
+                    {strategy.style}
                   </div>
                 </div>
                 <div>
-                  <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>Avg R</div>
-                  <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#e2e8f0" }}>
-                    {strategy.avg_r !== undefined ? strategy.avg_r.toFixed(2) : "—"}
+                  <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
+                    {t(lang, "marketplace.timeframesLabel")}
+                  </div>
+                  <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
+                    {strategy.timeframes.join(", ")}
                   </div>
                 </div>
                 <div>
-                  <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>Max DD</div>
-                  <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#e2e8f0" }}>
-                    {strategy.max_dd !== undefined ? `${strategy.max_dd}%` : "—"}
+                  <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
+                    {t(lang, "marketplace.executionLabel")}
                   </div>
-                </div>
-                <div>
-                  <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>Window</div>
-                  <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#e2e8f0" }}>
-                    {strategy.backtest_window || "—"}
+                  <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
+                    {strategy.execution}
                   </div>
                 </div>
               </div>
