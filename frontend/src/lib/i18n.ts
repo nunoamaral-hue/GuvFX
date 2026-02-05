@@ -1031,6 +1031,42 @@ const dictionary: Dictionary = {
     en: "6) Exit rules",
     ja: "6) 終了ルール",
   },
+
+  // -----------------------------------------------------------------------------
+  // Backtests
+  // -----------------------------------------------------------------------------
+  "backtests.title": {
+    en: "Backtests",
+    ja: "バックテスト",
+  },
+  "backtests.subtitle": {
+    en: "Manage test configurations, launch runs, and review observed results.",
+    ja: "テスト設定の管理、実行の起動、結果の確認を行います。",
+  },
+  "backtests.disclaimerLine1": {
+    en: "Testing is informational only. Results depend on data quality and assumptions, and do not guarantee future outcomes.",
+    ja: "テストは情報提供のみを目的としています。結果はデータの品質と仮定に依存し、将来の結果を保証するものではありません。",
+  },
+  "backtests.detailTitle": {
+    en: "Test Configuration",
+    ja: "テスト設定",
+  },
+  "backtests.detailSubtitle": {
+    en: "Review the configuration and all runs associated with it.",
+    ja: "設定と関連するすべての実行を確認します。",
+  },
+  "backtests.observedReturn": {
+    en: "Observed return",
+    ja: "観測リターン",
+  },
+  "backtests.maxDrawdown": {
+    en: "Max drawdown",
+    ja: "最大ドローダウン",
+  },
+  "backtests.observedWinRate": {
+    en: "Observed hit rate",
+    ja: "観測ヒット率",
+  },
 };
 
 // =============================================================================

@@ -7,8 +7,11 @@ import type { BacktestConfig, BacktestRun } from "@/types/backtests";
 import { Card } from "@/components/ui/Card";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 export default function BacktestDetailPage() {
+  const lang = useLang();
   const params = useParams();
   const configId = Number(params?.id);
 
@@ -104,10 +107,16 @@ export default function BacktestDetailPage() {
   return (
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
-          Backtest Configuration
+          {t(lang, "backtests.detailTitle")}
         </h1>
-        <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
-          Review the configuration and all runs associated with it.
+        <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "0.5rem" }}>
+          {t(lang, "backtests.detailSubtitle")}
+        </p>
+        <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "0.35rem" }}>
+          {t(lang, "legal.microDisclaimer")}
+        </p>
+        <p style={{ fontSize: "0.72rem", color: "#64748b", marginBottom: "1rem", lineHeight: 1.5 }}>
+          {t(lang, "backtests.disclaimerLine1")}
         </p>
 
         {error && <Alert type="error">{error}</Alert>}
@@ -323,7 +332,7 @@ export default function BacktestDetailPage() {
                     </p>
                   )}
 
-                  {/* metrics */}
+                  {/* metrics (observational) */}
                   {typeof totalReturn === "number" && (
                     <div
                       style={{
@@ -333,14 +342,14 @@ export default function BacktestDetailPage() {
                       }}
                     >
                       <p style={{ margin: 0 }}>
-                        <span style={labelStyle}>Total return:</span>
+                        <span style={labelStyle}>{t(lang, "backtests.observedReturn")}:</span>
                         <span style={valueStyle}>
                           {totalReturn.toFixed(2)}%
                         </span>
                       </p>
                       {typeof maxDD === "number" && (
                         <p style={{ margin: 0 }}>
-                          <span style={labelStyle}>Max drawdown:</span>
+                          <span style={labelStyle}>{t(lang, "backtests.maxDrawdown")}:</span>
                           <span style={valueStyle}>
                             {maxDD.toFixed(2)}%
                           </span>
@@ -348,7 +357,7 @@ export default function BacktestDetailPage() {
                       )}
                       {typeof winRate === "number" && (
                         <p style={{ margin: 0 }}>
-                          <span style={labelStyle}>Win rate:</span>
+                          <span style={labelStyle}>{t(lang, "backtests.observedWinRate")}:</span>
                           <span style={valueStyle}>
                             {winRate.toFixed(2)}%
                           </span>

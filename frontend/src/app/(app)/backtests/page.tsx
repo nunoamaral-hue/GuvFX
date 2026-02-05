@@ -8,6 +8,8 @@ import { Card } from "@/components/ui/Card";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 type BacktestMetricsSummary = Record<string, unknown> & {
   total_return_pct?: number;
@@ -28,6 +30,7 @@ type BacktestSummary = {
 };
 
 export default function BacktestsPage() {
+  const lang = useLang();
   const [accessToken, setAccessToken] = useState<string>("");
   const [configs, setConfigs] = useState<BacktestConfig[]>([]);
   const [summaries, setSummaries] = useState<Record<number, BacktestSummary>>({});
@@ -174,9 +177,15 @@ export default function BacktestsPage() {
 
   return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Backtests</h1>
-        <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
-          Manage your backtest configurations, launch runs, and review performance.
+        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>{t(lang, "backtests.title")}</h1>
+        <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "0.5rem" }}>
+          {t(lang, "backtests.subtitle")}
+        </p>
+        <p style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "0.35rem" }}>
+          {t(lang, "legal.microDisclaimer")}
+        </p>
+        <p style={{ fontSize: "0.72rem", color: "#64748b", marginBottom: "1rem", lineHeight: 1.5 }}>
+          {t(lang, "backtests.disclaimerLine1")}
         </p>
 
         {error && <Alert type="error">{error}</Alert>}
@@ -367,13 +376,13 @@ export default function BacktestsPage() {
                       {typeof totalReturn === "number" &&
                         typeof maxDD === "number" && (
                           <p style={{ margin: 0 }}>
-                            <span style={labelStyle}>Total return:</span>
+                            <span style={labelStyle}>{t(lang, "backtests.observedReturn")}:</span>
                             <span style={valueStyle}>
                               {totalReturn.toFixed(2)}%
                             </span>
                             {"  "}
                             &nbsp;|&nbsp;
-                            <span style={labelStyle}>Max DD:</span>
+                            <span style={labelStyle}>{t(lang, "backtests.maxDrawdown")}:</span>
                             <span style={valueStyle}>
                               {maxDD.toFixed(2)}%
                             </span>
