@@ -113,7 +113,7 @@ const ARCHETYPES: ArchetypeTemplate[] = [
     category: "Trend",
     accent: "blue",
     recommended: true,
-    description: "Robust trend follower using EMA crossover with higher-timeframe confirmation.",
+    description: "Trend-following template using EMA crossover with higher-timeframe confirmation.",
     defaults: {
       style: "INTRADAY",
       timeframe: "H1",
@@ -841,8 +841,8 @@ export default function CreateStrategyPage() {
           <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
             {/* 0) Overview */}
             <Card
-              title="0) Overview"
-              subtitle="Give your strategy a name and optional description."
+              title={t(lang, "createStrategy.overviewTitle")}
+              subtitle={t(lang, "createStrategy.overviewSubtitle")}
             >
               <div
                 style={{
@@ -861,7 +861,7 @@ export default function CreateStrategyPage() {
                       marginBottom: "0.25rem",
                     }}
                   >
-                    Strategy name
+                    {t(lang, "createStrategy.strategyNameLabel")}
                   </label>
                   <input
                     id="strategyName"
@@ -893,7 +893,7 @@ export default function CreateStrategyPage() {
                       marginBottom: "0.25rem",
                     }}
                   >
-                    Description (optional)
+                    {t(lang, "createStrategy.descriptionLabel")}
                   </label>
                   <input
                     id="strategyDescription"
@@ -919,8 +919,8 @@ export default function CreateStrategyPage() {
 
             {/* 1) Archetype */}
             <Card
-              title="1) Strategy archetype"
-              subtitle="Pick a proven template. Defaults auto-fill below."
+              title={t(lang, "createStrategy.archetypeTitle")}
+              subtitle={t(lang, "createStrategy.archetypeSubtitle")}
             >
               <div
                 style={{
@@ -965,7 +965,7 @@ export default function CreateStrategyPage() {
                             marginLeft: 7,
                           }}
                         >
-                          Recommended
+                          {t(lang, "createStrategy.suggested")}
                         </span>
                       )}
                       <div style={{ fontWeight: 600, fontSize: "1.05rem", color: "#e5f4ff", margin: "0.25rem 0 0.15rem" }}>

@@ -940,8 +940,8 @@ const dictionary: Dictionary = {
     ja: "戦略を作成",
   },
   "createStrategy.subtitle": {
-    en: "Build a strategy template from edge to execution. You can refine details later on the strategy page.",
-    ja: "エッジから実行まで戦略テンプレートを構築します。詳細は戦略ページで後から調整できます。",
+    en: "Build a strategy template from idea to structure. You can refine details later on the strategy page.",
+    ja: "アイデアから構造まで戦略テンプレートを構築します。詳細は戦略ページで後から調整できます。",
   },
   "createStrategy.showAdvanced": {
     en: "Show advanced",
@@ -954,6 +954,34 @@ const dictionary: Dictionary = {
   "createStrategy.advancedHint": {
     en: "Advanced = indicators, filters, psychology, and extra risk controls.",
     ja: "詳細設定 = インジケーター、フィルター、心理管理、追加リスク管理。",
+  },
+  "createStrategy.overviewTitle": {
+    en: "0) Overview",
+    ja: "0) 概要",
+  },
+  "createStrategy.overviewSubtitle": {
+    en: "Give your strategy a name and optional description.",
+    ja: "戦略に名前と任意の説明を付けてください。",
+  },
+  "createStrategy.strategyNameLabel": {
+    en: "Strategy name",
+    ja: "戦略名",
+  },
+  "createStrategy.descriptionLabel": {
+    en: "Description (optional)",
+    ja: "説明（任意）",
+  },
+  "createStrategy.archetypeTitle": {
+    en: "1) Strategy archetype",
+    ja: "1) 戦略アーキタイプ",
+  },
+  "createStrategy.archetypeSubtitle": {
+    en: "Pick a template. Defaults auto-fill below.",
+    ja: "テンプレートを選択してください。デフォルト値が下に自動入力されます。",
+  },
+  "createStrategy.suggested": {
+    en: "Suggested",
+    ja: "おすすめ",
   },
 };
 
