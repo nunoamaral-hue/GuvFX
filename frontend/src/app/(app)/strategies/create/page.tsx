@@ -1398,7 +1398,7 @@ export default function CreateStrategyPage() {
                       onChange={(e) => setAutoAi(e.target.checked)}
                       style={{ cursor: "pointer" }}
                     />
-                    Let AI manage parameters automatically
+                    {t(lang, "createStrategy.aiAssistLabel")}
                   </label>
                 </div>
               </div>
@@ -1408,9 +1408,9 @@ export default function CreateStrategyPage() {
 
             {!showAdvanced && (
             <>
-            {/* 4) Stops & take profit */}
+            {/* 4) Stop & exit rules */}
             <Card
-              title="4) Stops & take profit"
+              title={t(lang, "createStrategy.stopExitTitle")}
             >
               <div
                 style={{
@@ -1598,10 +1598,10 @@ export default function CreateStrategyPage() {
                     </>
                   )}
                 </div>
-                {/* Take Profit Side */}
+                {/* Exit rules */}
                 <div>
                   <h4 style={{ color: "#cbd5f5", fontSize: "1rem", margin: 0, marginBottom: 4 }}>
-                    Take profit
+                    {t(lang, "createStrategy.exitRulesLabel")}
                   </h4>
                   <div>
                     <label
@@ -1869,7 +1869,7 @@ export default function CreateStrategyPage() {
                     }}
                   />
                 </div>
-                {/* Risk & money management */}
+                {/* Risk controls */}
                 <div>
                   <label
                     htmlFor="dailyMaxLossR"
@@ -2493,7 +2493,7 @@ export default function CreateStrategyPage() {
             {showAdvanced && (
             <Card>
               <div>
-              {/* 4) Trade idea (edge) */}
+              {/* 4) Trade logic */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <div
                   style={{
@@ -2510,7 +2510,7 @@ export default function CreateStrategyPage() {
                       margin: 0,
                     }}
                   >
-                    4) Trade idea (edge)
+                    {t(lang, "createStrategy.tradeLogicTitle")}
                   </h3>
                   <span
                     style={{ fontSize: "0.75rem", color: "#9ca3af" }}
@@ -2535,7 +2535,7 @@ export default function CreateStrategyPage() {
                         marginBottom: "0.25rem",
                       }}
                     >
-                      Edge type
+                      {t(lang, "createStrategy.approachTypeLabel")}
                     </label>
                     <select
                       id="edgeType"
@@ -2553,7 +2553,7 @@ export default function CreateStrategyPage() {
                         boxSizing: "border-box",
                       }}
                     >
-                      <option value="">Select edge type</option>
+                      <option value="">{t(lang, "createStrategy.selectApproach")}</option>
                       <option value="TREND_FOLLOWING">Trend following</option>
                       <option value="MEAN_REVERSION">Mean reversion</option>
                       <option value="BREAKOUT">Breakout</option>
@@ -2572,7 +2572,7 @@ export default function CreateStrategyPage() {
                         marginBottom: "0.25rem",
                       }}
                     >
-                      Edge rationale
+                      {t(lang, "createStrategy.rationaleLabel")}
                     </label>
                     <textarea
                       id="edgeRationale"
@@ -2795,13 +2795,13 @@ export default function CreateStrategyPage() {
                         onChange={(e) => setAutoAi(e.target.checked)}
                         style={{ cursor: "pointer" }}
                       />
-                      Let AI manage parameters automatically
+                      {t(lang, "createStrategy.aiAssistLabel")}
                     </label>
                   </div>
                 </div>
               </section>
 
-              {/* 6) Stops & take profit */}
+              {/* 6) Stop & exit rules */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -2996,7 +2996,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 6) Stops & take profit (continued) */}
+              {/* 6) Exit rules (continued) */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -3005,7 +3005,7 @@ export default function CreateStrategyPage() {
                     margin: "0 0 0.4rem 0",
                   }}
                 >
-                  6) Take profit rules
+                  {t(lang, "createStrategy.exitRulesTitle")}
                 </h3>
                 <div
                   style={{
@@ -3597,7 +3597,7 @@ export default function CreateStrategyPage() {
                 </div>
               </section>
 
-              {/* 10) Risk & money management */}
+              {/* 10) Risk controls */}
               <section style={{ borderTop: "1px solid #1b2436", paddingTop: 16 }}>
                 <h3
                   style={{
@@ -3606,7 +3606,7 @@ export default function CreateStrategyPage() {
                     margin: "0 0 0.4rem 0",
                   }}
                 >
-                  10) Risk & money management (overall)
+                  {t(lang, "createStrategy.riskControlsTitle")}
                 </h3>
                 <div
                   style={{

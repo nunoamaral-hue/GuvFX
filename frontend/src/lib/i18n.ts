@@ -995,6 +995,42 @@ const dictionary: Dictionary = {
     en: "After saving, run tests to observe behavior and review risk characteristics before enabling execution.",
     ja: "保存後にテストを実行し、実行を有効にする前に挙動とリスク特性を確認してください。",
   },
+  "createStrategy.tradeLogicTitle": {
+    en: "4) Trade logic",
+    ja: "4) トレードロジック",
+  },
+  "createStrategy.approachTypeLabel": {
+    en: "Approach type",
+    ja: "アプローチタイプ",
+  },
+  "createStrategy.selectApproach": {
+    en: "Select approach type",
+    ja: "アプローチタイプを選択",
+  },
+  "createStrategy.rationaleLabel": {
+    en: "Rationale",
+    ja: "根拠",
+  },
+  "createStrategy.aiAssistLabel": {
+    en: "Let AI assist with parameter defaults",
+    ja: "AIにパラメーター設定を補助させる",
+  },
+  "createStrategy.riskControlsTitle": {
+    en: "10) Risk controls",
+    ja: "10) リスク管理",
+  },
+  "createStrategy.stopExitTitle": {
+    en: "4) Stop & exit rules",
+    ja: "4) ストップ＆終了ルール",
+  },
+  "createStrategy.exitRulesLabel": {
+    en: "Exit rules",
+    ja: "終了ルール",
+  },
+  "createStrategy.exitRulesTitle": {
+    en: "6) Exit rules",
+    ja: "6) 終了ルール",
+  },
 };
 
 // =============================================================================
