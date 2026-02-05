@@ -9,6 +9,7 @@ import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
 import { useLang } from "@/components/AppShell";
 import { t } from "@/lib/i18n";
+import { BacktestDiagnostics, DrawdownSparkline } from "@/components/backtests";
 
 export default function BacktestDetailPage() {
   const lang = useLang();
@@ -332,39 +333,72 @@ export default function BacktestDetailPage() {
                     </p>
                   )}
 
-                  {/* metrics (observational) */}
+                  {/* metrics (observational) + sparkline */}
                   {typeof totalReturn === "number" && (
                     <div
                       style={{
                         marginTop: "0.35rem",
                         fontSize: "0.84rem",
                         color: "#c9d7f2",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        gap: "1rem",
                       }}
                     >
-                      <p style={{ margin: 0 }}>
-                        <span style={labelStyle}>{t(lang, "backtests.observedReturn")}:</span>
-                        <span style={valueStyle}>
-                          {totalReturn.toFixed(2)}%
-                        </span>
-                      </p>
-                      {typeof maxDD === "number" && (
+                      <div>
                         <p style={{ margin: 0 }}>
-                          <span style={labelStyle}>{t(lang, "backtests.maxDrawdown")}:</span>
+                          <span style={labelStyle}>{t(lang, "backtests.observedReturn")}:</span>
                           <span style={valueStyle}>
-                            {maxDD.toFixed(2)}%
+                            {totalReturn.toFixed(2)}%
                           </span>
                         </p>
-                      )}
-                      {typeof winRate === "number" && (
-                        <p style={{ margin: 0 }}>
-                          <span style={labelStyle}>{t(lang, "backtests.observedWinRate")}:</span>
-                          <span style={valueStyle}>
-                            {winRate.toFixed(2)}%
-                          </span>
-                        </p>
+                        {typeof maxDD === "number" && (
+                          <p style={{ margin: 0 }}>
+                            <span style={labelStyle}>{t(lang, "backtests.maxDrawdown")}:</span>
+                            <span style={valueStyle}>
+                              {maxDD.toFixed(2)}%
+                            </span>
+                          </p>
+                        )}
+                        {typeof winRate === "number" && (
+                          <p style={{ margin: 0 }}>
+                            <span style={labelStyle}>{t(lang, "backtests.observedWinRate")}:</span>
+                            <span style={valueStyle}>
+                              {winRate.toFixed(2)}%
+                            </span>
+                          </p>
+                        )}
+                      </div>
+                      {/* Drawdown sparkline */}
+                      {metrics.equity_curve && Array.isArray(metrics.equity_curve) && metrics.equity_curve.length > 2 && (
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: "0.7rem", color: "#64748b", marginBottom: "0.15rem" }}>
+                            Drawdown
+                          </div>
+                          <DrawdownSparkline
+                            equityCurve={metrics.equity_curve}
+                            width={100}
+                            height={28}
+                          />
+                        </div>
                       )}
                     </div>
                   )}
+
+                  {/* Full diagnostics panel for completed runs with equity data */}
+                  {run.status === "COMPLETED" &&
+                    metrics.equity_curve &&
+                    Array.isArray(metrics.equity_curve) &&
+                    metrics.equity_curve.length > 5 && (
+                      <div style={{ marginTop: "0.75rem" }}>
+                        <BacktestDiagnostics
+                          equityCurve={metrics.equity_curve}
+                          maxDrawdownPct={maxDD}
+                          lang={lang}
+                        />
+                      </div>
+                    )}
                 </div>
               );
             })}

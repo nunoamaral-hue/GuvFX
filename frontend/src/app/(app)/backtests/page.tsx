@@ -10,12 +10,16 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useLang } from "@/components/AppShell";
 import { t } from "@/lib/i18n";
+import { DrawdownSparkline, LossClusteringBadge } from "@/components/backtests";
+
+type EquityPoint = { timestamp?: string; equity: number } | number;
 
 type BacktestMetricsSummary = Record<string, unknown> & {
   total_return_pct?: number;
   max_drawdown_pct?: number;
   win_rate_pct?: number;
   num_trades?: number;
+  equity_curve?: EquityPoint[];
 };
 
 type BacktestSummary = {
@@ -233,9 +237,63 @@ export default function BacktestsPage() {
           {loading && <p>Loading backtests...</p>}
 
           {!loading && configs.length === 0 && accessToken && !error && (
-            <p style={{ fontSize: "0.9rem" }}>
-              No backtest configs found yet. Create them via the backend/admin for now.
-            </p>
+            <div
+              style={{
+                textAlign: "center",
+                padding: "2rem 1rem",
+                border: "1px dashed #333a4d",
+                borderRadius: 8,
+                background: "rgba(15, 20, 35, 0.6)",
+              }}
+            >
+              <h3
+                style={{
+                  fontSize: "1.1rem",
+                  color: "#e5f4ff",
+                  marginBottom: "0.5rem",
+                }}
+              >
+                {t(lang, "backtests.emptyTitle")}
+              </h3>
+              <p
+                style={{
+                  fontSize: "0.88rem",
+                  color: "#9ca3af",
+                  marginBottom: "1.25rem",
+                  maxWidth: 420,
+                  marginLeft: "auto",
+                  marginRight: "auto",
+                }}
+              >
+                {t(lang, "backtests.emptySubtitle")}
+              </p>
+              <div
+                style={{
+                  display: "flex",
+                  gap: "0.75rem",
+                  justifyContent: "center",
+                  flexWrap: "wrap",
+                }}
+              >
+                <Link href="/strategies/create">
+                  <Button type="button">
+                    {t(lang, "backtests.ctaCreateStrategy")}
+                  </Button>
+                </Link>
+                <Link href="/accounts">
+                  <Button
+                    type="button"
+                    style={{
+                      background: "transparent",
+                      border: "1px solid #334155",
+                      color: "#e5f4ff",
+                    }}
+                  >
+                    {t(lang, "backtests.ctaLinkAccount")}
+                  </Button>
+                </Link>
+              </div>
+            </div>
           )}
 
           <div
@@ -375,18 +433,44 @@ export default function BacktestsPage() {
                       </p>
                       {typeof totalReturn === "number" &&
                         typeof maxDD === "number" && (
-                          <p style={{ margin: 0 }}>
-                            <span style={labelStyle}>{t(lang, "backtests.observedReturn")}:</span>
-                            <span style={valueStyle}>
-                              {totalReturn.toFixed(2)}%
-                            </span>
-                            {"  "}
-                            &nbsp;|&nbsp;
-                            <span style={labelStyle}>{t(lang, "backtests.maxDrawdown")}:</span>
-                            <span style={valueStyle}>
-                              {maxDD.toFixed(2)}%
-                            </span>
-                          </p>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: "0.75rem",
+                            }}
+                          >
+                            <p style={{ margin: 0 }}>
+                              <span style={labelStyle}>{t(lang, "backtests.observedReturn")}:</span>
+                              <span style={valueStyle}>
+                                {totalReturn.toFixed(2)}%
+                              </span>
+                              {"  "}
+                              &nbsp;|&nbsp;
+                              <span style={labelStyle}>{t(lang, "backtests.maxDrawdown")}:</span>
+                              <span style={valueStyle}>
+                                {maxDD.toFixed(2)}%
+                              </span>
+                            </p>
+                            {/* Mini sparkline + clustering badge */}
+                            {metrics.equity_curve &&
+                              Array.isArray(metrics.equity_curve) &&
+                              metrics.equity_curve.length > 2 && (
+                                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                                  <LossClusteringBadge
+                                    equityCurve={metrics.equity_curve}
+                                    lang={lang}
+                                    compact
+                                  />
+                                  <DrawdownSparkline
+                                    equityCurve={metrics.equity_curve}
+                                    width={80}
+                                    height={24}
+                                  />
+                                </div>
+                              )}
+                          </div>
                         )}
                     </div>
                   )}

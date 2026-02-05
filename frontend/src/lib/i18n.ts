@@ -1067,6 +1067,114 @@ const dictionary: Dictionary = {
     en: "Observed hit rate",
     ja: "観測ヒット率",
   },
+  "backtests.emptyTitle": {
+    en: "No test configurations yet",
+    ja: "テスト設定がまだありません",
+  },
+  "backtests.emptySubtitle": {
+    en: "Create a strategy first, then return here to set up test configurations.",
+    ja: "まず戦略を作成し、テスト設定を行うためにここに戻ってください。",
+  },
+  "backtests.ctaCreateStrategy": {
+    en: "Create a strategy",
+    ja: "戦略を作成",
+  },
+  "backtests.ctaLinkAccount": {
+    en: "Link a trading account",
+    ja: "取引口座を連携",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Backtest Diagnostics (Loss-focused, compliance-safe)
+  // -----------------------------------------------------------------------------
+  "backtests.diagnostics.title": {
+    en: "Loss Diagnostics",
+    ja: "損失診断",
+  },
+  "backtests.diagnostics.subtitle": {
+    en: "Observational analysis of drawdown behavior and loss patterns.",
+    ja: "ドローダウン挙動と損失パターンの観察分析。",
+  },
+  "backtests.diagnostics.noDataAvailable": {
+    en: "No equity data available for diagnostics.",
+    ja: "診断用のエクイティデータがありません。",
+  },
+  "backtests.diagnostics.noEquityData": {
+    en: "Insufficient equity data",
+    ja: "エクイティデータが不十分です",
+  },
+  "backtests.diagnostics.drawdownTimelineTitle": {
+    en: "Drawdown over time",
+    ja: "時系列ドローダウン",
+  },
+  "backtests.diagnostics.timeAxis": {
+    en: "Time →",
+    ja: "時間 →",
+  },
+  "backtests.diagnostics.drawdownAxis": {
+    en: "Drawdown %",
+    ja: "ドローダウン %",
+  },
+  "backtests.diagnostics.significantPeriods": {
+    en: "Significant periods",
+    ja: "重要な期間",
+  },
+  "backtests.diagnostics.clusteringDistributed": {
+    en: "Losses distributed",
+    ja: "損失は分散",
+  },
+  "backtests.diagnostics.clusteringLow": {
+    en: "Minor clustering observed",
+    ja: "軽度のクラスタリング",
+  },
+  "backtests.diagnostics.clusteringMedium": {
+    en: "Moderate loss clustering",
+    ja: "中程度の損失クラスタリング",
+  },
+  "backtests.diagnostics.clusteringHigh": {
+    en: "High loss concentration",
+    ja: "高い損失集中",
+  },
+  "backtests.diagnostics.longestStreak": {
+    en: "Longest streak",
+    ja: "最長連続",
+  },
+  "backtests.diagnostics.clusterCount": {
+    en: "Clusters",
+    ja: "クラスター数",
+  },
+  "backtests.diagnostics.sessionBreakdownTitle": {
+    en: "Session breakdown (UTC)",
+    ja: "セッション別内訳（UTC）",
+  },
+  "backtests.diagnostics.sessionTokyo": {
+    en: "Tokyo",
+    ja: "東京",
+  },
+  "backtests.diagnostics.sessionLondon": {
+    en: "London",
+    ja: "ロンドン",
+  },
+  "backtests.diagnostics.sessionNewYork": {
+    en: "New York",
+    ja: "ニューヨーク",
+  },
+  "backtests.diagnostics.periods": {
+    en: "periods",
+    ja: "期間",
+  },
+  "backtests.diagnostics.noSessionData": {
+    en: "Session analysis requires timestamp data.",
+    ja: "セッション分析にはタイムスタンプデータが必要です。",
+  },
+  "backtests.diagnostics.sessionDisclaimer": {
+    en: "Session buckets are approximate (UTC). Actual market hours vary.",
+    ja: "セッション区分は概算（UTC）です。実際の市場時間は異なります。",
+  },
+  "backtests.diagnostics.disclaimer": {
+    en: "These diagnostics are observational only. They help identify patterns in historical test data but do not predict future behavior or guarantee outcomes.",
+    ja: "これらの診断は観察目的のみです。過去のテストデータのパターン特定に役立ちますが、将来の挙動を予測したり結果を保証するものではありません。",
+  },
 };
 
 // =============================================================================
