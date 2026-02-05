@@ -983,6 +983,18 @@ const dictionary: Dictionary = {
     en: "Suggested",
     ja: "おすすめ",
   },
+  "createStrategy.hypothesisLabel": {
+    en: "Hypothesis (optional)",
+    ja: "仮説（任意）",
+  },
+  "createStrategy.hypothesisHelp": {
+    en: "Describe the hypothesis and what conditions it depends on. No performance claims.",
+    ja: "仮説と前提条件を記載してください（成果の断定は不可）。",
+  },
+  "createStrategy.backtestingNote": {
+    en: "After saving, run tests to observe behavior and review risk characteristics before enabling execution.",
+    ja: "保存後にテストを実行し、実行を有効にする前に挙動とリスク特性を確認してください。",
+  },
 };
 
 // =============================================================================

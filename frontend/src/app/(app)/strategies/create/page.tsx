@@ -2515,7 +2515,7 @@ export default function CreateStrategyPage() {
                   <span
                     style={{ fontSize: "0.75rem", color: "#9ca3af" }}
                   >
-                    Why this should make money
+                    {t(lang, "createStrategy.hypothesisLabel")}
                   </span>
                 </div>
                 <div
@@ -2579,7 +2579,7 @@ export default function CreateStrategyPage() {
                       rows={3}
                       value={edgeRationale}
                       onChange={(e) => setEdgeRationale(e.target.value)}
-                      placeholder="In one or two sentences, why should this strategy work?"
+                      placeholder={t(lang, "createStrategy.hypothesisHelp")}
                       style={{
                         width: "100%",
                         padding: "0.6rem 0.8rem",
@@ -3986,9 +3986,7 @@ export default function CreateStrategyPage() {
                     margin: 0,
                   }}
                 >
-                  After saving this strategy, run backtests from the Backtests
-                  section to measure win rate, average R, drawdown, and other
-                  performance metrics. Use those numbers before scaling risk.
+                  {t(lang, "createStrategy.backtestingNote")}
                 </p>
               </section>
               </div>
