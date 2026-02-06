@@ -261,19 +261,6 @@ export default function BacktestsPage() {
       {error && <Alert type="error">{error}</Alert>}
       {info && <Alert type="info">{info}</Alert>}
 
-      {/* Create Config button */}
-      {accessToken && (
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.75rem" }}>
-          <Button
-            type="button"
-            onClick={() => setShowCreateModal(true)}
-            style={{ padding: "0.5rem 1rem", fontSize: "0.88rem" }}
-          >
-            {t(lang, "backtests.createConfig")}
-          </Button>
-        </div>
-      )}
-
       {/* Demo mode banner */}
       {!loading && configs.length > 0 && (
         <div
@@ -315,40 +302,75 @@ export default function BacktestsPage() {
       )}
 
       <Card title={t(lang, "backtests.configsCardTitle")}>
-        {/* Processing controls */}
-        {accessToken && (
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "0.75rem",
-              gap: "0.75rem",
-              flexWrap: "wrap",
-            }}
-          >
-            <div style={{ fontSize: "0.8rem", color: "#9ca3af" }}>
-              {lastProcessedAt ? (
-                <>
-                  {t(lang, "backtests.lastProcessed")}{" "}
-                  <span style={{ color: "#e5f4ff" }}>{lastProcessedAt}</span>
-                </>
-              ) : (
-                t(lang, "backtests.pendingNotProcessed")
-              )}
-            </div>
+        {/* Header row with action buttons — ALWAYS visible */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "0.5rem",
+            gap: "0.75rem",
+            flexWrap: "wrap",
+          }}
+        >
+          {/* Left: last processed info */}
+          <div style={{ fontSize: "0.8rem", color: "#9ca3af" }}>
+            {lastProcessedAt ? (
+              <>
+                {t(lang, "backtests.lastProcessed")}{" "}
+                <span style={{ color: "#e5f4ff" }}>{lastProcessedAt}</span>
+              </>
+            ) : (
+              t(lang, "backtests.pendingNotProcessed")
+            )}
+          </div>
+
+          {/* Right: action buttons */}
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
             <Button
               type="button"
+              data-testid="process-pending-btn"
               onClick={handleProcessPending}
-              disabled={processingPending || !accessToken}
-              style={{ padding: "0.45rem 1.1rem", fontSize: "0.85rem" }}
+              disabled={processingPending}
+              style={{
+                padding: "0.45rem 0.9rem",
+                fontSize: "0.85rem",
+                background: "transparent",
+                border: "1px solid #334155",
+                color: "#b7c5dd",
+              }}
             >
               {processingPending
                 ? t(lang, "backtests.processing")
                 : t(lang, "backtests.processPending")}
             </Button>
+            <Button
+              type="button"
+              data-testid="create-config-btn"
+              onClick={() => setShowCreateModal(true)}
+              style={{
+                padding: "0.45rem 0.9rem",
+                fontSize: "0.85rem",
+                background: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)",
+                boxShadow: "0 0 12px rgba(59, 130, 246, 0.4)",
+                border: "none",
+              }}
+            >
+              {t(lang, "backtests.createConfig")}
+            </Button>
           </div>
-        )}
+        </div>
+
+        {/* Help line */}
+        <p
+          style={{
+            fontSize: "0.75rem",
+            color: "#64748b",
+            margin: "0 0 0.75rem 0",
+          }}
+        >
+          {t(lang, "backtests.headerHelpLine")}
+        </p>
 
         {/* Loading state */}
         {loading && (

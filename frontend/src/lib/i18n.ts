@@ -1547,6 +1547,10 @@ const dictionary: Dictionary = {
     en: "Processed {count} pending run(s).",
     ja: "{count}件の保留中の実行を処理しました。",
   },
+  "backtests.headerHelpLine": {
+    en: "Create a configuration to run a demo test. Results are illustrative only.",
+    ja: "デモテストを実行するには設定を作成してください。結果は例示のみです。",
+  },
 };
 
 // =============================================================================
