@@ -77,23 +77,56 @@ export default function BacktestDetailPage() {
     fetchConfig();
   }, [accessToken, configId]);
 
+  // Helper to extract config ID from a run (handles various API shapes)
+  const getRunConfigId = (run: BacktestRun): number | null => {
+    // Try run.config (number), run.config_id, or run.config.id (nested object)
+    if (typeof run.config === "number") return run.config;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyRun = run as any;
+    if (typeof anyRun.config_id === "number") return anyRun.config_id;
+    if (typeof anyRun.config?.id === "number") return anyRun.config.id;
+    return null;
+  };
+
+  // Normalize API response: handle both array and paginated {count, results} shapes
+  const normalizeRunsResponse = (
+    response: BacktestRun[] | { count?: number; results?: BacktestRun[] }
+  ): BacktestRun[] => {
+    if (Array.isArray(response)) {
+      return response;
+    }
+    if (response && Array.isArray(response.results)) {
+      return response.results;
+    }
+    return [];
+  };
+
   // Fetch runs for this config
   const fetchRuns = useCallback(async () => {
     if (!accessToken || !configId) return;
 
     setLoadingRuns(true);
+    setError(null);
     try {
       // Try backend filtering first (preferred)
-      let runsData: BacktestRun[];
+      let runsData: BacktestRun[] = [];
       try {
-        runsData = await apiFetch<BacktestRun[]>(
-          `/api/backtests/runs/?config=${configId}`,
-          {}
-        );
+        const response = await apiFetch<
+          BacktestRun[] | { count?: number; results?: BacktestRun[] }
+        >(`/api/backtests/runs/?config=${configId}`, {});
+        runsData = normalizeRunsResponse(response);
       } catch {
         // Fallback: fetch all runs and filter client-side
-        const allRuns = await apiFetch<BacktestRun[]>("/api/backtests/runs/", {});
-        runsData = allRuns.filter((r) => r.config === configId);
+        try {
+          const allResponse = await apiFetch<
+            BacktestRun[] | { count?: number; results?: BacktestRun[] }
+          >("/api/backtests/runs/", {});
+          const allRuns = normalizeRunsResponse(allResponse);
+          runsData = allRuns.filter((r) => getRunConfigId(r) === configId);
+        } catch (fallbackErr) {
+          console.error("Fallback fetch also failed:", fallbackErr);
+          throw fallbackErr;
+        }
       }
 
       // Sort by created_at descending (newest first)
@@ -103,7 +136,7 @@ export default function BacktestDetailPage() {
       );
       setRuns(runsData);
     } catch (err: unknown) {
-      console.error(err);
+      console.error("Failed to fetch runs:", err);
       const message =
         err instanceof Error ? err.message : "Failed to load backtest runs.";
       setError(message);
@@ -597,6 +630,20 @@ export default function BacktestDetailPage() {
                         </span>
                       )}
                     </div>
+                  )}
+
+                  {/* No equity curve indicator */}
+                  {!hasEquityCurve && run.status === "COMPLETED" && (
+                    <p
+                      style={{
+                        fontSize: "0.78rem",
+                        color: "#64748b",
+                        margin: "0.4rem 0 0",
+                        fontStyle: "italic",
+                      }}
+                    >
+                      {t(lang, "backtests.run.noEquityCurve")}
+                    </p>
                   )}
                 </div>
 

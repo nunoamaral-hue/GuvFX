@@ -244,6 +244,9 @@ class ProcessPendingBacktestsView(APIView):
         final_equity = equity_curve[-1]["equity"]
         total_return_pct = ((final_equity - initial_equity) / initial_equity) * 100
 
+        # Clamp max_drawdown to 0-100 range for safety
+        max_drawdown = min(max(max_drawdown, 0.0), 100.0)
+
         metrics = {
             "total_return_pct": round(total_return_pct, 2),
             "max_drawdown_pct": round(max_drawdown, 2),
@@ -251,9 +254,11 @@ class ProcessPendingBacktestsView(APIView):
             "num_trades": num_trades,
             "initial_balance": initial_equity,
             "final_balance": round(final_equity, 2),
+            # Include equity_curve in metrics for frontend compatibility
+            "equity_curve": equity_curve,
             # Demo flag for compliance
             "demo": True,
-            "notes": "Demo data / not real execution. For illustrative purposes only.",
+            "notes": "Demo data. For illustrative purposes only. Not real execution.",
         }
 
         return metrics, equity_curve
