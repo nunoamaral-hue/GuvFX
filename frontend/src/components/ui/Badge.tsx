@@ -4,7 +4,7 @@ import React from "react";
 
 type BadgeProps = {
   children: React.ReactNode;
-  color?: "green" | "gray" | "blue";
+  color?: "green" | "gray" | "blue" | "red";
 };
 
 export const Badge: React.FC<BadgeProps> = ({ children, color = "gray" }) => {
@@ -23,6 +23,11 @@ export const Badge: React.FC<BadgeProps> = ({ children, color = "gray" }) => {
       backgroundColor: "#e5f0ff",
       color: "#1a4fbf",
       borderColor: "#b4c7f2",
+    },
+    red: {
+      backgroundColor: "#fee2e2",
+      color: "#b91c1c",
+      borderColor: "#fecaca",
     },
   };
 

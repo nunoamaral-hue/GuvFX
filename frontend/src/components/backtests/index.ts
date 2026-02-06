@@ -10,3 +10,6 @@ export { DrawdownTimeline } from "./DrawdownTimeline";
 export { SessionHeatmap } from "./SessionHeatmap";
 export { LossClusteringBadge } from "./LossClusteringBadge";
 export { BacktestDiagnostics } from "./BacktestDiagnostics";
+export { EquityCurveChart } from "./EquityCurveChart";
+export { LossObservations } from "./LossObservations";
+export { RunDetailPanel } from "./RunDetailPanel";

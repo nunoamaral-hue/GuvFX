@@ -1255,6 +1255,162 @@ const dictionary: Dictionary = {
     en: "These diagnostics are observational only. They help identify patterns in historical test data but do not predict future behavior or guarantee outcomes.",
     ja: "これらの診断は観察目的のみです。過去のテストデータのパターン特定に役立ちますが、将来の挙動を予測したり結果を保証するものではありません。",
   },
+
+  // -----------------------------------------------------------------------------
+  // Backtest Run Detail (D.3 — MVP)
+  // -----------------------------------------------------------------------------
+  "backtests.run.title": {
+    en: "Run",
+    ja: "実行",
+  },
+  "backtests.run.statusQueued": {
+    en: "Queued",
+    ja: "キュー待ち",
+  },
+  "backtests.run.statusRunning": {
+    en: "Running",
+    ja: "実行中",
+  },
+  "backtests.run.statusCompleted": {
+    en: "Completed",
+    ja: "完了",
+  },
+  "backtests.run.statusFailed": {
+    en: "Failed",
+    ja: "失敗",
+  },
+  "backtests.run.startedAt": {
+    en: "Started:",
+    ja: "開始:",
+  },
+  "backtests.run.completedAt": {
+    en: "Completed:",
+    ja: "完了:",
+  },
+  "backtests.run.createdAt": {
+    en: "Created:",
+    ja: "作成日:",
+  },
+  "backtests.run.dataWindow": {
+    en: "Data window",
+    ja: "データ期間",
+  },
+  "backtests.run.noEquityCurve": {
+    en: "No equity curve data available for this run.",
+    ja: "この実行のエクイティカーブデータがありません。",
+  },
+  "backtests.run.noDataForRun": {
+    en: "No detailed data available for this run.",
+    ja: "この実行の詳細データがありません。",
+  },
+  "backtests.run.equityLabel": {
+    en: "Equity",
+    ja: "エクイティ",
+  },
+  "backtests.run.equityCurveLegend": {
+    en: "Equity curve",
+    ja: "エクイティカーブ",
+  },
+  "backtests.run.drawdownOverlayLegend": {
+    en: "Drawdown (underwater)",
+    ja: "ドローダウン（含み損）",
+  },
+  "backtests.run.chartsTitle": {
+    en: "Behaviour during this run",
+    ja: "この実行中の挙動",
+  },
+  "backtests.run.observedMetricsTitle": {
+    en: "Observed metrics (based on available data)",
+    ja: "観測指標（利用可能なデータに基づく）",
+  },
+  "backtests.run.longestDDDuration": {
+    en: "Longest drawdown",
+    ja: "最長ドローダウン",
+  },
+  "backtests.run.periods": {
+    en: "periods",
+    ja: "期間",
+  },
+  "backtests.run.totalTrades": {
+    en: "Total trades",
+    ja: "総取引数",
+  },
+  "backtests.run.metricsDisclaimer": {
+    en: "Metrics shown are observational and based on historical test data during this run.",
+    ja: "表示される指標は、この実行中の過去のテストデータに基づく観察値です。",
+  },
+  "backtests.run.lossObservationsTitle": {
+    en: "Loss Observations",
+    ja: "損失の観察",
+  },
+  "backtests.run.lossObservationsDisclaimer": {
+    en: "These observations are heuristic patterns identified in historical data. They do not imply conclusions or advice.",
+    ja: "これらの観察は過去データから特定されたヒューリスティックなパターンです。結論や助言を意味するものではありません。",
+  },
+  "backtests.run.obsHighLossFrequency": {
+    en: "High frequency of loss periods observed during this run",
+    ja: "この実行中に損失期間の頻度が高いことが観察されました",
+  },
+  "backtests.run.obsLowLossFrequency": {
+    en: "Relatively low frequency of loss periods during this run",
+    ja: "この実行中の損失期間の頻度は比較的低い",
+  },
+  "backtests.run.obsExtendedLossStreak": {
+    en: "Extended consecutive loss periods observed",
+    ja: "連続した損失期間の延長が観察されました",
+  },
+  "backtests.run.obsLossClustering": {
+    en: "Losses concentrated in short periods",
+    ja: "損失が短期間に集中",
+  },
+  "backtests.run.obsLossesDistributed": {
+    en: "Losses distributed evenly across the run",
+    ja: "損失が実行全体に均等に分布",
+  },
+  "backtests.run.obsExtendedDrawdownPhase": {
+    en: "Extended drawdown phases observed",
+    ja: "長期のドローダウン期間が観察されました",
+  },
+  "backtests.run.obsModerateDrawdownPhase": {
+    en: "Moderate drawdown duration observed",
+    ja: "中程度のドローダウン期間が観察されました",
+  },
+  "backtests.run.obsLargeLossMagnitude": {
+    en: "Loss magnitude larger than gain magnitude on average",
+    ja: "平均損失額が平均利益額より大きい",
+  },
+  "backtests.run.obsSmallLossMagnitude": {
+    en: "Loss magnitude smaller than gain magnitude on average",
+    ja: "平均損失額が平均利益額より小さい",
+  },
+  "backtests.run.obsSlowRecovery": {
+    en: "Slow recovery patterns observed after drawdowns",
+    ja: "ドローダウン後の回復が遅いパターンが観察されました",
+  },
+  "backtests.run.expandDetails": {
+    en: "Show details",
+    ja: "詳細を表示",
+  },
+  "backtests.run.collapseDetails": {
+    en: "Hide details",
+    ja: "詳細を非表示",
+  },
+  "backtests.run.runsCardTitle": {
+    en: "Test Runs",
+    ja: "テスト実行",
+  },
+  "backtests.run.noRunsYet": {
+    en: "No runs found for this configuration yet.",
+    ja: "この設定の実行はまだありません。",
+  },
+  "backtests.run.loadingRuns": {
+    en: "Loading runs…",
+    ja: "実行を読み込み中…",
+  },
+  "backtests.run.errorLabel": {
+    en: "Error:",
+    ja: "エラー:",
+  },
 };
 
 // =============================================================================
