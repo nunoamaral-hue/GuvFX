@@ -1055,6 +1055,10 @@ const dictionary: Dictionary = {
     en: "Review the configuration and all runs associated with it.",
     ja: "設定と関連するすべての実行を確認します。",
   },
+  "backtests.detailEmptyHint": {
+    en: "Click 'Run test' to create a demo run, then 'Process pending runs' to generate illustrative results.",
+    ja: "「テスト実行」をクリックしてデモ実行を作成し、「保留中の実行を処理」で例示的な結果を生成します。",
+  },
   "backtests.observedReturn": {
     en: "Observed return",
     ja: "観測リターン",

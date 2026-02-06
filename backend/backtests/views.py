@@ -70,9 +70,17 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
         if not user.is_staff:
             qs = qs.filter(config__owner=user)
+
+        # Filter by strategy ID
         strategy_id = self.request.query_params.get("strategy")
         if strategy_id:
             qs = qs.filter(config__strategy_id=strategy_id)
+
+        # Filter by config ID (supports both 'config' and 'config_id' params)
+        config_id = self.request.query_params.get("config") or self.request.query_params.get("config_id")
+        if config_id:
+            qs = qs.filter(config_id=config_id)
+
         return qs
 
     def perform_create(self, serializer):

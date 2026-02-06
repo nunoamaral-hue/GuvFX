@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import type { BacktestConfig, BacktestRun } from "@/types/backtests";
 import { Card } from "@/components/ui/Card";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { useLang } from "@/components/AppShell";
 import { t } from "@/lib/i18n";
 import { RunDetailPanel } from "@/components/backtests";
@@ -22,7 +23,10 @@ export default function BacktestDetailPage() {
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null);
+  const [runningBacktest, setRunningBacktest] = useState(false);
+  const [processingPending, setProcessingPending] = useState(false);
 
   const labelStyle: React.CSSProperties = {
     color: "#8fa0b7",
@@ -73,34 +77,99 @@ export default function BacktestDetailPage() {
     fetchConfig();
   }, [accessToken, configId]);
 
-  // Fetch runs and filter
-  useEffect(() => {
+  // Fetch runs for this config
+  const fetchRuns = useCallback(async () => {
     if (!accessToken || !configId) return;
 
-    const fetchRuns = async () => {
-      setLoadingRuns(true);
-      setError(null);
+    setLoadingRuns(true);
+    try {
+      // Try backend filtering first (preferred)
+      let runsData: BacktestRun[];
       try {
-        const allRuns = await apiFetch<BacktestRun[]>("/api/backtests/runs/", {});
-        const filtered = allRuns.filter((r) => r.config === configId);
-        // Sort by created_at descending (newest first)
-        filtered.sort(
-          (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        runsData = await apiFetch<BacktestRun[]>(
+          `/api/backtests/runs/?config=${configId}`,
+          {}
         );
-        setRuns(filtered);
-      } catch (err: unknown) {
-        console.error(err);
-        const message =
-          err instanceof Error ? err.message : "Failed to load backtest runs.";
-        setError(message);
-      } finally {
-        setLoadingRuns(false);
+      } catch {
+        // Fallback: fetch all runs and filter client-side
+        const allRuns = await apiFetch<BacktestRun[]>("/api/backtests/runs/", {});
+        runsData = allRuns.filter((r) => r.config === configId);
       }
-    };
 
-    fetchRuns();
+      // Sort by created_at descending (newest first)
+      runsData.sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      setRuns(runsData);
+    } catch (err: unknown) {
+      console.error(err);
+      const message =
+        err instanceof Error ? err.message : "Failed to load backtest runs.";
+      setError(message);
+    } finally {
+      setLoadingRuns(false);
+    }
   }, [accessToken, configId]);
+
+  useEffect(() => {
+    fetchRuns();
+  }, [fetchRuns]);
+
+  // Create a new run for this config
+  const handleRunBacktest = async () => {
+    if (!configId) return;
+    setError(null);
+    setInfo(null);
+    setRunningBacktest(true);
+
+    try {
+      await apiFetch("/api/backtests/runs/", {
+        method: "POST",
+        body: JSON.stringify({ config: configId }),
+      });
+      setInfo(t(lang, "backtests.runCreated"));
+      // Refresh runs list
+      await fetchRuns();
+    } catch (err: unknown) {
+      console.error(err);
+      const message =
+        err instanceof Error ? err.message : "Failed to create backtest run.";
+      setError(message);
+    } finally {
+      setRunningBacktest(false);
+    }
+  };
+
+  // Process all pending runs
+  const handleProcessPending = async () => {
+    setError(null);
+    setInfo(null);
+    setProcessingPending(true);
+
+    try {
+      const res = await apiFetch<{ processed_runs: number; processed_at: string }>(
+        "/api/backtests/process-pending/",
+        { method: "POST" }
+      );
+
+      setInfo(
+        t(lang, "backtests.processedRuns").replace("{count}", String(res.processed_runs))
+      );
+
+      // Refresh runs list after processing
+      await fetchRuns();
+    } catch (err: unknown) {
+      console.error(err);
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to process pending backtests.";
+      setError(message);
+    } finally {
+      setProcessingPending(false);
+    }
+  };
 
   const getStatusBadgeColor = (
     status: BacktestRun["status"]
@@ -156,6 +225,7 @@ export default function BacktestDetailPage() {
       </p>
 
       {error && <Alert type="error">{error}</Alert>}
+      {info && <Alert type="info">{info}</Alert>}
 
       {/* Config card */}
       <Card
@@ -215,6 +285,63 @@ export default function BacktestDetailPage() {
 
       {/* Runs card */}
       <Card title={t(lang, "backtests.run.runsCardTitle")}>
+        {/* Action buttons row - always visible */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "0.75rem",
+            gap: "0.75rem",
+            flexWrap: "wrap",
+          }}
+        >
+          <p
+            style={{
+              fontSize: "0.75rem",
+              color: "#64748b",
+              margin: 0,
+            }}
+          >
+            {t(lang, "backtests.headerHelpLine")}
+          </p>
+
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+            <Button
+              type="button"
+              onClick={handleProcessPending}
+              disabled={processingPending}
+              style={{
+                padding: "0.4rem 0.75rem",
+                fontSize: "0.82rem",
+                background: "transparent",
+                border: "1px solid #334155",
+                color: "#b7c5dd",
+              }}
+            >
+              {processingPending
+                ? t(lang, "backtests.processing")
+                : t(lang, "backtests.processPending")}
+            </Button>
+            <Button
+              type="button"
+              onClick={handleRunBacktest}
+              disabled={runningBacktest}
+              style={{
+                padding: "0.4rem 0.75rem",
+                fontSize: "0.82rem",
+                background: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)",
+                boxShadow: "0 0 10px rgba(59, 130, 246, 0.3)",
+                border: "none",
+              }}
+            >
+              {runningBacktest
+                ? t(lang, "backtests.creatingRun")
+                : t(lang, "backtests.runBacktest")}
+            </Button>
+          </div>
+        </div>
+
         {loadingRuns && (
           <p style={{ fontSize: "0.9rem", color: "#9ca3af" }}>
             {t(lang, "backtests.run.loadingRuns")}
@@ -222,9 +349,34 @@ export default function BacktestDetailPage() {
         )}
 
         {!loadingRuns && runs.length === 0 && accessToken && !error && (
-          <p style={{ fontSize: "0.9rem", color: "#9ca3af" }}>
-            {t(lang, "backtests.run.noRunsYet")}
-          </p>
+          <div
+            style={{
+              textAlign: "center",
+              padding: "1.5rem 1rem",
+              border: "1px dashed #333a4d",
+              borderRadius: 8,
+              background: "rgba(15, 20, 35, 0.6)",
+            }}
+          >
+            <p
+              style={{
+                fontSize: "0.92rem",
+                color: "#9ca3af",
+                margin: 0,
+              }}
+            >
+              {t(lang, "backtests.run.noRunsYet")}
+            </p>
+            <p
+              style={{
+                fontSize: "0.78rem",
+                color: "#64748b",
+                margin: "0.5rem 0 0",
+              }}
+            >
+              {t(lang, "backtests.detailEmptyHint")}
+            </p>
+          </div>
         )}
 
         <div
