@@ -1083,6 +1083,86 @@ const dictionary: Dictionary = {
     en: "Link a trading account",
     ja: "取引口座を連携",
   },
+  "backtests.configsCardTitle": {
+    en: "Test Configurations",
+    ja: "テスト設定",
+  },
+  "backtests.lastProcessed": {
+    en: "Last processed:",
+    ja: "最終処理:",
+  },
+  "backtests.pendingNotProcessed": {
+    en: "Pending runs have not been processed yet in this session.",
+    ja: "保留中の実行はまだ処理されていません。",
+  },
+  "backtests.processPending": {
+    en: "Process pending runs",
+    ja: "保留中を処理",
+  },
+  "backtests.processing": {
+    en: "Processing…",
+    ja: "処理中…",
+  },
+  "backtests.loading": {
+    en: "Loading test configurations…",
+    ja: "テスト設定を読み込み中…",
+  },
+  "backtests.noRuns": {
+    en: "No runs",
+    ja: "実行なし",
+  },
+  "backtests.strategyLabel": {
+    en: "Strategy:",
+    ja: "戦略:",
+  },
+  "backtests.noDescription": {
+    en: "No description",
+    ja: "説明なし",
+  },
+  "backtests.symbolLabel": {
+    en: "Symbol:",
+    ja: "シンボル:",
+  },
+  "backtests.timeframeLabel": {
+    en: "Timeframe:",
+    ja: "時間足:",
+  },
+  "backtests.periodLabel": {
+    en: "Period:",
+    ja: "期間:",
+  },
+  "backtests.initialBalanceLabel": {
+    en: "Initial balance:",
+    ja: "初期残高:",
+  },
+  "backtests.runsLabel": {
+    en: "Runs:",
+    ja: "実行回数:",
+  },
+  "backtests.lastRunLabel": {
+    en: "Last run:",
+    ja: "最終実行:",
+  },
+  "backtests.noEquityData": {
+    en: "No equity data",
+    ja: "エクイティデータなし",
+  },
+  "backtests.runBacktest": {
+    en: "Run test",
+    ja: "テスト実行",
+  },
+  "backtests.creatingRun": {
+    en: "Creating run…",
+    ja: "実行作成中…",
+  },
+  "backtests.viewConfig": {
+    en: "View config →",
+    ja: "設定を見る →",
+  },
+  "backtests.configId": {
+    en: "Config #",
+    ja: "設定 #",
+  },
 
   // -----------------------------------------------------------------------------
   // Backtest Diagnostics (Loss-focused, compliance-safe)
