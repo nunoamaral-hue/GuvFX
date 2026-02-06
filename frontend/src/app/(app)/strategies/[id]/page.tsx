@@ -589,48 +589,66 @@ export default function StrategyControlPage() {
         <div
           style={{
             display: "flex",
-            gap: "1rem",
-            alignItems: "center",
-            flexWrap: "wrap",
+            flexDirection: "column",
+            gap: "0.75rem",
           }}
         >
-          {/* Create Backtest CTA - only if test-ready */}
-          {testReady && (
-            <Button
-              variant="primary"
-              onClick={() => router.push(`/backtests?create=true&strategy=${strategyId}`)}
-            >
-              {t(lang, "strategy.actions.createBacktest")}
-            </Button>
-          )}
-
+          {/* Inline warning if not ready */}
           {!testReady && strategy && (
-            <Button
-              variant="secondary"
-              disabled
-              title={t(lang, "strategy.readiness.notReadyHint")}
+            <p
+              style={{
+                margin: 0,
+                fontSize: "0.82rem",
+                color: "#fbbf24",
+                backgroundColor: "rgba(251, 191, 36, 0.08)",
+                padding: "0.5rem 0.75rem",
+                borderRadius: 6,
+                border: "1px solid rgba(251, 191, 36, 0.2)",
+              }}
             >
-              {t(lang, "strategy.actions.createBacktest")}
-            </Button>
+              {t(lang, "strategy.testWarningInline")}
+            </p>
           )}
 
-          <Button
-            variant="secondary"
-            onClick={() => router.push(`/strategies/${strategyId}/edit`)}
-          >
-            {t(lang, "strategy.actions.editStrategy")}
-          </Button>
-
-          {/* Hint text */}
-          <span
+          <div
             style={{
-              fontSize: "0.8rem",
-              color: "#7c8ca4",
-              marginLeft: "auto",
+              display: "flex",
+              gap: "1rem",
+              alignItems: "center",
+              flexWrap: "wrap",
             }}
           >
-            {t(lang, "strategy.actions.createBacktestHint")}
-          </span>
+            {/* Create Backtest CTA - ALWAYS enabled */}
+            <Button
+              variant="primary"
+              onClick={() =>
+                router.push(
+                  `/backtests?create=true&strategy=${strategyId}${!testReady ? "&incomplete=true" : ""}`
+                )
+              }
+            >
+              {t(lang, "strategy.actions.createBacktest")}
+            </Button>
+
+            {/* Open strategy builder (Edit is not yet implemented) */}
+            <Button
+              variant="secondary"
+              onClick={() => router.push("/strategies/create")}
+            >
+              {t(lang, "strategy.actions.openBuilder")}
+            </Button>
+
+            {/* Hint text */}
+            <span
+              style={{
+                fontSize: "0.8rem",
+                color: "#7c8ca4",
+                marginLeft: "auto",
+              }}
+            >
+              {t(lang, "strategy.actions.editComingSoon")}
+            </span>
+          </div>
         </div>
       </Card>
     </div>

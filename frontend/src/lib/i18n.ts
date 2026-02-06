@@ -1543,6 +1543,12 @@ const dictionary: Dictionary = {
     en: "{strategy} — Test",
     ja: "{strategy} — テスト",
   },
+
+  // Modal warning for incomplete strategy
+  "backtests.modal.strategyIncompleteWarning": {
+    en: "Strategy may be incomplete. Tests are informational only.",
+    ja: "戦略が不完全な可能性があります。テストは情報提供のみを目的としています。",
+  },
   "backtests.form.error": {
     en: "Failed to create configuration.",
     ja: "設定の作成に失敗しました。",
@@ -1731,13 +1737,23 @@ const dictionary: Dictionary = {
     en: "Define parameters to run a test on historical data.",
     ja: "過去データでテストを実行するためのパラメータを定義します。",
   },
-  "strategy.actions.editStrategy": {
-    en: "Edit strategy",
-    ja: "戦略を編集",
+  "strategy.actions.openBuilder": {
+    en: "Open strategy builder",
+    ja: "戦略ビルダーを開く",
+  },
+  "strategy.actions.editComingSoon": {
+    en: "Editing existing strategies is coming soon.",
+    ja: "既存の戦略の編集機能は近日公開予定です。",
   },
   "strategy.actions.backToList": {
     en: "← All strategies",
     ja: "← 戦略一覧",
+  },
+
+  // Inline warning for incomplete strategy
+  "strategy.testWarningInline": {
+    en: "Some readiness checks are incomplete. You can still run informational tests.",
+    ja: "一部の準備チェックが未完了です。情報提供目的のテストは実行できます。",
   },
 
   // Legal Disclaimer

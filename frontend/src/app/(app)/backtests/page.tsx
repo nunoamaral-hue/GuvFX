@@ -70,6 +70,9 @@ export default function BacktestsPage() {
     initial_balance: "10000",
   });
 
+  // Track if strategy is incomplete (from deep-link)
+  const [strategyIncomplete, setStrategyIncomplete] = useState(false);
+
   // Track if we've already processed the deep-link to avoid re-triggering
   const deepLinkProcessedRef = useRef(false);
 
@@ -128,7 +131,7 @@ export default function BacktestsPage() {
     }
   }, [accessToken, fetchData]);
 
-  // Handle deep-link: ?create=true&strategy=<id>
+  // Handle deep-link: ?create=true&strategy=<id>&incomplete=true
   // Opens modal and pre-selects strategy when strategies are loaded
   useEffect(() => {
     // Only process once, and only after strategies are loaded
@@ -137,6 +140,7 @@ export default function BacktestsPage() {
 
     const shouldCreate = searchParams.get("create") === "true";
     const strategyIdParam = searchParams.get("strategy");
+    const isIncomplete = searchParams.get("incomplete") === "true";
 
     if (shouldCreate) {
       deepLinkProcessedRef.current = true;
@@ -146,6 +150,9 @@ export default function BacktestsPage() {
       const matchedStrategy = strategyId
         ? strategies.find((s) => s.id === strategyId)
         : null;
+
+      // Track if strategy is incomplete
+      setStrategyIncomplete(isIncomplete);
 
       // Prefill form with strategy info
       if (matchedStrategy) {
@@ -167,6 +174,7 @@ export default function BacktestsPage() {
       const url = new URL(window.location.href);
       url.searchParams.delete("create");
       url.searchParams.delete("strategy");
+      url.searchParams.delete("incomplete");
       window.history.replaceState({}, "", url.pathname);
     }
   }, [strategies, searchParams, lang]);
@@ -194,6 +202,7 @@ export default function BacktestsPage() {
 
       setInfo(t(lang, "backtests.form.success"));
       setShowCreateModal(false);
+      setStrategyIncomplete(false);
       setFormData({
         name: "",
         description: "",
@@ -789,7 +798,10 @@ export default function BacktestsPage() {
             justifyContent: "center",
             zIndex: 1000,
           }}
-          onClick={() => setShowCreateModal(false)}
+          onClick={() => {
+            setShowCreateModal(false);
+            setStrategyIncomplete(false);
+          }}
         >
           <div
             style={{
@@ -810,6 +822,34 @@ export default function BacktestsPage() {
             <p style={{ margin: "0 0 1rem", fontSize: "0.82rem", color: "#9ca3af" }}>
               {t(lang, "backtests.createConfigSubtitle")}
             </p>
+
+            {/* Warning banner if strategy is incomplete */}
+            {strategyIncomplete && (
+              <div
+                style={{
+                  marginBottom: "1rem",
+                  padding: "0.6rem 0.8rem",
+                  background: "rgba(251, 191, 36, 0.1)",
+                  border: "1px solid rgba(251, 191, 36, 0.25)",
+                  borderRadius: 6,
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "0.5rem",
+                }}
+              >
+                <span style={{ color: "#fbbf24", fontSize: "0.9rem", lineHeight: 1.4 }}>⚠</span>
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: "0.8rem",
+                    color: "#fbbf24",
+                    lineHeight: 1.45,
+                  }}
+                >
+                  {t(lang, "backtests.modal.strategyIncompleteWarning")}
+                </p>
+              </div>
+            )}
 
             <form onSubmit={handleCreateConfig}>
               {/* Name */}
@@ -1032,7 +1072,10 @@ export default function BacktestsPage() {
               <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
                 <Button
                   type="button"
-                  onClick={() => setShowCreateModal(false)}
+                  onClick={() => {
+                    setShowCreateModal(false);
+                    setStrategyIncomplete(false);
+                  }}
                   style={{
                     background: "transparent",
                     border: "1px solid #334155",
