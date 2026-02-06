@@ -17,7 +17,8 @@ export default function BacktestDetailPage() {
   const params = useParams();
   const configId = Number(params?.id);
 
-  const [accessToken, setAccessToken] = useState<string>("");
+  // Auth is handled by HttpOnly cookies + AuthGate in (app)/layout.tsx
+  // No localStorage token needed - apiFetch uses credentials: "include"
   const [config, setConfig] = useState<BacktestConfig | null>(null);
   const [runs, setRuns] = useState<BacktestRun[]>([]);
   const [loadingConfig, setLoadingConfig] = useState(false);
@@ -40,19 +41,9 @@ export default function BacktestDetailPage() {
     fontSize: "0.86rem",
   };
 
-  // Load token
+  // Fetch config when configId is available
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const stored = window.localStorage.getItem("guvfx_access_token");
-      if (stored) {
-        setAccessToken(stored);
-      }
-    }
-  }, []);
-
-  // Fetch config
-  useEffect(() => {
-    if (!accessToken || !configId) return;
+    if (!configId || isNaN(configId)) return;
 
     const fetchConfig = async () => {
       setLoadingConfig(true);
@@ -76,7 +67,7 @@ export default function BacktestDetailPage() {
     };
 
     fetchConfig();
-  }, [accessToken, configId]);
+  }, [configId]);
 
   // Helper to extract config ID from a run (handles various API shapes)
   const getRunConfigId = (run: BacktestRun): number | null => {
@@ -129,14 +120,13 @@ export default function BacktestDetailPage() {
   };
 
   // Fetch runs for this config with robust error handling and debug info
+  // Auth is via HttpOnly cookies - no token check needed
   const fetchRuns = useCallback(async () => {
-    if (!accessToken || !configId) {
-      setDebugInfo(`waiting: token=${!!accessToken} configId=${configId}`);
+    if (!configId || isNaN(configId)) {
       return;
     }
 
     setLoadingRuns(true);
-    setError(null);
     setDebugInfo("fetching...");
 
     let runsData: BacktestRun[] = [];
@@ -193,7 +183,7 @@ export default function BacktestDetailPage() {
       );
 
       setRuns(runsData);
-      setDebugInfo(`raw=${rawCount} filtered=${filteredCount} src=${source} status=${statusInfo}`);
+      setDebugInfo(`runsRaw=${rawCount} runsFiltered=${filteredCount} src=${source} status=${statusInfo}`);
     } catch (err: unknown) {
       console.error("Failed to fetch runs:", err);
       const message =
@@ -203,7 +193,7 @@ export default function BacktestDetailPage() {
     } finally {
       setLoadingRuns(false);
     }
-  }, [accessToken, configId]);
+  }, [configId]);
 
   useEffect(() => {
     fetchRuns();
@@ -458,7 +448,7 @@ export default function BacktestDetailPage() {
           </p>
         )}
 
-        {!loadingRuns && runs.length === 0 && accessToken && !error && (
+        {!loadingRuns && runs.length === 0 && !error && (
           <div
             style={{
               textAlign: "center",
