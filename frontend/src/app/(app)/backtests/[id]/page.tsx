@@ -28,16 +28,16 @@ export default function BacktestDetailPage() {
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null);
   const [runningBacktest, setRunningBacktest] = useState(false);
   const [processingPending, setProcessingPending] = useState(false);
-  const [debugInfo, setDebugInfo] = useState<string>("");
+  // Debug info removed for production - was: const [debugInfo, setDebugInfo] = useState<string>("");
 
   const labelStyle: React.CSSProperties = {
-    color: "#8fa0b7",
+    color: "#9db0c9",
     fontSize: "0.84rem",
-    marginRight: 4,
+    marginRight: 5,
   };
 
   const valueStyle: React.CSSProperties = {
-    color: "#e9f4ff",
+    color: "#f0f6ff",
     fontSize: "0.86rem",
   };
 
@@ -127,13 +127,8 @@ export default function BacktestDetailPage() {
     }
 
     setLoadingRuns(true);
-    setDebugInfo("fetching...");
 
     let runsData: BacktestRun[] = [];
-    let source = "none";
-    let rawCount = 0;
-    let filteredCount = 0;
-    let statusInfo = "ok";
 
     try {
       // Strategy 1: Try filtered endpoint first
@@ -141,37 +136,28 @@ export default function BacktestDetailPage() {
         const filteredUrl = `/api/backtests/runs/?config=${configId}`;
         const response = await apiFetch<unknown>(filteredUrl, {});
         const normalized = normalizeRunsResponse(response);
-        rawCount = normalized.length;
 
         // Filter client-side as well for safety
         runsData = normalized.filter((r) => {
           const runCfgId = getRunConfigId(r);
           return runCfgId === Number(configId);
         });
-        filteredCount = runsData.length;
-        source = "filtered";
       } catch (filteredErr) {
         console.warn("Filtered endpoint failed, trying fallback:", filteredErr);
-        statusInfo = `filtered-err: ${filteredErr instanceof Error ? filteredErr.message : "unknown"}`;
 
         // Strategy 2: Fallback to unfiltered endpoint
         try {
           const allUrl = "/api/backtests/runs/";
           const allResponse = await apiFetch<unknown>(allUrl, {});
           const allNormalized = normalizeRunsResponse(allResponse);
-          rawCount = allNormalized.length;
 
           // Filter client-side by config ID
           runsData = allNormalized.filter((r) => {
             const runCfgId = getRunConfigId(r);
             return runCfgId === Number(configId);
           });
-          filteredCount = runsData.length;
-          source = "fallback";
-          statusInfo = "ok-fallback";
         } catch (fallbackErr) {
           console.error("Fallback fetch also failed:", fallbackErr);
-          statusInfo = `fallback-err: ${fallbackErr instanceof Error ? fallbackErr.message : "unknown"}`;
           throw fallbackErr;
         }
       }
@@ -183,13 +169,11 @@ export default function BacktestDetailPage() {
       );
 
       setRuns(runsData);
-      setDebugInfo(`runsRaw=${rawCount} runsFiltered=${filteredCount} src=${source} status=${statusInfo}`);
     } catch (err: unknown) {
       console.error("Failed to fetch runs:", err);
       const message =
         err instanceof Error ? err.message : "Failed to load backtest runs.";
       setError(message);
-      setDebugInfo(`error: ${message} src=${source} raw=${rawCount}`);
     } finally {
       setLoadingRuns(false);
     }
@@ -281,7 +265,18 @@ export default function BacktestDetailPage() {
   };
 
   const toggleRunExpand = (runId: number) => {
-    setExpandedRunId(expandedRunId === runId ? null : runId);
+    const isExpanding = expandedRunId !== runId;
+    setExpandedRunId(isExpanding ? runId : null);
+
+    // Scroll expanded panel into view after a brief delay for render
+    if (isExpanding) {
+      setTimeout(() => {
+        const el = document.getElementById(`run-panel-${runId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+      }, 50);
+    }
   };
 
   return (
@@ -424,23 +419,6 @@ export default function BacktestDetailPage() {
             </Button>
           </div>
         </div>
-
-        {/* Debug info line - temporary for diagnostics */}
-        {debugInfo && (
-          <p
-            style={{
-              fontSize: "0.72rem",
-              color: "#4b5563",
-              margin: "0 0 0.5rem 0",
-              fontFamily: "monospace",
-              background: "rgba(0,0,0,0.2)",
-              padding: "0.25rem 0.5rem",
-              borderRadius: 4,
-            }}
-          >
-            [debug] {debugInfo}
-          </p>
-        )}
 
         {loadingRuns && (
           <p style={{ fontSize: "0.9rem", color: "#9ca3af" }}>
@@ -718,56 +696,43 @@ export default function BacktestDetailPage() {
                 {/* Expandable detail panel */}
                 {isExpanded && hasEquityCurve && (
                   <div
+                    id={`run-panel-${run.id}`}
                     style={{
                       borderTop: "1px solid #1e293b",
-                      padding: "0.75rem",
+                      padding: "0.75rem 0.75rem 1rem",
                     }}
                   >
-                    {/* Demo disclaimer at top of expanded panel */}
+                    {/* Demo disclaimer - compact */}
                     {isDemo && (
                       <div
                         style={{
-                          marginBottom: "0.75rem",
-                          padding: "0.5rem 0.75rem",
-                          background: "rgba(251, 191, 36, 0.08)",
-                          border: "1px solid rgba(251, 191, 36, 0.2)",
-                          borderRadius: 6,
+                          marginBottom: "0.6rem",
+                          padding: "0.35rem 0.6rem",
+                          background: "rgba(251, 191, 36, 0.06)",
+                          border: "1px solid rgba(251, 191, 36, 0.18)",
+                          borderRadius: 5,
                           display: "flex",
-                          alignItems: "flex-start",
-                          gap: "0.5rem",
+                          alignItems: "center",
+                          gap: "0.4rem",
                         }}
                       >
-                        <span
-                          style={{
-                            fontSize: "0.9rem",
-                            color: "#fbbf24",
-                            lineHeight: 1.4,
-                          }}
-                        >
+                        <span style={{ fontSize: "0.82rem", color: "#fbbf24" }}>
                           ⚠
                         </span>
-                        <div>
-                          <p
-                            style={{
-                              margin: 0,
-                              fontSize: "0.78rem",
-                              color: "#fbbf24",
-                              fontWeight: 500,
-                            }}
-                          >
+                        <p
+                          style={{
+                            margin: 0,
+                            fontSize: "0.72rem",
+                            color: "#d4a957",
+                            lineHeight: 1.35,
+                          }}
+                        >
+                          <span style={{ color: "#fbbf24", fontWeight: 500 }}>
                             {t(lang, "backtests.run.demoLabel")}
-                          </p>
-                          <p
-                            style={{
-                              margin: "0.15rem 0 0",
-                              fontSize: "0.72rem",
-                              color: "#d4a957",
-                              lineHeight: 1.4,
-                            }}
-                          >
-                            {t(lang, "backtests.run.demoExplanation")}
-                          </p>
-                        </div>
+                          </span>
+                          {" — "}
+                          {t(lang, "backtests.run.demoExplanation")}
+                        </p>
                       </div>
                     )}
 
