@@ -239,12 +239,18 @@ export default function BacktestDetailPage() {
             const totalReturn = metrics.total_return_pct;
             const maxDD = metrics.max_drawdown_pct;
             const winRate = metrics.win_rate_pct;
-            const totalTrades = metrics.total_trades;
+            const numTrades = metrics.num_trades as number | undefined;
+            const totalTrades = metrics.total_trades ?? numTrades;
             const isExpanded = expandedRunId === run.id;
+            // equity_curve can be in run.equity_curve or metrics.equity_curve
+            const equityCurve = run.equity_curve || metrics.equity_curve;
             const hasEquityCurve =
-              metrics.equity_curve &&
-              Array.isArray(metrics.equity_curve) &&
-              metrics.equity_curve.length > 2;
+              equityCurve &&
+              Array.isArray(equityCurve) &&
+              equityCurve.length > 2;
+
+            // Check if this is demo data
+            const isDemo = metrics.demo === true;
 
             return (
               <div
@@ -273,7 +279,7 @@ export default function BacktestDetailPage() {
                     e.currentTarget.style.background = "transparent";
                   }}
                 >
-                  {/* Top row: Run ID, status */}
+                  {/* Top row: Run ID, status, demo badge */}
                   <div
                     style={{
                       display: "flex",
@@ -292,6 +298,21 @@ export default function BacktestDetailPage() {
                       >
                         {t(lang, "backtests.run.title")} #{run.id}
                       </h3>
+                      {isDemo && (
+                        <span
+                          style={{
+                            fontSize: "0.68rem",
+                            padding: "0.1rem 0.45rem",
+                            borderRadius: 4,
+                            background: "rgba(251, 191, 36, 0.15)",
+                            color: "#fbbf24",
+                            border: "1px solid rgba(251, 191, 36, 0.3)",
+                            fontWeight: 500,
+                          }}
+                        >
+                          {t(lang, "backtests.demoBadge")}
+                        </span>
+                      )}
                       {hasEquityCurve && (
                         <span
                           style={{
@@ -435,8 +456,56 @@ export default function BacktestDetailPage() {
                       padding: "0.75rem",
                     }}
                   >
+                    {/* Demo disclaimer at top of expanded panel */}
+                    {isDemo && (
+                      <div
+                        style={{
+                          marginBottom: "0.75rem",
+                          padding: "0.5rem 0.75rem",
+                          background: "rgba(251, 191, 36, 0.08)",
+                          border: "1px solid rgba(251, 191, 36, 0.2)",
+                          borderRadius: 6,
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: "0.5rem",
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: "0.9rem",
+                            color: "#fbbf24",
+                            lineHeight: 1.4,
+                          }}
+                        >
+                          ⚠
+                        </span>
+                        <div>
+                          <p
+                            style={{
+                              margin: 0,
+                              fontSize: "0.78rem",
+                              color: "#fbbf24",
+                              fontWeight: 500,
+                            }}
+                          >
+                            {t(lang, "backtests.run.demoLabel")}
+                          </p>
+                          <p
+                            style={{
+                              margin: "0.15rem 0 0",
+                              fontSize: "0.72rem",
+                              color: "#d4a957",
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            {t(lang, "backtests.run.demoExplanation")}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
                     <RunDetailPanel
-                      equityCurve={metrics.equity_curve!}
+                      equityCurve={equityCurve!}
                       maxDrawdownPct={maxDD}
                       totalReturnPct={totalReturn}
                       observedHitRatePct={winRate}

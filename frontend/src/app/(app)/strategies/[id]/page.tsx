@@ -1262,9 +1262,9 @@ export default function StrategyDetailPage() {
               <div>
                 <div
                   style={{ fontSize: "0.8rem", color: "#9ca3af" }}
-                  title="Average percentage of winning trades across the included backtests"
+                  title="Average observed hit rate across the included test runs"
                 >
-                  Win rate
+                  Observed hit rate
                 </div>
                 <div
                   style={{

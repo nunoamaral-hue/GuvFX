@@ -72,7 +72,7 @@ export default function StrategyMetricsPage() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
-                  {["Strategy", "Trades", "Net PnL", "Win Rate"].map((h) => (
+                  {["Strategy", "Trades", "Net PnL", "Observed Hit Rate"].map((h) => (
                     <th
                       key={h}
                       style={{

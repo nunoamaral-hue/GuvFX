@@ -5,6 +5,7 @@ export type EquityPoint = {
 
 export type BacktestMetrics = {
   total_trades?: number;
+  num_trades?: number;
   win_rate_pct?: number;
   avg_rr?: number;
   net_profit?: number;
@@ -13,6 +14,11 @@ export type BacktestMetrics = {
 
   max_drawdown_pct?: number;
   total_return_pct?: number;
+
+  // Demo mode flag (Phase 1 confirmable pipeline)
+  demo?: boolean;
+  notes?: string;
+
   [key: string]: unknown;
 };
 
@@ -38,6 +44,7 @@ export type BacktestRun = {
   started_at: string | null;
   finished_at: string | null;
   metrics: BacktestMetrics | null;
+  equity_curve?: EquityPoint[] | null;
   created_at: string;
 };
 

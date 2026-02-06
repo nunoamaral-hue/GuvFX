@@ -1067,6 +1067,14 @@ const dictionary: Dictionary = {
     en: "Observed hit rate",
     ja: "観測ヒット率",
   },
+  "backtests.observedHitRateAvg": {
+    en: "Observed hit rate",
+    ja: "観測ヒット率",
+  },
+  "backtests.avgAcrossRuns": {
+    en: "Average across runs",
+    ja: "実行全体の平均",
+  },
   "backtests.emptyTitle": {
     en: "No test configurations yet",
     ja: "テスト設定がまだありません",
@@ -1410,6 +1418,134 @@ const dictionary: Dictionary = {
   "backtests.run.errorLabel": {
     en: "Error:",
     ja: "エラー:",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Backtest Demo Mode (Phase 1 — Confirmable Backtests)
+  // -----------------------------------------------------------------------------
+  "backtests.demoBadge": {
+    en: "Demo",
+    ja: "デモ",
+  },
+  "backtests.demoDisclaimer": {
+    en: "Demo data — illustrative only, not real execution.",
+    ja: "デモデータ — 例示のみ、実際の取引ではありません。",
+  },
+  "backtests.demoNote": {
+    en: "Results shown are generated demo data for testing the platform. They do not represent real market execution or predict future outcomes.",
+    ja: "表示される結果は、プラットフォームテスト用に生成されたデモデータです。実際の市場執行を示すものでも、将来の結果を予測するものでもありません。",
+  },
+  "backtests.run.demoLabel": {
+    en: "Demo run",
+    ja: "デモ実行",
+  },
+  "backtests.run.demoExplanation": {
+    en: "This run used generated demo data, not actual market data or real execution.",
+    ja: "この実行は生成されたデモデータを使用しており、実際の市場データや取引ではありません。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Backtest Create Config Modal (Phase 1 — Confirmable Backtests)
+  // -----------------------------------------------------------------------------
+  "backtests.createConfig": {
+    en: "Create test configuration",
+    ja: "テスト設定を作成",
+  },
+  "backtests.createConfigTitle": {
+    en: "New Test Configuration",
+    ja: "新規テスト設定",
+  },
+  "backtests.createConfigSubtitle": {
+    en: "Define parameters for a new test configuration. You can run tests after creation.",
+    ja: "新しいテスト設定のパラメータを定義します。作成後にテストを実行できます。",
+  },
+  "backtests.form.nameLabel": {
+    en: "Configuration name",
+    ja: "設定名",
+  },
+  "backtests.form.namePlaceholder": {
+    en: "e.g. EURUSD H1 Trend Test",
+    ja: "例: EURUSD H1 トレンドテスト",
+  },
+  "backtests.form.descriptionLabel": {
+    en: "Description (optional)",
+    ja: "説明（任意）",
+  },
+  "backtests.form.descriptionPlaceholder": {
+    en: "Brief description of this test configuration",
+    ja: "このテスト設定の簡単な説明",
+  },
+  "backtests.form.strategyLabel": {
+    en: "Strategy",
+    ja: "戦略",
+  },
+  "backtests.form.selectStrategy": {
+    en: "Select a strategy",
+    ja: "戦略を選択",
+  },
+  "backtests.form.noStrategies": {
+    en: "No strategies available. Create one first.",
+    ja: "戦略がありません。先に作成してください。",
+  },
+  "backtests.form.symbolLabel": {
+    en: "Symbol",
+    ja: "シンボル",
+  },
+  "backtests.form.symbolPlaceholder": {
+    en: "e.g. EURUSD",
+    ja: "例: EURUSD",
+  },
+  "backtests.form.timeframeLabel": {
+    en: "Timeframe",
+    ja: "時間足",
+  },
+  "backtests.form.selectTimeframe": {
+    en: "Select timeframe",
+    ja: "時間足を選択",
+  },
+  "backtests.form.dateFromLabel": {
+    en: "Start date",
+    ja: "開始日",
+  },
+  "backtests.form.dateToLabel": {
+    en: "End date",
+    ja: "終了日",
+  },
+  "backtests.form.initialBalanceLabel": {
+    en: "Initial balance",
+    ja: "初期残高",
+  },
+  "backtests.form.initialBalancePlaceholder": {
+    en: "e.g. 10000",
+    ja: "例: 10000",
+  },
+  "backtests.form.cancel": {
+    en: "Cancel",
+    ja: "キャンセル",
+  },
+  "backtests.form.create": {
+    en: "Create configuration",
+    ja: "設定を作成",
+  },
+  "backtests.form.creating": {
+    en: "Creating…",
+    ja: "作成中…",
+  },
+  "backtests.form.success": {
+    en: "Configuration created successfully.",
+    ja: "設定が正常に作成されました。",
+  },
+  "backtests.form.error": {
+    en: "Failed to create configuration.",
+    ja: "設定の作成に失敗しました。",
+  },
+  "backtests.runCreated": {
+    en: "Test run created and queued.",
+    ja: "テスト実行が作成され、キューに追加されました。",
+  },
+  "backtests.processedRuns": {
+    en: "Processed {count} pending run(s).",
+    ja: "{count}件の保留中の実行を処理しました。",
   },
 };
 

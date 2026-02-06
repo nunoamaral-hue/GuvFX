@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import type { BacktestConfig } from "@/types/backtests";
@@ -13,6 +13,11 @@ import { t } from "@/lib/i18n";
 import { DrawdownSparkline, LossClusteringBadge } from "@/components/backtests";
 
 type EquityPoint = { timestamp?: string; equity: number } | number;
+
+type Strategy = {
+  id: number;
+  name: string;
+};
 
 type BacktestMetricsSummary = Record<string, unknown> & {
   total_return_pct?: number;
@@ -33,17 +38,34 @@ type BacktestSummary = {
   last_metrics: BacktestMetricsSummary | null;
 };
 
+const TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"];
+
 export default function BacktestsPage() {
   const lang = useLang();
   const [accessToken, setAccessToken] = useState<string>("");
   const [configs, setConfigs] = useState<BacktestConfig[]>([]);
   const [summaries, setSummaries] = useState<Record<number, BacktestSummary>>({});
+  const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading] = useState(false);
   const [runningId, setRunningId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [processingPending, setProcessingPending] = useState(false);
   const [lastProcessedAt, setLastProcessedAt] = useState<string | null>(null);
+
+  // Create config modal state
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [formData, setFormData] = useState({
+    name: "",
+    description: "",
+    strategy: "",
+    symbol: "EURUSD",
+    timeframe: "H1",
+    date_from: "",
+    date_to: "",
+    initial_balance: "10000",
+  });
 
   const labelStyle: React.CSSProperties = {
     color: "#8fa0b7",
@@ -66,36 +88,83 @@ export default function BacktestsPage() {
     }
   }, []);
 
-  // Fetch configs + summaries
-  useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      setError(null);
-      setInfo(null);
-      try {
-        const [cfgs, sums] = await Promise.all([
-          apiFetch<BacktestConfig[]>("/api/backtests/configs/", {}),
-          apiFetch<BacktestSummary[]>("/api/analytics/strategy-backtests/", {}),
-        ]);
+  // Fetch configs + summaries + strategies
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [cfgs, sums, strats] = await Promise.all([
+        apiFetch<BacktestConfig[]>("/api/backtests/configs/", {}),
+        apiFetch<BacktestSummary[]>("/api/analytics/strategy-backtests/", {}),
+        apiFetch<Strategy[]>("/api/strategies/strategies/", {}),
+      ]);
 
-        setConfigs(cfgs);
-        const map: Record<number, BacktestSummary> = {};
-        for (const s of sums) {
-          map[s.config_id] = s;
-        }
-        setSummaries(map);
-      } catch (err: unknown) {
-        console.error(err);
-        const message =
-          err instanceof Error ? err.message : "Failed to load backtests.";
-        setError(message);
-      } finally {
-        setLoading(false);
+      setConfigs(cfgs);
+      setStrategies(strats);
+      const map: Record<number, BacktestSummary> = {};
+      for (const s of sums) {
+        map[s.config_id] = s;
       }
-    };
+      setSummaries(map);
+    } catch (err: unknown) {
+      console.error(err);
+      const message =
+        err instanceof Error ? err.message : "Failed to load backtests.";
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-    fetchData();
-  }, [accessToken]);
+  useEffect(() => {
+    if (accessToken) {
+      fetchData();
+    }
+  }, [accessToken, fetchData]);
+
+  const handleCreateConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setInfo(null);
+    setCreating(true);
+
+    try {
+      await apiFetch("/api/backtests/configs/", {
+        method: "POST",
+        body: JSON.stringify({
+          name: formData.name,
+          description: formData.description,
+          strategy: parseInt(formData.strategy, 10),
+          symbol: formData.symbol,
+          timeframe: formData.timeframe,
+          date_from: formData.date_from,
+          date_to: formData.date_to,
+          initial_balance: parseFloat(formData.initial_balance),
+        }),
+      });
+
+      setInfo(t(lang, "backtests.form.success"));
+      setShowCreateModal(false);
+      setFormData({
+        name: "",
+        description: "",
+        strategy: "",
+        symbol: "EURUSD",
+        timeframe: "H1",
+        date_from: "",
+        date_to: "",
+        initial_balance: "10000",
+      });
+      await fetchData();
+    } catch (err: unknown) {
+      console.error(err);
+      const message =
+        err instanceof Error ? err.message : t(lang, "backtests.form.error");
+      setError(message);
+    } finally {
+      setCreating(false);
+    }
+  };
 
   const handleRunBacktest = async (configId: number) => {
     setError(null);
@@ -107,8 +176,9 @@ export default function BacktestsPage() {
         method: "POST",
         body: JSON.stringify({ config: configId }),
       });
-      setInfo("Backtest run created. Process it with the worker when ready.");
+      setInfo(t(lang, "backtests.runCreated"));
 
+      // Refresh summaries
       const sums = await apiFetch<BacktestSummary[]>(
         "/api/analytics/strategy-backtests/",
         {}
@@ -139,19 +209,13 @@ export default function BacktestsPage() {
         { method: "POST" }
       );
 
-      setInfo(`Processed ${res.processed_runs} pending backtest run(s).`);
+      setInfo(
+        t(lang, "backtests.processedRuns").replace("{count}", String(res.processed_runs))
+      );
       setLastProcessedAt(new Date(res.processed_at).toLocaleString());
 
-      // Refresh summaries after processing
-      const sums = await apiFetch<BacktestSummary[]>(
-        "/api/analytics/strategy-backtests/",
-        {}
-      );
-      const map: Record<number, BacktestSummary> = {};
-      for (const s of sums) {
-        map[s.config_id] = s;
-      }
-      setSummaries(map);
+      // Refresh all data after processing
+      await fetchData();
     } catch (err: unknown) {
       console.error(err);
       const message =
@@ -196,6 +260,59 @@ export default function BacktestsPage() {
 
       {error && <Alert type="error">{error}</Alert>}
       {info && <Alert type="info">{info}</Alert>}
+
+      {/* Create Config button */}
+      {accessToken && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.75rem" }}>
+          <Button
+            type="button"
+            onClick={() => setShowCreateModal(true)}
+            style={{ padding: "0.5rem 1rem", fontSize: "0.88rem" }}
+          >
+            {t(lang, "backtests.createConfig")}
+          </Button>
+        </div>
+      )}
+
+      {/* Demo mode banner */}
+      {!loading && configs.length > 0 && (
+        <div
+          style={{
+            marginBottom: "1rem",
+            padding: "0.65rem 0.85rem",
+            background: "rgba(251, 191, 36, 0.08)",
+            border: "1px solid rgba(251, 191, 36, 0.2)",
+            borderRadius: 6,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: "0.5rem",
+          }}
+        >
+          <span style={{ fontSize: "0.95rem", color: "#fbbf24", lineHeight: 1.4 }}>⚠</span>
+          <div>
+            <p
+              style={{
+                margin: 0,
+                fontSize: "0.82rem",
+                color: "#fbbf24",
+                fontWeight: 500,
+              }}
+            >
+              {t(lang, "backtests.demoDisclaimer")}
+            </p>
+            <p
+              style={{
+                margin: "0.15rem 0 0",
+                fontSize: "0.74rem",
+                color: "#d4a957",
+                lineHeight: 1.4,
+              }}
+            >
+              {t(lang, "backtests.demoNote")}
+            </p>
+          </div>
+        </div>
+      )}
 
       <Card title={t(lang, "backtests.configsCardTitle")}>
         {/* Processing controls */}
@@ -325,6 +442,11 @@ export default function BacktestsPage() {
               Array.isArray(metrics.equity_curve) &&
               metrics.equity_curve.length > 2;
 
+            // Check if demo data (from metrics if available)
+            /* eslint-disable @typescript-eslint/no-explicit-any */
+            const isDemo = (metrics as any).demo === true;
+            /* eslint-enable @typescript-eslint/no-explicit-any */
+
             return (
               <Link
                 key={cfg.id}
@@ -383,9 +505,26 @@ export default function BacktestsPage() {
                         </span>
                       </p>
                     </div>
-                    <Badge color={statusBadgeColor(summary?.last_status ?? null)}>
-                      {summary?.last_status ?? t(lang, "backtests.noRuns")}
-                    </Badge>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                      {isDemo && (
+                        <span
+                          style={{
+                            fontSize: "0.68rem",
+                            padding: "0.1rem 0.45rem",
+                            borderRadius: 4,
+                            background: "rgba(251, 191, 36, 0.15)",
+                            color: "#fbbf24",
+                            border: "1px solid rgba(251, 191, 36, 0.3)",
+                            fontWeight: 500,
+                          }}
+                        >
+                          {t(lang, "backtests.demoBadge")}
+                        </span>
+                      )}
+                      <Badge color={statusBadgeColor(summary?.last_status ?? null)}>
+                        {summary?.last_status ?? t(lang, "backtests.noRuns")}
+                      </Badge>
+                    </div>
                   </div>
 
                   {/* Description */}
@@ -557,6 +696,279 @@ export default function BacktestsPage() {
           })}
         </div>
       </Card>
+
+      {/* Create Config Modal */}
+      {showCreateModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.7)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={() => setShowCreateModal(false)}
+        >
+          <div
+            style={{
+              background: "#0f1629",
+              border: "1px solid #1e293b",
+              borderRadius: 12,
+              padding: "1.5rem",
+              width: "100%",
+              maxWidth: 520,
+              maxHeight: "90vh",
+              overflow: "auto",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ margin: "0 0 0.25rem", fontSize: "1.25rem", color: "#f1f5ff" }}>
+              {t(lang, "backtests.createConfigTitle")}
+            </h2>
+            <p style={{ margin: "0 0 1rem", fontSize: "0.82rem", color: "#9ca3af" }}>
+              {t(lang, "backtests.createConfigSubtitle")}
+            </p>
+
+            <form onSubmit={handleCreateConfig}>
+              {/* Name */}
+              <div style={{ marginBottom: "0.85rem" }}>
+                <label
+                  style={{ display: "block", fontSize: "0.82rem", color: "#b7c5dd", marginBottom: "0.25rem" }}
+                >
+                  {t(lang, "backtests.form.nameLabel")} *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  placeholder={t(lang, "backtests.form.namePlaceholder")}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem 0.75rem",
+                    background: "#1a2236",
+                    border: "1px solid #334155",
+                    borderRadius: 6,
+                    color: "#e5f4ff",
+                    fontSize: "0.9rem",
+                  }}
+                />
+              </div>
+
+              {/* Description */}
+              <div style={{ marginBottom: "0.85rem" }}>
+                <label
+                  style={{ display: "block", fontSize: "0.82rem", color: "#b7c5dd", marginBottom: "0.25rem" }}
+                >
+                  {t(lang, "backtests.form.descriptionLabel")}
+                </label>
+                <textarea
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  placeholder={t(lang, "backtests.form.descriptionPlaceholder")}
+                  rows={2}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem 0.75rem",
+                    background: "#1a2236",
+                    border: "1px solid #334155",
+                    borderRadius: 6,
+                    color: "#e5f4ff",
+                    fontSize: "0.9rem",
+                    resize: "vertical",
+                  }}
+                />
+              </div>
+
+              {/* Strategy */}
+              <div style={{ marginBottom: "0.85rem" }}>
+                <label
+                  style={{ display: "block", fontSize: "0.82rem", color: "#b7c5dd", marginBottom: "0.25rem" }}
+                >
+                  {t(lang, "backtests.form.strategyLabel")} *
+                </label>
+                {strategies.length === 0 ? (
+                  <p style={{ fontSize: "0.82rem", color: "#f87171", margin: 0 }}>
+                    {t(lang, "backtests.form.noStrategies")}
+                  </p>
+                ) : (
+                  <select
+                    required
+                    value={formData.strategy}
+                    onChange={(e) => setFormData({ ...formData, strategy: e.target.value })}
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem 0.75rem",
+                      background: "#1a2236",
+                      border: "1px solid #334155",
+                      borderRadius: 6,
+                      color: "#e5f4ff",
+                      fontSize: "0.9rem",
+                    }}
+                  >
+                    <option value="">{t(lang, "backtests.form.selectStrategy")}</option>
+                    {strategies.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} (#{s.id})
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {/* Symbol + Timeframe row */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.85rem" }}>
+                <div>
+                  <label
+                    style={{ display: "block", fontSize: "0.82rem", color: "#b7c5dd", marginBottom: "0.25rem" }}
+                  >
+                    {t(lang, "backtests.form.symbolLabel")} *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.symbol}
+                    onChange={(e) => setFormData({ ...formData, symbol: e.target.value.toUpperCase() })}
+                    placeholder={t(lang, "backtests.form.symbolPlaceholder")}
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem 0.75rem",
+                      background: "#1a2236",
+                      border: "1px solid #334155",
+                      borderRadius: 6,
+                      color: "#e5f4ff",
+                      fontSize: "0.9rem",
+                    }}
+                  />
+                </div>
+                <div>
+                  <label
+                    style={{ display: "block", fontSize: "0.82rem", color: "#b7c5dd", marginBottom: "0.25rem" }}
+                  >
+                    {t(lang, "backtests.form.timeframeLabel")} *
+                  </label>
+                  <select
+                    required
+                    value={formData.timeframe}
+                    onChange={(e) => setFormData({ ...formData, timeframe: e.target.value })}
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem 0.75rem",
+                      background: "#1a2236",
+                      border: "1px solid #334155",
+                      borderRadius: 6,
+                      color: "#e5f4ff",
+                      fontSize: "0.9rem",
+                    }}
+                  >
+                    <option value="">{t(lang, "backtests.form.selectTimeframe")}</option>
+                    {TIMEFRAMES.map((tf) => (
+                      <option key={tf} value={tf}>
+                        {tf}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Date range row */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.85rem" }}>
+                <div>
+                  <label
+                    style={{ display: "block", fontSize: "0.82rem", color: "#b7c5dd", marginBottom: "0.25rem" }}
+                  >
+                    {t(lang, "backtests.form.dateFromLabel")} *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={formData.date_from}
+                    onChange={(e) => setFormData({ ...formData, date_from: e.target.value })}
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem 0.75rem",
+                      background: "#1a2236",
+                      border: "1px solid #334155",
+                      borderRadius: 6,
+                      color: "#e5f4ff",
+                      fontSize: "0.9rem",
+                    }}
+                  />
+                </div>
+                <div>
+                  <label
+                    style={{ display: "block", fontSize: "0.82rem", color: "#b7c5dd", marginBottom: "0.25rem" }}
+                  >
+                    {t(lang, "backtests.form.dateToLabel")} *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={formData.date_to}
+                    onChange={(e) => setFormData({ ...formData, date_to: e.target.value })}
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem 0.75rem",
+                      background: "#1a2236",
+                      border: "1px solid #334155",
+                      borderRadius: 6,
+                      color: "#e5f4ff",
+                      fontSize: "0.9rem",
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Initial Balance */}
+              <div style={{ marginBottom: "1.25rem" }}>
+                <label
+                  style={{ display: "block", fontSize: "0.82rem", color: "#b7c5dd", marginBottom: "0.25rem" }}
+                >
+                  {t(lang, "backtests.form.initialBalanceLabel")} *
+                </label>
+                <input
+                  type="number"
+                  required
+                  min="1"
+                  step="0.01"
+                  value={formData.initial_balance}
+                  onChange={(e) => setFormData({ ...formData, initial_balance: e.target.value })}
+                  placeholder={t(lang, "backtests.form.initialBalancePlaceholder")}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem 0.75rem",
+                    background: "#1a2236",
+                    border: "1px solid #334155",
+                    borderRadius: 6,
+                    color: "#e5f4ff",
+                    fontSize: "0.9rem",
+                  }}
+                />
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
+                <Button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  style={{
+                    background: "transparent",
+                    border: "1px solid #334155",
+                    color: "#9ca3af",
+                  }}
+                >
+                  {t(lang, "backtests.form.cancel")}
+                </Button>
+                <Button type="submit" disabled={creating || strategies.length === 0}>
+                  {creating ? t(lang, "backtests.form.creating") : t(lang, "backtests.form.create")}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
