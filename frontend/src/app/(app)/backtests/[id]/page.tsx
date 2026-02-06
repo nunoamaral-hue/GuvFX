@@ -27,6 +27,7 @@ export default function BacktestDetailPage() {
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null);
   const [runningBacktest, setRunningBacktest] = useState(false);
   const [processingPending, setProcessingPending] = useState(false);
+  const [debugInfo, setDebugInfo] = useState<string>("");
 
   const labelStyle: React.CSSProperties = {
     color: "#8fa0b7",
@@ -111,7 +112,8 @@ export default function BacktestDetailPage() {
 
   // Normalize API response: handle both array and paginated {count, results} shapes
   const normalizeRunsResponse = (
-    response: BacktestRun[] | { count?: number; results?: BacktestRun[] }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    response: any
   ): BacktestRun[] => {
     if (Array.isArray(response)) {
       return response;
@@ -119,33 +121,67 @@ export default function BacktestDetailPage() {
     if (response && Array.isArray(response.results)) {
       return response.results;
     }
+    // If response is an object but not paginated, it might be a single run
+    if (response && typeof response === "object" && response.id) {
+      return [response as BacktestRun];
+    }
     return [];
   };
 
-  // Fetch runs for this config
+  // Fetch runs for this config with robust error handling and debug info
   const fetchRuns = useCallback(async () => {
-    if (!accessToken || !configId) return;
+    if (!accessToken || !configId) {
+      setDebugInfo(`waiting: token=${!!accessToken} configId=${configId}`);
+      return;
+    }
 
     setLoadingRuns(true);
     setError(null);
+    setDebugInfo("fetching...");
+
+    let runsData: BacktestRun[] = [];
+    let source = "none";
+    let rawCount = 0;
+    let filteredCount = 0;
+    let statusInfo = "ok";
+
     try {
-      // Try backend filtering first (preferred)
-      let runsData: BacktestRun[] = [];
+      // Strategy 1: Try filtered endpoint first
       try {
-        const response = await apiFetch<
-          BacktestRun[] | { count?: number; results?: BacktestRun[] }
-        >(`/api/backtests/runs/?config=${configId}`, {});
-        runsData = normalizeRunsResponse(response);
-      } catch {
-        // Fallback: fetch all runs and filter client-side
+        const filteredUrl = `/api/backtests/runs/?config=${configId}`;
+        const response = await apiFetch<unknown>(filteredUrl, {});
+        const normalized = normalizeRunsResponse(response);
+        rawCount = normalized.length;
+
+        // Filter client-side as well for safety
+        runsData = normalized.filter((r) => {
+          const runCfgId = getRunConfigId(r);
+          return runCfgId === Number(configId);
+        });
+        filteredCount = runsData.length;
+        source = "filtered";
+      } catch (filteredErr) {
+        console.warn("Filtered endpoint failed, trying fallback:", filteredErr);
+        statusInfo = `filtered-err: ${filteredErr instanceof Error ? filteredErr.message : "unknown"}`;
+
+        // Strategy 2: Fallback to unfiltered endpoint
         try {
-          const allResponse = await apiFetch<
-            BacktestRun[] | { count?: number; results?: BacktestRun[] }
-          >("/api/backtests/runs/", {});
-          const allRuns = normalizeRunsResponse(allResponse);
-          runsData = allRuns.filter((r) => getRunConfigId(r) === Number(configId));
+          const allUrl = "/api/backtests/runs/";
+          const allResponse = await apiFetch<unknown>(allUrl, {});
+          const allNormalized = normalizeRunsResponse(allResponse);
+          rawCount = allNormalized.length;
+
+          // Filter client-side by config ID
+          runsData = allNormalized.filter((r) => {
+            const runCfgId = getRunConfigId(r);
+            return runCfgId === Number(configId);
+          });
+          filteredCount = runsData.length;
+          source = "fallback";
+          statusInfo = "ok-fallback";
         } catch (fallbackErr) {
           console.error("Fallback fetch also failed:", fallbackErr);
+          statusInfo = `fallback-err: ${fallbackErr instanceof Error ? fallbackErr.message : "unknown"}`;
           throw fallbackErr;
         }
       }
@@ -155,12 +191,15 @@ export default function BacktestDetailPage() {
         (a, b) =>
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
+
       setRuns(runsData);
+      setDebugInfo(`raw=${rawCount} filtered=${filteredCount} src=${source} status=${statusInfo}`);
     } catch (err: unknown) {
       console.error("Failed to fetch runs:", err);
       const message =
         err instanceof Error ? err.message : "Failed to load backtest runs.";
       setError(message);
+      setDebugInfo(`error: ${message} src=${source} raw=${rawCount}`);
     } finally {
       setLoadingRuns(false);
     }
@@ -395,6 +434,23 @@ export default function BacktestDetailPage() {
             </Button>
           </div>
         </div>
+
+        {/* Debug info line - temporary for diagnostics */}
+        {debugInfo && (
+          <p
+            style={{
+              fontSize: "0.72rem",
+              color: "#4b5563",
+              margin: "0 0 0.5rem 0",
+              fontFamily: "monospace",
+              background: "rgba(0,0,0,0.2)",
+              padding: "0.25rem 0.5rem",
+              borderRadius: 4,
+            }}
+          >
+            [debug] {debugInfo}
+          </p>
+        )}
 
         {loadingRuns && (
           <p style={{ fontSize: "0.9rem", color: "#9ca3af" }}>
