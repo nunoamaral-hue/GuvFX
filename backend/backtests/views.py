@@ -165,31 +165,87 @@ class ProcessPendingBacktestsView(APIView):
 
     def _generate_dummy_results(self, run: BacktestRun):
         """
-        Same dummy result generator as the management command.
+        Deterministic demo result generator seeded by (config.id, run.id).
+        Produces realistic equity curve with drawdown phases and timestamps.
+        Marked as demo data for compliance.
         """
-        total_return_pct = 12.5
-        max_drawdown_pct = 8.0
-        win_rate_pct = 57.0
-        num_trades = 120
+        import random
+        import math
+        from datetime import datetime, timedelta
+
+        # Seed for determinism: same config+run always produces same data
+        seed = (run.config_id * 1000) + run.id
+        rng = random.Random(seed)
 
         initial_equity = float(run.initial_balance)
-        final_equity = initial_equity * (1 + total_return_pct / 100.0)
 
-        equity_curve = [
-            {"step": 0, "equity": initial_equity},
-            {"step": 1, "equity": initial_equity * 0.98},
-            {"step": 2, "equity": initial_equity * 1.03},
-            {"step": 3, "equity": initial_equity * 1.05},
-            {"step": 4, "equity": final_equity},
-        ]
+        # Seeded parameters for variety across runs
+        base_return = rng.uniform(-5.0, 25.0)  # Range: loss to gain
+        volatility = rng.uniform(0.5, 2.5)  # Daily % volatility
+        win_rate_pct = rng.uniform(35.0, 65.0)
+        num_trades = rng.randint(40, 200)
+
+        # Generate 60 equity points (e.g., 60 days of trading)
+        num_points = 60
+        equity_curve = []
+
+        # Parse date range for timestamps
+        try:
+            start_date = datetime.strptime(str(run.date_from), "%Y-%m-%d")
+            end_date = datetime.strptime(str(run.date_to), "%Y-%m-%d")
+            days_span = max((end_date - start_date).days, num_points)
+        except (ValueError, TypeError):
+            start_date = datetime(2024, 1, 1)
+            days_span = 90
+
+        day_step = max(1, days_span // num_points)
+
+        equity = initial_equity
+        running_max = initial_equity
+        max_drawdown = 0.0
+
+        for i in range(num_points):
+            # Calculate timestamp
+            point_date = start_date + timedelta(days=i * day_step)
+            timestamp = point_date.strftime("%Y-%m-%dT09:00:00Z")
+
+            # Random walk with trend toward base_return
+            trend = (base_return / 100.0) / num_points
+            noise = rng.gauss(0, volatility / 100.0)
+
+            # Add occasional larger moves (drawdowns or rallies)
+            if rng.random() < 0.1:
+                noise *= 2.5
+
+            daily_return = trend + noise
+            equity *= (1 + daily_return)
+
+            # Track max drawdown
+            if equity > running_max:
+                running_max = equity
+            current_dd = ((running_max - equity) / running_max) * 100
+            if current_dd > max_drawdown:
+                max_drawdown = current_dd
+
+            equity_curve.append({
+                "timestamp": timestamp,
+                "equity": round(equity, 2),
+                "step": i,
+            })
+
+        final_equity = equity_curve[-1]["equity"]
+        total_return_pct = ((final_equity - initial_equity) / initial_equity) * 100
 
         metrics = {
-            "total_return_pct": total_return_pct,
-            "max_drawdown_pct": max_drawdown_pct,
-            "win_rate_pct": win_rate_pct,
+            "total_return_pct": round(total_return_pct, 2),
+            "max_drawdown_pct": round(max_drawdown, 2),
+            "win_rate_pct": round(win_rate_pct, 1),
             "num_trades": num_trades,
-            "initial_balance": float(run.initial_balance),
-            "final_balance": final_equity,
+            "initial_balance": initial_equity,
+            "final_balance": round(final_equity, 2),
+            # Demo flag for compliance
+            "demo": True,
+            "notes": "Demo data / not real execution. For illustrative purposes only.",
         }
 
         return metrics, equity_curve
