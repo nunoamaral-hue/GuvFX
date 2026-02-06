@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import type { BacktestConfig } from "@/types/backtests";
 import { Card } from "@/components/ui/Card";
@@ -42,6 +43,7 @@ const TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"];
 
 export default function BacktestsPage() {
   const lang = useLang();
+  const router = useRouter();
   const [accessToken, setAccessToken] = useState<string>("");
   const [configs, setConfigs] = useState<BacktestConfig[]>([]);
   const [summaries, setSummaries] = useState<Record<number, BacktestSummary>>({});
@@ -470,29 +472,43 @@ export default function BacktestsPage() {
             /* eslint-enable @typescript-eslint/no-explicit-any */
 
             return (
-              <Link
+              <div
                 key={cfg.id}
-                href={`/backtests/${cfg.id}`}
-                style={{ textDecoration: "none", color: "inherit" }}
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  // Only navigate if clicking on empty card area (not buttons, links, inputs, etc.)
+                  const target = e.target as HTMLElement;
+                  if (!target.closest("button, a, input, select, textarea")) {
+                    router.push(`/backtests/${cfg.id}`);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    const target = e.target as HTMLElement;
+                    if (!target.closest("button, a, input, select, textarea")) {
+                      e.preventDefault();
+                      router.push(`/backtests/${cfg.id}`);
+                    }
+                  }
+                }}
+                style={{
+                  border: "1px solid #222838",
+                  borderRadius: 8,
+                  padding: "0.75rem 1rem",
+                  background: "rgba(7, 12, 30, 0.9)",
+                  cursor: "pointer",
+                  transition: "border-color 0.15s, background 0.15s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = "#3b82f6";
+                  e.currentTarget.style.background = "rgba(15, 23, 50, 0.95)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = "#222838";
+                  e.currentTarget.style.background = "rgba(7, 12, 30, 0.9)";
+                }}
               >
-                <div
-                  style={{
-                    border: "1px solid #222838",
-                    borderRadius: 8,
-                    padding: "0.75rem 1rem",
-                    background: "rgba(7, 12, 30, 0.9)",
-                    cursor: "pointer",
-                    transition: "border-color 0.15s, background 0.15s",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = "#3b82f6";
-                    e.currentTarget.style.background = "rgba(15, 23, 50, 0.95)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = "#222838";
-                    e.currentTarget.style.background = "rgba(7, 12, 30, 0.9)";
-                  }}
-                >
                   {/* Header row */}
                   <div
                     style={{
@@ -691,12 +707,8 @@ export default function BacktestsPage() {
                     }}
                   >
                     <Button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleRunBacktest(cfg.id);
-                      }}
-                      disabled={!accessToken || runningId === cfg.id}
+                      onClick={() => handleRunBacktest(cfg.id)}
+                      disabled={runningId === cfg.id}
                     >
                       {runningId === cfg.id
                         ? t(lang, "backtests.creatingRun")
@@ -713,7 +725,6 @@ export default function BacktestsPage() {
                     </span>
                   </div>
                 </div>
-              </Link>
             );
           })}
         </div>
