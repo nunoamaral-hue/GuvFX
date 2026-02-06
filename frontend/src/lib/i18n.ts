@@ -1539,6 +1539,10 @@ const dictionary: Dictionary = {
     en: "Configuration created successfully.",
     ja: "設定が正常に作成されました。",
   },
+  "backtests.form.prefillName": {
+    en: "{strategy} — Test",
+    ja: "{strategy} — テスト",
+  },
   "backtests.form.error": {
     en: "Failed to create configuration.",
     ja: "設定の作成に失敗しました。",
@@ -1554,6 +1558,192 @@ const dictionary: Dictionary = {
   "backtests.headerHelpLine": {
     en: "Create a configuration to run a demo test. Results are illustrative only.",
     ja: "デモテストを実行するには設定を作成してください。結果は例示のみです。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Strategy Control Page (Legal-first)
+  // -----------------------------------------------------------------------------
+  "strategy.control.title": {
+    en: "Strategy Control",
+    ja: "戦略コントロール",
+  },
+  "strategy.control.subtitle": {
+    en: "Review strategy structure, verify readiness, and manage linked tests.",
+    ja: "戦略の構造を確認し、準備状況を検証し、リンクされたテストを管理します。",
+  },
+
+  // Strategy Definition Section
+  "strategy.definition.title": {
+    en: "Strategy Definition",
+    ja: "戦略定義",
+  },
+  "strategy.definition.subtitle": {
+    en: "Structural parameters that define this strategy's behavior.",
+    ja: "この戦略の動作を定義する構造パラメータ。",
+  },
+  "strategy.definition.nameLabel": {
+    en: "Name",
+    ja: "名前",
+  },
+  "strategy.definition.descriptionLabel": {
+    en: "Description",
+    ja: "説明",
+  },
+  "strategy.definition.noDescription": {
+    en: "No description provided",
+    ja: "説明なし",
+  },
+  "strategy.definition.styleLabel": {
+    en: "Style",
+    ja: "スタイル",
+  },
+  "strategy.definition.symbolsLabel": {
+    en: "Symbols",
+    ja: "シンボル",
+  },
+  "strategy.definition.timeframeLabel": {
+    en: "Timeframe",
+    ja: "時間足",
+  },
+  "strategy.definition.riskLabel": {
+    en: "Risk per trade",
+    ja: "1取引あたりのリスク",
+  },
+  "strategy.definition.magicLabel": {
+    en: "Magic number",
+    ja: "マジックナンバー",
+  },
+  "strategy.definition.entryLogicLabel": {
+    en: "Entry logic",
+    ja: "エントリーロジック",
+  },
+  "strategy.definition.exitLogicLabel": {
+    en: "Exit logic",
+    ja: "エグジットロジック",
+  },
+  "strategy.definition.notesLabel": {
+    en: "Notes",
+    ja: "メモ",
+  },
+  "strategy.definition.createdLabel": {
+    en: "Created",
+    ja: "作成日",
+  },
+  "strategy.definition.statusActive": {
+    en: "Active",
+    ja: "有効",
+  },
+  "strategy.definition.statusInactive": {
+    en: "Inactive",
+    ja: "無効",
+  },
+
+  // Readiness Checklist Section
+  "strategy.readiness.title": {
+    en: "Readiness Checklist",
+    ja: "準備チェックリスト",
+  },
+  "strategy.readiness.subtitle": {
+    en: "Verify these requirements before creating a test configuration.",
+    ja: "テスト設定を作成する前にこれらの要件を確認してください。",
+  },
+  "strategy.readiness.hasName": {
+    en: "Strategy has a name",
+    ja: "戦略に名前がある",
+  },
+  "strategy.readiness.hasSymbol": {
+    en: "At least one symbol defined",
+    ja: "少なくとも1つのシンボルが定義されている",
+  },
+  "strategy.readiness.hasTimeframe": {
+    en: "Timeframe specified",
+    ja: "時間足が指定されている",
+  },
+  "strategy.readiness.hasEntryLogic": {
+    en: "Entry logic defined",
+    ja: "エントリーロジックが定義されている",
+  },
+  "strategy.readiness.hasExitLogic": {
+    en: "Exit logic defined",
+    ja: "エグジットロジックが定義されている",
+  },
+  "strategy.readiness.ready": {
+    en: "Test-ready",
+    ja: "テスト準備完了",
+  },
+  "strategy.readiness.notReady": {
+    en: "Not ready",
+    ja: "準備未完了",
+  },
+  "strategy.readiness.readyHint": {
+    en: "This strategy meets the minimum requirements to create a test configuration.",
+    ja: "この戦略はテスト設定を作成するための最低要件を満たしています。",
+  },
+  "strategy.readiness.notReadyHint": {
+    en: "Complete the missing requirements above before creating a test.",
+    ja: "テストを作成する前に上記の不足している要件を完了してください。",
+  },
+
+  // Linked Backtests Section
+  "strategy.linkedBacktests.title": {
+    en: "Linked Test Configurations",
+    ja: "リンクされたテスト設定",
+  },
+  "strategy.linkedBacktests.subtitle": {
+    en: "Test configurations associated with this strategy.",
+    ja: "この戦略に関連付けられたテスト設定。",
+  },
+  "strategy.linkedBacktests.empty": {
+    en: "No test configurations linked to this strategy yet.",
+    ja: "この戦略にリンクされたテスト設定はまだありません。",
+  },
+  "strategy.linkedBacktests.emptyHint": {
+    en: "Create a test configuration to observe how this strategy behaves on historical data.",
+    ja: "過去データでこの戦略の動作を観察するためにテスト設定を作成してください。",
+  },
+  "strategy.linkedBacktests.symbolLabel": {
+    en: "Symbol:",
+    ja: "シンボル:",
+  },
+  "strategy.linkedBacktests.timeframeLabel": {
+    en: "Timeframe:",
+    ja: "時間足:",
+  },
+  "strategy.linkedBacktests.periodLabel": {
+    en: "Period:",
+    ja: "期間:",
+  },
+  "strategy.linkedBacktests.viewConfig": {
+    en: "View →",
+    ja: "表示 →",
+  },
+  "strategy.linkedBacktests.loading": {
+    en: "Loading test configurations…",
+    ja: "テスト設定を読み込み中…",
+  },
+
+  // Actions Section
+  "strategy.actions.createBacktest": {
+    en: "Create test configuration",
+    ja: "テスト設定を作成",
+  },
+  "strategy.actions.createBacktestHint": {
+    en: "Define parameters to run a test on historical data.",
+    ja: "過去データでテストを実行するためのパラメータを定義します。",
+  },
+  "strategy.actions.editStrategy": {
+    en: "Edit strategy",
+    ja: "戦略を編集",
+  },
+  "strategy.actions.backToList": {
+    en: "← All strategies",
+    ja: "← 戦略一覧",
+  },
+
+  // Legal Disclaimer
+  "strategy.disclaimer": {
+    en: "Testing is informational only. Results depend on data quality and assumptions, and do not guarantee future outcomes.",
+    ja: "テストは情報提供のみを目的としています。結果はデータの品質と仮定に依存し、将来の結果を保証するものではありません。",
   },
 };
 

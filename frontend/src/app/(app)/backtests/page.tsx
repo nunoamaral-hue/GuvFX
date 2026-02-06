@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import type { BacktestConfig } from "@/types/backtests";
 import { Card } from "@/components/ui/Card";
@@ -44,6 +44,7 @@ const TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"];
 export default function BacktestsPage() {
   const lang = useLang();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [accessToken, setAccessToken] = useState<string>("");
   const [configs, setConfigs] = useState<BacktestConfig[]>([]);
   const [summaries, setSummaries] = useState<Record<number, BacktestSummary>>({});
@@ -68,6 +69,9 @@ export default function BacktestsPage() {
     date_to: "",
     initial_balance: "10000",
   });
+
+  // Track if we've already processed the deep-link to avoid re-triggering
+  const deepLinkProcessedRef = useRef(false);
 
   const labelStyle: React.CSSProperties = {
     color: "#8fa0b7",
@@ -123,6 +127,49 @@ export default function BacktestsPage() {
       fetchData();
     }
   }, [accessToken, fetchData]);
+
+  // Handle deep-link: ?create=true&strategy=<id>
+  // Opens modal and pre-selects strategy when strategies are loaded
+  useEffect(() => {
+    // Only process once, and only after strategies are loaded
+    if (deepLinkProcessedRef.current) return;
+    if (strategies.length === 0) return;
+
+    const shouldCreate = searchParams.get("create") === "true";
+    const strategyIdParam = searchParams.get("strategy");
+
+    if (shouldCreate) {
+      deepLinkProcessedRef.current = true;
+
+      // Find the strategy if specified
+      const strategyId = strategyIdParam ? parseInt(strategyIdParam, 10) : null;
+      const matchedStrategy = strategyId
+        ? strategies.find((s) => s.id === strategyId)
+        : null;
+
+      // Prefill form with strategy info
+      if (matchedStrategy) {
+        setFormData((prev) => ({
+          ...prev,
+          strategy: String(matchedStrategy.id),
+          name: t(lang, "backtests.form.prefillName").replace(
+            "{strategy}",
+            matchedStrategy.name
+          ),
+        }));
+      }
+
+      // Open the modal
+      setShowCreateModal(true);
+
+      // Clear the URL params to avoid re-triggering on refresh
+      // Use replaceState to avoid adding to history
+      const url = new URL(window.location.href);
+      url.searchParams.delete("create");
+      url.searchParams.delete("strategy");
+      window.history.replaceState({}, "", url.pathname);
+    }
+  }, [strategies, searchParams, lang]);
 
   const handleCreateConfig = async (e: React.FormEvent) => {
     e.preventDefault();
