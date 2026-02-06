@@ -79,12 +79,33 @@ export default function BacktestDetailPage() {
 
   // Helper to extract config ID from a run (handles various API shapes)
   const getRunConfigId = (run: BacktestRun): number | null => {
-    // Try run.config (number), run.config_id, or run.config.id (nested object)
-    if (typeof run.config === "number") return run.config;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const anyRun = run as any;
+
+    // Try run.config (number or string)
+    if (typeof run.config === "number") return run.config;
+    if (typeof run.config === "string" && run.config) {
+      const parsed = Number(run.config);
+      if (!isNaN(parsed)) return parsed;
+    }
+
+    // Try run.config_id (number or string)
     if (typeof anyRun.config_id === "number") return anyRun.config_id;
-    if (typeof anyRun.config?.id === "number") return anyRun.config.id;
+    if (typeof anyRun.config_id === "string" && anyRun.config_id) {
+      const parsed = Number(anyRun.config_id);
+      if (!isNaN(parsed)) return parsed;
+    }
+
+    // Try nested run.config.id (object with id field)
+    if (anyRun.config && typeof anyRun.config === "object") {
+      const nestedId = anyRun.config.id;
+      if (typeof nestedId === "number") return nestedId;
+      if (typeof nestedId === "string" && nestedId) {
+        const parsed = Number(nestedId);
+        if (!isNaN(parsed)) return parsed;
+      }
+    }
+
     return null;
   };
 
@@ -122,7 +143,7 @@ export default function BacktestDetailPage() {
             BacktestRun[] | { count?: number; results?: BacktestRun[] }
           >("/api/backtests/runs/", {});
           const allRuns = normalizeRunsResponse(allResponse);
-          runsData = allRuns.filter((r) => getRunConfigId(r) === configId);
+          runsData = allRuns.filter((r) => getRunConfigId(r) === Number(configId));
         } catch (fallbackErr) {
           console.error("Fallback fetch also failed:", fallbackErr);
           throw fallbackErr;
@@ -428,11 +449,12 @@ export default function BacktestDetailPage() {
             const totalTrades = metrics.total_trades ?? numTrades;
             const isExpanded = expandedRunId === run.id;
             // equity_curve can be in run.equity_curve or metrics.equity_curve
-            const equityCurve = run.equity_curve || metrics.equity_curve;
+            // Prefer metrics.equity_curve since that's where backend stores it
+            const equityCurve = metrics.equity_curve || run.equity_curve;
             const hasEquityCurve =
               equityCurve &&
               Array.isArray(equityCurve) &&
-              equityCurve.length > 2;
+              equityCurve.length >= 2;
 
             // Check if this is demo data
             const isDemo = metrics.demo === true;
