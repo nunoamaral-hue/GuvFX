@@ -1761,6 +1761,90 @@ const dictionary: Dictionary = {
     en: "Testing is informational only. Results depend on data quality and assumptions, and do not guarantee future outcomes.",
     ja: "テストは情報提供のみを目的としています。結果はデータの品質と仮定に依存し、将来の結果を保証するものではありません。",
   },
+
+  // -----------------------------------------------------------------------------
+  // Live Trading Shell (Legal-first, execution disabled)
+  // -----------------------------------------------------------------------------
+  "liveTrading.title": {
+    en: "Live Trading",
+    ja: "ライブ取引",
+  },
+  "liveTrading.subtitle": {
+    en: "View linked accounts and strategy assignments. Execution controls will be available in a future release.",
+    ja: "連携された口座と戦略の割り当てを確認します。実行機能は将来のリリースで利用可能になります。",
+  },
+  "liveTrading.disclaimerLine1": {
+    en: "This page is informational only. No trades are executed from this interface. GuvFX provides platform tools only — not financial advice.",
+    ja: "このページは情報提供のみを目的としています。このインターフェースから取引は実行されません。GuvFXはプラットフォームツールのみを提供し、投資助言は行いません。",
+  },
+  "liveTrading.execDisabledTitle": {
+    en: "Execution is disabled",
+    ja: "実行は無効です",
+  },
+  "liveTrading.execDisabledBody": {
+    en: "Trade execution functionality is not yet available. This page provides a read-only view of your accounts and strategy assignments. Automated execution controls are planned for a future release.",
+    ja: "取引実行機能はまだ利用できません。このページでは口座と戦略の割り当てを読み取り専用で確認できます。自動実行機能は将来のリリースで予定されています。",
+  },
+  "liveTrading.accountsTitle": {
+    en: "Linked Accounts",
+    ja: "連携済み口座",
+  },
+  "liveTrading.accountsSubtitle": {
+    en: "Trading accounts connected to your GuvFX profile.",
+    ja: "GuvFXプロファイルに接続された取引口座。",
+  },
+  "liveTrading.accountsEmpty": {
+    en: "No trading accounts linked yet.",
+    ja: "連携された取引口座がまだありません。",
+  },
+  "liveTrading.strategiesTitle": {
+    en: "Strategies",
+    ja: "戦略",
+  },
+  "liveTrading.strategiesSubtitle": {
+    en: "Strategies available for assignment to accounts.",
+    ja: "口座に割り当て可能な戦略。",
+  },
+  "liveTrading.strategiesEmpty": {
+    en: "No strategies created yet.",
+    ja: "戦略がまだ作成されていません。",
+  },
+  "liveTrading.assignedStrategies": {
+    en: "Assigned strategies",
+    ja: "割り当て済み戦略",
+  },
+  "liveTrading.assigned": {
+    en: "Assigned",
+    ja: "割り当て済み",
+  },
+  "liveTrading.notAssigned": {
+    en: "Not assigned",
+    ja: "未割り当て",
+  },
+  "liveTrading.nextStepsTitle": {
+    en: "Next Steps",
+    ja: "次のステップ",
+  },
+  "liveTrading.nextStepsBody": {
+    en: "Prepare your trading setup by linking accounts, creating strategies, and running tests on historical data.",
+    ja: "口座を連携し、戦略を作成し、過去データでテストを実行して取引の準備を整えましょう。",
+  },
+  "liveTrading.ctaLinkAccount": {
+    en: "Link account",
+    ja: "口座を連携",
+  },
+  "liveTrading.ctaCreateStrategy": {
+    en: "Create strategy",
+    ja: "戦略を作成",
+  },
+  "liveTrading.ctaCreateTest": {
+    en: "Create test",
+    ja: "テストを作成",
+  },
+  "liveTrading.ctaViewBacktests": {
+    en: "View backtests",
+    ja: "バックテストを表示",
+  },
 };
 
 // =============================================================================
