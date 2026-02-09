@@ -1845,6 +1845,138 @@ const dictionary: Dictionary = {
     en: "View backtests",
     ja: "バックテストを表示",
   },
+
+  // -----------------------------------------------------------------------------
+  // Trade History (Observational, Legal-first)
+  // -----------------------------------------------------------------------------
+  "tradeHistory.title": {
+    en: "Trade History",
+    ja: "取引履歴",
+  },
+  "tradeHistory.subtitle": {
+    en: "Observed closed trades from linked accounts. Data is read-only and informational.",
+    ja: "連携口座からの確定済み取引を表示します。データは読み取り専用で情報提供目的です。",
+  },
+  "tradeHistory.disclaimerLine1": {
+    en: "Trade history is informational only. Results depend on execution conditions and do not guarantee future outcomes.",
+    ja: "取引履歴は情報提供のみを目的としています。結果は執行条件に依存し、将来の結果を保証するものではありません。",
+  },
+  "tradeHistory.filterAccountLabel": {
+    en: "Account",
+    ja: "口座",
+  },
+  "tradeHistory.noAccountsOption": {
+    en: "No accounts linked",
+    ja: "連携された口座がありません",
+  },
+  "tradeHistory.refresh": {
+    en: "Refresh",
+    ja: "更新",
+  },
+  "tradeHistory.refreshing": {
+    en: "Loading…",
+    ja: "読み込み中…",
+  },
+  "tradeHistory.loading": {
+    en: "Loading trade history…",
+    ja: "取引履歴を読み込み中…",
+  },
+  "tradeHistory.emptyTitle": {
+    en: "No trade history yet",
+    ja: "取引履歴がまだありません",
+  },
+  "tradeHistory.emptyBody": {
+    en: "Link a trading account and execute trades to see your history here. Trade data is synchronized automatically.",
+    ja: "取引口座を連携し、取引を実行するとここに履歴が表示されます。取引データは自動的に同期されます。",
+  },
+  "tradeHistory.ctaLinkAccount": {
+    en: "Link account",
+    ja: "口座を連携",
+  },
+  "tradeHistory.ctaLiveTrading": {
+    en: "View live trading",
+    ja: "ライブ取引を表示",
+  },
+  "tradeHistory.sectionChartsTitle": {
+    en: "Observed Patterns",
+    ja: "観測されたパターン",
+  },
+  "tradeHistory.sectionChartsSubtitle": {
+    en: "Visual representation of historical trade data. Charts show observed outcomes only.",
+    ja: "過去の取引データの視覚的表現。チャートは観測された結果のみを表示します。",
+  },
+  "tradeHistory.chartEquityTitle": {
+    en: "Balance trajectory (observed)",
+    ja: "残高推移（観測値）",
+  },
+  "tradeHistory.chartOutcomesTitle": {
+    en: "Outcome distribution (counts)",
+    ja: "結果分布（件数）",
+  },
+  "tradeHistory.chartDrawdownTitle": {
+    en: "Drawdown (underwater, observed)",
+    ja: "ドローダウン（水面下、観測値）",
+  },
+  "tradeHistory.sectionDetailsTitle": {
+    en: "Observed Statistics",
+    ja: "観測された統計",
+  },
+  "tradeHistory.sectionDetailsSubtitle": {
+    en: "Summary counts and metrics from historical data. These are observations, not predictions.",
+    ja: "過去データからの集計と指標。これらは観察であり、予測ではありません。",
+  },
+  "tradeHistory.statTrades": {
+    en: "Trades",
+    ja: "取引数",
+  },
+  "tradeHistory.statObservedHitRate": {
+    en: "Observed hit rate",
+    ja: "観測されたヒット率",
+  },
+  "tradeHistory.statLongestLossStreak": {
+    en: "Longest loss streak",
+    ja: "最長連敗",
+  },
+  "tradeHistory.statMaxDrawdown": {
+    en: "Max drawdown (observed)",
+    ja: "最大ドローダウン（観測値）",
+  },
+  "tradeHistory.sectionTradesTitle": {
+    en: "Trade Records",
+    ja: "取引記録",
+  },
+  "tradeHistory.sectionTradesSubtitle": {
+    en: "Individual closed trades from the selected account.",
+    ja: "選択された口座の個別の確定取引。",
+  },
+  "tradeHistory.colTime": {
+    en: "Time",
+    ja: "時刻",
+  },
+  "tradeHistory.colTicket": {
+    en: "Ticket",
+    ja: "チケット",
+  },
+  "tradeHistory.colSymbol": {
+    en: "Symbol",
+    ja: "シンボル",
+  },
+  "tradeHistory.colSide": {
+    en: "Side",
+    ja: "方向",
+  },
+  "tradeHistory.colVolume": {
+    en: "Volume",
+    ja: "数量",
+  },
+  "tradeHistory.colOutcome": {
+    en: "Outcome",
+    ja: "結果",
+  },
+  "tradeHistory.colStrategy": {
+    en: "Strategy",
+    ja: "戦略",
+  },
 };
 
 // =============================================================================
