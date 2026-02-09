@@ -163,8 +163,8 @@ const dictionary: Dictionary = {
   // -----------------------------------------------------------------------------
   "dashboard.title": { en: "Dashboard", ja: "ダッシュボード" },
   "dashboard.subtitle": {
-    en: "Unified trading intelligence across accounts and strategies.",
-    ja: "口座と戦略を統合したトレーディングインテリジェンス",
+    en: "Overview of your strategies, tests, and trading accounts.",
+    ja: "戦略、テスト、取引口座の概要。",
   },
 
   // -----------------------------------------------------------------------------
@@ -1976,6 +1976,134 @@ const dictionary: Dictionary = {
   "tradeHistory.colStrategy": {
     en: "Strategy",
     ja: "戦略",
+  },
+
+  // ===========================================================================
+  // DASHBOARD - Action Tiles, System Status, Next Steps
+  // ===========================================================================
+
+  // Action Tiles
+  "dashboard.tile.createStrategy.title": {
+    en: "Create Strategy",
+    ja: "戦略を作成",
+  },
+  "dashboard.tile.createStrategy.description": {
+    en: "Define entry and exit rules for backtesting. Strategies are structural definitions only.",
+    ja: "バックテスト用のエントリーおよびエグジットルールを定義します。戦略は構造的な定義のみです。",
+  },
+  "dashboard.tile.createStrategy.cta": {
+    en: "New Strategy",
+    ja: "新しい戦略",
+  },
+  "dashboard.tile.runBacktests.title": {
+    en: "Run Backtests",
+    ja: "バックテストを実行",
+  },
+  "dashboard.tile.runBacktests.description": {
+    en: "Apply strategies to historical data and observe simulated outcomes.",
+    ja: "戦略を過去データに適用し、シミュレーション結果を観察します。",
+  },
+  "dashboard.tile.runBacktests.cta": {
+    en: "View Tests",
+    ja: "テストを表示",
+  },
+  "dashboard.tile.liveTrading.title": {
+    en: "Live Trading",
+    ja: "ライブ取引",
+  },
+  "dashboard.tile.liveTrading.description": {
+    en: "View linked accounts and strategy assignments. Execution features coming soon.",
+    ja: "リンクされた口座と戦略の割り当てを表示します。実行機能は近日公開予定です。",
+  },
+  "dashboard.tile.liveTrading.cta": {
+    en: "View Status",
+    ja: "ステータスを表示",
+  },
+  "dashboard.tile.tradeHistory.title": {
+    en: "Trade History",
+    ja: "取引履歴",
+  },
+  "dashboard.tile.tradeHistory.description": {
+    en: "Review observed trades from linked accounts. Informational display only.",
+    ja: "リンクされた口座からの観察された取引を確認します。情報表示のみ。",
+  },
+  "dashboard.tile.tradeHistory.cta": {
+    en: "View History",
+    ja: "履歴を表示",
+  },
+
+  // System Status
+  "dashboard.systemStatus.title": {
+    en: "System Status",
+    ja: "システムステータス",
+  },
+  "dashboard.systemStatus.subtitle": {
+    en: "Current resource counts",
+    ja: "現在のリソース数",
+  },
+  "dashboard.systemStatus.strategies": {
+    en: "Strategies",
+    ja: "戦略",
+  },
+  "dashboard.systemStatus.linkedAccounts": {
+    en: "Linked Accounts",
+    ja: "リンクされた口座",
+  },
+  "dashboard.systemStatus.testConfigs": {
+    en: "Test Configs",
+    ja: "テスト設定",
+  },
+  "dashboard.systemStatus.note": {
+    en: "Counts reflect saved resources. These are structural summaries only.",
+    ja: "カウントは保存されたリソースを反映しています。これらは構造的な概要のみです。",
+  },
+
+  // Next Steps
+  "dashboard.nextSteps.title": {
+    en: "Next Steps",
+    ja: "次のステップ",
+  },
+  "dashboard.nextSteps.subtitle": {
+    en: "Suggested workflow",
+    ja: "推奨ワークフロー",
+  },
+  "dashboard.nextSteps.createStrategy": {
+    en: "Create a strategy",
+    ja: "戦略を作成する",
+  },
+  "dashboard.nextSteps.runTest": {
+    en: "Run a backtest",
+    ja: "バックテストを実行する",
+  },
+  "dashboard.nextSteps.reviewResults": {
+    en: "Review test results",
+    ja: "テスト結果を確認する",
+  },
+  "dashboard.nextSteps.linkAccount": {
+    en: "Link a trading account",
+    ja: "取引口座をリンクする",
+  },
+  "dashboard.nextSteps.note": {
+    en: "Checklist reflects current status. No investment advice is implied.",
+    ja: "チェックリストは現在のステータスを反映しています。投資アドバイスを意味するものではありません。",
+  },
+
+  // Quick Links
+  "dashboard.quickLinks.label": {
+    en: "Quick links:",
+    ja: "クイックリンク：",
+  },
+  "dashboard.quickLinks.strategies": {
+    en: "Strategies",
+    ja: "戦略",
+  },
+  "dashboard.quickLinks.accounts": {
+    en: "Accounts",
+    ja: "口座",
+  },
+  "dashboard.quickLinks.profile": {
+    en: "Profile",
+    ja: "プロフィール",
   },
 };
 
