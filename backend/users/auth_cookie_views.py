@@ -1,10 +1,12 @@
 from django.http import JsonResponse
-from rest_framework.decorators import api_view, permission_classes
+from django.middleware.csrf import get_token
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
 from core.audit import log_auth_login, log_auth_logout, log_auth_failed
+from core.throttling import GuvFXCSRFRateThrottle, GuvFXAuthRateThrottle
 
 COOKIE_ACCESS = "guvfx_access"
 COOKIE_REFRESH = "guvfx_refresh"
@@ -20,6 +22,7 @@ def _cookie_kwargs():
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([GuvFXAuthRateThrottle])
 def cookie_login(request):
     email = request.data.get("email", request.data.get("username", ""))
 
@@ -48,6 +51,7 @@ def cookie_login(request):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([GuvFXAuthRateThrottle])
 def cookie_refresh(request):
     refresh = request.COOKIES.get(COOKIE_REFRESH, "")
     serializer = TokenRefreshSerializer(data={"refresh": refresh})
@@ -72,17 +76,28 @@ def cookie_logout(request):
     return resp
 
 # --- CSRF helper for cookie auth (frontend calls this first) ---
-from django.http import JsonResponse
-from django.middleware.csrf import get_token
 from django.views.decorators.csrf import ensure_csrf_cookie
-from django.views.decorators.http import require_GET
+from django.utils.decorators import method_decorator
+from rest_framework.views import APIView
+from rest_framework.response import Response
 
 
-@require_GET
-@ensure_csrf_cookie
-def cookie_csrf(request):
+@method_decorator(ensure_csrf_cookie, name="get")
+class CookieCSRFView(APIView):
     """
-    Ensure csrftoken cookie exists and return token.
+    GET /api/auth/cookie/csrf/
+
+    Returns CSRF token and sets csrftoken cookie.
     Frontend should call this before cookie-login/refresh.
+
+    Rate limited to 60/min per IP to prevent abuse.
     """
-    return JsonResponse({"csrfToken": get_token(request)})
+    permission_classes = [AllowAny]
+    throttle_classes = [GuvFXCSRFRateThrottle]
+
+    def get(self, request):
+        return Response({"csrfToken": get_token(request)})
+
+
+# Legacy function-based view for backward compatibility with urls.py
+cookie_csrf = CookieCSRFView.as_view()

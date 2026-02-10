@@ -119,3 +119,44 @@ class GuvFXCSRFRateThrottle(SimpleRateThrottle):
             "scope": self.scope,
             "ident": ident,
         }
+
+
+class GuvFXAuthRateThrottle(SimpleRateThrottle):
+    """
+    Rate limit for authentication endpoints (login, refresh).
+
+    Limits: 20 requests per minute per IP.
+    This is stricter than general endpoints to prevent brute-force attacks.
+    """
+
+    scope = "auth"
+    rate = "20/min"
+
+    def get_cache_key(self, request, view):
+        ident = self.get_ident(request)
+        return self.cache_format % {
+            "scope": self.scope,
+            "ident": ident,
+        }
+
+    def allow_request(self, request, view):
+        """Check if request should be allowed."""
+        allowed = super().allow_request(request, view)
+        if not allowed:
+            # Log auth rate limit exceeded (potential brute-force)
+            try:
+                log_event(
+                    request,
+                    event_type="AUTH_RATE_LIMIT_EXCEEDED",
+                    severity="WARN",
+                    entity_type="ip",
+                    metadata={
+                        "scope": self.scope,
+                        "rate": self.rate,
+                        "ip": self.get_ident(request),
+                        "path": request.path,
+                    },
+                )
+            except Exception:
+                pass
+        return allowed

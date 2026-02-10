@@ -177,6 +177,7 @@ REST_FRAMEWORK = {
         "user": "100/min",
         "ip": "1000/min",
         "csrf": "60/min",
+        "auth": "20/min",
     },
 }
 
