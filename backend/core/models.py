@@ -149,9 +149,9 @@ class AuditEvent(models.Model):
     class Meta:
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["event_type", "created_at"]),
-            models.Index(fields=["user", "created_at"]),
-            models.Index(fields=["entity_type", "entity_id"]),
+            models.Index(fields=["event_type", "created_at"], name="core_audite_event_t_68fb24_idx"),
+            models.Index(fields=["user", "created_at"], name="core_audite_user_id_69cb1f_idx"),
+            models.Index(fields=["entity_type", "entity_id"], name="core_audite_entity__e1955d_idx"),
         ]
         # Prevent accidental updates
         verbose_name = "Audit Event"
