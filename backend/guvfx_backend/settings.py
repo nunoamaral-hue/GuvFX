@@ -169,7 +169,33 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "core.throttling.GuvFXUserRateThrottle",
+        "core.throttling.GuvFXIPRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "user": "100/min",
+        "ip": "1000/min",
+        "csrf": "60/min",
+    },
 }
+
+# Cache configuration for rate limiting
+# Uses LocMemCache by default; configure REDIS_URL for production
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "guvfx-rate-limit-cache",
+    }
+}
+
+# Override with Redis if available
+_redis_url = env("REDIS_URL", "")
+if _redis_url:
+    CACHES["default"] = {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": _redis_url,
+    }
 
 SIMPLE_JWT = {
     "ALGORITHM": "HS256",
@@ -192,7 +218,19 @@ _raw_cors = env("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
 CORS_ALLOWED_ORIGINS = ["https://guvfx.com", "https://www.guvfx.com"]
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "Authorization",
+    "X-CSRFToken",
 ]
+
+# CSRF Settings
+CSRF_TRUSTED_ORIGINS = [
+    "https://guvfx.com",
+    "https://www.guvfx.com",
+    "https://api.guvfx.com",
+]
+CSRF_COOKIE_DOMAIN = ".guvfx.com"
+CSRF_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_HTTPONLY = False  # Must be False so JS can read and send X-CSRFToken header
+CSRF_USE_SESSIONS = False  # Use cookie-based CSRF (double-submit pattern)
 
 # Security Settings
 if not DEBUG:

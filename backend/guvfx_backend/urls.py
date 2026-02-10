@@ -25,6 +25,7 @@ urlpatterns = [
     path("api/backtests/", include("backtests.urls")),
     path("api/analytics/", include("analytics.urls")),
     path("api/ai/", include("ai_helper.urls")),
+    path("api/execution/", include("execution.urls")),  # Execution control stubs
     path(
         "api/execution/open-trade/",
         CreateOpenTradeJobView.as_view(),

@@ -20,6 +20,12 @@ from .serializers import (
     StrategyChangeLogSerializer,
 )
 from backtests.models import BacktestConfig, BacktestRun
+from core.audit import (
+    log_strategy_created,
+    log_strategy_updated,
+    log_strategy_deleted,
+    log_assignment_created,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,18 @@ class StrategyViewSet(viewsets.ModelViewSet):
             qs = qs.filter(owner=user)
         return qs
 
+    def perform_create(self, serializer):
+        """Create strategy and log audit event."""
+        instance = serializer.save()
+        log_strategy_created(self.request, instance)
+
+    def perform_destroy(self, instance):
+        """Delete strategy and log audit event."""
+        strategy_id = instance.id
+        strategy_name = instance.name
+        instance.delete()
+        log_strategy_deleted(self.request, strategy_id, strategy_name)
+
     def perform_update(self, serializer):
         user = self.request.user
         instance: Strategy = self.get_object()
@@ -107,6 +125,9 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 before_settings=before_settings,
                 after_settings=after_settings,
             )
+            # Audit log
+            changed_fields = [k for k, v in after_settings.items() if before_settings.get(k) != v]
+            log_strategy_updated(self.request, updated, changed_fields)
 
     @action(detail=False, methods=["post"], url_path="marketplace/assign")
     def marketplace_assign(self, request):
@@ -257,6 +278,9 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
                     account__user_id=obj.account.user_id,
                     is_active=True,
                 ).exclude(id=obj.id).update(is_active=False)
+
+            # Audit log
+            log_assignment_created(self.request, obj)
 
     def get_queryset(self):
         qs = super().get_queryset()

@@ -2,6 +2,9 @@ from django.http import JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+
+from core.audit import log_auth_login, log_auth_logout, log_auth_failed
 
 COOKIE_ACCESS = "guvfx_access"
 COOKIE_REFRESH = "guvfx_refresh"
@@ -18,10 +21,24 @@ def _cookie_kwargs():
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def cookie_login(request):
+    email = request.data.get("email", request.data.get("username", ""))
+
     serializer = TokenObtainPairSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
+    try:
+        serializer.is_valid(raise_exception=True)
+    except (InvalidToken, TokenError) as e:
+        log_auth_failed(request, email, reason=str(e))
+        raise
+    except Exception as e:
+        log_auth_failed(request, email, reason="validation_error")
+        raise
+
     access = serializer.validated_data["access"]
     refresh = serializer.validated_data["refresh"]
+
+    # Log successful login
+    user = serializer.user
+    log_auth_login(request, user.id, user.email)
 
     resp = JsonResponse({"ok": True})
     ck = _cookie_kwargs()
@@ -45,6 +62,9 @@ def cookie_refresh(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def cookie_logout(request):
+    # Log logout before clearing cookies
+    log_auth_logout(request)
+
     resp = JsonResponse({"ok": True})
     ck = _cookie_kwargs()
     resp.set_cookie(COOKIE_ACCESS, "", max_age=0, **ck)

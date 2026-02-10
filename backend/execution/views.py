@@ -12,6 +12,7 @@ from .serializers import ExecutionJobSerializer, OpenTradeJobRequestSerializer
 from .services import OpenTradeParams, create_open_trade_job
 from strategies.models import Strategy, StrategyAssignment
 from trading.models import TradingAccount
+from core.audit import log_execution_attempt
 
 class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
     """
@@ -210,3 +211,116 @@ class WorkerAccountCredentialsView(APIView):
             "is_demo": account.is_demo,
         }
         return Response(data)
+
+
+# =============================================================================
+# Execution Control Stubs (501 Not Implemented)
+# =============================================================================
+#
+# These endpoints exist to:
+# 1. Document the intended API surface for execution controls
+# 2. Log any attempts to call them for security monitoring
+# 3. Return 501 Not Implemented to indicate feature is not yet available
+#
+# POST-MVP: These will be implemented with proper execution pipeline.
+# =============================================================================
+
+
+class ExecutionEnableView(APIView):
+    """
+    POST /api/execution/enable/<account_id>/
+
+    Enable execution for a specific account.
+
+    STATUS: 501 Not Implemented
+    POST-MVP: Will enable strategy execution on the specified account's MT5 terminal.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, account_id: int):
+        # Log attempt
+        log_execution_attempt(
+            request,
+            event_type="EXECUTION_ENABLE_ATTEMPT",
+            account_id=str(account_id),
+            reason="Feature not implemented. Execution controls are disabled in MVP.",
+        )
+
+        return Response(
+            {
+                "ok": False,
+                "error": "not_implemented",
+                "message": "Execution controls are not yet available. "
+                           "This feature is planned for a future release.",
+                "account_id": account_id,
+            },
+            status=status.HTTP_501_NOT_IMPLEMENTED,
+        )
+
+
+class ExecutionDisableView(APIView):
+    """
+    POST /api/execution/disable/<account_id>/
+
+    Disable execution for a specific account.
+
+    STATUS: 501 Not Implemented
+    POST-MVP: Will disable strategy execution and remove EA from terminal.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, account_id: int):
+        # Log attempt
+        log_execution_attempt(
+            request,
+            event_type="EXECUTION_DISABLE_ATTEMPT",
+            account_id=str(account_id),
+            reason="Feature not implemented. Execution controls are disabled in MVP.",
+        )
+
+        return Response(
+            {
+                "ok": False,
+                "error": "not_implemented",
+                "message": "Execution controls are not yet available. "
+                           "This feature is planned for a future release.",
+                "account_id": account_id,
+            },
+            status=status.HTTP_501_NOT_IMPLEMENTED,
+        )
+
+
+class ExecutionKillAllView(APIView):
+    """
+    POST /api/execution/kill-all/
+
+    Emergency kill switch - disable all execution globally.
+
+    STATUS: 501 Not Implemented
+    POST-MVP: Will immediately disable execution on all accounts.
+    Requires admin/staff permissions.
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        # Log attempt (even though not implemented)
+        log_execution_attempt(
+            request,
+            event_type="EXECUTION_KILL_ATTEMPT",
+            account_id="global",
+            reason="Feature not implemented. Kill switch is disabled in MVP.",
+        )
+
+        return Response(
+            {
+                "ok": False,
+                "error": "not_implemented",
+                "message": "Kill switch is not yet available. "
+                           "This feature is planned for a future release.",
+                "scope": "global",
+            },
+            status=status.HTTP_501_NOT_IMPLEMENTED,
+        )

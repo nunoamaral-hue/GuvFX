@@ -18,6 +18,11 @@ from .serializers import (
 )
 from strategies.models import Strategy
 from trading.models import TradingAccount
+from core.audit import (
+    log_backtest_config_created,
+    log_backtest_run_created,
+    log_backtests_processed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +49,8 @@ class BacktestConfigViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save()  # BacktestConfigSerializer.create() sets owner
+        instance = serializer.save()  # BacktestConfigSerializer.create() sets owner
+        log_backtest_config_created(self.request, instance)
 
 
 class BacktestRunViewSet(viewsets.ModelViewSet):
@@ -107,6 +113,9 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         # If you wanted a fake/dummy "instant completion" for now, you could update here.
         # For now we leave it as PENDING to be picked up by a future worker.
 
+        # Audit log
+        log_backtest_run_created(self.request, run)
+
         # Ensure serializer instance is set for response rendering
         serializer.instance = run
 
@@ -162,6 +171,10 @@ class ProcessPendingBacktestsView(APIView):
             )
 
             processed_count += 1
+
+        # Audit log
+        if processed_count > 0:
+            log_backtests_processed(request, processed_count)
 
         return Response(
             {
