@@ -51,8 +51,6 @@ class Migration(migrations.Migration):
                 ('entity_id', models.CharField(blank=True, db_index=True, help_text='ID of the entity (string to support UUIDs and integers)', max_length=128, null=True)),
                 ('ip_address', models.GenericIPAddressField(blank=True, null=True)),
                 ('user_agent', models.TextField(blank=True, default='')),
-                ('path', models.CharField(blank=True, default='', help_text="Request path (e.g., '/api/strategies/')", max_length=255)),
-                ('method', models.CharField(blank=True, default='', help_text='HTTP method (GET, POST, PUT, DELETE, etc.)', max_length=12)),
                 ('metadata', models.JSONField(blank=True, default=dict, help_text='Additional event context. Must NOT contain sensitive data.')),
                 ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
                 ('user', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='audit_events', to=settings.AUTH_USER_MODEL)),
