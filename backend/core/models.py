@@ -119,6 +119,20 @@ class AuditEvent(models.Model):
         default="",
     )
 
+    path = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Request path (e.g., '/api/strategies/')",
+    )
+
+    method = models.CharField(
+        max_length=12,
+        blank=True,
+        default="",
+        help_text="HTTP method (GET, POST, PUT, DELETE, etc.)",
+    )
+
     # Additional context (JSON)
     metadata = models.JSONField(
         default=dict,

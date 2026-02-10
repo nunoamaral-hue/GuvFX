@@ -49,6 +49,20 @@ def get_user_agent(request: HttpRequest) -> str:
     return request.META.get("HTTP_USER_AGENT", "")[:500]  # Truncate to 500 chars
 
 
+def get_request_path(request: HttpRequest) -> str:
+    """Extract the request path."""
+    if not request:
+        return ""
+    return getattr(request, "path", "")[:255]
+
+
+def get_request_method(request: HttpRequest) -> str:
+    """Extract the HTTP method."""
+    if not request:
+        return ""
+    return getattr(request, "method", "")[:12]
+
+
 def log_event(
     request: Optional[HttpRequest],
     event_type: str,
@@ -91,6 +105,8 @@ def log_event(
             "entity_id": str(entity_id) if entity_id is not None else None,
             "ip_address": get_client_ip(request) if request else None,
             "user_agent": get_user_agent(request) if request else "",
+            "path": get_request_path(request) if request else "",
+            "method": get_request_method(request) if request else "",
             "metadata": _sanitize_metadata(metadata or {}),
         }
 
