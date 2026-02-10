@@ -182,20 +182,39 @@ REST_FRAMEWORK = {
 }
 
 # Cache configuration for rate limiting
-# Uses LocMemCache by default; configure REDIS_URL for production
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "guvfx-rate-limit-cache",
-    }
-}
+# Production: DatabaseCache (shared across gunicorn workers, uses existing Postgres)
+# Development: LocMemCache (simpler, no setup needed)
+# Optional: Redis if REDIS_URL is set (fastest option)
 
-# Override with Redis if available
 _redis_url = env("REDIS_URL", "")
+
 if _redis_url:
-    CACHES["default"] = {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": _redis_url,
+    # Redis available - use it (fastest, best for high traffic)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": _redis_url,
+        }
+    }
+elif DEBUG:
+    # Development mode - use in-memory cache (simple, per-process)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "guvfx-rate-limit-cache",
+        }
+    }
+else:
+    # Production without Redis - use DatabaseCache (shared across workers)
+    # Requires: python manage.py createcachetable
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "django_cache",
+            "OPTIONS": {
+                "MAX_ENTRIES": 10000,  # Reasonable limit for rate limiting
+            },
+        }
     }
 
 SIMPLE_JWT = {
