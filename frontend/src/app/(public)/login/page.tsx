@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
 import { LanguageDropdown } from "@/components/LanguageDropdown";
+import { apiFetch } from "@/lib/api";
 
 /**
  * Validates returnTo parameter for safe redirect.
@@ -79,17 +80,11 @@ export default function LoginPage() {
         password,
       };
 
-      const res = await fetch("https://api.guvfx.com/api/auth/cookie/login/", {
+      // Use apiFetch which handles CSRF token automatically
+      await apiFetch("/api/auth/cookie/login/", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(body),
       });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || t(lang, "login.errorDefault"));
-      }
 
       setSuccess(t(lang, "login.success"));
       
