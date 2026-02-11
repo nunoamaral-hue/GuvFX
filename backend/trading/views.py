@@ -365,6 +365,7 @@ class TradeViewSet(viewsets.ReadOnlyModelViewSet):
 # =============================================================================
 # On-Demand Trade Sync
 # =============================================================================
+from datetime import datetime
 from decimal import Decimal
 from django.utils.dateparse import parse_datetime
 from rest_framework.views import APIView
@@ -379,10 +380,50 @@ def _to_decimal(x, default="0"):
 
 
 def _to_datetime(x):
-    """Safely convert to datetime."""
+    """
+    Safely convert to datetime.
+    Handles:
+    - ISO strings (via parse_datetime)
+    - Unix timestamps (integer seconds since epoch)
+    """
     if not x:
         return None
-    return parse_datetime(x)
+    # If it's an integer (Unix timestamp), convert to aware UTC datetime
+    if isinstance(x, (int, float)):
+        try:
+            return datetime.utcfromtimestamp(x).replace(tzinfo=timezone.utc)
+        except (ValueError, OSError):
+            return None
+    # Otherwise try parsing as ISO string
+    return parse_datetime(str(x))
+
+
+def _normalize_side(d: dict) -> str:
+    """
+    Normalize trade side from deal data.
+    - If "side" field exists, use it (BUY/SELL)
+    - Otherwise map MT5 "type" field: 0=BUY, 1=SELL
+    - Default to BUY if unknown
+    """
+    side = d.get("side")
+    if side:
+        s = str(side).strip().upper()
+        if s in ("BUY", "SELL"):
+            return s
+
+    # MT5 deal type codes: 0=DEAL_TYPE_BUY, 1=DEAL_TYPE_SELL
+    mt5_type = d.get("type")
+    if mt5_type is not None:
+        try:
+            t = int(mt5_type)
+            if t == 0:
+                return "BUY"
+            elif t == 1:
+                return "SELL"
+        except (ValueError, TypeError):
+            pass
+
+    return "BUY"  # Default
 
 
 def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int]:
@@ -390,83 +431,115 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int]:
     Upsert deals into Trade model.
     Returns (inserted_count, updated_count).
 
-    Logic mirrors mt5_trade_ingest_worker.upsert_trades().
+    Handles multiple input shapes from Windows agent:
+    - ISO datetime strings (open_time_utc, close_time_utc, etc.)
+    - Unix timestamps (time field as integer seconds)
+    - MT5 type codes (0=BUY, 1=SELL)
+
+    Skips malformed rows gracefully to avoid 500 errors.
     """
     inserted = 0
     updated = 0
 
     for d in deals:
-        ticket = str(d.get("ticket") or d.get("position_ticket") or d.get("deal_id") or "").strip()
-        if not ticket:
-            continue
-
-        symbol = (d.get("symbol") or "").strip()
-        side = (d.get("side") or d.get("type") or "").strip().upper() or "BUY"
-        vol = _to_decimal(d.get("volume") or d.get("lots") or "0")
-
-        open_time = _to_datetime(d.get("open_time_utc") or d.get("open_time") or d.get("t_open_utc"))
-        close_time = _to_datetime(d.get("close_time_utc") or d.get("close_time") or d.get("t_close_utc") or d.get("time_utc"))
-
-        open_price = _to_decimal(d.get("open_price") or "0")
-        close_price_raw = d.get("close_price")
-        close_price = _to_decimal(close_price_raw, "0") if close_price_raw is not None else None
-
-        profit = _to_decimal(d.get("profit") or d.get("pnl") or "0")
-        commission = _to_decimal(d.get("commission") or "0")
-        swap = _to_decimal(d.get("swap") or "0")
-
-        magic = d.get("magic") if d.get("magic") is not None else d.get("magic_number")
         try:
-            magic = int(magic) if magic is not None else None
+            ticket = str(d.get("ticket") or d.get("position_ticket") or d.get("deal_id") or "").strip()
+            if not ticket:
+                continue
+
+            symbol = (d.get("symbol") or "").strip()
+            side = _normalize_side(d)
+            vol = _to_decimal(d.get("volume") or d.get("lots") or "0")
+
+            # Try multiple datetime field names, including Unix "time" field
+            open_time = (
+                _to_datetime(d.get("open_time_utc"))
+                or _to_datetime(d.get("open_time"))
+                or _to_datetime(d.get("t_open_utc"))
+            )
+            close_time = (
+                _to_datetime(d.get("close_time_utc"))
+                or _to_datetime(d.get("close_time"))
+                or _to_datetime(d.get("t_close_utc"))
+                or _to_datetime(d.get("time_utc"))
+            )
+
+            # Fallback: "time" field (Unix seconds) - common in MT5 deal snapshots
+            unix_time = _to_datetime(d.get("time"))
+
+            # Ensure open_time is NEVER NULL (DB constraint)
+            # Priority: open_time > close_time > unix_time > now()
+            if not open_time:
+                open_time = close_time or unix_time or timezone.now()
+
+            # Use unix_time as close_time if we don't have one (deal is closed)
+            if not close_time and unix_time:
+                close_time = unix_time
+
+            open_price = _to_decimal(d.get("open_price") or d.get("price") or "0")
+            close_price_raw = d.get("close_price")
+            close_price = _to_decimal(close_price_raw, "0") if close_price_raw is not None else None
+
+            profit = _to_decimal(d.get("profit") or d.get("pnl") or "0")
+            commission = _to_decimal(d.get("commission") or "0")
+            swap = _to_decimal(d.get("swap") or "0")
+
+            magic = d.get("magic") if d.get("magic") is not None else d.get("magic_number")
+            try:
+                magic = int(magic) if magic is not None else None
+            except Exception:
+                magic = None
+
+            comment = str(d.get("comment") or "").strip()
+
+            obj, created = Trade.objects.get_or_create(
+                account=account,
+                ticket=ticket,
+                defaults={
+                    "symbol": symbol,
+                    "side": side,
+                    "volume": vol,
+                    "open_time": open_time,
+                    "close_time": close_time,
+                    "open_price": open_price,
+                    "close_price": close_price,
+                    "profit": profit,
+                    "commission": commission,
+                    "swap": swap,
+                    "magic_number": magic,
+                    "comment": comment,
+                    "opened_by": "EA",
+                },
+            )
+            if created:
+                inserted += 1
+                continue
+
+            # Update existing trade if values changed
+            changed = False
+            if close_price is not None and obj.close_price != close_price:
+                obj.close_price = close_price
+                changed = True
+            if close_time and obj.close_time != close_time:
+                obj.close_time = close_time
+                changed = True
+            if obj.profit != profit:
+                obj.profit = profit
+                changed = True
+            if obj.commission != commission:
+                obj.commission = commission
+                changed = True
+            if obj.swap != swap:
+                obj.swap = swap
+                changed = True
+
+            if changed:
+                obj.save()
+                updated += 1
+
         except Exception:
-            magic = None
-
-        comment = str(d.get("comment") or "").strip()
-
-        obj, created = Trade.objects.get_or_create(
-            account=account,
-            ticket=ticket,
-            defaults={
-                "symbol": symbol,
-                "side": side if side in ("BUY", "SELL") else "BUY",
-                "volume": vol,
-                "open_time": open_time or close_time,
-                "close_time": close_time,
-                "open_price": open_price,
-                "close_price": close_price,
-                "profit": profit,
-                "commission": commission,
-                "swap": swap,
-                "magic_number": magic,
-                "comment": comment,
-                "opened_by": "EA",
-            },
-        )
-        if created:
-            inserted += 1
+            # Skip malformed deal rows to avoid 500 errors
             continue
-
-        # Update existing trade if close_price changed (trade was closed)
-        changed = False
-        if close_price is not None and obj.close_price != close_price:
-            obj.close_price = close_price
-            changed = True
-        if close_time and obj.close_time != close_time:
-            obj.close_time = close_time
-            changed = True
-        if obj.profit != profit:
-            obj.profit = profit
-            changed = True
-        if obj.commission != commission:
-            obj.commission = commission
-            changed = True
-        if obj.swap != swap:
-            obj.swap = swap
-            changed = True
-
-        if changed:
-            obj.save()
-            updated += 1
 
     return inserted, updated
 
