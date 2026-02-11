@@ -391,7 +391,9 @@ def _to_datetime(x):
     # If it's an integer (Unix timestamp), convert to aware UTC datetime
     if isinstance(x, (int, float)):
         try:
-            return datetime.utcfromtimestamp(x).replace(tzinfo=timezone.utc)
+            # Use datetime.timezone.utc (Python stdlib), not Django's timezone module
+            import datetime as dt_module
+            return dt_module.datetime.utcfromtimestamp(x).replace(tzinfo=dt_module.timezone.utc)
         except (ValueError, OSError):
             return None
     # Otherwise try parsing as ISO string
@@ -426,10 +428,10 @@ def _normalize_side(d: dict) -> str:
     return "BUY"  # Default
 
 
-def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int]:
+def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int, list]:
     """
     Upsert deals into Trade model.
-    Returns (inserted_count, updated_count).
+    Returns (inserted_count, updated_count, skipped_count, skip_reasons).
 
     Handles multiple input shapes from Windows agent:
     - ISO datetime strings (open_time_utc, close_time_utc, etc.)
@@ -440,18 +442,24 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int]:
     """
     inserted = 0
     updated = 0
+    skipped = 0
+    skip_reasons = []
 
     for d in deals:
         try:
+            # Extract ticket (required)
             ticket = str(d.get("ticket") or d.get("position_ticket") or d.get("deal_id") or "").strip()
             if not ticket:
+                skipped += 1
+                if len(skip_reasons) < 3:
+                    skip_reasons.append("missing_ticket")
                 continue
 
             symbol = (d.get("symbol") or "").strip()
             side = _normalize_side(d)
             vol = _to_decimal(d.get("volume") or d.get("lots") or "0")
 
-            # Try multiple datetime field names, including Unix "time" field
+            # Try multiple datetime field names
             open_time = (
                 _to_datetime(d.get("open_time_utc"))
                 or _to_datetime(d.get("open_time"))
@@ -472,9 +480,16 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int]:
             if not open_time:
                 open_time = close_time or unix_time or timezone.now()
 
-            # Use unix_time as close_time if we don't have one (deal is closed)
+            # Use unix_time as close_time if we don't have one
             if not close_time and unix_time:
                 close_time = unix_time
+
+            # Final check: open_time must exist
+            if not open_time:
+                skipped += 1
+                if len(skip_reasons) < 3:
+                    skip_reasons.append(f"missing_open_time:ticket={ticket}")
+                continue
 
             open_price = _to_decimal(d.get("open_price") or d.get("price") or "0")
             close_price_raw = d.get("close_price")
@@ -537,11 +552,14 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int]:
                 obj.save()
                 updated += 1
 
-        except Exception:
+        except Exception as e:
             # Skip malformed deal rows to avoid 500 errors
+            skipped += 1
+            if len(skip_reasons) < 3:
+                skip_reasons.append(f"exception:{str(e)[:50]}")
             continue
 
-    return inserted, updated
+    return inserted, updated, skipped, skip_reasons
 
 
 class SyncNowView(APIView):
@@ -639,7 +657,7 @@ class SyncNowView(APIView):
             deals = data["data"]["deals"]
 
         # Upsert trades
-        inserted, updated = _upsert_trades(account, deals)
+        inserted, updated, skipped, skip_reasons = _upsert_trades(account, deals)
 
         # Audit log
         log_trades_ingested(
@@ -650,13 +668,15 @@ class SyncNowView(APIView):
             deals_count=len(deals),
         )
 
-        return Response(
-            {
-                "ok": True,
-                "inserted": inserted,
-                "updated": updated,
-                "deals_count": len(deals),
-            },
-            status=status.HTTP_200_OK,
-        )
+        response_data = {
+            "ok": True,
+            "inserted": inserted,
+            "updated": updated,
+            "skipped": skipped,
+            "deals_count": len(deals),
+        }
+        if skip_reasons:
+            response_data["skip_reasons"] = skip_reasons
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
