@@ -394,3 +394,25 @@ def log_execution_job_completed(
         entity_id=job_id,
         metadata=metadata,
     )
+
+
+def log_trades_ingested(
+    request: HttpRequest,
+    account_id: int,
+    inserted: int,
+    updated: int,
+    deals_count: int,
+) -> None:
+    """Log trade ingestion from Windows agent."""
+    log_event(
+        request,
+        event_type="TRADES_INGESTED",
+        severity="INFO",
+        entity_type="trading_account",
+        entity_id=str(account_id),
+        metadata={
+            "inserted": inserted,
+            "updated": updated,
+            "deals_count": deals_count,
+        },
+    )

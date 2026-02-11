@@ -361,3 +361,229 @@ class TradeViewSet(viewsets.ReadOnlyModelViewSet):
             qs = qs.filter(account__user=user)
         return qs
 
+
+# =============================================================================
+# On-Demand Trade Sync
+# =============================================================================
+from decimal import Decimal
+from django.utils.dateparse import parse_datetime
+from rest_framework.views import APIView
+from core.audit import log_trades_ingested
+
+
+def _to_decimal(x, default="0"):
+    """Safely convert to Decimal."""
+    if x is None:
+        return Decimal(default)
+    return Decimal(str(x))
+
+
+def _to_datetime(x):
+    """Safely convert to datetime."""
+    if not x:
+        return None
+    return parse_datetime(x)
+
+
+def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int]:
+    """
+    Upsert deals into Trade model.
+    Returns (inserted_count, updated_count).
+
+    Logic mirrors mt5_trade_ingest_worker.upsert_trades().
+    """
+    inserted = 0
+    updated = 0
+
+    for d in deals:
+        ticket = str(d.get("ticket") or d.get("position_ticket") or d.get("deal_id") or "").strip()
+        if not ticket:
+            continue
+
+        symbol = (d.get("symbol") or "").strip()
+        side = (d.get("side") or d.get("type") or "").strip().upper() or "BUY"
+        vol = _to_decimal(d.get("volume") or d.get("lots") or "0")
+
+        open_time = _to_datetime(d.get("open_time_utc") or d.get("open_time") or d.get("t_open_utc"))
+        close_time = _to_datetime(d.get("close_time_utc") or d.get("close_time") or d.get("t_close_utc") or d.get("time_utc"))
+
+        open_price = _to_decimal(d.get("open_price") or "0")
+        close_price_raw = d.get("close_price")
+        close_price = _to_decimal(close_price_raw, "0") if close_price_raw is not None else None
+
+        profit = _to_decimal(d.get("profit") or d.get("pnl") or "0")
+        commission = _to_decimal(d.get("commission") or "0")
+        swap = _to_decimal(d.get("swap") or "0")
+
+        magic = d.get("magic") if d.get("magic") is not None else d.get("magic_number")
+        try:
+            magic = int(magic) if magic is not None else None
+        except Exception:
+            magic = None
+
+        comment = str(d.get("comment") or "").strip()
+
+        obj, created = Trade.objects.get_or_create(
+            account=account,
+            ticket=ticket,
+            defaults={
+                "symbol": symbol,
+                "side": side if side in ("BUY", "SELL") else "BUY",
+                "volume": vol,
+                "open_time": open_time or close_time,
+                "close_time": close_time,
+                "open_price": open_price,
+                "close_price": close_price,
+                "profit": profit,
+                "commission": commission,
+                "swap": swap,
+                "magic_number": magic,
+                "comment": comment,
+                "opened_by": "EA",
+            },
+        )
+        if created:
+            inserted += 1
+            continue
+
+        # Update existing trade if close_price changed (trade was closed)
+        changed = False
+        if close_price is not None and obj.close_price != close_price:
+            obj.close_price = close_price
+            changed = True
+        if close_time and obj.close_time != close_time:
+            obj.close_time = close_time
+            changed = True
+        if obj.profit != profit:
+            obj.profit = profit
+            changed = True
+        if obj.commission != commission:
+            obj.commission = commission
+            changed = True
+        if obj.swap != swap:
+            obj.swap = swap
+            changed = True
+
+        if changed:
+            obj.save()
+            updated += 1
+
+    return inserted, updated
+
+
+class SyncNowView(APIView):
+    """
+    POST /api/trading/sync-now/
+
+    On-demand trade ingestion from Windows agent.
+    Requires cookie auth + CSRF.
+
+    Body:
+    {
+        "account_id": <int>,
+        "windows_username": "<string>"
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        account_id = request.data.get("account_id")
+        windows_username = request.data.get("windows_username", "").strip()
+
+        # Validate inputs
+        if not account_id:
+            return Response(
+                {"ok": False, "error": "missing_account_id", "message": "account_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not windows_username:
+            return Response(
+                {"ok": False, "error": "missing_windows_username", "message": "windows_username is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate account ownership
+        try:
+            account = TradingAccount.objects.get(id=account_id, user=user)
+        except TradingAccount.DoesNotExist:
+            return Response(
+                {"ok": False, "error": "account_not_found", "message": "Account not found or not owned by you."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Get Windows agent config
+        agent_base = (os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
+        agent_token = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
+
+        if not agent_base or not agent_token:
+            return Response(
+                {"ok": False, "error": "agent_not_configured", "message": "Windows agent is not configured."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Call Windows agent to get deals
+        import urllib.parse
+        url = f"{agent_base}/mt5/snapshots/deals?username={urllib.parse.quote(windows_username)}"
+
+        try:
+            req = urllib.request.Request(
+                url,
+                method="GET",
+                headers={"X-GuvFX-Agent-Token": agent_token},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode("utf-8", errors="ignore")
+                data = json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            return Response(
+                {"ok": False, "error": "agent_http_error", "message": f"Agent returned HTTP {e.code}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except urllib.error.URLError as e:
+            return Response(
+                {"ok": False, "error": "agent_unreachable", "message": f"Cannot reach agent: {e.reason}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except json.JSONDecodeError:
+            return Response(
+                {"ok": False, "error": "agent_invalid_json", "message": "Agent returned invalid JSON."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except Exception as e:
+            return Response(
+                {"ok": False, "error": "agent_error", "message": str(e)[:200]},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Parse deals robustly (multiple possible response shapes)
+        deals = (
+            data.get("deals")
+            or (data.get("data") or {}).get("deals")
+            or []
+        )
+        if data.get("ok") is True and "data" in data and "deals" in data["data"]:
+            deals = data["data"]["deals"]
+
+        # Upsert trades
+        inserted, updated = _upsert_trades(account, deals)
+
+        # Audit log
+        log_trades_ingested(
+            request=request,
+            account_id=account.id,
+            inserted=inserted,
+            updated=updated,
+            deals_count=len(deals),
+        )
+
+        return Response(
+            {
+                "ok": True,
+                "inserted": inserted,
+                "updated": updated,
+                "deals_count": len(deals),
+            },
+            status=status.HTTP_200_OK,
+        )
+

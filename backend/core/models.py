@@ -69,6 +69,9 @@ class AuditEvent(models.Model):
         # Rate limiting
         RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED", "Rate Limit Exceeded"
 
+        # Trade ingestion
+        TRADES_INGESTED = "TRADES_INGESTED", "Trades Ingested"
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
