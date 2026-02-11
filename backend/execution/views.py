@@ -324,32 +324,79 @@ class CreateDemoTradeJobView(APIView):
         try:
             account = TradingAccount.objects.get(id=account_id, user=user)
         except TradingAccount.DoesNotExist:
+            # Build diagnostic info (only in DEBUG mode)
+            debug_info = {}
+            if django_settings.DEBUG:
+                # Check if account exists at all (without user filter)
+                any_account = TradingAccount.objects.filter(id=account_id).first()
+                if any_account:
+                    debug_info = {
+                        "debug": {
+                            "account_exists": True,
+                            "owner_id": any_account.user_id,
+                            "request_user_id": user.id,
+                            "owner_match": any_account.user_id == user.id,
+                        }
+                    }
+                else:
+                    debug_info = {
+                        "debug": {
+                            "account_exists": False,
+                            "request_user_id": user.id,
+                        }
+                    }
+
             return Response(
                 {
                     "ok": False,
                     "error": "account_not_found",
                     "message": "Account not found or not owned by you.",
+                    **debug_info,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if not account.is_demo:
+            debug_info = {}
+            if django_settings.DEBUG:
+                debug_info = {
+                    "debug": {
+                        "account_id": account.id,
+                        "is_demo": account.is_demo,
+                        "is_active": account.is_active,
+                        "broker_server_env": (
+                            account.broker_server.environment
+                            if account.broker_server else None
+                        ),
+                    }
+                }
             return Response(
                 {
                     "ok": False,
                     "error": "account_not_demo",
                     "message": "Demo trading is only available on demo accounts. "
                                "This account is not marked as demo.",
+                    **debug_info,
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         if not account.is_active:
+            debug_info = {}
+            if django_settings.DEBUG:
+                debug_info = {
+                    "debug": {
+                        "account_id": account.id,
+                        "is_demo": account.is_demo,
+                        "is_active": account.is_active,
+                    }
+                }
             return Response(
                 {
                     "ok": False,
                     "error": "account_inactive",
                     "message": "This account is not active.",
+                    **debug_info,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
