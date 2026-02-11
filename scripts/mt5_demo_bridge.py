@@ -111,14 +111,18 @@ def get_headers() -> Dict[str, str]:
 
 def fetch_next_job() -> Optional[Dict[str, Any]]:
     """
-    Fetch the next pending job for our account from the API.
+    Fetch the next pending PLACE_TEST_ORDER job for our account from the API.
     Returns job data or None if no jobs available.
+
+    Note: job_type=PLACE_TEST_ORDER is explicitly requested to prevent Linux
+    ingest workers from claiming demo trade jobs (they only handle SYNC_POSITIONS).
     """
     try:
         url = f"{API_URL}/api/execution/jobs/next/"
         params = {
             "worker_id": f"mt5-bridge-{ACCOUNT_ID}",
             "account_id": ACCOUNT_ID,
+            "job_type": "PLACE_TEST_ORDER",
         }
 
         response = requests.get(url, headers=get_headers(), params=params, timeout=10)

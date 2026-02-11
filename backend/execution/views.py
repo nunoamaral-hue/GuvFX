@@ -84,12 +84,26 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
     def next_job(self, request):
         """
         Called by MT5 worker: claim the oldest PENDING job and mark it RUNNING.
-        Optionally filter by account_id query parameter.
+
+        Query params:
+        - worker_id: Identifier for the claiming worker (default: "mt5-worker")
+        - account_id: Filter jobs by account ID
+        - job_type: Filter by job type. If omitted, defaults to SYNC_POSITIONS only.
+                    This prevents Linux ingest workers from claiming PLACE_TEST_ORDER jobs.
         """
         worker_id = request.query_params.get("worker_id", "mt5-worker")
         account_id = request.query_params.get("account_id")
+        job_type = request.query_params.get("job_type")
 
         qs = ExecutionJob.objects.filter(status=ExecutionJob.Status.PENDING)
+
+        # Job type filtering: explicit param or default to SYNC_POSITIONS
+        if job_type:
+            qs = qs.filter(job_type=job_type)
+        else:
+            # Default: only return SYNC_POSITIONS (backward compat for Linux ingest worker)
+            qs = qs.filter(job_type=ExecutionJob.JobType.SYNC_POSITIONS)
+
         if account_id:
             qs = qs.filter(account_id=account_id)
 
