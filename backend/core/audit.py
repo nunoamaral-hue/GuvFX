@@ -272,7 +272,7 @@ def log_backtests_processed(request: HttpRequest, count: int) -> None:
     """Log batch backtest processing."""
     log_event(
         request,
-        event_type="BACKTEST_PROCESSED",
+        event_type="BACKTEST_RUNS_PROCESSED",
         severity="INFO",
         entity_type="backtest_run",
         metadata={"processed_count": count},

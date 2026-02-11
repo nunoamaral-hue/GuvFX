@@ -44,7 +44,7 @@ class AuditEvent(models.Model):
         # Backtest operations
         BACKTEST_CONFIG_CREATED = "BACKTEST_CONFIG_CREATED", "Backtest Config Created"
         BACKTEST_RUN_CREATED = "BACKTEST_RUN_CREATED", "Backtest Run Created"
-        BACKTEST_PROCESSED = "BACKTEST_PROCESSED", "Backtests Processed"
+        BACKTEST_RUNS_PROCESSED = "BACKTEST_RUNS_PROCESSED", "Backtest Runs Processed"
 
         # Account operations
         ACCOUNT_LINKED = "ACCOUNT_LINKED", "Account Linked"
