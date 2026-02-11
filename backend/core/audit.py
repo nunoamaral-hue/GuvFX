@@ -309,3 +309,88 @@ def log_execution_attempt(
         entity_id=account_id,
         metadata={"reason": reason, "status": "not_implemented"},
     )
+
+
+# =============================================================================
+# Execution Job Audit Helpers
+# =============================================================================
+
+
+def log_execution_job_created(
+    request: HttpRequest,
+    job_id: str,
+    job_type: str,
+    account_id: int,
+    strategy_id: int | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Log execution job creation."""
+    log_event(
+        request,
+        event_type="EXECUTION_JOB_CREATED",
+        severity="INFO",
+        entity_type="execution_job",
+        entity_id=job_id,
+        metadata={
+            "job_type": job_type,
+            "account_id": account_id,
+            "strategy_id": strategy_id,
+            **(metadata or {}),
+        },
+    )
+
+
+def log_execution_job_claimed(
+    request: HttpRequest | None,
+    job_id: str,
+    worker_id: str,
+    account_id: int,
+) -> None:
+    """Log execution job claimed by worker."""
+    log_event(
+        request,
+        event_type="EXECUTION_JOB_CLAIMED",
+        severity="INFO",
+        entity_type="execution_job",
+        entity_id=job_id,
+        metadata={
+            "worker_id": worker_id,
+            "account_id": account_id,
+        },
+    )
+
+
+def log_execution_job_completed(
+    request: HttpRequest | None,
+    job_id: str,
+    success: bool,
+    account_id: int,
+    result: dict | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Log execution job completion (success or failure)."""
+    event_type = "EXECUTION_JOB_COMPLETED" if success else "EXECUTION_JOB_FAILED"
+    severity = "INFO" if success else "WARN"
+
+    metadata = {
+        "success": success,
+        "account_id": account_id,
+    }
+    if result:
+        # Only include non-sensitive result fields
+        safe_result = {
+            k: v for k, v in result.items()
+            if k in ("ticket", "price", "volume", "symbol", "placed_at", "order_type")
+        }
+        metadata["result"] = safe_result
+    if error_message:
+        metadata["error"] = error_message[:500]  # Truncate long errors
+
+    log_event(
+        request,
+        event_type=event_type,
+        severity=severity,
+        entity_type="execution_job",
+        entity_id=job_id,
+        metadata=metadata,
+    )

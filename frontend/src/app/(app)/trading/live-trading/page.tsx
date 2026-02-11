@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useLang } from "@/components/AppShell";
 import { Card } from "@/components/ui/Card";
@@ -18,6 +18,18 @@ type Strategy = {
   id: number;
   name: string;
   is_active: boolean;
+};
+
+type DemoTradeResponse = {
+  ok: boolean;
+  job_id?: number;
+  status?: string;
+  message?: string;
+  error?: string;
+  daily_trades?: {
+    used: number;
+    limit: number;
+  };
 };
 
 // =============================================================================
@@ -90,6 +102,58 @@ export default function LiveTradingPage() {
     assignmentsByAccount.set(a.account, list);
   }
 
+  // Demo trade state
+  const [demoTradeLoading, setDemoTradeLoading] = useState<string | null>(null); // "accountId-strategyId" or null
+  const [demoTradeMessage, setDemoTradeMessage] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
+
+  // Handle demo trade execution
+  const handleDemoTrade = useCallback(
+    async (accountId: number, strategyId: number) => {
+      const key = `${accountId}-${strategyId}`;
+      setDemoTradeLoading(key);
+      setDemoTradeMessage(null);
+
+      try {
+        const response = await apiFetch<DemoTradeResponse>(
+          "/api/execution/demo-trade/",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              account_id: accountId,
+              strategy_id: strategyId,
+              symbol: "EURUSD",
+              side: "BUY",
+            }),
+          }
+        );
+
+        if (response.ok) {
+          setDemoTradeMessage({
+            type: "success",
+            text: `Demo trade created (Job #${response.job_id}). ${response.daily_trades ? `${response.daily_trades.used}/${response.daily_trades.limit} daily trades used.` : ""}`,
+          });
+        } else {
+          setDemoTradeMessage({
+            type: "error",
+            text: response.message || response.error || "Failed to create demo trade",
+          });
+        }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "Failed to create demo trade";
+        setDemoTradeMessage({
+          type: "error",
+          text: errorMessage,
+        });
+      } finally {
+        setDemoTradeLoading(null);
+      }
+    },
+    []
+  );
+
   return (
     <div style={{ maxWidth: 1000, margin: "0 auto" }}>
       {/* Header */}
@@ -113,40 +177,82 @@ export default function LiveTradingPage() {
         {t(lang, "liveTrading.disclaimerLine1")}
       </p>
 
-      {/* Execution Disabled Banner - VERY VISIBLE */}
+      {/* Demo Trade Message Toast */}
+      {demoTradeMessage && (
+        <div
+          style={{
+            marginBottom: "1rem",
+            padding: "0.75rem 1rem",
+            background:
+              demoTradeMessage.type === "success"
+                ? "rgba(74, 222, 128, 0.1)"
+                : "rgba(239, 68, 68, 0.1)",
+            border: `1px solid ${demoTradeMessage.type === "success" ? "rgba(74, 222, 128, 0.3)" : "rgba(239, 68, 68, 0.3)"}`,
+            borderRadius: 8,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "0.85rem",
+              color: demoTradeMessage.type === "success" ? "#4ade80" : "#f87171",
+            }}
+          >
+            {demoTradeMessage.type === "success" ? "✓" : "✕"} {demoTradeMessage.text}
+          </span>
+          <button
+            onClick={() => setDemoTradeMessage(null)}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#9ca3af",
+              cursor: "pointer",
+              padding: "0.25rem",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Execution Info Banner */}
       <div
         style={{
           marginBottom: "1.5rem",
           padding: "1rem 1.25rem",
-          background: "rgba(239, 68, 68, 0.08)",
-          border: "1px solid rgba(239, 68, 68, 0.3)",
+          background: "rgba(59, 130, 246, 0.08)",
+          border: "1px solid rgba(59, 130, 246, 0.3)",
           borderRadius: 8,
           display: "flex",
           alignItems: "flex-start",
           gap: "0.75rem",
         }}
       >
-        <span style={{ fontSize: "1.5rem", color: "#ef4444", lineHeight: 1 }}>⛔</span>
+        <span style={{ fontSize: "1.5rem", color: "#3b82f6", lineHeight: 1 }}>ℹ️</span>
         <div>
           <h3
             style={{
               margin: "0 0 0.35rem",
               fontSize: "1rem",
               fontWeight: 600,
-              color: "#fca5a5",
+              color: "#93c5fd",
             }}
           >
-            {t(lang, "liveTrading.execDisabledTitle")}
+            Demo Trading Available
           </h3>
           <p
             style={{
               margin: 0,
               fontSize: "0.85rem",
-              color: "#f87171",
+              color: "#60a5fa",
               lineHeight: 1.5,
             }}
           >
-            {t(lang, "liveTrading.execDisabledBody")}
+            Demo accounts with active strategy assignments can run test trades.
+            Limited to EURUSD, 0.01 lots, max 3 trades per day.
+            This feature is for demonstration purposes only.
           </p>
         </div>
       </div>
@@ -243,7 +349,7 @@ export default function LiveTradingPage() {
                       {acc.account_number}
                     </span>
                   </div>
-                  {/* Assigned strategies */}
+                  {/* Assigned strategies with demo trade buttons */}
                   {accAssignments.length > 0 && (
                     <div style={{ marginTop: "0.5rem" }}>
                       <span style={{ fontSize: "0.75rem", color: "#7c8ca4" }}>
@@ -252,29 +358,67 @@ export default function LiveTradingPage() {
                       <div
                         style={{
                           display: "flex",
+                          flexDirection: "column",
                           gap: "0.4rem",
-                          flexWrap: "wrap",
                           marginTop: "0.25rem",
                         }}
                       >
                         {accAssignments.map((asn) => {
                           const strat = strategyLookup.get(asn.strategy);
+                          const canRunDemoTrade =
+                            acc.is_demo && acc.is_active && asn.is_active;
+                          const loadingKey = `${acc.id}-${asn.strategy}`;
+                          const isLoading = demoTradeLoading === loadingKey;
+
                           return (
-                            <span
+                            <div
                               key={asn.id}
                               style={{
-                                fontSize: "0.75rem",
-                                padding: "0.15rem 0.5rem",
-                                borderRadius: 4,
-                                backgroundColor: asn.is_active
-                                  ? "rgba(74, 222, 128, 0.15)"
-                                  : "rgba(148,163,184,0.15)",
-                                color: asn.is_active ? "#4ade80" : "#9ca3af",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: "0.5rem",
                               }}
                             >
-                              {strat?.name || `Strategy #${asn.strategy}`}
-                              {!asn.is_active && " (paused)"}
-                            </span>
+                              <span
+                                style={{
+                                  fontSize: "0.75rem",
+                                  padding: "0.15rem 0.5rem",
+                                  borderRadius: 4,
+                                  backgroundColor: asn.is_active
+                                    ? "rgba(74, 222, 128, 0.15)"
+                                    : "rgba(148,163,184,0.15)",
+                                  color: asn.is_active ? "#4ade80" : "#9ca3af",
+                                }}
+                              >
+                                {strat?.name || `Strategy #${asn.strategy}`}
+                                {!asn.is_active && " (paused)"}
+                              </span>
+
+                              {/* Demo Trade Button - only for demo accounts with active assignments */}
+                              {canRunDemoTrade && (
+                                <button
+                                  onClick={() =>
+                                    handleDemoTrade(acc.id, asn.strategy)
+                                  }
+                                  disabled={isLoading}
+                                  style={{
+                                    fontSize: "0.7rem",
+                                    padding: "0.2rem 0.5rem",
+                                    borderRadius: 4,
+                                    border: "1px solid rgba(59, 130, 246, 0.5)",
+                                    background: isLoading
+                                      ? "rgba(59, 130, 246, 0.2)"
+                                      : "rgba(59, 130, 246, 0.1)",
+                                    color: "#60a5fa",
+                                    cursor: isLoading ? "wait" : "pointer",
+                                    opacity: isLoading ? 0.7 : 1,
+                                  }}
+                                >
+                                  {isLoading ? "Running..." : "Run Demo Trade"}
+                                </button>
+                              )}
+                            </div>
                           );
                         })}
                       </div>

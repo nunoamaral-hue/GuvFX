@@ -60,6 +60,12 @@ class AuditEvent(models.Model):
         EXECUTION_DISABLE_ATTEMPT = "EXECUTION_DISABLE_ATTEMPT", "Execution Disable Attempted"
         EXECUTION_KILL_ATTEMPT = "EXECUTION_KILL_ATTEMPT", "Kill Switch Attempted"
 
+        # Execution job lifecycle
+        EXECUTION_JOB_CREATED = "EXECUTION_JOB_CREATED", "Execution Job Created"
+        EXECUTION_JOB_CLAIMED = "EXECUTION_JOB_CLAIMED", "Execution Job Claimed"
+        EXECUTION_JOB_COMPLETED = "EXECUTION_JOB_COMPLETED", "Execution Job Completed"
+        EXECUTION_JOB_FAILED = "EXECUTION_JOB_FAILED", "Execution Job Failed"
+
         # Rate limiting
         RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED", "Rate Limit Exceeded"
 

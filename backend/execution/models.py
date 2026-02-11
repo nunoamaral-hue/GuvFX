@@ -1,8 +1,20 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from trading.models import TradingAccount
 from strategies.models import Strategy, StrategyAssignment
+
+
+# =============================================================================
+# Demo Trade Safety Constants
+# =============================================================================
+# These are hard-coded safety rails for the demo execution feature.
+# They cannot be overridden by user input or configuration.
+
+DEMO_ALLOWED_SYMBOLS = ["EURUSD"]  # Only these symbols can be traded in demo
+DEMO_FIXED_LOT_SIZE = 0.01  # Fixed lot size for all demo trades
+DEMO_MAX_TRADES_PER_DAY = 3  # Maximum demo trades per account per day
 
 
 class ExecutionJob(models.Model):
@@ -11,6 +23,7 @@ class ExecutionJob(models.Model):
         OPEN_TRADE = "OPEN_TRADE", "Open trade"
         CLOSE_TRADE = "CLOSE_TRADE", "Close trade"
         SYNC_POSITIONS = "SYNC_POSITIONS", "Sync positions"
+        PLACE_TEST_ORDER = "PLACE_TEST_ORDER", "Place test order (demo)"
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
@@ -72,3 +85,16 @@ class ExecutionJob(models.Model):
 
     def __str__(self) -> str:
         return f"{self.job_type} for account {self.account_id} (status={self.status})"
+
+    @classmethod
+    def count_today_demo_trades(cls, account_id: int) -> int:
+        """
+        Count PLACE_TEST_ORDER jobs created today for the given account.
+        Used to enforce DEMO_MAX_TRADES_PER_DAY limit.
+        """
+        today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        return cls.objects.filter(
+            account_id=account_id,
+            job_type=cls.JobType.PLACE_TEST_ORDER,
+            created_at__gte=today_start,
+        ).count()

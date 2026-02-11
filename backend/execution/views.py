@@ -1,5 +1,6 @@
 import os
 
+from django.conf import settings as django_settings
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -7,12 +8,26 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ExecutionJob
-from .serializers import ExecutionJobSerializer, OpenTradeJobRequestSerializer
+from .models import (
+    ExecutionJob,
+    DEMO_ALLOWED_SYMBOLS,
+    DEMO_FIXED_LOT_SIZE,
+    DEMO_MAX_TRADES_PER_DAY,
+)
+from .serializers import (
+    ExecutionJobSerializer,
+    OpenTradeJobRequestSerializer,
+    DemoTradeJobRequestSerializer,
+)
 from .services import OpenTradeParams, create_open_trade_job
 from strategies.models import Strategy, StrategyAssignment
 from trading.models import TradingAccount
-from core.audit import log_execution_attempt
+from core.audit import (
+    log_execution_attempt,
+    log_execution_job_created,
+    log_execution_job_claimed,
+    log_execution_job_completed,
+)
 
 class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
     """
@@ -69,15 +84,17 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
     def next_job(self, request):
         """
         Called by MT5 worker: claim the oldest PENDING job and mark it RUNNING.
+        Optionally filter by account_id query parameter.
         """
         worker_id = request.query_params.get("worker_id", "mt5-worker")
+        account_id = request.query_params.get("account_id")
 
-        job = (
-            ExecutionJob.objects
-            .filter(status=ExecutionJob.Status.PENDING)
-            .order_by("created_at")
-            .first()
-        )
+        qs = ExecutionJob.objects.filter(status=ExecutionJob.Status.PENDING)
+        if account_id:
+            qs = qs.filter(account_id=account_id)
+
+        job = qs.order_by("created_at").first()
+
         if not job:
             # 204 No Content – no jobs available
             return Response({"detail": "no_jobs"}, status=204)
@@ -86,6 +103,14 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         job.worker_id = worker_id
         job.started_at = timezone.now()
         job.save(update_fields=["status", "worker_id", "started_at"])
+
+        # Audit log
+        log_execution_job_claimed(
+            request=None,  # Worker request, not user request
+            job_id=str(job.id),
+            worker_id=worker_id,
+            account_id=job.account_id,
+        )
 
         serializer = self.get_serializer(job)
         return Response(serializer.data)
@@ -111,6 +136,16 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         job.error_message = error_message
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "result", "error_message", "finished_at"])
+
+        # Audit log
+        log_execution_job_completed(
+            request=None,  # Worker request, not user request
+            job_id=str(job.id),
+            success=(status_value == ExecutionJob.Status.SUCCESS),
+            account_id=job.account_id,
+            result=result if status_value == ExecutionJob.Status.SUCCESS else None,
+            error_message=error_message if status_value == ExecutionJob.Status.FAILED else None,
+        )
 
         serializer = self.get_serializer(job)
         return Response(serializer.data)
@@ -211,6 +246,235 @@ class WorkerAccountCredentialsView(APIView):
             "is_demo": account.is_demo,
         }
         return Response(data)
+
+
+# =============================================================================
+# Demo Trade Execution (Safety-First)
+# =============================================================================
+#
+# This endpoint allows creating a minimal demo trade job with strict safety rails:
+# - Demo accounts only (fail closed if account is not marked demo)
+# - Allowlisted symbols only (EURUSD)
+# - Fixed lot size: 0.01 only
+# - Max 3 trades per day per account
+# - Global kill switch respected
+# =============================================================================
+
+
+def _is_execution_globally_disabled() -> bool:
+    """
+    Check if execution is globally disabled via environment variable.
+    This is the kill switch for all execution.
+    """
+    return os.getenv("GUVFX_EXECUTION_DISABLED", "").lower() in ("true", "1", "yes")
+
+
+class CreateDemoTradeJobView(APIView):
+    """
+    POST /api/execution/demo-trade/
+
+    Create a demo trade job with strict safety rails.
+
+    Safety checks (all must pass):
+    1. Global kill switch not engaged
+    2. Account must be demo (is_demo=True)
+    3. Account must be owned by authenticated user
+    4. Strategy must be owned by authenticated user
+    5. Strategy assignment must exist and be active
+    6. Daily trade limit not exceeded (max 3 per account per day)
+    7. Symbol must be in allowlist (EURUSD only)
+
+    On success, creates a PLACE_TEST_ORDER job with:
+    - symbol: EURUSD (hard-coded)
+    - lots: 0.01 (hard-coded)
+    - side: BUY (hard-coded for demo)
+    - comment: GUVFX_DEMO_JOB:<job_id>
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        # =====================================================================
+        # Safety Check 1: Global kill switch
+        # =====================================================================
+        if _is_execution_globally_disabled():
+            return Response(
+                {
+                    "ok": False,
+                    "error": "execution_disabled",
+                    "message": "Execution is currently disabled globally.",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        # =====================================================================
+        # Validate request data
+        # =====================================================================
+        serializer = DemoTradeJobRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = request.user
+        account_id = data["account_id"]
+        strategy_id = data["strategy_id"]
+
+        # =====================================================================
+        # Safety Check 2 & 3: Account exists, is demo, owned by user
+        # =====================================================================
+        try:
+            account = TradingAccount.objects.get(id=account_id, user=user)
+        except TradingAccount.DoesNotExist:
+            return Response(
+                {
+                    "ok": False,
+                    "error": "account_not_found",
+                    "message": "Account not found or not owned by you.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not account.is_demo:
+            return Response(
+                {
+                    "ok": False,
+                    "error": "account_not_demo",
+                    "message": "Demo trading is only available on demo accounts. "
+                               "This account is not marked as demo.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not account.is_active:
+            return Response(
+                {
+                    "ok": False,
+                    "error": "account_inactive",
+                    "message": "This account is not active.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================================================
+        # Safety Check 4: Strategy exists and owned by user
+        # =====================================================================
+        try:
+            strategy = Strategy.objects.get(id=strategy_id, owner=user)
+        except Strategy.DoesNotExist:
+            return Response(
+                {
+                    "ok": False,
+                    "error": "strategy_not_found",
+                    "message": "Strategy not found or not owned by you.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================================================
+        # Safety Check 5: Active assignment exists
+        # =====================================================================
+        assignment = StrategyAssignment.objects.filter(
+            account=account,
+            strategy=strategy,
+            is_active=True,
+        ).first()
+
+        if not assignment:
+            return Response(
+                {
+                    "ok": False,
+                    "error": "no_active_assignment",
+                    "message": "No active strategy assignment found for this account/strategy pair. "
+                               "Please assign the strategy to the account first.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================================================
+        # Safety Check 6: Daily trade limit
+        # =====================================================================
+        today_count = ExecutionJob.count_today_demo_trades(account_id)
+        if today_count >= DEMO_MAX_TRADES_PER_DAY:
+            return Response(
+                {
+                    "ok": False,
+                    "error": "daily_limit_exceeded",
+                    "message": f"Daily demo trade limit reached ({DEMO_MAX_TRADES_PER_DAY} trades per day). "
+                               "Please try again tomorrow.",
+                    "today_count": today_count,
+                    "limit": DEMO_MAX_TRADES_PER_DAY,
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        # =====================================================================
+        # Safety Check 7: Symbol allowlist (enforced regardless of input)
+        # =====================================================================
+        symbol = "EURUSD"  # Hard-coded for safety
+
+        # =====================================================================
+        # Create the execution job with safety-enforced parameters
+        # =====================================================================
+        job = ExecutionJob.objects.create(
+            job_type=ExecutionJob.JobType.PLACE_TEST_ORDER,
+            account=account,
+            strategy=strategy,
+            assignment=assignment,
+            status=ExecutionJob.Status.PENDING,
+            created_by=user,
+            payload={
+                "symbol": symbol,
+                "lots": DEMO_FIXED_LOT_SIZE,
+                "side": "BUY",  # Hard-coded for demo
+                "comment": f"GUVFX_DEMO_JOB:{0}",  # Placeholder, will update below
+                "magic": strategy.id,  # Use strategy ID as magic number
+                "is_demo": True,
+                "safety_rails": {
+                    "max_daily": DEMO_MAX_TRADES_PER_DAY,
+                    "fixed_lots": DEMO_FIXED_LOT_SIZE,
+                    "allowed_symbols": DEMO_ALLOWED_SYMBOLS,
+                },
+            },
+        )
+
+        # Update comment with actual job ID
+        job.payload["comment"] = f"GUVFX_DEMO_JOB:{job.id}"
+        job.save(update_fields=["payload"])
+
+        # Audit log
+        log_execution_job_created(
+            request=request,
+            job_id=str(job.id),
+            job_type=job.job_type,
+            account_id=account.id,
+            strategy_id=strategy.id,
+            metadata={
+                "symbol": symbol,
+                "lots": DEMO_FIXED_LOT_SIZE,
+                "side": "BUY",
+                "is_demo": True,
+                "today_count": today_count + 1,
+            },
+        )
+
+        return Response(
+            {
+                "ok": True,
+                "job_id": job.id,
+                "status": job.status,
+                "message": "Demo trade job created successfully. "
+                           "The trade will be executed shortly.",
+                "payload": {
+                    "symbol": symbol,
+                    "lots": DEMO_FIXED_LOT_SIZE,
+                    "side": "BUY",
+                },
+                "daily_trades": {
+                    "used": today_count + 1,
+                    "limit": DEMO_MAX_TRADES_PER_DAY,
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # =============================================================================
