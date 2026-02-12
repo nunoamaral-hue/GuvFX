@@ -29,6 +29,7 @@ ENVIRONMENT VARIABLES (required):
 OPTIONAL:
 - MT5_TERMINAL_PATH: Path to MT5 terminal (if non-standard location)
 - POLL_INTERVAL_SECONDS: Polling interval (default: 2)
+- GUVFX_DEMO_AUTOCLOSE_SECONDS: If > 0, auto-close position after N seconds (default: 0)
 
 USAGE:
     python mt5_demo_bridge.py
@@ -46,10 +47,14 @@ import os
 import sys
 import time
 import logging
+import random
 from datetime import datetime
 from typing import Optional, Dict, Any
+from urllib.parse import urlencode
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Configure logging
 logging.basicConfig(
@@ -68,8 +73,15 @@ logger = logging.getLogger(__name__)
 ALLOWED_SYMBOLS = ["EURUSD"]
 FIXED_LOT_SIZE = 0.01
 ALLOWED_SIDES = ["BUY"]  # Only BUY for demo
-MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 5
+
+# =============================================================================
+# Polling/Retry Configuration
+# =============================================================================
+MAX_FETCH_RETRIES = 3
+RETRY_BASE_DELAY = 2.0  # Base delay for exponential backoff
+MAX_CONSECUTIVE_404 = 3  # Stop after this many consecutive 404s
+RETRY_DELAY_SECONDS = 5  # Delay after unexpected errors in main loop
+HTTP_TIMEOUT = 15  # Request timeout in seconds
 
 # =============================================================================
 # Configuration
@@ -83,6 +95,44 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
 # Demo auto-close: if > 0, wait N seconds after opening then close the position
 # This ensures the demo produces a complete round-trip (open + close deals)
 DEMO_AUTOCLOSE_SECONDS = int(os.getenv("GUVFX_DEMO_AUTOCLOSE_SECONDS", "0"))
+
+# Track consecutive 404 errors to avoid spamming
+_consecutive_404_count = 0
+
+
+def create_http_session() -> requests.Session:
+    """
+    Create an HTTP session with retry logic and HTTP/1.1 enforcement.
+    Uses urllib3 Retry for automatic retries with exponential backoff.
+    """
+    session = requests.Session()
+
+    # Configure retry strategy: retry on connection errors, timeouts, 502/503/504
+    retry_strategy = Retry(
+        total=MAX_FETCH_RETRIES,
+        backoff_factor=RETRY_BASE_DELAY,
+        status_forcelist=[502, 503, 504],
+        allowed_methods=["GET", "POST"],
+        raise_on_status=False,  # Don't raise, let us handle status codes
+    )
+
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+    return session
+
+
+# Global HTTP session for connection reuse
+_http_session: Optional[requests.Session] = None
+
+
+def get_http_session() -> requests.Session:
+    """Get or create the global HTTP session."""
+    global _http_session
+    if _http_session is None:
+        _http_session = create_http_session()
+    return _http_session
 
 
 def validate_config() -> bool:
@@ -120,58 +170,130 @@ def fetch_next_job() -> Optional[Dict[str, Any]]:
 
     Note: job_type=PLACE_TEST_ORDER is explicitly requested to prevent Linux
     ingest workers from claiming demo trade jobs (they only handle SYNC_POSITIONS).
+
+    Robust polling:
+    - Uses explicit query params in canonical order
+    - Uses HTTP session with retry/backoff via HTTPAdapter
+    - Logs full URL and response body snippet on errors
+    - Tracks consecutive 404s to avoid spamming
     """
+    global _consecutive_404_count
+
+    # Build URL with explicit query params (canonical order for debugging)
+    params = {
+        "account_id": ACCOUNT_ID,
+        "job_type": "PLACE_TEST_ORDER",
+        "worker_id": f"windows-bridge-{ACCOUNT_ID}",
+    }
+    # Construct full URL for logging
+    query_string = urlencode(params)
+    full_url = f"{API_URL}/api/execution/jobs/next/?{query_string}"
+
     try:
-        url = f"{API_URL}/api/execution/jobs/next/"
-        params = {
-            "worker_id": f"mt5-bridge-{ACCOUNT_ID}",
-            "account_id": ACCOUNT_ID,
-            "job_type": "PLACE_TEST_ORDER",
-        }
+        session = get_http_session()
+        response = session.get(
+            f"{API_URL}/api/execution/jobs/next/",
+            headers=get_headers(),
+            params=params,
+            timeout=HTTP_TIMEOUT,
+        )
 
-        response = requests.get(url, headers=get_headers(), params=params, timeout=10)
+        status = response.status_code
 
-        if response.status_code == 204:
-            # No jobs available
+        # 204: No jobs available (normal)
+        if status == 204:
+            _consecutive_404_count = 0  # Reset on success
             return None
 
-        if response.status_code == 200:
+        # 200: Job claimed
+        if status == 200:
+            _consecutive_404_count = 0  # Reset on success
             job = response.json()
             logger.info(f"Claimed job {job.get('id')}: {job.get('job_type')}")
             return job
 
-        logger.warning(f"Unexpected response fetching jobs: {response.status_code} - {response.text}")
+        # 404: Endpoint not found (likely wrong URL or routing issue)
+        if status == 404:
+            _consecutive_404_count += 1
+            body_snippet = response.text[:200] if response.text else "(empty)"
+            logger.error(
+                f"404 Not Found (attempt {_consecutive_404_count}/{MAX_CONSECUTIVE_404})\n"
+                f"  URL: {full_url}\n"
+                f"  Response: {body_snippet}"
+            )
+            if _consecutive_404_count >= MAX_CONSECUTIVE_404:
+                logger.error(
+                    f"Too many consecutive 404 errors. Check that the endpoint exists.\n"
+                    f"  Expected: {API_URL}/api/execution/jobs/next/\n"
+                    f"  Stopping job fetch until next poll cycle."
+                )
+            return None
+
+        # Other non-2xx status codes
+        body_snippet = response.text[:300] if response.text else "(empty)"
+        logger.warning(
+            f"Unexpected HTTP {status} fetching jobs\n"
+            f"  URL: {full_url}\n"
+            f"  Response: {body_snippet}"
+        )
         return None
 
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout ({HTTP_TIMEOUT}s) fetching jobs: {full_url}")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Connection error fetching jobs: {full_url}\n  Error: {e}")
+        return None
     except requests.RequestException as e:
-        logger.error(f"Error fetching jobs: {e}")
+        logger.error(f"Request error fetching jobs: {full_url}\n  Error: {e}")
+        return None
+    except Exception as e:
+        logger.exception(f"Unexpected error fetching jobs: {full_url}\n  Error: {e}")
         return None
 
 
 def complete_job(job_id: int, success: bool, result: Dict = None, error_message: str = "") -> bool:
     """
-    Report job completion to the API.
+    Report job completion to the API with retry logic.
     """
-    try:
-        url = f"{API_URL}/api/execution/jobs/{job_id}/complete/"
-        data = {
-            "status": "SUCCESS" if success else "FAILED",
-            "result": result or {},
-            "error_message": error_message,
-        }
+    url = f"{API_URL}/api/execution/jobs/{job_id}/complete/"
+    data = {
+        "status": "SUCCESS" if success else "FAILED",
+        "result": result or {},
+        "error_message": error_message,
+    }
 
-        response = requests.post(url, headers=get_headers(), json=data, timeout=10)
+    for attempt in range(1, MAX_FETCH_RETRIES + 1):
+        try:
+            session = get_http_session()
+            response = session.post(
+                url,
+                headers=get_headers(),
+                json=data,
+                timeout=HTTP_TIMEOUT,
+            )
 
-        if response.status_code == 200:
-            logger.info(f"Job {job_id} completed: {'SUCCESS' if success else 'FAILED'}")
-            return True
+            if response.status_code == 200:
+                logger.info(f"Job {job_id} completed: {'SUCCESS' if success else 'FAILED'}")
+                return True
 
-        logger.warning(f"Error completing job {job_id}: {response.status_code} - {response.text}")
-        return False
+            body_snippet = response.text[:200] if response.text else "(empty)"
+            logger.warning(
+                f"Error completing job {job_id} (attempt {attempt}/{MAX_FETCH_RETRIES}): "
+                f"HTTP {response.status_code}\n  Response: {body_snippet}"
+            )
 
-    except requests.RequestException as e:
-        logger.error(f"Error completing job {job_id}: {e}")
-        return False
+        except requests.RequestException as e:
+            logger.error(f"Request error completing job {job_id} (attempt {attempt}): {e}")
+
+        # Exponential backoff before retry
+        if attempt < MAX_FETCH_RETRIES:
+            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1)
+            logger.info(f"Retrying in {delay:.1f}s...")
+            time.sleep(delay)
+
+    logger.error(f"Failed to complete job {job_id} after {MAX_FETCH_RETRIES} attempts")
+    return False
 
 
 def validate_job_safety(job: Dict) -> tuple[bool, str]:
