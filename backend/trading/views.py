@@ -428,21 +428,18 @@ def _normalize_side(d: dict) -> str:
     return "BUY"  # Default
 
 
-def _find_demo_comment_for_close(account: TradingAccount, symbol: str, magic: int) -> str:
+def _find_demo_comment_for_close(account: TradingAccount, symbol: str) -> str:
     """
     For SELL deals with empty comment, try to find a matching BUY deal's comment.
-    This handles the case where MT5 close deals don't carry the original comment.
+    This handles the case where MT5 close deals don't carry the original comment
+    AND often have magic_number=0 even when the BUY had magic_number=1.
 
     Looks for recent BUY trades (last 10 minutes) on same account+symbol with
-    magic_number=1 (demo) and comment starting with GUVFX_DEMO_JOB:.
+    comment starting with GUVFX_DEMO_JOB:.
 
     Returns the comment string or empty string if not found.
     """
     from datetime import timedelta
-
-    # Only apply for demo magic number
-    if magic != 1:
-        return ""
 
     cutoff = timezone.now() - timedelta(minutes=10)
     recent_buy = (
@@ -450,7 +447,6 @@ def _find_demo_comment_for_close(account: TradingAccount, symbol: str, magic: in
             account=account,
             symbol=symbol,
             side="BUY",
-            magic_number=1,
             open_time__gte=cutoff,
             comment__startswith="GUVFX_DEMO_JOB:",
         )
@@ -537,9 +533,11 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
             comment = str(d.get("comment") or "").strip()
 
             # Demo attribution: For SELL deals with empty comment, try to copy
-            # from recent matching BUY deal so close legs show correct strategy
-            if not comment and side == "SELL" and magic == 1 and symbol:
-                comment = _find_demo_comment_for_close(account, symbol, magic)
+            # from recent matching BUY deal so close legs show correct strategy.
+            # Note: SELL deals often have magic_number=0 even when BUY had magic=1,
+            # so we don't require magic match on the SELL side.
+            if not comment and side == "SELL" and symbol:
+                comment = _find_demo_comment_for_close(account, symbol)
 
             obj, created = Trade.objects.get_or_create(
                 account=account,
