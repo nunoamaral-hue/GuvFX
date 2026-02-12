@@ -27,6 +27,7 @@ from core.audit import (
     log_execution_job_created,
     log_execution_job_claimed,
     log_execution_job_completed,
+    log_trades_sync_queued,
 )
 
 class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
@@ -133,6 +134,9 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
     def complete(self, request, pk=None):
         """
         Called by MT5 worker: mark job SUCCESS or FAILED and store result/error.
+
+        For PLACE_TEST_ORDER jobs that complete successfully, automatically
+        creates a SYNC_POSITIONS job to ingest the trade into the database.
         """
         job = self.get_object()
         status_value = request.data.get("status")
@@ -161,8 +165,71 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
             error_message=error_message if status_value == ExecutionJob.Status.FAILED else None,
         )
 
+        # =================================================================
+        # Auto-sync: Queue SYNC_POSITIONS job after successful demo trade
+        # =================================================================
+        sync_job_id = None
+        if (
+            job.job_type == ExecutionJob.JobType.PLACE_TEST_ORDER
+            and status_value == ExecutionJob.Status.SUCCESS
+        ):
+            sync_job_id = self._queue_sync_positions_job(job)
+
         serializer = self.get_serializer(job)
-        return Response(serializer.data)
+        response_data = serializer.data
+        if sync_job_id:
+            response_data["sync_job_id"] = sync_job_id
+
+        return Response(response_data)
+
+    def _queue_sync_positions_job(self, trigger_job: ExecutionJob) -> int | None:
+        """
+        Create a SYNC_POSITIONS job to ingest trades after a demo trade completes.
+
+        Returns the new job ID, or None if creation failed (graceful degradation).
+        """
+        try:
+            # Get windows_username from the trigger job payload or account's mt5_instance
+            windows_username = (trigger_job.payload or {}).get("windows_username")
+
+            if not windows_username:
+                # Try to get from account's mt5_instance
+                account = trigger_job.account
+                if account and account.mt5_instance:
+                    windows_username = getattr(account.mt5_instance, "windows_username", None)
+
+            if not windows_username:
+                # Cannot sync without windows_username - fail gracefully
+                return None
+
+            # Create SYNC_POSITIONS job
+            sync_job = ExecutionJob.objects.create(
+                job_type=ExecutionJob.JobType.SYNC_POSITIONS,
+                account=trigger_job.account,
+                strategy=trigger_job.strategy,
+                assignment=trigger_job.assignment,
+                status=ExecutionJob.Status.PENDING,
+                created_by=trigger_job.created_by,
+                payload={
+                    "windows_username": windows_username,
+                    "trigger_job_id": trigger_job.id,
+                    "auto_sync": True,
+                },
+            )
+
+            # Audit log
+            log_trades_sync_queued(
+                request=None,
+                account_id=trigger_job.account_id,
+                trigger_job_id=trigger_job.id,
+                sync_job_id=sync_job.id,
+            )
+
+            return sync_job.id
+
+        except Exception:
+            # Fail gracefully - don't block completion response
+            return None
 
 
 class CreateOpenTradeJobView(APIView):
@@ -473,6 +540,13 @@ class CreateDemoTradeJobView(APIView):
         symbol = "EURUSD"  # Hard-coded for safety
 
         # =====================================================================
+        # Get windows_username for auto-sync after trade completion
+        # =====================================================================
+        windows_username = None
+        if account.mt5_instance:
+            windows_username = getattr(account.mt5_instance, "windows_username", None) or None
+
+        # =====================================================================
         # Create the execution job with safety-enforced parameters
         # =====================================================================
         job = ExecutionJob.objects.create(
@@ -489,6 +563,7 @@ class CreateDemoTradeJobView(APIView):
                 "comment": f"GUVFX_DEMO_JOB:{0}",  # Placeholder, will update below
                 "magic": strategy.id,  # Use strategy ID as magic number
                 "is_demo": True,
+                "windows_username": windows_username,  # For auto-sync after completion
                 "safety_rails": {
                     "max_daily": DEMO_MAX_TRADES_PER_DAY,
                     "fixed_lots": DEMO_FIXED_LOT_SIZE,

@@ -416,3 +416,24 @@ def log_trades_ingested(
             "deals_count": deals_count,
         },
     )
+
+
+def log_trades_sync_queued(
+    request: HttpRequest | None,
+    account_id: int,
+    trigger_job_id: int,
+    sync_job_id: int,
+) -> None:
+    """Log automatic trade sync job queued after demo trade completion."""
+    log_event(
+        request,
+        event_type="TRADES_SYNC_QUEUED",
+        severity="INFO",
+        entity_type="execution_job",
+        entity_id=str(sync_job_id),
+        metadata={
+            "account_id": account_id,
+            "trigger_job_id": trigger_job_id,
+            "sync_job_id": sync_job_id,
+        },
+    )

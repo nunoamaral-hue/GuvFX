@@ -71,6 +71,7 @@ class AuditEvent(models.Model):
 
         # Trade ingestion
         TRADES_INGESTED = "TRADES_INGESTED", "Trades Ingested"
+        TRADES_SYNC_QUEUED = "TRADES_SYNC_QUEUED", "Trades Sync Queued"
 
     id = models.UUIDField(
         primary_key=True,
