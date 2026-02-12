@@ -11,6 +11,7 @@ import { t } from "@/lib/i18n";
 import type { TradingAccount } from "@/types/strategies";
 
 const API_BASE = "https://api.guvfx.com";
+const ACCOUNT_STORAGE_KEY = "guvfx_trade_history_account";
 
 // =============================================================================
 // Types
@@ -25,16 +26,55 @@ type RoundTripRow = {
   open_price: string | null;
   close_price: string | null;
   net_pnl: string;
+  net_pnl_money?: number; // Numeric for currency formatting
   legs: [string, string]; // [buy_ticket, sell_ticket]
   buy_ticket: string;
   sell_ticket: string;
   comment: string;
   strategy_name: string;
+  // New UI-friendly fields
+  trade_closed?: string;
+  trade_numbers?: string;
+  direction?: string;
   // Breakdown for debugging
   buy_profit?: string;
   sell_profit?: string;
   total_commission?: string;
   total_swap?: string;
+};
+
+// Balance series point
+type BalancePoint = {
+  index: number;
+  close_time: string | null;
+  net_pnl: number;
+  cumulative_balance: number;
+};
+
+// Observed statistics from backend
+type ObservedStats = {
+  total_trades: number;
+  wins: number;
+  losses: number;
+  win_rate_pct: number;
+  longest_loss_streak: number;
+  max_drawdown_pct: number;
+  net_pnl_total: number;
+  opening_balance?: number;
+  closing_balance?: number;
+};
+
+// API response type for roundtrip mode
+type TradeHistoryResponse = {
+  account_id: number;
+  mode: string;
+  count: number;
+  trades: RoundTripRow[] | DealRow[];
+  mt5_balance?: number | null;
+  mt5_equity?: number | null;
+  currency?: string;
+  balance_series?: BalancePoint[];
+  observed_stats?: ObservedStats;
 };
 
 // Legacy deal row (individual BUY or SELL)
@@ -71,19 +111,37 @@ function isRoundTrip(row: TradeRow): row is RoundTripRow {
 /**
  * BalanceTrajectoryChart - Shows observed equity/balance trajectory over trades.
  * Compliance-safe: observational only, no performance claims.
+ * Now uses balance_series from backend when available.
  */
 function BalanceTrajectoryChart({
   trades,
+  balanceSeries,
   initialBalance = 10000,
   width = 500,
   height = 180,
 }: {
   trades: TradeRow[];
+  balanceSeries?: BalancePoint[];
   initialBalance?: number;
   width?: number;
   height?: number;
 }) {
   const balancePoints = useMemo(() => {
+    // Use backend balance_series if available
+    if (balanceSeries && balanceSeries.length > 0) {
+      // Add starting point (opening balance = first cumulative - first pnl)
+      const firstPoint = balanceSeries[0];
+      const openingBalance = firstPoint.cumulative_balance - firstPoint.net_pnl;
+      return [
+        { index: 0, balance: openingBalance },
+        ...balanceSeries.map((p, i) => ({
+          index: i + 1,
+          balance: p.cumulative_balance,
+        })),
+      ];
+    }
+
+    // Fallback: compute locally from trades
     if (trades.length === 0) return [];
     let balance = initialBalance;
     const points = [{ index: 0, balance }];
@@ -93,7 +151,7 @@ function BalanceTrajectoryChart({
       points.push({ index: i + 1, balance });
     }
     return points;
-  }, [trades, initialBalance]);
+  }, [trades, balanceSeries, initialBalance]);
 
   if (balancePoints.length < 2) {
     return null;
@@ -104,7 +162,7 @@ function BalanceTrajectoryChart({
   const maxVal = Math.max(...values);
   const range = maxVal - minVal || 1;
 
-  const padding = { top: 16, right: 12, bottom: 24, left: 50 };
+  const padding = { top: 16, right: 12, bottom: 24, left: 60 }; // Wider left padding for currency
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
@@ -119,6 +177,13 @@ function BalanceTrajectoryChart({
 
   const yLabels = [minVal, (minVal + maxVal) / 2, maxVal];
   const endColor = values[values.length - 1] >= values[0] ? "#22c55e" : "#ef4444";
+
+  // Format currency values
+  const formatValue = (val: number) => {
+    if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`;
+    if (val >= 1000) return `${(val / 1000).toFixed(1)}K`;
+    return val.toFixed(0);
+  };
 
   return (
     <svg
@@ -142,7 +207,7 @@ function BalanceTrajectoryChart({
               strokeWidth={1}
             />
             <text x={padding.left - 6} y={y + 3} textAnchor="end" fill="#64748b" fontSize="9">
-              {val.toFixed(0)}
+              {formatValue(val)}
             </text>
           </g>
         );
@@ -383,6 +448,12 @@ export default function TradeHistoryPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // MT5 account data from backend
+  const [mt5Balance, setMt5Balance] = useState<number | null>(null);
+  const [currency, setCurrency] = useState<string>("USD");
+  const [balanceSeries, setBalanceSeries] = useState<BalancePoint[]>([]);
+  const [observedStats, setObservedStats] = useState<ObservedStats | null>(null);
+
   // Auto-refresh state (for demo trade flow)
   const [autoRefreshCount, setAutoRefreshCount] = useState(0);
   const autoRefreshTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -393,6 +464,9 @@ export default function TradeHistoryPage() {
   const fetchTrades = useCallback(async (accountId: string) => {
     if (!accountId) {
       setTrades([]);
+      setMt5Balance(null);
+      setBalanceSeries([]);
+      setObservedStats(null);
       return;
     }
 
@@ -412,15 +486,27 @@ export default function TradeHistoryPage() {
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
-      const data = await res.json();
+      const data: TradeHistoryResponse = await res.json();
       const newTrades = Array.isArray(data?.trades) ? data.trades : [];
       setTrades(newTrades);
+
+      // Set MT5 balance and currency from backend
+      setMt5Balance(data.mt5_balance ?? null);
+      setCurrency(data.currency || "USD");
+
+      // Set balance series and observed stats from backend
+      setBalanceSeries(data.balance_series || []);
+      setObservedStats(data.observed_stats || null);
+
       return newTrades;
     } catch (err) {
       // Surface helpful error message with status code if available
       const msg = err instanceof Error ? err.message : "Failed to load trade history";
       setError(msg);
       setTrades([]);
+      setMt5Balance(null);
+      setBalanceSeries([]);
+      setObservedStats(null);
       return [];
     } finally {
       setLoading(false);
@@ -435,13 +521,32 @@ export default function TradeHistoryPage() {
         const data = await apiFetch<TradingAccount[]>("/api/trading/accounts/", {});
         setAccounts(data);
 
-        // Check for account param in URL (from demo trade redirect)
+        // Check for account param in URL (from demo trade redirect) - highest priority
         const urlAccountId = searchParams.get("account");
         if (urlAccountId) {
           setSelectedAccountId(urlAccountId);
-        } else if (data.length > 0 && !selectedAccountId) {
-          // Auto-select first account if available
-          setSelectedAccountId(String(data[0].id));
+          // Save to localStorage for next visit
+          try {
+            localStorage.setItem(ACCOUNT_STORAGE_KEY, urlAccountId);
+          } catch {
+            // Ignore storage errors
+          }
+        } else {
+          // Check localStorage for last used account
+          let savedAccountId: string | null = null;
+          try {
+            savedAccountId = localStorage.getItem(ACCOUNT_STORAGE_KEY);
+          } catch {
+            // Ignore storage errors
+          }
+
+          // Use saved account if it exists in the list, otherwise use first account
+          if (savedAccountId && data.some((acc) => String(acc.id) === savedAccountId)) {
+            setSelectedAccountId(savedAccountId);
+          } else if (data.length > 0 && !selectedAccountId) {
+            // Auto-select first account if available
+            setSelectedAccountId(String(data[0].id));
+          }
         }
       } catch (err) {
         console.error("Failed to fetch accounts:", err);
@@ -516,8 +621,22 @@ export default function TradeHistoryPage() {
     fetchTrades(selectedAccountId);
   }, [selectedAccountId, fetchTrades, searchParams]);
 
-  // Compute observed statistics (counts only, no monetary values emphasized)
+  // Use observed statistics from backend, with local fallback
   const stats = useMemo(() => {
+    // Use backend stats if available
+    if (observedStats) {
+      return {
+        totalTrades: observedStats.total_trades,
+        wins: observedStats.wins,
+        losses: observedStats.losses,
+        observedHitRate: observedStats.win_rate_pct,
+        longestLossStreak: observedStats.longest_loss_streak,
+        maxDrawdownObserved: observedStats.max_drawdown_pct,
+        netPnlTotal: observedStats.net_pnl_total,
+      };
+    }
+
+    // Fallback: compute locally from trades
     if (trades.length === 0) return null;
 
     let wins = 0;
@@ -527,9 +646,11 @@ export default function TradeHistoryPage() {
     let balance = 10000;
     let peak = balance;
     let maxDrawdownPct = 0;
+    let netPnlTotal = 0;
 
     for (const trade of trades) {
       const netPnl = parseFloat(trade.net_pnl) || 0;
+      netPnlTotal += netPnl;
       if (netPnl >= 0) {
         wins++;
         currentStreak = 0;
@@ -553,8 +674,9 @@ export default function TradeHistoryPage() {
       observedHitRate: hitRate,
       longestLossStreak: maxLossStreak,
       maxDrawdownObserved: maxDrawdownPct,
+      netPnlTotal,
     };
-  }, [trades]);
+  }, [trades, observedStats]);
 
   const hasData = trades.length > 0;
 
@@ -604,7 +726,16 @@ export default function TradeHistoryPage() {
             </label>
             <select
               value={selectedAccountId}
-              onChange={(e) => setSelectedAccountId(e.target.value)}
+              onChange={(e) => {
+                const newAccountId = e.target.value;
+                setSelectedAccountId(newAccountId);
+                // Save to localStorage for persistence
+                try {
+                  localStorage.setItem(ACCOUNT_STORAGE_KEY, newAccountId);
+                } catch {
+                  // Ignore storage errors
+                }
+              }}
               disabled={loadingAccounts || accounts.length === 0}
               style={{
                 padding: "0.5rem 0.75rem",
@@ -724,7 +855,10 @@ export default function TradeHistoryPage() {
                   border: "1px solid rgba(148,163,184,0.15)",
                 }}
               >
-                <BalanceTrajectoryChart trades={trades} />
+                <BalanceTrajectoryChart
+                  trades={trades}
+                  balanceSeries={balanceSeries}
+                />
               </div>
             </div>
 
@@ -790,6 +924,35 @@ export default function TradeHistoryPage() {
               gap: "1rem",
             }}
           >
+            {/* MT5 Balance - show if available */}
+            {mt5Balance !== null && (
+              <div>
+                <div style={{ fontSize: "0.78rem", color: "#9ca3af" }}>
+                  {t(lang, "tradeHistory.statMT5Balance")}
+                </div>
+                <div style={{ fontSize: "1.1rem", color: "#60a5fa", fontWeight: 500 }}>
+                  {mt5Balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
+                </div>
+              </div>
+            )}
+            {/* Net P&L (observed) */}
+            {stats.netPnlTotal !== undefined && (
+              <div>
+                <div style={{ fontSize: "0.78rem", color: "#9ca3af" }}>
+                  {t(lang, "tradeHistory.statNetPnL")}
+                </div>
+                <div
+                  style={{
+                    fontSize: "1.1rem",
+                    color: stats.netPnlTotal >= 0 ? "#22c55e" : "#ef4444",
+                    fontWeight: 500,
+                  }}
+                >
+                  {stats.netPnlTotal >= 0 ? "+" : ""}
+                  {stats.netPnlTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
+                </div>
+              </div>
+            )}
             <div>
               <div style={{ fontSize: "0.78rem", color: "#9ca3af" }}>
                 {t(lang, "tradeHistory.statTrades")}
@@ -837,10 +1000,10 @@ export default function TradeHistoryPage() {
               <thead>
                 <tr>
                   {[
-                    t(lang, "tradeHistory.colTime"),
-                    t(lang, "tradeHistory.colTickets"),
+                    t(lang, "tradeHistory.colTradeClosed"),
+                    t(lang, "tradeHistory.colTradeNumbers"),
                     t(lang, "tradeHistory.colSymbol"),
-                    t(lang, "tradeHistory.colType"),
+                    t(lang, "tradeHistory.colDirection"),
                     t(lang, "tradeHistory.colVolume"),
                     t(lang, "tradeHistory.colOutcome"),
                     t(lang, "tradeHistory.colStrategy"),
@@ -862,11 +1025,24 @@ export default function TradeHistoryPage() {
                 </tr>
               </thead>
               <tbody>
-                {trades.map((r, idx) => {
+                {trades.map((r) => {
                   const netPnl = parseFloat(r.net_pnl) || 0;
                   const isPositive = netPnl >= 0;
                   const rt = isRoundTrip(r);
                   const rowKey = rt ? `${r.buy_ticket}-${r.sell_ticket}` : (r as DealRow).ticket;
+
+                  // Format close time for display
+                  const tradeClosed = rt
+                    ? r.trade_closed || r.close_time || r.open_time
+                    : (r as DealRow).close_time || (r as DealRow).open_time;
+
+                  // Format trade numbers
+                  const tradeNumbers = rt
+                    ? r.trade_numbers || `${r.buy_ticket} → ${r.sell_ticket}`
+                    : (r as DealRow).ticket;
+
+                  // Direction: BUY for round-trips, or the actual side for deals
+                  const direction = rt ? (r.direction || "BUY") : (r as DealRow).side;
 
                   return (
                     <tr
@@ -875,9 +1051,11 @@ export default function TradeHistoryPage() {
                         borderBottom: "1px solid rgba(255,255,255,0.05)",
                       }}
                     >
+                      {/* Trade Closed */}
                       <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "#b7c5dd" }}>
-                        {r.close_time || r.open_time}
+                        {tradeClosed}
                       </td>
+                      {/* Trade Numbers */}
                       <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "#e5f4ff" }}>
                         {rt ? (
                           <span title={`BUY: ${r.buy_ticket}, SELL: ${r.sell_ticket}`}>
@@ -886,24 +1064,24 @@ export default function TradeHistoryPage() {
                             <span style={{ color: "#94a3b8" }}>{r.sell_ticket}</span>
                           </span>
                         ) : (
-                          (r as DealRow).ticket
+                          tradeNumbers
                         )}
                       </td>
+                      {/* Symbol */}
                       <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "#e5f4ff" }}>
                         {r.symbol}
                       </td>
+                      {/* Buy/Sell Direction */}
                       <td style={{ padding: "0.5rem 0.75rem" }}>
-                        {rt ? (
-                          <Badge color="green">Round-trip</Badge>
-                        ) : (
-                          <Badge color={(r as DealRow).side === "BUY" ? "blue" : "gray"}>
-                            {(r as DealRow).side}
-                          </Badge>
-                        )}
+                        <Badge color={direction === "BUY" ? "blue" : "gray"}>
+                          {direction}
+                        </Badge>
                       </td>
+                      {/* Volume */}
                       <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "#b7c5dd" }}>
                         {r.volume}
                       </td>
+                      {/* Outcome (P&L with currency) */}
                       <td style={{ padding: "0.5rem 0.75rem" }}>
                         <span
                           style={{
@@ -913,9 +1091,10 @@ export default function TradeHistoryPage() {
                           }}
                         >
                           {isPositive ? "+" : ""}
-                          {netPnl.toFixed(2)}
+                          {netPnl.toFixed(2)} {currency}
                         </span>
                       </td>
+                      {/* Strategy */}
                       <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "#9ca3af" }}>
                         {r.strategy_name || "—"}
                       </td>

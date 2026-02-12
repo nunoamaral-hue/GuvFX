@@ -6,14 +6,56 @@ from collections import defaultdict
 from decimal import Decimal
 from django.db.models import Q
 from django.http import Http404
+from django.utils import timezone
+import logging
+import os
 import re
+import urllib.parse
+import urllib.request
+import json
 
 from trading.models import TradingAccount, Trade
 from strategies.models import Strategy
 from execution.models import ExecutionJob
 
+logger = logging.getLogger(__name__)
+
 # Pattern to match demo job attribution: GUVFX_DEMO_JOB:<job_id>
 DEMO_JOB_PATTERN = re.compile(r"GUVFX_DEMO_JOB:(\d+)")
+
+
+def _get_windows_agent_config() -> tuple[str, str]:
+    """Get Windows Agent base URL and token from environment."""
+    base = (os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
+    token = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
+    return base, token
+
+
+def _fetch_mt5_account_balance(windows_username: str) -> Optional[dict]:
+    """
+    Fetch MT5 account info (balance, equity, currency) from Windows Agent.
+    Returns dict with: balance, equity, currency, margin, free_margin, etc.
+    Returns None on error.
+    """
+    base, token = _get_windows_agent_config()
+    if not base or not token:
+        logger.warning("Windows agent not configured, cannot fetch MT5 balance")
+        return None
+
+    try:
+        url = f"{base}/mt5/snapshots/account?username={urllib.parse.quote(windows_username)}"
+        req = urllib.request.Request(
+            url,
+            method="GET",
+            headers={"X-GuvFX-Agent-Token": token}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = r.read().decode("utf-8", "ignore")
+            data = json.loads(raw) if raw else {}
+            return data
+    except Exception as e:
+        logger.warning(f"Failed to fetch MT5 account balance: {e}")
+        return None
 
 # Pattern to extract strategy_id from guvfx comment
 STRATEGY_ID_PATTERN = re.compile(r"guvfx:(?:sid|strategy_id)=(\d+)")
@@ -205,25 +247,135 @@ def _build_round_trip_row(
     # Use BUY's comment if available, else SELL's
     comment = buy_trade.comment or sell_trade.comment or ""
 
+    # Format close time for display (Trade Closed column)
+    close_time = sell_trade.close_time or sell_trade.open_time
+    trade_closed = close_time.isoformat() if close_time else None
+
+    # Format trade numbers: "BUY_TICKET → SELL_TICKET"
+    trade_numbers = f"{buy_trade.ticket} → {sell_trade.ticket}"
+
+    # Direction: always "BUY→SELL" for a round-trip (long position closed)
+    direction = "BUY"
+
     return {
         "open_time": buy_trade.open_time,
-        "close_time": sell_trade.close_time or sell_trade.open_time,
+        "close_time": close_time,
         "symbol": buy_trade.symbol,
         "volume": str(buy_trade.volume),
         "open_price": str(buy_trade.open_price) if buy_trade.open_price is not None else None,
         "close_price": str(sell_trade.close_price or sell_trade.open_price) if (sell_trade.close_price or sell_trade.open_price) else None,
         "net_pnl": str(net_pnl),
+        "net_pnl_money": float(net_pnl),  # Numeric for formatting with currency
         "legs": [buy_trade.ticket, sell_trade.ticket],
         "buy_ticket": buy_trade.ticket,
         "sell_ticket": sell_trade.ticket,
         "comment": comment,
         "strategy_name": strategy_name,
+        # New UI-friendly fields
+        "trade_closed": trade_closed,
+        "trade_numbers": trade_numbers,
+        "direction": direction,
         # Include breakdown for debugging
         "buy_profit": str(buy_trade.profit or Decimal("0")),
         "sell_profit": str(sell_trade.profit or Decimal("0")),
         "total_commission": str((buy_trade.commission or Decimal("0")) + (sell_trade.commission or Decimal("0"))),
         "total_swap": str((buy_trade.swap or Decimal("0")) + (sell_trade.swap or Decimal("0"))),
     }
+
+
+def _compute_balance_series(
+    round_trips: List[Dict[str, Any]],
+    mt5_balance: Optional[float] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Compute cumulative balance series from round-trips (oldest to newest).
+    Also computes observed statistics.
+
+    Args:
+        round_trips: List of round-trip dicts (sorted by close_time DESC from _build_round_trips)
+        mt5_balance: Current MT5 balance (optional). If provided, we work backwards.
+
+    Returns:
+        (balance_series, observed_stats)
+        - balance_series: List of {index, close_time, net_pnl, cumulative_balance}
+        - observed_stats: Dict with win_rate, longest_loss_streak, max_drawdown_pct, net_pnl_total
+    """
+    if not round_trips:
+        return [], {
+            "total_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate_pct": 0.0,
+            "longest_loss_streak": 0,
+            "max_drawdown_pct": 0.0,
+            "net_pnl_total": 0.0,
+        }
+
+    # Round-trips come sorted by close_time DESC, reverse for chronological order
+    sorted_rt = list(reversed(round_trips))
+
+    # Calculate total PnL from all trades
+    total_pnl = sum(float(rt.get("net_pnl_money", 0) or 0) for rt in sorted_rt)
+
+    # If we have MT5 balance, calculate opening balance; otherwise assume 10000
+    if mt5_balance is not None:
+        opening_balance = mt5_balance - total_pnl
+    else:
+        opening_balance = 10000.0
+
+    # Build balance series and compute stats
+    balance_series = []
+    balance = opening_balance
+    peak = balance
+    max_drawdown_pct = 0.0
+    wins = 0
+    losses = 0
+    current_loss_streak = 0
+    longest_loss_streak = 0
+
+    for i, rt in enumerate(sorted_rt):
+        pnl = float(rt.get("net_pnl_money", 0) or 0)
+        balance += pnl
+
+        # Track wins/losses
+        if pnl >= 0:
+            wins += 1
+            current_loss_streak = 0
+        else:
+            losses += 1
+            current_loss_streak += 1
+            longest_loss_streak = max(longest_loss_streak, current_loss_streak)
+
+        # Track drawdown
+        if balance > peak:
+            peak = balance
+        if peak > 0:
+            dd = (peak - balance) / peak * 100
+            max_drawdown_pct = max(max_drawdown_pct, dd)
+
+        balance_series.append({
+            "index": i,
+            "close_time": rt.get("close_time"),
+            "net_pnl": pnl,
+            "cumulative_balance": round(balance, 2),
+        })
+
+    total_trades = len(sorted_rt)
+    win_rate_pct = (wins / total_trades * 100) if total_trades > 0 else 0.0
+
+    observed_stats = {
+        "total_trades": total_trades,
+        "wins": wins,
+        "losses": losses,
+        "win_rate_pct": round(win_rate_pct, 2),
+        "longest_loss_streak": longest_loss_streak,
+        "max_drawdown_pct": round(max_drawdown_pct, 2),
+        "net_pnl_total": round(total_pnl, 2),
+        "opening_balance": round(opening_balance, 2),
+        "closing_balance": round(balance, 2),
+    }
+
+    return balance_series, observed_stats
 
 
 class TradeHistoryView(APIView):
@@ -246,6 +398,13 @@ class TradeHistoryView(APIView):
     2. guvfx:sid=<id> or guvfx:strategy_id=<id> -> lookup Strategy by id/magic_number
     3. name=<strategy_name> -> use directly
     4. Otherwise -> "Unattributed"
+
+    Response includes:
+    - trades: List of round-trip or deal rows
+    - mt5_balance: Current MT5 balance (if available)
+    - currency: Account currency (e.g., "USD")
+    - balance_series: Cumulative balance trajectory
+    - observed_stats: Computed statistics (win_rate, drawdown, etc.)
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -348,11 +507,46 @@ class TradeHistoryView(APIView):
             if strategy:
                 round_trips = [rt for rt in round_trips if rt.get("strategy_name") == strategy]
 
+            # -------------------------------------------------------------------------
+            # Fetch MT5 balance from Windows Agent (if account has mt5_instance)
+            # -------------------------------------------------------------------------
+            mt5_balance = None
+            currency = "USD"  # Default currency
+            mt5_equity = None
+
+            try:
+                account_obj = TradingAccount.objects.select_related("mt5_instance").get(id=account_id)
+                if account_obj.mt5_instance and hasattr(account_obj.mt5_instance, "windows_username"):
+                    windows_username = getattr(account_obj.mt5_instance, "windows_username", "")
+                    if windows_username:
+                        account_info = _fetch_mt5_account_balance(windows_username)
+                        if account_info:
+                            mt5_balance = account_info.get("balance")
+                            mt5_equity = account_info.get("equity")
+                            currency = account_info.get("currency", "USD") or "USD"
+            except TradingAccount.DoesNotExist:
+                pass
+            except Exception as e:
+                logger.warning(f"Error fetching MT5 balance for account {account_id}: {e}")
+
+            # -------------------------------------------------------------------------
+            # Compute balance series and observed statistics
+            # -------------------------------------------------------------------------
+            balance_series, observed_stats = _compute_balance_series(
+                round_trips=round_trips,
+                mt5_balance=mt5_balance,
+            )
+
             return Response({
                 "account_id": int(account_id),
                 "mode": "roundtrip",
                 "count": len(round_trips),
                 "trades": round_trips,
+                "mt5_balance": mt5_balance,
+                "mt5_equity": mt5_equity,
+                "currency": currency,
+                "balance_series": balance_series,
+                "observed_stats": observed_stats,
             })
 
         # -------------------------------------------------------------------------

@@ -1957,6 +1957,10 @@ const dictionary: Dictionary = {
     en: "Ticket",
     ja: "チケット",
   },
+  "tradeHistory.colTickets": {
+    en: "Tickets",
+    ja: "チケット",
+  },
   "tradeHistory.colSymbol": {
     en: "Symbol",
     ja: "シンボル",
@@ -1964,6 +1968,10 @@ const dictionary: Dictionary = {
   "tradeHistory.colSide": {
     en: "Deal side",
     ja: "売買方向",
+  },
+  "tradeHistory.colType": {
+    en: "Type",
+    ja: "タイプ",
   },
   "tradeHistory.colVolume": {
     en: "Volume",
@@ -1976,6 +1984,26 @@ const dictionary: Dictionary = {
   "tradeHistory.colStrategy": {
     en: "Strategy",
     ja: "戦略",
+  },
+  "tradeHistory.colTradeClosed": {
+    en: "Trade Closed",
+    ja: "取引終了",
+  },
+  "tradeHistory.colTradeNumbers": {
+    en: "Trade Numbers",
+    ja: "取引番号",
+  },
+  "tradeHistory.colDirection": {
+    en: "Buy/Sell",
+    ja: "売買",
+  },
+  "tradeHistory.statNetPnL": {
+    en: "Net P&L (observed)",
+    ja: "純損益（観測値）",
+  },
+  "tradeHistory.statMT5Balance": {
+    en: "MT5 Balance",
+    ja: "MT5残高",
   },
 
   // ===========================================================================
