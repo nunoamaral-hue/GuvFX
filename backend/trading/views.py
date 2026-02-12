@@ -428,36 +428,70 @@ def _normalize_side(d: dict) -> str:
     return "BUY"  # Default
 
 
-def _find_demo_comment_for_close(account: TradingAccount, symbol: str) -> str:
+def _find_demo_comment_for_close(
+    account: TradingAccount,
+    symbol: str,
+    sell_time,
+    sell_volume=None,
+) -> str:
     """
-    For SELL deals with empty comment, try to find a matching BUY deal's comment.
+    For SELL deals with empty comment, find the nearest preceding BUY deal's comment.
+
     This handles the case where MT5 close deals don't carry the original comment
     AND often have magic_number=0 even when the BUY had magic_number=1.
 
-    Looks for recent BUY trades (last 10 minutes) on same account+symbol with
-    comment starting with GUVFX_DEMO_JOB:.
+    Matching criteria (in order of priority):
+    1. Same account, same symbol
+    2. BUY.open_time <= SELL.open_time (BUY must be BEFORE or AT the SELL time)
+    3. Within configurable window (5 minutes before SELL)
+    4. Prefers volume match if sell_volume is provided
+    5. Takes the CLOSEST BUY to the SELL time (most recent BUY before SELL)
+
+    Args:
+        account: The trading account
+        symbol: The trading symbol (e.g., "EURUSD")
+        sell_time: The SELL deal's timestamp (datetime)
+        sell_volume: Optional volume to prefer matching BUY with same volume
 
     Returns the comment string or empty string if not found.
     """
     from datetime import timedelta
 
-    cutoff = timezone.now() - timedelta(minutes=10)
-    recent_buy = (
+    if not sell_time:
+        # Can't match without knowing when the SELL happened
+        return ""
+
+    # Look for BUY trades within 5 minutes BEFORE the SELL time
+    window_minutes = 5
+    cutoff = sell_time - timedelta(minutes=window_minutes)
+
+    # Find BUY trades that:
+    # - Same account, same symbol
+    # - Have GUVFX_DEMO_JOB: comment
+    # - open_time is BETWEEN (sell_time - 5min) AND sell_time
+    candidates = list(
         Trade.objects.filter(
             account=account,
             symbol=symbol,
             side="BUY",
             open_time__gte=cutoff,
+            open_time__lte=sell_time,  # BUY must be BEFORE or AT SELL time
             comment__startswith="GUVFX_DEMO_JOB:",
         )
-        .order_by("-open_time")
-        .first()
+        .order_by("-open_time")  # Most recent first
     )
 
-    if recent_buy and recent_buy.comment:
-        return recent_buy.comment
+    if not candidates:
+        return ""
 
-    return ""
+    # If we have sell_volume, prefer exact volume match
+    if sell_volume is not None:
+        for buy in candidates:
+            if buy.volume == sell_volume:
+                return buy.comment
+
+    # Otherwise return the most recent BUY (closest to SELL time)
+    return candidates[0].comment
 
 
 def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int, list]:
@@ -533,11 +567,17 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
             comment = str(d.get("comment") or "").strip()
 
             # Demo attribution: For SELL deals with empty comment, try to copy
-            # from recent matching BUY deal so close legs show correct strategy.
+            # from the nearest preceding BUY deal so close legs show correct strategy.
             # Note: SELL deals often have magic_number=0 even when BUY had magic=1,
             # so we don't require magic match on the SELL side.
+            # We pass the SELL's timestamp and volume to ensure we match the correct BUY.
             if not comment and side == "SELL" and symbol:
-                comment = _find_demo_comment_for_close(account, symbol)
+                comment = _find_demo_comment_for_close(
+                    account=account,
+                    symbol=symbol,
+                    sell_time=open_time,  # The SELL's timestamp
+                    sell_volume=vol,      # The SELL's volume for better matching
+                )
 
             obj, created = Trade.objects.get_or_create(
                 account=account,

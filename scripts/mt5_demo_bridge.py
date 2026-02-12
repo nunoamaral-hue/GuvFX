@@ -389,17 +389,30 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
     Returns (success, result_dict, error_message).
 
     If GUVFX_DEMO_AUTOCLOSE_SECONDS > 0, will also close the position after waiting.
+
+    ATTRIBUTION: Uses job.payload.comment exactly if provided, otherwise falls back
+    to f"GUVFX_DEMO_JOB:{job_id}". The SAME comment is used for both BUY and SELL
+    to enable backend attribution.
     """
     try:
         import MetaTrader5 as mt5
     except ImportError:
         return False, {}, "MetaTrader5 package not installed. Run: pip install MetaTrader5"
 
+    job_id = job.get("id")
     payload = job.get("payload", {})
     symbol = payload.get("symbol", "EURUSD")
     lots = FIXED_LOT_SIZE  # Always use fixed lot size
-    comment = payload.get("comment", f"GUVFX_DEMO_JOB:{job.get('id')}")
     magic = payload.get("magic", 0)
+
+    # CRITICAL: Use job comment EXACTLY if provided, otherwise generate from job_id
+    # This ensures attribution works correctly
+    job_comment = payload.get("comment", "").strip()
+    if not job_comment:
+        job_comment = f"GUVFX_DEMO_JOB:{job_id}"
+
+    # Log the exact comment we're using for debugging attribution issues
+    logger.info(f"Job {job_id}: Using job_comment='{job_comment}' for order_send")
 
     # Initialize MT5
     init_kwargs = {}
@@ -427,7 +440,8 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
 
         price = tick.ask  # BUY at ask price
 
-        # Prepare order request
+        # Prepare order request with exact job comment (truncated to 31 chars for MT5)
+        order_comment = job_comment[:31]
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
@@ -436,12 +450,12 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
             "price": price,
             "deviation": 20,  # 2 pips slippage allowed
             "magic": magic,
-            "comment": comment[:31],  # MT5 comment limit is 31 chars
+            "comment": order_comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
 
-        logger.info(f"Sending order: {symbol} BUY {lots} @ {price}")
+        logger.info(f"Sending order: {symbol} BUY {lots} @ {price} comment='{order_comment}'")
 
         # Send order
         result = mt5.order_send(request)
@@ -461,17 +475,17 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
             "symbol": symbol,
             "order_type": "BUY",
             "placed_at": datetime.utcnow().isoformat() + "Z",
-            "comment": comment,
+            "comment": job_comment,  # Full comment (not truncated) for result
             "retcode": result.retcode,
         }
 
-        logger.info(f"Order executed: ticket={result.order}, price={result.price}")
+        logger.info(f"Order executed: ticket={result.order}, price={result.price}, comment='{order_comment}'")
 
         # =====================================================================
         # DEMO AUTO-CLOSE: If enabled, wait then close the position
         # =====================================================================
         if DEMO_AUTOCLOSE_SECONDS > 0:
-            logger.info(f"Auto-close enabled: waiting {DEMO_AUTOCLOSE_SECONDS}s before closing position")
+            logger.info(f"Auto-close enabled: waiting {DEMO_AUTOCLOSE_SECONDS}s before closing position for job {job_id}")
 
             # Wait a moment for the position to be created
             time.sleep(1)
@@ -483,39 +497,49 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
             our_position = None
             if position_ticket_from_result and position_ticket_from_result > 0:
                 # Direct ticket from order result - most reliable
-                logger.info(f"Using position ticket from order result: {position_ticket_from_result}")
+                logger.info(f"Checking position ticket from order result: {position_ticket_from_result}")
                 positions = mt5.positions_get(ticket=position_ticket_from_result)
                 if positions and len(positions) > 0:
-                    our_position = positions[0]
+                    pos = positions[0]
+                    pos_comment = getattr(pos, "comment", "") or ""
+                    # Verify it's actually our position (comment should match)
+                    if pos_comment == order_comment:
+                        our_position = pos
+                        logger.info(f"Confirmed position {position_ticket_from_result} matches our comment")
+                    else:
+                        logger.warning(f"Position {position_ticket_from_result} comment='{pos_comment}' does not match expected='{order_comment}'")
                 else:
-                    logger.warning(f"Position {position_ticket_from_result} not found, falling back to search")
+                    logger.warning(f"Position {position_ticket_from_result} not found in open positions")
 
-            # Priority 2: Search with strict criteria
+            # Priority 2: Search with EXACT comment match (not just prefix)
             if our_position is None:
+                logger.info(f"Searching for position with exact comment='{order_comment}'")
                 positions = mt5.positions_get(symbol=symbol)
                 if positions:
                     for pos in positions:
-                        # Must match magic AND symbol
-                        if pos.magic != magic:
-                            continue
+                        # Must match symbol
                         if pos.symbol != symbol:
                             continue
-                        # If position has a comment, it must start with GUVFX_DEMO_JOB:
+                        # EXACT comment match required to avoid closing wrong position
                         pos_comment = getattr(pos, "comment", "") or ""
-                        if pos_comment and not pos_comment.startswith("GUVFX_DEMO_JOB:"):
-                            continue
-                        # All criteria passed
-                        our_position = pos
-                        logger.info(f"Found position via search: ticket={pos.ticket}, comment={pos_comment}")
-                        break
+                        if pos_comment == order_comment:
+                            our_position = pos
+                            logger.info(f"Found position via exact comment match: ticket={pos.ticket}, comment='{pos_comment}'")
+                            break
+                        else:
+                            logger.debug(f"Skipping position {pos.ticket}: comment='{pos_comment}' != '{order_comment}'")
 
             if our_position is None:
-                logger.warning(f"Could not find position with magic={magic}, symbol={symbol}, comment=GUVFX_DEMO_JOB:* to auto-close")
+                # SAFETY: Do NOT close any position if we can't find exact match
+                error_msg = f"Could not find position with exact comment='{order_comment}' to auto-close. Refusing to close random position."
+                logger.error(error_msg)
+                result_dict["auto_close_failed"] = True
+                result_dict["auto_close_error"] = error_msg
             else:
                 position_ticket = our_position.ticket
                 position_volume = our_position.volume
 
-                logger.info(f"Found position ticket={position_ticket}, volume={position_volume}")
+                logger.info(f"Will close position ticket={position_ticket}, volume={position_volume}, comment='{order_comment}'")
 
                 # Wait the configured time
                 remaining_wait = max(0, DEMO_AUTOCLOSE_SECONDS - 1)  # Already waited 1s above
@@ -529,18 +553,18 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
                     position_ticket=position_ticket,
                     symbol=symbol,
                     volume=position_volume,
-                    comment=comment,  # Same comment ensures attribution
+                    comment=job_comment,  # Same comment ensures attribution
                     magic=magic,
                 )
 
                 if close_success:
                     result_dict["auto_closed"] = True
                     result_dict["close_result"] = close_result
-                    logger.info(f"Auto-close successful: {close_result}")
+                    logger.info(f"Auto-close successful for job {job_id}: {close_result}")
                 else:
                     result_dict["auto_close_failed"] = True
                     result_dict["auto_close_error"] = close_error
-                    logger.warning(f"Auto-close failed: {close_error}")
+                    logger.warning(f"Auto-close failed for job {job_id}: {close_error}")
 
         return True, result_dict, ""
 
