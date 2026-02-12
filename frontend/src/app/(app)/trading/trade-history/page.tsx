@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useLang } from "@/components/AppShell";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/Badge";
 import { apiFetch } from "@/lib/api";
 import { t } from "@/lib/i18n";
 import type { TradingAccount } from "@/types/strategies";
+
+const API_BASE = "https://api.guvfx.com";
 
 // =============================================================================
 // Types
@@ -337,6 +339,7 @@ function DrawdownUnderwaterChart({
 export default function TradeHistoryPage() {
   const lang = useLang();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   // Accounts for filter dropdown
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
@@ -350,15 +353,63 @@ export default function TradeHistoryPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Auto-refresh state (for demo trade flow)
+  const [autoRefreshCount, setAutoRefreshCount] = useState(0);
+  const autoRefreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const initialTradeCountRef = useRef<number | null>(null);
+
+  // Fetch trades with cache-busting
+  const fetchTrades = useCallback(async (accountId: string) => {
+    if (!accountId) {
+      setTrades([]);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      // Add cache-busting timestamp to prevent stale data
+      const cacheBuster = Date.now();
+      const res = await fetch(
+        `${API_BASE}/api/analytics/trade-history/?account=${accountId}&_t=${cacheBuster}`,
+        {
+          credentials: "include",
+          cache: "no-store",
+          headers: {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            Pragma: "no-cache",
+          },
+        }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const newTrades = Array.isArray(data?.trades) ? data.trades : [];
+      setTrades(newTrades);
+      return newTrades;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to load trade history";
+      setError(msg);
+      setTrades([]);
+      return [];
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // Fetch accounts
   useEffect(() => {
-    const fetchAccounts = async () => {
+    const loadAccounts = async () => {
       setLoadingAccounts(true);
       try {
         const data = await apiFetch<TradingAccount[]>("/api/trading/accounts/", {});
         setAccounts(data);
-        // Auto-select first account if available
-        if (data.length > 0 && !selectedAccountId) {
+
+        // Check for account param in URL (from demo trade redirect)
+        const urlAccountId = searchParams.get("account");
+        if (urlAccountId) {
+          setSelectedAccountId(urlAccountId);
+        } else if (data.length > 0 && !selectedAccountId) {
+          // Auto-select first account if available
           setSelectedAccountId(String(data[0].id));
         }
       } catch (err) {
@@ -368,38 +419,71 @@ export default function TradeHistoryPage() {
         setLoadingAccounts(false);
       }
     };
-    fetchAccounts();
+    loadAccounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Fetch trades when account changes
+  // Handle auto-refresh from URL param (for demo trade flow)
   useEffect(() => {
-    if (!selectedAccountId) {
-      setTrades([]);
-      return;
-    }
+    const autoRefresh = searchParams.get("autorefresh");
+    if (autoRefresh === "1" && selectedAccountId) {
+      // Start auto-refresh sequence: fetch at 0s, 3s, 6s, 9s
+      setAutoRefreshCount(0);
+      initialTradeCountRef.current = null;
 
-    const fetchTrades = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch(
-          `https://api.guvfx.com/api/analytics/trade-history/?account=${selectedAccountId}`,
-          { credentials: "include" }
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        setTrades(Array.isArray(data?.trades) ? data.trades : []);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Failed to load trade history";
-        setError(msg);
-        setTrades([]);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchTrades();
-  }, [selectedAccountId]);
+      const doAutoRefresh = async (attempt: number) => {
+        if (attempt >= 4) {
+          // Stop after 4 attempts
+          setAutoRefreshCount(0);
+          // Clear URL param
+          const url = new URL(window.location.href);
+          url.searchParams.delete("autorefresh");
+          window.history.replaceState({}, "", url.toString());
+          return;
+        }
+
+        setAutoRefreshCount(attempt + 1);
+        const newTrades = await fetchTrades(selectedAccountId);
+
+        // On first fetch, record initial count
+        if (attempt === 0) {
+          initialTradeCountRef.current = newTrades?.length ?? 0;
+        }
+
+        // Check if new trades appeared
+        const currentCount = newTrades?.length ?? 0;
+        const initialCount = initialTradeCountRef.current ?? 0;
+        if (currentCount > initialCount && attempt > 0) {
+          // New trades found, stop refreshing
+          setAutoRefreshCount(0);
+          const url = new URL(window.location.href);
+          url.searchParams.delete("autorefresh");
+          window.history.replaceState({}, "", url.toString());
+          return;
+        }
+
+        // Schedule next attempt
+        autoRefreshTimerRef.current = setTimeout(() => doAutoRefresh(attempt + 1), 3000);
+      };
+
+      doAutoRefresh(0);
+
+      return () => {
+        if (autoRefreshTimerRef.current) {
+          clearTimeout(autoRefreshTimerRef.current);
+        }
+      };
+    }
+  }, [searchParams, selectedAccountId, fetchTrades]);
+
+  // Fetch trades when account changes (normal flow)
+  useEffect(() => {
+    // Skip if auto-refresh is active (it handles fetching)
+    const autoRefresh = searchParams.get("autorefresh");
+    if (autoRefresh === "1") return;
+
+    fetchTrades(selectedAccountId);
+  }, [selectedAccountId, fetchTrades, searchParams]);
 
   // Compute observed statistics (counts only, no monetary values emphasized)
   const stats = useMemo(() => {
@@ -514,23 +598,15 @@ export default function TradeHistoryPage() {
 
           <Button
             variant="secondary"
-            onClick={() => {
-              if (selectedAccountId) {
-                setLoading(true);
-                fetch(
-                  `https://api.guvfx.com/api/analytics/trade-history/?account=${selectedAccountId}`,
-                  { credentials: "include" }
-                )
-                  .then((res) => res.json())
-                  .then((data) => setTrades(Array.isArray(data?.trades) ? data.trades : []))
-                  .catch(() => setTrades([]))
-                  .finally(() => setLoading(false));
-              }
-            }}
+            onClick={() => fetchTrades(selectedAccountId)}
             disabled={loading || !selectedAccountId}
             style={{ marginTop: "1.25rem" }}
           >
-            {loading ? t(lang, "tradeHistory.refreshing") : t(lang, "tradeHistory.refresh")}
+            {loading
+              ? autoRefreshCount > 0
+                ? `${t(lang, "tradeHistory.refreshing")} (${autoRefreshCount}/4)...`
+                : t(lang, "tradeHistory.refreshing")
+              : t(lang, "tradeHistory.refresh")}
           </Button>
 
           {error && (
