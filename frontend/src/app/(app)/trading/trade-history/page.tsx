@@ -43,12 +43,12 @@ type RoundTripRow = {
   total_swap?: string;
 };
 
-// Balance series point
+// Balance series point (from backend)
 type BalancePoint = {
   index: number;
-  close_time: string | null;
-  net_pnl: number;
-  cumulative_balance: number;
+  trade_closed: string | null;
+  net_pnl_money: number;
+  balance_after_trade: number;
 };
 
 // Observed statistics from backend
@@ -70,9 +70,13 @@ type TradeHistoryResponse = {
   mode: string;
   count: number;
   trades: RoundTripRow[] | DealRow[];
-  mt5_balance?: number | null;
-  mt5_equity?: number | null;
+  // MT5 account info
+  mt5_balance_current?: number | null;
+  mt5_equity_current?: number | null;
   currency?: string;
+  // Balance trajectory
+  opening_balance_used?: number;
+  opening_balance_source?: string;
   balance_series?: BalancePoint[];
   observed_stats?: ObservedStats;
 };
@@ -105,85 +109,106 @@ function isRoundTrip(row: TradeRow): row is RoundTripRow {
 }
 
 // =============================================================================
-// SVG Chart Components (inline, charts-first)
+// Chart Helpers
+// =============================================================================
+
+/** Format money values for Y-axis readability */
+function formatMoneyAxis(v: number) {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${(v / 1_000).toFixed(2)}K`;
+  return v.toFixed(2);
+}
+
+/** Clamp a number between min and max */
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
+}
+
+// =============================================================================
+// Chart Components
 // =============================================================================
 
 /**
  * BalanceTrajectoryChart - Shows observed equity/balance trajectory over trades.
+ * Interactive SVG with hover tooltips and MT5 reference line.
  * Compliance-safe: observational only, no performance claims.
- * Now uses balance_series from backend when available.
  */
 function BalanceTrajectoryChart({
-  trades,
   balanceSeries,
-  initialBalance = 10000,
+  mt5BalanceCurrent,
+  currency = "USD",
   width = 500,
-  height = 180,
+  height = 200,
 }: {
-  trades: TradeRow[];
-  balanceSeries?: BalancePoint[];
-  initialBalance?: number;
+  balanceSeries: BalancePoint[];
+  mt5BalanceCurrent?: number | null;
+  currency?: string;
   width?: number;
   height?: number;
 }) {
-  const balancePoints = useMemo(() => {
-    // Use backend balance_series if available
-    if (balanceSeries && balanceSeries.length > 0) {
-      // Add starting point (opening balance = first cumulative - first pnl)
-      const firstPoint = balanceSeries[0];
-      const openingBalance = firstPoint.cumulative_balance - firstPoint.net_pnl;
-      return [
-        { index: 0, balance: openingBalance },
-        ...balanceSeries.map((p, i) => ({
-          index: i + 1,
-          balance: p.cumulative_balance,
-        })),
-      ];
-    }
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
-    // Fallback: compute locally from trades
-    if (trades.length === 0) return [];
-    let balance = initialBalance;
-    const points = [{ index: 0, balance }];
-    for (let i = 0; i < trades.length; i++) {
-      const netPnl = parseFloat(trades[i].net_pnl) || 0;
-      balance += netPnl;
-      points.push({ index: i + 1, balance });
-    }
-    return points;
-  }, [trades, balanceSeries, initialBalance]);
-
-  if (balancePoints.length < 2) {
-    return null;
+  if (!balanceSeries || balanceSeries.length === 0) {
+    return (
+      <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "#64748b" }}>
+        No balance data available
+      </div>
+    );
   }
 
-  const values = balancePoints.map((p) => p.balance);
-  const minVal = Math.min(...values);
-  const maxVal = Math.max(...values);
-  const range = maxVal - minVal || 1;
+  // Extract balance values
+  const values = balanceSeries.map((p) => p.balance_after_trade);
 
-  const padding = { top: 16, right: 12, bottom: 24, left: 60 }; // Wider left padding for currency
+  // Include MT5 balance in range if available for proper scaling
+  const allValues = mt5BalanceCurrent !== null && mt5BalanceCurrent !== undefined
+    ? [...values, mt5BalanceCurrent]
+    : values;
+  const rangeMin = Math.min(...allValues);
+  const rangeMax = Math.max(...allValues);
+
+  // Add padding to Y-axis for readability (15% padding on each side, min 0.5)
+  const range = Math.max(0.01, rangeMax - rangeMin);
+  const pad = Math.max(0.5, range * 0.15);
+  const yMin = rangeMin - pad;
+  const yMax = rangeMax + pad;
+  const yRange = yMax - yMin;
+
+  const padding = { top: 20, right: 70, bottom: 30, left: 70 };
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
-  const points = balancePoints.map((p, i) => {
-    const x = padding.left + (i / (balancePoints.length - 1)) * chartWidth;
-    const y = padding.top + chartHeight - ((p.balance - minVal) / range) * chartHeight;
-    return { x, y };
-  });
+  // Map data points to SVG coordinates
+  const points = balanceSeries.map((p, i) => ({
+    x: padding.left + (i / Math.max(1, balanceSeries.length - 1)) * chartWidth,
+    y: padding.top + chartHeight - ((p.balance_after_trade - yMin) / yRange) * chartHeight,
+    data: p,
+  }));
 
+  // Create line path
   const linePath = `M${points.map((p) => `${p.x},${p.y}`).join(" L")}`;
+
+  // Create area fill path
   const areaPath = `${linePath} L${points[points.length - 1].x},${padding.top + chartHeight} L${points[0].x},${padding.top + chartHeight} Z`;
 
-  const yLabels = [minVal, (minVal + maxVal) / 2, maxVal];
-  const endColor = values[values.length - 1] >= values[0] ? "#22c55e" : "#ef4444";
+  // Generate Y-axis ticks (5 ticks for better readability)
+  const yTicks = Array.from({ length: 5 }, (_, i) => {
+    const value = yMin + (yRange * i) / 4;
+    const y = padding.top + chartHeight - (i / 4) * chartHeight;
+    return { value, y };
+  });
 
-  // Format currency values
-  const formatValue = (val: number) => {
-    if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`;
-    if (val >= 1000) return `${(val / 1000).toFixed(1)}K`;
-    return val.toFixed(0);
-  };
+  // MT5 reference line position
+  const mt5RefY = mt5BalanceCurrent !== null && mt5BalanceCurrent !== undefined
+    ? padding.top + chartHeight - ((mt5BalanceCurrent - yMin) / yRange) * chartHeight
+    : null;
+
+  // Line color based on trend
+  const endColor = values[values.length - 1] >= values[0] ? "#22c55e" : "#ef4444";
+  const lineColor = "#22d3ee";
+
+  // Hovered point data
+  const hoveredPoint = hoveredIndex !== null ? points[hoveredIndex] : null;
 
   return (
     <svg
@@ -194,45 +219,147 @@ function BalanceTrajectoryChart({
       style={{ display: "block", maxWidth: "100%" }}
     >
       {/* Grid lines */}
-      {yLabels.map((val, i) => {
-        const y = padding.top + chartHeight - ((val - minVal) / range) * chartHeight;
-        return (
-          <g key={i}>
-            <line
-              x1={padding.left}
-              y1={y}
-              x2={padding.left + chartWidth}
-              y2={y}
-              stroke="#1e293b"
-              strokeWidth={1}
-            />
-            <text x={padding.left - 6} y={y + 3} textAnchor="end" fill="#64748b" fontSize="9">
-              {formatValue(val)}
-            </text>
-          </g>
-        );
-      })}
+      {yTicks.map((tick, i) => (
+        <g key={i}>
+          <line
+            x1={padding.left}
+            y1={tick.y}
+            x2={padding.left + chartWidth}
+            y2={tick.y}
+            stroke="#1e293b"
+            strokeWidth={1}
+            strokeDasharray="3 3"
+          />
+          <text
+            x={padding.left - 8}
+            y={tick.y + 4}
+            textAnchor="end"
+            fill="#64748b"
+            fontSize="10"
+          >
+            {formatMoneyAxis(tick.value)}
+          </text>
+        </g>
+      ))}
+
+      {/* MT5 Balance reference line (dashed) */}
+      {mt5RefY !== null && (
+        <g>
+          <line
+            x1={padding.left}
+            y1={mt5RefY}
+            x2={padding.left + chartWidth}
+            y2={mt5RefY}
+            stroke="#38bdf8"
+            strokeWidth={1.5}
+            strokeDasharray="4 4"
+          />
+          <text
+            x={padding.left + chartWidth + 5}
+            y={mt5RefY + 4}
+            textAnchor="start"
+            fill="#38bdf8"
+            fontSize="9"
+          >
+            MT5 {formatMoneyAxis(mt5BalanceCurrent!)} {currency}
+          </text>
+        </g>
+      )}
 
       {/* Area fill */}
-      <path d={areaPath} fill="rgba(59, 130, 246, 0.1)" />
+      <path d={areaPath} fill="rgba(34, 211, 238, 0.1)" />
 
       {/* Line */}
-      <path d={linePath} fill="none" stroke="#3b82f6" strokeWidth={2} strokeLinejoin="round" />
+      <path
+        d={linePath}
+        fill="none"
+        stroke={lineColor}
+        strokeWidth={2}
+        strokeLinejoin="round"
+      />
 
-      {/* Start/end markers */}
-      <circle cx={points[0].x} cy={points[0].y} r={3} fill="#3b82f6" />
-      <circle cx={points[points.length - 1].x} cy={points[points.length - 1].y} r={4} fill={endColor} />
+      {/* Data points (circles) */}
+      {points.map((p, i) => (
+        <circle
+          key={i}
+          cx={p.x}
+          cy={p.y}
+          r={hoveredIndex === i ? 6 : 4}
+          fill={i === points.length - 1 ? endColor : lineColor}
+          stroke="#0f172a"
+          strokeWidth={1}
+          style={{ cursor: "pointer" }}
+          onMouseEnter={() => setHoveredIndex(i)}
+          onMouseLeave={() => setHoveredIndex(null)}
+        />
+      ))}
 
       {/* X-axis label */}
       <text
         x={padding.left + chartWidth / 2}
-        y={height - 4}
+        y={height - 6}
         textAnchor="middle"
         fill="#64748b"
-        fontSize="9"
+        fontSize="10"
       >
-        Trade sequence
+        Trade sequence (#{1} → #{balanceSeries.length})
       </text>
+
+      {/* Tooltip */}
+      {hoveredPoint && (() => {
+        // Calculate tooltip position with clamping to stay within bounds
+        const tooltipWidth = 160;
+        const tooltipHeight = 72;
+        const tooltipX = clamp(hoveredPoint.x + 10, 5, width - tooltipWidth - 5);
+        const tooltipY = clamp(hoveredPoint.y - tooltipHeight - 5, 5, height - tooltipHeight - 5);
+        // Format trade_closed for display (show date/time portion)
+        const tradeClosed = hoveredPoint.data.trade_closed
+          ? hoveredPoint.data.trade_closed.replace("T", " ").slice(0, 19)
+          : `Trade #${hoveredPoint.data.index + 1}`;
+        return (
+          <g>
+            {/* Tooltip background */}
+            <rect
+              x={tooltipX}
+              y={tooltipY}
+              width={tooltipWidth}
+              height={tooltipHeight}
+              rx={6}
+              fill="#0f172a"
+              stroke="#1e293b"
+              strokeWidth={1}
+            />
+            {/* Trade Closed */}
+            <text
+              x={tooltipX + 8}
+              y={tooltipY + 16}
+              fill="#94a3b8"
+              fontSize="9"
+            >
+              Closed: {tradeClosed}
+            </text>
+            {/* Balance */}
+            <text
+              x={tooltipX + 8}
+              y={tooltipY + 34}
+              fill="#e5f4ff"
+              fontSize="10"
+              fontWeight="500"
+            >
+              Balance: {hoveredPoint.data.balance_after_trade.toFixed(2)} {currency}
+            </text>
+            {/* PnL */}
+            <text
+              x={tooltipX + 8}
+              y={tooltipY + 52}
+              fill={hoveredPoint.data.net_pnl_money >= 0 ? "#22c55e" : "#ef4444"}
+              fontSize="10"
+            >
+              PnL: {hoveredPoint.data.net_pnl_money >= 0 ? "+" : ""}{hoveredPoint.data.net_pnl_money.toFixed(2)} {currency}
+            </text>
+          </g>
+        );
+      })()}
     </svg>
   );
 }
@@ -449,7 +576,7 @@ export default function TradeHistoryPage() {
   const [error, setError] = useState<string | null>(null);
 
   // MT5 account data from backend
-  const [mt5Balance, setMt5Balance] = useState<number | null>(null);
+  const [mt5BalanceCurrent, setMt5BalanceCurrent] = useState<number | null>(null);
   const [currency, setCurrency] = useState<string>("USD");
   const [balanceSeries, setBalanceSeries] = useState<BalancePoint[]>([]);
   const [observedStats, setObservedStats] = useState<ObservedStats | null>(null);
@@ -464,7 +591,7 @@ export default function TradeHistoryPage() {
   const fetchTrades = useCallback(async (accountId: string) => {
     if (!accountId) {
       setTrades([]);
-      setMt5Balance(null);
+      setMt5BalanceCurrent(null);
       setBalanceSeries([]);
       setObservedStats(null);
       return;
@@ -491,7 +618,7 @@ export default function TradeHistoryPage() {
       setTrades(newTrades);
 
       // Set MT5 balance and currency from backend
-      setMt5Balance(data.mt5_balance ?? null);
+      setMt5BalanceCurrent(data.mt5_balance_current ?? null);
       setCurrency(data.currency || "USD");
 
       // Set balance series and observed stats from backend
@@ -504,7 +631,7 @@ export default function TradeHistoryPage() {
       const msg = err instanceof Error ? err.message : "Failed to load trade history";
       setError(msg);
       setTrades([]);
-      setMt5Balance(null);
+      setMt5BalanceCurrent(null);
       setBalanceSeries([]);
       setObservedStats(null);
       return [];
@@ -856,8 +983,10 @@ export default function TradeHistoryPage() {
                 }}
               >
                 <BalanceTrajectoryChart
-                  trades={trades}
                   balanceSeries={balanceSeries}
+                  mt5BalanceCurrent={mt5BalanceCurrent}
+                  currency={currency}
+                  height={200}
                 />
               </div>
             </div>
@@ -925,13 +1054,13 @@ export default function TradeHistoryPage() {
             }}
           >
             {/* MT5 Balance - show if available */}
-            {mt5Balance !== null && (
+            {mt5BalanceCurrent !== null && (
               <div>
                 <div style={{ fontSize: "0.78rem", color: "#9ca3af" }}>
                   {t(lang, "tradeHistory.statMT5Balance")}
                 </div>
                 <div style={{ fontSize: "1.1rem", color: "#60a5fa", fontWeight: 500 }}>
-                  {mt5Balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
+                  {mt5BalanceCurrent.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
                 </div>
               </div>
             )}
