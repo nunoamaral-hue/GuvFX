@@ -428,6 +428,42 @@ def _normalize_side(d: dict) -> str:
     return "BUY"  # Default
 
 
+def _find_demo_comment_for_close(account: TradingAccount, symbol: str, magic: int) -> str:
+    """
+    For SELL deals with empty comment, try to find a matching BUY deal's comment.
+    This handles the case where MT5 close deals don't carry the original comment.
+
+    Looks for recent BUY trades (last 10 minutes) on same account+symbol with
+    magic_number=1 (demo) and comment starting with GUVFX_DEMO_JOB:.
+
+    Returns the comment string or empty string if not found.
+    """
+    from datetime import timedelta
+
+    # Only apply for demo magic number
+    if magic != 1:
+        return ""
+
+    cutoff = timezone.now() - timedelta(minutes=10)
+    recent_buy = (
+        Trade.objects.filter(
+            account=account,
+            symbol=symbol,
+            side="BUY",
+            magic_number=1,
+            open_time__gte=cutoff,
+            comment__startswith="GUVFX_DEMO_JOB:",
+        )
+        .order_by("-open_time")
+        .first()
+    )
+
+    if recent_buy and recent_buy.comment:
+        return recent_buy.comment
+
+    return ""
+
+
 def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int, list]:
     """
     Upsert deals into Trade model.
@@ -443,8 +479,12 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
     - ticket is always a string
     - open_time is NEVER None
     - close_time is NEVER None
-    - open_price is NEVER None (defaults to 0)
-    - close_price is NEVER None (defaults to 0)
+    - open_price is NEVER None (uses price field, defaults to 0)
+    - close_price is NEVER None (uses price field, defaults to 0)
+
+    Demo attribution:
+    - For SELL deals with empty comment and magic=1, copies comment from
+      recent matching BUY deal for attribution continuity.
     """
     inserted = 0
     updated = 0
@@ -474,6 +514,7 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
             close_time = unix_time or timezone.now()
 
             # Price handling: use "price" field for BOTH open_price and close_price
+            # This ensures we never have 0 prices when actual price data exists
             price_raw = d.get("price")
             if price_raw is not None:
                 price = Decimal(str(price_raw))
@@ -494,6 +535,11 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
                 magic = None
 
             comment = str(d.get("comment") or "").strip()
+
+            # Demo attribution: For SELL deals with empty comment, try to copy
+            # from recent matching BUY deal so close legs show correct strategy
+            if not comment and side == "SELL" and magic == 1 and symbol:
+                comment = _find_demo_comment_for_close(account, symbol, magic)
 
             obj, created = Trade.objects.get_or_create(
                 account=account,
@@ -520,6 +566,12 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
 
             # Update existing trade if values changed
             changed = False
+
+            # Fix open_price if it was stored as 0 but we now have a price
+            if obj.open_price == Decimal("0") and open_price != Decimal("0"):
+                obj.open_price = open_price
+                changed = True
+
             if obj.close_price != close_price:
                 obj.close_price = close_price
                 changed = True
@@ -534,6 +586,11 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
                 changed = True
             if obj.swap != swap:
                 obj.swap = swap
+                changed = True
+
+            # Also update comment if it was empty and we now have one (demo attribution fix)
+            if not obj.comment and comment:
+                obj.comment = comment
                 changed = True
 
             if changed:

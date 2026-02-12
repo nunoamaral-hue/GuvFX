@@ -87,6 +87,8 @@ class TradeHistoryView(APIView):
 
     Returns closed trades from DB (trading.Trade).
 
+    Accepts both "account" and "account_id" query params for backwards compatibility.
+
     Trade attribution is resolved from multiple sources:
     1. GUVFX_DEMO_JOB:<job_id> pattern -> lookup ExecutionJob.strategy
     2. guvfx:sid=<id> or guvfx:strategy_id=<id> -> lookup Strategy by id/magic_number
@@ -97,7 +99,8 @@ class TradeHistoryView(APIView):
 
     def get(self, request):
         user = request.user
-        account_id = request.query_params.get("account")
+        # Accept both "account" and "account_id" for backwards compatibility
+        account_id = request.query_params.get("account") or request.query_params.get("account_id")
         if not account_id:
             return Response({"detail": "account is required"}, status=400)
 
@@ -227,12 +230,15 @@ class StrategyMetricsView(APIView):
 
     Aggregates DB trade history by strategy_name (derived from comment).
     Supports both standard attribution (guvfx:sid) and demo job attribution (GUVFX_DEMO_JOB).
+
+    Accepts both "account" and "account_id" query params for backwards compatibility.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        account_id = request.query_params.get("account")
+        # Accept both "account" and "account_id" for backwards compatibility
+        account_id = request.query_params.get("account") or request.query_params.get("account_id")
         if not account_id:
             return Response({"detail": "account is required"}, status=400)
 
