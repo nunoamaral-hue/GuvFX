@@ -80,6 +80,10 @@ ACCOUNT_ID = os.getenv("MT5_ACCOUNT_ID", "")
 MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
 
+# Demo auto-close: if > 0, wait N seconds after opening then close the position
+# This ensures the demo produces a complete round-trip (open + close deals)
+DEMO_AUTOCLOSE_SECONDS = int(os.getenv("GUVFX_DEMO_AUTOCLOSE_SECONDS", "0"))
+
 
 def validate_config() -> bool:
     """Validate required configuration is present."""
@@ -203,10 +207,66 @@ def validate_job_safety(job: Dict) -> tuple[bool, str]:
     return True, ""
 
 
+def close_position_by_ticket(mt5, position_ticket: int, symbol: str, volume: float, comment: str, magic: int) -> tuple[bool, Dict, str]:
+    """
+    Close a position by its ticket.
+    Returns (success, result_dict, error_message).
+
+    SAFETY: Only closes positions matching our magic number and comment pattern.
+    """
+    # Get current price for closing (SELL to close a BUY)
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return False, {}, f"Failed to get tick for {symbol} during close"
+
+    close_price = tick.bid  # SELL at bid price to close BUY
+
+    # Prepare close request
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": volume,
+        "type": mt5.ORDER_TYPE_SELL,  # SELL to close BUY
+        "position": position_ticket,
+        "price": close_price,
+        "deviation": 20,
+        "magic": magic,
+        "comment": comment[:31],  # Use same comment for attribution
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    logger.info(f"Closing position {position_ticket}: {symbol} SELL {volume} @ {close_price}")
+
+    result = mt5.order_send(request)
+
+    if result is None:
+        error = mt5.last_error()
+        return False, {}, f"Close order returned None: {error}"
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        return False, {}, f"Close order failed: retcode={result.retcode}, comment={result.comment}"
+
+    result_dict = {
+        "close_ticket": result.order,
+        "close_price": result.price,
+        "volume": result.volume,
+        "symbol": symbol,
+        "order_type": "SELL",
+        "closed_at": datetime.utcnow().isoformat() + "Z",
+        "position_ticket": position_ticket,
+    }
+
+    logger.info(f"Position {position_ticket} closed: ticket={result.order}, price={result.price}")
+    return True, result_dict, ""
+
+
 def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
     """
     Execute the trade via MetaTrader5.
     Returns (success, result_dict, error_message).
+
+    If GUVFX_DEMO_AUTOCLOSE_SECONDS > 0, will also close the position after waiting.
     """
     try:
         import MetaTrader5 as mt5
@@ -284,6 +344,82 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
         }
 
         logger.info(f"Order executed: ticket={result.order}, price={result.price}")
+
+        # =====================================================================
+        # DEMO AUTO-CLOSE: If enabled, wait then close the position
+        # =====================================================================
+        if DEMO_AUTOCLOSE_SECONDS > 0:
+            logger.info(f"Auto-close enabled: waiting {DEMO_AUTOCLOSE_SECONDS}s before closing position")
+
+            # Wait a moment for the position to be created
+            time.sleep(1)
+
+            # SAFETY: Determine position ticket with strict matching
+            # Priority 1: Use result.position if available (direct from order_send)
+            position_ticket_from_result = getattr(result, "position", None) or getattr(result, "deal", None)
+
+            our_position = None
+            if position_ticket_from_result and position_ticket_from_result > 0:
+                # Direct ticket from order result - most reliable
+                logger.info(f"Using position ticket from order result: {position_ticket_from_result}")
+                positions = mt5.positions_get(ticket=position_ticket_from_result)
+                if positions and len(positions) > 0:
+                    our_position = positions[0]
+                else:
+                    logger.warning(f"Position {position_ticket_from_result} not found, falling back to search")
+
+            # Priority 2: Search with strict criteria
+            if our_position is None:
+                positions = mt5.positions_get(symbol=symbol)
+                if positions:
+                    for pos in positions:
+                        # Must match magic AND symbol
+                        if pos.magic != magic:
+                            continue
+                        if pos.symbol != symbol:
+                            continue
+                        # If position has a comment, it must start with GUVFX_DEMO_JOB:
+                        pos_comment = getattr(pos, "comment", "") or ""
+                        if pos_comment and not pos_comment.startswith("GUVFX_DEMO_JOB:"):
+                            continue
+                        # All criteria passed
+                        our_position = pos
+                        logger.info(f"Found position via search: ticket={pos.ticket}, comment={pos_comment}")
+                        break
+
+            if our_position is None:
+                logger.warning(f"Could not find position with magic={magic}, symbol={symbol}, comment=GUVFX_DEMO_JOB:* to auto-close")
+            else:
+                position_ticket = our_position.ticket
+                position_volume = our_position.volume
+
+                logger.info(f"Found position ticket={position_ticket}, volume={position_volume}")
+
+                # Wait the configured time
+                remaining_wait = max(0, DEMO_AUTOCLOSE_SECONDS - 1)  # Already waited 1s above
+                if remaining_wait > 0:
+                    logger.info(f"Waiting {remaining_wait}s before auto-close...")
+                    time.sleep(remaining_wait)
+
+                # Close the position with SAME comment for attribution
+                close_success, close_result, close_error = close_position_by_ticket(
+                    mt5=mt5,
+                    position_ticket=position_ticket,
+                    symbol=symbol,
+                    volume=position_volume,
+                    comment=comment,  # Same comment ensures attribution
+                    magic=magic,
+                )
+
+                if close_success:
+                    result_dict["auto_closed"] = True
+                    result_dict["close_result"] = close_result
+                    logger.info(f"Auto-close successful: {close_result}")
+                else:
+                    result_dict["auto_close_failed"] = True
+                    result_dict["auto_close_error"] = close_error
+                    logger.warning(f"Auto-close failed: {close_error}")
+
         return True, result_dict, ""
 
     finally:
@@ -319,6 +455,10 @@ def main_loop() -> None:
     logger.info(f"  - Fixed lot size: {FIXED_LOT_SIZE}")
     logger.info(f"  - Allowed sides: {ALLOWED_SIDES}")
     logger.info(f"  - Poll interval: {POLL_INTERVAL}s")
+    if DEMO_AUTOCLOSE_SECONDS > 0:
+        logger.info(f"  - Auto-close: {DEMO_AUTOCLOSE_SECONDS}s (position will close automatically)")
+    else:
+        logger.info(f"  - Auto-close: DISABLED (position stays open)")
     logger.info("=" * 60)
 
     while True:
