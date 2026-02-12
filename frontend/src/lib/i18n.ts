@@ -1962,8 +1962,8 @@ const dictionary: Dictionary = {
     ja: "シンボル",
   },
   "tradeHistory.colSide": {
-    en: "Side",
-    ja: "方向",
+    en: "Deal side",
+    ja: "売買方向",
   },
   "tradeHistory.colVolume": {
     en: "Volume",

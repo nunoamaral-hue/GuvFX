@@ -4,9 +4,30 @@ from rest_framework.views import APIView
 from typing import Optional
 from django.db.models import Q
 from django.http import Http404
+import re
 
 from trading.models import TradingAccount, Trade
 from strategies.models import Strategy
+from execution.models import ExecutionJob
+
+# Pattern to match demo job attribution: GUVFX_DEMO_JOB:<job_id>
+DEMO_JOB_PATTERN = re.compile(r"GUVFX_DEMO_JOB:(\d+)")
+
+
+def _extract_demo_job_id(comment: str) -> Optional[int]:
+    """
+    Extract ExecutionJob ID from comment like 'GUVFX_DEMO_JOB:123'.
+    Returns the job_id as int, or None if pattern not found.
+    """
+    if not comment:
+        return None
+    match = DEMO_JOB_PATTERN.search(comment)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    return None
 
 
 def _strategy_name_from_comment(comment: str) -> str:
@@ -15,6 +36,8 @@ def _strategy_name_from_comment(comment: str) -> str:
     Convention (recommended):
       guvfx:strategy_id=<id>;name=<strategy_name>
     If not present, return "Unattributed".
+
+    Note: GUVFX_DEMO_JOB:<job_id> is handled separately via _extract_demo_job_id().
     """
     if not comment:
         return "Unattributed"
@@ -63,6 +86,12 @@ class TradeHistoryView(APIView):
     GET /api/analytics/trade-history/?account=<id>&from=<iso>&to=<iso>&strategy=<name>&symbol=<sym>
 
     Returns closed trades from DB (trading.Trade).
+
+    Trade attribution is resolved from multiple sources:
+    1. GUVFX_DEMO_JOB:<job_id> pattern -> lookup ExecutionJob.strategy
+    2. guvfx:sid=<id> or guvfx:strategy_id=<id> -> lookup Strategy by id/magic_number
+    3. name=<strategy_name> -> use directly
+    4. Otherwise -> "Unattributed"
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -96,15 +125,42 @@ class TradeHistoryView(APIView):
 
         trades = list(qs.order_by("-close_time")[:2000])
 
+        # -------------------------------------------------------------------------
+        # Pass 1: Extract raw labels and collect IDs for bulk lookups
+        # -------------------------------------------------------------------------
         raw_labels: dict[str, str] = {}
         sids: set[int] = set()
-        for t in trades:
-            raw = _strategy_name_from_comment(t.comment or "")
-            raw_labels[t.ticket] = raw
-            sid = _sid_int(raw)
-            if sid is not None:
-                sids.add(sid)
+        demo_job_ids: set[int] = set()
 
+        for t in trades:
+            comment = t.comment or ""
+            # Check for demo job pattern first
+            job_id = _extract_demo_job_id(comment)
+            if job_id is not None:
+                demo_job_ids.add(job_id)
+                raw_labels[t.ticket] = f"job:{job_id}"
+            else:
+                raw = _strategy_name_from_comment(comment)
+                raw_labels[t.ticket] = raw
+                sid = _sid_int(raw)
+                if sid is not None:
+                    sids.add(sid)
+
+        # -------------------------------------------------------------------------
+        # Pass 2: Bulk fetch ExecutionJobs for demo trades
+        # -------------------------------------------------------------------------
+        job_to_strategy: dict[int, tuple[Optional[int], Optional[str]]] = {}
+        if demo_job_ids:
+            jobs_qs = ExecutionJob.objects.select_related("strategy").filter(id__in=demo_job_ids)
+            for job in jobs_qs:
+                if job.strategy_id:
+                    job_to_strategy[job.id] = (job.strategy_id, job.strategy.name if job.strategy else None)
+                else:
+                    job_to_strategy[job.id] = (None, None)
+
+        # -------------------------------------------------------------------------
+        # Pass 3: Bulk fetch Strategies by id/magic_number
+        # -------------------------------------------------------------------------
         sid_to_name: dict[int, str] = {}
         if sids:
             strat_qs = Strategy.objects.filter(Q(id__in=sids) | Q(magic_number__in=sids))
@@ -117,11 +173,29 @@ class TradeHistoryView(APIView):
                 if s.magic_number is not None:
                     sid_to_name[int(s.magic_number)] = s.name
 
+        # -------------------------------------------------------------------------
+        # Pass 4: Build response rows with resolved strategy names
+        # -------------------------------------------------------------------------
         rows = []
         for t in trades:
             raw = raw_labels.get(t.ticket, "Unattributed")
-            sid = _sid_int(raw)
-            strat = sid_to_name.get(sid, raw) if sid is not None else raw
+
+            # Resolve strategy name
+            if raw.startswith("job:"):
+                # Demo trade: lookup via ExecutionJob
+                try:
+                    job_id = int(raw[4:])
+                except ValueError:
+                    job_id = None
+                if job_id and job_id in job_to_strategy:
+                    strategy_id, strategy_name = job_to_strategy[job_id]
+                    strat = strategy_name if strategy_name else "Unattributed"
+                else:
+                    strat = "Unattributed"
+            else:
+                # Standard attribution: sid lookup or direct name
+                sid = _sid_int(raw)
+                strat = sid_to_name.get(sid, raw) if sid is not None else raw
 
             if strategy and strat != strategy:
                 continue
@@ -152,6 +226,7 @@ class StrategyMetricsView(APIView):
     GET /api/analytics/strategy-metrics/?account=<id>
 
     Aggregates DB trade history by strategy_name (derived from comment).
+    Supports both standard attribution (guvfx:sid) and demo job attribution (GUVFX_DEMO_JOB).
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -172,15 +247,41 @@ class StrategyMetricsView(APIView):
 
         trades_list = list(trades)
 
+        # -------------------------------------------------------------------------
+        # Pass 1: Extract raw labels and collect IDs for bulk lookups
+        # -------------------------------------------------------------------------
         raw_labels: dict[str, str] = {}
         sids: set[int] = set()
-        for t in trades_list:
-            raw = _strategy_name_from_comment(t.comment or "")
-            raw_labels[t.ticket] = raw
-            sid = _sid_int(raw)
-            if sid is not None:
-                sids.add(sid)
+        demo_job_ids: set[int] = set()
 
+        for t in trades_list:
+            comment = t.comment or ""
+            job_id = _extract_demo_job_id(comment)
+            if job_id is not None:
+                demo_job_ids.add(job_id)
+                raw_labels[t.ticket] = f"job:{job_id}"
+            else:
+                raw = _strategy_name_from_comment(comment)
+                raw_labels[t.ticket] = raw
+                sid = _sid_int(raw)
+                if sid is not None:
+                    sids.add(sid)
+
+        # -------------------------------------------------------------------------
+        # Pass 2: Bulk fetch ExecutionJobs for demo trades
+        # -------------------------------------------------------------------------
+        job_to_strategy: dict[int, tuple[Optional[int], Optional[str]]] = {}
+        if demo_job_ids:
+            jobs_qs = ExecutionJob.objects.select_related("strategy").filter(id__in=demo_job_ids)
+            for job in jobs_qs:
+                if job.strategy_id:
+                    job_to_strategy[job.id] = (job.strategy_id, job.strategy.name if job.strategy else None)
+                else:
+                    job_to_strategy[job.id] = (None, None)
+
+        # -------------------------------------------------------------------------
+        # Pass 3: Bulk fetch Strategies by id/magic_number
+        # -------------------------------------------------------------------------
         sid_to_name: dict[int, str] = {}
         if sids:
             strat_qs = Strategy.objects.filter(Q(id__in=sids) | Q(magic_number__in=sids))
@@ -193,11 +294,27 @@ class StrategyMetricsView(APIView):
                 if s.magic_number is not None:
                     sid_to_name[int(s.magic_number)] = s.name
 
+        # -------------------------------------------------------------------------
+        # Pass 4: Aggregate by resolved strategy name
+        # -------------------------------------------------------------------------
         bucket = {}
         for t in trades_list:
             raw = raw_labels.get(t.ticket, "Unattributed")
-            sid = _sid_int(raw)
-            name = sid_to_name.get(sid, raw) if sid is not None else raw
+
+            # Resolve strategy name
+            if raw.startswith("job:"):
+                try:
+                    job_id = int(raw[4:])
+                except ValueError:
+                    job_id = None
+                if job_id and job_id in job_to_strategy:
+                    _, strategy_name = job_to_strategy[job_id]
+                    name = strategy_name if strategy_name else "Unattributed"
+                else:
+                    name = "Unattributed"
+            else:
+                sid = _sid_int(raw)
+                name = sid_to_name.get(sid, raw) if sid is not None else raw
 
             net = (t.profit or 0) + (t.commission or 0) + (t.swap or 0)
             b = bucket.setdefault(name, {"strategy_name": name, "trades": 0, "net_pnl": 0, "wins": 0, "losses": 0})
