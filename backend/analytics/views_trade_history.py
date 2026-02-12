@@ -34,8 +34,13 @@ def _get_windows_agent_config() -> tuple[str, str]:
 def _fetch_mt5_account_balance(windows_username: str) -> Optional[dict]:
     """
     Fetch MT5 account info (balance, equity, currency) from Windows Agent.
-    Returns dict with: balance, equity, currency, margin, free_margin, etc.
-    Returns None on error.
+
+    Handles response shapes:
+      - {"ok": true, "data": {"balance": ..., "equity": ..., "currency": ...}}
+      - {"ok": true, "data": {"account": {"balance": ..., ...}}}
+      - {"balance": ..., "equity": ..., "currency": ...}  (direct)
+
+    Returns dict with: balance, equity, currency (or None on error).
     """
     base, token = _get_windows_agent_config()
     if not base or not token:
@@ -52,7 +57,23 @@ def _fetch_mt5_account_balance(windows_username: str) -> Optional[dict]:
         with urllib.request.urlopen(req, timeout=10) as r:
             raw = r.read().decode("utf-8", "ignore")
             data = json.loads(raw) if raw else {}
-            return data
+
+            # Handle nested response shapes
+            # Shape 1: {"ok": true, "data": {"account": {...}}}
+            if isinstance(data.get("data"), dict):
+                inner = data["data"]
+                if isinstance(inner.get("account"), dict):
+                    return inner["account"]
+                # Shape 2: {"ok": true, "data": {"balance": ...}}
+                if "balance" in inner:
+                    return inner
+
+            # Shape 3: direct {"balance": ..., "equity": ...}
+            if "balance" in data:
+                return data
+
+            logger.warning(f"Unexpected MT5 account response shape: {list(data.keys())}")
+            return None
     except Exception as e:
         logger.warning(f"Failed to fetch MT5 account balance: {e}")
         return None
@@ -285,20 +306,22 @@ def _build_round_trip_row(
 
 def _compute_balance_series(
     round_trips: List[Dict[str, Any]],
-    mt5_balance: Optional[float] = None,
-) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    mt5_balance_current: Optional[float] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any], float, str]:
     """
-    Compute cumulative balance series from round-trips (oldest to newest).
+    Compute cumulative balance series from completed round-trips (sorted by close_time ASC).
     Also computes observed statistics.
 
     Args:
         round_trips: List of round-trip dicts (sorted by close_time DESC from _build_round_trips)
-        mt5_balance: Current MT5 balance (optional). If provided, we work backwards.
+        mt5_balance_current: Current MT5 balance (optional). Used to derive opening balance.
 
     Returns:
-        (balance_series, observed_stats)
-        - balance_series: List of {index, close_time, net_pnl, cumulative_balance}
+        (balance_series, observed_stats, opening_balance_used, opening_balance_source)
+        - balance_series: List of {index, trade_closed, net_pnl_money, balance_after_trade}
         - observed_stats: Dict with win_rate, longest_loss_streak, max_drawdown_pct, net_pnl_total
+        - opening_balance_used: The starting balance used for calculations
+        - opening_balance_source: "last_used" if derived from MT5, "fallback_10000" otherwise
     """
     if not round_trips:
         return [], {
@@ -309,23 +332,41 @@ def _compute_balance_series(
             "longest_loss_streak": 0,
             "max_drawdown_pct": 0.0,
             "net_pnl_total": 0.0,
-        }
+        }, 10000.0, "fallback_10000"
 
-    # Round-trips come sorted by close_time DESC, reverse for chronological order
-    sorted_rt = list(reversed(round_trips))
+    # Filter to only completed round-trips (must have close_time)
+    completed_rt = [rt for rt in round_trips if rt.get("close_time")]
 
-    # Calculate total PnL from all trades
+    if not completed_rt:
+        return [], {
+            "total_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate_pct": 0.0,
+            "longest_loss_streak": 0,
+            "max_drawdown_pct": 0.0,
+            "net_pnl_total": 0.0,
+        }, 10000.0, "fallback_10000"
+
+    # Round-trips come sorted by close_time DESC, reverse for chronological order (ASC)
+    sorted_rt = sorted(completed_rt, key=lambda r: r.get("close_time") or "")
+
+    # Calculate total PnL from all completed trades
     total_pnl = sum(float(rt.get("net_pnl_money", 0) or 0) for rt in sorted_rt)
 
-    # If we have MT5 balance, calculate opening balance; otherwise assume 10000
-    if mt5_balance is not None:
-        opening_balance = mt5_balance - total_pnl
+    # Determine opening balance:
+    # - If MT5 current balance available: opening = current - total_pnl ("last_used")
+    # - Otherwise: fallback to 10000 ("fallback_10000")
+    if mt5_balance_current is not None:
+        opening_balance_used = mt5_balance_current - total_pnl
+        opening_balance_source = "last_used"
     else:
-        opening_balance = 10000.0
+        opening_balance_used = 10000.0
+        opening_balance_source = "fallback_10000"
 
-    # Build balance series and compute stats
+    # Build balance series (balance AFTER each completed trade)
     balance_series = []
-    balance = opening_balance
+    balance = opening_balance_used
     peak = balance
     max_drawdown_pct = 0.0
     wins = 0
@@ -346,18 +387,22 @@ def _compute_balance_series(
             current_loss_streak += 1
             longest_loss_streak = max(longest_loss_streak, current_loss_streak)
 
-        # Track drawdown
+        # Track drawdown from peak
         if balance > peak:
             peak = balance
         if peak > 0:
             dd = (peak - balance) / peak * 100
             max_drawdown_pct = max(max_drawdown_pct, dd)
 
+        # Format trade_closed as ISO string
+        close_time = rt.get("close_time")
+        trade_closed = close_time.isoformat() if hasattr(close_time, "isoformat") else str(close_time) if close_time else None
+
         balance_series.append({
             "index": i,
-            "close_time": rt.get("close_time"),
-            "net_pnl": pnl,
-            "cumulative_balance": round(balance, 2),
+            "trade_closed": trade_closed,
+            "net_pnl_money": round(pnl, 2),
+            "balance_after_trade": round(balance, 2),
         })
 
     total_trades = len(sorted_rt)
@@ -371,11 +416,9 @@ def _compute_balance_series(
         "longest_loss_streak": longest_loss_streak,
         "max_drawdown_pct": round(max_drawdown_pct, 2),
         "net_pnl_total": round(total_pnl, 2),
-        "opening_balance": round(opening_balance, 2),
-        "closing_balance": round(balance, 2),
     }
 
-    return balance_series, observed_stats
+    return balance_series, observed_stats, round(opening_balance_used, 2), opening_balance_source
 
 
 class TradeHistoryView(APIView):
@@ -510,9 +553,9 @@ class TradeHistoryView(APIView):
             # -------------------------------------------------------------------------
             # Fetch MT5 balance from Windows Agent (if account has mt5_instance)
             # -------------------------------------------------------------------------
-            mt5_balance = None
+            mt5_balance_current = None
+            mt5_equity_current = None
             currency = "USD"  # Default currency
-            mt5_equity = None
 
             try:
                 account_obj = TradingAccount.objects.select_related("mt5_instance").get(id=account_id)
@@ -521,8 +564,8 @@ class TradeHistoryView(APIView):
                     if windows_username:
                         account_info = _fetch_mt5_account_balance(windows_username)
                         if account_info:
-                            mt5_balance = account_info.get("balance")
-                            mt5_equity = account_info.get("equity")
+                            mt5_balance_current = account_info.get("balance")
+                            mt5_equity_current = account_info.get("equity")
                             currency = account_info.get("currency", "USD") or "USD"
             except TradingAccount.DoesNotExist:
                 pass
@@ -532,9 +575,9 @@ class TradeHistoryView(APIView):
             # -------------------------------------------------------------------------
             # Compute balance series and observed statistics
             # -------------------------------------------------------------------------
-            balance_series, observed_stats = _compute_balance_series(
+            balance_series, observed_stats, opening_balance_used, opening_balance_source = _compute_balance_series(
                 round_trips=round_trips,
-                mt5_balance=mt5_balance,
+                mt5_balance_current=mt5_balance_current,
             )
 
             return Response({
@@ -542,9 +585,13 @@ class TradeHistoryView(APIView):
                 "mode": "roundtrip",
                 "count": len(round_trips),
                 "trades": round_trips,
-                "mt5_balance": mt5_balance,
-                "mt5_equity": mt5_equity,
+                # MT5 account info
+                "mt5_balance_current": mt5_balance_current,
+                "mt5_equity_current": mt5_equity_current,
                 "currency": currency,
+                # Balance trajectory
+                "opening_balance_used": opening_balance_used,
+                "opening_balance_source": opening_balance_source,
                 "balance_series": balance_series,
                 "observed_stats": observed_stats,
             })
