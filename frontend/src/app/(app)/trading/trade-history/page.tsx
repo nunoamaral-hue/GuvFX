@@ -16,7 +16,29 @@ const API_BASE = "https://api.guvfx.com";
 // Types
 // =============================================================================
 
-type TradeRow = {
+// Round-trip row (BUY+SELL paired)
+type RoundTripRow = {
+  open_time: string;
+  close_time: string | null;
+  symbol: string;
+  volume: string;
+  open_price: string | null;
+  close_price: string | null;
+  net_pnl: string;
+  legs: [string, string]; // [buy_ticket, sell_ticket]
+  buy_ticket: string;
+  sell_ticket: string;
+  comment: string;
+  strategy_name: string;
+  // Breakdown for debugging
+  buy_profit?: string;
+  sell_profit?: string;
+  total_commission?: string;
+  total_swap?: string;
+};
+
+// Legacy deal row (individual BUY or SELL)
+type DealRow = {
   ticket: string;
   symbol: string;
   side: string;
@@ -33,6 +55,14 @@ type TradeRow = {
   comment: string;
   strategy_name: string;
 };
+
+// Union type for either mode
+type TradeRow = RoundTripRow | DealRow;
+
+// Type guard to check if it's a round-trip
+function isRoundTrip(row: TradeRow): row is RoundTripRow {
+  return "legs" in row && Array.isArray((row as RoundTripRow).legs);
+}
 
 // =============================================================================
 // SVG Chart Components (inline, charts-first)
@@ -359,6 +389,7 @@ export default function TradeHistoryPage() {
   const initialTradeCountRef = useRef<number | null>(null);
 
   // Fetch trades with cache-busting (no custom headers to avoid CORS preflight)
+  // Uses mode=roundtrip by default to show completed round-trips (BUY+SELL paired)
   const fetchTrades = useCallback(async (accountId: string) => {
     if (!accountId) {
       setTrades([]);
@@ -369,9 +400,10 @@ export default function TradeHistoryPage() {
     setError(null);
     try {
       // Cache-busting via query param only (no custom headers to avoid preflight)
+      // Use mode=roundtrip to get paired BUY+SELL as single rows
       const cacheBuster = Date.now();
       const res = await fetch(
-        `${API_BASE}/api/analytics/trade-history/?account=${accountId}&_t=${cacheBuster}`,
+        `${API_BASE}/api/analytics/trade-history/?account=${accountId}&mode=roundtrip&_t=${cacheBuster}`,
         {
           credentials: "include",
           cache: "no-store",
@@ -794,7 +826,7 @@ export default function TradeHistoryPage() {
         </Card>
       )}
 
-      {/* Trades Table */}
+      {/* Trades Table (Round-trips) */}
       {hasData && (
         <Card
           title={t(lang, "tradeHistory.sectionTradesTitle")}
@@ -806,9 +838,9 @@ export default function TradeHistoryPage() {
                 <tr>
                   {[
                     t(lang, "tradeHistory.colTime"),
-                    t(lang, "tradeHistory.colTicket"),
+                    t(lang, "tradeHistory.colTickets"),
                     t(lang, "tradeHistory.colSymbol"),
-                    t(lang, "tradeHistory.colSide"),
+                    t(lang, "tradeHistory.colType"),
                     t(lang, "tradeHistory.colVolume"),
                     t(lang, "tradeHistory.colOutcome"),
                     t(lang, "tradeHistory.colStrategy"),
@@ -830,12 +862,15 @@ export default function TradeHistoryPage() {
                 </tr>
               </thead>
               <tbody>
-                {trades.map((r) => {
+                {trades.map((r, idx) => {
                   const netPnl = parseFloat(r.net_pnl) || 0;
                   const isPositive = netPnl >= 0;
+                  const rt = isRoundTrip(r);
+                  const rowKey = rt ? `${r.buy_ticket}-${r.sell_ticket}` : (r as DealRow).ticket;
+
                   return (
                     <tr
-                      key={r.ticket}
+                      key={rowKey}
                       style={{
                         borderBottom: "1px solid rgba(255,255,255,0.05)",
                       }}
@@ -844,15 +879,27 @@ export default function TradeHistoryPage() {
                         {r.close_time || r.open_time}
                       </td>
                       <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "#e5f4ff" }}>
-                        {r.ticket}
+                        {rt ? (
+                          <span title={`BUY: ${r.buy_ticket}, SELL: ${r.sell_ticket}`}>
+                            <span style={{ color: "#60a5fa" }}>{r.buy_ticket}</span>
+                            <span style={{ color: "#64748b", margin: "0 0.25rem" }}>→</span>
+                            <span style={{ color: "#94a3b8" }}>{r.sell_ticket}</span>
+                          </span>
+                        ) : (
+                          (r as DealRow).ticket
+                        )}
                       </td>
                       <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "#e5f4ff" }}>
                         {r.symbol}
                       </td>
                       <td style={{ padding: "0.5rem 0.75rem" }}>
-                        <Badge color={r.side === "BUY" ? "blue" : "gray"}>
-                          {r.side}
-                        </Badge>
+                        {rt ? (
+                          <Badge color="green">Round-trip</Badge>
+                        ) : (
+                          <Badge color={(r as DealRow).side === "BUY" ? "blue" : "gray"}>
+                            {(r as DealRow).side}
+                          </Badge>
+                        )}
                       </td>
                       <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "#b7c5dd" }}>
                         {r.volume}
