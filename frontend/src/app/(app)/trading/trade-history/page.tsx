@@ -358,7 +358,7 @@ export default function TradeHistoryPage() {
   const autoRefreshTimerRef = useRef<NodeJS.Timeout | null>(null);
   const initialTradeCountRef = useRef<number | null>(null);
 
-  // Fetch trades with cache-busting
+  // Fetch trades with cache-busting (no custom headers to avoid CORS preflight)
   const fetchTrades = useCallback(async (accountId: string) => {
     if (!accountId) {
       setTrades([]);
@@ -368,25 +368,24 @@ export default function TradeHistoryPage() {
     setLoading(true);
     setError(null);
     try {
-      // Add cache-busting timestamp to prevent stale data
+      // Cache-busting via query param only (no custom headers to avoid preflight)
       const cacheBuster = Date.now();
       const res = await fetch(
         `${API_BASE}/api/analytics/trade-history/?account=${accountId}&_t=${cacheBuster}`,
         {
           credentials: "include",
           cache: "no-store",
-          headers: {
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            Pragma: "no-cache",
-          },
         }
       );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      }
       const data = await res.json();
       const newTrades = Array.isArray(data?.trades) ? data.trades : [];
       setTrades(newTrades);
       return newTrades;
     } catch (err) {
+      // Surface helpful error message with status code if available
       const msg = err instanceof Error ? err.message : "Failed to load trade history";
       setError(msg);
       setTrades([]);
