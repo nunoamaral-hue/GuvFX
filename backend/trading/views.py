@@ -433,12 +433,18 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
     Upsert deals into Trade model.
     Returns (inserted_count, updated_count, skipped_count, skip_reasons).
 
-    Handles multiple input shapes from Windows agent:
-    - ISO datetime strings (open_time_utc, close_time_utc, etc.)
-    - Unix timestamps (time field as integer seconds)
-    - MT5 type codes (0=BUY, 1=SELL)
+    Handles MT5 deal snapshots from Windows agent:
+    - ticket: coerced to string
+    - time: Unix seconds -> used for BOTH open_time and close_time
+    - price: used for BOTH open_price and close_price
+    - type: 0=BUY, 1=SELL
 
-    Skips malformed rows gracefully to avoid 500 errors.
+    Guarantees:
+    - ticket is always a string
+    - open_time is NEVER None
+    - close_time is NEVER None
+    - open_price is NEVER None (defaults to 0)
+    - close_price is NEVER None (defaults to 0)
     """
     inserted = 0
     updated = 0
@@ -447,8 +453,9 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
 
     for d in deals:
         try:
-            # Extract ticket (required)
-            ticket = str(d.get("ticket") or d.get("position_ticket") or d.get("deal_id") or "").strip()
+            # Extract ticket (required) - always coerce to string
+            ticket_raw = d.get("ticket") or d.get("position_ticket") or d.get("deal_id") or ""
+            ticket = str(ticket_raw).strip()
             if not ticket:
                 skipped += 1
                 if len(skip_reasons) < 3:
@@ -459,41 +466,22 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
             side = _normalize_side(d)
             vol = _to_decimal(d.get("volume") or d.get("lots") or "0")
 
-            # Try multiple datetime field names
-            open_time = (
-                _to_datetime(d.get("open_time_utc"))
-                or _to_datetime(d.get("open_time"))
-                or _to_datetime(d.get("t_open_utc"))
-            )
-            close_time = (
-                _to_datetime(d.get("close_time_utc"))
-                or _to_datetime(d.get("close_time"))
-                or _to_datetime(d.get("t_close_utc"))
-                or _to_datetime(d.get("time_utc"))
-            )
-
-            # Fallback: "time" field (Unix seconds) - common in MT5 deal snapshots
+            # Timestamp handling: use "time" field (Unix seconds) as primary source
             unix_time = _to_datetime(d.get("time"))
 
-            # Ensure open_time is NEVER NULL (DB constraint)
-            # Priority: open_time > close_time > unix_time > now()
-            if not open_time:
-                open_time = close_time or unix_time or timezone.now()
+            # open_time and close_time: both set to unix_time, fallback to now()
+            open_time = unix_time or timezone.now()
+            close_time = unix_time or timezone.now()
 
-            # Use unix_time as close_time if we don't have one
-            if not close_time and unix_time:
-                close_time = unix_time
+            # Price handling: use "price" field for BOTH open_price and close_price
+            price_raw = d.get("price")
+            if price_raw is not None:
+                price = Decimal(str(price_raw))
+            else:
+                price = Decimal("0")
 
-            # Final check: open_time must exist
-            if not open_time:
-                skipped += 1
-                if len(skip_reasons) < 3:
-                    skip_reasons.append(f"missing_open_time:ticket={ticket}")
-                continue
-
-            open_price = _to_decimal(d.get("open_price") or d.get("price") or "0")
-            close_price_raw = d.get("close_price")
-            close_price = _to_decimal(close_price_raw, "0") if close_price_raw is not None else None
+            open_price = price
+            close_price = price
 
             profit = _to_decimal(d.get("profit") or d.get("pnl") or "0")
             commission = _to_decimal(d.get("commission") or "0")
@@ -532,10 +520,10 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
 
             # Update existing trade if values changed
             changed = False
-            if close_price is not None and obj.close_price != close_price:
+            if obj.close_price != close_price:
                 obj.close_price = close_price
                 changed = True
-            if close_time and obj.close_time != close_time:
+            if obj.close_time != close_time:
                 obj.close_time = close_time
                 changed = True
             if obj.profit != profit:
