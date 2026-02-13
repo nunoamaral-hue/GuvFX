@@ -20,8 +20,11 @@ from execution.models import ExecutionJob
 
 logger = logging.getLogger(__name__)
 
-# Pattern to match demo job attribution: GUVFX_DEMO_JOB:<job_id>
-DEMO_JOB_PATTERN = re.compile(r"GUVFX_DEMO_JOB:(\d+)")
+# Patterns to match demo job attribution:
+# - Legacy: GUVFX_DEMO_JOB:<job_id>
+# - New: GJ<4-digit-zero-padded-job_id> (e.g., "GJ0031" for job_id=31)
+DEMO_JOB_PATTERN_LEGACY = re.compile(r"GUVFX_DEMO_JOB:(\d+)")
+DEMO_JOB_PATTERN_NEW = re.compile(r"^GJ(\d{4})$")
 
 
 def _get_windows_agent_config() -> tuple[str, str]:
@@ -84,17 +87,33 @@ STRATEGY_ID_PATTERN = re.compile(r"guvfx:(?:sid|strategy_id)=(\d+)")
 
 def _extract_demo_job_id(comment: str) -> Optional[int]:
     """
-    Extract ExecutionJob ID from comment like 'GUVFX_DEMO_JOB:123'.
+    Extract ExecutionJob ID from comment.
+
+    Recognizes two patterns:
+    - Legacy: 'GUVFX_DEMO_JOB:123' -> job_id=123
+    - New: 'GJ0031' -> job_id=31 (4-digit zero-padded)
+
     Returns the job_id as int, or None if pattern not found.
     """
     if not comment:
         return None
-    match = DEMO_JOB_PATTERN.search(comment)
+
+    # Try new pattern first (exact match for "GJdddd")
+    match = DEMO_JOB_PATTERN_NEW.match(comment.strip())
     if match:
         try:
             return int(match.group(1))
         except ValueError:
-            return None
+            pass
+
+    # Try legacy pattern (can appear anywhere in comment)
+    match = DEMO_JOB_PATTERN_LEGACY.search(comment)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+
     return None
 
 
@@ -154,16 +173,16 @@ def _get_pairing_key(trade: Trade) -> str:
     Get the pairing key for a trade.
 
     Priority:
-    1. If comment contains GUVFX_DEMO_JOB:<id>, pair by exact comment (same job)
+    1. If comment matches demo job pattern (legacy or new), pair by job_id
     2. If comment contains guvfx:strategy_id=<id>, pair by strategy_id
     3. Fallback: pair by (symbol, volume)
     """
     comment = trade.comment or ""
 
-    # Priority 1: Demo job - pair by exact comment
-    demo_match = DEMO_JOB_PATTERN.search(comment)
-    if demo_match:
-        return f"demo:{demo_match.group(0)}"
+    # Priority 1: Demo job - pair by job_id (both legacy and new patterns)
+    job_id = _extract_demo_job_id(comment)
+    if job_id is not None:
+        return f"demo:job:{job_id}"
 
     # Priority 2: Strategy ID - pair by strategy
     strategy_match = STRATEGY_ID_PATTERN.search(comment)

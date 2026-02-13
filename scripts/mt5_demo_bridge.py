@@ -424,14 +424,13 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
     lots = FIXED_LOT_SIZE  # Always use fixed lot size
     magic = payload.get("magic", 0)
 
-    # CRITICAL: Use job comment EXACTLY if provided, otherwise generate from job_id
-    # This ensures attribution works correctly
-    job_comment = payload.get("comment", "").strip()
-    if not job_comment:
-        job_comment = f"GUVFX_DEMO_JOB:{job_id}"
+    # Generate a fixed-length correlation tag that survives MT5 truncation:
+    # Format: "GJ" + 4-digit zero-padded job_id (e.g., "GJ0031" for job_id=31)
+    # This is 6 chars, well under MT5's 31-char limit, and is MT5-safe.
+    correlation_tag = f"GJ{job_id:04d}"
 
-    # Log the exact comment we're using for debugging attribution issues
-    logger.info(f"Job {job_id}: Using job_comment='{job_comment}' for order_send")
+    # Log the exact correlation_tag for debugging attribution issues
+    logger.info(f"Job {job_id}: Using correlation_tag='{correlation_tag}' for order_send")
 
     # Initialize MT5
     init_kwargs = {}
@@ -459,8 +458,7 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
 
         price = tick.ask  # BUY at ask price
 
-        # Prepare order request with exact job comment (truncated to 31 chars for MT5)
-        order_comment = job_comment[:31]
+        # Prepare order request with correlation_tag as comment
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
@@ -469,12 +467,12 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
             "price": price,
             "deviation": 20,  # 2 pips slippage allowed
             "magic": magic,
-            "comment": order_comment,
+            "comment": correlation_tag,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
 
-        logger.info(f"Sending order: {symbol} BUY {lots} @ {price} comment='{order_comment}'")
+        logger.info(f"Sending order: {symbol} BUY {lots} @ {price} comment='{correlation_tag}'")
 
         # Send order
         result = mt5.order_send(request)
@@ -494,11 +492,11 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
             "symbol": symbol,
             "order_type": "BUY",
             "placed_at": datetime.utcnow().isoformat() + "Z",
-            "comment": job_comment,  # Full comment (not truncated) for result
+            "comment": correlation_tag,  # correlation_tag used for attribution
             "retcode": result.retcode,
         }
 
-        logger.info(f"Order executed: ticket={result.order}, price={result.price}, comment='{order_comment}'")
+        logger.info(f"Order executed: ticket={result.order}, price={result.price}, comment='{correlation_tag}'")
 
         # =====================================================================
         # DEMO AUTO-CLOSE: If enabled, wait then close the position by ticket
@@ -556,13 +554,13 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
                         logger.info(f"Auto-close: position {position_ticket} verified (symbol={pos_symbol}, magic={pos_magic}, volume={pos_volume})")
                         logger.info(f"Closing position {position_ticket}...")
 
-                        # Close the position with SAME comment for attribution
+                        # Close the position with SAME correlation_tag for attribution
                         close_success, close_result, close_error = close_position_by_ticket(
                             mt5=mt5,
                             position_ticket=position_ticket,
                             symbol=symbol,
                             volume=pos_volume,
-                            comment=job_comment,  # Same comment ensures attribution
+                            comment=correlation_tag,  # Same tag ensures attribution
                             magic=magic,
                         )
 

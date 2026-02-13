@@ -447,6 +447,10 @@ def _find_demo_comment_for_close(
     4. Prefers volume match if sell_volume is provided
     5. Takes the CLOSEST BUY to the SELL time (most recent BUY before SELL)
 
+    Recognizes both demo comment patterns:
+    - Legacy: "GUVFX_DEMO_JOB:<id>"
+    - New: "GJdddd" (e.g., "GJ0031")
+
     Args:
         account: The trading account
         symbol: The trading symbol (e.g., "EURUSD")
@@ -456,6 +460,8 @@ def _find_demo_comment_for_close(
     Returns the comment string or empty string if not found.
     """
     from datetime import timedelta
+    from django.db.models import Q
+    import re
 
     if not sell_time:
         # Can't match without knowing when the SELL happened
@@ -467,7 +473,7 @@ def _find_demo_comment_for_close(
 
     # Find BUY trades that:
     # - Same account, same symbol
-    # - Have GUVFX_DEMO_JOB: comment
+    # - Have demo job comment (legacy OR new pattern)
     # - open_time is BETWEEN (sell_time - 5min) AND sell_time
     candidates = list(
         Trade.objects.filter(
@@ -476,7 +482,10 @@ def _find_demo_comment_for_close(
             side="BUY",
             open_time__gte=cutoff,
             open_time__lte=sell_time,  # BUY must be BEFORE or AT SELL time
-            comment__startswith="GUVFX_DEMO_JOB:",
+        )
+        .filter(
+            # Match either legacy pattern OR new pattern
+            Q(comment__startswith="GUVFX_DEMO_JOB:") | Q(comment__regex=r"^GJ\d{4}$")
         )
         .order_by("-open_time")  # Most recent first
     )
