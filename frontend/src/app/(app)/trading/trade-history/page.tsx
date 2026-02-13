@@ -138,7 +138,7 @@ function isRoundTrip(row: TradeRow): row is RoundTripRow {
 
 // Type guard to check if it's an unpaired row
 function isUnpaired(row: TradeRow): row is UnpairedRow {
-  return row.unpaired === true;
+  return "unpaired" in row && (row as any).unpaired === true;
 }
 
 // =============================================================================
