@@ -19,6 +19,7 @@ const ACCOUNT_STORAGE_KEY = "guvfx_trade_history_account";
 
 // Round-trip row (BUY+SELL paired)
 type RoundTripRow = {
+  unpaired?: false; // Explicit flag for paired rows
   open_time: string;
   close_time: string | null;
   symbol: string;
@@ -41,6 +42,31 @@ type RoundTripRow = {
   sell_profit?: string;
   total_commission?: string;
   total_swap?: string;
+};
+
+// Unpaired row (single BUY or SELL without matching leg)
+type UnpairedRow = {
+  unpaired: true; // Flag for frontend to render differently
+  open_time: string;
+  close_time: string | null;
+  symbol: string;
+  volume: string;
+  open_price: string | null;
+  close_price: string | null;
+  net_pnl: string;
+  net_pnl_money?: number;
+  legs: [string]; // Single ticket
+  ticket: string;
+  comment: string;
+  strategy_name: string;
+  // UI-friendly fields
+  trade_closed?: string;
+  trade_numbers?: string;
+  direction?: string; // BUY or SELL (not BUY→SELL)
+  // Single leg breakdown
+  profit?: string;
+  commission?: string;
+  swap?: string;
 };
 
 // Balance series point (from backend)
@@ -69,7 +95,9 @@ type TradeHistoryResponse = {
   account_id: number;
   mode: string;
   count: number;
-  trades: RoundTripRow[] | DealRow[];
+  paired_count?: number; // Number of paired round-trips
+  unpaired_count?: number; // Number of unpaired rows
+  trades: (RoundTripRow | UnpairedRow | DealRow)[];
   // MT5 account info
   mt5_balance_current?: number | null;
   mt5_equity_current?: number | null;
@@ -101,11 +129,16 @@ type DealRow = {
 };
 
 // Union type for either mode
-type TradeRow = RoundTripRow | DealRow;
+type TradeRow = RoundTripRow | UnpairedRow | DealRow;
 
-// Type guard to check if it's a round-trip
+// Type guard to check if it's a round-trip (paired)
 function isRoundTrip(row: TradeRow): row is RoundTripRow {
-  return "legs" in row && Array.isArray((row as RoundTripRow).legs);
+  return "legs" in row && Array.isArray((row as RoundTripRow).legs) && !row.unpaired;
+}
+
+// Type guard to check if it's an unpaired row
+function isUnpaired(row: TradeRow): row is UnpairedRow {
+  return row.unpaired === true;
 }
 
 // =============================================================================
@@ -1158,26 +1191,50 @@ export default function TradeHistoryPage() {
                   const netPnl = parseFloat(r.net_pnl) || 0;
                   const isPositive = netPnl >= 0;
                   const rt = isRoundTrip(r);
-                  const rowKey = rt ? `${r.buy_ticket}-${r.sell_ticket}` : (r as DealRow).ticket;
+                  const unpaired = isUnpaired(r);
+
+                  // Generate unique row key based on type
+                  let rowKey: string;
+                  if (rt) {
+                    rowKey = `rt-${r.buy_ticket}-${r.sell_ticket}`;
+                  } else if (unpaired) {
+                    rowKey = `up-${(r as UnpairedRow).ticket}`;
+                  } else {
+                    rowKey = `dl-${(r as DealRow).ticket}`;
+                  }
 
                   // Format close time for display
                   const tradeClosed = rt
                     ? r.trade_closed || r.close_time || r.open_time
-                    : (r as DealRow).close_time || (r as DealRow).open_time;
+                    : unpaired
+                      ? (r as UnpairedRow).trade_closed || (r as UnpairedRow).close_time || (r as UnpairedRow).open_time
+                      : (r as DealRow).close_time || (r as DealRow).open_time;
 
                   // Format trade numbers
-                  const tradeNumbers = rt
-                    ? r.trade_numbers || `${r.buy_ticket} → ${r.sell_ticket}`
-                    : (r as DealRow).ticket;
+                  let tradeNumbers: React.ReactNode;
+                  if (rt) {
+                    tradeNumbers = r.trade_numbers || `${r.buy_ticket} → ${r.sell_ticket}`;
+                  } else if (unpaired) {
+                    tradeNumbers = (r as UnpairedRow).ticket;
+                  } else {
+                    tradeNumbers = (r as DealRow).ticket;
+                  }
 
-                  // Direction: BUY for round-trips, or the actual side for deals
-                  const direction = rt ? (r.direction || "BUY") : (r as DealRow).side;
+                  // Direction: BUY→SELL for round-trips, or the actual side for unpaired/deals
+                  const direction = rt
+                    ? (r.direction || "BUY")
+                    : unpaired
+                      ? (r as UnpairedRow).direction || "BUY"
+                      : (r as DealRow).side;
 
                   return (
                     <tr
                       key={rowKey}
                       style={{
                         borderBottom: "1px solid rgba(255,255,255,0.05)",
+                        // Subtle visual distinction for unpaired rows
+                        opacity: unpaired ? 0.85 : 1,
+                        background: unpaired ? "rgba(251, 191, 36, 0.03)" : undefined,
                       }}
                     >
                       {/* Trade Closed */}
@@ -1192,6 +1249,13 @@ export default function TradeHistoryPage() {
                             <span style={{ color: "#64748b", margin: "0 0.25rem" }}>→</span>
                             <span style={{ color: "#94a3b8" }}>{r.sell_ticket}</span>
                           </span>
+                        ) : unpaired ? (
+                          <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                            <span>{tradeNumbers}</span>
+                            <Badge color="yellow" style={{ fontSize: "0.65rem", padding: "0.1rem 0.35rem" }}>
+                              UNPAIRED
+                            </Badge>
+                          </span>
                         ) : (
                           tradeNumbers
                         )}
@@ -1202,7 +1266,7 @@ export default function TradeHistoryPage() {
                       </td>
                       {/* Buy/Sell Direction */}
                       <td style={{ padding: "0.5rem 0.75rem" }}>
-                        <Badge color={direction === "BUY" ? "blue" : "gray"}>
+                        <Badge color={direction === "BUY" ? "blue" : direction === "SELL" ? "red" : "gray"}>
                           {direction}
                         </Badge>
                       </td>

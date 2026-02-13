@@ -168,29 +168,35 @@ def _sid_int(label: str) -> Optional[int]:
         return None
 
 
-def _get_pairing_key(trade: Trade) -> str:
+def _get_pairing_key(trade: Trade) -> Optional[str]:
     """
-    Get the pairing key for a trade.
+    Get the pairing key for a trade - ONLY when a stable key exists.
 
-    Priority:
-    1. If comment matches demo job pattern (legacy or new), pair by job_id
-    2. If comment contains guvfx:strategy_id=<id>, pair by strategy_id
-    3. Fallback: pair by (symbol, volume)
+    MODE 2 (Stable-key-only pairing):
+    - Only pair trades when we have a reliable attribution key
+    - Returns None if no stable key -> trade will appear as unpaired row
+
+    Stable keys:
+    1. Demo job pattern (legacy GUVFX_DEMO_JOB:<id> or new GJdddd)
+    2. Strategy ID pattern (guvfx:strategy_id=<id> or guvfx:sid=<id>)
+
+    NO FIFO FALLBACK: Symbol/volume matching causes "lagging by 1" issues
+    and incorrectly pairs unrelated trades.
     """
     comment = trade.comment or ""
 
-    # Priority 1: Demo job - pair by job_id (both legacy and new patterns)
+    # Stable key 1: Demo job - pair by job_id (both legacy and new patterns)
     job_id = _extract_demo_job_id(comment)
     if job_id is not None:
         return f"demo:job:{job_id}"
 
-    # Priority 2: Strategy ID - pair by strategy
+    # Stable key 2: Strategy ID - pair by strategy
     strategy_match = STRATEGY_ID_PATTERN.search(comment)
     if strategy_match:
         return f"strategy:{strategy_match.group(1)}|{trade.symbol}|{trade.volume}"
 
-    # Priority 3: Fallback - pair by symbol and volume (FIFO)
-    return f"fifo:{trade.symbol}|{trade.volume}"
+    # No stable key -> return None (trade will be unpaired)
+    return None
 
 
 def _build_round_trips(
@@ -198,22 +204,28 @@ def _build_round_trips(
     raw_labels: Dict[str, str],
     job_to_strategy: Dict[int, tuple],
     sid_to_name: Dict[int, str],
-) -> List[Dict[str, Any]]:
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Build round-trip rows from a list of trades (sorted by open_time ascending).
 
-    Pairing rules:
-    - For demo jobs: BUY and SELL with same GUVFX_DEMO_JOB:<id> form a pair
-    - For strategy trades: BUY and SELL with same (strategy_id, symbol, volume) FIFO
-    - Fallback: BUY and SELL with same (symbol, volume) FIFO
+    MODE 2 (Stable-key-only pairing):
+    - Only pair trades with a stable key (demo job or strategy tag)
+    - Trades without stable keys appear as unpaired rows
+    - NO FIFO fallback by symbol/volume
 
-    Returns list of round-trip dicts with all required fields.
+    Returns:
+        (round_trips, unpaired_rows)
+        - round_trips: List of paired BUY+SELL dicts
+        - unpaired_rows: List of individual trade dicts (no match found or no stable key)
     """
     # FIFO queues per pairing key: key -> list of BUY trades waiting for SELL
     buy_queues: Dict[str, List[Trade]] = defaultdict(list)
 
     # Completed round-trips
     round_trips: List[Dict[str, Any]] = []
+
+    # Track paired trade tickets
+    paired_tickets: set[str] = set()
 
     # Sort trades by open_time ascending for FIFO pairing
     sorted_trades = sorted(trades, key=lambda t: t.open_time)
@@ -222,6 +234,10 @@ def _build_round_trips(
         key = _get_pairing_key(trade)
         side = trade.side.upper() if trade.side else "BUY"
 
+        # If no stable key, this trade cannot be paired
+        if key is None:
+            continue  # Will be collected as unpaired later
+
         if side == "BUY":
             # Push BUY into queue for this key
             buy_queues[key].append(trade)
@@ -229,6 +245,10 @@ def _build_round_trips(
             # Try to pop earliest BUY from same key
             if buy_queues[key]:
                 buy_trade = buy_queues[key].pop(0)
+
+                # Mark both as paired
+                paired_tickets.add(buy_trade.ticket)
+                paired_tickets.add(trade.ticket)
 
                 # Build round-trip row
                 rt = _build_round_trip_row(
@@ -239,12 +259,34 @@ def _build_round_trips(
                     sid_to_name=sid_to_name,
                 )
                 round_trips.append(rt)
-            # else: orphan SELL with no matching BUY - skip silently
+            # else: orphan SELL with stable key but no matching BUY -> will be unpaired
+
+    # -------------------------------------------------------------------------
+    # Build unpaired rows for:
+    # 1. Trades with no stable key (key was None)
+    # 2. Trades with stable key but no match found (orphan BUY/SELL)
+    # -------------------------------------------------------------------------
+    unpaired_rows: List[Dict[str, Any]] = []
+
+    for trade in sorted_trades:
+        if trade.ticket in paired_tickets:
+            continue  # Already paired
+
+        unpaired_row = _build_unpaired_row(
+            trade=trade,
+            raw_labels=raw_labels,
+            job_to_strategy=job_to_strategy,
+            sid_to_name=sid_to_name,
+        )
+        unpaired_rows.append(unpaired_row)
 
     # Sort round-trips by close_time descending (most recent first)
     round_trips.sort(key=lambda r: r["close_time"] or "", reverse=True)
 
-    return round_trips
+    # Sort unpaired by open_time descending (most recent first)
+    unpaired_rows.sort(key=lambda r: r["open_time"] or "", reverse=True)
+
+    return round_trips, unpaired_rows
 
 
 def _build_round_trip_row(
@@ -320,6 +362,71 @@ def _build_round_trip_row(
         "sell_profit": str(sell_trade.profit or Decimal("0")),
         "total_commission": str((buy_trade.commission or Decimal("0")) + (sell_trade.commission or Decimal("0"))),
         "total_swap": str((buy_trade.swap or Decimal("0")) + (sell_trade.swap or Decimal("0"))),
+    }
+
+
+def _build_unpaired_row(
+    trade: Trade,
+    raw_labels: Dict[str, str],
+    job_to_strategy: Dict[int, tuple],
+    sid_to_name: Dict[int, str],
+) -> Dict[str, Any]:
+    """
+    Build an unpaired row for a single trade that couldn't be matched.
+
+    Unpaired trades are shown separately in the UI with an "UNPAIRED" badge.
+    They are NOT included in balance trajectory calculations.
+    """
+    # Resolve strategy name
+    def resolve_strategy(t: Trade) -> str:
+        raw = raw_labels.get(t.ticket, "Unattributed")
+        if raw.startswith("job:"):
+            try:
+                job_id = int(raw[4:])
+            except ValueError:
+                return "Unattributed"
+            if job_id in job_to_strategy:
+                _, strategy_name = job_to_strategy[job_id]
+                return strategy_name if strategy_name else "Unattributed"
+            return "Unattributed"
+        else:
+            sid = _sid_int(raw)
+            return sid_to_name.get(sid, raw) if sid is not None else raw
+
+    strategy_name = resolve_strategy(trade)
+
+    # Calculate net P&L for this single leg
+    net_pnl = (trade.profit or Decimal("0")) + (trade.commission or Decimal("0")) + (trade.swap or Decimal("0"))
+
+    # Format times
+    open_time = trade.open_time
+    close_time = trade.close_time
+    trade_closed = close_time.isoformat() if close_time else None
+
+    side = trade.side.upper() if trade.side else "BUY"
+
+    return {
+        "unpaired": True,  # Flag for frontend to render differently
+        "open_time": open_time,
+        "close_time": close_time,
+        "symbol": trade.symbol,
+        "volume": str(trade.volume),
+        "open_price": str(trade.open_price) if trade.open_price is not None else None,
+        "close_price": str(trade.close_price) if trade.close_price is not None else None,
+        "net_pnl": str(net_pnl),
+        "net_pnl_money": float(net_pnl),
+        "legs": [trade.ticket],
+        "ticket": trade.ticket,
+        "comment": trade.comment or "",
+        "strategy_name": strategy_name,
+        # UI-friendly fields
+        "trade_closed": trade_closed,
+        "trade_numbers": str(trade.ticket),  # Single ticket for unpaired
+        "direction": side,  # BUY or SELL (not BUY→SELL)
+        # Single leg breakdown
+        "profit": str(trade.profit or Decimal("0")),
+        "commission": str(trade.commission or Decimal("0")),
+        "swap": str(trade.swap or Decimal("0")),
     }
 
 
@@ -556,9 +663,10 @@ class TradeHistoryView(APIView):
 
         # -------------------------------------------------------------------------
         # Mode: Round-trip (default) - pair BUY+SELL into single rows
+        # MODE 2: Stable-key-only pairing with unpaired rows
         # -------------------------------------------------------------------------
         if mode == "roundtrip":
-            round_trips = _build_round_trips(
+            round_trips, unpaired_rows = _build_round_trips(
                 trades=trades,
                 raw_labels=raw_labels,
                 job_to_strategy=job_to_strategy,
@@ -568,6 +676,7 @@ class TradeHistoryView(APIView):
             # Apply strategy filter if provided
             if strategy:
                 round_trips = [rt for rt in round_trips if rt.get("strategy_name") == strategy]
+                unpaired_rows = [ur for ur in unpaired_rows if ur.get("strategy_name") == strategy]
 
             # -------------------------------------------------------------------------
             # Fetch MT5 balance from Windows Agent (if account has mt5_instance)
@@ -593,22 +702,47 @@ class TradeHistoryView(APIView):
 
             # -------------------------------------------------------------------------
             # Compute balance series and observed statistics
+            # IMPORTANT: Only use completed round-trips (exclude unpaired rows)
             # -------------------------------------------------------------------------
             balance_series, observed_stats, opening_balance_used, opening_balance_source = _compute_balance_series(
                 round_trips=round_trips,
                 mt5_balance_current=mt5_balance_current,
             )
 
+            # -------------------------------------------------------------------------
+            # Merge round_trips and unpaired_rows into single "trades" list
+            # Sort all by close_time (or open_time for unpaired) descending
+            # -------------------------------------------------------------------------
+            all_trades = []
+
+            # Add round-trips (already have unpaired=False implicitly)
+            for rt in round_trips:
+                rt["unpaired"] = False  # Explicit flag for consistency
+                all_trades.append(rt)
+
+            # Add unpaired rows (already have unpaired=True)
+            all_trades.extend(unpaired_rows)
+
+            # Sort by close_time (for paired) or open_time (for unpaired) descending
+            def sort_key(row):
+                if row.get("unpaired"):
+                    return row.get("open_time") or ""
+                return row.get("close_time") or ""
+
+            all_trades.sort(key=sort_key, reverse=True)
+
             return Response({
                 "account_id": int(account_id),
                 "mode": "roundtrip",
-                "count": len(round_trips),
-                "trades": round_trips,
+                "count": len(all_trades),
+                "paired_count": len(round_trips),
+                "unpaired_count": len(unpaired_rows),
+                "trades": all_trades,
                 # MT5 account info
                 "mt5_balance_current": mt5_balance_current,
                 "mt5_equity_current": mt5_equity_current,
                 "currency": currency,
-                # Balance trajectory
+                # Balance trajectory (only from completed round-trips)
                 "opening_balance_used": opening_balance_used,
                 "opening_balance_source": opening_balance_source,
                 "balance_series": balance_series,

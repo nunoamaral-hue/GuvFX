@@ -4,10 +4,11 @@ import React from "react";
 
 type BadgeProps = {
   children: React.ReactNode;
-  color?: "green" | "gray" | "blue" | "red";
+  color?: "green" | "gray" | "blue" | "red" | "yellow";
+  style?: React.CSSProperties;
 };
 
-export const Badge: React.FC<BadgeProps> = ({ children, color = "gray" }) => {
+export const Badge: React.FC<BadgeProps> = ({ children, color = "gray", style }) => {
   const colors: Record<string, React.CSSProperties> = {
     green: {
       backgroundColor: "#e5f9e7",
@@ -29,6 +30,11 @@ export const Badge: React.FC<BadgeProps> = ({ children, color = "gray" }) => {
       color: "#b91c1c",
       borderColor: "#fecaca",
     },
+    yellow: {
+      backgroundColor: "#fef3c7",
+      color: "#92400e",
+      borderColor: "#fcd34d",
+    },
   };
 
   return (
@@ -41,6 +47,7 @@ export const Badge: React.FC<BadgeProps> = ({ children, color = "gray" }) => {
         borderStyle: "solid",
         display: "inline-block",
         ...(colors[color] || colors.gray),
+        ...style,
       }}
     >
       {children}
