@@ -867,6 +867,10 @@ const dictionary: Dictionary = {
     en: "Patterns",
     ja: "パターン",
   },
+  "marketplace.filterSystem-grade": {
+    en: "System-grade",
+    ja: "システムグレード",
+  },
   "marketplace.selectAccount": {
     en: "Select account",
     ja: "口座を選択",

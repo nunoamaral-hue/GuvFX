@@ -10,9 +10,9 @@ import { useRouter } from "next/navigation";
 // ─────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────
-type MarketCategory = "Trend" | "Breakout" | "Reversion" | "Structure" | "Patterns";
+type MarketCategory = "Trend" | "Breakout" | "Reversion" | "Structure" | "Patterns" | "System-grade";
 
-type Accent = "blue" | "green" | "purple" | "yellow";
+type Accent = "blue" | "green" | "purple" | "yellow" | "cyan";
 
 type MarketplaceStrategy = {
   id: string;
@@ -43,6 +43,7 @@ const accentPill = (accent: Accent) => {
     green: { bg: "rgba(34,197,94,0.14)", border: "rgba(34,197,94,0.35)", text: "#86efac" },
     purple: { bg: "rgba(168,85,247,0.14)", border: "rgba(168,85,247,0.35)", text: "#d8b4fe" },
     yellow: { bg: "rgba(250,204,21,0.14)", border: "rgba(250,204,21,0.40)", text: "#fde047" },
+    cyan: { bg: "rgba(34,211,238,0.14)", border: "rgba(34,211,238,0.40)", text: "#67e8f9" },
   } as const;
   return map[accent];
 };
@@ -135,6 +136,18 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     timeframes: ["H1", "H4"],
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"],
     tags: ["Beta"],
+  },
+  {
+    id: "mp-005",
+    name: "Trendline Break Pocket",
+    category: "System-grade",
+    accent: "cyan",
+    style: "HTF Zone + Structure",
+    execution: "Automation-ready",
+    summary: "HTF zone + trendline break + structure shift. Fixed 2R model. Manual zones editable. Designed by Ali.",
+    timeframes: ["H4"],
+    pairs: ["EURUSD", "GBPUSD"],
+    tags: ["Automation-ready", "Ali"],
   },
 ];
 
@@ -471,7 +484,7 @@ export default function StrategyMarketplacePage() {
           />
 
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-            {(["All", "Trend", "Breakout", "Reversion", "Structure", "Patterns"] as const).map((cat) => {
+            {(["All", "Trend", "Breakout", "Reversion", "Structure", "Patterns", "System-grade"] as const).map((cat) => {
               const isActive = activeFilter === cat;
               const filterKey = `marketplace.filter${cat}` as const;
               return (

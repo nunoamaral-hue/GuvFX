@@ -65,6 +65,56 @@ MARKETPLACE_STRATEGIES = {
             "auto_optimize_by_ai": False,
         },
     },
+    "mp-005": {
+        "name": "Trendline Break Pocket",
+        "description": "HTF zone + trendline break + structure shift. Fixed 2R model. Manual zones editable.",
+        "trader": "Ali",
+        "category": "System-grade",
+        "marketplace_listed": True,
+        "automation_ready": True,
+        "defaults": {
+            "timeframe": "H4",
+            "symbol_universe": "EURUSD,GBPUSD",
+            "edge_type": "BREAKOUT",
+            "risk_per_trade_pct": 0.1,
+            "auto_optimize_by_ai": False,
+            # Strategy-specific parameters stored in filters JSON
+            "filters": {
+                "enabled": True,
+                "direction_mode": "both",
+                "pairs_enabled": ["EURUSD", "GBPUSD"],
+                "htf_timeframe": "D1",
+                "execution_timeframe": "H4",
+                "rr_target": 2.0,
+                "trendline_lookback_bars": 101,
+                "trendline_pivot_strength": 2,
+                "break_confirm_bars": 1,
+                "swing_break_mode": "close_break",
+                "swing_lookback": 7,
+                "pocket_retest_required": True,
+                "entry_buffer_pips": {"EURUSD": 2, "GBPUSD": 3},
+                "overshoot_max_pips": {"EURUSD": 12, "GBPUSD": 18},
+                "clean_air_min_pips": {"EURUSD": 8, "GBPUSD": 12},
+                "max_trades_per_day": 1,
+                "news_filter_mode": "major_only",
+                "zones": {
+                    "EURUSD": [
+                        {"zone_name": "Supply 1", "zone_type": "supply", "low": 1.1830, "high": 1.1860, "source": "seeded"},
+                        {"zone_name": "Pivot", "zone_type": "pivot", "low": 1.1775, "high": 1.1795, "source": "seeded"},
+                        {"zone_name": "Demand 1", "zone_type": "demand", "low": 1.1715, "high": 1.1745, "source": "seeded"},
+                    ],
+                    "GBPUSD": [
+                        {"zone_name": "Supply 1", "zone_type": "supply", "low": 1.3600, "high": 1.3640, "source": "seeded"},
+                        {"zone_name": "Pivot", "zone_type": "pivot", "low": 1.3490, "high": 1.3530, "source": "seeded"},
+                        {"zone_name": "Demand 1", "zone_type": "demand", "low": 1.3380, "high": 1.3420, "source": "seeded"},
+                    ],
+                },
+            },
+            # Entry/exit logic descriptions
+            "entry_logic": "1. Price in HTF zone (D1 supply/demand)\n2. Trendline break confirmed (close beyond TL)\n3. Structure shift (swing break)\n4. Retest pocket entry (if enabled)\n5. Clean air validation",
+            "exit_logic": "Fixed 2R target from entry. Stop at structural invalidation.",
+        },
+    },
 }
 
 class StrategyViewSet(viewsets.ModelViewSet):
