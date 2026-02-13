@@ -1749,6 +1749,10 @@ const dictionary: Dictionary = {
     en: "Editing existing strategies is coming soon.",
     ja: "既存の戦略の編集機能は近日公開予定です。",
   },
+  "strategy.actions.editStrategy": {
+    en: "Edit Strategy",
+    ja: "戦略を編集",
+  },
   "strategy.actions.backToList": {
     en: "← All strategies",
     ja: "← 戦略一覧",
@@ -1764,6 +1768,106 @@ const dictionary: Dictionary = {
   "strategy.disclaimer": {
     en: "Testing is informational only. Results depend on data quality and assumptions, and do not guarantee future outcomes.",
     ja: "テストは情報提供のみを目的としています。結果はデータの品質と仮定に依存し、将来の結果を保証するものではありません。",
+  },
+
+  // -----------------------------------------------------------------------------
+  // Strategy Edit Page
+  // -----------------------------------------------------------------------------
+  "strategyEdit.title": {
+    en: "Edit Strategy",
+    ja: "戦略を編集",
+  },
+  "strategyEdit.basicInfo": {
+    en: "Basic Information",
+    ja: "基本情報",
+  },
+  "strategyEdit.basicInfoSubtitle": {
+    en: "Core strategy settings and identification.",
+    ja: "コア戦略の設定と識別。",
+  },
+  "strategyEdit.enabled": {
+    en: "Strategy Enabled",
+    ja: "戦略有効",
+  },
+  "strategyEdit.tbpParameters": {
+    en: "Trendline Break Pocket Parameters",
+    ja: "トレンドラインブレイクポケットパラメータ",
+  },
+  "strategyEdit.tbpParametersSubtitle": {
+    en: "Configure the HTF zone and trendline detection settings.",
+    ja: "HTFゾーンとトレンドライン検出設定を構成。",
+  },
+  "strategyEdit.directionMode": {
+    en: "Direction Mode",
+    ja: "方向モード",
+  },
+  "strategyEdit.htfTimeframe": {
+    en: "HTF Zone Timeframe",
+    ja: "HTFゾーンタイムフレーム",
+  },
+  "strategyEdit.rrTarget": {
+    en: "R:R Target",
+    ja: "R:Rターゲット",
+  },
+  "strategyEdit.trendlineLookback": {
+    en: "Trendline Lookback (bars)",
+    ja: "トレンドラインルックバック（バー）",
+  },
+  "strategyEdit.pivotStrength": {
+    en: "Pivot Strength",
+    ja: "ピボット強度",
+  },
+  "strategyEdit.swingLookback": {
+    en: "Swing Lookback",
+    ja: "スイングルックバック",
+  },
+  "strategyEdit.maxTradesPerDay": {
+    en: "Max Trades/Day",
+    ja: "1日最大取引数",
+  },
+  "strategyEdit.newsFilterMode": {
+    en: "News Filter",
+    ja: "ニュースフィルター",
+  },
+  "strategyEdit.pocketRetestRequired": {
+    en: "Pocket Retest Required",
+    ja: "ポケットリテスト必須",
+  },
+  "strategyEdit.htfZones": {
+    en: "HTF Zones",
+    ja: "HTFゾーン",
+  },
+  "strategyEdit.htfZonesSubtitle": {
+    en: "Define supply and demand zones for each symbol.",
+    ja: "各シンボルの供給と需要ゾーンを定義。",
+  },
+  "strategyEdit.zonesSeededHint": {
+    en: "Seeded defaults provided — edit as needed. Zones marked 'Seeded' are templates; edit them to customize.",
+    ja: "シードされたデフォルトが提供されています — 必要に応じて編集してください。",
+  },
+  "strategyEdit.logicRules": {
+    en: "Entry & Exit Logic",
+    ja: "エントリーとエグジットロジック",
+  },
+  "strategyEdit.logicRulesSubtitle": {
+    en: "Human-readable rules and notes for your trading plan.",
+    ja: "取引計画の人間が読めるルールとメモ。",
+  },
+  "strategyEdit.save": {
+    en: "Save Changes",
+    ja: "変更を保存",
+  },
+  "strategyEdit.saving": {
+    en: "Saving...",
+    ja: "保存中...",
+  },
+  "strategyEdit.cancel": {
+    en: "Cancel",
+    ja: "キャンセル",
+  },
+  "strategyEdit.lastUpdated": {
+    en: "Last updated",
+    ja: "最終更新",
   },
 
   // -----------------------------------------------------------------------------

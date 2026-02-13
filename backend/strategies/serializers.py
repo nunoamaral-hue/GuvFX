@@ -4,6 +4,9 @@ from rest_framework import serializers
 from .models import Strategy, StrategyAssignment, StrategyChangeLog
 from trading.models import Trade
 
+# Import validation function for template-specific filters
+from .views import validate_trendline_break_pocket_filters
+
 
 class StrategySerializer(serializers.ModelSerializer):
     class Meta:
@@ -145,6 +148,15 @@ class StrategySerializer(serializers.ModelSerializer):
         max_trades = filters.get("max_trades_per_day")
         if max_trades is not None and max_trades < 0:
             errors["filters"] = "Max trades per day cannot be negative."
+
+        # Template-specific validation: Trendline Break Pocket (Ali)
+        tbp_errors = validate_trendline_break_pocket_filters(filters)
+        if tbp_errors:
+            # Merge errors; if filters already has an error, append
+            if "filters" in errors:
+                errors["filters"] = f"{errors['filters']} | {tbp_errors}"
+            else:
+                errors["filters"] = tbp_errors
 
         news_filter = filters.get("news_filter") or {}
         if news_filter.get("pre_event_minutes") is not None and news_filter[

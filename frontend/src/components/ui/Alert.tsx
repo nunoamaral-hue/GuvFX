@@ -4,7 +4,7 @@ import React from "react";
 
 type AlertProps = {
   children: React.ReactNode;
-  type?: "error" | "info";
+  type?: "error" | "info" | "success";
 };
 
 export const Alert: React.FC<AlertProps> = ({ children, type = "info" }) => {
@@ -18,6 +18,11 @@ export const Alert: React.FC<AlertProps> = ({ children, type = "info" }) => {
       backgroundColor: "rgba(59,130,246,0.12)",
       borderColor: "rgba(59,130,246,0.45)",
       color: "#e5f4ff",
+    },
+    success: {
+      backgroundColor: "rgba(34,197,94,0.12)",
+      borderColor: "rgba(34,197,94,0.45)",
+      color: "#86efac",
     },
   };
 

@@ -19,6 +19,11 @@ from .serializers import (
     StrategyAssignmentSerializer,
     StrategyChangeLogSerializer,
 )
+from .execution import (
+    validate_strategy_for_execution,
+    prepare_execution_config,
+    get_execution_status,
+)
 from backtests.models import BacktestConfig, BacktestRun
 from core.audit import (
     log_strategy_created,
@@ -70,6 +75,7 @@ MARKETPLACE_STRATEGIES = {
         "description": "HTF zone + trendline break + structure shift. Fixed 2R model. Manual zones editable.",
         "trader": "Ali",
         "category": "System-grade",
+        "template_slug": "trendline-break-pocket-ali",
         "marketplace_listed": True,
         "automation_ready": True,
         "defaults": {
@@ -80,6 +86,7 @@ MARKETPLACE_STRATEGIES = {
             "auto_optimize_by_ai": False,
             # Strategy-specific parameters stored in filters JSON
             "filters": {
+                "template_slug": "trendline-break-pocket-ali",
                 "enabled": True,
                 "direction_mode": "both",
                 "pairs_enabled": ["EURUSD", "GBPUSD"],
@@ -116,6 +123,66 @@ MARKETPLACE_STRATEGIES = {
         },
     },
 }
+
+
+def validate_trendline_break_pocket_filters(filters: dict) -> dict:
+    """
+    Validate Trendline Break Pocket (Ali) strategy-specific filter parameters.
+    Returns dict of validation errors (empty if valid).
+    """
+    errors = {}
+    template_slug = filters.get("template_slug", "")
+
+    # Only validate if this is the Trendline Break Pocket template
+    if template_slug != "trendline-break-pocket-ali":
+        return errors
+
+    # direction_mode validation
+    direction_mode = filters.get("direction_mode")
+    valid_direction_modes = {"both", "long", "short"}
+    if direction_mode and direction_mode not in valid_direction_modes:
+        errors["direction_mode"] = f"direction_mode must be one of: {', '.join(valid_direction_modes)}"
+
+    # trendline_lookback_bars validation (must be >= 50)
+    lookback = filters.get("trendline_lookback_bars")
+    if lookback is not None:
+        try:
+            lookback_int = int(lookback)
+            if lookback_int < 50:
+                errors["trendline_lookback_bars"] = "trendline_lookback_bars must be >= 50"
+        except (TypeError, ValueError):
+            errors["trendline_lookback_bars"] = "trendline_lookback_bars must be an integer"
+
+    # rr_target validation (must be > 0)
+    rr_target = filters.get("rr_target")
+    if rr_target is not None:
+        try:
+            rr_float = float(rr_target)
+            if rr_float <= 0:
+                errors["rr_target"] = "rr_target must be > 0"
+        except (TypeError, ValueError):
+            errors["rr_target"] = "rr_target must be a number"
+
+    # Zone validation (low < high for each zone)
+    zones = filters.get("zones") or {}
+    for symbol, zone_list in zones.items():
+        if not isinstance(zone_list, list):
+            continue
+        for i, zone in enumerate(zone_list):
+            if not isinstance(zone, dict):
+                continue
+            low = zone.get("low")
+            high = zone.get("high")
+            if low is not None and high is not None:
+                try:
+                    low_f = float(low)
+                    high_f = float(high)
+                    if low_f >= high_f:
+                        errors[f"zones.{symbol}[{i}]"] = f"Zone low ({low_f}) must be < high ({high_f})"
+                except (TypeError, ValueError):
+                    errors[f"zones.{symbol}[{i}]"] = "Zone low/high must be numbers"
+
+    return errors
 
 class StrategyViewSet(viewsets.ModelViewSet):
     queryset = Strategy.objects.all()
@@ -178,6 +245,46 @@ class StrategyViewSet(viewsets.ModelViewSet):
             # Audit log
             changed_fields = [k for k, v in after_settings.items() if before_settings.get(k) != v]
             log_strategy_updated(self.request, updated, changed_fields)
+
+    @action(detail=True, methods=["get"], url_path="execution/validate")
+    def execution_validate(self, request, pk=None):
+        """
+        Validate if a strategy is ready for execution.
+
+        Returns validation status, errors, and warnings.
+        This is a placeholder endpoint - execution engine is not yet implemented.
+        """
+        strategy = self.get_object()
+        validation = validate_strategy_for_execution(strategy)
+        return Response({
+            "strategy_id": strategy.id,
+            "strategy_name": strategy.name,
+            **validation,
+        })
+
+    @action(detail=True, methods=["get"], url_path="execution/config")
+    def execution_config(self, request, pk=None):
+        """
+        Get the execution configuration for a strategy.
+
+        Returns the configuration that would be sent to the execution engine.
+        NOTE: This is a placeholder - no trades are executed.
+        """
+        strategy = self.get_object()
+        config = prepare_execution_config(strategy)
+        return Response(config)
+
+    @action(detail=True, methods=["get"], url_path="execution/status")
+    def execution_status(self, request, pk=None):
+        """
+        Get the current execution status of a strategy.
+
+        Returns status information about the strategy's execution state.
+        NOTE: Execution engine is not yet implemented.
+        """
+        strategy = self.get_object()
+        status_info = get_execution_status(strategy)
+        return Response(status_info)
 
     @action(detail=False, methods=["post"], url_path="marketplace/assign")
     def marketplace_assign(self, request):

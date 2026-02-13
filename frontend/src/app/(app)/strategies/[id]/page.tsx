@@ -630,24 +630,21 @@ export default function StrategyControlPage() {
               {t(lang, "strategy.actions.createBacktest")}
             </Button>
 
-            {/* Open strategy builder (Edit is not yet implemented) */}
+            {/* Edit Strategy */}
+            <Button
+              variant="secondary"
+              onClick={() => router.push(`/strategies/${strategyId}/edit`)}
+            >
+              {t(lang, "strategy.actions.editStrategy")}
+            </Button>
+
+            {/* Open strategy builder */}
             <Button
               variant="secondary"
               onClick={() => router.push("/strategies/create")}
             >
               {t(lang, "strategy.actions.openBuilder")}
             </Button>
-
-            {/* Hint text */}
-            <span
-              style={{
-                fontSize: "0.8rem",
-                color: "#7c8ca4",
-                marginLeft: "auto",
-              }}
-            >
-              {t(lang, "strategy.actions.editComingSoon")}
-            </span>
           </div>
         </div>
       </Card>
