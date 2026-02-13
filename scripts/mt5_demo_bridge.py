@@ -334,21 +334,40 @@ def close_position_by_ticket(mt5, position_ticket: int, symbol: str, volume: flo
     Close a position by its ticket.
     Returns (success, result_dict, error_message).
 
-    SAFETY: Only closes positions matching our magic number and comment pattern.
+    SAFETY: Fetches position by ticket and determines correct close direction.
     """
-    # Get current price for closing (SELL to close a BUY)
+    # Fetch position by ticket to determine direction
+    positions = mt5.positions_get(ticket=position_ticket)
+    if not positions or len(positions) == 0:
+        return False, {}, f"Position {position_ticket} not found (may already be closed)"
+
+    pos = positions[0]
+    pos_type = pos.type  # 0 = BUY, 1 = SELL
+
+    # Get current price for closing
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
         return False, {}, f"Failed to get tick for {symbol} during close"
 
-    close_price = tick.bid  # SELL at bid price to close BUY
+    # Determine close direction and price
+    # NOTE: pos.type is POSITION_TYPE (0=BUY, 1=SELL), not ORDER_TYPE
+    if pos_type == mt5.POSITION_TYPE_BUY:
+        # Close BUY with SELL at bid
+        close_type = mt5.ORDER_TYPE_SELL
+        close_price = tick.bid
+        close_type_str = "SELL"
+    else:
+        # Close SELL with BUY at ask
+        close_type = mt5.ORDER_TYPE_BUY
+        close_price = tick.ask
+        close_type_str = "BUY"
 
     # Prepare close request
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
         "volume": volume,
-        "type": mt5.ORDER_TYPE_SELL,  # SELL to close BUY
+        "type": close_type,
         "position": position_ticket,
         "price": close_price,
         "deviation": 20,
@@ -358,7 +377,7 @@ def close_position_by_ticket(mt5, position_ticket: int, symbol: str, volume: flo
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
 
-    logger.info(f"Closing position {position_ticket}: {symbol} SELL {volume} @ {close_price}")
+    logger.info(f"Closing position {position_ticket}: {symbol} {close_type_str} {volume} @ {close_price}")
 
     result = mt5.order_send(request)
 
@@ -374,7 +393,7 @@ def close_position_by_ticket(mt5, position_ticket: int, symbol: str, volume: flo
         "close_price": result.price,
         "volume": result.volume,
         "symbol": symbol,
-        "order_type": "SELL",
+        "order_type": close_type_str,
         "closed_at": datetime.utcnow().isoformat() + "Z",
         "position_ticket": position_ticket,
     }
@@ -482,89 +501,79 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
         logger.info(f"Order executed: ticket={result.order}, price={result.price}, comment='{order_comment}'")
 
         # =====================================================================
-        # DEMO AUTO-CLOSE: If enabled, wait then close the position
+        # DEMO AUTO-CLOSE: If enabled, wait then close the position by ticket
         # =====================================================================
         if DEMO_AUTOCLOSE_SECONDS > 0:
-            logger.info(f"Auto-close enabled: waiting {DEMO_AUTOCLOSE_SECONDS}s before closing position for job {job_id}")
+            # Extract position ticket from order_send result
+            # Try result.position first (some brokers), then fall back to result.order
+            position_ticket = int(getattr(result, "position", 0) or 0)
+            if position_ticket <= 0:
+                position_ticket = int(getattr(result, "order", 0) or 0)
 
-            # Wait a moment for the position to be created
-            time.sleep(1)
-
-            # SAFETY: Determine position ticket with strict matching
-            # Priority 1: Use result.position if available (direct from order_send)
-            position_ticket_from_result = getattr(result, "position", None) or getattr(result, "deal", None)
-
-            our_position = None
-            if position_ticket_from_result and position_ticket_from_result > 0:
-                # Direct ticket from order result - most reliable
-                logger.info(f"Checking position ticket from order result: {position_ticket_from_result}")
-                positions = mt5.positions_get(ticket=position_ticket_from_result)
-                if positions and len(positions) > 0:
-                    pos = positions[0]
-                    pos_comment = getattr(pos, "comment", "") or ""
-                    # Verify it's actually our position (comment should match)
-                    if pos_comment == order_comment:
-                        our_position = pos
-                        logger.info(f"Confirmed position {position_ticket_from_result} matches our comment")
-                    else:
-                        logger.warning(f"Position {position_ticket_from_result} comment='{pos_comment}' does not match expected='{order_comment}'")
-                else:
-                    logger.warning(f"Position {position_ticket_from_result} not found in open positions")
-
-            # Priority 2: Search with EXACT comment match (not just prefix)
-            if our_position is None:
-                logger.info(f"Searching for position with exact comment='{order_comment}'")
-                positions = mt5.positions_get(symbol=symbol)
-                if positions:
-                    for pos in positions:
-                        # Must match symbol
-                        if pos.symbol != symbol:
-                            continue
-                        # EXACT comment match required to avoid closing wrong position
-                        pos_comment = getattr(pos, "comment", "") or ""
-                        if pos_comment == order_comment:
-                            our_position = pos
-                            logger.info(f"Found position via exact comment match: ticket={pos.ticket}, comment='{pos_comment}'")
-                            break
-                        else:
-                            logger.debug(f"Skipping position {pos.ticket}: comment='{pos_comment}' != '{order_comment}'")
-
-            if our_position is None:
-                # SAFETY: Do NOT close any position if we can't find exact match
-                error_msg = f"Could not find position with exact comment='{order_comment}' to auto-close. Refusing to close random position."
-                logger.error(error_msg)
+            if position_ticket <= 0:
+                error_msg = f"Auto-close: order_send did not return a valid position ticket (got {position_ticket})"
+                logger.warning(error_msg)
                 result_dict["auto_close_failed"] = True
                 result_dict["auto_close_error"] = error_msg
             else:
-                position_ticket = our_position.ticket
-                position_volume = our_position.volume
+                logger.info(f"Auto-close: using position ticket from order result: {position_ticket}")
+                logger.info(f"Waiting {DEMO_AUTOCLOSE_SECONDS}s before auto-close...")
+                time.sleep(DEMO_AUTOCLOSE_SECONDS)
 
-                logger.info(f"Will close position ticket={position_ticket}, volume={position_volume}, comment='{order_comment}'")
-
-                # Wait the configured time
-                remaining_wait = max(0, DEMO_AUTOCLOSE_SECONDS - 1)  # Already waited 1s above
-                if remaining_wait > 0:
-                    logger.info(f"Waiting {remaining_wait}s before auto-close...")
-                    time.sleep(remaining_wait)
-
-                # Close the position with SAME comment for attribution
-                close_success, close_result, close_error = close_position_by_ticket(
-                    mt5=mt5,
-                    position_ticket=position_ticket,
-                    symbol=symbol,
-                    volume=position_volume,
-                    comment=job_comment,  # Same comment ensures attribution
-                    magic=magic,
-                )
-
-                if close_success:
-                    result_dict["auto_closed"] = True
-                    result_dict["close_result"] = close_result
-                    logger.info(f"Auto-close successful for job {job_id}: {close_result}")
-                else:
+                # SAFETY: Verify the position exists and matches expected attributes
+                positions = mt5.positions_get(ticket=position_ticket)
+                if not positions or len(positions) == 0:
+                    error_msg = f"Auto-close: position {position_ticket} not found (may already be closed)"
+                    logger.warning(error_msg)
                     result_dict["auto_close_failed"] = True
-                    result_dict["auto_close_error"] = close_error
-                    logger.warning(f"Auto-close failed for job {job_id}: {close_error}")
+                    result_dict["auto_close_error"] = error_msg
+                elif len(positions) > 1:
+                    error_msg = f"Auto-close: multiple positions returned for ticket {position_ticket}, refusing to close"
+                    logger.error(error_msg)
+                    result_dict["auto_close_failed"] = True
+                    result_dict["auto_close_error"] = error_msg
+                else:
+                    pos = positions[0]
+                    # SAFETY: Verify symbol, magic, and volume match
+                    pos_symbol = pos.symbol
+                    pos_magic = pos.magic
+                    pos_volume = pos.volume
+
+                    mismatches = []
+                    if pos_symbol != symbol:
+                        mismatches.append(f"symbol mismatch: expected={symbol}, got={pos_symbol}")
+                    if pos_magic != magic:
+                        mismatches.append(f"magic mismatch: expected={magic}, got={pos_magic}")
+                    if abs(pos_volume - lots) >= 1e-9:
+                        mismatches.append(f"volume mismatch: expected={lots}, got={pos_volume}")
+
+                    if mismatches:
+                        error_msg = f"Auto-close: position {position_ticket} verification failed: {'; '.join(mismatches)}"
+                        logger.error(error_msg)
+                        result_dict["auto_close_failed"] = True
+                        result_dict["auto_close_error"] = error_msg
+                    else:
+                        logger.info(f"Auto-close: position {position_ticket} verified (symbol={pos_symbol}, magic={pos_magic}, volume={pos_volume})")
+                        logger.info(f"Closing position {position_ticket}...")
+
+                        # Close the position with SAME comment for attribution
+                        close_success, close_result, close_error = close_position_by_ticket(
+                            mt5=mt5,
+                            position_ticket=position_ticket,
+                            symbol=symbol,
+                            volume=pos_volume,
+                            comment=job_comment,  # Same comment ensures attribution
+                            magic=magic,
+                        )
+
+                        if close_success:
+                            result_dict["auto_closed"] = True
+                            result_dict["close_result"] = close_result
+                            logger.info(f"Auto-close successful for job {job_id}")
+                        else:
+                            result_dict["auto_close_failed"] = True
+                            result_dict["auto_close_error"] = close_error
+                            logger.warning(f"Auto-close failed for job {job_id}: {close_error}")
 
         return True, result_dict, ""
 
