@@ -437,3 +437,86 @@ def log_trades_sync_queued(
             "sync_job_id": sync_job_id,
         },
     )
+
+
+# =============================================================================
+# Strategy Signal Audit Helpers
+# =============================================================================
+
+
+def log_signal_evaluated(
+    request: HttpRequest | None,
+    strategy_id: int,
+    account_id: int,
+    symbol: str,
+    signal_result: dict | None = None,
+) -> None:
+    """Log signal evaluation (whether or not it produced a trade)."""
+    log_event(
+        request,
+        event_type="SIGNAL_EVALUATED",
+        severity="INFO",
+        entity_type="strategy",
+        entity_id=str(strategy_id),
+        metadata={
+            "account_id": account_id,
+            "symbol": symbol,
+            "result": signal_result or {},
+        },
+    )
+
+
+def log_signal_rejected(
+    request: HttpRequest | None,
+    strategy_id: int,
+    account_id: int,
+    symbol: str,
+    reason: str,
+    details: dict | None = None,
+) -> None:
+    """Log signal rejection with reason."""
+    log_event(
+        request,
+        event_type="SIGNAL_REJECTED",
+        severity="WARN",
+        entity_type="strategy",
+        entity_id=str(strategy_id),
+        metadata={
+            "account_id": account_id,
+            "symbol": symbol,
+            "reason": reason,
+            **(details or {}),
+        },
+    )
+
+
+def log_signal_created(
+    request: HttpRequest | None,
+    strategy_id: int,
+    account_id: int,
+    job_id: int,
+    symbol: str,
+    side: str,
+    lots: float,
+    entry_price: float | None = None,
+    sl_price: float | None = None,
+    tp_price: float | None = None,
+) -> None:
+    """Log signal created and job queued."""
+    log_event(
+        request,
+        event_type="SIGNAL_CREATED",
+        severity="INFO",
+        entity_type="execution_job",
+        entity_id=str(job_id),
+        metadata={
+            "strategy_id": strategy_id,
+            "account_id": account_id,
+            "symbol": symbol,
+            "side": side,
+            "lots": lots,
+            "entry_price": entry_price,
+            "sl_price": sl_price,
+            "tp_price": tp_price,
+        },
+    )

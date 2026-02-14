@@ -286,6 +286,109 @@ class StrategyViewSet(viewsets.ModelViewSet):
         status_info = get_execution_status(strategy)
         return Response(status_info)
 
+    @action(detail=True, methods=["post"], url_path="execution/run-signal")
+    def run_signal(self, request, pk=None):
+        """
+        Evaluate and execute a signal for the Trendline Break Pocket strategy.
+
+        POST /api/strategies/{id}/execution/run-signal/
+
+        Query params:
+            account_id: Required. The trading account ID.
+
+        Request body (optional, for manual test signals):
+            {
+                "symbol": "EURUSD",  # Required
+                "manual": true,      # If true, uses manual_params below
+                "side": "BUY",       # "BUY" or "SELL"
+                "entry_price": 1.0850,
+                "sl_price": 1.0800,
+                "tp_price": 1.0950
+            }
+
+        Returns:
+            {
+                "ok": true/false,
+                "signal_type": "BUY" or "SELL" or null,
+                "symbol": "EURUSD",
+                "entry_price": 1.0850,
+                "sl_price": 1.0800,
+                "tp_price": 1.0950,
+                "lots": 0.01,
+                "reason": "job_queued" or rejection reason,
+                "job_id": 123 or null,
+                "details": {...}
+            }
+        """
+        from .signal_engine import run_signal_evaluation
+
+        strategy = self.get_object()
+        user = request.user
+
+        # Get account_id from query params
+        account_id = request.query_params.get("account_id")
+        if not account_id:
+            return Response(
+                {"ok": False, "reason": "account_id_required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate account ownership
+        account = TradingAccount.objects.filter(id=account_id).first()
+        if not account:
+            return Response(
+                {"ok": False, "reason": "account_not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not user.is_staff and account.user_id != user.id:
+            return Response(
+                {"ok": False, "reason": "account_not_owned"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Validate strategy ownership
+        if not user.is_staff and strategy.owner_id != user.id:
+            return Response(
+                {"ok": False, "reason": "strategy_not_owned"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Get symbol from request body
+        symbol = request.data.get("symbol", "EURUSD").upper()
+
+        # Check for manual test signal params
+        manual_params = None
+        if request.data.get("manual"):
+            manual_params = {
+                "side": request.data.get("side", "BUY"),
+                "entry_price": request.data.get("entry_price"),
+                "sl_price": request.data.get("sl_price"),
+                "tp_price": request.data.get("tp_price"),
+            }
+            # Validate required fields for manual signal
+            if not all([
+                manual_params.get("entry_price"),
+                manual_params.get("sl_price"),
+                manual_params.get("tp_price"),
+            ]):
+                return Response(
+                    {"ok": False, "reason": "manual_signal_missing_prices"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Run signal evaluation
+        result = run_signal_evaluation(
+            request=request,
+            strategy=strategy,
+            account=account,
+            symbol=symbol,
+            user=user,
+            manual_params=manual_params,
+        )
+
+        return Response(result.to_dict())
+
     @action(detail=False, methods=["post"], url_path="marketplace/assign")
     def marketplace_assign(self, request):
         user = request.user

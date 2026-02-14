@@ -73,6 +73,11 @@ class AuditEvent(models.Model):
         TRADES_INGESTED = "TRADES_INGESTED", "Trades Ingested"
         TRADES_SYNC_QUEUED = "TRADES_SYNC_QUEUED", "Trades Sync Queued"
 
+        # Strategy signal lifecycle
+        SIGNAL_EVALUATED = "SIGNAL_EVALUATED", "Signal Evaluated"
+        SIGNAL_REJECTED = "SIGNAL_REJECTED", "Signal Rejected"
+        SIGNAL_CREATED = "SIGNAL_CREATED", "Signal Created (Job Queued)"
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
