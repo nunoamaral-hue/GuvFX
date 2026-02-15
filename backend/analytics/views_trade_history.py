@@ -20,11 +20,12 @@ from execution.models import ExecutionJob
 
 logger = logging.getLogger(__name__)
 
-# Patterns to match demo job attribution:
+# Patterns to match execution job attribution:
 # - Legacy: GUVFX_DEMO_JOB:<job_id>
-# - New: GJ<4-digit-zero-padded-job_id> (e.g., "GJ0031" for job_id=31)
+# - Demo: GJ<4-digit-zero-padded-job_id> (e.g., "GJ0031" for job_id=31)
+# - Signal: GS<4-digit-zero-padded-job_id> (e.g., "GS0039" for signal job_id=39)
 DEMO_JOB_PATTERN_LEGACY = re.compile(r"GUVFX_DEMO_JOB:(\d+)")
-DEMO_JOB_PATTERN_NEW = re.compile(r"^GJ(\d{4})$")
+DEMO_JOB_PATTERN_NEW = re.compile(r"^G[JS](\d{4})$")  # Match both GJ and GS tags
 
 
 def _get_windows_agent_config() -> tuple[str, str]:

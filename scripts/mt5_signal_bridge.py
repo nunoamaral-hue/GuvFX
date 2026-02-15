@@ -384,6 +384,28 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
             return False, {}, f"Order send returned None: {error}"
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
+            # Check for market closed (retcode=10018 or comment contains "Market closed")
+            is_market_closed = (
+                result.retcode == 10018 or
+                (result.comment and "market closed" in result.comment.lower())
+            )
+
+            if is_market_closed:
+                # Special handling: return structured result so backend knows it's market_closed
+                market_closed_result = {
+                    "ok": False,
+                    "reason": "market_closed",
+                    "retcode": result.retcode,
+                    "comment": result.comment,
+                    "symbol": symbol,
+                    "entry_price": entry_price,
+                    "sl_price": sl_price,
+                    "tp_price": tp_price,
+                    "lots": lots,
+                    "market_closed": True,
+                }
+                return False, market_closed_result, f"market_closed retcode={result.retcode}"
+
             return False, {}, f"Order failed: retcode={result.retcode}, comment={result.comment}"
 
         # Success!

@@ -447,9 +447,10 @@ def _find_demo_comment_for_close(
     4. Prefers volume match if sell_volume is provided
     5. Takes the CLOSEST BUY to the SELL time (most recent BUY before SELL)
 
-    Recognizes both demo comment patterns:
+    Recognizes execution job comment patterns:
     - Legacy: "GUVFX_DEMO_JOB:<id>"
-    - New: "GJdddd" (e.g., "GJ0031")
+    - Demo: "GJdddd" (e.g., "GJ0031" for demo job_id=31)
+    - Signal: "GSdddd" (e.g., "GS0039" for signal job_id=39)
 
     Args:
         account: The trading account
@@ -484,8 +485,8 @@ def _find_demo_comment_for_close(
             open_time__lte=sell_time,  # BUY must be BEFORE or AT SELL time
         )
         .filter(
-            # Match either legacy pattern OR new pattern
-            Q(comment__startswith="GUVFX_DEMO_JOB:") | Q(comment__regex=r"^GJ\d{4}$")
+            # Match legacy pattern OR new patterns (GJ for demo, GS for signals)
+            Q(comment__startswith="GUVFX_DEMO_JOB:") | Q(comment__regex=r"^G[JS]\d{4}$")
         )
         .order_by("-open_time")  # Most recent first
     )

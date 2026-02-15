@@ -113,8 +113,12 @@ class ExecutionJob(models.Model):
     @classmethod
     def count_today_signal_trades(cls, account_id: int, strategy_id: int, symbol: str) -> int:
         """
-        Count PLACE_ORDER jobs created today for the given account+strategy+symbol.
+        Count PLACE_ORDER jobs completed with SUCCESS today for the given account+strategy+symbol.
         Used to enforce SIGNAL_MAX_TRADES_PER_DAY limit.
+
+        NOTE: Only SUCCESS jobs count toward the limit.
+        FAILED jobs (including market_closed) do NOT consume the daily limit,
+        so users can retry when the market opens.
         """
         today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         return cls.objects.filter(
@@ -122,6 +126,7 @@ class ExecutionJob(models.Model):
             strategy_id=strategy_id,
             job_type=cls.JobType.PLACE_ORDER,
             payload__symbol=symbol,
+            status=cls.Status.SUCCESS,  # Only count successful trades
             created_at__gte=today_start,
         ).count()
 
