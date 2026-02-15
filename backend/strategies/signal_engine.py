@@ -98,7 +98,7 @@ class TrendlineBreakPocketConfig:
     entry_buffer_pips: dict = None
     overshoot_max_pips: dict = None
     clean_air_min_pips: dict = None
-    max_trades_per_day: int = 1
+    max_trades_per_day: int = 10
     max_concurrent_positions: int = 1
     news_filter_mode: str = "major_only"
     zones: dict = None
@@ -134,7 +134,7 @@ class TrendlineBreakPocketConfig:
             entry_buffer_pips=filters.get("entry_buffer_pips", {"EURUSD": 2, "GBPUSD": 3}),
             overshoot_max_pips=filters.get("overshoot_max_pips", {"EURUSD": 12, "GBPUSD": 18}),
             clean_air_min_pips=filters.get("clean_air_min_pips", {"EURUSD": 8, "GBPUSD": 12}),
-            max_trades_per_day=filters.get("max_trades_per_day", 1),
+            max_trades_per_day=filters.get("max_trades_per_day", 10),
             max_concurrent_positions=filters.get("max_concurrent_positions", 1),
             news_filter_mode=filters.get("news_filter_mode", "major_only"),
             zones=filters.get("zones", {}),
