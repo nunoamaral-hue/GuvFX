@@ -4,8 +4,77 @@ from rest_framework import serializers
 from .models import Strategy, StrategyAssignment, StrategyChangeLog
 from trading.models import Trade
 
-# Import validation function for template-specific filters
-from .views import validate_trendline_break_pocket_filters
+
+def validate_trendline_break_pocket_filters(filters: dict) -> dict:
+    """
+    Validate Trendline Break Pocket (Ali) strategy-specific filter parameters.
+    Returns dict of validation errors (empty if valid).
+
+    NOTE: This function lives in serializers.py to avoid circular import with views.py.
+    """
+    errors = {}
+
+    if not isinstance(filters, dict):
+        return errors
+
+    template_slug = filters.get("template_slug", "")
+
+    # Only validate if this is the Trendline Break Pocket template
+    if template_slug != "trendline-break-pocket-ali":
+        return errors
+
+    # direction_mode validation
+    direction_mode = filters.get("direction_mode")
+    valid_direction_modes = {"both", "long", "short"}
+    if direction_mode and direction_mode not in valid_direction_modes:
+        errors["direction_mode"] = f"direction_mode must be one of: {', '.join(valid_direction_modes)}"
+
+    # trendline_lookback_bars validation (must be >= 50)
+    lookback = filters.get("trendline_lookback_bars")
+    if lookback is not None:
+        try:
+            lookback_int = int(lookback)
+            if lookback_int < 50:
+                errors["trendline_lookback_bars"] = "trendline_lookback_bars must be >= 50"
+        except (TypeError, ValueError):
+            errors["trendline_lookback_bars"] = "trendline_lookback_bars must be an integer"
+
+    # rr_target validation (must be > 0)
+    rr_target = filters.get("rr_target")
+    if rr_target is not None:
+        try:
+            rr_float = float(rr_target)
+            if rr_float <= 0:
+                errors["rr_target"] = "rr_target must be > 0"
+        except (TypeError, ValueError):
+            errors["rr_target"] = "rr_target must be a number"
+
+    # Zone validation (low < high for each zone, zone_type valid)
+    zones = filters.get("zones") or {}
+    valid_zone_types = {"supply", "demand", "pivot"}
+    for symbol, zone_list in zones.items():
+        if not isinstance(zone_list, list):
+            continue
+        for i, zone in enumerate(zone_list):
+            if not isinstance(zone, dict):
+                continue
+            low = zone.get("low")
+            high = zone.get("high")
+            zone_type = zone.get("zone_type")
+
+            if low is not None and high is not None:
+                try:
+                    low_f = float(low)
+                    high_f = float(high)
+                    if low_f >= high_f:
+                        errors[f"zones.{symbol}[{i}]"] = f"Zone low ({low_f}) must be < high ({high_f})"
+                except (TypeError, ValueError):
+                    errors[f"zones.{symbol}[{i}]"] = "Zone low/high must be numbers"
+
+            if zone_type and zone_type not in valid_zone_types:
+                errors[f"zones.{symbol}[{i}].zone_type"] = f"zone_type must be one of: {', '.join(valid_zone_types)}"
+
+    return errors
 
 
 class StrategySerializer(serializers.ModelSerializer):
