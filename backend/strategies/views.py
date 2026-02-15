@@ -366,6 +366,10 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 "sl_price": request.data.get("sl_price"),
                 "tp_price": request.data.get("tp_price"),
             }
+            # Optional explicit lots override (validated in signal engine)
+            if "lots" in request.data:
+                manual_params["lots"] = request.data.get("lots")
+
             # Validate required fields for manual signal
             if not all([
                 manual_params.get("entry_price"),

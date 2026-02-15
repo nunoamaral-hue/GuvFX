@@ -231,12 +231,15 @@ def validate_signal_safety(
 # =============================================================================
 
 
+SIGNAL_MIN_LOT_SIZE = 0.01  # Hard floor for lot sizing
+
+
 def calculate_lot_size(
     account: TradingAccount,
     risk_pct: float,
     stop_distance_pips: float,
     symbol: str,
-) -> float:
+) -> tuple[float, str | None]:
     """
     Calculate position size based on risk percentage and stop distance.
 
@@ -249,12 +252,17 @@ def calculate_lot_size(
     risk_amount = balance * (risk_pct / 100)
     pip_value_per_lot = 10 (for USD quote pairs)
     lots = risk_amount / (stop_distance_pips * pip_value_per_lot)
+
+    Returns:
+        (lots, warning) - lots is always >= 0.01, warning is set if fallback used
     """
+    warning = None
+
     # Get balance - for MVP, use a default if not available
     balance = getattr(account, "balance", None)
     if balance is None or float(balance) <= 0:
-        # Fallback: reject if no balance
-        return 0.0
+        # Fallback: use minimum lot size instead of failing
+        return SIGNAL_MIN_LOT_SIZE, "no_balance_fallback_to_min_lots"
 
     balance_float = float(balance)
     risk_amount = balance_float * (risk_pct / 100.0)
@@ -264,21 +272,24 @@ def calculate_lot_size(
 
     # Calculate lots
     if stop_distance_pips <= 0:
-        return 0.0
+        return SIGNAL_MIN_LOT_SIZE, "invalid_stop_pips_fallback_to_min_lots"
 
     lots = risk_amount / (stop_distance_pips * pip_value_per_lot)
 
     # Apply hard cap
-    lots = min(lots, SIGNAL_MAX_LOT_SIZE)
+    if lots > SIGNAL_MAX_LOT_SIZE:
+        lots = SIGNAL_MAX_LOT_SIZE
+        warning = f"lot_size_capped_to_max:{SIGNAL_MAX_LOT_SIZE}"
 
     # Round to 2 decimal places (standard lot precision)
     lots = round(lots, 2)
 
     # Minimum lot size
-    if lots < 0.01:
-        lots = 0.01
+    if lots < SIGNAL_MIN_LOT_SIZE:
+        lots = SIGNAL_MIN_LOT_SIZE
+        warning = f"lot_size_raised_to_min:{SIGNAL_MIN_LOT_SIZE}"
 
-    return lots
+    return lots, warning
 
 
 # =============================================================================
@@ -350,12 +361,17 @@ def generate_manual_test_signal(
     sl_price: float,
     tp_price: float,
     config: TrendlineBreakPocketConfig,
+    override_lots: float | None = None,
 ) -> SignalResult:
     """
     Generate a test signal with manually specified parameters.
 
     This allows testing the execution flow without full signal logic.
     Safety rails still apply.
+
+    Args:
+        override_lots: Optional explicit lot size (must be 0.01 <= lots <= 0.02).
+                      If provided, bypasses risk-based calculation.
     """
     # Validate side
     side = side.upper()
@@ -412,17 +428,50 @@ def generate_manual_test_signal(
     pip_size = 0.0001  # For EURUSD, GBPUSD
     stop_distance_pips = abs(entry_price - sl_price) / pip_size
 
-    # Calculate lot size
-    risk_pct = float(strategy.risk_per_trade_pct or 0.1)
-    lots = calculate_lot_size(account, risk_pct, stop_distance_pips, symbol)
+    # Determine lot size
+    warning = None
+    risk_pct = float(strategy.risk_per_trade_pct or 1.0)
 
-    if lots <= 0:
-        return SignalResult(
-            ok=False,
-            symbol=symbol,
-            reason="lot_size_calculation_failed",
-            details={"risk_pct": risk_pct, "stop_pips": stop_distance_pips},
-        )
+    if override_lots is not None:
+        # Validate explicit lots override (hard caps enforced)
+        try:
+            lots = float(override_lots)
+        except (TypeError, ValueError):
+            return SignalResult(
+                ok=False,
+                symbol=symbol,
+                reason="invalid_lots_value",
+                details={"lots": override_lots},
+            )
+
+        if lots < SIGNAL_MIN_LOT_SIZE:
+            return SignalResult(
+                ok=False,
+                symbol=symbol,
+                reason=f"lots_below_minimum:{SIGNAL_MIN_LOT_SIZE}",
+                details={"lots": lots, "min": SIGNAL_MIN_LOT_SIZE},
+            )
+        if lots > SIGNAL_MAX_LOT_SIZE:
+            return SignalResult(
+                ok=False,
+                symbol=symbol,
+                reason=f"lots_above_maximum:{SIGNAL_MAX_LOT_SIZE}",
+                details={"lots": lots, "max": SIGNAL_MAX_LOT_SIZE},
+            )
+        # Round to 2 decimals
+        lots = round(lots, 2)
+    else:
+        # Calculate lot size from risk (with safe fallback)
+        lots, warning = calculate_lot_size(account, risk_pct, stop_distance_pips, symbol)
+
+    details = {
+        "risk_pct": risk_pct,
+        "stop_distance_pips": stop_distance_pips,
+        "lots": lots,
+        "lots_source": "override" if override_lots is not None else "calculated",
+    }
+    if warning:
+        details["warning"] = warning
 
     return SignalResult(
         ok=True,
@@ -433,11 +482,7 @@ def generate_manual_test_signal(
         tp_price=tp_price,
         lots=lots,
         reason="manual_test_signal",
-        details={
-            "risk_pct": risk_pct,
-            "stop_distance_pips": stop_distance_pips,
-            "calculated_lots": lots,
-        },
+        details=details,
     )
 
 
@@ -609,6 +654,7 @@ def run_signal_evaluation(
     # Generate signal
     if manual_params:
         # Manual test signal
+        override_lots = manual_params.get("lots")  # Optional explicit lots
         signal = generate_manual_test_signal(
             strategy=strategy,
             account=account,
@@ -619,6 +665,7 @@ def run_signal_evaluation(
             sl_price=float(manual_params.get("sl_price", 0)),
             tp_price=float(manual_params.get("tp_price", 0)),
             config=config,
+            override_lots=override_lots,
         )
     else:
         # Automatic signal evaluation
