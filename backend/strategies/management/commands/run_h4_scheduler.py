@@ -21,6 +21,7 @@ Usage:
     python manage.py run_h4_scheduler --force-bar-close-iso "2026-02-16T08:00:00Z"
 """
 
+import datetime as dt
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -151,7 +152,7 @@ class Command(BaseCommand):
             # Parse forced bar close time
             try:
                 bar_close_time = datetime.fromisoformat(force_bar_close.replace("Z", "+00:00"))
-                bar_close_time = bar_close_time.replace(tzinfo=timezone.utc)
+                bar_close_time = bar_close_time.replace(tzinfo=dt.timezone.utc)
             except ValueError as e:
                 self.stderr.write(f"[ERROR] Invalid ISO format: {force_bar_close} - {e}")
                 return
@@ -223,6 +224,9 @@ class Command(BaseCommand):
 
             for symbol in pairs_enabled:
                 symbol = symbol.strip().upper()
+
+                # Safe logging for cron readability
+                print(f"[H4] account={account.id} strategy={strategy.id} symbol={symbol} bar={bar_close_iso}")
 
                 # Idempotency check (outside transaction for early skip)
                 if job_exists_for_bar_close(account.id, strategy.id, symbol, bar_close_iso):
