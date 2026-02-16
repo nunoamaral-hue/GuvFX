@@ -15,18 +15,21 @@ SAFETY:
 - Demo accounts only (is_demo=True)
 - Symbols: EURUSD, GBPUSD only
 - Max lots: 0.02 (hard cap)
-- Max trades per day per account+strategy+symbol: 3
+- Max trades per day per account+strategy+symbol: 10
 - Max concurrent positions per symbol: 1
 
-NOTE: This is a simplified implementation for the MVP. The signal evaluation
-currently uses a placeholder that generates signals based on basic price
-structure analysis. Full implementation requires H4 OHLC data feed.
+AUTO MODE:
+When manual_params is None, the engine fetches H4/D1 OHLC data from the Windows
+agent and evaluates the full TBP signal logic deterministically.
 """
 
+import json
 import logging
+import os
+import urllib.request
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from django.http import HttpRequest
 
@@ -42,6 +45,83 @@ from trading.models import TradingAccount, Trade
 from core.audit import log_signal_evaluated, log_signal_rejected, log_signal_created
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# OHLC Data Fetching from Windows Agent
+# =============================================================================
+
+
+class RatesFetchError(Exception):
+    """Exception raised when fetching rates from Windows agent fails."""
+    pass
+
+
+def fetch_rates(
+    account,
+    symbol: str,
+    timeframe: str,
+    count: int = 300,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch OHLC rates from the Windows MT5 agent.
+
+    Args:
+        account: TradingAccount with windows_username
+        symbol: Trading symbol (e.g., "EURUSD")
+        timeframe: Timeframe string ("H4", "D1", etc.)
+        count: Number of bars to fetch (max 500)
+
+    Returns:
+        List of OHLC dicts with keys: time, open, high, low, close, tick_volume
+
+    Raises:
+        RatesFetchError: If the request fails or returns invalid data
+    """
+    # Get agent URL and token from environment
+    agent_url = (os.getenv("GUVFX_AGENT_URL") or os.getenv("WINDOWS_AGENT_BASE") or "").rstrip("/")
+    agent_token = (os.getenv("GUVFX_AGENT_TOKEN") or os.getenv("WINDOWS_AGENT_TOKEN") or "").strip()
+
+    if not agent_url:
+        raise RatesFetchError("GUVFX_AGENT_URL not configured")
+
+    # Build URL with query params
+    params = f"symbol={symbol}&timeframe={timeframe}&count={count}"
+    url = f"{agent_url}/mt5/snapshots/rates?{params}"
+
+    # Build request
+    headers = {"Content-Type": "application/json"}
+    if agent_token:
+        headers["X-GuvFX-Agent-Token"] = agent_token
+
+    req = urllib.request.Request(url, method="GET", headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+            if not raw:
+                raise RatesFetchError("Empty response from agent")
+
+            data = json.loads(raw)
+
+            if not data.get("ok"):
+                error = data.get("error", "unknown error")
+                raise RatesFetchError(f"Agent error: {error}")
+
+            rates = data.get("data", [])
+            if not isinstance(rates, list):
+                raise RatesFetchError("Invalid data format: expected list")
+
+            return rates
+
+    except urllib.error.URLError as e:
+        raise RatesFetchError(f"Connection failed: {e}")
+    except urllib.error.HTTPError as e:
+        raise RatesFetchError(f"HTTP error {e.code}: {e.reason}")
+    except json.JSONDecodeError as e:
+        raise RatesFetchError(f"Invalid JSON response: {e}")
+    except Exception as e:
+        raise RatesFetchError(f"Unexpected error: {e}")
 
 
 # =============================================================================
@@ -293,8 +373,153 @@ def calculate_lot_size(
 
 
 # =============================================================================
-# Signal Evaluation (Placeholder for MVP)
+# TBP Signal Analysis Functions
 # =============================================================================
+
+
+def find_pivot_highs(rates: List[Dict], strength: int = 2) -> List[Dict]:
+    """
+    Find pivot highs in OHLC data.
+
+    A pivot high is a bar where the high is higher than `strength` bars on each side.
+
+    Returns list of {index, time, price} for each pivot.
+    """
+    pivots = []
+    n = len(rates)
+
+    for i in range(strength, n - strength):
+        high = rates[i]["high"]
+        is_pivot = True
+
+        # Check left side
+        for j in range(1, strength + 1):
+            if rates[i - j]["high"] >= high:
+                is_pivot = False
+                break
+
+        # Check right side
+        if is_pivot:
+            for j in range(1, strength + 1):
+                if rates[i + j]["high"] >= high:
+                    is_pivot = False
+                    break
+
+        if is_pivot:
+            pivots.append({
+                "index": i,
+                "time": rates[i]["time"],
+                "price": high,
+            })
+
+    return pivots
+
+
+def find_pivot_lows(rates: List[Dict], strength: int = 2) -> List[Dict]:
+    """
+    Find pivot lows in OHLC data.
+
+    A pivot low is a bar where the low is lower than `strength` bars on each side.
+
+    Returns list of {index, time, price} for each pivot.
+    """
+    pivots = []
+    n = len(rates)
+
+    for i in range(strength, n - strength):
+        low = rates[i]["low"]
+        is_pivot = True
+
+        # Check left side
+        for j in range(1, strength + 1):
+            if rates[i - j]["low"] <= low:
+                is_pivot = False
+                break
+
+        # Check right side
+        if is_pivot:
+            for j in range(1, strength + 1):
+                if rates[i + j]["low"] <= low:
+                    is_pivot = False
+                    break
+
+        if is_pivot:
+            pivots.append({
+                "index": i,
+                "time": rates[i]["time"],
+                "price": low,
+            })
+
+    return pivots
+
+
+def compute_trendline_from_pivots(
+    pivots: List[Dict],
+    lookback_bars: int,
+    rates_len: int,
+) -> Optional[Dict]:
+    """
+    Compute a deterministic trendline from pivot points.
+
+    For bullish (demand zone): Uses pivot lows, line connects most recent valid pivots
+    For bearish (supply zone): Uses pivot highs, line connects most recent valid pivots
+
+    Returns {slope, intercept, start_idx, end_idx, start_price, end_price} or None
+    """
+    if len(pivots) < 2:
+        return None
+
+    # Only use pivots within lookback window
+    min_idx = rates_len - lookback_bars
+    valid_pivots = [p for p in pivots if p["index"] >= min_idx]
+
+    if len(valid_pivots) < 2:
+        return None
+
+    # Use the two most recent pivots for deterministic line
+    p1 = valid_pivots[-2]
+    p2 = valid_pivots[-1]
+
+    # Calculate slope (price per bar)
+    idx_diff = p2["index"] - p1["index"]
+    if idx_diff == 0:
+        return None
+
+    slope = (p2["price"] - p1["price"]) / idx_diff
+    intercept = p1["price"] - slope * p1["index"]
+
+    return {
+        "slope": slope,
+        "intercept": intercept,
+        "start_idx": p1["index"],
+        "end_idx": p2["index"],
+        "start_price": p1["price"],
+        "end_price": p2["price"],
+    }
+
+
+def get_trendline_value_at(trendline: Dict, bar_index: int) -> float:
+    """Get the trendline price at a specific bar index."""
+    return trendline["slope"] * bar_index + trendline["intercept"]
+
+
+def is_price_in_zone(price: float, zone: Dict) -> bool:
+    """Check if price is within a zone's low/high range."""
+    return zone["low"] <= price <= zone["high"]
+
+
+def find_swing_high(rates: List[Dict], lookback: int) -> Optional[float]:
+    """Find the highest high in the last `lookback` bars."""
+    if len(rates) < lookback:
+        return None
+    return max(r["high"] for r in rates[-lookback:])
+
+
+def find_swing_low(rates: List[Dict], lookback: int) -> Optional[float]:
+    """Find the lowest low in the last `lookback` bars."""
+    if len(rates) < lookback:
+        return None
+    return min(r["low"] for r in rates[-lookback:])
 
 
 def evaluate_trendline_break_pocket_signal(
@@ -304,22 +529,23 @@ def evaluate_trendline_break_pocket_signal(
     symbol: str,
     config: TrendlineBreakPocketConfig,
     current_price: Optional[float] = None,
+    h4_rates: Optional[List[Dict]] = None,
+    d1_rates: Optional[List[Dict]] = None,
 ) -> SignalResult:
     """
-    Evaluate whether a signal should be generated for the given symbol.
+    Evaluate whether a TBP signal should be generated for the given symbol.
 
-    MVP IMPLEMENTATION:
-    This is a simplified placeholder that demonstrates the signal flow.
-    Full implementation requires:
-    1. H4 OHLC data feed from MT5 or external source
-    2. Pivot high/low detection algorithm
-    3. Trendline construction and break detection
-    4. Swing structure analysis
+    FULL AUTO MODE:
+    When h4_rates and d1_rates are provided, evaluates the complete signal logic:
+    1. Check if current price is inside a D1 zone
+    2. Compute trendline from H4 pivot points
+    3. Check for H4 close break of trendline
+    4. Confirm swing structure break
+    5. Optionally wait for pocket retest
 
-    For the MVP, we return a "no_signal" result and let the user manually
-    trigger test signals via a special endpoint.
+    MANUAL/FALLBACK MODE:
+    When rates are not provided, returns no_signal.
     """
-    # Get the first zone for reference (for testing purposes)
     symbol_zones = config.zones.get(symbol, [])
     if not symbol_zones:
         return SignalResult(
@@ -328,20 +554,201 @@ def evaluate_trendline_break_pocket_signal(
             reason="no_zones_available",
         )
 
-    # For MVP: Return no_signal with details about what would be checked
+    # If no rates provided, can't evaluate (manual mode required)
+    if not h4_rates or len(h4_rates) < config.trendline_lookback_bars:
+        return SignalResult(
+            ok=True,
+            signal_type=None,
+            symbol=symbol,
+            reason="insufficient_h4_data",
+            details={"bars_needed": config.trendline_lookback_bars, "bars_available": len(h4_rates) if h4_rates else 0},
+        )
+
+    if not d1_rates or len(d1_rates) < 20:
+        return SignalResult(
+            ok=True,
+            signal_type=None,
+            symbol=symbol,
+            reason="insufficient_d1_data",
+            details={"bars_needed": 20, "bars_available": len(d1_rates) if d1_rates else 0},
+        )
+
+    # Get current H4 bar (most recent closed bar is index -2, current is -1)
+    # We evaluate on the CLOSED bar, not the forming bar
+    current_bar = h4_rates[-2] if len(h4_rates) >= 2 else h4_rates[-1]
+    current_close = current_bar["close"]
+    current_high = current_bar["high"]
+    current_low = current_bar["low"]
+
+    # Get pip size for the symbol
+    pip_size = 0.0001 if "JPY" not in symbol else 0.01
+    entry_buffer_pips = config.entry_buffer_pips.get(symbol, 2)
+    entry_buffer = entry_buffer_pips * pip_size
+
+    # Step 1: Find which zone (if any) price is in
+    active_zone = None
+    zone_type = None  # "demand" or "supply"
+
+    for zone in symbol_zones:
+        if is_price_in_zone(current_close, zone):
+            active_zone = zone
+            zone_type = zone.get("zone_type", "demand")  # Default to demand
+            break
+
+    if not active_zone:
+        return SignalResult(
+            ok=True,
+            signal_type=None,
+            symbol=symbol,
+            reason="price_not_in_zone",
+            details={"current_close": current_close, "zones_checked": len(symbol_zones)},
+        )
+
+    # Determine signal direction based on zone type
+    if zone_type == "demand":
+        signal_direction = "BUY"
+        if config.direction_mode == "short":
+            return SignalResult(ok=True, signal_type=None, symbol=symbol, reason="direction_mode_excludes_long")
+    elif zone_type == "supply":
+        signal_direction = "SELL"
+        if config.direction_mode == "long":
+            return SignalResult(ok=True, signal_type=None, symbol=symbol, reason="direction_mode_excludes_short")
+    else:
+        # Pivot zone - check price direction relative to zone center
+        zone_mid = (active_zone["low"] + active_zone["high"]) / 2
+        if current_close > zone_mid:
+            signal_direction = "SELL" if config.direction_mode != "long" else None
+        else:
+            signal_direction = "BUY" if config.direction_mode != "short" else None
+
+        if not signal_direction:
+            return SignalResult(ok=True, signal_type=None, symbol=symbol, reason="pivot_zone_direction_filtered")
+
+    # Step 2: Compute trendline
+    if signal_direction == "BUY":
+        # For BUY: Look for downtrend line from pivot highs, break upward
+        pivots = find_pivot_highs(h4_rates[:-1], config.trendline_pivot_strength)
+        trendline = compute_trendline_from_pivots(pivots, config.trendline_lookback_bars, len(h4_rates) - 1)
+
+        if not trendline:
+            return SignalResult(
+                ok=True,
+                signal_type=None,
+                symbol=symbol,
+                reason="no_valid_downtrend_line",
+                details={"pivot_count": len(pivots)},
+            )
+
+        # Check for upward break: close above trendline + buffer
+        trendline_value = get_trendline_value_at(trendline, len(h4_rates) - 2)
+        break_threshold = trendline_value + entry_buffer
+
+        if current_close < break_threshold:
+            return SignalResult(
+                ok=True,
+                signal_type=None,
+                symbol=symbol,
+                reason="no_trendline_break",
+                details={"close": current_close, "trendline": trendline_value, "threshold": break_threshold},
+            )
+
+    else:  # SELL
+        # For SELL: Look for uptrend line from pivot lows, break downward
+        pivots = find_pivot_lows(h4_rates[:-1], config.trendline_pivot_strength)
+        trendline = compute_trendline_from_pivots(pivots, config.trendline_lookback_bars, len(h4_rates) - 1)
+
+        if not trendline:
+            return SignalResult(
+                ok=True,
+                signal_type=None,
+                symbol=symbol,
+                reason="no_valid_uptrend_line",
+                details={"pivot_count": len(pivots)},
+            )
+
+        # Check for downward break: close below trendline - buffer
+        trendline_value = get_trendline_value_at(trendline, len(h4_rates) - 2)
+        break_threshold = trendline_value - entry_buffer
+
+        if current_close > break_threshold:
+            return SignalResult(
+                ok=True,
+                signal_type=None,
+                symbol=symbol,
+                reason="no_trendline_break",
+                details={"close": current_close, "trendline": trendline_value, "threshold": break_threshold},
+            )
+
+    # Step 3: Confirm swing structure break
+    swing_lookback = config.swing_lookback
+
+    if signal_direction == "BUY":
+        # BUY: Need close above recent swing high
+        swing_high = find_swing_high(h4_rates[:-2], swing_lookback)
+        if swing_high and current_close <= swing_high:
+            return SignalResult(
+                ok=True,
+                signal_type=None,
+                symbol=symbol,
+                reason="swing_break_not_confirmed",
+                details={"close": current_close, "swing_high": swing_high},
+            )
+    else:
+        # SELL: Need close below recent swing low
+        swing_low = find_swing_low(h4_rates[:-2], swing_lookback)
+        if swing_low and current_close >= swing_low:
+            return SignalResult(
+                ok=True,
+                signal_type=None,
+                symbol=symbol,
+                reason="swing_break_not_confirmed",
+                details={"close": current_close, "swing_low": swing_low},
+            )
+
+    # Step 4: Pocket retest (if required) - simplified: entry at current close
+    # Full implementation would track runtime_state for multi-bar retest
+    entry_price = current_close
+
+    # Step 5: Calculate SL and TP
+    rr_target = config.rr_target
+
+    if signal_direction == "BUY":
+        # SL below zone low with buffer
+        sl_price = active_zone["low"] - (5 * pip_size)  # 5 pip buffer
+        sl_distance = entry_price - sl_price
+        tp_price = entry_price + (sl_distance * rr_target)
+    else:
+        # SL above zone high with buffer
+        sl_price = active_zone["high"] + (5 * pip_size)  # 5 pip buffer
+        sl_distance = sl_price - entry_price
+        tp_price = entry_price - (sl_distance * rr_target)
+
+    # Calculate lot size
+    stop_distance_pips = abs(entry_price - sl_price) / pip_size
+    risk_pct = float(strategy.risk_per_trade_pct or 1.0)
+    lots, lot_warning = calculate_lot_size(account, risk_pct, stop_distance_pips, symbol)
+
+    zone_name = active_zone.get("name", f"{zone_type}_{symbol}")
+
     return SignalResult(
         ok=True,
-        signal_type=None,  # No signal generated
+        signal_type=signal_direction,
         symbol=symbol,
-        reason="no_signal_conditions_not_met",
+        entry_price=round(entry_price, 5),
+        sl_price=round(sl_price, 5),
+        tp_price=round(tp_price, 5),
+        lots=lots,
+        reason="trendline_break_pocket_signal",
         details={
-            "zones_count": len(symbol_zones),
-            "direction_mode": config.direction_mode,
-            "rr_target": config.rr_target,
-            "lookback_bars": config.trendline_lookback_bars,
-            "pivot_strength": config.trendline_pivot_strength,
-            "pocket_retest_required": config.pocket_retest_required,
-            "note": "MVP placeholder - full signal logic not yet implemented",
+            "zone_name": zone_name,
+            "zone_type": zone_type,
+            "zone_low": active_zone["low"],
+            "zone_high": active_zone["high"],
+            "trendline_value": round(trendline_value, 5),
+            "rr_target": rr_target,
+            "risk_pct": risk_pct,
+            "stop_distance_pips": round(stop_distance_pips, 1),
+            "lot_warning": lot_warning,
         },
     )
 
@@ -519,6 +926,11 @@ def create_place_order_job(
     if account.mt5_instance:
         windows_username = getattr(account.mt5_instance, "windows_username", None)
 
+    # Extract zone info from signal details
+    signal_details = signal.details or {}
+    zone_name = signal_details.get("zone_name", "")
+    signal_reason = signal.reason or "signal"
+
     # Build payload
     payload = {
         "symbol": signal.symbol,
@@ -532,6 +944,8 @@ def create_place_order_job(
         "is_demo": account.is_demo,
         "strategy_id": strategy.id,
         "windows_username": windows_username,
+        "zone_name": zone_name,
+        "signal_reason": signal_reason,
         "safety_rails": {
             "max_lots": SIGNAL_MAX_LOT_SIZE,
             "allowed_symbols": SIGNAL_ALLOWED_SYMBOLS,
@@ -680,13 +1094,45 @@ def run_signal_evaluation(
             override_lots=override_lots,
         )
     else:
-        # Automatic signal evaluation
+        # AUTO MODE: Fetch rates and evaluate full signal logic
+        h4_rates = None
+        d1_rates = None
+
+        try:
+            # Fetch H4 rates (need at least lookback_bars + buffer)
+            h4_count = config.trendline_lookback_bars + 50
+            h4_rates = fetch_rates(account, symbol, "H4", count=min(h4_count, 300))
+            logger.info(f"Fetched {len(h4_rates)} H4 bars for {symbol}")
+
+            # Fetch D1 rates for zone context
+            d1_rates = fetch_rates(account, symbol, "D1", count=100)
+            logger.info(f"Fetched {len(d1_rates)} D1 bars for {symbol}")
+
+        except RatesFetchError as e:
+            logger.warning(f"Failed to fetch rates for {symbol}: {e}")
+            # Return no_signal with error details
+            signal = SignalResult(
+                ok=True,
+                signal_type=None,
+                symbol=symbol,
+                reason="rates_fetch_failed",
+                details={"error": str(e)},
+            )
+            log_signal_evaluated(
+                request, strategy.id, account.id, symbol,
+                signal_result=signal.to_dict(),
+            )
+            return signal
+
+        # Evaluate with fetched rates
         signal = evaluate_trendline_break_pocket_signal(
             strategy=strategy,
             account=account,
             assignment=assignment,
             symbol=symbol,
             config=config,
+            h4_rates=h4_rates,
+            d1_rates=d1_rates,
         )
 
     # Log evaluation

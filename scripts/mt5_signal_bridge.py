@@ -13,6 +13,11 @@ KEY DIFFERENCES FROM DEMO BRIDGE:
 - Does NOT auto-close positions (real strategy trades)
 - Supports EURUSD and GBPUSD
 
+HTTP SERVER MODE (for OHLC data):
+- Runs an embedded HTTP server on port 8787
+- Provides /mt5/snapshots/rates endpoint for fetching OHLC data
+- Used by the backend for H4 auto-evaluation
+
 SAFETY RAILS (hard-coded, cannot be bypassed):
 - Demo accounts only (is_demo=True in payload)
 - EURUSD and GBPUSD only
@@ -33,6 +38,7 @@ ENVIRONMENT VARIABLES (required):
 OPTIONAL:
 - MT5_TERMINAL_PATH: Path to MT5 terminal (if non-standard location)
 - POLL_INTERVAL_SECONDS: Polling interval (default: 2)
+- HTTP_SERVER_PORT: Port for HTTP server (default: 8787)
 
 USAGE:
     python mt5_signal_bridge.py
@@ -41,11 +47,14 @@ USAGE:
 import os
 import sys
 import time
+import json
 import logging
 import random
+import threading
 from datetime import datetime
 from typing import Optional, Dict, Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, parse_qs, urlparse
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -86,6 +95,20 @@ WORKER_TOKEN = os.getenv("GUVFX_WORKER_TOKEN", "")
 ACCOUNT_ID = os.getenv("MT5_ACCOUNT_ID", "")
 MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
+HTTP_SERVER_PORT = int(os.getenv("HTTP_SERVER_PORT", "8787"))
+
+# Timeframe mapping for MT5
+TIMEFRAME_MAP = {
+    "M1": 1,      # TIMEFRAME_M1
+    "M5": 5,      # TIMEFRAME_M5
+    "M15": 15,    # TIMEFRAME_M15
+    "M30": 30,    # TIMEFRAME_M30
+    "H1": 16385,  # TIMEFRAME_H1
+    "H4": 16388,  # TIMEFRAME_H4
+    "D1": 16408,  # TIMEFRAME_D1
+    "W1": 32769,  # TIMEFRAME_W1
+    "MN1": 49153, # TIMEFRAME_MN1
+}
 
 _consecutive_404_count = 0
 
@@ -449,6 +472,170 @@ def process_job(job: Dict) -> None:
     complete_job(job_id, success=success, result=result, error_message=error)
 
 
+# =============================================================================
+# HTTP Server for OHLC Data
+# =============================================================================
+
+
+def fetch_ohlc_rates(symbol: str, timeframe: str, count: int) -> Dict[str, Any]:
+    """
+    Fetch OHLC rates from MT5.
+
+    Args:
+        symbol: Trading symbol (e.g., EURUSD)
+        timeframe: Timeframe string (H4, D1, etc.)
+        count: Number of bars to fetch (max 500)
+
+    Returns:
+        Dict with ok, data, and metadata
+    """
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return {"ok": False, "error": "MetaTrader5 package not installed"}
+
+    # Validate timeframe
+    if timeframe not in TIMEFRAME_MAP:
+        return {"ok": False, "error": f"Invalid timeframe: {timeframe}. Valid: {list(TIMEFRAME_MAP.keys())}"}
+
+    # Validate count
+    if count <= 0 or count > 500:
+        return {"ok": False, "error": f"Count must be 1-500, got: {count}"}
+
+    # Initialize MT5
+    init_kwargs = {}
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+
+    if not mt5.initialize(**init_kwargs):
+        error = mt5.last_error()
+        return {"ok": False, "error": f"MT5 initialization failed: {error}"}
+
+    try:
+        # Check symbol exists
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            return {"ok": False, "error": f"Symbol {symbol} not found in MT5"}
+
+        if not symbol_info.visible:
+            if not mt5.symbol_select(symbol, True):
+                return {"ok": False, "error": f"Failed to select symbol {symbol}"}
+
+        # Get timeframe constant
+        tf_value = TIMEFRAME_MAP[timeframe]
+
+        # Fetch rates from current position
+        rates = mt5.copy_rates_from_pos(symbol, tf_value, 0, count)
+
+        if rates is None or len(rates) == 0:
+            error = mt5.last_error()
+            return {"ok": False, "error": f"Failed to fetch rates: {error}"}
+
+        # Convert to list of dicts
+        data = []
+        for rate in rates:
+            data.append({
+                "time": int(rate[0]),
+                "open": float(rate[1]),
+                "high": float(rate[2]),
+                "low": float(rate[3]),
+                "close": float(rate[4]),
+                "tick_volume": int(rate[5]),
+            })
+
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "count": len(data),
+            "data": data,
+        }
+
+    finally:
+        mt5.shutdown()
+
+
+class OHLCRequestHandler(BaseHTTPRequestHandler):
+    """HTTP request handler for OHLC data endpoints."""
+
+    def log_message(self, format, *args):
+        """Override to use our logger."""
+        logger.debug(f"HTTP: {args[0]}")
+
+    def _send_json_response(self, data: Dict, status_code: int = 200):
+        """Send JSON response."""
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode("utf-8"))
+
+    def _validate_token(self) -> bool:
+        """Validate the worker token from headers."""
+        provided_token = self.headers.get("X-GuvFX-Agent-Token", "")
+        if not WORKER_TOKEN:
+            return True  # No token configured, allow all
+        return provided_token == WORKER_TOKEN
+
+    def do_GET(self):
+        """Handle GET requests."""
+        try:
+            parsed = urlparse(self.path)
+            path = parsed.path
+            params = parse_qs(parsed.query)
+
+            # Token validation
+            if not self._validate_token():
+                self._send_json_response({"ok": False, "error": "unauthorized"}, 401)
+                return
+
+            if path == "/mt5/snapshots/rates":
+                self._handle_rates_request(params)
+            elif path == "/health":
+                self._send_json_response({"ok": True, "status": "healthy"})
+            else:
+                self._send_json_response({"ok": False, "error": "not_found"}, 404)
+
+        except Exception as e:
+            logger.exception(f"HTTP handler error: {e}")
+            self._send_json_response({"ok": False, "error": str(e)}, 500)
+
+    def _handle_rates_request(self, params: Dict):
+        """Handle /mt5/snapshots/rates endpoint."""
+        # Extract parameters
+        symbol = params.get("symbol", [""])[0].upper()
+        timeframe = params.get("timeframe", ["H4"])[0].upper()
+        count_str = params.get("count", ["300"])[0]
+
+        # Validate required params
+        if not symbol:
+            self._send_json_response({"ok": False, "error": "symbol parameter required"}, 400)
+            return
+
+        try:
+            count = int(count_str)
+        except ValueError:
+            self._send_json_response({"ok": False, "error": f"Invalid count: {count_str}"}, 400)
+            return
+
+        # Fetch OHLC data
+        result = fetch_ohlc_rates(symbol, timeframe, count)
+
+        if result.get("ok"):
+            self._send_json_response(result)
+        else:
+            self._send_json_response(result, 400)
+
+
+def start_http_server():
+    """Start the HTTP server in a background thread."""
+    try:
+        server = HTTPServer(("0.0.0.0", HTTP_SERVER_PORT), OHLCRequestHandler)
+        logger.info(f"HTTP server started on port {HTTP_SERVER_PORT}")
+        server.serve_forever()
+    except Exception as e:
+        logger.exception(f"HTTP server error: {e}")
+
+
 def main_loop() -> None:
     """Main polling loop."""
     logger.info("=" * 60)
@@ -461,6 +648,9 @@ def main_loop() -> None:
     logger.info(f"  - Poll interval: {POLL_INTERVAL}s")
     logger.info(f"  - SL/TP required: Yes")
     logger.info(f"  - Auto-close: No (strategy trades stay open)")
+    logger.info(f"HTTP server:")
+    logger.info(f"  - Port: {HTTP_SERVER_PORT}")
+    logger.info(f"  - OHLC endpoint: /mt5/snapshots/rates")
     logger.info("=" * 60)
 
     while True:
@@ -485,6 +675,11 @@ def main() -> int:
     if not validate_config():
         logger.error("Configuration validation failed. Exiting.")
         return 1
+
+    # Start HTTP server in background thread for OHLC data requests
+    http_thread = threading.Thread(target=start_http_server, daemon=True)
+    http_thread.start()
+    logger.info(f"HTTP server thread started (port {HTTP_SERVER_PORT})")
 
     try:
         main_loop()
