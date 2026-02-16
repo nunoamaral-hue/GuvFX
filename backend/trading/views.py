@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import re
 import urllib.request
 import json
 import os
+
+# Pattern to normalize manual-close tags: "MANUAL_CLOSE_GS0042" -> "GS0042"
+MANUAL_CLOSE_TAG_RE = re.compile(r"^MANUAL_CLOSE_(G[JS]\d{4})$")
 
 def _windows_agent_post_json(path: str, payload: dict) -> dict:
     base = (os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
@@ -576,7 +580,12 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
 
             comment = str(d.get("comment") or "").strip()
 
-            # Demo attribution: For SELL deals with empty comment, try to copy
+            # Normalize manual-close tags: "MANUAL_CLOSE_GS0042" -> "GS0042"
+            manual_match = MANUAL_CLOSE_TAG_RE.match(comment)
+            if manual_match:
+                comment = manual_match.group(1)
+
+            # Attribution: For SELL deals with empty comment, try to copy
             # from the nearest preceding BUY deal so close legs show correct strategy.
             # Note: SELL deals often have magic_number=0 even when BUY had magic=1,
             # so we don't require magic match on the SELL side.
@@ -636,10 +645,18 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
                 obj.swap = swap
                 changed = True
 
-            # Also update comment if it was empty and we now have one (demo attribution fix)
+            # Also update comment if:
+            # 1. It was empty and we now have one (attribution fix), OR
+            # 2. It matches manual-close pattern and needs normalization
             if not obj.comment and comment:
                 obj.comment = comment
                 changed = True
+            elif obj.comment:
+                # Normalize existing manual-close tags on update
+                existing_match = MANUAL_CLOSE_TAG_RE.match(obj.comment)
+                if existing_match:
+                    obj.comment = existing_match.group(1)
+                    changed = True
 
             if changed:
                 obj.save()
