@@ -135,8 +135,8 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         """
         Called by MT5 worker: mark job SUCCESS or FAILED and store result/error.
 
-        For PLACE_TEST_ORDER jobs that complete successfully, automatically
-        creates a SYNC_POSITIONS job to ingest the trade into the database.
+        For PLACE_TEST_ORDER and PLACE_ORDER jobs that complete successfully,
+        automatically creates a SYNC_POSITIONS job to ingest the trade into the database.
         """
         job = self.get_object()
         status_value = request.data.get("status")
@@ -166,11 +166,12 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         )
 
         # =================================================================
-        # Auto-sync: Queue SYNC_POSITIONS job after successful demo trade
+        # Auto-sync: Queue SYNC_POSITIONS job after successful trade placement
+        # Applies to both demo trades (PLACE_TEST_ORDER) and signal trades (PLACE_ORDER)
         # =================================================================
         sync_job_id = None
         if (
-            job.job_type == ExecutionJob.JobType.PLACE_TEST_ORDER
+            job.job_type in (ExecutionJob.JobType.PLACE_TEST_ORDER, ExecutionJob.JobType.PLACE_ORDER)
             and status_value == ExecutionJob.Status.SUCCESS
         ):
             sync_job_id = self._queue_sync_positions_job(job)
@@ -184,7 +185,11 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
 
     def _queue_sync_positions_job(self, trigger_job: ExecutionJob) -> int | None:
         """
-        Create a SYNC_POSITIONS job to ingest trades after a demo trade completes.
+        Create a SYNC_POSITIONS job to ingest trades after a trade placement completes.
+
+        Works for both:
+        - PLACE_TEST_ORDER (demo trades)
+        - PLACE_ORDER (strategy signal trades)
 
         Returns the new job ID, or None if creation failed (graceful degradation).
         """
