@@ -498,12 +498,17 @@ def create_place_order_job(
     assignment: StrategyAssignment,
     signal: SignalResult,
     user,
+    bar_close_time: Optional[str] = None,
 ) -> ExecutionJob:
     """
     Create a PLACE_ORDER execution job from a signal.
 
     The job payload includes all information needed by the Windows bridge
     to execute the order.
+
+    Args:
+        bar_close_time: Optional ISO timestamp of the H4 bar close being evaluated.
+                       Used for idempotency in auto-evaluation mode.
     """
     # Generate correlation tag (same format as demo trades)
     # This will be updated with actual job ID after creation
@@ -533,6 +538,10 @@ def create_place_order_job(
             "demo_only": True,
         },
     }
+
+    # Include bar_close_time for idempotency (H4 auto-evaluation mode)
+    if bar_close_time:
+        payload["bar_close_time"] = bar_close_time
 
     # Create the job
     job = ExecutionJob.objects.create(
@@ -578,6 +587,7 @@ def run_signal_evaluation(
     symbol: str,
     user,
     manual_params: Optional[dict] = None,
+    bar_close_time: Optional[str] = None,
 ) -> SignalResult:
     """
     Main entry point for signal evaluation and job creation.
@@ -595,6 +605,8 @@ def run_signal_evaluation(
                 "sl_price": float,
                 "tp_price": float,
             }
+        bar_close_time: Optional ISO timestamp for H4 auto-evaluation mode.
+                       Included in job payload for idempotency.
 
     Returns:
         SignalResult with evaluation outcome and job_id if created
@@ -692,6 +704,7 @@ def run_signal_evaluation(
             assignment=assignment,
             signal=signal,
             user=user,
+            bar_close_time=bar_close_time,
         )
         signal.job_id = job.id
         signal.reason = "job_queued"
