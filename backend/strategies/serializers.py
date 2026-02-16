@@ -122,6 +122,34 @@ class StrategySerializer(serializers.ModelSerializer):
         owner = self.context["request"].user
         return Strategy.objects.create(owner=owner, **validated_data)
 
+    def update(self, instance, validated_data):
+        """
+        Override update to implement MERGE semantics for JSON fields like 'filters'.
+
+        This prevents accidental data loss when PATCH includes only partial filters.
+        For example, PATCH with {"filters": {"max_trades_per_day": 10}} should NOT
+        wipe out existing zones - it should merge.
+
+        Merge rules for 'filters':
+        - Shallow merge: existing keys are kept unless overwritten by incoming data
+        - If incoming data has a key, it replaces the existing key entirely
+        - This allows updating individual fields while preserving zones
+        """
+        # Handle filters merge for PATCH requests
+        if "filters" in validated_data and self.instance is not None:
+            existing_filters = self.instance.filters or {}
+            incoming_filters = validated_data.get("filters") or {}
+
+            # Shallow merge: existing + incoming (incoming wins on conflict)
+            merged_filters = {**existing_filters, **incoming_filters}
+            validated_data["filters"] = merged_filters
+
+        # Standard update for all other fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        return instance
+
     def validate(self, attrs):
         errors = {}
 
