@@ -38,7 +38,8 @@ ENVIRONMENT VARIABLES (required):
 OPTIONAL:
 - MT5_TERMINAL_PATH: Path to MT5 terminal (if non-standard location)
 - POLL_INTERVAL_SECONDS: Polling interval (default: 2)
-- HTTP_SERVER_PORT: Port for HTTP server (default: 8787)
+- HTTP_SERVER_PORT: Port for HTTP server (default: 8788)
+- GUVFX_AGENT_TOKEN: Token for OHLC endpoint auth (separate from WORKER_TOKEN)
 
 USAGE:
     python mt5_signal_bridge.py
@@ -92,10 +93,11 @@ HTTP_TIMEOUT = 15
 # =============================================================================
 API_URL = os.getenv("GUVFX_API_URL", "").rstrip("/")
 WORKER_TOKEN = os.getenv("GUVFX_WORKER_TOKEN", "")
+AGENT_TOKEN = os.getenv("GUVFX_AGENT_TOKEN", "").strip()  # For OHLC endpoint auth
 ACCOUNT_ID = os.getenv("MT5_ACCOUNT_ID", "")
 MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
-HTTP_SERVER_PORT = int(os.getenv("HTTP_SERVER_PORT", "8787"))
+HTTP_SERVER_PORT = int(os.getenv("HTTP_SERVER_PORT", "8788"))
 
 # Timeframe mapping for MT5
 TIMEFRAME_MAP = {
@@ -570,11 +572,21 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode("utf-8"))
 
     def _validate_token(self) -> bool:
-        """Validate the worker token from headers."""
+        """
+        Validate the agent token from headers for OHLC endpoints.
+
+        Uses GUVFX_AGENT_TOKEN if set, otherwise falls back to GUVFX_WORKER_TOKEN.
+        This allows separate tokens for OHLC data (backend) vs job polling (bridge).
+        """
         provided_token = self.headers.get("X-GuvFX-Agent-Token", "")
-        if not WORKER_TOKEN:
+
+        # Prefer AGENT_TOKEN for OHLC auth, fallback to WORKER_TOKEN
+        if AGENT_TOKEN:
+            return provided_token == AGENT_TOKEN
+        elif WORKER_TOKEN:
+            return provided_token == WORKER_TOKEN
+        else:
             return True  # No token configured, allow all
-        return provided_token == WORKER_TOKEN
 
     def do_GET(self):
         """Handle GET requests."""
@@ -651,6 +663,12 @@ def main_loop() -> None:
     logger.info(f"HTTP server:")
     logger.info(f"  - Port: {HTTP_SERVER_PORT}")
     logger.info(f"  - OHLC endpoint: /mt5/snapshots/rates")
+    if AGENT_TOKEN:
+        logger.info(f"  - OHLC auth: using GUVFX_AGENT_TOKEN")
+    elif WORKER_TOKEN:
+        logger.info(f"  - OHLC auth: using GUVFX_WORKER_TOKEN (fallback)")
+    else:
+        logger.info(f"  - OHLC auth: DISABLED (no token configured)")
     logger.info("=" * 60)
 
     while True:
