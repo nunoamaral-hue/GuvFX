@@ -11,6 +11,13 @@ import os
 MANUAL_CLOSE_TAG_RE = re.compile(r"^MANUAL_CLOSE_(G[JS]\d{4})$")
 GS_CLOSE_TAG_RE = re.compile(r"^GS_CLOSE:(G[JS]\d{4})$")
 
+# Pattern to detect MT5 auto-generated bracket comments for SL/TP closes
+# Examples: "[sl 1.18450]", "[tp 1.19200]", "[sl]", "[tp]"
+BRACKET_CLOSE_RE = re.compile(r"^\[(sl|tp)\b", re.IGNORECASE)
+
+# Pattern for valid execution job tags (GS#### for signal, GJ#### for demo)
+VALID_TAG_RE = re.compile(r"^G[JS]\d{4}$")
+
 def _windows_agent_post_json(path: str, payload: dict) -> dict:
     base = (os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
     token = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
@@ -435,61 +442,92 @@ def _normalize_side(d: dict) -> str:
     return "BUY"  # Default
 
 
-def _find_demo_comment_for_close(
+def _is_comment_missing_or_bracket(comment: str) -> bool:
+    """
+    Check if a comment should be treated as "missing" for attribution purposes.
+
+    Returns True for:
+    - Empty string ""
+    - Bracket-style MT5 auto-comments: "[sl 1.18450]", "[tp 1.19200]", etc.
+    """
+    if not comment:
+        return True
+    if BRACKET_CLOSE_RE.match(comment):
+        return True
+    return False
+
+
+def _find_prior_tag_for_close(
     account: TradingAccount,
     symbol: str,
-    sell_time,
-    sell_volume=None,
+    close_time,
+    close_volume=None,
+    close_side: str = "SELL",
 ) -> str:
     """
-    For SELL deals with empty comment, find the nearest preceding BUY deal's comment.
+    For close deals with missing/bracket comment, find the nearest preceding
+    opposite-side deal's tag comment.
 
     This handles the case where MT5 close deals don't carry the original comment
-    AND often have magic_number=0 even when the BUY had magic_number=1.
+    AND often have magic_number=0 even when the opening leg had magic_number=1.
+
+    Works for BOTH directions:
+    - SELL close (needs prior BUY tag) - closing a long position
+    - BUY close (needs prior SELL tag) - closing a short position
 
     Matching criteria (in order of priority):
     1. Same account, same symbol
-    2. BUY.open_time <= SELL.open_time (BUY must be BEFORE or AT the SELL time)
-    3. Within configurable window (5 minutes before SELL)
-    4. Prefers volume match if sell_volume is provided
-    5. Takes the CLOSEST BUY to the SELL time (most recent BUY before SELL)
+    2. Opposite side (BUY for SELL close, SELL for BUY close)
+    3. Prior trade's open_time <= close deal's time
+    4. Within 5-minute window before close
+    5. Prefers volume match if close_volume is provided
+    6. Takes the CLOSEST prior trade (most recent before close)
 
     Recognizes execution job comment patterns:
     - Legacy: "GUVFX_DEMO_JOB:<id>"
-    - Demo: "GJdddd" (e.g., "GJ0031" for demo job_id=31)
-    - Signal: "GSdddd" (e.g., "GS0039" for signal job_id=39)
+    - Demo: "GJ####" (e.g., "GJ0031" for demo job_id=31)
+    - Signal: "GS####" (e.g., "GS0039" for signal job_id=39)
 
     Args:
         account: The trading account
         symbol: The trading symbol (e.g., "EURUSD")
-        sell_time: The SELL deal's timestamp (datetime)
-        sell_volume: Optional volume to prefer matching BUY with same volume
+        close_time: The close deal's timestamp (datetime)
+        close_volume: Optional volume to prefer matching with same volume
+        close_side: The side of the CLOSE deal ("SELL" or "BUY")
 
     Returns the comment string or empty string if not found.
     """
     from datetime import timedelta
     from django.db.models import Q
-    import re
 
-    if not sell_time:
-        # Can't match without knowing when the SELL happened
+    if not close_time:
+        # Can't match without knowing when the close happened
         return ""
 
-    # Look for BUY trades within 5 minutes BEFORE the SELL time
-    window_minutes = 5
-    cutoff = sell_time - timedelta(minutes=window_minutes)
+    # Determine which side to look for (opposite of close side)
+    if close_side == "SELL":
+        prior_side = "BUY"  # Closing a long position
+    elif close_side == "BUY":
+        prior_side = "SELL"  # Closing a short position
+    else:
+        return ""
 
-    # Find BUY trades that:
+    # Look for opposite-side trades within 5 minutes BEFORE the close time
+    window_minutes = 5
+    cutoff = close_time - timedelta(minutes=window_minutes)
+
+    # Find prior trades that:
     # - Same account, same symbol
-    # - Have demo job comment (legacy OR new pattern)
-    # - open_time is BETWEEN (sell_time - 5min) AND sell_time
+    # - Opposite side
+    # - Have a valid job comment (legacy OR new pattern)
+    # - open_time is BETWEEN (close_time - 5min) AND close_time
     candidates = list(
         Trade.objects.filter(
             account=account,
             symbol=symbol,
-            side="BUY",
+            side=prior_side,
             open_time__gte=cutoff,
-            open_time__lte=sell_time,  # BUY must be BEFORE or AT SELL time
+            open_time__lte=close_time,  # Prior must be BEFORE or AT close time
         )
         .filter(
             # Match legacy pattern OR new patterns (GJ for demo, GS for signals)
@@ -501,14 +539,34 @@ def _find_demo_comment_for_close(
     if not candidates:
         return ""
 
-    # If we have sell_volume, prefer exact volume match
-    if sell_volume is not None:
-        for buy in candidates:
-            if buy.volume == sell_volume:
-                return buy.comment
+    # If we have close_volume, prefer exact volume match
+    if close_volume is not None:
+        for prior in candidates:
+            if prior.volume == close_volume:
+                return prior.comment
 
-    # Otherwise return the most recent BUY (closest to SELL time)
+    # Otherwise return the most recent prior trade (closest to close time)
     return candidates[0].comment
+
+
+# Keep the old function as an alias for backwards compatibility
+def _find_demo_comment_for_close(
+    account: TradingAccount,
+    symbol: str,
+    sell_time,
+    sell_volume=None,
+) -> str:
+    """
+    Legacy wrapper for _find_prior_tag_for_close.
+    For SELL deals (closing a long), find the nearest preceding BUY deal's comment.
+    """
+    return _find_prior_tag_for_close(
+        account=account,
+        symbol=symbol,
+        close_time=sell_time,
+        close_volume=sell_volume,
+        close_side="SELL",
+    )
 
 
 def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int, list]:
@@ -594,18 +652,29 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
                 if gs_close_match:
                     comment = gs_close_match.group(1)
 
-            # Attribution: For SELL deals with empty comment, try to copy
-            # from the nearest preceding BUY deal so close legs show correct strategy.
-            # Note: SELL deals often have magic_number=0 even when BUY had magic=1,
-            # so we don't require magic match on the SELL side.
-            # We pass the SELL's timestamp and volume to ensure we match the correct BUY.
-            if not comment and side == "SELL" and symbol:
-                comment = _find_demo_comment_for_close(
+            # Attribution: For deals with missing/bracket comments, try to copy
+            # from the nearest preceding opposite-side deal so close legs show correct strategy.
+            #
+            # Handles both directions:
+            # - SELL close (closes a long): find prior BUY tag
+            # - BUY close (closes a short): find prior SELL tag
+            #
+            # "Missing" includes:
+            # - Empty comment ""
+            # - Bracket-style MT5 auto-comments: "[sl 1.18450]", "[tp 1.19200]"
+            #
+            # Note: Close deals often have magic_number=0 even when the opening leg
+            # had magic_number=1, so we don't require magic match.
+            if _is_comment_missing_or_bracket(comment) and symbol:
+                attributed_tag = _find_prior_tag_for_close(
                     account=account,
                     symbol=symbol,
-                    sell_time=open_time,  # The SELL's timestamp
-                    sell_volume=vol,      # The SELL's volume for better matching
+                    close_time=open_time,  # The close deal's timestamp
+                    close_volume=vol,      # The close deal's volume for better matching
+                    close_side=side,       # SELL or BUY
                 )
+                if attributed_tag:
+                    comment = attributed_tag
 
             obj, created = Trade.objects.get_or_create(
                 account=account,
@@ -655,9 +724,10 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
                 changed = True
 
             # Also update comment if:
-            # 1. It was empty and we now have one (attribution fix), OR
+            # 1. It was empty/bracket and we now have a valid tag (attribution fix), OR
             # 2. It matches manual-close pattern and needs normalization
-            if not obj.comment and comment:
+            if _is_comment_missing_or_bracket(obj.comment) and comment and VALID_TAG_RE.match(comment):
+                # Replace missing/bracket comment with valid tag
                 obj.comment = comment
                 changed = True
             elif obj.comment:
@@ -670,6 +740,10 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
                     gs_close_existing_match = GS_CLOSE_TAG_RE.match(obj.comment)
                     if gs_close_existing_match:
                         obj.comment = gs_close_existing_match.group(1)
+                        changed = True
+                    elif BRACKET_CLOSE_RE.match(obj.comment) and comment and VALID_TAG_RE.match(comment):
+                        # Replace bracket comment with valid tag
+                        obj.comment = comment
                         changed = True
 
             if changed:
