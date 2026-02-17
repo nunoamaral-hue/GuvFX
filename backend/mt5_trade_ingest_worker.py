@@ -23,6 +23,10 @@ AGENT_TOKEN = (os.getenv("GUVFX_AGENT_TOKEN") or os.getenv("WINDOWS_AGENT_TOKEN"
 
 SLEEP_SEC = float(os.getenv("MT5_WORKER_SLEEP", "2.0"))
 
+# Retry settings for auto-sync when expected deal not found
+AUTO_SYNC_MAX_RETRIES = int(os.getenv("AUTO_SYNC_MAX_RETRIES", "5"))
+AUTO_SYNC_RETRY_DELAY = float(os.getenv("AUTO_SYNC_RETRY_DELAY", "2.0"))
+
 def api_headers():
     return {
         "Host": API_HOST,
@@ -72,6 +76,42 @@ def to_dec(x, default="0"):
     if x is None:
         return Decimal(default)
     return Decimal(str(x))
+
+def find_expected_tag_in_deals(deals: list[dict], expected_tag: str) -> bool:
+    """Check if expected_tag exists in any deal's comment field."""
+    if not expected_tag:
+        return True  # No tag to find, consider it found
+    for d in deals:
+        comment = str(d.get("comment") or "").strip()
+        if comment == expected_tag:
+            return True
+    return False
+
+
+def get_expected_tag_from_trigger_job(trigger_job_id: int) -> str | None:
+    """
+    Get the expected comment tag from a trigger job (PLACE_ORDER).
+    Returns the comment from payload or result, or None if not found.
+    """
+    from execution.models import ExecutionJob
+    try:
+        trigger_job = ExecutionJob.objects.get(id=trigger_job_id)
+        # Try payload.comment first (where we set it)
+        payload = trigger_job.payload or {}
+        tag = payload.get("comment")
+        if tag:
+            return str(tag).strip()
+        # Fallback to result.comment (if MT5 modified it)
+        result = trigger_job.result or {}
+        tag = result.get("comment")
+        if tag:
+            return str(tag).strip()
+        return None
+    except ExecutionJob.DoesNotExist:
+        return None
+    except Exception:
+        return None
+
 
 def upsert_trades(account: TradingAccount, deals: list[dict]):
     inserted = 0
@@ -180,17 +220,64 @@ def main():
 
             account = TradingAccount.objects.get(id=account_id)
 
-            deals_resp = agent_get("deals", windows_username)
-            # allow different response shapes
-            deals = deals_resp.get("deals") or (deals_resp.get("data") or {}).get("deals") or []
+            # Check if this is an auto-sync triggered by a PLACE_ORDER job
+            is_auto_sync = payload.get("auto_sync", False)
+            trigger_job_id = payload.get("trigger_job_id")
+            expected_tag = None
+
+            if is_auto_sync and trigger_job_id:
+                expected_tag = get_expected_tag_from_trigger_job(trigger_job_id)
+                print(f"[SYNC] Auto-sync for trigger_job_id={trigger_job_id}, expected_tag={expected_tag}")
+
+            # Fetch deals with retry logic for auto-sync
+            deals = []
+            retry_count = 0
+            max_retries = AUTO_SYNC_MAX_RETRIES if (is_auto_sync and expected_tag) else 1
+
+            while retry_count < max_retries:
+                deals_resp = agent_get("deals", windows_username)
+                # allow different response shapes
+                deals = deals_resp.get("deals") or (deals_resp.get("data") or {}).get("deals") or []
+
+                # For auto-sync: check if expected deal is present
+                if expected_tag:
+                    if find_expected_tag_in_deals(deals, expected_tag):
+                        print(f"[SYNC] Found expected deal with tag={expected_tag} on attempt {retry_count + 1}")
+                        break
+                    else:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            print(f"[SYNC] Expected deal tag={expected_tag} not found, retry {retry_count}/{max_retries} in {AUTO_SYNC_RETRY_DELAY}s")
+                            time.sleep(AUTO_SYNC_RETRY_DELAY)
+                        else:
+                            print(f"[SYNC] Expected deal tag={expected_tag} NOT FOUND after {max_retries} retries")
+                else:
+                    break  # No expected tag, single pass
+
             inserted, updated = upsert_trades(account, deals)
 
-            complete_job(
-                job_id,
-                "SUCCESS",
-                {"ok": True, "account_id": account_id, "inserted": inserted, "updated": updated, "deals_count": len(deals)},
-                "",
-            )
+            # Determine if we should fail due to missing expected deal
+            if expected_tag and not find_expected_tag_in_deals(deals, expected_tag):
+                complete_job(
+                    job_id,
+                    "FAILED",
+                    {
+                        "ok": False,
+                        "reason": "expected_deal_not_found_after_retries",
+                        "expected_tag": expected_tag,
+                        "trigger_job_id": trigger_job_id,
+                        "retries": max_retries,
+                        "deals_count": len(deals),
+                    },
+                    f"Expected deal with tag {expected_tag} not found after {max_retries} retries",
+                )
+            else:
+                complete_job(
+                    job_id,
+                    "SUCCESS",
+                    {"ok": True, "account_id": account_id, "inserted": inserted, "updated": updated, "deals_count": len(deals)},
+                    "",
+                )
 
         except Exception as e:
             print("loop_error:", repr(e))

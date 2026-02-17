@@ -88,6 +88,9 @@ MAX_CONSECUTIVE_404 = 3
 RETRY_DELAY_SECONDS = 5
 HTTP_TIMEOUT = 15
 
+# Post-trade delay before completing job (sync race mitigation)
+POST_TRADE_SYNC_DELAY = float(os.getenv("GUVFX_POST_TRADE_SYNC_DELAY_SECONDS", "3"))
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -448,6 +451,12 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
         }
 
         logger.info(f"Order executed: ticket={result.order}, price={result.price}, SL={sl_price}, TP={tp_price}")
+
+        # Post-trade delay: sleep before completing job to allow MT5 to commit deal to history
+        # This mitigates the race where SYNC_POSITIONS runs before the deal appears
+        if POST_TRADE_SYNC_DELAY > 0:
+            logger.info(f"Post-trade delay: sleeping {POST_TRADE_SYNC_DELAY}s before completing job (sync race mitigation)")
+            time.sleep(POST_TRADE_SYNC_DELAY)
 
         return True, result_dict, ""
 

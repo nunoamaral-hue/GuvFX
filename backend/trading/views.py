@@ -5,8 +5,11 @@ import urllib.request
 import json
 import os
 
-# Pattern to normalize manual-close tags: "MANUAL_CLOSE_GS0042" -> "GS0042"
+# Patterns to normalize close tags to base GS/GJ format:
+# - "MANUAL_CLOSE_GS0042" -> "GS0042"
+# - "GS_CLOSE:GS0045" -> "GS0045"
 MANUAL_CLOSE_TAG_RE = re.compile(r"^MANUAL_CLOSE_(G[JS]\d{4})$")
+GS_CLOSE_TAG_RE = re.compile(r"^GS_CLOSE:(G[JS]\d{4})$")
 
 def _windows_agent_post_json(path: str, payload: dict) -> dict:
     base = (os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
@@ -580,10 +583,16 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
 
             comment = str(d.get("comment") or "").strip()
 
-            # Normalize manual-close tags: "MANUAL_CLOSE_GS0042" -> "GS0042"
+            # Normalize close tags to base GS/GJ format:
+            # - "MANUAL_CLOSE_GS0042" -> "GS0042"
+            # - "GS_CLOSE:GS0045" -> "GS0045"
             manual_match = MANUAL_CLOSE_TAG_RE.match(comment)
             if manual_match:
                 comment = manual_match.group(1)
+            else:
+                gs_close_match = GS_CLOSE_TAG_RE.match(comment)
+                if gs_close_match:
+                    comment = gs_close_match.group(1)
 
             # Attribution: For SELL deals with empty comment, try to copy
             # from the nearest preceding BUY deal so close legs show correct strategy.
@@ -652,11 +661,16 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
                 obj.comment = comment
                 changed = True
             elif obj.comment:
-                # Normalize existing manual-close tags on update
+                # Normalize existing close tags on update
                 existing_match = MANUAL_CLOSE_TAG_RE.match(obj.comment)
                 if existing_match:
                     obj.comment = existing_match.group(1)
                     changed = True
+                else:
+                    gs_close_existing_match = GS_CLOSE_TAG_RE.match(obj.comment)
+                    if gs_close_existing_match:
+                        obj.comment = gs_close_existing_match.group(1)
+                        changed = True
 
             if changed:
                 obj.save()
