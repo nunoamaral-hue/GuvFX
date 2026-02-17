@@ -479,7 +479,7 @@ def _find_prior_tag_for_close(
     1. Same account, same symbol
     2. Opposite side (BUY for SELL close, SELL for BUY close)
     3. Prior trade's open_time <= close deal's time
-    4. Within 5-minute window before close
+    4. Within 60-minute window before close (configurable via GUVFX_CLOSE_ATTRIBUTION_LOOKBACK_MINUTES)
     5. Prefers volume match if close_volume is provided
     6. Takes the CLOSEST prior trade (most recent before close)
 
@@ -512,15 +512,16 @@ def _find_prior_tag_for_close(
     else:
         return ""
 
-    # Look for opposite-side trades within 5 minutes BEFORE the close time
-    window_minutes = 5
+    # Look for opposite-side trades within configurable window BEFORE the close time
+    # Default 60 minutes to handle realistic SL/TP closure times
+    window_minutes = int(os.getenv("GUVFX_CLOSE_ATTRIBUTION_LOOKBACK_MINUTES", "60"))
     cutoff = close_time - timedelta(minutes=window_minutes)
 
     # Find prior trades that:
     # - Same account, same symbol
     # - Opposite side
     # - Have a valid job comment (legacy OR new pattern)
-    # - open_time is BETWEEN (close_time - 5min) AND close_time
+    # - open_time is BETWEEN (close_time - window) AND close_time
     candidates = list(
         Trade.objects.filter(
             account=account,
