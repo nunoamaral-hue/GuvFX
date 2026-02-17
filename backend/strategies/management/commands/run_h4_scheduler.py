@@ -19,6 +19,9 @@ Usage:
 
     # Force evaluation for specific bar close (testing)
     python manage.py run_h4_scheduler --force-bar-close-iso "2026-02-16T08:00:00Z"
+
+    # Force create exactly ONE test PLACE_ORDER job (end-to-end testing)
+    python manage.py run_h4_scheduler --force-once --account-id 1 --strategy-id 1
 """
 
 import datetime as dt
@@ -110,6 +113,190 @@ def job_exists_for_bar_close(
 class Command(BaseCommand):
     help = "Run H4 auto evaluation for Trendline Break Pocket strategies"
 
+    def _handle_force_once(
+        self,
+        assignments: list,
+        bar_close_iso: str,
+        dry_run: bool,
+    ) -> None:
+        """
+        Create exactly ONE test PLACE_ORDER job for end-to-end testing.
+
+        This bypasses signal logic but keeps safety rails:
+        - Demo accounts only
+        - Zones must exist for symbol
+        - SL/TP required (20 pip SL, 40 pip TP = 2R)
+        - Idempotent per bar_close_time
+
+        Prefers EURUSD as the first eligible symbol.
+        """
+        from decimal import Decimal
+
+        # Priority order for symbols
+        PREFERRED_SYMBOLS = ["EURUSD", "GBPUSD"]
+        PIP_SIZE = 0.0001  # For EUR/GBP pairs
+        SL_PIPS = 20
+        TP_PIPS = 40  # 2R
+
+        self.stdout.write("[FORCE-ONCE] Looking for first eligible assignment...")
+
+        for assignment in assignments:
+            strategy = assignment.strategy
+            account = assignment.account
+
+            # Safety: Demo only
+            if not account.is_demo:
+                self.stdout.write(
+                    f"  [SKIP] account={account.id} is not demo"
+                )
+                continue
+
+            # Get filters and zones
+            filters = strategy.filters or {}
+            zones = filters.get("zones") or {}
+            pairs_enabled = filters.get("pairs_enabled") or PREFERRED_SYMBOLS
+
+            # Find first eligible symbol with zones
+            selected_symbol = None
+            selected_zones = None
+
+            # Prefer EURUSD, then GBPUSD, then others
+            for symbol in PREFERRED_SYMBOLS:
+                if symbol in pairs_enabled and symbol in zones:
+                    symbol_zones = zones.get(symbol, [])
+                    if symbol_zones:
+                        selected_symbol = symbol
+                        selected_zones = symbol_zones
+                        break
+
+            if not selected_symbol:
+                # Fallback to any enabled symbol with zones
+                for symbol in pairs_enabled:
+                    symbol_zones = zones.get(symbol, [])
+                    if symbol_zones:
+                        selected_symbol = symbol
+                        selected_zones = symbol_zones
+                        break
+
+            if not selected_symbol:
+                self.stdout.write(
+                    f"  [SKIP] strategy={strategy.id} has no symbols with zones"
+                )
+                continue
+
+            # Idempotency check
+            if job_exists_for_bar_close(account.id, strategy.id, selected_symbol, bar_close_iso):
+                self.stdout.write(
+                    f"  [SKIP-IDEMPOTENT] Job already exists: account={account.id} "
+                    f"strategy={strategy.id} symbol={selected_symbol} bar_close={bar_close_iso}"
+                )
+                continue
+
+            if dry_run:
+                self.stdout.write(
+                    f"  [DRY-RUN] Would create PLACE_ORDER: account={account.id} "
+                    f"strategy={strategy.id} symbol={selected_symbol}"
+                )
+                return
+
+            # Get first zone for entry reference
+            zone = selected_zones[0]
+            zone_low = float(zone.get("low", 1.0))
+            zone_high = float(zone.get("high", 1.1))
+            zone_type = zone.get("zone_type", "demand")
+
+            # Determine side and calculate entry/SL/TP
+            if zone_type == "demand":
+                side = "BUY"
+                # Entry near zone high (where price would break out)
+                entry_price = zone_high + (5 * PIP_SIZE)
+                sl_price = entry_price - (SL_PIPS * PIP_SIZE)
+                tp_price = entry_price + (TP_PIPS * PIP_SIZE)
+            else:
+                side = "SELL"
+                # Entry near zone low (where price would break down)
+                entry_price = zone_low - (5 * PIP_SIZE)
+                sl_price = entry_price + (SL_PIPS * PIP_SIZE)
+                tp_price = entry_price - (TP_PIPS * PIP_SIZE)
+
+            # Round prices
+            entry_price = round(entry_price, 5)
+            sl_price = round(sl_price, 5)
+            tp_price = round(tp_price, 5)
+
+            # Create job directly (bypassing signal engine)
+            try:
+                with transaction.atomic():
+                    # Double-check idempotency inside transaction
+                    if job_exists_for_bar_close(account.id, strategy.id, selected_symbol, bar_close_iso):
+                        self.stdout.write(
+                            f"  [SKIP-RACE] Job created by concurrent process"
+                        )
+                        return
+
+                    # Get windows_username from account's mt5_instance
+                    windows_username = None
+                    if account.mt5_instance:
+                        windows_username = getattr(account.mt5_instance, "windows_username", None)
+
+                    # Build payload
+                    payload = {
+                        "symbol": selected_symbol,
+                        "side": side,
+                        "lots": 0.01,  # Minimum lot for testing
+                        "entry_price": entry_price,
+                        "sl_price": sl_price,
+                        "tp_price": tp_price,
+                        "comment": f"GS{strategy.id:04d}",  # Will update with job ID
+                        "magic": strategy.magic_number or strategy.id,
+                        "is_demo": account.is_demo,
+                        "strategy_id": strategy.id,
+                        "windows_username": windows_username,
+                        "zone_name": zone.get("name", f"{zone_type}_{selected_symbol}"),
+                        "signal_reason": "forced_once_test",
+                        "bar_close_time": bar_close_iso,
+                        "safety_rails": {
+                            "max_lots": 0.02,
+                            "allowed_symbols": ["EURUSD", "GBPUSD"],
+                            "demo_only": True,
+                        },
+                    }
+
+                    # Create the job
+                    job = ExecutionJob.objects.create(
+                        job_type=ExecutionJob.JobType.PLACE_ORDER,
+                        account=account,
+                        strategy=strategy,
+                        assignment=assignment,
+                        status=ExecutionJob.Status.PENDING,
+                        created_by=None,  # System-triggered
+                        payload=payload,
+                    )
+
+                    # Update comment with actual job ID (GS tag)
+                    job.payload["comment"] = f"GS{job.id:04d}"
+                    job.save(update_fields=["payload"])
+
+                    self.stdout.write(
+                        f"[FORCE-ONCE] SUCCESS: created PLACE_ORDER job_id={job.id} "
+                        f"account={account.id} strategy={strategy.id} symbol={selected_symbol} "
+                        f"side={side} lots=0.01 entry={entry_price} sl={sl_price} tp={tp_price}"
+                    )
+                    print(
+                        f"[FORCE-ONCE] job_id={job.id} account={account.id} strategy={strategy.id} "
+                        f"symbol={selected_symbol} bar={bar_close_iso}"
+                    )
+                    return
+
+            except Exception as e:
+                self.stderr.write(
+                    f"  [ERROR] Failed to create job: {str(e)}"
+                )
+                logger.exception(f"Force-once job creation error: {e}")
+                return
+
+        self.stdout.write("[FORCE-ONCE] No eligible assignment found for forced test")
+
     def add_arguments(self, parser):
         parser.add_argument(
             "--grace-seconds",
@@ -137,6 +324,13 @@ class Command(BaseCommand):
             type=str,
             help="Force evaluation for specific bar close time (ISO format, e.g., 2026-02-16T08:00:00Z)",
         )
+        parser.add_argument(
+            "--force-once",
+            action="store_true",
+            help="Create exactly ONE test PLACE_ORDER job for first eligible symbol (EURUSD preferred). "
+                 "Bypasses signal logic but keeps safety rails (demo, zones, SL/TP required). "
+                 "Uses 20 pip SL, 40 pip TP (2R). Idempotent per bar_close_time.",
+        )
 
     def handle(self, *args, **options):
         grace_seconds = options["grace_seconds"]
@@ -144,6 +338,7 @@ class Command(BaseCommand):
         strategy_filter = options.get("strategy_id")
         dry_run = options["dry_run"]
         force_bar_close = options.get("force_bar_close_iso")
+        force_once = options.get("force_once", False)
 
         now_utc = timezone.now()
 
@@ -198,6 +393,15 @@ class Command(BaseCommand):
 
         if not assignments:
             self.stdout.write("[INFO] No active TBP assignments to evaluate")
+            return
+
+        # --force-once mode: Create exactly ONE test PLACE_ORDER job
+        if force_once:
+            self._handle_force_once(
+                assignments=assignments,
+                bar_close_iso=bar_close_iso,
+                dry_run=dry_run,
+            )
             return
 
         # Process each assignment
