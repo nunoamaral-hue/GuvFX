@@ -78,12 +78,19 @@ def fetch_rates(
     Raises:
         RatesFetchError: If the request fails or returns invalid data
     """
-    # Get agent URL and token from environment
-    agent_url = (os.getenv("GUVFX_AGENT_URL") or os.getenv("WINDOWS_AGENT_BASE") or "").rstrip("/")
+    # Get OHLC agent URL - prefer dedicated OHLC endpoint (8788), fallback to legacy (8787)
+    # GUVFX_WINDOWS_AGENT_BASE_URL = OHLC agent on port 8788 (/mt5/snapshots/rates)
+    # GUVFX_AGENT_URL / WINDOWS_AGENT_BASE = deals agent on port 8787 (legacy fallback)
+    agent_url = (
+        os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL")
+        or os.getenv("GUVFX_AGENT_URL")
+        or os.getenv("WINDOWS_AGENT_BASE")
+        or ""
+    ).rstrip("/")
     agent_token = (os.getenv("GUVFX_AGENT_TOKEN") or os.getenv("WINDOWS_AGENT_TOKEN") or "").strip()
 
     if not agent_url:
-        raise RatesFetchError("GUVFX_AGENT_URL not configured")
+        raise RatesFetchError("GUVFX_WINDOWS_AGENT_BASE_URL not configured")
 
     # Build URL with query params
     params = f"symbol={symbol}&timeframe={timeframe}&count={count}"
