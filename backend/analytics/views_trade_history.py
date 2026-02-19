@@ -885,3 +885,188 @@ class StrategyHasTradesView(APIView):
             "has_trades": trade_count > 0,
             "trade_count": int(trade_count),
         })
+
+
+class DailyPnlView(APIView):
+    """
+    GET /api/analytics/daily-pnl/?account_id=<id>&days=30&strategy_id=<optional>
+
+    Returns daily aggregated PnL from completed round-trips.
+    Uses the SAME pairing logic as trade-history roundtrip mode.
+
+    Query params:
+    - account_id (or account): Required. The trading account ID.
+    - days: Optional. Number of days to look back (default: 30, max: 365).
+    - strategy_id: Optional. Filter by strategy (uses comment tag attribution).
+    - mode: Always roundtrip (only supported mode).
+
+    Response shape:
+    {
+      "account_id": 13,
+      "strategy_id": 12|null,
+      "mode": "roundtrip",
+      "days": 30,
+      "series": [{date, trades, wins, losses, win_rate, net_pnl, gross_profit, gross_loss}, ...],
+      "totals": {trades, wins, losses, win_rate, net_pnl}
+    }
+
+    Win = net_pnl > 0; Loss = net_pnl < 0; Breakeven (== 0) counted as trade but not win/loss.
+    Daily grouping is based on UTC date of close_time.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from datetime import timedelta
+        from collections import OrderedDict
+
+        user = request.user
+        account_id = request.query_params.get("account_id") or request.query_params.get("account")
+        if not account_id:
+            return Response({"detail": "account_id is required"}, status=400)
+
+        # Parse days (default 30, max 365)
+        try:
+            days = int(request.query_params.get("days", "30"))
+        except (ValueError, TypeError):
+            days = 30
+        days = max(1, min(days, 365))
+
+        strategy_filter_id = request.query_params.get("strategy_id")
+
+        # Date boundary: only fetch trades that closed in the last N days
+        cutoff = timezone.now() - timedelta(days=days)
+
+        qs = Trade.objects.select_related("account").filter(
+            account_id=account_id,
+            close_time__gte=cutoff,
+        )
+
+        # Ownership gate
+        if not user.is_staff:
+            qs = qs.filter(account__user=user)
+
+        trades = list(qs.order_by("-close_time")[:2000])
+
+        # --- Reuse attribution logic from TradeHistoryView ---
+        raw_labels: dict[str, str] = {}
+        sids: set[int] = set()
+        demo_job_ids: set[int] = set()
+
+        for t in trades:
+            comment = t.comment or ""
+            job_id = _extract_demo_job_id(comment)
+            if job_id is not None:
+                demo_job_ids.add(job_id)
+                raw_labels[t.ticket] = f"job:{job_id}"
+            else:
+                raw = _strategy_name_from_comment(comment)
+                raw_labels[t.ticket] = raw
+                sid = _sid_int(raw)
+                if sid is not None:
+                    sids.add(sid)
+
+        job_to_strategy: dict[int, tuple] = {}
+        if demo_job_ids:
+            jobs_qs = ExecutionJob.objects.select_related("strategy").filter(id__in=demo_job_ids)
+            for job in jobs_qs:
+                if job.strategy_id:
+                    job_to_strategy[job.id] = (job.strategy_id, job.strategy.name if job.strategy else None)
+                else:
+                    job_to_strategy[job.id] = (None, None)
+
+        sid_to_name: dict[int, str] = {}
+        if sids:
+            strat_qs = Strategy.objects.filter(Q(id__in=sids) | Q(magic_number__in=sids))
+            if not user.is_staff:
+                strat_qs = strat_qs.filter(owner=user)
+            for s in strat_qs:
+                sid_to_name[s.id] = s.name
+                if s.magic_number is not None:
+                    sid_to_name[int(s.magic_number)] = s.name
+
+        # Build round-trips
+        round_trips = _build_round_trips(
+            trades=trades,
+            raw_labels=raw_labels,
+            job_to_strategy=job_to_strategy,
+            sid_to_name=sid_to_name,
+        )
+
+        # Apply strategy filter if requested
+        if strategy_filter_id:
+            # Resolve strategy name for the given ID
+            try:
+                strat_id_int = int(strategy_filter_id)
+                strat_obj = Strategy.objects.filter(id=strat_id_int).first()
+                if strat_obj:
+                    filter_name = strat_obj.name
+                    round_trips = [rt for rt in round_trips if rt.get("strategy_name") == filter_name]
+                else:
+                    round_trips = []
+            except (ValueError, TypeError):
+                round_trips = []
+
+        # --- Aggregate by UTC date of close_time ---
+        daily: dict[str, dict] = {}
+
+        for rt in round_trips:
+            close_time = rt.get("close_time")
+            if not close_time:
+                continue
+            # close_time is a datetime or string
+            if hasattr(close_time, "strftime"):
+                date_key = close_time.strftime("%Y-%m-%d")
+            else:
+                date_key = str(close_time)[:10]
+
+            pnl = float(rt.get("net_pnl_money", 0) or 0)
+
+            day = daily.setdefault(date_key, {
+                "date": date_key,
+                "trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "net_pnl": 0.0,
+                "gross_profit": 0.0,
+                "gross_loss": 0.0,
+            })
+            day["trades"] += 1
+            day["net_pnl"] += pnl
+            if pnl > 0:
+                day["wins"] += 1
+                day["gross_profit"] += pnl
+            elif pnl < 0:
+                day["losses"] += 1
+                day["gross_loss"] += pnl
+            # breakeven (pnl == 0): counted as trade but not win/loss
+
+        # Sort by date ascending and compute win_rate per day
+        series = sorted(daily.values(), key=lambda d: d["date"])
+        for day in series:
+            wl = day["wins"] + day["losses"]
+            day["win_rate"] = round(day["wins"] / wl, 4) if wl > 0 else 0.0
+            day["net_pnl"] = round(day["net_pnl"], 2)
+            day["gross_profit"] = round(day["gross_profit"], 2)
+            day["gross_loss"] = round(day["gross_loss"], 2)
+
+        # Totals
+        total_trades = sum(d["trades"] for d in series)
+        total_wins = sum(d["wins"] for d in series)
+        total_losses = sum(d["losses"] for d in series)
+        total_wl = total_wins + total_losses
+        total_net_pnl = round(sum(d["net_pnl"] for d in series), 2)
+
+        return Response({
+            "account_id": int(account_id),
+            "strategy_id": int(strategy_filter_id) if strategy_filter_id else None,
+            "mode": "roundtrip",
+            "days": days,
+            "series": series,
+            "totals": {
+                "trades": total_trades,
+                "wins": total_wins,
+                "losses": total_losses,
+                "win_rate": round(total_wins / total_wl, 4) if total_wl > 0 else 0.0,
+                "net_pnl": total_net_pnl,
+            },
+        })

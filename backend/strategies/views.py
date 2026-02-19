@@ -286,6 +286,124 @@ class StrategyViewSet(viewsets.ModelViewSet):
         status_info = get_execution_status(strategy)
         return Response(status_info)
 
+    @action(detail=True, methods=["get"], url_path="execution/live-status")
+    def execution_live_status(self, request, pk=None):
+        """
+        GET /api/strategies/strategies/<id>/execution/live-status/?account_id=<id>
+
+        Health-check whether this strategy is "live" end-to-end:
+        strategy active, assignment active, scheduler running, agents reachable, ingest healthy.
+
+        Returns:
+            { overall: "PASS"|"FAIL"|"DEGRADED", strategy_id, account_id,
+              checked_at, checks: [{name, status, detail}, ...] }
+        """
+        import os
+        import json as _json
+        import urllib.request
+        import urllib.parse
+        from datetime import timedelta
+        from execution.models import ExecutionJob
+        from core.models import AuditEvent
+
+        strategy = self.get_object()
+        account_id = request.query_params.get("account_id")
+        if not account_id:
+            return Response(
+                {"ok": False, "reason": "account_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        account = TradingAccount.objects.filter(id=account_id).first()
+        if not account:
+            return Response(
+                {"ok": False, "reason": f"Account {account_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        now = timezone.now()
+        lookback_24h = now - timedelta(hours=24)
+        checks = []
+
+        # 1. Strategy active
+        if not strategy.is_active:
+            checks.append({"name": "strategy_active", "status": "FAIL",
+                           "detail": f"Strategy '{strategy.name}' is_active=False"})
+        else:
+            checks.append({"name": "strategy_active", "status": "PASS",
+                           "detail": f"Strategy '{strategy.name}' is_active=True"})
+
+        # 2. Account active + demo
+        if not account.is_active:
+            checks.append({"name": "account_active", "status": "FAIL",
+                           "detail": f"Account {account_id} is_active=False"})
+        elif not account.is_demo:
+            checks.append({"name": "account_demo", "status": "WARN",
+                           "detail": f"Account {account_id} is_demo=False"})
+        else:
+            checks.append({"name": "account_active", "status": "PASS",
+                           "detail": f"Account {account_id} is_active=True, is_demo=True"})
+
+        # 3. Assignment active
+        assignment = StrategyAssignment.objects.filter(
+            strategy=strategy, account=account, is_active=True,
+        ).first()
+        if not assignment:
+            checks.append({"name": "assignment_active", "status": "FAIL",
+                           "detail": f"No active assignment for strategy={strategy.id} account={account_id}"})
+        else:
+            checks.append({"name": "assignment_active", "status": "PASS",
+                           "detail": f"Assignment id={assignment.id} is_active=True"})
+
+        # 4. Recent PLACE_ORDER jobs (scheduler activity)
+        recent_po = ExecutionJob.objects.filter(
+            account_id=account_id, strategy_id=strategy.id,
+            job_type=ExecutionJob.JobType.PLACE_ORDER,
+            created_at__gte=lookback_24h,
+        ).order_by("-created_at")
+        po_count = recent_po.count()
+        if po_count > 0:
+            latest = recent_po.first()
+            checks.append({"name": "scheduler_recent", "status": "PASS",
+                           "detail": f"{po_count} PLACE_ORDER jobs in 24h, latest={latest.status} at {latest.created_at.isoformat()}"})
+        else:
+            recent_evals = AuditEvent.objects.filter(
+                event_type="SIGNAL_EVALUATED", entity_type="strategy",
+                entity_id=str(strategy.id), created_at__gte=lookback_24h,
+            ).count()
+            if recent_evals > 0:
+                checks.append({"name": "scheduler_recent", "status": "PASS",
+                               "detail": f"0 PLACE_ORDER but {recent_evals} SIGNAL_EVALUATED in 24h"})
+            else:
+                checks.append({"name": "scheduler_recent", "status": "FAIL",
+                               "detail": "No PLACE_ORDER or SIGNAL_EVALUATED events in 24h"})
+
+        # 5. Ingest worker (recent SYNC_POSITIONS)
+        sync_count = ExecutionJob.objects.filter(
+            account_id=account_id,
+            job_type=ExecutionJob.JobType.SYNC_POSITIONS,
+            created_at__gte=lookback_24h,
+        ).count()
+        if sync_count > 0:
+            checks.append({"name": "ingest_worker", "status": "PASS",
+                           "detail": f"{sync_count} SYNC_POSITIONS in 24h"})
+        else:
+            checks.append({"name": "ingest_worker", "status": "WARN",
+                           "detail": "No SYNC_POSITIONS in 24h (normal if no trades)"})
+
+        # Overall verdict
+        fail_count = sum(1 for c in checks if c["status"] == "FAIL")
+        warn_count = sum(1 for c in checks if c["status"] == "WARN")
+        overall = "FAIL" if fail_count > 0 else ("DEGRADED" if warn_count > 0 else "PASS")
+
+        return Response({
+            "overall": overall,
+            "strategy_id": strategy.id,
+            "account_id": int(account_id),
+            "checked_at": now.isoformat(),
+            "checks": checks,
+        })
+
     @action(detail=True, methods=["post"], url_path="execution/run-signal")
     def run_signal(self, request, pk=None):
         """

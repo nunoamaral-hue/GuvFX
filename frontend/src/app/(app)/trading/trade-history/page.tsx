@@ -100,6 +100,35 @@ type DealRow = {
   strategy_name: string;
 };
 
+// Daily PnL row from /api/analytics/daily-pnl/
+type DailyPnlRow = {
+  date: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  net_pnl: number;
+  gross_profit: number;
+  gross_loss: number;
+};
+
+type DailyPnlResponse = {
+  account_id: number;
+  strategy_id: number | null;
+  mode: string;
+  days: number;
+  series: DailyPnlRow[];
+  totals: {
+    trades: number;
+    wins: number;
+    losses: number;
+    win_rate: number;
+    net_pnl: number;
+    gross_profit: number;
+    gross_loss: number;
+  };
+};
+
 // Union type for either mode
 type TradeRow = RoundTripRow | DealRow;
 
@@ -581,6 +610,11 @@ export default function TradeHistoryPage() {
   const [balanceSeries, setBalanceSeries] = useState<BalancePoint[]>([]);
   const [observedStats, setObservedStats] = useState<ObservedStats | null>(null);
 
+  // Daily PnL state
+  const [dailyPnl, setDailyPnl] = useState<DailyPnlResponse | null>(null);
+  const [dailyPnlDays, setDailyPnlDays] = useState(30);
+  const [loadingDailyPnl, setLoadingDailyPnl] = useState(false);
+
   // Auto-refresh state (for demo trade flow)
   const [autoRefreshCount, setAutoRefreshCount] = useState(0);
   const autoRefreshTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -747,6 +781,33 @@ export default function TradeHistoryPage() {
 
     fetchTrades(selectedAccountId);
   }, [selectedAccountId, fetchTrades, searchParams]);
+
+  // Fetch daily PnL when account or days changes
+  useEffect(() => {
+    if (!selectedAccountId) {
+      setDailyPnl(null);
+      return;
+    }
+    let cancelled = false;
+    const fetchDailyPnl = async () => {
+      setLoadingDailyPnl(true);
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/analytics/daily-pnl/?account_id=${selectedAccountId}&days=${dailyPnlDays}`,
+          { credentials: "include", cache: "no-store" }
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data: DailyPnlResponse = await res.json();
+        if (!cancelled) setDailyPnl(data);
+      } catch {
+        if (!cancelled) setDailyPnl(null);
+      } finally {
+        if (!cancelled) setLoadingDailyPnl(false);
+      }
+    };
+    fetchDailyPnl();
+    return () => { cancelled = true; };
+  }, [selectedAccountId, dailyPnlDays]);
 
   // Use observed statistics from backend, with local fallback
   const stats = useMemo(() => {
@@ -1115,6 +1176,142 @@ export default function TradeHistoryPage() {
               </div>
             </div>
           </div>
+        </Card>
+      )}
+
+      {/* Daily PnL & Win Rate (Observed) */}
+      {hasData && (
+        <Card
+          title="Daily PnL & Win Rate (Observed)"
+          subtitle="Aggregated by UTC close date. Not investment advice."
+        >
+          {/* Days selector */}
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem", alignItems: "center" }}>
+            <span style={{ fontSize: "0.8rem", color: "#9ca3af" }}>Period:</span>
+            {[7, 14, 30, 90].map((d) => (
+              <button
+                key={d}
+                onClick={() => setDailyPnlDays(d)}
+                style={{
+                  padding: "0.25rem 0.6rem",
+                  borderRadius: 6,
+                  border: dailyPnlDays === d ? "1px solid #60a5fa" : "1px solid rgba(148,163,184,0.25)",
+                  background: dailyPnlDays === d ? "rgba(96,165,250,0.15)" : "transparent",
+                  color: dailyPnlDays === d ? "#60a5fa" : "#9ca3af",
+                  fontSize: "0.8rem",
+                  cursor: "pointer",
+                }}
+              >
+                {d}d
+              </button>
+            ))}
+          </div>
+
+          {loadingDailyPnl && (
+            <p style={{ fontSize: "0.85rem", color: "#9ca3af" }}>Loading daily data…</p>
+          )}
+
+          {!loadingDailyPnl && dailyPnl && dailyPnl.series.length > 0 && (
+            <>
+              {/* Totals row */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+                  gap: "0.75rem",
+                  marginBottom: "1rem",
+                  padding: "0.75rem",
+                  borderRadius: 8,
+                  background: "rgba(15,23,42,0.5)",
+                  border: "1px solid rgba(148,163,184,0.15)",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: "0.72rem", color: "#9ca3af" }}>Net PnL</div>
+                  <div style={{
+                    fontSize: "1rem", fontWeight: 500,
+                    color: dailyPnl.totals.net_pnl >= 0 ? "#22c55e" : "#ef4444",
+                  }}>
+                    {dailyPnl.totals.net_pnl >= 0 ? "+" : ""}{dailyPnl.totals.net_pnl.toFixed(2)} {currency}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: "0.72rem", color: "#9ca3af" }}>Trades</div>
+                  <div style={{ fontSize: "1rem", color: "#e5f4ff", fontWeight: 500 }}>{dailyPnl.totals.trades}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: "0.72rem", color: "#9ca3af" }}>Win Rate</div>
+                  <div style={{ fontSize: "1rem", color: "#e5f4ff", fontWeight: 500 }}>{dailyPnl.totals.win_rate.toFixed(1)}%</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: "0.72rem", color: "#9ca3af" }}>W / L</div>
+                  <div style={{ fontSize: "1rem", color: "#e5f4ff", fontWeight: 500 }}>
+                    <span style={{ color: "#22c55e" }}>{dailyPnl.totals.wins}</span>
+                    {" / "}
+                    <span style={{ color: "#ef4444" }}>{dailyPnl.totals.losses}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Daily table — last 7 rows */}
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      {["Date", "Trades", "W", "L", "Win %", "Net PnL"].map((h) => (
+                        <th
+                          key={h}
+                          style={{
+                            textAlign: h === "Net PnL" ? "right" : "left",
+                            padding: "0.4rem 0.6rem",
+                            borderBottom: "1px solid rgba(255,255,255,0.1)",
+                            fontSize: "0.75rem",
+                            color: "#9ca3af",
+                            fontWeight: 500,
+                          }}
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dailyPnl.series.slice(-7).reverse().map((row) => (
+                      <tr key={row.date} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                        <td style={{ padding: "0.4rem 0.6rem", fontSize: "0.82rem", color: "#b7c5dd" }}>
+                          {row.date}
+                        </td>
+                        <td style={{ padding: "0.4rem 0.6rem", fontSize: "0.82rem", color: "#e5f4ff" }}>
+                          {row.trades}
+                        </td>
+                        <td style={{ padding: "0.4rem 0.6rem", fontSize: "0.82rem", color: "#22c55e" }}>
+                          {row.wins}
+                        </td>
+                        <td style={{ padding: "0.4rem 0.6rem", fontSize: "0.82rem", color: "#ef4444" }}>
+                          {row.losses}
+                        </td>
+                        <td style={{ padding: "0.4rem 0.6rem", fontSize: "0.82rem", color: "#e5f4ff" }}>
+                          {row.win_rate.toFixed(0)}%
+                        </td>
+                        <td style={{
+                          padding: "0.4rem 0.6rem", fontSize: "0.82rem", textAlign: "right", fontWeight: 500,
+                          color: row.net_pnl >= 0 ? "#22c55e" : "#ef4444",
+                        }}>
+                          {row.net_pnl >= 0 ? "+" : ""}{row.net_pnl.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {!loadingDailyPnl && (!dailyPnl || dailyPnl.series.length === 0) && (
+            <p style={{ fontSize: "0.85rem", color: "#64748b", textAlign: "center", padding: "1rem" }}>
+              No daily data for this period.
+            </p>
+          )}
         </Card>
       )}
 

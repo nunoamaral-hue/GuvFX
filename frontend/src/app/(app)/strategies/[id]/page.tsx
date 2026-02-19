@@ -38,6 +38,30 @@ type Strategy = {
 };
 
 // =============================================================================
+// Live Status Types
+// =============================================================================
+
+type LiveStatusCheck = {
+  name: string;
+  status: "PASS" | "FAIL" | "WARN";
+  detail: string;
+};
+
+type LiveStatusResponse = {
+  overall: "PASS" | "FAIL" | "DEGRADED";
+  strategy_id: number;
+  account_id: number;
+  checked_at: string;
+  checks: LiveStatusCheck[];
+};
+
+type StrategyAssignmentBrief = {
+  id: number;
+  account: number;
+  is_active: boolean;
+};
+
+// =============================================================================
 // Readiness Check Helper
 // =============================================================================
 
@@ -190,6 +214,46 @@ export default function StrategyControlPage() {
     fetchConfigs();
   }, [strategyId]);
 
+  // Live status state
+  const [liveStatus, setLiveStatus] = useState<LiveStatusResponse | null>(null);
+  const [liveStatusLoading, setLiveStatusLoading] = useState(false);
+
+  // Lazy-load live status: find active assignment → fetch live-status
+  useEffect(() => {
+    if (!strategyId || Number.isNaN(strategyId)) return;
+    let cancelled = false;
+
+    const fetchLiveStatus = async () => {
+      setLiveStatusLoading(true);
+      try {
+        // 1. Get active assignments for this strategy
+        const assignments = await apiFetch<
+          StrategyAssignmentBrief[] | { results: StrategyAssignmentBrief[] }
+        >(`/api/strategies/assignments/?strategy=${strategyId}`, {});
+        const list = Array.isArray(assignments) ? assignments : assignments.results || [];
+        const active = list.find((a) => a.is_active);
+        if (!active || cancelled) {
+          if (!cancelled) setLiveStatus(null);
+          return;
+        }
+
+        // 2. Fetch live-status for the active assignment's account
+        const statusData = await apiFetch<LiveStatusResponse>(
+          `/api/strategies/strategies/${strategyId}/execution/live-status/?account_id=${active.account}`,
+          {}
+        );
+        if (!cancelled) setLiveStatus(statusData);
+      } catch {
+        if (!cancelled) setLiveStatus(null);
+      } finally {
+        if (!cancelled) setLiveStatusLoading(false);
+      }
+    };
+
+    fetchLiveStatus();
+    return () => { cancelled = true; };
+  }, [strategyId]);
+
   // Guard for invalid strategyId
   if (Number.isNaN(strategyId)) {
     return (
@@ -242,6 +306,58 @@ export default function StrategyControlPage() {
       </div>
 
       {error && <Alert type="error">{error}</Alert>}
+
+      {/* Live Status Badge */}
+      {!liveStatusLoading && liveStatus && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "0.75rem",
+            padding: "0.6rem 1rem",
+            borderRadius: 8,
+            marginBottom: "1rem",
+            backgroundColor:
+              liveStatus.overall === "PASS"
+                ? "rgba(74, 222, 128, 0.08)"
+                : liveStatus.overall === "DEGRADED"
+                  ? "rgba(251, 191, 36, 0.08)"
+                  : "rgba(249, 115, 115, 0.08)",
+            border: `1px solid ${
+              liveStatus.overall === "PASS"
+                ? "rgba(74, 222, 128, 0.25)"
+                : liveStatus.overall === "DEGRADED"
+                  ? "rgba(251, 191, 36, 0.25)"
+                  : "rgba(249, 115, 115, 0.25)"
+            }`,
+          }}
+        >
+          <Badge
+            color={
+              liveStatus.overall === "PASS"
+                ? "green"
+                : liveStatus.overall === "DEGRADED"
+                  ? "yellow"
+                  : "red"
+            }
+          >
+            {liveStatus.overall === "PASS"
+              ? "LIVE"
+              : liveStatus.overall === "DEGRADED"
+                ? "DEGRADED"
+                : "OFFLINE"}
+          </Badge>
+          <span style={{ fontSize: "0.82rem", color: "#b7c5dd" }}>
+            {liveStatus.checks
+              .filter((c) => c.status !== "PASS")
+              .map((c) => c.detail)
+              .join(" · ") || "All systems operational"}
+          </span>
+          <span style={{ fontSize: "0.72rem", color: "#64748b", marginLeft: "auto" }}>
+            Checked {new Date(liveStatus.checked_at).toLocaleTimeString()}
+          </span>
+        </div>
+      )}
 
       {/* Strategy Definition Card */}
       <Card
