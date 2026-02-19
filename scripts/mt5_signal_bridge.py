@@ -98,6 +98,10 @@ EXTRA_STOP_BUFFER_POINTS = int(os.getenv("GUVFX_EXTRA_STOP_BUFFER_POINTS", "2"))
 # Max attempts to widen SL/TP buffer via order_check before giving up
 STOP_CLAMP_MAX_RETRIES = 3
 
+# Force-once test job: dynamic SL/TP from live tick price (pips from market)
+FORCE_ONCE_SL_PIPS = float(os.getenv("FORCE_ONCE_SL_PIPS", "50"))
+FORCE_ONCE_TP_PIPS = float(os.getenv("FORCE_ONCE_TP_PIPS", "100"))
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -394,6 +398,37 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
             logger.info(f"Note: entry_price={entry_price} specified but using market order at {price}")
 
         # -----------------------------------------------------------------
+        # Force-once override: compute SL/TP from live tick price
+        # -----------------------------------------------------------------
+        is_forced_once = payload.get("signal_reason") == "forced_once_test"
+        forced_sl_pips = 0.0
+        forced_tp_pips = 0.0
+
+        if is_forced_once:
+            point = symbol_info.point
+            digits = symbol_info.digits
+            # "pip" = 10 points for 3/5-digit brokers, else 1 point
+            pip_value = point * 10 if digits in (3, 5) else point
+
+            forced_sl_pips = FORCE_ONCE_SL_PIPS
+            forced_tp_pips = FORCE_ONCE_TP_PIPS
+            sl_distance = forced_sl_pips * pip_value
+            tp_distance = forced_tp_pips * pip_value
+
+            if side == "BUY":
+                sl_price = round(price - sl_distance, digits)
+                tp_price = round(price + tp_distance, digits)
+            else:
+                sl_price = round(price + sl_distance, digits)
+                tp_price = round(price - tp_distance, digits)
+
+            logger.info(
+                f"FORCE-ONCE override: market_price={price}, "
+                f"sl_pips={forced_sl_pips}, tp_pips={forced_tp_pips}, "
+                f"pip_value={pip_value}, sl={sl_price}, tp={tp_price}"
+            )
+
+        # -----------------------------------------------------------------
         # Enforce broker minimum stop distance (prevents retcode=10016)
         # -----------------------------------------------------------------
         point = symbol_info.point
@@ -546,6 +581,10 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
                 "buffer_points": buffer_points,
                 "original_sl": sl_price,
                 "original_tp": tp_price,
+                "forced_override": is_forced_once,
+                "forced_sl_pips": forced_sl_pips,
+                "forced_tp_pips": forced_tp_pips,
+                "market_price_used": price,
             },
         }
 
