@@ -208,14 +208,17 @@ def _build_round_trips(
 
     MODE 1 (FIFO pairing):
     - All trades get a pairing key (demo job, strategy, or FIFO fallback)
-    - Pairs BUY+SELL with same key into round-trips
-    - Orphan BUY/SELL legs are silently ignored (no unpaired rows)
+    - Pairs opposite-side trades with same key into round-trips:
+        Long:  BUY (open) → SELL (close)
+        Short: SELL (open) → BUY (close)
+    - Orphan legs are silently ignored (no unpaired rows)
 
     Returns:
         List of paired round-trip dicts
     """
-    # FIFO queues per pairing key: key -> list of BUY trades waiting for SELL
+    # FIFO queues per pairing key, per side
     buy_queues: Dict[str, List[Trade]] = defaultdict(list)
+    sell_queues: Dict[str, List[Trade]] = defaultdict(list)
 
     # Completed round-trips
     round_trips: List[Dict[str, Any]] = []
@@ -228,23 +231,37 @@ def _build_round_trips(
         side = trade.side.upper() if trade.side else "BUY"
 
         if side == "BUY":
-            # Push BUY into queue for this key
-            buy_queues[key].append(trade)
-        elif side == "SELL":
-            # Try to pop earliest BUY from same key
-            if buy_queues[key]:
-                buy_trade = buy_queues[key].pop(0)
-
-                # Build round-trip row
+            # Check if there's an earlier SELL waiting (short close)
+            if sell_queues[key]:
+                open_trade = sell_queues[key].pop(0)
                 rt = _build_round_trip_row(
-                    buy_trade=buy_trade,
-                    sell_trade=trade,
+                    open_trade=open_trade,
+                    close_trade=trade,
+                    direction="SELL",
                     raw_labels=raw_labels,
                     job_to_strategy=job_to_strategy,
                     sid_to_name=sid_to_name,
                 )
                 round_trips.append(rt)
-            # else: orphan SELL with no matching BUY - skip silently
+            else:
+                # No matching SELL opener; this BUY is an opener for a long
+                buy_queues[key].append(trade)
+        elif side == "SELL":
+            # Check if there's an earlier BUY waiting (long close)
+            if buy_queues[key]:
+                open_trade = buy_queues[key].pop(0)
+                rt = _build_round_trip_row(
+                    open_trade=open_trade,
+                    close_trade=trade,
+                    direction="BUY",
+                    raw_labels=raw_labels,
+                    job_to_strategy=job_to_strategy,
+                    sid_to_name=sid_to_name,
+                )
+                round_trips.append(rt)
+            else:
+                # No matching BUY opener; this SELL is an opener for a short
+                sell_queues[key].append(trade)
 
     # Sort round-trips by close_time descending (most recent first)
     round_trips.sort(key=lambda r: r["close_time"] or "", reverse=True)
@@ -253,16 +270,22 @@ def _build_round_trips(
 
 
 def _build_round_trip_row(
-    buy_trade: Trade,
-    sell_trade: Trade,
+    open_trade: Trade,
+    close_trade: Trade,
+    direction: str,
     raw_labels: Dict[str, str],
     job_to_strategy: Dict[int, tuple],
     sid_to_name: Dict[int, str],
 ) -> Dict[str, Any]:
     """
-    Build a single round-trip row from a BUY and SELL trade pair.
+    Build a single round-trip row from an open and close trade pair.
+
+    Args:
+        open_trade:  The trade that opened the position (BUY for longs, SELL for shorts).
+        close_trade: The trade that closed the position (SELL for longs, BUY for shorts).
+        direction:   "BUY" for long round-trips, "SELL" for short round-trips.
     """
-    # Resolve strategy name (prefer BUY's, fallback to SELL's)
+    # Resolve strategy name (prefer opener's, fallback to closer's)
     def resolve_strategy(trade: Trade) -> str:
         raw = raw_labels.get(trade.ticket, "Unattributed")
         if raw.startswith("job:"):
@@ -278,40 +301,43 @@ def _build_round_trip_row(
             sid = _sid_int(raw)
             return sid_to_name.get(sid, raw) if sid is not None else raw
 
-    buy_strategy = resolve_strategy(buy_trade)
-    sell_strategy = resolve_strategy(sell_trade)
+    open_strategy = resolve_strategy(open_trade)
+    close_strategy = resolve_strategy(close_trade)
 
-    # Prefer BUY's strategy if available, else SELL's
-    strategy_name = buy_strategy if buy_strategy != "Unattributed" else sell_strategy
+    # Prefer opener's strategy if available, else closer's
+    strategy_name = open_strategy if open_strategy != "Unattributed" else close_strategy
 
     # Calculate net P&L: sum of both legs' profit + commission + swap
-    buy_pnl = (buy_trade.profit or Decimal("0")) + (buy_trade.commission or Decimal("0")) + (buy_trade.swap or Decimal("0"))
-    sell_pnl = (sell_trade.profit or Decimal("0")) + (sell_trade.commission or Decimal("0")) + (sell_trade.swap or Decimal("0"))
-    net_pnl = buy_pnl + sell_pnl
+    open_pnl = (open_trade.profit or Decimal("0")) + (open_trade.commission or Decimal("0")) + (open_trade.swap or Decimal("0"))
+    close_pnl = (close_trade.profit or Decimal("0")) + (close_trade.commission or Decimal("0")) + (close_trade.swap or Decimal("0"))
+    net_pnl = open_pnl + close_pnl
 
-    # Use BUY's comment if available, else SELL's
-    comment = buy_trade.comment or sell_trade.comment or ""
+    # Use opener's comment if available, else closer's
+    comment = open_trade.comment or close_trade.comment or ""
 
     # Format close time for display (Trade Closed column)
-    close_time = sell_trade.close_time or sell_trade.open_time
+    close_time = close_trade.close_time or close_trade.open_time
     trade_closed = close_time.isoformat() if close_time else None
 
-    # Format trade numbers: "BUY_TICKET → SELL_TICKET"
-    trade_numbers = f"{buy_trade.ticket} → {sell_trade.ticket}"
+    # Format trade numbers: "OPEN_TICKET → CLOSE_TICKET"
+    trade_numbers = f"{open_trade.ticket} → {close_trade.ticket}"
 
-    # Direction: always "BUY→SELL" for a round-trip (long position closed)
-    direction = "BUY"
+    # Identify BUY and SELL legs for backwards-compatible fields
+    if direction == "BUY":
+        buy_trade, sell_trade = open_trade, close_trade
+    else:
+        buy_trade, sell_trade = close_trade, open_trade
 
     return {
-        "open_time": buy_trade.open_time,
+        "open_time": open_trade.open_time,
         "close_time": close_time,
-        "symbol": buy_trade.symbol,
-        "volume": str(buy_trade.volume),
-        "open_price": str(buy_trade.open_price) if buy_trade.open_price is not None else None,
-        "close_price": str(sell_trade.close_price or sell_trade.open_price) if (sell_trade.close_price or sell_trade.open_price) else None,
+        "symbol": open_trade.symbol,
+        "volume": str(open_trade.volume),
+        "open_price": str(open_trade.open_price) if open_trade.open_price is not None else None,
+        "close_price": str(close_trade.close_price or close_trade.open_price) if (close_trade.close_price or close_trade.open_price) else None,
         "net_pnl": str(net_pnl),
         "net_pnl_money": float(net_pnl),  # Numeric for formatting with currency
-        "legs": [buy_trade.ticket, sell_trade.ticket],
+        "legs": [open_trade.ticket, close_trade.ticket],
         "buy_ticket": buy_trade.ticket,
         "sell_ticket": sell_trade.ticket,
         "comment": comment,
@@ -454,7 +480,7 @@ class TradeHistoryView(APIView):
     Query params:
     - account (or account_id): Required. The trading account ID.
     - mode: Optional. "roundtrip" (default) or "deals".
-        - roundtrip: Returns completed round-trips (BUY+SELL paired)
+        - roundtrip: Returns completed round-trips (BUY→SELL long or SELL→BUY short)
         - deals: Returns individual deal rows (legacy behavior)
     - from/to: Optional date filters
     - symbol: Optional symbol filter
