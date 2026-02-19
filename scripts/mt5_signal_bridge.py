@@ -430,30 +430,62 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
 
         # -----------------------------------------------------------------
         # Enforce broker minimum stop distance (prevents retcode=10016)
+        #
+        # Uses FOUR inputs to compute the safe stop buffer:
+        #   1) trade_stops_level  — broker-mandated minimum (points)
+        #   2) trade_freeze_level — broker freeze distance  (points)
+        #   3) current spread     — ask-bid in points
+        #   4) EXTRA_STOP_BUFFER_POINTS — configurable safety margin
+        #
+        # If trade_stops_level==0 the broker may still reject stops
+        # that fall inside the spread; the retry loop will widen
+        # exponentially until order_check passes or retries exhausted.
         # -----------------------------------------------------------------
         point = symbol_info.point
         digits = symbol_info.digits
         stops_level = max(int(symbol_info.trade_stops_level or 0), 0)
         freeze_level = max(int(getattr(symbol_info, "trade_freeze_level", 0) or 0), 0)
 
+        # Current spread in points (integer)
+        spread_points = int(round((tick.ask - tick.bid) / point)) if point > 0 else 0
+
         def _round_price(x):
             """Round price to symbol's digit precision."""
             return round(x, digits)
 
-        # Start with broker minimums + safety buffer
-        buffer_points = max(stops_level, freeze_level) + EXTRA_STOP_BUFFER_POINTS
+        # Base buffer = max(stops_level, freeze_level, spread) + extra safety
+        # Even when stops_level==0 the spread provides a sane floor so stops
+        # are never placed *inside* the spread.
+        broker_min = max(stops_level, freeze_level, spread_points)
+        buffer_points = broker_min + EXTRA_STOP_BUFFER_POINTS
+        initial_buffer_points = buffer_points
+
         logger.info(
-            f"Stop distance: stops_level={stops_level} freeze_level={freeze_level} "
+            f"Stop distance calc: stops_level={stops_level} freeze_level={freeze_level} "
+            f"spread_pts={spread_points} broker_min={broker_min} "
             f"extra_buffer={EXTRA_STOP_BUFFER_POINTS} => buffer_points={buffer_points} "
-            f"(point={point}, digits={digits})"
+            f"(point={point}, digits={digits}, tick_size={symbol_info.trade_tick_size})"
         )
 
         # Clamp SL/TP to respect minimum distance, with retry loop
         final_sl = sl_price
         final_tp = tp_price
         order_ok = False
+        check_rc = None
+        check_comment = None
 
         for clamp_attempt in range(STOP_CLAMP_MAX_RETRIES + 1):
+            # Re-fetch tick on retries so price/spread stay current
+            if clamp_attempt > 0:
+                fresh_tick = mt5.symbol_info_tick(symbol)
+                if fresh_tick is not None:
+                    tick = fresh_tick
+                    if side == "BUY":
+                        price = tick.ask
+                    else:
+                        price = tick.bid
+                    spread_points = int(round((tick.ask - tick.bid) / point)) if point > 0 else 0
+
             buffer_price = buffer_points * point
 
             if side == "BUY":
@@ -495,7 +527,8 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
                 order_ok = True
                 logger.info(
                     f"order_check PASSED (attempt {clamp_attempt + 1}): "
-                    f"SL={final_sl} TP={final_tp} buffer_pts={buffer_points}"
+                    f"SL={final_sl} TP={final_tp} buffer_pts={buffer_points} "
+                    f"spread_pts={spread_points} price={price}"
                 )
                 break
 
@@ -505,18 +538,40 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
             logger.warning(
                 f"order_check FAILED (attempt {clamp_attempt + 1}/{STOP_CLAMP_MAX_RETRIES + 1}): "
                 f"retcode={check_rc} comment='{check_comment}' "
-                f"SL={final_sl} TP={final_tp} buffer_pts={buffer_points}"
+                f"SL={final_sl} TP={final_tp} buffer_pts={buffer_points} "
+                f"spread_pts={spread_points} price={price}"
             )
 
             if clamp_attempt < STOP_CLAMP_MAX_RETRIES:
-                buffer_points *= 2  # Double the buffer and retry
+                # Exponential widen: double the buffer each retry
+                buffer_points = max(buffer_points * 2, initial_buffer_points + (clamp_attempt + 1) * spread_points)
 
         if not order_ok:
-            return False, {}, (
+            return False, {
+                "ok": False,
+                "reason": "order_check_failed",
+                "symbol": symbol,
+                "side": side,
+                "price": price,
+                "sl": final_sl,
+                "tp": final_tp,
+                "stop_distance_info": {
+                    "stops_level": stops_level,
+                    "freeze_level": freeze_level,
+                    "spread_points": spread_points,
+                    "initial_buffer_points": initial_buffer_points,
+                    "final_buffer_points": buffer_points,
+                    "point": point,
+                    "digits": digits,
+                    "tick_size": symbol_info.trade_tick_size,
+                    "last_check_retcode": check_rc,
+                    "last_check_comment": check_comment,
+                },
+            }, (
                 f"order_check failed after {STOP_CLAMP_MAX_RETRIES + 1} attempts: "
                 f"symbol={symbol} side={side} price={price} sl={final_sl} tp={final_tp} "
                 f"stops_level={stops_level} freeze_level={freeze_level} "
-                f"buffer_pts={buffer_points}"
+                f"spread_pts={spread_points} buffer_pts={buffer_points}"
             )
 
         # Log any SL/TP adjustments
@@ -578,7 +633,12 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
             "stop_distance_info": {
                 "stops_level": stops_level,
                 "freeze_level": freeze_level,
-                "buffer_points": buffer_points,
+                "spread_points": spread_points,
+                "initial_buffer_points": initial_buffer_points,
+                "final_buffer_points": buffer_points,
+                "point": point,
+                "digits": digits,
+                "tick_size": symbol_info.trade_tick_size,
                 "original_sl": sl_price,
                 "original_tp": tp_price,
                 "forced_override": is_forced_once,
