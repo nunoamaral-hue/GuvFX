@@ -46,6 +46,17 @@ from core.audit import log_signal_evaluated, log_signal_rejected, log_signal_cre
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# TBP Debug Branch Trace (env-gated, production-safe)
+# =============================================================================
+TBP_DEBUG = os.getenv("GUVFX_TBP_DEBUG") == "1"
+
+
+def _tbp_debug(msg: str) -> None:
+    """Emit a TBP branch-trace line. Only runs when GUVFX_TBP_DEBUG=1."""
+    if TBP_DEBUG:
+        logger.info(msg)
+
 
 # =============================================================================
 # OHLC Data Fetching from Windows Agent
@@ -529,6 +540,88 @@ def find_swing_low(rates: List[Dict], lookback: int) -> Optional[float]:
     return min(r["low"] for r in rates[-lookback:])
 
 
+def _evaluate_branch(
+    direction: str,
+    zone_type: Optional[str],
+    direction_mode: str,
+    h4_rates: List[Dict],
+    current_close: float,
+    entry_buffer: float,
+    trendline_lookback_bars: int,
+    trendline_pivot_strength: int,
+    swing_lookback: int,
+    active_zone: Optional[Dict],
+    pip_size: float,
+    rr_target: float,
+) -> str:
+    """
+    Evaluate one direction branch and return a stable reason code.
+
+    This is a PURE diagnostic function — it does NOT create signals or jobs.
+    Used only for TBP_DEBUG branch-trace logging.
+
+    Returns one of the stable reason codes:
+        price_not_in_zone, direction_mode_excluded, zone_type_mismatch,
+        no_trendline, no_trendline_break_up, no_trendline_break_down,
+        no_swing_break_up, no_swing_break_down, sl_tp_invalid, signal_ready
+    """
+    if not active_zone:
+        return "price_not_in_zone"
+
+    # Direction mode filter
+    if direction == "BUY" and direction_mode == "short":
+        return "direction_mode_excluded"
+    if direction == "SELL" and direction_mode == "long":
+        return "direction_mode_excluded"
+
+    # Zone type compatibility
+    if direction == "BUY" and zone_type == "supply":
+        return "zone_type_mismatch"
+    if direction == "SELL" and zone_type == "demand":
+        return "zone_type_mismatch"
+
+    # Trendline computation
+    if direction == "BUY":
+        pivots = find_pivot_highs(h4_rates[:-1], trendline_pivot_strength)
+        trendline = compute_trendline_from_pivots(pivots, trendline_lookback_bars, len(h4_rates) - 1)
+        if not trendline:
+            return "no_trendline"
+        tl_val = get_trendline_value_at(trendline, len(h4_rates) - 2)
+        if current_close < tl_val + entry_buffer:
+            return "no_trendline_break_up"
+    else:
+        pivots = find_pivot_lows(h4_rates[:-1], trendline_pivot_strength)
+        trendline = compute_trendline_from_pivots(pivots, trendline_lookback_bars, len(h4_rates) - 1)
+        if not trendline:
+            return "no_trendline"
+        tl_val = get_trendline_value_at(trendline, len(h4_rates) - 2)
+        if current_close > tl_val - entry_buffer:
+            return "no_trendline_break_down"
+
+    # Swing structure break
+    if direction == "BUY":
+        swing_high = find_swing_high(h4_rates[:-2], swing_lookback)
+        if swing_high and current_close <= swing_high:
+            return "no_swing_break_up"
+    else:
+        swing_low = find_swing_low(h4_rates[:-2], swing_lookback)
+        if swing_low and current_close >= swing_low:
+            return "no_swing_break_down"
+
+    # SL/TP feasibility
+    if direction == "BUY":
+        sl_price = active_zone["low"] - (5 * pip_size)
+        sl_dist = current_close - sl_price
+    else:
+        sl_price = active_zone["high"] + (5 * pip_size)
+        sl_dist = sl_price - current_close
+
+    if sl_dist <= 0:
+        return "sl_tp_invalid"
+
+    return "signal_ready"
+
+
 def evaluate_trendline_break_pocket_signal(
     strategy: Strategy,
     account: TradingAccount,
@@ -601,6 +694,55 @@ def evaluate_trendline_break_pocket_signal(
             active_zone = zone
             zone_type = zone.get("zone_type", "demand")  # Default to demand
             break
+
+    # -----------------------------------------------------------------
+    # TBP Debug: branch-coverage trace (only when GUVFX_TBP_DEBUG=1)
+    # -----------------------------------------------------------------
+    if TBP_DEBUG:
+        _zone_name = active_zone.get("name", f"{zone_type}_{symbol}") if active_zone else "none"
+        _bar_ts = current_bar.get("time", "?")
+        _in_zone = active_zone is not None
+        _tbp_debug(
+            f"[TBP_DEBUG] bar={_bar_ts} sym={symbol} mode={config.direction_mode} "
+            f"in_zone={str(_in_zone).lower()} zone={_zone_name} zone_type={zone_type or 'none'} "
+            f"close={current_close}"
+        )
+        _branch_args = dict(
+            zone_type=zone_type,
+            direction_mode=config.direction_mode,
+            h4_rates=h4_rates,
+            current_close=current_close,
+            entry_buffer=entry_buffer,
+            trendline_lookback_bars=config.trendline_lookback_bars,
+            trendline_pivot_strength=config.trendline_pivot_strength,
+            swing_lookback=config.swing_lookback,
+            active_zone=active_zone,
+            pip_size=pip_size,
+            rr_target=config.rr_target,
+        )
+        if config.direction_mode == "both":
+            _buy_reason = _evaluate_branch(direction="BUY", **_branch_args)
+            _sell_reason = _evaluate_branch(direction="SELL", **_branch_args)
+            _tbp_debug(
+                f"[TBP_DEBUG] bar={_bar_ts} sym={symbol} branch=BUY "
+                f"pass={str(_buy_reason == 'signal_ready').lower()} reason={_buy_reason}"
+            )
+            _tbp_debug(
+                f"[TBP_DEBUG] bar={_bar_ts} sym={symbol} branch=SELL "
+                f"pass={str(_sell_reason == 'signal_ready').lower()} reason={_sell_reason}"
+            )
+        elif config.direction_mode == "long":
+            _buy_reason = _evaluate_branch(direction="BUY", **_branch_args)
+            _tbp_debug(
+                f"[TBP_DEBUG] bar={_bar_ts} sym={symbol} branch=BUY "
+                f"pass={str(_buy_reason == 'signal_ready').lower()} reason={_buy_reason}"
+            )
+        elif config.direction_mode == "short":
+            _sell_reason = _evaluate_branch(direction="SELL", **_branch_args)
+            _tbp_debug(
+                f"[TBP_DEBUG] bar={_bar_ts} sym={symbol} branch=SELL "
+                f"pass={str(_sell_reason == 'signal_ready').lower()} reason={_sell_reason}"
+            )
 
     if not active_zone:
         return SignalResult(
