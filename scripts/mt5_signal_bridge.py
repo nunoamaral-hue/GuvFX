@@ -91,6 +91,13 @@ HTTP_TIMEOUT = 15
 # Post-trade delay before completing job (sync race mitigation)
 POST_TRADE_SYNC_DELAY = float(os.getenv("GUVFX_POST_TRADE_SYNC_DELAY_SECONDS", "3"))
 
+# Extra buffer points added on top of broker's trade_stops_level / trade_freeze_level
+# to avoid edge-case rejections.  Default 2 points ≈ 0.2 pip for 5-digit brokers.
+EXTRA_STOP_BUFFER_POINTS = int(os.getenv("GUVFX_EXTRA_STOP_BUFFER_POINTS", "2"))
+
+# Max attempts to widen SL/TP buffer via order_check before giving up
+STOP_CLAMP_MAX_RETRIES = 3
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -386,23 +393,105 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
         if entry_price:
             logger.info(f"Note: entry_price={entry_price} specified but using market order at {price}")
 
-        # Prepare order request
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": lots,
-            "type": order_type,
-            "price": price,
-            "sl": sl_price,
-            "tp": tp_price,
-            "deviation": 20,  # 2 pips slippage
-            "magic": magic,
-            "comment": comment,
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
+        # -----------------------------------------------------------------
+        # Enforce broker minimum stop distance (prevents retcode=10016)
+        # -----------------------------------------------------------------
+        point = symbol_info.point
+        digits = symbol_info.digits
+        stops_level = max(int(symbol_info.trade_stops_level or 0), 0)
+        freeze_level = max(int(getattr(symbol_info, "trade_freeze_level", 0) or 0), 0)
 
-        logger.info(f"Sending order: {symbol} {side} {lots} @ {price}, SL={sl_price}, TP={tp_price}")
+        def _round_price(x):
+            """Round price to symbol's digit precision."""
+            return round(x, digits)
+
+        # Start with broker minimums + safety buffer
+        buffer_points = max(stops_level, freeze_level) + EXTRA_STOP_BUFFER_POINTS
+        logger.info(
+            f"Stop distance: stops_level={stops_level} freeze_level={freeze_level} "
+            f"extra_buffer={EXTRA_STOP_BUFFER_POINTS} => buffer_points={buffer_points} "
+            f"(point={point}, digits={digits})"
+        )
+
+        # Clamp SL/TP to respect minimum distance, with retry loop
+        final_sl = sl_price
+        final_tp = tp_price
+        order_ok = False
+
+        for clamp_attempt in range(STOP_CLAMP_MAX_RETRIES + 1):
+            buffer_price = buffer_points * point
+
+            if side == "BUY":
+                # BUY: SL must be below price, TP above price
+                max_sl = _round_price(price - buffer_price)
+                min_tp = _round_price(price + buffer_price)
+                final_sl = min(sl_price, max_sl) if sl_price > 0 else max_sl
+                final_tp = max(tp_price, min_tp) if tp_price > 0 else min_tp
+            else:
+                # SELL: SL must be above price, TP below price
+                min_sl = _round_price(price + buffer_price)
+                max_tp = _round_price(price - buffer_price)
+                final_sl = max(sl_price, min_sl) if sl_price > 0 else min_sl
+                final_tp = min(tp_price, max_tp) if tp_price > 0 else max_tp
+
+            final_sl = _round_price(final_sl)
+            final_tp = _round_price(final_tp)
+
+            # Build the order request
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": lots,
+                "type": order_type,
+                "price": price,
+                "sl": final_sl,
+                "tp": final_tp,
+                "deviation": 20,  # 2 pips slippage
+                "magic": magic,
+                "comment": comment,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            # Pre-flight check
+            check_result = mt5.order_check(request)
+
+            if check_result is not None and check_result.retcode == 0:
+                order_ok = True
+                logger.info(
+                    f"order_check PASSED (attempt {clamp_attempt + 1}): "
+                    f"SL={final_sl} TP={final_tp} buffer_pts={buffer_points}"
+                )
+                break
+
+            # order_check failed — log and widen
+            check_rc = check_result.retcode if check_result else "None"
+            check_comment = check_result.comment if check_result else "None"
+            logger.warning(
+                f"order_check FAILED (attempt {clamp_attempt + 1}/{STOP_CLAMP_MAX_RETRIES + 1}): "
+                f"retcode={check_rc} comment='{check_comment}' "
+                f"SL={final_sl} TP={final_tp} buffer_pts={buffer_points}"
+            )
+
+            if clamp_attempt < STOP_CLAMP_MAX_RETRIES:
+                buffer_points *= 2  # Double the buffer and retry
+
+        if not order_ok:
+            return False, {}, (
+                f"order_check failed after {STOP_CLAMP_MAX_RETRIES + 1} attempts: "
+                f"symbol={symbol} side={side} price={price} sl={final_sl} tp={final_tp} "
+                f"stops_level={stops_level} freeze_level={freeze_level} "
+                f"buffer_pts={buffer_points}"
+            )
+
+        # Log any SL/TP adjustments
+        if final_sl != sl_price or final_tp != tp_price:
+            logger.info(
+                f"SL/TP clamped: SL {sl_price}->{final_sl}, TP {tp_price}->{final_tp} "
+                f"(buffer_pts={buffer_points}, buffer_price={buffer_price:.{digits}f})"
+            )
+
+        logger.info(f"Sending order: {symbol} {side} {lots} @ {price}, SL={final_sl}, TP={final_tp}")
 
         # Send order
         result = mt5.order_send(request)
@@ -427,14 +516,17 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
                     "comment": result.comment,
                     "symbol": symbol,
                     "entry_price": entry_price,
-                    "sl_price": sl_price,
-                    "tp_price": tp_price,
+                    "sl_price": final_sl,
+                    "tp_price": final_tp,
                     "lots": lots,
                     "market_closed": True,
                 }
                 return False, market_closed_result, f"market_closed retcode={result.retcode}"
 
-            return False, {}, f"Order failed: retcode={result.retcode}, comment={result.comment}"
+            return False, {}, (
+                f"Order failed: retcode={result.retcode}, comment={result.comment}, "
+                f"sl={final_sl}, tp={final_tp}, price={price}"
+            )
 
         # Success!
         result_dict = {
@@ -443,14 +535,21 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
             "volume": result.volume,
             "symbol": symbol,
             "order_type": side,
-            "sl": sl_price,
-            "tp": tp_price,
+            "sl": final_sl,
+            "tp": final_tp,
             "placed_at": datetime.utcnow().isoformat() + "Z",
             "comment": comment,
             "retcode": result.retcode,
+            "stop_distance_info": {
+                "stops_level": stops_level,
+                "freeze_level": freeze_level,
+                "buffer_points": buffer_points,
+                "original_sl": sl_price,
+                "original_tp": tp_price,
+            },
         }
 
-        logger.info(f"Order executed: ticket={result.order}, price={result.price}, SL={sl_price}, TP={tp_price}")
+        logger.info(f"Order executed: ticket={result.order}, price={result.price}, SL={final_sl}, TP={final_tp}")
 
         # Post-trade delay: sleep before completing job to allow MT5 to commit deal to history
         # This mitigates the race where SYNC_POSITIONS runs before the deal appears
