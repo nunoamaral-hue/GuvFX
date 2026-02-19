@@ -58,6 +58,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from execution.models import ExecutionJob
 from mt5.models import Mt5Instance
 from .models import TradingAccount, Trade
 from .serializers import TradingAccountSerializer, TradeSerializer
@@ -570,6 +571,50 @@ def _find_demo_comment_for_close(
     )
 
 
+def _infer_source_stage(comment: str) -> str:
+    """
+    Infer Trade.source_stage from comment tag.
+
+    - GJ#### (demo) => "TEST"
+    - GS#### (signal) => look up ExecutionJob.payload.assignment_stage
+      - fallback: if payload.signal_reason == "forced_once_test" => "TEST"
+      - fallback: if payload.signal_reason == "trendline_break_pocket_signal" => check payload.assignment_stage
+      - else "UNKNOWN"
+    - anything else => "UNKNOWN"
+    """
+    if not comment:
+        return "UNKNOWN"
+
+    # GJ tags are always demo/test
+    if re.match(r"^GJ\d{4}$", comment):
+        return "TEST"
+
+    # GS tags — look up the ExecutionJob
+    gs_match = re.match(r"^GS(\d{4})$", comment)
+    if gs_match:
+        job_id = int(gs_match.group(1))
+        try:
+            job = ExecutionJob.objects.get(id=job_id)
+            payload = job.payload or {}
+            # Prefer explicit assignment_stage in payload
+            stage = payload.get("assignment_stage")
+            if stage in ("TEST", "LIVE"):
+                return stage
+            # Fallback: forced_once_test is always TEST
+            if payload.get("signal_reason") == "forced_once_test":
+                return "TEST"
+            # signal jobs default to LIVE if created by scheduler
+            if payload.get("signal_reason") == "trendline_break_pocket_signal":
+                return "LIVE"
+            return "UNKNOWN"
+        except ExecutionJob.DoesNotExist:
+            return "UNKNOWN"
+        except Exception:
+            return "UNKNOWN"
+
+    return "UNKNOWN"
+
+
 def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int, list]:
     """
     Upsert deals into Trade model.
@@ -591,11 +636,20 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
     Demo attribution:
     - For SELL deals with empty comment and magic=1, copies comment from
       recent matching BUY deal for attribution continuity.
+
+    Cutover:
+    - If account.ingest_cutover_time is set, deals older than cutover are skipped.
+
+    Source stage:
+    - Inferred from comment tag: GJ#### => TEST, GS#### => lookup job payload.
     """
     inserted = 0
     updated = 0
     skipped = 0
     skip_reasons = []
+
+    # Read cutover once
+    cutover = account.ingest_cutover_time
 
     for d in deals:
         try:
@@ -618,6 +672,13 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
             # open_time and close_time: both set to unix_time, fallback to now()
             open_time = unix_time or timezone.now()
             close_time = unix_time or timezone.now()
+
+            # Cutover check: skip deals older than the cutoff
+            if cutover and unix_time and unix_time < cutover:
+                skipped += 1
+                if len(skip_reasons) < 3:
+                    skip_reasons.append(f"before_cutover:{ticket}")
+                continue
 
             # Price handling: use "price" field for BOTH open_price and close_price
             # This ensures we never have 0 prices when actual price data exists
@@ -677,6 +738,9 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
                 if attributed_tag:
                     comment = attributed_tag
 
+            # Infer source_stage from comment tag
+            source_stage = _infer_source_stage(comment)
+
             obj, created = Trade.objects.get_or_create(
                 account=account,
                 ticket=ticket,
@@ -694,6 +758,7 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
                     "magic_number": magic,
                     "comment": comment,
                     "opened_by": "EA",
+                    "source_stage": source_stage,
                 },
             )
             if created:
@@ -746,6 +811,11 @@ def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int,
                         # Replace bracket comment with valid tag
                         obj.comment = comment
                         changed = True
+
+            # Update source_stage if UNKNOWN and we now have a valid stage
+            if obj.source_stage == "UNKNOWN" and source_stage != "UNKNOWN":
+                obj.source_stage = source_stage
+                changed = True
 
             if changed:
                 obj.save()
@@ -879,3 +949,58 @@ class SyncNowView(APIView):
 
         return Response(response_data, status=status.HTTP_200_OK)
 
+
+class SetIngestCutoverView(APIView):
+    """
+    POST /api/trading/set-ingest-cutover/
+
+    Set or update the ingest cutover timestamp for a trading account.
+    After setting, trade ingest will skip deals with deal.time < cutover.
+
+    Body:
+    {
+        "account_id": <int>,
+        "cutover_iso": "2026-02-19T12:00:00Z"  (optional, defaults to now UTC)
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.utils.dateparse import parse_datetime as _parse_dt
+
+        user = request.user
+        account_id = request.data.get("account_id")
+
+        if not account_id:
+            return Response(
+                {"ok": False, "error": "missing_account_id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            account = TradingAccount.objects.get(id=account_id, user=user)
+        except TradingAccount.DoesNotExist:
+            return Response(
+                {"ok": False, "error": "account_not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        cutover_iso = request.data.get("cutover_iso")
+        if cutover_iso:
+            cutover_dt = _parse_dt(str(cutover_iso))
+            if not cutover_dt:
+                return Response(
+                    {"ok": False, "error": "invalid_cutover_iso", "message": f"Cannot parse: {cutover_iso}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            cutover_dt = timezone.now()
+
+        account.ingest_cutover_time = cutover_dt
+        account.save(update_fields=["ingest_cutover_time", "updated_at"])
+
+        return Response({
+            "ok": True,
+            "account_id": account.id,
+            "ingest_cutover_time": account.ingest_cutover_time.isoformat(),
+        })

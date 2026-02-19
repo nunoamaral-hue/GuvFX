@@ -1095,6 +1095,7 @@ def create_place_order_job(
         "windows_username": windows_username,
         "zone_name": zone_name,
         "signal_reason": signal_reason,
+        "assignment_stage": getattr(assignment, "stage", "UNKNOWN"),
         "safety_rails": {
             "max_lots": SIGNAL_MAX_LOT_SIZE,
             "allowed_symbols": SIGNAL_ALLOWED_SYMBOLS,

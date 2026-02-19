@@ -519,6 +519,12 @@ class TradeHistoryView(APIView):
         if not user.is_staff:
             qs = qs.filter(account__user=user)
 
+        # Stage filter: LIVE (default), TEST, or ALL
+        stage = (request.query_params.get("stage") or "ALL").upper()
+        if stage in ("LIVE", "TEST"):
+            qs = qs.filter(source_stage=stage)
+        # ALL => no filter
+
         # Optional filters
         symbol = request.query_params.get("symbol")
         if symbol:
@@ -944,6 +950,11 @@ class DailyPnlView(APIView):
         # Ownership gate
         if not user.is_staff:
             qs = qs.filter(account__user=user)
+
+        # Stage filter: LIVE (default), TEST, or ALL
+        stage = (request.query_params.get("stage") or "ALL").upper()
+        if stage in ("LIVE", "TEST"):
+            qs = qs.filter(source_stage=stage)
 
         trades = list(qs.order_by("-close_time")[:2000])
 

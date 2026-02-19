@@ -113,13 +113,66 @@ def get_expected_tag_from_trigger_job(trigger_job_id: int) -> str | None:
         return None
 
 
+import re
+import datetime as dt_module
+from execution.models import ExecutionJob
+
+# Regex for GJ/GS tags
+_GJ_TAG_RE = re.compile(r"^GJ\d{4}$")
+_GS_TAG_RE = re.compile(r"^GS(\d{4})$")
+
+
+def _worker_infer_source_stage(comment: str) -> str:
+    """Infer Trade.source_stage from comment tag in ingest worker."""
+    if not comment:
+        return "UNKNOWN"
+    if _GJ_TAG_RE.match(comment):
+        return "TEST"
+    gs_match = _GS_TAG_RE.match(comment)
+    if gs_match:
+        job_id = int(gs_match.group(1))
+        try:
+            job = ExecutionJob.objects.get(id=job_id)
+            payload = job.payload or {}
+            stage = payload.get("assignment_stage")
+            if stage in ("TEST", "LIVE"):
+                return stage
+            if payload.get("signal_reason") == "forced_once_test":
+                return "TEST"
+            if payload.get("signal_reason") == "trendline_break_pocket_signal":
+                return "LIVE"
+        except Exception:
+            pass
+    return "UNKNOWN"
+
+
+def _deal_time_to_utc(d: dict):
+    """Extract deal.time (unix seconds) as aware UTC datetime."""
+    raw = d.get("time")
+    if raw and isinstance(raw, (int, float)):
+        try:
+            return dt_module.datetime.utcfromtimestamp(raw).replace(tzinfo=dt_module.timezone.utc)
+        except (ValueError, OSError):
+            pass
+    return None
+
+
 def upsert_trades(account: TradingAccount, deals: list[dict]):
     inserted = 0
     updated = 0
+    skipped = 0
+
+    cutover = account.ingest_cutover_time
 
     for d in deals:
         ticket = str(d.get("ticket") or d.get("position_ticket") or d.get("deal_id") or "").strip()
         if not ticket:
+            continue
+
+        # Cutover check (deal.time is unix seconds)
+        deal_time_utc = _deal_time_to_utc(d)
+        if cutover and deal_time_utc and deal_time_utc < cutover:
+            skipped += 1
             continue
 
         symbol = (d.get("symbol") or "").strip()
@@ -144,6 +197,7 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
             magic = None
 
         comment = str(d.get("comment") or "").strip()
+        source_stage = _worker_infer_source_stage(comment)
 
         obj, created = Trade.objects.get_or_create(
             account=account,
@@ -162,6 +216,7 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
                 "magic_number": magic,
                 "comment": comment,
                 "opened_by": "EA",
+                "source_stage": source_stage,
             },
         )
         if created:
@@ -182,6 +237,11 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
             if val is not None and getattr(obj, field) != val:
                 setattr(obj, field, val)
                 changed = True
+
+        # Update source_stage if UNKNOWN and we now have a valid one
+        if obj.source_stage == "UNKNOWN" and source_stage != "UNKNOWN":
+            obj.source_stage = source_stage
+            changed = True
 
         if changed:
             obj.save()

@@ -313,6 +313,7 @@ class StrategyAssignmentSerializer(serializers.ModelSerializer):
             "strategy",
             "account",
             "is_active",
+            "stage",
             "risk_per_trade_override_pct",
             "created_at",
             "updated_at",

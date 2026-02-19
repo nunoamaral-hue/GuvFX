@@ -610,6 +610,9 @@ export default function TradeHistoryPage() {
   const [balanceSeries, setBalanceSeries] = useState<BalancePoint[]>([]);
   const [observedStats, setObservedStats] = useState<ObservedStats | null>(null);
 
+  // Stage filter (LIVE / TEST / ALL)
+  const [stageFilter, setStageFilter] = useState<"ALL" | "LIVE" | "TEST">("ALL");
+
   // Daily PnL state
   const [dailyPnl, setDailyPnl] = useState<DailyPnlResponse | null>(null);
   const [dailyPnlDays, setDailyPnlDays] = useState(30);
@@ -638,7 +641,7 @@ export default function TradeHistoryPage() {
       // Use mode=roundtrip to get paired BUY+SELL as single rows
       const cacheBuster = Date.now();
       const res = await fetch(
-        `${API_BASE}/api/analytics/trade-history/?account=${accountId}&mode=roundtrip&_t=${cacheBuster}`,
+        `${API_BASE}/api/analytics/trade-history/?account=${accountId}&mode=roundtrip&stage=${stageFilter}&_t=${cacheBuster}`,
         {
           credentials: "include",
           cache: "no-store",
@@ -672,7 +675,7 @@ export default function TradeHistoryPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [stageFilter]);
 
   // Fetch accounts
   useEffect(() => {
@@ -793,7 +796,7 @@ export default function TradeHistoryPage() {
       setLoadingDailyPnl(true);
       try {
         const res = await fetch(
-          `${API_BASE}/api/analytics/daily-pnl/?account_id=${selectedAccountId}&days=${dailyPnlDays}`,
+          `${API_BASE}/api/analytics/daily-pnl/?account_id=${selectedAccountId}&days=${dailyPnlDays}&stage=${stageFilter}`,
           { credentials: "include", cache: "no-store" }
         );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -807,7 +810,7 @@ export default function TradeHistoryPage() {
     };
     fetchDailyPnl();
     return () => { cancelled = true; };
-  }, [selectedAccountId, dailyPnlDays]);
+  }, [selectedAccountId, dailyPnlDays, stageFilter]);
 
   // Use observed statistics from backend, with local fallback
   const stats = useMemo(() => {
@@ -958,6 +961,29 @@ export default function TradeHistoryPage() {
                 : t(lang, "tradeHistory.refreshing")
               : t(lang, "tradeHistory.refresh")}
           </Button>
+
+          {/* Stage filter */}
+          <div style={{ marginTop: "1.25rem" }}>
+            <span style={{ fontSize: "0.78rem", color: "#9ca3af", marginRight: "0.4rem" }}>Stage:</span>
+            {(["ALL", "LIVE", "TEST"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setStageFilter(s)}
+                style={{
+                  padding: "0.25rem 0.5rem",
+                  marginRight: "0.25rem",
+                  borderRadius: 5,
+                  border: stageFilter === s ? "1px solid #60a5fa" : "1px solid rgba(148,163,184,0.25)",
+                  background: stageFilter === s ? "rgba(96,165,250,0.15)" : "transparent",
+                  color: stageFilter === s ? "#60a5fa" : "#9ca3af",
+                  fontSize: "0.78rem",
+                  cursor: "pointer",
+                }}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
 
           {error && (
             <span style={{ color: "#f87171", fontSize: "0.85rem", marginTop: "1.25rem" }}>

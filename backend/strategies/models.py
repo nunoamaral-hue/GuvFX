@@ -252,6 +252,13 @@ class StrategyAssignment(models.Model):
     Links a Strategy to a TradingAccount (strategy running on that account).
     """
 
+    STAGE_TEST = "TEST"
+    STAGE_LIVE = "LIVE"
+    STAGE_CHOICES = [
+        (STAGE_TEST, "Test"),
+        (STAGE_LIVE, "Live"),
+    ]
+
     strategy = models.ForeignKey(
         Strategy,
         on_delete=models.CASCADE,
@@ -264,6 +271,12 @@ class StrategyAssignment(models.Model):
     )
 
     is_active = models.BooleanField(default=True)
+    stage = models.CharField(
+        max_length=8,
+        choices=STAGE_CHOICES,
+        default=STAGE_TEST,
+        help_text="TEST = dry-run/testing (excluded from auto scheduler), LIVE = real auto-evaluation.",
+    )
     risk_per_trade_override_pct = models.DecimalField(
         max_digits=5,
         decimal_places=2,

@@ -254,6 +254,7 @@ class Command(BaseCommand):
                         "windows_username": windows_username,
                         "zone_name": zone.get("name", f"{zone_type}_{selected_symbol}"),
                         "signal_reason": "forced_once_test",
+                        "assignment_stage": getattr(assignment, "stage", "TEST"),
                         "bar_close_time": bar_close_iso,
                         "safety_rails": {
                             "max_lots": 0.02,
@@ -388,8 +389,27 @@ class Command(BaseCommand):
         if strategy_filter:
             assignments_qs = assignments_qs.filter(strategy_id=strategy_filter)
 
-        assignments = list(assignments_qs)
-        self.stdout.write(f"[INFO] Found {len(assignments)} active TBP assignments")
+        all_assignments = list(assignments_qs)
+
+        # Separate LIVE from TEST — only LIVE assignments get auto-evaluated
+        # (force-once bypasses this gate to allow testing)
+        if force_once:
+            assignments = all_assignments
+        else:
+            assignments = []
+            for a in all_assignments:
+                if getattr(a, "stage", "TEST") == "LIVE":
+                    assignments.append(a)
+                else:
+                    self.stdout.write(
+                        f"[SKIP-STAGE] assignment={a.id} strategy={a.strategy_id} "
+                        f"account={a.account_id} stage={a.stage} (not LIVE, skipping auto-eval)"
+                    )
+
+        self.stdout.write(
+            f"[INFO] Found {len(all_assignments)} active TBP assignments, "
+            f"{len(assignments)} with stage=LIVE (evaluating)"
+        )
 
         if not assignments:
             self.stdout.write("[INFO] No active TBP assignments to evaluate")
