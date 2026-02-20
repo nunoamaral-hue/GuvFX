@@ -41,6 +41,7 @@ from execution.models import (
     SIGNAL_MAX_CONCURRENT_POSITIONS,
 )
 from strategies.models import Strategy, StrategyAssignment
+from strategies.zone_generator import resolve_zones
 from trading.models import TradingAccount, Trade
 from core.audit import log_signal_evaluated, log_signal_rejected, log_signal_created
 
@@ -235,7 +236,7 @@ class TrendlineBreakPocketConfig:
             max_trades_per_day=filters.get("max_trades_per_day", 10),
             max_concurrent_positions=filters.get("max_concurrent_positions", 1),
             news_filter_mode=filters.get("news_filter_mode", "major_only"),
-            zones=filters.get("zones", {}),
+            zones=resolve_zones(filters),
         )
 
 

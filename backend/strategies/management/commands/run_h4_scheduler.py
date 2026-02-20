@@ -36,6 +36,7 @@ from django.utils import timezone
 from execution.models import ExecutionJob
 from strategies.models import Strategy, StrategyAssignment
 from strategies.signal_engine import run_signal_evaluation
+from strategies.zone_generator import is_zones_stale, resolve_zones
 from trading.models import TradingAccount
 
 logger = logging.getLogger(__name__)
@@ -151,9 +152,9 @@ class Command(BaseCommand):
                 )
                 continue
 
-            # Get filters and zones
+            # Get filters and zones (auto_zones if enabled, else manual zones)
             filters = strategy.filters or {}
-            zones = filters.get("zones") or {}
+            zones = resolve_zones(filters)
             pairs_enabled = filters.get("pairs_enabled") or PREFERRED_SYMBOLS
 
             # Find first eligible symbol with zones
@@ -298,6 +299,101 @@ class Command(BaseCommand):
 
         self.stdout.write("[FORCE-ONCE] No eligible assignment found for forced test")
 
+    def _maybe_refresh_auto_zones(
+        self,
+        assignment,
+        dry_run: bool,
+    ) -> None:
+        """
+        Auto-refresh D1 zones if stale, respecting stage rules:
+          - stage=TEST  → always refresh stale zones (TEST is for experimentation)
+          - stage=LIVE  → only refresh if filters.auto_zones_enabled == true
+        """
+        from strategies.zone_generator import generate_zones_for_symbol
+        from strategies.management.commands.refresh_htf_zones import _fetch_d1_bars
+
+        strategy = assignment.strategy
+        stage = getattr(assignment, "stage", "TEST")
+        filters = strategy.filters or {}
+
+        # Determine if auto-refresh is allowed for this assignment
+        auto_enabled = filters.get("auto_zones_enabled") is True
+        if stage == "LIVE" and not auto_enabled:
+            return  # LIVE without auto_zones_enabled → skip
+
+        # Check staleness
+        if not is_zones_stale(filters):
+            return  # Fresh zones, nothing to do
+
+        # Resolve which symbols to refresh
+        symbols = filters.get("pairs_enabled") or ["EURUSD", "GBPUSD"]
+
+        self.stdout.write(
+            f"[AUTO_ZONES] Stale zones detected for strategy={strategy.id} "
+            f"stage={stage} auto_enabled={auto_enabled} — refreshing..."
+        )
+
+        if dry_run:
+            self.stdout.write(
+                f"[AUTO_ZONES] DRY-RUN: would refresh zones for strategy={strategy.id}"
+            )
+            return
+
+        all_auto_zones = {}
+        combined_meta = {}
+
+        for symbol in symbols:
+            try:
+                bars = _fetch_d1_bars(symbol, count=120)
+            except Exception as e:
+                self.stderr.write(
+                    f"[AUTO_ZONES] ERROR fetching D1 bars for {symbol}: {e}"
+                )
+                continue
+
+            zones, meta = generate_zones_for_symbol(
+                bars=bars,
+                symbol=symbol,
+                atr_period=14,
+                atr_mult=0.8,
+                pivot_strength=2,
+                max_zones=3,
+            )
+
+            if zones:
+                all_auto_zones[symbol] = zones
+                combined_meta = meta
+
+                supply = [z for z in zones if z["zone_type"] == "supply"]
+                demand = [z for z in zones if z["zone_type"] == "demand"]
+                pivot = [z for z in zones if z["zone_type"] == "pivot"]
+                supply_s = ", ".join(f'[{z["low"]:.5f}-{z["high"]:.5f}]' for z in supply) or "none"
+                demand_s = ", ".join(f'[{z["low"]:.5f}-{z["high"]:.5f}]' for z in demand) or "none"
+                pivot_s = ", ".join(f'[{z["low"]:.5f}-{z["high"]:.5f}]' for z in pivot) or "none"
+
+                log_line = (
+                    f"[AUTO_ZONES] strategy={strategy.id} symbol={symbol} "
+                    f"generated supply={supply_s} demand={demand_s} pivot={pivot_s} "
+                    f"generated_at={meta.get('generated_at', '?')}"
+                )
+                self.stdout.write(log_line)
+                print(log_line)
+
+        if all_auto_zones:
+            filters["auto_zones"] = all_auto_zones
+            filters["zones_meta"] = combined_meta
+            strategy.filters = filters
+            strategy.save(update_fields=["filters"])
+            # Reload strategy on the assignment so signal engine picks up new zones
+            assignment.strategy.refresh_from_db()
+            self.stdout.write(
+                f"[AUTO_ZONES] Written auto_zones for strategy={strategy.id}"
+            )
+        else:
+            self.stderr.write(
+                f"[AUTO_ZONES] No zones generated for strategy={strategy.id}"
+            )
+
     def add_arguments(self, parser):
         parser.add_argument(
             "--grace-seconds",
@@ -410,6 +506,22 @@ class Command(BaseCommand):
             f"[INFO] Found {len(all_assignments)} active TBP assignments, "
             f"{len(assignments)} with stage=LIVE (evaluating)"
         )
+
+        # -----------------------------------------------------------------
+        # Auto HTF zones: refresh stale zones BEFORE evaluation
+        # - TEST assignments: always refresh (zone experimentation)
+        # - LIVE assignments: only if filters.auto_zones_enabled == true
+        # -----------------------------------------------------------------
+        if not force_once:
+            for a in all_assignments:
+                try:
+                    self._maybe_refresh_auto_zones(a, dry_run=dry_run)
+                except Exception as e:
+                    self.stderr.write(
+                        f"[AUTO_ZONES] ERROR refreshing zones for assignment={a.id} "
+                        f"strategy={a.strategy_id}: {e}"
+                    )
+                    logger.exception(f"Auto zone refresh error: {e}")
 
         if not assignments:
             self.stdout.write("[INFO] No active TBP assignments to evaluate")
