@@ -25,6 +25,7 @@ type Strategy = {
   ma_slow_period: number | null;
   ma_type: string | null;
   auto_optimize_by_ai: boolean;
+  filters: Record<string, unknown> | null;
   created_at: string;
 };
 
@@ -270,6 +271,21 @@ export default function StrategiesListPage() {
                 <strong>Symbols:</strong> {strategy.symbol_universe || "—"}{" "}
                 &nbsp;|&nbsp;
                 <strong>Timeframe:</strong> {strategy.timeframe || "—"}
+                {strategy.filters?.template_slug && (
+                  <>
+                    &nbsp;|&nbsp;
+                    <strong>Engine:</strong>{" "}
+                    {strategy.filters.template_slug === "trendline-break-pocket-ali"
+                      ? "TBP"
+                      : strategy.filters.template_slug ===
+                          "adaptive-liquidity-trap-scalper"
+                        ? "ALTS"
+                        : strategy.filters.template_slug ===
+                            "structural-continuation-engine"
+                          ? "SCE"
+                          : String(strategy.filters.template_slug)}
+                  </>
+                )}
               </p>
               <p
                 style={{

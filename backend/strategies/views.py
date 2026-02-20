@@ -13,7 +13,13 @@ from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
 from trading.models import TradingAccount
 
-from .models import Strategy, StrategyAssignment, StrategyChangeLog
+from .models import (
+    Strategy,
+    StrategyAssignment,
+    StrategyChangeLog,
+    StrategyRuntimeState,
+    StrategyRuntimeEvent,
+)
 from .serializers import (
     StrategySerializer,
     StrategyAssignmentSerializer,
@@ -402,6 +408,94 @@ class StrategyViewSet(viewsets.ModelViewSet):
             "account_id": int(account_id),
             "checked_at": now.isoformat(),
             "checks": checks,
+        })
+
+    @action(detail=True, methods=["get"], url_path="execution/engine-status")
+    def execution_engine_status(self, request, pk=None):
+        """
+        GET /api/strategies/strategies/<id>/execution/engine-status/?account_id=<id>
+
+        Returns per-engine, per-symbol runtime state and recent evaluation events
+        for the active assignment. Used by the frontend observability dashboard.
+
+        Response:
+            { strategy_id, account_id, assignment_id, stage,
+              checked_at, runtime_states: [...], recent_events: [...] }
+        """
+        strategy = self.get_object()
+        account_id = request.query_params.get("account_id")
+        if not account_id:
+            return Response(
+                {"ok": False, "reason": "account_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        account = TradingAccount.objects.filter(id=account_id).first()
+        if not account:
+            return Response(
+                {"ok": False, "reason": f"Account {account_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        assignment = StrategyAssignment.objects.filter(
+            strategy=strategy, account=account, is_active=True,
+        ).first()
+        if not assignment:
+            return Response({
+                "strategy_id": strategy.id,
+                "account_id": int(account_id),
+                "assignment_id": None,
+                "stage": None,
+                "checked_at": timezone.now().isoformat(),
+                "runtime_states": [],
+                "recent_events": [],
+            })
+
+        # Fetch all runtime states for this assignment
+        states = StrategyRuntimeState.objects.filter(
+            assignment=assignment,
+        ).order_by("strategy_key", "symbol")
+
+        runtime_states = []
+        for s in states:
+            runtime_states.append({
+                "strategy_key": s.strategy_key,
+                "symbol": s.symbol,
+                "last_eval_at": s.last_eval_at.isoformat() if s.last_eval_at else None,
+                "daily_r_pnl": str(s.daily_r_pnl),
+                "daily_trade_count": s.daily_trade_count,
+                "weekly_r_pnl": str(s.weekly_r_pnl),
+                "consecutive_losses": s.consecutive_losses,
+                "paused_until": s.paused_until.isoformat() if s.paused_until else None,
+                "pause_reason": s.pause_reason,
+                "regime_blob": s.regime_blob or {},
+                "updated_at": s.updated_at.isoformat(),
+            })
+
+        # Fetch recent events (last 50)
+        events = StrategyRuntimeEvent.objects.filter(
+            assignment=assignment,
+        ).order_by("-created_at")[:50]
+
+        recent_events = []
+        for e in events:
+            recent_events.append({
+                "event_type": e.event_type,
+                "strategy_key": e.strategy_key,
+                "symbol": e.symbol,
+                "reason_code": e.reason_code,
+                "bar_close_time": e.bar_close_time,
+                "created_at": e.created_at.isoformat(),
+            })
+
+        return Response({
+            "strategy_id": strategy.id,
+            "account_id": int(account_id),
+            "assignment_id": assignment.id,
+            "stage": assignment.stage,
+            "checked_at": timezone.now().isoformat(),
+            "runtime_states": runtime_states,
+            "recent_events": recent_events,
         })
 
     @action(detail=True, methods=["post"], url_path="execution/run-signal")

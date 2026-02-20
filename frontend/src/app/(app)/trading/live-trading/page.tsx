@@ -395,6 +395,15 @@ export default function LiveTradingPage() {
                                 {!asn.is_active && " (paused)"}
                               </span>
 
+                              {/* Stage badge */}
+                              <Badge
+                                color={
+                                  asn.stage === "LIVE" ? "green" : "yellow"
+                                }
+                              >
+                                {asn.stage || "TEST"}
+                              </Badge>
+
                               {/* Demo Trade Button - only for demo accounts with active assignments */}
                               {canRunDemoTrade && (
                                 <button

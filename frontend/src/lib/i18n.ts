@@ -1770,6 +1770,24 @@ const dictionary: Dictionary = {
     ja: "テストは情報提供のみを目的としています。結果はデータの品質と仮定に依存し、将来の結果を保証するものではありません。",
   },
 
+  // Engine Runtime Status Section
+  "strategy.engineStatus.title": {
+    en: "Engine Runtime Status",
+    ja: "エンジンランタイムステータス",
+  },
+  "strategy.engineStatus.subtitle": {
+    en: "Per-engine, per-symbol runtime metrics and risk counters.",
+    ja: "エンジンごとのランタイムメトリクスとリスクカウンター。",
+  },
+  "strategy.engineEvents.title": {
+    en: "Recent Evaluation Events",
+    ja: "最近の評価イベント",
+  },
+  "strategy.engineEvents.subtitle": {
+    en: "Signal evaluations, throttles, and regime changes.",
+    ja: "シグナル評価、スロットル、レジーム変更。",
+  },
+
   // -----------------------------------------------------------------------------
   // Strategy Edit Page
   // -----------------------------------------------------------------------------

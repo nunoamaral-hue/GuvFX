@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Alert } from "@/components/ui/Alert";
 import { t, detectLang, type Lang } from "@/lib/i18n";
 import type { BacktestConfig } from "@/types/backtests";
+import type { EngineStatusResponse } from "@/types/strategies";
 
 // =============================================================================
 // Types
@@ -59,6 +60,7 @@ type StrategyAssignmentBrief = {
   id: number;
   account: number;
   is_active: boolean;
+  stage: "TEST" | "LIVE";
 };
 
 // =============================================================================
@@ -254,6 +256,44 @@ export default function StrategyControlPage() {
     return () => { cancelled = true; };
   }, [strategyId]);
 
+  // Engine runtime status state
+  const [engineStatus, setEngineStatus] = useState<EngineStatusResponse | null>(null);
+  const [engineStatusLoading, setEngineStatusLoading] = useState(false);
+
+  // Lazy-load engine status: find active assignment → fetch engine-status
+  useEffect(() => {
+    if (!strategyId || Number.isNaN(strategyId)) return;
+    let cancelled = false;
+
+    const fetchEngineStatus = async () => {
+      setEngineStatusLoading(true);
+      try {
+        const assignments = await apiFetch<
+          StrategyAssignmentBrief[] | { results: StrategyAssignmentBrief[] }
+        >(`/api/strategies/assignments/?strategy=${strategyId}`, {});
+        const list = Array.isArray(assignments) ? assignments : assignments.results || [];
+        const active = list.find((a) => a.is_active);
+        if (!active || cancelled) {
+          if (!cancelled) setEngineStatus(null);
+          return;
+        }
+
+        const data = await apiFetch<EngineStatusResponse>(
+          `/api/strategies/strategies/${strategyId}/execution/engine-status/?account_id=${active.account}`,
+          {}
+        );
+        if (!cancelled) setEngineStatus(data);
+      } catch {
+        if (!cancelled) setEngineStatus(null);
+      } finally {
+        if (!cancelled) setEngineStatusLoading(false);
+      }
+    };
+
+    fetchEngineStatus();
+    return () => { cancelled = true; };
+  }, [strategyId]);
+
   // Guard for invalid strategyId
   if (Number.isNaN(strategyId)) {
     return (
@@ -347,6 +387,11 @@ export default function StrategyControlPage() {
                 ? "DEGRADED"
                 : "OFFLINE"}
           </Badge>
+          {engineStatus?.stage && (
+            <Badge color={engineStatus.stage === "LIVE" ? "green" : "yellow"}>
+              {engineStatus.stage}
+            </Badge>
+          )}
           <span style={{ fontSize: "0.82rem", color: "#b7c5dd" }}>
             {liveStatus.checks
               .filter((c) => c.status !== "PASS")
@@ -357,6 +402,208 @@ export default function StrategyControlPage() {
             Checked {new Date(liveStatus.checked_at).toLocaleTimeString()}
           </span>
         </div>
+      )}
+
+      {/* Engine Runtime Status */}
+      {!engineStatusLoading && engineStatus && engineStatus.runtime_states.length > 0 && (
+        <Card
+          title={t(lang, "strategy.engineStatus.title")}
+          subtitle={t(lang, "strategy.engineStatus.subtitle")}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {engineStatus.runtime_states.map((rs) => {
+              const engineAbbr =
+                rs.strategy_key === "trendline-break-pocket-ali"
+                  ? "TBP"
+                  : rs.strategy_key === "adaptive-liquidity-trap-scalper"
+                    ? "ALTS"
+                    : rs.strategy_key === "structural-continuation-engine"
+                      ? "SCE"
+                      : rs.strategy_key;
+
+              return (
+                <div
+                  key={`${rs.strategy_key}-${rs.symbol}`}
+                  style={{
+                    padding: "0.75rem 1rem",
+                    borderRadius: 8,
+                    backgroundColor: "rgba(15,23,42,0.5)",
+                    border: "1px solid rgba(148,163,184,0.2)",
+                  }}
+                >
+                  {/* Header: symbol + engine badge + pause badge */}
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: "0.4rem",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <span style={{ fontWeight: 500, color: "#f0f6ff", fontSize: "0.9rem" }}>
+                        {rs.symbol}
+                      </span>
+                      <Badge color="blue">{engineAbbr}</Badge>
+                    </div>
+                    {rs.paused_until && <Badge color="red">PAUSED</Badge>}
+                  </div>
+
+                  {/* Metrics grid */}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                      gap: "0.4rem 1rem",
+                      fontSize: "0.82rem",
+                    }}
+                  >
+                    <div>
+                      <span style={{ color: "#7c8ca4" }}>Daily R: </span>
+                      <span
+                        style={{
+                          color:
+                            parseFloat(rs.daily_r_pnl) >= 0 ? "#4ade80" : "#f97373",
+                        }}
+                      >
+                        {parseFloat(rs.daily_r_pnl) >= 0 ? "+" : ""}
+                        {rs.daily_r_pnl}R
+                      </span>
+                    </div>
+                    <div>
+                      <span style={{ color: "#7c8ca4" }}>Trades today: </span>
+                      <span style={{ color: "#f0f6ff" }}>{rs.daily_trade_count}</span>
+                    </div>
+                    <div>
+                      <span style={{ color: "#7c8ca4" }}>Weekly R: </span>
+                      <span
+                        style={{
+                          color:
+                            parseFloat(rs.weekly_r_pnl) >= 0 ? "#4ade80" : "#f97373",
+                        }}
+                      >
+                        {parseFloat(rs.weekly_r_pnl) >= 0 ? "+" : ""}
+                        {rs.weekly_r_pnl}R
+                      </span>
+                    </div>
+                    <div>
+                      <span style={{ color: "#7c8ca4" }}>Loss streak: </span>
+                      <span
+                        style={{
+                          color: rs.consecutive_losses > 0 ? "#fbbf24" : "#f0f6ff",
+                        }}
+                      >
+                        {rs.consecutive_losses}
+                      </span>
+                    </div>
+                    <div>
+                      <span style={{ color: "#7c8ca4" }}>Last eval: </span>
+                      <span style={{ color: "#c9def7", fontSize: "0.78rem" }}>
+                        {rs.last_eval_at
+                          ? new Date(rs.last_eval_at).toLocaleTimeString()
+                          : "never"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Pause info */}
+                  {rs.paused_until && (
+                    <div
+                      style={{
+                        marginTop: "0.4rem",
+                        fontSize: "0.78rem",
+                        color: "#fbbf24",
+                      }}
+                    >
+                      Paused until {new Date(rs.paused_until).toLocaleString()}
+                      {rs.pause_reason && ` (${rs.pause_reason})`}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* Recent Evaluation Events */}
+      {!engineStatusLoading && engineStatus && engineStatus.recent_events.length > 0 && (
+        <Card
+          title={t(lang, "strategy.engineEvents.title")}
+          subtitle={t(lang, "strategy.engineEvents.subtitle")}
+        >
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.4rem",
+              maxHeight: 300,
+              overflow: "auto",
+            }}
+          >
+            {engineStatus.recent_events.slice(0, 20).map((evt, idx) => {
+              const isSignal = evt.event_type === "SIGNAL_FIRED";
+              const isError = evt.event_type === "ERROR";
+              const isThrottled = evt.event_type === "RISK_THROTTLED";
+              const dotColor = isSignal
+                ? "#4ade80"
+                : isError
+                  ? "#f97373"
+                  : isThrottled
+                    ? "#fbbf24"
+                    : "#9db0c9";
+
+              const engineAbbr =
+                evt.strategy_key === "trendline-break-pocket-ali"
+                  ? "TBP"
+                  : evt.strategy_key === "adaptive-liquidity-trap-scalper"
+                    ? "ALTS"
+                    : evt.strategy_key === "structural-continuation-engine"
+                      ? "SCE"
+                      : evt.strategy_key;
+
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: "0.6rem",
+                    padding: "0.35rem 0",
+                    borderBottom: "1px solid rgba(148,163,184,0.1)",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      backgroundColor: dotColor,
+                      marginTop: 5,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: "0.8rem", color: "#f0f6ff" }}>
+                      {evt.event_type.replace(/_/g, " ")}
+                      {evt.reason_code && (
+                        <span style={{ color: "#7c8ca4", marginLeft: 6 }}>
+                          ({evt.reason_code})
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: "0.72rem", color: "#64748b" }}>
+                      {evt.symbol} &middot; {engineAbbr}
+                      {evt.bar_close_time && ` \u00b7 bar ${evt.bar_close_time}`}
+                      {" \u00b7 "}
+                      {new Date(evt.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
       )}
 
       {/* Strategy Definition Card */}
