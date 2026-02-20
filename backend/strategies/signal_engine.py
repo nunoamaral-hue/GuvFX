@@ -32,6 +32,7 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any
 
 from django.http import HttpRequest
+from django.utils import timezone
 
 from execution.models import (
     ExecutionJob,
@@ -1198,19 +1199,40 @@ def run_signal_evaluation(
     filters = strategy.filters or {}
     template_slug = filters.get("template_slug", "")
 
-    # Only process trendline-break-pocket-ali strategies
-    if template_slug != "trendline-break-pocket-ali":
+    # Route by template slug
+    if template_slug == "trendline-break-pocket-ali":
+        pass  # Fall through to TBP logic below
+    elif template_slug == "adaptive-liquidity-trap-scalper":
+        # ALTS engine — dispatches to dedicated module
+        from strategies.engines.alts_engine import evaluate_alts
+        return evaluate_alts(
+            assignment=assignment,
+            symbol=symbol,
+            now_ts=timezone.now(),
+            bar_close_time=bar_close_time or "",
+        )
+    elif template_slug == "structural-continuation-engine":
+        # SCE engine — dispatches to dedicated module (milestone 3)
+        from strategies.engines.sce_engine import evaluate_sce
+        return evaluate_sce(
+            assignment=assignment,
+            symbol=symbol,
+            now_ts=timezone.now(),
+            bar_close_time=bar_close_time or "",
+        )
+    else:
         log_signal_rejected(
             request, strategy.id, account.id, symbol,
-            reason="wrong_template",
+            reason="unknown_template",
             details={"template_slug": template_slug},
         )
         return SignalResult(
             ok=False,
             symbol=symbol,
-            reason=f"wrong_template:{template_slug}",
+            reason=f"unknown_template:{template_slug}",
         )
 
+    # === TBP path (trendline-break-pocket-ali) ===
     config = TrendlineBreakPocketConfig.from_filters(filters)
 
     # Safety validation
