@@ -19,7 +19,18 @@ type TrendlineBreakPocketZone = {
   zone_type: "supply" | "demand" | "pivot";
   low: number;
   high: number;
-  source: "seeded" | "user";
+  source: "seeded" | "user" | "auto";
+};
+
+type ZonesMeta = {
+  generated_at?: string;
+  source?: string;
+  timeframe?: string;
+  bars?: number;
+  atr_value?: number;
+  atr_mult?: number;
+  pivot_strength?: number;
+  max_zones?: number;
 };
 
 type TrendlineBreakPocketFilters = {
@@ -42,6 +53,9 @@ type TrendlineBreakPocketFilters = {
   max_trades_per_day: number;
   news_filter_mode: string;
   zones: Record<string, TrendlineBreakPocketZone[]>;
+  auto_zones?: Record<string, TrendlineBreakPocketZone[]>;
+  auto_zones_enabled?: boolean;
+  zones_meta?: ZonesMeta;
 };
 
 type Strategy = {
@@ -135,6 +149,25 @@ const seededBadgeStyle: CSSProperties = {
   fontSize: "0.7rem",
   fontWeight: 600,
   marginLeft: "0.5rem",
+};
+
+const autoBadgeStyle: CSSProperties = {
+  display: "inline-block",
+  padding: "0.15rem 0.4rem",
+  borderRadius: 4,
+  backgroundColor: "rgba(168,85,247,0.15)",
+  border: "1px solid rgba(168,85,247,0.3)",
+  color: "#c084fc",
+  fontSize: "0.7rem",
+  fontWeight: 600,
+  marginLeft: "0.5rem",
+};
+
+const disabledInputStyle: CSSProperties = {
+  ...inputStyle,
+  opacity: 0.6,
+  cursor: "not-allowed",
+  pointerEvents: "none",
 };
 
 // =============================================================================
@@ -275,6 +308,25 @@ export default function EditStrategyPage() {
     []
   );
 
+  // Copy auto zones → manual zones
+  const handleCopyAutoToManual = useCallback(() => {
+    setFormData((prev) => {
+      const f = (prev.filters || {}) as TrendlineBreakPocketFilters;
+      const autoZones = f.auto_zones || {};
+      // Deep copy auto_zones into zones
+      const copiedZones: Record<string, TrendlineBreakPocketZone[]> = {};
+      for (const [sym, zList] of Object.entries(autoZones)) {
+        copiedZones[sym] = zList.map((z) => ({ ...z, source: "user" as const }));
+      }
+      return {
+        ...prev,
+        filters: { ...f, zones: copiedZones },
+      };
+    });
+    setSuccess("Manual zones updated from auto zones.");
+    setTimeout(() => setSuccess(null), 3000);
+  }, []);
+
   // Save strategy
   const handleSave = async () => {
     if (!strategyId) return;
@@ -284,9 +336,18 @@ export default function EditStrategyPage() {
     setSuccess(null);
 
     try {
+      // When auto_zones_enabled, strip zones and auto_zones from the PATCH payload
+      // to avoid overwriting manual zones or auto zones (managed by backend).
+      let payload = formData;
+      const f = (formData.filters || {}) as TrendlineBreakPocketFilters;
+      if (f.auto_zones_enabled) {
+        const { zones: _z, auto_zones: _az, zones_meta: _zm, ...restFilters } = f;
+        payload = { ...formData, filters: restFilters };
+      }
+
       await apiFetch(`/api/strategies/strategies/${strategyId}/`, {
         method: "PATCH",
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
       setSuccess("Strategy saved successfully.");
       // Refresh strategy data
@@ -315,6 +376,13 @@ export default function EditStrategyPage() {
 
   const filters = (formData.filters || {}) as TrendlineBreakPocketFilters;
   const isTBP = strategy && isTrendlineBreakPocket(strategy);
+
+  // Auto-zones: when enabled, display auto_zones (read-only); otherwise manual zones (editable)
+  const isAutoMode = filters.auto_zones_enabled === true;
+  const displayedZones: Record<string, TrendlineBreakPocketZone[]> = isAutoMode
+    ? (filters.auto_zones || {})
+    : (filters.zones || {});
+  const zonesMeta: ZonesMeta | undefined = filters.zones_meta;
 
   return (
     <div style={{ maxWidth: 900, margin: "0 auto" }}>
@@ -556,24 +624,77 @@ export default function EditStrategyPage() {
                 title={t(lang, "strategyEdit.htfZones")}
                 subtitle={t(lang, "strategyEdit.htfZonesSubtitle")}
               >
-                <div
-                  style={{
-                    padding: "0.5rem 0.75rem",
-                    borderRadius: 6,
-                    backgroundColor: "rgba(34,211,238,0.08)",
-                    border: "1px solid rgba(34,211,238,0.2)",
-                    marginBottom: "1rem",
-                    fontSize: "0.8rem",
-                    color: "#67e8f9",
-                  }}
-                >
-                  {t(lang, "strategyEdit.zonesSeededHint")}
-                </div>
+                {/* Auto-zones banner */}
+                {isAutoMode ? (
+                  <div
+                    style={{
+                      padding: "0.6rem 0.85rem",
+                      borderRadius: 6,
+                      backgroundColor: "rgba(168,85,247,0.1)",
+                      border: "1px solid rgba(168,85,247,0.25)",
+                      marginBottom: "1rem",
+                      fontSize: "0.8rem",
+                      color: "#c084fc",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                      Auto zones enabled
+                    </div>
+                    <div style={{ color: "#a78bfa", fontSize: "0.75rem" }}>
+                      Zones are refreshed automatically from D1 OHLC data. Manual zones are preserved but not used while auto is enabled.
+                      {zonesMeta?.generated_at && (
+                        <span style={{ marginLeft: "0.5rem", color: "#7c3aed" }}>
+                          Last generated: {new Date(zonesMeta.generated_at).toLocaleString()}
+                          {zonesMeta.atr_value != null && ` | ATR: ${zonesMeta.atr_value}`}
+                          {zonesMeta.bars != null && ` | Bars: ${zonesMeta.bars}`}
+                        </span>
+                      )}
+                    </div>
+                    {/* Copy auto → manual button */}
+                    <button
+                      type="button"
+                      onClick={handleCopyAutoToManual}
+                      style={{
+                        marginTop: "0.5rem",
+                        background: "rgba(168,85,247,0.15)",
+                        border: "1px solid rgba(168,85,247,0.3)",
+                        color: "#c084fc",
+                        padding: "0.3rem 0.6rem",
+                        borderRadius: 4,
+                        cursor: "pointer",
+                        fontSize: "0.75rem",
+                        fontWeight: 500,
+                      }}
+                    >
+                      Copy auto zones → manual zones
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      padding: "0.5rem 0.75rem",
+                      borderRadius: 6,
+                      backgroundColor: "rgba(34,211,238,0.08)",
+                      border: "1px solid rgba(34,211,238,0.2)",
+                      marginBottom: "1rem",
+                      fontSize: "0.8rem",
+                      color: "#67e8f9",
+                    }}
+                  >
+                    {t(lang, "strategyEdit.zonesSeededHint")}
+                  </div>
+                )}
 
-                {Object.entries(filters.zones || {}).map(([symbol, zones]) => (
+                {/* Zone rows — use displayedZones (auto or manual) */}
+                {Object.entries(displayedZones).map(([symbol, zones]) => (
                   <div key={symbol} style={{ marginBottom: "1.5rem" }}>
                     <h4 style={{ color: "#93c5fd", fontSize: "1rem", marginBottom: "0.75rem" }}>
                       {symbol} Zones
+                      {isAutoMode && (
+                        <span style={{ fontSize: "0.7rem", color: "#a78bfa", marginLeft: "0.5rem", fontWeight: 400 }}>
+                          (read-only)
+                        </span>
+                      )}
                     </h4>
 
                     {zones.map((zone, idx) => (
@@ -582,38 +703,53 @@ export default function EditStrategyPage() {
                           <div style={{ display: "flex", alignItems: "center" }}>
                             <input
                               type="text"
-                              style={{ ...inputStyle, width: 140, padding: "0.35rem 0.5rem" }}
+                              style={{
+                                ...(isAutoMode ? disabledInputStyle : inputStyle),
+                                width: 140,
+                                padding: "0.35rem 0.5rem",
+                              }}
                               value={zone.zone_name}
-                              onChange={(e) => handleZoneChange(symbol, idx, "zone_name", e.target.value)}
+                              disabled={isAutoMode}
+                              onChange={isAutoMode ? undefined : (e) => handleZoneChange(symbol, idx, "zone_name", e.target.value)}
                             />
                             {zone.source === "seeded" && (
                               <span style={seededBadgeStyle}>Seeded</span>
                             )}
+                            {zone.source === "auto" && (
+                              <span style={autoBadgeStyle}>Auto</span>
+                            )}
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveZone(symbol, idx)}
-                            style={{
-                              background: "rgba(239,68,68,0.15)",
-                              border: "1px solid rgba(239,68,68,0.3)",
-                              color: "#fca5a5",
-                              padding: "0.25rem 0.5rem",
-                              borderRadius: 4,
-                              cursor: "pointer",
-                              fontSize: "0.75rem",
-                            }}
-                          >
-                            Remove
-                          </button>
+                          {!isAutoMode && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveZone(symbol, idx)}
+                              style={{
+                                background: "rgba(239,68,68,0.15)",
+                                border: "1px solid rgba(239,68,68,0.3)",
+                                color: "#fca5a5",
+                                padding: "0.25rem 0.5rem",
+                                borderRadius: 4,
+                                cursor: "pointer",
+                                fontSize: "0.75rem",
+                              }}
+                            >
+                              Remove
+                            </button>
+                          )}
                         </div>
 
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.75rem" }}>
                           <div>
                             <label style={{ ...labelStyle, fontSize: "0.75rem" }}>Type</label>
                             <select
-                              style={{ ...selectStyle, padding: "0.35rem 0.5rem", fontSize: "0.85rem" }}
+                              style={{
+                                ...(isAutoMode ? { ...selectStyle, opacity: 0.6, cursor: "not-allowed", pointerEvents: "none" as const } : selectStyle),
+                                padding: "0.35rem 0.5rem",
+                                fontSize: "0.85rem",
+                              }}
                               value={zone.zone_type}
-                              onChange={(e) => handleZoneChange(symbol, idx, "zone_type", e.target.value)}
+                              disabled={isAutoMode}
+                              onChange={isAutoMode ? undefined : (e) => handleZoneChange(symbol, idx, "zone_type", e.target.value)}
                             >
                               <option value="supply">Supply</option>
                               <option value="demand">Demand</option>
@@ -625,9 +761,14 @@ export default function EditStrategyPage() {
                             <input
                               type="number"
                               step="0.0001"
-                              style={{ ...inputStyle, padding: "0.35rem 0.5rem", fontSize: "0.85rem" }}
+                              style={{
+                                ...(isAutoMode ? disabledInputStyle : inputStyle),
+                                padding: "0.35rem 0.5rem",
+                                fontSize: "0.85rem",
+                              }}
                               value={zone.low}
-                              onChange={(e) => handleZoneChange(symbol, idx, "low", parseFloat(e.target.value))}
+                              disabled={isAutoMode}
+                              onChange={isAutoMode ? undefined : (e) => handleZoneChange(symbol, idx, "low", parseFloat(e.target.value))}
                             />
                           </div>
                           <div>
@@ -635,33 +776,47 @@ export default function EditStrategyPage() {
                             <input
                               type="number"
                               step="0.0001"
-                              style={{ ...inputStyle, padding: "0.35rem 0.5rem", fontSize: "0.85rem" }}
+                              style={{
+                                ...(isAutoMode ? disabledInputStyle : inputStyle),
+                                padding: "0.35rem 0.5rem",
+                                fontSize: "0.85rem",
+                              }}
                               value={zone.high}
-                              onChange={(e) => handleZoneChange(symbol, idx, "high", parseFloat(e.target.value))}
+                              disabled={isAutoMode}
+                              onChange={isAutoMode ? undefined : (e) => handleZoneChange(symbol, idx, "high", parseFloat(e.target.value))}
                             />
                           </div>
                         </div>
                       </div>
                     ))}
 
-                    <button
-                      type="button"
-                      onClick={() => handleAddZone(symbol)}
-                      style={{
-                        background: "rgba(59,130,246,0.15)",
-                        border: "1px solid rgba(59,130,246,0.3)",
-                        color: "#93c5fd",
-                        padding: "0.4rem 0.75rem",
-                        borderRadius: 6,
-                        cursor: "pointer",
-                        fontSize: "0.8rem",
-                        fontWeight: 500,
-                      }}
-                    >
-                      + Add Zone
-                    </button>
+                    {!isAutoMode && (
+                      <button
+                        type="button"
+                        onClick={() => handleAddZone(symbol)}
+                        style={{
+                          background: "rgba(59,130,246,0.15)",
+                          border: "1px solid rgba(59,130,246,0.3)",
+                          color: "#93c5fd",
+                          padding: "0.4rem 0.75rem",
+                          borderRadius: 6,
+                          cursor: "pointer",
+                          fontSize: "0.8rem",
+                          fontWeight: 500,
+                        }}
+                      >
+                        + Add Zone
+                      </button>
+                    )}
                   </div>
                 ))}
+
+                {/* Empty state for auto mode with no zones yet */}
+                {isAutoMode && Object.keys(displayedZones).length === 0 && (
+                  <div style={{ color: "#7c8ca4", fontSize: "0.85rem", fontStyle: "italic", padding: "1rem 0" }}>
+                    No auto zones generated yet. Run the scheduler or management command to generate zones.
+                  </div>
+                )}
               </Card>
             </>
           )}
