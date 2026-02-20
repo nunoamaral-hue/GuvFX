@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 from trading.models import TradingAccount
 
 
@@ -348,4 +349,192 @@ class StrategyChangeLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.strategy.name} | {self.source} @ {self.created_at}"
+
+
+# ---------------------------------------------------------------------------
+# Runtime State & Events (for ALTS / SCE / future engines)
+# ---------------------------------------------------------------------------
+
+class StrategyRuntimeState(models.Model):
+    """
+    Per-assignment, per-engine, per-symbol runtime state.
+
+    Tracks daily R P&L, trade counts, consecutive losses, regime blob,
+    and pause/cooldown state.  Used by risk_manager.py to gate signals.
+
+    One row per (assignment, strategy_key, symbol) triple.
+    """
+
+    assignment = models.ForeignKey(
+        StrategyAssignment,
+        on_delete=models.CASCADE,
+        related_name="runtime_states",
+    )
+    strategy_key = models.CharField(
+        max_length=64,
+        help_text="Engine identifier / template slug, e.g. 'adaptive-liquidity-trap-scalper'.",
+    )
+    symbol = models.CharField(
+        max_length=20,
+        help_text="Trading pair, e.g. 'EURUSD'.",
+    )
+
+    # Last evaluation timestamp
+    last_eval_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Timestamp of the last signal evaluation for this key+symbol.",
+    )
+
+    # Pause / cooldown
+    paused_until = models.DateTimeField(
+        null=True, blank=True,
+        help_text="If set, signals are blocked until this timestamp (loss-streak cooldown, etc.).",
+    )
+    pause_reason = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Reason code for the current pause (e.g. LOSS_STREAK_PAUSE).",
+    )
+
+    # Engine-specific regime / bias snapshot
+    regime_blob = models.JSONField(
+        default=dict, blank=True,
+        help_text="Engine-specific state: bias, regime, last BOS, etc.",
+    )
+
+    # Daily risk counters
+    daily_r_pnl = models.DecimalField(
+        max_digits=10, decimal_places=4,
+        default=0,
+        help_text="Cumulative R P&L for the current day (negative = loss).",
+    )
+    daily_trade_count = models.IntegerField(
+        default=0,
+        help_text="Number of signals fired today.",
+    )
+    daily_reset_date = models.DateField(
+        null=True, blank=True,
+        help_text="Date (UTC) of last daily counter reset.",
+    )
+
+    # Weekly risk counter
+    weekly_r_pnl = models.DecimalField(
+        max_digits=10, decimal_places=4,
+        default=0,
+        help_text="Cumulative R P&L for the current week (resets Monday 00:00 UTC).",
+    )
+    weekly_reset_date = models.DateField(
+        null=True, blank=True,
+        help_text="Monday of the current tracking week.",
+    )
+
+    # Streak tracking
+    consecutive_losses = models.IntegerField(
+        default=0,
+        help_text="Running count of consecutive losing trades (resets on a win).",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["assignment", "strategy_key", "symbol"],
+                name="uniq_runtime_state_per_key_symbol",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["assignment", "strategy_key"]),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"RuntimeState({self.assignment_id}, "
+            f"{self.strategy_key}, {self.symbol})"
+        )
+
+
+class StrategyRuntimeEvent(models.Model):
+    """
+    Append-only audit log for signal evaluation events.
+
+    Every evaluation cycle records one event — whether a signal fired,
+    was skipped, or was throttled by risk gates.  Immutable after creation.
+    """
+
+    # Event types (broad category)
+    EVENT_SIGNAL_FIRED = "SIGNAL_FIRED"
+    EVENT_SIGNAL_SKIPPED = "SIGNAL_SKIPPED"
+    EVENT_RISK_THROTTLED = "RISK_THROTTLED"
+    EVENT_REGIME_CHANGED = "REGIME_CHANGED"
+    EVENT_COOLDOWN_STARTED = "COOLDOWN_STARTED"
+    EVENT_COOLDOWN_ENDED = "COOLDOWN_ENDED"
+    EVENT_DAILY_RESET = "DAILY_RESET"
+    EVENT_ERROR = "ERROR"
+
+    EVENT_TYPE_CHOICES = [
+        (EVENT_SIGNAL_FIRED, "Signal Fired"),
+        (EVENT_SIGNAL_SKIPPED, "Signal Skipped"),
+        (EVENT_RISK_THROTTLED, "Risk Throttled"),
+        (EVENT_REGIME_CHANGED, "Regime Changed"),
+        (EVENT_COOLDOWN_STARTED, "Cooldown Started"),
+        (EVENT_COOLDOWN_ENDED, "Cooldown Ended"),
+        (EVENT_DAILY_RESET, "Daily Reset"),
+        (EVENT_ERROR, "Error"),
+    ]
+
+    assignment = models.ForeignKey(
+        StrategyAssignment,
+        on_delete=models.CASCADE,
+        related_name="runtime_events",
+    )
+    strategy_key = models.CharField(
+        max_length=64,
+        help_text="Engine identifier / template slug.",
+    )
+    symbol = models.CharField(
+        max_length=20,
+        help_text="Trading pair.",
+    )
+
+    event_type = models.CharField(
+        max_length=32,
+        choices=EVENT_TYPE_CHOICES,
+    )
+    reason_code = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Structured reason code from PART G enum (e.g. DAILY_LOSS_CAP).",
+    )
+
+    payload = models.JSONField(
+        default=dict, blank=True,
+        help_text="Full diagnostic payload (bar data, indicator values, etc.).",
+    )
+    bar_close_time = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="ISO UTC timestamp of the bar close that triggered this event.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["assignment", "strategy_key", "symbol"]),
+            models.Index(fields=["event_type", "created_at"]),
+            models.Index(fields=["strategy_key", "created_at"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return (
+            f"RuntimeEvent({self.event_type}, "
+            f"{self.strategy_key}, {self.symbol}, "
+            f"{self.reason_code})"
+        )
 

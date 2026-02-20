@@ -9,11 +9,11 @@ Algorithm:
   2. Compute ATR(14)
   3. Find swing pivot highs / lows (pivot_strength = 2)
   4. Rank pivots by recency + swing magnitude
-  5. Select up to max_zones (default 3): supply‑1, pivot, demand‑1
-  6. Zone width = ATR × atr_mult (default 0.8)
-     - Supply zone: [high − width, high]
+  5. Select up to max_zones (default 3): supply-1, pivot, demand-1
+  6. Zone width = ATR x atr_mult (default 0.8)
+     - Supply zone: [high - width, high]
      - Demand zone: [low, low + width]
-     - Pivot zone: [median − 0.5 × ATR, median + 0.5 × ATR]
+     - Pivot zone: [median - 0.5 x ATR, median + 0.5 x ATR]
 
 Usage:
     from strategies.zone_generator import generate_zones_for_symbol
@@ -31,104 +31,19 @@ Usage:
 from __future__ import annotations
 
 import logging
-import math
 import statistics
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
+
+# Canonical implementations now live in indicators.py.
+# Re-export here for backward compatibility (refresh_htf_zones.py, etc.).
+from strategies.indicators import (  # noqa: F401
+    compute_atr,
+    find_pivot_highs,
+    find_pivot_lows,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# ATR (Average True Range)
-# ---------------------------------------------------------------------------
-
-def compute_atr(bars: List[Dict[str, Any]], period: int = 14) -> float:
-    """
-    Compute Average True Range over *period* bars.
-
-    Uses the classic Wilder smoothing:
-        TR = max(high − low, |high − prev_close|, |low − prev_close|)
-        ATR = SMA of first *period* TRs, then EMA thereafter.
-
-    Returns 0.0 if insufficient data.
-    """
-    if len(bars) < period + 1:
-        return 0.0
-
-    true_ranges: List[float] = []
-    for i in range(1, len(bars)):
-        h = float(bars[i]["high"])
-        l = float(bars[i]["low"])
-        pc = float(bars[i - 1]["close"])
-        tr = max(h - l, abs(h - pc), abs(l - pc))
-        true_ranges.append(tr)
-
-    if len(true_ranges) < period:
-        return 0.0
-
-    # Initial SMA
-    atr = sum(true_ranges[:period]) / period
-
-    # Wilder smoothing for the rest
-    for tr in true_ranges[period:]:
-        atr = (atr * (period - 1) + tr) / period
-
-    return atr
-
-
-# ---------------------------------------------------------------------------
-# Pivot detection
-# ---------------------------------------------------------------------------
-
-def find_pivot_highs(
-    bars: List[Dict[str, Any]],
-    strength: int = 2,
-) -> List[Tuple[int, float]]:
-    """
-    Return list of (bar_index, high_value) for confirmed pivot highs.
-
-    A pivot high at index *i* requires:
-        bars[i].high > bars[j].high   for every j in [i − strength .. i + strength], j ≠ i
-    """
-    pivots: List[Tuple[int, float]] = []
-    for i in range(strength, len(bars) - strength):
-        h = float(bars[i]["high"])
-        is_pivot = True
-        for j in range(i - strength, i + strength + 1):
-            if j == i:
-                continue
-            if float(bars[j]["high"]) >= h:
-                is_pivot = False
-                break
-        if is_pivot:
-            pivots.append((i, h))
-    return pivots
-
-
-def find_pivot_lows(
-    bars: List[Dict[str, Any]],
-    strength: int = 2,
-) -> List[Tuple[int, float]]:
-    """
-    Return list of (bar_index, low_value) for confirmed pivot lows.
-
-    A pivot low at index *i* requires:
-        bars[i].low < bars[j].low    for every j in [i − strength .. i + strength], j ≠ i
-    """
-    pivots: List[Tuple[int, float]] = []
-    for i in range(strength, len(bars) - strength):
-        l = float(bars[i]["low"])
-        is_pivot = True
-        for j in range(i - strength, i + strength + 1):
-            if j == i:
-                continue
-            if float(bars[j]["low"]) <= l:
-                is_pivot = False
-                break
-        if is_pivot:
-            pivots.append((i, l))
-    return pivots
 
 
 # ---------------------------------------------------------------------------
@@ -142,9 +57,9 @@ def _rank_pivots(
     """
     Rank pivots by a composite score: recency + swing magnitude.
 
-    Score = 0.6 × recency_norm  +  0.4 × magnitude_norm
-    where recency_norm = bar_index / (total_bars − 1)
-          magnitude_norm = |value − median_value| / max_deviation (if > 1 pivot)
+    Score = 0.6 x recency_norm  +  0.4 x magnitude_norm
+    where recency_norm = bar_index / (total_bars - 1)
+          magnitude_norm = |value - median_value| / max_deviation (if > 1 pivot)
 
     Returns [(bar_index, value, score), ...] sorted descending by score.
     """
@@ -188,12 +103,12 @@ def generate_zones_for_symbol(
     Parameters
     ----------
     bars : list of OHLC dicts (keys: time, open, high, low, close, tick_volume)
-           Must be sorted oldest → newest.
+           Must be sorted oldest -> newest.
     symbol : e.g. "EURUSD"
     atr_period : ATR lookback (default 14)
-    atr_mult : zone width = ATR × atr_mult (default 0.8)
+    atr_mult : zone width = ATR x atr_mult (default 0.8)
     pivot_strength : number of bars each side for pivot detection (default 2)
-    max_zones : maximum total zones (default 3 → 1 supply + 1 pivot + 1 demand)
+    max_zones : maximum total zones (default 3 -> 1 supply + 1 pivot + 1 demand)
 
     Returns
     -------
@@ -325,9 +240,9 @@ def resolve_zones(filters: dict) -> dict:
 
     Rules:
       - If filters.auto_zones_enabled == True AND filters.auto_zones exists
-        → return filters.auto_zones  (dict of symbol → zone list)
+        -> return filters.auto_zones  (dict of symbol -> zone list)
       - Otherwise
-        → return filters.zones        (manual/seeded zones)
+        -> return filters.zones        (manual/seeded zones)
 
     This keeps manual zones completely untouched when auto is off.
     """
