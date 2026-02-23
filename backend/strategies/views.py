@@ -439,17 +439,12 @@ class StrategyViewSet(viewsets.ModelViewSet):
 
         assignment = StrategyAssignment.objects.filter(
             strategy=strategy, account=account, is_active=True,
-        ).first()
+        ).order_by("-id").first()
         if not assignment:
-            return Response({
-                "strategy_id": strategy.id,
-                "account_id": int(account_id),
-                "assignment_id": None,
-                "stage": None,
-                "checked_at": timezone.now().isoformat(),
-                "runtime_states": [],
-                "recent_events": [],
-            })
+            return Response(
+                {"ok": False, "reason": "no_active_assignment"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         # Fetch all runtime states for this assignment
         states = StrategyRuntimeState.objects.filter(
