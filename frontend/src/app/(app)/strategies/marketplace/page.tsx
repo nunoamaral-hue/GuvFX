@@ -149,6 +149,30 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     pairs: ["EURUSD", "GBPUSD"],
     tags: ["Automation-ready", "Ali"],
   },
+  {
+    id: "mp-006",
+    name: "Adaptive Liquidity Trap Scalper",
+    category: "System-grade",
+    accent: "purple",
+    style: "Liquidity / Mean reversion",
+    execution: "Automation-ready",
+    summary: "Range-regime liquidity sweep + displacement + confirmation. M5 execution with M15 regime filter.",
+    timeframes: ["M5", "M15"],
+    pairs: ["EURUSD", "GBPUSD"],
+    tags: ["Automation-ready", "ALTS"],
+  },
+  {
+    id: "mp-007",
+    name: "Structural Continuation Engine",
+    category: "System-grade",
+    accent: "purple",
+    style: "Trend continuation",
+    execution: "Automation-ready",
+    summary: "H4 bias + H1 BOS + pullback + rejection continuation. H1 execution with H4 context.",
+    timeframes: ["H1", "H4"],
+    pairs: ["EURUSD", "GBPUSD"],
+    tags: ["Automation-ready", "SCE"],
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────

@@ -128,6 +128,50 @@ MARKETPLACE_STRATEGIES = {
             "exit_logic": "Fixed 2R target from entry. Stop at structural invalidation.",
         },
     },
+    "mp-006": {
+        "name": "Adaptive Liquidity Trap Scalper",
+        "description": "Range-regime liquidity sweep + displacement + confirmation. M5 execution with M15 regime filter.",
+        "category": "System-grade",
+        "template_slug": "adaptive-liquidity-trap-scalper",
+        "marketplace_listed": True,
+        "automation_ready": True,
+        "defaults": {
+            "timeframe": "M5",
+            "symbol_universe": "EURUSD,GBPUSD",
+            "edge_type": "MEAN_REVERSION",
+            "risk_per_trade_pct": 1.0,
+            "auto_optimize_by_ai": False,
+            "filters": {
+                "template_slug": "adaptive-liquidity-trap-scalper",
+                "enabled": True,
+                "instruments": ["EURUSD", "GBPUSD"],
+            },
+            "entry_logic": "1. M15 regime = range\n2. Liquidity sweep beyond session high/low\n3. Displacement candle confirmation\n4. Entry on pullback into displacement origin",
+            "exit_logic": "Fixed 2R target from entry. Stop beyond sweep extreme.",
+        },
+    },
+    "mp-007": {
+        "name": "Structural Continuation Engine",
+        "description": "H4 bias + H1 BOS + pullback + rejection continuation. H1 execution with H4 context.",
+        "category": "System-grade",
+        "template_slug": "structural-continuation-engine",
+        "marketplace_listed": True,
+        "automation_ready": True,
+        "defaults": {
+            "timeframe": "H1",
+            "symbol_universe": "EURUSD,GBPUSD",
+            "edge_type": "TREND_CONTINUATION",
+            "risk_per_trade_pct": 1.0,
+            "auto_optimize_by_ai": False,
+            "filters": {
+                "template_slug": "structural-continuation-engine",
+                "enabled": True,
+                "instruments": ["EURUSD", "GBPUSD"],
+            },
+            "entry_logic": "1. H4 directional bias established\n2. H1 break of structure (BOS) in bias direction\n3. Pullback into discount/premium zone\n4. Rejection candle confirmation",
+            "exit_logic": "Fixed 2R target from entry. Stop at structural invalidation.",
+        },
+    },
 }
 
 

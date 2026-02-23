@@ -271,7 +271,7 @@ export default function StrategiesListPage() {
                 <strong>Symbols:</strong> {strategy.symbol_universe || "—"}{" "}
                 &nbsp;|&nbsp;
                 <strong>Timeframe:</strong> {strategy.timeframe || "—"}
-                {strategy.filters?.template_slug && (
+                {typeof strategy.filters?.template_slug === "string" && (
                   <>
                     &nbsp;|&nbsp;
                     <strong>Engine:</strong>{" "}
