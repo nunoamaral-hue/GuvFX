@@ -139,14 +139,19 @@ MARKETPLACE_STRATEGIES = {
             "timeframe": "M5",
             "symbol_universe": "EURUSD,GBPUSD",
             "edge_type": "MEAN_REVERSION",
-            "risk_per_trade_pct": 1.0,
+            "risk_per_trade_pct": 0.1,
             "auto_optimize_by_ai": False,
             "filters": {
                 "template_slug": "adaptive-liquidity-trap-scalper",
                 "enabled": True,
-                "instruments": ["EURUSD", "GBPUSD"],
+                "direction_mode": "both",
+                "pairs_enabled": ["EURUSD", "GBPUSD"],
+                "execution_timeframe": "M5",
+                "regime_timeframe": "M15",
+                "rr_target": 2.0,
+                "max_trades_per_day": 10,
             },
-            "entry_logic": "1. M15 regime = range\n2. Liquidity sweep beyond session high/low\n3. Displacement candle confirmation\n4. Entry on pullback into displacement origin",
+            "entry_logic": "1. M15 regime = range (ADX < 25, price within Keltner)\n2. Liquidity sweep beyond session high/low\n3. Displacement candle confirmation (body > 1.0 ATR)\n4. Entry on pullback into displacement origin",
             "exit_logic": "Fixed 2R target from entry. Stop beyond sweep extreme.",
         },
     },
@@ -160,15 +165,20 @@ MARKETPLACE_STRATEGIES = {
         "defaults": {
             "timeframe": "H1",
             "symbol_universe": "EURUSD,GBPUSD",
-            "edge_type": "TREND_CONTINUATION",
-            "risk_per_trade_pct": 1.0,
+            "edge_type": "TREND_FOLLOWING",
+            "risk_per_trade_pct": 0.1,
             "auto_optimize_by_ai": False,
             "filters": {
                 "template_slug": "structural-continuation-engine",
                 "enabled": True,
-                "instruments": ["EURUSD", "GBPUSD"],
+                "direction_mode": "both",
+                "pairs_enabled": ["EURUSD", "GBPUSD"],
+                "htf_timeframe": "H4",
+                "execution_timeframe": "H1",
+                "rr_target": 2.0,
+                "max_trades_per_day": 4,
             },
-            "entry_logic": "1. H4 directional bias established\n2. H1 break of structure (BOS) in bias direction\n3. Pullback into discount/premium zone\n4. Rejection candle confirmation",
+            "entry_logic": "1. H4 directional bias established (fractal HH/HL or LH/LL + ADX)\n2. H1 break of structure (BOS) in bias direction\n3. Pullback into 38-62% Fibonacci zone\n4. Rejection candle confirmation (body > 0.5 ATR)",
             "exit_logic": "Fixed 2R target from entry. Stop at structural invalidation.",
         },
     },
@@ -687,66 +697,79 @@ class StrategyViewSet(viewsets.ModelViewSet):
         if "description" in allowed_fields:
             create_kwargs["description"] = tpl.get("description") or ""
 
-        with transaction.atomic():
-            # 1. Find or create the Strategy row for this marketplace template
-            if "owner" in allowed_fields:
-                existing_strategy = (
-                    Strategy.objects
-                    .filter(owner=user, name=template_name)
-                    .order_by("-id")
-                    .first()
-                )
-            else:
-                existing_strategy = (
-                    Strategy.objects
-                    .filter(name=template_name)
+        try:
+            with transaction.atomic():
+                # 1. Find or create the Strategy row for this marketplace template
+                if "owner" in allowed_fields:
+                    existing_strategy = (
+                        Strategy.objects
+                        .filter(owner=user, name=template_name)
+                        .order_by("-id")
+                        .first()
+                    )
+                else:
+                    existing_strategy = (
+                        Strategy.objects
+                        .filter(name=template_name)
+                        .order_by("-id")
+                        .first()
+                    )
+
+                if existing_strategy:
+                    strategy_to_use = existing_strategy
+                    # Update filters on existing strategy if stale (ensures engine picks up config)
+                    tpl_filters = defaults.get("filters")
+                    if tpl_filters and existing_strategy.filters != tpl_filters:
+                        existing_strategy.filters = tpl_filters
+                        existing_strategy.save(update_fields=["filters", "updated_at"])
+                else:
+                    strategy_to_use = Strategy.objects.create(**create_kwargs)
+
+                # 2. Look for existing assignment scoped to (account, strategy)
+                existing = (
+                    StrategyAssignment.objects
+                    .select_for_update()
+                    .filter(account=account, strategy=strategy_to_use)
                     .order_by("-id")
                     .first()
                 )
 
-            if existing_strategy:
-                strategy_to_use = existing_strategy
-            else:
-                strategy_to_use = Strategy.objects.create(**create_kwargs)
+                # 3. Idempotency: if assignment already exists and is active, return early
+                if existing and existing.is_active:
+                    return Response(
+                        {
+                            "ok": True,
+                            "marketplace_strategy_id": marketplace_strategy_id,
+                            "strategy_id": existing.strategy_id,
+                            "assignment_id": existing.id,
+                            "strategy_name": getattr(existing.strategy, "name", ""),
+                            "account_id": account.id,
+                            "stage": existing.stage,
+                            "already_assigned": True,
+                        },
+                        status=status.HTTP_200_OK,
+                    )
 
-            # 2. Look for existing assignment scoped to (account, strategy)
-            existing = (
-                StrategyAssignment.objects
-                .select_for_update()
-                .filter(account=account, strategy=strategy_to_use)
-                .order_by("-id")
-                .first()
+                # 4. Re-activate if deactivated, else create new
+                if existing:
+                    existing.is_active = True
+                    existing.stage = StrategyAssignment.STAGE_TEST
+                    existing.save(update_fields=["is_active", "stage", "updated_at"])
+                    assignment = existing
+                else:
+                    assignment = StrategyAssignment.objects.create(
+                        strategy=strategy_to_use,
+                        account=account,
+                        is_active=True,
+                        stage=StrategyAssignment.STAGE_TEST,
+                    )
+
+        except Exception:
+            logger.exception("marketplace_assign failed for %s account=%s", marketplace_strategy_id, account_id)
+            return Response(
+                {"ok": False, "detail": "Internal error during assignment. Check server logs."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
-            # 3. Idempotency: if assignment already exists and is active, return early
-            if existing and existing.is_active:
-                return Response(
-                    {
-                        "ok": True,
-                        "marketplace_strategy_id": marketplace_strategy_id,
-                        "strategy_id": existing.strategy_id,
-                        "assignment_id": existing.id,
-                        "strategy_name": getattr(existing.strategy, "name", ""),
-                        "account_id": account.id,
-                        "stage": existing.stage,
-                        "already_assigned": True,
-                    },
-                    status=status.HTTP_200_OK,
-                )
-
-            # 4. Re-activate if deactivated, else create new
-            if existing:
-                existing.is_active = True
-                existing.stage = StrategyAssignment.STAGE_TEST
-                existing.save(update_fields=["is_active", "stage", "updated_at"])
-                assignment = existing
-            else:
-                assignment = StrategyAssignment.objects.create(
-                    strategy=strategy_to_use,
-                    account=account,
-                    is_active=True,
-                    stage=StrategyAssignment.STAGE_TEST,
-                )
 
         # 5. Return payload
         return Response(
