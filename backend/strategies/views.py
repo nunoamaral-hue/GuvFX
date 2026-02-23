@@ -688,15 +688,7 @@ class StrategyViewSet(viewsets.ModelViewSet):
             create_kwargs["description"] = tpl.get("description") or ""
 
         with transaction.atomic():
-            # 1. Lock and fetch existing active assignment for this account
-            existing = (
-                StrategyAssignment.objects
-                .select_for_update()
-                .filter(account=account, is_active=True)
-                .first()
-            )
-
-            # 2. Try to find an existing Strategy for this user with the marketplace template name
+            # 1. Find or create the Strategy row for this marketplace template
             if "owner" in allowed_fields:
                 existing_strategy = (
                     Strategy.objects
@@ -705,7 +697,6 @@ class StrategyViewSet(viewsets.ModelViewSet):
                     .first()
                 )
             else:
-                # Fallback for staff or if owner field isn't present
                 existing_strategy = (
                     Strategy.objects
                     .filter(name=template_name)
@@ -713,8 +704,22 @@ class StrategyViewSet(viewsets.ModelViewSet):
                     .first()
                 )
 
-            # 3. Idempotency: if assignment exists and already points to this template, return early
-            if existing and getattr(existing.strategy, "name", "") == template_name:
+            if existing_strategy:
+                strategy_to_use = existing_strategy
+            else:
+                strategy_to_use = Strategy.objects.create(**create_kwargs)
+
+            # 2. Look for existing assignment scoped to (account, strategy)
+            existing = (
+                StrategyAssignment.objects
+                .select_for_update()
+                .filter(account=account, strategy=strategy_to_use)
+                .order_by("-id")
+                .first()
+            )
+
+            # 3. Idempotency: if assignment already exists and is active, return early
+            if existing and existing.is_active:
                 return Response(
                     {
                         "ok": True,
@@ -723,40 +728,27 @@ class StrategyViewSet(viewsets.ModelViewSet):
                         "assignment_id": existing.id,
                         "strategy_name": getattr(existing.strategy, "name", ""),
                         "account_id": account.id,
+                        "stage": existing.stage,
                         "already_assigned": True,
                     },
                     status=status.HTTP_200_OK,
                 )
 
-            # 4/5. Choose strategy_to_use: prefer existing_strategy, else create new
-            if existing_strategy:
-                strategy_to_use = existing_strategy
-            else:
-                strategy_to_use = Strategy.objects.create(**create_kwargs)
-
-            # 4. If assignment exists but points to different strategy, update it
+            # 4. Re-activate if deactivated, else create new
             if existing:
-                existing.strategy = strategy_to_use
                 existing.is_active = True
-                existing.save(update_fields=["strategy", "is_active", "updated_at"])
+                existing.stage = StrategyAssignment.STAGE_TEST
+                existing.save(update_fields=["is_active", "stage", "updated_at"])
                 assignment = existing
             else:
-                # 5. No assignment exists, create one
                 assignment = StrategyAssignment.objects.create(
                     strategy=strategy_to_use,
                     account=account,
                     is_active=True,
+                    stage=StrategyAssignment.STAGE_TEST,
                 )
 
-            # Deactivate other active assignments on the same MT5 instance
-            if assignment.account.mt5_instance_id:
-                StrategyAssignment.objects.filter(
-                    account__mt5_instance_id=assignment.account.mt5_instance_id,
-                    account__user_id=assignment.account.user_id,
-                    is_active=True,
-                ).exclude(id=assignment.id).update(is_active=False)
-
-        # 6. Return payload
+        # 5. Return payload
         return Response(
             {
                 "ok": True,
@@ -765,6 +757,7 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 "assignment_id": assignment.id,
                 "strategy_name": getattr(strategy_to_use, "name", ""),
                 "account_id": account.id,
+                "stage": assignment.stage,
                 "already_assigned": False,
             },
             status=status.HTTP_201_CREATED,
