@@ -292,11 +292,13 @@ class StrategyAssignment(models.Model):
         unique_together = ("strategy", "account")
         ordering = ["-created_at"]
         constraints = [
-            # One active assignment per MT5 instance (per user implicitly)
+            # One active assignment per (account, strategy) pair.
+            # Allows multiple strategies to be active on the same account
+            # (e.g. TBP + ALTS + SCE all running on account 13).
             models.UniqueConstraint(
-                fields=["account"],
-                condition=Q(is_active=True),  # CI: removed join-based constraint (account__mt5_instance__isnull)
-                name="uniq_active_strategy_assignment_per_instance",
+                fields=["account", "strategy"],
+                condition=Q(is_active=True),
+                name="uniq_active_assignment_per_account_strategy",
             ),
         ]
 
