@@ -176,29 +176,171 @@ class Command(BaseCommand):
             self.stdout.write("[INFO] No active ALTS assignments found")
             return
 
-        # Separate by stage
-        if force_once:
-            assignments = all_assignments
-        else:
-            assignments = []
-            for a in all_assignments:
-                stage = getattr(a, "stage", "TEST")
-                if stage == "LIVE":
-                    assignments.append(a)
-                else:
-                    # TEST stage: evaluate for observability but do NOT create jobs
-                    self._evaluate_test_stage(a, bar_close_iso, dry_run)
+        # Separate by stage — only LIVE gets PLACE_ORDER jobs (even force-once)
+        assignments = []
+        for a in all_assignments:
+            stage = getattr(a, "stage", "TEST")
+            if stage == "LIVE":
+                assignments.append(a)
+            elif not force_once:
+                # TEST stage: evaluate for observability but do NOT create jobs
+                self._evaluate_test_stage(a, bar_close_iso, dry_run)
+            else:
+                self.stdout.write(
+                    f"  [SKIP-STAGE] assignment={a.id} strategy={a.strategy_id} "
+                    f"account={a.account_id} stage={stage} (force-once requires LIVE)"
+                )
 
         self.stdout.write(
             f"[INFO] Found {len(all_assignments)} ALTS assignments, "
             f"{len(assignments)} LIVE (will create jobs)"
         )
 
-        # Process LIVE assignments (or all in force-once mode)
+        # --force-once mode: create exactly ONE test PLACE_ORDER job
+        if force_once:
+            self._handle_force_once(
+                assignments=assignments,
+                bar_close_iso=bar_close_iso,
+                dry_run=dry_run,
+            )
+            return
+
+        # Process LIVE assignments
         for assignment in assignments:
             self._evaluate_live(assignment, bar_close_iso, dry_run, now_utc)
 
         self.stdout.write(f"[DONE] M5 ALTS evaluation complete for bar_close={bar_close_iso}")
+
+    def _handle_force_once(
+        self,
+        assignments: list,
+        bar_close_iso: str,
+        dry_run: bool,
+    ) -> None:
+        """
+        Create exactly ONE test PLACE_ORDER job for end-to-end testing.
+
+        Bypasses ALTS signal logic but keeps safety rails:
+        - Demo accounts only
+        - LIVE stage only (caller pre-filters)
+        - SL/TP placeholders (Windows bridge overrides for forced_once_test)
+        - Idempotent per bar_close_time
+        - Prefers EURUSD as the first eligible symbol.
+        """
+        PREFERRED_SYMBOLS = ["EURUSD", "GBPUSD"]
+
+        self.stdout.write("[FORCE-ONCE] Looking for first eligible ALTS assignment...")
+
+        for assignment in assignments:
+            strategy = assignment.strategy
+            account = assignment.account
+
+            # Safety: Demo only
+            if not account.is_demo:
+                self.stdout.write(
+                    f"  [SKIP] account={account.id} is not demo"
+                )
+                continue
+
+            # Resolve symbols
+            filters = strategy.filters or {}
+            pairs_enabled = filters.get("pairs_enabled") or PREFERRED_SYMBOLS
+
+            # Pick first eligible symbol (prefer EURUSD)
+            selected_symbol = None
+            for symbol in PREFERRED_SYMBOLS:
+                if symbol in pairs_enabled:
+                    selected_symbol = symbol
+                    break
+            if not selected_symbol:
+                selected_symbol = pairs_enabled[0] if pairs_enabled else "EURUSD"
+
+            # Idempotency check
+            if job_exists_for_bar_close(account.id, strategy.id, selected_symbol, bar_close_iso):
+                self.stdout.write(
+                    f"  [SKIP-IDEMPOTENT] Job already exists: account={account.id} "
+                    f"strategy={strategy.id} symbol={selected_symbol} bar_close={bar_close_iso}"
+                )
+                continue
+
+            if dry_run:
+                self.stdout.write(
+                    f"  [DRY-RUN] Would create PLACE_ORDER: account={account.id} "
+                    f"strategy={strategy.id} symbol={selected_symbol}"
+                )
+                return
+
+            try:
+                with transaction.atomic():
+                    # Double-check idempotency inside transaction
+                    if job_exists_for_bar_close(account.id, strategy.id, selected_symbol, bar_close_iso):
+                        self.stdout.write(
+                            f"  [SKIP-RACE] Job created by concurrent process"
+                        )
+                        return
+
+                    # Resolve windows_username from account's mt5_instance
+                    windows_username = None
+                    if account.mt5_instance:
+                        windows_username = getattr(account.mt5_instance, "windows_username", None)
+
+                    # Build payload — placeholders for SL/TP (Windows bridge overrides
+                    # for signal_reason=forced_once_test using live tick + configurable pips)
+                    payload = {
+                        "symbol": selected_symbol,
+                        "side": "SELL",
+                        "lots": 0.01,
+                        "entry_price": 0,
+                        "sl_price": 0,
+                        "tp_price": 0,
+                        "comment": f"GS{strategy.id:04d}",
+                        "magic": strategy.magic_number or strategy.id,
+                        "is_demo": account.is_demo,
+                        "strategy_id": strategy.id,
+                        "windows_username": windows_username,
+                        "signal_reason": "forced_once_test",
+                        "assignment_stage": "LIVE",
+                        "bar_close_time": bar_close_iso,
+                        "safety_rails": {
+                            "max_lots": 0.02,
+                            "allowed_symbols": ["EURUSD", "GBPUSD"],
+                            "demo_only": True,
+                        },
+                    }
+
+                    job = ExecutionJob.objects.create(
+                        job_type=ExecutionJob.JobType.PLACE_ORDER,
+                        account=account,
+                        strategy=strategy,
+                        assignment=assignment,
+                        status=ExecutionJob.Status.PENDING,
+                        created_by=None,
+                        payload=payload,
+                    )
+
+                    # Update comment with actual job ID (GS tag)
+                    job.payload["comment"] = f"GS{job.id:04d}"
+                    job.save(update_fields=["payload"])
+
+                    self.stdout.write(
+                        f"[FORCE-ONCE] SUCCESS: created PLACE_ORDER job_id={job.id} "
+                        f"account={account.id} strategy={strategy.id} symbol={selected_symbol} "
+                        f"side=SELL lots=0.01"
+                    )
+                    print(
+                        f"[FORCE-ONCE] job_id={job.id} account={account.id} strategy={strategy.id} "
+                        f"symbol={selected_symbol} bar={bar_close_iso}"
+                    )
+                    return
+
+            except Exception as e:
+                self.stderr.write(
+                    f"  [ERROR] Failed to create job: {str(e)}"
+                )
+                logger.exception(f"Force-once job creation error: {e}")
+                return
+
+        self.stdout.write("[FORCE-ONCE] No eligible LIVE ALTS assignment found for forced test")
 
     def _evaluate_test_stage(
         self,
