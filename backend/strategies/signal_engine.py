@@ -1235,6 +1235,50 @@ def run_signal_evaluation(
             bar_close_time=bar_close_time or "",
             dry_run=dry_run,
         )
+    elif template_slug == "tbp-v3-hybrid-sleeve-v1":
+        # Hybrid wrapper — CORE (TBP) + SLEEVE (TC1) with macro gating
+        from strategies.engines.tbp_v3_hybrid_sleeve_v1 import (
+            evaluate_tbp_v3_hybrid_sleeve_v1,
+        )
+        signal = evaluate_tbp_v3_hybrid_sleeve_v1(
+            strategy=strategy,
+            account=account,
+            assignment=assignment,
+            symbol=symbol,
+            now_ts=timezone.now(),
+            bar_close_time=bar_close_time or "",
+            dry_run=dry_run,
+        )
+        # CORE (TBP) results have no job_id — dispatcher creates job.
+        # SLEEVE (TC1) results already have job_id from internal creation.
+        if (
+            signal.ok
+            and signal.signal_type
+            and not signal.job_id
+            and not dry_run
+        ):
+            job = create_place_order_job(
+                request=request,
+                strategy=strategy,
+                account=account,
+                assignment=assignment,
+                signal=signal,
+                user=user,
+                bar_close_time=bar_close_time,
+            )
+            signal.job_id = job.id
+            signal.reason = "job_queued"
+            # Annotate job with portfolio audit from wrapper
+            if signal.details and signal.details.get("portfolio"):
+                try:
+                    job.payload["portfolio"] = signal.details["portfolio"]
+                    job.save(update_fields=["payload"])
+                except Exception:
+                    logger.warning(
+                        "[HYBRID] Failed to annotate CORE job %s with portfolio audit",
+                        job.id,
+                    )
+        return signal
     else:
         log_signal_rejected(
             request, strategy.id, account.id, symbol,
@@ -1329,8 +1373,8 @@ def run_signal_evaluation(
         signal_result=signal.to_dict(),
     )
 
-    # If signal generated, create job
-    if signal.ok and signal.signal_type:
+    # If signal generated, create job (skip in dry-run mode)
+    if signal.ok and signal.signal_type and not dry_run:
         job = create_place_order_job(
             request=request,
             strategy=strategy,

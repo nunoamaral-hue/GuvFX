@@ -214,6 +214,57 @@ MARKETPLACE_STRATEGIES = {
             "exit_logic": "SL = 1.2 × ATR14 beyond entry. TP = 1.5 × SL distance (fixed 1.5R).",
         },
     },
+    "mp-009": {
+        "name": "TBP V3 Hybrid Sleeve v1",
+        "description": "Wrapper: CORE (TBP trendline break pocket) + SLEEVE (TC1 trend continuation on risk-on days, EURUSD/GBPUSD only). H4 execution.",
+        "category": "System-grade",
+        "template_slug": "tbp-v3-hybrid-sleeve-v1",
+        "marketplace_listed": True,
+        "automation_ready": True,
+        "defaults": {
+            "timeframe": "H4",
+            "symbol_universe": "EURUSD,GBPUSD",
+            "edge_type": "TREND_FOLLOWING",
+            "risk_per_trade_pct": 0.03,
+            "auto_optimize_by_ai": False,
+            "filters": {
+                "template_slug": "tbp-v3-hybrid-sleeve-v1",
+                "enabled": True,
+                "direction_mode": "both",
+                "pairs_enabled": ["EURUSD", "GBPUSD"],
+                "alpha": 0.25,
+                "max_trades_per_day": 4,
+                # TBP-compatible fields (CORE)
+                "htf_timeframe": "D1",
+                "execution_timeframe": "H4",
+                "rr_target": 2.0,
+                "trendline_lookback_bars": 101,
+                "trendline_pivot_strength": 2,
+                "break_confirm_bars": 1,
+                "swing_break_mode": "close_break",
+                "swing_lookback": 7,
+                "pocket_retest_required": True,
+                "entry_buffer_pips": {"EURUSD": 2, "GBPUSD": 3},
+                "overshoot_max_pips": {"EURUSD": 12, "GBPUSD": 18},
+                "clean_air_min_pips": {"EURUSD": 8, "GBPUSD": 12},
+                "news_filter_mode": "major_only",
+                "zones": {
+                    "EURUSD": [
+                        {"zone_name": "Supply 1", "zone_type": "supply", "low": 1.1830, "high": 1.1860, "source": "seeded"},
+                        {"zone_name": "Pivot", "zone_type": "pivot", "low": 1.1775, "high": 1.1795, "source": "seeded"},
+                        {"zone_name": "Demand 1", "zone_type": "demand", "low": 1.1715, "high": 1.1745, "source": "seeded"},
+                    ],
+                    "GBPUSD": [
+                        {"zone_name": "Supply 1", "zone_type": "supply", "low": 1.3600, "high": 1.3640, "source": "seeded"},
+                        {"zone_name": "Pivot", "zone_type": "pivot", "low": 1.3490, "high": 1.3530, "source": "seeded"},
+                        {"zone_name": "Demand 1", "zone_type": "demand", "low": 1.3380, "high": 1.3420, "source": "seeded"},
+                    ],
+                },
+            },
+            "entry_logic": "CORE: HTF zone + trendline break + structure shift (TBP, fixed 2R). SLEEVE: EMA50/200 trend + ATR pullback + confirmation (TC1, 1.5R) — only on risk-on days for EURUSD/GBPUSD.",
+            "exit_logic": "CORE: Fixed 2R target from entry. SLEEVE: SL = 1.2 × ATR14, TP = 1.5R. Selection: CORE_PRIORITY (TBP first, TC1 fallback).",
+        },
+    },
 }
 
 

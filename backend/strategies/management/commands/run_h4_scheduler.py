@@ -49,6 +49,7 @@ TBP_TEMPLATE_SLUG = "trendline-break-pocket-ali"  # keep for force-once / zone r
 H4_TEMPLATE_SLUGS = [
     TBP_TEMPLATE_SLUG,
     "tc1-engine-v1",
+    "tbp-v3-hybrid-sleeve-v1",
 ]
 
 
@@ -568,26 +569,21 @@ class Command(BaseCommand):
                 # Safe logging for cron readability
                 print(f"[H4] account={account.id} strategy={strategy.id} symbol={symbol} bar={bar_close_iso}")
 
-                # Idempotency check (outside transaction for early skip)
-                if job_exists_for_bar_close(account.id, strategy.id, symbol, bar_close_iso):
+                # Idempotency check (skip in dry-run — no jobs created)
+                if not dry_run and job_exists_for_bar_close(account.id, strategy.id, symbol, bar_close_iso):
                     self.stdout.write(
                         f"  [SKIP] Job already exists: account={account.id} "
                         f"strategy={strategy.id} symbol={symbol} bar_close={bar_close_iso}"
                     )
                     continue
 
-                if dry_run:
-                    self.stdout.write(
-                        f"  [DRY-RUN] Would evaluate: account={account.id} "
-                        f"strategy={strategy.id} symbol={symbol}"
-                    )
-                    continue
-
                 # Run signal evaluation in AUTO mode
+                # dry_run=True → engines evaluate but do NOT create jobs
                 try:
                     with transaction.atomic():
                         # Double-check idempotency inside transaction (race prevention)
-                        if job_exists_for_bar_close(account.id, strategy.id, symbol, bar_close_iso):
+                        # Skip in dry-run — no jobs are created
+                        if not dry_run and job_exists_for_bar_close(account.id, strategy.id, symbol, bar_close_iso):
                             self.stdout.write(
                                 f"  [SKIP-RACE] Job created by concurrent process: "
                                 f"account={account.id} strategy={strategy.id} symbol={symbol}"
@@ -595,7 +591,7 @@ class Command(BaseCommand):
                             continue
 
                         # Call signal engine in AUTO mode (no manual_params)
-                        # Pass bar_close_time via a special mechanism
+                        # dry_run flag propagates to engines → they evaluate but skip job creation
                         result = run_signal_evaluation(
                             request=None,
                             strategy=strategy,
@@ -604,21 +600,25 @@ class Command(BaseCommand):
                             user=None,  # System-triggered
                             manual_params=None,  # AUTO mode
                             bar_close_time=bar_close_iso,  # For idempotency in job payload
+                            dry_run=dry_run,
                         )
 
-                        if result.ok and result.job_id:
+                        prefix = "[DRY-RUN] " if dry_run else ""
+
+                        if result.ok and result.signal_type:
                             self.stdout.write(
-                                f"  [EVAL] SUCCESS: account={account.id} strategy={strategy.id} "
-                                f"symbol={symbol} signal={result.signal_type} job_id={result.job_id}"
+                                f"  [{prefix}EVAL] SIGNAL: account={account.id} strategy={strategy.id} "
+                                f"symbol={symbol} signal={result.signal_type} "
+                                f"job_id={result.job_id or 'N/A'} reason={result.reason}"
                             )
                         elif result.ok and not result.signal_type:
                             self.stdout.write(
-                                f"  [EVAL] NO_SIGNAL: account={account.id} strategy={strategy.id} "
+                                f"  [{prefix}EVAL] NO_SIGNAL: account={account.id} strategy={strategy.id} "
                                 f"symbol={symbol} reason={result.reason}"
                             )
                         else:
                             self.stdout.write(
-                                f"  [EVAL] REJECTED: account={account.id} strategy={strategy.id} "
+                                f"  [{prefix}EVAL] REJECTED: account={account.id} strategy={strategy.id} "
                                 f"symbol={symbol} reason={result.reason}"
                             )
 
