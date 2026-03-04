@@ -255,7 +255,7 @@ class Command(BaseCommand):
         return strategy
 
     def _ensure_assignment(self, strategy, account, stage):
-        """Create or reactivate a StrategyAssignment."""
+        """Create, reactivate, or update stage of a StrategyAssignment."""
         assignment, created = StrategyAssignment.objects.get_or_create(
             strategy=strategy,
             account=account,
@@ -276,6 +276,14 @@ class Command(BaseCommand):
             self.stdout.write(
                 f"         assignment id={assignment.id} "
                 f"reactivated stage={stage}"
+            )
+        elif assignment.stage != stage:
+            old_stage = assignment.stage
+            assignment.stage = stage
+            assignment.save(update_fields=["stage", "updated_at"])
+            self.stdout.write(
+                f"         [UPDATE] assignment id={assignment.id} "
+                f"stage {old_stage}\u2192{stage}"
             )
         else:
             self.stdout.write(
