@@ -1,5 +1,5 @@
 """
-H4 Auto Evaluation Scheduler for Trendline Break Pocket (TBP) Strategy
+H4 Auto Evaluation Scheduler
 
 This management command runs every minute via cron and triggers signal evaluation
 at H4 bar closes (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC).
@@ -7,7 +7,7 @@ at H4 bar closes (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC).
 Key features:
 - Grace window (default 70s) to handle cron jitter
 - Idempotency: only one PLACE_ORDER per (account, strategy, symbol, bar_close_time)
-- Targets only TBP strategies (template_slug = "trendline-break-pocket-ali")
+- Evaluates all H4-scheduled engines (TBP, TC1) via H4_TEMPLATE_SLUGS whitelist
 - Safe: uses existing signal engine with all safety rails
 
 Usage:
@@ -44,8 +44,12 @@ logger = logging.getLogger(__name__)
 # H4 close hours in UTC
 H4_CLOSE_HOURS = [0, 4, 8, 12, 16, 20]
 
-# TBP template slug
-TBP_TEMPLATE_SLUG = "trendline-break-pocket-ali"
+# Template slugs evaluated on the H4 schedule
+TBP_TEMPLATE_SLUG = "trendline-break-pocket-ali"  # keep for force-once / zone refresh
+H4_TEMPLATE_SLUGS = [
+    TBP_TEMPLATE_SLUG,
+    "tc1-engine-v1",
+]
 
 
 def get_current_h4_bar_close(now_utc: datetime) -> Optional[datetime]:
@@ -467,16 +471,16 @@ class Command(BaseCommand):
             f"bar_close_time={bar_close_iso}, now_utc={now_utc.isoformat()}"
         )
 
-        # Find active TBP strategy assignments
+        # Find active H4 strategy assignments
         assignments_qs = StrategyAssignment.objects.filter(
             is_active=True,
             strategy__is_active=True,
             account__is_active=True,
         ).select_related("strategy", "account")
 
-        # Filter to TBP strategies only
+        # Filter to H4-scheduled engines
         assignments_qs = assignments_qs.filter(
-            strategy__filters__template_slug=TBP_TEMPLATE_SLUG
+            strategy__filters__template_slug__in=H4_TEMPLATE_SLUGS
         )
 
         if account_filter:
@@ -503,7 +507,7 @@ class Command(BaseCommand):
                     )
 
         self.stdout.write(
-            f"[INFO] Found {len(all_assignments)} active TBP assignments, "
+            f"[INFO] Found {len(all_assignments)} active H4 assignments, "
             f"{len(assignments)} with stage=LIVE (evaluating)"
         )
 
@@ -524,7 +528,7 @@ class Command(BaseCommand):
                     logger.exception(f"Auto zone refresh error: {e}")
 
         if not assignments:
-            self.stdout.write("[INFO] No active TBP assignments to evaluate")
+            self.stdout.write("[INFO] No active H4 assignments to evaluate")
             return
 
         # --force-once mode: Create exactly ONE test PLACE_ORDER job

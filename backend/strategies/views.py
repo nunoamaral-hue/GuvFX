@@ -182,6 +182,38 @@ MARKETPLACE_STRATEGIES = {
             "exit_logic": "Fixed 2R target from entry. Stop at structural invalidation.",
         },
     },
+    "mp-008": {
+        "name": "Trend Continuation Engine v1",
+        "description": "EMA50/200 trend filter + ATR pullback zone + confirmation candle. H4 execution, fixed 1.5R.",
+        "category": "System-grade",
+        "template_slug": "tc1-engine-v1",
+        "marketplace_listed": True,
+        "automation_ready": True,
+        "defaults": {
+            "timeframe": "H4",
+            "symbol_universe": "EURUSD,GBPUSD",
+            "edge_type": "TREND_FOLLOWING",
+            "risk_per_trade_pct": 1.5,
+            "auto_optimize_by_ai": False,
+            "filters": {
+                "template_slug": "tc1-engine-v1",
+                "enabled": True,
+                "direction_mode": "both",
+                "pairs_enabled": ["EURUSD", "GBPUSD"],
+                "execution_timeframe": "H4",
+                "ema_fast": 50,
+                "ema_slow": 200,
+                "atr_period": 14,
+                "pullback_atr_mult": 0.25,
+                "sl_atr_mult": 1.2,
+                "rr_fixed": 1.5,
+                "risk_pct": 1.5,
+                "max_trades_per_day": 4,
+            },
+            "entry_logic": "1. EMA50 > EMA200 (bull) or EMA50 < EMA200 (bear) establishes trend\n2. Price enters pullback zone within 0.25 × ATR14 of EMA50\n3. Confirmation candle closes in trend direction\n4. Market entry at next bar open",
+            "exit_logic": "SL = 1.2 × ATR14 beyond entry. TP = 1.5 × SL distance (fixed 1.5R).",
+        },
+    },
 }
 
 

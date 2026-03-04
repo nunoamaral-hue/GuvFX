@@ -1154,6 +1154,7 @@ def run_signal_evaluation(
     user,
     manual_params: Optional[dict] = None,
     bar_close_time: Optional[str] = None,
+    dry_run: bool = False,
 ) -> SignalResult:
     """
     Main entry point for signal evaluation and job creation.
@@ -1219,6 +1220,20 @@ def run_signal_evaluation(
             symbol=symbol,
             now_ts=timezone.now(),
             bar_close_time=bar_close_time or "",
+        )
+    elif template_slug == "tc1-engine-v1":
+        # TC1 engine — trend continuation v1 (job creation inside engine)
+        from strategies.engines.tc1_engine_v1 import evaluate_tc1_engine_v1, TC1Config
+        tc1_cfg = TC1Config.from_filters(filters)
+        return evaluate_tc1_engine_v1(
+            strategy=strategy,
+            account=account,
+            assignment=assignment,
+            symbol=symbol,
+            config=tc1_cfg,
+            now_ts=timezone.now(),
+            bar_close_time=bar_close_time or "",
+            dry_run=dry_run,
         )
     else:
         log_signal_rejected(
