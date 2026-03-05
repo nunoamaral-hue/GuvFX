@@ -190,7 +190,7 @@ def evaluate_tbp_v3_hybrid_sleeve_v1(
         evaluate_trendline_break_pocket_signal,
     )
     from strategies.engines.tc1_engine_v1 import evaluate_tc1_engine_v1, TC1Config
-    from strategies.services.macro import get_macro_regime_label
+    from strategies.services.macro import get_macro_regime_label, MACRO_PROVIDER_VERSION
     from execution.models import ExecutionJob
 
     filters = strategy.filters or {}
@@ -422,6 +422,8 @@ def evaluate_tbp_v3_hybrid_sleeve_v1(
         try:
             job = ExecutionJob.objects.get(pk=selected_result.job_id)
             job.payload["portfolio"] = audit
+            job.payload["macro_label"] = macro_label or "UNKNOWN"
+            job.payload["macro_provider"] = MACRO_PROVIDER_VERSION
             job.save(update_fields=["payload"])
         except Exception as exc:
             logger.warning(

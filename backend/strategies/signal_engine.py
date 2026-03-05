@@ -1271,7 +1271,12 @@ def run_signal_evaluation(
             # Annotate job with portfolio audit from wrapper
             if signal.details and signal.details.get("portfolio"):
                 try:
-                    job.payload["portfolio"] = signal.details["portfolio"]
+                    portfolio = signal.details["portfolio"]
+                    job.payload["portfolio"] = portfolio
+                    job.payload["macro_label"] = (
+                        portfolio.get("macro_regime_label") or "UNKNOWN"
+                    )
+                    job.payload["macro_provider"] = "MACRO_PROVIDER_V2"
                     job.save(update_fields=["payload"])
                 except Exception:
                     logger.warning(
