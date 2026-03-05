@@ -1109,6 +1109,12 @@ def create_place_order_job(
     if bar_close_time:
         payload["bar_close_time"] = bar_close_time
 
+    # Macro audit for hybrid wrapper (only hybrid signals carry portfolio details)
+    portfolio = (signal.details or {}).get("portfolio")
+    if portfolio:
+        payload["macro_label"] = portfolio.get("macro_regime_label") or "UNKNOWN"
+        payload["macro_provider"] = "MACRO_PROVIDER_V2"
+
     # Create the job
     job = ExecutionJob.objects.create(
         job_type=ExecutionJob.JobType.PLACE_ORDER,

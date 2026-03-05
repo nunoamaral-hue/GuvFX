@@ -269,6 +269,18 @@ class Command(BaseCommand):
                         },
                     }
 
+                    # Macro audit for hybrid wrapper
+                    if filters.get("template_slug") == "tbp-v3-hybrid-sleeve-v1":
+                        try:
+                            from strategies.services.macro import get_macro_regime_label
+                            macro_label = get_macro_regime_label(
+                                timezone.now(), account=account,
+                            )
+                        except Exception:
+                            macro_label = "UNKNOWN"
+                        payload["macro_label"] = macro_label or "UNKNOWN"
+                        payload["macro_provider"] = "MACRO_PROVIDER_V2"
+
                     # Create the job
                     job = ExecutionJob.objects.create(
                         job_type=ExecutionJob.JobType.PLACE_ORDER,
