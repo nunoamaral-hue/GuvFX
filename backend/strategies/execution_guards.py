@@ -33,7 +33,7 @@ def get_pip_size(symbol: str) -> float:
     if "JPY" in symbol_upper:
         return 0.01
     if "XAU" in symbol_upper:
-        return 0.01  # XAU hook — not in v1 SIGNAL_ALLOWED_SYMBOLS
+        return 0.01  # XAU pip size (1 pip = $0.01 for gold)
     return 0.0001
 
 

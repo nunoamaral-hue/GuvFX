@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # HARD-CODED SAFETY RAILS (DO NOT MODIFY)
 # =============================================================================
-ALLOWED_SYMBOLS = ["EURUSD", "GBPUSD"]
+ALLOWED_SYMBOLS = ["EURUSD", "GBPUSD", "XAUUSD"]
 MAX_LOT_SIZE = 0.02
 ALLOWED_SIDES = ["BUY", "SELL"]
 

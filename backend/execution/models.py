@@ -21,7 +21,7 @@ DEMO_MAX_TRADES_PER_DAY = 3  # Maximum demo trades per account per day
 # =============================================================================
 # These apply to PLACE_ORDER jobs from strategy signals.
 
-SIGNAL_ALLOWED_SYMBOLS = ["EURUSD", "GBPUSD"]  # Symbols allowed for signal execution
+SIGNAL_ALLOWED_SYMBOLS = ["EURUSD", "GBPUSD", "XAUUSD"]  # Symbols allowed for signal execution
 SIGNAL_MAX_LOT_SIZE = 0.02  # Hard cap on lot size for strategy signals
 SIGNAL_MAX_TRADES_PER_DAY = 10  # Maximum signal trades per account+strategy+symbol per day (SUCCESS only)
 SIGNAL_MAX_CONCURRENT_POSITIONS = 1  # Max concurrent positions per account+strategy+symbol
