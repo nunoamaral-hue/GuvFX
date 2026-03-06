@@ -1,6 +1,7 @@
 import os
 
 from django.conf import settings as django_settings
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -108,16 +109,24 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         if account_id:
             qs = qs.filter(account_id=account_id)
 
-        job = qs.order_by("created_at").first()
+        # Atomic claim: lock the row so only one worker can claim it.
+        # skip_locked=True causes concurrent claimants to skip the locked
+        # row and try the next PENDING job (or get None).
+        with transaction.atomic():
+            job = (
+                qs.order_by("created_at")
+                .select_for_update(skip_locked=True)
+                .first()
+            )
 
-        if not job:
-            # 204 No Content – no jobs available
-            return Response({"detail": "no_jobs"}, status=204)
+            if not job:
+                # 204 No Content – no jobs available (or all locked by other workers)
+                return Response({"detail": "no_jobs"}, status=204)
 
-        job.status = ExecutionJob.Status.RUNNING
-        job.worker_id = worker_id
-        job.started_at = timezone.now()
-        job.save(update_fields=["status", "worker_id", "started_at"])
+            job.status = ExecutionJob.Status.RUNNING
+            job.worker_id = worker_id
+            job.started_at = timezone.now()
+            job.save(update_fields=["status", "worker_id", "started_at"])
 
         # Audit log
         log_execution_job_claimed(
