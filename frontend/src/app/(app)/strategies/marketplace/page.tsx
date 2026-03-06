@@ -174,18 +174,6 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     tags: ["Automation-ready", "SCE"],
   },
   {
-    id: "mp-008",
-    name: "Trend Continuation Engine v1",
-    category: "System-grade",
-    accent: "cyan",
-    style: "Trend continuation",
-    execution: "Automation-ready",
-    summary: "EMA50/200 trend filter + ATR pullback zone + confirmation candle. H4 execution, fixed 1.5R.",
-    timeframes: ["H4"],
-    pairs: ["EURUSD", "GBPUSD"],
-    tags: ["Automation-ready", "TC1"],
-  },
-  {
     id: "mp-009",
     name: "TBP V3 Hybrid Sleeve v1",
     category: "System-grade",
