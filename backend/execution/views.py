@@ -158,6 +158,16 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         ):
             return Response({"detail": "invalid status"}, status=400)
 
+        # Lifecycle guard: only RUNNING jobs may be completed
+        if job.status != ExecutionJob.Status.RUNNING:
+            return Response(
+                {
+                    "detail": f"job {job.id} is {job.status}, expected RUNNING",
+                    "current_status": job.status,
+                },
+                status=409,
+            )
+
         job.status = status_value
         job.result = result
         job.error_message = error_message
