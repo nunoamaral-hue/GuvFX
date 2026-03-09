@@ -556,127 +556,165 @@ export default function StrategyMarketplacePage() {
           }}
         >
           {filteredStrategies.map((strategy) => (
-            <div key={strategy.id} style={{ ...glassCardStyle, padding: "1.25rem" }}>
-              {/* Header: Category + Tags */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
-                <span style={pillStyle(strategy.accent)}>{strategy.category}</span>
-                <div style={{ display: "flex", gap: "0.4rem" }}>
-                  {strategy.tags?.map((tag) => (
-                    <span key={tag} style={badgeStyle()}>
-                      {tag}
-                    </span>
-                  ))}
+            <div
+              key={strategy.id}
+              style={{
+                ...glassCardStyle,
+                padding: "1.25rem",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              {/* ── Zone 1 — Header ── */}
+              <div style={{ marginBottom: "0.75rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.6rem" }}>
+                  <span style={pillStyle(strategy.accent)}>{strategy.category}</span>
+                  <div style={{ display: "flex", gap: "0.4rem" }}>
+                    {strategy.tags?.map((tag) => (
+                      <span key={tag} style={badgeStyle()}>
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
                 </div>
+                <h3 style={{ fontSize: "1.1rem", fontWeight: 600, color: "#e2e8f0", margin: 0 }}>
+                  {strategy.name}
+                </h3>
               </div>
 
-              {/* Name */}
-              <h3 style={{ fontSize: "1.1rem", fontWeight: 600, marginBottom: "0.5rem", color: "#e2e8f0" }}>
-                {strategy.name}
-              </h3>
-
-              {/* Summary */}
-              <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginBottom: "1rem", lineHeight: 1.5 }}>
+              {/* ── Zone 2 — Summary ── */}
+              <p
+                style={{
+                  fontSize: "0.85rem",
+                  color: "#94a3b8",
+                  lineHeight: 1.5,
+                  marginBottom: "0.75rem",
+                  display: "-webkit-box",
+                  WebkitLineClamp: 3,
+                  WebkitBoxOrient: "vertical" as const,
+                  overflow: "hidden",
+                }}
+              >
                 {strategy.summary}
               </p>
 
               {/* Pairs + Timeframes */}
-              <div style={{ marginBottom: "1rem" }}>
-                <div style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "0.3rem" }}>{t(lang, "marketplace.pairsLabel")}</div>
-                <div style={{ fontSize: "0.8rem", color: "#cbd5e1" }}>{strategy.pairs.join(", ")}</div>
-                <div style={{ fontSize: "0.75rem", color: "#64748b", marginTop: "0.5rem", marginBottom: "0.3rem" }}>
+              <div style={{ marginBottom: "0.75rem" }}>
+                <div style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "0.2rem" }}>{t(lang, "marketplace.pairsLabel")}</div>
+                <div style={{ fontSize: "0.8rem", color: "#cbd5e1", marginBottom: "0.4rem" }}>{strategy.pairs.join(", ")}</div>
+                <div style={{ fontSize: "0.75rem", color: "#64748b", marginBottom: "0.2rem" }}>
                   {t(lang, "marketplace.timeframesLabel")}
                 </div>
                 <div style={{ fontSize: "0.8rem", color: "#cbd5e1" }}>{strategy.timeframes.join(", ")}</div>
               </div>
 
-              {/* Template Info */}
+              {/* ── Zone 3 — Preview metrics strip ── */}
               <div
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(3, 1fr)",
-                  gap: "0.75rem",
-                  padding: "0.75rem",
-                  borderRadius: 8,
-                  background: "rgba(0,0,0,0.25)",
-                  marginBottom: "1rem",
+                  padding: "0.45rem 0.75rem",
+                  borderRadius: 6,
+                  background: "rgba(100,116,139,0.08)",
+                  border: "1px solid rgba(100,116,139,0.15)",
+                  fontSize: "0.72rem",
+                  color: "#64748b",
+                  textAlign: "center",
+                  marginBottom: "0.75rem",
                 }}
               >
-                <div>
-                  <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
-                    {t(lang, "marketplace.styleLabel")}
-                  </div>
-                  <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
-                    {strategy.style}
-                  </div>
-                </div>
-                <div>
-                  <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
-                    {t(lang, "marketplace.timeframesLabel")}
-                  </div>
-                  <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
-                    {strategy.timeframes.join(", ")}
-                  </div>
-                </div>
-                <div>
-                  <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
-                    {t(lang, "marketplace.executionLabel")}
-                  </div>
-                  <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
-                    {strategy.execution}
-                  </div>
-                </div>
+                Preview metrics unavailable
               </div>
 
-              {/* CTA Row — two-line: dropdown full-width, then buttons */}
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                <select
-                  value={selectedAccount[strategy.id] || ""}
-                  onChange={(e) => {
-                    const nextVal = e.target.value ? Number(e.target.value) : "";
-                    setSelectedAccount({
-                      ...selectedAccount,
-                      [strategy.id]: nextVal,
-                    });
-
-                    if (typeof window !== "undefined") {
-                      if (nextVal === "") {
-                        window.localStorage.removeItem(LS_DEFAULT_ACCOUNT_KEY);
-                        setDefaultAccountId(null);
-                      } else {
-                        window.localStorage.setItem(LS_DEFAULT_ACCOUNT_KEY, String(nextVal));
-                        setDefaultAccountId(nextVal);
-                      }
-                    }
-                  }}
-                  disabled={loadingAccounts}
+              {/* ── Zone 4 — Footer / Actions (bottom-anchored) ── */}
+              <div style={{ marginTop: "auto" }}>
+                {/* Template Info */}
+                <div
                   style={{
-                    width: "100%",
-                    padding: "0.5rem",
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, 1fr)",
+                    gap: "0.75rem",
+                    padding: "0.75rem",
                     borderRadius: 8,
-                    border: "1px solid rgba(255,255,255,0.15)",
-                    background: "rgba(10,16,35,0.6)",
-                    color: "#e2e8f0",
-                    fontSize: "0.85rem",
+                    background: "rgba(0,0,0,0.25)",
+                    marginBottom: "0.75rem",
                   }}
                 >
-                  <option value="">{t(lang, "marketplace.selectAccount")}</option>
-                  {accounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name}
-                    </option>
-                  ))}
-                </select>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-                  <Button
-                    variant="primary"
-                    onClick={() => handleAssign(strategy.id)}
-                    disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
+                  <div>
+                    <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
+                      {t(lang, "marketplace.styleLabel")}
+                    </div>
+                    <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
+                      {strategy.style}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
+                      {t(lang, "marketplace.timeframesLabel")}
+                    </div>
+                    <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
+                      {strategy.timeframes.join(", ")}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
+                      {t(lang, "marketplace.executionLabel")}
+                    </div>
+                    <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
+                      {strategy.execution}
+                    </div>
+                  </div>
+                </div>
+
+                {/* CTA — two-line: dropdown full-width, then buttons */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  <select
+                    value={selectedAccount[strategy.id] || ""}
+                    onChange={(e) => {
+                      const nextVal = e.target.value ? Number(e.target.value) : "";
+                      setSelectedAccount({
+                        ...selectedAccount,
+                        [strategy.id]: nextVal,
+                      });
+
+                      if (typeof window !== "undefined") {
+                        if (nextVal === "") {
+                          window.localStorage.removeItem(LS_DEFAULT_ACCOUNT_KEY);
+                          setDefaultAccountId(null);
+                        } else {
+                          window.localStorage.setItem(LS_DEFAULT_ACCOUNT_KEY, String(nextVal));
+                          setDefaultAccountId(nextVal);
+                        }
+                      }
+                    }}
+                    disabled={loadingAccounts}
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem",
+                      borderRadius: 8,
+                      border: "1px solid rgba(255,255,255,0.15)",
+                      background: "rgba(10,16,35,0.6)",
+                      color: "#e2e8f0",
+                      fontSize: "0.85rem",
+                    }}
                   >
-                    {assigning[strategy.id] ? t(lang, "marketplace.assigning") : t(lang, "marketplace.assign")}
-                  </Button>
-                  <Button variant="secondary" onClick={handlePreview}>
-                    {t(lang, "marketplace.preview")}
-                  </Button>
+                    <option value="">{t(lang, "marketplace.selectAccount")}</option>
+                    {accounts.map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.name}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+                    <Button
+                      variant="primary"
+                      onClick={() => handleAssign(strategy.id)}
+                      disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
+                    >
+                      {assigning[strategy.id] ? t(lang, "marketplace.assigning") : t(lang, "marketplace.assign")}
+                    </Button>
+                    <Button variant="secondary" onClick={handlePreview}>
+                      {t(lang, "marketplace.preview")}
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>
