@@ -396,6 +396,19 @@ def evaluate_tbp_v3_hybrid_sleeve_v1(
             selected_result = sleeve_result
             selected_result.reason = SLEEVE_TC1_SIGNAL
 
+    # ── HYBRID_TRACE (stdout for dry-run observability) ─────────────
+    _routing = {"TBP": "CORE", "TC1": "SLEEVE"}.get(engine_selected, "NO_SIGNAL")
+    _trace_reason = (
+        selected_result.reason if selected_result
+        else (sleeve_reason or NO_SIGNAL)
+    )
+    logger.info(
+        "[HYBRID_TRACE] bar=%s symbol=%s macro_label=%s "
+        "sleeve_active=%s routing_decision=%s reason=%s",
+        bar_close_time, symbol, macro_label,
+        sleeve_enabled, _routing, _trace_reason,
+    )
+
     # =================================================================
     # 10. Build audit payload
     # =================================================================
