@@ -11,29 +11,29 @@ type BadgeProps = {
 export const Badge: React.FC<BadgeProps> = ({ children, color = "gray", style }) => {
   const colors: Record<string, React.CSSProperties> = {
     green: {
-      backgroundColor: "#e5f9e7",
-      color: "#1b7c3a",
-      borderColor: "#b5e3bd",
+      backgroundColor: "rgba(34,197,94,0.15)",
+      color: "#86efac",
+      borderColor: "rgba(34,197,94,0.3)",
     },
     gray: {
-      backgroundColor: "#f3f3f3",
-      color: "#555",
-      borderColor: "#dddddd",
+      backgroundColor: "rgba(148,163,184,0.12)",
+      color: "#94a3b8",
+      borderColor: "rgba(148,163,184,0.25)",
     },
     blue: {
-      backgroundColor: "#e5f0ff",
-      color: "#1a4fbf",
-      borderColor: "#b4c7f2",
+      backgroundColor: "rgba(59,130,246,0.15)",
+      color: "#93c5fd",
+      borderColor: "rgba(59,130,246,0.3)",
     },
     red: {
-      backgroundColor: "#fee2e2",
-      color: "#b91c1c",
-      borderColor: "#fecaca",
+      backgroundColor: "rgba(239,68,68,0.15)",
+      color: "#fca5a5",
+      borderColor: "rgba(239,68,68,0.3)",
     },
     yellow: {
-      backgroundColor: "#fef3c7",
-      color: "#92400e",
-      borderColor: "#fcd34d",
+      backgroundColor: "rgba(245,158,11,0.15)",
+      color: "#fcd34d",
+      borderColor: "rgba(245,158,11,0.3)",
     },
   };
 

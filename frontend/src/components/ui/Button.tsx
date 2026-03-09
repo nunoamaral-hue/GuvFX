@@ -13,7 +13,7 @@ export const Button: React.FC<ButtonProps> = ({
   ...props
 }) => {
   const base: React.CSSProperties = {
-    padding: "0.45rem 1rem",
+    padding: "0.5rem 1.25rem",
     borderRadius: 999,
     border: "1px solid transparent",
     fontSize: "0.9rem",
