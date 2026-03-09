@@ -627,8 +627,8 @@ export default function StrategyMarketplacePage() {
                 </div>
               </div>
 
-              {/* CTA Row */}
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              {/* CTA Row — two-line: dropdown full-width, then buttons */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                 <select
                   value={selectedAccount[strategy.id] || ""}
                   onChange={(e) => {
@@ -650,7 +650,7 @@ export default function StrategyMarketplacePage() {
                   }}
                   disabled={loadingAccounts}
                   style={{
-                    flex: 1,
+                    width: "100%",
                     padding: "0.5rem",
                     borderRadius: 8,
                     border: "1px solid rgba(255,255,255,0.15)",
@@ -666,16 +666,18 @@ export default function StrategyMarketplacePage() {
                     </option>
                   ))}
                 </select>
-                <Button
-                  variant="primary"
-                  onClick={() => handleAssign(strategy.id)}
-                  disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
-                >
-                  {assigning[strategy.id] ? t(lang, "marketplace.assigning") : t(lang, "marketplace.assign")}
-                </Button>
-                <Button variant="secondary" onClick={handlePreview}>
-                  {t(lang, "marketplace.preview")}
-                </Button>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+                  <Button
+                    variant="primary"
+                    onClick={() => handleAssign(strategy.id)}
+                    disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
+                  >
+                    {assigning[strategy.id] ? t(lang, "marketplace.assigning") : t(lang, "marketplace.assign")}
+                  </Button>
+                  <Button variant="secondary" onClick={handlePreview}>
+                    {t(lang, "marketplace.preview")}
+                  </Button>
+                </div>
               </div>
             </div>
           ))}
