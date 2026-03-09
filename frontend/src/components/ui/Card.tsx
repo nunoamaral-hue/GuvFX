@@ -14,6 +14,7 @@ export const Card: React.FC<CardProps> = ({ children, title, subtitle, style }) 
     <section
       style={{
         borderRadius: 12,
+        overflow: "hidden",
         padding: "1.25rem 1.5rem",
         background: "rgba(7, 12, 30, 0.96)",          // <<< dark panel background
         border: "1px solid rgba(148, 163, 184, 0.35)", // subtle slate border

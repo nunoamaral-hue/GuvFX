@@ -17,6 +17,8 @@ export const Button: React.FC<ButtonProps> = ({
     borderRadius: 999,
     border: "1px solid transparent",
     fontSize: "0.9rem",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
     cursor: props.disabled ? "not-allowed" : "pointer",
     transition: "background 0.15s ease, transform 0.05s ease, opacity 0.15s ease",
   };

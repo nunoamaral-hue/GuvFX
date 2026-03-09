@@ -51,6 +51,7 @@ const accentPill = (accent: Accent) => {
 const glassCardStyle: React.CSSProperties = {
   border: "1px solid rgba(255,255,255,0.10)",
   borderRadius: 14,
+  overflow: "hidden",
   background: "linear-gradient(180deg, rgba(10,16,35,0.72), rgba(6,10,25,0.85))",
   boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
 };
