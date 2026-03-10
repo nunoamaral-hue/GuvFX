@@ -81,6 +81,14 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
+    labelKey: "nav.account",
+    defaultOpen: false,
+    items: [
+      { labelKey: "nav.billingPlans", href: "/account/billing" },
+      { labelKey: "nav.accountHosting", href: "/account/hosting" },
+    ],
+  },
+  {
     labelKey: "nav.settings",
     defaultOpen: false,
     items: [

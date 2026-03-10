@@ -119,6 +119,7 @@ const dictionary: Dictionary = {
   "nav.strategy": { en: "Strategy", ja: "戦略" },
   "nav.run": { en: "Run", ja: "実行" },
   "nav.analytics": { en: "Analytics", ja: "分析" },
+  "nav.account": { en: "Account", ja: "アカウント" },
   "nav.settings": { en: "Settings", ja: "設定" },
 
   // -----------------------------------------------------------------------------
@@ -135,6 +136,8 @@ const dictionary: Dictionary = {
   "nav.performance": { en: "Performance", ja: "パフォーマンス" },
   "nav.strategyMetrics": { en: "Strategy Metrics", ja: "戦略指標" },
   "nav.charts": { en: "Charts", ja: "チャート" },
+  "nav.billingPlans": { en: "Billing & Plans", ja: "請求 & プラン" },
+  "nav.accountHosting": { en: "Hosting", ja: "ホスティング" },
   "nav.brokerAccounts": { en: "Broker Accounts", ja: "ブローカー口座" },
   "nav.userSettings": { en: "User Settings", ja: "ユーザー設定" },
   "nav.hosting": { en: "Hosting", ja: "ホスティング" },
