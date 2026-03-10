@@ -138,6 +138,8 @@ const dictionary: Dictionary = {
   "nav.charts": { en: "Charts", ja: "チャート" },
   "nav.billingPlans": { en: "Billing & Plans", ja: "請求 & プラン" },
   "nav.accountHosting": { en: "Hosting", ja: "ホスティング" },
+  "nav.invoices": { en: "Invoices", ja: "請求書" },
+  "nav.usage": { en: "Usage", ja: "使用状況" },
   "nav.brokerAccounts": { en: "Broker Accounts", ja: "ブローカー口座" },
   "nav.userSettings": { en: "User Settings", ja: "ユーザー設定" },
   "nav.hosting": { en: "Hosting", ja: "ホスティング" },

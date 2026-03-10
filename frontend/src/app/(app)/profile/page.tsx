@@ -176,7 +176,7 @@ export default function ProfilePage() {
           )}
         </Card>
 
-        {/* Billing & hosting UI moved to /account/billing and /account/hosting */}
+        {/* Billing UI → /account/billing · Hosting UI → /account/hosting (hidden from nav) */}
 
         {/* Password change */}
         <Card
