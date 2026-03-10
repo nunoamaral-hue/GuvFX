@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { type Lang, detectLang, setLang as persistLang } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
 import { LanguageDropdown } from "@/components/LanguageDropdown";
+import { ContactSalesModal } from "@/components/ContactSalesModal";
 
 // ─────────────────────────────────────────────────────────────────────
 // Plan definitions
@@ -16,8 +17,10 @@ type Plan = {
   price: string;
   period: string;
   subtitle: string;
+  supportingLine?: string;
   features: string[];
   cta: string;
+  ctaAction?: "contact-sales";
   highlight: boolean;
 };
 
@@ -78,6 +81,7 @@ const PLANS: Plan[] = [
     price: "$149",
     period: "/month",
     subtitle: "For power users and institutional workflows.",
+    supportingLine: "Enterprise-grade infrastructure and dedicated support.",
     features: [
       "Everything in Pro",
       "Custom execution hooks",
@@ -86,6 +90,7 @@ const PLANS: Plan[] = [
       "SLA guarantees",
     ],
     cta: "Contact Sales",
+    ctaAction: "contact-sales",
     highlight: false,
     badgeColor: "#c4b5fd",
   },
@@ -119,6 +124,8 @@ export default function PricingPage() {
     if (typeof window === "undefined") return "en";
     return detectLang();
   });
+
+  const [salesModalOpen, setSalesModalOpen] = useState(false);
 
   return (
     <div
@@ -317,9 +324,15 @@ export default function PricingPage() {
               </div>
 
               {/* Subtitle */}
-              <p style={{ fontSize: "0.85rem", color: "#8fa0b7", lineHeight: 1.5, margin: "0 0 1.25rem" }}>
+              <p style={{ fontSize: "0.85rem", color: "#8fa0b7", lineHeight: 1.5, margin: "0 0 0.5rem" }}>
                 {plan.subtitle}
               </p>
+              {plan.supportingLine && (
+                <p style={{ fontSize: "0.8rem", color: "#67e8f9", lineHeight: 1.5, margin: "0 0 1.25rem", fontWeight: 500 }}>
+                  {plan.supportingLine}
+                </p>
+              )}
+              {!plan.supportingLine && <div style={{ marginBottom: "0.75rem" }} />}
 
               {/* Features */}
               <ul
@@ -345,7 +358,7 @@ export default function PricingPage() {
 
               {/* CTA */}
               <button
-                onClick={() => router.push("/register")}
+                onClick={() => plan.ctaAction === "contact-sales" ? setSalesModalOpen(true) : router.push("/register")}
                 style={{
                   width: "100%",
                   padding: "0.75rem 1rem",
@@ -541,6 +554,13 @@ export default function PricingPage() {
       </footer>
 
       <LegalFooter lang={lang} />
+
+      {/* ── Contact Sales Modal ── */}
+      <ContactSalesModal
+        open={salesModalOpen}
+        onClose={() => setSalesModalOpen(false)}
+        source="pricing-advanced"
+      />
     </div>
   );
 }
