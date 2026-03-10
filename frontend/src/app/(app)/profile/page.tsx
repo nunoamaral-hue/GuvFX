@@ -430,7 +430,7 @@ export default function ProfilePage() {
 
                 switch (plan.code) {
                   case "FREE_SESSION_MT5":
-                    badgeLabel = "Free";
+                    badgeLabel = "Starter Trial";
                     hostingModeLabel = "Ephemeral session-only MT5";
                     planTone = "#22c55e";
                     break;
@@ -459,7 +459,7 @@ export default function ProfilePage() {
                 let pillLabel = plan.name;
                 switch (plan.code) {
                   case "FREE_SESSION_MT5":
-                    pillLabel = "Free";
+                    pillLabel = "Starter Trial";
                     break;
                   case "STANDARD_DEDICATED_2":
                     pillLabel = "Standard";
@@ -476,7 +476,7 @@ export default function ProfilePage() {
                   primaryFeatures.push(
                     "Ephemeral MT5 instance while you are logged in",
                     "No 24/7 automation",
-                    "Good for testing and short sessions"
+                    "Designed for 30-day trial — upgrade anytime"
                   );
                 } else if (plan.code === "STANDARD_DEDICATED_2") {
                   primaryFeatures.push(
@@ -541,7 +541,7 @@ export default function ProfilePage() {
                           }}
                         >
                           {plan.code === "FREE_SESSION_MT5"
-                            ? "Session"
+                            ? "Starter Trial"
                             : plan.code === "STANDARD_DEDICATED_2"
                             ? "Dedicated"
                             : plan.code === "MANAGED_SHARED_10"
@@ -698,7 +698,7 @@ export default function ProfilePage() {
                             </span>
                           </>
                         ) : (
-                          "Free"
+                          "$0 trial"
                         )}
                       </div>
                       <Button

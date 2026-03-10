@@ -85,7 +85,7 @@ const PLANS: Plan[] = [
       "Dedicated account manager",
       "SLA guarantees",
     ],
-    cta: "Contact Us",
+    cta: "Contact Sales",
     highlight: false,
     badgeColor: "#c4b5fd",
   },
