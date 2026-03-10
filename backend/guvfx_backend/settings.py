@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "execution",  # NEW
     "hosting",
     "mt5",
+    "billing",
 ]
 
 MIDDLEWARE = [
