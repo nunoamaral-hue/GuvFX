@@ -388,7 +388,7 @@ const dictionary: Dictionary = {
     en: "Built for discretionary and systematic traders. No hype. Full control.",
     ja: "裁量・システムトレーダー向け。誇張なし。完全なコントロール。",
   },
-  "landing.ctaPrimary": { en: "Get Started (Free)", ja: "無料で始める" },
+  "landing.ctaPrimary": { en: "Start Free Trial", ja: "無料トライアルを開始" },
   "landing.ctaSecondary": { en: "View Platform", ja: "プラットフォームを見る" },
   "landing.ctaMicro": {
     en: "No credit card • Cancel anytime • Demo supported",
