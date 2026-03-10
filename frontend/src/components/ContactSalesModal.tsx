@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -25,10 +25,60 @@ const METHODS: { key: ContactMethod; label: string; icon: string }[] = [
 // ─────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────
+// Shared input style
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  padding: "0.6rem 0.8rem",
+  borderRadius: 10,
+  border: "1px solid rgba(255, 255, 255, 0.1)",
+  background: "rgba(8, 12, 32, 0.9)",
+  color: "#e5f4ff",
+  fontSize: "0.9rem",
+  outline: "none",
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// Validation helpers
+// ─────────────────────────────────────────────────────────────────────
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function isValidEmail(v: string) {
+  return EMAIL_RE.test(v.trim());
+}
+
+function canSubmitForMethod(
+  method: ContactMethod | null,
+  fields: { email: string; fullName: string; countryCode: string; phone: string },
+  userEmail?: string,
+): boolean {
+  if (!method) return false;
+  const resolvedEmail = userEmail || fields.email;
+  if (!isValidEmail(resolvedEmail)) return false;
+
+  if (method === "email") return true;
+
+  // Chat with Sales — also needs full name
+  if (method === "chat") return fields.fullName.trim().length > 0;
+
+  // Schedule a Call — full name + country code + phone
+  if (method === "call") {
+    return (
+      fields.fullName.trim().length > 0 &&
+      fields.countryCode.trim().length > 0 &&
+      fields.phone.trim().length > 0
+    );
+  }
+
+  return false;
+}
+
 export function ContactSalesModal({ open, onClose, userEmail, source }: ContactSalesModalProps) {
   const [method, setMethod] = useState<ContactMethod | null>(null);
   const [message, setMessage] = useState("");
   const [email, setEmail] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [countryCode, setCountryCode] = useState("+1");
+  const [phone, setPhone] = useState("");
   const [submitted, setSubmitted] = useState(false);
 
   // Suppress unused lint — source is for future analytics
@@ -36,8 +86,12 @@ export function ContactSalesModal({ open, onClose, userEmail, source }: ContactS
 
   if (!open) return null;
 
-  const resolvedEmail = userEmail || email;
-  const canSubmit = method !== null && (userEmail || email.trim().length > 0);
+  // Which fields are required for the currently selected method?
+  const needsName = method === "call" || method === "chat";
+  const needsPhone = method === "call";
+  const needsEmail = !userEmail; // always needed, but hidden when authed
+
+  const canSubmit = canSubmitForMethod(method, { email, fullName, countryCode, phone }, userEmail);
 
   const handleSubmit = () => {
     if (!canSubmit) return;
@@ -50,6 +104,9 @@ export function ContactSalesModal({ open, onClose, userEmail, source }: ContactS
     setMethod(null);
     setMessage("");
     setEmail("");
+    setFullName("");
+    setCountryCode("+1");
+    setPhone("");
     setSubmitted(false);
     onClose();
   };
@@ -215,63 +272,102 @@ export function ContactSalesModal({ open, onClose, userEmail, source }: ContactS
               })}
             </div>
 
-            {/* Email field — only if no authenticated email */}
-            {!userEmail && (
-              <>
-                <label
-                  htmlFor="cs-email"
-                  style={{ display: "block", fontSize: "0.8rem", color: "#94a3b8", marginBottom: "0.35rem", fontWeight: 600 }}
-                >
-                  Email
-                </label>
-                <input
-                  id="cs-email"
-                  type="email"
-                  placeholder="you@company.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "0.6rem 0.8rem",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255, 255, 255, 0.1)",
-                    background: "rgba(8, 12, 32, 0.9)",
-                    color: "#e5f4ff",
-                    fontSize: "0.9rem",
-                    marginBottom: "1.25rem",
-                    outline: "none",
-                  }}
-                />
-              </>
-            )}
+            {/* ── Dynamic fields based on selected method ── */}
+            {method !== null && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "1rem", marginBottom: "1.25rem" }}>
+                {/* Full name — required for call + chat */}
+                {needsName && (
+                  <div>
+                    <label
+                      htmlFor="cs-fullname"
+                      style={{ display: "block", fontSize: "0.8rem", color: "#94a3b8", marginBottom: "0.35rem", fontWeight: 600 }}
+                    >
+                      Full name
+                    </label>
+                    <input
+                      id="cs-fullname"
+                      type="text"
+                      placeholder="Jane Doe"
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      style={inputStyle}
+                    />
+                  </div>
+                )}
 
-            {/* Optional message */}
-            <label
-              htmlFor="cs-message"
-              style={{ display: "block", fontSize: "0.8rem", color: "#94a3b8", marginBottom: "0.35rem", fontWeight: 600 }}
-            >
-              Message <span style={{ fontWeight: 400, color: "#64748b" }}>(optional)</span>
-            </label>
-            <textarea
-              id="cs-message"
-              placeholder="Tell us about your use case or requirements..."
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              rows={3}
-              style={{
-                width: "100%",
-                padding: "0.6rem 0.8rem",
-                borderRadius: 10,
-                border: "1px solid rgba(255, 255, 255, 0.1)",
-                background: "rgba(8, 12, 32, 0.9)",
-                color: "#e5f4ff",
-                fontSize: "0.9rem",
-                marginBottom: "1.5rem",
-                outline: "none",
-                resize: "vertical",
-                fontFamily: "inherit",
-              }}
-            />
+                {/* Email — always required, but hidden when authenticated */}
+                {needsEmail && (
+                  <div>
+                    <label
+                      htmlFor="cs-email"
+                      style={{ display: "block", fontSize: "0.8rem", color: "#94a3b8", marginBottom: "0.35rem", fontWeight: 600 }}
+                    >
+                      Email
+                    </label>
+                    <input
+                      id="cs-email"
+                      type="email"
+                      placeholder="you@company.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      style={inputStyle}
+                    />
+                  </div>
+                )}
+
+                {/* Country code + Phone — required for call only */}
+                {needsPhone && (
+                  <div>
+                    <label
+                      htmlFor="cs-phone"
+                      style={{ display: "block", fontSize: "0.8rem", color: "#94a3b8", marginBottom: "0.35rem", fontWeight: 600 }}
+                    >
+                      Phone number
+                    </label>
+                    <div style={{ display: "flex", gap: "0.5rem" }}>
+                      <input
+                        id="cs-country-code"
+                        type="text"
+                        placeholder="+1"
+                        value={countryCode}
+                        onChange={(e) => setCountryCode(e.target.value)}
+                        style={{ ...inputStyle, width: 72, flexShrink: 0, textAlign: "center" }}
+                      />
+                      <input
+                        id="cs-phone"
+                        type="tel"
+                        placeholder="555 123 4567"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        style={{ ...inputStyle, flex: 1 }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Message — always visible, optional */}
+                <div>
+                  <label
+                    htmlFor="cs-message"
+                    style={{ display: "block", fontSize: "0.8rem", color: "#94a3b8", marginBottom: "0.35rem", fontWeight: 600 }}
+                  >
+                    Message <span style={{ fontWeight: 400, color: "#64748b" }}>(optional)</span>
+                  </label>
+                  <textarea
+                    id="cs-message"
+                    placeholder="Tell us about your use case or requirements..."
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    rows={3}
+                    style={{
+                      ...inputStyle,
+                      resize: "vertical" as const,
+                      fontFamily: "inherit",
+                    }}
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Actions */}
             <div style={{ display: "flex", gap: "0.75rem" }}>
