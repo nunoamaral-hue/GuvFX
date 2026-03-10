@@ -2,16 +2,22 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .entitlements import resolve_entitlements
 from .models import UserSubscriptionState, Invoice
-from .serializers import UserSubscriptionStateSerializer, InvoiceSerializer
+from .serializers import (
+    UserSubscriptionStateSerializer,
+    EntitlementsSerializer,
+    InvoiceSerializer,
+)
 
 
 class MySubscriptionView(APIView):
     """
     GET /api/billing/subscription/
 
-    Returns the authenticated user's subscription state.
-    If no UserSubscriptionState row exists, returns null (not 404/500).
+    Returns the authenticated user's subscription state and computed
+    entitlements.  If no UserSubscriptionState row exists, subscription
+    is null but entitlements still resolve to safe viewer defaults.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -20,10 +26,14 @@ class MySubscriptionView(APIView):
         try:
             state = UserSubscriptionState.objects.get(user=request.user)
         except UserSubscriptionState.DoesNotExist:
-            return Response({"subscription": None})
+            state = None
 
-        serializer = UserSubscriptionStateSerializer(state)
-        return Response({"subscription": serializer.data})
+        sub_data = (
+            UserSubscriptionStateSerializer(state).data if state is not None else None
+        )
+        ent_data = EntitlementsSerializer(resolve_entitlements(state)).data
+
+        return Response({"subscription": sub_data, "entitlements": ent_data})
 
 
 class MyInvoicesView(APIView):

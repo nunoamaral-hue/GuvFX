@@ -28,6 +28,26 @@ class UserSubscriptionStateSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class EntitlementsSerializer(serializers.Serializer):
+    """Read-only serializer for the computed Entitlements object (no model)."""
+
+    can_view_dashboard = serializers.BooleanField(read_only=True)
+    can_browse_marketplace = serializers.BooleanField(read_only=True)
+    can_run_backtests = serializers.BooleanField(read_only=True)
+    can_assign_strategies = serializers.BooleanField(read_only=True)
+    can_deploy_automation = serializers.BooleanField(read_only=True)
+
+    max_trading_accounts = serializers.IntegerField(read_only=True)
+    max_active_strategies = serializers.IntegerField(read_only=True)
+
+    historical_data_tier = serializers.CharField(read_only=True)
+
+    source_plan = serializers.CharField(read_only=True, allow_null=True)
+    source_plan_status = serializers.CharField(read_only=True)
+    viewer_mode = serializers.BooleanField(read_only=True)
+    resolved_access_mode = serializers.CharField(read_only=True)
+
+
 class InvoiceSerializer(serializers.ModelSerializer):
     """Read-only serializer for a user's invoice list."""
 
