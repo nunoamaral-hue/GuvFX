@@ -18,6 +18,7 @@ from .serializers import (
 )
 from strategies.models import Strategy
 from trading.models import TradingAccount
+from billing.enforcement import require_entitlement
 from core.audit import (
     log_backtest_config_created,
     log_backtest_run_created,
@@ -92,6 +93,9 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         config = serializer.validated_data["config"]
+
+        # Entitlement gate: user must have can_run_backtests
+        require_entitlement(user, "can_run_backtests")
 
         # Ownership check: non-staff can only create runs on their own configs
         if (not user.is_staff) and config.owner != user:

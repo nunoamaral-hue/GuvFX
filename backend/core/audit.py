@@ -520,3 +520,126 @@ def log_signal_created(
             "tp_price": tp_price,
         },
     )
+
+
+# =============================================================================
+# Worker Authentication Audit Helpers
+# =============================================================================
+
+
+def log_worker_auth_success(
+    request: HttpRequest | None,
+    worker_id: str,
+) -> None:
+    """Log a successful worker authentication."""
+    log_event(
+        request,
+        event_type="WORKER_AUTH_SUCCESS",
+        severity="INFO",
+        entity_type="worker",
+        metadata={"worker_id": worker_id},
+    )
+
+
+def log_worker_auth_failed(
+    request: HttpRequest | None,
+    worker_id: str,
+    reason: str = "",
+) -> None:
+    """Log a failed worker authentication attempt."""
+    log_event(
+        request,
+        event_type="WORKER_AUTH_FAILED",
+        severity="WARN",
+        entity_type="worker",
+        metadata={"worker_id": worker_id, "reason": reason},
+    )
+
+
+# =============================================================================
+# Subscription Mutation Audit Helpers
+# =============================================================================
+
+
+def log_subscription_created(
+    request: HttpRequest | None,
+    user_id: int,
+    plan: str,
+    metadata: dict | None = None,
+) -> None:
+    """Log subscription creation."""
+    log_event(
+        request,
+        event_type="SUBSCRIPTION_CREATED",
+        severity="INFO",
+        entity_type="subscription",
+        entity_id=str(user_id),
+        metadata={"plan": plan, **(metadata or {})},
+    )
+
+
+def log_subscription_updated(
+    request: HttpRequest | None,
+    user_id: int,
+    changed_fields: list | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Log subscription update."""
+    log_event(
+        request,
+        event_type="SUBSCRIPTION_UPDATED",
+        severity="INFO",
+        entity_type="subscription",
+        entity_id=str(user_id),
+        metadata={"changed_fields": changed_fields or [], **(metadata or {})},
+    )
+
+
+# =============================================================================
+# Admin Override Audit Helpers
+# =============================================================================
+
+
+def log_admin_override(
+    request: HttpRequest,
+    action: str,
+    entity_type: str = "",
+    entity_id: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Log an admin override action."""
+    log_event(
+        request,
+        event_type="ADMIN_OVERRIDE",
+        severity="WARN",
+        entity_type=entity_type,
+        entity_id=entity_id,
+        metadata={"action": action, **(metadata or {})},
+    )
+
+
+# =============================================================================
+# Entitlement Enforcement Audit Helpers
+# =============================================================================
+
+
+def log_entitlement_denied(
+    request: HttpRequest | None,
+    user_id: int,
+    capability: str,
+    plan: str | None = None,
+    resolved_mode: str | None = None,
+) -> None:
+    """Log an entitlement denial."""
+    log_event(
+        request,
+        event_type="ENTITLEMENT_DENIED",
+        severity="WARN",
+        entity_type="user",
+        entity_id=str(user_id),
+        metadata={
+            "capability": capability,
+            "plan": plan,
+            "resolved_access_mode": resolved_mode,
+        },
+    )

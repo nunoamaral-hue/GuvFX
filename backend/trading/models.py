@@ -66,6 +66,15 @@ class TradingAccount(models.Model):
     is_demo = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
+    # Multicurrency: account denomination (e.g. "USD", "EUR").
+    # Nullable for backward compatibility; populated from MT5 account info.
+    account_currency = models.CharField(
+        max_length=8,
+        null=True,
+        blank=True,
+        help_text="Account denomination currency (e.g. USD, EUR). Populated from MT5.",
+    )
+
     # Cutover: deals with deal.time < cutover are skipped during ingest.
     # Set after wiping trades so old MT5 history doesn't re-import.
     ingest_cutover_time = models.DateTimeField(
@@ -144,6 +153,21 @@ class Trade(models.Model):
     profit = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     commission = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     swap = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+
+    # Multicurrency: currency denomination of monetary amounts.
+    # Nullable for backward compatibility; populated from MT5 account currency.
+    profit_currency = models.CharField(
+        max_length=8, null=True, blank=True,
+        help_text="Currency of profit field (e.g. USD). Populated from MT5.",
+    )
+    commission_currency = models.CharField(
+        max_length=8, null=True, blank=True,
+        help_text="Currency of commission field. Populated from MT5.",
+    )
+    swap_currency = models.CharField(
+        max_length=8, null=True, blank=True,
+        help_text="Currency of swap field. Populated from MT5.",
+    )
 
     magic_number = models.IntegerField(null=True, blank=True)
     comment = models.CharField(max_length=255, blank=True)

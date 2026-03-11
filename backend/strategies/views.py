@@ -31,6 +31,7 @@ from .execution import (
     get_execution_status,
 )
 from backtests.models import BacktestConfig, BacktestRun
+from billing.enforcement import require_entitlement
 from core.audit import (
     log_strategy_created,
     log_strategy_updated,
@@ -740,6 +741,9 @@ class StrategyViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="marketplace/assign")
     def marketplace_assign(self, request):
         user = request.user
+
+        # Entitlement gate: user must have can_assign_strategies
+        require_entitlement(user, "can_assign_strategies")
 
         marketplace_strategy_id = request.data.get("marketplace_strategy_id")
         account_id = request.data.get("account_id")

@@ -20,6 +20,7 @@ from .serializers import (
     OpenTradeJobRequestSerializer,
     DemoTradeJobRequestSerializer,
 )
+from .auth import authenticate_worker
 from .services import OpenTradeParams, create_open_trade_job
 from strategies.models import Strategy, StrategyAssignment
 from trading.models import TradingAccount
@@ -35,7 +36,9 @@ class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
     """
     Allow access if:
     - the request has an authenticated user, OR
-    - the request provides the correct X-Worker-Token header.
+    - the request provides valid X-Worker-Id + X-Worker-Secret headers
+      (validated against WorkerIdentity), OR
+    - the request provides the legacy X-Worker-Token header (env var).
     """
 
     def has_permission(self, request, view):
@@ -44,7 +47,19 @@ class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
         if user is not None and user.is_authenticated:
             return True
 
-        # Worker token path
+        # WorkerIdentity path (preferred)
+        worker_id = request.headers.get("X-Worker-Id")
+        worker_secret = request.headers.get("X-Worker-Secret")
+        if worker_id and worker_secret:
+            try:
+                worker = authenticate_worker(worker_id, worker_secret)
+                # Stash the authenticated worker on the request for downstream use.
+                request._worker_identity = worker
+                return True
+            except PermissionDenied:
+                return False
+
+        # Legacy env-var token path (backward-compatible)
         expected_token = os.getenv("MT5_WORKER_TOKEN")
         provided_token = request.headers.get("X-Worker-Token")
 
@@ -322,19 +337,16 @@ class CreateOpenTradeJobView(APIView):
 class WorkerAccountCredentialsView(APIView):
     """
     Internal endpoint for MT5 workers to fetch broker credentials for a given TradingAccount.
-    Protected by a shared worker token (MT5_WORKER_TOKEN).
+
+    Protected by ``IsAuthenticatedOrWorkerToken`` which supports:
+    - WorkerIdentity (X-Worker-Id + X-Worker-Secret headers) — preferred
+    - Legacy env-var token (X-Worker-Token header) — backward-compatible
     """
 
     authentication_classes: list = []
-    permission_classes: list = []
+    permission_classes = [IsAuthenticatedOrWorkerToken]
 
     def get(self, request, account_id: int):
-        expected_token = os.getenv("MT5_WORKER_TOKEN")
-        provided_token = request.headers.get("X-Worker-Token")
-
-        if not expected_token or provided_token != expected_token:
-            raise PermissionDenied("Invalid worker token")
-
         try:
             account = TradingAccount.objects.get(pk=account_id, is_active=True)
         except TradingAccount.DoesNotExist:

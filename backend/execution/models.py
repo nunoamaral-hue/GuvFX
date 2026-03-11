@@ -1,3 +1,5 @@
+import hashlib
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -143,3 +145,50 @@ class ExecutionJob(models.Model):
             payload__symbol=symbol,
             status__in=[cls.Status.PENDING, cls.Status.RUNNING],
         ).count()
+
+
+# =============================================================================
+# Worker Identity (for authenticated worker ↔ backend communication)
+# =============================================================================
+
+
+class WorkerIdentity(models.Model):
+    """
+    Registered MT5 worker identity with hashed secret for authentication.
+
+    Secrets are stored as SHA-256 hashes and validated via constant-time
+    comparison (``hmac.compare_digest``).
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        REVOKED = "REVOKED", "Revoked"
+
+    worker_id = models.CharField(max_length=64, unique=True)
+    worker_secret_hash = models.CharField(
+        max_length=255,
+        help_text="SHA-256 hex digest of the worker secret.",
+    )
+    worker_permissions = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Arbitrary permission flags for future use.",
+    )
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Worker Identity"
+        verbose_name_plural = "Worker Identities"
+
+    def __str__(self) -> str:
+        return f"Worker {self.worker_id} ({self.status})"
+
+    @staticmethod
+    def hash_secret(raw_secret: str) -> str:
+        """Return the SHA-256 hex digest of *raw_secret*."""
+        return hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()

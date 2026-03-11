@@ -8,6 +8,25 @@ from django.db import models
 from django.conf import settings
 
 
+# ---------------------------------------------------------------------------
+# Immutable QuerySet / Manager for AuditEvent
+# ---------------------------------------------------------------------------
+
+class AuditEventQuerySet(models.QuerySet):
+    """QuerySet that blocks bulk update and delete to enforce immutability."""
+
+    def update(self, **kwargs):
+        raise ValueError("AuditEvent records are immutable and cannot be updated.")
+
+    def delete(self):
+        raise ValueError("AuditEvent records cannot be deleted.")
+
+
+class AuditEventManager(models.Manager):
+    def get_queryset(self):
+        return AuditEventQuerySet(self.model, using=self._db)
+
+
 class AuditEvent(models.Model):
     """
     Append-only audit log for security-relevant events.
@@ -77,6 +96,23 @@ class AuditEvent(models.Model):
         SIGNAL_EVALUATED = "SIGNAL_EVALUATED", "Signal Evaluated"
         SIGNAL_REJECTED = "SIGNAL_REJECTED", "Signal Rejected"
         SIGNAL_CREATED = "SIGNAL_CREATED", "Signal Created (Job Queued)"
+
+        # Worker authentication
+        WORKER_AUTH_SUCCESS = "WORKER_AUTH_SUCCESS", "Worker Auth Success"
+        WORKER_AUTH_FAILED = "WORKER_AUTH_FAILED", "Worker Auth Failed"
+
+        # Subscription mutations
+        SUBSCRIPTION_CREATED = "SUBSCRIPTION_CREATED", "Subscription Created"
+        SUBSCRIPTION_UPDATED = "SUBSCRIPTION_UPDATED", "Subscription Updated"
+
+        # Admin overrides
+        ADMIN_OVERRIDE = "ADMIN_OVERRIDE", "Admin Override"
+
+        # Entitlement enforcement
+        ENTITLEMENT_DENIED = "ENTITLEMENT_DENIED", "Entitlement Denied"
+
+    # Use immutable manager to block bulk update/delete at QuerySet level.
+    objects = AuditEventManager()
 
     id = models.UUIDField(
         primary_key=True,

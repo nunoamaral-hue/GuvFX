@@ -34,6 +34,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
+from billing.enforcement import require_entitlement
 from execution.models import ExecutionJob
 from strategies.engines.alts_engine import ALTS_TEMPLATE_SLUG, evaluate_alts
 from strategies.management.commands.run_h4_scheduler import job_exists_for_bar_close
@@ -234,6 +235,15 @@ class Command(BaseCommand):
         for assignment in assignments:
             strategy = assignment.strategy
             account = assignment.account
+
+            # Entitlement gate: account owner must have can_deploy_automation
+            try:
+                require_entitlement(account.user, "can_deploy_automation")
+            except Exception:
+                self.stdout.write(
+                    f"  [SKIP] account={account.id} owner lacks can_deploy_automation"
+                )
+                continue
 
             # Safety: Demo only
             if not account.is_demo:

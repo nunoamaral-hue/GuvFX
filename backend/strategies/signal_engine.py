@@ -44,6 +44,7 @@ from execution.models import (
 from strategies.models import Strategy, StrategyAssignment
 from strategies.zone_generator import resolve_zones
 from trading.models import TradingAccount, Trade
+from billing.enforcement import require_entitlement
 from core.audit import log_signal_evaluated, log_signal_rejected, log_signal_created
 
 logger = logging.getLogger(__name__)
@@ -1068,6 +1069,11 @@ def create_place_order_job(
         bar_close_time: Optional ISO timestamp of the H4 bar close being evaluated.
                        Used for idempotency in auto-evaluation mode.
     """
+    # Entitlement gate: account owner must have can_deploy_automation.
+    # Use account.user (the owner) rather than the triggering user —
+    # schedulers pass user=None for system-triggered evaluations.
+    require_entitlement(account.user, "can_deploy_automation")
+
     # Generate correlation tag (same format as demo trades)
     # This will be updated with actual job ID after creation
     correlation_tag = f"GS{strategy.id:04d}"
