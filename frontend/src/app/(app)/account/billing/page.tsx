@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { ActionRequestModal } from "@/components/ActionRequestModal";
-import type { Subscription, SubscriptionResponse } from "@/types/billing";
+import type {
+  Subscription,
+  Entitlements,
+  SubscriptionResponse,
+} from "@/types/billing";
 
 // ─────────────────────────────────────────────────────────────────────
 // Display helpers — humanization is display-only, never used for logic
@@ -143,6 +147,30 @@ const statusColor: Record<string, string> = {
   viewer_only: "#94a3b8",
 };
 
+// Access mode display mapping — derived from backend resolved_access_mode
+const accessModeConfig: Record<string, { label: string; color: string; description: string }> = {
+  active: {
+    label: "Active",
+    color: "#4ade80",
+    description: "Your subscription is active with full access.",
+  },
+  trial: {
+    label: "Trial",
+    color: "#60a5fa",
+    description: "You are on a trial period. Some capabilities may be limited.",
+  },
+  degraded: {
+    label: "Payment Past Due",
+    color: "#fbbf24",
+    description: "Your payment is past due. Access is preserved during the grace period.",
+  },
+  viewer: {
+    label: "Viewer",
+    color: "#94a3b8",
+    description: "You have view-only access. Upgrade to unlock full capabilities.",
+  },
+};
+
 // ─────────────────────────────────────────────────────────────────────
 // Subscription detail row — only renders non-null fields
 // ─────────────────────────────────────────────────────────────────────
@@ -165,8 +193,9 @@ export default function BillingPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalContext, setModalContext] = useState("");
 
-  // Subscription state from API
+  // Subscription + entitlements state from API
   const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [entitlements, setEntitlements] = useState<Entitlements | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -180,6 +209,7 @@ export default function BillingPage() {
           {}
         );
         setSubscription(data.subscription);
+        setEntitlements(data.entitlements ?? null);
       } catch (err: unknown) {
         const message =
           err instanceof Error ? err.message : "Failed to load subscription.";
@@ -426,6 +456,309 @@ export default function BillingPage() {
           </div>
         </div>
       )}
+
+      {/* ── Access Mode banner (only when entitlements loaded) ── */}
+      {!loading && !error && entitlements && (
+        <div
+          style={{
+            ...glassCard,
+            marginBottom: "1.5rem",
+            padding: "1rem 1.25rem",
+            flexDirection: "row" as const,
+            alignItems: "center",
+            gap: "0.75rem",
+            flexWrap: "wrap" as const,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flex: 1 }}>
+            <div>
+              <span
+                style={{
+                  fontSize: "0.8rem",
+                  color: "#94a3b8",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  fontWeight: 600,
+                }}
+              >
+                Access mode
+              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginTop: "0.15rem" }}>
+                <span
+                  style={{
+                    fontSize: "1rem",
+                    fontWeight: 600,
+                    color:
+                      accessModeConfig[entitlements.resolved_access_mode]?.color ?? "#94a3b8",
+                  }}
+                >
+                  {accessModeConfig[entitlements.resolved_access_mode]?.label ??
+                    humanize(entitlements.resolved_access_mode)}
+                </span>
+                {entitlements.source_plan && (
+                  <span style={{ fontSize: "0.85rem", color: "#8fa0b7" }}>
+                    ({humanize(entitlements.source_plan)})
+                  </span>
+                )}
+              </div>
+              <p
+                style={{
+                  fontSize: "0.8rem",
+                  color: "#8fa0b7",
+                  margin: "0.25rem 0 0",
+                  lineHeight: 1.4,
+                }}
+              >
+                {accessModeConfig[entitlements.resolved_access_mode]?.description ??
+                  `Access mode: ${humanize(entitlements.resolved_access_mode)}`}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Entitlement Summary card (only when entitlements loaded) ── */}
+      {!loading && !error && entitlements && (
+        <div
+          style={{
+            ...glassCard,
+            marginBottom: "1.5rem",
+            padding: "1.25rem",
+          }}
+        >
+          <div
+            style={{
+              fontSize: "0.8rem",
+              color: "#94a3b8",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              fontWeight: 600,
+              marginBottom: "0.75rem",
+            }}
+          >
+            Platform capabilities
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: "0.75rem",
+            }}
+          >
+            {/* Boolean capabilities */}
+            {([
+              ["Backtests", entitlements.can_run_backtests],
+              ["Strategy Assignment", entitlements.can_assign_strategies],
+              ["Automation Deployment", entitlements.can_deploy_automation],
+              ["Dashboard", entitlements.can_view_dashboard],
+              ["Marketplace", entitlements.can_browse_marketplace],
+            ] as [string, boolean][]).map(([label, enabled]) => (
+              <div
+                key={label}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                  padding: "0.5rem 0.75rem",
+                  borderRadius: 10,
+                  background: "rgba(255, 255, 255, 0.02)",
+                  border: "1px solid rgba(74, 179, 255, 0.06)",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: "0.85rem",
+                    color: enabled ? "#4ade80" : "#f87171",
+                    fontWeight: 600,
+                    width: 18,
+                    textAlign: "center",
+                  }}
+                >
+                  {enabled ? "✓" : "✗"}
+                </span>
+                <span style={{ fontSize: "0.85rem", color: enabled ? "#e9f4ff" : "#64748b" }}>
+                  {label}
+                </span>
+              </div>
+            ))}
+
+            {/* Numeric limits */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                padding: "0.5rem 0.75rem",
+                borderRadius: 10,
+                background: "rgba(255, 255, 255, 0.02)",
+                border: "1px solid rgba(74, 179, 255, 0.06)",
+              }}
+            >
+              <span style={{ fontSize: "0.85rem", color: "#93c5fd", fontWeight: 600, width: 18, textAlign: "center" }}>
+                {entitlements.max_trading_accounts}
+              </span>
+              <span style={{ fontSize: "0.85rem", color: "#e9f4ff" }}>
+                Trading Accounts
+              </span>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                padding: "0.5rem 0.75rem",
+                borderRadius: 10,
+                background: "rgba(255, 255, 255, 0.02)",
+                border: "1px solid rgba(74, 179, 255, 0.06)",
+              }}
+            >
+              <span style={{ fontSize: "0.85rem", color: "#93c5fd", fontWeight: 600, width: 18, textAlign: "center" }}>
+                {entitlements.max_active_strategies}
+              </span>
+              <span style={{ fontSize: "0.85rem", color: "#e9f4ff" }}>
+                Active Strategies
+              </span>
+            </div>
+
+            {/* Historical data tier */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                padding: "0.5rem 0.75rem",
+                borderRadius: 10,
+                background: "rgba(255, 255, 255, 0.02)",
+                border: "1px solid rgba(74, 179, 255, 0.06)",
+              }}
+            >
+              <span style={{ fontSize: "0.85rem", color: "#93c5fd", fontWeight: 600, width: 18, textAlign: "center" }}>
+                ◆
+              </span>
+              <span style={{ fontSize: "0.85rem", color: "#e9f4ff" }}>
+                Historical Data: {humanize(entitlements.historical_data_tier)}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Restricted / viewer upgrade messaging ── */}
+      {!loading &&
+        !error &&
+        entitlements &&
+        entitlements.resolved_access_mode === "viewer" && (
+          <div
+            style={{
+              ...glassCard,
+              marginBottom: "1.5rem",
+              padding: "1rem 1.25rem",
+              borderColor: "rgba(148, 163, 184, 0.2)",
+              background:
+                "linear-gradient(135deg, rgba(15, 18, 35, 0.95) 0%, rgba(8, 10, 25, 0.98) 100%)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: "0.9rem",
+                color: "#94a3b8",
+                fontWeight: 600,
+                marginBottom: "0.35rem",
+              }}
+            >
+              Viewer access only
+            </div>
+            <p
+              style={{
+                fontSize: "0.85rem",
+                color: "#8fa0b7",
+                margin: 0,
+                lineHeight: 1.5,
+              }}
+            >
+              Your account currently has view-only access. Upgrade to a paid plan
+              below to unlock backtesting, strategy assignment, live automation,
+              and full platform capabilities.
+            </p>
+          </div>
+        )}
+
+      {!loading &&
+        !error &&
+        entitlements &&
+        entitlements.resolved_access_mode === "trial" &&
+        !entitlements.can_deploy_automation && (
+          <div
+            style={{
+              ...glassCard,
+              marginBottom: "1.5rem",
+              padding: "1rem 1.25rem",
+              borderColor: "rgba(96, 165, 250, 0.2)",
+              background:
+                "linear-gradient(135deg, rgba(12, 16, 38, 0.95) 0%, rgba(6, 9, 24, 0.98) 100%)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: "0.9rem",
+                color: "#60a5fa",
+                fontWeight: 600,
+                marginBottom: "0.35rem",
+              }}
+            >
+              Trial limitations
+            </div>
+            <p
+              style={{
+                fontSize: "0.85rem",
+                color: "#8fa0b7",
+                margin: 0,
+                lineHeight: 1.5,
+              }}
+            >
+              Your trial includes backtesting and strategy tools, but live
+              automation deployment requires an upgrade to a paid plan.
+            </p>
+          </div>
+        )}
+
+      {!loading &&
+        !error &&
+        entitlements &&
+        entitlements.resolved_access_mode === "degraded" && (
+          <div
+            style={{
+              ...glassCard,
+              marginBottom: "1.5rem",
+              padding: "1rem 1.25rem",
+              borderColor: "rgba(251, 191, 36, 0.2)",
+              background:
+                "linear-gradient(135deg, rgba(18, 15, 10, 0.95) 0%, rgba(10, 8, 5, 0.98) 100%)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: "0.9rem",
+                color: "#fbbf24",
+                fontWeight: 600,
+                marginBottom: "0.35rem",
+              }}
+            >
+              Payment past due
+            </div>
+            <p
+              style={{
+                fontSize: "0.85rem",
+                color: "#8fa0b7",
+                margin: 0,
+                lineHeight: 1.5,
+              }}
+            >
+              Your payment is past due. Full access is maintained during the grace
+              period. Please update your payment method to avoid service interruption.
+            </p>
+          </div>
+        )}
 
       {/* ── Plan cards grid (always visible) ── */}
       <div

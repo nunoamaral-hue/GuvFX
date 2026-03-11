@@ -21,8 +21,24 @@ export type Subscription = {
   last_plan_change_at: string | null;
 };
 
+export type Entitlements = {
+  can_view_dashboard: boolean;
+  can_browse_marketplace: boolean;
+  can_run_backtests: boolean;
+  can_assign_strategies: boolean;
+  can_deploy_automation: boolean;
+  max_trading_accounts: number;
+  max_active_strategies: number;
+  historical_data_tier: string;
+  source_plan: string | null;
+  source_plan_status: string;
+  viewer_mode: boolean;
+  resolved_access_mode: string;
+};
+
 export type SubscriptionResponse = {
   subscription: Subscription | null;
+  entitlements: Entitlements;
 };
 
 export type Invoice = {
