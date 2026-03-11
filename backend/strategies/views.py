@@ -880,6 +880,8 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
+        require_entitlement(user, "can_assign_strategies")
+
         assignment = serializer.validated_data
         account = assignment["account"]
 
@@ -930,6 +932,8 @@ class StrategyAutoTuneView(APIView):
 
     def post(self, request, pk: int):
         user = request.user
+        require_entitlement(user, "can_run_backtests")
+
         try:
             strategy = Strategy.objects.get(pk=pk)
         except Strategy.DoesNotExist:

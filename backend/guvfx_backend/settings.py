@@ -119,6 +119,10 @@ GUVFX_WINDOWS_AGENT_BASE_URL = env(
 )
 GUVFX_WINDOWS_AGENT_TOKEN = env("GUVFX_WINDOWS_AGENT_TOKEN", "")
 
+# Legacy worker token toggle.  Set to "false" to disable legacy X-Worker-Token
+# header authentication and require all workers to use WorkerIdentity credentials.
+ENABLE_LEGACY_WORKER_TOKEN: bool = env("ENABLE_LEGACY_WORKER_TOKEN", "true").lower() == "true"
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators

@@ -6,6 +6,7 @@ from typing import Optional
 
 from django.contrib.auth import get_user_model
 
+from billing.enforcement import require_entitlement
 from execution.models import ExecutionJob
 from strategies.models import Strategy, StrategyAssignment
 from trading.models import TradingAccount
@@ -66,6 +67,11 @@ def create_open_trade_job(params: OpenTradeParams) -> ExecutionJob:
     Create an ExecutionJob with job_type='OPEN_TRADE' and a payload that
     contains all information the MT5 worker needs to open a trade.
     """
+    # Defense-in-depth: enforce entitlement at service level so direct
+    # callers (e.g. signal_engine) cannot bypass view-level checks.
+    owner = params.account.user if params.account else params.created_by
+    require_entitlement(owner, "can_deploy_automation")
+
     effective_risk_pct = resolve_risk_pct(params=params)
 
     payload = {

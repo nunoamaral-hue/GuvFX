@@ -20,7 +20,7 @@ from .serializers import (
     OpenTradeJobRequestSerializer,
     DemoTradeJobRequestSerializer,
 )
-from .auth import authenticate_worker
+from .auth import authenticate_worker, authenticate_legacy_worker
 from .services import OpenTradeParams, create_open_trade_job
 from strategies.models import Strategy, StrategyAssignment
 from trading.models import TradingAccount
@@ -30,7 +30,10 @@ from core.audit import (
     log_execution_job_claimed,
     log_execution_job_completed,
     log_trades_sync_queued,
+    log_worker_auth_success,
+    log_worker_auth_failed,
 )
+from billing.enforcement import require_entitlement
 
 class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
     """
@@ -38,7 +41,11 @@ class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
     - the request has an authenticated user, OR
     - the request provides valid X-Worker-Id + X-Worker-Secret headers
       (validated against WorkerIdentity), OR
-    - the request provides the legacy X-Worker-Token header (env var).
+    - the request provides the legacy X-Worker-Token header, routed through
+      the ``legacy-worker`` WorkerIdentity row for full trust validation.
+
+    On successful worker auth (either path) the resolved ``WorkerIdentity``
+    is attached to ``request._worker_identity`` for downstream use.
     """
 
     def has_permission(self, request, view):
@@ -53,18 +60,26 @@ class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
         if worker_id and worker_secret:
             try:
                 worker = authenticate_worker(worker_id, worker_secret)
-                # Stash the authenticated worker on the request for downstream use.
                 request._worker_identity = worker
+                log_worker_auth_success(request, worker_id=worker_id)
                 return True
             except PermissionDenied:
+                log_worker_auth_failed(request, worker_id=worker_id, reason="credentials")
                 return False
 
-        # Legacy env-var token path (backward-compatible)
-        expected_token = os.getenv("MT5_WORKER_TOKEN")
+        # Legacy env-var token path — routed through WorkerIdentity trust
         provided_token = request.headers.get("X-Worker-Token")
-
-        if expected_token and provided_token == expected_token:
-            return True
+        if provided_token:
+            try:
+                worker = authenticate_legacy_worker(provided_token)
+                request._worker_identity = worker
+                log_worker_auth_success(request, worker_id=worker.worker_id)
+                return True
+            except PermissionDenied:
+                log_worker_auth_failed(
+                    request, worker_id="legacy-worker", reason="legacy_token",
+                )
+                return False
 
         return False
 
@@ -77,9 +92,9 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         request = self.request
         user = getattr(request, "user", None)
 
-        expected_token = os.getenv("MT5_WORKER_TOKEN")
-        provided_token = request.headers.get("X-Worker-Token")
-        is_worker = (expected_token and provided_token == expected_token and (user is None or not user.is_authenticated))
+        # Workers (either modern or legacy) see all jobs; non-superuser
+        # authenticated users see only their own.
+        is_worker = getattr(request, "_worker_identity", None) is not None
 
         if not is_worker and user is not None and user.is_authenticated and not user.is_superuser:
             qs = qs.filter(account__user=user)
@@ -290,6 +305,7 @@ class CreateOpenTradeJobView(APIView):
         data = serializer.validated_data
 
         user = request.user
+        require_entitlement(user, "can_deploy_automation")
 
         try:
             account = TradingAccount.objects.get(id=data["account"], user=user)
@@ -411,6 +427,11 @@ class CreateDemoTradeJobView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
+        # =====================================================================
+        # Entitlement check (before any other logic)
+        # =====================================================================
+        require_entitlement(request.user, "can_deploy_automation")
+
         # =====================================================================
         # Safety Check 1: Global kill switch
         # =====================================================================
