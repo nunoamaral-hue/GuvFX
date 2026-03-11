@@ -111,6 +111,11 @@ class AuditEvent(models.Model):
         # Entitlement enforcement
         ENTITLEMENT_DENIED = "ENTITLEMENT_DENIED", "Entitlement Denied"
 
+        # Reconciliation
+        RECONCILIATION_RUN_STARTED = "RECONCILIATION_RUN_STARTED", "Reconciliation Run Started"
+        RECONCILIATION_RUN_COMPLETED = "RECONCILIATION_RUN_COMPLETED", "Reconciliation Run Completed"
+        RECONCILIATION_DISCREPANCY = "RECONCILIATION_DISCREPANCY", "Reconciliation Discrepancy Detected"
+
     # Use immutable manager to block bulk update/delete at QuerySet level.
     objects = AuditEventManager()
 

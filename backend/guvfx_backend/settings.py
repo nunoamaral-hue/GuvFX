@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     "hosting",
     "mt5",
     "billing",
+    "reconciliation",
 ]
 
 MIDDLEWARE = [
