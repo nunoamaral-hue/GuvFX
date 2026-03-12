@@ -1,6 +1,10 @@
+import hashlib
+import json
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +274,195 @@ class Invoice(models.Model):
                         )
                     }
                 )
+
+
+# ---------------------------------------------------------------------------
+# PaymentEvent (webhook ingress log)
+# ---------------------------------------------------------------------------
+
+# Maximum raw payload size in bytes (64 KiB).  Payloads exceeding this
+# limit are truncated before persistence.
+_MAX_RAW_PAYLOAD_BYTES = 65_536
+
+# Fields that must be redacted from raw payloads before storage.
+_SENSITIVE_PAYLOAD_KEYS = frozenset({
+    "password", "secret", "token", "api_key", "apikey",
+    "credential", "private", "credit_card", "cvv", "ssn",
+    "card_number", "cvc", "expiry",
+})
+
+
+def _sanitize_payload(payload: dict) -> dict:
+    """
+    Recursively redact sensitive keys from a webhook payload dict.
+
+    Enforces the bounded-size rule by serialising → truncating → re-parsing
+    if the result exceeds ``_MAX_RAW_PAYLOAD_BYTES``.
+    """
+    def _redact(obj):
+        if isinstance(obj, dict):
+            return {
+                k: ("[REDACTED]" if k.lower() in _SENSITIVE_PAYLOAD_KEYS else _redact(v))
+                for k, v in obj.items()
+            }
+        if isinstance(obj, list):
+            return [_redact(item) for item in obj]
+        return obj
+
+    sanitized = _redact(payload)
+    raw = json.dumps(sanitized, separators=(",", ":"), default=str)
+    if len(raw.encode("utf-8")) > _MAX_RAW_PAYLOAD_BYTES:
+        sanitized = {"_truncated": True, "_size": len(raw)}
+    return sanitized
+
+
+class PaymentEvent(models.Model):
+    """
+    Durable ingress log and processing record for payment-provider
+    webhook events.
+
+    Append / new-record oriented.  ``raw_payload`` is treated as immutable
+    after creation — no update path is exposed.
+    """
+
+    class ProcessingStatus(models.TextChoices):
+        RECEIVED = "received", "Received"
+        VERIFIED = "verified", "Verified"
+        DUPLICATE = "duplicate", "Duplicate"
+        REJECTED = "rejected", "Rejected"
+        PROCESSED = "processed", "Processed"
+        FAILED = "failed", "Failed"
+
+    # ---- Identity ----
+    provider_name = models.CharField(
+        max_length=64,
+        db_index=True,
+        help_text="Payment provider identifier (e.g. 'stripe').",
+    )
+    provider_event_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Provider-assigned event ID (used for primary idempotency).",
+    )
+    event_type = models.CharField(
+        max_length=128,
+        help_text="Provider event type (e.g. 'invoice.payment_succeeded').",
+    )
+
+    # ---- Idempotency ----
+    idempotency_key = models.CharField(
+        max_length=255,
+        unique=True,
+        help_text="Deterministic idempotency key (unique per webhook event).",
+    )
+
+    # ---- Subscription linkage ----
+    subscription_reference = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Provider subscription ID or internal reference.",
+    )
+
+    # ---- Timestamps ----
+    provider_timestamp = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp provided by the payment provider for this event.",
+    )
+    signature_verified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+    processed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    # ---- Payload ----
+    raw_payload = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Sanitized, bounded webhook payload.  Immutable after creation.  "
+            "Must not contain secrets or unbounded raw dumps."
+        ),
+    )
+
+    # ---- Processing ----
+    processing_status = models.CharField(
+        max_length=16,
+        choices=ProcessingStatus.choices,
+        default=ProcessingStatus.RECEIVED,
+        db_index=True,
+    )
+
+    # ---- Optional ----
+    correlation_id = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text="Optional correlation identifier for tracing.",
+    )
+
+    class Meta:
+        verbose_name = "Payment Event"
+        verbose_name_plural = "Payment Events"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["provider_name", "provider_event_id"],
+                name="idx_payment_provider_event",
+            ),
+            models.Index(
+                fields=["processing_status", "created_at"],
+                name="idx_payment_status_created",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"PaymentEvent {self.provider_name}:{self.provider_event_id} "
+            f"[{self.processing_status}]"
+        )
+
+    def save(self, *args, **kwargs) -> None:
+        # Immutability guard: raw_payload must not change after initial save.
+        if self.pk is not None:
+            try:
+                existing = PaymentEvent.objects.only("raw_payload").get(pk=self.pk)
+                if existing.raw_payload != self.raw_payload:
+                    raise ValidationError(
+                        {"raw_payload": "raw_payload is immutable after creation."}
+                    )
+            except PaymentEvent.DoesNotExist:
+                pass  # First save — proceed normally.
+        super().save(*args, **kwargs)
+
+    @staticmethod
+    def build_idempotency_key(
+        provider_name: str,
+        provider_event_id: str = "",
+        event_type: str = "",
+        subscription_reference: str = "",
+        provider_timestamp: str = "",
+    ) -> str:
+        """
+        Build a deterministic idempotency key.
+
+        Primary source: ``provider_name`` + ``provider_event_id``.
+        Fallback (when ``provider_event_id`` is absent):
+            ``provider_name`` + ``event_type`` + ``subscription_reference``
+            + ``provider_timestamp``.
+        """
+        if provider_event_id:
+            raw = f"{provider_name}:{provider_event_id}"
+        else:
+            raw = (
+                f"{provider_name}:{event_type}:"
+                f"{subscription_reference}:{provider_timestamp}"
+            )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()

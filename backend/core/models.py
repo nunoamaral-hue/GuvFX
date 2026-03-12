@@ -116,6 +116,13 @@ class AuditEvent(models.Model):
         RECONCILIATION_RUN_COMPLETED = "RECONCILIATION_RUN_COMPLETED", "Reconciliation Run Completed"
         RECONCILIATION_DISCREPANCY = "RECONCILIATION_DISCREPANCY", "Reconciliation Discrepancy Detected"
 
+        # Payment webhook lifecycle
+        WEBHOOK_SIGNATURE_FAILED = "WEBHOOK_SIGNATURE_FAILED", "Webhook Signature Failed"
+        WEBHOOK_DUPLICATE_REJECTED = "WEBHOOK_DUPLICATE_REJECTED", "Webhook Duplicate Rejected"
+        WEBHOOK_STALE_REJECTED = "WEBHOOK_STALE_REJECTED", "Webhook Stale Event Rejected"
+        WEBHOOK_SUBSCRIPTION_TRANSITIONED = "WEBHOOK_SUBSCRIPTION_TRANSITIONED", "Webhook Subscription Transitioned"
+        WEBHOOK_PROCESSING_FAILED = "WEBHOOK_PROCESSING_FAILED", "Webhook Processing Failed"
+
     # Use immutable manager to block bulk update/delete at QuerySet level.
     objects = AuditEventManager()
 
