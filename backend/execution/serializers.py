@@ -1,6 +1,36 @@
 from decimal import Decimal
 from rest_framework import serializers
-from .models import ExecutionJob
+from .models import ExecutionJob, TerminalNode
+
+
+class TerminalNodeSerializer(serializers.ModelSerializer):
+    computed_active_accounts = serializers.IntegerField(read_only=True)
+    has_capacity = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = TerminalNode
+        fields = [
+            "id",
+            "hostname",
+            "display_name",
+            "status",
+            "max_accounts",
+            "active_accounts",
+            "computed_active_accounts",
+            "has_capacity",
+            "last_heartbeat",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = (
+            "id",
+            "active_accounts",
+            "computed_active_accounts",
+            "has_capacity",
+            "last_heartbeat",
+            "created_at",
+            "updated_at",
+        )
 
 
 class ExecutionJobSerializer(serializers.ModelSerializer):

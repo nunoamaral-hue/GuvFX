@@ -91,6 +91,7 @@ def create_open_trade_job(params: OpenTradeParams) -> ExecutionJob:
         account=params.account,
         strategy=params.strategy,
         assignment=params.assignment,
+        terminal_node_id=params.account.terminal_node_id,  # snapshot at creation
         payload=payload,
         status=ExecutionJob.Status.PENDING,
         created_by=params.created_by,

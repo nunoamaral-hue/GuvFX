@@ -9,6 +9,89 @@ from strategies.models import Strategy, StrategyAssignment
 
 
 # =============================================================================
+# Terminal Node — represents an execution host running one or more MT5 workers
+# =============================================================================
+
+
+class TerminalNode(models.Model):
+    """
+    Represents a physical or virtual execution host that runs MT5 worker
+    processes.  Each node can service multiple TradingAccounts.
+
+    ``status`` is an *operator-declared* value — it is never auto-mutated by
+    the heartbeat endpoint (which only updates ``last_heartbeat``).
+
+    Capacity is *computed* from the count of TradingAccount rows that point at
+    this node, not from ``active_accounts`` alone.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        DRAINING = "draining", "Draining"
+        OFFLINE = "offline", "Offline"
+        DISABLED = "disabled", "Disabled"
+
+    hostname = models.CharField(
+        max_length=128,
+        unique=True,
+        help_text="Unique identifier for this execution host.",
+    )
+    display_name = models.CharField(
+        max_length=128,
+        blank=True,
+        help_text="Human-friendly label shown in admin surfaces.",
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
+
+    # Capacity bookkeeping — max_accounts is operator-set; active_accounts is
+    # an advisory cache that MUST NOT be trusted for enforcement (use
+    # TradingAccount.objects.filter(terminal_node=self).count() instead).
+    max_accounts = models.PositiveIntegerField(
+        default=50,
+        help_text="Operator-declared maximum accounts this node can handle.",
+    )
+    active_accounts = models.PositiveIntegerField(
+        default=0,
+        help_text="Advisory cache — real count derived from TradingAccount FK.",
+    )
+
+    # Heartbeat — updated only by the heartbeat endpoint; never auto-mutates
+    # ``status``.
+    last_heartbeat = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Last time a worker on this node reported in.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["hostname"]
+        verbose_name = "Terminal Node"
+        verbose_name_plural = "Terminal Nodes"
+
+    def __str__(self) -> str:
+        label = self.display_name or self.hostname
+        return f"{label} ({self.status})"
+
+    @property
+    def computed_active_accounts(self) -> int:
+        """Authoritative account count — derived from FK, not cache field."""
+        return TradingAccount.objects.filter(
+            terminal_node=self, is_active=True
+        ).count()
+
+    @property
+    def has_capacity(self) -> bool:
+        return self.computed_active_accounts < self.max_accounts
+
+
+# =============================================================================
 # Demo Trade Safety Constants
 # =============================================================================
 # These are hard-coded safety rails for the demo execution feature.
@@ -66,6 +149,17 @@ class ExecutionJob(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="execution_jobs",
+    )
+
+    # Snapshot of the terminal node at job creation time.
+    # NULL means "legacy job" (created before node-aware routing).
+    terminal_node = models.ForeignKey(
+        TerminalNode,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="execution_jobs",
+        help_text="Snapshotted from account.terminal_node at job creation.",
     )
 
     # Arbitrary parameters for the job (symbol, volume, SL/TP, etc.)

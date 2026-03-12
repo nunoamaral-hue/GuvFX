@@ -116,6 +116,14 @@ class AuditEvent(models.Model):
         RECONCILIATION_RUN_COMPLETED = "RECONCILIATION_RUN_COMPLETED", "Reconciliation Run Completed"
         RECONCILIATION_DISCREPANCY = "RECONCILIATION_DISCREPANCY", "Reconciliation Discrepancy Detected"
 
+        # Terminal node lifecycle
+        NODE_CREATED = "NODE_CREATED", "Terminal Node Created"
+        NODE_STATUS_CHANGED = "NODE_STATUS_CHANGED", "Terminal Node Status Changed"
+        NODE_ACCOUNT_ASSIGNED = "NODE_ACCOUNT_ASSIGNED", "Account Assigned to Node"
+        NODE_ACCOUNT_UNASSIGNED = "NODE_ACCOUNT_UNASSIGNED", "Account Unassigned from Node"
+        NODE_WRONG_CLAIM = "NODE_WRONG_CLAIM", "Worker Claimed Wrong-Node Job"
+        NODE_HEARTBEAT_STALE = "NODE_HEARTBEAT_STALE", "Terminal Node Heartbeat Stale"
+
         # Payment webhook lifecycle
         WEBHOOK_SIGNATURE_FAILED = "WEBHOOK_SIGNATURE_FAILED", "Webhook Signature Failed"
         WEBHOOK_DUPLICATE_REJECTED = "WEBHOOK_DUPLICATE_REJECTED", "Webhook Duplicate Rejected"

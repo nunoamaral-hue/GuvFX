@@ -122,6 +122,13 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         - account_id: Filter jobs by account ID
         - job_type: Filter by job type. If omitted, defaults to SYNC_POSITIONS only.
                     This prevents Linux ingest workers from claiming PLACE_TEST_ORDER jobs.
+
+        Node-aware routing:
+        - Workers with ``authorized_nodes`` in their permissions can only claim
+          jobs whose ``terminal_node_id`` matches one of their authorized nodes.
+        - Workers *without* ``authorized_nodes`` (legacy) can only claim jobs
+          where ``terminal_node_id IS NULL``.
+        - Jobs targeting a node in draining/offline/disabled status are skipped.
         """
         worker_id = request.query_params.get("worker_id", "mt5-worker")
         account_id = request.query_params.get("account_id")
@@ -138,6 +145,31 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
 
         if account_id:
             qs = qs.filter(account_id=account_id)
+
+        # ------------------------------------------------------------------
+        # Node-aware filtering
+        # ------------------------------------------------------------------
+        worker_identity = getattr(request, "_worker_identity", None)
+        authorized_nodes = []
+        if worker_identity:
+            perms = worker_identity.worker_permissions or {}
+            authorized_nodes = perms.get("authorized_nodes", [])
+
+        if authorized_nodes:
+            # Node-aware worker: only claim jobs targeting one of its nodes,
+            # AND only if the node is active.
+            from execution.models import TerminalNode
+
+            active_node_ids = list(
+                TerminalNode.objects.filter(
+                    hostname__in=authorized_nodes,
+                    status=TerminalNode.Status.ACTIVE,
+                ).values_list("id", flat=True)
+            )
+            qs = qs.filter(terminal_node_id__in=active_node_ids)
+        else:
+            # Legacy worker (no authorized_nodes): only claim NULL-node jobs.
+            qs = qs.filter(terminal_node__isnull=True)
 
         # Atomic claim: lock the row so only one worker can claim it.
         # skip_locked=True causes concurrent claimants to skip the locked
@@ -262,6 +294,7 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
                 account=trigger_job.account,
                 strategy=trigger_job.strategy,
                 assignment=trigger_job.assignment,
+                terminal_node_id=trigger_job.terminal_node_id,  # propagate from trigger
                 status=ExecutionJob.Status.PENDING,
                 created_by=trigger_job.created_by,
                 payload={
@@ -611,6 +644,7 @@ class CreateDemoTradeJobView(APIView):
             account=account,
             strategy=strategy,
             assignment=assignment,
+            terminal_node_id=account.terminal_node_id,  # snapshot at creation
             status=ExecutionJob.Status.PENDING,
             created_by=user,
             payload={
@@ -781,3 +815,111 @@ class ExecutionKillAllView(APIView):
             },
             status=status.HTTP_501_NOT_IMPLEMENTED,
         )
+
+
+# =============================================================================
+# Terminal Node — Heartbeat & Admin CRUD
+# =============================================================================
+
+from .models import TerminalNode
+from .serializers import TerminalNodeSerializer
+
+
+class TerminalNodeHeartbeatView(APIView):
+    """
+    POST /api/execution/nodes/<hostname>/heartbeat/
+
+    Called by workers to report liveness.  Updates ``last_heartbeat`` ONLY —
+    never auto-mutates ``status``.  Authenticated via worker credentials.
+    """
+
+    permission_classes = [IsAuthenticatedOrWorkerToken]
+
+    def post(self, request, hostname):
+        try:
+            node = TerminalNode.objects.get(hostname=hostname)
+        except TerminalNode.DoesNotExist:
+            return Response(
+                {"detail": f"Unknown node: {hostname}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        node.last_heartbeat = timezone.now()
+        node.save(update_fields=["last_heartbeat"])
+
+        return Response({
+            "hostname": node.hostname,
+            "status": node.status,
+            "last_heartbeat": node.last_heartbeat.isoformat(),
+            "active_accounts": node.computed_active_accounts,
+            "max_accounts": node.max_accounts,
+        })
+
+
+class TerminalNodeViewSet(viewsets.ModelViewSet):
+    """
+    Admin CRUD for TerminalNode.  Staff-only.
+
+    Provides list/create/retrieve/update/destroy plus custom actions
+    for status transitions (which emit audit events).
+    """
+
+    queryset = TerminalNode.objects.all()
+    serializer_class = TerminalNodeSerializer
+    permission_classes = [permissions.IsAdminUser]
+    lookup_field = "hostname"
+
+    def perform_create(self, serializer):
+        node = serializer.save()
+        from core.audit import log_event
+        log_event(
+            request=self.request,
+            event_type="NODE_CREATED",
+            severity="INFO",
+            entity_type="TerminalNode",
+            entity_id=str(node.id),
+            metadata={
+                "hostname": node.hostname,
+                "max_accounts": node.max_accounts,
+            },
+        )
+
+    @action(detail=True, methods=["post"], url_path="set-status")
+    def set_status(self, request, hostname=None):
+        """
+        POST /api/execution/nodes/<hostname>/set-status/
+        Body: {"status": "active|draining|offline|disabled"}
+
+        Audit-logged status transition.
+        """
+        node = self.get_object()
+        new_status = request.data.get("status")
+        valid = [c[0] for c in TerminalNode.Status.choices]
+        if new_status not in valid:
+            return Response(
+                {"detail": f"Invalid status. Must be one of: {valid}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        old_status = node.status
+        if old_status == new_status:
+            return Response(TerminalNodeSerializer(node).data)
+
+        node.status = new_status
+        node.save(update_fields=["status", "updated_at"])
+
+        from core.audit import log_event
+        log_event(
+            request=request,
+            event_type="NODE_STATUS_CHANGED",
+            severity="WARN" if new_status in ("draining", "offline", "disabled") else "INFO",
+            entity_type="TerminalNode",
+            entity_id=str(node.id),
+            metadata={
+                "hostname": node.hostname,
+                "old_status": old_status,
+                "new_status": new_status,
+            },
+        )
+
+        return Response(TerminalNodeSerializer(node).data)

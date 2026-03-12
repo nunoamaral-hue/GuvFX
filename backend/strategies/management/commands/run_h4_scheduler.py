@@ -297,6 +297,7 @@ class Command(BaseCommand):
                         account=account,
                         strategy=strategy,
                         assignment=assignment,
+                        terminal_node_id=account.terminal_node_id,  # snapshot at creation
                         status=ExecutionJob.Status.PENDING,
                         created_by=None,  # System-triggered
                         payload=payload,

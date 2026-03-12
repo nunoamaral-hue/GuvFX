@@ -47,6 +47,17 @@ class TradingAccount(models.Model):
         blank=True,
     )
 
+    # Node-aware routing: which execution host services this account.
+    # NULL means "not yet assigned to a node" (legacy accounts).
+    terminal_node = models.ForeignKey(
+        "execution.TerminalNode",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="trading_accounts",
+        help_text="Execution host that services this account.",
+    )
+
     name = models.CharField(max_length=100)
 
     broker_server = models.ForeignKey(
