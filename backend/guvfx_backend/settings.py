@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     "mt5",
     "billing",
     "reconciliation",
+    "admin_ops",
 ]
 
 MIDDLEWARE = [
