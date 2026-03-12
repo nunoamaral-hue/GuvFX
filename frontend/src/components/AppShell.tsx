@@ -98,6 +98,18 @@ const navGroups: NavGroup[] = [
       { labelKey: "nav.hosting", href: "/admin/hosting", adminOnly: true },
     ],
   },
+  {
+    labelKey: "nav.operations",
+    defaultOpen: false,
+    items: [
+      { labelKey: "nav.opsOverview", href: "/admin/operations", adminOnly: true },
+      { labelKey: "nav.reconciliation", href: "/admin/operations/reconciliation", adminOnly: true },
+      { labelKey: "nav.payments", href: "/admin/operations/payments", adminOnly: true },
+      { labelKey: "nav.workers", href: "/admin/operations/workers", adminOnly: true },
+      { labelKey: "nav.entitlements", href: "/admin/operations/entitlements", adminOnly: true },
+      { labelKey: "nav.executionJobs", href: "/admin/operations/execution-jobs", adminOnly: true },
+    ],
+  },
 ];
 
 // =============================================================================

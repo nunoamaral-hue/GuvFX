@@ -144,6 +144,15 @@ const dictionary: Dictionary = {
   "nav.userSettings": { en: "User Settings", ja: "ユーザー設定" },
   "nav.hosting": { en: "Hosting", ja: "ホスティング" },
 
+  // Operations Console
+  "nav.operations": { en: "Operations", ja: "運用管理" },
+  "nav.opsOverview": { en: "Overview", ja: "概要" },
+  "nav.reconciliation": { en: "Reconciliation", ja: "照合" },
+  "nav.payments": { en: "Payments", ja: "決済" },
+  "nav.workers": { en: "Workers", ja: "ワーカー" },
+  "nav.entitlements": { en: "Entitlements", ja: "権限" },
+  "nav.executionJobs": { en: "Execution Jobs", ja: "実行ジョブ" },
+
   // -----------------------------------------------------------------------------
   // AppShell - UI Elements
   // -----------------------------------------------------------------------------
