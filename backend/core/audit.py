@@ -345,18 +345,25 @@ def log_execution_job_claimed(
     job_id: str,
     worker_id: str,
     account_id: int,
+    routing_mode: str | None = None,
+    terminal_node_id: int | None = None,
 ) -> None:
     """Log execution job claimed by worker."""
+    meta: dict[str, Any] = {
+        "worker_id": worker_id,
+        "account_id": account_id,
+    }
+    if routing_mode:
+        meta["routing_mode"] = routing_mode
+    if terminal_node_id is not None:
+        meta["terminal_node_id"] = terminal_node_id
     log_event(
         request,
         event_type="EXECUTION_JOB_CLAIMED",
         severity="INFO",
         entity_type="execution_job",
         entity_id=job_id,
-        metadata={
-            "worker_id": worker_id,
-            "account_id": account_id,
-        },
+        metadata=meta,
     )
 
 

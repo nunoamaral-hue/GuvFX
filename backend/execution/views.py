@@ -155,6 +155,9 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
             perms = worker_identity.worker_permissions or {}
             authorized_nodes = perms.get("authorized_nodes", [])
 
+        # Determine routing mode for audit trail
+        routing_mode = "node_aware" if authorized_nodes else "legacy_null_node"
+
         if authorized_nodes:
             # Node-aware worker: only claim jobs targeting one of its nodes,
             # AND only if the node is active.
@@ -182,6 +185,46 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
             )
 
             if not job:
+                # ---------------------------------------------------------
+                # Wrong-node claim detection (Fix 1):
+                # If the filtered queryset is empty but PENDING jobs exist
+                # that the worker *cannot* claim due to node mismatch,
+                # emit NODE_WRONG_CLAIM audit event.
+                # ---------------------------------------------------------
+                base_qs = ExecutionJob.objects.filter(
+                    status=ExecutionJob.Status.PENDING,
+                )
+                if job_type:
+                    base_qs = base_qs.filter(job_type=job_type)
+                else:
+                    base_qs = base_qs.filter(
+                        job_type=ExecutionJob.JobType.SYNC_POSITIONS,
+                    )
+                if account_id:
+                    base_qs = base_qs.filter(account_id=account_id)
+
+                # Peek at the first excluded job (without locking) for
+                # audit context.  Do NOT expose its payload to the worker.
+                excluded_job = base_qs.exclude(
+                    id__in=qs.values_list("id", flat=True)
+                ).values("id", "terminal_node_id").first()
+
+                if excluded_job:
+                    from core.audit import log_event as _log_event
+                    _log_event(
+                        request=None,
+                        event_type="NODE_WRONG_CLAIM",
+                        severity="WARN",
+                        entity_type="execution_job",
+                        entity_id=str(excluded_job["id"]),
+                        metadata={
+                            "worker_id": worker_id,
+                            "routing_mode": routing_mode,
+                            "authorized_nodes": authorized_nodes or None,
+                            "job_terminal_node_id": excluded_job["terminal_node_id"],
+                        },
+                    )
+
                 # 204 No Content – no jobs available (or all locked by other workers)
                 return Response({"detail": "no_jobs"}, status=204)
 
@@ -190,12 +233,14 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
             job.started_at = timezone.now()
             job.save(update_fields=["status", "worker_id", "started_at"])
 
-        # Audit log
+        # Audit log — includes routing_mode marker (Fix 2: mixed-mode containment)
         log_execution_job_claimed(
             request=None,  # Worker request, not user request
             job_id=str(job.id),
             worker_id=worker_id,
             account_id=job.account_id,
+            routing_mode=routing_mode,
+            terminal_node_id=job.terminal_node_id,
         )
 
         serializer = self.get_serializer(job)
@@ -883,6 +928,137 @@ class TerminalNodeViewSet(viewsets.ModelViewSet):
                 "max_accounts": node.max_accounts,
             },
         )
+
+    @action(detail=True, methods=["post"], url_path="assign-account")
+    def assign_account(self, request, hostname=None):
+        """
+        POST /api/execution/nodes/<hostname>/assign-account/
+        Body: {"account_id": <int>}
+
+        Assigns a TradingAccount to this node.
+        Enforces capacity — rejects if node is at/over max_accounts.
+        Emits NODE_ACCOUNT_ASSIGNED audit event with before/after values.
+        """
+        node = self.get_object()
+        account_id = request.data.get("account_id")
+        if not account_id:
+            return Response(
+                {"detail": "account_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            account = TradingAccount.objects.get(id=account_id)
+        except TradingAccount.DoesNotExist:
+            return Response(
+                {"detail": f"TradingAccount {account_id} not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        previous_node_id = account.terminal_node_id
+        previous_hostname = None
+        if previous_node_id:
+            prev_node = TerminalNode.objects.filter(id=previous_node_id).first()
+            previous_hostname = prev_node.hostname if prev_node else None
+
+        # Skip capacity check if re-assigning to the same node
+        if previous_node_id != node.id:
+            # Capacity enforcement: use authoritative FK-derived count
+            current_count = TradingAccount.objects.filter(
+                terminal_node=node, is_active=True,
+            ).exclude(id=account.id).count()
+            if current_count >= node.max_accounts:
+                return Response(
+                    {
+                        "detail": "Node at capacity.",
+                        "hostname": node.hostname,
+                        "max_accounts": node.max_accounts,
+                        "current_accounts": current_count,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        account.terminal_node = node
+        account.save(update_fields=["terminal_node", "updated_at"])
+
+        from core.audit import log_event
+        log_event(
+            request=request,
+            event_type="NODE_ACCOUNT_ASSIGNED",
+            severity="INFO",
+            entity_type="TradingAccount",
+            entity_id=str(account.id),
+            metadata={
+                "trading_account_id": account.id,
+                "previous_terminal_node_id": previous_node_id,
+                "previous_terminal_node_hostname": previous_hostname,
+                "new_terminal_node_id": node.id,
+                "new_terminal_node_hostname": node.hostname,
+            },
+        )
+
+        return Response({
+            "ok": True,
+            "account_id": account.id,
+            "terminal_node": node.hostname,
+            "computed_active_accounts": node.computed_active_accounts,
+        })
+
+    @action(detail=True, methods=["post"], url_path="unassign-account")
+    def unassign_account(self, request, hostname=None):
+        """
+        POST /api/execution/nodes/<hostname>/unassign-account/
+        Body: {"account_id": <int>}
+
+        Removes terminal_node assignment from a TradingAccount.
+        Emits NODE_ACCOUNT_UNASSIGNED audit event with before/after values.
+        """
+        node = self.get_object()
+        account_id = request.data.get("account_id")
+        if not account_id:
+            return Response(
+                {"detail": "account_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            account = TradingAccount.objects.get(id=account_id)
+        except TradingAccount.DoesNotExist:
+            return Response(
+                {"detail": f"TradingAccount {account_id} not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if account.terminal_node_id != node.id:
+            return Response(
+                {"detail": f"Account {account_id} is not assigned to node {node.hostname}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        account.terminal_node = None
+        account.save(update_fields=["terminal_node", "updated_at"])
+
+        from core.audit import log_event
+        log_event(
+            request=request,
+            event_type="NODE_ACCOUNT_UNASSIGNED",
+            severity="INFO",
+            entity_type="TradingAccount",
+            entity_id=str(account.id),
+            metadata={
+                "trading_account_id": account.id,
+                "previous_terminal_node_id": node.id,
+                "previous_terminal_node_hostname": node.hostname,
+                "new_terminal_node_id": None,
+                "new_terminal_node_hostname": None,
+            },
+        )
+
+        return Response({
+            "ok": True,
+            "account_id": account.id,
+            "terminal_node": None,
+        })
 
     @action(detail=True, methods=["post"], url_path="set-status")
     def set_status(self, request, hostname=None):
