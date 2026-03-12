@@ -213,15 +213,14 @@ class PaymentWebhookView(View):
             # ---------------------------------------------------------------
             # Step 4: Idempotency — duplicate detected at DB level
             # ---------------------------------------------------------------
-            # Mark existing event as duplicate (if not already).
-            existing = PaymentEvent.objects.filter(
-                idempotency_key=idem_key
-            ).first()
-            if existing and existing.processing_status != PaymentEvent.ProcessingStatus.DUPLICATE:
-                PaymentEvent.objects.filter(pk=existing.pk).update(
-                    processing_status=PaymentEvent.ProcessingStatus.DUPLICATE,
-                )
-
+            # The idempotency_key unique constraint rejected the insert,
+            # meaning a prior event with this key already exists.
+            #
+            # We do NOT mutate the original PaymentEvent row.  Its
+            # processing_status (processed / rejected / failed / verified)
+            # reflects the historical truth of the first delivery and must
+            # be preserved.  Duplicate handling is audit-only + idempotent
+            # 200 response.
             _emit_audit(
                 "WEBHOOK_DUPLICATE_REJECTED",
                 provider_name=provider_name,
