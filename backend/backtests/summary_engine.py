@@ -11,21 +11,25 @@ Approved BacktestSummary schema fields (B1):
 Extended analytical data (PnL series, equity curve) is persisted as
 artifact files — not stored in BacktestSummary or PostgreSQL blobs.
 
-Current limitation:
-    The backtest worker produces placeholder execution output only
-    (no real engine yet).  This summary engine generates a small
-    deterministic set of placeholder trades to exercise the full
-    calculation pipeline.  When a real backtesting engine is wired
-    in, `generate_placeholder_trades()` will be replaced by parsing
-    real trade output from execution artifacts.
+Honest-support policy:
+    The summary engine only computes metrics that are genuinely
+    derivable from actual worker-produced outputs.  If the current
+    worker outputs (e.g. result_stub with status=placeholder) do
+    not contain trade data, all trade-dependent metrics are set to
+    their safe null/default values.  No synthetic or fabricated
+    trade data is generated.
 """
+import gzip
 import json
 import logging
 import math
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
-from backtests.artifact_storage import store_artifact
+from django.conf import settings
+
+from backtests.artifact_storage import store_artifact, _get_artifact_root
 from backtests.models import (
     BacktestArtifact,
     BacktestExecution,
@@ -53,36 +57,39 @@ class Trade:
 def compute_and_store_summary(execution: BacktestExecution) -> BacktestSummary:
     """
     Compute summary metrics for a completed BacktestExecution and
-    persist them as a BacktestSummary row + analytical artifacts.
+    persist them as a BacktestSummary row.
 
-    This is the canonical B4 entry point, called from the worker
-    service after artifacts have been written.
+    Metrics are derived strictly from actual worker-produced artifact
+    outputs.  If no trade data is available in the artifacts, all
+    trade-dependent metrics are set to null/0.
+
+    Extended analytical artifacts (equity_curve, pnl_series) are only
+    produced when real trade data is available.
 
     Returns the created BacktestSummary instance.
     """
-    job = execution.backtest_job
-
-    # ── Obtain trade data ──
-    # B4: placeholder trades.  A future packet will parse real trade
-    # output from execution artifacts here.
-    trades = _load_trades_from_execution(execution)
+    # ── Obtain trade data from actual artifacts ──
+    trades = _load_trades_from_artifacts(execution)
 
     # ── Compute metrics ──
     metrics = _compute_metrics(trades)
 
-    # ── Persist analytical artifacts (PnL series, equity curve) ──
-    _persist_analytical_artifacts(execution, job, trades, metrics)
+    # ── Persist analytical artifacts only if real trade data exists ──
+    if trades:
+        _persist_analytical_artifacts(execution, trades, metrics)
 
     # ── Create/update BacktestSummary row ──
     summary = _persist_summary(execution, metrics)
 
     logger.info(
-        "Summary computed for execution %s: trades=%d, win_rate=%s, pf=%s, dd=%s",
+        "Summary computed for execution %s: trades=%d, win_rate=%s, pf=%s, dd=%s "
+        "(trade_data_available=%s)",
         execution.run_identifier,
         metrics.total_trades,
         metrics.win_rate,
         metrics.profit_factor,
         metrics.max_drawdown,
+        bool(trades),
     )
 
     return summary
@@ -103,49 +110,109 @@ class SummaryMetrics:
     expectancy: Decimal | None
 
 
-# ── Trade loading ──
+# ── Trade loading from actual artifacts ──
 
 
-def _load_trades_from_execution(execution: BacktestExecution) -> list[Trade]:
+def _load_trades_from_artifacts(execution: BacktestExecution) -> list[Trade]:
     """
-    Load trade results from the execution's produced outputs.
+    Load trade results from the execution's produced artifact files.
 
-    B4 current state: the worker produces placeholder outputs only,
-    so this generates a deterministic set of placeholder trades.
-    When a real engine is integrated, this function will parse
-    actual trade data from execution artifacts.
+    Reads the ``result_stub`` artifact and parses trade data from it
+    if available.  Returns an empty list if no trade data exists in
+    any artifact (e.g. placeholder execution with no real engine).
+
+    When a real backtesting engine is integrated, it will produce
+    a result artifact containing a ``trades`` array.  This function
+    parses that structure.
     """
-    return _generate_placeholder_trades(execution)
+    # Try to read the result_stub artifact
+    result_data = _read_artifact_json(execution, "result_stub")
+    if result_data is None:
+        logger.info(
+            "No result_stub artifact found for execution %s — "
+            "no trade data available",
+            execution.run_identifier,
+        )
+        return []
 
+    # Check if the result contains actual trade data
+    raw_trades = result_data.get("trades")
+    if not isinstance(raw_trades, list) or not raw_trades:
+        logger.info(
+            "result_stub for execution %s contains no trade data "
+            "(status=%s) — metrics will use safe defaults",
+            execution.run_identifier,
+            result_data.get("status", "unknown"),
+        )
+        return []
 
-def _generate_placeholder_trades(execution: BacktestExecution) -> list[Trade]:
-    """
-    Generate a small deterministic set of placeholder trades.
-
-    Uses execution.pk as a seed-like value to produce slightly
-    varied but reproducible results across different executions.
-
-    This function exists only until a real backtesting engine is
-    integrated.  It exercises the full calculation pipeline.
-    """
-    # Deterministic variation based on execution id
-    seed = execution.pk if execution.pk else 1
-    num_trades = 20 + (seed % 11)  # 20–30 trades
-
+    # Parse trade records from the artifact
     trades = []
-    for i in range(num_trades):
-        # Deterministic win/loss pattern with ~58% win rate
-        is_win = ((seed * 7 + i * 13) % 100) < 58
+    for i, raw in enumerate(raw_trades):
+        try:
+            pnl = float(raw.get("pnl", 0))
+            is_win = bool(raw.get("is_win", pnl > 0))
+            trade_number = int(raw.get("trade_number", i + 1))
+            trades.append(Trade(trade_number=trade_number, pnl=pnl, is_win=is_win))
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Skipping malformed trade record %d in execution %s: %s",
+                i,
+                execution.run_identifier,
+                exc,
+            )
 
-        # Deterministic PnL magnitude
-        if is_win:
-            pnl = 50.0 + ((seed + i * 3) % 80)  # +50 to +129
-        else:
-            pnl = -(30.0 + ((seed + i * 5) % 60))  # -30 to -89
-
-        trades.append(Trade(trade_number=i + 1, pnl=round(pnl, 2), is_win=is_win))
-
+    logger.info(
+        "Loaded %d trades from result_stub artifact for execution %s",
+        len(trades),
+        execution.run_identifier,
+    )
     return trades
+
+
+def _read_artifact_json(
+    execution: BacktestExecution, artifact_type: str
+) -> dict | None:
+    """
+    Read and parse a JSON artifact file for the given execution.
+
+    Handles both gzip-compressed (.gz) and plain JSON files.
+    Returns None if the artifact does not exist or cannot be read.
+    """
+    try:
+        artifact = BacktestArtifact.objects.filter(
+            execution=execution,
+            artifact_type=artifact_type,
+        ).first()
+
+        if artifact is None:
+            return None
+
+        root = _get_artifact_root()
+        full_path = root / artifact.file_path
+
+        if not full_path.exists():
+            logger.warning(
+                "Artifact file not found on disk: %s", full_path
+            )
+            return None
+
+        raw_bytes = full_path.read_bytes()
+
+        # Decompress if gzipped
+        if artifact.file_path.endswith(".gz"):
+            raw_bytes = gzip.decompress(raw_bytes)
+
+        return json.loads(raw_bytes)
+
+    except Exception as exc:
+        logger.warning(
+            "Failed to read artifact %s for execution %s: %s",
+            artifact_type,
+            execution.run_identifier,
+            exc,
+        )
+        return None
 
 
 # ── Metric computation ──
@@ -166,6 +233,9 @@ def _compute_metrics(trades: list[Trade]) -> SummaryMetrics:
 
     Returns safe nulls for metrics that cannot be computed (e.g.
     zero trades, zero losses for profit_factor).
+
+    If ``trades`` is empty (no trade data available from artifacts),
+    returns total_trades=0 and all other metrics as None.
     """
     if not trades:
         return SummaryMetrics(
@@ -274,13 +344,13 @@ def _compute_sharpe_ratio(trades: list[Trade]) -> Decimal | None:
 
 def _persist_analytical_artifacts(
     execution: BacktestExecution,
-    job,
     trades: list[Trade],
     metrics: SummaryMetrics,
 ) -> None:
     """
     Persist extended analytical data as artifact files.
 
+    Only called when real trade data is available from artifacts.
     PnL series and equity curve are stored as artifacts (not in
     BacktestSummary) to keep the summary row lean and the schema
     within approved B1 boundaries.
