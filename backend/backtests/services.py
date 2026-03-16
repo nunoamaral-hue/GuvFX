@@ -22,6 +22,7 @@ from backtests.models import (
     BacktestStatus,
 )
 from backtests.artifact_storage import store_artifact
+from backtests.summary_engine import compute_and_store_summary
 from core.audit import (
     log_backtest_execution_claimed,
     log_backtest_execution_completed,
@@ -90,8 +91,8 @@ def run_backtest_execution(execution: BacktestExecution) -> None:
     Execute a single backtest and update lifecycle fields.
 
     Placeholder execution only (no real engine yet).  Writes artifact
-    files to local storage (B3) and creates BacktestArtifact metadata
-    rows.  No summary calculation.
+    files to local storage (B3), creates BacktestArtifact metadata
+    rows, and computes BacktestSummary metrics (B4).
     """
     job = execution.backtest_job
     worker_hostname = execution.worker_hostname
@@ -110,6 +111,9 @@ def run_backtest_execution(execution: BacktestExecution) -> None:
 
         # ── Create artifact files + metadata rows ──
         _create_artifacts(execution)
+
+        # ── Compute and store BacktestSummary (B4) ──
+        compute_and_store_summary(execution)
 
         # ── Mark execution completed ──
         now = timezone.now()

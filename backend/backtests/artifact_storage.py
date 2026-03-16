@@ -37,6 +37,7 @@ _COMPRESSIBLE_TYPES = frozenset({
     "metrics",
     "trade_log",
     "equity_curve",
+    "pnl_series",
 })
 
 # Conservative safe-character set for filenames
