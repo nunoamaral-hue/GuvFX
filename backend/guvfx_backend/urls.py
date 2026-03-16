@@ -41,6 +41,7 @@ urlpatterns = [
     path("api/billing/", include("billing.urls")),
     path("api/admin/", include("admin_ops.urls")),
     path("api/mt5/", include("mt5.urls")),
+    path("api/mt5-interaction/", include("mt5.urls_interaction")),
     path("health/", health),
     # Windows Agent MVP endpoints (direct wiring)
     path(
