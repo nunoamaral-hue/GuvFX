@@ -67,6 +67,7 @@ const navGroups: NavGroup[] = [
     items: [
       { labelKey: "nav.backtests", href: "/backtests" },
       { labelKey: "nav.liveTrading", href: "/trading/live-trading" },
+      { labelKey: "nav.terminalAccess", href: "/trading/terminal-access" },
       { labelKey: "nav.tradeHistory", href: "/trading/trade-history" },
     ],
   },

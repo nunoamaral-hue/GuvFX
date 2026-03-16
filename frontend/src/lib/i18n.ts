@@ -131,6 +131,7 @@ const dictionary: Dictionary = {
   "nav.strategyAdvisor": { en: "Strategy Advisor", ja: "戦略アドバイザー" },
   "nav.backtests": { en: "Backtests", ja: "バックテスト" },
   "nav.liveTrading": { en: "Live Trading", ja: "ライブ取引" },
+  "nav.terminalAccess": { en: "Terminal Access", ja: "ターミナルアクセス" },
   "nav.tradeHistory": { en: "Trade History", ja: "取引履歴" },
   "nav.overview": { en: "Overview", ja: "概要" },
   "nav.performance": { en: "Performance", ja: "パフォーマンス" },
