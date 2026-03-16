@@ -249,16 +249,15 @@ class WindowsBacktestJob(models.Model):
 # WindowsBacktestJob above.  The B1 models represent the formal, pipeline-
 # oriented backtesting subsystem.
 #
-# Naming note: The B1 spec's "BacktestRun" is named "BacktestJobRun" here
-# to avoid collision with the existing BacktestRun class (which references
-# BacktestConfig, not BacktestJob).  The relationship and fields match the
-# approved spec exactly.
+# Naming note: The B1 canonical execution model is "BacktestExecution"
+# per Program Director naming decision.  The existing legacy BacktestRun
+# (which references BacktestConfig) remains unchanged.
 # =========================================================================
 
 
 class BacktestStatus(models.TextChoices):
     """
-    Canonical status values for BacktestJob and BacktestJobRun.
+    Canonical status values for BacktestJob and BacktestExecution.
 
     Used by both models via ``choices=BacktestStatus.choices``.
     """
@@ -349,21 +348,18 @@ class BacktestJob(models.Model):
         return f"BacktestJob #{self.pk} | {self.user_id} | {self.strategy_id} | {self.status}"
 
 
-class BacktestJobRun(models.Model):
+class BacktestExecution(models.Model):
     """
     A single execution run within a BacktestJob.
 
-    One job may produce multiple runs (e.g. parameter sweeps, retries).
-    Each run tracks its own status, worker, timing, and log location.
-
-    Naming: Called "BacktestJobRun" to avoid collision with the existing
-    BacktestRun model.  Matches the B1 spec's "BacktestRun" in all fields.
+    One job may produce multiple executions (e.g. parameter sweeps, retries).
+    Each execution tracks its own status, worker, timing, and log location.
     """
 
     backtest_job = models.ForeignKey(
         BacktestJob,
         on_delete=models.CASCADE,
-        related_name="job_runs",
+        related_name="executions",
     )
 
     run_identifier = models.CharField(
@@ -411,11 +407,11 @@ class BacktestJobRun(models.Model):
     class Meta:
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["backtest_job", "status"], name="bt_jobrun_job_status_idx"),
+            models.Index(fields=["backtest_job", "status"], name="bt_exec_job_status_idx"),
         ]
 
     def __str__(self) -> str:
-        return f"BacktestJobRun {self.run_identifier} | {self.status}"
+        return f"BacktestExecution {self.run_identifier} | {self.status}"
 
 
 # ── BacktestArtifact immutability infrastructure ──
@@ -438,7 +434,7 @@ class BacktestArtifactManager(models.Manager):
 
 class BacktestArtifact(models.Model):
     """
-    An immutable output artifact produced by a BacktestJobRun.
+    An immutable output artifact produced by a BacktestExecution.
 
     Artifacts are append-only: once created they cannot be updated or
     deleted.  This follows the same immutability pattern as core.AuditEvent.
@@ -448,8 +444,8 @@ class BacktestArtifact(models.Model):
 
     objects = BacktestArtifactManager()
 
-    backtest_run = models.ForeignKey(
-        BacktestJobRun,
+    execution = models.ForeignKey(
+        BacktestExecution,
         on_delete=models.CASCADE,
         related_name="artifacts",
     )
@@ -479,11 +475,11 @@ class BacktestArtifact(models.Model):
     class Meta:
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["backtest_run", "artifact_type"], name="bt_artifact_run_type_idx"),
+            models.Index(fields=["execution", "artifact_type"], name="bt_artifact_exec_type_idx"),
         ]
 
     def __str__(self) -> str:
-        return f"BacktestArtifact #{self.pk} | {self.artifact_type} | run={self.backtest_run_id}"
+        return f"BacktestArtifact #{self.pk} | {self.artifact_type} | exec={self.execution_id}"
 
     def save(self, *args, **kwargs):
         # Append-only: block updates to existing records
@@ -497,14 +493,14 @@ class BacktestArtifact(models.Model):
 
 class BacktestSummary(models.Model):
     """
-    Aggregated performance summary for a BacktestJobRun.
+    Aggregated performance summary for a BacktestExecution.
 
     Stores the canonical performance metrics produced by the
-    backtesting engine after a run completes.
+    backtesting engine after an execution completes.
     """
 
-    backtest_run = models.OneToOneField(
-        BacktestJobRun,
+    execution = models.OneToOneField(
+        BacktestExecution,
         on_delete=models.CASCADE,
         related_name="summary",
     )
@@ -556,6 +552,6 @@ class BacktestSummary(models.Model):
 
     def __str__(self) -> str:
         return (
-            f"BacktestSummary | run={self.backtest_run_id} | "
+            f"BacktestSummary | exec={self.execution_id} | "
             f"trades={self.total_trades} | wr={self.win_rate}"
         )
