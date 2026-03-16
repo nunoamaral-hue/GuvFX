@@ -21,24 +21,24 @@ router.register("runs", BacktestRunViewSet, basename="backtest-run")
 urlpatterns = [
     # Packet B — B5: Canonical backtest API endpoints
     path(
-        "jobs/run/",
+        "run/",
         BacktestJobRunView.as_view(),
         name="backtest-job-run",
     ),
     path(
-        "jobs/<int:job_id>/status/",
+        "status/<int:job_id>/",
         BacktestJobStatusView.as_view(),
-        name="backtest-job-status",
+        name="backtest-status",
     ),
     path(
-        "jobs/<int:job_id>/results/",
+        "results/<int:job_id>/",
         BacktestJobResultsView.as_view(),
-        name="backtest-job-results",
+        name="backtest-results",
     ),
     path(
-        "jobs/<int:job_id>/artifacts/",
+        "artifacts/<int:job_id>/",
         BacktestJobArtifactsView.as_view(),
-        name="backtest-job-artifacts",
+        name="backtest-artifacts",
     ),
     # Legacy endpoints
     path(
