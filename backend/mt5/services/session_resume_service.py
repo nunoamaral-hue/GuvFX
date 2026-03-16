@@ -155,3 +155,70 @@ def resolve_resumable(
         authorization=authorization,
         latest_mt5_session=latest_mt5,
     )
+
+
+# =========================================================================
+# Adapter invocation bridge (service-layer only — views must not call
+# adapters directly)
+# =========================================================================
+
+
+def invoke_adapter_resume(context: ResumableContext) -> dict:
+    """
+    Invoke the session adapter to obtain fresh embed credentials
+    for a resumable session.
+
+    Returns a safe launch descriptor with the 4 approved frontend
+    fields: transport_type, embed_url, session_token, expiry.
+
+    Does NOT mutate session state — resume produces ephemeral
+    adapter credentials only.
+    """
+    from mt5.adapters.guacamole_vnc_adapter import GuacamoleVncAdapter
+    from mt5.adapters.session_adapter import AdapterResumeRequest
+
+    binding = context.terminal_binding
+    session = context.interaction_session
+    mt5 = context.latest_mt5_session
+
+    if not mt5:
+        return _empty_safe_descriptor()
+
+    adapter = GuacamoleVncAdapter()
+    request = AdapterResumeRequest(
+        terminal_binding_id=binding.id,
+        terminal_node_id=binding.terminal_node_id,
+        terminal_identifier=binding.terminal_identifier,
+        mt5_account_login=binding.mt5_account_login,
+        interaction_session_id=session.id,
+        mt5_session_id=mt5.id,
+        prior_adapter_session_id=mt5.adapter_session_id or "",
+        prior_adapter_metadata={},
+    )
+
+    result = adapter.resume(request)
+
+    if not result.success:
+        logger.warning(
+            "Adapter resume failed: session=%s error=%s",
+            session.pk, result.error_message,
+        )
+        return _empty_safe_descriptor()
+
+    metadata = result.adapter_metadata or {}
+    return {
+        "transport_type": result.adapter_type or "",
+        "embed_url": metadata.get("guacamole_launch_url", ""),
+        "session_token": metadata.get("guacamole_session_token", ""),
+        "expiry": session.expires_at.isoformat() if session.expires_at else None,
+    }
+
+
+def _empty_safe_descriptor() -> dict:
+    """Return an empty safe launch descriptor (adapter failed or unavailable)."""
+    return {
+        "transport_type": "",
+        "embed_url": "",
+        "session_token": "",
+        "expiry": None,
+    }

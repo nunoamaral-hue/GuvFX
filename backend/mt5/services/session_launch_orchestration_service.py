@@ -279,3 +279,76 @@ def _audit_launch(
             "Failed to audit session_launch_orchestrated for session=%s",
             session.pk,
         )
+
+
+# =========================================================================
+# Adapter invocation bridge (service-layer only — views must not call
+# adapters directly)
+# =========================================================================
+
+
+def invoke_adapter_launch(launch_result: LaunchResult) -> dict:
+    """
+    Invoke the session adapter for a newly orchestrated launch.
+
+    Updates the MT5Session with adapter results and returns
+    a safe launch descriptor containing only the 4 approved
+    frontend fields: transport_type, embed_url, session_token, expiry.
+
+    This is a service-layer bridge — views must not call adapters directly.
+    """
+    from mt5.adapters.guacamole_vnc_adapter import GuacamoleVncAdapter
+    from mt5.adapters.session_adapter import AdapterLaunchRequest
+
+    binding = launch_result.binding
+    session = launch_result.interaction_session
+    mt5_session = launch_result.mt5_session
+
+    adapter = GuacamoleVncAdapter()
+    request = AdapterLaunchRequest(
+        terminal_binding_id=binding.id,
+        terminal_node_id=binding.terminal_node_id,
+        terminal_identifier=binding.terminal_identifier,
+        mt5_account_login=binding.mt5_account_login,
+        environment_type=binding.environment_type,
+        interaction_session_id=session.id,
+        mt5_session_id=mt5_session.id,
+    )
+
+    result = adapter.launch(request)
+
+    # Update MT5Session with adapter results
+    mt5_session.adapter_type = result.adapter_type
+    mt5_session.adapter_session_id = result.adapter_session_id
+    mt5_session.launch_descriptor_snapshot = result.launch_descriptor
+    mt5_session.save(update_fields=[
+        "adapter_type", "adapter_session_id",
+        "launch_descriptor_snapshot", "updated_at",
+    ])
+
+    if not result.success:
+        mark_launch_failed(mt5_session, result.error_message)
+        return _empty_safe_descriptor()
+
+    return _build_safe_descriptor(result, session.expires_at)
+
+
+def _build_safe_descriptor(adapter_result, expires_at) -> dict:
+    """Extract the 4 approved frontend fields from an adapter result."""
+    metadata = adapter_result.adapter_metadata or {}
+    return {
+        "transport_type": adapter_result.adapter_type or "",
+        "embed_url": metadata.get("guacamole_launch_url", ""),
+        "session_token": metadata.get("guacamole_session_token", ""),
+        "expiry": expires_at.isoformat() if expires_at else None,
+    }
+
+
+def _empty_safe_descriptor() -> dict:
+    """Return an empty safe launch descriptor (adapter failed or unavailable)."""
+    return {
+        "transport_type": "",
+        "embed_url": "",
+        "session_token": "",
+        "expiry": None,
+    }

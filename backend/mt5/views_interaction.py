@@ -22,6 +22,7 @@ from rest_framework.views import APIView
 from mt5.serializers import (
     InteractionSessionResponseSerializer,
     ResumableContextResponseSerializer,
+    SafeLaunchDescriptorSerializer,
     SessionLaunchRequestSerializer,
     SessionTerminateRequestSerializer,
     TerminalBindingListSerializer,
@@ -70,8 +71,14 @@ class SessionLaunchView(APIView):
                 status=status_code,
             )
 
+        # Invoke adapter to obtain embed credentials (service-layer only)
+        safe_descriptor = _invoke_adapter_for_launch(result)
+
         response_data = InteractionSessionResponseSerializer(
             result.interaction_session,
+        ).data
+        response_data["launch_descriptor"] = SafeLaunchDescriptorSerializer(
+            safe_descriptor,
         ).data
         return Response(response_data, status=status.HTTP_201_CREATED)
 
@@ -157,11 +164,17 @@ class SessionResumeView(APIView):
                 status=status_code,
             )
 
+        # Invoke adapter to obtain fresh embed credentials (service-layer only)
+        safe_descriptor = _invoke_adapter_for_resume(context)
+
         response_data = ResumableContextResponseSerializer({
             "interaction_session": context.interaction_session,
             "can_resume": True,
             "access_mode": context.authorization.access_mode if context.authorization else "",
         }).data
+        response_data["launch_descriptor"] = SafeLaunchDescriptorSerializer(
+            safe_descriptor,
+        ).data
         return Response(response_data)
 
 
@@ -255,6 +268,40 @@ class TerminalBindingListView(APIView):
         return Response(
             TerminalBindingListSerializer(bindings, many=True).data,
         )
+
+
+# =========================================================================
+# Adapter invocation helpers (delegate to service-layer bridge functions)
+# =========================================================================
+
+_EMPTY_DESCRIPTOR = {
+    "transport_type": "",
+    "embed_url": "",
+    "session_token": "",
+    "expiry": None,
+}
+
+
+def _invoke_adapter_for_launch(launch_result) -> dict:
+    """Invoke adapter for launch via service bridge. Fail-safe."""
+    try:
+        from mt5.services.session_launch_orchestration_service import (
+            invoke_adapter_launch,
+        )
+        return invoke_adapter_launch(launch_result)
+    except Exception as e:
+        logger.warning("Adapter launch invocation failed (non-blocking): %s", str(e))
+        return dict(_EMPTY_DESCRIPTOR)
+
+
+def _invoke_adapter_for_resume(context) -> dict:
+    """Invoke adapter for resume via service bridge. Fail-safe."""
+    try:
+        from mt5.services.session_resume_service import invoke_adapter_resume
+        return invoke_adapter_resume(context)
+    except Exception as e:
+        logger.warning("Adapter resume invocation failed (non-blocking): %s", str(e))
+        return dict(_EMPTY_DESCRIPTOR)
 
 
 # =========================================================================

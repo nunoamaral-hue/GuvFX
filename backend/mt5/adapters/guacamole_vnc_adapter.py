@@ -99,9 +99,10 @@ class GuacamoleVncAdapter(SessionAdapter):
                 adapter_type=ADAPTER_TYPE,
                 launch_descriptor=descriptor,
                 adapter_metadata={
-                    # Backend-only, ephemeral — safe for immediate use,
+                    # Ephemeral — safe for immediate use by frontend embed,
                     # not persisted in launch_descriptor_snapshot.
                     "guacamole_launch_url": url,
+                    "guacamole_session_token": token,
                     "guacamole_connection_name": connection_name,
                 },
             )
@@ -173,6 +174,7 @@ class GuacamoleVncAdapter(SessionAdapter):
                 launch_descriptor=descriptor,
                 adapter_metadata={
                     "guacamole_launch_url": url,
+                    "guacamole_session_token": token,
                     "resumed": True,
                 },
             )

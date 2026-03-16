@@ -145,6 +145,22 @@ class ResumableContextResponseSerializer(serializers.Serializer):
     access_mode = serializers.CharField(read_only=True)
 
 
+class SafeLaunchDescriptorSerializer(serializers.Serializer):
+    """
+    Safe LaunchDescriptor for frontend consumption.
+
+    Exposes exactly the 4 approved fields — no adapter internals,
+    no credentials, no raw descriptor snapshots, no backend routing.
+    """
+
+    transport_type = serializers.CharField(read_only=True, default="")
+    embed_url = serializers.CharField(read_only=True, default="")
+    session_token = serializers.CharField(read_only=True, default="")
+    expiry = serializers.CharField(
+        read_only=True, allow_null=True, default=None,
+    )
+
+
 class TerminalBindingListSerializer(serializers.ModelSerializer):
     """
     Safe terminal binding fields for the listing endpoint.
