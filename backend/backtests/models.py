@@ -491,6 +491,73 @@ class BacktestArtifact(models.Model):
         raise ValueError("BacktestArtifact records are immutable and cannot be deleted.")
 
 
+class ReviewStatus(models.TextChoices):
+    """
+    Review lifecycle states for PromotionCandidate.
+
+    Research-only: marks whether a backtest execution has been reviewed
+    for promotion candidacy.  Does not imply deployment.
+    """
+
+    PENDING = "pending", "Pending"
+    APPROVED = "approved", "Approved"
+    REJECTED = "rejected", "Rejected"
+
+
+class PromotionCandidate(models.Model):
+    """
+    Marks a BacktestExecution as a research promotion candidate.
+
+    This is metadata-only — it does NOT trigger strategy deployment,
+    modify execution infrastructure, or alter worker behaviour.
+    One candidate record per execution (OneToOneField).
+    """
+
+    backtest_execution = models.OneToOneField(
+        BacktestExecution,
+        on_delete=models.CASCADE,
+        related_name="promotion_candidate",
+    )
+
+    review_status = models.CharField(
+        max_length=20,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.PENDING,
+        db_index=True,
+    )
+
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_promotions",
+        help_text="User who reviewed this candidate.",
+    )
+    review_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Reviewer notes or rationale.",
+    )
+    reviewed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the review decision was made.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return (
+            f"PromotionCandidate #{self.pk} | "
+            f"exec={self.backtest_execution_id} | {self.review_status}"
+        )
+
+
 class BacktestSummary(models.Model):
     """
     Aggregated performance summary for a BacktestExecution.
