@@ -2,7 +2,8 @@
 DRF Views for Packet A — Terminal Interaction API.
 
 All views delegate to the service layer only.  No adapter logic,
-no Guacamole helper calls, no direct occupancy mutations.
+no Guacamole helper calls, no direct ORM queries, no direct
+occupancy mutations.
 
 Endpoints:
     POST /api/mt5-interaction/sessions/              (launch)
@@ -13,13 +14,11 @@ Endpoints:
 """
 import logging
 
-from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from mt5.models import InteractionSession, TerminalBinding
 from mt5.serializers import (
     InteractionSessionResponseSerializer,
     ResumableContextResponseSerializer,
@@ -81,19 +80,25 @@ class SessionDetailView(APIView):
     """
     GET /api/mt5-interaction/sessions/{id}/
 
-    Return persisted domain/session state.  Does NOT treat adapter
-    get_status as authoritative — returns persisted truth only.
+    Return persisted domain/session state.  Delegates to
+    session_read_service.  Does NOT treat adapter get_status
+    as authoritative — returns persisted truth only.
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
+        from mt5.services.session_read_service import (
+            get_user_session_detail,
+            SessionNotFound,
+        )
+
         try:
-            session = InteractionSession.objects.select_related(
-                "terminal_binding",
-                "terminal_binding__terminal_node",
-            ).get(pk=pk, user=request.user)
-        except InteractionSession.DoesNotExist:
+            session = get_user_session_detail(
+                user_id=request.user.id,
+                session_id=pk,
+            )
+        except SessionNotFound:
             return Response(
                 {"detail": "Session not found."},
                 status=status.HTTP_404_NOT_FOUND,
@@ -109,20 +114,25 @@ class SessionResumeView(APIView):
     POST /api/mt5-interaction/sessions/{id}/resume/
 
     Validate and return resumable session context.
-    Delegates to session_resume_service (validation/context only).
+    Delegates to session_resume_service (validation/context only)
+    with session retrieval via session_read_service.
     Does NOT create new MT5Sessions or perform lifecycle mutation.
     """
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
+        from mt5.services.session_read_service import (
+            get_user_session_detail,
+            SessionNotFound,
+        )
+
         try:
-            session = InteractionSession.objects.select_related(
-                "terminal_binding",
-                "terminal_binding__terminal_node",
-                "authorization",
-            ).get(pk=pk, user=request.user)
-        except InteractionSession.DoesNotExist:
+            session = get_user_session_detail(
+                user_id=request.user.id,
+                session_id=pk,
+            )
+        except SessionNotFound:
             return Response(
                 {"detail": "Session not found."},
                 status=status.HTTP_404_NOT_FOUND,
@@ -160,7 +170,8 @@ class SessionTerminateView(APIView):
     POST /api/mt5-interaction/sessions/{id}/terminate/
 
     Terminate an interaction session.
-    Delegates entirely to session_terminate_service.
+    Delegates to session_terminate_service with session retrieval
+    via session_read_service.
     """
 
     permission_classes = [IsAuthenticated]
@@ -171,12 +182,17 @@ class SessionTerminateView(APIView):
 
         reason = serializer.validated_data.get("reason", "")
 
+        from mt5.services.session_read_service import (
+            get_user_session_detail,
+            SessionNotFound,
+        )
+
         try:
-            session = InteractionSession.objects.select_related(
-                "terminal_binding",
-                "terminal_binding__terminal_node",
-            ).get(pk=pk, user=request.user)
-        except InteractionSession.DoesNotExist:
+            session = get_user_session_detail(
+                user_id=request.user.id,
+                session_id=pk,
+            )
+        except SessionNotFound:
             return Response(
                 {"detail": "Session not found."},
                 status=status.HTTP_404_NOT_FOUND,
@@ -202,8 +218,15 @@ class SessionTerminateView(APIView):
                 status=status_code,
             )
 
-        # Re-fetch to return post-termination state
-        session.refresh_from_db()
+        # Re-fetch via service to return post-termination state
+        try:
+            session = get_user_session_detail(
+                user_id=request.user.id,
+                session_id=pk,
+            )
+        except SessionNotFound:
+            pass  # use pre-termination session object
+
         return Response(
             InteractionSessionResponseSerializer(session).data,
         )
@@ -214,37 +237,19 @@ class TerminalBindingListView(APIView):
     GET /api/mt5-interaction/terminal-bindings/
 
     List terminal bindings that the authenticated user has active
-    authorization for.  Filtered through UserToTerminalAuthorization
-    records — does NOT expose all bindings globally.
+    authorization for.  Delegates to session_read_service —
+    does NOT expose all bindings globally.
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        now = timezone.now()
-
-        # Get binding IDs the user is authorized for
-        from mt5.models import UserToTerminalAuthorization
-
-        authorized_binding_ids = (
-            UserToTerminalAuthorization.objects
-            .filter(
-                user=request.user,
-                revoked_at__isnull=True,
-            )
-            .exclude(
-                expires_at__isnull=False,
-                expires_at__lt=now,
-            )
-            .values_list("terminal_binding_id", flat=True)
-            .distinct()
+        from mt5.services.session_read_service import (
+            list_authorized_terminal_bindings,
         )
 
-        bindings = (
-            TerminalBinding.objects
-            .filter(pk__in=authorized_binding_ids)
-            .select_related("terminal_node")
-            .order_by("terminal_node", "terminal_identifier")
+        bindings = list_authorized_terminal_bindings(
+            user_id=request.user.id,
         )
 
         return Response(

@@ -161,7 +161,6 @@ class TerminalBindingListSerializer(serializers.ModelSerializer):
             "id",
             "terminal_identifier",
             "terminal_label",
-            "mt5_account_login",
             "environment_type",
             "status",
             "supports_shared_view",
