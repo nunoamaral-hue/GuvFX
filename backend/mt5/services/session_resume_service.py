@@ -2,15 +2,20 @@
 Session Resume Service.
 
 Locates and validates resumable InteractionSessions for a user,
-then prepares them for reconnection.
+returning validated domain context only.
 
 A session is resumable if:
 - state is "active" (started but not ended)
 - the binding is still occupied by that session
 - the user has can_resume authorization
 - the session has not expired
+
+This service does NOT create MT5Sessions, end existing sessions,
+or perform any lifecycle mutation.  Adapter reconnection logic
+is out of scope for Phase 2.
 """
 import logging
+from dataclasses import dataclass
 from typing import Optional
 
 from django.db.models import QuerySet
@@ -20,7 +25,7 @@ from mt5.models import (
     InteractionSession,
     MT5Session,
     TerminalBinding,
-    TerminalInteractionAudit,
+    UserToTerminalAuthorization,
 )
 from mt5.services.authorization_validation_service import (
     AuthorizationDenied,
@@ -31,8 +36,18 @@ logger = logging.getLogger(__name__)
 
 
 class ResumeError(Exception):
-    """Raised when session resume fails."""
+    """Raised when session resume validation fails."""
     pass
+
+
+@dataclass
+class ResumableContext:
+    """Validated resumable session context returned by resolve_resumable."""
+
+    interaction_session: InteractionSession
+    terminal_binding: TerminalBinding
+    authorization: UserToTerminalAuthorization
+    latest_mt5_session: MT5Session | None
 
 
 def find_resumable_sessions(user_id: int) -> QuerySet[InteractionSession]:
@@ -59,9 +74,9 @@ def find_resumable_sessions(user_id: int) -> QuerySet[InteractionSession]:
 
 def validate_resumable(session: InteractionSession) -> None:
     """
-    Validate that a specific session can be resumed.
+    Validate that a specific session is in a resumable state.
 
-    Raises ResumeError if the session is not in a resumable state.
+    Raises ResumeError if the session is not resumable.
     """
     if session.state != "active":
         raise ResumeError(
@@ -90,117 +105,53 @@ def validate_resumable(session: InteractionSession) -> None:
         )
 
 
-def resume_session(
+def resolve_resumable(
     session: InteractionSession,
     user_id: int,
-) -> MT5Session:
+) -> ResumableContext:
     """
-    Resume an existing InteractionSession.
+    Validate and resolve the full resumable context for a session.
 
-    Validates resumability, authorization, then creates a new
-    MT5Session for the reconnection.
-
-    Args:
-        session: The InteractionSession to resume.
-        user_id: The user requesting the resume.
+    Checks:
+    - session ownership
+    - session resumability (state, expiry, occupancy)
+    - user has can_resume authorization on the binding
 
     Returns:
-        A new MT5Session in "launching" state.
+        ResumableContext with validated domain objects.
 
     Raises:
         ResumeError: If session cannot be resumed.
         AuthorizationDenied: If user lacks can_resume.
     """
-    # Validate the session is resumable
-    validate_resumable(session)
-
-    # Validate authorization
+    # Validate ownership
     if session.user_id != user_id:
         raise ResumeError(
             f"User {user_id} does not own session {session.pk}."
         )
 
-    validate_can_resume(user_id, session.terminal_binding)
+    # Validate resumability
+    validate_resumable(session)
 
-    now = timezone.now()
+    # Validate authorization
+    authorization = validate_can_resume(user_id, session.terminal_binding)
 
-    # End any existing MT5Sessions in non-terminal states
-    _end_stale_mt5_sessions(session, now)
-
-    # Create new MT5Session for the resume
-    mt5_session = MT5Session.objects.create(
-        interaction_session=session,
-        terminal_binding=session.terminal_binding,
-        state="launching",
-        launch_issued_at=now,
-        launch_descriptor_snapshot=_get_last_descriptor(session),
-    )
-
-    # Update activity timestamp
-    session.last_activity_at = now
-    session.save(update_fields=["last_activity_at", "updated_at"])
-
-    # Audit
-    try:
-        TerminalInteractionAudit.objects.create(
-            interaction_session=session,
-            mt5_session=mt5_session,
-            actor_user_id=user_id,
-            action_type="session_resumed",
-            before_state="active",
-            after_state="active",
-            metadata={"new_mt5_session_id": mt5_session.pk},
-            timestamp=now,
-        )
-    except Exception:
-        logger.exception(
-            "Failed to audit session_resumed for session=%s", session.pk
-        )
-
-    logger.info(
-        "Session resumed: session=%s user=%s new_mt5_session=%s",
-        session.pk, user_id, mt5_session.pk,
-    )
-    return mt5_session
-
-
-def _end_stale_mt5_sessions(
-    session: InteractionSession,
-    now,
-) -> int:
-    """
-    End any MT5Sessions for this InteractionSession that are still
-    in non-terminal states (launching, connected, suspended).
-
-    Returns the number of sessions ended.
-    """
-    stale = MT5Session.objects.filter(
-        interaction_session=session,
-        state__in=["launching", "connected", "suspended"],
-    )
-    count = stale.update(
-        state="ended",
-        ended_at=now,
-        failure_reason="ended_for_resume",
-    )
-    if count:
-        logger.info(
-            "Ended %d stale MT5Sessions for session=%s before resume",
-            count, session.pk,
-        )
-    return count
-
-
-def _get_last_descriptor(session: InteractionSession) -> dict:
-    """
-    Get the launch descriptor from the most recent MT5Session,
-    to reuse for the resume.
-    """
-    last = (
+    # Locate the latest MT5Session (read-only context)
+    latest_mt5 = (
         MT5Session.objects
         .filter(interaction_session=session)
         .order_by("-created_at")
-        .values_list("launch_descriptor_snapshot", flat=True)
         .first()
     )
-    return last or {}
+
+    logger.info(
+        "Resumable context resolved: session=%s user=%s binding=%s",
+        session.pk, user_id, session.terminal_binding_id,
+    )
+
+    return ResumableContext(
+        interaction_session=session,
+        terminal_binding=session.terminal_binding,
+        authorization=authorization,
+        latest_mt5_session=latest_mt5,
+    )
