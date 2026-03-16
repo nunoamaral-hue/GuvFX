@@ -124,6 +124,12 @@ class AuditEvent(models.Model):
         NODE_WRONG_CLAIM = "NODE_WRONG_CLAIM", "Worker Claimed Wrong-Node Job"
         NODE_HEARTBEAT_STALE = "NODE_HEARTBEAT_STALE", "Terminal Node Heartbeat Stale"
 
+        # Backtest worker lifecycle (Packet B — B2)
+        BACKTEST_EXECUTION_CLAIMED = "BACKTEST_EXECUTION_CLAIMED", "Backtest Execution Claimed"
+        BACKTEST_EXECUTION_STARTED = "BACKTEST_EXECUTION_STARTED", "Backtest Execution Started"
+        BACKTEST_EXECUTION_COMPLETED = "BACKTEST_EXECUTION_COMPLETED", "Backtest Execution Completed"
+        BACKTEST_EXECUTION_FAILED = "BACKTEST_EXECUTION_FAILED", "Backtest Execution Failed"
+
         # Payment webhook lifecycle
         WEBHOOK_SIGNATURE_FAILED = "WEBHOOK_SIGNATURE_FAILED", "Webhook Signature Failed"
         WEBHOOK_DUPLICATE_REJECTED = "WEBHOOK_DUPLICATE_REJECTED", "Webhook Duplicate Rejected"

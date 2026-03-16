@@ -630,6 +630,89 @@ def log_admin_override(
 # =============================================================================
 
 
+# =============================================================================
+# Backtest Worker Audit Helpers (Packet B — B2)
+# =============================================================================
+
+
+def log_backtest_execution_claimed(
+    execution_id: int,
+    job_id: int,
+    worker_hostname: str,
+    run_identifier: str,
+) -> None:
+    """Log a backtest execution claimed by a worker."""
+    log_event(
+        None,
+        event_type="BACKTEST_EXECUTION_CLAIMED",
+        severity="INFO",
+        entity_type="backtest_execution",
+        entity_id=str(execution_id),
+        metadata={
+            "job_id": job_id,
+            "worker_hostname": worker_hostname,
+            "run_identifier": run_identifier,
+        },
+    )
+
+
+def log_backtest_execution_started(
+    execution_id: int,
+    job_id: int,
+    worker_hostname: str,
+) -> None:
+    """Log a backtest execution started."""
+    log_event(
+        None,
+        event_type="BACKTEST_EXECUTION_STARTED",
+        severity="INFO",
+        entity_type="backtest_execution",
+        entity_id=str(execution_id),
+        metadata={
+            "job_id": job_id,
+            "worker_hostname": worker_hostname,
+        },
+    )
+
+
+def log_backtest_execution_completed(
+    execution_id: int,
+    job_id: int,
+    duration_seconds: float | None = None,
+) -> None:
+    """Log a backtest execution completed successfully."""
+    meta: dict[str, Any] = {"job_id": job_id}
+    if duration_seconds is not None:
+        meta["duration_seconds"] = duration_seconds
+    log_event(
+        None,
+        event_type="BACKTEST_EXECUTION_COMPLETED",
+        severity="INFO",
+        entity_type="backtest_execution",
+        entity_id=str(execution_id),
+        metadata=meta,
+    )
+
+
+def log_backtest_execution_failed(
+    execution_id: int,
+    job_id: int,
+    error: str = "",
+) -> None:
+    """Log a backtest execution failure."""
+    log_event(
+        None,
+        event_type="BACKTEST_EXECUTION_FAILED",
+        severity="ERROR",
+        entity_type="backtest_execution",
+        entity_id=str(execution_id),
+        metadata={
+            "job_id": job_id,
+            "error": error[:500],
+        },
+    )
+
+
 def log_entitlement_denied(
     request: HttpRequest | None,
     user_id: int,
