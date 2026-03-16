@@ -713,6 +713,75 @@ def log_backtest_execution_failed(
     )
 
 
+# =============================================================================
+# Backtest API Audit Helpers (Packet B — B5)
+# =============================================================================
+
+
+def log_backtest_job_created(
+    request: HttpRequest | None,
+    job_id: int,
+    execution_id: int,
+    strategy_id: int,
+    symbol: str,
+) -> None:
+    """Log a new backtest job + execution creation via API."""
+    log_event(
+        request,
+        event_type="BACKTEST_JOB_CREATED",
+        severity="INFO",
+        entity_type="backtest_job",
+        entity_id=str(job_id),
+        metadata={
+            "execution_id": execution_id,
+            "strategy_id": strategy_id,
+            "symbol": symbol,
+        },
+    )
+
+
+def log_backtest_status_viewed(
+    request: HttpRequest | None,
+    job_id: int,
+) -> None:
+    """Log a backtest status retrieval."""
+    log_event(
+        request,
+        event_type="BACKTEST_STATUS_VIEWED",
+        severity="INFO",
+        entity_type="backtest_job",
+        entity_id=str(job_id),
+    )
+
+
+def log_backtest_results_viewed(
+    request: HttpRequest | None,
+    job_id: int,
+) -> None:
+    """Log a backtest results retrieval."""
+    log_event(
+        request,
+        event_type="BACKTEST_RESULTS_VIEWED",
+        severity="INFO",
+        entity_type="backtest_job",
+        entity_id=str(job_id),
+    )
+
+
+def log_backtest_artifacts_viewed(
+    request: HttpRequest | None,
+    job_id: int,
+) -> None:
+    """Log a backtest artifacts listing retrieval."""
+    log_event(
+        request,
+        event_type="BACKTEST_ARTIFACTS_VIEWED",
+        severity="INFO",
+        entity_type="backtest_job",
+        entity_id=str(job_id),
+    )
+
+
 def log_entitlement_denied(
     request: HttpRequest | None,
     user_id: int,

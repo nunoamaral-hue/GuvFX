@@ -130,6 +130,12 @@ class AuditEvent(models.Model):
         BACKTEST_EXECUTION_COMPLETED = "BACKTEST_EXECUTION_COMPLETED", "Backtest Execution Completed"
         BACKTEST_EXECUTION_FAILED = "BACKTEST_EXECUTION_FAILED", "Backtest Execution Failed"
 
+        # Backtest API lifecycle (Packet B — B5)
+        BACKTEST_JOB_CREATED = "BACKTEST_JOB_CREATED", "Backtest Job Created"
+        BACKTEST_STATUS_VIEWED = "BACKTEST_STATUS_VIEWED", "Backtest Status Viewed"
+        BACKTEST_RESULTS_VIEWED = "BACKTEST_RESULTS_VIEWED", "Backtest Results Viewed"
+        BACKTEST_ARTIFACTS_VIEWED = "BACKTEST_ARTIFACTS_VIEWED", "Backtest Artifacts Viewed"
+
         # Payment webhook lifecycle
         WEBHOOK_SIGNATURE_FAILED = "WEBHOOK_SIGNATURE_FAILED", "Webhook Signature Failed"
         WEBHOOK_DUPLICATE_REJECTED = "WEBHOOK_DUPLICATE_REJECTED", "Webhook Duplicate Rejected"

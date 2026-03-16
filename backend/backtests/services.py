@@ -1,15 +1,16 @@
 """
-Backtest worker services — Packet B B2/B3.
+Backtest worker services — Packet B B2/B3/B5.
 
 Provides the atomic claim and execution lifecycle for the
 platform-native DB-backed backtest worker, with local artifact
-storage integration (B3).
+storage integration (B3), plus API-layer service helpers (B5).
 
 No Celery, no external broker, no cloud storage.
 """
 import json
 import logging
 import platform
+import uuid
 from decimal import Decimal
 
 from django.db import transaction
@@ -20,6 +21,7 @@ from backtests.models import (
     BacktestExecution,
     BacktestJob,
     BacktestStatus,
+    BacktestSummary,
 )
 from backtests.artifact_storage import store_artifact
 from backtests.summary_engine import compute_and_store_summary
@@ -335,3 +337,216 @@ def _handle_execution_failure(
         execution.run_identifier,
         error_msg,
     )
+
+
+# =========================================================================
+# Packet B — B5: API service helpers
+# =========================================================================
+
+
+def create_backtest_request(
+    user,
+    strategy,
+    symbol: str,
+    timeframe: str,
+    start_date,
+    end_date,
+    parameter_set: dict | None = None,
+    data_source: str = "",
+) -> tuple[BacktestJob, BacktestExecution]:
+    """
+    Create a BacktestJob and initial BacktestExecution in queued state.
+
+    This is the canonical API-layer entrypoint for submitting a new
+    backtest request.  The worker will pick up the queued execution.
+
+    Returns (job, execution) tuple.
+    """
+    with transaction.atomic():
+        job = BacktestJob.objects.create(
+            user=user,
+            strategy=strategy,
+            symbol=symbol,
+            timeframe=timeframe,
+            start_date=start_date,
+            end_date=end_date,
+            parameter_set=parameter_set or {},
+            data_source=data_source,
+            status=BacktestStatus.QUEUED,
+        )
+
+        execution = BacktestExecution.objects.create(
+            backtest_job=job,
+            run_identifier=f"exec-{job.pk}-{uuid.uuid4().hex[:8]}",
+            status=BacktestStatus.QUEUED,
+        )
+
+    logger.info(
+        "Created BacktestJob %d + BacktestExecution %s for user %s",
+        job.pk,
+        execution.run_identifier,
+        user.pk,
+    )
+
+    return job, execution
+
+
+def get_backtest_status_for_user(job_id: int, user) -> dict:
+    """
+    Return safe status/lifecycle information for a BacktestJob.
+
+    Enforces user-scoped access (non-staff see only own jobs).
+    Returns a dict with safe fields for API serialization.
+
+    Raises BacktestJob.DoesNotExist if not found or not accessible.
+    """
+    job = _get_user_job(job_id, user)
+    execution = (
+        job.executions.select_related("backtest_job")
+        .order_by("-created_at")
+        .first()
+    )
+
+    result = {
+        "job_id": job.pk,
+        "status": job.status,
+        "strategy_id": job.strategy_id,
+        "symbol": job.symbol,
+        "timeframe": job.timeframe,
+        "start_date": job.start_date,
+        "end_date": job.end_date,
+        "requested_at": job.requested_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+        "worker_id": job.worker_id or None,
+        "execution_id": None,
+        "execution_status": None,
+        "execution_run_identifier": None,
+        "execution_started_at": None,
+        "execution_completed_at": None,
+        "execution_duration_seconds": None,
+    }
+
+    if execution:
+        result.update({
+            "execution_id": execution.pk,
+            "execution_status": execution.status,
+            "execution_run_identifier": execution.run_identifier,
+            "execution_started_at": execution.started_at,
+            "execution_completed_at": execution.completed_at,
+            "execution_duration_seconds": (
+                float(execution.duration_seconds)
+                if execution.duration_seconds is not None
+                else None
+            ),
+        })
+
+    return result
+
+
+def get_backtest_results_for_user(job_id: int, user) -> dict:
+    """
+    Return BacktestSummary + safe execution result metadata.
+
+    Enforces user-scoped access.  Returns honest status if summary
+    is not yet available.
+
+    Raises BacktestJob.DoesNotExist if not found or not accessible.
+    """
+    job = _get_user_job(job_id, user)
+    execution = (
+        job.executions.order_by("-created_at").first()
+    )
+
+    result = {
+        "job_id": job.pk,
+        "status": job.status,
+        "summary_available": False,
+        "summary": None,
+        "execution_id": None,
+        "execution_status": None,
+        "artifact_count": 0,
+    }
+
+    if execution:
+        result["execution_id"] = execution.pk
+        result["execution_status"] = execution.status
+        result["artifact_count"] = execution.artifacts.count()
+
+        try:
+            summary = execution.summary
+            result["summary_available"] = True
+            result["summary"] = {
+                "total_trades": summary.total_trades,
+                "win_rate": (
+                    float(summary.win_rate) if summary.win_rate is not None else None
+                ),
+                "profit_factor": (
+                    float(summary.profit_factor)
+                    if summary.profit_factor is not None
+                    else None
+                ),
+                "max_drawdown": (
+                    float(summary.max_drawdown)
+                    if summary.max_drawdown is not None
+                    else None
+                ),
+                "sharpe_ratio": (
+                    float(summary.sharpe_ratio)
+                    if summary.sharpe_ratio is not None
+                    else None
+                ),
+                "expectancy": (
+                    float(summary.expectancy)
+                    if summary.expectancy is not None
+                    else None
+                ),
+            }
+        except BacktestSummary.DoesNotExist:
+            pass
+
+    return result
+
+
+def list_backtest_artifacts_for_user(job_id: int, user) -> list[dict]:
+    """
+    Return safe artifact metadata listing for a BacktestJob.
+
+    Enforces user-scoped access.  Returns metadata only (no file
+    contents, no absolute paths).
+
+    Raises BacktestJob.DoesNotExist if not found or not accessible.
+    """
+    job = _get_user_job(job_id, user)
+    execution = job.executions.order_by("-created_at").first()
+
+    if execution is None:
+        return []
+
+    artifacts = execution.artifacts.order_by("created_at")
+    return [
+        {
+            "artifact_id": a.pk,
+            "artifact_type": a.artifact_type,
+            "file_path": a.file_path,
+            "file_size": a.file_size,
+            "checksum": a.checksum,
+            "created_at": a.created_at,
+        }
+        for a in artifacts
+    ]
+
+
+def _get_user_job(job_id: int, user) -> BacktestJob:
+    """
+    Fetch a BacktestJob by ID with user-scoped access control.
+
+    Non-staff users can only access their own jobs.
+    Staff users can access any job.
+
+    Raises BacktestJob.DoesNotExist if not found or not accessible.
+    """
+    qs = BacktestJob.objects.select_related("strategy")
+    if not user.is_staff:
+        qs = qs.filter(user=user)
+    return qs.get(pk=job_id)

@@ -8,24 +8,169 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, NotFound
 
-from .models import BacktestConfig, BacktestRun, WindowsBacktestJob
+from .models import BacktestConfig, BacktestJob, BacktestRun, WindowsBacktestJob
 from .serializers import (
+    BacktestArtifactMetadataSerializer,
     BacktestConfigSerializer,
+    BacktestResultsResponseSerializer,
+    BacktestRunRequestSerializer,
+    BacktestRunResponseSerializer,
     BacktestRunSerializer,
+    BacktestStatusResponseSerializer,
     WindowsBacktestRunRequestSerializer,
     WindowsBacktestJobSerializer,
     AIBacktestRecommendationRequestSerializer,
+)
+from .services import (
+    create_backtest_request,
+    get_backtest_status_for_user,
+    get_backtest_results_for_user,
+    list_backtest_artifacts_for_user,
 )
 from strategies.models import Strategy
 from trading.models import TradingAccount
 from billing.enforcement import require_entitlement
 from core.audit import (
     log_backtest_config_created,
+    log_backtest_job_created,
     log_backtest_run_created,
+    log_backtest_status_viewed,
+    log_backtest_results_viewed,
+    log_backtest_artifacts_viewed,
     log_backtests_processed,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# =========================================================================
+# Packet B — B5: Canonical backtest API views
+# =========================================================================
+
+
+class BacktestJobRunView(APIView):
+    """
+    POST /api/backtests/jobs/run/
+
+    Create a BacktestJob + initial BacktestExecution in queued state.
+    Respects entitlements and ownership.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = BacktestRunRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = request.user
+
+        # Entitlement gate
+        require_entitlement(user, "can_run_backtests")
+
+        # Ownership check: non-staff must own the strategy
+        strategy = Strategy.objects.get(id=data["strategy_id"])
+        if not user.is_staff and strategy.owner != user:
+            raise PermissionDenied("You can only run backtests on your own strategies.")
+
+        # Service layer: create job + execution
+        job, execution = create_backtest_request(
+            user=user,
+            strategy=strategy,
+            symbol=data["symbol"],
+            timeframe=data["timeframe"],
+            start_date=data["start_date"],
+            end_date=data["end_date"],
+            parameter_set=data.get("parameter_set"),
+            data_source=data.get("data_source", ""),
+        )
+
+        # Audit
+        log_backtest_job_created(
+            request,
+            job_id=job.pk,
+            execution_id=execution.pk,
+            strategy_id=strategy.pk,
+            symbol=data["symbol"],
+        )
+
+        response_data = {
+            "backtest_job_id": job.pk,
+            "backtest_execution_id": execution.pk,
+            "run_identifier": execution.run_identifier,
+            "status": job.status,
+            "requested_at": job.requested_at,
+        }
+        response_serializer = BacktestRunResponseSerializer(response_data)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class BacktestJobStatusView(APIView):
+    """
+    GET /api/backtests/jobs/{id}/status/
+
+    Return safe status/lifecycle information for a BacktestJob.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, job_id):
+        try:
+            data = get_backtest_status_for_user(job_id, request.user)
+        except BacktestJob.DoesNotExist:
+            raise NotFound("Backtest job not found.")
+
+        log_backtest_status_viewed(request, job_id=job_id)
+
+        serializer = BacktestStatusResponseSerializer(data)
+        return Response(serializer.data)
+
+
+class BacktestJobResultsView(APIView):
+    """
+    GET /api/backtests/jobs/{id}/results/
+
+    Return BacktestSummary + safe execution result metadata.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, job_id):
+        try:
+            data = get_backtest_results_for_user(job_id, request.user)
+        except BacktestJob.DoesNotExist:
+            raise NotFound("Backtest job not found.")
+
+        log_backtest_results_viewed(request, job_id=job_id)
+
+        serializer = BacktestResultsResponseSerializer(data)
+        return Response(serializer.data)
+
+
+class BacktestJobArtifactsView(APIView):
+    """
+    GET /api/backtests/jobs/{id}/artifacts/
+
+    Return safe artifact metadata listing for a BacktestJob.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, job_id):
+        try:
+            artifacts = list_backtest_artifacts_for_user(job_id, request.user)
+        except BacktestJob.DoesNotExist:
+            raise NotFound("Backtest job not found.")
+
+        log_backtest_artifacts_viewed(request, job_id=job_id)
+
+        serializer = BacktestArtifactMetadataSerializer(artifacts, many=True)
+        return Response(serializer.data)
+
+
+# =========================================================================
+# Legacy views (existing — unchanged)
+# =========================================================================
 
 
 class BacktestConfigViewSet(viewsets.ModelViewSet):
