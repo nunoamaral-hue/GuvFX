@@ -1,14 +1,15 @@
 """
-Backtest worker services — Packet B B2.
+Backtest worker services — Packet B B2/B3.
 
 Provides the atomic claim and execution lifecycle for the
-platform-native DB-backed backtest worker.
+platform-native DB-backed backtest worker, with local artifact
+storage integration (B3).
 
-No Celery, no external broker, no storage integration.
+No Celery, no external broker, no cloud storage.
 """
+import json
 import logging
 import platform
-import uuid
 from decimal import Decimal
 
 from django.db import transaction
@@ -20,6 +21,7 @@ from backtests.models import (
     BacktestJob,
     BacktestStatus,
 )
+from backtests.artifact_storage import store_artifact
 from core.audit import (
     log_backtest_execution_claimed,
     log_backtest_execution_completed,
@@ -87,11 +89,9 @@ def run_backtest_execution(execution: BacktestExecution) -> None:
     """
     Execute a single backtest and update lifecycle fields.
 
-    B2 scope: placeholder execution only.  No real engine, no artifact
-    file I/O, no summary calculation.
-
-    Creates placeholder BacktestArtifact metadata rows and updates
-    BacktestExecution + BacktestJob status/timestamps.
+    Placeholder execution only (no real engine yet).  Writes artifact
+    files to local storage (B3) and creates BacktestArtifact metadata
+    rows.  No summary calculation.
     """
     job = execution.backtest_job
     worker_hostname = execution.worker_hostname
@@ -108,8 +108,8 @@ def run_backtest_execution(execution: BacktestExecution) -> None:
         # engine integration will be wired in a future packet.
         _run_placeholder_backtest(execution)
 
-        # ── Create placeholder artifact rows ──
-        _create_placeholder_artifacts(execution)
+        # ── Create artifact files + metadata rows ──
+        _create_artifacts(execution)
 
         # ── Mark execution completed ──
         now = timezone.now()
@@ -169,34 +169,92 @@ def _run_placeholder_backtest(execution: BacktestExecution) -> None:
     )
 
 
-def _create_placeholder_artifacts(execution: BacktestExecution) -> None:
+def _create_artifacts(execution: BacktestExecution) -> None:
     """
-    Create minimal placeholder BacktestArtifact rows.
+    Create artifact files on local storage and corresponding
+    BacktestArtifact metadata rows.
 
-    B2 scope: metadata rows only, no actual file I/O.
+    B3: writes real files via ``artifact_storage.store_artifact``.
+    Content is still placeholder (no real engine yet), but files
+    are persisted, compressed, and checksummed.
+
     Artifacts are immutable once created.
     """
-    placeholder_run_id = execution.run_identifier
+    job = execution.backtest_job
 
-    BacktestArtifact.objects.create(
-        execution=execution,
-        artifact_type="execution_log",
-        file_path=f"placeholder://backtests/{placeholder_run_id}/execution.log",
-        file_size=0,
-        checksum="placeholder-no-file",
+    # ── Execution manifest (JSON) ──
+    manifest_content = json.dumps(
+        {
+            "execution_id": execution.pk,
+            "run_identifier": execution.run_identifier,
+            "job_id": job.pk,
+            "strategy_id": job.strategy_id,
+            "symbol": job.symbol,
+            "timeframe": job.timeframe,
+            "start_date": str(job.start_date),
+            "end_date": str(job.end_date),
+            "parameter_set": job.parameter_set,
+            "worker_hostname": execution.worker_hostname,
+            "started_at": str(execution.started_at) if execution.started_at else None,
+        },
+        indent=2,
     )
+    _write_artifact(execution, "execution_manifest", manifest_content, "json")
 
-    BacktestArtifact.objects.create(
-        execution=execution,
-        artifact_type="result_stub",
-        file_path=f"placeholder://backtests/{placeholder_run_id}/result.json",
-        file_size=0,
-        checksum="placeholder-no-file",
+    # ── Worker execution log (text) ──
+    log_content = (
+        f"BacktestExecution {execution.run_identifier}\n"
+        f"Job: {job.pk} | Strategy: {job.strategy_id}\n"
+        f"Symbol: {job.symbol} | Timeframe: {job.timeframe}\n"
+        f"Range: {job.start_date} – {job.end_date}\n"
+        f"Worker: {execution.worker_hostname}\n"
+        f"Started: {execution.started_at}\n"
+        f"Status: placeholder execution (B3 — no real engine yet)\n"
     )
+    _write_artifact(execution, "execution_log", log_content, "txt")
+
+    # ── Result stub (JSON) ──
+    result_content = json.dumps(
+        {
+            "execution_id": execution.pk,
+            "status": "placeholder",
+            "note": "Real backtest engine not yet integrated.",
+        },
+        indent=2,
+    )
+    _write_artifact(execution, "result_stub", result_content, "json")
 
     logger.info(
-        "Created 2 placeholder artifacts for execution %s",
+        "Created 3 artifacts for execution %s",
         execution.run_identifier,
+    )
+
+
+def _write_artifact(
+    execution: BacktestExecution,
+    artifact_type: str,
+    content: str,
+    extension: str,
+) -> None:
+    """
+    Write a single artifact file and create the BacktestArtifact row.
+
+    Uses ``artifact_storage.store_artifact`` for safe path generation,
+    compression, checksum, and immutability enforcement.
+    """
+    stored = store_artifact(
+        execution_id=execution.pk,
+        artifact_type=artifact_type,
+        content=content,
+        extension=extension,
+    )
+
+    BacktestArtifact.objects.create(
+        execution=execution,
+        artifact_type=artifact_type,
+        file_path=stored.file_path,
+        file_size=stored.file_size,
+        checksum=stored.checksum,
     )
 
 

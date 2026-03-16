@@ -300,6 +300,11 @@ LOGGING = {
         "level": env("DJANGO_LOG_LEVEL", "INFO"),
     },
 }
+# Backtest Artifact Storage (Packet B — B3)
+# Local filesystem root for artifact files.  PostgreSQL stores metadata only.
+BACKTEST_ARTIFACT_ROOT = env("BACKTEST_ARTIFACT_ROOT", str(BASE_DIR / "backtest_artifacts"))
+BACKTEST_ARTIFACT_MAX_BYTES = int(env("BACKTEST_ARTIFACT_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB
+
 # --- Behind Traefik (TLS terminated upstream) ---
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True
