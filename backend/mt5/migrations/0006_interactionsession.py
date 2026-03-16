@@ -28,18 +28,10 @@ class Migration(migrations.Migration):
                 (
                     "state",
                     models.CharField(
-                        choices=[
-                            ("requested", "Requested"),
-                            ("authorized", "Authorized"),
-                            ("starting", "Starting"),
-                            ("active", "Active"),
-                            ("suspended", "Suspended"),
-                            ("ended", "Ended"),
-                            ("failed", "Failed"),
-                        ],
+                        blank=True,
                         db_index=True,
-                        default="requested",
-                        max_length=16,
+                        default="",
+                        max_length=32,
                     ),
                 ),
                 ("requested_at", models.DateTimeField(blank=True, null=True)),

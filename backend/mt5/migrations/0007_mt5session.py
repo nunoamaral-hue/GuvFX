@@ -44,17 +44,10 @@ class Migration(migrations.Migration):
                 (
                     "state",
                     models.CharField(
-                        choices=[
-                            ("pending", "Pending"),
-                            ("launching", "Launching"),
-                            ("connected", "Connected"),
-                            ("suspended", "Suspended"),
-                            ("ended", "Ended"),
-                            ("failed", "Failed"),
-                        ],
+                        blank=True,
                         db_index=True,
-                        default="pending",
-                        max_length=16,
+                        default="",
+                        max_length=32,
                     ),
                 ),
                 ("launch_issued_at", models.DateTimeField(blank=True, null=True)),

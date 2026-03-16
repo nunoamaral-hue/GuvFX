@@ -207,15 +207,6 @@ class InteractionSession(models.Model):
     Lifecycle: requested -> authorized -> started -> ended.
     """
 
-    class State(models.TextChoices):
-        REQUESTED = "requested", "Requested"
-        AUTHORIZED = "authorized", "Authorized"
-        STARTING = "starting", "Starting"
-        ACTIVE = "active", "Active"
-        SUSPENDED = "suspended", "Suspended"
-        ENDED = "ended", "Ended"
-        FAILED = "failed", "Failed"
-
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -234,9 +225,9 @@ class InteractionSession(models.Model):
         related_name="interaction_sessions",
     )
     state = models.CharField(
-        max_length=16,
-        choices=State.choices,
-        default=State.REQUESTED,
+        max_length=32,
+        blank=True,
+        default="",
         db_index=True,
     )
 
@@ -279,14 +270,6 @@ class MT5Session(models.Model):
     InteractionSession.  Tracks adapter connectivity and heartbeat.
     """
 
-    class State(models.TextChoices):
-        PENDING = "pending", "Pending"
-        LAUNCHING = "launching", "Launching"
-        CONNECTED = "connected", "Connected"
-        SUSPENDED = "suspended", "Suspended"
-        ENDED = "ended", "Ended"
-        FAILED = "failed", "Failed"
-
     interaction_session = models.ForeignKey(
         InteractionSession,
         on_delete=models.CASCADE,
@@ -310,9 +293,9 @@ class MT5Session(models.Model):
         help_text="Adapter-assigned session identifier.",
     )
     state = models.CharField(
-        max_length=16,
-        choices=State.choices,
-        default=State.PENDING,
+        max_length=32,
+        blank=True,
+        default="",
         db_index=True,
     )
 
