@@ -3,7 +3,12 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
-import type { BacktestConfig, BacktestRun } from "@/types/backtests";
+import type {
+  BacktestConfig,
+  BacktestRun,
+  BacktestResultsResponse,
+  PromotionCandidate,
+} from "@/types/backtests";
 import { Card } from "@/components/ui/Card";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
@@ -28,7 +33,12 @@ export default function BacktestDetailPage() {
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null);
   const [runningBacktest, setRunningBacktest] = useState(false);
   const [processingPending, setProcessingPending] = useState(false);
-  // Debug info removed for production - was: const [debugInfo, setDebugInfo] = useState<string>("");
+
+  // B5/B7 Promotion state — keyed by run ID
+  const [promotionData, setPromotionData] = useState<
+    Record<number, { results: BacktestResultsResponse | null; loading: boolean; error: string | null }>
+  >({});
+  const [promotingRunId, setPromotingRunId] = useState<number | null>(null);
 
   const labelStyle: React.CSSProperties = {
     color: "#9db0c9",
@@ -276,6 +286,84 @@ export default function BacktestDetailPage() {
           el.scrollIntoView({ behavior: "smooth", block: "nearest" });
         }
       }, 50);
+
+      // Fetch B5 results (promotion data) if not already loaded
+      if (!promotionData[runId]) {
+        fetchPromotionData(runId);
+      }
+    }
+  };
+
+  // B7: Fetch B5 canonical results for a run (best-effort — 404 = no B5 job)
+  const fetchPromotionData = async (runId: number) => {
+    setPromotionData((prev) => ({
+      ...prev,
+      [runId]: { results: null, loading: true, error: null },
+    }));
+
+    try {
+      const data = await apiFetch<BacktestResultsResponse>(
+        `/api/backtests/results/${runId}/`,
+        {}
+      );
+      setPromotionData((prev) => ({
+        ...prev,
+        [runId]: { results: data, loading: false, error: null },
+      }));
+    } catch {
+      // 404 or other error — silently mark as unavailable
+      setPromotionData((prev) => ({
+        ...prev,
+        [runId]: { results: null, loading: false, error: null },
+      }));
+    }
+  };
+
+  // B7: Promote a BacktestExecution
+  const handlePromote = async (runId: number, executionId: number) => {
+    setPromotingRunId(runId);
+    setError(null);
+
+    try {
+      const data = await apiFetch<PromotionCandidate>(
+        `/api/backtests/${executionId}/promote/`,
+        { method: "POST" }
+      );
+
+      // Update local promotion data with the new/existing candidate
+      setPromotionData((prev) => {
+        const existing = prev[runId];
+        if (!existing?.results) return prev;
+        return {
+          ...prev,
+          [runId]: {
+            ...existing,
+            results: { ...existing.results, promotion_candidate: data },
+          },
+        };
+      });
+
+      setInfo("Promotion candidate created successfully.");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to promote execution.";
+      setError(message);
+    } finally {
+      setPromotingRunId(null);
+    }
+  };
+
+  // B7: Promotion status chip color
+  const getPromotionColor = (state: string): string => {
+    switch (state) {
+      case "pending":
+        return "#fbbf24"; // amber
+      case "approved":
+        return "#4ade80"; // green
+      case "rejected":
+        return "#f87171"; // red
+      default:
+        return "#94a3b8"; // gray
     }
   };
 
@@ -744,6 +832,141 @@ export default function BacktestDetailPage() {
                       totalTrades={totalTrades}
                       lang={lang}
                     />
+
+                    {/* B7: Promotion section */}
+                    {(() => {
+                      const promo = promotionData[run.id];
+                      if (!promo || promo.loading) {
+                        return promo?.loading ? (
+                          <div
+                            style={{
+                              marginTop: "0.75rem",
+                              padding: "0.5rem 0.75rem",
+                              fontSize: "0.8rem",
+                              color: "#8fa0b7",
+                            }}
+                          >
+                            Checking promotion status…
+                          </div>
+                        ) : null;
+                      }
+
+                      const results = promo.results;
+                      if (!results || !results.execution_id) return null;
+
+                      const candidate = results.promotion_candidate;
+                      const execId = results.execution_id;
+
+                      return (
+                        <div
+                          style={{
+                            marginTop: "0.75rem",
+                            padding: "0.6rem 0.75rem",
+                            background: "rgba(15, 20, 45, 0.7)",
+                            border: "1px solid rgba(74, 179, 255, 0.12)",
+                            borderRadius: 6,
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: "0.75rem",
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            <div>
+                              <p
+                                style={{
+                                  margin: 0,
+                                  fontSize: "0.82rem",
+                                  color: "#c9d7f2",
+                                  fontWeight: 500,
+                                }}
+                              >
+                                Promotion Candidate
+                              </p>
+                              {candidate ? (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "0.5rem",
+                                    marginTop: "0.25rem",
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      fontSize: "0.72rem",
+                                      padding: "0.15rem 0.5rem",
+                                      borderRadius: 4,
+                                      background: `${getPromotionColor(candidate.state)}18`,
+                                      color: getPromotionColor(candidate.state),
+                                      border: `1px solid ${getPromotionColor(candidate.state)}40`,
+                                      fontWeight: 500,
+                                      textTransform: "capitalize",
+                                    }}
+                                  >
+                                    {candidate.state}
+                                  </span>
+                                  <span
+                                    style={{
+                                      fontSize: "0.72rem",
+                                      color: "#8fa0b7",
+                                    }}
+                                  >
+                                    Created{" "}
+                                    {new Date(candidate.created_at).toLocaleDateString("en-US", {
+                                      year: "numeric",
+                                      month: "short",
+                                      day: "numeric",
+                                    })}
+                                  </span>
+                                </div>
+                              ) : (
+                                <p
+                                  style={{
+                                    margin: "0.2rem 0 0",
+                                    fontSize: "0.75rem",
+                                    color: "#8fa0b7",
+                                  }}
+                                >
+                                  No promotion candidate yet.
+                                </p>
+                              )}
+                            </div>
+
+                            {!candidate && (
+                              <Button
+                                type="button"
+                                onClick={() => handlePromote(run.id, execId)}
+                                disabled={promotingRunId === run.id}
+                                style={{
+                                  padding: "0.35rem 0.7rem",
+                                  fontSize: "0.78rem",
+                                  background:
+                                    "linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)",
+                                  boxShadow: "0 0 8px rgba(139, 92, 246, 0.25)",
+                                  border: "none",
+                                  color: "#fff",
+                                  borderRadius: 5,
+                                  cursor:
+                                    promotingRunId === run.id
+                                      ? "not-allowed"
+                                      : "pointer",
+                                  opacity: promotingRunId === run.id ? 0.6 : 1,
+                                }}
+                              >
+                                {promotingRunId === run.id
+                                  ? "Promoting…"
+                                  : "Promote Candidate"}
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>

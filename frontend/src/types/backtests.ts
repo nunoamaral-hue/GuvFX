@@ -48,6 +48,34 @@ export type BacktestRun = {
   created_at: string;
 };
 
+// B5 Canonical: Promotion candidate (Packet B — B7)
+export type PromotionCandidate = {
+  id: number;
+  backtest_execution_id: number;
+  state: string; // "pending" | "approved" | "rejected"
+  created_at: string;
+  updated_at: string;
+};
+
+// B5 Canonical: Results response shape (GET /api/backtests/results/{job_id}/)
+export type BacktestResultsResponse = {
+  job_id: number;
+  status: string;
+  summary_available: boolean;
+  summary: {
+    total_trades: number;
+    win_rate: number | null;
+    profit_factor: number | null;
+    max_drawdown: number | null;
+    sharpe_ratio: number | null;
+    expectancy: number | null;
+  } | null;
+  execution_id: number | null;
+  execution_status: string | null;
+  artifact_count: number;
+  promotion_candidate: PromotionCandidate | null;
+};
+
 export type BacktestConfig = {
   id: number;
   name: string;
