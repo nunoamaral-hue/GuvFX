@@ -97,3 +97,16 @@ This removed stale containers, rebuilt the Docker network, refreshed Traefik ser
 **Architecture Impact:** NONE
 **Infrastructure Impact:** NONE
 **Status:** RESOLVED
+
+## Documentation Governance Mapping
+
+This repository uses the following canonical mapping:
+
+| Governance Reference | Canonical File |
+|---|---|
+| `GUVFX_IMPLEMENTATION_LOG.md` | `docs/STATUS.md` |
+| `GUVFX_PLATFORM_STATE.md` | `docs/STATUS.md` (shared responsibility) |
+| `GUVFX_TERMINAL_FARM_RUNBOOK.md` | `docs/RUNBOOK.md` |
+| Incident / edge-case tracking | `docs/KNOWN_ISSUES.md` |
+
+All references to `GUVFX_*` documents map to these files. The `docs/` directory is the single source of truth. Do not create duplicate documents with alternate naming or introduce parallel canonical structures.
