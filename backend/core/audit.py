@@ -807,6 +807,26 @@ def log_backtest_promotion_created(
     )
 
 
+def log_execution_candidate_created(
+    request: HttpRequest | None,
+    execution_candidate_id: int,
+    promotion_candidate_id: int,
+    actor_user_id: int,
+) -> None:
+    """Log an execution candidate creation (Packet C2)."""
+    log_event(
+        request,
+        event_type="EXECUTION_CANDIDATE_CREATED",
+        severity="INFO",
+        entity_type="execution_candidate",
+        entity_id=str(execution_candidate_id),
+        metadata={
+            "promotion_candidate_id": promotion_candidate_id,
+            "actor_user_id": actor_user_id,
+        },
+    )
+
+
 def log_backtest_promotion_reviewed(
     request: HttpRequest | None,
     promotion_id: int,

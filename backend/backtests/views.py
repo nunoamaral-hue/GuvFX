@@ -17,6 +17,7 @@ from .serializers import (
     BacktestRunResponseSerializer,
     BacktestRunSerializer,
     BacktestStatusResponseSerializer,
+    ExecutionCandidateResponseSerializer,
     PromotionCandidateReviewSerializer,
     PromotionCandidateSerializer,
     WindowsBacktestRunRequestSerializer,
@@ -30,6 +31,8 @@ from .services import (
     get_backtest_results_for_user,
     list_backtest_artifacts_for_user,
     review_promotion_candidate,
+    create_execution_candidate,
+    PromotionNotApprovedError,
 )
 from admin_ops.permissions import IsSuperOrOpsAdmin
 from strategies.models import Strategy
@@ -225,6 +228,45 @@ class PromotionCandidateReviewView(APIView):
 
         output = PromotionCandidateSerializer(candidate)
         return Response(output.data)
+
+
+class ExecutionCandidateStageView(APIView):
+    """
+    POST /api/backtests/candidates/{id}/stage/
+
+    Stage an approved PromotionCandidate as an ExecutionCandidate.
+    Idempotent: returns existing ExecutionCandidate if already staged.
+    Restricted to ops_admin and super_admin roles.
+
+    Metadata-only — does NOT create ExecutionJobs, trigger workers,
+    or modify the execution pipeline.
+    """
+
+    permission_classes = [IsSuperOrOpsAdmin]
+
+    def post(self, request, candidate_id):
+        try:
+            promo = PromotionCandidate.objects.get(pk=candidate_id)
+        except PromotionCandidate.DoesNotExist:
+            raise NotFound("Promotion candidate not found.")
+
+        try:
+            ec, created = create_execution_candidate(
+                promotion_candidate=promo,
+                actor_user=request.user,
+                request=request,
+            )
+        except PromotionNotApprovedError as e:
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        serializer = ExecutionCandidateResponseSerializer(ec)
+        return Response(
+            serializer.data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 # =========================================================================

@@ -123,6 +123,14 @@ class PromotionCandidateReviewSerializer(serializers.Serializer):
     )
 
 
+class ExecutionCandidateResponseSerializer(serializers.Serializer):
+    """Output for POST /api/backtests/candidates/{id}/stage/ (Packet C2)."""
+
+    execution_candidate_id = serializers.IntegerField(source="id", read_only=True)
+    promotion_candidate_id = serializers.IntegerField(read_only=True)
+    created_at = serializers.DateTimeField(read_only=True)
+
+
 class BacktestResultsResponseSerializer(serializers.Serializer):
     """Output for GET /api/backtests/jobs/{id}/results/."""
 

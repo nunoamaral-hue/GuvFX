@@ -22,6 +22,7 @@ from backtests.models import (
     BacktestJob,
     BacktestStatus,
     BacktestSummary,
+    ExecutionCandidate,
     PromotionCandidate,
     ReviewStatus,
 )
@@ -711,3 +712,67 @@ def review_promotion_candidate(
     )
 
     return candidate
+
+
+# =========================================================================
+# Packet C2: Execution candidate staging
+# =========================================================================
+
+
+class PromotionNotApprovedError(Exception):
+    """Raised when attempting to stage a PromotionCandidate that is not approved."""
+
+    pass
+
+
+def create_execution_candidate(
+    promotion_candidate: PromotionCandidate,
+    actor_user,
+    request=None,
+) -> tuple[ExecutionCandidate, bool]:
+    """
+    Create an ExecutionCandidate for an approved PromotionCandidate.
+
+    Idempotent: returns existing ExecutionCandidate if already present
+    (created=False), without emitting a duplicate audit event.
+
+    Raises PromotionNotApprovedError if PromotionCandidate.review_status
+    is not 'approved'.
+
+    Returns (execution_candidate, created) tuple.
+    """
+    if promotion_candidate.review_status != ReviewStatus.APPROVED:
+        raise PromotionNotApprovedError(
+            f"PromotionCandidate {promotion_candidate.pk} has review_status "
+            f"'{promotion_candidate.review_status}', expected 'approved'."
+        )
+
+    # Idempotent: return existing if present
+    try:
+        existing = promotion_candidate.execution_candidate
+        return existing, False
+    except ExecutionCandidate.DoesNotExist:
+        pass
+
+    candidate = ExecutionCandidate.objects.create(
+        promotion_candidate=promotion_candidate,
+        created_by_user=actor_user,
+    )
+
+    from core.audit import log_execution_candidate_created
+
+    log_execution_candidate_created(
+        request,
+        execution_candidate_id=candidate.pk,
+        promotion_candidate_id=promotion_candidate.pk,
+        actor_user_id=actor_user.pk,
+    )
+
+    logger.info(
+        "Created ExecutionCandidate %d for PromotionCandidate %d by user %s",
+        candidate.pk,
+        promotion_candidate.pk,
+        actor_user.pk,
+    )
+
+    return candidate, True

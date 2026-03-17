@@ -558,6 +558,44 @@ class PromotionCandidate(models.Model):
         )
 
 
+class ExecutionCandidate(models.Model):
+    """
+    Records that an approved PromotionCandidate has been staged for
+    potential future execution consideration.
+
+    This is metadata-only — it does NOT create ExecutionJobs,
+    reference TerminalNodes, trigger workers, or modify the
+    execution pipeline in any way.
+
+    One record per PromotionCandidate (OneToOneField).
+    """
+
+    promotion_candidate = models.OneToOneField(
+        PromotionCandidate,
+        on_delete=models.CASCADE,
+        related_name="execution_candidate",
+    )
+    created_by_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_execution_candidates",
+        help_text="Admin user who staged this candidate.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return (
+            f"ExecutionCandidate #{self.pk} | "
+            f"promo={self.promotion_candidate_id}"
+        )
+
+
 class BacktestSummary(models.Model):
     """
     Aggregated performance summary for a BacktestExecution.
