@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/Button";
 import { useLang } from "@/components/AppShell";
 import { t } from "@/lib/i18n";
 import { RunDetailPanel } from "@/components/backtests";
+import { useAdminRole } from "@/components/admin/useAdminRole";
 
 export default function BacktestDetailPage() {
   const lang = useLang();
@@ -39,6 +40,13 @@ export default function BacktestDetailPage() {
     Record<number, { results: BacktestResultsResponse | null; loading: boolean; error: string | null }>
   >({});
   const [promotingRunId, setPromotingRunId] = useState<number | null>(null);
+
+  // C1-FE: Admin role for review controls
+  const adminCtx = useAdminRole();
+  const canReview =
+    adminCtx.authorized &&
+    (adminCtx.role === "super_admin" || adminCtx.role === "ops_admin");
+  const [reviewingCandidateId, setReviewingCandidateId] = useState<number | null>(null);
 
   const labelStyle: React.CSSProperties = {
     color: "#9db0c9",
@@ -364,6 +372,45 @@ export default function BacktestDetailPage() {
         return "#f87171"; // red
       default:
         return "#94a3b8"; // gray
+    }
+  };
+
+  // C1-FE: Review a promotion candidate (approve/reject)
+  const handleReview = async (
+    runId: number,
+    candidateId: number,
+    decision: "approved" | "rejected"
+  ) => {
+    setReviewingCandidateId(candidateId);
+    setError(null);
+
+    try {
+      const body: Record<string, string> = { decision };
+      const updated = await apiFetch<PromotionCandidate>(
+        `/api/backtests/candidates/${candidateId}/review/`,
+        { method: "POST", body: JSON.stringify(body) }
+      );
+
+      // Update local promotion data with the reviewed candidate
+      setPromotionData((prev) => {
+        const existing = prev[runId];
+        if (!existing?.results) return prev;
+        return {
+          ...prev,
+          [runId]: {
+            ...existing,
+            results: { ...existing.results, promotion_candidate: updated },
+          },
+        };
+      });
+
+      setInfo(`Candidate ${decision} successfully.`);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to review candidate.";
+      setError(message);
+    } finally {
+      setReviewingCandidateId(null);
     }
   };
 
@@ -888,42 +935,104 @@ export default function BacktestDetailPage() {
                                 Promotion Candidate
                               </p>
                               {candidate ? (
-                                <div
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: "0.5rem",
-                                    marginTop: "0.25rem",
-                                  }}
-                                >
-                                  <span
+                                <>
+                                  <div
                                     style={{
-                                      fontSize: "0.72rem",
-                                      padding: "0.15rem 0.5rem",
-                                      borderRadius: 4,
-                                      background: `${getPromotionColor(candidate.state)}18`,
-                                      color: getPromotionColor(candidate.state),
-                                      border: `1px solid ${getPromotionColor(candidate.state)}40`,
-                                      fontWeight: 500,
-                                      textTransform: "capitalize",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: "0.5rem",
+                                      marginTop: "0.25rem",
                                     }}
                                   >
-                                    {candidate.state}
-                                  </span>
-                                  <span
-                                    style={{
-                                      fontSize: "0.72rem",
-                                      color: "#8fa0b7",
-                                    }}
-                                  >
-                                    Created{" "}
-                                    {new Date(candidate.created_at).toLocaleDateString("en-US", {
-                                      year: "numeric",
-                                      month: "short",
-                                      day: "numeric",
-                                    })}
-                                  </span>
-                                </div>
+                                    <span
+                                      style={{
+                                        fontSize: "0.72rem",
+                                        padding: "0.15rem 0.5rem",
+                                        borderRadius: 4,
+                                        background: `${getPromotionColor(candidate.state)}18`,
+                                        color: getPromotionColor(candidate.state),
+                                        border: `1px solid ${getPromotionColor(candidate.state)}40`,
+                                        fontWeight: 500,
+                                        textTransform: "capitalize",
+                                      }}
+                                    >
+                                      {candidate.state}
+                                    </span>
+                                    <span
+                                      style={{
+                                        fontSize: "0.72rem",
+                                        color: "#8fa0b7",
+                                      }}
+                                    >
+                                      Created{" "}
+                                      {new Date(candidate.created_at).toLocaleDateString("en-US", {
+                                        year: "numeric",
+                                        month: "short",
+                                        day: "numeric",
+                                      })}
+                                    </span>
+                                  </div>
+
+                                  {/* C1-FE: Admin review controls */}
+                                  {canReview && candidate.state === "pending" && (
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        gap: "0.4rem",
+                                        marginTop: "0.4rem",
+                                      }}
+                                    >
+                                      <Button
+                                        type="button"
+                                        onClick={() =>
+                                          handleReview(run.id, candidate.id, "approved")
+                                        }
+                                        disabled={reviewingCandidateId === candidate.id}
+                                        style={{
+                                          padding: "0.25rem 0.6rem",
+                                          fontSize: "0.72rem",
+                                          background: "rgba(74, 222, 128, 0.12)",
+                                          border: "1px solid rgba(74, 222, 128, 0.35)",
+                                          color: "#4ade80",
+                                          borderRadius: 4,
+                                          cursor:
+                                            reviewingCandidateId === candidate.id
+                                              ? "not-allowed"
+                                              : "pointer",
+                                          opacity:
+                                            reviewingCandidateId === candidate.id ? 0.5 : 1,
+                                        }}
+                                      >
+                                        {reviewingCandidateId === candidate.id
+                                          ? "Reviewing…"
+                                          : "Approve"}
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        onClick={() =>
+                                          handleReview(run.id, candidate.id, "rejected")
+                                        }
+                                        disabled={reviewingCandidateId === candidate.id}
+                                        style={{
+                                          padding: "0.25rem 0.6rem",
+                                          fontSize: "0.72rem",
+                                          background: "rgba(248, 113, 113, 0.12)",
+                                          border: "1px solid rgba(248, 113, 113, 0.35)",
+                                          color: "#f87171",
+                                          borderRadius: 4,
+                                          cursor:
+                                            reviewingCandidateId === candidate.id
+                                              ? "not-allowed"
+                                              : "pointer",
+                                          opacity:
+                                            reviewingCandidateId === candidate.id ? 0.5 : 1,
+                                        }}
+                                      >
+                                        Reject
+                                      </Button>
+                                    </div>
+                                  )}
+                                </>
                               ) : (
                                 <p
                                   style={{
