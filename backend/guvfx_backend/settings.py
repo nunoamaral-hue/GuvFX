@@ -256,20 +256,25 @@ CSRF_TRUSTED_ORIGINS = [
     "https://api.guvfx.com",
 ]
 CSRF_COOKIE_DOMAIN = ".guvfx.com"
-CSRF_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_HTTPONLY = False  # Must be False so JS can read and send X-CSRFToken header
 CSRF_USE_SESSIONS = False  # Use cookie-based CSRF (double-submit pattern)
 
 # Security Settings
+# SameSite=None requires Secure=True (enforced by browsers).
+# Cross-origin cookie auth (guvfx.com → api.guvfx.com) needs SameSite=None.
 if not DEBUG:
+    SESSION_COOKIE_SAMESITE = "None"
     SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SAMESITE = "None"
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = int(env("DJANGO_HSTS_SECONDS", "31536000"))  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     SECURE_SSL_REDIRECT = env("DJANGO_SSL_REDIRECT", "True").lower() == "true"
 else:
+    SESSION_COOKIE_SAMESITE = "Lax"
     SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SAMESITE = "Lax"
     CSRF_COOKIE_SECURE = False
     SECURE_HSTS_SECONDS = 0
     SECURE_HSTS_INCLUDE_SUBDOMAINS = False
