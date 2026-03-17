@@ -22,6 +22,8 @@ from backtests.models import (
     BacktestJob,
     BacktestStatus,
     BacktestSummary,
+    PromotionCandidate,
+    ReviewStatus,
 )
 from backtests.artifact_storage import store_artifact
 from backtests.summary_engine import compute_and_store_summary
@@ -466,12 +468,19 @@ def get_backtest_results_for_user(job_id: int, user) -> dict:
         "execution_id": None,
         "execution_status": None,
         "artifact_count": 0,
+        "promotion_candidate": None,
     }
 
     if execution:
         result["execution_id"] = execution.pk
         result["execution_status"] = execution.status
         result["artifact_count"] = execution.artifacts.count()
+
+        # Promotion candidate (B7)
+        try:
+            result["promotion_candidate"] = execution.promotion_candidate
+        except PromotionCandidate.DoesNotExist:
+            pass
 
         try:
             summary = execution.summary
@@ -550,3 +559,86 @@ def _get_user_job(job_id: int, user) -> BacktestJob:
     if not user.is_staff:
         qs = qs.filter(user=user)
     return qs.get(pk=job_id)
+
+
+def _get_user_execution(execution_id: int, user) -> BacktestExecution:
+    """
+    Fetch a BacktestExecution by ID with user-scoped access control.
+
+    Ownership is enforced via the parent BacktestJob.user field.
+    Non-staff users can only access executions belonging to their own jobs.
+
+    Raises BacktestExecution.DoesNotExist if not found or not accessible.
+    """
+    qs = BacktestExecution.objects.select_related("backtest_job")
+    if not user.is_staff:
+        qs = qs.filter(backtest_job__user=user)
+    return qs.get(pk=execution_id)
+
+
+# =========================================================================
+# Packet B — B7: Promotion candidate service helpers
+# =========================================================================
+
+
+def get_promotion_candidate_for_execution_for_user(
+    execution_id: int, user
+) -> PromotionCandidate | None:
+    """
+    Return the PromotionCandidate for an execution, or None.
+
+    Enforces user-scoped ownership via the execution → job chain.
+    Raises BacktestExecution.DoesNotExist if execution not found/accessible.
+    """
+    execution = _get_user_execution(execution_id, user)
+    try:
+        return execution.promotion_candidate
+    except PromotionCandidate.DoesNotExist:
+        return None
+
+
+def create_promotion_candidate_for_execution_for_user(
+    execution_id: int, user, request=None
+) -> tuple[PromotionCandidate, bool]:
+    """
+    Idempotent create of a PromotionCandidate for an execution.
+
+    If a candidate already exists, returns it unchanged (created=False).
+    Otherwise creates one with review_status=pending (created=True).
+
+    Emits BACKTEST_PROMOTION_CREATED audit event only on actual creation.
+
+    Returns (candidate, created) tuple.
+    Raises BacktestExecution.DoesNotExist if execution not found/accessible.
+    """
+    execution = _get_user_execution(execution_id, user)
+
+    try:
+        existing = execution.promotion_candidate
+        return existing, False
+    except PromotionCandidate.DoesNotExist:
+        pass
+
+    candidate = PromotionCandidate.objects.create(
+        backtest_execution=execution,
+        review_status=ReviewStatus.PENDING,
+    )
+
+    from core.audit import log_backtest_promotion_created
+
+    log_backtest_promotion_created(
+        request,
+        promotion_id=candidate.pk,
+        execution_id=execution.pk,
+        job_id=execution.backtest_job_id,
+    )
+
+    logger.info(
+        "Created PromotionCandidate %d for execution %d (job %d, user %s)",
+        candidate.pk,
+        execution.pk,
+        execution.backtest_job_id,
+        user.pk,
+    )
+
+    return candidate, True

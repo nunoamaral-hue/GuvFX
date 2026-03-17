@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, NotFound
 
-from .models import BacktestConfig, BacktestJob, BacktestRun, WindowsBacktestJob
+from .models import BacktestConfig, BacktestExecution, BacktestJob, BacktestRun, WindowsBacktestJob
 from .serializers import (
     BacktestArtifactMetadataSerializer,
     BacktestConfigSerializer,
@@ -17,12 +17,14 @@ from .serializers import (
     BacktestRunResponseSerializer,
     BacktestRunSerializer,
     BacktestStatusResponseSerializer,
+    PromotionCandidateSerializer,
     WindowsBacktestRunRequestSerializer,
     WindowsBacktestJobSerializer,
     AIBacktestRecommendationRequestSerializer,
 )
 from .services import (
     create_backtest_request,
+    create_promotion_candidate_for_execution_for_user,
     get_backtest_status_for_user,
     get_backtest_results_for_user,
     list_backtest_artifacts_for_user,
@@ -166,6 +168,31 @@ class BacktestJobArtifactsView(APIView):
 
         serializer = BacktestArtifactMetadataSerializer(artifacts, many=True)
         return Response(serializer.data)
+
+
+class BacktestPromoteView(APIView):
+    """
+    POST /api/backtests/{execution_id}/promote/
+
+    Idempotently create a PromotionCandidate for an execution.
+    Returns existing candidate if already present.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, execution_id):
+        try:
+            candidate, created = create_promotion_candidate_for_execution_for_user(
+                execution_id, request.user, request=request
+            )
+        except BacktestExecution.DoesNotExist:
+            raise NotFound("Backtest execution not found.")
+
+        serializer = PromotionCandidateSerializer(candidate)
+        return Response(
+            serializer.data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 # =========================================================================

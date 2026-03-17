@@ -7,6 +7,7 @@ from .views import (
     BacktestJobResultsView,
     BacktestJobRunView,
     BacktestJobStatusView,
+    BacktestPromoteView,
     BacktestRunViewSet,
     ProcessPendingBacktestsView,
     WindowsBacktestRunView,
@@ -39,6 +40,12 @@ urlpatterns = [
         "artifacts/<int:job_id>/",
         BacktestJobArtifactsView.as_view(),
         name="backtest-artifacts",
+    ),
+    # Packet B — B7: Promotion candidate endpoint
+    path(
+        "<int:execution_id>/promote/",
+        BacktestPromoteView.as_view(),
+        name="backtest-promote",
     ),
     # Legacy endpoints
     path(

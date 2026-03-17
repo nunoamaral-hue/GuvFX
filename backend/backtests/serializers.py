@@ -93,6 +93,20 @@ class BacktestSummarySerializer(serializers.Serializer):
     expectancy = serializers.FloatField(read_only=True, allow_null=True)
 
 
+class PromotionCandidateSerializer(serializers.Serializer):
+    """
+    Output for promotion candidate data (Packet B — B7).
+
+    Maps review_status → state for the approved API shape.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    backtest_execution_id = serializers.IntegerField(read_only=True)
+    state = serializers.CharField(source="review_status", read_only=True)
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+
+
 class BacktestResultsResponseSerializer(serializers.Serializer):
     """Output for GET /api/backtests/jobs/{id}/results/."""
 
@@ -103,6 +117,9 @@ class BacktestResultsResponseSerializer(serializers.Serializer):
     execution_id = serializers.IntegerField(read_only=True, allow_null=True)
     execution_status = serializers.CharField(read_only=True, allow_null=True)
     artifact_count = serializers.IntegerField(read_only=True)
+    promotion_candidate = PromotionCandidateSerializer(
+        read_only=True, allow_null=True
+    )
 
 
 class BacktestArtifactMetadataSerializer(serializers.Serializer):

@@ -782,6 +782,31 @@ def log_backtest_artifacts_viewed(
     )
 
 
+# =============================================================================
+# Backtest Promotion Audit Helpers (Packet B — B7)
+# =============================================================================
+
+
+def log_backtest_promotion_created(
+    request: HttpRequest | None,
+    promotion_id: int,
+    execution_id: int,
+    job_id: int,
+) -> None:
+    """Log a new promotion candidate creation via API."""
+    log_event(
+        request,
+        event_type="BACKTEST_PROMOTION_CREATED",
+        severity="INFO",
+        entity_type="promotion_candidate",
+        entity_id=str(promotion_id),
+        metadata={
+            "execution_id": execution_id,
+            "job_id": job_id,
+        },
+    )
+
+
 def log_entitlement_denied(
     request: HttpRequest | None,
     user_id: int,
