@@ -107,6 +107,22 @@ class PromotionCandidateSerializer(serializers.Serializer):
     updated_at = serializers.DateTimeField(read_only=True)
 
 
+class PromotionCandidateReviewSerializer(serializers.Serializer):
+    """
+    Input for POST /api/backtests/candidates/{id}/review/ (Packet C1).
+
+    Accepts a review decision and optional notes.
+    """
+
+    decision = serializers.ChoiceField(
+        choices=["approved", "rejected"],
+        required=True,
+    )
+    notes = serializers.CharField(
+        required=False, allow_blank=True, default=""
+    )
+
+
 class BacktestResultsResponseSerializer(serializers.Serializer):
     """Output for GET /api/backtests/jobs/{id}/results/."""
 

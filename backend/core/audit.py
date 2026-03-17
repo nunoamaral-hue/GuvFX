@@ -807,6 +807,30 @@ def log_backtest_promotion_created(
     )
 
 
+def log_backtest_promotion_reviewed(
+    request: HttpRequest | None,
+    promotion_id: int,
+    execution_id: int,
+    decision: str,
+    reviewer_id: int,
+    has_notes: bool = False,
+) -> None:
+    """Log a promotion candidate review action (Packet C1)."""
+    log_event(
+        request,
+        event_type="BACKTEST_PROMOTION_REVIEWED",
+        severity="INFO",
+        entity_type="promotion_candidate",
+        entity_id=str(promotion_id),
+        metadata={
+            "execution_id": execution_id,
+            "decision": decision,
+            "reviewer_id": reviewer_id,
+            "has_notes": has_notes,
+        },
+    )
+
+
 def log_entitlement_denied(
     request: HttpRequest | None,
     user_id: int,

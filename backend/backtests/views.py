@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, NotFound
 
-from .models import BacktestConfig, BacktestExecution, BacktestJob, BacktestRun, WindowsBacktestJob
+from .models import BacktestConfig, BacktestExecution, BacktestJob, BacktestRun, PromotionCandidate, WindowsBacktestJob
 from .serializers import (
     BacktestArtifactMetadataSerializer,
     BacktestConfigSerializer,
@@ -17,6 +17,7 @@ from .serializers import (
     BacktestRunResponseSerializer,
     BacktestRunSerializer,
     BacktestStatusResponseSerializer,
+    PromotionCandidateReviewSerializer,
     PromotionCandidateSerializer,
     WindowsBacktestRunRequestSerializer,
     WindowsBacktestJobSerializer,
@@ -28,7 +29,9 @@ from .services import (
     get_backtest_status_for_user,
     get_backtest_results_for_user,
     list_backtest_artifacts_for_user,
+    review_promotion_candidate,
 )
+from admin_ops.permissions import IsSuperOrOpsAdmin
 from strategies.models import Strategy
 from trading.models import TradingAccount
 from billing.enforcement import require_entitlement
@@ -193,6 +196,35 @@ class BacktestPromoteView(APIView):
             serializer.data,
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+
+class PromotionCandidateReviewView(APIView):
+    """
+    POST /api/backtests/candidates/{id}/review/
+
+    Apply a review decision (approved/rejected) to a PromotionCandidate.
+    Restricted to ops_admin and super_admin roles.
+    """
+
+    permission_classes = [IsSuperOrOpsAdmin]
+
+    def post(self, request, candidate_id):
+        serializer = PromotionCandidateReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            candidate = review_promotion_candidate(
+                candidate_id=candidate_id,
+                decision=serializer.validated_data["decision"],
+                notes=serializer.validated_data.get("notes", ""),
+                reviewer=request.user,
+                request=request,
+            )
+        except PromotionCandidate.DoesNotExist:
+            raise NotFound("Promotion candidate not found.")
+
+        output = PromotionCandidateSerializer(candidate)
+        return Response(output.data)
 
 
 # =========================================================================

@@ -10,6 +10,7 @@ from .views import (
     BacktestPromoteView,
     BacktestRunViewSet,
     ProcessPendingBacktestsView,
+    PromotionCandidateReviewView,
     WindowsBacktestRunView,
     WindowsBacktestStatusView,
     WindowsBacktestResultView,
@@ -46,6 +47,12 @@ urlpatterns = [
         "<int:execution_id>/promote/",
         BacktestPromoteView.as_view(),
         name="backtest-promote",
+    ),
+    # Packet C1: Promotion candidate review endpoint
+    path(
+        "candidates/<int:candidate_id>/review/",
+        PromotionCandidateReviewView.as_view(),
+        name="backtest-promotion-review",
     ),
     # Legacy endpoints
     path(

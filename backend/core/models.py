@@ -136,8 +136,9 @@ class AuditEvent(models.Model):
         BACKTEST_RESULTS_VIEWED = "BACKTEST_RESULTS_VIEWED", "Backtest Results Viewed"
         BACKTEST_ARTIFACTS_VIEWED = "BACKTEST_ARTIFACTS_VIEWED", "Backtest Artifacts Viewed"
 
-        # Backtest promotion lifecycle (Packet B — B7)
+        # Backtest promotion lifecycle (Packet B — B7, Packet C1)
         BACKTEST_PROMOTION_CREATED = "BACKTEST_PROMOTION_CREATED", "Backtest Promotion Created"
+        BACKTEST_PROMOTION_REVIEWED = "BACKTEST_PROMOTION_REVIEWED", "Backtest Promotion Reviewed"
 
         # Payment webhook lifecycle
         WEBHOOK_SIGNATURE_FAILED = "WEBHOOK_SIGNATURE_FAILED", "Webhook Signature Failed"

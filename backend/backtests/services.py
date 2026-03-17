@@ -642,3 +642,72 @@ def create_promotion_candidate_for_execution_for_user(
     )
 
     return candidate, True
+
+
+# =========================================================================
+# Packet C1: Promotion candidate review
+# =========================================================================
+
+
+def review_promotion_candidate(
+    candidate_id: int,
+    decision: str,
+    notes: str,
+    reviewer,
+    request=None,
+) -> PromotionCandidate:
+    """
+    Apply a review decision (approved/rejected) to a PromotionCandidate.
+
+    Updates review_status, reviewed_by, reviewed_at, and review_notes.
+    Emits BACKTEST_PROMOTION_REVIEWED audit event.
+
+    Allows overwriting a previous review decision (latest review is truth).
+
+    Args:
+        candidate_id: PK of the PromotionCandidate.
+        decision: "approved" or "rejected".
+        notes: Optional review notes.
+        reviewer: The admin user performing the review.
+        request: HTTP request for audit context.
+
+    Returns the updated PromotionCandidate.
+    Raises PromotionCandidate.DoesNotExist if not found.
+    """
+    candidate = PromotionCandidate.objects.select_related(
+        "backtest_execution", "backtest_execution__backtest_job"
+    ).get(pk=candidate_id)
+
+    candidate.review_status = decision
+    candidate.reviewed_by = reviewer
+    candidate.reviewed_at = timezone.now()
+    candidate.review_notes = notes
+    candidate.save(
+        update_fields=[
+            "review_status",
+            "reviewed_by",
+            "reviewed_at",
+            "review_notes",
+            "updated_at",
+        ]
+    )
+
+    from core.audit import log_backtest_promotion_reviewed
+
+    log_backtest_promotion_reviewed(
+        request,
+        promotion_id=candidate.pk,
+        execution_id=candidate.backtest_execution_id,
+        decision=decision,
+        reviewer_id=reviewer.pk,
+        has_notes=bool(notes),
+    )
+
+    logger.info(
+        "PromotionCandidate %d reviewed as '%s' by user %s",
+        candidate.pk,
+        decision,
+        reviewer.pk,
+    )
+
+    return candidate
