@@ -219,3 +219,43 @@ wine "$HOME/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe"
   - Openbox autostart runs the wallpaper, launches MT5, maximizes the window, and executes the `$HOME/bin/apply-account-config` script inside the MT5 container; the script fills login, server, and (optionally) password fields but does *not* submit the dialog unless `SUBMIT=1` is explicitly enabled.
 
 - Do not reuse the legacy `metatrader5-linux-django-docker` stack; it is discontinued.
+
+## Traefik — Stale Backend Routing (Operational Procedure)
+
+**Trigger:** Intermittent 502 Bad Gateway errors from `api.guvfx.com` with no corresponding backend application errors.
+
+**Root Cause:** Traefik's dynamic Docker-based service discovery can retain stale container IPs in its routing table after container recreation or crashes. This causes intermittent routing to dead containers, producing 502 errors, CORS preflight failures, and auth endpoint failures.
+
+**Symptoms:**
+- Browser login failure ("Failed to fetch")
+- Intermittent 502 Bad Gateway on API calls
+- CORS preflight (OPTIONS) failures that appear and disappear
+- Inconsistent API responses across sequential requests
+- Backend container logs show no corresponding errors
+
+**Resolution:**
+```bash
+# From the VPS host:
+cd /home/ubuntu/guvfx-prod
+docker compose down --remove-orphans
+docker compose up -d
+```
+
+**Effects:**
+- Removes stale/orphan containers from Docker network
+- Rebuilds Docker network mappings
+- Forces Traefik to rediscover all backend targets cleanly
+- Eliminates invalid backend IPs from the routing table
+
+**Validation:**
+```bash
+# Verify CSRF endpoint (10 consecutive hits should all succeed):
+for i in $(seq 1 10); do curl -s -o /dev/null -w "%{http_code}\n" https://api.guvfx.com/api/auth/cookie/csrf/; done
+
+# Verify OPTIONS preflight:
+curl -s -o /dev/null -w "%{http_code}\n" -X OPTIONS https://api.guvfx.com/api/auth/cookie/login/ -H "Origin: https://guvfx.com"
+
+# Verify browser login works end-to-end
+```
+
+**Rule:** If intermittent 502 errors occur with no corresponding backend errors, suspect stale container routing in Traefik. Run `docker compose down --remove-orphans && docker compose up -d` before investigating application-level issues.
