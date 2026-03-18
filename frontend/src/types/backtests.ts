@@ -57,6 +57,13 @@ export type PromotionCandidate = {
   updated_at: string;
 };
 
+// C2: Execution candidate (Packet C2)
+export type ExecutionCandidateResponse = {
+  execution_candidate_id: number;
+  promotion_candidate_id: number;
+  created_at: string;
+};
+
 // B5 Canonical: Results response shape (GET /api/backtests/results/{job_id}/)
 export type BacktestResultsResponse = {
   job_id: number;
@@ -74,6 +81,7 @@ export type BacktestResultsResponse = {
   execution_status: string | null;
   artifact_count: number;
   promotion_candidate: PromotionCandidate | null;
+  execution_candidate: ExecutionCandidateResponse | null;
 };
 
 export type BacktestConfig = {

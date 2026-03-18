@@ -7,6 +7,7 @@ import type {
   BacktestConfig,
   BacktestRun,
   BacktestResultsResponse,
+  ExecutionCandidateResponse,
   PromotionCandidate,
 } from "@/types/backtests";
 import { Card } from "@/components/ui/Card";
@@ -47,6 +48,9 @@ export default function BacktestDetailPage() {
     adminCtx.authorized &&
     (adminCtx.role === "super_admin" || adminCtx.role === "ops_admin");
   const [reviewingCandidateId, setReviewingCandidateId] = useState<number | null>(null);
+
+  // C2-FE: Execution candidate staging state
+  const [stagingCandidateId, setStagingCandidateId] = useState<number | null>(null);
 
   const labelStyle: React.CSSProperties = {
     color: "#9db0c9",
@@ -411,6 +415,40 @@ export default function BacktestDetailPage() {
       setError(message);
     } finally {
       setReviewingCandidateId(null);
+    }
+  };
+
+  // C2-FE: Stage an approved PromotionCandidate as ExecutionCandidate
+  const handleStage = async (runId: number, promoCandidateId: number) => {
+    setStagingCandidateId(promoCandidateId);
+    setError(null);
+
+    try {
+      const data = await apiFetch<ExecutionCandidateResponse>(
+        `/api/backtests/candidates/${promoCandidateId}/stage/`,
+        { method: "POST" }
+      );
+
+      // Update local promotion data with execution_candidate
+      setPromotionData((prev) => {
+        const existing = prev[runId];
+        if (!existing?.results) return prev;
+        return {
+          ...prev,
+          [runId]: {
+            ...existing,
+            results: { ...existing.results, execution_candidate: data },
+          },
+        };
+      });
+
+      setInfo("Candidate marked ready for deployment.");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to stage candidate.";
+      setError(message);
+    } finally {
+      setStagingCandidateId(null);
     }
   };
 
@@ -902,6 +940,7 @@ export default function BacktestDetailPage() {
                       if (!results || !results.execution_id) return null;
 
                       const candidate = results.promotion_candidate;
+                      const execCandidate = results.execution_candidate;
                       const execId = results.execution_id;
 
                       return (
@@ -942,22 +981,40 @@ export default function BacktestDetailPage() {
                                       alignItems: "center",
                                       gap: "0.5rem",
                                       marginTop: "0.25rem",
+                                      flexWrap: "wrap",
                                     }}
                                   >
-                                    <span
-                                      style={{
-                                        fontSize: "0.72rem",
-                                        padding: "0.15rem 0.5rem",
-                                        borderRadius: 4,
-                                        background: `${getPromotionColor(candidate.state)}18`,
-                                        color: getPromotionColor(candidate.state),
-                                        border: `1px solid ${getPromotionColor(candidate.state)}40`,
-                                        fontWeight: 500,
-                                        textTransform: "capitalize",
-                                      }}
-                                    >
-                                      {candidate.state}
-                                    </span>
+                                    {/* C2-FE: Show "Ready for Deployment" if staged, otherwise show promotion state */}
+                                    {execCandidate ? (
+                                      <span
+                                        style={{
+                                          fontSize: "0.72rem",
+                                          padding: "0.15rem 0.5rem",
+                                          borderRadius: 4,
+                                          background: "rgba(56, 189, 248, 0.12)",
+                                          color: "#38bdf8",
+                                          border: "1px solid rgba(56, 189, 248, 0.35)",
+                                          fontWeight: 500,
+                                        }}
+                                      >
+                                        Ready for Deployment
+                                      </span>
+                                    ) : (
+                                      <span
+                                        style={{
+                                          fontSize: "0.72rem",
+                                          padding: "0.15rem 0.5rem",
+                                          borderRadius: 4,
+                                          background: `${getPromotionColor(candidate.state)}18`,
+                                          color: getPromotionColor(candidate.state),
+                                          border: `1px solid ${getPromotionColor(candidate.state)}40`,
+                                          fontWeight: 500,
+                                          textTransform: "capitalize",
+                                        }}
+                                      >
+                                        {candidate.state}
+                                      </span>
+                                    )}
                                     <span
                                       style={{
                                         fontSize: "0.72rem",
@@ -973,8 +1030,8 @@ export default function BacktestDetailPage() {
                                     </span>
                                   </div>
 
-                                  {/* C1-FE: Admin review controls */}
-                                  {canReview && candidate.state === "pending" && (
+                                  {/* C1-FE: Admin review controls (only when pending, not staged) */}
+                                  {canReview && candidate.state === "pending" && !execCandidate && (
                                     <div
                                       style={{
                                         display: "flex",
@@ -1032,6 +1089,41 @@ export default function BacktestDetailPage() {
                                       </Button>
                                     </div>
                                   )}
+
+                                  {/* C2-FE: Admin staging control (approved + not yet staged) */}
+                                  {canReview &&
+                                    candidate.state === "approved" &&
+                                    !execCandidate && (
+                                      <div style={{ marginTop: "0.4rem" }}>
+                                        <Button
+                                          type="button"
+                                          onClick={() =>
+                                            handleStage(run.id, candidate.id)
+                                          }
+                                          disabled={stagingCandidateId === candidate.id}
+                                          style={{
+                                            padding: "0.25rem 0.65rem",
+                                            fontSize: "0.72rem",
+                                            background: "rgba(56, 189, 248, 0.12)",
+                                            border: "1px solid rgba(56, 189, 248, 0.35)",
+                                            color: "#38bdf8",
+                                            borderRadius: 4,
+                                            cursor:
+                                              stagingCandidateId === candidate.id
+                                                ? "not-allowed"
+                                                : "pointer",
+                                            opacity:
+                                              stagingCandidateId === candidate.id
+                                                ? 0.5
+                                                : 1,
+                                          }}
+                                        >
+                                          {stagingCandidateId === candidate.id
+                                            ? "Staging…"
+                                            : "Mark Ready for Deployment"}
+                                        </Button>
+                                      </div>
+                                    )}
                                 </>
                               ) : (
                                 <p
