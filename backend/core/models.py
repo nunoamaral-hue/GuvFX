@@ -141,6 +141,16 @@ class AuditEvent(models.Model):
         BACKTEST_PROMOTION_REVIEWED = "BACKTEST_PROMOTION_REVIEWED", "Backtest Promotion Reviewed"
         EXECUTION_CANDIDATE_CREATED = "EXECUTION_CANDIDATE_CREATED", "Execution Candidate Created"
 
+        # Onboarding lifecycle (Packet A — Onboarding)
+        ONBOARDING_EMAIL_VERIFIED = "ONBOARDING_EMAIL_VERIFIED", "Onboarding Email Verified"
+        ONBOARDING_2FA_ENABLED = "ONBOARDING_2FA_ENABLED", "Onboarding 2FA Enabled"
+        ONBOARDING_RISK_ACCEPTED = "ONBOARDING_RISK_ACCEPTED", "Onboarding Risk Accepted"
+        ONBOARDING_PLAN_SELECTED = "ONBOARDING_PLAN_SELECTED", "Onboarding Plan Selected"
+        ONBOARDING_BROKER_REFERRAL = "ONBOARDING_BROKER_REFERRAL", "Onboarding Broker Referral"
+        ONBOARDING_ACCOUNT_CONNECTED = "ONBOARDING_ACCOUNT_CONNECTED", "Onboarding Account Connected"
+        ONBOARDING_STRATEGY_ASSIGNED = "ONBOARDING_STRATEGY_ASSIGNED", "Onboarding Strategy Assigned"
+        ONBOARDING_COMPLETED = "ONBOARDING_COMPLETED", "Onboarding Completed"
+
         # Payment webhook lifecycle
         WEBHOOK_SIGNATURE_FAILED = "WEBHOOK_SIGNATURE_FAILED", "Webhook Signature Failed"
         WEBHOOK_DUPLICATE_REJECTED = "WEBHOOK_DUPLICATE_REJECTED", "Webhook Duplicate Rejected"

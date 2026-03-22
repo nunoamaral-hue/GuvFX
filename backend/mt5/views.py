@@ -9,6 +9,8 @@ from rest_framework import status
 from mt5.models import Mt5Instance
 from .models import Mt5Credential
 from .crypto import encrypt_password
+from trading.models import TradingAccount
+from trading.crypto import decrypt_password as trading_decrypt_password
 HANDOFF_VALIDATE = Path("/app/.guvfx_handoff_validate")
 HANDOFF = Path("/app/.guvfx_handoff")
 POOL_ROOT = Path("/srv/guvfx/mt5_pool")
@@ -142,9 +144,16 @@ class Mt5StatusView(APIView):
             "updated_at": cred.updated_at,
         }})
 
-from rest_framework.permissions import IsAuthenticated
 from .guac_json import build_mt5_desktop_payload, sign_and_encrypt_json, build_guac_data_url
 from .pool import lease_instance_for_user
+
+
+def _server_name_for_account(account: TradingAccount) -> str:
+    """Return the MT5 server string from a TradingAccount."""
+    if account.broker_server_id:
+        return account.broker_server.server_name
+    return account.broker_name or ""
+
 
 class Mt5DesktopLinkView(APIView):
     permission_classes = [IsAuthenticated]
@@ -155,96 +164,106 @@ class Mt5DesktopLinkView(APIView):
         if not secret_hex:
             return Response({"detail": "GUAC_JSON_SECRET_KEY_HEX not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # Use stable identifier for the ephemeral Guac JSON username
         user_label = f"user-{request.user.id}"
 
-        # HARD GATE: user must have validated MT5 credentials before opening MT5 Desktop
-        cred = Mt5Credential.objects.filter(user=request.user).first()
-        if not cred:
-            return Response({"detail": "No MT5 credentials saved"}, status=status.HTTP_400_BAD_REQUEST)
+        # ── HARD GATE 1: user must have an active TradingAccount ──
+        account = (
+            TradingAccount.objects
+            .select_related("broker_server", "mt5_instance")
+            .filter(user=request.user, is_active=True)
+            .first()
+        )
+        if not account:
+            return Response(
+                {"detail": "No active trading account. Add and activate an account first."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
-        if (cred.last_status != "SUCCESS"):
-            return Response({"detail": "MT5 credentials not active. Please validate first."}, status=status.HTTP_409_CONFLICT)
+        if not account.mt5_instance_id:
+            return Response(
+                {"detail": "Trading account is not bound to an MT5 instance."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
+        # ── Lease instance ──
         inst = lease_instance_for_user(request.user)
         if not inst:
             return Response({"detail": "No MT5 instances available"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-        # Auto-launch into the leased instance (pool-aware handoff)
-        pw = decrypt_password(cred.password_enc)
+        # ── HARD GATE 2: account must be bound to the leased instance ──
+        if account.mt5_instance_id != inst.id:
+            return Response(
+                {"detail": "Active account is bound to a different MT5 instance."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
-        udir = POOL_ROOT / inst.hostname
+        # ── Resolve account credentials for handoff ──
+        server_name = _server_name_for_account(account)
+        pw = trading_decrypt_password(account.password_enc)
+
+        # ── Single handoff path: HANDOFF_POOL (pool-aware) ──
+        udir = HANDOFF_POOL / inst.hostname
         udir.mkdir(parents=True, exist_ok=True)
 
-        (udir / "launch_account.json").write_text(json.dumps(
-        {
-            "login": cred.login,
+        (udir / "launch_account.json").write_text(json.dumps({
+            "user_id": request.user.id,
+            "login": account.account_number,
             "password": pw,
-            "server": cred.server,
+            "server": server_name,
         }), encoding="utf-8")
-
         os.chmod(udir / "launch_account.json", 0o600)
-        (udir / "launch_request.json").write_text(json.dumps(
-        {
+
+        (udir / "launch_request.json").write_text(json.dumps({
             "ts": timezone.now().isoformat(),
+            "user_id": request.user.id,
         }), encoding="utf-8")
-
         os.chmod(udir / "launch_request.json", 0o600)
-        # If user has validated MT5 creds, push an auto-login request into the leased instance
-        cred = Mt5Credential.objects.filter(user=request.user).first()
-        if cred and (cred.last_status == "SUCCESS"):
-            try:
-                pw = decrypt_password(cred.password_enc)
-                udir = HANDOFF_POOL / inst.hostname
-                udir.mkdir(parents=True, exist_ok=True)
 
-                # EPHEMERAL plaintext password -> instance watcher MUST delete after use
-                (udir / "launch_account.json").write_text(json.dumps({
-                    "user_id": request.user.id,
-                    "login": cred.login,
-                    "password": pw,
-                    "server": cred.server,
-                }), encoding="utf-8")
-
-                (udir / "launch_request.json").write_text(json.dumps({
-                    "ts": timezone.now().isoformat(),
-                    "user_id": request.user.id,
-                }), encoding="utf-8")
-            except Exception:
-                # Do not block desktop link if launch file write fails
-                pass
-
+        # ── Build signed Guacamole desktop link ──
         payload = build_mt5_desktop_payload(username=user_label, host_override=inst.hostname)
         data_b64 = sign_and_encrypt_json(payload, secret_hex=secret_hex)
         url = build_guac_data_url(base_url=base_url, data_b64=data_b64)
 
         return Response({"url": url})
 
-from .crypto import decrypt_password
-
 class Mt5LaunchApplyView(APIView):
+    """Queue a launch request for the user's active TradingAccount."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        cred = Mt5Credential.objects.filter(user=request.user).first()
-        if not cred:
-            return Response({"detail": "No MT5 credentials saved"}, status=status.HTTP_400_BAD_REQUEST)
+        from trading.views import _get_user_mt5_instance
 
-        # decrypt only at the moment we write the ephemeral session file
-        pw = decrypt_password(cred.password_enc)
+        account = (
+            TradingAccount.objects
+            .select_related("broker_server", "mt5_instance")
+            .filter(user=request.user, is_active=True)
+            .first()
+        )
+        if not account:
+            return Response({"detail": "No active trading account"}, status=status.HTTP_409_CONFLICT)
 
-        udir = HANDOFF / "free" / str(request.user.id)
+        inst = _get_user_mt5_instance(request.user)
+        if not inst:
+            return Response({"detail": "No MT5 instance assigned"}, status=status.HTTP_409_CONFLICT)
+
+        server_name = _server_name_for_account(account)
+        pw = trading_decrypt_password(account.password_enc)
+
+        udir = HANDOFF_POOL / inst.hostname
         udir.mkdir(parents=True, exist_ok=True)
 
-        # EPHEMERAL: includes plaintext password; MT5 side must delete
         (udir / "launch_account.json").write_text(json.dumps({
-            "login": cred.login,
+            "user_id": request.user.id,
+            "login": account.account_number,
             "password": pw,
-            "server": cred.server,
+            "server": server_name,
         }), encoding="utf-8")
+        os.chmod(udir / "launch_account.json", 0o600)
 
         (udir / "launch_request.json").write_text(json.dumps({
             "ts": timezone.now().isoformat(),
+            "user_id": request.user.id,
         }), encoding="utf-8")
+        os.chmod(udir / "launch_request.json", 0o600)
 
         return Response({"status": "QUEUED"})

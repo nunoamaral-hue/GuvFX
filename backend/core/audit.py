@@ -871,3 +871,40 @@ def log_entitlement_denied(
             "resolved_access_mode": resolved_mode,
         },
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Onboarding lifecycle audit helpers
+# ─────────────────────────────────────────────────────────────────────
+
+
+def log_onboarding_email_verified(request: HttpRequest | None, user_id: int) -> None:
+    log_event(request, event_type="ONBOARDING_EMAIL_VERIFIED", entity_type="user", entity_id=str(user_id))
+
+
+def log_onboarding_2fa_enabled(request: HttpRequest | None, user_id: int) -> None:
+    log_event(request, event_type="ONBOARDING_2FA_ENABLED", entity_type="user", entity_id=str(user_id))
+
+
+def log_onboarding_risk_accepted(request: HttpRequest | None, user_id: int) -> None:
+    log_event(request, event_type="ONBOARDING_RISK_ACCEPTED", entity_type="user", entity_id=str(user_id))
+
+
+def log_onboarding_plan_selected(request: HttpRequest | None, user_id: int, plan: str) -> None:
+    log_event(request, event_type="ONBOARDING_PLAN_SELECTED", entity_type="user", entity_id=str(user_id), metadata={"plan": plan})
+
+
+def log_onboarding_broker_referral(request: HttpRequest | None, user_id: int, broker_code: str) -> None:
+    log_event(request, event_type="ONBOARDING_BROKER_REFERRAL", entity_type="user", entity_id=str(user_id), metadata={"broker_code": broker_code})
+
+
+def log_onboarding_account_connected(request: HttpRequest | None, user_id: int, account_id: int) -> None:
+    log_event(request, event_type="ONBOARDING_ACCOUNT_CONNECTED", entity_type="user", entity_id=str(user_id), metadata={"account_id": account_id})
+
+
+def log_onboarding_strategy_assigned(request: HttpRequest | None, user_id: int, assignment_id: int) -> None:
+    log_event(request, event_type="ONBOARDING_STRATEGY_ASSIGNED", entity_type="user", entity_id=str(user_id), metadata={"assignment_id": assignment_id})
+
+
+def log_onboarding_completed(request: HttpRequest | None, user_id: int) -> None:
+    log_event(request, event_type="ONBOARDING_COMPLETED", entity_type="user", entity_id=str(user_id))

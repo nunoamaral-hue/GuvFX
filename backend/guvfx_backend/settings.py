@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     "billing",
     "reconciliation",
     "admin_ops",
+    "onboarding",
 ]
 
 MIDDLEWARE = [

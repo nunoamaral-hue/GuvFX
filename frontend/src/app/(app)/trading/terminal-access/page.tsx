@@ -12,6 +12,19 @@ import type {
 } from "@/types/mt5-interaction";
 
 // ─────────────────────────────────────────────────────────────────────
+// MT5 credential status type (from GET /api/mt5/status/)
+// ─────────────────────────────────────────────────────────────────────
+
+type Mt5CredentialStatus = {
+  login: string;
+  server: string;
+  last_status: string | null;
+  last_verified_at: string | null;
+  last_error: string | null;
+  updated_at: string;
+} | null;
+
+// ─────────────────────────────────────────────────────────────────────
 // Display helpers
 // ─────────────────────────────────────────────────────────────────────
 
@@ -346,11 +359,56 @@ export default function TerminalAccessPage() {
   const [resuming, setResuming] = useState(false);
   const [resumeResult, setResumeResult] = useState<ResumableContextResponse | null>(null);
 
+  // ── MT5 credential status state ──
+  const [credStatus, setCredStatus] = useState<Mt5CredentialStatus>(null);
+  const [credLoading, setCredLoading] = useState(true);
+  const [desktopLaunching, setDesktopLaunching] = useState(false);
+  const [desktopUrl, setDesktopUrl] = useState<string | null>(null);
+
   // ── Notice state ──
   const [notice, setNotice] = useState<{ type: "info" | "warning" | "error"; message: string } | null>(null);
 
   // ── Polling interval for session status ──
   const [pollInterval, setPollInterval] = useState<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Fetch MT5 credential status ──
+  const fetchCredStatus = useCallback(async () => {
+    setCredLoading(true);
+    try {
+      const data = await apiFetch<{ credential: Mt5CredentialStatus }>(
+        "/api/mt5/status/",
+        {}
+      );
+      setCredStatus(data.credential);
+    } catch {
+      // Non-blocking; credential card simply won't render
+      setCredStatus(null);
+    } finally {
+      setCredLoading(false);
+    }
+  }, []);
+
+  // ── Launch desktop link ──
+  const handleDesktopLaunch = useCallback(async () => {
+    setDesktopLaunching(true);
+    setNotice(null);
+    setDesktopUrl(null);
+    try {
+      const data = await apiFetch<{ url: string }>(
+        "/api/mt5/desktop-link/",
+        { method: "POST" }
+      );
+      setDesktopUrl(data.url);
+      setNotice({ type: "info", message: "Desktop link generated. Opening MT5 terminal..." });
+      // Open in new tab
+      window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to launch MT5 desktop.";
+      setNotice({ type: "error", message });
+    } finally {
+      setDesktopLaunching(false);
+    }
+  }, []);
 
   // ── Fetch terminal bindings ──
   const fetchBindings = useCallback(async () => {
@@ -509,7 +567,8 @@ export default function TerminalAccessPage() {
   // ── Initial fetch ──
   useEffect(() => {
     fetchBindings();
-  }, [fetchBindings]);
+    fetchCredStatus();
+  }, [fetchBindings, fetchCredStatus]);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -530,6 +589,55 @@ export default function TerminalAccessPage() {
       >
         Launch, monitor, and manage MT5 terminal sessions.
       </p>
+
+      {/* ── Safety message ── */}
+      <StateNotice type="info" message="This session is restricted to MT5 interaction only." />
+
+      {/* ── MT5 Runtime Status card ── */}
+      {!credLoading && credStatus && (
+        <div style={{ ...glassCard, marginBottom: "1rem" }}>
+          <div style={sectionHeader}>MT5 Runtime Status</div>
+          <div style={{ display: "flex", flexWrap: "wrap" as const, gap: "1rem 2rem", alignItems: "center", marginBottom: "1rem" }}>
+            <DetailRow label="Login" value={credStatus.login} />
+            <DetailRow label="Server" value={credStatus.server} />
+            <div style={{ minWidth: 180 }}>
+              <div style={labelStyle}>Status</div>
+              <Badge
+                color={
+                  credStatus.last_status === "SUCCESS"
+                    ? "green"
+                    : credStatus.last_status === "FAILED"
+                      ? "red"
+                      : credStatus.last_status === "PENDING"
+                        ? "yellow"
+                        : "gray"
+                }
+              >
+                {credStatus.last_status ?? "Unknown"}
+              </Badge>
+            </div>
+            {credStatus.last_error && (
+              <DetailRow label="Last Error" value={credStatus.last_error} />
+            )}
+            {credStatus.last_verified_at && (
+              <DetailRow label="Verified" value={fmtDateTime(credStatus.last_verified_at)} />
+            )}
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+            <Button
+              onClick={handleDesktopLaunch}
+              disabled={desktopLaunching || credStatus.last_status !== "SUCCESS"}
+            >
+              {desktopLaunching ? "Launching..." : "Launch MT5 Desktop"}
+            </Button>
+            {credStatus.last_status !== "SUCCESS" && (
+              <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+                Validate credentials before launching.
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── State notices ── */}
       {notice && <StateNotice type={notice.type} message={notice.message} />}
