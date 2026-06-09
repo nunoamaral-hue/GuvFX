@@ -102,8 +102,8 @@ def build_mt5_desktop_payload(*, username: str, host_override: str | None = None
                     "username": rdp_user,
                     "password": rdp_pass,
                     "ignore-cert": "true",
-                    "security": "rdp",
-            "color-depth": "24",          # try 24 first (32 is also OK)
+                    "security": "any",
+                    "color-depth": "24",
                 },
             }
         },

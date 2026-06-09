@@ -55,62 +55,74 @@ class GuacamoleVncAdapter(SessionAdapter):
 
     def launch(self, request: AdapterLaunchRequest) -> AdapterResult:
         """
-        Initiate a Guacamole session for the given terminal binding.
+        Initiate a Guacamole session via encrypted JSON auth.
+
+        Uses guacamole-auth-json: builds an encrypted RDP connection
+        payload signed with the shared secret. No pre-provisioned
+        Guacamole connection or guac_connection_id required.
 
         Steps:
-        1. Look up the Mt5Instance to get guac_connection_id
-        2. Obtain a Guacamole auth token (ephemeral, not persisted)
-        3. Build launch URL
-        4. Return AdapterResult with launch descriptor
+        1. Resolve RDP target from TerminalBinding → TerminalNode → Mt5Instance
+        2. Build encrypted JSON auth payload with RDP parameters
+        3. Generate signed Guacamole launch URL
+        4. Return AdapterResult with embed URL
 
         On failure: return AdapterResult(success=False, mapped_state="failed").
         """
+        import os
+
         try:
-            connection_id, connection_name = self._resolve_guac_connection(
-                request.terminal_binding_id,
-                request.terminal_identifier,
+            from mt5.guac_json import (
+                build_mt5_desktop_payload,
+                sign_and_encrypt_json,
+                build_guac_data_url,
             )
 
-            # Obtain ephemeral auth token (NOT persisted)
-            from mt5.services.guac_api import guac_token, launch_url
+            base_url = os.getenv("GUAC_BASE_URL", "").rstrip("/")
+            secret_hex = os.getenv("GUAC_JSON_SECRET_KEY_HEX", "").strip()
 
-            token = guac_token()
-            url = launch_url(token, connection_id)
-            # Token and URL are ephemeral — only the connection_id is
-            # persisted in the launch descriptor.  The token itself
-            # is passed via adapter_metadata for immediate use only.
+            if not base_url or not secret_hex:
+                raise RuntimeError("GUAC_BASE_URL or GUAC_JSON_SECRET_KEY_HEX not configured")
+
+            # Resolve the RDP host from the terminal node
+            rdp_host = self._resolve_rdp_host(request.terminal_node_id)
+
+            user_label = f"user-binding-{request.terminal_binding_id}"
+            payload = build_mt5_desktop_payload(
+                username=user_label,
+                host_override=rdp_host,
+            )
+            data_b64 = sign_and_encrypt_json(payload, secret_hex=secret_hex)
+            url = build_guac_data_url(base_url=base_url, data_b64=data_b64)
+
+            session_id = f"json-auth-{request.terminal_binding_id}"
 
             descriptor = build_launch_descriptor(
                 adapter_type=ADAPTER_TYPE,
-                connection_mode="guacamole_vnc",
+                connection_mode="guacamole_json_auth",
                 terminal_binding_id=request.terminal_binding_id,
                 terminal_node_id=request.terminal_node_id,
                 terminal_identifier=request.terminal_identifier,
                 mt5_account_login=request.mt5_account_login,
-                guacamole_connection_id=str(connection_id),
-                adapter_session_id=f"guac-{connection_id}",
-                resume_hint="reconnect_same_connection",
+                adapter_session_id=session_id,
+                resume_hint="regenerate_json_auth",
             )
 
             return AdapterResult(
                 success=True,
                 mapped_state="launching",
-                adapter_session_id=f"guac-{connection_id}",
+                adapter_session_id=session_id,
                 adapter_type=ADAPTER_TYPE,
                 launch_descriptor=descriptor,
                 adapter_metadata={
-                    # Ephemeral — safe for immediate use by frontend embed,
-                    # not persisted in launch_descriptor_snapshot.
                     "guacamole_launch_url": url,
-                    "guacamole_session_token": token,
-                    "guacamole_connection_name": connection_name,
                 },
             )
 
         except Exception as e:
             error_msg = _sanitize_error(e)
             logger.error(
-                "Guacamole launch failed: binding=%s error=%s",
+                "Guacamole JSON auth launch failed: binding=%s error=%s",
                 request.terminal_binding_id, error_msg,
             )
             return AdapterResult(
@@ -126,71 +138,65 @@ class GuacamoleVncAdapter(SessionAdapter):
 
     def resume(self, request: AdapterResumeRequest) -> AdapterResult:
         """
-        Attempt to reconnect to an existing Guacamole session.
+        Resume by generating a fresh JSON auth URL.
 
-        Reuses the same guac_connection_id from the prior session.
-        Obtains a fresh auth token for reconnection.
+        JSON auth sessions are stateless — each launch generates a
+        fresh encrypted payload. Resume is equivalent to a new launch
+        targeting the same binding.
         """
+        import os
+
         try:
-            # Extract connection_id from prior adapter metadata or session ID
-            connection_id = self._extract_connection_id(
-                request.prior_adapter_session_id,
-                request.prior_adapter_metadata,
+            from mt5.guac_json import (
+                build_mt5_desktop_payload,
+                sign_and_encrypt_json,
+                build_guac_data_url,
             )
 
-            if not connection_id:
-                return AdapterResult(
-                    success=False,
-                    mapped_state="failed",
-                    adapter_type=ADAPTER_TYPE,
-                    error_message=(
-                        "Cannot resume: no usable guacamole_connection_id "
-                        "from prior session."
-                    ),
-                )
+            base_url = os.getenv("GUAC_BASE_URL", "").rstrip("/")
+            secret_hex = os.getenv("GUAC_JSON_SECRET_KEY_HEX", "").strip()
 
-            from mt5.services.guac_api import guac_token, launch_url
+            if not base_url or not secret_hex:
+                raise RuntimeError("GUAC_BASE_URL or GUAC_JSON_SECRET_KEY_HEX not configured")
 
-            token = guac_token()
-            url = launch_url(token, int(connection_id))
+            rdp_host = self._resolve_rdp_host(request.terminal_node_id)
+
+            user_label = f"user-binding-{request.terminal_binding_id}"
+            payload = build_mt5_desktop_payload(username=user_label, host_override=rdp_host)
+            data_b64 = sign_and_encrypt_json(payload, secret_hex=secret_hex)
+            url = build_guac_data_url(base_url=base_url, data_b64=data_b64)
+
+            session_id = f"json-auth-{request.terminal_binding_id}"
 
             descriptor = build_launch_descriptor(
                 adapter_type=ADAPTER_TYPE,
-                connection_mode="guacamole_vnc",
+                connection_mode="guacamole_json_auth",
                 terminal_binding_id=request.terminal_binding_id,
                 terminal_node_id=request.terminal_node_id,
                 terminal_identifier=request.terminal_identifier,
                 mt5_account_login=request.mt5_account_login,
-                guacamole_connection_id=str(connection_id),
-                adapter_session_id=f"guac-{connection_id}",
-                resume_hint="reconnected_existing_connection",
+                adapter_session_id=session_id,
+                resume_hint="regenerate_json_auth",
             )
 
             return AdapterResult(
                 success=True,
                 mapped_state="connected",
-                adapter_session_id=f"guac-{connection_id}",
+                adapter_session_id=session_id,
                 adapter_type=ADAPTER_TYPE,
                 launch_descriptor=descriptor,
                 adapter_metadata={
                     "guacamole_launch_url": url,
-                    "guacamole_session_token": token,
                     "resumed": True,
                 },
             )
 
         except Exception as e:
             error_msg = _sanitize_error(e)
-            logger.error(
-                "Guacamole resume failed: binding=%s error=%s",
-                request.terminal_binding_id, error_msg,
-            )
-            return AdapterResult(
-                success=False,
-                mapped_state="failed",
-                adapter_type=ADAPTER_TYPE,
-                error_message=error_msg,
-            )
+            logger.error("Guacamole resume failed: binding=%s error=%s",
+                         request.terminal_binding_id, error_msg)
+            return AdapterResult(success=False, mapped_state="failed",
+                                 adapter_type=ADAPTER_TYPE, error_message=error_msg)
 
     # -----------------------------------------------------------------
     # SessionAdapter.terminate
@@ -290,35 +296,31 @@ class GuacamoleVncAdapter(SessionAdapter):
     # Internal helpers
     # -----------------------------------------------------------------
 
-    def _resolve_guac_connection(
-        self,
-        terminal_binding_id: int,
-        terminal_identifier: str,
-    ) -> tuple[int, str]:
+    def _resolve_rdp_host(self, terminal_node_id: int) -> str:
         """
-        Resolve the Guacamole connection_id for a terminal binding.
+        Resolve the RDP hostname for a TerminalNode.
 
-        Looks up the Mt5Instance by matching terminal_identifier
-        to hostname, and returns (guac_connection_id, connection_name).
+        Looks up TerminalNode → Mt5Instance (by matching hostname)
+        and returns the Mt5Instance.rdp_host for RDP connection.
 
-        Raises RuntimeError if no matching instance or no connection_id.
+        Falls back to TerminalNode.hostname if no Mt5Instance found
+        (the hostname may be directly routable via Tailscale).
         """
+        from execution.models import TerminalNode
         from mt5.models import Mt5Instance
 
         try:
-            instance = Mt5Instance.objects.get(hostname=terminal_identifier)
-        except Mt5Instance.DoesNotExist:
-            raise RuntimeError(
-                f"No Mt5Instance found for hostname={terminal_identifier}"
-            )
+            node = TerminalNode.objects.get(pk=terminal_node_id)
+        except TerminalNode.DoesNotExist:
+            raise RuntimeError(f"TerminalNode id={terminal_node_id} not found")
 
-        if not instance.guac_connection_id:
-            raise RuntimeError(
-                f"Mt5Instance {terminal_identifier} has no "
-                f"guac_connection_id configured."
-            )
+        # Try to find Mt5Instance with matching hostname for rdp_host
+        instance = Mt5Instance.objects.filter(hostname=node.hostname).first()
+        if instance and instance.rdp_host:
+            return instance.rdp_host
 
-        return instance.guac_connection_id, instance.hostname
+        # Fallback: use the node hostname directly
+        return node.hostname
 
     def _extract_connection_id(
         self,
