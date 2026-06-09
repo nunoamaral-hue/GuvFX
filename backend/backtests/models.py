@@ -596,6 +596,99 @@ class ExecutionCandidate(models.Model):
         )
 
 
+class ResearchObservation(models.Model):
+    """
+    A single research observation from the Research Knowledge Base.
+
+    Each time Strategy Lab, Research Matrix, or any research endpoint runs
+    a backtest for a (symbol, template, timeframe) combination, the result
+    is recorded here.  Multiple observations accumulate over time, enabling
+    long-term confidence tracking.
+
+    Research Mode only — no live execution side effects.
+    """
+
+    symbol = models.CharField(max_length=32, db_index=True)
+    template = models.CharField(max_length=64, db_index=True)
+    timeframe = models.CharField(max_length=20, db_index=True)
+    parameters = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Strategy parameters used for this observation.",
+    )
+
+    # Core metrics
+    research_score = models.IntegerField(
+        default=0,
+        help_text="Composite research score (0-100).",
+    )
+    robustness_label = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="STRONG / PROMISING / WATCHLIST / WEAK",
+    )
+    profit_factor = models.FloatField(default=0.0)
+    max_drawdown = models.FloatField(default=0.0, help_text="Max drawdown as pct.")
+    net_profit = models.FloatField(default=0.0)
+    total_return_pct = models.FloatField(default=0.0)
+    win_rate = models.FloatField(default=0.0)
+    total_trades = models.IntegerField(default=0)
+    expectancy = models.FloatField(default=0.0)
+
+    # Regime context
+    regime_at_observation = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="Market regime at observation time (BULL/BEAR/SIDEWAYS).",
+    )
+
+    # Walk-forward (if available)
+    walk_forward_degradation = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Walk-forward degradation pct (null if not run).",
+    )
+    walk_forward_robust = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text="Walk-forward robustness flag.",
+    )
+
+    # Data quality
+    bar_count = models.IntegerField(default=0)
+    data_quality_status = models.CharField(max_length=20, blank=True, default="OK")
+
+    # Source tracking
+    source = models.CharField(
+        max_length=40,
+        default="strategy_lab",
+        help_text="Which endpoint created this: strategy_lab, research_matrix, optimise, etc.",
+    )
+
+    observed_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-observed_at"]
+        indexes = [
+            models.Index(
+                fields=["symbol", "template", "timeframe"],
+                name="ro_sym_tmpl_tf_idx",
+            ),
+            models.Index(
+                fields=["research_score"],
+                name="ro_score_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"ResearchObservation {self.symbol}/{self.template}/{self.timeframe} "
+            f"score={self.research_score} @ {self.observed_at}"
+        )
+
+
 class BacktestSummary(models.Model):
     """
     Aggregated performance summary for a BacktestExecution.

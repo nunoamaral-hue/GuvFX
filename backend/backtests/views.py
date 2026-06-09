@@ -370,6 +370,37 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class ResearchKnowledgeBaseView(APIView):
+    """
+    GET /api/backtests/research-knowledge/
+
+    Query the Research Knowledge Base for aggregated long-term research metrics.
+    Returns strongest, weakest, most tested, and highest confidence combinations.
+
+    Research Mode only — no live execution side effects.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.knowledge_base import query_knowledge_base, result_to_dict as kb_to_dict
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        symbol = request.query_params.get("symbol")
+        template = request.query_params.get("template")
+        timeframe = request.query_params.get("timeframe")
+        min_runs = int(request.query_params.get("min_runs", 1))
+        top_n = min(int(request.query_params.get("top_n", 10)), 50)
+
+        result = query_knowledge_base(
+            symbol=symbol, template=template, timeframe=timeframe,
+            min_runs=min_runs, top_n=top_n,
+        )
+
+        return Response({"ok": True, **kb_to_dict(result)})
+
+
 class BacktestRecommendationsView(APIView):
     """
     POST /api/backtests/research-recommendations/
@@ -403,6 +434,11 @@ class BacktestRecommendationsView(APIView):
         )
         matrix_dict = matrix_to_dict(matrix_result)
         matrix_rows = matrix_dict.get("all_rows", [])
+
+        # B14: Record matrix observations in Knowledge Base
+        from backtests.knowledge_base import record_from_matrix_row
+        for row in matrix_rows:
+            record_from_matrix_row(row, source="recommendations")
 
         # 2. Regime analysis (on first symbol)
         regime_data = None
@@ -511,7 +547,13 @@ class BacktestResearchMatrixView(APIView):
             max_combinations=max_combos,
         )
 
-        return Response({"ok": True, **matrix_to_dict(result)})
+        # B14: Record observations in Knowledge Base
+        from backtests.knowledge_base import record_from_matrix_row
+        result_dict = matrix_to_dict(result)
+        for row in result_dict.get("all_rows", []):
+            record_from_matrix_row(row, source="research_matrix")
+
+        return Response({"ok": True, **result_dict})
 
 
 class BacktestRegimeFilterView(APIView):
@@ -564,7 +606,28 @@ class BacktestRegimeFilterView(APIView):
         if result.error:
             return Response({"ok": False, "error": result.error}, status=400)
 
-        return Response({"ok": True, **comparison_to_dict(result)})
+        # B14: Record baseline observation in Knowledge Base
+        from backtests.knowledge_base import record_from_backtest_metrics
+        cmp = comparison_to_dict(result)
+        baseline = cmp.get("comparison", {})
+        if baseline.get("baseline_trades", 0) > 0:
+            record_from_backtest_metrics(
+                symbol=symbol, template=template_name, timeframe=timeframe,
+                metrics={
+                    "profit_factor": baseline.get("baseline_profit_factor", 0),
+                    "max_drawdown": baseline.get("baseline_max_drawdown", 0),
+                    "net_profit": baseline.get("baseline_net_profit", 0),
+                    "win_rate": baseline.get("baseline_win_rate", 0),
+                    "total_trades": baseline.get("baseline_trades", 0),
+                    "total_return_pct": 0,
+                    "expectancy": 0,
+                },
+                params=template_params,
+                bar_count=bar_count,
+                source="regime_filter",
+            )
+
+        return Response({"ok": True, **cmp})
 
 
 class BacktestRegimeAnalysisView(APIView):
@@ -680,7 +743,30 @@ class BacktestOptimiseView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({"ok": True, **result_to_dict(result)})
+        # B14: Record top result in Knowledge Base
+        from backtests.knowledge_base import record_observation
+        opt_dict = result_to_dict(result)
+        top = opt_dict.get("top_results", [])
+        wf = opt_dict.get("walk_forward", [])
+        if top:
+            best = top[0]
+            wf_deg = wf[0].get("degradation_pct") if wf else None
+            wf_rob = wf[0].get("robust") if wf else None
+            record_observation(
+                symbol=symbol, template=template_name, timeframe=timeframe,
+                parameters=best.get("params", {}),
+                profit_factor=float(best.get("profit_factor", 0)),
+                max_drawdown=float(best.get("max_drawdown", 0)),
+                net_profit=float(best.get("net_profit", 0)),
+                win_rate=float(best.get("win_rate", 0)),
+                total_trades=int(best.get("trade_count", 0)),
+                walk_forward_degradation=wf_deg,
+                walk_forward_robust=wf_rob,
+                bar_count=bar_count,
+                source="optimise",
+            )
+
+        return Response({"ok": True, **opt_dict})
 
 
 class BacktestTemplateListView(APIView):

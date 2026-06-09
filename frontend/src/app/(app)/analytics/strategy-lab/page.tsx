@@ -103,6 +103,24 @@ export default function StrategyLabPage() {
   const [recommendations, setRecommendations] = useState<RecItem[]>([]);
   const [recSummary, setRecSummary] = useState<Record<string, number>>({});
 
+  // B14: Knowledge Base state
+  type KBEntry = {
+    symbol: string; template: string; timeframe: string;
+    run_count: number; avg_score: number; avg_pf: number;
+    avg_drawdown: number; avg_return: number; avg_win_rate: number;
+    confidence: string; confidence_score: number;
+    robustness_pct: number; best_score: number; worst_score: number;
+    last_score: number; last_observed: string;
+    wf_run_count: number; wf_robust_pct: number;
+    score_stddev: number;
+    regime_distribution: Record<string, number>;
+  };
+  const [kbStrongest, setKbStrongest] = useState<KBEntry[]>([]);
+  const [kbMostTested, setKbMostTested] = useState<KBEntry[]>([]);
+  const [kbHighConf, setKbHighConf] = useState<KBEntry[]>([]);
+  const [kbTotalObs, setKbTotalObs] = useState(0);
+  const [kbTotalCombos, setKbTotalCombos] = useState(0);
+
   const [loading, setLoading] = useState("");
   const [error, setError] = useState("");
 
@@ -120,6 +138,8 @@ export default function StrategyLabPage() {
     setRegime(null); setRegimePerf(null); setComparison(null);
     setOptResults([]); setWfResults([]); setOptWarnings([]);
     setRecommendations([]); setRecSummary({});
+    setKbStrongest([]); setKbMostTested([]); setKbHighConf([]);
+    setKbTotalObs(0); setKbTotalCombos(0);
 
     try {
       // 1. Regime analysis + filtered backtest
@@ -209,6 +229,26 @@ export default function StrategyLabPage() {
         if (recRes.ok) {
           setRecommendations(recRes.recommendations || []);
           setRecSummary(recRes.summary || {});
+        }
+      } catch { /* non-blocking */ }
+
+      // 6. Knowledge Base (fetch after observations have been recorded)
+      setLoading("Loading knowledge base...");
+      try {
+        const kbRes = await apiFetch<{
+          ok: boolean;
+          strongest: KBEntry[];
+          most_tested: KBEntry[];
+          highest_confidence: KBEntry[];
+          total_observations: number;
+          total_combinations: number;
+        }>(`/api/backtests/research-knowledge/?symbol=${symbol}&top_n=5`, {});
+        if (kbRes.ok) {
+          setKbStrongest(kbRes.strongest || []);
+          setKbMostTested(kbRes.most_tested || []);
+          setKbHighConf(kbRes.highest_confidence || []);
+          setKbTotalObs(kbRes.total_observations || 0);
+          setKbTotalCombos(kbRes.total_combinations || 0);
         }
       } catch { /* non-blocking */ }
 
@@ -458,6 +498,126 @@ export default function StrategyLabPage() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Knowledge Base ── */}
+      {(kbStrongest.length > 0 || kbMostTested.length > 0) && (
+        <div style={glass}>
+          <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>Research Knowledge Base</span>
+            <span style={{ fontSize: "0.68rem", color: "#64748b", fontWeight: 400, textTransform: "none" }}>
+              {kbTotalObs} observations · {kbTotalCombos} combinations
+            </span>
+          </div>
+
+          {/* Strongest Combinations */}
+          {kbStrongest.length > 0 && (
+            <div style={{ marginBottom: "1rem" }}>
+              <div style={{ fontSize: "0.72rem", color: "#86efac", fontWeight: 600, marginBottom: "0.4rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                Strongest Combinations
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={th}>Template</th><th style={th}>Timeframe</th>
+                    <th style={th}>Runs</th><th style={th}>Avg Score</th><th style={th}>Avg PF</th>
+                    <th style={th}>Avg DD</th><th style={th}>Confidence</th><th style={th}>Robustness</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {kbStrongest.map((e, i) => (
+                    <tr key={`s-${i}`}>
+                      <td style={{ ...td, fontSize: "0.78rem" }}>{e.template}</td>
+                      <td style={td}>{e.timeframe}</td>
+                      <td style={numTd}>{e.run_count}</td>
+                      <td style={{ ...numTd, color: e.avg_score >= 60 ? "#86efac" : e.avg_score >= 40 ? "#fbbf24" : "#fca5a5" }}>
+                        {e.avg_score}
+                      </td>
+                      <td style={numTd}>{e.avg_pf.toFixed(2)}</td>
+                      <td style={numTd}>{pct(e.avg_drawdown)}</td>
+                      <td style={td}>
+                        <Badge color={e.confidence === "high" ? "green" : e.confidence === "medium" ? "yellow" : "gray"}>
+                          {e.confidence.toUpperCase()} ({e.confidence_score})
+                        </Badge>
+                      </td>
+                      <td style={numTd}>{pct(e.robustness_pct)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Highest Confidence */}
+          {kbHighConf.length > 0 && (
+            <div style={{ marginBottom: "1rem" }}>
+              <div style={{ fontSize: "0.72rem", color: "#4ab3ff", fontWeight: 600, marginBottom: "0.4rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                Highest Confidence
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={th}>Template</th><th style={th}>TF</th>
+                    <th style={th}>Runs</th><th style={th}>Score ±σ</th>
+                    <th style={th}>Confidence</th><th style={th}>WF Runs</th><th style={th}>WF Robust</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {kbHighConf.map((e, i) => (
+                    <tr key={`c-${i}`}>
+                      <td style={{ ...td, fontSize: "0.78rem" }}>{e.template}</td>
+                      <td style={td}>{e.timeframe}</td>
+                      <td style={numTd}>{e.run_count}</td>
+                      <td style={numTd}>
+                        {e.avg_score} <span style={{ color: "#64748b", fontSize: "0.7rem" }}>±{e.score_stddev}</span>
+                      </td>
+                      <td style={td}>
+                        <Badge color={e.confidence === "high" ? "green" : e.confidence === "medium" ? "yellow" : "gray"}>
+                          {e.confidence_score}
+                        </Badge>
+                      </td>
+                      <td style={numTd}>{e.wf_run_count}</td>
+                      <td style={numTd}>{e.wf_run_count > 0 ? pct(e.wf_robust_pct) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Most Tested */}
+          {kbMostTested.length > 0 && (
+            <div>
+              <div style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 600, marginBottom: "0.4rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                Most Tested
+              </div>
+              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                {kbMostTested.map((e, i) => (
+                  <div key={`mt-${i}`} style={{
+                    padding: "0.5rem 0.75rem", borderRadius: 8,
+                    border: "1px solid rgba(74,179,255,0.08)", background: "rgba(74,179,255,0.02)",
+                    fontSize: "0.78rem", color: "#b7c5dd",
+                  }}>
+                    <div style={{ fontWeight: 600, color: "#e5f4ff", marginBottom: "0.15rem" }}>
+                      {e.template} · {e.timeframe}
+                    </div>
+                    <div style={{ display: "flex", gap: "0.75rem", fontSize: "0.72rem" }}>
+                      <span>{e.run_count} runs</span>
+                      <span>Score: {e.avg_score}</span>
+                      <span>Best: {e.best_score}</span>
+                      <span>Worst: {e.worst_score}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ fontSize: "0.68rem", color: "#475569", marginTop: "0.75rem" }}>
+            Knowledge Base accumulates observations from Strategy Lab, Research Matrix, and Optimisation runs.
+            Confidence reflects consistency, sample size, and walk-forward robustness — not predicted future performance.
+          </div>
         </div>
       )}
 

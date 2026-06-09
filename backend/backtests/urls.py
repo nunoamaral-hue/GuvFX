@@ -19,6 +19,7 @@ from .views import (
     ProcessPendingBacktestsView,
     PromotionCandidateReviewView,
     ExecutionCandidateStageView,
+    ResearchKnowledgeBaseView,
     WindowsBacktestRunView,
     WindowsBacktestStatusView,
     WindowsBacktestResultView,
@@ -109,6 +110,12 @@ urlpatterns = [
         "research-recommendations/",
         BacktestRecommendationsView.as_view(),
         name="backtests-research-recommendations",
+    ),
+    # B14: Research Knowledge Base
+    path(
+        "research-knowledge/",
+        ResearchKnowledgeBaseView.as_view(),
+        name="backtests-research-knowledge",
     ),
     # Process pending runs
     path(
