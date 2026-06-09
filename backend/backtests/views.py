@@ -370,6 +370,40 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class BacktestPortfolioResearchView(APIView):
+    """
+    POST /api/backtests/portfolio-research/
+
+    Build and analyse portfolio combinations.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.portfolio_research import build_portfolio, portfolio_to_dict
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        data = request.data
+        components = data.get("components", [])
+        name = data.get("name", "Custom Portfolio")
+        bar_count = int(data.get("bar_count", 1000))
+
+        if not components or len(components) < 2:
+            return Response({"ok": False, "error": "At least 2 components required"}, status=400)
+        if len(components) > 8:
+            return Response({"ok": False, "error": "Max 8 components"}, status=400)
+
+        result = build_portfolio(
+            specs=components, bar_count=bar_count, name=name,
+        )
+
+        if result.error:
+            return Response({"ok": False, "error": result.error}, status=400)
+
+        return Response({"ok": True, **portfolio_to_dict(result)})
+
+
 class BacktestResearchMatrixView(APIView):
     """
     POST /api/backtests/research-matrix/
