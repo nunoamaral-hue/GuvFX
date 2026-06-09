@@ -27,6 +27,7 @@ import { detectLang, t } from "@/lib/i18n";
 // =============================================================================
 
 type AuthState = "checking" | "ok" | "error";
+type OnboardingGateState = "checking" | "complete" | "incomplete";
 
 const API_BASE = "https://api.guvfx.com";
 
@@ -187,13 +188,77 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 // =============================================================================
-// LAYOUT — AuthGate wraps AppShell wraps page content
+// ONBOARDING GATE — redirects incomplete users to /onboarding
+// =============================================================================
+
+function OnboardingGate({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const [gateState, setGateState] = useState<OnboardingGateState>(() =>
+    isLocalhostEnv() ? "complete" : "checking"
+  );
+
+  useEffect(() => {
+    if (isLocalhostEnv()) return;
+
+    // Allow the onboarding page itself to render without redirect
+    if (pathname === "/onboarding" || pathname.startsWith("/onboarding/")) {
+      setGateState("complete");
+      return;
+    }
+
+    let cancelled = false;
+
+    async function checkOnboarding() {
+      try {
+        const res = await fetch(`${API_BASE}/api/onboarding/state/`, {
+          method: "GET",
+          credentials: "include",
+        });
+
+        if (cancelled) return;
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.onboarding_completed) {
+            setGateState("complete");
+          } else {
+            // Incomplete onboarding — redirect
+            window.location.replace("/onboarding");
+          }
+        } else {
+          // Can't determine state — let through (fail-open for non-blocking)
+          setGateState("complete");
+        }
+      } catch {
+        if (!cancelled) {
+          // Network error — fail-open
+          setGateState("complete");
+        }
+      }
+    }
+
+    checkOnboarding();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
+  if (gateState === "checking") {
+    return null; // AuthGate already shows loading spinner
+  }
+
+  return <>{children}</>;
+}
+
+// =============================================================================
+// LAYOUT — AuthGate wraps OnboardingGate wraps AppShell wraps page content
 // =============================================================================
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <AuthGate>
-      <AppShell>{children}</AppShell>
+      <OnboardingGate>
+        <AppShell>{children}</AppShell>
+      </OnboardingGate>
     </AuthGate>
   );
 }

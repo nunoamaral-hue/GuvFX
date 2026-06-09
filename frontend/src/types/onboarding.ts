@@ -43,20 +43,67 @@ export type OnboardingStepId =
   | "account_connected"
   | "strategy_assigned";
 
-/** Step metadata for the UI */
+/**
+ * Canonical 5-step onboarding model (public-facing labels).
+ *
+ * Step 1: Create account       — handled by /register (not in this list)
+ * Step 2: Select plan          — plan_selected
+ * Step 3: Complete profile     — risk_accepted (+ optional email_verified, 2FA)
+ * Step 4: Connect broker       — account_connected
+ * Step 5: Get started          — strategy_assigned + readiness review
+ */
 export type StepConfig = {
-  id: OnboardingStepId | "readiness";
+  /** UI step number (2–5, since step 1 is /register) */
+  stepNumber: number;
+  /** Canonical label shown in progress rail */
   label: string;
-  required: boolean;
+  /**
+   * Backend flags that must ALL be true for this step to be considered complete.
+   * Only required flags are listed — optional flags (2FA) are handled within
+   * the step component itself.
+   */
+  requiredFlags: OnboardingStepId[];
+  /** Component key used by OnboardingShell to render the right step */
+  componentKey: string;
 };
 
-/** Ordered step list */
+/** Ordered onboarding steps (steps 2–5; step 1 is /register) */
 export const ONBOARDING_STEPS: StepConfig[] = [
-  { id: "email_verified", label: "Email Verification", required: true },
-  { id: "two_factor_enabled", label: "Two-Factor Authentication", required: false },
-  { id: "risk_accepted", label: "Risk Disclosure", required: true },
-  { id: "plan_selected", label: "Plan Selection", required: true },
-  { id: "account_connected", label: "Account Connection", required: true },
-  { id: "strategy_assigned", label: "Strategy Assignment", required: true },
-  { id: "readiness", label: "Readiness Review", required: true },
+  {
+    stepNumber: 2,
+    label: "Select plan",
+    requiredFlags: ["plan_selected"],
+    componentKey: "plan",
+  },
+  {
+    stepNumber: 3,
+    label: "Complete profile",
+    requiredFlags: ["risk_accepted"],
+    componentKey: "profile",
+  },
+  {
+    stepNumber: 4,
+    label: "Connect broker",
+    requiredFlags: ["account_connected"],
+    componentKey: "broker",
+  },
+  {
+    stepNumber: 5,
+    label: "Get started",
+    requiredFlags: ["strategy_assigned"],
+    componentKey: "get_started",
+  },
 ];
+
+/** Check if all required flags for a step are satisfied */
+export function isStepComplete(state: OnboardingState, step: StepConfig): boolean {
+  return step.requiredFlags.every((flag) => state[flag]);
+}
+
+/** Find the index of the first incomplete step, or -1 if all complete */
+export function findCurrentStepIndex(state: OnboardingState): number {
+  for (let i = 0; i < ONBOARDING_STEPS.length; i++) {
+    if (!isStepComplete(state, ONBOARDING_STEPS[i])) return i;
+  }
+  return -1; // all complete
+}

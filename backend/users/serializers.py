@@ -27,6 +27,11 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = ["email", "username", "password", "first_name", "last_name"]
 
+    def validate_password(self, value):
+        """Run Django's password validators (common passwords, similarity, etc.)."""
+        validate_password(value)
+        return value
+
     def create(self, validated_data):
         password = validated_data.pop("password")
         user = User(**validated_data)

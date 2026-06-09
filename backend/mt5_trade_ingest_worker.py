@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from decimal import Decimal
@@ -13,13 +14,14 @@ django.setup()
 from django.utils.dateparse import parse_datetime
 from trading.models import TradingAccount, Trade
 
-API_BASE = "http://127.0.0.1:8000"
-API_HOST = "api.guvfx.com"
+API_BASE = os.getenv("GUVFX_API_BASE", "http://guvfx-backend:8000")
+API_HOST = os.getenv("GUVFX_API_HOST", "api.guvfx.com")
 WORKER_ID = os.getenv("MT5_WORKER_ID", "mt5-trade-ingest-1")
 
 WORKER_TOKEN = os.getenv("MT5_WORKER_TOKEN", "")
-AGENT_BASE = (os.getenv("GUVFX_AGENT_URL") or os.getenv("WINDOWS_AGENT_BASE") or "").rstrip("/")
-AGENT_TOKEN = (os.getenv("GUVFX_AGENT_TOKEN") or os.getenv("WINDOWS_AGENT_TOKEN") or "").strip().strip('"')
+AGENT_BASE = (os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL") or os.getenv("GUVFX_AGENT_URL") or os.getenv("WINDOWS_AGENT_BASE") or "").rstrip("/")
+AGENT_ORDER_BASE = AGENT_BASE
+AGENT_TOKEN = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip().strip('"')
 
 SLEEP_SEC = float(os.getenv("MT5_WORKER_SLEEP", "2.0"))
 
@@ -28,14 +30,25 @@ AUTO_SYNC_MAX_RETRIES = int(os.getenv("AUTO_SYNC_MAX_RETRIES", "5"))
 AUTO_SYNC_RETRY_DELAY = float(os.getenv("AUTO_SYNC_RETRY_DELAY", "2.0"))
 
 def api_headers():
-    return {
+    headers = {
         "Host": API_HOST,
         "X-Forwarded-Proto": "https",
-        "X-Worker-Token": WORKER_TOKEN,
+        "X-Worker-Id": WORKER_ID,
+        "X-Worker-Secret": WORKER_TOKEN,
     }
+    if os.getenv("GUVFX_USE_LEGACY_AUTH"):
+        headers = {
+            "Host": API_HOST,
+            "X-Forwarded-Proto": "https",
+            "X-Worker-Token": WORKER_TOKEN,
+        }
+    return headers
 
-def claim_next_job():
-    url = f"{API_BASE}/api/execution/jobs/next/?worker_id={urllib.parse.quote(WORKER_ID)}"
+def claim_next_job(job_type: str | None = None):
+    params = f"worker_id={urllib.parse.quote(WORKER_ID)}"
+    if job_type:
+        params += f"&job_type={urllib.parse.quote(job_type)}"
+    url = f"{API_BASE}/api/execution/jobs/next/?{params}"
     req = urllib.request.Request(url, method="GET", headers=api_headers())
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -65,6 +78,27 @@ def agent_get(kind: str, username: str):
     with urllib.request.urlopen(req, timeout=15) as r:
         raw = r.read().decode("utf-8", "ignore")
         return json.loads(raw) if raw else {}
+
+def agent_order(payload: dict) -> dict:
+    """POST /mt5/order on the Windows agent (signal bridge port 8788)."""
+    url = f"{AGENT_ORDER_BASE}/mt5/order"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"X-GuvFX-Agent-Token": AGENT_TOKEN, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read().decode("utf-8", "ignore")
+            return json.loads(raw) if raw else {"ok": False, "error": "empty_response"}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")[:500]
+        try:
+            return json.loads(body)
+        except Exception:
+            return {"ok": False, "error": f"http_{e.code}", "detail": body}
+    except Exception as e:
+        return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
 
 def to_dt(x):
     if not x:
@@ -255,10 +289,10 @@ def main():
     if not AGENT_BASE or not AGENT_TOKEN:
         raise SystemExit("GUVFX_AGENT_URL/TOKEN (or WINDOWS_AGENT_BASE/TOKEN) missing")
 
-    print("worker:", WORKER_ID)
+    print("worker:", WORKER_ID, "agent_order_base:", AGENT_ORDER_BASE)
     while True:
         try:
-            job = claim_next_job()
+            job = claim_next_job("PLACE_TEST_ORDER") or claim_next_job()
             if not job:
                 time.sleep(SLEEP_SEC)
                 continue
@@ -268,8 +302,49 @@ def main():
             payload = job.get("payload") or {}
             account_id = int(job.get("account"))
 
+            if jt == "PLACE_TEST_ORDER":
+                # --- Demo order execution via Windows agent ---
+                windows_username = payload.get("windows_username")
+                symbol = payload.get("symbol")
+                side = payload.get("side")
+                lots = payload.get("lots")
+                magic = payload.get("magic", 0)
+                comment = payload.get("comment", "")
+
+                if not all([windows_username, symbol, side, lots, comment]):
+                    complete_job(job_id, "FAILED", {"ok": False, "reason": "missing_payload_fields"}, "PLACE_TEST_ORDER requires windows_username, symbol, side, lots, comment")
+                    continue
+
+                print(f"[DEMO] Executing PLACE_TEST_ORDER job_id={job_id}: {symbol} {side} {lots}")
+                order_result = agent_order({
+                    "username": windows_username,
+                    "symbol": symbol,
+                    "side": side,
+                    "lots": lots,
+                    "magic": magic,
+                    "comment": comment,
+                })
+
+                if order_result.get("ok"):
+                    print(f"[DEMO] SUCCESS job_id={job_id}: order={order_result.get('order')}, price={order_result.get('price')}")
+                    complete_job(job_id, "SUCCESS", {
+                        "ok": True,
+                        "order": order_result.get("order"),
+                        "deal": order_result.get("deal"),
+                        "price": order_result.get("price"),
+                        "volume": order_result.get("volume"),
+                        "retcode": order_result.get("retcode"),
+                        "comment": order_result.get("comment"),
+                    }, "")
+                else:
+                    error_msg = order_result.get("error", "unknown_error")
+                    detail = order_result.get("detail", "")
+                    print(f"[DEMO] FAILED job_id={job_id}: {error_msg} {detail}")
+                    complete_job(job_id, "FAILED", order_result, f"Agent order failed: {error_msg}")
+                continue
+
             if jt != "SYNC_POSITIONS":
-                complete_job(job_id, "FAILED", {"ok": False, "reason": "unsupported_job_type", "job_type": jt}, "Worker only supports SYNC_POSITIONS in A2.1")
+                complete_job(job_id, "FAILED", {"ok": False, "reason": "unsupported_job_type", "job_type": jt}, "Worker supports SYNC_POSITIONS and PLACE_TEST_ORDER only")
                 continue
 
             # MVP: require windows_username in payload. (We can later fetch from MT5 instance.)

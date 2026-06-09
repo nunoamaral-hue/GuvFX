@@ -13,10 +13,11 @@ KEY DIFFERENCES FROM DEMO BRIDGE:
 - Does NOT auto-close positions (real strategy trades)
 - Supports EURUSD and GBPUSD
 
-HTTP SERVER MODE (for OHLC data):
-- Runs an embedded HTTP server on port 8787
+HTTP SERVER MODE (for OHLC data and demo order execution):
+- Runs an embedded HTTP server on port 8788
 - Provides /mt5/snapshots/rates endpoint for fetching OHLC data
-- Used by the backend for H4 auto-evaluation
+- Provides POST /mt5/order endpoint for demo order execution (called by Linux ingest worker)
+- Used by the backend for H4 auto-evaluation and controlled demo execution
 
 SAFETY RAILS (hard-coded, cannot be bypassed):
 - Demo accounts only (is_demo=True in payload)
@@ -78,6 +79,11 @@ logger = logging.getLogger(__name__)
 ALLOWED_SYMBOLS = ["EURUSD", "GBPUSD", "XAUUSD"]
 MAX_LOT_SIZE = 0.02
 ALLOWED_SIDES = ["BUY", "SELL"]
+
+# Demo order endpoint safety rails (POST /mt5/order)
+DEMO_ORDER_ALLOWED_SYMBOLS = ["EURUSD"]
+DEMO_ORDER_MAX_LOT_SIZE = 0.01
+DEMO_ORDER_ALLOWED_SIDES = ["BUY", "SELL"]
 
 # =============================================================================
 # Polling/Retry Configuration
@@ -764,8 +770,316 @@ def fetch_ohlc_rates(symbol: str, timeframe: str, count: int) -> Dict[str, Any]:
         mt5.shutdown()
 
 
+# =============================================================================
+# Demo Order Execution (POST /mt5/order endpoint handler)
+# =============================================================================
+
+def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Execute a demo market order via MT5 with strict safety rails.
+
+    Called by the HTTP handler for POST /mt5/order.
+    Returns a dict with ok, retcode, order, deal, comment, etc.
+    """
+    symbol = str(params.get("symbol", "")).upper()
+    side = str(params.get("side", "")).upper()
+    lots = float(params.get("lots", 0))
+    magic = int(params.get("magic", 0))
+    comment = str(params.get("comment", ""))
+
+    # --- Safety validation ---
+    if symbol not in DEMO_ORDER_ALLOWED_SYMBOLS:
+        return {"ok": False, "error": f"symbol_not_allowed", "detail": f"{symbol} not in {DEMO_ORDER_ALLOWED_SYMBOLS}"}
+
+    if side not in DEMO_ORDER_ALLOWED_SIDES:
+        return {"ok": False, "error": "side_not_allowed", "detail": f"{side} not in {DEMO_ORDER_ALLOWED_SIDES}"}
+
+    if lots <= 0 or lots > DEMO_ORDER_MAX_LOT_SIZE:
+        return {"ok": False, "error": "lots_out_of_range", "detail": f"lots={lots}, max={DEMO_ORDER_MAX_LOT_SIZE}"}
+
+    if not comment:
+        return {"ok": False, "error": "comment_required"}
+
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return {"ok": False, "error": "mt5_not_installed"}
+
+    init_kwargs = {}
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+
+    if not mt5.initialize(**init_kwargs):
+        error = mt5.last_error()
+        return {"ok": False, "error": "mt5_init_failed", "detail": str(error)}
+
+    try:
+        # Verify account is demo
+        account_info = mt5.account_info()
+        if account_info is None:
+            return {"ok": False, "error": "account_info_failed"}
+
+        # trade_mode: 0=DEMO, 1=CONTEST, 2=REAL
+        if account_info.trade_mode != 0:
+            return {"ok": False, "error": "account_not_demo", "detail": f"trade_mode={account_info.trade_mode}"}
+
+        # Verify symbol
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            return {"ok": False, "error": "symbol_not_found"}
+
+        if not symbol_info.visible:
+            if not mt5.symbol_select(symbol, True):
+                return {"ok": False, "error": "symbol_select_failed"}
+
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            return {"ok": False, "error": "tick_failed"}
+
+        order_type = mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL
+        price = tick.ask if side == "BUY" else tick.bid
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lots,
+            "type": order_type,
+            "price": price,
+            "deviation": 20,
+            "magic": magic,
+            "comment": comment[:31],
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        logger.info(f"[/mt5/order] Sending: {symbol} {side} {lots} @ {price} comment='{comment[:31]}'")
+        result = mt5.order_send(request)
+
+        if result is None:
+            error = mt5.last_error()
+            return {"ok": False, "error": "order_send_none", "detail": str(error)}
+
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            return {
+                "ok": False,
+                "error": "order_rejected",
+                "retcode": result.retcode,
+                "comment": result.comment,
+            }
+
+        logger.info(f"[/mt5/order] Success: ticket={result.order}, price={result.price}")
+        return {
+            "ok": True,
+            "retcode": result.retcode,
+            "order": result.order,
+            "deal": result.deal,
+            "price": result.price,
+            "volume": result.volume,
+            "comment": comment[:31],
+        }
+
+    except Exception as e:
+        logger.exception(f"[/mt5/order] Exception: {e}")
+        return {"ok": False, "error": "exception", "detail": str(e)}
+
+    finally:
+        mt5.shutdown()
+
+
+# =============================================================================
+# Deals Snapshot (GET /mt5/snapshots/deals — used by SYNC_POSITIONS worker)
+# =============================================================================
+
+def fetch_deals_snapshot(username: str) -> Dict[str, Any]:
+    """Fetch deal history from MT5 for the SYNC_POSITIONS worker."""
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return {"ok": False, "error": "mt5_not_installed"}
+
+    init_kwargs = {}
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+
+    if not mt5.initialize(**init_kwargs):
+        return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
+
+    try:
+        account_info = mt5.account_info()
+        if account_info is None:
+            return {"ok": False, "error": "account_info_failed"}
+        if account_info.trade_mode != 0:
+            return {"ok": False, "error": "account_not_demo"}
+
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc) + timedelta(days=1)
+        since = now - timedelta(days=90)
+
+        deals = mt5.history_deals_get(since, now)
+        if deals is None:
+            deals = ()
+
+        deal_list = []
+        for d in deals:
+            deal_list.append({
+                "ticket": str(d.ticket),
+                "order": d.order,
+                "time": d.time,
+                "time_utc": datetime.utcfromtimestamp(d.time).isoformat() + "Z" if d.time else None,
+                "type": d.type,
+                "side": "BUY" if d.type == 0 else "SELL" if d.type == 1 else str(d.type),
+                "symbol": d.symbol,
+                "volume": d.volume,
+                "price": d.price,
+                "profit": d.profit,
+                "commission": d.commission,
+                "swap": d.swap,
+                "magic": d.magic,
+                "comment": d.comment,
+                "position_id": d.position_id,
+            })
+
+        return {"ok": True, "deals": deal_list, "count": len(deal_list)}
+
+    except Exception as e:
+        logger.exception(f"[deals] Exception: {e}")
+        return {"ok": False, "error": "exception", "detail": str(e)}
+    finally:
+        mt5.shutdown()
+
+
+# =============================================================================
+# Positions + Close Position (for cleanup/management)
+# =============================================================================
+
+def fetch_positions(symbol: str = "") -> Dict[str, Any]:
+    """Fetch open positions from MT5."""
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return {"ok": False, "error": "mt5_not_installed"}
+
+    init_kwargs = {}
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+
+    if not mt5.initialize(**init_kwargs):
+        return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
+
+    try:
+        account_info = mt5.account_info()
+        if account_info is None:
+            return {"ok": False, "error": "account_info_failed"}
+        if account_info.trade_mode != 0:
+            return {"ok": False, "error": "account_not_demo"}
+
+        if symbol:
+            positions = mt5.positions_get(symbol=symbol)
+        else:
+            positions = mt5.positions_get()
+
+        if positions is None:
+            positions = ()
+
+        pos_list = []
+        for p in positions:
+            pos_list.append({
+                "ticket": p.ticket,
+                "symbol": p.symbol,
+                "type": p.type,
+                "side": "BUY" if p.type == 0 else "SELL",
+                "volume": p.volume,
+                "price_open": p.price_open,
+                "price_current": p.price_current,
+                "profit": p.profit,
+                "magic": p.magic,
+                "comment": p.comment,
+            })
+
+        return {"ok": True, "positions": pos_list, "count": len(pos_list)}
+
+    except Exception as e:
+        return {"ok": False, "error": "exception", "detail": str(e)}
+    finally:
+        mt5.shutdown()
+
+
+def close_position(ticket: int) -> Dict[str, Any]:
+    """Close an open position by ticket. Demo accounts only."""
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return {"ok": False, "error": "mt5_not_installed"}
+
+    init_kwargs = {}
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+
+    if not mt5.initialize(**init_kwargs):
+        return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
+
+    try:
+        account_info = mt5.account_info()
+        if account_info is None:
+            return {"ok": False, "error": "account_info_failed"}
+        if account_info.trade_mode != 0:
+            return {"ok": False, "error": "account_not_demo"}
+
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            return {"ok": False, "error": "position_not_found", "detail": f"ticket={ticket}"}
+
+        pos = positions[0]
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if not tick:
+            return {"ok": False, "error": "tick_failed"}
+
+        if pos.type == mt5.POSITION_TYPE_BUY:
+            close_type = mt5.ORDER_TYPE_SELL
+            close_price = tick.bid
+        else:
+            close_type = mt5.ORDER_TYPE_BUY
+            close_price = tick.ask
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": pos.symbol,
+            "volume": pos.volume,
+            "type": close_type,
+            "position": ticket,
+            "price": close_price,
+            "deviation": 20,
+            "magic": pos.magic,
+            "comment": "GUVFX_CLOSE",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        result = mt5.order_send(request)
+        if result is None:
+            return {"ok": False, "error": "order_send_none", "detail": str(mt5.last_error())}
+
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            return {"ok": False, "error": "close_rejected", "retcode": result.retcode, "comment": result.comment}
+
+        logger.info(f"[close] Closed ticket={ticket}: order={result.order} deal={result.deal} price={result.price}")
+        return {
+            "ok": True,
+            "ticket": ticket,
+            "close_order": result.order,
+            "close_deal": result.deal,
+            "close_price": result.price,
+            "volume": result.volume,
+        }
+
+    except Exception as e:
+        return {"ok": False, "error": "exception", "detail": str(e)}
+    finally:
+        mt5.shutdown()
+
+
 class OHLCRequestHandler(BaseHTTPRequestHandler):
-    """HTTP request handler for OHLC data endpoints."""
+    """HTTP request handler for OHLC data, deals snapshots, and demo order execution."""
 
     def log_message(self, format, *args):
         """Override to use our logger."""
@@ -809,6 +1123,14 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/mt5/snapshots/rates":
                 self._handle_rates_request(params)
+            elif path == "/mt5/snapshots/deals":
+                username = params.get("username", [""])[0]
+                result = fetch_deals_snapshot(username)
+                self._send_json_response(result, 200 if result.get("ok") else 400)
+            elif path == "/mt5/positions":
+                symbol = params.get("symbol", [""])[0]
+                result = fetch_positions(symbol)
+                self._send_json_response(result, 200 if result.get("ok") else 400)
             elif path == "/health":
                 self._send_json_response({"ok": True, "status": "healthy"})
             else:
@@ -817,6 +1139,74 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.exception(f"HTTP handler error: {e}")
             self._send_json_response({"ok": False, "error": str(e)}, 500)
+
+    def do_POST(self):
+        """Handle POST requests."""
+        try:
+            parsed = urlparse(self.path)
+            path = parsed.path
+
+            if not self._validate_token():
+                self._send_json_response({"ok": False, "error": "unauthorized"}, 401)
+                return
+
+            if path == "/mt5/order":
+                self._handle_order_request()
+            elif path == "/mt5/close-position":
+                self._handle_close_position_request()
+            else:
+                self._send_json_response({"ok": False, "error": "not_found"}, 404)
+
+        except Exception as e:
+            logger.exception(f"HTTP POST handler error: {e}")
+            self._send_json_response({"ok": False, "error": str(e)}, 500)
+
+    def _handle_order_request(self):
+        """Handle POST /mt5/order — execute a demo market order."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            self._send_json_response({"ok": False, "error": "empty_body"}, 400)
+            return
+
+        raw = self.rfile.read(content_length)
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json_response({"ok": False, "error": "invalid_json"}, 400)
+            return
+
+        required = ["symbol", "side", "lots", "comment"]
+        missing = [k for k in required if k not in body]
+        if missing:
+            self._send_json_response({"ok": False, "error": "missing_fields", "detail": missing}, 400)
+            return
+
+        result = execute_demo_order(body)
+        status_code = 200 if result.get("ok") else 400
+        self._send_json_response(result, status_code)
+
+    def _handle_close_position_request(self):
+        """Handle POST /mt5/close-position — close a position by ticket."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            self._send_json_response({"ok": False, "error": "empty_body"}, 400)
+            return
+
+        raw = self.rfile.read(content_length)
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json_response({"ok": False, "error": "invalid_json"}, 400)
+            return
+
+        ticket = body.get("ticket")
+        if not ticket:
+            self._send_json_response({"ok": False, "error": "missing_ticket"}, 400)
+            return
+
+        result = close_position(int(ticket))
+        status_code = 200 if result.get("ok") else 400
+        self._send_json_response(result, status_code)
 
     def _handle_rates_request(self, params: Dict):
         """Handle /mt5/snapshots/rates endpoint."""

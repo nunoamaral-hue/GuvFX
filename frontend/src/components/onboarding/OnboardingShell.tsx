@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
-import { ONBOARDING_STEPS } from "@/types/onboarding";
+import { ONBOARDING_STEPS, findCurrentStepIndex } from "@/types/onboarding";
 import { OnboardingProgress } from "./OnboardingProgress";
 import { EmailVerificationStep } from "./steps/EmailVerificationStep";
 import { TwoFactorStep } from "./steps/TwoFactorStep";
@@ -13,43 +14,6 @@ import { BrokerStep } from "./steps/BrokerStep";
 import { AccountConnectionStep } from "./steps/AccountConnectionStep";
 import { StrategyAssignmentStep } from "./steps/StrategyAssignmentStep";
 import { ReadinessStep } from "./steps/ReadinessStep";
-
-// ─────────────────────────────────────────────────────────────────────
-// Step index computation from backend state
-// ─────────────────────────────────────────────────────────────────────
-
-function computeCurrentStepIndex(state: OnboardingState): number {
-  // Walk through steps in order; first incomplete required step is current.
-  // Optional steps (2FA) are current only if prior steps are done and 2FA isn't.
-  for (let i = 0; i < ONBOARDING_STEPS.length; i++) {
-    const step = ONBOARDING_STEPS[i];
-    if (step.id === "readiness") {
-      // Readiness is the final step — shown when all flags are true
-      return i;
-    }
-    const complete = state[step.id] ?? false;
-    if (!complete) {
-      // For optional steps, skip to next if prior required steps are done
-      if (!step.required) {
-        // Check if the step BEFORE this optional one is complete
-        // If so, pause here to offer the option
-        const priorDone = i === 0 || (() => {
-          for (let j = 0; j < i; j++) {
-            const prior = ONBOARDING_STEPS[j];
-            if (prior.required && !(state[prior.id as keyof OnboardingState] ?? false)) {
-              return false;
-            }
-          }
-          return true;
-        })();
-        if (!priorDone) continue; // skip, prior required steps not done
-      }
-      return i;
-    }
-  }
-  // All steps complete → readiness step
-  return ONBOARDING_STEPS.length - 1;
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Glass card style (matches existing GuvFX pattern)
@@ -70,42 +34,49 @@ const glassCard: React.CSSProperties = {
 // ─────────────────────────────────────────────────────────────────────
 
 export function OnboardingShell() {
+  const router = useRouter();
   const [state, setState] = useState<OnboardingState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch onboarding state from backend (single source of truth)
   const fetchState = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const data = await apiFetch<OnboardingState>("/api/onboarding/state/", {});
       setState(data);
+
+      // Completed users → redirect to dashboard
+      if (data.onboarding_completed) {
+        router.replace("/dashboard");
+        return;
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to load onboarding state.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     fetchState();
   }, [fetchState]);
 
-  // After any step completes, re-fetch backend state to advance
   const handleStepComplete = useCallback(() => {
     fetchState();
   }, [fetchState]);
 
+  // ── Loading ──
   if (loading && !state) {
     return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Getting Started</h1>
-        <p style={{ color: "#94a3b8", fontSize: "0.9rem" }}>Loading your onboarding progress...</p>
+        <p style={{ color: "#94a3b8", fontSize: "0.9rem" }}>Loading your setup progress...</p>
       </div>
     );
   }
 
+  // ── Error ──
   if (error && !state) {
     return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
@@ -119,14 +90,19 @@ export function OnboardingShell() {
 
   if (!state) return null;
 
-  const currentStepIndex = computeCurrentStepIndex(state);
-  const currentStep = ONBOARDING_STEPS[currentStepIndex];
+  const currentStepIndex = findCurrentStepIndex(state);
+
+  // All steps complete but onboarding_completed not yet set — show readiness
+  const showReadiness = currentStepIndex === -1;
+  const currentStep = showReadiness ? null : ONBOARDING_STEPS[currentStepIndex];
+  const stepNumber = currentStep ? currentStep.stepNumber : 5;
+  const totalSteps = 5;
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
       <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Getting Started</h1>
       <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1.5rem" }}>
-        Complete the steps below to set up your GuvFX platform.
+        Step {stepNumber} of {totalSteps} — Complete the steps below to set up your GuvFX workspace.
       </p>
 
       <div
@@ -139,39 +115,58 @@ export function OnboardingShell() {
       >
         {/* Left: Progress sidebar */}
         <div style={glassCard}>
-          <OnboardingProgress state={state} currentStepIndex={currentStepIndex} />
+          <OnboardingProgress
+            state={state}
+            currentStepIndex={showReadiness ? ONBOARDING_STEPS.length : currentStepIndex}
+          />
         </div>
 
         {/* Right: Active step content */}
         <div style={glassCard}>
-          {currentStep.id === "email_verified" && (
-            <EmailVerificationStep state={state} onComplete={handleStepComplete} />
-          )}
-          {currentStep.id === "two_factor_enabled" && (
-            <TwoFactorStep
-              state={state}
-              onComplete={handleStepComplete}
-              onSkip={handleStepComplete}
-            />
-          )}
-          {currentStep.id === "risk_accepted" && (
-            <RiskAcceptanceStep state={state} onComplete={handleStepComplete} />
-          )}
-          {currentStep.id === "plan_selected" && (
+          {currentStep?.componentKey === "plan" && (
             <PlanSelectionStep state={state} onComplete={handleStepComplete} />
           )}
-          {currentStep.id === "account_connected" && !state.account_connected && (
-            <BrokerStep onContinue={() => {}} />
+          {currentStep?.componentKey === "profile" && (
+            <>
+              {/* Optional sub-steps within "Complete profile" */}
+              {!state.email_verified && (
+                <EmailVerificationStep state={state} onComplete={handleStepComplete} />
+              )}
+              {state.email_verified && !state.two_factor_enabled && !state.risk_accepted && (
+                <TwoFactorStep
+                  state={state}
+                  onComplete={handleStepComplete}
+                  onSkip={handleStepComplete}
+                />
+              )}
+              {state.email_verified && !state.risk_accepted && state.two_factor_enabled && (
+                <RiskAcceptanceStep state={state} onComplete={handleStepComplete} />
+              )}
+              {state.email_verified && !state.risk_accepted && !state.two_factor_enabled && (
+                <RiskAcceptanceStep state={state} onComplete={handleStepComplete} />
+              )}
+              {state.email_verified && state.risk_accepted && (
+                <div>
+                  <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
+                    Complete Profile
+                  </h2>
+                  <p style={{ color: "#86efac", fontSize: "0.9rem" }}>Profile setup is complete.</p>
+                </div>
+              )}
+            </>
           )}
-          {currentStep.id === "account_connected" && (
-            <div style={{ marginTop: currentStep.id === "account_connected" && !state.account_connected ? "1.25rem" : 0 }}>
-              <AccountConnectionStep state={state} onComplete={handleStepComplete} />
-            </div>
+          {currentStep?.componentKey === "broker" && (
+            <>
+              <BrokerStep />
+              <div style={{ marginTop: "1.25rem" }}>
+                <AccountConnectionStep state={state} onComplete={handleStepComplete} />
+              </div>
+            </>
           )}
-          {currentStep.id === "strategy_assigned" && (
+          {currentStep?.componentKey === "get_started" && !state.strategy_assigned && (
             <StrategyAssignmentStep state={state} onComplete={handleStepComplete} />
           )}
-          {currentStep.id === "readiness" && <ReadinessStep />}
+          {showReadiness && <ReadinessStep />}
         </div>
       </div>
     </div>

@@ -6,11 +6,14 @@ import { Badge } from "@/components/ui/Badge";
 import { apiFetch } from "@/lib/api";
 import type { BrokerPartner } from "@/types/onboarding";
 
-type Props = {
-  onContinue: () => void;
-};
-
-export function BrokerStep({ onContinue }: Props) {
+/**
+ * Broker Connection — informational panel shown above AccountConnectionStep.
+ *
+ * Displays partner brokers (if any) and links to the Accounts page.
+ * This component does NOT gate onboarding progression — the
+ * AccountConnectionStep below it handles the actual flag.
+ */
+export function BrokerStep() {
   const [brokers, setBrokers] = useState<BrokerPartner[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -114,13 +117,9 @@ export function BrokerStep({ onContinue }: Props) {
           <a href="/accounts" style={{ color: "#4ab3ff", textDecoration: "none" }}>
             Connect it on the Accounts page
           </a>{" "}
-          then return here to continue.
+          then return here to confirm below.
         </p>
       </div>
-
-      <Button variant="secondary" onClick={onContinue}>
-        Continue to Account Connection
-      </Button>
     </div>
   );
 }
