@@ -370,6 +370,82 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class BacktestOptimiseView(APIView):
+    """
+    POST /api/backtests/optimise/
+
+    Run parameter optimisation with walk-forward validation.
+    Research Mode only — no live execution.
+
+    Body: {
+        "template_name": "rsi_mean_reversion",
+        "symbol": "EURUSD",
+        "timeframe": "H1",
+        "bar_count": 1000,
+        "score_metric": "profit_factor",
+        "param_grid": {
+            "rsi_period": [10, 14, 21],
+            "sl_pips": [20, 25, 30]
+        },
+        "walk_forward": true,
+        "top_n": 10
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.engine import fetch_bars
+        from backtests.optimiser import run_optimisation, result_to_dict
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        data = request.data
+        template_name = data.get("template_name", "ema_trend")
+        symbol = data.get("symbol", "EURUSD")
+        timeframe = data.get("timeframe", "H1")
+        bar_count = int(data.get("bar_count", 1000))
+        score_metric = data.get("score_metric", "profit_factor")
+        param_grid = data.get("param_grid", {})
+        walk_forward = data.get("walk_forward", True)
+        top_n = min(int(data.get("top_n", 10)), 20)
+
+        if not param_grid:
+            return Response(
+                {"ok": False, "error": "param_grid is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            bars = fetch_bars(symbol, timeframe, count=bar_count)
+        except Exception as e:
+            return Response(
+                {"ok": False, "error": f"Failed to fetch data: {e}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if not bars:
+            return Response(
+                {"ok": False, "error": f"No bars for {symbol} {timeframe}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = run_optimisation(
+            bars=bars, template_name=template_name,
+            param_grid=param_grid, score_metric=score_metric,
+            symbol=symbol, timeframe=timeframe,
+            walk_forward=walk_forward, top_n=top_n,
+        )
+
+        if result.error:
+            return Response(
+                {"ok": False, "error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({"ok": True, **result_to_dict(result)})
+
+
 class BacktestTemplateListView(APIView):
     """
     GET /api/backtests/templates/

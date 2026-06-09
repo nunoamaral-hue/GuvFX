@@ -7,6 +7,7 @@ from .views import (
     BacktestJobResultsView,
     BacktestJobRunView,
     BacktestJobStatusView,
+    BacktestOptimiseView,
     BacktestPromoteView,
     BacktestRunViewSet,
     BacktestTemplateListView,
@@ -67,6 +68,12 @@ urlpatterns = [
         "templates/",
         BacktestTemplateListView.as_view(),
         name="backtests-templates",
+    ),
+    # Parameter optimisation
+    path(
+        "optimise/",
+        BacktestOptimiseView.as_view(),
+        name="backtests-optimise",
     ),
     # Process pending runs
     path(
