@@ -370,6 +370,36 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class BacktestResearchMatrixView(APIView):
+    """
+    POST /api/backtests/research-matrix/
+
+    Run multi-symbol Research Matrix.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.research_matrix import run_research_matrix, matrix_to_dict, TIER1_SYMBOLS, ALL_TEMPLATES
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        data = request.data
+        symbols = data.get("symbols", TIER1_SYMBOLS)
+        timeframes = data.get("timeframes", ["H1"])
+        templates = data.get("templates", ALL_TEMPLATES)
+        bar_count = int(data.get("bar_count", 1000))
+        max_combos = min(int(data.get("max_combinations", 200)), 200)
+
+        result = run_research_matrix(
+            symbols=symbols, timeframes=timeframes,
+            templates=templates, bar_count=bar_count,
+            max_combinations=max_combos,
+        )
+
+        return Response({"ok": True, **matrix_to_dict(result)})
+
+
 class BacktestRegimeFilterView(APIView):
     """
     POST /api/backtests/regime-filter/
