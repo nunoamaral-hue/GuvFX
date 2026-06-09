@@ -19,8 +19,8 @@ BRACKET_CLOSE_RE = re.compile(r"^\[(sl|tp)\b", re.IGNORECASE)
 VALID_TAG_RE = re.compile(r"^G[JS]\d{4}$")
 
 def _windows_agent_post_json(path: str, payload: dict) -> dict:
-    base = (os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
-    token = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
+    base = (os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL") or os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
+    token = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
 
     if not base or not token:
         return {"ok": False, "error": "missing_agent_env", "base": base}
@@ -66,9 +66,13 @@ from .serializers import TradingAccountSerializer, TradeSerializer
 
 def _get_user_mt5_instance(user) -> Mt5Instance | None:
     """
-    Prefer the instance currently leased to the user.
-    Fallback to the Windows instance if present.
+    Resolve the MT5 instance for a user.
+
+    Priority:
+    1. Instance currently leased to this user.
+    2. Any Windows-platform instance (single-instance deployments).
     """
+    # 1. Leased to user
     inst = (
         Mt5Instance.objects.filter(is_leased=True, leased_to=user)
         .order_by("hostname")
@@ -77,8 +81,15 @@ def _get_user_mt5_instance(user) -> Mt5Instance | None:
     if inst:
         return inst
 
-    # fallback (your Windows instance naming)
-    inst = Mt5Instance.objects.filter(hostname="WIN-FH-01").first()
+    # 2. Fallback: any Windows instance with a windows_username set
+    inst = (
+        Mt5Instance.objects.filter(
+            platform__iexact="windows",
+            windows_username__gt="",
+        )
+        .order_by("hostname")
+        .first()
+    )
     return inst
 
 

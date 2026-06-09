@@ -1078,6 +1078,89 @@ def close_position(ticket: int) -> Dict[str, Any]:
         mt5.shutdown()
 
 
+# =============================================================================
+# Login-and-Validate (POST /mt5/login-and-validate)
+# =============================================================================
+
+def login_and_validate(params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Log into an MT5 account and validate credentials.
+    Does NOT execute trades — read-only validation only.
+
+    Accepts: username, login, password, server
+    Returns: ok, valid, login, server, balance, currency, trade_mode, etc.
+    """
+    login_str = str(params.get("login", "")).strip()
+    password = str(params.get("password", "")).strip()
+    server = str(params.get("server", "")).strip()
+
+    if not login_str or not password or not server:
+        return {"ok": False, "valid": False, "reason": "missing_fields",
+                "detail": "login, password, and server are required"}
+
+    try:
+        login_int = int(login_str)
+    except ValueError:
+        return {"ok": False, "valid": False, "reason": "invalid_login",
+                "detail": "login must be numeric"}
+
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return {"ok": False, "valid": False, "reason": "mt5_not_installed"}
+
+    init_kwargs = {
+        "login": login_int,
+        "password": password,
+        "server": server,
+    }
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+
+    # Initialize and login in one step — handles terminals with no saved session
+    if not mt5.initialize(**init_kwargs):
+        err = mt5.last_error()
+        # Distinguish init failure from auth failure
+        err_code = err[0] if isinstance(err, tuple) else 0
+        if err_code == -6:  # Authorization failed
+            return {"ok": True, "valid": False, "reason": "login_failed",
+                    "detail": str(err)}
+        return {"ok": False, "valid": False, "reason": "mt5_init_failed",
+                "detail": str(err)}
+
+    try:
+
+        info = mt5.account_info()
+        if info is None:
+            return {"ok": True, "valid": False, "reason": "account_info_failed"}
+
+        result = {
+            "ok": True,
+            "valid": True,
+            "reason": "ok",
+            "login": info.login,
+            "server": info.server,
+            "balance": info.balance,
+            "currency": info.currency,
+            "trade_mode": info.trade_mode,
+            "trade_allowed": info.trade_allowed,
+            "trade_expert": info.trade_expert,
+            "name": info.name,
+            "leverage": info.leverage,
+        }
+
+        logger.info(f"[login-validate] OK: login={info.login} server={info.server} "
+                     f"mode={info.trade_mode} balance={info.balance}")
+        return result
+
+    except Exception as e:
+        logger.exception(f"[login-validate] Exception: {e}")
+        return {"ok": False, "valid": False, "reason": "exception", "detail": str(e)}
+
+    finally:
+        mt5.shutdown()
+
+
 class OHLCRequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler for OHLC data, deals snapshots, and demo order execution."""
 
@@ -1154,6 +1237,8 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
                 self._handle_order_request()
             elif path == "/mt5/close-position":
                 self._handle_close_position_request()
+            elif path == "/mt5/login-and-validate":
+                self._handle_login_validate_request()
             else:
                 self._send_json_response({"ok": False, "error": "not_found"}, 404)
 
@@ -1205,6 +1290,31 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
             return
 
         result = close_position(int(ticket))
+        status_code = 200 if result.get("ok") else 400
+        self._send_json_response(result, status_code)
+
+    def _handle_login_validate_request(self):
+        """Handle POST /mt5/login-and-validate — validate MT5 credentials."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            self._send_json_response({"ok": False, "valid": False, "reason": "empty_body"}, 400)
+            return
+
+        raw = self.rfile.read(content_length)
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json_response({"ok": False, "valid": False, "reason": "invalid_json"}, 400)
+            return
+
+        required = ["login", "password", "server"]
+        missing = [k for k in required if not body.get(k)]
+        if missing:
+            self._send_json_response(
+                {"ok": False, "valid": False, "reason": "missing_fields", "detail": missing}, 400)
+            return
+
+        result = login_and_validate(body)
         status_code = 200 if result.get("ok") else 400
         self._send_json_response(result, status_code)
 
