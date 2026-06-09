@@ -70,6 +70,31 @@ export default function BacktestsPage() {
     initial_balance: "10000",
   });
 
+  // Template selection state
+  type TemplateInfo = { name: string; description: string; default_params: Record<string, number> };
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState("ema_trend");
+  const [templateParams, setTemplateParams] = useState<Record<string, number>>({});
+
+  // Fetch templates on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await apiFetch<{ templates: TemplateInfo[] }>("/api/backtests/templates/", {});
+        setTemplates(data.templates || []);
+        const ema = (data.templates || []).find((t: TemplateInfo) => t.name === "ema_trend");
+        if (ema) setTemplateParams(ema.default_params);
+      } catch { /* non-blocking */ }
+    })();
+  }, []);
+
+  // Update params when template changes
+  const handleTemplateChange = (name: string) => {
+    setSelectedTemplate(name);
+    const tmpl = templates.find((t) => t.name === name);
+    if (tmpl) setTemplateParams({ ...tmpl.default_params });
+  };
+
   // Track if strategy is incomplete (from deep-link)
   const [strategyIncomplete, setStrategyIncomplete] = useState(false);
 
@@ -186,11 +211,18 @@ export default function BacktestsPage() {
     setCreating(true);
 
     try {
+      // Encode template selection in description as JSON for backend
+      const templateMeta = JSON.stringify({
+        backtest_template: selectedTemplate,
+        backtest_params: templateParams,
+        bar_count: 1000,
+      });
+
       await apiFetch("/api/backtests/configs/", {
         method: "POST",
         body: JSON.stringify({
           name: formData.name,
-          description: formData.description,
+          description: templateMeta,
           strategy: parseInt(formData.strategy, 10),
           symbol: formData.symbol,
           timeframe: formData.timeframe,
@@ -877,30 +909,59 @@ export default function BacktestsPage() {
                 />
               </div>
 
-              {/* Description */}
+              {/* Strategy Template */}
               <div style={{ marginBottom: "0.85rem" }}>
-                <label
-                  style={{ display: "block", fontSize: "0.82rem", color: "#b7c5dd", marginBottom: "0.25rem" }}
-                >
-                  {t(lang, "backtests.form.descriptionLabel")}
+                <label style={{ display: "block", fontSize: "0.82rem", color: "#b7c5dd", marginBottom: "0.25rem" }}>
+                  Strategy Template *
                 </label>
-                <textarea
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder={t(lang, "backtests.form.descriptionPlaceholder")}
-                  rows={2}
+                <select
+                  value={selectedTemplate}
+                  onChange={(e) => handleTemplateChange(e.target.value)}
                   style={{
-                    width: "100%",
-                    padding: "0.5rem 0.75rem",
-                    background: "#1a2236",
-                    border: "1px solid #334155",
-                    borderRadius: 6,
-                    color: "#e5f4ff",
-                    fontSize: "0.9rem",
-                    resize: "vertical",
+                    width: "100%", padding: "0.5rem 0.75rem",
+                    background: "#1a2236", border: "1px solid #334155",
+                    borderRadius: 6, color: "#e5f4ff", fontSize: "0.9rem",
                   }}
-                />
+                >
+                  {templates.map((t) => (
+                    <option key={t.name} value={t.name}>{t.description.split(".")[0]}</option>
+                  ))}
+                  {templates.length === 0 && <option value="ema_trend">EMA Trend (loading...)</option>}
+                </select>
+                <p style={{ fontSize: "0.72rem", color: "#64748b", margin: "0.25rem 0 0" }}>
+                  Research Mode — results are simulated, not live execution
+                </p>
               </div>
+
+              {/* Template Parameters */}
+              {Object.keys(templateParams).length > 0 && (
+                <div style={{ marginBottom: "0.85rem", padding: "0.6rem", background: "rgba(74,179,255,0.04)", borderRadius: 8, border: "1px solid rgba(74,179,255,0.1)" }}>
+                  <label style={{ display: "block", fontSize: "0.78rem", color: "#94a3b8", marginBottom: "0.4rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                    Parameters
+                  </label>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem" }}>
+                    {Object.entries(templateParams).map(([key, val]) => (
+                      <div key={key} style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                        <label style={{ fontSize: "0.78rem", color: "#b7c5dd", minWidth: 90 }}>
+                          {key.replace(/_/g, " ")}
+                        </label>
+                        <input
+                          type="number"
+                          value={val}
+                          onChange={(e) => setTemplateParams({ ...templateParams, [key]: parseFloat(e.target.value) || 0 })}
+                          step={key.includes("mult") ? 0.1 : 1}
+                          style={{
+                            width: 70, padding: "0.25rem 0.4rem",
+                            background: "#0f172a", border: "1px solid #334155",
+                            borderRadius: 4, color: "#e5f4ff", fontSize: "0.82rem",
+                            textAlign: "center",
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Strategy */}
               <div style={{ marginBottom: "0.85rem" }}>

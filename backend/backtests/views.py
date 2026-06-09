@@ -370,6 +370,19 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class BacktestTemplateListView(APIView):
+    """
+    GET /api/backtests/templates/
+
+    List available backtest strategy templates with default parameters.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.strategy_templates import list_templates
+        return Response({"templates": list_templates()})
+
+
 class ProcessPendingBacktestsView(APIView):
     """
     POST /api/backtests/process-pending/
@@ -460,12 +473,33 @@ class ProcessPendingBacktestsView(APIView):
         strategy = run.config.strategy
         lots = float(getattr(strategy, "fixed_lot_size", None) or 0.01)
 
-        # Template selection: from strategy filters or default to ema_trend
-        template_name = (strategy.filters or {}).get("backtest_template", "ema_trend")
-        template_params = (strategy.filters or {}).get("backtest_params", {})
+        # Template selection priority:
+        # 1. Config description JSON (if parseable) — allows per-config override
+        # 2. Strategy filters
+        # 3. Default: ema_trend
+        import json as _json
+        config_meta = {}
+        try:
+            config_meta = _json.loads(run.config.description or "{}")
+        except (ValueError, TypeError):
+            pass
+
+        template_name = (
+            config_meta.get("backtest_template")
+            or (strategy.filters or {}).get("backtest_template")
+            or "ema_trend"
+        )
+        template_params = (
+            config_meta.get("backtest_params")
+            or (strategy.filters or {}).get("backtest_params")
+            or {}
+        )
+        bar_count_override = config_meta.get("bar_count")
+        spread_override = config_meta.get("spread_pips")
+        lots_override = config_meta.get("lots")
 
         # Fetch bars
-        bar_count = 1000
+        bar_count = int(bar_count_override or 1000)
         bars = fetch_bars(symbol, timeframe, count=bar_count)
 
         if not bars:
@@ -475,7 +509,9 @@ class ProcessPendingBacktestsView(APIView):
             bars, template_name=template_name,
             params=template_params,
             symbol=symbol, timeframe=timeframe,
-            initial_balance=initial_balance, lots=lots,
+            initial_balance=initial_balance,
+            lots=float(lots_override or lots),
+            spread_pips=float(spread_override or 1.5),
         )
 
         if result.error:

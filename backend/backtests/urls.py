@@ -9,6 +9,7 @@ from .views import (
     BacktestJobStatusView,
     BacktestPromoteView,
     BacktestRunViewSet,
+    BacktestTemplateListView,
     ProcessPendingBacktestsView,
     PromotionCandidateReviewView,
     ExecutionCandidateStageView,
@@ -61,7 +62,13 @@ urlpatterns = [
         ExecutionCandidateStageView.as_view(),
         name="execution-candidate-stage",
     ),
-    # Legacy endpoints
+    # Strategy templates
+    path(
+        "templates/",
+        BacktestTemplateListView.as_view(),
+        name="backtests-templates",
+    ),
+    # Process pending runs
     path(
         "process-pending/",
         ProcessPendingBacktestsView.as_view(),
