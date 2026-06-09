@@ -374,8 +374,13 @@ class ProcessPendingBacktestsView(APIView):
     """
     POST /api/backtests/process-pending/
 
-    Processes all PENDING BacktestRun objects using the same dummy logic
-    as the management command, and returns how many runs were updated.
+    Processes all PENDING BacktestRun objects using the real MT5-data
+    backtesting engine (EMA crossover strategy).
+
+    Fetches OHLC bars from the MT5 signal bridge, runs a deterministic
+    simulation, and stores metrics + equity curve + trade list.
+
+    No live execution.  No ExecutionJob created.  No MT5 orders sent.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -400,15 +405,19 @@ class ProcessPendingBacktestsView(APIView):
             run.started_at = timezone.now()
             run.save(update_fields=["status", "started_at"])
 
-            # Generate dummy metrics
-            metrics, equity_curve = self._generate_dummy_results(run)
+            try:
+                metrics, equity_curve = self._run_real_backtest(run)
+                run.status = BacktestRun.STATUS_COMPLETED
+                run.error_message = ""
+            except Exception as e:
+                metrics = {"error": str(e), "demo": False}
+                equity_curve = []
+                run.status = BacktestRun.STATUS_FAILED
+                run.error_message = str(e)[:500]
 
-            # Mark as COMPLETED
-            run.status = BacktestRun.STATUS_COMPLETED
             run.finished_at = timezone.now()
             run.metrics = metrics
             run.equity_curve = equity_curve
-            run.error_message = ""
 
             run.save(
                 update_fields=[
@@ -434,9 +443,88 @@ class ProcessPendingBacktestsView(APIView):
             status=200,
         )
 
+    def _run_real_backtest(self, run: BacktestRun):
+        """
+        Run real MT5-data backtest using the engine.
+
+        Fetches OHLC bars from the signal bridge, runs EMA crossover
+        simulation, returns (metrics_dict, equity_curve_list).
+        """
+        from backtests.engine import fetch_bars, run_backtest, StrategyParams
+
+        symbol = run.symbol or run.config.symbol
+        timeframe = run.timeframe or run.config.timeframe
+        initial_balance = float(run.initial_balance)
+
+        # Strategy parameters from config or defaults
+        strategy = run.config.strategy
+        risk_pct = float(run.config.risk_per_trade_pct or strategy.risk_per_trade_pct or 1)
+        lots = float(getattr(strategy, "fixed_lot_size", None) or 0.01)
+
+        params = StrategyParams(
+            fast_ema=20,
+            slow_ema=50,
+            sl_pips=30.0,
+            tp_pips=60.0,
+            lots=lots,
+            spread_pips=1.5,
+        )
+
+        # Fetch bars (max 500 per request)
+        bars = fetch_bars(symbol, timeframe, count=500)
+
+        if not bars:
+            raise RuntimeError(f"No bars returned for {symbol} {timeframe}")
+
+        result = run_backtest(
+            bars, params,
+            symbol=symbol,
+            timeframe=timeframe,
+            initial_balance=initial_balance,
+        )
+
+        if result.error:
+            raise RuntimeError(result.error)
+
+        # Build metrics dict (frontend-compatible format)
+        metrics = {
+            **result.metrics,
+            "equity_curve": result.equity_curve,
+            "data_source": "MT5",
+            "strategy_params": {
+                "fast_ema": params.fast_ema,
+                "slow_ema": params.slow_ema,
+                "sl_pips": params.sl_pips,
+                "tp_pips": params.tp_pips,
+                "lots": params.lots,
+                "spread_pips": params.spread_pips,
+            },
+            "bars_count": result.bars_count,
+            "date_range": f"{result.start_date} to {result.end_date}",
+            "trades": [
+                {
+                    "trade_number": t.trade_number,
+                    "side": t.side,
+                    "entry_time": t.entry_time,
+                    "exit_time": t.exit_time,
+                    "entry_price": t.entry_price,
+                    "exit_price": t.exit_price,
+                    "sl": t.sl,
+                    "tp": t.tp,
+                    "lots": t.lots,
+                    "pnl": t.pnl,
+                    "exit_reason": t.exit_reason,
+                }
+                for t in result.trades
+            ],
+            "demo": False,
+        }
+
+        return metrics, result.equity_curve
+
     def _generate_dummy_results(self, run: BacktestRun):
         """
-        Deterministic demo result generator seeded by (config.id, run.id).
+        Legacy: Deterministic demo result generator seeded by (config.id, run.id).
         Produces realistic equity curve with drawdown phases and timestamps.
         Marked as demo data for compliance.
         """
