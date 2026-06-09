@@ -43,12 +43,22 @@ from .models import (
 # Step ordering — defines valid transitions
 # ─────────────────────────────────────────────────────────────────────
 
-# Steps in required order. 2FA is optional (can be skipped).
+# Steps in canonical order, aligned with the 5-step frontend model:
+#
+#   Step 1: Create account   — handled by /register (no flag here)
+#   Step 2: Select plan      — plan_selected (no prerequisites)
+#   Step 3: Complete profile  — email_verified, 2FA (optional), risk_accepted
+#   Step 4: Connect broker   — account_connected
+#   Step 5: Get started      — strategy_assigned
+#
+# The _check_prerequisites function enforces this linear ordering:
+# each step requires all prior REQUIRED steps to be complete.
+# 2FA is optional and never blocks progression.
 STEP_ORDER = [
-    "email_verified",
-    "two_factor_enabled",  # optional
-    "risk_accepted",
     "plan_selected",
+    "email_verified",
+    "two_factor_enabled",  # optional — never blocks
+    "risk_accepted",
     "account_connected",
     "strategy_assigned",
 ]
