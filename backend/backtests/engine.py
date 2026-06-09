@@ -481,7 +481,7 @@ def compute_metrics(
         "gross_profit": round(gross_profit, 2),
         "gross_loss": round(gross_loss, 2),
         "win_rate": round(win_rate, 1),
-        "profit_factor": round(profit_factor, 2) if profit_factor != float("inf") else 999.99,
+        "profit_factor": min(round(profit_factor, 2), 99.99) if profit_factor != float("inf") else 99.99,
         "max_drawdown": round(max_dd, 2),
         "avg_win": round(avg_win, 2),
         "avg_loss": round(avg_loss, 2),
@@ -490,6 +490,11 @@ def compute_metrics(
         "initial_balance": initial_balance,
         "final_balance": round(final_balance, 2),
         "total_return_pct": round((final_balance - initial_balance) / initial_balance * 100, 2),
+        "warnings": (
+            ["Low trade count — results may not be statistically significant"] if len(pnls) < 10 else []
+        ) + (
+            ["Very short sample — consider longer data period"] if len(pnls) < 5 else []
+        ),
     }
 
 

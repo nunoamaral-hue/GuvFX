@@ -552,11 +552,14 @@ class BacktestRegimeFilterView(APIView):
         if not bars:
             return Response({"ok": False, "error": "No bars"}, status=400)
 
-        result = run_regime_comparison(
-            bars, template_name, filter_config,
-            params=template_params,
-            symbol=symbol, timeframe=timeframe,
-        )
+        try:
+            result = run_regime_comparison(
+                bars, template_name, filter_config,
+                params=template_params,
+                symbol=symbol, timeframe=timeframe,
+            )
+        except KeyError as e:
+            return Response({"ok": False, "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         if result.error:
             return Response({"ok": False, "error": result.error}, status=400)
