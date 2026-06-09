@@ -607,9 +607,21 @@ class BacktestRegimeFilterView(APIView):
             return Response({"ok": False, "error": result.error}, status=400)
 
         # B14: Record baseline observation in Knowledge Base
+        # B16: attach normalised market-context feature dict
         from backtests.knowledge_base import record_from_backtest_metrics
         cmp = comparison_to_dict(result)
         baseline = cmp.get("comparison", {})
+
+        feature_context = {}
+        try:
+            from backtests.feature_extractor import extract_feature_context, apply_risk_warnings
+            feature_context = extract_feature_context(bars, symbol=symbol, timeframe=timeframe)
+            apply_risk_warnings(feature_context, {
+                "max_drawdown": baseline.get("baseline_max_drawdown", 0),
+            })
+        except Exception:
+            feature_context = {}
+
         if baseline.get("baseline_trades", 0) > 0:
             record_from_backtest_metrics(
                 symbol=symbol, template=template_name, timeframe=timeframe,
@@ -624,10 +636,11 @@ class BacktestRegimeFilterView(APIView):
                 },
                 params=template_params,
                 bar_count=bar_count,
+                feature_context=feature_context,
                 source="regime_filter",
             )
 
-        return Response({"ok": True, **cmp})
+        return Response({"ok": True, "feature_context": feature_context, **cmp})
 
 
 class BacktestRegimeAnalysisView(APIView):
@@ -744,10 +757,21 @@ class BacktestOptimiseView(APIView):
             )
 
         # B14: Record top result in Knowledge Base
+        # B16: attach normalised market-context feature dict
         from backtests.knowledge_base import record_observation
         opt_dict = result_to_dict(result)
         top = opt_dict.get("top_results", [])
         wf = opt_dict.get("walk_forward", [])
+
+        feature_context = {}
+        try:
+            from backtests.feature_extractor import extract_feature_context, apply_risk_warnings
+            feature_context = extract_feature_context(bars, symbol=symbol, timeframe=timeframe)
+            if top:
+                apply_risk_warnings(feature_context, {"max_drawdown": float(top[0].get("max_drawdown", 0))})
+        except Exception:
+            feature_context = {}
+
         if top:
             best = top[0]
             wf_deg = wf[0].get("degradation_pct") if wf else None
@@ -763,10 +787,11 @@ class BacktestOptimiseView(APIView):
                 walk_forward_degradation=wf_deg,
                 walk_forward_robust=wf_rob,
                 bar_count=bar_count,
+                feature_context=feature_context,
                 source="optimise",
             )
 
-        return Response({"ok": True, **opt_dict})
+        return Response({"ok": True, "feature_context": feature_context, **opt_dict})
 
 
 class BacktestTemplateListView(APIView):

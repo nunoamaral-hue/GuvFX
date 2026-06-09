@@ -660,6 +660,22 @@ class ResearchObservation(models.Model):
     bar_count = models.IntegerField(default=0)
     data_quality_status = models.CharField(max_length=20, blank=True, default="OK")
 
+    # B16 — Feature framework: normalised market context at observation time
+    feature_context = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Full normalised market-context feature dict (trend/volatility/session/structure/normalisation).",
+    )
+    trend_state = models.CharField(max_length=24, blank=True, default="", db_index=True)
+    volatility_state = models.CharField(max_length=24, blank=True, default="", db_index=True)
+    session_bucket = models.CharField(max_length=24, blank=True, default="")
+    breakout_state = models.CharField(max_length=24, blank=True, default="")
+    position_size_warning = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True if result may need position-size normalization before comparison.",
+    )
+
     # Source tracking
     source = models.CharField(
         max_length=40,

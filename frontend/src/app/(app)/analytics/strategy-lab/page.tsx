@@ -52,6 +52,22 @@ type OptResult = {
   max_drawdown: number;
 };
 
+// B16 — Feature framework: normalised market context
+type FeatureContext = {
+  available?: boolean;
+  trend?: { ema_slope: number; ema_distance: number; trend_strength: number; trend_state: string };
+  volatility?: { atr_value: number; atr_percentile: number; volatility_state: string; volatility_expansion: string };
+  session?: { session_bucket: string; asian_range: number; london_range: number; ny_range: number };
+  structure?: { distance_to_20_high: number; distance_to_50_high: number; breakout_state: string };
+  normalisation?: {
+    tick_size: number; tick_value: number; contract_size: number;
+    notional_per_001_lot: number; atr_dollars_per_001_lot: number;
+    pnl_model: string; position_size_warning: boolean;
+    position_size_warning_reasons?: string[]; warning_text?: string;
+  };
+  snapshot?: { trend_state: string; volatility_state: string; session_profile: string; breakout_state: string; position_size_warning: boolean };
+};
+
 type WFResult = {
   rank: number;
   params: Record<string, number>;
@@ -91,6 +107,7 @@ export default function StrategyLabPage() {
   const [regime, setRegime] = useState<RegimeData | null>(null);
   const [regimePerf, setRegimePerf] = useState<Record<string, { trades: number; net_profit: number; win_rate: number; profit_factor: number }> | null>(null);
   const [comparison, setComparison] = useState<Comparison | null>(null);
+  const [featureContext, setFeatureContext] = useState<FeatureContext | null>(null);
   const [optResults, setOptResults] = useState<OptResult[]>([]);
   const [wfResults, setWfResults] = useState<WFResult[]>([]);
   const [optWarnings, setOptWarnings] = useState<string[]>([]);
@@ -135,7 +152,7 @@ export default function StrategyLabPage() {
   const runAll = useCallback(async () => {
     setLoading("Running analyses...");
     setError("");
-    setRegime(null); setRegimePerf(null); setComparison(null);
+    setRegime(null); setRegimePerf(null); setComparison(null); setFeatureContext(null);
     setOptResults([]); setWfResults([]); setOptWarnings([]);
     setRecommendations([]); setRecSummary({});
     setKbStrongest([]); setKbMostTested([]); setKbHighConf([]);
@@ -157,6 +174,7 @@ export default function StrategyLabPage() {
       const filterRes = await apiFetch<{
         ok: boolean;
         comparison: Comparison;
+        feature_context: FeatureContext;
         regime_skip_analysis: Record<string, unknown>;
       }>("/api/backtests/regime-filter/", {
         method: "POST",
@@ -165,7 +183,10 @@ export default function StrategyLabPage() {
           regime_filter: { allowed_entry_regimes: allowed },
         }),
       });
-      if (filterRes.ok) setComparison(filterRes.comparison);
+      if (filterRes.ok) {
+        setComparison(filterRes.comparison);
+        if (filterRes.feature_context?.available) setFeatureContext(filterRes.feature_context);
+      }
 
       // 3. Quick backtest for regime performance
       setLoading("Strategy backtest...");
@@ -298,6 +319,51 @@ export default function StrategyLabPage() {
       </div>
 
       {error && <div style={{ ...glass, borderColor: "rgba(248,113,113,0.3)", color: "#f87171", fontSize: "0.85rem" }}>{error}</div>}
+
+      {/* ── Market Context (B16 Feature Framework) ── */}
+      {featureContext?.available && (
+        <div style={glass}>
+          <div style={secHeader}>Market Context <span style={{ textTransform: "none", color: "#64748b", fontWeight: 400 }}>— normalised research features</span></div>
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
+            <Badge color={featureContext.snapshot?.trend_state?.includes("up") ? "green" : featureContext.snapshot?.trend_state?.includes("down") ? "red" : "gray"}>
+              trend: {featureContext.snapshot?.trend_state || "—"}
+            </Badge>
+            <Badge color={featureContext.snapshot?.volatility_state === "high" ? "yellow" : featureContext.snapshot?.volatility_state === "low" ? "gray" : "blue"}>
+              volatility: {featureContext.snapshot?.volatility_state || "—"} ({featureContext.volatility?.volatility_expansion})
+            </Badge>
+            <Badge color="blue">breakout: {featureContext.snapshot?.breakout_state || "—"}</Badge>
+            <Badge color="gray">session: {featureContext.snapshot?.session_profile || "—"}</Badge>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.5rem", marginBottom: "0.75rem" }}>
+            <div style={{ fontSize: "0.78rem", color: "#b7c5dd" }}>
+              <div style={{ color: "#64748b", fontSize: "0.7rem" }}>TREND</div>
+              strength {featureContext.trend?.trend_strength} · slope {featureContext.trend?.ema_slope} · dist {featureContext.trend?.ema_distance} ATR
+            </div>
+            <div style={{ fontSize: "0.78rem", color: "#b7c5dd" }}>
+              <div style={{ color: "#64748b", fontSize: "0.7rem" }}>VOLATILITY</div>
+              ATR {featureContext.volatility?.atr_value} · pct {featureContext.volatility?.atr_percentile}%
+            </div>
+            <div style={{ fontSize: "0.78rem", color: "#b7c5dd" }}>
+              <div style={{ color: "#64748b", fontSize: "0.7rem" }}>STRUCTURE (ATR mult)</div>
+              to 20H {featureContext.structure?.distance_to_20_high} · to 50H {featureContext.structure?.distance_to_50_high}
+            </div>
+            <div style={{ fontSize: "0.78rem", color: "#b7c5dd" }}>
+              <div style={{ color: "#64748b", fontSize: "0.7rem" }}>NORMALISATION</div>
+              tick ${featureContext.normalisation?.tick_value}/{featureContext.normalisation?.tick_size} · ~${featureContext.normalisation?.atr_dollars_per_001_lot}/ATR per 0.01 lot
+            </div>
+          </div>
+          {featureContext.normalisation?.position_size_warning && (
+            <div style={{ fontSize: "0.78rem", color: "#fbbf24", padding: "0.5rem 0.7rem", borderRadius: 8, border: "1px solid rgba(251,191,36,0.25)", background: "rgba(251,191,36,0.06)" }}>
+              ⚠ {featureContext.normalisation?.warning_text}
+              {featureContext.normalisation?.position_size_warning_reasons?.length ? (
+                <div style={{ color: "#94a3b8", fontSize: "0.72rem", marginTop: "0.2rem" }}>
+                  {featureContext.normalisation.position_size_warning_reasons.join(" · ")}
+                </div>
+              ) : null}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Regime Analytics ── */}
       {regime && (

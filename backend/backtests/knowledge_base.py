@@ -40,6 +40,7 @@ def record_observation(
     walk_forward_robust: bool | None = None,
     bar_count: int = 0,
     data_quality_status: str = "OK",
+    feature_context: dict | None = None,
     source: str = "strategy_lab",
 ):
     """
@@ -49,6 +50,11 @@ def record_observation(
     to avoid disrupting the calling research endpoint.
     """
     from backtests.models import ResearchObservation
+
+    # B16 — derive flat feature fields from the snapshot for fast filtering
+    fc = feature_context or {}
+    snap = fc.get("snapshot", {}) if isinstance(fc, dict) else {}
+    norm = fc.get("normalisation", {}) if isinstance(fc, dict) else {}
 
     try:
         obs = ResearchObservation.objects.create(
@@ -70,6 +76,12 @@ def record_observation(
             walk_forward_robust=walk_forward_robust,
             bar_count=bar_count,
             data_quality_status=data_quality_status,
+            feature_context=fc,
+            trend_state=snap.get("trend_state", ""),
+            volatility_state=snap.get("volatility_state", ""),
+            session_bucket=snap.get("session_profile", "") or fc.get("session", {}).get("session_bucket", ""),
+            breakout_state=snap.get("breakout_state", ""),
+            position_size_warning=bool(norm.get("position_size_warning", snap.get("position_size_warning", False))),
             source=source,
         )
         return obs
@@ -96,6 +108,7 @@ def record_from_matrix_row(row: dict, *, source: str = "research_matrix"):
         expectancy=float(row.get("expectancy", 0)),
         regime_at_observation=row.get("current_regime", ""),
         bar_count=int(row.get("bar_count", 0)),
+        feature_context=row.get("feature_context"),
         source=source,
     )
 
@@ -109,6 +122,7 @@ def record_from_backtest_metrics(
     params: dict | None = None,
     regime: str = "",
     bar_count: int = 0,
+    feature_context: dict | None = None,
     source: str = "strategy_lab",
 ):
     """Record from a backtest metrics dict (as returned by compute_metrics)."""
@@ -131,6 +145,7 @@ def record_from_backtest_metrics(
         expectancy=float(metrics.get("expectancy", 0)),
         regime_at_observation=regime,
         bar_count=bar_count,
+        feature_context=feature_context if feature_context is not None else metrics.get("feature_context"),
         source=source,
     )
 
@@ -169,6 +184,12 @@ class CombinationSummary:
 
     # Regime breakdown
     regime_distribution: dict = field(default_factory=dict)
+
+    # B16 — feature-context aggregation
+    dominant_trend_state: str = ""
+    dominant_volatility_state: str = ""
+    position_size_warning_rate: float = 0.0   # % of observations flagged
+    latest_feature_snapshot: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -313,6 +334,19 @@ def get_combination_summary(
         if c > 0:
             regime_counts[regime_val] = c
 
+    # B16 — feature-context aggregation
+    def _dominant(field_name):
+        counts = {}
+        for v in qs.exclude(**{field_name: ""}).values_list(field_name, flat=True):
+            counts[v] = counts.get(v, 0) + 1
+        return max(counts, key=counts.get) if counts else ""
+
+    dominant_trend = _dominant("trend_state")
+    dominant_vol = _dominant("volatility_state")
+    warn_count = qs.filter(position_size_warning=True).count()
+    warn_rate = (warn_count / aggs["run_count"] * 100) if aggs["run_count"] else 0
+    latest_snapshot = (latest.feature_context or {}).get("snapshot", {}) if latest else {}
+
     summary = CombinationSummary(
         symbol=symbol,
         template=template,
@@ -334,6 +368,10 @@ def get_combination_summary(
         wf_robust_pct=round(wf_robust_pct, 1),
         avg_wf_degradation=round(wf_aggs["avg_deg"] or 0, 1),
         regime_distribution=regime_counts,
+        dominant_trend_state=dominant_trend,
+        dominant_volatility_state=dominant_vol,
+        position_size_warning_rate=round(warn_rate, 1),
+        latest_feature_snapshot=latest_snapshot,
     )
 
     level, conf_score = _compute_confidence(summary)
@@ -421,6 +459,10 @@ def query_knowledge_base(
             "wf_robust_pct": s.wf_robust_pct,
             "avg_wf_degradation": s.avg_wf_degradation,
             "regime_distribution": s.regime_distribution,
+            "dominant_trend_state": s.dominant_trend_state,
+            "dominant_volatility_state": s.dominant_volatility_state,
+            "position_size_warning_rate": s.position_size_warning_rate,
+            "latest_feature_snapshot": s.latest_feature_snapshot,
         }
 
     # Sort for different views

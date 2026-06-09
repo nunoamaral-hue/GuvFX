@@ -208,6 +208,7 @@ class MatrixRow:
     expectancy: float = 0
     research_score: int = 0
     robustness_label: str = ""
+    feature_context: dict = field(default_factory=dict)
     error: str = ""
 
 
@@ -311,6 +312,7 @@ def run_research_matrix(
                         expectancy=m.get("expectancy", 0),
                         research_score=score,
                         robustness_label=label,
+                        feature_context=m.get("feature_context", {}) or {},
                     ))
                     result.combinations_completed += 1
 
@@ -370,6 +372,7 @@ def compute_rankings(result: MatrixResult) -> dict:
 
 
 def _row_to_dict(row: MatrixRow, rank: int = 0) -> dict:
+    snap = (row.feature_context or {}).get("snapshot", {})
     return {
         "rank": rank,
         "symbol": row.symbol,
@@ -384,6 +387,13 @@ def _row_to_dict(row: MatrixRow, rank: int = 0) -> dict:
         "research_score": row.research_score,
         "robustness_label": row.robustness_label,
         "current_regime": row.current_regime,
+        # B16 — compact market-context snapshot for display
+        "feature_snapshot": {
+            "trend_state": snap.get("trend_state", ""),
+            "volatility_state": snap.get("volatility_state", ""),
+            "breakout_state": snap.get("breakout_state", ""),
+            "position_size_warning": snap.get("position_size_warning", False),
+        },
     }
 
 
@@ -396,7 +406,10 @@ def matrix_to_dict(result: MatrixResult) -> dict:
         "runtime_seconds": result.runtime_seconds,
         "warnings": result.warnings,
         "rankings": rankings,
-        "all_rows": [_row_to_dict(r) for r in result.rows if not r.error],
+        "all_rows": [
+            {**_row_to_dict(r), "feature_context": r.feature_context or {}}
+            for r in result.rows if not r.error
+        ],
         "failed_rows": [{"symbol": r.symbol, "template": r.template, "error": r.error}
                         for r in result.rows if r.error],
         "mode": "research",

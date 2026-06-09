@@ -702,6 +702,15 @@ def run_template_backtest(
     if regime_data:
         metrics["regime"] = regime_data
 
+    # ── Feature context (B16) — records market conditions, no trade-logic change ──
+    try:
+        from backtests.feature_extractor import extract_feature_context, apply_risk_warnings
+        feature_context = extract_feature_context(bars, symbol=symbol, timeframe=timeframe)
+        apply_risk_warnings(feature_context, metrics)
+        metrics["feature_context"] = feature_context
+    except Exception:
+        pass  # Non-blocking — feature context is additive
+
     return BacktestResult(
         symbol=symbol, timeframe=timeframe,
         start_date=start_date, end_date=end_date,
