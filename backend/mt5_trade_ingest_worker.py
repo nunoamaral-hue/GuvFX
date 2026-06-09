@@ -292,7 +292,12 @@ def main():
     print("worker:", WORKER_ID, "agent_order_base:", AGENT_ORDER_BASE)
     while True:
         try:
-            job = claim_next_job("PLACE_TEST_ORDER") or claim_next_job()
+            # Claim priority: PLACE_TEST_ORDER > PLACE_ORDER > SYNC_POSITIONS
+            job = (
+                claim_next_job("PLACE_TEST_ORDER")
+                or claim_next_job("PLACE_ORDER")
+                or claim_next_job()
+            )
             if not job:
                 time.sleep(SLEEP_SEC)
                 continue
@@ -302,8 +307,8 @@ def main():
             payload = job.get("payload") or {}
             account_id = int(job.get("account"))
 
-            if jt == "PLACE_TEST_ORDER":
-                # --- Demo order execution via Windows agent ---
+            if jt in ("PLACE_TEST_ORDER", "PLACE_ORDER"):
+                # --- Order execution via Windows agent ---
                 windows_username = payload.get("windows_username")
                 symbol = payload.get("symbol")
                 side = payload.get("side")
@@ -312,21 +317,41 @@ def main():
                 comment = payload.get("comment", "")
 
                 if not all([windows_username, symbol, side, lots, comment]):
-                    complete_job(job_id, "FAILED", {"ok": False, "reason": "missing_payload_fields"}, "PLACE_TEST_ORDER requires windows_username, symbol, side, lots, comment")
+                    complete_job(job_id, "FAILED", {"ok": False, "reason": "missing_payload_fields"},
+                                 f"{jt} requires windows_username, symbol, side, lots, comment")
                     continue
 
-                print(f"[DEMO] Executing PLACE_TEST_ORDER job_id={job_id}: {symbol} {side} {lots}")
-                order_result = agent_order({
+                # Safety: enforce lot cap
+                max_lots = 0.02
+                if float(lots) > max_lots:
+                    complete_job(job_id, "FAILED", {"ok": False, "reason": "lots_exceeded",
+                                 "lots": lots, "max": max_lots}, f"Lot size {lots} exceeds max {max_lots}")
+                    continue
+
+                label = "SIGNAL" if jt == "PLACE_ORDER" else "DEMO"
+                print(f"[{label}] Executing {jt} job_id={job_id}: {symbol} {side} {lots}")
+
+                # Build agent order payload — include SL/TP for signal orders
+                agent_payload = {
                     "username": windows_username,
                     "symbol": symbol,
                     "side": side,
                     "lots": lots,
                     "magic": magic,
                     "comment": comment,
-                })
+                }
+                # Pass SL/TP if present (PLACE_ORDER from signal engine)
+                sl = payload.get("sl_price")
+                tp = payload.get("tp_price")
+                if sl is not None:
+                    agent_payload["sl"] = float(sl)
+                if tp is not None:
+                    agent_payload["tp"] = float(tp)
+
+                order_result = agent_order(agent_payload)
 
                 if order_result.get("ok"):
-                    print(f"[DEMO] SUCCESS job_id={job_id}: order={order_result.get('order')}, price={order_result.get('price')}")
+                    print(f"[{label}] SUCCESS job_id={job_id}: order={order_result.get('order')}, price={order_result.get('price')}")
                     complete_job(job_id, "SUCCESS", {
                         "ok": True,
                         "order": order_result.get("order"),
@@ -339,12 +364,13 @@ def main():
                 else:
                     error_msg = order_result.get("error", "unknown_error")
                     detail = order_result.get("detail", "")
-                    print(f"[DEMO] FAILED job_id={job_id}: {error_msg} {detail}")
+                    print(f"[{label}] FAILED job_id={job_id}: {error_msg} {detail}")
                     complete_job(job_id, "FAILED", order_result, f"Agent order failed: {error_msg}")
                 continue
 
             if jt != "SYNC_POSITIONS":
-                complete_job(job_id, "FAILED", {"ok": False, "reason": "unsupported_job_type", "job_type": jt}, "Worker supports SYNC_POSITIONS and PLACE_TEST_ORDER only")
+                complete_job(job_id, "FAILED", {"ok": False, "reason": "unsupported_job_type", "job_type": jt},
+                             "Worker supports SYNC_POSITIONS, PLACE_TEST_ORDER, and PLACE_ORDER")
                 continue
 
             # MVP: require windows_username in payload. (We can later fetch from MT5 instance.)

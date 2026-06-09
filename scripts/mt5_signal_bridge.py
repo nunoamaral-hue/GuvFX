@@ -81,8 +81,8 @@ MAX_LOT_SIZE = 0.02
 ALLOWED_SIDES = ["BUY", "SELL"]
 
 # Demo order endpoint safety rails (POST /mt5/order)
-DEMO_ORDER_ALLOWED_SYMBOLS = ["EURUSD"]
-DEMO_ORDER_MAX_LOT_SIZE = 0.01
+DEMO_ORDER_ALLOWED_SYMBOLS = ["EURUSD", "GBPUSD", "XAUUSD"]
+DEMO_ORDER_MAX_LOT_SIZE = 0.02
 DEMO_ORDER_ALLOWED_SIDES = ["BUY", "SELL"]
 
 # =============================================================================
@@ -845,14 +845,24 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
             "volume": lots,
             "type": order_type,
             "price": price,
-            "deviation": 20,
+            "deviation": int(params.get("deviation", 20)),
             "magic": magic,
             "comment": comment[:31],
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
 
-        logger.info(f"[/mt5/order] Sending: {symbol} {side} {lots} @ {price} comment='{comment[:31]}'")
+        # Optional SL/TP (from PLACE_ORDER signal jobs)
+        sl = params.get("sl")
+        tp = params.get("tp")
+        if sl is not None:
+            request["sl"] = float(sl)
+        if tp is not None:
+            request["tp"] = float(tp)
+
+        sl_str = f" sl={sl}" if sl else ""
+        tp_str = f" tp={tp}" if tp else ""
+        logger.info(f"[/mt5/order] Sending: {symbol} {side} {lots} @ {price}{sl_str}{tp_str} comment='{comment[:31]}'")
         result = mt5.order_send(request)
 
         if result is None:
