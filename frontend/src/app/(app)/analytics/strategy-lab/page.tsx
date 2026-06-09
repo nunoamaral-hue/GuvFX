@@ -95,6 +95,14 @@ export default function StrategyLabPage() {
   const [wfResults, setWfResults] = useState<WFResult[]>([]);
   const [optWarnings, setOptWarnings] = useState<string[]>([]);
 
+  // Recommendations state
+  type RecItem = {
+    category: string; priority: string; confidence: string;
+    title: string; evidence: string[]; suggested_next_action: string;
+  };
+  const [recommendations, setRecommendations] = useState<RecItem[]>([]);
+  const [recSummary, setRecSummary] = useState<Record<string, number>>({});
+
   const [loading, setLoading] = useState("");
   const [error, setError] = useState("");
 
@@ -111,6 +119,7 @@ export default function StrategyLabPage() {
     setError("");
     setRegime(null); setRegimePerf(null); setComparison(null);
     setOptResults([]); setWfResults([]); setOptWarnings([]);
+    setRecommendations([]); setRecSummary({});
 
     try {
       // 1. Regime analysis + filtered backtest
@@ -179,6 +188,29 @@ export default function StrategyLabPage() {
         setWfResults(optRes.walk_forward || []);
         setOptWarnings(optRes.warnings || []);
       }
+
+      // 5. Research recommendations
+      setLoading("Generating recommendations...");
+      try {
+        const recRes = await apiFetch<{
+          ok: boolean;
+          recommendations: RecItem[];
+          summary: Record<string, number>;
+        }>("/api/backtests/research-recommendations/", {
+          method: "POST",
+          body: JSON.stringify({
+            scope: "all",
+            symbols: [symbol],
+            templates: [selectedTemplate],
+            include_regime: true,
+            include_portfolio: false,
+          }),
+        });
+        if (recRes.ok) {
+          setRecommendations(recRes.recommendations || []);
+          setRecSummary(recRes.summary || {});
+        }
+      } catch { /* non-blocking */ }
 
       setLoading("");
     } catch (err) {
@@ -357,6 +389,75 @@ export default function StrategyLabPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* ── Research Recommendations ── */}
+      {recommendations.length > 0 && (
+        <div style={glass}>
+          <div style={secHeader}>
+            Research Recommendations
+            <span style={{ fontSize: "0.7rem", color: "#64748b", fontWeight: 400, marginLeft: "0.5rem", textTransform: "none" }}>
+              {recSummary.total_recommendations || 0} insights
+            </span>
+          </div>
+
+          {/* High priority */}
+          {recommendations.filter((r) => r.priority === "high").length > 0 && (
+            <div style={{ marginBottom: "0.75rem" }}>
+              <div style={{ fontSize: "0.72rem", color: "#f87171", fontWeight: 600, marginBottom: "0.4rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                High Priority
+              </div>
+              {recommendations.filter((r) => r.priority === "high").map((r, i) => (
+                <div key={`h-${i}`} style={{ padding: "0.6rem 0.75rem", marginBottom: "0.35rem", borderRadius: 8, border: "1px solid rgba(248,113,113,0.15)", background: "rgba(248,113,113,0.04)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" }}>
+                    <Badge color="red">{r.category}</Badge>
+                    <span style={{ fontSize: "0.85rem", color: "#e9f4ff", fontWeight: 500 }}>{r.title}</span>
+                  </div>
+                  {r.evidence.slice(0, 2).map((e, j) => (
+                    <div key={j} style={{ fontSize: "0.75rem", color: "#94a3b8", marginLeft: "0.5rem" }}>{e}</div>
+                  ))}
+                  {r.suggested_next_action && (
+                    <div style={{ fontSize: "0.75rem", color: "#4ab3ff", marginTop: "0.2rem" }}>→ {r.suggested_next_action}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Medium priority */}
+          {recommendations.filter((r) => r.priority === "medium").length > 0 && (
+            <div style={{ marginBottom: "0.75rem" }}>
+              <div style={{ fontSize: "0.72rem", color: "#fbbf24", fontWeight: 600, marginBottom: "0.4rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                Medium Priority
+              </div>
+              {recommendations.filter((r) => r.priority === "medium").map((r, i) => (
+                <div key={`m-${i}`} style={{ padding: "0.5rem 0.75rem", marginBottom: "0.3rem", borderRadius: 8, border: "1px solid rgba(251,191,36,0.1)", background: "rgba(251,191,36,0.02)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.15rem" }}>
+                    <Badge color="yellow">{r.category}</Badge>
+                    <span style={{ fontSize: "0.82rem", color: "#e9f4ff" }}>{r.title}</span>
+                  </div>
+                  {r.suggested_next_action && (
+                    <div style={{ fontSize: "0.72rem", color: "#94a3b8" }}>→ {r.suggested_next_action}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Low priority */}
+          {recommendations.filter((r) => r.priority === "low").length > 0 && (
+            <div>
+              <div style={{ fontSize: "0.72rem", color: "#64748b", fontWeight: 600, marginBottom: "0.4rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                Low Priority
+              </div>
+              {recommendations.filter((r) => r.priority === "low").map((r, i) => (
+                <div key={`l-${i}`} style={{ padding: "0.4rem 0.75rem", marginBottom: "0.25rem", borderRadius: 6, background: "rgba(255,255,255,0.01)" }}>
+                  <span style={{ fontSize: "0.78rem", color: "#8fa0b7" }}>{r.title}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
