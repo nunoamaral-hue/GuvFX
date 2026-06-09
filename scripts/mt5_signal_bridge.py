@@ -1221,6 +1221,9 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
                 username = params.get("username", [""])[0]
                 result = fetch_deals_snapshot(username)
                 self._send_json_response(result, 200 if result.get("ok") else 400)
+            elif path == "/mt5/symbols":
+                result = self._handle_symbols_request()
+                self._send_json_response(result, 200 if result.get("ok") else 400)
             elif path == "/mt5/positions":
                 symbol = params.get("symbol", [""])[0]
                 result = fetch_positions(symbol)
@@ -1329,10 +1332,53 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
         status_code = 200 if result.get("ok") else 400
         self._send_json_response(result, status_code)
 
+    def _handle_symbols_request(self) -> Dict:
+        """GET /mt5/symbols — list all available MT5 symbols with metadata."""
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            return {"ok": False, "error": "mt5_not_installed"}
+
+        init_kwargs = {}
+        if MT5_TERMINAL_PATH:
+            init_kwargs["path"] = MT5_TERMINAL_PATH
+
+        if not mt5.initialize(**init_kwargs):
+            return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
+
+        try:
+            symbols = mt5.symbols_get()
+            if symbols is None:
+                return {"ok": False, "error": "symbols_get_failed"}
+
+            result = []
+            for s in symbols:
+                result.append({
+                    "name": s.name,
+                    "description": s.description,
+                    "path": s.path,
+                    "visible": s.visible,
+                    "spread": s.spread,
+                    "digits": s.digits,
+                    "trade_mode": s.trade_mode,  # 0=disabled, 4=full
+                    "contract_size": s.trade_contract_size,
+                    "volume_min": s.volume_min,
+                    "volume_max": s.volume_max,
+                    "currency_base": s.currency_base,
+                    "currency_profit": s.currency_profit,
+                })
+
+            return {"ok": True, "count": len(result), "symbols": result}
+
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            mt5.shutdown()
+
     def _handle_rates_request(self, params: Dict):
         """Handle /mt5/snapshots/rates endpoint."""
         # Extract parameters
-        symbol = params.get("symbol", [""])[0].upper()
+        symbol = params.get("symbol", [""])[0]  # preserve case for index symbols
         timeframe = params.get("timeframe", ["H4"])[0].upper()
         count_str = params.get("count", ["300"])[0]
         start_pos_str = params.get("start_pos", ["0"])[0]
