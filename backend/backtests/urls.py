@@ -9,6 +9,7 @@ from .views import (
     BacktestJobStatusView,
     BacktestOptimiseView,
     BacktestPromoteView,
+    BacktestRegimeAnalysisView,
     BacktestRunViewSet,
     BacktestTemplateListView,
     ProcessPendingBacktestsView,
@@ -74,6 +75,12 @@ urlpatterns = [
         "optimise/",
         BacktestOptimiseView.as_view(),
         name="backtests-optimise",
+    ),
+    # Regime analysis
+    path(
+        "regime-analysis/",
+        BacktestRegimeAnalysisView.as_view(),
+        name="backtests-regime-analysis",
     ),
     # Process pending runs
     path(

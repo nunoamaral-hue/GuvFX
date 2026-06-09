@@ -370,6 +370,46 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class BacktestRegimeAnalysisView(APIView):
+    """
+    POST /api/backtests/regime-analysis/
+
+    Analyse market regime for a symbol/timeframe.
+    Returns current regime, transition matrix, regime distribution.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.engine import fetch_bars
+        from backtests.regime_engine import classify_regimes, analysis_to_dict, RegimeParams
+
+        data = request.data
+        symbol = data.get("symbol", "EURUSD")
+        timeframe = data.get("timeframe", "H1")
+        bar_count = int(data.get("bar_count", 1000))
+        lookback = int(data.get("lookback", 20))
+        k = float(data.get("k", 1.0))
+
+        try:
+            bars = fetch_bars(symbol, timeframe, count=bar_count)
+        except Exception as e:
+            return Response({"ok": False, "error": str(e)}, status=502)
+
+        if not bars:
+            return Response({"ok": False, "error": "No bars"}, status=400)
+
+        analysis = classify_regimes(bars, RegimeParams(lookback=lookback, k=k))
+        if analysis.error:
+            return Response({"ok": False, "error": analysis.error}, status=400)
+
+        result = analysis_to_dict(analysis)
+        result["ok"] = True
+        result["symbol"] = symbol
+        result["timeframe"] = timeframe
+        result["mode"] = "research"
+        return Response(result)
+
+
 class BacktestOptimiseView(APIView):
     """
     POST /api/backtests/optimise/

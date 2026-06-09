@@ -641,6 +641,24 @@ def run_template_backtest(
 
     metrics = compute_metrics(trades, initial_balance, balance)
 
+    # ── Regime analysis ──
+    regime_data = {}
+    try:
+        from backtests.regime_engine import classify_regimes, compute_regime_metrics, analysis_to_dict, RegimeParams
+        regime_analysis = classify_regimes(bars, RegimeParams(lookback=20, k=1.0))
+        regime_metrics = compute_regime_metrics(trades, regime_analysis.labels, bars)
+        regime_data = {
+            "analysis": analysis_to_dict(regime_analysis),
+            "performance_by_regime": regime_metrics.by_regime,
+        }
+        # Tag each trade with entry regime
+        for trade in trades:
+            idx = trade.entry_bar
+            if 0 <= idx < len(regime_analysis.labels):
+                trade.exit_reason = f"{trade.exit_reason}|regime:{regime_analysis.labels[idx]}"
+    except Exception:
+        pass  # Non-blocking — regime is additive
+
     start_date = datetime.utcfromtimestamp(bars[0].time).strftime("%Y-%m-%d") if bars else ""
     end_date = datetime.utcfromtimestamp(bars[-1].time).strftime("%Y-%m-%d") if bars else ""
 
@@ -668,6 +686,10 @@ def run_template_backtest(
         "pip_value_per_lot": pip_value,
         "notes": "Research mode. Bar OHLC simulation with fixed spread.",
     }
+
+    # Add regime data to metrics
+    if regime_data:
+        metrics["regime"] = regime_data
 
     return BacktestResult(
         symbol=symbol, timeframe=timeframe,
