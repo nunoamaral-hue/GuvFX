@@ -370,6 +370,56 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class BacktestRegimeFilterView(APIView):
+    """
+    POST /api/backtests/regime-filter/
+
+    Run a baseline vs regime-filtered backtest comparison.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.engine import fetch_bars
+        from backtests.regime_filter import (
+            run_regime_comparison, RegimeFilterConfig, comparison_to_dict,
+        )
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        data = request.data
+        template_name = data.get("template_name", "rsi_mean_reversion")
+        symbol = data.get("symbol", "EURUSD")
+        timeframe = data.get("timeframe", "H1")
+        bar_count = int(data.get("bar_count", 1000))
+        template_params = data.get("params", {})
+
+        regime_cfg = data.get("regime_filter", {})
+        filter_config = RegimeFilterConfig(
+            enabled=True,
+            allowed_entry_regimes=regime_cfg.get("allowed_entry_regimes", ["BULL", "SIDEWAYS"]),
+        )
+
+        try:
+            bars = fetch_bars(symbol, timeframe, count=bar_count)
+        except Exception as e:
+            return Response({"ok": False, "error": str(e)}, status=502)
+
+        if not bars:
+            return Response({"ok": False, "error": "No bars"}, status=400)
+
+        result = run_regime_comparison(
+            bars, template_name, filter_config,
+            params=template_params,
+            symbol=symbol, timeframe=timeframe,
+        )
+
+        if result.error:
+            return Response({"ok": False, "error": result.error}, status=400)
+
+        return Response({"ok": True, **comparison_to_dict(result)})
+
+
 class BacktestRegimeAnalysisView(APIView):
     """
     POST /api/backtests/regime-analysis/
