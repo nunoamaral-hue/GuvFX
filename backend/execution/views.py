@@ -61,7 +61,8 @@ class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
             try:
                 worker = authenticate_worker(worker_id, worker_secret)
                 request._worker_identity = worker
-                log_worker_auth_success(request, worker_id=worker_id)
+                # Suppressed: WORKER_AUTH_SUCCESS generates ~40K events/day
+                # from polling. Log only failures (see log_worker_auth_failed).
                 return True
             except PermissionDenied:
                 log_worker_auth_failed(request, worker_id=worker_id, reason="credentials")
@@ -73,7 +74,7 @@ class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
             try:
                 worker = authenticate_legacy_worker(provided_token)
                 request._worker_identity = worker
-                log_worker_auth_success(request, worker_id=worker.worker_id)
+                # Suppressed: same as modern path — polling noise.
                 return True
             except PermissionDenied:
                 log_worker_auth_failed(
