@@ -33,7 +33,7 @@ def lease_instance_for_user(user):
     if inst:
         inst.last_seen_at = now
         inst.lease_expires_at = now + timedelta(minutes=LEASE_MINUTES)
-        inst.save(update_fields=["last_seen_at", "lease_expires_at", "updated_at"])
+        inst.save(update_fields=["last_seen_at", "lease_expires_at"])
         return inst
 
     # Find a free instance
@@ -51,5 +51,5 @@ def lease_instance_for_user(user):
     inst.leased_to = user
     inst.last_seen_at = now
     inst.lease_expires_at = now + timedelta(minutes=LEASE_MINUTES)
-    inst.save(update_fields=["is_leased","leased_to","last_seen_at","lease_expires_at","updated_at"])
+    inst.save(update_fields=["is_leased", "leased_to", "last_seen_at", "lease_expires_at"])
     return inst

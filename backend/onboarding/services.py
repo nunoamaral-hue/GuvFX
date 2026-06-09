@@ -352,6 +352,13 @@ def mark_account_connected(user, request=None) -> UserOnboardingState:
     state.save(update_fields=["account_connected", "updated_at"])
     log_onboarding_account_connected(request, user.id, account.id)
 
+    # Auto-provision terminal access for the connected account
+    try:
+        from mt5.services.terminal_provisioning_service import provision_terminal_for_account
+        provision_terminal_for_account(user, account)
+    except Exception:
+        pass  # Non-blocking — terminal access is a convenience, not a gate
+
     _check_completion(state)
     if state.onboarding_completed:
         log_onboarding_completed(request, user.id)
