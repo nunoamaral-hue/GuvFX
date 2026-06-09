@@ -12,6 +12,7 @@ from .views import (
     BacktestRegimeAnalysisView,
     BacktestRegimeFilterView,
     BacktestPortfolioResearchView,
+    BacktestRecommendationsView,
     BacktestResearchMatrixView,
     BacktestRunViewSet,
     BacktestTemplateListView,
@@ -102,6 +103,12 @@ urlpatterns = [
         "portfolio-research/",
         BacktestPortfolioResearchView.as_view(),
         name="backtests-portfolio-research",
+    ),
+    # Research recommendations
+    path(
+        "research-recommendations/",
+        BacktestRecommendationsView.as_view(),
+        name="backtests-research-recommendations",
     ),
     # Process pending runs
     path(

@@ -370,6 +370,86 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class BacktestRecommendationsView(APIView):
+    """
+    POST /api/backtests/research-recommendations/
+
+    Generate research recommendations from matrix, regime, and portfolio data.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.research_matrix import run_research_matrix, matrix_to_dict
+        from backtests.regime_engine import classify_regimes, analysis_to_dict, RegimeParams
+        from backtests.regime_filter import run_regime_comparison, RegimeFilterConfig, comparison_to_dict
+        from backtests.portfolio_research import build_portfolio, portfolio_to_dict
+        from backtests.research_recommender import generate_recommendations, result_to_dict
+        from backtests.engine import fetch_bars
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        data = request.data
+        scope = data.get("scope", "all")
+        symbols = data.get("symbols")
+        templates = data.get("templates")
+        include_regime = data.get("include_regime", True)
+        include_portfolio = data.get("include_portfolio", True)
+
+        # 1. Run research matrix
+        matrix_result = run_research_matrix(
+            symbols=symbols, templates=templates,
+            timeframes=["H1"], bar_count=1000,
+        )
+        matrix_dict = matrix_to_dict(matrix_result)
+        matrix_rows = matrix_dict.get("all_rows", [])
+
+        # 2. Regime analysis (on first symbol)
+        regime_data = None
+        filter_data = None
+        if include_regime and matrix_rows:
+            first_sym = matrix_rows[0]["symbol"] if matrix_rows else "EURUSD"
+            try:
+                bars = fetch_bars(first_sym, "H1", count=1000)
+                ra = classify_regimes(bars, RegimeParams())
+                regime_data = analysis_to_dict(ra)
+
+                # Quick regime filter test on best RSI combo
+                rsi_rows = [r for r in matrix_rows if r.get("template") == "rsi_mean_reversion"]
+                if rsi_rows:
+                    best_rsi = max(rsi_rows, key=lambda r: r.get("research_score", 0))
+                    filter_result = run_regime_comparison(
+                        bars, "rsi_mean_reversion",
+                        RegimeFilterConfig(enabled=True, allowed_entry_regimes=["BULL", "SIDEWAYS"]),
+                        symbol=best_rsi["symbol"], timeframe="H1",
+                    )
+                    filter_data = comparison_to_dict(filter_result)
+            except Exception:
+                pass
+
+        # 3. Portfolio (top 4 if requested)
+        portfolios = []
+        if include_portfolio and len(matrix_rows) >= 4:
+            try:
+                top4 = sorted(matrix_rows, key=lambda r: r.get("research_score", 0), reverse=True)[:4]
+                specs = [{"symbol": r["symbol"], "template": r["template"], "timeframe": "H1"} for r in top4]
+                port = build_portfolio(specs, name="Auto: Top 4")
+                portfolios.append(portfolio_to_dict(port))
+            except Exception:
+                pass
+
+        # 4. Generate recommendations
+        result = generate_recommendations(
+            matrix_rows=matrix_rows,
+            regime_data=regime_data,
+            filter_data=filter_data.get("comparison") if isinstance(filter_data, dict) else None,
+            portfolios=portfolios,
+            scope=scope,
+        )
+
+        return Response({"ok": True, **result_to_dict(result)})
+
+
 class BacktestPortfolioResearchView(APIView):
     """
     POST /api/backtests/portfolio-research/
