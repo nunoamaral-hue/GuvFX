@@ -20,6 +20,7 @@ from .views import (
     PromotionCandidateReviewView,
     ExecutionCandidateStageView,
     ResearchKnowledgeBaseView,
+    FeatureAttributionView,
     WindowsBacktestRunView,
     WindowsBacktestStatusView,
     WindowsBacktestResultView,
@@ -116,6 +117,12 @@ urlpatterns = [
         "research-knowledge/",
         ResearchKnowledgeBaseView.as_view(),
         name="backtests-research-knowledge",
+    ),
+    # B17: Feature Attribution
+    path(
+        "feature-attribution/",
+        FeatureAttributionView.as_view(),
+        name="backtests-feature-attribution",
     ),
     # Process pending runs
     path(

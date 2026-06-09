@@ -370,6 +370,39 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class FeatureAttributionView(APIView):
+    """
+    GET /api/backtests/feature-attribution/
+
+    Deterministic statistical attribution over the Research Knowledge Base —
+    which market contexts associate with strong/weak research outcomes.
+    Read-only, Research Mode. No ML, no prediction, no deployment.
+
+    Query params: template, symbol, timeframe, min_count (default 3), feature.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.attribution import run_attribution
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        try:
+            min_count = max(1, int(request.query_params.get("min_count", 3)))
+        except (TypeError, ValueError):
+            min_count = 3
+
+        result = run_attribution(
+            template=request.query_params.get("template"),
+            symbol=request.query_params.get("symbol"),
+            timeframe=request.query_params.get("timeframe"),
+            min_count=min_count,
+            feature=request.query_params.get("feature"),
+        )
+        return Response({"ok": True, **result})
+
+
 class ResearchKnowledgeBaseView(APIView):
     """
     GET /api/backtests/research-knowledge/

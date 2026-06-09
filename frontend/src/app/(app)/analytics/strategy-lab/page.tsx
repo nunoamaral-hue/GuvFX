@@ -149,6 +149,22 @@ export default function StrategyLabPage() {
   const [kbTotalObs, setKbTotalObs] = useState(0);
   const [kbTotalCombos, setKbTotalCombos] = useState(0);
 
+  // B17: Feature Attribution state
+  type AttrInsight = {
+    category: string; template: string | null; title: string;
+    confidence: string; sample_count: number; caution: string;
+    evidence: Record<string, number>;
+  };
+  type AttrResult = {
+    summary: { total_observations: number; with_feature_context: number; with_news_context: number; strong_observations: number; weak_observations: number };
+    insights: AttrInsight[];
+    feature_tally: { top_features_in_strong: Record<string, number>; top_features_in_weak: Record<string, number> };
+    normalisation_attribution: Record<string, { observation_count: number; avg_score: number; avg_max_drawdown: number; weak_rate: number; insufficient_sample: boolean }>;
+    news_attribution: Record<string, Record<string, { observation_count: number; avg_score: number; insufficient_sample: boolean }>>;
+    warnings: string[];
+  };
+  const [attribution, setAttribution] = useState<AttrResult | null>(null);
+
   const [loading, setLoading] = useState("");
   const [error, setError] = useState("");
 
@@ -168,6 +184,7 @@ export default function StrategyLabPage() {
     setRecommendations([]); setRecSummary({});
     setKbStrongest([]); setKbMostTested([]); setKbHighConf([]);
     setKbTotalObs(0); setKbTotalCombos(0);
+    setAttribution(null);
 
     try {
       // 1. Regime analysis + filtered backtest
@@ -282,6 +299,14 @@ export default function StrategyLabPage() {
           setKbTotalObs(kbRes.total_observations || 0);
           setKbTotalCombos(kbRes.total_combinations || 0);
         }
+      } catch { /* non-blocking */ }
+
+      // 7. Feature Attribution (across all research observations — view only)
+      setLoading("Computing feature attribution...");
+      try {
+        const attrRes = await apiFetch<{ ok: boolean } & AttrResult>(
+          "/api/backtests/feature-attribution/?min_count=3", {});
+        if (attrRes.ok) setAttribution(attrRes);
       } catch { /* non-blocking */ }
 
       setLoading("");
@@ -598,6 +623,76 @@ export default function StrategyLabPage() {
                   <span style={{ fontSize: "0.78rem", color: "#8fa0b7" }}>{r.title}</span>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Feature Attribution (B17) — view only ── */}
+      {attribution && attribution.summary.total_observations > 0 && (
+        <div style={glass}>
+          <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>Feature Attribution <span style={{ textTransform: "none", color: "#64748b", fontWeight: 400 }}>— context vs outcome (all observations)</span></span>
+            <span style={{ fontSize: "0.68rem", color: "#64748b", fontWeight: 400, textTransform: "none" }}>
+              {attribution.summary.total_observations} obs · {attribution.summary.strong_observations} strong / {attribution.summary.weak_observations} weak
+            </span>
+          </div>
+
+          {/* Insights */}
+          {attribution.insights.length > 0 ? (
+            <div style={{ marginBottom: "0.9rem" }}>
+              {attribution.insights.slice(0, 8).map((ins, i) => (
+                <div key={i} style={{ padding: "0.5rem 0.7rem", marginBottom: "0.35rem", borderRadius: 8, border: "1px solid rgba(74,179,255,0.1)", background: "rgba(74,179,255,0.03)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                    <Badge color={ins.confidence === "high" ? "green" : ins.confidence === "medium" ? "yellow" : "gray"}>{ins.confidence} · n={ins.sample_count}</Badge>
+                    <span style={{ fontSize: "0.83rem", color: "#e9f4ff" }}>{ins.title}</span>
+                  </div>
+                  <div style={{ fontSize: "0.7rem", color: "#64748b", marginTop: "0.2rem" }}>{ins.caution}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: "0.8rem", color: "#64748b", marginBottom: "0.9rem" }}>
+              No context associations meet the sample threshold yet — accumulate more feature-aware observations.
+            </div>
+          )}
+
+          {/* Strong vs weak feature tally */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.75rem" }}>
+            <div>
+              <div style={{ fontSize: "0.72rem", color: "#86efac", fontWeight: 600, marginBottom: "0.3rem", textTransform: "uppercase" }}>Most common in strong</div>
+              {Object.entries(attribution.feature_tally.top_features_in_strong).slice(0, 5).map(([k, v]) => (
+                <div key={k} style={{ fontSize: "0.76rem", color: "#b7c5dd", fontFamily: "monospace" }}>{k} <span style={{ color: "#64748b" }}>×{v}</span></div>
+              ))}
+            </div>
+            <div>
+              <div style={{ fontSize: "0.72rem", color: "#fca5a5", fontWeight: 600, marginBottom: "0.3rem", textTransform: "uppercase" }}>Most common in weak</div>
+              {Object.entries(attribution.feature_tally.top_features_in_weak).slice(0, 5).map(([k, v]) => (
+                <div key={k} style={{ fontSize: "0.76rem", color: "#b7c5dd", fontFamily: "monospace" }}>{k} <span style={{ color: "#64748b" }}>×{v}</span></div>
+              ))}
+            </div>
+          </div>
+
+          {/* Normalisation attribution */}
+          {attribution.normalisation_attribution?.true && attribution.normalisation_attribution?.false && (
+            <div style={{ fontSize: "0.76rem", color: "#b7c5dd", marginBottom: "0.5rem" }}>
+              <span style={{ color: "#64748b", textTransform: "uppercase", fontSize: "0.7rem", fontWeight: 600 }}>Normalisation — </span>
+              warning=true: score {attribution.normalisation_attribution.true.avg_score}, DD {attribution.normalisation_attribution.true.avg_max_drawdown}%, weak {attribution.normalisation_attribution.true.weak_rate}% ·
+              warning=false: score {attribution.normalisation_attribution.false.avg_score}, DD {attribution.normalisation_attribution.false.avg_max_drawdown}%, weak {attribution.normalisation_attribution.false.weak_rate}%
+            </div>
+          )}
+
+          {/* News attribution summary */}
+          {attribution.news_attribution?.event_relevance && (
+            <div style={{ fontSize: "0.76rem", color: "#b7c5dd" }}>
+              <span style={{ color: "#64748b", textTransform: "uppercase", fontSize: "0.7rem", fontWeight: 600 }}>News (event_relevance) — </span>
+              {Object.entries(attribution.news_attribution.event_relevance).map(([k, v]) => `${k}: ${v.observation_count} obs (score ${v.avg_score})`).join(" · ")}
+            </div>
+          )}
+
+          {attribution.warnings.length > 0 && (
+            <div style={{ fontSize: "0.7rem", color: "#fbbf24", marginTop: "0.6rem" }}>
+              {attribution.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
             </div>
           )}
         </div>
