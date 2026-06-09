@@ -136,6 +136,7 @@ const dictionary: Dictionary = {
   "nav.overview": { en: "Overview", ja: "概要" },
   "nav.performance": { en: "Performance", ja: "パフォーマンス" },
   "nav.strategyMetrics": { en: "Strategy Metrics", ja: "戦略指標" },
+  "nav.strategyLab": { en: "Strategy Lab", ja: "戦略ラボ" },
   "nav.charts": { en: "Charts", ja: "チャート" },
   "nav.billingPlans": { en: "Billing & Plans", ja: "請求 & プラン" },
   "nav.accountHosting": { en: "Hosting", ja: "ホスティング" },

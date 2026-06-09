@@ -78,6 +78,7 @@ const navGroups: NavGroup[] = [
       { labelKey: "nav.overview", href: "/dashboard" },
       { labelKey: "nav.performance", href: "/dashboard/performance", soon: true },
       { labelKey: "nav.strategyMetrics", href: "/analytics/strategy-metrics" },
+      { labelKey: "nav.strategyLab", href: "/analytics/strategy-lab" },
       { labelKey: "nav.charts", href: "/charts" },
     ],
   },
