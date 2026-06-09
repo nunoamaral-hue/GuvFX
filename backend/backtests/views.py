@@ -445,43 +445,37 @@ class ProcessPendingBacktestsView(APIView):
 
     def _run_real_backtest(self, run: BacktestRun):
         """
-        Run real MT5-data backtest using the engine.
+        Run real MT5-data backtest using a strategy template.
 
-        Fetches OHLC bars from the signal bridge, runs EMA crossover
-        simulation, returns (metrics_dict, equity_curve_list).
+        Fetches OHLC bars from the signal bridge, runs the selected
+        strategy template, returns (metrics_dict, equity_curve_list).
         """
-        from backtests.engine import fetch_bars, run_backtest, StrategyParams
+        from backtests.engine import fetch_bars, run_template_backtest
 
         symbol = run.symbol or run.config.symbol
         timeframe = run.timeframe or run.config.timeframe
         initial_balance = float(run.initial_balance)
 
-        # Strategy parameters from config or defaults
+        # Strategy parameters from config
         strategy = run.config.strategy
-        risk_pct = float(run.config.risk_per_trade_pct or strategy.risk_per_trade_pct or 1)
         lots = float(getattr(strategy, "fixed_lot_size", None) or 0.01)
 
-        params = StrategyParams(
-            fast_ema=20,
-            slow_ema=50,
-            sl_pips=30.0,
-            tp_pips=60.0,
-            lots=lots,
-            spread_pips=1.5,
-        )
+        # Template selection: from strategy filters or default to ema_trend
+        template_name = (strategy.filters or {}).get("backtest_template", "ema_trend")
+        template_params = (strategy.filters or {}).get("backtest_params", {})
 
-        # Fetch bars — use batch fetching for larger counts
-        bar_count = 500  # default; could be configurable per config later
+        # Fetch bars
+        bar_count = 1000
         bars = fetch_bars(symbol, timeframe, count=bar_count)
 
         if not bars:
             raise RuntimeError(f"No bars returned for {symbol} {timeframe}")
 
-        result = run_backtest(
-            bars, params,
-            symbol=symbol,
-            timeframe=timeframe,
-            initial_balance=initial_balance,
+        result = run_template_backtest(
+            bars, template_name=template_name,
+            params=template_params,
+            symbol=symbol, timeframe=timeframe,
+            initial_balance=initial_balance, lots=lots,
         )
 
         if result.error:
@@ -501,15 +495,9 @@ class ProcessPendingBacktestsView(APIView):
                 "last_bar_time": dq.last_bar_time,
                 "notes": dq.notes,
             },
-            # Strategy params snapshot
-            "strategy_params": {
-                "fast_ema": params.fast_ema,
-                "slow_ema": params.slow_ema,
-                "sl_pips": params.sl_pips,
-                "tp_pips": params.tp_pips,
-                "lots": params.lots,
-                "spread_pips": params.spread_pips,
-            },
+            # Strategy template + params
+            "strategy_template": template_name,
+            "strategy_params": result.reconciliation.get("strategy_params", {}),
             # Reconciliation metadata
             "reconciliation": result.reconciliation,
             # Display metadata

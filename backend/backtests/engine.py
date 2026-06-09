@@ -491,3 +491,190 @@ def compute_metrics(
         "final_balance": round(final_balance, 2),
         "total_return_pct": round((final_balance - initial_balance) / initial_balance * 100, 2),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Template-based backtest runner
+# ─────────────────────────────────────────────────────────────────────
+
+def run_template_backtest(
+    bars: list[Bar],
+    template_name: str,
+    params: dict | None = None,
+    symbol: str = "EURUSD",
+    timeframe: str = "H1",
+    initial_balance: float = 10000.0,
+    lots: float = 0.01,
+    spread_pips: float = 1.5,
+    pip_value: float = 10.0,
+) -> BacktestResult:
+    """
+    Run a backtest using a named strategy template.
+
+    This is the primary entry point for template-based backtests.
+    Falls back to the legacy run_backtest() for ema_trend if needed.
+    """
+    from backtests.strategy_templates import get_template
+
+    template = get_template(template_name)
+    params = {**template.default_params(), **(params or {})}
+
+    pip_size = 0.0001 if "JPY" not in symbol.upper() else 0.01
+    min_bars = template.min_bars(params)
+
+    if len(bars) < min_bars + 5:
+        return BacktestResult(
+            symbol=symbol, timeframe=timeframe,
+            start_date="", end_date="",
+            bars_count=len(bars), initial_balance=initial_balance,
+            final_balance=initial_balance,
+            error=f"Not enough bars ({len(bars)}) for template {template_name} (need {min_bars})",
+        )
+
+    # Prepare indicators
+    indicators = template.prepare(bars, params)
+
+    trades: list[BacktestTrade] = []
+    equity_curve: list[dict] = []
+    balance = initial_balance
+    position: Optional[dict] = None
+    trade_count = 0
+
+    for i in range(min_bars, len(bars)):
+        bar = bars[i]
+        bar_time = datetime.utcfromtimestamp(bar.time).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # ── Check SL/TP on open position ──
+        if position is not None:
+            exit_price = None
+            exit_reason = None
+
+            if position["side"] == "BUY":
+                if bar.low <= position["sl"]:
+                    exit_price, exit_reason = position["sl"], "sl"
+                elif bar.high >= position["tp"]:
+                    exit_price, exit_reason = position["tp"], "tp"
+            else:
+                if bar.high >= position["sl"]:
+                    exit_price, exit_reason = position["sl"], "sl"
+                elif bar.low <= position["tp"]:
+                    exit_price, exit_reason = position["tp"], "tp"
+
+            if exit_price is None:
+                # Check template signal for close
+                sig = template.signal(i, bars, indicators, params, position)
+                if sig.action == "close":
+                    if position["side"] == "BUY":
+                        exit_price = bar.close - spread_pips * pip_size
+                    else:
+                        exit_price = bar.close + spread_pips * pip_size
+                    exit_reason = sig.reason or "signal_exit"
+
+            if exit_price is not None:
+                if position["side"] == "BUY":
+                    pips = (exit_price - position["entry_price"]) / pip_size
+                else:
+                    pips = (position["entry_price"] - exit_price) / pip_size
+
+                pnl = round(pips * pip_value * lots, 2)
+                balance += pnl
+                trade_count += 1
+
+                trades.append(BacktestTrade(
+                    trade_number=trade_count,
+                    entry_bar=position["entry_bar"],
+                    exit_bar=i,
+                    entry_time=position["entry_time"],
+                    exit_time=bar_time,
+                    side=position["side"],
+                    entry_price=round(position["entry_price"], 5),
+                    exit_price=round(exit_price, 5),
+                    sl=round(position["sl"], 5),
+                    tp=round(position["tp"], 5),
+                    lots=lots,
+                    pnl=pnl,
+                    exit_reason=exit_reason,
+                ))
+                position = None
+
+        # ── Check for new entry ──
+        if position is None:
+            sig = template.signal(i, bars, indicators, params, None)
+            if sig.action in ("buy", "sell"):
+                if sig.action == "buy":
+                    entry_price = bar.close + spread_pips * pip_size
+                else:
+                    entry_price = bar.close - spread_pips * pip_size
+                position = {
+                    "side": sig.action.upper(),
+                    "entry_price": entry_price,
+                    "sl": sig.sl,
+                    "tp": sig.tp,
+                    "entry_bar": i,
+                    "entry_time": bar_time,
+                }
+
+        equity_curve.append({"timestamp": bar_time, "equity": round(balance, 2)})
+
+    # Close open position at end
+    if position is not None:
+        last = bars[-1]
+        if position["side"] == "BUY":
+            exit_price = last.close - spread_pips * pip_size
+            pips = (exit_price - position["entry_price"]) / pip_size
+        else:
+            exit_price = last.close + spread_pips * pip_size
+            pips = (position["entry_price"] - exit_price) / pip_size
+        pnl = round(pips * pip_value * lots, 2)
+        balance += pnl
+        trade_count += 1
+        trades.append(BacktestTrade(
+            trade_number=trade_count, entry_bar=position["entry_bar"],
+            exit_bar=len(bars)-1, entry_time=position["entry_time"],
+            exit_time=datetime.utcfromtimestamp(last.time).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            side=position["side"],
+            entry_price=round(position["entry_price"], 5),
+            exit_price=round(exit_price, 5),
+            sl=round(position["sl"], 5), tp=round(position["tp"], 5),
+            lots=lots, pnl=pnl, exit_reason="end_of_data",
+        ))
+
+    metrics = compute_metrics(trades, initial_balance, balance)
+
+    start_date = datetime.utcfromtimestamp(bars[0].time).strftime("%Y-%m-%d") if bars else ""
+    end_date = datetime.utcfromtimestamp(bars[-1].time).strftime("%Y-%m-%d") if bars else ""
+
+    quality = DataQuality(
+        bar_count=len(bars),
+        first_bar_time=datetime.utcfromtimestamp(bars[0].time).isoformat() + "Z" if bars else "",
+        last_bar_time=datetime.utcfromtimestamp(bars[-1].time).isoformat() + "Z" if bars else "",
+        data_source="MT5", status="OK",
+    )
+    if len(bars) < 100:
+        quality.status = "WARNING"
+        quality.notes.append(f"Low bar count ({len(bars)}).")
+    if not trades:
+        quality.status = "WARNING"
+        quality.notes.append("No trades generated.")
+
+    reconciliation = {
+        "execution_model": "bar_ohlc",
+        "cost_model": "fixed_spread",
+        "spread_pips": spread_pips,
+        "template_name": template_name,
+        "template_version": template.version,
+        "strategy_params": params,
+        "lots": lots,
+        "pip_value_per_lot": pip_value,
+        "notes": "Research mode. Bar OHLC simulation with fixed spread.",
+    }
+
+    return BacktestResult(
+        symbol=symbol, timeframe=timeframe,
+        start_date=start_date, end_date=end_date,
+        bars_count=len(bars), initial_balance=initial_balance,
+        final_balance=round(balance, 2),
+        trades=trades, equity_curve=equity_curve,
+        metrics=metrics, data_quality=quality,
+        reconciliation=reconciliation,
+    )
