@@ -19,7 +19,10 @@ Research Mode only.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -204,15 +207,151 @@ class MockEventProvider(EventProvider):
         return [e for e in self._events if start_epoch <= e.event_time <= end_epoch]
 
 
-def get_event_provider() -> EventProvider:
-    """Factory. Defaults to StaticEventProvider (empty unless configured)."""
+# ── Conservative title → event_type mapping (no aggressive inference) ──
+
+def map_event_type(title: str) -> str:
+    """Map a calendar event title to a controlled event_type. Conservative:
+    only high-confidence keyword matches; everything else → 'Other'."""
+    t = (title or "").lower()
+    if ("non-farm" in t) or ("nonfarm" in t) or ("nfp" in t):
+        return "NFP"
+    if "cpi" in t:
+        return "CPI"
+    if ("rate" in t and any(k in t for k in ("decision", "statement", "overnight", "refinancing", "bank rate", "cash rate", "official"))):
+        return "Interest Rate Decision"
+    if ("ppi" in t) or ("inflation" in t):
+        return "Inflation"
+    if "gdp" in t:
+        return "GDP"
+    if "pmi" in t:
+        return "PMI"
+    if "retail sales" in t:
+        return "Retail Sales"
+    if any(k in t for k in ("payroll", "employment", "unemployment", "jobless", "claims", "jobs")):
+        return "Employment"
+    if any(k in t for k in ("press conference", "speech", "speaks", "testimony", "statement")):
+        return "Central Bank Speech"
+    return "Other"
+
+
+def map_impact(raw: str) -> str | None:
+    """Map provider impact string to LOW/MEDIUM/HIGH. Returns None to skip."""
+    r = (raw or "").strip().lower()
+    if r in ("high", "red"):
+        return "HIGH"
+    if r in ("medium", "orange", "moderate"):
+        return "MEDIUM"
+    if r in ("low", "yellow"):
+        return "LOW"
+    # 'Holiday', 'Non-Economic', '' → skip (not an impactful data release)
+    return None
+
+
+class ForexFactoryEconomicCalendarProvider(EventProvider):
+    """
+    Free economic calendar via the ForexFactory faireconomy.media published
+    JSON feed (no login, no token, no HTML scraping, no protection bypass).
+
+    Coverage: current week feed. Cached (Django cache, default 6h TTL).
+    Fail-closed: any error → empty list, never breaks research endpoints.
+
+    Research context source ONLY — not a trading signal.
+    """
+
+    DEFAULT_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+    CACHE_KEY = "guvfx:ff_calendar:v1"
+    _USER_AGENT = "GuvFX-Research/1.0 (economic-context; non-commercial research)"
+
+    def __init__(self, url: str | None = None, ttl_seconds: int | None = None):
+        self.url = url or _cfg("GUVFX_FOREXFACTORY_CALENDAR_URL", self.DEFAULT_URL)
+        try:
+            self.ttl = int(ttl_seconds if ttl_seconds is not None else _cfg("GUVFX_EVENT_PROVIDER_CACHE_TTL_SECONDS", 21600))
+        except (TypeError, ValueError):
+            self.ttl = 21600
+
+    def _download(self) -> list[EconomicEvent]:
+        req = urllib.request.Request(
+            self.url, headers={"User-Agent": self._USER_AGENT, "Accept": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if getattr(resp, "status", 200) != 200:
+                raise RuntimeError(f"calendar fetch status {resp.status}")
+            raw = json.loads(resp.read().decode("utf-8"))
+        events: list[EconomicEvent] = []
+        for item in raw:
+            try:
+                impact = map_impact(item.get("impact", ""))
+                if impact is None:
+                    continue
+                dt = datetime.fromisoformat(item["date"])  # ISO with TZ offset
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                epoch = int(dt.timestamp())
+                title = item.get("title", "Event")
+                events.append(EconomicEvent(
+                    event_name=title,
+                    event_type=map_event_type(title),
+                    impact_level=impact,
+                    currency=(item.get("country", "") or "").upper(),
+                    event_time=epoch,
+                ).normalised())
+            except Exception:
+                continue  # skip malformed rows, conservative
+        return events
+
+    def _all_events(self) -> list[EconomicEvent]:
+        # Try Django cache; degrade to in-process cache; fail-closed to [].
+        try:
+            from django.core.cache import cache
+            cached = cache.get(self.CACHE_KEY)
+            if cached is not None:
+                return cached
+        except Exception:
+            cache = None
+        try:
+            events = self._download()
+        except Exception as exc:
+            logger.warning("ForexFactory calendar fetch failed (fail-closed): %s", exc)
+            events = []
+            try:
+                if cache is not None:
+                    cache.set(self.CACHE_KEY, events, min(300, self.ttl))  # short cache on failure
+            except Exception:
+                pass
+            return events
+        try:
+            if cache is not None:
+                cache.set(self.CACHE_KEY, events, self.ttl)
+        except Exception:
+            pass
+        return events
+
+    def get_events(self, start_epoch: int, end_epoch: int) -> list[EconomicEvent]:
+        return [e for e in self._all_events() if start_epoch <= e.event_time <= end_epoch]
+
+
+def _cfg(name: str, default):
+    """Read config from Django settings, then env, then default."""
     try:
         from django.conf import settings
-        kind = getattr(settings, "GUVFX_EVENT_PROVIDER", "static")
+        if hasattr(settings, name):
+            return getattr(settings, name)
     except Exception:
-        kind = "static"
+        pass
+    return os.environ.get(name, default)
+
+
+def get_event_provider() -> EventProvider:
+    """
+    Factory. Selected via GUVFX_EVENT_PROVIDER (settings or env):
+      static (default) | mock | forexfactory
+    Extensible — add Trading Economics / Myfxbook / proprietary here later.
+    """
+    kind = str(_cfg("GUVFX_EVENT_PROVIDER", "static") or "static").lower()
     if kind == "mock":
         return MockEventProvider()
+    if kind in ("forexfactory", "faireconomy", "ff"):
+        return ForexFactoryEconomicCalendarProvider()
     return StaticEventProvider()
 
 
