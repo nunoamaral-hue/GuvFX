@@ -55,6 +55,9 @@ def record_observation(
     fc = feature_context or {}
     snap = fc.get("snapshot", {}) if isinstance(fc, dict) else {}
     norm = fc.get("normalisation", {}) if isinstance(fc, dict) else {}
+    # B16.5 — economic event context
+    news = fc.get("news", {}) if isinstance(fc, dict) else {}
+    mte = news.get("minutes_to_event")
 
     try:
         obs = ResearchObservation.objects.create(
@@ -82,6 +85,11 @@ def record_observation(
             session_bucket=snap.get("session_profile", "") or fc.get("session", {}).get("session_bucket", ""),
             breakout_state=snap.get("breakout_state", ""),
             position_size_warning=bool(norm.get("position_size_warning", snap.get("position_size_warning", False))),
+            news_impact=news.get("impact", "NONE") or "NONE",
+            news_type=news.get("event_type", "") or "",
+            news_currency=news.get("currency", "") or "",
+            event_relevance=news.get("event_relevance", "NONE") or "NONE",
+            minutes_to_event=mte if isinstance(mte, int) else None,
             source=source,
         )
         return obs

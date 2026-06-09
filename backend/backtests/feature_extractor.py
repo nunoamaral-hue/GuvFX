@@ -312,16 +312,26 @@ def extract_feature_context(bars, symbol: str = "", timeframe: str = "") -> dict
         "warning_text": WARNING_TEXT if structural_warning else "",
     }
 
+    # ── Economic event context (B16.5) — factual scheduled-event metadata ──
+    try:
+        from backtests.event_provider import build_news_context
+        news = build_news_context(symbol, bars[-1].time)
+    except Exception:
+        news = {"impact": "NONE", "event_relevance": "NONE"}
+
     snapshot = {
         "trend_state": trend_state,
         "volatility_state": vol_state,
         "session_profile": _SESSION_PROFILE.get(session_bucket, session_bucket),
         "breakout_state": breakout_state,
         "position_size_warning": structural_warning,
+        "news_impact": news.get("impact", "NONE"),
+        "event_relevance": news.get("event_relevance", "NONE"),
     }
 
     return {
         "available": True,
+        "news": news,
         "symbol": symbol,
         "timeframe": timeframe,
         "asset_class": asset_class,

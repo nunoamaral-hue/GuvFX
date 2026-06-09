@@ -393,6 +393,9 @@ def _row_to_dict(row: MatrixRow, rank: int = 0) -> dict:
             "volatility_state": snap.get("volatility_state", ""),
             "breakout_state": snap.get("breakout_state", ""),
             "position_size_warning": snap.get("position_size_warning", False),
+            # B16.5 — economic event context
+            "news_impact": snap.get("news_impact", "NONE"),
+            "event_relevance": snap.get("event_relevance", "NONE"),
         },
     }
 

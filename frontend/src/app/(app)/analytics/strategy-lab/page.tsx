@@ -66,6 +66,17 @@ type FeatureContext = {
     position_size_warning_reasons?: string[]; warning_text?: string;
   };
   snapshot?: { trend_state: string; volatility_state: string; session_profile: string; breakout_state: string; position_size_warning: boolean };
+  // B16.5 — economic event context (factual metadata only)
+  news?: {
+    impact: string;
+    event_relevance?: string;
+    event_type?: string;
+    event_name?: string;
+    currency?: string;
+    minutes_to_event?: number;
+    minutes_since_event?: number;
+    is_upcoming?: boolean;
+  };
 };
 
 type WFResult = {
@@ -362,6 +373,31 @@ export default function StrategyLabPage() {
               ) : null}
             </div>
           )}
+
+          {/* ── Economic Context (B16.5) ── */}
+          <div style={{ marginTop: "0.85rem", paddingTop: "0.75rem", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+            <div style={{ fontSize: "0.72rem", color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 600, marginBottom: "0.5rem" }}>Economic Context</div>
+            {featureContext.news && featureContext.news.impact !== "NONE" ? (
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                <Badge color={featureContext.news.impact === "HIGH" ? "red" : featureContext.news.impact === "MEDIUM" ? "yellow" : "gray"}>
+                  {featureContext.news.impact} impact
+                </Badge>
+                <span style={{ fontSize: "0.85rem", color: "#e9f4ff", fontWeight: 500 }}>
+                  {featureContext.news.event_name || featureContext.news.event_type} ({featureContext.news.currency})
+                </span>
+                <Badge color={featureContext.news.event_relevance === "HIGH" ? "green" : featureContext.news.event_relevance === "MEDIUM" ? "blue" : "gray"}>
+                  relevance: {featureContext.news.event_relevance}
+                </Badge>
+                <span style={{ fontSize: "0.78rem", color: "#94a3b8" }}>
+                  {featureContext.news.is_upcoming
+                    ? `in ${featureContext.news.minutes_to_event} min`
+                    : `${featureContext.news.minutes_since_event} min ago`}
+                </span>
+              </div>
+            ) : (
+              <div style={{ fontSize: "0.8rem", color: "#64748b" }}>No significant economic events nearby.</div>
+            )}
+          </div>
         </div>
       )}
 

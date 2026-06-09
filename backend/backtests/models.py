@@ -676,6 +676,22 @@ class ResearchObservation(models.Model):
         help_text="True if result may need position-size normalization before comparison.",
     )
 
+    # B16.5 — Economic event context (factual metadata only; no NLP/sentiment/ML)
+    news_impact = models.CharField(
+        max_length=12, blank=True, default="NONE", db_index=True,
+        help_text="Nearest relevant event impact: NONE/LOW/MEDIUM/HIGH.",
+    )
+    news_type = models.CharField(max_length=40, blank=True, default="")
+    news_currency = models.CharField(max_length=8, blank=True, default="")
+    event_relevance = models.CharField(
+        max_length=12, blank=True, default="NONE", db_index=True,
+        help_text="Event relevance to this symbol: NONE/LOW/MEDIUM/HIGH.",
+    )
+    minutes_to_event = models.IntegerField(
+        null=True, blank=True,
+        help_text="Minutes to the nearest relevant upcoming event (null if none).",
+    )
+
     # Source tracking
     source = models.CharField(
         max_length=40,
