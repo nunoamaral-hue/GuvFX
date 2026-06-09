@@ -54,6 +54,17 @@ class BacktestTrade:
 
 
 @dataclass
+class DataQuality:
+    bar_count: int = 0
+    first_bar_time: str = ""
+    last_bar_time: str = ""
+    duplicate_bars: int = 0
+    data_source: str = "MT5"
+    status: str = "OK"  # OK, WARNING, FAIL
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
 class BacktestResult:
     symbol: str
     timeframe: str
@@ -65,6 +76,8 @@ class BacktestResult:
     trades: list[BacktestTrade] = field(default_factory=list)
     equity_curve: list[dict] = field(default_factory=list)
     metrics: dict = field(default_factory=dict)
+    data_quality: DataQuality = field(default_factory=DataQuality)
+    reconciliation: dict = field(default_factory=dict)
     error: str = ""
 
 
@@ -79,7 +92,12 @@ TIMEFRAME_MAP = {
 
 
 def fetch_bars(symbol: str, timeframe: str, count: int = 500) -> list[Bar]:
-    """Fetch OHLC bars from the MT5 signal bridge. Max ~500 per request."""
+    """
+    Fetch OHLC bars from the MT5 signal bridge with batch support.
+
+    Automatically batches requests for counts > 1000 using start_pos
+    offset pagination.  Deduplicates by timestamp.
+    """
     base = (
         os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL")
         or os.getenv("WINDOWS_AGENT_BASE")
@@ -96,27 +114,48 @@ def fetch_bars(symbol: str, timeframe: str, count: int = 500) -> list[Bar]:
     if not base or not token:
         raise RuntimeError("Bridge URL/token not configured")
 
-    url = f"{base}/mt5/snapshots/rates?symbol={symbol}&timeframe={timeframe}&count={count}"
+    BATCH_SIZE = 1000
+    all_bars: dict[int, Bar] = {}  # keyed by timestamp for dedup
+    remaining = count
+    start_pos = 0
 
-    req = urllib.request.Request(url, headers={"X-GuvFX-Agent-Token": token})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read().decode())
+    while remaining > 0:
+        batch = min(remaining, BATCH_SIZE)
+        url = f"{base}/mt5/snapshots/rates?symbol={symbol}&timeframe={timeframe}&count={batch}&start_pos={start_pos}"
 
-    if not data.get("ok"):
-        raise RuntimeError(f"Bridge error: {data}")
+        req = urllib.request.Request(url, headers={"X-GuvFX-Agent-Token": token})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
 
-    bars = []
-    for d in data.get("data", []):
-        bars.append(Bar(
-            time=d["time"],
-            open=d["open"],
-            high=d["high"],
-            low=d["low"],
-            close=d["close"],
-            tick_volume=d.get("tick_volume", 0),
-        ))
+        if not data.get("ok"):
+            if all_bars:
+                break  # Return what we have
+            raise RuntimeError(f"Bridge error: {data}")
 
-    return sorted(bars, key=lambda b: b.time)
+        batch_data = data.get("data", [])
+        if not batch_data:
+            break  # No more data available
+
+        for d in batch_data:
+            ts = d["time"]
+            if ts not in all_bars:
+                all_bars[ts] = Bar(
+                    time=ts,
+                    open=d["open"],
+                    high=d["high"],
+                    low=d["low"],
+                    close=d["close"],
+                    tick_volume=d.get("tick_volume", 0),
+                )
+
+        remaining -= batch
+        start_pos += batch
+
+        # If bridge returned fewer than requested, we've hit the end
+        if len(batch_data) < batch:
+            break
+
+    return sorted(all_bars.values(), key=lambda b: b.time)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -334,6 +373,39 @@ def run_backtest(
     start_date = datetime.utcfromtimestamp(bars[0].time).strftime("%Y-%m-%d") if bars else ""
     end_date = datetime.utcfromtimestamp(bars[-1].time).strftime("%Y-%m-%d") if bars else ""
 
+    # ── Data quality assessment ──
+    quality = DataQuality(
+        bar_count=len(bars),
+        first_bar_time=datetime.utcfromtimestamp(bars[0].time).isoformat() + "Z" if bars else "",
+        last_bar_time=datetime.utcfromtimestamp(bars[-1].time).isoformat() + "Z" if bars else "",
+        data_source="MT5",
+        status="OK",
+    )
+
+    if len(bars) < 100:
+        quality.status = "WARNING"
+        quality.notes.append(f"Low bar count ({len(bars)}). Results may not be statistically significant.")
+    if len(trades) == 0:
+        quality.status = "WARNING"
+        quality.notes.append("No trades generated. Strategy may not match this data.")
+
+    # ── Reconciliation metadata ──
+    reconciliation = {
+        "execution_model": "bar_ohlc",
+        "cost_model": "fixed_spread",
+        "spread_pips": params.spread_pips,
+        "strategy_params": {
+            "fast_ema": params.fast_ema,
+            "slow_ema": params.slow_ema,
+            "sl_pips": params.sl_pips,
+            "tp_pips": params.tp_pips,
+            "lots": params.lots,
+        },
+        "pip_value_per_lot": params.pip_value,
+        "notes": "Research mode. Bar OHLC simulation with fixed spread. "
+                 "May differ from MT5 Strategy Tester or live execution.",
+    }
+
     return BacktestResult(
         symbol=symbol,
         timeframe=timeframe,
@@ -345,6 +417,8 @@ def run_backtest(
         trades=trades,
         equity_curve=equity_curve,
         metrics=metrics,
+        data_quality=quality,
+        reconciliation=reconciliation,
     )
 
 

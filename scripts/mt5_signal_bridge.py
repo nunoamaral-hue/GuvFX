@@ -692,14 +692,15 @@ def process_job(job: Dict) -> None:
 # =============================================================================
 
 
-def fetch_ohlc_rates(symbol: str, timeframe: str, count: int) -> Dict[str, Any]:
+def fetch_ohlc_rates(symbol: str, timeframe: str, count: int, start_pos: int = 0) -> Dict[str, Any]:
     """
     Fetch OHLC rates from MT5.
 
     Args:
         symbol: Trading symbol (e.g., EURUSD)
         timeframe: Timeframe string (H4, D1, etc.)
-        count: Number of bars to fetch (max 500)
+        count: Number of bars to fetch (max 1000)
+        start_pos: Starting position offset (0 = most recent)
 
     Returns:
         Dict with ok, data, and metadata
@@ -713,9 +714,9 @@ def fetch_ohlc_rates(symbol: str, timeframe: str, count: int) -> Dict[str, Any]:
     if timeframe not in TIMEFRAME_MAP:
         return {"ok": False, "error": f"Invalid timeframe: {timeframe}. Valid: {list(TIMEFRAME_MAP.keys())}"}
 
-    # Validate count
-    if count <= 0 or count > 500:
-        return {"ok": False, "error": f"Count must be 1-500, got: {count}"}
+    # Validate count (allow up to 1000 per request for batch support)
+    if count <= 0 or count > 1000:
+        return {"ok": False, "error": f"Count must be 1-1000, got: {count}"}
 
     # Initialize MT5
     init_kwargs = {}
@@ -739,8 +740,8 @@ def fetch_ohlc_rates(symbol: str, timeframe: str, count: int) -> Dict[str, Any]:
         # Get timeframe constant
         tf_value = TIMEFRAME_MAP[timeframe]
 
-        # Fetch rates from current position
-        rates = mt5.copy_rates_from_pos(symbol, tf_value, 0, count)
+        # Fetch rates from specified position (0 = most recent)
+        rates = mt5.copy_rates_from_pos(symbol, tf_value, start_pos, count)
 
         if rates is None or len(rates) == 0:
             error = mt5.last_error()
@@ -1334,6 +1335,7 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
         symbol = params.get("symbol", [""])[0].upper()
         timeframe = params.get("timeframe", ["H4"])[0].upper()
         count_str = params.get("count", ["300"])[0]
+        start_pos_str = params.get("start_pos", ["0"])[0]
 
         # Validate required params
         if not symbol:
@@ -1342,12 +1344,13 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
 
         try:
             count = int(count_str)
+            start_pos = int(start_pos_str)
         except ValueError:
-            self._send_json_response({"ok": False, "error": f"Invalid count: {count_str}"}, 400)
+            self._send_json_response({"ok": False, "error": f"Invalid count/start_pos"}, 400)
             return
 
         # Fetch OHLC data
-        result = fetch_ohlc_rates(symbol, timeframe, count)
+        result = fetch_ohlc_rates(symbol, timeframe, count, start_pos)
 
         if result.get("ok"):
             self._send_json_response(result)

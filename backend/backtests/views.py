@@ -470,8 +470,9 @@ class ProcessPendingBacktestsView(APIView):
             spread_pips=1.5,
         )
 
-        # Fetch bars (max 500 per request)
-        bars = fetch_bars(symbol, timeframe, count=500)
+        # Fetch bars — use batch fetching for larger counts
+        bar_count = 500  # default; could be configurable per config later
+        bars = fetch_bars(symbol, timeframe, count=bar_count)
 
         if not bars:
             raise RuntimeError(f"No bars returned for {symbol} {timeframe}")
@@ -487,10 +488,20 @@ class ProcessPendingBacktestsView(APIView):
             raise RuntimeError(result.error)
 
         # Build metrics dict (frontend-compatible format)
+        dq = result.data_quality
         metrics = {
             **result.metrics,
             "equity_curve": result.equity_curve,
+            # Data source + quality
             "data_source": "MT5",
+            "data_quality": {
+                "status": dq.status,
+                "bar_count": dq.bar_count,
+                "first_bar_time": dq.first_bar_time,
+                "last_bar_time": dq.last_bar_time,
+                "notes": dq.notes,
+            },
+            # Strategy params snapshot
             "strategy_params": {
                 "fast_ema": params.fast_ema,
                 "slow_ema": params.slow_ema,
@@ -499,8 +510,18 @@ class ProcessPendingBacktestsView(APIView):
                 "lots": params.lots,
                 "spread_pips": params.spread_pips,
             },
+            # Reconciliation metadata
+            "reconciliation": result.reconciliation,
+            # Display metadata
             "bars_count": result.bars_count,
             "date_range": f"{result.start_date} to {result.end_date}",
+            "mode": "research",
+            "mode_label": "Research Mode Backtest",
+            "mode_disclaimer": (
+                "Results are simulated using MT5 OHLC data and GuvFX execution assumptions. "
+                "They may differ from MT5 Strategy Tester or live execution."
+            ),
+            # Trade list
             "trades": [
                 {
                     "trade_number": t.trade_number,
