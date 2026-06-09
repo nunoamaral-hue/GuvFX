@@ -1360,12 +1360,17 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
                     "visible": s.visible,
                     "spread": s.spread,
                     "digits": s.digits,
-                    "trade_mode": s.trade_mode,  # 0=disabled, 4=full
+                    "point": s.point,
+                    "trade_mode": s.trade_mode,
                     "contract_size": s.trade_contract_size,
+                    "tick_size": s.trade_tick_size,
+                    "tick_value": s.trade_tick_value,
                     "volume_min": s.volume_min,
+                    "volume_step": s.volume_step,
                     "volume_max": s.volume_max,
                     "currency_base": s.currency_base,
                     "currency_profit": s.currency_profit,
+                    "currency_margin": s.currency_margin,
                 })
 
             return {"ok": True, "count": len(result), "symbols": result}

@@ -48,29 +48,68 @@ ALL_TEMPLATES = ["ema_trend", "rsi_mean_reversion", "atr_breakout", "london_brea
 
 
 # ─────────────────────────────────────────────────────────────────
-# Pip configuration per asset class
+# MT5 symbol metadata cache + PnL configuration
 # ─────────────────────────────────────────────────────────────────
 
+# Actual MT5 tick_value/tick_size per symbol (from /mt5/symbols)
+# PnL = (price_delta / tick_size) × tick_value × lots
+SYMBOL_METADATA: dict[str, dict] = {
+    # FX Major — tick_size=point, tick_value=$/pip/lot
+    "EURUSD":      {"tick_size": 0.00001, "tick_value": 1.00, "spread_points": 6, "digits": 5},
+    "GBPUSD":      {"tick_size": 0.00001, "tick_value": 1.00, "spread_points": 6, "digits": 5},
+    "USDJPY":      {"tick_size": 0.001,   "tick_value": 0.62, "spread_points": 9, "digits": 3},
+    "USDCHF":      {"tick_size": 0.00001, "tick_value": 1.26, "spread_points": 11, "digits": 5},
+    "USDCAD":      {"tick_size": 0.00001, "tick_value": 0.72, "spread_points": 6, "digits": 5},
+    "AUDUSD":      {"tick_size": 0.00001, "tick_value": 1.00, "spread_points": 6, "digits": 5},
+    "NZDUSD":      {"tick_size": 0.00001, "tick_value": 1.00, "spread_points": 7, "digits": 5},
+    # Metals
+    "XAUUSD":      {"tick_size": 0.01,    "tick_value": 1.00, "spread_points": 33, "digits": 2},
+    "XAGUSD":      {"tick_size": 0.001,   "tick_value": 5.00, "spread_points": 133, "digits": 3},
+    # Indices (contract_size × tick_value per tick)
+    ".US30Cash":   {"tick_size": 1.0,     "tick_value": 10.0, "spread_points": 9, "digits": 0},
+    ".USTECHCash": {"tick_size": 0.1,     "tick_value": 1.0,  "spread_points": 35, "digits": 1},
+    ".US500Cash":  {"tick_size": 0.1,     "tick_value": 2.0,  "spread_points": 17, "digits": 1},
+    ".DE30Cash":   {"tick_size": 0.1,     "tick_value": 1.0,  "spread_points": 30, "digits": 1},
+    ".UK100Cash":  {"tick_size": 0.1,     "tick_value": 1.0,  "spread_points": 33, "digits": 1},
+    # Crypto
+    "BTCUSD":      {"tick_size": 0.01,    "tick_value": 0.01, "spread_points": 884, "digits": 2},
+    "ETHUSD":      {"tick_size": 0.01,    "tick_value": 0.10, "spread_points": 158, "digits": 2},
+    "SOLUSD":      {"tick_size": 0.001,   "tick_value": 0.001, "spread_points": 90, "digits": 3},
+    "XRPUSD":      {"tick_size": 0.0001,  "tick_value": 0.0001, "spread_points": 21, "digits": 4},
+    # Energy
+    ".WTICrude":   {"tick_size": 0.01,    "tick_value": 10.0, "spread_points": 14, "digits": 2},
+    ".BrentCrude": {"tick_size": 0.01,    "tick_value": 10.0, "spread_points": 8, "digits": 2},
+    # FX Minor
+    "EURGBP":      {"tick_size": 0.00001, "tick_value": 1.26, "spread_points": 5, "digits": 5},
+    "EURJPY":      {"tick_size": 0.001,   "tick_value": 0.62, "spread_points": 10, "digits": 3},
+    "GBPJPY":      {"tick_size": 0.001,   "tick_value": 0.62, "spread_points": 12, "digits": 3},
+}
+
+
 def get_pip_config(symbol: str) -> dict:
-    """Return pip_value and spread_pips for a symbol."""
-    s = symbol.upper()
-    if s.startswith(".US") or s.startswith(".DE") or s.startswith(".UK") or s.startswith(".AUS") or s.startswith(".JP"):
-        return {"pip_value": 1.0, "spread_pips": 3.0}  # index: $1/point/lot
-    if "XAU" in s:
-        return {"pip_value": 1.0, "spread_pips": 3.5}  # gold: $1/point
-    if "XAG" in s:
-        return {"pip_value": 0.5, "spread_pips": 15.0}
-    if "BTC" in s:
-        return {"pip_value": 0.01, "spread_pips": 90.0}  # BTC: $0.01/point
-    if "ETH" in s:
-        return {"pip_value": 0.01, "spread_pips": 16.0}
-    if "SOL" in s or "XRP" in s:
-        return {"pip_value": 0.01, "spread_pips": 10.0}
-    if "CRUDE" in s.upper() or "WTI" in s.upper() or "BRENT" in s.upper():
-        return {"pip_value": 1.0, "spread_pips": 1.5}
-    if "JPY" in s:
-        return {"pip_value": 7.0, "spread_pips": 1.0}  # JPY pairs
-    return {"pip_value": 10.0, "spread_pips": 1.5}  # default FX
+    """
+    Return tick_value, tick_size, and spread in price units for a symbol.
+
+    Uses MT5 metadata. Falls back to conservative FX defaults.
+    """
+    meta = SYMBOL_METADATA.get(symbol)
+    if meta:
+        return {
+            "tick_size": meta["tick_size"],
+            "tick_value": meta["tick_value"],
+            "spread_points": meta["spread_points"],  # spread in ticks
+            "digits": meta["digits"],
+            "source": "mt5_metadata",
+        }
+
+    # Fallback for unknown symbols (conservative FX)
+    return {
+        "tick_size": 0.00001,
+        "tick_value": 1.0,
+        "spread_points": 15,  # 1.5 pips in FX terms
+        "digits": 5,
+        "source": "fallback",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -240,14 +279,20 @@ def run_research_matrix(
                 pass
 
             pip_cfg = get_pip_config(sym)
+            ts = pip_cfg["tick_size"]
+            tv = pip_cfg["tick_value"]
+            sp = pip_cfg["spread_points"]
 
             for tmpl in templates:
                 try:
+                    # PnL = (price_delta / tick_size) × tick_value × lots
+                    # spread_pips = spread in ticks (engine multiplies by pip_size=tick_size)
                     bt = run_template_backtest(
                         bars, tmpl, symbol=sym, timeframe=tf,
                         lots=0.01,
-                        spread_pips=pip_cfg["spread_pips"],
-                        pip_value=pip_cfg["pip_value"],
+                        spread_pips=sp,
+                        pip_value=tv,
+                        pip_size=ts,
                     )
 
                     m = bt.metrics

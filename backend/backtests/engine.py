@@ -507,19 +507,25 @@ def run_template_backtest(
     lots: float = 0.01,
     spread_pips: float = 1.5,
     pip_value: float = 10.0,
+    pip_size: float | None = None,
 ) -> BacktestResult:
     """
     Run a backtest using a named strategy template.
 
     This is the primary entry point for template-based backtests.
-    Falls back to the legacy run_backtest() for ema_trend if needed.
+
+    PnL formula: pnl = (price_delta / pip_size) × pip_value × lots
+
+    For MT5-accurate results, pass pip_size=tick_size and pip_value=tick_value
+    from the symbol metadata. Falls back to FX defaults if not provided.
     """
     from backtests.strategy_templates import get_template
 
     template = get_template(template_name)
     params = {**template.default_params(), **(params or {})}
 
-    pip_size = 0.0001 if "JPY" not in symbol.upper() else 0.01
+    if pip_size is None:
+        pip_size = 0.0001 if "JPY" not in symbol.upper() else 0.01
     min_bars = template.min_bars(params)
 
     if len(bars) < min_bars + 5:
