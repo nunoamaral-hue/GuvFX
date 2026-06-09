@@ -44,25 +44,62 @@ def sign_and_encrypt_json(payload: dict, *, secret_hex: str) -> str:
 
 def build_guac_data_url(*, base_url: str, data_b64: str) -> str:
     base_url = base_url.rstrip("/")
-    # Force direct open of the connection (no Home/Recent UI):
-    # "c/<id>" where <id> is the connection identifier in the JSON payload.
     data_q = quote(data_b64, safe="")
-    return f"{base_url}/#/client/c/mt5-rdp?data={data_q}"
+    return f"{base_url}/#/client/c/mt5-terminal?data={data_q}"
 
 
 def build_mt5_desktop_payload(*, username: str, host_override: str | None = None) -> dict:
+    """
+    Build a Guacamole JSON-auth payload for MT5 terminal access.
+
+    Supports both VNC and RDP protocols via GUAC_MT5_PROTOCOL env var.
+    Default: VNC (attaches to existing interactive desktop).
+    """
     expires_ms = int(time.time() * 1000) + 3_600_000
 
-    proto = os.getenv("GUAC_MT5_PROTOCOL", "rdp")
-    host = (host_override or os.getenv("GUAC_MT5_HOST", "mt5-free-vnc"))
-    port = os.getenv("GUAC_MT5_PORT", "3389")
-    rdp_user = os.getenv("GUAC_MT5_USER", "mt5free")
-    rdp_pass = os.getenv("GUAC_MT5_PASS", "")
+    proto = os.getenv("GUAC_MT5_PROTOCOL", "vnc")
+    host = (host_override or os.getenv("GUAC_MT5_HOST", "100.79.101.19"))
+    port = os.getenv("GUAC_MT5_PORT", "5900")
+    password = os.getenv("GUAC_MT5_PASS", "")
 
-    if not rdp_pass:
+    if not password:
         raise RuntimeError("GUAC_MT5_PASS is not set")
 
-    conn_id = "mt5-rdp"
+    conn_id = "mt5-terminal"
+
+    if proto == "vnc":
+        parameters = {
+            "hostname": host,
+            "port": str(port),
+            "password": password,
+            "color-depth": "24",
+            "cursor": "local",
+            "swap-red-blue": "false",
+            "read-only": "false",
+        }
+    else:
+        # RDP fallback
+        rdp_user = os.getenv("GUAC_MT5_USER", "Administrator")
+        parameters = {
+            "hostname": host,
+            "port": str(port),
+            "username": rdp_user,
+            "password": password,
+            "ignore-cert": "true",
+            "security": "any",
+            "color-depth": "24",
+            "dpi": "96",
+            "width": "1920",
+            "height": "1080",
+            "disable-copy": "true",
+            "disable-paste": "true",
+            "enable-font-smoothing": "false",
+            "enable-wallpaper": "false",
+            "enable-themes": "false",
+            "enable-printing": "false",
+            "enable-drive": "false",
+            "enable-audio": "false",
+        }
 
     return {
         "username": username,
@@ -70,41 +107,7 @@ def build_mt5_desktop_payload(*, username: str, host_override: str | None = None
         "connections": {
             conn_id: {
                 "protocol": proto,
-                "parameters": {
-                "disable-offscreen-caching": "true",
-
-                "disable-bitmap-caching": "true",
-
-                "dpi": "96",
-
-                "height": "1080",
-
-                "width": "1920",
-
-                "disable-paste": "true",
-
-                "disable-copy": "true",
-
-                "enable-font-smoothing": "false",
-
-                "enable-themes": "false",
-
-                "enable-wallpaper": "false",
-
-                "enable-printing": "false",
-
-                "enable-drive": "false",
-
-                "enable-audio": "false",
-
-                    "hostname": host,
-                    "port": str(port),
-                    "username": rdp_user,
-                    "password": rdp_pass,
-                    "ignore-cert": "true",
-                    "security": "any",
-                    "color-depth": "24",
-                },
+                "parameters": parameters,
             }
         },
     }
