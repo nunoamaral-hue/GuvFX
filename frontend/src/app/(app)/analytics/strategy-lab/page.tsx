@@ -188,6 +188,18 @@ export default function StrategyLabPage() {
   };
   const [tradeIntel, setTradeIntel] = useState<TradeIntel | null>(null);
 
+  // B20: Narrative / Explanation
+  type Narrative = {
+    trader_summary: string;
+    analyst_note: string;
+    journal_note: { setup: string; context: string; entry_thesis: string; risk_factors: string[]; review_after_outcome: string[] };
+    education_note: string;
+    public_language_pass: boolean;
+  };
+  const [narrative, setNarrative] = useState<Narrative | null>(null);
+  const [showAnalyst, setShowAnalyst] = useState(false);
+  const [showJournal, setShowJournal] = useState(false);
+
   const [loading, setLoading] = useState("");
   const [error, setError] = useState("");
 
@@ -209,6 +221,7 @@ export default function StrategyLabPage() {
     setKbTotalObs(0); setKbTotalCombos(0);
     setAttribution(null);
     setTradeIntel(null);
+    setNarrative(null);
 
     try {
       // 1. Regime analysis + filtered backtest
@@ -339,6 +352,14 @@ export default function StrategyLabPage() {
         const tiRes = await apiFetch<{ ok: boolean; record: TradeIntel | null }>(
           `/api/backtests/trade-intelligence/?symbol=${symbol}&template=${selectedTemplate}&timeframe=${timeframe}`, {});
         if (tiRes.ok && tiRes.record) setTradeIntel(tiRes.record);
+      } catch { /* non-blocking */ }
+
+      // 9. Narrative / Explanation (readable formats from the record)
+      setLoading("Generating explanation...");
+      try {
+        const nRes = await apiFetch<{ ok: boolean; narrative: Narrative | null }>(
+          `/api/backtests/trade-narrative/?symbol=${symbol}&template=${selectedTemplate}&timeframe=${timeframe}`, {});
+        if (nRes.ok && nRes.narrative) setNarrative(nRes.narrative);
       } catch { /* non-blocking */ }
 
       setLoading("");
@@ -694,6 +715,57 @@ export default function StrategyLabPage() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Explanation (B20 Narrative Layer) ── */}
+      {narrative && (
+        <div style={glass}>
+          <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>Explanation <span style={{ textTransform: "none", color: "#64748b", fontWeight: 400 }}>— readable research rationale</span></span>
+            <span style={{ fontSize: "0.68rem", color: narrative.public_language_pass ? "#86efac" : "#fbbf24", fontWeight: 400, textTransform: "none" }}>
+              {narrative.public_language_pass ? "public-safe ✓" : "sanitised ⚠"}
+            </span>
+          </div>
+
+          <div style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.3rem" }}>Trader summary</div>
+          <div style={{ fontSize: "0.88rem", color: "#e9f4ff", lineHeight: 1.5, marginBottom: "0.85rem" }}>{narrative.trader_summary}</div>
+
+          <div style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.3rem" }}>Education note</div>
+          <div style={{ fontSize: "0.82rem", color: "#b7c5dd", lineHeight: 1.5, marginBottom: "0.85rem" }}>{narrative.education_note}</div>
+
+          <div style={{ display: "flex", gap: "0.6rem", marginBottom: "0.5rem" }}>
+            <button onClick={() => setShowAnalyst(!showAnalyst)} style={{ fontSize: "0.74rem", color: "#4ab3ff", background: "none", border: "1px solid rgba(74,179,255,0.3)", borderRadius: 6, padding: "0.3rem 0.7rem", cursor: "pointer" }}>
+              {showAnalyst ? "− Analyst note" : "+ Analyst note"}
+            </button>
+            <button onClick={() => setShowJournal(!showJournal)} style={{ fontSize: "0.74rem", color: "#4ab3ff", background: "none", border: "1px solid rgba(74,179,255,0.3)", borderRadius: 6, padding: "0.3rem 0.7rem", cursor: "pointer" }}>
+              {showJournal ? "− Journal note" : "+ Journal note"}
+            </button>
+          </div>
+
+          {showAnalyst && (
+            <div style={{ fontSize: "0.82rem", color: "#b7c5dd", lineHeight: 1.5, padding: "0.6rem 0.8rem", background: "rgba(74,179,255,0.03)", borderRadius: 8, marginBottom: "0.5rem" }}>
+              {narrative.analyst_note}
+            </div>
+          )}
+
+          {showJournal && (
+            <div style={{ fontSize: "0.8rem", color: "#b7c5dd", lineHeight: 1.5, padding: "0.6rem 0.8rem", background: "rgba(74,179,255,0.03)", borderRadius: 8, marginBottom: "0.5rem" }}>
+              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#94a3b8" }}>Setup:</b> {narrative.journal_note.setup}</div>
+              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#94a3b8" }}>Context:</b> {narrative.journal_note.context}</div>
+              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#94a3b8" }}>Entry thesis:</b> {narrative.journal_note.entry_thesis}</div>
+              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#fca5a5" }}>Risk factors:</b> {narrative.journal_note.risk_factors.join("; ")}</div>
+              <div><b style={{ color: "#94a3b8" }}>Review after outcome:</b>
+                <ul style={{ margin: "0.2rem 0 0 1rem", padding: 0 }}>
+                  {narrative.journal_note.review_after_outcome.map((q, i) => <li key={i} style={{ marginBottom: "0.15rem" }}>{q}</li>)}
+                </ul>
+              </div>
+            </div>
+          )}
+
+          <div style={{ fontSize: "0.7rem", color: "#475569", marginTop: "0.4rem" }}>
+            Research rationale and education only — not a prediction, signal, or recommendation to trade.
+          </div>
         </div>
       )}
 

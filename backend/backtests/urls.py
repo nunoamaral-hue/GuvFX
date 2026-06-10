@@ -22,6 +22,7 @@ from .views import (
     ResearchKnowledgeBaseView,
     FeatureAttributionView,
     TradeIntelligenceView,
+    TradeNarrativeView,
     WindowsBacktestRunView,
     WindowsBacktestStatusView,
     WindowsBacktestResultView,
@@ -130,6 +131,12 @@ urlpatterns = [
         "trade-intelligence/",
         TradeIntelligenceView.as_view(),
         name="backtests-trade-intelligence",
+    ),
+    # B20: Trade Narrative / Explanation
+    path(
+        "trade-narrative/",
+        TradeNarrativeView.as_view(),
+        name="backtests-trade-narrative",
     ),
     # Process pending runs
     path(

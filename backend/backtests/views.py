@@ -370,6 +370,55 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class TradeNarrativeView(APIView):
+    """
+    GET /api/backtests/trade-narrative/
+
+    Generate deterministic human-readable explanation formats (trader/analyst/
+    journal/education) from a B19 Trade Intelligence Record. Read-only, Research
+    Mode. No ML, no LLM, no external calls, no prediction, no execution.
+    Public-safe language enforced.
+
+    Query params: observation_id, symbol, template, timeframe,
+    format (all|trader|analyst|journal|education).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.trade_intelligence import generate_record
+        from backtests.trade_narrative import generate_narrative
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        obs_id = request.query_params.get("observation_id")
+        try:
+            obs_id = int(obs_id) if obs_id else None
+        except (TypeError, ValueError):
+            obs_id = None
+
+        gen = generate_record(
+            observation_id=obs_id,
+            symbol=request.query_params.get("symbol"),
+            template=request.query_params.get("template"),
+            timeframe=request.query_params.get("timeframe"),
+        )
+        record = gen.get("record")
+        warnings = list(gen.get("warnings", []))
+        fmt = request.query_params.get("format", "all")
+        narrative = generate_narrative(record, fmt=fmt)
+        warnings.extend(narrative.get("warnings", []))
+
+        return Response({
+            "ok": True,
+            "record": record,
+            "narrative": narrative,
+            "content_safety_mode": narrative.get("content_safety_mode", "public_safe"),
+            "public_language_pass": narrative.get("public_language_pass", True),
+            "warnings": warnings,
+        })
+
+
 class TradeIntelligenceView(APIView):
     """
     GET /api/backtests/trade-intelligence/
