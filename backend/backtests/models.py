@@ -692,6 +692,20 @@ class ResearchObservation(models.Model):
         help_text="Minutes to the nearest relevant upcoming event (null if none).",
     )
 
+    # B18 — Trade Quality Framework (decision quality, not profitability)
+    quality_score = models.IntegerField(
+        null=True, blank=True, db_index=True,
+        help_text="Overall trade-quality score (0-100); null if not scored.",
+    )
+    quality_label = models.CharField(
+        max_length=16, blank=True, default="",
+        help_text="Elite / Excellent / Good / Acceptable / Weak.",
+    )
+    quality_buckets = models.JSONField(
+        default=dict, blank=True,
+        help_text="Per-bucket quality scores (market_selection/context/macro/entry/risk/management/discipline).",
+    )
+
     # Source tracking
     source = models.CharField(
         max_length=40,

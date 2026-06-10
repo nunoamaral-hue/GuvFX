@@ -373,6 +373,7 @@ def compute_rankings(result: MatrixResult) -> dict:
 
 def _row_to_dict(row: MatrixRow, rank: int = 0) -> dict:
     snap = (row.feature_context or {}).get("snapshot", {})
+    tq = (row.feature_context or {}).get("trade_quality", {})
     return {
         "rank": rank,
         "symbol": row.symbol,
@@ -396,6 +397,9 @@ def _row_to_dict(row: MatrixRow, rank: int = 0) -> dict:
             # B16.5 — economic event context
             "news_impact": snap.get("news_impact", "NONE"),
             "event_relevance": snap.get("event_relevance", "NONE"),
+            # B18 — trade quality
+            "quality_score": tq.get("overall_score") if tq.get("available") else None,
+            "quality_label": tq.get("overall_label", "") if tq.get("available") else "",
         },
     }
 

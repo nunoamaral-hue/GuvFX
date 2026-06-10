@@ -58,6 +58,11 @@ def record_observation(
     # B16.5 — economic event context
     news = fc.get("news", {}) if isinstance(fc, dict) else {}
     mte = news.get("minutes_to_event")
+    # B18 — trade quality
+    tq = fc.get("trade_quality", {}) if isinstance(fc, dict) else {}
+    q_score = tq.get("overall_score") if tq.get("available") else None
+    q_label = tq.get("overall_label", "") if tq.get("available") else ""
+    q_buckets = tq.get("buckets", {}) if tq.get("available") else {}
 
     try:
         obs = ResearchObservation.objects.create(
@@ -90,6 +95,9 @@ def record_observation(
             news_currency=news.get("currency", "") or "",
             event_relevance=news.get("event_relevance", "NONE") or "NONE",
             minutes_to_event=mte if isinstance(mte, int) else None,
+            quality_score=q_score if isinstance(q_score, int) else None,
+            quality_label=q_label or "",
+            quality_buckets=q_buckets or {},
             source=source,
         )
         return obs

@@ -46,6 +46,7 @@ _VALUE_FIELDS = [
     "regime_at_observation", "trend_state", "volatility_state",
     "session_bucket", "breakout_state", "position_size_warning",
     "news_impact", "news_type", "news_currency", "event_relevance", "minutes_to_event",
+    "quality_score", "quality_label",
 ]
 
 _UNKNOWN = "(unknown)"
@@ -90,6 +91,8 @@ def group_stats(rows: list[dict], min_count: int = 3) -> dict:
     scores = [r.get("research_score") or 0 for r in rows]
     strong_count = sum(1 for r in rows if _is_strong(r))
     weak_count = sum(1 for r in rows if _is_weak(r))
+    # B18 — decision-quality (independent of profitability)
+    q = [r.get("quality_score") for r in rows if r.get("quality_score") is not None]
     return {
         "observation_count": n,
         "avg_score": round(sum(scores) / n, 1) if n else 0.0,
@@ -98,6 +101,8 @@ def group_stats(rows: list[dict], min_count: int = 3) -> dict:
         "avg_max_drawdown": _avg([r.get("max_drawdown") for r in rows]),
         "avg_net_profit": _avg([r.get("net_profit") for r in rows]),
         "win_rate_avg": _avg([r.get("win_rate") for r in rows]),
+        "avg_quality_score": round(sum(q) / len(q), 1) if q else None,
+        "quality_sample": len(q),
         "strong_count": strong_count,
         "weak_count": weak_count,
         "strong_rate": round(100.0 * strong_count / n, 1) if n else 0.0,
@@ -299,6 +304,9 @@ def run_attribution(
             "insufficient_sample": len(s_rows) < min_count,
         }
 
+    # B18 — Quality attribution (decision quality, independent of profitability)
+    quality_attr = _quality_attribution(rows, feats, min_count)
+
     # News attribution
     news_attr = {f: attribute_by_feature(rows, f, min_count) for f in NEWS_FEATURES}
 
@@ -327,11 +335,56 @@ def run_attribution(
         "symbol_attribution": symbol_attr,
         "news_attribution": news_attr,
         "normalisation_attribution": norm_attr,
+        "quality_attribution": quality_attr,
         "feature_tally": tally,
         "insights": insights,
         "warnings": warnings,
         "mode": "research",
         "mode_disclaimer": _DISCLAIMER,
+    }
+
+
+def _quality_attribution(rows: list[dict], feats: list[str], min_count: int) -> dict:
+    """Decision-quality attribution: which templates/symbols/contexts produce
+    the highest setup quality (independent of profitability)."""
+    scored = [r for r in rows if r.get("quality_score") is not None]
+    coverage = len(scored)
+    if coverage == 0:
+        return {"quality_coverage": 0, "note": "No quality-scored observations yet."}
+
+    def avg_q(subset):
+        q = [r["quality_score"] for r in subset if r.get("quality_score") is not None]
+        return round(sum(q) / len(q), 1) if q else None
+
+    by_template = {}
+    for t in sorted(set(r["template"] for r in scored)):
+        grp = [r for r in scored if r["template"] == t]
+        by_template[t] = {"avg_quality_score": avg_q(grp), "n": len(grp), "insufficient_sample": len(grp) < min_count}
+    by_symbol = {}
+    for s in sorted(set(r["symbol"] for r in scored)):
+        grp = [r for r in scored if r["symbol"] == s]
+        by_symbol[s] = {"avg_quality_score": avg_q(grp), "n": len(grp), "insufficient_sample": len(grp) < min_count}
+
+    # context value → avg quality (across the categorical features)
+    ctx_quality = []
+    for feature in feats:
+        groups: dict[str, list[dict]] = {}
+        for r in scored:
+            v = _norm_value(feature, r.get(feature))
+            if v == _UNKNOWN:
+                continue
+            groups.setdefault(v, []).append(r)
+        for v, grp in groups.items():
+            if len(grp) >= min_count:
+                ctx_quality.append({"feature": feature, "value": v, "avg_quality_score": avg_q(grp), "n": len(grp)})
+    ctx_quality.sort(key=lambda x: -(x["avg_quality_score"] or 0))
+
+    return {
+        "quality_coverage": coverage,
+        "by_template": dict(sorted(by_template.items(), key=lambda x: -(x[1]["avg_quality_score"] or 0))),
+        "by_symbol": dict(sorted(by_symbol.items(), key=lambda x: -(x[1]["avg_quality_score"] or 0))),
+        "highest_quality_contexts": ctx_quality[:8],
+        "lowest_quality_contexts": list(reversed(ctx_quality[-8:])) if len(ctx_quality) > 8 else ctx_quality[::-1],
     }
 
 

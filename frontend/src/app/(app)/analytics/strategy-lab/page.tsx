@@ -66,6 +66,14 @@ type FeatureContext = {
     position_size_warning_reasons?: string[]; warning_text?: string;
   };
   snapshot?: { trend_state: string; volatility_state: string; session_profile: string; breakout_state: string; position_size_warning: boolean };
+  // B18 — trade quality (decision quality, not profitability)
+  trade_quality?: {
+    available?: boolean;
+    overall_score: number;
+    overall_label: string;
+    buckets: Record<string, number>;
+    what_this_means: string[];
+  };
   // B16.5 — economic event context (factual metadata only)
   news?: {
     impact: string;
@@ -355,6 +363,43 @@ export default function StrategyLabPage() {
       </div>
 
       {error && <div style={{ ...glass, borderColor: "rgba(248,113,113,0.3)", color: "#f87171", fontSize: "0.85rem" }}>{error}</div>}
+
+      {/* ── Trade Quality (B18) ── */}
+      {featureContext?.trade_quality?.available && (
+        <div style={glass}>
+          <div style={secHeader}>Trade Quality <span style={{ textTransform: "none", color: "#64748b", fontWeight: 400 }}>— decision quality of the setup, not profitability</span></div>
+          <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap", marginBottom: "0.9rem" }}>
+            <div style={{ fontSize: "2.4rem", fontWeight: 700, color: (featureContext.trade_quality.overall_score >= 70 ? "#86efac" : featureContext.trade_quality.overall_score >= 60 ? "#fbbf24" : "#fca5a5") }}>
+              {featureContext.trade_quality.overall_score}
+            </div>
+            <Badge color={featureContext.trade_quality.overall_score >= 80 ? "green" : featureContext.trade_quality.overall_score >= 60 ? "yellow" : "red"}>
+              {featureContext.trade_quality.overall_label}
+            </Badge>
+          </div>
+          {/* bucket bars */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.4rem 1.5rem", marginBottom: "0.9rem" }}>
+            {([
+              ["Market Selection", "market_selection"], ["Context", "context"], ["Macro", "macro"],
+              ["Entry", "entry"], ["Risk", "risk"], ["Management", "management"], ["Discipline", "discipline"],
+            ] as [string, string][]).map(([label, key]) => {
+              const v = featureContext.trade_quality!.buckets[key] ?? 0;
+              return (
+                <div key={key} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <span style={{ fontSize: "0.74rem", color: "#94a3b8", width: 110 }}>{label}</span>
+                  <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ width: `${v}%`, height: "100%", background: v >= 70 ? "#86efac" : v >= 55 ? "#fbbf24" : "#fca5a5" }} />
+                  </div>
+                  <span style={{ fontSize: "0.74rem", color: "#e9f4ff", fontFamily: "monospace", width: 26, textAlign: "right" }}>{v}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: "0.7rem", color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.3rem" }}>What this means</div>
+          {featureContext.trade_quality.what_this_means.map((m, i) => (
+            <div key={i} style={{ fontSize: "0.8rem", color: i === 0 ? "#b7c5dd" : "#8fa0b7", marginBottom: "0.15rem" }}>{i === 0 ? "" : "· "}{m}</div>
+          ))}
+        </div>
+      )}
 
       {/* ── Market Context (B16 Feature Framework) ── */}
       {featureContext?.available && (

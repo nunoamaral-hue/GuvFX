@@ -649,9 +649,20 @@ class BacktestRegimeFilterView(APIView):
         try:
             from backtests.feature_extractor import extract_feature_context, apply_risk_warnings
             feature_context = extract_feature_context(bars, symbol=symbol, timeframe=timeframe)
-            apply_risk_warnings(feature_context, {
+            base_perf = {
                 "max_drawdown": baseline.get("baseline_max_drawdown", 0),
-            })
+                "profit_factor": baseline.get("baseline_profit_factor", 0),
+                "win_rate": baseline.get("baseline_win_rate", 0),
+                "total_trades": baseline.get("baseline_trades", 0),
+            }
+            apply_risk_warnings(feature_context, base_perf)
+            try:
+                from backtests.trade_quality import score_trade_quality
+                feature_context["trade_quality"] = score_trade_quality(
+                    symbol, template_name, timeframe, feature_context, params=template_params, perf=base_perf,
+                )
+            except Exception:
+                pass
         except Exception:
             feature_context = {}
 
@@ -801,7 +812,21 @@ class BacktestOptimiseView(APIView):
             from backtests.feature_extractor import extract_feature_context, apply_risk_warnings
             feature_context = extract_feature_context(bars, symbol=symbol, timeframe=timeframe)
             if top:
-                apply_risk_warnings(feature_context, {"max_drawdown": float(top[0].get("max_drawdown", 0))})
+                best0 = top[0]
+                best_perf = {
+                    "max_drawdown": float(best0.get("max_drawdown", 0)),
+                    "profit_factor": float(best0.get("profit_factor", 0)),
+                    "win_rate": float(best0.get("win_rate", 0)),
+                    "total_trades": int(best0.get("trade_count", 0)),
+                }
+                apply_risk_warnings(feature_context, best_perf)
+                try:
+                    from backtests.trade_quality import score_trade_quality
+                    feature_context["trade_quality"] = score_trade_quality(
+                        symbol, template_name, timeframe, feature_context, params=best0.get("params", {}), perf=best_perf,
+                    )
+                except Exception:
+                    pass
         except Exception:
             feature_context = {}
 

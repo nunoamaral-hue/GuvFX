@@ -707,6 +707,14 @@ def run_template_backtest(
         from backtests.feature_extractor import extract_feature_context, apply_risk_warnings
         feature_context = extract_feature_context(bars, symbol=symbol, timeframe=timeframe)
         apply_risk_warnings(feature_context, metrics)
+        # ── Trade quality (B18) — decision-quality of the setup, not profitability ──
+        try:
+            from backtests.trade_quality import score_trade_quality
+            feature_context["trade_quality"] = score_trade_quality(
+                symbol, template_name, timeframe, feature_context, params=params, perf=metrics,
+            )
+        except Exception:
+            pass  # Non-blocking — quality is additive
         metrics["feature_context"] = feature_context
     except Exception:
         pass  # Non-blocking — feature context is additive
