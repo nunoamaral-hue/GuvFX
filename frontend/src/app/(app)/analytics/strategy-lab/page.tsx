@@ -200,6 +200,18 @@ export default function StrategyLabPage() {
   const [showAnalyst, setShowAnalyst] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
 
+  // SI-1: Market State + Strategy Selection
+  type MarketState = { current_state: string; confidence: string; supporting_evidence: string[] };
+  type StrategySelection = {
+    market_state?: MarketState;
+    preferred_families: { family: string; label: string; suitability: string }[];
+    preferred_strategies: { template: string; name: string; family: string; suitability: string; kb_observations: number; kb_avg_quality: number | null; selection_score: number }[];
+    confidence: string;
+    rationale: string[];
+  };
+  const [marketState, setMarketState] = useState<MarketState | null>(null);
+  const [strategySelection, setStrategySelection] = useState<StrategySelection | null>(null);
+
   const [loading, setLoading] = useState("");
   const [error, setError] = useState("");
 
@@ -222,8 +234,21 @@ export default function StrategyLabPage() {
     setAttribution(null);
     setTradeIntel(null);
     setNarrative(null);
+    setMarketState(null); setStrategySelection(null);
 
     try {
+      // 0. Strategy Selection (SI-1) — includes the market_state from the same
+      //    classification, so the displayed state and the selection always agree.
+      setLoading("Classifying market state...");
+      try {
+        const ssRes = await apiFetch<{ ok: boolean } & StrategySelection>(
+          `/api/backtests/strategy-selection/?symbol=${symbol}&timeframe=${timeframe}`, {});
+        if (ssRes.ok) {
+          setStrategySelection(ssRes);
+          if (ssRes.market_state) setMarketState(ssRes.market_state);
+        }
+      } catch { /* non-blocking */ }
+
       // 1. Regime analysis + filtered backtest
       setLoading("Regime analysis...");
       const regimeRes = await apiFetch<RegimeData & { ok: boolean }>("/api/backtests/regime-analysis/", {
@@ -408,6 +433,46 @@ export default function StrategyLabPage() {
       </div>
 
       {error && <div style={{ ...glass, borderColor: "rgba(248,113,113,0.3)", color: "#f87171", fontSize: "0.85rem" }}>{error}</div>}
+
+      {/* ── Market State + Strategy Selection (SI-1) ── */}
+      {(marketState || strategySelection) && (
+        <div style={glass}>
+          <div style={secHeader}>Market State &amp; Strategy Selection <span style={{ textTransform: "none", color: "#64748b", fontWeight: 400 }}>— research guidance, not a signal</span></div>
+          {marketState && (
+            <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap", marginBottom: "0.75rem" }}>
+              <Badge color="blue">{marketState.current_state}</Badge>
+              <span style={{ fontSize: "0.78rem", color: "#94a3b8" }}>confidence: {marketState.confidence}</span>
+              <span style={{ fontSize: "0.74rem", color: "#64748b" }}>{marketState.supporting_evidence.slice(0, 3).join(" · ")}</span>
+            </div>
+          )}
+          {strategySelection && (
+            <>
+              <div style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.3rem" }}>
+                Preferred families <span style={{ textTransform: "none", color: "#64748b", fontWeight: 400 }}>(selection confidence: {strategySelection.confidence})</span>
+              </div>
+              <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", marginBottom: "0.7rem" }}>
+                {strategySelection.preferred_families.map((f, i) => (
+                  <Badge key={i} color={f.suitability === "HIGH" ? "green" : f.suitability === "MEDIUM" ? "yellow" : "gray"}>
+                    {f.label} · {f.suitability}
+                  </Badge>
+                ))}
+              </div>
+              <div style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.3rem" }}>Top candidates</div>
+              {strategySelection.preferred_strategies.slice(0, 4).map((s, i) => (
+                <div key={i} style={{ fontSize: "0.8rem", color: "#b7c5dd", marginBottom: "0.2rem" }}>
+                  <span style={{ color: "#e9f4ff", fontWeight: 500 }}>{s.name}</span> ({s.family}, {s.suitability})
+                  {s.kb_avg_quality != null ? ` · hist. quality ${s.kb_avg_quality} (n=${s.kb_observations})` : " · limited history"}
+                </div>
+              ))}
+              <div style={{ marginTop: "0.6rem", paddingTop: "0.5rem", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                {strategySelection.rationale.map((r, i) => (
+                  <div key={i} style={{ fontSize: "0.76rem", color: i === strategySelection.rationale.length - 1 ? "#475569" : "#8fa0b7", fontStyle: i === strategySelection.rationale.length - 1 ? "italic" : "normal", marginBottom: "0.15rem" }}>{r}</div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* ── Trade Quality (B18) ── */}
       {featureContext?.trade_quality?.available && (

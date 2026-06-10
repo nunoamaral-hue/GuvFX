@@ -370,6 +370,101 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class StrategyFamiliesView(APIView):
+    """GET /api/backtests/strategy-families/ — taxonomy families (read-only)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.strategy_taxonomy import StrategyFamilyRegistry, MarketStateSuitabilityRegistry
+        return Response({
+            "ok": True,
+            "families": StrategyFamilyRegistry.all(),
+            "market_state_suitability": MarketStateSuitabilityRegistry.all(),
+            "mode": "research",
+        })
+
+
+class StrategyDefinitionsView(APIView):
+    """GET /api/backtests/strategy-definitions/ — concrete strategies (read-only)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.strategy_taxonomy import StrategyDefinitionRegistry, SetupTypeRegistry, AssetClassRegistry
+        return Response({
+            "ok": True,
+            "definitions": StrategyDefinitionRegistry.all(),
+            "setup_types": SetupTypeRegistry.all(),
+            "asset_classes": AssetClassRegistry.all(),
+            "mode": "research",
+        })
+
+
+class TraderProfilesView(APIView):
+    """GET /api/backtests/trader-profiles/ — trader archetypes (read-only)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.strategy_taxonomy import TraderProfileRegistry
+        return Response({"ok": True, "trader_profiles": TraderProfileRegistry.all(), "mode": "research"})
+
+
+class MarketStateView(APIView):
+    """
+    GET /api/backtests/market-state/?symbol=&timeframe=&bar_count=
+
+    Deterministic market-state classification. Read-only, Research Mode.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.engine import fetch_bars
+        from backtests.market_state import classify_market_state
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+        symbol = request.query_params.get("symbol", "EURUSD")
+        timeframe = request.query_params.get("timeframe", "H1")
+        try:
+            bar_count = min(int(request.query_params.get("bar_count", 1000)), 2000)
+        except (TypeError, ValueError):
+            bar_count = 1000
+        try:
+            bars = fetch_bars(symbol, timeframe, count=bar_count)
+        except Exception as e:
+            return Response({"ok": False, "error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        result = classify_market_state(bars, symbol=symbol, timeframe=timeframe)
+        return Response({"ok": True, **result})
+
+
+class StrategySelectionView(APIView):
+    """
+    GET /api/backtests/strategy-selection/?symbol=&timeframe=&bar_count=
+
+    Research guidance: preferred families/strategies for the current market
+    state. Read-only, Research Mode. No execution, no deployment.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.engine import fetch_bars
+        from backtests.strategy_selection import select_strategies
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+        symbol = request.query_params.get("symbol", "EURUSD")
+        timeframe = request.query_params.get("timeframe", "H1")
+        try:
+            bar_count = min(int(request.query_params.get("bar_count", 1000)), 2000)
+        except (TypeError, ValueError):
+            bar_count = 1000
+        try:
+            bars = fetch_bars(symbol, timeframe, count=bar_count)
+        except Exception as e:
+            return Response({"ok": False, "error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        result = select_strategies(bars, symbol=symbol, timeframe=timeframe)
+        return Response({"ok": True, **result})
+
+
 class TradeNarrativeView(APIView):
     """
     GET /api/backtests/trade-narrative/

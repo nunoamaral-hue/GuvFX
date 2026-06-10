@@ -23,6 +23,11 @@ from .views import (
     FeatureAttributionView,
     TradeIntelligenceView,
     TradeNarrativeView,
+    StrategyFamiliesView,
+    StrategyDefinitionsView,
+    TraderProfilesView,
+    MarketStateView,
+    StrategySelectionView,
     WindowsBacktestRunView,
     WindowsBacktestStatusView,
     WindowsBacktestResultView,
@@ -138,6 +143,12 @@ urlpatterns = [
         TradeNarrativeView.as_view(),
         name="backtests-trade-narrative",
     ),
+    # SI-1: Strategy Intelligence (taxonomy / market state / selection)
+    path("strategy-families/", StrategyFamiliesView.as_view(), name="backtests-strategy-families"),
+    path("strategy-definitions/", StrategyDefinitionsView.as_view(), name="backtests-strategy-definitions"),
+    path("trader-profiles/", TraderProfilesView.as_view(), name="backtests-trader-profiles"),
+    path("market-state/", MarketStateView.as_view(), name="backtests-market-state"),
+    path("strategy-selection/", StrategySelectionView.as_view(), name="backtests-strategy-selection"),
     # Process pending runs
     path(
         "process-pending/",
