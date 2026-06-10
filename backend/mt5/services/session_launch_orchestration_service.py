@@ -13,9 +13,50 @@ adapter layer's responsibility (not in scope for Phase 2).
 """
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
+
+# Default lifetime for a terminal session when the caller does not supply one.
+# Generous enough not to interrupt an active user, short enough that an
+# abandoned session frees its binding the same day.
+DEFAULT_SESSION_TTL = timedelta(hours=8)
+
+
+def _supersede_stale_user_sessions(binding, user_id) -> int:
+    """Terminate any non-ended InteractionSession the given user holds on this
+    binding, releasing occupancy, so the user can always re-launch cleanly.
+
+    Returns the number of sessions superseded. Best-effort: a failure to
+    terminate one session must not block the new launch.
+    """
+    from mt5.services.session_terminate_service import (
+        terminate_session,
+        TerminateError,
+    )
+
+    stale = (
+        InteractionSession.objects
+        .filter(terminal_binding=binding, user_id=user_id)
+        .exclude(state="ended")
+    )
+    superseded = 0
+    for s in stale:
+        try:
+            terminate_session(
+                s,
+                reason="superseded by new launch on same binding",
+                actor_user_id=user_id,
+            )
+            superseded += 1
+        except TerminateError:
+            continue
+        except Exception:  # noqa: BLE001 — never block a launch on cleanup
+            logging.getLogger(__name__).exception(
+                "Failed to supersede stale session=%s", s.pk
+            )
+    return superseded
 
 from mt5.models import (
     InteractionSession,
@@ -74,8 +115,17 @@ def orchestrate_launch(
     """
     now = timezone.now()
 
-    # Step 1: Resolve and validate binding
+    # Step 1: Resolve binding
     binding = resolve_binding_by_id(binding_id, user_id)
+
+    # Self-supersede: if this binding is still held by a non-ended session
+    # belonging to THIS user (an abandoned browser tab, or a prior launch),
+    # terminate it first so the user can always re-launch their own terminal
+    # rather than being locked out by their own stale occupancy.
+    _supersede_stale_user_sessions(binding, user_id)
+    binding.refresh_from_db()
+
+    # Validate the (now freed) binding is launchable
     validate_binding_launchable(binding)
 
     # Step 2: Validate authorization
@@ -93,7 +143,9 @@ def orchestrate_launch(
     # Step 4: Authorize the session
     interaction_session.state = "authorized"
     interaction_session.authorized_at = now
-    interaction_session.expires_at = session_expires_at
+    # Always set an expiry so abandoned sessions are reaped by
+    # cleanup_expired_mt5_sessions and never hold a binding forever.
+    interaction_session.expires_at = session_expires_at or (now + DEFAULT_SESSION_TTL)
     interaction_session.last_activity_at = now
     interaction_session.save(
         update_fields=[
@@ -329,6 +381,19 @@ def invoke_adapter_launch(launch_result: LaunchResult) -> dict:
     if not result.success:
         mark_launch_failed(mt5_session, result.error_message)
         return _empty_safe_descriptor()
+
+    # The adapter produced a valid Guacamole VNC embed — the tunnel is
+    # established client-side. Record the connection so the session leaves
+    # 'launching' (→ active) and the binding becomes ACTIVE. Without this the
+    # session hangs in 'launching' forever (confirm_launch_connected was never
+    # wired up — the root cause of "terminal stuck launching"). Fail-safe: a
+    # confirmation error must not void an otherwise-valid descriptor.
+    try:
+        confirm_launch_connected(mt5_session)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "confirm_launch_connected failed for mt5_session=%s", mt5_session.pk
+        )
 
     return _build_safe_descriptor(result, session.expires_at)
 
