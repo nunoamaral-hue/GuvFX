@@ -148,7 +148,8 @@ class Command(BaseCommand):
         # Check 6: Windows OHLC agent reachable
         # ---------------------------------------------------------------
         ohlc_url = (os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL") or "").rstrip("/")
-        ohlc_token = (os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
+        # 8788 OHLC bridge authenticates with GUVFX_WINDOWS_AGENT_TOKEN, not the 8787 token.
+        ohlc_token = (os.getenv("GUVFX_WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
 
         if not ohlc_url:
             checks.append({"name": "ohlc_agent", "status": "WARN", "detail": "GUVFX_WINDOWS_AGENT_BASE_URL not configured"})

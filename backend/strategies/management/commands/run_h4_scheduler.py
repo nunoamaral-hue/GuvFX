@@ -255,14 +255,20 @@ class Command(BaseCommand):
                     if account.mt5_instance:
                         windows_username = getattr(account.mt5_instance, "windows_username", None)
 
-                    # Build payload
+                    # Build payload.
+                    # entry/SL/TP are placeholders (0): for signal_reason=forced_once_test
+                    # the Windows bridge fills a market order with live-tick-relative
+                    # SL/TP. Sending zone-derived prices here produces MT5 retcode 10016
+                    # "Invalid stops" whenever price has drifted away from the zone, since
+                    # the stops land on the wrong side of the actual fill. The zone is still
+                    # used to pick the symbol and the side (BUY/SELL) above.
                     payload = {
                         "symbol": selected_symbol,
                         "side": side,
                         "lots": 0.01,  # Minimum lot for testing
-                        "entry_price": entry_price,
-                        "sl_price": sl_price,
-                        "tp_price": tp_price,
+                        "entry_price": 0,
+                        "sl_price": 0,
+                        "tp_price": 0,
                         "comment": f"GS{strategy.id:04d}",  # Will update with job ID
                         "magic": strategy.magic_number or strategy.id,
                         "is_demo": account.is_demo,

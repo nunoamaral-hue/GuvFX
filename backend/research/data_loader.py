@@ -105,8 +105,12 @@ def load_bars_from_agent(
         or os.getenv("WINDOWS_AGENT_BASE")
         or ""
     ).rstrip("/")
+    # Token MUST match url_base. snapshots/rates lives on the 8788 bridge
+    # (GUVFX_WINDOWS_AGENT_BASE_URL) which authenticates with
+    # GUVFX_WINDOWS_AGENT_TOKEN — not the legacy 8787 GUVFX_AGENT_TOKEN.
     token = (
         agent_token
+        or os.getenv("GUVFX_WINDOWS_AGENT_TOKEN")
         or os.getenv("GUVFX_AGENT_TOKEN")
         or os.getenv("WINDOWS_AGENT_TOKEN")
         or ""

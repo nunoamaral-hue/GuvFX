@@ -40,8 +40,12 @@ def _fetch_d1_bars(symbol: str, count: int) -> list:
         or os.getenv("WINDOWS_AGENT_BASE")
         or ""
     ).rstrip("/")
+    # Token MUST match the base URL above. snapshots/rates lives on the 8788
+    # bridge (GUVFX_WINDOWS_AGENT_BASE_URL) which authenticates with
+    # GUVFX_WINDOWS_AGENT_TOKEN — not the legacy 8787 GUVFX_AGENT_TOKEN.
     agent_token = (
-        os.getenv("GUVFX_AGENT_TOKEN")
+        os.getenv("GUVFX_WINDOWS_AGENT_TOKEN")
+        or os.getenv("GUVFX_AGENT_TOKEN")
         or os.getenv("WINDOWS_AGENT_TOKEN")
         or ""
     ).strip()
