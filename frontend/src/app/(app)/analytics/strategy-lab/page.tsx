@@ -173,6 +173,21 @@ export default function StrategyLabPage() {
   };
   const [attribution, setAttribution] = useState<AttrResult | null>(null);
 
+  // B19: Trade Intelligence Record
+  type TradeIntel = {
+    identity: { symbol: string; direction: string; template_name: string; timeframe: string; setup_type: string; source_observation_id: number | null };
+    quality: { quality_score: number | null; quality_label: string; confidence_level: string | null };
+    historical_evidence: { similar_observation_count: number; avg_research_score?: number; avg_quality_score?: number; strong_rate?: number; weak_rate?: number };
+    trade_thesis: string;
+    supporting_factors: string[];
+    risk_factors: string[];
+    decision_notes: string[];
+    audience_safe_summary: string;
+    content_safety_mode: string;
+    public_language_pass: boolean;
+  };
+  const [tradeIntel, setTradeIntel] = useState<TradeIntel | null>(null);
+
   const [loading, setLoading] = useState("");
   const [error, setError] = useState("");
 
@@ -193,6 +208,7 @@ export default function StrategyLabPage() {
     setKbStrongest([]); setKbMostTested([]); setKbHighConf([]);
     setKbTotalObs(0); setKbTotalCombos(0);
     setAttribution(null);
+    setTradeIntel(null);
 
     try {
       // 1. Regime analysis + filtered backtest
@@ -315,6 +331,14 @@ export default function StrategyLabPage() {
         const attrRes = await apiFetch<{ ok: boolean } & AttrResult>(
           "/api/backtests/feature-attribution/?min_count=3", {});
         if (attrRes.ok) setAttribution(attrRes);
+      } catch { /* non-blocking */ }
+
+      // 8. Trade Intelligence Record (structured rationale for this setup)
+      setLoading("Generating trade intelligence...");
+      try {
+        const tiRes = await apiFetch<{ ok: boolean; record: TradeIntel | null }>(
+          `/api/backtests/trade-intelligence/?symbol=${symbol}&template=${selectedTemplate}&timeframe=${timeframe}`, {});
+        if (tiRes.ok && tiRes.record) setTradeIntel(tiRes.record);
       } catch { /* non-blocking */ }
 
       setLoading("");
@@ -670,6 +694,61 @@ export default function StrategyLabPage() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Trade Intelligence (B19) ── */}
+      {tradeIntel && (
+        <div style={glass}>
+          <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>Trade Intelligence <span style={{ textTransform: "none", color: "#64748b", fontWeight: 400 }}>— structured rationale (research context, not advice)</span></span>
+            <span style={{ fontSize: "0.68rem", color: "#64748b", fontWeight: 400, textTransform: "none" }}>
+              {tradeIntel.identity.direction} · {tradeIntel.identity.setup_type}
+              {tradeIntel.public_language_pass ? " · public-safe ✓" : " · sanitised ⚠"}
+            </span>
+          </div>
+
+          <div style={{ fontSize: "0.86rem", color: "#e9f4ff", lineHeight: 1.5, marginBottom: "0.85rem" }}>
+            {tradeIntel.trade_thesis}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem", marginBottom: "0.85rem" }}>
+            <div>
+              <div style={{ fontSize: "0.72rem", color: "#86efac", fontWeight: 600, marginBottom: "0.3rem", textTransform: "uppercase" }}>Supporting factors</div>
+              {tradeIntel.supporting_factors.map((f, i) => (
+                <div key={i} style={{ fontSize: "0.78rem", color: "#b7c5dd", marginBottom: "0.2rem" }}>+ {f}</div>
+              ))}
+            </div>
+            <div>
+              <div style={{ fontSize: "0.72rem", color: "#fca5a5", fontWeight: 600, marginBottom: "0.3rem", textTransform: "uppercase" }}>Risk factors</div>
+              {tradeIntel.risk_factors.map((f, i) => (
+                <div key={i} style={{ fontSize: "0.78rem", color: "#b7c5dd", marginBottom: "0.2rem" }}>− {f}</div>
+              ))}
+            </div>
+          </div>
+
+          {tradeIntel.decision_notes.length > 0 && (
+            <div style={{ marginBottom: "0.7rem" }}>
+              <div style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 600, marginBottom: "0.3rem", textTransform: "uppercase" }}>Decision notes</div>
+              {tradeIntel.decision_notes.map((d, i) => (
+                <div key={i} style={{ fontSize: "0.78rem", color: "#8fa0b7", marginBottom: "0.2rem" }}>{d}</div>
+              ))}
+            </div>
+          )}
+
+          {tradeIntel.historical_evidence.similar_observation_count > 0 && (
+            <div style={{ fontSize: "0.76rem", color: "#b7c5dd", marginBottom: "0.6rem" }}>
+              <span style={{ color: "#64748b", textTransform: "uppercase", fontSize: "0.7rem", fontWeight: 600 }}>Historical evidence — </span>
+              {tradeIntel.historical_evidence.similar_observation_count} similar observations ·
+              avg research {tradeIntel.historical_evidence.avg_research_score ?? "—"} ·
+              avg quality {tradeIntel.historical_evidence.avg_quality_score ?? "—"} ·
+              strong {tradeIntel.historical_evidence.strong_rate ?? "—"}% / weak {tradeIntel.historical_evidence.weak_rate ?? "—"}%
+            </div>
+          )}
+
+          <div style={{ fontSize: "0.78rem", color: "#8fa0b7", fontStyle: "italic", paddingTop: "0.6rem", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+            {tradeIntel.audience_safe_summary}
+          </div>
         </div>
       )}
 

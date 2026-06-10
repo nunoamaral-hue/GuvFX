@@ -370,6 +370,40 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         serializer.instance = run
 
 
+class TradeIntelligenceView(APIView):
+    """
+    GET /api/backtests/trade-intelligence/
+
+    Deterministically generate a structured Trade Intelligence Record
+    (rationale + risks + evidence) for an observation or a combination.
+    Read-only, Research Mode. No ML, no LLM, no prediction, no execution.
+    Public-safe language enforced.
+
+    Query params: observation_id, symbol, template, timeframe.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.trade_intelligence import generate_record
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        obs_id = request.query_params.get("observation_id")
+        try:
+            obs_id = int(obs_id) if obs_id else None
+        except (TypeError, ValueError):
+            obs_id = None
+
+        result = generate_record(
+            observation_id=obs_id,
+            symbol=request.query_params.get("symbol"),
+            template=request.query_params.get("template"),
+            timeframe=request.query_params.get("timeframe"),
+        )
+        return Response(result)
+
+
 class FeatureAttributionView(APIView):
     """
     GET /api/backtests/feature-attribution/
