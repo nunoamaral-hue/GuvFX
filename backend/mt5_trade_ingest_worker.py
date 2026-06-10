@@ -111,15 +111,61 @@ def to_dec(x, default="0"):
         return Decimal(default)
     return Decimal(str(x))
 
-def find_expected_tag_in_deals(deals: list[dict], expected_tag: str) -> bool:
-    """Check if expected_tag exists in any deal's comment field."""
-    if not expected_tag:
-        return True  # No tag to find, consider it found
+def find_expected_tag_in_deals(
+    deals: list[dict],
+    expected_tag: str,
+    expected_order=None,
+    expected_deal=None,
+) -> bool:
+    """Check whether the placed trade is present in the deals snapshot.
+
+    MT5 / the broker truncates or strips the order comment on the stored
+    history deal (e.g. "GUVFX_DEMO_JOB:30" is persisted as "GUVFX_DEMO_JOB:3",
+    a hard 16-char cut), so matching purely on comment fails for any job id
+    >= 10. We therefore match primarily on the order / position / deal ticket
+    returned by the PLACE result (which MT5 never mutates), and fall back to an
+    exact comment match for legacy callers that pass only a tag.
+    """
+    def _norm(v):
+        s = str(v).strip() if v is not None else ""
+        return s if s and s != "0" else None
+
+    eo = _norm(expected_order)
+    ed = _norm(expected_deal)
+    tag = str(expected_tag or "").strip()
+    if not (eo or ed or tag):
+        return True  # nothing to match against, consider it found
     for d in deals:
-        comment = str(d.get("comment") or "").strip()
-        if comment == expected_tag:
+        if eo and (str(d.get("order")).strip() == eo or str(d.get("position_id")).strip() == eo):
+            return True
+        if ed and str(d.get("ticket")).strip() == ed:
+            return True
+        if tag and str(d.get("comment") or "").strip() == tag:
             return True
     return False
+
+
+def get_expected_ids_from_trigger_job(trigger_job_id: int):
+    """Return (tag, order_ticket, deal_ticket) for the placed trade.
+
+    The order/deal tickets come from the PLACE job's result (set by the agent
+    when the order is filled) and are the reliable join key for SYNC, since the
+    comment tag is truncated by MT5 in history deals.
+    """
+    from execution.models import ExecutionJob
+    try:
+        job = ExecutionJob.objects.get(id=trigger_job_id)
+    except ExecutionJob.DoesNotExist:
+        return (None, None, None)
+    except Exception:
+        return (None, None, None)
+    payload = job.payload or {}
+    result = job.result or {}
+    tag = payload.get("comment") or result.get("comment")
+    tag = str(tag).strip() if tag else None
+    order_ticket = result.get("order") or payload.get("order")
+    deal_ticket = result.get("deal")
+    return (tag, order_ticket, deal_ticket)
 
 
 def get_expected_tag_from_trigger_job(trigger_job_id: int) -> str | None:
@@ -385,40 +431,46 @@ def main():
             is_auto_sync = payload.get("auto_sync", False)
             trigger_job_id = payload.get("trigger_job_id")
             expected_tag = None
+            expected_order = None
+            expected_deal = None
 
             if is_auto_sync and trigger_job_id:
-                expected_tag = get_expected_tag_from_trigger_job(trigger_job_id)
-                print(f"[SYNC] Auto-sync for trigger_job_id={trigger_job_id}, expected_tag={expected_tag}")
+                expected_tag, expected_order, expected_deal = get_expected_ids_from_trigger_job(trigger_job_id)
+                print(f"[SYNC] Auto-sync for trigger_job_id={trigger_job_id}, expected_tag={expected_tag} order={expected_order} deal={expected_deal}")
+
+            # Has the placed trade landed in the deals snapshot yet?
+            have_expected = lambda dl: find_expected_tag_in_deals(dl, expected_tag, expected_order, expected_deal)
 
             # Fetch deals with retry logic for auto-sync
+            has_expected_key = bool(expected_tag or expected_order or expected_deal)
             deals = []
             retry_count = 0
-            max_retries = AUTO_SYNC_MAX_RETRIES if (is_auto_sync and expected_tag) else 1
+            max_retries = AUTO_SYNC_MAX_RETRIES if (is_auto_sync and has_expected_key) else 1
 
             while retry_count < max_retries:
                 deals_resp = agent_get("deals", windows_username)
                 # allow different response shapes
                 deals = deals_resp.get("deals") or (deals_resp.get("data") or {}).get("deals") or []
 
-                # For auto-sync: check if expected deal is present
-                if expected_tag:
-                    if find_expected_tag_in_deals(deals, expected_tag):
-                        print(f"[SYNC] Found expected deal with tag={expected_tag} on attempt {retry_count + 1}")
+                # For auto-sync: check if expected deal is present (by ticket, comment fallback)
+                if has_expected_key:
+                    if have_expected(deals):
+                        print(f"[SYNC] Found expected trade (order={expected_order} deal={expected_deal} tag={expected_tag}) on attempt {retry_count + 1}")
                         break
                     else:
                         retry_count += 1
                         if retry_count < max_retries:
-                            print(f"[SYNC] Expected deal tag={expected_tag} not found, retry {retry_count}/{max_retries} in {AUTO_SYNC_RETRY_DELAY}s")
+                            print(f"[SYNC] Expected trade order={expected_order} not found, retry {retry_count}/{max_retries} in {AUTO_SYNC_RETRY_DELAY}s")
                             time.sleep(AUTO_SYNC_RETRY_DELAY)
                         else:
-                            print(f"[SYNC] Expected deal tag={expected_tag} NOT FOUND after {max_retries} retries")
+                            print(f"[SYNC] Expected trade order={expected_order} deal={expected_deal} tag={expected_tag} NOT FOUND after {max_retries} retries")
                 else:
-                    break  # No expected tag, single pass
+                    break  # No expected key, single pass
 
             inserted, updated = upsert_trades(account, deals)
 
             # Determine if we should fail due to missing expected deal
-            if expected_tag and not find_expected_tag_in_deals(deals, expected_tag):
+            if has_expected_key and not have_expected(deals):
                 complete_job(
                     job_id,
                     "FAILED",
@@ -426,11 +478,13 @@ def main():
                         "ok": False,
                         "reason": "expected_deal_not_found_after_retries",
                         "expected_tag": expected_tag,
+                        "expected_order": expected_order,
+                        "expected_deal": expected_deal,
                         "trigger_job_id": trigger_job_id,
                         "retries": max_retries,
                         "deals_count": len(deals),
                     },
-                    f"Expected deal with tag {expected_tag} not found after {max_retries} retries",
+                    f"Expected trade order={expected_order} deal={expected_deal} not found after {max_retries} retries",
                 )
             else:
                 complete_job(

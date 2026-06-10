@@ -101,7 +101,17 @@ def fetch_rates(
         or os.getenv("WINDOWS_AGENT_BASE")
         or ""
     ).rstrip("/")
-    agent_token = (os.getenv("GUVFX_AGENT_TOKEN") or os.getenv("WINDOWS_AGENT_TOKEN") or "").strip()
+    # Token MUST match the base URL above. The snapshots/rates endpoint lives on
+    # the 8788 bridge (GUVFX_WINDOWS_AGENT_BASE_URL), which authenticates with
+    # GUVFX_WINDOWS_AGENT_TOKEN — NOT the legacy 8787 GUVFX_AGENT_TOKEN. Sending
+    # the wrong token returns 401, which silently starves CORE/macro of rates and
+    # prevents any signal from ever firing. Prefer the 8788 token to match the URL.
+    agent_token = (
+        os.getenv("GUVFX_WINDOWS_AGENT_TOKEN")
+        or os.getenv("GUVFX_AGENT_TOKEN")
+        or os.getenv("WINDOWS_AGENT_TOKEN")
+        or ""
+    ).strip()
 
     if not agent_url:
         raise RatesFetchError("GUVFX_WINDOWS_AGENT_BASE_URL not configured")
