@@ -66,6 +66,10 @@ jobs:
           DB_PASSWORD: "ci"
           DB_HOST: "127.0.0.1"
           DB_PORT: "5432"
+          # Production keeps SSL redirect ON; the Django test client speaks http,
+          # so SECURE_SSL_REDIRECT would 301 every request and break assertions.
+          # Disable it only for the test run (no production impact).
+          DJANGO_SSL_REDIRECT: "False"
         run: |
           cd "${{ steps.detect.outputs.path }}"
           python manage.py test

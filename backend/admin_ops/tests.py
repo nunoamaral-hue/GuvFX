@@ -231,7 +231,8 @@ class ExecutionJobDiagnosticsTest(TestCase):
         self.account = TradingAccount.objects.create(
             user=self.owner,
             broker_server=server,
-            mt5_login="12345",
+            name="Test Account",
+            account_number="12345",
             is_active=True,
         )
 

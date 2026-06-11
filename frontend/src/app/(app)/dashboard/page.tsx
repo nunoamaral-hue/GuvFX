@@ -157,6 +157,18 @@ function MetricTile({ label, value, sub, subColor, info }: { label: string; valu
   );
 }
 
+function SectionCard({ icon, title, info, children, action }: { icon: string; title: string; info?: string; children: React.ReactNode; action?: { href: string; label: string } }) {
+  return (
+    <div style={glass}>
+      <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span><i className={`ti ti-${icon}`} aria-hidden="true" style={{ marginRight: 6 }} />{title}{info && <Info text={info} />}</span>
+        {action && <Link href={action.href} style={{ fontSize: "0.7rem", color: "#4ab3ff", textTransform: "none", fontWeight: 400, textDecoration: "none" }}>{action.label} →</Link>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const lang = useLang();
   const [strategies, setStrategies] = useState<Strategy[]>([]);
@@ -221,6 +233,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!symbol) return;
     try { window.localStorage.setItem(LS_KEY, symbol); } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: reset loading + clear stale selection when the focus symbol changes
     setSelLoading(true); setSelection(null);
     apiFetch<Selection>(`/api/backtests/strategy-selection/?symbol=${encodeURIComponent(symbol)}&timeframe=H1`, {})
       .then((res) => { setSelection(res?.ok ? res : null); setSelAt(nowClock()); })
@@ -289,15 +302,8 @@ export default function DashboardPage() {
 
   const setupComplete = strategies.length > 0 && accounts.length > 0;
 
-  const SectionCard = useCallback(({ icon, title, info, children, action }: { icon: string; title: string; info?: string; children: React.ReactNode; action?: { href: string; label: string } }) => (
-    <div style={glass}>
-      <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span><i className={`ti ti-${icon}`} aria-hidden="true" style={{ marginRight: 6 }} />{title}{info && <Info text={info} />}</span>
-        {action && <Link href={action.href} style={{ fontSize: "0.7rem", color: "#4ab3ff", textTransform: "none", fontWeight: 400, textDecoration: "none" }}>{action.label} →</Link>}
-      </div>
-      {children}
-    </div>
-  ), []);
+  // SectionCard is defined at module scope (see below) to satisfy
+  // react-hooks/static-components — components must not be created during render.
 
   // Strategy Insights — observational note tied to current context (no advice)
   function insightNote(s: Strategy): string {
