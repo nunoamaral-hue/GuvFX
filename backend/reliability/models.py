@@ -8,7 +8,7 @@ and never executes recovery.
 from django.conf import settings
 from django.db import models
 
-from .constants import Component, HealthStatus, TradingState, Scope
+from .constants import Component, HealthStatus, TradingState, Scope, RecoveryOutcome, MarketState
 
 
 class ComponentHealth(models.Model):
@@ -193,3 +193,56 @@ class RecoveryAction(models.Model):
 
     def __str__(self):
         return f"ACT {self.action} {self.target_ref} by {self.actor_type} -> {self.outcome}"
+
+
+class RecoveryAttempt(models.Model):
+    """RX-2G recovery framework record. Phase 0: shadow-only (shadow=True,
+    outcome=SHADOW_PLANNED / SUPPRESSED) — records what WOULD happen without
+    executing. Future live attempts reuse this with shadow=False and a
+    RECOVERED/FAILED/AMBIGUOUS outcome."""
+    policy = models.CharField(max_length=40)
+    action = models.CharField(max_length=32)
+    scope = models.CharField(max_length=120)
+    component = models.CharField(max_length=32, choices=Component.CHOICES, blank=True)
+    terminal_node = models.ForeignKey("execution.TerminalNode", null=True, blank=True, on_delete=models.SET_NULL, related_name="recovery_attempts")
+    trading_account = models.ForeignKey("trading.TradingAccount", null=True, blank=True, on_delete=models.SET_NULL, related_name="recovery_attempts")
+    pre_state = models.CharField(max_length=12, blank=True)
+    post_state = models.CharField(max_length=12, blank=True)
+    outcome = models.CharField(max_length=16, choices=RecoveryOutcome.CHOICES, default=RecoveryOutcome.SHADOW_PLANNED)
+    shadow = models.BooleanField(default=True)
+    attempt_number = models.PositiveIntegerField(default=1)
+    cooldown_window = models.CharField(max_length=80, db_index=True)
+    market_state = models.CharField(max_length=16, choices=MarketState.CHOICES, default=MarketState.UNKNOWN)
+    linked_alert = models.ForeignKey(AlertEvent, null=True, blank=True, on_delete=models.SET_NULL, related_name="recovery_attempts")
+    linked_recommendation = models.ForeignKey(RecoveryRecommendation, null=True, blank=True, on_delete=models.SET_NULL, related_name="recovery_attempts")
+    detail = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["policy", "cooldown_window"]), models.Index(fields=["shadow", "outcome"])]
+
+    def __str__(self):
+        return f"{'SHADOW' if self.shadow else 'LIVE'} {self.policy}:{self.action} {self.scope} -> {self.outcome}"
+
+
+class CircuitBreakerState(models.Model):
+    """Global recovery circuit breaker. Counts would-act attempts in a rolling
+    window; trips OPEN at threshold to suppress recovery storms."""
+    class State(models.TextChoices):
+        CLOSED = "CLOSED", "Closed"
+        OPEN = "OPEN", "Open"
+
+    key = models.CharField(max_length=40, unique=True, default="global")
+    state = models.CharField(max_length=8, choices=State.choices, default=State.CLOSED)
+    window_started_at = models.DateTimeField(null=True, blank=True)
+    action_count = models.PositiveIntegerField(default=0)
+    threshold = models.PositiveIntegerField(default=5)
+    window_s = models.PositiveIntegerField(default=900)
+    tripped_at = models.DateTimeField(null=True, blank=True)
+    reset_at = models.DateTimeField(null=True, blank=True)
+    detail = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"circuit[{self.key}]={self.state} count={self.action_count}/{self.threshold}"

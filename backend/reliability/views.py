@@ -5,10 +5,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ComponentHealth, TradingHealthSnapshot, AlertEvent, RecoveryRecommendation
+from .models import ComponentHealth, TradingHealthSnapshot, AlertEvent, RecoveryRecommendation, RecoveryAttempt, CircuitBreakerState
 from .serializers import (
     ComponentHealthSerializer, TradingHealthSnapshotSerializer,
-    AlertEventSerializer, RecoveryRecommendationSerializer,
+    AlertEventSerializer, RecoveryRecommendationSerializer, RecoveryAttemptSerializer,
 )
 
 
@@ -109,6 +109,55 @@ class RecommendationListView(APIView):
         if st:
             qs = qs.filter(status=st.upper())
         return Response({"ok": True, "recommendations": RecoveryRecommendationSerializer(qs[:200], many=True).data})
+
+
+class RecoveryAttemptListView(APIView):
+    """GET /api/reliability/recovery-attempts/?shadow=true&policy=&limit="""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = RecoveryAttempt.objects.all()
+        if request.query_params.get("policy"):
+            qs = qs.filter(policy=request.query_params["policy"])
+        sh = request.query_params.get("shadow")
+        if sh is not None:
+            qs = qs.filter(shadow=(sh.lower() == "true"))
+        return Response({"ok": True, "attempts": RecoveryAttemptSerializer(qs[:200], many=True).data})
+
+
+class RecoveryStatusView(APIView):
+    """GET /api/reliability/recovery-status/ — RX-2G control surfaces."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .constants import auto_recovery_frozen, rx2g_enabled
+        from .recovery import MarketStateService
+        b = CircuitBreakerState.objects.filter(key="global").first()
+        rows = list(ComponentHealth.objects.all())
+        return Response({
+            "ok": True,
+            "auto_recovery_enabled": rx2g_enabled(),
+            "auto_recovery_frozen": auto_recovery_frozen(),
+            "live_actions_implemented": False,  # Phase 0: shadow-only by construction
+            "market_state": MarketStateService.current(rows),
+            "circuit": {
+                "state": b.state if b else "CLOSED",
+                "action_count": b.action_count if b else 0,
+                "threshold": b.threshold if b else None,
+                "window_s": b.window_s if b else None,
+                "tripped_at": b.tripped_at if b else None,
+            },
+        })
+
+
+class CircuitResetView(APIView):
+    """POST /api/reliability/circuit/reset/ — manual breaker reset path."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from .recovery import reset_breaker
+        b = reset_breaker()
+        return Response({"ok": True, "state": b.state, "reset_at": b.reset_at})
 
 
 class HeartbeatIngestView(APIView):

@@ -116,3 +116,88 @@ HEARTBEAT_EXPECTED_INTERVAL = {
     Component.INGEST_WORKER: 60,
     Component.VALIDATE_WORKER: 60,
 }
+
+
+# =============================================================================
+# RX-2G Automated Recovery — Phase 0 (SHADOW-ONLY). No live actions execute.
+# All gate flags are read live (per-tick) so freeze/enable can be toggled
+# operationally without a rebuild.
+# =============================================================================
+def _live_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() == "true"
+
+
+# Master design-intent enable for live recovery (Phase 0: stays OFF).
+def rx2g_enabled() -> bool:
+    return _live_flag("RX2G_AUTO_RECOVERY_ENABLED", "false")
+
+
+# Global operator FREEZE: when true, NO recovery action executes; detection,
+# alerting, visibility and recommendations all continue. Top precedence.
+def auto_recovery_frozen() -> bool:
+    return _live_flag("AUTO_RECOVERY_FROZEN", "false")
+
+
+def policy_enabled(policy: str) -> bool:
+    return _live_flag(f"RX2G_POLICY_{policy.upper()}_ENABLED", "false")
+
+
+def policy_shadow(policy: str) -> bool:
+    # Shadow is ON by default in Phase 0.
+    return _live_flag(f"RX2G_POLICY_{policy.upper()}_SHADOW", "true")
+
+
+class RecoveryOutcome:
+    RECOVERED = "RECOVERED"
+    FAILED = "FAILED"
+    AMBIGUOUS = "AMBIGUOUS"
+    SHADOW_PLANNED = "SHADOW_PLANNED"   # shadow: action not executed
+    SUPPRESSED = "SUPPRESSED"           # gated off (frozen / circuit-open / disabled)
+    CHOICES = [(RECOVERED, RECOVERED), (FAILED, FAILED), (AMBIGUOUS, AMBIGUOUS),
+               (SHADOW_PLANNED, SHADOW_PLANNED), (SUPPRESSED, SUPPRESSED)]
+
+
+class MarketState:
+    OPEN = "MARKET_OPEN"
+    CLOSED = "MARKET_CLOSED"
+    UNKNOWN = "MARKET_UNKNOWN"
+    CHOICES = [(OPEN, OPEN), (CLOSED, CLOSED), (UNKNOWN, UNKNOWN)]
+
+
+# Recovery action identifiers (planned actions; never executed in Phase 0).
+class RecoveryActionType:
+    MT5_RELOGIN = "MT5_RELOGIN"
+    RESTART_BRIDGE = "RESTART_BRIDGE"
+    RESTART_WORKER = "RESTART_WORKER"
+    REPAIR_SCHEDULER = "REPAIR_SCHEDULER"
+    FORCE_FAIL_JOB = "FORCE_FAIL_JOB"
+    RECONCILE_JOB = "RECONCILE_JOB"
+    TELEMETRY_REPROBE = "TELEMETRY_REPROBE"
+    NONE = "NONE"
+
+
+# Circuit breaker defaults (read live so they can be tuned for tests).
+def circuit_threshold() -> int:
+    try:
+        return int(os.getenv("RX2G_CIRCUIT_THRESHOLD", "5"))
+    except ValueError:
+        return 5
+
+
+def circuit_window_s() -> int:
+    try:
+        return int(os.getenv("RX2G_CIRCUIT_WINDOW_S", "900"))
+    except ValueError:
+        return 900
+
+
+# Per-policy cooldown windows (seconds) — also used to dedup shadow attempts.
+RECOVERY_COOLDOWN_S = {
+    "mt5_logout": 900,
+    "mt5_disconnect": 900,
+    "bridge_failure": 600,
+    "worker_failure": 300,
+    "scheduler_failure": 300,
+    "orphan_jobs": 120,
+    "stale_telemetry": 120,
+}

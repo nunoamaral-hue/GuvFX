@@ -54,10 +54,22 @@ class Command(BaseCommand):
         # Alert lifecycle + advisory recommendations.
         counts = alerting.reconcile(orphan_jobs=orphans)
 
+        # RX-2G Phase 0: SHADOW recovery engine — records what would happen,
+        # executes nothing. Honors AUTO_RECOVERY_FROZEN > circuit > market > policy.
+        rx2g = {}
+        try:
+            from reliability.recovery import run_shadow
+            rx2g = run_shadow(now)
+        except Exception:  # noqa: BLE001 — recovery shadow must never break the tick
+            import logging
+            logging.getLogger(__name__).exception("rx2g run_shadow failed")
+
         glob = next((s for s in snapshots if s.scope == "GLOBAL"), None)
         self.stdout.write(
             f"[reliability_tick] {now.isoformat()} global={glob.state if glob else '?'} "
             f"can_trade={glob.can_trade if glob else '?'} snapshots={len(snapshots)} "
             f"orphans={len(orphans)} alerts_opened={counts['opened']} resolved={counts['resolved']} "
-            f"recommendations={counts['recommended']}"
+            f"recommendations={counts['recommended']} | rx2g market={rx2g.get('market_state')} "
+            f"frozen={rx2g.get('frozen')} circuit={rx2g.get('circuit')} "
+            f"shadow_planned={rx2g.get('shadow_planned')} suppressed={rx2g.get('suppressed')}"
         )

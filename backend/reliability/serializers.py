@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import ComponentHealth, TradingHealthSnapshot, AlertEvent, RecoveryRecommendation
+from .models import ComponentHealth, TradingHealthSnapshot, AlertEvent, RecoveryRecommendation, RecoveryAttempt
 
 
 class ComponentHealthSerializer(serializers.ModelSerializer):
@@ -34,3 +34,12 @@ class RecoveryRecommendationSerializer(serializers.ModelSerializer):
         fields = ["id", "component", "terminal_node", "mt5_instance", "trading_account",
                   "recommended_action", "target_ref", "rationale", "severity",
                   "linked_alert", "status", "created_at", "updated_at"]
+
+
+class RecoveryAttemptSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecoveryAttempt
+        fields = ["id", "policy", "action", "scope", "component", "terminal_node", "trading_account",
+                  "pre_state", "post_state", "outcome", "shadow", "attempt_number",
+                  "cooldown_window", "market_state", "linked_alert", "linked_recommendation",
+                  "detail", "created_at"]
