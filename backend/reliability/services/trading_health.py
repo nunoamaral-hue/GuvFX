@@ -10,7 +10,9 @@ from ..constants import (
 from ..models import ComponentHealth, TradingHealthSnapshot
 
 
-def _human(component, status):
+def _human(r):
+    """Human reason for a non-OK ComponentHealth row (uses detail for job types)."""
+    component, status = r.component, r.status
     label = dict(Component.CHOICES).get(component, component)
     if component == Component.MT5_BROKER and status == HealthStatus.FAILED:
         return "MT5 is not connected/logged in to the broker"
@@ -19,12 +21,30 @@ def _human(component, status):
     if component == Component.SNAPSHOT_FEED and status in (HealthStatus.STALE, HealthStatus.FAILED):
         return "Market data feed is stale"
     if component == Component.EXECUTION_PIPELINE and status != HealthStatus.OK:
-        return "Execution pipeline has orphaned/stuck jobs"
+        cats = (r.detail or {}).get("by_category", {})
+        te = cats.get("trade_exec") or []
+        if te:
+            return f"Execution pipeline: {len(te)} stale trade-execution job(s) {te} — trading impaired (critical)"
+        sy = cats.get("sync") or []
+        va = cats.get("validation") or []
+        un = cats.get("unknown") or []
+        parts = []
+        if sy:
+            parts.append(f"{len(sy)} stale sync job(s) {sy}")
+        if va:
+            parts.append(f"{len(va)} stale validation job(s) {va}")
+        if un:
+            parts.append(f"{len(un)} stale job(s) of unknown type {un}")
+        return "Execution pipeline: " + ("; ".join(parts) or "stale jobs") + " (degraded — not blocking trading)"
     return f"{label}: {status.lower()}"
 
 
 def _state_from(rows):
-    """rows: iterable of ComponentHealth. Returns (state, can_trade, reasons, components_map)."""
+    """rows: iterable of ComponentHealth. Returns (state, can_trade, reasons, components_map).
+
+    Severity model: a CRITICAL component FAILED -> DOWN; CRITICAL STALE -> IMPAIRED;
+    CRITICAL DEGRADED -> DEGRADED (does NOT block can_trade — e.g. a stale SYNC job).
+    """
     comp_map = {}
     reasons = []
     crit_failed = crit_stale = supporting_bad = any_known = False
@@ -34,25 +54,17 @@ def _state_from(rows):
             any_known = True
         if r.status == HealthStatus.OK:
             continue
-        reasons.append(_human(r.component, r.status))
+        reasons.append(_human(r))
         critical = r.component in CRITICAL_COMPONENTS
         if r.status == HealthStatus.FAILED:
-            if critical:
-                crit_failed = True
-            elif r.component == Component.SNAPSHOT_FEED:
-                supporting_bad = True
-            else:
-                supporting_bad = True
+            crit_failed = crit_failed or critical
+            supporting_bad = supporting_bad or (not critical)
         elif r.status == HealthStatus.STALE:
-            if critical:
-                crit_stale = True
-            else:
-                supporting_bad = True
+            crit_stale = crit_stale or critical
+            supporting_bad = supporting_bad or (not critical)
         elif r.status == HealthStatus.DEGRADED:
-            if critical:
-                crit_stale = True
-            else:
-                supporting_bad = True
+            # DEGRADED never blocks trading — even for a critical component.
+            supporting_bad = True
 
     if not any_known:
         return TradingState.UNKNOWN, False, reasons or ["No health signals yet"], comp_map

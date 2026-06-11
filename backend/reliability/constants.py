@@ -58,6 +58,22 @@ TERMINAL_SCOPED_COMPONENTS = {
     Component.EXECUTION_PIPELINE,
 }
 
+# ─── Execution job-type categories (RX-2E severity calibration) ───
+# A stale RUNNING job's severity depends on what kind of job it is.
+TRADE_EXECUTION_JOB_TYPES = {"OPEN_TRADE", "CLOSE_TRADE", "PLACE_ORDER", "PLACE_TEST_ORDER"}
+SYNC_JOB_TYPES = {"SYNC_POSITIONS"}
+VALIDATION_JOB_TYPES = {"TEST_CONNECTION"}
+
+
+def job_category(job_type: str) -> str:
+    if job_type in TRADE_EXECUTION_JOB_TYPES:
+        return "trade_exec"
+    if job_type in SYNC_JOB_TYPES:
+        return "sync"
+    if job_type in VALIDATION_JOB_TYPES:
+        return "validation"
+    return "unknown"
+
 
 class HealthStatus:
     OK = "OK"

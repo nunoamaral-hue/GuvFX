@@ -1,7 +1,8 @@
 from django.urls import path
 
 from .views import (
-    TradingHealthView, HealthMatrixView, AlertListView, AlertAcknowledgeView, RecommendationListView,
+    TradingHealthView, HealthMatrixView, AlertListView, AlertAcknowledgeView,
+    RecommendationListView, HeartbeatIngestView,
 )
 
 urlpatterns = [
@@ -10,4 +11,5 @@ urlpatterns = [
     path("alerts/", AlertListView.as_view(), name="reliability-alerts"),
     path("alerts/<int:pk>/acknowledge/", AlertAcknowledgeView.as_view(), name="reliability-alert-ack"),
     path("recommendations/", RecommendationListView.as_view(), name="reliability-recommendations"),
+    path("heartbeat/", HeartbeatIngestView.as_view(), name="reliability-heartbeat"),
 ]

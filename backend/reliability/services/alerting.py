@@ -38,22 +38,43 @@ def _severity(row: ComponentHealth) -> str:
 
 
 def _deliver(alert: AlertEvent):
-    """Optional internal webhook delivery; persist-only if unconfigured."""
-    url = (os.getenv("RELIABILITY_ALERT_WEBHOOK_URL") or "").strip()
-    if not url:
-        alert.delivery_status = "SKIPPED"
-        alert.delivery_detail = {"reason": "no_webhook_configured"}
-        alert.save(update_fields=["delivery_status", "delivery_detail"])
-        return
+    """Push the alert to the first configured operator channel.
+
+    Channels (in order): Telegram bot, then generic webhook. Persist-only
+    (SKIPPED) if none configured. Delivery NEVER raises — a failure is recorded
+    as FAILED and reliability_tick continues. No external monitoring platform.
+    """
+    tg_token = (os.getenv("RELIABILITY_TELEGRAM_BOT_TOKEN") or "").strip()
+    tg_chat = (os.getenv("RELIABILITY_TELEGRAM_CHAT_ID") or "").strip()
+    webhook = (os.getenv("RELIABILITY_ALERT_WEBHOOK_URL") or "").strip()
+    text = f"[{alert.severity}] {alert.title}\n{(alert.body or '')[:600]}"
+
+    channel = detail = None
     try:
-        body = json.dumps({"severity": alert.severity, "title": alert.title, "body": alert.body,
-                           "component": alert.component, "created_at": alert.created_at.isoformat()}).encode()
-        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=8)
-        alert.delivery_status = "SENT"
-    except Exception as e:  # noqa: BLE001
+        if tg_token and tg_chat:
+            channel = "telegram"
+            data = json.dumps({"chat_id": tg_chat, "text": text}).encode()
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                data=data, method="POST", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                detail = {"channel": channel, "http": getattr(r, "status", 200)}
+            alert.delivery_status = "SENT"
+        elif webhook:
+            channel = "webhook"
+            data = json.dumps({"severity": alert.severity, "title": alert.title, "body": alert.body,
+                               "component": alert.component, "created_at": alert.created_at.isoformat()}).encode()
+            req = urllib.request.Request(webhook, data=data, method="POST", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                detail = {"channel": channel, "http": getattr(r, "status", 200)}
+            alert.delivery_status = "SENT"
+        else:
+            alert.delivery_status = "SKIPPED"
+            detail = {"reason": "no_channel_configured"}
+    except Exception as e:  # noqa: BLE001 — delivery must never break the tick
         alert.delivery_status = "FAILED"
-        alert.delivery_detail = {"error": type(e).__name__}
+        detail = {"channel": channel, "error": f"{type(e).__name__}:{str(e)[:160]}"}
+    alert.delivery_detail = detail or {}
     alert.save(update_fields=["delivery_status", "delivery_detail"])
 
 
@@ -63,7 +84,8 @@ def reconcile(orphan_jobs=None):
     Returns counts: {"opened": n, "resolved": n, "recommended": n}.
     """
     orphan_jobs = orphan_jobs or []
-    opened = resolved = recommended = 0
+    opened = resolved = recommended = escalated = 0
+    _RANK = {"INFO": 0, "WARN": 1, "CRITICAL": 2}
     rows = list(ComponentHealth.objects.all())
 
     for row in rows:
@@ -84,11 +106,13 @@ def reconcile(orphan_jobs=None):
         if row.status == HealthStatus.UNKNOWN:
             continue  # do not alert on unknown (e.g. endpoint not yet deployed)
 
-        # Unhealthy → ensure one OPEN alert (dedup).
-        if not open_qs.exists():
-            label = dict(Component.CHOICES).get(row.component, row.component)
+        # Unhealthy → ensure one OPEN alert (dedup), escalating severity if worsened.
+        sev = _severity(row)
+        label = dict(Component.CHOICES).get(row.component, row.component)
+        existing = open_qs.first()
+        if existing is None:
             alert = AlertEvent.objects.create(
-                severity=_severity(row), component=row.component,
+                severity=sev, component=row.component,
                 terminal_node_id=row.terminal_node_id, mt5_instance_id=row.mt5_instance_id,
                 trading_account_id=row.trading_account_id,
                 title=f"{label} {row.status}", body=json.dumps(row.detail)[:1000],
@@ -96,6 +120,15 @@ def reconcile(orphan_jobs=None):
             )
             opened += 1
             _deliver(alert)
+        elif _RANK.get(sev, 0) > _RANK.get(existing.severity, 0):
+            # Condition worsened (e.g. WARN sync orphan -> CRITICAL trade-exec orphan):
+            # escalate the open alert's severity and re-attempt delivery.
+            existing.severity = sev
+            existing.title = f"{label} {row.status}"
+            existing.detail = row.detail
+            existing.save(update_fields=["severity", "title", "detail"])
+            _deliver(existing)
+            escalated += 1
 
         # Advisory recommendation (no execution).
         action = _ACTION_FOR.get(row.component)
@@ -118,4 +151,4 @@ def reconcile(orphan_jobs=None):
                         severity=_severity(row), dedup_key=key)
                     recommended += 1
 
-    return {"opened": opened, "resolved": resolved, "recommended": recommended}
+    return {"opened": opened, "resolved": resolved, "recommended": recommended, "escalated": escalated}

@@ -109,3 +109,23 @@ class RecommendationListView(APIView):
         if st:
             qs = qs.filter(status=st.upper())
         return Response({"ok": True, "recommendations": RecoveryRecommendationSerializer(qs[:200], many=True).data})
+
+
+class HeartbeatIngestView(APIView):
+    """POST /api/reliability/heartbeat/  — components (e.g. the non-Django
+    validate worker) report liveness over HTTP. Worker-token or user auth.
+    Observe-only; never affects trading or execution."""
+    from execution.views import IsAuthenticatedOrWorkerToken as _WorkerOrAuth
+    permission_classes = [_WorkerOrAuth]
+
+    def post(self, request):
+        source = str(request.data.get("source") or "").strip()
+        if not source:
+            return Response({"detail": "source required"}, status=http.HTTP_400_BAD_REQUEST)
+        try:
+            interval = int(request.data.get("expected_interval_s") or 60)
+        except (TypeError, ValueError):
+            interval = 60
+        from .services.heartbeat import record_beat
+        record_beat(source, interval_s=interval, detail={"via": "http"})
+        return Response({"ok": True, "source": source, "expected_interval_s": interval})
