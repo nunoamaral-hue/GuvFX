@@ -49,6 +49,15 @@ const actionLink: React.CSSProperties = { fontSize: "0.8rem", border: "1px solid
 const COMMON = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "USDCAD", "BTCUSD", ".US30Cash"];
 const LS_KEY = "guvfx.focus.symbol";
 
+// ─── RX-2 Reliability Core (Phase 1: read + acknowledge; advisory recommendations) ───
+type RxHealth = { ok?: boolean; state?: string; can_trade?: boolean; reasons?: string[]; computed_at?: string };
+type RxAlert = { id: number; severity: string; component: string; title: string; status: string; created_at: string };
+type RxRec = { id: number; recommended_action: string; target_ref: string; rationale: string; status: string };
+const TH_TONE: Record<string, { c: "green" | "yellow" | "red" | "gray"; label: string }> = {
+  HEALTHY: { c: "green", label: "Healthy" }, DEGRADED: { c: "yellow", label: "Degraded" },
+  IMPAIRED: { c: "yellow", label: "Impaired" }, DOWN: { c: "red", label: "Down" }, UNKNOWN: { c: "gray", label: "Unknown" },
+};
+
 function money(n: number | null | undefined, ccy = "") {
   if (n == null) return "—";
   return (n < 0 ? "-" : "") + (ccy ? ccy + " " : "$") + Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -164,6 +173,21 @@ export default function DashboardPage() {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [selLoading, setSelLoading] = useState(false);
   const [selAt, setSelAt] = useState("");
+
+  // RX-2 Reliability Core (read + acknowledge)
+  const [tradingHealth, setTradingHealth] = useState<RxHealth | null>(null);
+  const [alerts, setAlerts] = useState<RxAlert[]>([]);
+  const [recs, setRecs] = useState<RxRec[]>([]);
+  const loadReliability = useCallback(() => {
+    apiFetch<RxHealth>("/api/reliability/trading-health/", {}).then((h) => setTradingHealth(h || null)).catch(() => setTradingHealth(null));
+    apiFetch<{ alerts: RxAlert[] }>("/api/reliability/alerts/?status=open", {}).then((r) => setAlerts(r?.alerts || [])).catch(() => setAlerts([]));
+    apiFetch<{ recommendations: RxRec[] }>("/api/reliability/recommendations/?status=open", {}).then((r) => setRecs(r?.recommendations || [])).catch(() => setRecs([]));
+  }, []);
+  useEffect(() => { loadReliability(); }, [loadReliability]);
+  const acknowledge = useCallback(async (id: number) => {
+    try { await apiFetch(`/api/reliability/alerts/${id}/acknowledge/`, { method: "POST", body: JSON.stringify({}) }); } catch { /* ignore */ }
+    loadReliability();
+  }, [loadReliability]);
 
   // ── Boot (fast reads) ──
   useEffect(() => {
@@ -311,6 +335,43 @@ export default function DashboardPage() {
         {syncedAt && <span style={{ color: "#64748b" }}>· synced {syncedAt}</span>}
         <Link href="/trading/terminal-access" style={{ marginLeft: "auto", color: "#4ab3ff", textDecoration: "none", fontSize: "0.72rem" }}>Terminal →</Link>
       </div>
+
+      {/* RX-2 Trading Health (reliability) — ambient system trust. Read-only + acknowledge. */}
+      {tradingHealth && tradingHealth.ok !== false && (
+        <div style={{ ...glass, marginBottom: "0.9rem", borderColor: (TH_TONE[tradingHealth.state || "UNKNOWN"]?.c === "red") ? "rgba(248,113,113,0.35)" : (TH_TONE[tradingHealth.state || "UNKNOWN"]?.c === "yellow") ? "rgba(251,191,36,0.28)" : "rgba(74,179,255,0.12)" }}>
+          <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span><i className="ti ti-heartbeat" aria-hidden="true" style={{ marginRight: 6 }} />Trading Health<Info text="Whether GuvFX can actually trade right now (MT5 connected/logged-in, data fresh, execution healthy) — not just whether processes are running." /></span>
+            {tradingHealth.computed_at && <span style={{ fontSize: "0.7rem", color: "#64748b", textTransform: "none", fontWeight: 400 }}>as of {new Date(tradingHealth.computed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: alerts.length || recs.length ? 10 : 0 }}>
+            <Badge color={TH_TONE[tradingHealth.state || "UNKNOWN"]?.c || "gray"}>{TH_TONE[tradingHealth.state || "UNKNOWN"]?.label || tradingHealth.state}</Badge>
+            <span style={{ fontSize: "0.82rem", color: tradingHealth.can_trade ? "#86efac" : "#fca5a5" }}>{tradingHealth.can_trade ? "Able to trade" : "Trading capability impaired"}</span>
+            {(tradingHealth.reasons || []).length > 0 && <span style={{ fontSize: "0.78rem", color: "#94a3b8" }}>· {(tradingHealth.reasons || []).slice(0, 2).join(" · ")}</span>}
+          </div>
+          {alerts.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: recs.length ? 8 : 0 }}>
+              <div style={microLabel}>Open alerts</div>
+              {alerts.slice(0, 4).map((a) => (
+                <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: "0.8rem", color: "#b7c5dd" }}>
+                  <Badge color={a.severity === "CRITICAL" ? "red" : a.severity === "WARN" ? "yellow" : "gray"}>{a.severity}</Badge>
+                  <span>{a.title}</span>
+                  <button onClick={() => acknowledge(a.id)} style={{ ...actionLink, padding: "2px 9px", fontSize: "0.72rem", cursor: "pointer", background: "transparent" }}>Acknowledge</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {recs.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <div style={microLabel}>Recommended actions <span style={{ textTransform: "none", color: "#64748b" }}>(advisory — operator-performed, not automatic)</span></div>
+              {recs.slice(0, 4).map((r) => (
+                <div key={r.id} style={{ fontSize: "0.78rem", color: "#94a3b8", display: "flex", gap: 7 }}>
+                  <i className="ti ti-tool" aria-hidden="true" style={{ color: "#4ab3ff", fontSize: 13, marginTop: 1 }} /><span><span style={{ color: "#e9f4ff" }}>{r.recommended_action}</span> {r.target_ref ? `(${r.target_ref})` : ""} — {r.rationale}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Performance Snapshot — How am I doing? (6 interpreted metrics + curve) */}
       <div style={{ ...glass, marginBottom: "0.9rem" }}>

@@ -338,6 +338,11 @@ def main():
     print("worker:", WORKER_ID, "agent_order_base:", AGENT_ORDER_BASE)
     while True:
         try:
+            try:  # RX-2C: heartbeat (never break the worker loop)
+                from reliability.services.heartbeat import record_beat
+                record_beat("ingest_worker", interval_s=60)
+            except Exception:
+                pass
             # Claim priority: PLACE_TEST_ORDER > PLACE_ORDER > SYNC_POSITIONS
             job = (
                 claim_next_job("PLACE_TEST_ORDER")

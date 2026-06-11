@@ -179,6 +179,13 @@ class ExecutionJob(models.Model):
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
 
+    # RX-2E: lease set when the job becomes RUNNING (claim path). A RUNNING job
+    # whose lease has expired (or has no lease) is an orphan — detected by the
+    # reliability supervisor. Nullable at DB level (PENDING jobs have no lease).
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    recovered = models.BooleanField(default=False)
+    recovery_reason = models.TextField(blank=True)
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,

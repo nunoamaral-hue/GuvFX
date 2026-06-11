@@ -464,6 +464,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        try:  # RX-2C: prove scheduler liveness every run (never break the scheduler)
+            from reliability.services.heartbeat import record_beat
+            record_beat("scheduler_h4", interval_s=60)
+        except Exception:
+            pass
         grace_seconds = options["grace_seconds"]
         account_filter = options.get("account_id")
         strategy_filter = options.get("strategy_id")

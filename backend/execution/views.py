@@ -229,10 +229,16 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
                 # 204 No Content – no jobs available (or all locked by other workers)
                 return Response({"detail": "no_jobs"}, status=204)
 
+            from datetime import timedelta as _timedelta
+            _now = timezone.now()
             job.status = ExecutionJob.Status.RUNNING
             job.worker_id = worker_id
-            job.started_at = timezone.now()
-            job.save(update_fields=["status", "worker_id", "started_at"])
+            job.started_at = _now
+            # RX-2E: mandatory lease on RUNNING. An expired/absent lease marks the
+            # job an orphan for the reliability supervisor (detection only, Phase 1).
+            _lease_ttl = int(os.getenv("EXECUTION_LEASE_TTL_SECONDS", "300"))
+            job.lease_expires_at = _now + _timedelta(seconds=_lease_ttl)
+            job.save(update_fields=["status", "worker_id", "started_at", "lease_expires_at"])
 
         # Audit log — includes routing_mode marker (Fix 2: mixed-mode containment)
         log_execution_job_claimed(

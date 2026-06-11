@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     "reconciliation",
     "admin_ops",
     "onboarding",
+    "reliability",  # RX-2 Reliability Core (Phase 1: detection/visibility/alerting)
 ]
 
 MIDDLEWARE = [
