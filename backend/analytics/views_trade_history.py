@@ -508,6 +508,16 @@ class TradeHistoryView(APIView):
         if not account_id:
             return Response({"detail": "account is required"}, status=400)
 
+        # Ownership gate (TX-AC1F): non-staff users may only access their own
+        # account. Return 404 for any foreign/nonexistent id so the response is
+        # identical regardless of existence (no account-existence oracle) and the
+        # balance/equity enrichment below can never read a foreign account.
+        acc_gate = TradingAccount.objects.filter(id=account_id)
+        if not user.is_staff:
+            acc_gate = acc_gate.filter(user=user)
+        if not acc_gate.exists():
+            return Response({"detail": "account not found"}, status=404)
+
         # Mode: roundtrip (default) or deals
         mode = request.query_params.get("mode", "roundtrip").lower()
         if mode not in ("roundtrip", "deals"):
@@ -615,7 +625,13 @@ class TradeHistoryView(APIView):
             currency = "USD"  # Default currency
 
             try:
-                account_obj = TradingAccount.objects.select_related("mt5_instance").get(id=account_id)
+                # TX-AC1F: ownership-filtered fetch (defense in depth — the upfront
+                # gate already 404s foreign accounts; this ensures the balance/equity
+                # enrichment can never read an account the user does not own).
+                acc_q = TradingAccount.objects.select_related("mt5_instance").filter(id=account_id)
+                if not user.is_staff:
+                    acc_q = acc_q.filter(user=user)
+                account_obj = acc_q.get()
                 if account_obj.mt5_instance and hasattr(account_obj.mt5_instance, "windows_username"):
                     windows_username = getattr(account_obj.mt5_instance, "windows_username", "")
                     if windows_username:
