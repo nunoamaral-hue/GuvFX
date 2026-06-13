@@ -88,10 +88,44 @@ class GuacamoleVncAdapter(SessionAdapter):
             rdp_host = self._resolve_rdp_host(request.terminal_node_id)
 
             user_label = f"user-binding-{request.terminal_binding_id}"
-            payload = build_mt5_desktop_payload(
-                username=user_label,
-                host_override=rdp_host,
-            )
+
+            # TX-CUT1: dedicated-session cutover. If this account is routed to
+            # the dedicated path (kill-switch on + assignment enabled + runtime
+            # populated + READY), connect RDP as its non-admin kiosk identity
+            # (guvfx_u_<id>) instead of VNC-to-Administrator — removing the
+            # Administrator-desktop exposure. FAIL-CLOSED: any error (or the
+            # account not being routed) falls back to the legacy VNC payload.
+            payload = None
+            try:
+                from trading.models import TradingAccount
+                from terminal_provisioning import delivery
+                from terminal_provisioning.models import AccountProvisioning
+                from trading.crypto import decrypt_password
+                from mt5.guac_json import build_dedicated_rdp_payload
+
+                acct = TradingAccount.objects.filter(
+                    account_number=request.mt5_account_login
+                ).first()
+                if acct and delivery.deliver_session(acct.id).get("path") == "DEDICATED":
+                    prov = AccountProvisioning.objects.get(trading_account=acct)
+                    payload = build_dedicated_rdp_payload(
+                        username=f"ded-{prov.windows_username}",
+                        windows_username=prov.windows_username,
+                        windows_password=decrypt_password(prov.password_enc),
+                        host=rdp_host,
+                    )
+                    logger.info("TX-CUT1: dedicated RDP route for account %s (%s)",
+                                getattr(acct, "id", None), prov.windows_username)
+            except Exception as e:  # noqa: BLE001 — fail closed to legacy
+                logger.warning("TX-CUT1 dedicated routing skipped (fallback to legacy): %s",
+                               _sanitize_error(e))
+                payload = None
+
+            if payload is None:
+                payload = build_mt5_desktop_payload(
+                    username=user_label,
+                    host_override=rdp_host,
+                )
             data_b64 = sign_and_encrypt_json(payload, secret_hex=secret_hex)
             url = build_guac_data_url(base_url=base_url, data_b64=data_b64)
 

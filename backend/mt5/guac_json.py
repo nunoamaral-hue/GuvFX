@@ -79,6 +79,52 @@ def build_guac_data_url(
     return f"{base_url}/#/client/{client_id}?data={data_q}"
 
 
+def build_dedicated_rdp_payload(
+    *,
+    username: str,
+    windows_username: str,
+    windows_password: str,
+    host: str,
+    port: str = "3389",
+    conn_id: str = "mt5-terminal",
+) -> dict:
+    """
+    TX-CUT1 — dedicated per-account RDP session as a NON-ADMIN kiosk identity.
+
+    Connects Guacamole via RDP to ``windows_username`` (guvfx_u_<id>). That
+    user's per-user kiosk shell (Winlogon\\Shell = the account's viewer MT5)
+    launches MT5 instead of explorer, so the session exposes NO Administrator
+    desktop / Start menu / Explorer. The Windows password is carried inside the
+    AES-encrypted guacamole-auth-json token (same protection as the VNC password
+    today). View-only (no broker login) is enforced by the runtime config.
+    """
+    expires_ms = int(time.time() * 1000) + 3_600_000
+    unique_username = f"{username}-{uuid.uuid4().hex[:12]}"
+    return {
+        "username": unique_username,
+        "expires": expires_ms,
+        "connections": {
+            conn_id: {
+                "protocol": "rdp",
+                "parameters": {
+                    "hostname": host,
+                    "port": str(port),
+                    "username": windows_username,
+                    "password": windows_password,
+                    "security": "any",
+                    "ignore-cert": "true",
+                    "color-depth": "24",
+                    "resize-method": "display-update",
+                    "enable-drive": "false",
+                    "enable-audio": "false",
+                    "disable-copy": "true",
+                    "disable-paste": "true",
+                },
+            }
+        },
+    }
+
+
 def build_mt5_desktop_payload(*, username: str, host_override: str | None = None) -> dict:
     """
     Build a Guacamole JSON-auth payload for MT5 terminal access.
