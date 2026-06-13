@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     "admin_ops",
     "onboarding",
     "reliability",  # RX-2 Reliability Core (Phase 1: detection/visibility/alerting)
+    "terminal_provisioning",  # TX-1A/TX-1B Terminal Isolation foundation (additive)
 ]
 
 MIDDLEWARE = [

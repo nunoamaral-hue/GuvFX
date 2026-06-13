@@ -151,6 +151,37 @@ class AuditEvent(models.Model):
         ONBOARDING_STRATEGY_ASSIGNED = "ONBOARDING_STRATEGY_ASSIGNED", "Onboarding Strategy Assigned"
         ONBOARDING_COMPLETED = "ONBOARDING_COMPLETED", "Onboarding Completed"
 
+        # Terminal isolation / provisioning lifecycle (TX-1A / TX-1B)
+        TX_IDENTITY_CREATED = "TX_IDENTITY_CREATED", "Terminal Identity Created"
+        TX_IDENTITY_DISABLED = "TX_IDENTITY_DISABLED", "Terminal Identity Disabled"
+        TX_IDENTITY_ENABLED = "TX_IDENTITY_ENABLED", "Terminal Identity Enabled"
+        TX_IDENTITY_RETIRED = "TX_IDENTITY_RETIRED", "Terminal Identity Retired"
+        TX_RUNTIME_CREATED = "TX_RUNTIME_CREATED", "Terminal Runtime Created"
+        TX_RUNTIME_BOUND = "TX_RUNTIME_BOUND", "Terminal Runtime Bound"
+        TX_MAPPING_CHANGED = "TX_MAPPING_CHANGED", "Terminal Mapping Changed"
+
+        # Session assignment / routing lifecycle (TX-1C)
+        TX_SESSION_MAPPING_CREATED = "TX_SESSION_MAPPING_CREATED", "Session Mapping Created"
+        TX_SESSION_MAPPING_UPDATED = "TX_SESSION_MAPPING_UPDATED", "Session Mapping Updated"
+        TX_SESSION_ASSIGNMENT_ENABLED = "TX_SESSION_ASSIGNMENT_ENABLED", "Session Assignment Enabled"
+        TX_SESSION_ASSIGNMENT_DISABLED = "TX_SESSION_ASSIGNMENT_DISABLED", "Session Assignment Disabled"
+        TX_SESSION_READINESS_CHANGED = "TX_SESSION_READINESS_CHANGED", "Session Readiness Changed"
+
+        # Dedicated viewer session / dual-path routing lifecycle (TX-1D)
+        TX_VIEWER_RUNTIME_POPULATED = "TX_VIEWER_RUNTIME_POPULATED", "Viewer Runtime Populated"
+        TX_DEDICATED_PATH_ENABLED = "TX_DEDICATED_PATH_ENABLED", "Dedicated Path Enabled"
+        TX_DEDICATED_PATH_DISABLED = "TX_DEDICATED_PATH_DISABLED", "Dedicated Path Disabled"
+        TX_LIVE_READINESS_EVALUATED = "TX_LIVE_READINESS_EVALUATED", "Live Readiness Evaluated"
+        TX_FALLBACK_TO_LEGACY = "TX_FALLBACK_TO_LEGACY", "Fallback To Legacy Path"
+        TX_ROLLBACK_DEMONSTRATED = "TX_ROLLBACK_DEMONSTRATED", "Rollback Demonstrated"
+
+        # Dedicated session delivery / kiosk lifecycle (TX-1E)
+        TX_DEDICATED_SESSION_CREATED = "TX_DEDICATED_SESSION_CREATED", "Dedicated Session Created"
+        TX_DEDICATED_SESSION_LAUNCHED = "TX_DEDICATED_SESSION_LAUNCHED", "Dedicated Session Launched"
+        TX_DEDICATED_SESSION_DISABLED = "TX_DEDICATED_SESSION_DISABLED", "Dedicated Session Disabled"
+        TX_DEDICATED_SESSION_FALLBACK = "TX_DEDICATED_SESSION_FALLBACK", "Dedicated Session Fallback"
+        TX_KIOSK_ENABLED = "TX_KIOSK_ENABLED", "Kiosk Shell Enabled"
+
         # Payment webhook lifecycle
         WEBHOOK_SIGNATURE_FAILED = "WEBHOOK_SIGNATURE_FAILED", "Webhook Signature Failed"
         WEBHOOK_DUPLICATE_REJECTED = "WEBHOOK_DUPLICATE_REJECTED", "Webhook Duplicate Rejected"
