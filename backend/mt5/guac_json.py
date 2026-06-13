@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import time
+import uuid
 from urllib.parse import quote
 
 from cryptography.hazmat.primitives import padding
@@ -42,10 +43,40 @@ def sign_and_encrypt_json(payload: dict, *, secret_hex: str) -> str:
     return base64.b64encode(ciphertext).decode("ascii")
 
 
-def build_guac_data_url(*, base_url: str, data_b64: str) -> str:
+def guac_client_identifier(conn_id: str, datasource: str = "json") -> str:
+    """
+    Build a Guacamole client identifier for a deep-link into a specific
+    connection (so the viewer opens the connection directly instead of the
+    Guacamole home / connection-list page).
+
+    Format (Guacamole 1.x ClientIdentifier): base64( <id> 0x00 'c' 0x00 <dataSource> ).
+    For guacamole-auth-json the dataSource identifier is "json" and a
+    connection's id equals its name in the JSON-auth payload.
+    """
+    raw = conn_id.encode("utf-8") + b"\x00" + b"c" + b"\x00" + datasource.encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")
+
+
+def build_guac_data_url(
+    *,
+    base_url: str,
+    data_b64: str,
+    conn_id: str = "mt5-terminal",
+    datasource: str = "json",
+) -> str:
+    """
+    Deep-link directly into the MT5 connection's client view.
+
+    PX-7B: the previous form ("#/client/c/mt5-terminal") was NOT a valid
+    Guacamole client identifier, so Guacamole authenticated and then fell
+    back to the home / connection-list page (Recent/All Connections UI
+    leaked to traders). The correct form embeds the base64 client identifier
+    so the iframe opens straight into the MT5 session.
+    """
     base_url = base_url.rstrip("/")
+    client_id = quote(guac_client_identifier(conn_id, datasource), safe="")
     data_q = quote(data_b64, safe="")
-    return f"{base_url}/#/client/c/mt5-terminal?data={data_q}"
+    return f"{base_url}/#/client/{client_id}?data={data_q}"
 
 
 def build_mt5_desktop_payload(*, username: str, host_override: str | None = None) -> dict:
@@ -101,8 +132,17 @@ def build_mt5_desktop_payload(*, username: str, host_override: str | None = None
             "enable-audio": "false",
         }
 
+    # PX-7B: make the JSON-auth username unique per launch. The Guacamole
+    # webapp re-uses an existing stored token when the re-authenticated user
+    # matches (server returns the same authToken), silently ignoring the fresh
+    # connection payload → "The requested connection does not exist" on
+    # reload/reconnect. A unique username forces the server to mint a NEW token
+    # (authToken changes), so the webapp revokes the stale session and adopts
+    # the fresh one that actually carries the mt5-terminal connection.
+    unique_username = f"{username}-{uuid.uuid4().hex[:12]}"
+
     return {
-        "username": username,
+        "username": unique_username,
         "expires": expires_ms,
         "connections": {
             conn_id: {

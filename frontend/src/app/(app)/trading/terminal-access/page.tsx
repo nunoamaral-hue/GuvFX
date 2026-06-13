@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { apiFetch } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -68,13 +68,109 @@ const sessionStateColor: Record<string, "green" | "gray" | "blue" | "red" | "yel
 // MT5Session state → Badge color
 // ─────────────────────────────────────────────────────────────────────
 
-const mt5StateColor: Record<string, "green" | "gray" | "blue" | "red" | "yellow"> = {
-  launching: "blue",
-  connected: "green",
-  suspended: "yellow",
-  ended: "gray",
-  failed: "red",
+// ─────────────────────────────────────────────────────────────────────
+// PX-7A — Trading vs Viewer state separation (INCIDENT-001)
+//
+// CORE RULE: Viewer Availability ≠ Trading Availability.
+// Trading is NEVER computed in the frontend — it is consumed verbatim from
+// /api/reliability/trading-health/ and only mapped to a display bucket.
+// ─────────────────────────────────────────────────────────────────────
+
+type TradingHealth = {
+  ok?: boolean;
+  state: string; // HEALTHY | DEGRADED | IMPAIRED | DOWN | UNKNOWN
+  can_trade: boolean;
+  reasons: string[];
+} | null;
+
+type TradingBucket = "Healthy" | "Warning" | "Critical" | "Unknown";
+
+// Map the reliability TradingState verbatim → display bucket (no calculation).
+const tradingBucket = (h: TradingHealth): TradingBucket => {
+  switch (h?.state) {
+    case "HEALTHY":
+      return "Healthy";
+    case "DEGRADED":
+    case "IMPAIRED":
+      return "Warning";
+    case "DOWN":
+      return "Critical";
+    default:
+      return "Unknown";
+  }
 };
+
+const tradingColor: Record<TradingBucket, "green" | "yellow" | "red" | "gray"> = {
+  Healthy: "green",
+  Warning: "yellow",
+  Critical: "red",
+  Unknown: "gray",
+};
+
+// Viewer = the Guacamole VNC tunnel lifecycle. Frontend-owned, fully
+// independent of trading. Never surfaced as a generic "Unavailable".
+type ViewerState =
+  | "Connected"
+  | "Connecting"
+  | "Reconnecting"
+  | "Disconnected"
+  | "Error";
+
+const viewerColor: Record<ViewerState, "green" | "blue" | "yellow" | "gray" | "red"> = {
+  Connected: "green",
+  Connecting: "blue",
+  Reconnecting: "yellow",
+  Disconnected: "gray",
+  Error: "red",
+};
+
+// Binding availability is a separate axis from viewer/trading state.
+// Per PX-7A: never render the generic word "Unavailable" on a binding.
+const bindingActionLabel = (status: string): string => {
+  switch (status) {
+    case "available":
+      return "Launch";
+    case "launching":
+    case "active":
+      return "In Use";
+    case "suspended":
+      return "Suspended";
+    case "maintenance":
+      return "Maintenance";
+    case "locked":
+      return "Locked";
+    default:
+      return "Busy";
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// Status header — two clearly separated badges: Trading and Viewer
+// ─────────────────────────────────────────────────────────────────────
+
+function StatusHeader({ trading, viewer }: { trading: TradingBucket; viewer: ViewerState }) {
+  const pill: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.6rem",
+    padding: "0.6rem 1rem",
+    borderRadius: 12,
+    border: "1px solid rgba(74, 179, 255, 0.12)",
+    background: "rgba(255, 255, 255, 0.02)",
+  };
+  return (
+    <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" as const, marginBottom: "1rem" }}>
+      <div style={pill}>
+        <span style={{ ...labelStyle, marginBottom: 0 }}>Trading</span>
+        <Badge color={tradingColor[trading]}>{trading}</Badge>
+      </div>
+      <div style={pill}>
+        <span style={{ ...labelStyle, marginBottom: 0 }}>Viewer</span>
+        <Badge color={viewerColor[viewer]}>{viewer}</Badge>
+      </div>
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Shared styles (matches existing GuvFX glass card pattern)
@@ -162,20 +258,38 @@ function SessionStatusCard({
   session,
   launchDescriptor,
   onTerminate,
-  onResume,
   terminating,
-  resuming,
+  trading,
+  viewerState,
+  viewerEpoch,
+  onReconnect,
+  onViewerLoad,
 }: {
   session: InteractionSessionResponse;
   launchDescriptor: SafeLaunchDescriptor | null;
   onTerminate: () => void;
-  onResume: () => void;
   terminating: boolean;
-  resuming: boolean;
+  trading: TradingBucket;
+  viewerState: ViewerState;
+  viewerEpoch: number;
+  onReconnect: () => void;
+  onViewerLoad: () => void;
 }) {
   const isActive = session.state === "active" || session.state === "authorized";
   const isEnded = session.state === "ended";
   const mt5 = session.latest_mt5_session;
+  const reconnecting = viewerState === "Reconnecting";
+  // When trading itself is unavailable, viewer access is paused (PX-7B Task 4).
+  const tradingUnavailable = trading === "Critical";
+  const viewerEligible =
+    isActive && !!mt5 && (mt5.state === "connected" || mt5.state === "launching");
+  // Show the live iframe only when confidently connected/connecting with a
+  // launch descriptor — never as a fallback for an uncertain state (Task 3).
+  const showIframe =
+    !tradingUnavailable &&
+    !!launchDescriptor?.embed_url &&
+    (viewerState === "Connected" || viewerState === "Connecting");
+  const connecting = viewerState === "Connecting";
 
   return (
     <div style={{ ...glassCard, marginBottom: "1rem" }}>
@@ -202,120 +316,84 @@ function SessionStatusCard({
         </Badge>
       </div>
 
-      {/* Session detail fields (only non-null) */}
-      <div style={{ display: "flex", flexWrap: "wrap" as const, gap: "1rem 2rem", marginBottom: "1rem" }}>
-        <DetailRow label="Session ID" value={`#${session.id}`} />
-        <DetailRow label="Binding" value={session.terminal_identifier} />
-        <DetailRow label="Requested" value={session.requested_at ? fmtDateTime(session.requested_at) : null} />
-        <DetailRow label="Authorized" value={session.authorized_at ? fmtDateTime(session.authorized_at) : null} />
-        <DetailRow label="Started" value={session.started_at ? fmtDateTime(session.started_at) : null} />
-        <DetailRow label="Expires" value={session.expires_at ? fmtDateTime(session.expires_at) : null} />
-        <DetailRow label="Last activity" value={session.last_activity_at ? fmtDateTime(session.last_activity_at) : null} />
-        {isEnded && <DetailRow label="Ended" value={session.ended_at ? fmtDateTime(session.ended_at) : null} />}
-        {isEnded && session.terminated_reason && (
-          <DetailRow label="Termination reason" value={session.terminated_reason} />
-        )}
-      </div>
-
-      {/* MT5Session sub-card */}
-      {mt5 && (
+      {/* ── MT5 viewer — GuvFX-framed; trader sees MT5 or a GuvFX state, never raw Guacamole ── */}
+      {viewerEligible && (
         <div
           style={{
             borderRadius: 12,
-            border: "1px solid rgba(74, 179, 255, 0.08)",
-            background: "rgba(255, 255, 255, 0.02)",
-            padding: "1rem",
+            border: "1px solid rgba(74, 179, 255, 0.15)",
+            background: "rgba(0, 0, 0, 0.3)",
+            overflow: "hidden",
             marginBottom: "1rem",
           }}
         >
-          <div style={{ ...sectionHeader, marginBottom: "0.5rem" }}>MT5 Session</div>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem", flexWrap: "wrap" as const }}>
-            <Badge color={mt5StateColor[mt5.state] ?? "gray"}>
-              {humanize(mt5.state)}
-            </Badge>
-            <span style={{ fontSize: "0.8rem", color: "#8fa0b7" }}>
-              {mt5.adapter_type}
-            </span>
+          {/* GuvFX viewer header (no Guacamole terminology) */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "0.5rem 1rem",
+              background: "rgba(10, 15, 40, 0.9)",
+              borderBottom: "1px solid rgba(74, 179, 255, 0.1)",
+            }}
+          >
+            <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>MT5 Terminal</span>
+            <Badge color={viewerColor[viewerState]}>{viewerState}</Badge>
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap" as const, gap: "0.75rem 2rem" }}>
-            <DetailRow label="Launch issued" value={mt5.launch_issued_at ? fmtDateTime(mt5.launch_issued_at) : null} />
-            <DetailRow label="Connected" value={mt5.connected_at ? fmtDateTime(mt5.connected_at) : null} />
-            <DetailRow label="Last heartbeat" value={mt5.last_heartbeat_at ? fmtDateTime(mt5.last_heartbeat_at) : null} />
-            {mt5.state === "failed" && mt5.failure_reason && (
-              <DetailRow label="Failure reason" value={mt5.failure_reason} />
-            )}
-          </div>
+
+          {tradingUnavailable ? (
+            <ViewerPanel
+              tone="error"
+              title="Trading is currently unavailable"
+              body="Viewer access is paused until trading health recovers."
+            />
+          ) : showIframe ? (
+            <>
+              {connecting && (
+                <div style={{ padding: "0.5rem 1rem", fontSize: "0.8rem", color: "#93c5fd", background: "rgba(59,130,246,.08)" }}>
+                  Opening MT5 viewer…
+                </div>
+              )}
+              <iframe
+                key={`mt5-viewer-${viewerEpoch}`}
+                src={launchDescriptor!.embed_url}
+                title="MT5 Terminal"
+                onLoad={onViewerLoad}
+                style={{ width: "100%", height: "600px", border: "none", display: "block" }}
+                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+              />
+            </>
+          ) : reconnecting ? (
+            <ViewerPanel
+              tone="reconnecting"
+              title="Reconnecting terminal viewer…"
+              body="Re-establishing the MT5 viewer session. Trading is unaffected."
+            />
+          ) : viewerState === "Error" ? (
+            <ViewerPanel
+              tone="error"
+              title="MT5 viewer could not be opened"
+              body="Trading status is checked separately. Try reconnecting the viewer."
+              onReconnect={onReconnect}
+            />
+          ) : (
+            <ViewerPanel
+              tone="muted"
+              title="Viewer session disconnected"
+              body={
+                trading === "Healthy"
+                  ? "Trading remains healthy and broker is connected. Reconnect viewer to continue viewing MT5."
+                  : "This is a viewer-only disconnection. Trading status is shown separately above and is unaffected by the viewer."
+              }
+              onReconnect={onReconnect}
+            />
+          )}
         </div>
       )}
 
-      {/* Embedded terminal panel — GuvFX controls ABOVE, MT5 panel BELOW */}
-      {isActive && mt5 && (mt5.state === "connected" || mt5.state === "launching") && (
-        launchDescriptor && launchDescriptor.embed_url ? (
-          <div
-            style={{
-              borderRadius: 12,
-              border: "1px solid rgba(74, 179, 255, 0.15)",
-              background: "rgba(0, 0, 0, 0.3)",
-              overflow: "hidden",
-              marginBottom: "1rem",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "0.5rem 1rem",
-                background: "rgba(10, 15, 40, 0.9)",
-                borderBottom: "1px solid rgba(74, 179, 255, 0.1)",
-              }}
-            >
-              <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
-                MT5 Terminal — {launchDescriptor.transport_type}
-              </span>
-              {launchDescriptor.expiry && (
-                <span style={{ fontSize: "0.75rem", color: "#64748b" }}>
-                  Expires: {fmtDateTime(launchDescriptor.expiry)}
-                </span>
-              )}
-            </div>
-            <iframe
-              src={launchDescriptor.embed_url}
-              title="MT5 Terminal"
-              style={{
-                width: "100%",
-                height: "600px",
-                border: "none",
-                display: "block",
-              }}
-              sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-            />
-          </div>
-        ) : (
-          <div
-            style={{
-              borderRadius: 12,
-              border: "1px dashed rgba(74, 179, 255, 0.2)",
-              background: "rgba(255, 255, 255, 0.01)",
-              padding: "2rem",
-              textAlign: "center" as const,
-              marginBottom: "1rem",
-            }}
-          >
-            <div style={{ fontSize: "0.9rem", color: "#8fa0b7", marginBottom: "0.25rem" }}>
-              {mt5.state === "launching" ? "Connecting to terminal..." : "Terminal Panel"}
-            </div>
-            <div style={{ fontSize: "0.8rem", color: "#64748b" }}>
-              {mt5.state === "launching"
-                ? "The terminal session is being established. This may take a moment."
-                : "Embed URL not available. The adapter may not have returned connection details."}
-            </div>
-          </div>
-        )
-      )}
-
       {/* Action buttons */}
-      <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" as const }}>
+      <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" as const, alignItems: "center" }}>
         {isActive && (
           <Button
             variant="secondary"
@@ -327,11 +405,63 @@ function SessionStatusCard({
           </Button>
         )}
         {isEnded && (
-          <Button variant="secondary" onClick={onResume} disabled={resuming}>
-            {resuming ? "Checking..." : "Check Resumability"}
-          </Button>
+          <span style={{ fontSize: "0.8rem", color: "#8fa0b7", alignSelf: "center" }}>
+            This session has ended. Launch a terminal below to start a new one.
+          </span>
         )}
       </div>
+
+      {/* ── Technical details (collapsed; not trader-facing priority) ── */}
+      <details style={{ marginTop: "1rem" }}>
+        <summary style={{ ...labelStyle, marginBottom: 0, cursor: "pointer", userSelect: "none" as const }}>
+          Session details
+        </summary>
+        <div style={{ display: "flex", flexWrap: "wrap" as const, gap: "0.75rem 2rem", marginTop: "0.75rem" }}>
+          <DetailRow label="Session ID" value={`#${session.id}`} />
+          <DetailRow label="Account" value={session.terminal_identifier} />
+          <DetailRow label="Started" value={session.started_at ? fmtDateTime(session.started_at) : null} />
+          <DetailRow label="Expires" value={session.expires_at ? fmtDateTime(session.expires_at) : null} />
+          <DetailRow label="Last activity" value={session.last_activity_at ? fmtDateTime(session.last_activity_at) : null} />
+          {mt5 && <DetailRow label="Connected" value={mt5.connected_at ? fmtDateTime(mt5.connected_at) : null} />}
+          {isEnded && <DetailRow label="Ended" value={session.ended_at ? fmtDateTime(session.ended_at) : null} />}
+          {isEnded && session.terminated_reason && (
+            <DetailRow label="Termination reason" value={session.terminated_reason} />
+          )}
+          {mt5 && mt5.state === "failed" && mt5.failure_reason && (
+            <DetailRow label="Failure reason" value={mt5.failure_reason} />
+          )}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// GuvFX viewer-state panel (replaces any raw Guacamole fallback UI)
+// ─────────────────────────────────────────────────────────────────────
+
+function ViewerPanel({
+  tone,
+  title,
+  body,
+  onReconnect,
+}: {
+  tone: "muted" | "reconnecting" | "error";
+  title: string;
+  body: string;
+  onReconnect?: () => void;
+}) {
+  const toneColor =
+    tone === "reconnecting" ? "#fcd34d" : tone === "error" ? "#fca5a5" : "#e9f4ff";
+  return (
+    <div style={{ padding: "2rem 1.75rem", textAlign: "center" as const, background: "rgba(255,255,255,0.01)" }}>
+      <div style={{ fontSize: "0.95rem", color: toneColor, fontWeight: 600, marginBottom: "0.4rem" }}>
+        {title}
+      </div>
+      <div style={{ fontSize: "0.85rem", color: "#b7c5dd", lineHeight: 1.6, marginBottom: onReconnect ? "1rem" : 0, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
+        {body}
+      </div>
+      {onReconnect && <Button onClick={onReconnect}>Reconnect viewer</Button>}
     </div>
   );
 }
@@ -356,8 +486,14 @@ export default function TerminalAccessPage() {
   const [launching, setLaunching] = useState(false);
   const [launchBindingId, setLaunchBindingId] = useState<number | null>(null);
   const [terminating, setTerminating] = useState(false);
-  const [resuming, setResuming] = useState(false);
-  const [resumeResult, setResumeResult] = useState<ResumableContextResponse | null>(null);
+
+  // ── PX-7A: Trading (source of truth = reliability) + Viewer (frontend-owned) ──
+  const [trading, setTrading] = useState<TradingHealth>(null);
+  const [viewerState, setViewerState] = useState<ViewerState>("Disconnected");
+  const [viewerEpoch, setViewerEpoch] = useState(0); // bump → iframe remount with fresh creds
+  const activeSessionRef = useRef<InteractionSessionResponse | null>(null);
+  const wasHiddenRef = useRef(false); // tab was backgrounded (tunnel likely dropped)
+  const autoReconnectedRef = useRef<number | null>(null); // session id auto-reconnected once
 
   // ── MT5 credential status state ──
   const [credStatus, setCredStatus] = useState<Mt5CredentialStatus>(null);
@@ -385,6 +521,32 @@ export default function TerminalAccessPage() {
       setCredStatus(null);
     } finally {
       setCredLoading(false);
+    }
+  }, []);
+
+  // ── Fetch trading health (SOURCE OF TRUTH — never computed here) ──
+  const fetchTradingHealth = useCallback(async (): Promise<TradingHealth> => {
+    try {
+      const data = await apiFetch<TradingHealth>("/api/reliability/trading-health/", {});
+      setTrading(data);
+      return data;
+    } catch {
+      // Endpoint unreachable → Unknown (do NOT infer trading from viewer).
+      setTrading(null);
+      return null;
+    }
+  }, []);
+
+  // ── Re-discover the user's current resumable session (PX-7A endpoint) ──
+  const fetchActiveSession = useCallback(async (): Promise<InteractionSessionResponse | null> => {
+    try {
+      const data = await apiFetch<{ active_session: InteractionSessionResponse | null }>(
+        "/api/mt5-interaction/sessions/active/",
+        {}
+      );
+      return data.active_session;
+    } catch {
+      return null;
     }
   }, []);
 
@@ -456,8 +618,9 @@ export default function TerminalAccessPage() {
     setLaunchBindingId(bindingId);
     setSessionError(null);
     setNotice(null);
-    setResumeResult(null);
     setLaunchDescriptor(null);
+    setViewerState("Connecting");
+    autoReconnectedRef.current = null;
     try {
       const data = await apiFetch<InteractionSessionResponse & { launch_descriptor?: SafeLaunchDescriptor }>(
         "/api/mt5-interaction/sessions/",
@@ -467,8 +630,11 @@ export default function TerminalAccessPage() {
         }
       );
       setActiveSession(data);
-      if (data.launch_descriptor) {
+      if (data.launch_descriptor?.embed_url) {
         setLaunchDescriptor(data.launch_descriptor);
+        setViewerState("Connecting"); // iframe onLoad → Connected
+      } else {
+        setViewerState("Disconnected"); // no embed yet; Reconnect viewer available
       }
       setNotice({ type: "info", message: "Session launched. Waiting for terminal connection..." });
       // Refresh bindings to reflect occupancy change
@@ -499,6 +665,7 @@ export default function TerminalAccessPage() {
     setTerminating(true);
     setNotice(null);
     setLaunchDescriptor(null);
+    setViewerState("Disconnected");
     try {
       const data = await apiFetch<InteractionSessionResponse>(
         `/api/mt5-interaction/sessions/${activeSession.id}/terminate/`,
@@ -519,42 +686,50 @@ export default function TerminalAccessPage() {
     }
   }, [activeSession, fetchBindings]);
 
-  // ── Resume check ──
-  const handleResume = useCallback(async () => {
-    if (!activeSession) return;
-    setResuming(true);
-    setNotice(null);
-    setResumeResult(null);
-    try {
-      const data = await apiFetch<ResumableContextResponse>(
-        `/api/mt5-interaction/sessions/${activeSession.id}/resume/`,
-        { method: "POST" }
-      );
-      setResumeResult(data);
-      if (data.can_resume) {
-        setActiveSession(data.interaction_session);
-        if (data.launch_descriptor) {
-          setLaunchDescriptor(data.launch_descriptor);
+  // ── Reconnect viewer (PX-7A core) ──
+  // Resumes the live Guacamole tunnel for an ACTIVE session by fetching a
+  // fresh embed_url. NO logout/login, NO new MT5Session, NO lifecycle change
+  // (backend resolve_resumable forbids mutation). Viewer-only operation.
+  const reconnectViewer = useCallback(
+    async (sessionId: number): Promise<boolean> => {
+      setViewerState("Reconnecting");
+      setNotice(null);
+      try {
+        const data = await apiFetch<ResumableContextResponse>(
+          `/api/mt5-interaction/sessions/${sessionId}/resume/`,
+          { method: "POST" }
+        );
+        if (data.interaction_session) {
+          setActiveSession(data.interaction_session);
         }
-        setNotice({ type: "info", message: "Session is resumable. You may continue working." });
-      } else {
-        setNotice({ type: "warning", message: "Session cannot be resumed at this time." });
+        if (data.launch_descriptor?.embed_url) {
+          setLaunchDescriptor(data.launch_descriptor);
+          setViewerEpoch((e) => e + 1); // force iframe remount with fresh credentials
+          setViewerState("Connecting"); // iframe onLoad → Connected
+          return true;
+        }
+        // Resumable but adapter returned no embed — offer manual retry.
+        setViewerState("Disconnected");
+        return false;
+      } catch (err: unknown) {
+        // Session no longer resumable (expired/ended/occupancy lost) → Error.
+        const message = err instanceof Error ? err.message : "Failed to reconnect viewer.";
+        setViewerState("Error");
+        setNotice({ type: "warning", message: `Viewer reconnect failed: ${message}` });
+        return false;
       }
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Failed to check resumability.";
-      setNotice({ type: "error", message });
-    } finally {
-      setResuming(false);
-    }
-  }, [activeSession]);
+    },
+    []
+  );
 
-  // ── Poll active session status ──
+  // ── Poll active session status + trading health (keeps both badges live) ──
   useEffect(() => {
     if (!activeSession) return;
     if (activeSession.state === "ended") return;
 
     const interval = setInterval(() => {
       fetchSessionStatus(activeSession.id);
+      fetchTradingHealth();
     }, 10000); // Poll every 10 seconds
 
     setPollInterval(interval);
@@ -562,13 +737,84 @@ export default function TerminalAccessPage() {
       clearInterval(interval);
       setPollInterval(null);
     };
-  }, [activeSession?.id, activeSession?.state, fetchSessionStatus]);
+  }, [activeSession?.id, activeSession?.state, fetchSessionStatus, fetchTradingHealth]);
 
-  // ── Initial fetch ──
+  // ── Keep a ref of the active session for event handlers ──
   useEffect(() => {
-    fetchBindings();
-    fetchCredStatus();
-  }, [fetchBindings, fetchCredStatus]);
+    activeSessionRef.current = activeSession;
+  }, [activeSession]);
+
+  // ── Bootstrap on page load (TASK 3) ──
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      fetchBindings();
+      fetchCredStatus();
+      const [th, session] = await Promise.all([fetchTradingHealth(), fetchActiveSession()]);
+      if (cancelled) return;
+      if (!session) {
+        setViewerState("Disconnected");
+        return;
+      }
+      setActiveSession(session);
+      const mt5 = session.latest_mt5_session;
+      const viewerEligible =
+        (session.state === "active" || session.state === "authorized") &&
+        !!mt5 &&
+        (mt5.state === "connected" || mt5.state === "launching");
+      if (!viewerEligible) {
+        setViewerState("Disconnected");
+        return;
+      }
+      // After a reload/navigation the live tunnel is almost always gone, even
+      // though the backend session is still active. Reconnect once if trading
+      // is healthy; otherwise present the Reconnect viewer button.
+      setViewerState("Disconnected");
+      if (tradingBucket(th) === "Healthy" && autoReconnectedRef.current !== session.id) {
+        autoReconnectedRef.current = session.id;
+        await reconnectViewer(session.id);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Tab visibility change (TASK 4) ──
+  useEffect(() => {
+    const onVisibility = async () => {
+      if (typeof document === "undefined") return;
+      if (document.hidden) {
+        wasHiddenRef.current = true;
+        // Tunnel drops while hidden — reflect that the viewer is no longer live.
+        // Trading status is intentionally left untouched.
+        setViewerState((s) => (s === "Connected" || s === "Connecting" ? "Disconnected" : s));
+        return;
+      }
+      // Became visible again: refresh BOTH trading and viewer/session state.
+      const th = await fetchTradingHealth();
+      const session = activeSessionRef.current;
+      if (!session) return;
+      const refreshed = await fetchSessionStatus(session.id);
+      const s = refreshed || session;
+      const mt5 = s.latest_mt5_session;
+      const viewerEligible =
+        (s.state === "active" || s.state === "authorized") &&
+        !!mt5 &&
+        (mt5.state === "connected" || mt5.state === "launching");
+      if (wasHiddenRef.current && viewerEligible) {
+        wasHiddenRef.current = false;
+        if (tradingBucket(th) === "Healthy") {
+          await reconnectViewer(s.id); // attempt reconnect once on return
+        } else {
+          setViewerState("Disconnected"); // viewer-only; trading shown separately
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [fetchTradingHealth, fetchActiveSession, fetchSessionStatus, reconnectViewer, fetchBindings, fetchCredStatus]);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -589,6 +835,9 @@ export default function TerminalAccessPage() {
       >
         Launch, monitor, and manage MT5 terminal sessions.
       </p>
+
+      {/* ── PX-7A: separated Trading vs Viewer status ── */}
+      <StatusHeader trading={tradingBucket(trading)} viewer={viewerState} />
 
       {/* ── Safety message ── */}
       <StateNotice type="info" message="This session is restricted to MT5 interaction only." />
@@ -658,27 +907,13 @@ export default function TerminalAccessPage() {
           session={activeSession}
           launchDescriptor={launchDescriptor}
           onTerminate={handleTerminate}
-          onResume={handleResume}
           terminating={terminating}
-          resuming={resuming}
+          trading={tradingBucket(trading)}
+          viewerState={viewerState}
+          viewerEpoch={viewerEpoch}
+          onReconnect={() => activeSession && reconnectViewer(activeSession.id)}
+          onViewerLoad={() => setViewerState((s) => (s === "Connecting" ? "Connected" : s))}
         />
-      )}
-
-      {/* ── Resume result card ── */}
-      {resumeResult && (
-        <div style={{ ...glassCard, marginBottom: "1rem" }}>
-          <div style={sectionHeader}>Resume Check Result</div>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" as const }}>
-            <Badge color={resumeResult.can_resume ? "green" : "red"}>
-              {resumeResult.can_resume ? "Resumable" : "Not Resumable"}
-            </Badge>
-            {resumeResult.access_mode && (
-              <span style={{ fontSize: "0.85rem", color: "#8fa0b7" }}>
-                Access mode: {humanize(resumeResult.access_mode)}
-              </span>
-            )}
-          </div>
-        </div>
       )}
 
       {/* ── Terminal bindings list ── */}
@@ -790,7 +1025,7 @@ export default function TerminalAccessPage() {
                         disabled
                         style={{ fontSize: "0.8rem", padding: "0.35rem 0.8rem" }}
                       >
-                        In Use
+                        Current session
                       </Button>
                     ) : (
                       <Button
@@ -799,7 +1034,7 @@ export default function TerminalAccessPage() {
                         onClick={() => handleLaunch(binding.id)}
                         style={{ fontSize: "0.8rem", padding: "0.35rem 0.8rem" }}
                       >
-                        {isLaunching ? "Launching..." : isAvailable ? "Launch" : "Unavailable"}
+                        {isLaunching ? "Launching..." : bindingActionLabel(binding.status)}
                       </Button>
                     )}
                   </div>

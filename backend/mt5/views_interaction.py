@@ -245,6 +245,35 @@ class SessionTerminateView(APIView):
         )
 
 
+class ActiveSessionView(APIView):
+    """
+    GET /api/mt5-interaction/sessions/active/
+
+    Return the authenticated user's current resumable interaction session
+    (state == "active", not ended, not expired), or null if none.
+
+    PX-7A / INCIDENT-001: lets the Terminal Access page re-discover an
+    existing session after a page reload / SPA navigation so the viewer can
+    be reconnected instead of the binding being mislabelled "Unavailable".
+
+    Read-only — delegates to the existing resume read service.  Creates no
+    sessions, mutates no lifecycle/occupancy, touches no trading/execution.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from mt5.services.session_resume_service import find_resumable_sessions
+
+        session = find_resumable_sessions(user_id=request.user.id).first()
+        if session is None:
+            return Response({"active_session": None})
+
+        return Response({
+            "active_session": InteractionSessionResponseSerializer(session).data,
+        })
+
+
 class TerminalBindingListView(APIView):
     """
     GET /api/mt5-interaction/terminal-bindings/

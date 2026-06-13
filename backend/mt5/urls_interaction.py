@@ -11,6 +11,7 @@ from .views_interaction import (
     SessionResumeView,
     SessionTerminateView,
     TerminalBindingListView,
+    ActiveSessionView,
 )
 
 urlpatterns = [
@@ -19,6 +20,13 @@ urlpatterns = [
         "sessions/",
         SessionLaunchView.as_view(),
         name="mt5-interaction-session-launch",
+    ),
+    # PX-7A: current resumable session for the user (read-only re-discovery).
+    # Declared before <int:pk> ("active" is not an int, but explicit is safer).
+    path(
+        "sessions/active/",
+        ActiveSessionView.as_view(),
+        name="mt5-interaction-session-active",
     ),
     path(
         "sessions/<int:pk>/",
