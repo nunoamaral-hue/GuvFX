@@ -42,6 +42,24 @@ def record_audit(actor, event: str, obj, **detail) -> AuditEvent:
     )
 
 
+def record_audit_ref(actor, event: str, *, object_type: str,
+                     object_id: int = 0, **detail) -> AuditEvent:
+    """Append an audit row for an object referenced by type/id only.
+
+    Same audit capability as :func:`record_audit`, for events about things that
+    are not (yet) persisted WIMS rows — e.g. a transient Signal Intelligence
+    Envelope before its ConsumptionContract exists (Phase 7A). ``object_id`` may
+    be 0 when the referent has no integer pk.
+    """
+    return AuditEvent.objects.create(
+        actor=actor,
+        event=event,
+        object_type=object_type,
+        object_id=object_id,
+        detail=detail,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Step 1 — Educational Topic (source)
 # ---------------------------------------------------------------------------

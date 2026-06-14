@@ -24,6 +24,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "users",
     "wims",
+    "intelligence",  # Phase 7A — GuvFX-side producer (no models; demo/tests)
 ]
 
 ROOT_URLCONF = "wims._demo_urls"
