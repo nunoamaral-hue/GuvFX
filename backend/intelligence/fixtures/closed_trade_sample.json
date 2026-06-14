@@ -1,0 +1,16 @@
+{
+  "ticket": "100245789",
+  "symbol": "EURUSD",
+  "side": "BUY",
+  "volume": "0.50",
+  "open_time": "2026-06-13T09:15:00Z",
+  "close_time": "2026-06-13T11:45:00Z",
+  "open_price": "1.10200",
+  "close_price": "1.10850",
+  "profit": "325.00",
+  "commission": "-4.00",
+  "swap": "-1.20",
+  "magic_number": 220614,
+  "comment": "wayond",
+  "signal_id": "WAYOND-2026-0613-007"
+}

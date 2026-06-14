@@ -24,11 +24,14 @@ from django.db import transaction
 from wims.models import AuditEvent, ConsumptionContract
 from wims.services import create_contract, record_audit_ref
 
-from .envelope import SignalIntelligenceEnvelope
+from .envelope import SignalIntelligenceEnvelope, TradeResultIntelligenceEnvelope
 from .producer import SignalIntelligenceProducer
+from .trade_result_producer import TradeResultProducer
 
 _ENVELOPE_TYPE = "SignalIntelligenceEnvelope"
 _SIGNAL_TYPE = "WayondSignal"
+_TR_ENVELOPE_TYPE = "TradeResultIntelligenceEnvelope"
+_TRADE_TYPE = "ClosedTrade"
 
 
 def _dec(value):
@@ -38,6 +41,13 @@ def _dec(value):
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _parse_dt(value):
+    from django.utils.dateparse import parse_datetime
+    if not value:
+        return None
+    return parse_datetime(value) if isinstance(value, str) else value
 
 
 @transaction.atomic
@@ -103,6 +113,78 @@ def deliver(envelope: SignalIntelligenceEnvelope, actor=None) -> ConsumptionCont
     )
 
     # 4 — envelope consumed (now a first-class persisted WIMS object)
+    record_audit_ref(
+        actor, AuditEvent.Event.ENVELOPE_CONSUMED,
+        object_type="ConsumptionContract", object_id=contract.pk,
+        intelligence_id=envelope.intelligence_id,
+    )
+    return contract
+
+
+# ---------------------------------------------------------------------------
+# Phase 7B — Trade Result Intelligence (closed trade -> envelope -> WIMS)
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def ingest_trade_result(trade, actor=None):
+    """Full producer + delivery path for one closed trade.
+
+    ``trade`` is a ``trading.models.Trade`` instance (authoritative source) or an
+    equivalent mapping. Returns ``(envelope, contract)``. Atomic.
+    """
+    envelope = TradeResultProducer().produce(trade)
+
+    # 1 — trade detected (a closed trade was found in GuvFX trade history)
+    record_audit_ref(
+        actor, AuditEvent.Event.TRADE_DETECTED,
+        object_type=_TRADE_TYPE, object_id=0,
+        intelligence_id=envelope.intelligence_id,
+        trade_id=envelope.structured_payload.trade_id,
+        source=envelope.source,
+    )
+    # 2 — envelope created (immutable intelligence artefact)
+    record_audit_ref(
+        actor, AuditEvent.Event.ENVELOPE_CREATED,
+        object_type=_TR_ENVELOPE_TYPE, object_id=0,
+        intelligence_id=envelope.intelligence_id, version=envelope.version,
+        intelligence_type=envelope.intelligence_type,
+    )
+    # 3 + 4 — deliver and consume
+    contract = deliver_trade_result(envelope, actor=actor)
+    return envelope, contract
+
+
+@transaction.atomic
+def deliver_trade_result(envelope: TradeResultIntelligenceEnvelope,
+                         actor=None) -> ConsumptionContract:
+    """Deliver a trade-result envelope to WIMS and consume it as a contract."""
+    p = envelope.structured_payload
+
+    # 3 — envelope delivered (handed across the GuvFX -> WIMS boundary)
+    record_audit_ref(
+        actor, AuditEvent.Event.ENVELOPE_DELIVERED,
+        object_type=_TR_ENVELOPE_TYPE, object_id=0,
+        intelligence_id=envelope.intelligence_id, trade_id=p.trade_id,
+    )
+
+    # WIMS consumes via the existing WP-3 TRADE_RESULT path (unchanged service).
+    contract = create_contract(
+        actor=actor,
+        source_type=ConsumptionContract.SourceType.TRADE_RESULT,
+        source_reference=f"intelligence:{envelope.intelligence_id}",
+        symbol=p.market,
+        direction=p.direction,
+        # entry/exit price are not part of the trade-result envelope payload
+        # (it carries pnl/pips/outcome); the full envelope is kept in raw_signal.
+        result_type=p.outcome,
+        profit_loss=_dec(p.pnl),
+        pips=_dec(p.pips),
+        close_time=_parse_dt(p.close_time),
+        commentary=p.summary,
+        tags=["trade-result", p.outcome.lower()] if p.outcome else ["trade-result"],
+        raw_signal=json.dumps(envelope.to_dict()),
+    )
+
+    # 4 — envelope consumed
     record_audit_ref(
         actor, AuditEvent.Event.ENVELOPE_CONSUMED,
         object_type="ConsumptionContract", object_id=contract.pk,

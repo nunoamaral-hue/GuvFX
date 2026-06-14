@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 INTELLIGENCE_TYPE_SIGNAL = "SIGNAL"
+INTELLIGENCE_TYPE_TRADE_RESULT = "TRADE_RESULT"
 ENVELOPE_VERSION = "1.0"
 
 
@@ -54,4 +55,44 @@ class SignalIntelligenceEnvelope:
 
     def to_dict(self) -> dict:
         """Serialise the full envelope (header + structured payload)."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TradeResultPayload:
+    """Structured trade-result payload (immutable). Phase 7B.
+
+    Descriptive outcome metadata of a *closed* trade — not a trade/execution
+    record. ``signal_id`` may be empty when the closed trade carries no signal
+    linkage.
+    """
+
+    trade_id: str
+    signal_id: str
+    market: str
+    direction: str
+    open_time: str
+    close_time: str
+    duration: str
+    pnl: str
+    pips: str
+    outcome: str
+    confidence: str
+    summary: str
+
+
+@dataclass(frozen=True)
+class TradeResultIntelligenceEnvelope:
+    """Immutable intelligence envelope wrapping a single closed-trade result."""
+
+    intelligence_id: str
+    source: str
+    timestamp: str
+    confidence: str
+    summary: str
+    structured_payload: TradeResultPayload
+    intelligence_type: str = INTELLIGENCE_TYPE_TRADE_RESULT
+    version: str = ENVELOPE_VERSION
+
+    def to_dict(self) -> dict:
         return asdict(self)

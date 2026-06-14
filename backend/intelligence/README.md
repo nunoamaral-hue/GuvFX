@@ -1,46 +1,57 @@
-# intelligence — GuvFX Signal Intelligence Producer (Phase 7A)
+# intelligence — GuvFX Intelligence Producer (Phase 7A / 7B)
 
 GuvFX-side intelligence **producer** (ADR-009: *GuvFX creates intelligence,
-WIMS consumes it*). This app packages an existing **Wayond signal** into an
-immutable **Signal Intelligence Envelope** and delivers it into the existing
-WIMS consumption pipeline. Wayond is the only source for this phase.
+WIMS consumes it*). This app packages authoritative GuvFX inputs into immutable
+intelligence **envelopes** and delivers them into the existing WIMS consumption
+pipeline.
 
-This phase is **packaging + delivery, not signal generation** — the producer
-never invents a signal, it wraps one it is given.
+- **Phase 7A** — Wayond signal → Signal Intelligence Envelope (Wayond only).
+- **Phase 7B** — closed trade → Trade Result Intelligence Envelope.
 
-## Flow
+Both are **packaging + delivery, not generation/execution** — the producer
+never invents a signal nor opens/closes a trade; it wraps inputs it is given.
+
+## Flows
 
 ```
 Wayond Signal (external)
-  → Signal Intelligence Envelope (immutable, version=1.0)
+  → Signal Intelligence Envelope (SIGNAL, v1.0)
   → WIMS Consumption Contract (source_type=WAYOND)
-  → existing WIMS pipeline (context → content → review → publish)
+  → existing WIMS pipeline
+
+Closed Trade (trading.models.Trade)
+  → Trade Result Intelligence Envelope (TRADE_RESULT, v1.0)
+  → WIMS Consumption Contract (source_type=TRADE_RESULT)
+  → existing WIMS pipeline
 ```
 
 ## Components (no persistence models)
 
-- `envelope.py` — `SignalIntelligenceEnvelope` + `SignalPayload`, **frozen
-  dataclasses** (immutable after creation). Header: `intelligence_id`,
-  `intelligence_type=SIGNAL`, `version="1.0"`, `source`, `timestamp`,
-  `confidence`, `summary`, `structured_payload`. No registry.
-- `producer.py` — `SignalIntelligenceProducer.produce(signal)` → envelope (pure;
-  no I/O/persistence/audit).
-- `delivery.py` — `ingest_wayond_signal(signal, actor)` runs the full audited
-  path and returns `(envelope, contract)`. `deliver(envelope, actor)` is the
-  GuvFX→WIMS boundary crossing; it consumes the envelope via the **unchanged**
-  `wims.services.create_contract`.
+- `envelope.py` — frozen, immutable envelopes + payloads (`Signal*` and
+  `TradeResult*`). Header: `intelligence_id`, `intelligence_type`,
+  `version="1.0"`, `source`, `timestamp`, `confidence`, `summary`,
+  `structured_payload`. No registry.
+- `producer.py` — `SignalIntelligenceProducer.produce(signal)` (7A, pure).
+- `trade_result_producer.py` — `TradeResultProducer.produce(trade)` (7B, pure).
+  Accepts a `trading.models.Trade` instance (authoritative source) or an
+  equivalent mapping; requires a *closed* trade; derives outcome/pnl/pips.
+- `delivery.py` — `ingest_wayond_signal` (7A) and `ingest_trade_result` (7B) run
+  the full audited path and return `(envelope, contract)`. The deliver functions
+  are the GuvFX→WIMS boundary crossing; they consume via the **unchanged**
+  `wims.services.create_contract` (WAYOND / WP-3 TRADE_RESULT paths).
 
-The envelope is **transient** — it is never persisted as its own object. The
-first persisted artefact is the WIMS `ConsumptionContract`.
+The envelope is **transient** — never persisted as its own object. The first
+persisted artefact is the WIMS `ConsumptionContract`.
 
 ## Audit (reuses existing WIMS capability)
 
-No new audit framework, no `IntelligenceAuditRecord`. Four lifecycle events are
-recorded via the existing `wims` audit (`AuditEvent` + `record_audit_ref`),
-correlated by `intelligence_id`:
+No new audit framework, no `IntelligenceAuditRecord`. Four lifecycle events per
+run are recorded via the existing `wims` audit (`AuditEvent` +
+`record_audit_ref`), correlated by `intelligence_id`:
 
 ```
-SIGNAL_RECEIVED → ENVELOPE_CREATED → ENVELOPE_DELIVERED → ENVELOPE_CONSUMED
+7A:  SIGNAL_RECEIVED → ENVELOPE_CREATED → ENVELOPE_DELIVERED → ENVELOPE_CONSUMED
+7B:  TRADE_DETECTED  → ENVELOPE_CREATED → ENVELOPE_DELIVERED → ENVELOPE_CONSUMED
 ```
 
 (plus WIMS' own `CONTRACT_CREATED` at consumption).
@@ -63,11 +74,14 @@ DJANGO_SETTINGS_MODULE=wims._demo_settings python manage.py produce_wayond_signa
 DJANGO_SETTINGS_MODULE=wims._demo_settings python manage.py test wims intelligence
 ```
 
-`produce_wayond_signal` reads a Wayond signal (default fixture
-`intelligence/fixtures/wayond_signal_sample.json`, or `--fixture` / `--signal`),
-produces + delivers the envelope, runs the existing WIMS pipeline, prints the
-five evidence points + audit trail, and ends in `PASS`. `--no-pipeline` stops
-after consumption.
+`produce_wayond_signal` (7A) reads a Wayond signal (default fixture
+`intelligence/fixtures/wayond_signal_sample.json`, or `--fixture` / `--signal`).
+`produce_trade_result` (7B) reads a closed trade — in production via
+`--ticket <t> [--account <id>]` from the real `trading.models.Trade`; offline via
+the default fixture `intelligence/fixtures/closed_trade_sample.json` (or
+`--fixture`/`--trade`). Both produce + deliver the envelope, run the existing
+WIMS pipeline, print the five evidence points + audit trail, and end in `PASS`.
+`--no-pipeline` stops after consumption.
 
-In deployment, run against Postgres unchanged (ORM-only): `python manage.py
-migrate wims && python manage.py produce_wayond_signal`.
+In deployment, run against Postgres unchanged (ORM-only), e.g.
+`python manage.py migrate wims && python manage.py produce_trade_result --ticket <t>`.
