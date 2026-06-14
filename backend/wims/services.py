@@ -63,11 +63,18 @@ def create_contract(*, symbol: str = "", direction: str = "", actor=None,
                     source_type: str = ConsumptionContract.SourceType.WAYOND,
                     source_reference: str = "", signal_type: str = "",
                     entry_price=None, stop_loss=None, take_profit=None,
-                    confidence=None, raw_signal: str = "") -> ConsumptionContract:
+                    confidence=None, raw_signal: str = "",
+                    # WP-3 — trade-result fields (used when source_type=TRADE_RESULT)
+                    exit_price=None, result_type: str = "", profit_loss=None,
+                    pips=None, close_time=None, commentary: str = "",
+                    tags=None) -> ConsumptionContract:
     """Record externally-sourced intelligence as a consumption contract.
 
-    This does NOT create a Signal/Trade/Execution object; WIMS only persists the
-    contract describing the intelligence it received (ADR-009 boundary).
+    Source-type agnostic: handles Wayond entry signals (WP-2) and external trade
+    results (WP-3). This does NOT create a Signal / Trade / Position / Deal /
+    Execution object; WIMS only persists the contract describing the
+    intelligence it received (ADR-009 boundary). The trade-result fields are
+    descriptive content-generation input, not a settled trade record.
     """
     contract = ConsumptionContract.objects.create(
         source_type=source_type,
@@ -81,10 +88,18 @@ def create_contract(*, symbol: str = "", direction: str = "", actor=None,
         take_profit=take_profit,
         confidence=confidence,
         raw_signal=raw_signal,
+        exit_price=exit_price,
+        result_type=result_type,
+        profit_loss=profit_loss,
+        pips=pips,
+        close_time=close_time,
+        commentary=commentary,
+        tags=tags if tags is not None else [],
         status=ConsumptionContract.Status.RECEIVED,
     )
     record_audit(actor, AuditEvent.Event.CONTRACT_CREATED, contract,
-                 source_type=source_type, symbol=symbol, direction=direction)
+                 source_type=source_type, symbol=symbol, direction=direction,
+                 result_type=result_type or None)
     return contract
 
 

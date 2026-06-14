@@ -47,11 +47,11 @@ class ConsumptionContractAdmin(admin.ModelAdmin):
     """Manual consumption-contract entry (WP-2 D5) + contract→context action (D2)."""
 
     list_display = (
-        "id", "source_type", "symbol", "direction", "status",
+        "id", "source_type", "symbol", "direction", "result_type", "status",
         "workflow_state", "created_by", "created_at",
     )
-    list_filter = ("status", "source_type", "direction")
-    search_fields = ("symbol", "source_reference", "raw_signal")
+    list_filter = ("status", "source_type", "direction", "result_type")
+    search_fields = ("symbol", "source_reference", "raw_signal", "commentary")
     readonly_fields = ("created_at",)
     actions = ("action_generate_context",)
 

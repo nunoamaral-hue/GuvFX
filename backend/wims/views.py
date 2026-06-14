@@ -60,9 +60,11 @@ class EducationalTopicViewSet(viewsets.ModelViewSet):
 
 
 class ConsumptionContractViewSet(viewsets.ModelViewSet):
-    """WP-2 — manual consumption-contract entry (D5) + contract→context (D2).
+    """Manual consumption-contract entry + contract→context.
 
-    No automation/polling/webhooks: contracts are created by an operator.
+    Source-type agnostic: Wayond entry signals (WP-2) and external trade results
+    (WP-3, ``source_type=TRADE_RESULT``). No automation/polling/webhooks —
+    contracts are created by an operator from transient external intelligence.
     """
 
     queryset = ConsumptionContract.objects.all()
@@ -84,6 +86,14 @@ class ConsumptionContractViewSet(viewsets.ModelViewSet):
             take_profit=v.get("take_profit"),
             confidence=v.get("confidence"),
             raw_signal=v.get("raw_signal", ""),
+            # WP-3 — trade-result fields
+            exit_price=v.get("exit_price"),
+            result_type=v.get("result_type", ""),
+            profit_loss=v.get("profit_loss"),
+            pips=v.get("pips"),
+            close_time=v.get("close_time"),
+            commentary=v.get("commentary", ""),
+            tags=v.get("tags"),
         )
         serializer.instance = contract
 

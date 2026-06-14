@@ -212,11 +212,102 @@ class WayondSignalFlowTests(TestCase):
             Context.objects.create(context_text="orphan")
 
     def test_no_prohibited_object_types_persisted(self):
-        # ADR-009: wims must not define Signal/Trade/MT5/Broker/Execution models.
+        # ADR-009: wims must not define Trade/Position/Deal/MT5/Broker/Execution/Signal models.
         from django.apps import apps
         names = [m.__name__.lower() for m in apps.get_app_config("wims").get_models()]
-        for banned in ("signal", "trade", "mt5", "broker", "execution"):
+        for banned in ("signal", "trade", "position", "deal", "mt5", "broker", "execution"):
             self.assertFalse(
                 any(banned in n for n in names),
                 f"prohibited model type {banned!r} found in wims: {names}",
             )
+
+
+class TradeResultFlowTests(TestCase):
+    """WP-3 acceptance tests — Trade Result consumed via the existing pipeline."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="op3", email="op3@example.invalid", password="x"
+        )
+
+    def _make_trade_result_contract(self):
+        return services.create_contract(
+            actor=self.user,
+            source_type=ConsumptionContract.SourceType.TRADE_RESULT,
+            source_reference="trade-result:test",
+            symbol="EURUSD",
+            direction=ConsumptionContract.Direction.BUY,
+            entry_price=Decimal("1.1020"),
+            exit_price=Decimal("1.1085"),
+            result_type=ConsumptionContract.ResultType.WIN,
+            profit_loss=Decimal("650.00"),
+            pips=Decimal("65.0"),
+            tags=["eurusd", "win"],
+            raw_signal='{"symbol": "EURUSD"}',
+        )
+
+    def test_trade_result_fields_persist_on_contract(self):
+        c = self._make_trade_result_contract()
+        c.refresh_from_db()
+        self.assertEqual(c.source_type, ConsumptionContract.SourceType.TRADE_RESULT)
+        self.assertEqual(c.result_type, ConsumptionContract.ResultType.WIN)
+        self.assertEqual(c.exit_price, Decimal("1.1085000000"))
+        self.assertEqual(c.profit_loss, Decimal("650.00"))
+        self.assertEqual(c.pips, Decimal("65.00"))
+        self.assertEqual(c.tags, ["eurusd", "win"])
+
+    def test_trade_result_end_to_end(self):
+        contract = self._make_trade_result_contract()
+        self.assertEqual(
+            services.workflow_state_for_contract(contract), WorkflowState.AWAITING_CONTEXT
+        )
+        ctx = services.create_context_from_contract(
+            contract=contract, context_text="educational, neutral", actor=self.user
+        )
+        contract.refresh_from_db()
+        self.assertEqual(contract.status, ConsumptionContract.Status.PROCESSED)
+        self.assertEqual(ctx.contract_id, contract.id)
+
+        content = services.create_content(
+            context=ctx, title="t", content_text="neutral education", actor=self.user
+        )
+        services.submit_for_review(content=content, actor=self.user)
+        services.review_content(
+            content=content, decision=Review.Decision.APPROVE, reviewer=self.user
+        )
+        services.publish_content(
+            content=content, channel=Publish.Channel.TELEGRAM, publisher=self.user
+        )
+        content.refresh_from_db()
+        self.assertEqual(content.status, Content.Status.PUBLISHED)
+        self.assertEqual(
+            services.workflow_state_for_contract(contract), WorkflowState.PUBLISHED
+        )
+
+        # Audit covers contract -> context -> processed -> content -> review -> publish
+        events = list(
+            AuditEvent.objects.filter(
+                object_id__in={contract.id, ctx.id, content.id}
+            ).values_list("event", flat=True)
+        )
+        for expected in (
+            AuditEvent.Event.CONTRACT_CREATED,
+            AuditEvent.Event.CONTEXT_CREATED,
+            AuditEvent.Event.CONTRACT_PROCESSED,
+            AuditEvent.Event.CONTENT_CREATED,
+            AuditEvent.Event.SUBMITTED_FOR_REVIEW,
+            AuditEvent.Event.REVIEW_DECISION,
+            AuditEvent.Event.PUBLISHED,
+        ):
+            self.assertIn(expected, events)
+
+    def test_demo_command_runs_and_passes(self):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command("wp3_demo", stdout=out, stderr=StringIO())
+        output = out.getvalue()
+        self.assertIn("PASS", output)
+        self.assertIn("ADR-009 boundary OK", output)
+        # One contract persisted, no rogue object types.
+        self.assertEqual(ConsumptionContract.objects.count(), 1)

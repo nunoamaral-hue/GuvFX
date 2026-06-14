@@ -82,6 +82,7 @@ class ConsumptionContract(models.Model):
     class SourceType(models.TextChoices):
         WAYOND = "WAYOND", "Wayond"
         MANUAL = "MANUAL", "Manual entry"
+        TRADE_RESULT = "TRADE_RESULT", "Trade result"  # WP-3 — external outcome intel
 
     class SignalType(models.TextChoices):
         ENTRY = "ENTRY", "Entry"
@@ -91,6 +92,11 @@ class ConsumptionContract(models.Model):
     class Direction(models.TextChoices):
         BUY = "BUY", "Buy"
         SELL = "SELL", "Sell"
+
+    class ResultType(models.TextChoices):  # WP-3 — outcome category of a trade result
+        WIN = "WIN", "Win"
+        LOSS = "LOSS", "Loss"
+        BREAKEVEN = "BREAKEVEN", "Breakeven"
 
     class Status(models.TextChoices):
         RECEIVED = "RECEIVED", "Received"
@@ -133,6 +139,26 @@ class ConsumptionContract(models.Model):
         max_digits=5, decimal_places=2, null=True, blank=True,
         help_text="Reported confidence of the source intelligence, 0–100.",
     )
+    # --- WP-3: trade-result intelligence (descriptive only; NOT a trade record).
+    # Populated when source_type == TRADE_RESULT. All optional so WAYOND/MANUAL
+    # entry contracts are unaffected.
+    exit_price = models.DecimalField(
+        max_digits=20, decimal_places=8, null=True, blank=True
+    )
+    result_type = models.CharField(
+        max_length=12, choices=ResultType.choices, blank=True
+    )
+    profit_loss = models.DecimalField(
+        max_digits=20, decimal_places=2, null=True, blank=True,
+        help_text="Reported P/L of the source result (account currency). "
+                  "Descriptive metadata, not a settled deal.",
+    )
+    pips = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    close_time = models.DateTimeField(null=True, blank=True)
+    commentary = models.TextField(blank=True)
+    tags = models.JSONField(default=list, blank=True)
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.RECEIVED
     )
