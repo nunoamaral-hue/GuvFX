@@ -1,0 +1,15 @@
+{
+  "source_type": "TRADE_RESULT",
+  "source_reference": "trade-result:demo-eurusd-001",
+  "symbol": "EURUSD",
+  "direction": "BUY",
+  "entry_price": "1.1020",
+  "exit_price": "1.1085",
+  "result_type": "WIN",
+  "profit_loss": "650.00",
+  "pips": "65.0",
+  "close_time": "2026-06-14T08:30:00Z",
+  "confidence": "80",
+  "commentary": "Position closed at target. External intelligence only.",
+  "tags": ["eurusd", "win", "demo"]
+}
