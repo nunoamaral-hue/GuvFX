@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "execution",  # NEW
     "hosting",
     "mt5",
+    "wims",  # WP-1 — Educational Content Flow (logically separate per ADR-009)
 ]
 
 MIDDLEWARE = [
