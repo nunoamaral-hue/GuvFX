@@ -12,13 +12,14 @@ from django.core.exceptions import ValidationError
 from . import services
 from .models import (
     AuditEvent,
+    ConsumptionContract,
     Content,
     Context,
     EducationalTopic,
     Publish,
     Review,
 )
-from .services import workflow_state_for_topic
+from .services import workflow_state_for_contract, workflow_state_for_topic
 
 
 class ContextInline(admin.TabularInline):
@@ -41,12 +42,62 @@ class EducationalTopicAdmin(admin.ModelAdmin):
         return workflow_state_for_topic(obj)
 
 
+@admin.register(ConsumptionContract)
+class ConsumptionContractAdmin(admin.ModelAdmin):
+    """Manual consumption-contract entry (WP-2 D5) + contract→context action (D2)."""
+
+    list_display = (
+        "id", "source_type", "symbol", "direction", "status",
+        "workflow_state", "created_by", "created_at",
+    )
+    list_filter = ("status", "source_type", "direction")
+    search_fields = ("symbol", "source_reference", "raw_signal")
+    readonly_fields = ("created_at",)
+    actions = ("action_generate_context",)
+
+    @admin.display(description="Workflow state")
+    def workflow_state(self, obj: ConsumptionContract) -> str:
+        return workflow_state_for_contract(obj)
+
+    @admin.action(description="Generate educational Context from selected contract(s)")
+    def action_generate_context(self, request, queryset):
+        done = 0
+        for contract in queryset:
+            try:
+                services.create_context_from_contract(
+                    contract=contract,
+                    context_text=(
+                        "Educational context (placeholder — edit before content). "
+                        "Explain the market/instrument involved, what the order "
+                        "direction means as a concept, and what stop-loss and "
+                        "take-profit levels are. Neutral and educational only; no "
+                        "trade recommendation or signal validation."
+                    ),
+                    actor=request.user,
+                )
+                done += 1
+            except ValidationError as exc:
+                self.message_user(
+                    request, f"Contract #{contract.pk}: {exc.messages[0]}",
+                    level=messages.ERROR,
+                )
+        if done:
+            self.message_user(
+                request, f"Generated context for {done} contract(s).",
+                level=messages.SUCCESS,
+            )
+
+
 @admin.register(Context)
 class ContextAdmin(admin.ModelAdmin):
-    list_display = ("id", "source", "status", "created_by", "created_at")
+    list_display = ("id", "origin", "source", "contract", "status", "created_by", "created_at")
     list_filter = ("status",)
     search_fields = ("context_text",)
     readonly_fields = ("created_at",)
+
+    @admin.display(description="Origin")
+    def origin(self, obj: Context):
+        return obj.origin
 
 
 @admin.register(Content)

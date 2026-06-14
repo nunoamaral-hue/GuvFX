@@ -2,13 +2,14 @@ from rest_framework import serializers
 
 from .models import (
     AuditEvent,
+    ConsumptionContract,
     Content,
     Context,
     EducationalTopic,
     Publish,
     Review,
 )
-from .services import workflow_state_for_topic
+from .services import workflow_state_for_contract, workflow_state_for_topic
 
 
 class EducationalTopicSerializer(serializers.ModelSerializer):
@@ -26,11 +27,27 @@ class EducationalTopicSerializer(serializers.ModelSerializer):
         return workflow_state_for_topic(obj)
 
 
+class ConsumptionContractSerializer(serializers.ModelSerializer):
+    workflow_state = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ConsumptionContract
+        fields = (
+            "id", "source_type", "source_reference", "signal_type", "symbol",
+            "direction", "entry_price", "stop_loss", "take_profit", "confidence",
+            "status", "raw_signal", "workflow_state", "created_by", "created_at",
+        )
+        read_only_fields = ("status", "created_by", "created_at")
+
+    def get_workflow_state(self, obj) -> str:
+        return workflow_state_for_contract(obj)
+
+
 class ContextSerializer(serializers.ModelSerializer):
     class Meta:
         model = Context
         fields = (
-            "id", "source", "context_text", "status",
+            "id", "source", "contract", "context_text", "status",
             "created_by", "created_at",
         )
         read_only_fields = ("created_by", "created_at", "status")
@@ -84,3 +101,8 @@ class ReviewActionSerializer(serializers.Serializer):
 
 class PublishActionSerializer(serializers.Serializer):
     channel = serializers.ChoiceField(choices=Publish.Channel.choices)
+
+
+class ContractToContextSerializer(serializers.Serializer):
+    """Payload for generating a Context from a ConsumptionContract (WP-2)."""
+    context_text = serializers.CharField()

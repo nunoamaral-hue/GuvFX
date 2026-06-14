@@ -21,6 +21,7 @@ from django.db import transaction
 
 from .models import (
     AuditEvent,
+    ConsumptionContract,
     Content,
     Context,
     EducationalTopic,
@@ -55,7 +56,40 @@ def create_topic(*, title: str, description: str = "", actor=None,
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — Context
+# Step 1b (WP-2) — Consumption Contract (first WIMS-side object)
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def create_contract(*, symbol: str = "", direction: str = "", actor=None,
+                    source_type: str = ConsumptionContract.SourceType.WAYOND,
+                    source_reference: str = "", signal_type: str = "",
+                    entry_price=None, stop_loss=None, take_profit=None,
+                    confidence=None, raw_signal: str = "") -> ConsumptionContract:
+    """Record externally-sourced intelligence as a consumption contract.
+
+    This does NOT create a Signal/Trade/Execution object; WIMS only persists the
+    contract describing the intelligence it received (ADR-009 boundary).
+    """
+    contract = ConsumptionContract.objects.create(
+        source_type=source_type,
+        source_reference=source_reference,
+        created_by=actor,
+        signal_type=signal_type,
+        symbol=symbol,
+        direction=direction,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        confidence=confidence,
+        raw_signal=raw_signal,
+        status=ConsumptionContract.Status.RECEIVED,
+    )
+    record_audit(actor, AuditEvent.Event.CONTRACT_CREATED, contract,
+                 source_type=source_type, symbol=symbol, direction=direction)
+    return contract
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — Context (from a topic [WP-1] or a consumption contract [WP-2])
 # ---------------------------------------------------------------------------
 @transaction.atomic
 def create_context(*, topic: EducationalTopic, context_text: str, actor=None,
@@ -66,6 +100,35 @@ def create_context(*, topic: EducationalTopic, context_text: str, actor=None,
         source=topic, context_text=context_text, created_by=actor, status=status
     )
     record_audit(actor, AuditEvent.Event.CONTEXT_CREATED, ctx, source_id=topic.pk)
+    return ctx
+
+
+@transaction.atomic
+def create_context_from_contract(
+    *, contract: ConsumptionContract, context_text: str, actor=None,
+    status: str = Context.Status.READY_FOR_CONTENT,
+) -> Context:
+    """Deliverable 2 (WP-2) — turn a consumption contract into educational Context.
+
+    Marks the contract PROCESSED and emits CONTRACT_PROCESSED. The resulting
+    Context feeds the identical, unchanged WP-1 Content → Review → Publish flow.
+    """
+    if contract.status == ConsumptionContract.Status.ARCHIVED:
+        raise ValidationError("Cannot create context for an archived contract.")
+    if contract.status == ConsumptionContract.Status.PROCESSED:
+        raise ValidationError("Contract has already been processed into context.")
+
+    ctx = Context.objects.create(
+        contract=contract, context_text=context_text, created_by=actor,
+        status=status,
+    )
+    record_audit(actor, AuditEvent.Event.CONTEXT_CREATED, ctx,
+                 contract_id=contract.pk)
+
+    contract.status = ConsumptionContract.Status.PROCESSED
+    contract.save(update_fields=["status"])
+    record_audit(actor, AuditEvent.Event.CONTRACT_PROCESSED, contract,
+                 context_id=ctx.pk)
     return ctx
 
 
@@ -184,4 +247,24 @@ def workflow_state_for_topic(topic: EducationalTopic) -> str:
     if not has_context:
         return WorkflowState.AWAITING_CONTEXT
     # Context exists but no content past draft yet.
+    return WorkflowState.AWAITING_CONTENT
+
+
+def workflow_state_for_contract(contract: ConsumptionContract) -> str:
+    """Operator-facing pipeline stage for a consumption contract (WP-2)."""
+    if contract.status == ConsumptionContract.Status.ARCHIVED:
+        return WorkflowState.ARCHIVED
+
+    contents = list(
+        Content.objects.filter(context__contract=contract).order_by("-created_at")
+    )
+    if any(c.status == Content.Status.PUBLISHED for c in contents):
+        return WorkflowState.PUBLISHED
+    if any(c.status == Content.Status.APPROVED for c in contents):
+        return WorkflowState.AWAITING_PUBLISH
+    if any(c.status == Content.Status.READY_FOR_REVIEW for c in contents):
+        return WorkflowState.AWAITING_REVIEW
+
+    if not Context.objects.filter(contract=contract).exists():
+        return WorkflowState.AWAITING_CONTEXT
     return WorkflowState.AWAITING_CONTENT

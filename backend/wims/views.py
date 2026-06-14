@@ -15,11 +15,19 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from . import services
-from .models import AuditEvent, Content, Context, EducationalTopic
+from .models import (
+    AuditEvent,
+    ConsumptionContract,
+    Content,
+    Context,
+    EducationalTopic,
+)
 from .serializers import (
     AuditEventSerializer,
+    ConsumptionContractSerializer,
     ContentSerializer,
     ContextSerializer,
+    ContractToContextSerializer,
     EducationalTopicSerializer,
     PublishActionSerializer,
     PublishSerializer,
@@ -49,6 +57,47 @@ class EducationalTopicViewSet(viewsets.ModelViewSet):
             actor=self.request.user,
         )
         serializer.instance = topic
+
+
+class ConsumptionContractViewSet(viewsets.ModelViewSet):
+    """WP-2 — manual consumption-contract entry (D5) + contract→context (D2).
+
+    No automation/polling/webhooks: contracts are created by an operator.
+    """
+
+    queryset = ConsumptionContract.objects.all()
+    serializer_class = ConsumptionContractSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer):
+        v = serializer.validated_data
+        contract = _svc(
+            services.create_contract,
+            actor=self.request.user,
+            source_type=v.get("source_type", ConsumptionContract.SourceType.WAYOND),
+            source_reference=v.get("source_reference", ""),
+            signal_type=v.get("signal_type", ""),
+            symbol=v.get("symbol", ""),
+            direction=v.get("direction", ""),
+            entry_price=v.get("entry_price"),
+            stop_loss=v.get("stop_loss"),
+            take_profit=v.get("take_profit"),
+            confidence=v.get("confidence"),
+            raw_signal=v.get("raw_signal", ""),
+        )
+        serializer.instance = contract
+
+    @action(detail=True, methods=["post"], url_path="generate-context")
+    def generate_context(self, request, pk=None):
+        payload = ContractToContextSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        ctx = _svc(
+            services.create_context_from_contract,
+            contract=self.get_object(),
+            context_text=payload.validated_data["context_text"],
+            actor=request.user,
+        )
+        return Response(ContextSerializer(ctx).data, status=status.HTTP_201_CREATED)
 
 
 class ContextViewSet(viewsets.ModelViewSet):

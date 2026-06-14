@@ -65,11 +65,96 @@ class EducationalTopic(models.Model):
         return f"[{self.status}] {self.title}"
 
 
-class Context(models.Model):
-    """Deliverable 2 — educational context derived from a topic.
+class ConsumptionContract(models.Model):
+    """Deliverable 1 (WP-2) — intelligence handed to WIMS for education.
 
-    Transforms the source topic into the "why it matters / common mistakes /
-    what traders should understand" framing that feeds content generation.
+    The first WIMS-side persisted object in the signal-sourced flow. This is a
+    *consumption contract*, NOT a Signal / Trade / Execution object: WIMS records
+    the externally-sourced intelligence it has *received* so it can produce
+    educational context and content. WIMS never acts on it, never trades it, and
+    never persists Signal / Trade / MT5 / Broker / Execution objects (ADR-009:
+    "WIMS never trades"). The price/direction fields are descriptive metadata of
+    the received intelligence, not an executable order.
+
+    ``contract_id`` is the model primary key (``id``).
+    """
+
+    class SourceType(models.TextChoices):
+        WAYOND = "WAYOND", "Wayond"
+        MANUAL = "MANUAL", "Manual entry"
+
+    class SignalType(models.TextChoices):
+        ENTRY = "ENTRY", "Entry"
+        EXIT = "EXIT", "Exit"
+        UPDATE = "UPDATE", "Update"
+
+    class Direction(models.TextChoices):
+        BUY = "BUY", "Buy"
+        SELL = "SELL", "Sell"
+
+    class Status(models.TextChoices):
+        RECEIVED = "RECEIVED", "Received"
+        PROCESSED = "PROCESSED", "Processed"
+        ARCHIVED = "ARCHIVED", "Archived"
+
+    source_type = models.CharField(
+        max_length=16, choices=SourceType.choices, default=SourceType.WAYOND
+    )
+    source_reference = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="External provenance only (e.g. provider name, message id). "
+                  "Not a broker/execution reference.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="wims_contracts",
+    )
+    signal_type = models.CharField(
+        max_length=16, choices=SignalType.choices, blank=True
+    )
+    symbol = models.CharField(max_length=32, blank=True)
+    direction = models.CharField(
+        max_length=8, choices=Direction.choices, blank=True
+    )
+    entry_price = models.DecimalField(
+        max_digits=20, decimal_places=8, null=True, blank=True
+    )
+    stop_loss = models.DecimalField(
+        max_digits=20, decimal_places=8, null=True, blank=True
+    )
+    take_profit = models.DecimalField(
+        max_digits=20, decimal_places=8, null=True, blank=True
+    )
+    confidence = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Reported confidence of the source intelligence, 0–100.",
+    )
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.RECEIVED
+    )
+    raw_signal = models.TextField(
+        blank=True, help_text="Verbatim external input as received."
+    )
+
+    class Meta:
+        ordering = ("-created_at",)
+        verbose_name = "Consumption contract"
+
+    def __str__(self) -> str:
+        sym = self.symbol or "?"
+        return f"Contract #{self.pk} {self.direction} {sym} [{self.status}]"
+
+
+class Context(models.Model):
+    """Deliverable 2 — educational context.
+
+    Originates from EITHER an ``EducationalTopic`` (WP-1) or a
+    ``ConsumptionContract`` (WP-2). Exactly one origin is set; the Content /
+    Review / Publish flow downstream is identical regardless of origin.
     """
 
     class Status(models.TextChoices):
@@ -77,11 +162,23 @@ class Context(models.Model):
         READY_FOR_CONTENT = "READY_FOR_CONTENT", "Ready for content"
         ARCHIVED = "ARCHIVED", "Archived"
 
-    # FK column name is ``source_id`` per the WP "source_id" field spec.
+    # WP-1 origin (topic). FK column ``source_id``. Now nullable so a Context
+    # can instead originate from a ConsumptionContract (WP-2) — additive, no
+    # WP-1 behaviour change (WP-1 always sets this).
     source = models.ForeignKey(
         EducationalTopic,
         on_delete=models.CASCADE,
         related_name="contexts",
+        null=True,
+        blank=True,
+    )
+    # WP-2 origin (consumption contract).
+    contract = models.ForeignKey(
+        ConsumptionContract,
+        on_delete=models.CASCADE,
+        related_name="contexts",
+        null=True,
+        blank=True,
     )
     context_text = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
@@ -97,9 +194,23 @@ class Context(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
+        constraints = [
+            models.CheckConstraint(
+                name="wims_context_exactly_one_origin",
+                check=(
+                    models.Q(source__isnull=False, contract__isnull=True)
+                    | models.Q(source__isnull=True, contract__isnull=False)
+                ),
+            )
+        ]
+
+    @property
+    def origin(self):
+        """Return the originating object (topic or contract)."""
+        return self.source or self.contract
 
     def __str__(self) -> str:
-        return f"Context #{self.pk} for {self.source.title!r} [{self.status}]"
+        return f"Context #{self.pk} from {self.origin} [{self.status}]"
 
 
 class Content(models.Model):
@@ -219,6 +330,9 @@ class AuditEvent(models.Model):
 
     class Event(models.TextChoices):
         SOURCE_CREATED = "SOURCE_CREATED", "Source created"
+        # WP-2 — consumption contract lifecycle (existing events unchanged).
+        CONTRACT_CREATED = "CONTRACT_CREATED", "Contract created"
+        CONTRACT_PROCESSED = "CONTRACT_PROCESSED", "Contract processed"
         CONTEXT_CREATED = "CONTEXT_CREATED", "Context created"
         CONTENT_CREATED = "CONTENT_CREATED", "Content created"
         SUBMITTED_FOR_REVIEW = "SUBMITTED_FOR_REVIEW", "Submitted for review"
