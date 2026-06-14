@@ -5,6 +5,7 @@ backend/**/*.pyc
 
 # Django DB
 backend/db.sqlite3
+backend/wims_demo.sqlite3
 
 # Next.js / Node
 frontend/node_modules/
