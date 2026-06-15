@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     "hosting",
     "mt5",
     "wims",  # WP-1 — Educational Content Flow (logically separate per ADR-009)
+    "intelligence",  # Phase 7A — GuvFX Signal Intelligence Producer (produces; WIMS consumes)
 ]
 
 MIDDLEWARE = [

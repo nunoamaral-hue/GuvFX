@@ -1,0 +1,11 @@
+{
+  "signal_id": "WAYOND-2026-0614-001",
+  "market": "XAUUSD",
+  "direction": "BUY",
+  "entry": "3350.0",
+  "stop_loss": "3335.0",
+  "take_profit": "3370.0",
+  "timestamp": "2026-06-14T08:00:00Z",
+  "confidence": "72",
+  "summary": "Wayond long setup on gold (XAUUSD)."
+}
