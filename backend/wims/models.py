@@ -356,9 +356,10 @@ class AuditEvent(models.Model):
 
     class Event(models.TextChoices):
         SOURCE_CREATED = "SOURCE_CREATED", "Source created"
-        # Phase 7A — signal-intelligence envelope lifecycle (produced GuvFX-side,
+        # Phase 7A/7B — intelligence envelope lifecycle (produced GuvFX-side,
         # delivered into WIMS; recorded via the existing audit capability).
         SIGNAL_RECEIVED = "SIGNAL_RECEIVED", "Signal received"
+        TRADE_DETECTED = "TRADE_DETECTED", "Trade detected"
         ENVELOPE_CREATED = "ENVELOPE_CREATED", "Envelope created"
         ENVELOPE_DELIVERED = "ENVELOPE_DELIVERED", "Envelope delivered"
         ENVELOPE_CONSUMED = "ENVELOPE_CONSUMED", "Envelope consumed"
