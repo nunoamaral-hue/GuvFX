@@ -1,0 +1,7 @@
+{
+  "name": "Gold H1 Shadow Strategy",
+  "is_active": true,
+  "symbol_universe": "XAUUSD,EURUSD",
+  "timeframe": "H1",
+  "risk_per_trade_pct": "1.0"
+}

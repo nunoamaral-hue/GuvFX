@@ -2,6 +2,17 @@
 
 List active problems with reproduction steps and workarounds.
 
+## Flow A (Shadow) — ADR-012 SSOT endpoint not yet implemented
+- **Symptom:** ADR-012 requires trading availability / `can_trade` to come only
+  from `/api/reliability/trading-health/`. That endpoint (and any `reliability`
+  app) does not exist in the repo or its history.
+- **Impact:** Flow A Phase 1 runs in Shadow Mode with availability **not
+  consulted** (execution is suppressed regardless), so the gap does not block
+  shadow runs. The `flow_a` quality gate is built to **escalate** rather than
+  derive `can_trade` if availability is ever requested without the SSOT result.
+- **Next step:** Implement the SSOT endpoint before any availability-gated or
+  non-shadow Flow A behaviour; wire `flow_a.quality_gate` to consume it.
+
 ## Example
 - **Tests fail: permission denied to create database**
   - Symptom: `permission denied to create database`

@@ -6,6 +6,11 @@
 3. [x] Broker autocomplete MVP: define acceptance criteria and implement debounced broker search + selection flow. — done 2025-12-16
 4. [x] Add tests/guardrails for broker autocomplete (minimum: type-safe API response handling + basic UI state tests if available). — done 2025-12-16
 
+## Flow A (Shadow Delivery)
+1. [x] Phase 1 — minimum viable shadow pipeline (Wayond → evaluation → quality gate v0.1 → suppressed OPEN_TRADE candidate) in new `backend/flow_a/` (no models, not in prod `INSTALLED_APPS`, isolated SQLite shim). — done 2026-06-17
+2. [ ] Conductor to ratify: (a) whether availability gating is in scope for later phases, (b) Trade Quality Gate v0.1 thresholds for promotion beyond Draft/Shadow.
+3. [ ] Implement ADR-012 SSOT endpoint `/api/reliability/trading-health/` before any availability-gated or non-shadow Flow A behaviour (see KNOWN_ISSUES).
+
 ## P1
 1. [ ] Cleanup follow-ups: ensure `.trash_duplicates/` stays ignored and remove any remaining duplicate “(1)” / “ 2” files if they reappear.
 2. [x] Switch login reason parsing to a lazy `useState` initializer so the client-only `window` lookup happens safely.
