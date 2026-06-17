@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
+import { DashboardHeader } from "@/components/DashboardHeader";
 
 /**
  * Phase 1: Dashboard / Overview
@@ -65,12 +66,7 @@ export default function DashboardPage() {
   return (
     <AppShell>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
-          Dashboard
-        </h1>
-        <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1.5rem" }}>
-          Welcome to GuvFX. This is your trading overview.
-        </p>
+        <DashboardHeader />
 
         {/* Stable placeholder content - Phase 1 only */}
         <div
