@@ -3,8 +3,7 @@
 - **Packet ID:** GFX-PKT-003I-B (continuation of GFX-PKT-003I-A)
 - **Title:** Commit and Remote CI Validation v0.1
 - **Branch:** `chore/guvfx-governance-convergence`
-- **Status:** In progress — governance foundation locally validated; remote CI validation
-  pending before PM acceptance. **No merge is authorised.**
+- **Status:** Executed — CI verified; PM review pending. **No merge is authorised.**
 
 ## Scope
 
