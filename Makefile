@@ -1,9 +1,15 @@
-.PHONY: help check backend-test backend-lint frontend-lint frontend-build
+.PHONY: help check backend-test backend-lint frontend-lint frontend-build secret-scan governance-check
 
 help:
-	@echo "Targets: check backend-test frontend-lint frontend-build"
+	@echo "Targets: check backend-test frontend-lint frontend-build secret-scan governance-check"
 
-check: backend-test frontend-lint frontend-build
+check: governance-check backend-test frontend-lint frontend-build
+
+secret-scan:
+	python3 scripts/check_no_secrets.py
+
+governance-check: secret-scan
+	python3 -m unittest discover -s tests -p 'test_no_secrets.py'
 
 backend-test:
 	@if [ -f backend/manage.py ]; then \
