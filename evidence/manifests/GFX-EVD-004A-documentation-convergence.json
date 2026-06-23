@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-004A-documentation-convergence",
+  "packet_id": "GFX-PKT-004A",
+  "created_at_utc": "2026-06-23T07:07:40Z",
+  "branch": "chore/guvfx-documentation-convergence",
+  "base_commit": "c17b7b849c3af2d9e6ba8738d7c9807db8efda96",
+  "head_commit": null,
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "event": "push",
+    "run_id": null,
+    "run_head_sha": null,
+    "jobs": [
+      { "name": "governance", "conclusion": null },
+      { "name": "backend", "conclusion": null },
+      { "name": "frontend", "conclusion": null }
+    ]
+  },
+  "changed_files": [
+    "docs/STATUS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/ADRs/template.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    "docs/DATA_CONTRACTS.md",
+    "evidence/manifests/GFX-EVD-004A-documentation-convergence.json"
+  ],
+  "commands": [
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-004A-documentation-convergence.json >/dev/null",
+    "make governance-check",
+    "git diff --check",
+    "git diff --cached --check",
+    "python3 (stdlib documentation sanity checks: STATUS heading/TL;DR duplication, broken relative links, prohibited personal paths/secret-like values, ARCHITECTURE status labels, DATA_CONTRACTS Current/Candidate/Proposed separation)"
+  ],
+  "expected_results": [
+    "Secret scanner reports no findings and exits 0",
+    "All secret-scanner unit tests pass",
+    "Evidence manifest is valid JSON",
+    "governance-check (secret scan + unit tests) passes",
+    "No staged or unstaged whitespace errors",
+    "Documentation sanity checks pass (no duplicate STATUS/TL;DR headings, no broken intra-doc links, no personal paths, required ARCHITECTURE status labels present, DATA_CONTRACTS status separation present)"
+  ],
+  "actual_results": [
+    "check_no_secrets: no findings (exit 0)",
+    "secret-scanner unit tests: OK",
+    "evidence manifest parsed as valid JSON",
+    "governance-check passed",
+    "git diff --check and git diff --cached --check produced no output",
+    "documentation sanity checks passed"
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "head_commit is null at evidence authoring time: the documentation commit C1 does not yet exist. It is recorded in the C2 evidence-only commit after C1 CI passes.",
+    "CI run_id, run_head_sha and per-job conclusions are null at authoring time; they are filled in at C2 after the C1 push run completes.",
+    "make check was not run locally per packet instruction (GitHub Actions is the approved full application integration gate); only make governance-check and the documentation/JSON/privacy/link sanity checks ran locally.",
+    "No application, backend, frontend, MT5, infrastructure, Notion, broker, or market-data action was performed; this packet is documentation-only."
+  ],
+  "artefact_locations": [
+    "docs/STATUS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/ADRs/template.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    "evidence/manifests/GFX-EVD-004A-documentation-convergence.json"
+  ],
+  "checksums": {
+    "docs/STATUS.md": "sha256:e18faa7fe33695e5a679d2929cee79649448bfa44d4fe222f08d01b3f7c982b5",
+    "docs/ARCHITECTURE.md": "sha256:72b3992fb050d394674f54b06843dbeac0c2ac629abd628dc94978c598e49b35",
+    "docs/DATA_CONTRACTS.md": "sha256:4353867282cc84a4136b9ebaf87b0de993786c171df8c169e35d79fd4a6ae80c",
+    "docs/ADRs/template.md": "sha256:8e5e02fa8982d81c95a76bb5af170cc7be3a1298fcd6a6565cd8d052a3fbf107",
+    "docs/NOTION_MAP.md": "sha256:5ef20d7e512e59a805703862eb50ca326acf658c4d1f88846106993989f02c17"
+  },
+  "reviewer": null
+}
