@@ -50,13 +50,19 @@
       "minItems": 1,
       "description": "Instrument(s) covered by the dataset."
     },
+    "record_type": {
+      "type": "string",
+      "enum": ["quote", "bar"],
+      "description": "Observation record type the dataset holds, so quote vs bar datasets are unambiguous."
+    },
     "interval": {
       "type": "string",
       "minLength": 1,
-      "description": "Frequency/interval of the dataset rows (e.g. M1). No interval is assumed by this schema."
+      "description": "Frequency/interval of the dataset rows (e.g. 'event' for quotes, 'M1' for bars). No interval is assumed by this schema."
     },
     "source_objects": {
       "type": "array",
+      "minItems": 1,
       "items": { "$ref": "#/definitions/source_object_ref" },
       "description": "Immutable raw source objects (id + checksum) the dataset derives from."
     },
@@ -72,9 +78,8 @@
       "description": "Code version/commit that produced the dataset."
     },
     "config_hash": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Hash of the configuration used to build the dataset."
+      "$ref": "#/definitions/sha256_hex",
+      "description": "Lowercase hex SHA-256 of the configuration used to build the dataset."
     },
     "point_in_time_policy": {
       "type": "string",
@@ -93,6 +98,7 @@
     },
     "content_checksums": {
       "type": "object",
+      "minProperties": 1,
       "additionalProperties": { "$ref": "#/definitions/sha256_hex" },
       "description": "Map of artefact name -> SHA-256 content checksum."
     },
@@ -117,6 +123,7 @@
     "dataset_id",
     "dataset_version",
     "created_at_utc",
+    "record_type",
     "instrument_universe",
     "interval",
     "source_objects",

@@ -153,7 +153,17 @@
         "properties": { "record_type": { "const": "quote" } }
       },
       "then": {
-        "required": ["bid", "ask"]
+        "comment": "Quote requires bid/ask and rejects all bar-only fields.",
+        "required": ["bid", "ask"],
+        "properties": {
+          "frequency": false,
+          "open": false,
+          "high": false,
+          "low": false,
+          "close": false,
+          "volume": false,
+          "volume_unit": false
+        }
       }
     },
     {
@@ -161,7 +171,14 @@
         "properties": { "record_type": { "const": "bar" } }
       },
       "then": {
-        "required": ["frequency", "open", "high", "low", "close"]
+        "comment": "Bar requires OHLC/frequency and rejects all quote-only fields.",
+        "required": ["frequency", "open", "high", "low", "close"],
+        "properties": {
+          "bid": false,
+          "ask": false,
+          "bid_size": false,
+          "ask_size": false
+        }
       }
     }
   ]

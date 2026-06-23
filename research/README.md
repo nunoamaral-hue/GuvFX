@@ -76,7 +76,17 @@ Versioned JSON Schemas under `research/contracts/`:
 - `market_observation_v1.schema.json` — quote/bar observations with source and
   time lineage.
 - `broker_cost_v1.schema.json` — point-in-time broker cost/contract specification.
-- `dataset_manifest_v1.schema.json` — reproducible dataset manifest.
+- `dataset_manifest_v1.schema.json` — reproducible dataset manifest (carries a
+  required `record_type` so quote vs bar datasets are unambiguous).
+
+The synthetic smoke harness (`tools/research_smoke.py`) preserves **all** required
+observation fields, the **five point-in-time timestamps**
+(`observation`/`source`/`received`/`ingestion`/`availability`), the **raw-lineage**
+fields (`raw_object_id`, `raw_object_sha256`), `quality_flags`, and the populated
+quote/bar variant fields through the Parquet write and readback. Each reconstructed
+record is re-validated and compared field-by-field to its source. The run emits
+**separate** dataset manifests — quotes with `interval: event` and bars with
+`interval: M1` — each referencing only its own raw objects, checksum and counts.
 
 ## Status / blockers
 

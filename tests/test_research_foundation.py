@@ -1,4 +1,4 @@
-"""Tests for the GFX-PKT-005B research foundation.
+"""Tests for the GFX-PKT-005B research foundation (R1: contract integrity).
 
 Standard-library ``unittest`` plus the research venv's DuckDB package. No pandas,
 PyArrow or Polars. Run with the research interpreter:
@@ -56,20 +56,10 @@ class TestSchemasParse(unittest.TestCase):
         ):
             self.assertIn(field, obs["required"])
 
-        cost = _load_schema("broker_cost")
-        self.assertEqual(cost["properties"]["schema_version"]["const"], "1.0")
-        for field in (
-            "instrument_id", "broker_id", "account_type", "valid_from_utc",
-            "commission_model", "commission_value", "commission_currency",
-            "contract_size", "tick_size", "tick_value", "minimum_lot",
-            "lot_step", "source_object_id", "source_object_sha256",
-        ):
-            self.assertIn(field, cost["required"])
-
         manifest = _load_schema("dataset_manifest")
         self.assertEqual(manifest["properties"]["schema_version"]["const"], "1.0")
         for field in (
-            "dataset_id", "dataset_version", "created_at_utc",
+            "dataset_id", "dataset_version", "created_at_utc", "record_type",
             "instrument_universe", "interval", "source_objects",
             "schema_versions", "code_commit", "config_hash",
             "point_in_time_policy", "row_count", "partition_count",
@@ -79,15 +69,32 @@ class TestSchemasParse(unittest.TestCase):
 
     def test_quote_and_bar_variants_are_distinct(self):
         obs = _load_schema("market_observation")
-        branches = obs["allOf"]
-        required_sets = []
-        for branch in branches:
-            const = branch["if"]["properties"]["record_type"]["const"]
-            required_sets.append((const, set(branch["then"]["required"])))
-        as_dict = dict(required_sets)
-        self.assertEqual(as_dict["quote"], {"bid", "ask"})
-        self.assertEqual(as_dict["bar"], {"frequency", "open", "high", "low", "close"})
-        self.assertNotEqual(as_dict["quote"], as_dict["bar"])
+        branches = {b["if"]["properties"]["record_type"]["const"]: b["then"] for b in obs["allOf"]}
+        self.assertEqual(set(branches["quote"]["required"]), {"bid", "ask"})
+        self.assertEqual(set(branches["bar"]["required"]),
+                         {"frequency", "open", "high", "low", "close"})
+
+    def test_schema_rejects_cross_variant_fields(self):
+        obs = _load_schema("market_observation")
+        branches = {b["if"]["properties"]["record_type"]["const"]: b["then"] for b in obs["allOf"]}
+        # Quote branch forbids every bar-only field (schema value `false`).
+        for field in ("frequency", "open", "high", "low", "close", "volume", "volume_unit"):
+            self.assertEqual(branches["quote"]["properties"].get(field), False)
+        # Bar branch forbids every quote-only field.
+        for field in ("bid", "ask", "bid_size", "ask_size"):
+            self.assertEqual(branches["bar"]["properties"].get(field), False)
+        # Root still rejects unknown fields.
+        self.assertFalse(obs["additionalProperties"])
+
+    def test_dataset_manifest_constraints_tightened(self):
+        manifest = _load_schema("dataset_manifest")
+        props = manifest["properties"]
+        self.assertEqual(props["record_type"]["enum"], ["quote", "bar"])
+        self.assertEqual(props["source_objects"]["minItems"], 1)
+        self.assertEqual(props["content_checksums"]["minProperties"], 1)
+        # config_hash constrained to the lowercase SHA-256 pattern via $ref.
+        self.assertEqual(props["config_hash"].get("$ref"), "#/definitions/sha256_hex")
+        self.assertEqual(manifest["definitions"]["sha256_hex"]["pattern"], "^[0-9a-f]{64}$")
 
 
 class TestLocalValidator(unittest.TestCase):
@@ -100,6 +107,30 @@ class TestLocalValidator(unittest.TestCase):
     def test_valid_records_pass(self):
         smoke.validate_observation(self._valid_quote())
         smoke.validate_observation(self._valid_bar())
+
+    def test_unknown_field_rejected(self):
+        q = self._valid_quote()
+        q["mystery"] = "nope"
+        with self.assertRaises(ValueError):
+            smoke.validate_observation(q)
+
+    def test_bar_only_field_on_quote_rejected(self):
+        q = self._valid_quote()
+        q["frequency"] = "M1"
+        with self.assertRaises(ValueError):
+            smoke.validate_observation(q)
+
+    def test_quote_only_field_on_bar_rejected(self):
+        b = self._valid_bar()
+        b["bid"] = 1.1
+        with self.assertRaises(ValueError):
+            smoke.validate_observation(b)
+
+    def test_non_string_quality_flag_rejected(self):
+        q = self._valid_quote()
+        q["quality_flags"] = ["ok", 123]
+        with self.assertRaises(ValueError):
+            smoke.validate_observation(q)
 
     def test_missing_raw_lineage_rejected(self):
         q = self._valid_quote()
@@ -139,35 +170,91 @@ class TestLocalValidator(unittest.TestCase):
 
 
 class TestSmokeRoundTrip(unittest.TestCase):
-    def test_round_trip_writes_and_reads_parquet(self):
+    def test_full_field_round_trip(self):
         with tempfile.TemporaryDirectory(prefix="guvfx_test_smoke_") as tmp:
             result = smoke.run_smoke(output_dir=tmp)
             self.assertEqual(result["status"], "PASS")
+            self.assertTrue(result["full_field_roundtrip_verified"])
             self.assertEqual(result["counts"]["quote_written"], result["counts"]["quote_read"])
             self.assertEqual(result["counts"]["bar_written"], result["counts"]["bar_read"])
-            self.assertGreater(result["counts"]["quote_read"], 0)
-            self.assertGreater(result["counts"]["bar_read"], 0)
-            # Parquet files were actually written.
+            # Parquet preserves the entire contract surface, not a subset.
+            self.assertEqual(set(result["columns"]["quote"]), set(smoke.QUOTE_COLUMNS))
+            self.assertEqual(set(result["columns"]["bar"]), set(smoke.BAR_COLUMNS))
+            for field in (
+                "schema_version", "record_type", "broker_id", "account_type",
+                "source_time_utc", "received_time_utc", "ingestion_time_utc",
+                "quality_flags", "raw_object_id", "raw_object_sha256",
+                "bid_size", "ask_size",
+            ):
+                self.assertIn(field, result["columns"]["quote"])
+            for field in ("volume", "volume_unit", "frequency"):
+                self.assertIn(field, result["columns"]["bar"])
             self.assertTrue(os.path.isfile(os.path.join(tmp, smoke.QUOTE_PARQUET)))
             self.assertTrue(os.path.isfile(os.path.join(tmp, smoke.BAR_PARQUET)))
+
+    def test_readback_records_validate_and_match_source(self):
+        import duckdb
+        quotes = smoke.build_synthetic_quotes()
+        bars = smoke.build_synthetic_bars()
+        with tempfile.TemporaryDirectory(prefix="guvfx_test_rb_") as tmp:
+            smoke.run_smoke(output_dir=tmp)
+            con = duckdb.connect(database=":memory:")
+            try:
+                qback = smoke.read_parquet_records(
+                    con, os.path.join(tmp, smoke.QUOTE_PARQUET), smoke.QUOTE_COLUMNS)
+                bback = smoke.read_parquet_records(
+                    con, os.path.join(tmp, smoke.BAR_PARQUET), smoke.BAR_COLUMNS)
+            finally:
+                con.close()
+        # Every reconstructed record re-validates and round-trips losslessly.
+        for rec in (*qback, *bback):
+            smoke.validate_observation(rec)
+        smoke._assert_records_match(quotes, qback, smoke.QUOTE_COLUMNS)
+        smoke._assert_records_match(bars, bback, smoke.BAR_COLUMNS)
+        # Nullable fields round-trip as null.
+        self.assertIsNone(qback[0]["broker_id"])
+        self.assertIsNone(qback[0]["account_type"])
+        # quality_flags survives as a list/array.
+        self.assertEqual(qback[0]["quality_flags"], ["synthetic"])
+
+    def test_separate_manifests_are_correct(self):
+        result = smoke.run_smoke()
+        qm, bm = result["quote_manifest"], result["bar_manifest"]
+        # Distinct deterministic dataset IDs.
+        self.assertNotEqual(qm["dataset_id"], bm["dataset_id"])
+        # Record type + interval semantics.
+        self.assertEqual((qm["record_type"], qm["interval"]), ("quote", "event"))
+        self.assertEqual((bm["record_type"], bm["interval"]), ("bar", "M1"))
+        # Each manifest references only its own raw objects.
+        q_raws = {s["source_object_id"] for s in qm["source_objects"]}
+        b_raws = {s["source_object_id"] for s in bm["source_objects"]}
+        self.assertTrue(all("quote" in r for r in q_raws))
+        self.assertTrue(all("bar" in r for r in b_raws))
+        self.assertEqual(q_raws & b_raws, set())
+        # Each manifest's content checksum belongs to that dataset only.
+        self.assertEqual(set(qm["content_checksums"]), {smoke.QUOTE_PARQUET})
+        self.assertEqual(set(bm["content_checksums"]), {smoke.BAR_PARQUET})
+        # Counts reflect only that dataset.
+        self.assertEqual(qm["row_count"], result["counts"]["quote_read"])
+        self.assertEqual(bm["row_count"], result["counts"]["bar_read"])
+        self.assertEqual(qm["partition_count"], 1)
+        self.assertEqual(bm["partition_count"], 1)
+        # Both conform to the dataset_manifest required set, with hex config_hash.
+        required = set(_load_schema("dataset_manifest")["required"])
+        for m in (qm, bm):
+            self.assertTrue(required.issubset(set(m.keys())))
+            self.assertRegex(m["config_hash"], r"^[0-9a-f]{64}$")
+            self.assertNotIn("/", m["artefact_location"].split("://")[0])
 
     def test_result_is_deterministic_excluding_checksums(self):
         def core(res):
             res = copy.deepcopy(res)
             res.pop("checksums", None)
-            res["manifest"].pop("content_checksums", None)
+            for key in ("quote_manifest", "bar_manifest"):
+                res[key].pop("content_checksums", None)
             return res
 
-        r1 = smoke.run_smoke()
-        r2 = smoke.run_smoke()
-        self.assertEqual(core(r1), core(r2))
-
-    def test_manifest_conforms_to_dataset_manifest_required_fields(self):
-        manifest = smoke.run_smoke()["manifest"]
-        required = set(_load_schema("dataset_manifest")["required"])
-        self.assertTrue(required.issubset(set(manifest.keys())))
-        self.assertEqual(manifest["schema_version"], "1.0")
-        self.assertNotIn("/", manifest["artefact_location"].split("://")[0])
+        self.assertEqual(core(smoke.run_smoke()), core(smoke.run_smoke()))
 
     def test_output_contains_no_personal_absolute_path(self):
         buf = io.StringIO()
@@ -180,7 +267,6 @@ class TestSmokeRoundTrip(unittest.TestCase):
             self.assertNotIn(needle, out)
 
     def test_no_heavy_dataframe_libs_required(self):
-        # Importing the module and running the smoke must not require these.
         smoke.run_smoke()
         for mod in ("pandas", "pyarrow", "polars"):
             self.assertNotIn(mod, sys.modules)

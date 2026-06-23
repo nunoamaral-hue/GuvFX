@@ -126,8 +126,15 @@ Each item is **Current** and cites its source.
   `$id`, `version: "1.0"`, and `additionalProperties: false`.
 - **Synthetic round-trip harness** (`tools/research_smoke.py`): proves a
   deterministic quote/bar → DuckDB → Parquet → DuckDB loop using only the standard
-  library and DuckDB (no pandas/PyArrow/Polars). It writes to a temporary
-  directory and deletes all artefacts on exit; nothing persistent is produced.
+  library and DuckDB (no pandas/PyArrow/Polars). The round trip preserves the
+  **full** versioned observation contract — every required common field, all five
+  point-in-time timestamps, the raw-lineage fields, `quality_flags`, and the
+  populated quote/bar variant fields — and re-validates and field-compares each
+  reconstructed record against its source. It emits **separate** dataset manifests
+  (quotes `interval: event`, bars `interval: M1`), each carrying a required
+  `record_type` and referencing only its own raw objects, checksum and row counts.
+  It writes to a temporary directory and deletes all artefacts on exit; nothing
+  persistent is produced.
 - **Isolated research runtime**: a local `.venv-research` (Python 3.14) with
   exactly `duckdb==1.5.4` pinned in `requirements-research.txt`; exercised by
   `make research-check` and the `research-foundation` CI job. See
