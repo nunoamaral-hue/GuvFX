@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-005B-R1-contract-integrity",
+  "packet_id": "GFX-PKT-005B-R1",
+  "created_at_utc": "2026-06-23T12:57:00Z",
+  "branch": "chore/eurusd-data-foundation",
+  "base_commit": "59a7e45b8e06fd3ac238a24256cecce5aa7f3935",
+  "head_commit": "9349c2d469261c26e3a39d0e0fe6c74fede18936",
+  "c3_commit": "9349c2d469261c26e3a39d0e0fe6c74fede18936",
+  "c4_commit": null,
+  "environment": {
+    "python_version": "3.14.6",
+    "duckdb_version": "1.5.4",
+    "research_venv": ".venv-research (unchanged; no reinstall or upgrade)",
+    "dependencies_changed": false,
+    "heavy_dataframe_libs_present": false
+  },
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "c3": {
+      "push_run_id": 28027778350,
+      "pull_request_run_id": 28027780427,
+      "run_head_sha": "9349c2d469261c26e3a39d0e0fe6c74fede18936",
+      "jobs": [
+        { "name": "governance", "conclusion": "success" },
+        { "name": "backend", "conclusion": "success" },
+        { "name": "frontend", "conclusion": "success" },
+        { "name": "research-foundation", "conclusion": "success" }
+      ]
+    },
+    "c4": { "push_run_id": null, "pull_request_run_id": null, "run_head_sha": null, "jobs": [] }
+  },
+  "corrections": [
+    "tools/research_smoke.py: the synthetic Parquet round trip now writes the FULL versioned observation contract for both quote and bar (all 14 required common fields, all five point-in-time timestamps observation/source/received/ingestion/availability, raw_object_id + raw_object_sha256, quality_flags as a DuckDB VARCHAR[] list, and the populated quote size / bar volume variant fields) using DuckDB-native types; nullable fields round-trip as NULL. After readback the harness asserts the expected column set, reconstructs each record, re-runs the local validator on every reconstructed record, and compares every field (with deterministic numeric normalisation) plus the raw lineage and all five timestamps against the source records; count and aggregate checks retained.",
+    "tools/research_smoke.py: replaced the single combined manifest (which mislabelled event quotes as interval M1) with SEPARATE quote_manifest and bar_manifest, distinct deterministic dataset IDs (synthetic_eurusd_quotes / synthetic_eurusd_bars), record_type quote|bar, interval event|M1, each referencing only its own raw objects, single content checksum and row/partition counts.",
+    "research/contracts/market_observation_v1.schema.json: kept root additionalProperties:false and tightened the variant allOf so record_type=quote forbids all bar-only fields (frequency/open/high/low/close/volume/volume_unit set to false) and record_type=bar forbids all quote-only fields (bid/ask/bid_size/ask_size set to false), while still requiring the variant's own fields.",
+    "tools/research_smoke.py local validator: now rejects unknown fields and cross-variant fields (bar-only on quote, quote-only on bar), enforces strict common-field types (instrument_id/source_id non-empty strings; broker_id/account_type string-or-null; quality_flags list of strings; numeric bid/ask/OHLC excluding bool) instead of relying on accidental Python comparison errors, and preserves the existing UTC, raw-lineage, bid<=ask, high>=low and availability>=observation checks.",
+    "research/contracts/dataset_manifest_v1.schema.json: added required record_type (enum quote|bar), source_objects minItems:1, content_checksums minProperties:1, and constrained config_hash to the lowercase SHA-256 pattern via the existing sha256_hex definition; retained the logical/non-personal artefact_location and all prior required fields.",
+    "tests/test_research_foundation.py: added tests for full-field Parquet round trip and column set, readback re-validation + field-for-field match + null round-trip + quality_flags list, separate quote/event and bar/M1 manifests (dataset IDs, record_type, interval, owned source objects, owned checksum, counts), schema cross-variant rejection structure, and the tightened dataset-manifest constraints; unknown-field and both cross-variant validator rejections; non-string quality flag rejection.",
+    "research/README.md and docs/DATA_CONTRACTS.md (Current schema-foundation section only): describe the full-field contract round trip and separate quote/event + bar/M1 manifest semantics; Candidate/Proposed/Unknown boundaries preserved.",
+    "docs/NOTION_MAP.md: appended titles GFX-EVD-005B (PM review), GFX-PKT-005B-R1, GuvFX — Current State v0.15 (titles only).",
+    "packets/ACTIVE.md: active pointer set to GFX-PKT-005B-R1."
+  ],
+  "commands": [
+    ".venv-research/bin/python tools/research_smoke.py",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    "make research-check",
+    "python3 -m json.tool research/contracts/market_observation_v1.schema.json >/dev/null",
+    "python3 -m json.tool research/contracts/dataset_manifest_v1.schema.json >/dev/null",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-005B-R1-contract-integrity.json >/dev/null",
+    "git diff --check",
+    "git diff --cached --check",
+    "stdlib scope/privacy check: only authorised files changed; no real-data artefact/personal path/credential; Parquet column sets include every required contract field; manifests separate and unambiguous"
+  ],
+  "expected_results": [
+    "Full required common and variant fields survive Parquet write/read for both quote and bar",
+    "Reconstructed records pass the local validator and match source records field-for-field, with null round-trip and quality_flags preserved as a list",
+    "Quote/bar cross-fields and unknown fields are rejected by schema structure and the local validator",
+    "Separate quote (event) and bar (M1) manifests are correct and deterministic with owned raw objects, checksum and counts",
+    "Dataset-manifest schema constraints (record_type, minItems, minProperties, config_hash pattern) are present and tested",
+    "Governance, research, JSON and privacy checks pass; only authorised files change",
+    "CI passes governance, backend, frontend and research-foundation for C3 and C4 (push + PR runs)"
+  ],
+  "actual_results": [
+    "research_smoke: status PASS; full_field_roundtrip_verified true; quote columns = 14 common + bid/ask/bid_size/ask_size; bar columns = 14 common + frequency/open/high/low/close/volume/volume_unit; counts quote 5/5, bar 5/5; aggregates quote_spread_sum=0.0005, bar_close_avg=1.1011, bar_high_max=1.1023",
+    "research unit tests: Ran 23 tests, OK (includes full-field round trip, readback validate+match, separate manifests, cross-variant + unknown-field rejections, manifest-constraint checks)",
+    "check_no_secrets: no findings (exit 0); secret-scanner unit tests OK",
+    "make governance-check: passed; make research-check: smoke PASS + 23 research tests OK",
+    "json.tool: both modified schemas and this manifest parsed as valid JSON",
+    "scope/privacy: only the 8 authorised files (C3) changed; broker-cost schema, requirements, ADR, Makefile, CI workflow and the original 005B evidence manifest untouched; no personal paths/secrets/real-data artefacts",
+    "git diff --check and git diff --cached --check produced no output",
+    "C3 CI: push run 28027778350 and pull_request run 28027780427 (head 9349c2d) both pass governance/backend/frontend/research-foundation; C4 runs recorded in the C4 commit"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Synthetic data only: no provider, NAS, broker identity, account, real EURUSD price, or ingestion pipeline was added or accessed.",
+    "Schema enforcement of cross-variant rejection is asserted structurally (the variant subschemas set the wrong-variant fields to false) and behaviourally via the local validator; no JSON-Schema validator library is installed (stdlib + DuckDB only), so full draft-07 validation is not executed in-process.",
+    "head_commit/c3_commit point at C3 (9349c2d); the C4 block and c4_commit are filled at the evidence-only C4 commit after the C3 runs concluded success; the C4 commit triggers further CI validated separately.",
+    "make check (full backend/frontend integration) was not run locally per packet instruction; GitHub Actions is the approved full integration gate.",
+    "No dependency, requirements, ADR, Makefile, CI workflow or broker-cost schema change was made; the research venv was not reinstalled or upgraded."
+  ],
+  "artefact_locations": [
+    "research/contracts/market_observation_v1.schema.json",
+    "research/contracts/dataset_manifest_v1.schema.json",
+    "tools/research_smoke.py",
+    "tests/test_research_foundation.py",
+    "research/README.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    "evidence/manifests/GFX-EVD-005B-R1-contract-integrity.json"
+  ],
+  "checksums": {
+    "research/contracts/market_observation_v1.schema.json": "sha256:936d4065f03ca9deb91e9e71fb26ee604f59d241222dd6c8877e9de6074fb9e5",
+    "research/contracts/dataset_manifest_v1.schema.json": "sha256:7a43418503067bf0f7c555d1afe8e80e6de5f404081d32a95e9af3e602249da8",
+    "tools/research_smoke.py": "sha256:0f5943d5b5e74f73b36ef50ba60877072c39fcf1536a8e5d156969e103f61a36",
+    "tests/test_research_foundation.py": "sha256:d907d14e190107bb85997bf960cf452ad1870a8fbe8cdbabd2e444cdca62bb97"
+  },
+  "reviewer": null
+}
