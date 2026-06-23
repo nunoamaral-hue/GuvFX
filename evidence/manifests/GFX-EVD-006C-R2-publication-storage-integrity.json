@@ -1,0 +1,139 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-006C-R2-publication-storage-integrity",
+  "packet_id": "GFX-PKT-006C-R2",
+  "created_at_utc": "2026-06-23T22:21:21Z",
+  "branch": "chore/market-data-synthetic-foundation",
+  "base_commit": "a3578941d239c0b49f396b0605fb05b1d63dfe42",
+  "head_commit": "0932bffd73623c3e0b04ec84fdbfb7f1a06fa9dc",
+  "c5_commit": "0932bffd73623c3e0b04ec84fdbfb7f1a06fa9dc",
+  "c6_commit": null,
+  "continuation_of": "GFX-PKT-006C and GFX-PKT-006C-R1 (prior evidence manifests unchanged in substance; R1 carries an additive superseded_by_r2_evidence pointer)",
+  "environment": {
+    "research_python_version": "3.14.6",
+    "duckdb_version": "1.5.4",
+    "dependencies_changed": false,
+    "ci_make_changed": false,
+    "schemas_changed_scope": "research/contracts/raw_market_data_manifest_v1.schema.json rel_path definition only (no $id/version change); the other six schemas unchanged"
+  },
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "c5": {
+      "push_run_id": 28061006418,
+      "pull_request_run_id": 28061009404,
+      "run_head_sha": "0932bffd73623c3e0b04ec84fdbfb7f1a06fa9dc",
+      "jobs": [
+        { "name": "governance", "conclusion": "success" },
+        { "name": "backend", "conclusion": "success" },
+        { "name": "frontend", "conclusion": "success" },
+        { "name": "research-foundation", "conclusion": "success" },
+        { "name": "market-data-foundation", "conclusion": "success" }
+      ]
+    },
+    "c6": { "push_run_id": null, "pull_request_run_id": null, "run_head_sha": null, "jobs": [] }
+  },
+  "files_modified": [
+    "research/market_data/agent_client.py",
+    "research/market_data/normalise.py",
+    "research/market_data/timezone.py",
+    "research/market_data/storage.py",
+    "research/contracts/raw_market_data_manifest_v1.schema.json",
+    "tools/market_data_synthetic_smoke.py",
+    "tests/test_market_data_foundation.py",
+    "research/README.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/STATUS.md",
+    "docs/HANDOFF.md",
+    "docs/NEXT.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    "evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json"
+  ],
+  "files_added": [
+    "evidence/manifests/GFX-EVD-006C-R2-publication-storage-integrity.json"
+  ],
+  "unauthorised_files_changed": false,
+  "dependencies_changed": false,
+  "ci_make_changed": false,
+  "orchestrator_changed": false,
+  "remediation_results": {
+    "gated_publication_api": "normalise.publish_observations is the single supported public entry; it requires timezone evidence then calls validate_request -> validate_response -> validate_request_response_match -> gate_for_normalisation(all bar epochs) before invoking the private _map_bid_ohlc mapper; the prior public normalise_bid_ohlc no longer exists",
+    "no_output_on_gate_failure": "absent/INCONCLUSIVE/CONFLICT/source-mismatch/uncovered/invalid evidence raises before any record; a test runs each non-VERIFIED case with a prospective output dir and asserts the dir stays absent",
+    "private_mapper_boundary": "_map_bid_ohlc is underscore-prefixed, not re-exported (hasattr(normalise,'normalise_bid_ohlc') is False), documented as requiring the completed gate",
+    "timezone_runtime": "source/account type-checked before regex and bounded <=64; evidence_method/dst_behaviour non-empty <=256; each observation an exact object with integer non-bool clock/offset fields; server_clock - utc_clock == implied_offset enforced; each observed_at_utc within [covered_start, covered_end); fingerprint + VERIFIED/source/scope/bar-coverage gate retained; no hardcoded offset",
+    "manifest_path_schema": "rel_path pattern now rejects absolute, backslash, empty-segment/double-slash, '.'/'..' and leading-dot segments while still accepting the generated raw and quarantine paths",
+    "runtime_manifest_validation": "one strict validator runs before every manifest write (on staged files) and on every read; enforces exact field set, schema_version, state, identity, canonical timestamps, ACCEPTED->null reason / QUARANTINED->non-empty reason, safe root-relative paths tied to the expected object directory with exact basenames, and that stored request/response files exist (regular, in-root, non-symlink) with exact SHA-256 matching the manifest; any tamper/missing/extra/path-unsafe/mismatch fails closed and is never overwritten or treated as idempotent",
+    "concurrency_staging": "each attempt uses a unique tempfile.mkdtemp staging dir, cleans only its own staging, preserves foreign staging; final dir never overwritten; a late winner appearing before promotion -> discard own staging, validate winner, return ALREADY_PRESENT on exact request+response match else quarantine; deterministic quarantine dir reused only on exact request/response/reason match else fail closed; no partial accepted dir on any exception",
+    "http_hardening": "max_response_bytes must be a positive non-bool int; base URL userinfo rejected; status retrieval and body read wrapped so TimeoutError/OSError/URLError become a generic redacted TransportError; response always closed; one attempt, exact bytes/headers/timeout/byte-limit retained; token/body never in repr or exceptions"
+  },
+  "tests": {
+    "market_data_tests_total": 85,
+    "result": "OK",
+    "gated_publication_matrix": "VERIFIED publishes; missing/INCONCLUSIVE/CONFLICT/source-mismatch/uncovered all raise with no output; invalid response raises ContractError before records",
+    "timezone": "type error, overlength method, offset arithmetic mismatch, observation-outside-coverage all rejected",
+    "manifest": "tampered response file, extra field, ACCEPTED+reason, traversal/backslash/sibling path, checksum mismatch and identity mismatch all fail closed",
+    "concurrency": "foreign staging preserved byte-for-byte; two objects do not alias; late identical race -> ALREADY_PRESENT; late/pre-existing conflict -> quarantine with accepted unchanged",
+    "http": "invalid max-byte (0/-1/bool/str) rejected; URL userinfo rejected; getcode failure and read timeout -> redacted TransportError with response closed; token redaction",
+    "frozen_fixture_note": "synthetic_timezone_verified.json (observation outside coverage) is retained unchanged and now drives a negative coverage test; positive VERIFIED cases build evidence in-memory"
+  },
+  "commands": [
+    "python3 -m json.tool research/contracts/raw_market_data_manifest_v1.schema.json >/dev/null",
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v",
+    ".venv-research/bin/python tools/market_data_synthetic_smoke.py",
+    "make research-check",
+    "make market-data-check",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R2-publication-storage-integrity.json >/dev/null",
+    "git diff --check; git status --short",
+    "git diff --name-only a3578941d239c0b49f396b0605fb05b1d63dfe42...HEAD"
+  ],
+  "expected_results": [
+    "All eight R2 findings implemented and unit-tested",
+    "No real network egress; HTTP and race tests use fakes inside the egress guard",
+    "Existing research + market-data tests remain green; smoke deterministic, gated-API only",
+    "Only authorised files changed; no dependency/CI/Make/unrelated-schema change",
+    "All five CI jobs pass for C5 and C6 push + PR runs"
+  ],
+  "actual_results": [
+    "market-data tests: Ran 85 tests, OK",
+    "research foundation: OK; synthetic smoke: PASS via gated publish_observations; deterministic byte-for-byte across two runs",
+    "check_no_secrets: no findings; make governance-check OK; make research-check OK; make market-data-check OK",
+    "json.tool: tightened schema and R2 manifest valid JSON",
+    "git diff --check clean; only the 16 authorised files changed (orchestrator.py not needed; contracts.py unchanged in R2)",
+    "C5 CI: push 28061006418 + PR 28061009404 (head 0932bff) — governance/backend/frontend/research-foundation/market-data-foundation all success; C6 final runs recorded in PR comment + handoff"
+  ],
+  "no_network_proof": "all HTTP and race tests use injected fakes/mocks inside network_blocked(); socket.create_connection raises in-guard; NetworkAgentClient remains inert unless allow_network=True; no real socket/URL opener invoked",
+  "status": "PASS",
+  "limitations": [
+    "Synthetic-only: no external agent endpoint, real market data, NAS path or credentials were implemented or contacted.",
+    "Backend 'core' test relies on the GitHub backend CI job locally (no backend/.venv/PostgreSQL); unchanged from 006C.",
+    "head_commit/c5_commit point at C5 (0932bff); the C6 block is filled at the evidence-only C6 commit after C5 runs concluded success; C6 triggers further CI recorded in the PR comment/handoff.",
+    "The pre-existing synthetic_timezone_verified.json fixture is retained unchanged (frozen) and intentionally fails the new observation-coverage rule; it is used as a negative test, and positive VERIFIED evidence is built in-memory.",
+    "The 006C and R1 evidence manifests' historical command/result/status fields are unchanged; only an additive superseded_by_r2_evidence pointer was added to R1."
+  ],
+  "artefact_locations": [
+    "research/market_data/agent_client.py",
+    "research/market_data/normalise.py",
+    "research/market_data/timezone.py",
+    "research/market_data/storage.py",
+    "research/contracts/raw_market_data_manifest_v1.schema.json",
+    "tools/market_data_synthetic_smoke.py",
+    "tests/test_market_data_foundation.py",
+    "evidence/manifests/GFX-EVD-006C-R2-publication-storage-integrity.json"
+  ],
+  "checksums": {
+    "research/market_data/agent_client.py": "sha256:88a4a5f24943dc554a9ab83d39277fb85f74009398fb8ad25dcc9c207b316024",
+    "research/market_data/normalise.py": "sha256:9213cc77596986db848cea18ef77fae373b21788de32bd678d313d15cb98162e",
+    "research/market_data/timezone.py": "sha256:bb23e85026826a464bc36b07537680f56f4c4b5637d3661c942ddff95d310fda",
+    "research/market_data/storage.py": "sha256:324253e7c68dc93488261c1211788adce8dbf844d3b39263f3c03063fefb3894",
+    "research/contracts/raw_market_data_manifest_v1.schema.json": "sha256:44c1b8b74eb9a4eefb6c65b4b9815fff75f316021f202d42565e85a9de375675",
+    "tools/market_data_synthetic_smoke.py": "sha256:4b6081e39adc6a6f3dcf6fe4312b2890a6a2c840efdc9eab5e8977b04ba62750",
+    "tests/test_market_data_foundation.py": "sha256:01e6176f9b8de11186bae57a1c4010c1cfa8a88eb8cad18d80e177b9a9554825"
+  },
+  "reviewer": null
+}
