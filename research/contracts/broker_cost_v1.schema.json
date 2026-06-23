@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/broker_cost_v1.schema.json",
+  "title": "GuvFX Broker Cost Specification v1",
+  "description": "Provider-independent, point-in-time broker cost and contract specification for one instrument/broker/account-type, versioned by effective date so a historical 'as-of' lookup is possible. Assumes no specific provider, broker, currency, or storage path.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "utc_timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "utc_timestamp_nullable": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Contract version of this broker-cost record."
+    },
+    "instrument_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider-independent instrument identifier the costs apply to."
+    },
+    "broker_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Broker identity these costs/specifications belong to."
+    },
+    "account_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Account tier the costs apply to (e.g. research/paper/live)."
+    },
+    "valid_from_utc": {
+      "$ref": "#/definitions/utc_timestamp",
+      "description": "Effective start of this cost version (inclusive)."
+    },
+    "valid_to_utc": {
+      "$ref": "#/definitions/utc_timestamp_nullable",
+      "description": "Effective end of this cost version; null means currently open-ended."
+    },
+    "commission_model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Commission model identifier (e.g. per_lot, per_trade, percent_notional)."
+    },
+    "commission_value": {
+      "type": "number",
+      "description": "Numeric commission value interpreted per commission_model."
+    },
+    "commission_currency": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Currency the commission_value is denominated in."
+    },
+    "swap_long": {
+      "type": ["number", "null"],
+      "description": "Swap/financing applied to long positions; nullable when not applicable/unknown."
+    },
+    "swap_short": {
+      "type": ["number", "null"],
+      "description": "Swap/financing applied to short positions; nullable when not applicable/unknown."
+    },
+    "rollover_rule": {
+      "type": ["string", "null"],
+      "description": "Rollover/triple-swap rule description; nullable."
+    },
+    "contract_size": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Units of the underlying per one contract/lot."
+    },
+    "tick_size": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Minimum price increment."
+    },
+    "tick_value": {
+      "type": "number",
+      "description": "Monetary value of one tick per contract."
+    },
+    "minimum_lot": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Smallest tradable lot size."
+    },
+    "lot_step": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Increment between tradable lot sizes."
+    },
+    "margin_rule": {
+      "type": ["string", "null"],
+      "description": "Margin/leverage rule description; nullable."
+    },
+    "source_object_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Logical reference to the immutable raw source object these costs were derived from."
+    },
+    "source_object_sha256": {
+      "$ref": "#/definitions/sha256_hex",
+      "description": "SHA-256 of the immutable raw source object."
+    },
+    "quality_flags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Quality/lineage markers for this cost record. Empty array means none."
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Known limitations or caveats (e.g. fields not covered, assumed). Empty array means none stated."
+    }
+  },
+  "required": [
+    "schema_version",
+    "instrument_id",
+    "broker_id",
+    "account_type",
+    "valid_from_utc",
+    "valid_to_utc",
+    "commission_model",
+    "commission_value",
+    "commission_currency",
+    "swap_long",
+    "swap_short",
+    "rollover_rule",
+    "contract_size",
+    "tick_size",
+    "tick_value",
+    "minimum_lot",
+    "lot_step",
+    "margin_rule",
+    "source_object_id",
+    "source_object_sha256",
+    "quality_flags",
+    "limitations"
+  ]
+}

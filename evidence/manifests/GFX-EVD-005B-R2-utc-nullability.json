@@ -1,0 +1,101 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-005B-R2-utc-nullability",
+  "packet_id": "GFX-PKT-005B-R2",
+  "created_at_utc": "2026-06-23T13:58:44Z",
+  "branch": "chore/eurusd-data-foundation",
+  "base_commit": "c33ae6af51d314abecbb9e4a5fbb23d2b7f4826e",
+  "head_commit": "a8759c565dc9fc44ead357e330d596b287965496",
+  "c5_commit": "a8759c565dc9fc44ead357e330d596b287965496",
+  "c6_commit": null,
+  "environment": {
+    "python_version": "3.14.6",
+    "duckdb_version": "1.5.4",
+    "research_venv": ".venv-research (unchanged; no reinstall or upgrade)",
+    "dependencies_changed": false,
+    "schemas_changed": false,
+    "ci_workflow_changed": false,
+    "heavy_dataframe_libs_present": false
+  },
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "c5": {
+      "push_run_id": 28031660693,
+      "pull_request_run_id": 28031662452,
+      "run_head_sha": "a8759c565dc9fc44ead357e330d596b287965496",
+      "jobs": [
+        { "name": "governance", "conclusion": "success" },
+        { "name": "backend", "conclusion": "success" },
+        { "name": "frontend", "conclusion": "success" },
+        { "name": "research-foundation", "conclusion": "success" }
+      ]
+    },
+    "c6": { "push_run_id": null, "pull_request_run_id": null, "run_head_sha": null, "jobs": [] }
+  },
+  "corrections": [
+    "tools/research_smoke.py: _parse_utc no longer returns the raw string after a regex check; it keeps the canonical 'Z' regex as a representation gate, then parses with datetime.fromisoformat into a timezone-aware UTC datetime, rejecting impossible calendar/time values (e.g. 2026-02-30, hour 25) and any non-UTC offset. availability_time_utc >= observation_time_utc is now compared as datetime instants, fixing the prior lexicographic bug where '2026-01-02T00:00:00.1Z' sorted before '...00Z' because '.' < 'Z'. The original timestamp strings are preserved unchanged in records and Parquet (the datetime is used only for comparison).",
+    "tools/research_smoke.py: synthetic inputs now exercise nullability - the last quote (synthetic_raw_quote_4) sets source_time_utc and received_time_utc to null and OMITS bid_size/ask_size; the last bar (synthetic_raw_bar_4) OMITS volume/volume_unit. Insertion uses rec.get(col) so an absent optional column is written as NULL (no KeyError); required common fields are still guaranteed present by validate_observation before insertion.",
+    "tools/research_smoke.py: the field-by-field readback comparison now uses src.get(col) so an absent optional source field and a null read-back value are treated as equivalent; reconstructed records still re-run the local validator, and full-lineage, cross-variant, separate-manifest and deterministic checks are retained.",
+    "tests/test_research_foundation.py: added TestUtcSemantics (parse returns aware datetime; invalid calendar date 2026-02-30 rejected; invalid time hour 25 rejected; later fractional availability accepted; earlier whole-second availability rejected; equal instants accepted) and TestNullableRoundTrip (null source/received timestamps + null/omitted quote sizes round-trip as null; omitted bar volume/unit round-trip as null; omitted optional inputs do not raise), plus a required-common-field-mandatory check.",
+    "research/README.md and docs/DATA_CONTRACTS.md (Current schema-foundation section only): describe semantic UTC datetime ordering and nullable/omitted-field round trip; Candidate/Proposed/Unknown boundaries preserved.",
+    "docs/NOTION_MAP.md: appended titles GFX-EVD-005B-R1 (PM review), GFX-PKT-005B-R2, GuvFX — Current State v0.16 (titles only).",
+    "packets/ACTIVE.md: active pointer set to GFX-PKT-005B-R2."
+  ],
+  "commands": [
+    ".venv-research/bin/python tools/research_smoke.py",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    "make research-check",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-005B-R2-utc-nullability.json >/dev/null",
+    "git diff --check",
+    "git diff --cached --check",
+    "stdlib scope/privacy check: only authorised files changed; no real-data artefact/personal path; no schema/dependency/CI file changed; required UTC + null tests present"
+  ],
+  "expected_results": [
+    "Timestamp syntax and calendar/time semantics validated; non-UTC and impossible values rejected",
+    "Availability ordering compares UTC instants correctly across fractional representations",
+    "Required common fields remain mandatory",
+    "Nullable/omitted timestamp, size and volume fields survive Parquet as null and re-validate",
+    "Existing full-field, variant, manifest and deterministic checks remain green",
+    "Only authorised files change; no schema/dependency/CI change",
+    "CI passes governance, backend, frontend and research-foundation for C5 and C6 (push + PR)"
+  ],
+  "actual_results": [
+    "research_smoke: status PASS; full_field_roundtrip_verified true; counts quote 5/5, bar 5/5; quote_manifest/bar_manifest row_count 5 each",
+    "research unit tests: Ran 33 tests, OK (includes 6 UTC-semantic tests and 3 nullable round-trip tests)",
+    "check_no_secrets: no findings (exit 0); secret-scanner unit tests OK",
+    "make governance-check: passed; make research-check: smoke PASS + 33 research tests OK",
+    "json.tool: this manifest parsed as valid JSON; both contract schemas still valid and unchanged",
+    "scope/privacy: only the 6 authorised files (C5) changed; schemas, requirements, ADR, Makefile, CI workflow and prior evidence manifests untouched; no personal paths/secrets/real-data artefacts",
+    "git diff --check and git diff --cached --check produced no output",
+    "C5 CI: push run 28031660693 and pull_request run 28031662452 (head a8759c5) both pass governance/backend/frontend/research-foundation; C6 runs recorded in the C6 commit and PR comment"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Synthetic data only: no provider, NAS, broker identity, account, real EURUSD price, or ingestion pipeline was added or accessed.",
+    "Semantic UTC parsing uses the Python standard library (datetime.fromisoformat); no date/time or JSON-Schema validator dependency was introduced.",
+    "head_commit/c5_commit point at C5 (a8759c5); the C6 block and c6_commit are filled at the evidence-only C6 commit after the C5 runs concluded success; the C6 commit triggers further CI validated separately.",
+    "make check (full backend/frontend integration) was not run locally per packet instruction; GitHub Actions is the approved full integration gate.",
+    "No dependency, schema, requirements, ADR, Makefile or CI workflow change was made; the research venv was not reinstalled or upgraded."
+  ],
+  "artefact_locations": [
+    "tools/research_smoke.py",
+    "tests/test_research_foundation.py",
+    "research/README.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    "evidence/manifests/GFX-EVD-005B-R2-utc-nullability.json"
+  ],
+  "checksums": {
+    "tools/research_smoke.py": "sha256:49cf3a89e124096bf2835dba158a6b5818f31d105ec4f88cb1f9a5202ed6a1b7",
+    "tests/test_research_foundation.py": "sha256:abd605d0370333004b527912dc90a3f37bdf5c1b54a129b7c7c7f697dd065869",
+    "research/README.md": "sha256:20b70ce8d03f1787ceed344e82f0782d4b6f350d5e36c0831f44ba8c3349e7e8",
+    "docs/DATA_CONTRACTS.md": "sha256:e8a6bbc968e9b88d68a38b78dcc13b03a97e06c0a44db4d7cf39f8c12db49852",
+    "docs/NOTION_MAP.md": "sha256:d2dc2f6c00f0b8c70e34a8b348200a290746b7c35502fc6b97a9c2d097b3b6d7"
+  },
+  "reviewer": null
+}

@@ -1,42 +1,45 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-004A-R1 (continuation of GFX-PKT-004A)
-- **Title:** Documentation Factuality Remediation v0.1
-- **Branch:** `chore/guvfx-documentation-convergence`
+- **Packet ID:** GFX-PKT-005B-R2 (continuation of GFX-PKT-005B / R1)
+- **Title:** UTC Semantic and Nullable-Field Remediation v0.1
+- **Branch:** `chore/eurusd-data-foundation`
 - **Status:** Remediated — CI verified; PM review pending. **No merge is authorised.**
 
 ## Scope
 
-A Green, documentation-only factuality remediation on the existing PR #32 branch,
-correcting six current-state overstatements raised in PM review:
+A Green, bounded final foundation correction on the existing PR #33 branch,
+addressing the point-in-time defect raised in PM review:
 
-- `docs/STATUS.md` — label the domains as *documented production routes* and state
-  that route availability / live production health were not probed.
-- `docs/ARCHITECTURE.md` — qualify the PostgreSQL version (CI = 16; production =
-  Unknown without a deployment source); change production topology to *Partial*;
-  change security posture to *Partial*, separating implemented Git controls from
-  policy controls and unknown operational facts.
-- `docs/DATA_CONTRACTS.md` — record the fixed current MT5 mount-path constants and
-  the `/admin/` + `/health/` API exceptions; mark configurable paths as Proposed.
-- `docs/NOTION_MAP.md` — append three record titles (titles only).
-- this pointer + a new R1 evidence manifest.
+- `tools/research_smoke.py` — `_parse_utc` now parses canonical `Z` timestamps into
+  timezone-aware UTC `datetime` instants (rejecting impossible calendar/time values
+  and non-UTC representations); `availability_time_utc >= observation_time_utc` is
+  compared as instants, not lexicographically, so fractional-second ordering is
+  correct. Original timestamp strings are preserved in records and Parquet.
+- `tools/research_smoke.py` — synthetic inputs now include a quote with null
+  `source_time_utc`/`received_time_utc` and omitted bid/ask sizes, and a bar with
+  omitted volume/unit; insertion uses null for absent optional columns and the
+  field comparison treats an absent optional source field and a null read-back as
+  equivalent. Required common fields remain mandatory.
+- `tests/test_research_foundation.py` — tests for invalid calendar/time values,
+  fractional-second ordering both directions, equal instants, and null round-trip
+  of the optional timestamp/size/volume fields.
+- `research/README.md`, `docs/DATA_CONTRACTS.md`, `docs/NOTION_MAP.md` — docs.
+- this pointer + a new GFX-EVD-005B-R2 evidence manifest.
 
-## Prohibited in this packet
+## Non-goals / Prohibited in this packet
 
-- No application, CI, Makefile, scanner, rule, ADR-template, or infrastructure
-  edits.
-- No production, NAS, broker, MT5 runtime, market-data, or Notion access.
-- No branch switch, fetch, merge, rebase, reset, or force push.
-- No edit outside the six authorised paths.
-- No PR merge.
+- No schema, dependency, requirements, ADR, Makefile, or CI workflow change.
+- No real market data or committed Parquet artefact.
+- No provider, broker, account, NAS, MT5 runtime, database, or production access.
+- No application code change.
+- No branch switch, fetch, rebase, reset, force push, or PR merge.
 
 ## Evidence
 
-- Expected path: `evidence/manifests/GFX-EVD-004A-R1-factuality-remediation.json`
-- The original `evidence/manifests/GFX-EVD-004A-documentation-convergence.json` is
-  not modified.
+- Expected path: `evidence/manifests/GFX-EVD-005B-R2-utc-nullability.json`
+- Prior evidence manifests (005B, 005B-R1) are not modified.
 
 ## Notion record
 
-- Title: **GFX-PKT-004A-R1 — Documentation Factuality Remediation v0.1**
+- Title: **GFX-PKT-005B-R2 — UTC Semantic and Nullable-Field Remediation v0.1**
   (Notion is authoritative for full text and lifecycle status.)

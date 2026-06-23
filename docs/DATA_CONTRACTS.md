@@ -111,6 +111,47 @@ Each item is **Current** and cites its source.
   `RECEIVED → PROCESSED → ARCHIVED`. It is **not** a Signal/Trade/Position/
   Execution object (ADR-009).
 
+### Market-data schema foundation — Current
+
+> **Current (schema + harness only).** Established by **GFX-PKT-005B** and
+> **ADR 0010** (`docs/ADRs/0010-market-data-research-foundation.md`). Versioned
+> JSON Schemas and a synthetic round-trip harness now exist in the repository.
+> **No provider, real dataset, or ingestion pipeline exists** — only synthetic
+> data marked `synthetic_test_only`.
+
+- **Versioned contract schemas** (`research/contracts/`): `market_observation_v1`
+  (quote/bar observations with source and time lineage), `broker_cost_v1`
+  (point-in-time broker cost/contract specification), `dataset_manifest_v1`
+  (reproducible dataset manifest). Each is a JSON Schema document with a stable
+  `$id`, `version: "1.0"`, and `additionalProperties: false`.
+- **Synthetic round-trip harness** (`tools/research_smoke.py`): proves a
+  deterministic quote/bar → DuckDB → Parquet → DuckDB loop using only the standard
+  library and DuckDB (no pandas/PyArrow/Polars). The round trip preserves the
+  **full** versioned observation contract — every required common field, all five
+  point-in-time timestamps, the raw-lineage fields, `quality_flags`, and the
+  populated quote/bar variant fields — and re-validates and field-compares each
+  reconstructed record against its source. Timestamp ordering is validated as a
+  **semantic UTC datetime instant comparison** (canonical `Z` strings parsed into
+  timezone-aware UTC datetimes, rejecting impossible calendar/time values and
+  ordering fractional seconds correctly) while preserving the original strings;
+  **nullable/omitted optional fields** (source/received times, quote sizes, bar
+  volume/unit) are proven to round-trip as null. It emits **separate** dataset
+  manifests (quotes `interval: event`, bars `interval: M1`), each carrying a
+  required `record_type` and referencing only its own raw objects, checksum and row
+  counts. It writes to a temporary directory and deletes all artefacts on exit;
+  nothing persistent is produced.
+- **Isolated research runtime**: a local `.venv-research` (Python 3.14) with
+  exactly `duckdb==1.5.4` pinned in `requirements-research.txt`; exercised by
+  `make research-check` and the `research-foundation` CI job. See
+  `research/README.md`.
+- **Future real-data root** is the `GUVFX_DATA_ROOT` environment variable with **no
+  repository-path default**; this foundation adds **no** real data, NAS path,
+  broker identity, account, or ingestion code.
+
+The shape below remains **Candidate** for source-specific EURUSD ingestion, and
+the broader point-in-time platform remains **Proposed**; this section does not
+promote either.
+
 ---
 
 ## Candidate market-data contract — Candidate
