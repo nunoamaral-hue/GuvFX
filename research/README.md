@@ -148,3 +148,14 @@ prices must be finite; runtime validation enforces the schema type/length bounds
 Raw landing is exactly idempotent (an unchanged re-acquire returns the stored
 checksums) and any request/response byte difference is quarantined without touching
 accepted raw.
+
+**GFX-PKT-006C-R2 (publication, manifest & concurrency):** publication now goes
+through the single fail-closed `normalise.publish_observations` API, which validates
+the request, response, request/response match and a `VERIFIED`, bar-covering
+timezone assessment before any record is produced (the mapper is private). Timezone
+evidence enforces type/length bounds, offset arithmetic and observation coverage.
+Every raw manifest is strictly validated before write and on read, with stored
+request/response files verified by exact SHA-256 and paths tied to their object
+directory. Each landing attempt uses a unique staging directory and resolves late
+races without overwrite or data loss. The HTTP client validates its byte limit,
+rejects URL userinfo, and redacts response read errors.

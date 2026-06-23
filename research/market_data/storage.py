@@ -1,16 +1,22 @@
 """Immutable raw-object landing with path safety, idempotency and quarantine.
 
-Accepted raw bytes are written once via a staging directory and atomically
+Accepted raw bytes are written once via a UNIQUE staging directory and atomically
 promoted; they are never edited or overwritten. Corrections are new objects.
 Conflicts and malformed input are quarantined without touching accepted raw. A
 prohibited credential/account-number key triggers a fail-closed security stop that
 persists only a digest, never the body.
 
-R1 hardening (GFX-PKT-006C-R1): idempotency compares BOTH stored request and
-response SHA-256 and returns values read back from the stored manifest; a corrupt/
-missing accepted manifest fails closed; quarantine identity is deterministic over
-request bytes + response bytes + reason (so differing request bytes cannot alias);
-and land() rejects request_bytes that are not the canonical bytes of the request.
+R2 hardening (GFX-PKT-006C-R2):
+- a single strict manifest validator runs before every manifest write and on every
+  manifest read; it verifies the exact field set, path safety, that the three paths
+  live in the expected object directory, that the raw-object id matches the request
+  directory, and that the stored request/response files exist (regular, in-root,
+  non-symlink) with exact SHA-256 matching the manifest;
+- each attempt uses a unique ``tempfile.mkdtemp`` staging dir and only ever cleans
+  up its own staging; foreign staging is preserved;
+- late races (a winning final/quarantine dir appearing during staging) are resolved
+  by validating the winner and returning ALREADY_PRESENT only on exact byte match,
+  else quarantining, never overwriting or deleting another attempt's data.
 """
 
 from __future__ import annotations
@@ -19,11 +25,14 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
 from .contracts import (
+    INSTANT_UTC_RE,
+    MINUTE_UTC_RE,
     REQUEST_SCHEMA_ID,
     RESPONSE_SCHEMA_ID,
     ProhibitedKeyError,
@@ -36,11 +45,18 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,12}$")
 TIMEFRAME_RE = re.compile(r"^[A-Z][A-Z0-9]{0,7}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+# Safe relative path: segments start with [A-Za-z0-9_-] (no dot), dots allowed
+# only after the first segment char; single slashes; no backslash/empty/.././absolute.
+SAFE_REL_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$")
 MANIFEST_SCHEMA_ID = "https://guvfx.local/schema/raw_market_data_manifest_v1.schema.json"
 
-_MANIFEST_REQUIRED = (
-    "raw_object_id", "object_state", "request_sha256", "response_sha256",
-    "request_path", "response_path", "manifest_path",
+MANIFEST_FIELDS = (
+    "schema_version", "raw_object_id", "object_state", "source_id", "account_scope",
+    "symbol", "timeframe", "representation", "range_start_utc", "range_end_utc",
+    "range_semantics", "acquired_at_utc", "received_at_utc", "request_schema_id",
+    "response_schema_id", "request_sha256", "response_sha256", "request_path",
+    "response_path", "manifest_path", "code_commit", "timezone_status",
+    "quarantine_reason", "limitations",
 )
 
 
@@ -94,21 +110,105 @@ class RawStore:
         dt = dt.astimezone(timezone.utc)
         return source, scope, symbol, timeframe, f"{dt.year:04d}", f"{dt.month:02d}"
 
-    def _load_manifest_failclosed(self, directory: Path) -> dict:
+    # -- strict manifest validation ----------------------------------------
+    def _validate_manifest(self, manifest: dict, *, files_dir: Path,
+                           expected_rel_dir: str, expected_request_id: str) -> None:
+        """Strictly validate a manifest + its stored files. Fail closed on any issue.
+
+        Used before writing a manifest (files in staging) and on every read (files
+        in the final/quarantine dir).
+        """
+        if not isinstance(manifest, dict) or set(manifest) != set(MANIFEST_FIELDS):
+            raise StorageError("manifest field set invalid")
+        if manifest["schema_version"] != "1.0":
+            raise StorageError("manifest schema_version invalid")
+        if manifest["object_state"] not in ("ACCEPTED", "QUARANTINED"):
+            raise StorageError("manifest object_state invalid")
+        if not isinstance(manifest["source_id"], str) or not SLUG_RE.match(manifest["source_id"]):
+            raise StorageError("manifest source_id invalid")
+        if not isinstance(manifest["account_scope"], str) or not SLUG_RE.match(manifest["account_scope"]) \
+                or not any(c.isalpha() for c in manifest["account_scope"]):
+            raise StorageError("manifest account_scope invalid")
+        if not isinstance(manifest["symbol"], str) or not SYMBOL_RE.match(manifest["symbol"]):
+            raise StorageError("manifest symbol invalid")
+        if not isinstance(manifest["timeframe"], str) or not TIMEFRAME_RE.match(manifest["timeframe"]):
+            raise StorageError("manifest timeframe invalid")
+        if manifest["representation"] != "bid_ohlc":
+            raise StorageError("manifest representation invalid")
+        for f in ("range_start_utc", "range_end_utc"):
+            if not isinstance(manifest[f], str) or not MINUTE_UTC_RE.match(manifest[f]):
+                raise StorageError(f"manifest {f} invalid")
+        if manifest["range_semantics"] != "[start,end)":
+            raise StorageError("manifest range_semantics invalid")
+        for f in ("acquired_at_utc", "received_at_utc"):
+            if not isinstance(manifest[f], str) or not INSTANT_UTC_RE.match(manifest[f]):
+                raise StorageError(f"manifest {f} invalid")
+        for f in ("request_schema_id", "response_schema_id", "code_commit"):
+            if not isinstance(manifest[f], str) or not manifest[f]:
+                raise StorageError(f"manifest {f} invalid")
+        for f in ("request_sha256", "response_sha256"):
+            if not isinstance(manifest[f], str) or not HEX64_RE.match(manifest[f]):
+                raise StorageError(f"manifest {f} invalid")
+        if manifest["timezone_status"] not in ("NOT_EVALUATED", "VERIFIED", "INCONCLUSIVE", "CONFLICT"):
+            raise StorageError("manifest timezone_status invalid")
+        if not isinstance(manifest["limitations"], list) or not all(
+            isinstance(x, str) for x in manifest["limitations"]
+        ):
+            raise StorageError("manifest limitations invalid")
+
+        # State / reason pairing.
+        if manifest["object_state"] == "ACCEPTED":
+            if manifest["quarantine_reason"] is not None:
+                raise StorageError("ACCEPTED manifest must have null quarantine_reason")
+        else:
+            if not isinstance(manifest["quarantine_reason"], str) or not manifest["quarantine_reason"]:
+                raise StorageError("QUARANTINED manifest must have a non-empty reason")
+
+        # Identity must match the expected request-id directory.
+        if not HEX64_RE.match(str(manifest["raw_object_id"])) \
+                or manifest["raw_object_id"] != expected_request_id:
+            raise StorageError("manifest raw_object_id does not match request directory")
+
+        # Paths: safe, expected basenames, tied to the expected object directory,
+        # and resolving beneath the configured root.
+        expected = {
+            "request_path": f"{expected_rel_dir}/request.json",
+            "response_path": f"{expected_rel_dir}/response.json",
+            "manifest_path": f"{expected_rel_dir}/manifest.json",
+        }
+        for key, exp in expected.items():
+            val = manifest[key]
+            if not isinstance(val, str) or not SAFE_REL_RE.match(val):
+                raise StorageError(f"manifest {key} is not a safe relative path")
+            if val != exp:
+                raise StorageError(f"manifest {key} not in the expected object directory")
+            self._resolve_under_root(*val.split("/"))  # raises if it escapes root
+
+        # Stored files must exist (regular, in-root, non-symlink) and match digests.
+        for name, digest_key in (("request.json", "request_sha256"),
+                                 ("response.json", "response_sha256")):
+            fpath = files_dir / name
+            if fpath.is_symlink() or not fpath.is_file():
+                raise StorageError(f"stored {name} missing or not a regular file")
+            resolved = fpath.resolve()
+            if resolved != self.root and self.root not in resolved.parents:
+                raise StorageError(f"stored {name} resolves outside the data root")
+            if sha256_hex(fpath.read_bytes()) != manifest[digest_key]:
+                raise StorageError(f"stored {name} checksum does not match manifest")
+
+    def _load_manifest_failclosed(self, directory: Path, *, expected_rel_dir: str,
+                                  expected_request_id: str) -> dict:
         path = directory / "manifest.json"
         try:
             manifest = json.loads(path.read_text("utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise StorageError(
-                "accepted manifest missing or corrupt; failing closed"
-            ) from exc
-        if not isinstance(manifest, dict) or any(k not in manifest for k in _MANIFEST_REQUIRED):
-            raise StorageError("accepted manifest incomplete; failing closed")
+            raise StorageError("manifest missing or corrupt; failing closed") from exc
+        self._validate_manifest(manifest, files_dir=directory,
+                                expected_rel_dir=expected_rel_dir,
+                                expected_request_id=expected_request_id)
         return manifest
 
-    def _result_from_manifest(self, status: str, directory: Path) -> dict:
-        """Build a result from the STORED manifest, never current-call claims."""
-        manifest = self._load_manifest_failclosed(directory)
+    def _result_from_manifest(self, status: str, manifest: dict) -> dict:
         return {
             "status": status,
             "object_state": manifest["object_state"],
@@ -120,12 +220,16 @@ class RawStore:
             "manifest_path": manifest["manifest_path"],
         }
 
+    def _staging_parent(self) -> Path:
+        parent = self._resolve_under_root(".staging")
+        parent.mkdir(parents=True, exist_ok=True)
+        return parent
+
     # -- public API ---------------------------------------------------------
     def land(self, request: dict, response: dict, request_bytes: bytes,
              response_bytes: bytes, *, code_commit: str, acquired_at_utc: str,
              received_at_utc: str, timezone_status: str = "NOT_EVALUATED") -> dict:
         """Land an accepted raw object, or report ALREADY_PRESENT / quarantine."""
-        # Fail-closed security stop: never persist a body containing a prohibited key.
         for obj, label in ((request, "request"), (response, "response")):
             bad = find_prohibited_key(obj)
             if bad:
@@ -139,10 +243,10 @@ class RawStore:
         response_sha = sha256_hex(response_bytes)
         source, scope, symbol, timeframe, yyyy, mm = self._components(request)
         rel_parts = ("raw", "mt5", source, scope, symbol, timeframe, yyyy, mm, request_id)
+        rel_dir = "/".join(rel_parts)
         final_dir = self._resolve_under_root(*rel_parts)
 
-        # Direct-call ambiguity guard: request_bytes MUST be the canonical bytes of
-        # the validated request object. Otherwise quarantine; accepted raw untouched.
+        # Canonical-request-byte guard.
         if request_bytes != canonical_json_bytes(request):
             q = self._quarantine(request, request_bytes, response_bytes, source, scope,
                                  symbol, timeframe, yyyy, mm, request_id, code_commit,
@@ -151,16 +255,10 @@ class RawStore:
             return {**q, "status": "QUARANTINED_CONFLICT"}
 
         if final_dir.exists():
-            manifest = self._load_manifest_failclosed(final_dir)
-            same_req = manifest["request_sha256"] == request_sha
-            same_resp = manifest["response_sha256"] == response_sha
-            if same_req and same_resp:
-                return self._result_from_manifest("ALREADY_PRESENT", final_dir)
-            reason = "response_byte_conflict" if same_req else "request_byte_conflict"
-            q = self._quarantine(request, request_bytes, response_bytes, source, scope,
-                                 symbol, timeframe, yyyy, mm, request_id, code_commit,
-                                 acquired_at_utc, received_at_utc, reason=reason)
-            return {**q, "status": "QUARANTINED_CONFLICT"}
+            return self._resolve_existing_accepted(
+                final_dir, rel_dir, request_id, request_sha, response_sha, request,
+                request_bytes, response_bytes, source, scope, symbol, timeframe, yyyy,
+                mm, code_commit, acquired_at_utc, received_at_utc)
 
         manifest = self._manifest(
             object_state="ACCEPTED", request=request, request_id=request_id,
@@ -169,29 +267,49 @@ class RawStore:
             received_at_utc=received_at_utc, timezone_status=timezone_status,
             quarantine_reason=None,
         )
-        staging = self._resolve_under_root(".staging", f"accept-{request_id}")
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True)
+        staging = Path(tempfile.mkdtemp(dir=self._staging_parent(), prefix="accept-"))
         try:
             self._write_exclusive(staging / "request.json", request_bytes)
             self._write_exclusive(staging / "response.json", response_bytes)
+            # Validate before writing the manifest (verifies staged files + checksums).
+            self._validate_manifest(manifest, files_dir=staging, expected_rel_dir=rel_dir,
+                                    expected_request_id=request_id)
             self._write_exclusive(staging / "manifest.json", canonical_json_bytes(manifest))
             final_dir.parent.mkdir(parents=True, exist_ok=True)
-            if final_dir.exists():
-                raise StorageError("accepted object appeared during staging")
-            os.replace(staging, final_dir)  # atomic promotion of the complete object
+            try:
+                os.replace(staging, final_dir)  # atomic; fails if final already exists
+            except OSError:
+                # Late race: a winner appeared. Discard our staging, resolve the winner.
+                shutil.rmtree(staging, ignore_errors=True)
+                return self._resolve_existing_accepted(
+                    final_dir, rel_dir, request_id, request_sha, response_sha, request,
+                    request_bytes, response_bytes, source, scope, symbol, timeframe,
+                    yyyy, mm, code_commit, acquired_at_utc, received_at_utc)
         finally:
             if staging.exists():
-                shutil.rmtree(staging)
+                shutil.rmtree(staging, ignore_errors=True)
 
-        return self._result_from_manifest("ACCEPTED", final_dir)
+        return self._result_from_manifest("ACCEPTED", manifest)
+
+    def _resolve_existing_accepted(self, final_dir, rel_dir, request_id, request_sha,
+                                   response_sha, request, request_bytes, response_bytes,
+                                   source, scope, symbol, timeframe, yyyy, mm,
+                                   code_commit, acquired_at_utc, received_at_utc) -> dict:
+        manifest = self._load_manifest_failclosed(
+            final_dir, expected_rel_dir=rel_dir, expected_request_id=request_id)
+        if manifest["request_sha256"] == request_sha and manifest["response_sha256"] == response_sha:
+            return self._result_from_manifest("ALREADY_PRESENT", manifest)
+        reason = "response_byte_conflict" if manifest["request_sha256"] == request_sha \
+            else "request_byte_conflict"
+        q = self._quarantine(request, request_bytes, response_bytes, source, scope,
+                             symbol, timeframe, yyyy, mm, request_id, code_commit,
+                             acquired_at_utc, received_at_utc, reason=reason)
+        return {**q, "status": "QUARANTINED_CONFLICT"}
 
     def quarantine_malformed(self, request: dict, request_bytes: bytes,
                              response_bytes: bytes, *, code_commit: str,
                              acquired_at_utc: str, received_at_utc: str,
                              reason: str) -> dict:
-        """Quarantine ordinary malformed/invalid data with exact bytes + reason."""
         bad = find_prohibited_key(request)
         if bad:
             self.security_stop(request, request_bytes, response_bytes, bad)
@@ -208,20 +326,20 @@ class RawStore:
     def _quarantine(self, request, request_bytes, response_bytes, source, scope, symbol,
                     timeframe, yyyy, mm, request_id, code_commit, acquired_at_utc,
                     received_at_utc, *, reason) -> dict:
-        # Deterministic over request bytes + response bytes + reason: differing
-        # request bytes cannot alias the same quarantine directory.
         quarantine_id = sha256_hex(
             request_bytes + b"\x00" + response_bytes + b"\x00" + reason.encode("utf-8")
         )[:16]
         rel_parts = ("quarantine", "mt5", source, scope, symbol, timeframe, yyyy, mm,
                      request_id, quarantine_id)
+        rel_dir = "/".join(rel_parts)
         qdir = self._resolve_under_root(*rel_parts)
-        if qdir.exists():
-            # Return STORED values, not current-call claims.
-            return self._result_from_manifest("QUARANTINED", qdir)
-
         request_sha = sha256_hex(request_bytes)
         response_sha = sha256_hex(response_bytes)
+
+        if qdir.exists():
+            return self._resolve_existing_quarantine(qdir, rel_dir, request_id,
+                                                     request_sha, response_sha, reason)
+
         manifest = self._manifest(
             object_state="QUARANTINED", request=request, request_id=request_id,
             request_sha=request_sha, response_sha=response_sha, rel_parts=rel_parts,
@@ -229,29 +347,42 @@ class RawStore:
             received_at_utc=received_at_utc, timezone_status="NOT_EVALUATED",
             quarantine_reason=reason,
         )
-        staging = self._resolve_under_root(".staging", f"quar-{request_id}-{quarantine_id}")
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True)
+        staging = Path(tempfile.mkdtemp(dir=self._staging_parent(), prefix="quar-"))
         try:
             self._write_exclusive(staging / "request.json", request_bytes)
             self._write_exclusive(staging / "response.json", response_bytes)
+            self._validate_manifest(manifest, files_dir=staging, expected_rel_dir=rel_dir,
+                                    expected_request_id=request_id)
             self._write_exclusive(staging / "manifest.json", canonical_json_bytes(manifest))
             qdir.parent.mkdir(parents=True, exist_ok=True)
-            if not qdir.exists():
+            try:
                 os.replace(staging, qdir)
+            except OSError:
+                shutil.rmtree(staging, ignore_errors=True)
+                return self._resolve_existing_quarantine(qdir, rel_dir, request_id,
+                                                         request_sha, response_sha, reason)
         finally:
             if staging.exists():
-                shutil.rmtree(staging)
-        return self._result_from_manifest("QUARANTINED", qdir)
+                shutil.rmtree(staging, ignore_errors=True)
+        return self._result_from_manifest("QUARANTINED", manifest)
+
+    def _resolve_existing_quarantine(self, qdir, rel_dir, request_id, request_sha,
+                                     response_sha, reason) -> dict:
+        manifest = self._load_manifest_failclosed(
+            qdir, expected_rel_dir=rel_dir, expected_request_id=request_id)
+        # The deterministic id binds request+response+reason; require an exact match.
+        if (manifest["request_sha256"] != request_sha
+                or manifest["response_sha256"] != response_sha
+                or manifest.get("quarantine_reason") != reason):
+            raise StorageError("existing quarantine object does not match; failing closed")
+        return self._result_from_manifest("QUARANTINED", manifest)
 
     def security_stop(self, request, request_bytes, response_bytes, bad_key) -> None:
         """Persist ONLY digests + a redacted reason; never the offending body."""
         request_id = request.get("request_id", "unknown")
         if not re.match(r"^[0-9a-f]{64}$", str(request_id)):
             request_id = sha256_hex(request_bytes)
-        rel_parts = ("quarantine", "security", request_id)
-        sdir = self._resolve_under_root(*rel_parts)
+        sdir = self._resolve_under_root("quarantine", "security", request_id)
         record = {
             "schema_version": "1.0",
             "object_state": "QUARANTINED",
@@ -299,6 +430,5 @@ class RawStore:
 
     @staticmethod
     def _write_exclusive(path: Path, data: bytes) -> None:
-        # Exclusive creation: accepted/quarantined files are never overwritten.
         with open(path, "xb") as fh:
             fh.write(data)

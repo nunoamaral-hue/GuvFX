@@ -61,6 +61,33 @@ def _commit_args():
                 received_at_utc="2026-01-01T00:00:00Z")
 
 
+def _verified_evidence(request=None):
+    """Deterministic VERIFIED evidence with an observation inside the coverage.
+
+    The committed verified fixture intentionally violates the R2 observation
+    coverage rule, so positive cases build evidence in-memory.
+    """
+    request = request or _fixture("synthetic_history_request.json")
+    ev = {
+        "schema_version": "1.0",
+        "source_id": request["source_id"],
+        "account_scope": request["account_scope"],
+        "assessment_status": "VERIFIED",
+        "evidence_method": "synthetic_clock_compare",
+        "assessed_at_utc": "2025-01-01T00:00:00Z",
+        "covered_start_utc": "2025-01-01T00:00:00Z",
+        "covered_end_utc": "2025-02-01T00:00:00Z",
+        "observations": [
+            {"observed_at_utc": "2025-01-01T00:00:00Z", "server_clock_epoch_s": 1735689600,
+             "utc_clock_epoch_s": 1735689600, "implied_offset_seconds": 0}
+        ],
+        "dst_behaviour": "synthetic_none",
+        "limitations": ["synthetic_test_only"],
+    }
+    ev["evidence_fingerprint"] = tzgate.compute_evidence_fingerprint(ev)
+    return ev
+
+
 class TestSchemas(unittest.TestCase):
     def test_schemas_parse_and_are_strict(self):
         for name in SCHEMAS:
@@ -310,7 +337,7 @@ class TestTimezoneGate(unittest.TestCase):
     def setUp(self):
         self.request = _fixture("synthetic_history_request.json")
         self.response = _fixture("synthetic_history_response.json")
-        self.verified = _fixture("synthetic_timezone_verified.json")
+        self.verified = _verified_evidence(self.request)
         self.inconclusive = _fixture("synthetic_timezone_inconclusive.json")
         self.epochs = [b["time_epoch_s"] for b in self.response["bars"]]
 
@@ -331,6 +358,12 @@ class TestTimezoneGate(unittest.TestCase):
 
     def test_verified_permits_normalisation(self):
         self._gate(self.verified)  # no raise
+
+    def test_committed_verified_fixture_violates_coverage(self):
+        # The frozen fixture's observation is outside its covered interval; the R2
+        # observation-coverage rule must reject it.
+        with self.assertRaises(tzgate.TimezoneError):
+            self._gate(_fixture("synthetic_timezone_verified.json"))
 
     def test_inconclusive_blocks(self):
         with self.assertRaises(tzgate.TimezoneError):
@@ -373,18 +406,20 @@ class TestNoHardcodedOffset(unittest.TestCase):
             self.assertNotIn("7200", text)  # 2h in seconds
 
 
-class TestNormalisation(unittest.TestCase):
+class TestGatedPublication(unittest.TestCase):
     def setUp(self):
+        self.request = _fixture("synthetic_history_request.json")
         self.response = _fixture("synthetic_history_response.json")
+        self.verified = _verified_evidence(self.request)
 
-    def _records(self):
-        return normalise.normalise_bid_ohlc(
-            self.response, raw_object_id="a" * 64,
+    def _publish(self, evidence):
+        return normalise.publish_observations(
+            self.request, self.response, evidence, raw_object_id="a" * 64,
             response_sha256="b" * 64, received_time_utc="2026-01-01T00:00:00Z",
             ingestion_time_utc="2026-01-01T00:00:05Z", synthetic=True)
 
-    def test_records_are_m1_bid_ohlc_only_with_lineage(self):
-        records = self._records()
+    def test_verified_publishes_m1_bid_ohlc_with_lineage(self):
+        records = self._publish(self.verified)
         self.assertEqual(len(records), len(self.response["bars"]))
         for rec in records:
             self.assertEqual(rec["record_type"], "bar")
@@ -397,21 +432,55 @@ class TestNormalisation(unittest.TestCase):
             self.assertIn("bid_ohlc", rec["quality_flags"])
             self.assertIn("historical_backfill", rec["quality_flags"])
 
-    def test_duplicate_timestamp_fails(self):
-        bad = copy.deepcopy(self.response)
-        bad["bars"][1]["time_epoch_s"] = bad["bars"][0]["time_epoch_s"]
-        with self.assertRaises(normalise.NormalisationError):
-            normalise.normalise_bid_ohlc(bad, raw_object_id="a" * 64, response_sha256="b" * 64,
-                                         received_time_utc="2026-01-01T00:00:00Z",
-                                         ingestion_time_utc="2026-01-01T00:00:05Z", synthetic=True)
+    def test_missing_evidence_raises(self):
+        with self.assertRaises(normalise.PublicationError):
+            self._publish(None)
 
-    def test_out_of_order_timestamp_fails(self):
+    def test_inconclusive_evidence_raises(self):
+        with self.assertRaises(tzgate.TimezoneError):
+            self._publish(_fixture("synthetic_timezone_inconclusive.json"))
+
+    def test_source_mismatch_raises(self):
+        ev = copy.deepcopy(self.verified)
+        ev["source_id"] = "synthetic-other"
+        ev["evidence_fingerprint"] = tzgate.compute_evidence_fingerprint(ev)
+        with self.assertRaises(tzgate.TimezoneError):
+            self._publish(ev)
+
+    def test_uncovered_bars_raise(self):
+        ev = copy.deepcopy(self.verified)
+        ev["covered_end_utc"] = "2025-01-01T00:01:00Z"  # excludes later bars
+        ev["observations"] = []  # keep evidence otherwise valid
+        ev["evidence_fingerprint"] = tzgate.compute_evidence_fingerprint(ev)
+        with self.assertRaises(tzgate.TimezoneError):
+            self._publish(ev)
+
+    def test_invalid_response_raises_before_records(self):
         bad = copy.deepcopy(self.response)
-        bad["bars"] = list(reversed(bad["bars"]))
-        with self.assertRaises(normalise.NormalisationError):
-            normalise.normalise_bid_ohlc(bad, raw_object_id="a" * 64, response_sha256="b" * 64,
-                                         received_time_utc="2026-01-01T00:00:00Z",
-                                         ingestion_time_utc="2026-01-01T00:00:05Z", synthetic=True)
+        bad["bars"][1]["time_epoch_s"] = bad["bars"][0]["time_epoch_s"]  # duplicate
+        with self.assertRaises(ContractError):
+            normalise.publish_observations(
+                self.request, bad, self.verified, raw_object_id="a" * 64,
+                response_sha256="b" * 64, received_time_utc="2026-01-01T00:00:00Z",
+                ingestion_time_utc="2026-01-01T00:00:05Z", synthetic=True)
+
+    def test_no_output_path_created_on_any_gate_failure(self):
+        # Every non-VERIFIED case, given a prospective output dir, leaves it absent.
+        cases = [None, _fixture("synthetic_timezone_inconclusive.json")]
+        conflict = copy.deepcopy(self.verified)
+        conflict["assessment_status"] = "CONFLICT"
+        conflict["evidence_fingerprint"] = tzgate.compute_evidence_fingerprint(conflict)
+        cases.append(conflict)
+        for ev in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = os.path.join(tmp, "publish_out")
+                with self.assertRaises((normalise.PublicationError, tzgate.TimezoneError)):
+                    self._publish(ev)
+                self.assertFalse(os.path.exists(out))
+
+    def test_private_mapper_not_reexported(self):
+        self.assertFalse(hasattr(normalise, "normalise_bid_ohlc"))
+        self.assertTrue(hasattr(normalise, "_map_bid_ohlc"))  # private, present
 
 
 class TestSmokeEndToEnd(unittest.TestCase):
@@ -466,19 +535,28 @@ class TestBackendSettingWiring(unittest.TestCase):
 
 
 class _FakeResp:
-    def __init__(self, status=200, body=b'{"ok": true}'):
-        self.status = status
+    def __init__(self, status=200, body=b'{"ok": true}', *, has_status=True,
+                 getcode_exc=None, read_exc=None):
+        if has_status:
+            self.status = status
+        self._status = status
         self._body = body
+        self._getcode_exc = getcode_exc
+        self._read_exc = read_exc
         self.closed = False
 
     def read(self, n=-1):
+        if self._read_exc is not None:
+            raise self._read_exc
         return self._body if (n is None or n < 0) else self._body[:n]
 
     def close(self):
         self.closed = True
 
     def getcode(self):
-        return self.status
+        if self._getcode_exc is not None:
+            raise self._getcode_exc
+        return self._status
 
 
 class _FakeOpener:
@@ -715,6 +793,203 @@ class TestIdempotencyExactness(unittest.TestCase):
                 fh.write("{ corrupt")
             with self.assertRaises(storage.StorageError):
                 self._acquire(store)
+
+
+class TestTimezoneRuntimeBounds(unittest.TestCase):
+    def _ev(self):
+        return _verified_evidence()
+
+    def test_source_type_error_no_typeerror(self):
+        ev = self._ev()
+        ev["source_id"] = 123
+        ev["evidence_fingerprint"] = tzgate.compute_evidence_fingerprint(ev)
+        with self.assertRaises(ContractError):
+            tzgate.validate_timezone_evidence(ev)
+
+    def test_overlength_method_rejected(self):
+        ev = self._ev()
+        ev["evidence_method"] = "m" * 257
+        ev["evidence_fingerprint"] = tzgate.compute_evidence_fingerprint(ev)
+        with self.assertRaises(ContractError):
+            tzgate.validate_timezone_evidence(ev)
+
+    def test_offset_arithmetic_mismatch_rejected(self):
+        ev = self._ev()
+        ev["observations"][0]["implied_offset_seconds"] = 3600  # but server==utc -> 0
+        ev["evidence_fingerprint"] = tzgate.compute_evidence_fingerprint(ev)
+        with self.assertRaises(ContractError):
+            tzgate.validate_timezone_evidence(ev)
+
+    def test_observation_outside_coverage_rejected(self):
+        ev = self._ev()
+        ev["observations"][0]["observed_at_utc"] = "2025-03-01T00:00:00Z"  # outside coverage
+        ev["evidence_fingerprint"] = tzgate.compute_evidence_fingerprint(ev)
+        with self.assertRaises(ContractError):
+            tzgate.validate_timezone_evidence(ev)
+
+
+class TestSchemaRelPath(unittest.TestCase):
+    def test_rel_path_pattern_rejects_unsafe(self):
+        import re
+        schema = _load_json(os.path.join(CONTRACTS_DIR, "raw_market_data_manifest_v1.schema.json"))
+        pattern = re.compile(schema["definitions"]["rel_path"]["pattern"])
+        good = "raw/mt5/synthetic-mt5-agent/synthetic-demo/EURUSD/M1/2025/01/" + "a" * 64 + "/request.json"
+        self.assertTrue(pattern.match(good))
+        for bad in ("/abs/path", "a\\b", "a//b", "../escape", "a/../b", "./a",
+                    ".hidden/x", "a/.hidden", ""):
+            self.assertFalse(pattern.match(bad), bad)
+
+
+class TestManifestVerification(unittest.TestCase):
+    def _land(self, tmp):
+        store = storage.RawStore(tmp)
+        req = _fixture("synthetic_history_request.json")
+        rb = _fixture_bytes("synthetic_history_response.json")
+        res = orchestrator.acquire(req, FixtureTransport(rb), store, **_commit_args())
+        return store, res, req
+
+    def test_tampered_response_file_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, res, req = self._land(tmp)
+            Path(os.path.join(tmp, res["response_path"])).write_bytes(b'{"tampered": true}')
+            with self.assertRaises(storage.StorageError):
+                orchestrator.acquire(req, FixtureTransport(_fixture_bytes("synthetic_history_response.json")),
+                                     store, **_commit_args())
+
+    def test_crafted_manifests_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, res, _ = self._land(tmp)
+            acc_dir = Path(os.path.join(tmp, os.path.dirname(res["manifest_path"])))
+            rel_dir = os.path.dirname(res["manifest_path"])
+            rid = res["raw_object_id"]
+            base = json.loads((acc_dir / "manifest.json").read_text("utf-8"))
+            # Valid baseline passes.
+            store._validate_manifest(base, files_dir=acc_dir, expected_rel_dir=rel_dir,
+                                     expected_request_id=rid)
+
+            def bad(mutate):
+                m = copy.deepcopy(base)
+                mutate(m)
+                with self.assertRaises(storage.StorageError):
+                    store._validate_manifest(m, files_dir=acc_dir, expected_rel_dir=rel_dir,
+                                             expected_request_id=rid)
+
+            bad(lambda m: m.update(extra="x"))                                   # extra field
+            bad(lambda m: m.update(quarantine_reason="x"))                       # ACCEPTED + reason
+            bad(lambda m: m.update(request_path="../escape/request.json"))       # traversal
+            bad(lambda m: m.update(request_path="a\\b/request.json"))            # backslash
+            bad(lambda m: m.update(request_path=rel_dir + "/../sibling/request.json"))  # sibling
+            bad(lambda m: m.update(response_sha256="0" * 64))                    # checksum mismatch
+            # identity mismatch (expected request id differs)
+            with self.assertRaises(storage.StorageError):
+                store._validate_manifest(base, files_dir=acc_dir, expected_rel_dir=rel_dir,
+                                         expected_request_id="f" * 64)
+
+
+class TestConcurrencyStaging(unittest.TestCase):
+    def setUp(self):
+        self.req = _fixture("synthetic_history_request.json")
+        self.rb = _fixture_bytes("synthetic_history_response.json")
+
+    def test_foreign_staging_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            staging_parent = Path(tmp) / ".staging"
+            staging_parent.mkdir(parents=True, exist_ok=True)
+            foreign = staging_parent / "foreign-attempt"
+            foreign.mkdir()
+            (foreign / "keep.txt").write_bytes(b"do-not-touch")
+            orchestrator.acquire(self.req, FixtureTransport(self.rb), store, **_commit_args())
+            self.assertTrue(foreign.exists())
+            self.assertEqual((foreign / "keep.txt").read_bytes(), b"do-not-touch")
+
+    def test_unique_staging_no_alias(self):
+        # Two distinct objects both land without clobbering each other.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            r1 = orchestrator.acquire(self.req, FixtureTransport(self.rb), store, **_commit_args())
+            other_req = copy.deepcopy(self.req)
+            other_req["range_start_utc"] = "2025-02-01T00:00:00Z"
+            other_req["range_end_utc"] = "2025-03-01T00:00:00Z"
+            other_req["request_id"] = contracts.compute_request_id(other_req)
+            other_resp = json.loads(self.rb)
+            other_resp["request_id"] = other_req["request_id"]
+            other_resp["range_start_utc"] = "2025-02-01T00:00:00Z"
+            other_resp["range_end_utc"] = "2025-03-01T00:00:00Z"
+            base = 1738368000  # 2025-02-01T00:00:00Z
+            for i, b in enumerate(other_resp["bars"]):
+                b["time_epoch_s"] = base + i * 60
+            other_bytes = contracts.canonical_json_bytes(other_resp)
+            r2 = orchestrator.acquire(other_req, FixtureTransport(other_bytes), store, **_commit_args())
+            self.assertEqual(r1["status"], "ACCEPTED")
+            self.assertEqual(r2["status"], "ACCEPTED")
+            self.assertNotEqual(r1["manifest_path"], r2["manifest_path"])
+
+    def test_late_identical_race_resolves_already_present(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            real_replace = storage.os.replace
+            state = {"raced": False}
+
+            def racing_replace(src, dst):
+                if not state["raced"]:
+                    state["raced"] = True
+                    real_replace(src, dst)            # a "winner" lands identical bytes
+                    raise OSError("simulated late race")
+                return real_replace(src, dst)
+
+            with mock.patch.object(storage.os, "replace", racing_replace):
+                res = orchestrator.acquire(self.req, FixtureTransport(self.rb), store, **_commit_args())
+            self.assertEqual(res["status"], "ALREADY_PRESENT")
+
+    def test_late_conflicting_winner_quarantines(self):
+        # A pre-existing winner with different response bytes -> conflict, unchanged.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            r1 = orchestrator.acquire(self.req, FixtureTransport(self.rb), store, **_commit_args())
+            accepted = Path(os.path.join(tmp, r1["response_path"]))
+            original = accepted.read_bytes()
+            other = json.loads(self.rb)
+            other["bars"][0]["close"] = 1.42424
+            res = store.land(self.req, other, contracts.canonical_json_bytes(self.req),
+                             contracts.canonical_json_bytes(other), **_commit_args())
+            self.assertEqual(res["status"], "QUARANTINED_CONFLICT")
+            self.assertEqual(accepted.read_bytes(), original)
+
+
+class TestHttpHardening(unittest.TestCase):
+    URL = "http://agent.invalid:8787"
+    TOKEN = "TOPSECRETVALUE-do-not-log"
+
+    def test_invalid_max_bytes_rejected(self):
+        for bad in (0, -1, True, "100"):
+            with self.assertRaises(TransportError):
+                NetworkAgentClient(self.URL, self.TOKEN, allow_network=True, max_response_bytes=bad)
+
+    def test_userinfo_url_rejected(self):
+        with self.assertRaises(TransportError):
+            NetworkAgentClient("http://user:pass@agent.invalid:8787", self.TOKEN, allow_network=True)
+
+    def test_getcode_failure_redacted_and_closed(self):
+        resp = _FakeResp(has_status=False, getcode_exc=OSError("boom"))
+        opener = _FakeOpener(resp)
+        client = NetworkAgentClient(self.URL, self.TOKEN, allow_network=True, opener=opener)
+        with network_blocked():
+            with self.assertRaises(TransportError) as ctx:
+                client.export_rates(b'{}')
+        self.assertNotIn(self.TOKEN, str(ctx.exception))
+        self.assertTrue(resp.closed)
+
+    def test_read_failure_redacted_and_closed(self):
+        resp = _FakeResp(status=200, read_exc=TimeoutError("slow"))
+        opener = _FakeOpener(resp)
+        client = NetworkAgentClient(self.URL, self.TOKEN, allow_network=True, opener=opener)
+        with network_blocked():
+            with self.assertRaises(TransportError) as ctx:
+                client.export_rates(b'{}')
+        self.assertNotIn(self.TOKEN, str(ctx.exception))
+        self.assertTrue(resp.closed)
 
 
 if __name__ == "__main__":

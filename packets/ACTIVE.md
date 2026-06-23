@@ -1,28 +1,40 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-006C-R1 (continuation of GFX-PKT-006C)
-- **Title:** Client and Raw-Integrity Remediation v0.1
+- **Packet ID:** GFX-PKT-006C-R2 (continuation of GFX-PKT-006C / R1)
+- **Title:** Publication, Manifest and Concurrency Remediation v0.1
 - **Branch:** `chore/market-data-synthetic-foundation`
 - **Base:** `main` @ `80ef2f85d6546b7d62aea09ab5db39d8859482b0`
 - **Status:** Remediation in progress — synthetic-only; PR #34 remains **draft and
   unmerged** for PM review (not accepted). **No merge and no real-data/NAS/broker/
   agent access are authorised.**
 
-## R1 remediation scope (closes five PM findings)
+## R2 remediation scope (closes eight findings)
 
-1. Actual standard-library HTTP history-export client (`agent_client.py`) — inert
-   unless `allow_network=True`; injectable opener; exact POST/headers/body/timeout;
-   one attempt; byte cap; redacted token/body in repr and all exceptions.
-2. Strict JSON decode (reject invalid UTF-8/JSON and NaN/Infinity/-Infinity) +
-   `math.isfinite` OHLC + schema-aligned type/length bounds (`contracts.py`,
-   `timezone.py`, `orchestrator.py`).
-3. Malformed bytes scanned for quoted prohibited JSON key tokens → digest-only
-   `security_stop`, never persisting the body/value.
-4. Exact idempotency/quarantine: `ALREADY_PRESENT` requires BOTH stored request and
-   response SHA-256 and returns stored manifest values; deterministic quarantine
-   identity over request+response+reason; canonical-request-byte guard; fail closed
-   on corrupt accepted manifest (`storage.py`).
-5. Exact authoritative Notion-map titles (`docs/NOTION_MAP.md`).
+1. Non-bypassable timezone-gated publication API (`normalise.publish_observations`)
+   — requires evidence, validates request/response/match and a `VERIFIED`,
+   bar-covering timezone assessment before any record; private `_map_bid_ohlc`
+   mapper; no output on gate failure.
+2. Timezone runtime bounds — source/account type-checked + ≤64; `evidence_method`/
+   `dst_behaviour` non-empty ≤256 (`timezone.py`).
+3. Timezone offset arithmetic — `server_clock - utc_clock == implied_offset`.
+4. Timezone observation coverage — each `observed_at_utc` within `[covered_start,
+   covered_end)`.
+5. Raw-manifest `rel_path` schema rejects absolute/backslash/empty-segment/`.`/`..`/
+   leading-dot segments (`raw_market_data_manifest_v1.schema.json`).
+6. Strict runtime manifest validation before every write and on every read: exact
+   field set, path safety, paths tied to the expected object dir, raw-object/dir
+   identity, and stored request/response files verified by exact SHA-256; fails
+   closed on any tamper/missing/unsafe state (`storage.py`).
+7. Concurrency-safe staging — unique `mkdtemp` per attempt, self-clean only,
+   foreign staging preserved; late identical race → `ALREADY_PRESENT`, late
+   conflict → quarantine; no overwrite/partial/loss (`storage.py`).
+8. HTTP client hardening — positive-int `max_response_bytes`, reject URL userinfo,
+   redact status/read I/O errors, always close the response (`agent_client.py`).
+
+The R1 five-finding scope is retained; R2 completes the remaining publication and
+persisted-evidence boundaries. The pre-existing `synthetic_timezone_verified.json`
+fixture (observation outside coverage) is **retained unchanged** and is now used as
+a negative coverage test; positive VERIFIED cases build evidence in-memory.
 
 ## Scope
 

@@ -8,7 +8,7 @@
   "head_commit": "792731dff06fa9c7fae7f00b9449a13c59bc104d",
   "c3_commit": "792731dff06fa9c7fae7f00b9449a13c59bc104d",
   "c4_commit": null,
-  "continuation_of": "GFX-PKT-006C (evidence GFX-EVD-006C-synthetic-market-data-foundation.json — unchanged historical record)",
+  "continuation_of": "GFX-PKT-006C (evidence GFX-EVD-006C-synthetic-market-data-foundation.json \u2014 unchanged historical record)",
   "environment": {
     "research_python_version": "3.14.6",
     "duckdb_version": "1.5.4",
@@ -24,14 +24,34 @@
       "pull_request_run_id": 28057251546,
       "run_head_sha": "792731dff06fa9c7fae7f00b9449a13c59bc104d",
       "jobs": [
-        { "name": "governance", "conclusion": "success" },
-        { "name": "backend", "conclusion": "success" },
-        { "name": "frontend", "conclusion": "success" },
-        { "name": "research-foundation", "conclusion": "success" },
-        { "name": "market-data-foundation", "conclusion": "success" }
+        {
+          "name": "governance",
+          "conclusion": "success"
+        },
+        {
+          "name": "backend",
+          "conclusion": "success"
+        },
+        {
+          "name": "frontend",
+          "conclusion": "success"
+        },
+        {
+          "name": "research-foundation",
+          "conclusion": "success"
+        },
+        {
+          "name": "market-data-foundation",
+          "conclusion": "success"
+        }
       ]
     },
-    "c4": { "push_run_id": null, "pull_request_run_id": null, "run_head_sha": null, "jobs": [] }
+    "c4": {
+      "push_run_id": null,
+      "pull_request_run_id": null,
+      "run_head_sha": null,
+      "jobs": []
+    }
   },
   "files_modified": [
     "research/market_data/agent_client.py",
@@ -68,7 +88,7 @@
     "response_byte_conflict": "same request_id with changed response bytes quarantined; accepted raw unchanged",
     "quarantine_identity": "quarantine id is sha256(request_bytes\\0response_bytes\\0reason)[:16]; distinct request bytes produce distinct quarantine directories (no aliasing); existing quarantine dir returns stored manifest values",
     "fail_closed_manifest": "a missing/corrupt/incomplete accepted manifest raises StorageError (fails closed) rather than claiming idempotency or overwriting",
-    "notion_titles": "GFX-EVD-006B and GFX-ADR-DATA-004 replaced with exact authoritative titles; GFX-EVD-006C, GFX-PKT-006C-R1 and GuvFX — Current State v0.20 added"
+    "notion_titles": "GFX-EVD-006B and GFX-ADR-DATA-004 replaced with exact authoritative titles; GFX-EVD-006C, GFX-PKT-006C-R1 and GuvFX \u2014 Current State v0.20 added"
   },
   "commands": [
     "python3 scripts/check_no_secrets.py",
@@ -96,7 +116,7 @@
     "check_no_secrets: no findings; make governance-check OK; make research-check OK; make market-data-check OK",
     "json.tool: R1 manifest valid JSON",
     "git diff --check clean; only the 12 authorised files changed (timezone.py was reverted to keep within the authorised list)",
-    "C3 CI: push 28057248675 + PR 28057251546 (head 792731d) — governance/backend/frontend/research-foundation/market-data-foundation all success; C4 final runs recorded in PR comment + handoff"
+    "C3 CI: push 28057248675 + PR 28057251546 (head 792731d) \u2014 governance/backend/frontend/research-foundation/market-data-foundation all success; C4 final runs recorded in PR comment + handoff"
   ],
   "status": "PASS",
   "limitations": [
@@ -123,5 +143,6 @@
     "tests/test_market_data_foundation.py": "sha256:86c1c6c2e0267f86049691f588a5ddda3e688e66ccada4e1199d7d8f2c8ff70f",
     "docs/NOTION_MAP.md": "sha256:f9aa8d01cc821ec971d0beee086eb9e7a0509310af20fa1fbf6166775a269d98"
   },
-  "reviewer": null
+  "reviewer": null,
+  "superseded_by_r2_evidence": "evidence/manifests/GFX-EVD-006C-R2-publication-storage-integrity.json"
 }

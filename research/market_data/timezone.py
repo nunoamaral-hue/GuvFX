@@ -16,6 +16,7 @@ from .contracts import (
     SHA256_RE,
     SLUG_RE,
     ContractError,
+    _require_bounded_str,
     canonical_json_bytes,
     sha256_hex,
 )
@@ -50,31 +51,47 @@ def validate_timezone_evidence(evidence: dict) -> None:
         raise ContractError("timezone evidence has wrong field set")
     if evidence["schema_version"] != "1.0":
         raise ContractError("timezone evidence schema_version must be '1.0'")
-    if not SLUG_RE.match(evidence["source_id"]):
+    # Type-check slugs before regex use; enforce maximum length.
+    if not isinstance(evidence["source_id"], str) or not SLUG_RE.match(evidence["source_id"]):
         raise ContractError("timezone evidence source_id must be a slug")
-    if not SLUG_RE.match(evidence["account_scope"]) or not any(
-        c.isalpha() for c in evidence["account_scope"]
-    ):
-        raise ContractError("timezone evidence account_scope invalid")
+    if len(evidence["source_id"]) > 64:
+        raise ContractError("timezone evidence source_id exceeds 64 characters")
+    if not isinstance(evidence["account_scope"], str) or not SLUG_RE.match(evidence["account_scope"]):
+        raise ContractError("timezone evidence account_scope must be a slug")
+    if len(evidence["account_scope"]) > 64:
+        raise ContractError("timezone evidence account_scope exceeds 64 characters")
+    if not any(c.isalpha() for c in evidence["account_scope"]):
+        raise ContractError("timezone evidence account_scope must not be all digits")
     if evidence["assessment_status"] not in STATUSES:
         raise ContractError("timezone assessment_status invalid")
+    _require_bounded_str(evidence["evidence_method"], "evidence_method", 256)
+    _require_bounded_str(evidence["dst_behaviour"], "dst_behaviour", 256)
     _instant(evidence["assessed_at_utc"], "assessed_at_utc")
     start = _instant(evidence["covered_start_utc"], "covered_start_utc")
     end = _instant(evidence["covered_end_utc"], "covered_end_utc")
     if not (end > start):
         raise ContractError("covered_end_utc must be later than covered_start_utc")
+    covered_start_s = int(start.timestamp())
+    covered_end_s = int(end.timestamp())
     if not isinstance(evidence["observations"], list):
         raise ContractError("observations must be a list")
     for obs in evidence["observations"]:
-        if set(obs) != {"observed_at_utc", "server_clock_epoch_s",
-                        "utc_clock_epoch_s", "implied_offset_seconds"}:
+        if not isinstance(obs, dict) or set(obs) != {
+            "observed_at_utc", "server_clock_epoch_s", "utc_clock_epoch_s",
+            "implied_offset_seconds",
+        }:
             raise ContractError("observation has wrong field set")
-        _instant(obs["observed_at_utc"], "observation.observed_at_utc")
+        obs_dt = _instant(obs["observed_at_utc"], "observation.observed_at_utc")
         for f in ("server_clock_epoch_s", "utc_clock_epoch_s", "implied_offset_seconds"):
             if not isinstance(obs[f], int) or isinstance(obs[f], bool):
                 raise ContractError(f"observation.{f} must be an integer")
-    if not isinstance(evidence["dst_behaviour"], str) or not evidence["dst_behaviour"]:
-        raise ContractError("dst_behaviour must be a non-empty string")
+        # Offset arithmetic must be internally consistent.
+        if obs["server_clock_epoch_s"] - obs["utc_clock_epoch_s"] != obs["implied_offset_seconds"]:
+            raise ContractError("observation implied_offset_seconds does not match clock difference")
+        # Each observation must fall within the covered interval [start, end).
+        obs_s = int(obs_dt.timestamp())
+        if not (covered_start_s <= obs_s < covered_end_s):
+            raise ContractError("observation observed_at_utc outside covered interval")
     if not SHA256_RE.match(evidence["evidence_fingerprint"]):
         raise ContractError("evidence_fingerprint must be 64 lowercase hex")
     if compute_evidence_fingerprint(evidence) != evidence["evidence_fingerprint"]:

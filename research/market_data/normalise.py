@@ -1,9 +1,13 @@
-"""Synthetic M1 bid-OHLC normalisation into market_observation_v1 (GFX-PKT-006C).
+"""Gated synthetic M1 bid-OHLC publication into market_observation_v1 (GFX-PKT-006C,
+R2).
 
-Only invoked after the timezone gate has passed. Produces bar-variant observation
-records (bid OHLC only); never ask, spread or quote fields. Each record is
-validated against the existing research-foundation observation rules without
-weakening that schema.
+The single supported public entry point is ``publish_observations``. It fails
+closed: it requires timezone evidence and internally validates the request, the
+response, the request/response match, and a matching ``VERIFIED`` timezone
+assessment (covering every bar) BEFORE any record is produced. The mapping helper
+``_map_bid_ohlc`` is private, not re-exported, and must only be called after the
+gate has passed. No record is returned and no output path is created on any gate
+failure. Bid-OHLC only — never ask, spread or quote fields.
 """
 
 from __future__ import annotations
@@ -12,7 +16,18 @@ import os
 import sys
 from datetime import datetime, timezone
 
+from . import timezone as tzgate
+from .contracts import (
+    validate_request,
+    validate_request_response_match,
+    validate_response,
+)
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+class PublicationError(RuntimeError):
+    """Fail-closed publication-gate error."""
 
 
 class NormalisationError(RuntimeError):
@@ -31,12 +46,43 @@ def _epoch_to_z(epoch_s: int) -> str:
     return datetime.fromtimestamp(epoch_s, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def normalise_bid_ohlc(response: dict, *, raw_object_id: str, response_sha256: str,
-                       received_time_utc: str, ingestion_time_utc: str,
-                       synthetic: bool) -> list[dict]:
-    """Map validated bid-OHLC bars into market_observation_v1 bar records.
+def publish_observations(request: dict, response: dict, timezone_evidence: dict, *,
+                         raw_object_id: str, response_sha256: str,
+                         received_time_utc: str, ingestion_time_utc: str,
+                         synthetic: bool) -> list[dict]:
+    """Fail-closed publication: validate everything, then map. Returns records.
 
-    Caller must have validated the response contract AND passed the timezone gate.
+    Raises before producing any record (and without creating any output) if the
+    timezone evidence is absent/invalid/non-VERIFIED/mismatched/under-covering, or
+    if the request/response/contract checks fail.
+    """
+    # 1. Timezone evidence must be present.
+    if timezone_evidence is None:
+        raise PublicationError("timezone evidence is required for publication")
+    # 2-4. Contract validation (raises ContractError on any problem).
+    validate_request(request)
+    validate_response(response)
+    validate_request_response_match(request, response)
+    # 5. Timezone gate over EVERY bar epoch (raises TimezoneError on failure).
+    bar_epochs = [bar["time_epoch_s"] for bar in response["bars"]]
+    tzgate.gate_for_normalisation(
+        timezone_evidence, source_id=request["source_id"],
+        account_scope=request["account_scope"], bar_epochs_s=bar_epochs,
+    )
+    # 6. Only now map.
+    return _map_bid_ohlc(
+        response, raw_object_id=raw_object_id, response_sha256=response_sha256,
+        received_time_utc=received_time_utc, ingestion_time_utc=ingestion_time_utc,
+        synthetic=synthetic,
+    )
+
+
+def _map_bid_ohlc(response: dict, *, raw_object_id: str, response_sha256: str,
+                  received_time_utc: str, ingestion_time_utc: str,
+                  synthetic: bool) -> list[dict]:
+    """PRIVATE mapper — only valid AFTER publish_observations' gate has passed.
+
+    Maps validated bid-OHLC bars into market_observation_v1 bar records.
     """
     bars = response["bars"]
     if not bars:

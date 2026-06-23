@@ -29,6 +29,32 @@ from research.market_data.agent_client import FixtureTransport, network_blocked 
 from research.market_data.storage import RawStore  # noqa: E402
 from tools import research_smoke as rf  # noqa: E402
 
+
+def _verified_timezone_evidence(request: dict) -> dict:
+    """Deterministic VERIFIED evidence whose observation falls within coverage.
+
+    Built in-memory (the committed verified fixture intentionally violates the R2
+    observation-coverage rule and is retained as a negative test).
+    """
+    evidence = {
+        "schema_version": "1.0",
+        "source_id": request["source_id"],
+        "account_scope": request["account_scope"],
+        "assessment_status": "VERIFIED",
+        "evidence_method": "synthetic_clock_compare",
+        "assessed_at_utc": "2025-01-01T00:00:00Z",
+        "covered_start_utc": "2025-01-01T00:00:00Z",
+        "covered_end_utc": "2025-02-01T00:00:00Z",
+        "observations": [
+            {"observed_at_utc": "2025-01-01T00:00:00Z", "server_clock_epoch_s": 1735689600,
+             "utc_clock_epoch_s": 1735689600, "implied_offset_seconds": 0}
+        ],
+        "dst_behaviour": "synthetic_none",
+        "limitations": ["synthetic_test_only", "invented_offset_for_interface_test"],
+    }
+    evidence["evidence_fingerprint"] = tzgate.compute_evidence_fingerprint(evidence)
+    return evidence
+
 BANNER = "synthetic_test_only"
 FIXTURES = os.path.join(REPO_ROOT, "tests", "fixtures", "market_data")
 
@@ -69,7 +95,7 @@ def run_smoke() -> dict:
     request = json.loads(_load("synthetic_history_request.json"))
     response_bytes = _load("synthetic_history_response.json")
     response = json.loads(response_bytes)
-    tz_verified = json.loads(_load("synthetic_timezone_verified.json"))
+    tz_verified = _verified_timezone_evidence(request)
 
     with network_blocked():
         with tempfile.TemporaryDirectory(prefix="guvfx_md_smoke_") as tmp:
@@ -92,15 +118,11 @@ def run_smoke() -> dict:
             if rerun["status"] != "ALREADY_PRESENT":
                 raise RuntimeError(f"expected ALREADY_PRESENT, got {rerun['status']}")
 
-            # Timezone gate (VERIFIED) before any normalisation.
-            bar_epochs = [b["time_epoch_s"] for b in response["bars"]]
-            tzgate.gate_for_normalisation(
-                tz_verified, source_id=request["source_id"],
-                account_scope=request["account_scope"], bar_epochs_s=bar_epochs,
-            )
-
-            records = normalise.normalise_bid_ohlc(
-                response, raw_object_id=acq["raw_object_id"],
+            # Gated publication: request/response/match + VERIFIED timezone evidence
+            # are validated INSIDE publish_observations before any record is produced.
+            records = normalise.publish_observations(
+                request, response, tz_verified,
+                raw_object_id=acq["raw_object_id"],
                 response_sha256=acq["response_sha256"], received_time_utc=RECEIVED_AT,
                 ingestion_time_utc=INGESTION_AT, synthetic=True,
             )

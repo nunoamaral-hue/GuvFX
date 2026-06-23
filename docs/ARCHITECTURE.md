@@ -156,6 +156,11 @@ strictly separate from the external agent host:
   timezone gate; and synthetic M1 bid-OHLC normalisation into
   `market_observation_v1`. `GUVFX_DATA_ROOT` is wired with no default and fails
   closed. Gated by the `market-data-foundation` CI job.
+- **R2 hardening (synthetic):** publication is a single fail-closed gated API
+  (VERIFIED bar-covering timezone evidence required before any record; private
+  mapper); raw manifests are strictly validated with stored-file checksum and
+  path-containment checks; landing uses unique per-attempt staging with
+  late-race resolution; the HTTP client is byte/userinfo/read-error hardened.
 - **External / unimplemented (Proposed):** the Windows Agent read-only export
   endpoint `POST /mt5/history/rates/export` is **not** present in this repository
   (only an HTTP client boundary is defined). Real acquisition, the `GuvFXData` NAS

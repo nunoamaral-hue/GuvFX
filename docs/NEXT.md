@@ -1,7 +1,7 @@
 # NEXT — Priorities (keep this list short)
 
-## Current next action (GFX-PKT-006C-R1)
-- [ ] **PM independent review of PR #34 and the GFX-PKT-006C-R1 evidence only.** PR
+## Current next action (GFX-PKT-006C-R2)
+- [ ] **PM independent review of PR #34 and the GFX-PKT-006C-R2 evidence only.** PR
   #34 remains draft/unmerged (not accepted). Do **not** start GFX-PKT-006D. No real
   data, NAS, broker, agent or deployment action is authorised until a later scoped
   packet.

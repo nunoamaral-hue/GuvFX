@@ -178,6 +178,14 @@ Implemented and exercised by `tools/market_data_synthetic_smoke.py` +
 - **`GUVFX_DATA_ROOT`** is now wired into backend settings with **no default**;
   real operation fails closed when it is unset/blank or resolves inside the repo.
 
+> **GFX-PKT-006C-R2 update:** publication is now a single fail-closed gated
+> API (request/response/match + VERIFIED bar-covering timezone evidence before
+> any record; private mapper); timezone evidence enforces bounds, offset
+> arithmetic and observation coverage; raw manifests are strictly validated
+> (paths + stored-file SHA-256) before write and on read; landing uses unique
+> staging with late-race resolution; the HTTP client validates byte limits,
+> rejects URL userinfo and redacts read errors. Still synthetic-only.
+
 > **GFX-PKT-006C-R1 update:** the in-repo transport is now an actual gated
 > standard-library HTTP client (inert unless explicitly enabled), response
 > decoding is strict (no NaN/Infinity; finite prices; schema type/length

@@ -1,13 +1,15 @@
-# HANDOFF — GFX-PKT-006C-R1 (client & raw-integrity remediation)
+# HANDOFF — GFX-PKT-006C-R2 (publication, manifest & concurrency remediation)
 
 > Concise packet pointer. **Notion is authoritative** for full packet text and
 > lifecycle status; the repository holds implementation, tests and concise evidence.
 
-- Active packet: **GFX-PKT-006C-R1 — Client and Raw-Integrity Remediation**
-  (continuation of GFX-PKT-006C). Closes five PM findings: gated stdlib HTTP client,
-  strict JSON/non-finite + schema-bound validation, malformed prohibited-key
-  protection, exact idempotency/quarantine semantics, exact Notion titles.
-- Base packet: **GFX-PKT-006C — Synthetic Infrastructure and Contract Implementation**.
+- Active packet: **GFX-PKT-006C-R2 — Publication, Manifest and Concurrency
+  Remediation** (continuation of GFX-PKT-006C / R1). Closes eight findings:
+  non-bypassable timezone-gated publication API; timezone bounds/arithmetic/coverage;
+  tightened manifest path schema; strict runtime manifest + stored-file/checksum
+  verification; concurrency-safe unique staging + late-race resolution; HTTP
+  byte/userinfo/read-error hardening.
+- Base packets: **GFX-PKT-006C** + **R1**.
 - Branch: `chore/market-data-synthetic-foundation` (base `main` `80ef2f8`); PR #34
   remains **draft and unmerged** for PM review (not accepted).
 - Scope: synthetic-only client/storage/orchestration foundation under
@@ -15,7 +17,8 @@
   `market-data-foundation` CI job. No real data, NAS, broker, agent, execution or
   deployment action.
 - Evidence: `evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json`
-  (006C) and `evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json` (R1).
+  (006C), `evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json` (R1), and
+  `evidence/manifests/GFX-EVD-006C-R2-publication-storage-integrity.json` (R2).
 
 ---
 

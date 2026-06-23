@@ -66,8 +66,13 @@ class NetworkAgentClient:
             raise TransportError("base_url must be an http(s) URL")
         if parts.query or parts.fragment:
             raise TransportError("base_url must not contain a query or fragment")
-        if not isinstance(timeout_s, (int, float)) or timeout_s <= 0:
+        if parts.username or parts.password:
+            raise TransportError("base_url must not contain userinfo")
+        if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool) or timeout_s <= 0:
             raise TransportError("timeout_s must be a positive number")
+        if not isinstance(max_response_bytes, int) or isinstance(max_response_bytes, bool) \
+                or max_response_bytes <= 0:
+            raise TransportError("max_response_bytes must be a positive integer")
         self._base_url = base_url.rstrip("/")
         self._token = token  # never logged or repr'd
         self._allow_network = bool(allow_network)
@@ -123,19 +128,28 @@ class NetworkAgentClient:
             raise TransportError("history export transport error") from None
 
         try:
-            status = getattr(response, "status", None)
-            if status is None:
-                status = response.getcode()
-            if status != 200:
-                raise TransportError(f"agent returned non-success HTTP status {status}")
-            # Read at most max+1 to detect oversize without retaining a large body.
-            body = response.read(self._max_response_bytes + 1)
-            if len(body) > self._max_response_bytes:
-                raise TransportError("agent response exceeded the byte limit")
+            try:
+                status = getattr(response, "status", None)
+                if status is None:
+                    status = response.getcode()
+                if status != 200:
+                    raise TransportError(f"agent returned non-success HTTP status {status}")
+                # Read at most max+1 to detect oversize without retaining a large body.
+                body = response.read(self._max_response_bytes + 1)
+                if len(body) > self._max_response_bytes:
+                    raise TransportError("agent response exceeded the byte limit")
+            except TransportError:
+                raise
+            except Exception:
+                # Redacted: status/read I/O failures (timeout, OSError, URLError, ...).
+                raise TransportError("history export response read error") from None
         finally:
             close = getattr(response, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except Exception:
+                    pass
         return bytes(body)
 
 
