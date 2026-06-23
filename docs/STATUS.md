@@ -1,64 +1,85 @@
-# GuyFX / GuvFX — Project Status
+# GuvFX — Project Status
 
-> Update this file **whenever** project state changes.
+> Update this file **whenever** project state changes. This is a current-state
+> snapshot; deeper operational detail lives in `docs/RUNBOOK.md` and the handoff
+> docs.
 
--## TL;DR
-- Current focus: VPS production rollout (Traefik + Let’s Encrypt) + MT5 handoff automation and the Guacamole mouse reliability investigation.
-- Current branch: `fix/broker-autocomplete-edgecases`
-- Next milestone: Resolve the navigation/focus follow-up for broker autocomplete (P1 #4) while keeping the VPS/MT5 flow steady.
-- Production URLs: `https://guvfx.com` (frontend), `https://api.guvfx.com` (backend), `https://guac.guvfx.com/guacamole/` (Guacamole).
-- Last verification: `curl -Ik https://guvfx.com`, `curl -Ik https://api.guvfx.com`, `curl -Ik https://guac.guvfx.com/guacamole/`, and `docker logs --tail 200 traefik | egrep -i "acme|certificate|error"` (post-`make check` still blocked on PostgreSQL connectivity).
-## TL;DR
-- Current focus: VPS production rollout (Traefik+Let’s Encrypt) + MT5 handoff automation and MT5 mouse reliability.
-- Current branch: `fix/broker-autocomplete-edgecases`
-- Next milestone: Resolve the navigation/focus follow-up for broker autocomplete (P1 #4) while keeping the VPS/MT5 flow stable.
-- Production URLs: `https://guvfx.com` (frontend), `https://api.guvfx.com` (backend API), `https://guac.guvfx.com/guacamole/` (Guacamole UI).
-- Last green verification: `make check` on `main` (local; blocked by Postgres + Guacamole mouse flake).
-- Open PRs: 0
+## Snapshot
 
-## Repo layout (confirm paths)
-- Backend: Django — `backend/`
-- Frontend: Next.js — `frontend/`
-- Docs: `docs/`
+- Date: 2026-06-23 (UTC)
+- Canonical branch: `main`
+- Current governance merge: `c17b7b8` — PR #31 *Add governance convergence
+  foundation* merged into `main`. This introduced the scoped Claude rules,
+  authority/packet boundaries, the secret scanner + governance Make/CI gate, the
+  Notion map, the evidence convention, and the active-packet pointer.
+- Documented production routes: `https://guvfx.com` (frontend),
+  `https://api.guvfx.com` (backend API), `https://guac.guvfx.com/guacamole/`
+  (Guacamole MT5 desktop). These are the routes recorded in `docs/RUNBOOK.md`;
+  route availability and live production health were **not probed** by
+  GFX-PKT-004A or its R1 remediation.
+
+## Verified current state
+
+Facts supported by code, Git history, or CI in this repository:
+
+- Monorepo with a Django + DRF backend (`backend/`) and a Next.js frontend
+  (`frontend/`); see `docs/ARCHITECTURE.md`.
+- Backend local apps registered in `backend/guvfx_backend/settings.py`
+  (`INSTALLED_APPS`): `users`, `core`, `trading`, `strategies`, `backtests`,
+  `analytics`, `ai_helper`, `execution`, `hosting`, `mt5`, `wims`,
+  `intelligence`.
+- GuvFX/WIMS producer–consumer boundary is implemented: `intelligence` packages
+  inputs into transient envelopes and delivers them; `wims` consumes via
+  `ConsumptionContract`. WIMS never imports `intelligence` (ADR-009 boundary,
+  documented in `backend/intelligence/README.md` and `backend/wims/README.md`).
+- Auth is cookie-based JWT (`users.auth_cookie.CookieJWTAuthentication`) with
+  DRF default permission `IsAuthenticated`; `USE_TZ = True`, `TIME_ZONE = 'UTC'`.
+- Governance/evidence layer is present on `main` as of `c17b7b8` (PR #31):
+  `.claude/rules/`, `scripts/check_no_secrets.py`, `tests/test_no_secrets.py`,
+  `evidence/`, `packets/`, `make governance-check`.
+
+## Active feature work
+
+- **Flow A (`flow-a-shadow` branch)** — a shadow, execution-suppressed signal
+  pipeline (`backend/flow_a/`: `signal_intake`, `candidate`, `evaluation`,
+  `quality_gate`, `suppression`, `pipeline`, `replay/`, and the
+  `run_flow_a_shadow` management command). It runs in shadow mode only and is
+  **not** merged into `main` and **not** promoted to paper or live trading.
+  Treat it as research/validation work bounded by its own branch and governance
+  path.
+
+## Known gaps and blockers
+
+Current, evidenced items only:
+
+- Local `make check` cannot complete on a machine without a `backend/.venv` and a
+  reachable PostgreSQL (`127.0.0.1:5432`); backend Django tests need a running
+  PostgreSQL. GitHub Actions is the approved full-integration gate.
+- MT5 mouse input via Guacamole has been observed to be unreliable (clicks
+  intermittently drop while keyboard navigation works); see
+  `docs/KNOWN_ISSUES.md`.
 
 ## Last known green checks
-- Backend: 2025-12-15 — GitHub Actions CI ✅ (Django tests) + `make check` local ✅
-- Frontend: 2025-12-15 — GitHub Actions CI ✅ (lint + build) + `make check` local ✅
 
-## Active blockers
-- `make check` cannot finish because Django/postgres cannot open `127.0.0.1:5432` (Operation not permitted); tests will need a reachable PostgreSQL server.
-- MT5 mouse input via Guacamole is still unreliable (mouse clicks intermittently dead even though keyboard navigation works); needs deeper investigation before we rely on automation clicks.
-- `make check` cannot finish because Django/postgres cannot open `127.0.0.1:5432` (Operation not permitted); tests need a reachable PostgreSQL server.
-- MT5 mouse input via Guacamole is still unreliable; clicks sometimes drop until menu hotkeys or restarts re-enable input.
+Kept distinct: historical local evidence vs. current governance CI evidence.
+
+- **Historical (2025-12-15):** Backend GitHub Actions CI (Django tests) and
+  Frontend GitHub Actions CI (lint + build) reported green, with `make check`
+  green locally at that time.
+- **Current governance CI (2026-06-23):** GitHub Actions push run for merge
+  `c17b7b8` (PR #31) — jobs `governance`, `backend`, and `frontend` all
+  succeeded.
+
+## Production operations
+
+Production runs behind Traefik with Let's Encrypt TLS on a VPS; the
+GuvFX backend/frontend/Postgres stack and the Guacamole + MT5 desktop stack are
+operated separately. Do **not** duplicate the full procedure here — see
+`docs/RUNBOOK.md` (sections "VPS Production (GuvFX)" and "RUNBOOK — MT5 Free
+Desktop") for the authoritative restart, verification, and handoff-mount steps.
+This document does not assert live-trading readiness; promotion to paper or live
+follows the governance decision path, not status notes.
 
 ## Owners
+
 - PM: Nuno Amaral
-- Active coder: Nuno (current) → Clive (next)
-
-# STATUS — MT5 Free Desktop (XRDP + VNC)
-
-**Overall status:** ✅ STABLE / OPERATIONAL  
-**Last verified:** 2025-12-18 (UTC)
-
-### What is running
-- XRDP listening on `:3389`
-- xrdp-sesman listening on `:3350`
-- Xvfb + Openbox running on `DISPLAY=:99` (VNC fallback)
-- XRDP Xorg session allocated dynamically (e.g. `DISPLAY=:10`)
-- MetaTrader 5 (Wine) auto-starts inside XRDP session
-
-### Verified checks
-- `terminal64.exe` running under user `mt5free`
-- `wmctrl` lists:
-  - `MetaTrader 5 - Netting`
-  - `Login` window
-- Guacamole RDP connection shows MT5 UI
-
-### Persistence
-- Wine prefix persisted via Docker volume: `/home/mt5free/.wine`
-- Autostart script persisted via bind mount: `/home/mt5free/bin/autostart-rdp.sh`
-
-### Notable guarantees
-- No manual MT5 launch required
-- No XRDP password re-entry after container restart
-- Safe to rebuild container without losing MT5 state

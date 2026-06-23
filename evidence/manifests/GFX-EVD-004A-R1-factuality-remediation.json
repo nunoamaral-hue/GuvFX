@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-004A-R1-factuality-remediation",
+  "packet_id": "GFX-PKT-004A-R1",
+  "created_at_utc": "2026-06-23T07:52:38Z",
+  "branch": "chore/guvfx-documentation-convergence",
+  "base_commit": "c720d5d1b8530c99fb66a4bbb241478ebe7e0d19",
+  "head_commit": "4da8e93a5eaf3e08ae0435ab2e8afe5fbf5988dc",
+  "c3_commit": "4da8e93a5eaf3e08ae0435ab2e8afe5fbf5988dc",
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "event": "push",
+    "run_id": 28011062243,
+    "run_head_sha": "4da8e93a5eaf3e08ae0435ab2e8afe5fbf5988dc",
+    "jobs": [
+      { "name": "governance", "conclusion": "success" },
+      { "name": "backend", "conclusion": "success" },
+      { "name": "frontend", "conclusion": "success" }
+    ]
+  },
+  "corrections": [
+    "docs/STATUS.md: 'Production URLs' relabelled 'Documented production routes'; added explicit statement that route availability and live production health were not probed by GFX-PKT-004A/R1.",
+    "docs/ARCHITECTURE.md: PostgreSQL line now states CI tests against PostgreSQL 16 and the production database version is Unknown unless a deployment source is cited.",
+    "docs/ARCHITECTURE.md: 'Production topology' status changed from Implemented to Partial (documented, live state not verified); added note that uptime, deployed image versions and configuration drift were not checked.",
+    "docs/ARCHITECTURE.md: 'Security posture' status changed to Partial; separated implemented Git controls (DRF auth defaults, cookie JWT/CSRF, tracked/staged Git secret scanning) from policy controls (no secrets in Notion/prompts/logs, least privilege, no public admin exposure) and unknown operational facts (runtime-log compliance, current network/public-exposure state); removed any implication that the scanner enforces Notion or runtime logs.",
+    "docs/DATA_CONTRACTS.md: API statement now says application endpoints are under /api/ with /admin/ and /health/ as explicit exceptions in backend/guvfx_backend/urls.py; recorded the four fixed current MT5 mount-path constants (/app/.guvfx_handoff_validate, /app/.guvfx_handoff, /srv/guvfx/mt5_pool, /app/.guvfx_pool) as fixed Path(...) constants in backend/mt5/views.py, not personal paths and not currently configurable; added a Proposed configuration-driven path requirement and distinguished it from the fixed Current implementation in the storage rules; scoped the worker-deletion claim to mt5_worker/mt5_validate_worker.py (validate_request.json, validate_cred.json) and marked other ephemeral files as contract/comment-governed, not independently verified.",
+    "docs/NOTION_MAP.md: appended titles GFX-EVD-004A, GFX-PKT-004A-R1, GuvFX — Current State v0.12 (titles only).",
+    "packets/ACTIVE.md: active pointer set to GFX-PKT-004A-R1."
+  ],
+  "commands": [
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-004A-R1-factuality-remediation.json >/dev/null",
+    "python3 (stdlib factuality script: PostgreSQL-16 production claim removed; production topology not Implemented; security posture not Implemented; scanner not described as enforcing Notion/runtime logs; MT5 paths not described as configurable; /admin/ and /health/ exceptions present; four MT5 path constants present; STATUS has 'Documented production routes' + availability-not-probed)",
+    "python3 (stdlib privacy/link sanity: no duplicate STATUS/TL;DR headings, no broken intra-doc links, no personal paths/secret-like values)",
+    "git diff --check",
+    "git diff --cached --check"
+  ],
+  "expected_results": [
+    "Secret scanner reports no findings and exits 0",
+    "All secret-scanner unit tests pass",
+    "governance-check passes",
+    "R1 evidence manifest is valid JSON",
+    "Factuality checks pass (all six PM corrections present)",
+    "Privacy/link sanity checks pass",
+    "No staged or unstaged whitespace errors"
+  ],
+  "actual_results": [
+    "check_no_secrets: no findings (exit 0)",
+    "secret-scanner unit tests: OK",
+    "governance-check passed",
+    "R1 evidence manifest parsed as valid JSON",
+    "FACTUALITY: PASS (all checks)",
+    "DOC SANITY: PASS (all checks)",
+    "git diff --check and git diff --cached --check produced no output"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "head_commit/c3_commit and the CI block were filled in at the C4 evidence-only commit after the C3 push run concluded success; the C4 commit itself triggers a second CI run validated separately.",
+    "make check was not run locally per packet instruction (GitHub Actions is the approved full application integration gate); only make governance-check and the factuality/privacy/JSON/whitespace checks ran locally.",
+    "Production live state (uptime, deployed image/database versions, configuration drift, route availability, runtime-log compliance, public-exposure state) was not probed by this packet; the corrections record these as Unknown/unverified rather than asserting them.",
+    "Consumer-side deletion of launch-time ephemeral files written by backend/mt5/views.py is governed by contract/comments and is not independently verified here; only the validate-worker deletion path is evidenced in code.",
+    "The original GFX-PKT-004A evidence manifest was not modified.",
+    "No application, backend, frontend, MT5 runtime, infrastructure, Notion, broker, or market-data action was performed; this packet is documentation-only."
+  ],
+  "artefact_locations": [
+    "docs/STATUS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    "evidence/manifests/GFX-EVD-004A-R1-factuality-remediation.json"
+  ],
+  "checksums": {
+    "docs/STATUS.md": "sha256:3ace9bb4513ff79fa213e6a3a98ce802d8b2cf29455090e9006b9704e124c050",
+    "docs/ARCHITECTURE.md": "sha256:d856445894fea67a8cba1e6e4df9c8e807fcc47f0532c6892763d2252af14419",
+    "docs/DATA_CONTRACTS.md": "sha256:dba1ef5904a5cb2850d8680913a140073e8a5850cbe726e0c34dcd6cb24b6e03"
+  },
+  "reviewer": null
+}
