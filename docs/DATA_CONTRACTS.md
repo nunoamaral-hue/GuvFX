@@ -178,6 +178,13 @@ Implemented and exercised by `tools/market_data_synthetic_smoke.py` +
 - **`GUVFX_DATA_ROOT`** is now wired into backend settings with **no default**;
   real operation fails closed when it is unset/blank or resolves inside the repo.
 
+> **GFX-PKT-006C-R1 update:** the in-repo transport is now an actual gated
+> standard-library HTTP client (inert unless explicitly enabled), response
+> decoding is strict (no NaN/Infinity; finite prices; schema type/length
+> bounds enforced), and raw landing is exactly idempotent with deterministic
+> quarantine. Still synthetic-only; the agent endpoint and real acquisition
+> remain Proposed/Partial.
+
 **Proposed / Partial (not implemented here):** the Windows Agent
 `POST /mt5/history/rates/export` endpoint (agent-host code is **not** in this
 repository), real acquisition, the `GuvFXData` NAS share/mount, broker

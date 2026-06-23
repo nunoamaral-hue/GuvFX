@@ -20,10 +20,13 @@
 - Research/data foundation: PR #32 and PR #33 are merged to `main`
   (`80ef2f8`), establishing the DuckDB research foundation and the versioned
   market-data contracts (GFX-PKT-005B / R1 / R2).
-- **GFX-PKT-006C** (synthetic market-data acquisition foundation) is in progress on
-  branch `chore/market-data-synthetic-foundation` with an **open, unmerged** PR for
-  PM review. Synthetic-only: no real data, NAS, broker, agent or deployment action.
-  CI adds a `market-data-foundation` job.
+- **GFX-PKT-006C** (synthetic market-data acquisition foundation) on branch
+  `chore/market-data-synthetic-foundation`, now continued by **GFX-PKT-006C-R1**
+  (client and raw-integrity remediation: stdlib HTTP client gated by default,
+  strict JSON/non-finite + schema-bound validation, malformed prohibited-key
+  protection, exact idempotency/quarantine semantics). PR **#34 remains draft and
+  unmerged** for PM review (not accepted). Synthetic-only: no real data, NAS,
+  broker, agent or deployment action. CI runs a `market-data-foundation` job.
 
 ## Verified current state
 

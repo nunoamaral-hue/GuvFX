@@ -8,14 +8,14 @@ gated separately on VERIFIED timezone evidence.
 
 from __future__ import annotations
 
-import json
-
 from .agent_client import Transport
 from .contracts import (
     ContractError,
     ProhibitedKeyError,
     canonical_json_bytes,
     find_prohibited_key,
+    scan_raw_for_prohibited_key_tokens,
+    strict_json_loads,
     validate_request,
     validate_request_response_match,
     validate_response,
@@ -47,8 +47,15 @@ def acquire(request: dict, transport: Transport, store: RawStore, *, code_commit
     response_bytes = bytes(response_bytes)
 
     try:
-        response_obj = json.loads(response_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        response_obj = strict_json_loads(response_bytes)
+    except ContractError:
+        # Malformed bytes: conservatively guard against prohibited key tokens in the
+        # raw bytes BEFORE they enter ordinary quarantine (digest-only security stop).
+        if scan_raw_for_prohibited_key_tokens(response_bytes):
+            store.security_stop(request, request_bytes, response_bytes, "prohibited_in_malformed")
+            raise ProhibitedKeyError(
+                "prohibited key token in malformed response; body not persisted"
+            ) from None
         return store.quarantine_malformed(
             request, request_bytes, response_bytes, code_commit=code_commit,
             acquired_at_utc=acquired_at_utc, received_at_utc=received_at_utc,

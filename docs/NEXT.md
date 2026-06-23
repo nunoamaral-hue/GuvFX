@@ -1,9 +1,10 @@
 # NEXT — Priorities (keep this list short)
 
-## Current next action (GFX-PKT-006C)
-- [ ] **PM independent review of the GFX-PKT-006C PR and evidence only.** Do **not**
-  start GFX-PKT-006D. No real data, NAS, broker, agent or deployment action is
-  authorised until a later scoped packet.
+## Current next action (GFX-PKT-006C-R1)
+- [ ] **PM independent review of PR #34 and the GFX-PKT-006C-R1 evidence only.** PR
+  #34 remains draft/unmerged (not accepted). Do **not** start GFX-PKT-006D. No real
+  data, NAS, broker, agent or deployment action is authorised until a later scoped
+  packet.
 
 ## P0 (historical)
 1. [x] Resolve local docs diffs cleanly: either (a) commit `docs/HANDOFF.md` + `docs/STATUS.md` on a small `docs/...` branch and open a PR to `main`, or (b) restore them if they are outdated. — done 2025-12-16

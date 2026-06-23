@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import datetime, timezone
 
@@ -51,6 +52,44 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _reject_constant(token: str):
+    raise ContractError("non-standard JSON constant rejected")
+
+
+def strict_json_loads(data: bytes):
+    """Decode UTF-8 JSON strictly. No body appears in any error message.
+
+    Rejects invalid UTF-8, invalid JSON, and the non-standard constants NaN,
+    Infinity and -Infinity (which Python's json accepts by default).
+    """
+    if not isinstance(data, (bytes, bytearray)):
+        raise ContractError("payload must be bytes")
+    try:
+        text = bytes(data).decode("utf-8")
+    except UnicodeDecodeError:
+        raise ContractError("payload is not valid UTF-8") from None
+    try:
+        return json.loads(text, parse_constant=_reject_constant)
+    except json.JSONDecodeError:
+        raise ContractError("payload is not valid JSON") from None
+
+
+# Quoted JSON key token for a prohibited key, e.g. "token" : ... (case-insensitive,
+# optional whitespace before the colon). Deliberately conservative: it only matches
+# a *quoted key* followed by a colon, not an arbitrary occurrence in a value.
+_PROHIBITED_KEY_TOKEN_RE = re.compile(
+    rb'"(?:password|token|secret|api_key|login|account_number)"\s*:',
+    re.IGNORECASE,
+)
+
+
+def scan_raw_for_prohibited_key_tokens(raw: bytes) -> bool:
+    """True if raw bytes appear to contain a prohibited JSON key token."""
+    if not isinstance(raw, (bytes, bytearray)):
+        return False
+    return bool(_PROHIBITED_KEY_TOKEN_RE.search(bytes(raw)))
+
+
 def find_prohibited_key(obj) -> str | None:
     """Recursively scan for a prohibited key; return the first found or None."""
     if isinstance(obj, dict):
@@ -89,8 +128,19 @@ def _parse_instant_utc(value: str, field: str) -> datetime:
 def _require_scope(value, field: str) -> None:
     if not isinstance(value, str) or not SLUG_RE.match(value):
         raise ContractError(f"{field} must be a lowercase safe slug")
+    if len(value) > 64:
+        raise ContractError(f"{field} exceeds 64 characters")
     if not any(c.isalpha() for c in value):
         raise ContractError(f"{field} must contain at least one letter and not be all digits")
+
+
+def _require_bounded_str(value, field: str, max_len: int) -> None:
+    if not isinstance(value, str):
+        raise ContractError(f"{field} must be a string")
+    if not value:
+        raise ContractError(f"{field} must be non-empty")
+    if len(value) > max_len:
+        raise ContractError(f"{field} exceeds {max_len} characters")
 
 
 def compute_request_id(request: dict) -> str:
@@ -121,6 +171,8 @@ def validate_request(request: dict) -> None:
         raise ContractError("operation must be copy_rates_range")
     if not isinstance(request["source_id"], str) or not SLUG_RE.match(request["source_id"]):
         raise ContractError("source_id must be a lowercase safe slug")
+    if len(request["source_id"]) > 64:
+        raise ContractError("source_id exceeds 64 characters")
     _require_scope(request["account_scope"], "account_scope")
     if not isinstance(request["symbol"], str) or not SYMBOL_RE.match(request["symbol"]):
         raise ContractError("symbol must match ^[A-Z0-9]{3,12}$")
@@ -172,16 +224,18 @@ def validate_response(response: dict) -> None:
     }
     if not isinstance(source, dict) or set(source) != src_allowed:
         raise ContractError("response.source has wrong field set")
-    if not SLUG_RE.match(source["source_id"]):
+    if not isinstance(source["source_id"], str) or not SLUG_RE.match(source["source_id"]):
         raise ContractError("source.source_id must be a slug")
+    if len(source["source_id"]) > 64:
+        raise ContractError("source.source_id exceeds 64 characters")
     _require_scope(source["account_scope"], "source.account_scope")
     if source["account_type"] not in ("demo", "live", "contest"):
         raise ContractError("source.account_type invalid")
     if source["adapter_operation"] != "copy_rates_range":
         raise ContractError("source.adapter_operation must be copy_rates_range")
-    for field in ("broker_reported", "server_reported", "terminal_build"):
-        if not isinstance(source[field], str) or not source[field]:
-            raise ContractError(f"source.{field} must be a non-empty string")
+    _require_bounded_str(source["broker_reported"], "source.broker_reported", 128)
+    _require_bounded_str(source["server_reported"], "source.server_reported", 128)
+    _require_bounded_str(source["terminal_build"], "source.terminal_build", 64)
 
     if not isinstance(response["symbol"], str) or not SYMBOL_RE.match(response["symbol"]):
         raise ContractError("response symbol invalid")
@@ -231,6 +285,8 @@ def validate_response(response: dict) -> None:
         for name, val in (("open", o), ("high", h), ("low", low_), ("close", c)):
             if not isinstance(val, (int, float)) or isinstance(val, bool):
                 raise ContractError(f"bar.{name} must be numeric")
+            if not math.isfinite(val):
+                raise ContractError(f"bar.{name} must be a finite number")
         if h < low_:
             raise ContractError("bar high must be >= low")
         if not (low_ <= o <= h) or not (low_ <= c <= h):

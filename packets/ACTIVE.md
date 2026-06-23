@@ -1,11 +1,28 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-006C
-- **Title:** Synthetic Infrastructure and Contract Implementation v0.1
+- **Packet ID:** GFX-PKT-006C-R1 (continuation of GFX-PKT-006C)
+- **Title:** Client and Raw-Integrity Remediation v0.1
 - **Branch:** `chore/market-data-synthetic-foundation`
 - **Base:** `main` @ `80ef2f85d6546b7d62aea09ab5db39d8859482b0`
-- **Status:** In progress — synthetic-only implementation; PR open and unmerged for
-  PM review. **No merge and no real-data/NAS/broker/agent access are authorised.**
+- **Status:** Remediation in progress — synthetic-only; PR #34 remains **draft and
+  unmerged** for PM review (not accepted). **No merge and no real-data/NAS/broker/
+  agent access are authorised.**
+
+## R1 remediation scope (closes five PM findings)
+
+1. Actual standard-library HTTP history-export client (`agent_client.py`) — inert
+   unless `allow_network=True`; injectable opener; exact POST/headers/body/timeout;
+   one attempt; byte cap; redacted token/body in repr and all exceptions.
+2. Strict JSON decode (reject invalid UTF-8/JSON and NaN/Infinity/-Infinity) +
+   `math.isfinite` OHLC + schema-aligned type/length bounds (`contracts.py`,
+   `timezone.py`, `orchestrator.py`).
+3. Malformed bytes scanned for quoted prohibited JSON key tokens → digest-only
+   `security_stop`, never persisting the body/value.
+4. Exact idempotency/quarantine: `ALREADY_PRESENT` requires BOTH stored request and
+   response SHA-256 and returns stored manifest values; deterministic quarantine
+   identity over request+response+reason; canonical-request-byte guard; fail closed
+   on corrupt accepted manifest (`storage.py`).
+5. Exact authoritative Notion-map titles (`docs/NOTION_MAP.md`).
 
 ## Scope
 

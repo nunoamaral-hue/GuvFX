@@ -138,3 +138,13 @@ make market-data-check          # smoke + market-data unit tests
 No real data exists from this packet. The Windows Agent export endpoint, the
 `GuvFXData` NAS share, broker timezone/identity evidence and real acquisition are
 **not** implemented here.
+
+**GFX-PKT-006C-R1 (client & raw integrity):** `agent_client.NetworkAgentClient` is
+now an actual standard-library HTTP client, but it is **inert unless explicitly
+constructed with `allow_network=True`** (plus base URL + token) by a future
+authorised packet; it makes no call here and never logs the token or any body.
+Response decoding is strict (rejects invalid UTF-8/JSON and `NaN`/`Infinity`);
+prices must be finite; runtime validation enforces the schema type/length bounds.
+Raw landing is exactly idempotent (an unchanged re-acquire returns the stored
+checksums) and any request/response byte difference is quarantined without touching
+accepted raw.

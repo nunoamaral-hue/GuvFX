@@ -465,5 +465,257 @@ class TestBackendSettingWiring(unittest.TestCase):
         self.assertNotIn('GUVFX_DATA_ROOT = env("GUVFX_DATA_ROOT",', src)  # no default arg
 
 
+class _FakeResp:
+    def __init__(self, status=200, body=b'{"ok": true}'):
+        self.status = status
+        self._body = body
+        self.closed = False
+
+    def read(self, n=-1):
+        return self._body if (n is None or n < 0) else self._body[:n]
+
+    def close(self):
+        self.closed = True
+
+    def getcode(self):
+        return self.status
+
+
+class _FakeOpener:
+    def __init__(self, resp=None, raises=None):
+        self.resp = resp
+        self.raises = raises
+        self.calls = []
+
+    def __call__(self, request, timeout=None):
+        self.calls.append((request, timeout))
+        if self.raises is not None:
+            raise self.raises
+        return self.resp
+
+
+class TestHttpClient(unittest.TestCase):
+    TOKEN = "TOPSECRETVALUE-do-not-log"
+    URL = "http://agent.invalid:8787"
+
+    def test_disabled_by_default_fails_before_open(self):
+        opener = _FakeOpener(_FakeResp())
+        client = NetworkAgentClient(self.URL, self.TOKEN, opener=opener)  # allow_network False
+        with network_blocked():
+            with self.assertRaises(TransportError):
+                client.export_rates(b'{"x":1}')
+        self.assertEqual(opener.calls, [])  # never opened
+
+    def test_constructor_rejects_bad_inputs(self):
+        for base, tok in [("", "t"), ("http://a", ""), ("ftp://a", "t"),
+                          ("http://a?q=1", "t"), ("http://a#f", "t"), ("notaurl", "t")]:
+            with self.assertRaises(TransportError):
+                NetworkAgentClient(base, tok, allow_network=True)
+
+    def test_post_contract_under_mock(self):
+        resp = _FakeResp(status=200, body=b'{"ok": true}')
+        opener = _FakeOpener(resp)
+        client = NetworkAgentClient(self.URL, self.TOKEN, allow_network=True,
+                                    timeout_s=12, opener=opener)
+        body = b'{"request_id":"x"}'
+        with network_blocked():
+            out = client.export_rates(body)
+        self.assertEqual(out, b'{"ok": true}')
+        self.assertEqual(len(opener.calls), 1)  # one attempt, no retry
+        req, timeout = opener.calls[0]
+        self.assertEqual(req.method, "POST")
+        self.assertEqual(req.full_url, self.URL + "/mt5/history/rates/export")
+        self.assertEqual(req.data, body)  # exact bytes
+        self.assertEqual(timeout, 12)
+        headers = {k.lower(): v for k, v in req.header_items()}
+        self.assertEqual(headers["X-guvfx-agent-token".lower()], self.TOKEN)
+        self.assertEqual(headers["content-type"], "application/json")
+        self.assertEqual(headers["accept"], "application/json")
+        self.assertTrue(resp.closed)  # response closed
+
+    def test_non_success_status_raises_without_body(self):
+        resp = _FakeResp(status=500, body=b'{"secret-body":1}')
+        opener = _FakeOpener(resp)
+        client = NetworkAgentClient(self.URL, self.TOKEN, allow_network=True, opener=opener)
+        with network_blocked():
+            with self.assertRaises(TransportError) as ctx:
+                client.export_rates(b'{}')
+        self.assertNotIn("secret-body", str(ctx.exception))
+
+    def test_byte_limit_exceeded_raises(self):
+        resp = _FakeResp(status=200, body=b"x" * 50)
+        opener = _FakeOpener(resp)
+        client = NetworkAgentClient(self.URL, self.TOKEN, allow_network=True,
+                                    max_response_bytes=4, opener=opener)
+        with network_blocked():
+            with self.assertRaises(TransportError):
+                client.export_rates(b'{}')
+
+    def test_http_error_redacted(self):
+        import urllib.error
+        opener = _FakeOpener(raises=urllib.error.HTTPError(self.URL, 503, "boom", {}, io.BytesIO(b"")))
+        client = NetworkAgentClient(self.URL, self.TOKEN, allow_network=True, opener=opener)
+        with network_blocked():
+            with self.assertRaises(TransportError) as ctx:
+                client.export_rates(b'{}')
+        self.assertNotIn(self.TOKEN, str(ctx.exception))
+
+    def test_url_error_redacted(self):
+        import urllib.error
+        opener = _FakeOpener(raises=urllib.error.URLError("dns boom"))
+        client = NetworkAgentClient(self.URL, self.TOKEN, allow_network=True, opener=opener)
+        with network_blocked():
+            with self.assertRaises(TransportError) as ctx:
+                client.export_rates(b'{}')
+        self.assertNotIn(self.TOKEN, str(ctx.exception))
+
+    def test_repr_redacts_token(self):
+        client = NetworkAgentClient(self.URL, self.TOKEN, allow_network=True)
+        self.assertNotIn(self.TOKEN, repr(client))
+        self.assertIn("<redacted>", repr(client))
+
+
+class TestStrictJsonAndBounds(unittest.TestCase):
+    def test_strict_json_rejects_non_finite(self):
+        for bad in (b'{"x": NaN}', b'{"x": Infinity}', b'{"x": -Infinity}'):
+            with self.assertRaises(ContractError):
+                contracts.strict_json_loads(bad)
+
+    def test_strict_json_rejects_invalid(self):
+        with self.assertRaises(ContractError):
+            contracts.strict_json_loads(b'{not json')
+        with self.assertRaises(ContractError):
+            contracts.strict_json_loads(b'\xff\xfe not utf8')
+
+    def test_non_finite_ohlc_rejected(self):
+        resp = _fixture("synthetic_history_response.json")
+        resp["bars"][0]["high"] = float("inf")
+        with self.assertRaises(ContractError):
+            contracts.validate_response(resp)
+
+    def test_length_bounds(self):
+        req = _fixture("synthetic_history_request.json")
+        long_req = copy.deepcopy(req)
+        long_req["source_id"] = "s" + "x" * 70
+        long_req["request_id"] = contracts.compute_request_id(long_req)
+        with self.assertRaises(ContractError):
+            contracts.validate_request(long_req)
+
+        resp = _fixture("synthetic_history_response.json")
+        r2 = copy.deepcopy(resp)
+        r2["source"]["broker_reported"] = "B" * 129
+        with self.assertRaises(ContractError):
+            contracts.validate_response(r2)
+
+    def test_regex_type_guard_no_typeerror(self):
+        req = _fixture("synthetic_history_request.json")
+        req["source_id"] = 12345  # not a string
+        with self.assertRaises(ContractError):
+            contracts.validate_request(req)
+
+
+class TestMalformedProhibitedKey(unittest.TestCase):
+    def test_scan_distinguishes_key_from_value(self):
+        self.assertTrue(contracts.scan_raw_for_prohibited_key_tokens(b'{"token": "x"}'))
+        self.assertTrue(contracts.scan_raw_for_prohibited_key_tokens(b'{"token"  : "x"}'))
+        self.assertTrue(contracts.scan_raw_for_prohibited_key_tokens(b'{"TOKEN": "x"}'))
+        self.assertFalse(contracts.scan_raw_for_prohibited_key_tokens(b'{"note": "my token: y"}'))
+
+    def test_malformed_with_secret_key_not_persisted(self):
+        request = _fixture("synthetic_history_request.json")
+        malformed = b'{"token": "SUPERSECRET-XYZ", broken'
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            with self.assertRaises(ProhibitedKeyError):
+                orchestrator.acquire(request, FixtureTransport(malformed), store,
+                                     **_commit_args())
+            # No accepted/quarantine body persisted; security record exists; no value.
+            self.assertEqual(glob.glob(os.path.join(tmp, "raw", "**", "*.json"),
+                                       recursive=True), [])
+            for path in glob.glob(os.path.join(tmp, "**", "*"), recursive=True):
+                if os.path.isfile(path):
+                    self.assertNotIn("SUPERSECRET-XYZ", Path(path).read_text(encoding="utf-8"))
+
+    def test_malformed_without_secret_quarantines(self):
+        request = _fixture("synthetic_history_request.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = orchestrator.acquire(request, FixtureTransport(b"not json at all"),
+                                       store, **_commit_args())
+            self.assertEqual(res["object_state"], "QUARANTINED")
+
+
+class TestIdempotencyExactness(unittest.TestCase):
+    def setUp(self):
+        self.request = _fixture("synthetic_history_request.json")
+        self.response_bytes = _fixture_bytes("synthetic_history_response.json")
+
+    def _acquire(self, store):
+        return orchestrator.acquire(self.request, FixtureTransport(self.response_bytes),
+                                    store, **_commit_args())
+
+    def test_already_present_returns_stored_checksums(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            self._acquire(store)
+            res = self._acquire(store)
+            self.assertEqual(res["status"], "ALREADY_PRESENT")
+            # Returned checksums match the files at the returned paths.
+            self.assertEqual(
+                res["response_sha256"],
+                contracts.sha256_hex(Path(os.path.join(tmp, res["response_path"])).read_bytes()))
+            self.assertEqual(
+                res["request_sha256"],
+                contracts.sha256_hex(Path(os.path.join(tmp, res["request_path"])).read_bytes()))
+
+    def test_changed_request_bytes_quarantines_accepted_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            r1 = self._acquire(store)
+            accepted = os.path.join(tmp, r1["response_path"])
+            original = Path(accepted).read_bytes()
+            canonical = contracts.canonical_json_bytes(self.request)
+            noncanonical = canonical + b" "  # same object, different bytes
+            res = store.land(self.request, json.loads(self.response_bytes), noncanonical,
+                             self.response_bytes, **_commit_args())
+            self.assertEqual(res["status"], "QUARANTINED_CONFLICT")
+            self.assertEqual(Path(accepted).read_bytes(), original)
+
+    def test_changed_response_quarantines_accepted_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            r1 = self._acquire(store)
+            accepted = os.path.join(tmp, r1["response_path"])
+            original = Path(accepted).read_bytes()
+            other = json.loads(self.response_bytes)
+            other["bars"][0]["close"] = 1.23456
+            other_bytes = contracts.canonical_json_bytes(other)
+            canonical = contracts.canonical_json_bytes(self.request)
+            res = store.land(self.request, other, canonical, other_bytes, **_commit_args())
+            self.assertEqual(res["status"], "QUARANTINED_CONFLICT")
+            self.assertEqual(Path(accepted).read_bytes(), original)
+
+    def test_distinct_request_bytes_distinct_quarantine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            self._acquire(store)
+            canonical = contracts.canonical_json_bytes(self.request)
+            r_a = store.land(self.request, json.loads(self.response_bytes), canonical + b" ",
+                             self.response_bytes, **_commit_args())
+            r_b = store.land(self.request, json.loads(self.response_bytes), canonical + b"  ",
+                             self.response_bytes, **_commit_args())
+            self.assertNotEqual(r_a["manifest_path"], r_b["manifest_path"])  # no aliasing
+
+    def test_corrupt_accepted_manifest_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            r1 = self._acquire(store)
+            manifest_file = os.path.join(tmp, r1["manifest_path"])
+            with open(manifest_file, "w", encoding="utf-8") as fh:
+                fh.write("{ corrupt")
+            with self.assertRaises(storage.StorageError):
+                self._acquire(store)
+
+
 if __name__ == "__main__":
     unittest.main()
