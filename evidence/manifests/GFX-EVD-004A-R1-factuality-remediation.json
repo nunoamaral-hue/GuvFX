@@ -5,18 +5,18 @@
   "created_at_utc": "2026-06-23T07:52:38Z",
   "branch": "chore/guvfx-documentation-convergence",
   "base_commit": "c720d5d1b8530c99fb66a4bbb241478ebe7e0d19",
-  "head_commit": null,
-  "c3_commit": null,
+  "head_commit": "4da8e93a5eaf3e08ae0435ab2e8afe5fbf5988dc",
+  "c3_commit": "4da8e93a5eaf3e08ae0435ab2e8afe5fbf5988dc",
   "ci": {
     "provider": "GitHub Actions",
     "workflow_name": "CI",
     "event": "push",
-    "run_id": null,
-    "run_head_sha": null,
+    "run_id": 28011062243,
+    "run_head_sha": "4da8e93a5eaf3e08ae0435ab2e8afe5fbf5988dc",
     "jobs": [
-      { "name": "governance", "conclusion": null },
-      { "name": "backend", "conclusion": null },
-      { "name": "frontend", "conclusion": null }
+      { "name": "governance", "conclusion": "success" },
+      { "name": "backend", "conclusion": "success" },
+      { "name": "frontend", "conclusion": "success" }
     ]
   },
   "corrections": [
@@ -56,9 +56,9 @@
     "DOC SANITY: PASS (all checks)",
     "git diff --check and git diff --cached --check produced no output"
   ],
-  "status": "PARTIAL",
+  "status": "PASS",
   "limitations": [
-    "head_commit/c3_commit and the CI block are null at authoring time; they are filled in at the C4 evidence-only commit after the C3 push run completes.",
+    "head_commit/c3_commit and the CI block were filled in at the C4 evidence-only commit after the C3 push run concluded success; the C4 commit itself triggers a second CI run validated separately.",
     "make check was not run locally per packet instruction (GitHub Actions is the approved full application integration gate); only make governance-check and the factuality/privacy/JSON/whitespace checks ran locally.",
     "Production live state (uptime, deployed image/database versions, configuration drift, route availability, runtime-log compliance, public-exposure state) was not probed by this packet; the corrections record these as Unknown/unverified rather than asserting them.",
     "Consumer-side deletion of launch-time ephemeral files written by backend/mt5/views.py is governed by contract/comments and is not independently verified here; only the validate-worker deletion path is evidenced in code.",

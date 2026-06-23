@@ -3,7 +3,7 @@
 - **Packet ID:** GFX-PKT-004A-R1 (continuation of GFX-PKT-004A)
 - **Title:** Documentation Factuality Remediation v0.1
 - **Branch:** `chore/guvfx-documentation-convergence`
-- **Status:** Remediation in progress. **No merge is authorised.**
+- **Status:** Remediated — CI verified; PM review pending. **No merge is authorised.**
 
 ## Scope
 
