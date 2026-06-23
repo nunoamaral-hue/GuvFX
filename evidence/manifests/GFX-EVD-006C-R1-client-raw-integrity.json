@@ -1,0 +1,127 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-006C-R1-client-raw-integrity",
+  "packet_id": "GFX-PKT-006C-R1",
+  "created_at_utc": "2026-06-23T21:10:07Z",
+  "branch": "chore/market-data-synthetic-foundation",
+  "base_commit": "0710d43b597d1e8bbb7e1f6c8e17ac34ee67966e",
+  "head_commit": "792731dff06fa9c7fae7f00b9449a13c59bc104d",
+  "c3_commit": "792731dff06fa9c7fae7f00b9449a13c59bc104d",
+  "c4_commit": null,
+  "continuation_of": "GFX-PKT-006C (evidence GFX-EVD-006C-synthetic-market-data-foundation.json — unchanged historical record)",
+  "environment": {
+    "research_python_version": "3.14.6",
+    "duckdb_version": "1.5.4",
+    "dependencies_changed": false,
+    "schemas_changed": false,
+    "ci_make_changed": false
+  },
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "c3": {
+      "push_run_id": 28057248675,
+      "pull_request_run_id": 28057251546,
+      "run_head_sha": "792731dff06fa9c7fae7f00b9449a13c59bc104d",
+      "jobs": [
+        { "name": "governance", "conclusion": "success" },
+        { "name": "backend", "conclusion": "success" },
+        { "name": "frontend", "conclusion": "success" },
+        { "name": "research-foundation", "conclusion": "success" },
+        { "name": "market-data-foundation", "conclusion": "success" }
+      ]
+    },
+    "c4": { "push_run_id": null, "pull_request_run_id": null, "run_head_sha": null, "jobs": [] }
+  },
+  "files_modified": [
+    "research/market_data/agent_client.py",
+    "research/market_data/contracts.py",
+    "research/market_data/orchestrator.py",
+    "research/market_data/storage.py",
+    "tests/test_market_data_foundation.py",
+    "research/README.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/STATUS.md",
+    "docs/HANDOFF.md",
+    "docs/NEXT.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md"
+  ],
+  "files_added": [
+    "evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json"
+  ],
+  "unauthorised_files_changed": false,
+  "dependencies_changed": false,
+  "schemas_changed": false,
+  "ci_make_changed": false,
+  "remediation_results": {
+    "http_client": "NetworkAgentClient.export_rates implemented with stdlib urllib only; inert unless allow_network=True (fails before opening); constructor requires non-empty base URL + token, http/https scheme, no query/fragment, positive timeout; injectable opener (defaults to urllib.request.urlopen)",
+    "http_mock_assertions": "mocked opener verified: method POST; URL {base}/mt5/history/rates/export; headers X-GuvFX-Agent-Token + Content-Type/Accept application/json; exact request bytes; configured timeout passed; exactly one call (no retry); response.close() called; returns exact body",
+    "http_limits_and_redaction": "non-200 status raises TransportError without body; response read capped at max_response_bytes+1 (oversize raises, no body); HTTPError/URLError/timeout translated to redacted TransportError with no token/body; repr redacts token",
+    "no_egress": "tests run inside network_blocked() egress guard with fake openers; zero real sockets/HTTP; socket.create_connection raises inside guard",
+    "strict_json": "strict_json_loads rejects invalid UTF-8, invalid JSON, and NaN/Infinity/-Infinity via parse_constant; no body in error messages; orchestrator uses it",
+    "non_finite_prices": "validate_response rejects non-finite open/high/low/close via math.isfinite",
+    "schema_bounds": "runtime enforces source/account slug <=64, broker/server reported <=128, terminal build <=64; regex validators confirm string type first and raise ContractError (no TypeError leak). NOTE deviation: timezone evidence_method/dst_behaviour <=256 runtime check NOT added because research/market_data/timezone.py is outside the section-6 authorised-modify list; the committed broker_timezone_evidence_v1 schema already enforces maxLength 256 for both fields.",
+    "malformed_prohibited_key": "raw malformed bytes are scanned for quoted prohibited JSON key tokens (password|token|secret|api_key|login|account_number, case-insensitive, optional ws before colon) BEFORE ordinary quarantine; on match -> digest-only security_stop (no request/response body persisted) + ProhibitedKeyError with generic message; a value occurrence is not treated as a key (tested)",
+    "idempotency": "land() returns ALREADY_PRESENT only when BOTH stored request_sha256 and response_sha256 match; result built from the stored manifest (digests + root-relative paths), never current-call claims; returned checksums verified equal to sha256 of the files at the returned paths",
+    "request_byte_conflict": "non-canonical request_bytes (request_bytes != canonical_json_bytes(request)) are quarantined; accepted raw byte-for-byte unchanged",
+    "response_byte_conflict": "same request_id with changed response bytes quarantined; accepted raw unchanged",
+    "quarantine_identity": "quarantine id is sha256(request_bytes\\0response_bytes\\0reason)[:16]; distinct request bytes produce distinct quarantine directories (no aliasing); existing quarantine dir returns stored manifest values",
+    "fail_closed_manifest": "a missing/corrupt/incomplete accepted manifest raises StorageError (fails closed) rather than claiming idempotency or overwriting",
+    "notion_titles": "GFX-EVD-006B and GFX-ADR-DATA-004 replaced with exact authoritative titles; GFX-EVD-006C, GFX-PKT-006C-R1 and GuvFX — Current State v0.20 added"
+  },
+  "commands": [
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v",
+    ".venv-research/bin/python tools/market_data_synthetic_smoke.py",
+    "make research-check",
+    "make market-data-check",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json >/dev/null",
+    "git diff --check; git status --short",
+    "git diff --name-only 0710d43b597d1e8bbb7e1f6c8e17ac34ee67966e...HEAD"
+  ],
+  "expected_results": [
+    "All R1 remediation behaviours implemented and unit-tested",
+    "No real network egress; HTTP client exercised only via mocks inside the egress guard",
+    "Existing research + market-data tests remain green; smoke deterministic",
+    "Only authorised files changed; no dependency/schema/CI/Make change",
+    "All five CI jobs pass for C3 and C4 push + PR runs"
+  ],
+  "actual_results": [
+    "market-data tests: Ran 64 tests, OK (adds HTTP client, strict-JSON/bounds, malformed-key, idempotency/quarantine exactness)",
+    "research foundation: OK; synthetic smoke: deterministic byte-for-byte across two runs",
+    "check_no_secrets: no findings; make governance-check OK; make research-check OK; make market-data-check OK",
+    "json.tool: R1 manifest valid JSON",
+    "git diff --check clean; only the 12 authorised files changed (timezone.py was reverted to keep within the authorised list)",
+    "C3 CI: push 28057248675 + PR 28057251546 (head 792731d) — governance/backend/frontend/research-foundation/market-data-foundation all success; C4 final runs recorded in PR comment + handoff"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "No real client call, agent endpoint, market data, NAS or credentials: the HTTP client is inert by default and was exercised only through injected fakes inside the egress guard.",
+    "Deviation: the timezone evidence method/DST 256-char runtime bound (one sub-item of finding 7.2) was not added because research/market_data/timezone.py is not in the authorised-modify list; the committed schema already enforces maxLength 256, so this is a defense-in-depth gap only. PM may authorise timezone.py in a tiny follow-up.",
+    "Backend 'core' test still relies on the GitHub backend CI job locally (no backend/.venv/PostgreSQL); unchanged from 006C.",
+    "head_commit/c3_commit point at C3 (792731d); the C4 block is filled at the evidence-only C4 commit after C3 runs concluded success; C4 triggers further CI recorded in the PR comment/handoff.",
+    "The 006C evidence manifest historical record is unchanged."
+  ],
+  "artefact_locations": [
+    "research/market_data/agent_client.py",
+    "research/market_data/contracts.py",
+    "research/market_data/orchestrator.py",
+    "research/market_data/storage.py",
+    "tests/test_market_data_foundation.py",
+    "docs/NOTION_MAP.md",
+    "evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json"
+  ],
+  "checksums": {
+    "research/market_data/agent_client.py": "sha256:ddc01abbe74dc6c62eb58c510b7810d4b9ee951a05a83abae93ee03f9ed6b7de",
+    "research/market_data/contracts.py": "sha256:5754a8996cb58ab67ca8f3266e16bb3b51bc09dacfa4801195bd37167ba2d624",
+    "research/market_data/orchestrator.py": "sha256:45df082a7b0ca1d1b2671701df93ce7afeeebb7944e5f263b545e922727c5e1c",
+    "research/market_data/storage.py": "sha256:964a3eb2823268c5614286a7c4e5f7ce84fcc75dc775f566a8a85b8bee588459",
+    "tests/test_market_data_foundation.py": "sha256:86c1c6c2e0267f86049691f588a5ddda3e688e66ccada4e1199d7d8f2c8ff70f",
+    "docs/NOTION_MAP.md": "sha256:f9aa8d01cc821ec971d0beee086eb9e7a0509310af20fa1fbf6166775a269d98"
+  },
+  "reviewer": null
+}
