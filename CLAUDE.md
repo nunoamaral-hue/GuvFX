@@ -95,3 +95,41 @@ Path alias: `@/*` maps to `./src/*`.
 - Python: 4-space indent
 - JS/TS/JSON: 2-space indent
 - Line endings: LF (enforced via `.gitattributes`)
+
+## GuvFX Governance Overlay
+
+This overlay is **additive**. All existing project instructions above — Build & Test,
+Working Agreement, Architecture, environment variables, and application guidance — remain
+fully in force. The GuvFX application, trading platform, and infrastructure described above
+exist and are authoritative for how the system is built; this section adds governance
+boundaries on top of them.
+
+**Sources of authority**
+
+- **Notion is authoritative** for the approved blueprint, decisions, risks, and the full
+  packet lifecycle.
+- **Git is authoritative** for implementation, tests, and concise evidence.
+- Active work must be **bounded by `packets/ACTIVE.md`** plus the full Notion packet
+  supplied in the current session.
+- **Chat history and home-level Claude memory are non-authoritative** and must not be used
+  as authority for decisions.
+
+**Decision boundaries**
+
+- **Green** — small, additive, behaviour-preserving changes within the active packet's
+  scope: proceed.
+- **Amber** — changes that touch shared structure, gates, security posture, or anything
+  near the boundary of the packet: proceed only with an explicit, documented decision and
+  flag it in the handoff.
+- **Red** — live/paper trading authority, credential or production access, irreversible or
+  out-of-scope actions: require Nuno's explicit approval before proceeding.
+
+**Standing rules**
+
+- **No-assumption rule.** If something is not established in code, docs, or the active
+  packet, say so and propose a safe way to confirm — do not assume.
+- **No unrestricted LLM live-trading authority.** Model output may inform research and
+  suggestions only; it must never place, size, or approve live or paper orders without an
+  explicit human-gated control path.
+- **Scoped rules live under `.claude/rules/`** (`architecture`, `data`, `research`,
+  `security`, `evidence`, `handoff`, `notion`) and must be read when relevant to the work.
