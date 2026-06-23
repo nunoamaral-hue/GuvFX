@@ -5,8 +5,8 @@
   "created_at_utc": "2026-06-23T09:18:09Z",
   "branch": "chore/eurusd-data-foundation",
   "base_commit": "ec59f8358e7ea0e55cb754a5db614645931e4791",
-  "head_commit": null,
-  "c1_commit": null,
+  "head_commit": "d207c246ae21c46b334ddef666eb8aa2cb4c57c9",
+  "c1_commit": "d207c246ae21c46b334ddef666eb8aa2cb4c57c9",
   "c2_commit": null,
   "environment": {
     "python_version": "3.14.6",
@@ -20,7 +20,16 @@
   "ci": {
     "provider": "GitHub Actions",
     "workflow_name": "CI",
-    "c1": { "run_id": null, "run_head_sha": null, "jobs": [] },
+    "c1": {
+      "run_id": 28016035520,
+      "run_head_sha": "d207c246ae21c46b334ddef666eb8aa2cb4c57c9",
+      "jobs": [
+        { "name": "governance", "conclusion": "success" },
+        { "name": "backend", "conclusion": "success" },
+        { "name": "frontend", "conclusion": "success" },
+        { "name": "research-foundation", "conclusion": "success" }
+      ]
+    },
     "c2": { "run_id": null, "run_head_sha": null, "jobs": [] }
   },
   "commands": [
@@ -59,7 +68,8 @@
     "make governance-check: passed; make research-check: smoke PASS + 16 research tests OK",
     "json.tool: all three schemas and this manifest parsed as valid JSON",
     "git diff --check and git diff --cached --check produced no output",
-    "CI results recorded at C2 (run IDs filled in the post-C1 evidence update)"
+    "C1 CI run 28016035520 (head d207c246): governance, backend, frontend, research-foundation all success",
+    "Initial C1 push (fcf19983) failed CI as a workflow-parse error: a 'run:' value containing '--only-binary=:all: --no-deps' was read by YAML as a mapping (colon-space at 'all: '); fixed by switching the affected research-foundation steps to block scalars ('run: |') and the C1 commit was amended to d207c246, which passes"
   ],
   "status": "PASS",
   "limitations": [

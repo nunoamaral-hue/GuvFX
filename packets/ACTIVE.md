@@ -3,7 +3,7 @@
 - **Packet ID:** GFX-PKT-005B
 - **Title:** EURUSD Contract and DuckDB Research Foundation v0.1
 - **Branch:** `chore/eurusd-data-foundation`
-- **Status:** In progress. **No merge is authorised.**
+- **Status:** Executed — CI verified; PM review pending. **No merge is authorised.**
 
 ## Scope
 
