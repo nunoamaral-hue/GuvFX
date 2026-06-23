@@ -43,7 +43,10 @@ Each item is **Current** and cites its source.
 
 ### Backend API / auth boundary — Current
 
-- All app endpoints are under the `/api/` prefix (DRF ViewSets + routers).
+- Application API endpoints are under the `/api/` prefix (DRF ViewSets +
+  routers). The Django **admin** is at `/admin/` and the health check is at
+  `/health/` — these are explicit **exceptions** to the `/api/` prefix, routed in
+  `backend/guvfx_backend/urls.py`.
 - Auth: `users.auth_cookie.CookieJWTAuthentication` (HttpOnly cookie JWT) with a
   SimpleJWT fallback; DRF default permission `IsAuthenticated`
   (`backend/guvfx_backend/settings.py`).
@@ -69,16 +72,30 @@ Each item is **Current** and cites its source.
 
 ### MT5 handoff / config conventions — Current
 
-- The backend communicates with MT5 through **ephemeral JSON files** on a shared
-  mount, written by the backend and consumed/deleted by the MT5-side worker
-  (`backend/mt5/views.py`, `mt5_worker/`).
+- The backend communicates with MT5 through **ephemeral JSON files** on shared
+  container/host mounts (`backend/mt5/views.py`, `mt5_worker/`).
+- **Fixed current mount paths** — `backend/mt5/views.py` defines these as fixed
+  `Path(...)` module constants (not configuration, not personal paths, and **not
+  currently configurable in that module**):
+  - `/app/.guvfx_handoff_validate` (`HANDOFF_VALIDATE`);
+  - `/app/.guvfx_handoff` (`HANDOFF`);
+  - `/srv/guvfx/mt5_pool` (`POOL_ROOT`);
+  - `/app/.guvfx_pool` (`HANDOFF_POOL`).
 - Launch handoff fields (names only): a credential file carrying `login`,
   `password`, `server`, and a request file carrying a timestamp and optional
-  user identifier. The credential file is **ephemeral and must be deleted after
-  use**; its contents are secrets and are never recorded in docs or evidence
-  (`.claude/rules/security.md`).
-- Handoff/pool locations are **configuration**, not hard-coded personal paths;
-  see `docs/RUNBOOK.md` for the operational mount description.
+  user identifier. Credential contents are secrets and are never recorded in docs
+  or evidence (`.claude/rules/security.md`).
+- **Deletion (as evidenced):** the MT5 validate worker
+  (`mt5_worker/mt5_validate_worker.py`) deletes `validate_request.json` and
+  `validate_cred.json` after processing (EPHEMERAL cleanup). Other ephemeral
+  launch/validate files are marked EPHEMERAL by the contract/comments in
+  `backend/mt5/views.py`, with the consumer expected to delete them; that
+  consumer-side deletion is not independently verified in this document.
+
+> **Proposed:** make the MT5 handoff/pool path locations
+> **configuration-driven** (e.g. settings/environment), rather than fixed module
+> constants, where future portability or multi-host deployment requires it. Not
+> implemented today.
 
 ### GuvFX intelligence objects & WIMS consumption boundary — Current
 
@@ -145,8 +162,12 @@ These follow `.claude/rules/data.md` and `.claude/rules/evidence.md`:
   reproducible from raw inputs plus recorded config; treat derived data as cache.
 - **Quarantine, don't destroy.** Suspect data is quarantined with a reason, not
   silently deleted.
-- **Configurable paths.** Data locations are configuration, not hard-coded or
-  personal/home paths.
+- **Configurable paths (Proposed target vs. Current implementation).** The rule's
+  intent is that data locations be configuration, not personal/home paths. This is
+  a **Proposed** target for the MT5 handoff/pool paths, which are **currently**
+  fixed `Path(...)` module constants in `backend/mt5/views.py` (see the MT5
+  handoff section above) — fixed container/host mounts, not personal paths, but
+  not yet configuration-driven.
 - **No large/raw data in Git.** Git holds code, small fixtures, and concise
   evidence; bulk/binary data lives outside the repo.
 - **Versioned manifests + provenance.** Evidence is captured in versioned,

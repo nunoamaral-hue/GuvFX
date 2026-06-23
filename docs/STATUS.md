@@ -12,8 +12,11 @@
   foundation* merged into `main`. This introduced the scoped Claude rules,
   authority/packet boundaries, the secret scanner + governance Make/CI gate, the
   Notion map, the evidence convention, and the active-packet pointer.
-- Production URLs: `https://guvfx.com` (frontend), `https://api.guvfx.com`
-  (backend API), `https://guac.guvfx.com/guacamole/` (Guacamole MT5 desktop).
+- Documented production routes: `https://guvfx.com` (frontend),
+  `https://api.guvfx.com` (backend API), `https://guac.guvfx.com/guacamole/`
+  (Guacamole MT5 desktop). These are the routes recorded in `docs/RUNBOOK.md`;
+  route availability and live production health were **not probed** by
+  GFX-PKT-004A or its R1 remediation.
 
 ## Verified current state
 

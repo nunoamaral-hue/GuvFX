@@ -1,42 +1,42 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-004A
-- **Title:** Documentation and Current-State Convergence v0.1
+- **Packet ID:** GFX-PKT-004A-R1 (continuation of GFX-PKT-004A)
+- **Title:** Documentation Factuality Remediation v0.1
 - **Branch:** `chore/guvfx-documentation-convergence`
-- **Status:** Executed — CI verified; PM review pending. **No merge is authorised.**
+- **Status:** Remediation in progress. **No merge is authorised.**
 
 ## Scope
 
-A documentation-only convergence built on a dedicated branch from `origin/main`
-(which includes governance merge `c17b7b8`). Repair stale/duplicated current-state
-docs and document the actual implemented architecture and data contracts:
+A Green, documentation-only factuality remediation on the existing PR #32 branch,
+correcting six current-state overstatements raised in PM review:
 
-- repair `docs/STATUS.md` (collapse duplication, distinct verified/active/known
-  sections, preserve dated historical green checks);
-- document implemented architecture in `docs/ARCHITECTURE.md` with explicit
-  Implemented/Partial/Proposed/Unknown labels and a separate Target evolution
-  section;
-- create `docs/DATA_CONTRACTS.md` separating Current/Candidate/Proposed/Unknown
-  contracts, every current claim citing a repository path or ADR;
-- enrich `docs/ADRs/template.md` (no new ADRs, no parallel directory);
-- update `docs/NOTION_MAP.md` (titles only) and this pointer;
-- record machine-readable evidence under `evidence/manifests/`.
+- `docs/STATUS.md` — label the domains as *documented production routes* and state
+  that route availability / live production health were not probed.
+- `docs/ARCHITECTURE.md` — qualify the PostgreSQL version (CI = 16; production =
+  Unknown without a deployment source); change production topology to *Partial*;
+  change security posture to *Partial*, separating implemented Git controls from
+  policy controls and unknown operational facts.
+- `docs/DATA_CONTRACTS.md` — record the fixed current MT5 mount-path constants and
+  the `/admin/` + `/health/` API exceptions; mark configurable paths as Proposed.
+- `docs/NOTION_MAP.md` — append three record titles (titles only).
+- this pointer + a new R1 evidence manifest.
 
 ## Prohibited in this packet
 
-- No application/backend/frontend/MT5 code edits.
-- No Makefile, CI, secret-scanner, scoped-rule, or infrastructure change.
-- No local package installation, Docker, database, or production access.
-- No NAS, broker, market-data, Notion, or trading action.
-- No edits outside the seven authorised files.
-- No merge, rebase, reset, or force push.
-- No change to `flow-a-shadow` or preservation branches.
+- No application, CI, Makefile, scanner, rule, ADR-template, or infrastructure
+  edits.
+- No production, NAS, broker, MT5 runtime, market-data, or Notion access.
+- No branch switch, fetch, merge, rebase, reset, or force push.
+- No edit outside the six authorised paths.
+- No PR merge.
 
 ## Evidence
 
-- Expected path: `evidence/manifests/GFX-EVD-004A-documentation-convergence.json`
+- Expected path: `evidence/manifests/GFX-EVD-004A-R1-factuality-remediation.json`
+- The original `evidence/manifests/GFX-EVD-004A-documentation-convergence.json` is
+  not modified.
 
 ## Notion record
 
-- Title: **GFX-PKT-004A — Documentation and Current-State Convergence v0.1**
+- Title: **GFX-PKT-004A-R1 — Documentation Factuality Remediation v0.1**
   (Notion is authoritative for full text and lifecycle status.)

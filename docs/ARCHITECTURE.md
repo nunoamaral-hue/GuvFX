@@ -15,7 +15,9 @@ A single repository holding the full stack:
   `guvfx_backend/`; local apps listed below.
 - `frontend/` — Next.js 16 / React 19 / TypeScript, App Router under `src/app/`.
   `src/lib/api.ts` centralises CSRF injection, 401 auto-refresh, and cookie auth.
-- **PostgreSQL** — primary datastore (production runs PostgreSQL 16).
+- **PostgreSQL** — primary datastore. Repository CI tests against **PostgreSQL
+  16**; the **production** database version is **Unknown** in this repository
+  unless a concrete deployment source is cited.
 - `mt5_worker/` — Python worker(s) for MT5 trade ingestion and credential
   validation; the `mt5` app and `execution` app coordinate handoff.
 - `docs/`, `evidence/`, `packets/`, `.claude/rules/`, `scripts/`, `tests/` —
@@ -75,14 +77,17 @@ distinct and must not be merged:
   not a fully unattended pipeline; MT5 click reliability is a known issue
   (`docs/KNOWN_ISSUES.md`).
 
-## Production topology — Implemented (as documented)
+## Production topology — Partial (documented, live state not verified by this packet)
 
-Production runs on a VPS behind **Traefik** with **Let's Encrypt** TLS, serving
-the frontend, backend API, and Guacamole MT5 desktop on separate hostnames. The
-GuvFX app stack and the Guacamole + MT5 stack are operated independently, with a
-shared handoff mount between backend and MT5 containers. Host paths, restart, and
-verification commands are **not** duplicated here — see `docs/RUNBOOK.md`. No
-private addresses or credentials are recorded in this document.
+`docs/RUNBOOK.md` documents the **intended / last-recorded** production topology:
+a VPS behind **Traefik** with **Let's Encrypt** TLS, serving the frontend,
+backend API, and Guacamole MT5 desktop on separate hostnames; the GuvFX app stack
+and the Guacamole + MT5 stack operated independently, with a shared handoff mount
+between backend and MT5 containers. Host paths, restart, and verification commands
+are **not** duplicated here — see `docs/RUNBOOK.md`. No private addresses or
+credentials are recorded in this document. This packet reviewed documentation and
+repository configuration only: current **uptime**, **deployed image versions**,
+and **configuration drift** against the runbook were **not checked**.
 
 ## Governance & evidence layer — Implemented
 
@@ -116,13 +121,26 @@ pipeline (`backend/flow_a/`). It is research/validation in shadow mode; it does
 not place, size, or approve orders, and is not promoted to paper or live. See
 `docs/STATUS.md`.
 
-## Security posture (minimum) — Implemented
+## Security posture — Partial
 
-- Auth required by default (DRF `IsAuthenticated`); cookie-based JWT with CSRF.
-- Per-account scoping on trading data; staff/superuser bypass is intentional.
-- No secrets in Git/Notion/logs (enforced by the secret scanner and
-  `.claude/rules/security.md`). Admin/management surfaces are not publicly
-  exposed.
+The repository implements some controls; others are **policy** (defined in rules
+but not enforced by repository code) or are **operational facts this packet did
+not verify**. These are kept distinct:
+
+- **Implemented controls (evidenced in this repository):**
+  - Auth required by default (DRF `IsAuthenticated`); cookie-based JWT with CSRF
+    (`backend/guvfx_backend/settings.py`, `backend/users/auth_cookie*`).
+  - Per-account scoping on trading data; staff/superuser bypass is intentional.
+  - Secret scanning over **Git tracked/staged text only**
+    (`scripts/check_no_secrets.py`); it does **not** read Notion, runtime logs,
+    untracked files, or network state, and cannot enforce them.
+- **Policy controls (defined in `.claude/rules/security.md`, not enforced by the
+  scanner):** no secrets in Notion, prompts, or logs; least privilege; no public
+  admin exposure.
+- **Unknown operational facts (not checked by this packet):** current
+  runtime-log compliance (whether deployed services actually keep secrets out of
+  logs) and the current network / public-exposure state of admin and management
+  surfaces.
 
 ## Target evolution — Proposed
 

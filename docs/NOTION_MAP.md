@@ -22,6 +22,9 @@ in Notion when authority is required.
 - GFX-ADR-GIT-003 — Integrate Governance Foundation into Main v0.1
 - GFX-PKT-004A — Documentation and Current-State Convergence v0.1
 - GuvFX — Current State v0.11
+- GFX-EVD-004A — PM Review and Factuality Corrections Required v0.1
+- GFX-PKT-004A-R1 — Documentation Factuality Remediation v0.1
+- GuvFX — Current State v0.12
 
 > The titles above are pointers. Notion holds the authoritative content and lifecycle
 > state; the repository holds implementation, tests, and concise evidence. Full text and
