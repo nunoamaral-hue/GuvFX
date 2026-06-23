@@ -3,7 +3,7 @@
 - **Packet ID:** GFX-PKT-005B-R2 (continuation of GFX-PKT-005B / R1)
 - **Title:** UTC Semantic and Nullable-Field Remediation v0.1
 - **Branch:** `chore/eurusd-data-foundation`
-- **Status:** Remediation in progress. **No merge is authorised.**
+- **Status:** Remediated — CI verified; PM review pending. **No merge is authorised.**
 
 ## Scope
 
