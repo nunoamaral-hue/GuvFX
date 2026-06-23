@@ -5,17 +5,18 @@
   "created_at_utc": "2026-06-23T07:07:40Z",
   "branch": "chore/guvfx-documentation-convergence",
   "base_commit": "c17b7b849c3af2d9e6ba8738d7c9807db8efda96",
-  "head_commit": null,
+  "head_commit": "d8217ee5c5d54e8dc2d81e91eedd1d3a5e736dcc",
+  "c1_commit": "d8217ee5c5d54e8dc2d81e91eedd1d3a5e736dcc",
   "ci": {
     "provider": "GitHub Actions",
     "workflow_name": "CI",
     "event": "push",
-    "run_id": null,
-    "run_head_sha": null,
+    "run_id": 28008813154,
+    "run_head_sha": "d8217ee5c5d54e8dc2d81e91eedd1d3a5e736dcc",
     "jobs": [
-      { "name": "governance", "conclusion": null },
-      { "name": "backend", "conclusion": null },
-      { "name": "frontend", "conclusion": null }
+      { "name": "governance", "conclusion": "success" },
+      { "name": "backend", "conclusion": "success" },
+      { "name": "frontend", "conclusion": "success" }
     ]
   },
   "changed_files": [
@@ -52,11 +53,11 @@
     "git diff --check and git diff --cached --check produced no output",
     "documentation sanity checks passed"
   ],
-  "status": "PARTIAL",
+  "status": "PASS",
   "limitations": [
-    "head_commit is null at evidence authoring time: the documentation commit C1 does not yet exist. It is recorded in the C2 evidence-only commit after C1 CI passes.",
-    "CI run_id, run_head_sha and per-job conclusions are null at authoring time; they are filled in at C2 after the C1 push run completes.",
-    "make check was not run locally per packet instruction (GitHub Actions is the approved full application integration gate); only make governance-check and the documentation/JSON/privacy/link sanity checks ran locally.",
+    "head_commit/c1_commit and the CI block were filled in at the C2 evidence-only commit after the C1 push run completed successfully; the C2 commit itself triggers a second CI run validated separately.",
+    "make check was not run locally per packet instruction (GitHub Actions is the approved full application integration gate); only make governance-check and the documentation/JSON/privacy/link sanity checks ran locally. The C1 push run executed backend Django tests against PostgreSQL and frontend lint/build in CI.",
+    "C1 CI emitted non-fatal annotations only (Node.js 20 deprecation for actions/checkout/setup-node/setup-python); all three jobs concluded success.",
     "No application, backend, frontend, MT5, infrastructure, Notion, broker, or market-data action was performed; this packet is documentation-only."
   ],
   "artefact_locations": [
