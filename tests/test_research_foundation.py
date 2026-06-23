@@ -168,6 +168,103 @@ class TestLocalValidator(unittest.TestCase):
         with self.assertRaises(ValueError):
             smoke.validate_observation(q)
 
+    def test_required_common_field_remains_mandatory(self):
+        q = self._valid_quote()
+        del q["instrument_id"]
+        with self.assertRaises(ValueError):
+            smoke.validate_observation(q)
+
+
+class TestUtcSemantics(unittest.TestCase):
+    """Point-in-time validation compares real UTC instants, not strings."""
+
+    def _quote_with_times(self, obs, avail):
+        q = copy.deepcopy(smoke.build_synthetic_quotes()[0])
+        q["observation_time_utc"] = obs
+        q["availability_time_utc"] = avail
+        # Keep nullable source/received valid by mirroring observation.
+        q["source_time_utc"] = obs
+        q["received_time_utc"] = obs
+        return q
+
+    def test_parse_utc_returns_aware_datetime(self):
+        dt = smoke._parse_utc("2026-01-02T00:00:00Z")
+        self.assertIsNotNone(dt.tzinfo)
+        self.assertEqual(dt.utcoffset().total_seconds(), 0)
+
+    def test_invalid_calendar_date_rejected(self):
+        with self.assertRaises(ValueError):
+            smoke._parse_utc("2026-02-30T00:00:00Z")
+        with self.assertRaises(ValueError):
+            smoke.validate_observation(self._quote_with_times(
+                "2026-02-30T00:00:00Z", "2026-02-30T00:00:00Z"))
+
+    def test_invalid_time_rejected(self):
+        with self.assertRaises(ValueError):
+            smoke._parse_utc("2026-01-02T25:00:00Z")
+        with self.assertRaises(ValueError):
+            smoke.validate_observation(self._quote_with_times(
+                "2026-01-02T25:00:00Z", "2026-01-02T25:00:00Z"))
+
+    def test_later_fractional_availability_accepted(self):
+        # observation whole-second, availability fractionally later -> valid.
+        smoke.validate_observation(self._quote_with_times(
+            "2026-01-02T00:00:00Z", "2026-01-02T00:00:00.1Z"))
+
+    def test_earlier_whole_second_availability_rejected(self):
+        # availability earlier than fractional observation -> invalid.
+        with self.assertRaises(ValueError):
+            smoke.validate_observation(self._quote_with_times(
+                "2026-01-02T00:00:00.1Z", "2026-01-02T00:00:00Z"))
+
+    def test_equal_instants_accepted(self):
+        smoke.validate_observation(self._quote_with_times(
+            "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z"))
+
+
+class TestNullableRoundTrip(unittest.TestCase):
+    """Nullable/omitted optional fields survive Parquet as null."""
+
+    def _readback(self):
+        import duckdb
+        with tempfile.TemporaryDirectory(prefix="guvfx_test_null_") as tmp:
+            smoke.run_smoke(output_dir=tmp)
+            con = duckdb.connect(database=":memory:")
+            try:
+                qback = smoke.read_parquet_records(
+                    con, os.path.join(tmp, smoke.QUOTE_PARQUET), smoke.QUOTE_COLUMNS)
+                bback = smoke.read_parquet_records(
+                    con, os.path.join(tmp, smoke.BAR_PARQUET), smoke.BAR_COLUMNS)
+            finally:
+                con.close()
+        return qback, bback
+
+    def test_null_timestamps_and_sizes_round_trip(self):
+        qback, _ = self._readback()
+        nq = {q["raw_object_id"]: q for q in qback}["synthetic_raw_quote_4"]
+        self.assertIsNone(nq["source_time_utc"])
+        self.assertIsNone(nq["received_time_utc"])
+        self.assertIsNone(nq["bid_size"])
+        self.assertIsNone(nq["ask_size"])
+        # Required common fields are still populated.
+        self.assertEqual(nq["instrument_id"], "EURUSD")
+        self.assertIsNotNone(nq["observation_time_utc"])
+        smoke.validate_observation(nq)
+
+    def test_null_bar_volume_round_trip(self):
+        _, bback = self._readback()
+        nb = {b["raw_object_id"]: b for b in bback}["synthetic_raw_bar_4"]
+        self.assertIsNone(nb["volume"])
+        self.assertIsNone(nb["volume_unit"])
+        self.assertIsNotNone(nb["close"])
+        smoke.validate_observation(nb)
+
+    def test_omitted_optional_inputs_do_not_raise(self):
+        # The synthetic builders omit optional fields entirely; building + the
+        # full round trip must materialise them as null without a KeyError.
+        result = smoke.run_smoke()
+        self.assertEqual(result["status"], "PASS")
+
 
 class TestSmokeRoundTrip(unittest.TestCase):
     def test_full_field_round_trip(self):

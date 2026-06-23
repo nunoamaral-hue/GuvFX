@@ -28,6 +28,7 @@ import json
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 
 import duckdb
 
@@ -118,11 +119,23 @@ def _is_number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _parse_utc(value: str) -> str:
-    """Validate a canonical UTC 'Z' timestamp; return it unchanged."""
+def _parse_utc(value: str) -> datetime:
+    """Parse a canonical UTC 'Z' timestamp into a tz-aware UTC datetime instant.
+
+    The regex is only a representation gate; semantic parsing then rejects
+    impossible calendar/time values (e.g. 2026-02-30 or hour 25) and any non-UTC
+    representation. The original string is never mutated by callers — this returns
+    a datetime purely for instant comparison.
+    """
     if not isinstance(value, str) or not UTC_TS_RE.match(value):
         raise ValueError(f"not a canonical UTC 'Z' timestamp: {value!r}")
-    return value
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"impossible calendar/time value: {value!r}") from exc
+    if dt.tzinfo is None or dt.utcoffset().total_seconds() != 0:
+        raise ValueError(f"timestamp must be UTC: {value!r}")
+    return dt.astimezone(timezone.utc)
 
 
 def validate_observation(record: dict) -> None:
@@ -232,14 +245,24 @@ def _common(record_type: str, obs: str, raw_suffix: str) -> dict:
 
 
 def build_synthetic_quotes() -> list[dict]:
-    """Deterministic synthetic EURUSD quotes (clearly fake)."""
+    """Deterministic synthetic EURUSD quotes (clearly fake).
+
+    The last quote deliberately nulls the optional source/received timestamps and
+    OMITS the optional bid/ask sizes, so the round trip proves null/absent handling.
+    """
     base = "2026-01-02T00:00:0"
     quotes = []
     for i in range(5):
         bid = round(1.10000 + i * 0.00010, 5)
         ask = round(bid + 0.00010, 5)
         rec = _common("quote", f"{base}{i}Z", str(i))
-        rec.update({"bid": bid, "ask": ask, "bid_size": 1_000_000.0, "ask_size": 1_000_000.0})
+        rec.update({"bid": bid, "ask": ask})
+        if i == 4:
+            # Optional timestamps null; optional sizes omitted entirely.
+            rec["source_time_utc"] = None
+            rec["received_time_utc"] = None
+        else:
+            rec.update({"bid_size": 1_000_000.0, "ask_size": 1_000_000.0})
         quotes.append(rec)
     return quotes
 
@@ -254,17 +277,10 @@ def build_synthetic_bars() -> list[dict]:
         low = round(open_ - 0.00020, 5)
         close = round(open_ + 0.00010, 5)
         rec = _common("bar", f"{base}{i}:00Z", str(i))
-        rec.update(
-            {
-                "frequency": "M1",
-                "open": open_,
-                "high": high,
-                "low": low,
-                "close": close,
-                "volume": 100.0 + i,
-                "volume_unit": "contracts",
-            }
-        )
+        rec.update({"frequency": "M1", "open": open_, "high": high, "low": low, "close": close})
+        if i != 4:
+            # The last bar OMITS the optional volume fields to prove null handling.
+            rec.update({"volume": 100.0 + i, "volume_unit": "contracts"})
         bars.append(rec)
     return bars
 
@@ -282,9 +298,11 @@ def _create_and_insert(con, table: str, columns: tuple, records: list[dict]) -> 
     col_defs = ", ".join(f'"{c}" {_COLUMN_TYPES[c]}' for c in columns)
     con.execute(f"CREATE TABLE {table} ({col_defs})")
     placeholders = ", ".join("?" for _ in columns)
+    # Use .get so an absent optional column is inserted as NULL, not a KeyError.
+    # Required columns are guaranteed present by validate_observation upstream.
     con.executemany(
         f"INSERT INTO {table} VALUES ({placeholders})",
-        [tuple(rec[c] for c in columns) for rec in records],
+        [tuple(rec.get(c) for c in columns) for rec in records],
     )
 
 
@@ -318,7 +336,8 @@ def _assert_records_match(source: list[dict], readback: list[dict], columns: tup
         if set(rb) != set(columns):
             raise ValueError("readback column set does not match the contract surface")
         for col in columns:
-            if _normalise(src[col]) != _normalise(rb[col]):
+            # An absent optional source field and a null read-back are equivalent.
+            if _normalise(src.get(col)) != _normalise(rb[col]):
                 raise ValueError(f"value drift on field {col}")
         # Lineage and the full point-in-time timestamp set survive unchanged.
         if rb["raw_object_id"] != src["raw_object_id"] or rb["raw_object_sha256"] != src["raw_object_sha256"]:

@@ -130,11 +130,16 @@ Each item is **Current** and cites its source.
   **full** versioned observation contract — every required common field, all five
   point-in-time timestamps, the raw-lineage fields, `quality_flags`, and the
   populated quote/bar variant fields — and re-validates and field-compares each
-  reconstructed record against its source. It emits **separate** dataset manifests
-  (quotes `interval: event`, bars `interval: M1`), each carrying a required
-  `record_type` and referencing only its own raw objects, checksum and row counts.
-  It writes to a temporary directory and deletes all artefacts on exit; nothing
-  persistent is produced.
+  reconstructed record against its source. Timestamp ordering is validated as a
+  **semantic UTC datetime instant comparison** (canonical `Z` strings parsed into
+  timezone-aware UTC datetimes, rejecting impossible calendar/time values and
+  ordering fractional seconds correctly) while preserving the original strings;
+  **nullable/omitted optional fields** (source/received times, quote sizes, bar
+  volume/unit) are proven to round-trip as null. It emits **separate** dataset
+  manifests (quotes `interval: event`, bars `interval: M1`), each carrying a
+  required `record_type` and referencing only its own raw objects, checksum and row
+  counts. It writes to a temporary directory and deletes all artefacts on exit;
+  nothing persistent is produced.
 - **Isolated research runtime**: a local `.venv-research` (Python 3.14) with
   exactly `duckdb==1.5.4` pinned in `requirements-research.txt`; exercised by
   `make research-check` and the `research-foundation` CI job. See

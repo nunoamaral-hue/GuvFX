@@ -88,6 +88,14 @@ record is re-validated and compared field-by-field to its source. The run emits
 **separate** dataset manifests — quotes with `interval: event` and bars with
 `interval: M1` — each referencing only its own raw objects, checksum and counts.
 
+Timestamp ordering is validated as a **semantic UTC datetime instant comparison**
+(canonical `Z` strings are parsed into timezone-aware UTC `datetime` values, so
+impossible calendar/time values and fractional-second ordering are handled
+correctly), while the original timestamp strings are preserved through storage and
+round trip. The smoke also exercises **nullable/omitted optional fields** —
+`source_time_utc`/`received_time_utc`, quote bid/ask sizes, and bar volume/unit —
+proving they materialise as null through the typed DuckDB/Parquet columns.
+
 ## Status / blockers
 
 - No real data exists; the smoke harness uses synthetic data only.
