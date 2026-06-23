@@ -104,3 +104,37 @@ proving they materialise as null through the typed DuckDB/Parquet columns.
   (`docs/DATA_CONTRACTS.md`, ADR 0010).
 - Generated temporary smoke artefacts are written to a `TemporaryDirectory` and
   **deleted automatically** on exit; nothing persistent is produced.
+
+## Synthetic market-data acquisition foundation (GFX-PKT-006C)
+
+`research/market_data/` is a **synthetic-only, fail-closed** client/storage/
+orchestration foundation for a LATER, separately authorised read-only MT5 history
+export endpoint on the GuvFX Windows Agent. It performs **no** live MT5, broker,
+NAS or real-data action and makes **no** network calls (a guard proves zero
+egress).
+
+Flow proven by `tools/market_data_synthetic_smoke.py`:
+synthetic request → strict contract validation → immutable raw landing →
+SHA-256 / idempotency / quarantine → `VERIFIED` timezone gate →
+`market_observation_v1` M1 bid-OHLC normalisation → temporary Parquet/DuckDB
+round trip → `dataset_manifest_v1`.
+
+Data-root rules:
+
+- `GUVFX_DATA_ROOT` is required for any **real** operation, must be an absolute
+  path **outside** the repository, and has **no default / no fallback**. Real mode
+  fails closed when it is unset/blank/unsafe.
+- Synthetic mode uses only an explicit caller-supplied temporary root (never the
+  environment, never the repo) and deletes it on exit.
+
+Commands:
+
+```bash
+make market-data-check          # smoke + market-data unit tests
+.venv-research/bin/python tools/market_data_synthetic_smoke.py
+.venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v
+```
+
+No real data exists from this packet. The Windows Agent export endpoint, the
+`GuvFXData` NAS share, broker timezone/identity evidence and real acquisition are
+**not** implemented here.

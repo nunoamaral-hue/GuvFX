@@ -152,6 +152,38 @@ The shape below remains **Candidate** for source-specific EURUSD ingestion, and
 the broader point-in-time platform remains **Proposed**; this section does not
 promote either.
 
+### Synthetic acquisition foundation — Current (GFX-PKT-006C)
+
+> **Current (synthetic-only).** Established by **GFX-PKT-006C**. A fail-closed,
+> synthetic-only client/storage/orchestration foundation exists in the canonical
+> repository under `research/market_data/`. It performs **no** live MT5, broker,
+> NAS or real-data action.
+
+Implemented and exercised by `tools/market_data_synthetic_smoke.py` +
+`tests/test_market_data_foundation.py`:
+
+- **Four versioned contracts** (`research/contracts/`): `agent_history_export_request_v1`,
+  `agent_history_export_response_v1`, `raw_market_data_manifest_v1`,
+  `broker_timezone_evidence_v1` (draft-07, `additionalProperties: false`).
+- **Deterministic request fingerprints** (SHA-256), **monthly half-open chunk
+  planning**, a **transport-injected** read-only client (network-inert by default;
+  a network guard proves zero egress), **immutable atomic raw landing** with
+  SHA-256, **idempotent reruns**, and **conflict/malformed/credential quarantine**
+  that never mutates accepted raw.
+- A **timezone verification gate**: normalisation requires a `VERIFIED`
+  `broker_timezone_evidence_v1` assessment; there is **no default offset**.
+- **Synthetic M1 bid-OHLC normalisation** into the existing `market_observation_v1`
+  bar variant (bid OHLC only — no ask/spread/tick), proven through a temporary
+  Parquet/DuckDB round trip and a `dataset_manifest_v1`.
+- **`GUVFX_DATA_ROOT`** is now wired into backend settings with **no default**;
+  real operation fails closed when it is unset/blank or resolves inside the repo.
+
+**Proposed / Partial (not implemented here):** the Windows Agent
+`POST /mt5/history/rates/export` endpoint (agent-host code is **not** in this
+repository), real acquisition, the `GuvFXData` NAS share/mount, broker
+timezone/server/legal identity, and broker-cost/specification capture all remain
+**Proposed/Partial**. No real EURUSD data exists.
+
 ---
 
 ## Candidate market-data contract — Candidate

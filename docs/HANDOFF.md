@@ -1,3 +1,19 @@
+# HANDOFF — GFX-PKT-006C (synthetic market-data foundation)
+
+> Concise packet pointer. **Notion is authoritative** for full packet text and
+> lifecycle status; the repository holds implementation, tests and concise evidence.
+
+- Packet: **GFX-PKT-006C — Synthetic Infrastructure and Contract Implementation**.
+- Branch: `chore/market-data-synthetic-foundation` (base `main` `80ef2f8`); PR open
+  and **unmerged** for PM review.
+- Scope: synthetic-only client/storage/orchestration foundation under
+  `research/market_data/` + four contracts + `GUVFX_DATA_ROOT` wiring (no default) +
+  `market-data-foundation` CI job. No real data, NAS, broker, agent, execution or
+  deployment action.
+- Evidence: `evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json`.
+
+---
+
 # HANDOFF (2025-12-16)
 
 > Outgoing coder updates this at the end of **every** session.

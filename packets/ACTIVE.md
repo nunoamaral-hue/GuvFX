@@ -1,45 +1,48 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-005B-R2 (continuation of GFX-PKT-005B / R1)
-- **Title:** UTC Semantic and Nullable-Field Remediation v0.1
-- **Branch:** `chore/eurusd-data-foundation`
-- **Status:** Remediated — CI verified; PM review pending. **No merge is authorised.**
+- **Packet ID:** GFX-PKT-006C
+- **Title:** Synthetic Infrastructure and Contract Implementation v0.1
+- **Branch:** `chore/market-data-synthetic-foundation`
+- **Base:** `main` @ `80ef2f85d6546b7d62aea09ab5db39d8859482b0`
+- **Status:** In progress — synthetic-only implementation; PR open and unmerged for
+  PM review. **No merge and no real-data/NAS/broker/agent access are authorised.**
 
 ## Scope
 
-A Green, bounded final foundation correction on the existing PR #33 branch,
-addressing the point-in-time defect raised in PM review:
+A fail-closed, **synthetic-only** market-data acquisition foundation in the
+canonical repository, proving:
+synthetic MT5 history response → strict contract validation → immutable raw landing
+→ SHA-256/idempotency/quarantine → timezone publication gate →
+`market_observation_v1` normalisation → temporary Parquet/DuckDB → `dataset_manifest_v1`.
 
-- `tools/research_smoke.py` — `_parse_utc` now parses canonical `Z` timestamps into
-  timezone-aware UTC `datetime` instants (rejecting impossible calendar/time values
-  and non-UTC representations); `availability_time_utc >= observation_time_utc` is
-  compared as instants, not lexicographically, so fractional-second ordering is
-  correct. Original timestamp strings are preserved in records and Parquet.
-- `tools/research_smoke.py` — synthetic inputs now include a quote with null
-  `source_time_utc`/`received_time_utc` and omitted bid/ask sizes, and a bar with
-  omitted volume/unit; insertion uses null for absent optional columns and the
-  field comparison treats an absent optional source field and a null read-back as
-  equivalent. Required common fields remain mandatory.
-- `tests/test_research_foundation.py` — tests for invalid calendar/time values,
-  fractional-second ordering both directions, equal instants, and null round-trip
-  of the optional timestamp/size/volume fields.
-- `research/README.md`, `docs/DATA_CONTRACTS.md`, `docs/NOTION_MAP.md` — docs.
-- this pointer + a new GFX-EVD-005B-R2 evidence manifest.
+- `research/market_data/` package (config, contracts, chunking, agent_client,
+  storage, timezone, normalise, orchestrator).
+- Four versioned contracts + four synthetic fixtures
+  (`research/contracts/agent_history_export_*`, `raw_market_data_manifest_v1`,
+  `broker_timezone_evidence_v1`).
+- `GUVFX_DATA_ROOT` wired into backend settings with **no default**; backend
+  `core` test proves it is `None` when unset.
+- `tools/market_data_synthetic_smoke.py`, `tests/test_market_data_foundation.py`.
+- `make market-data-check` + composed `research-check`; CI job
+  `market-data-foundation`.
+- Docs aligned; this pointer; evidence manifest
+  `evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json`.
 
-## Non-goals / Prohibited in this packet
+## Non-goals / Prohibited
 
-- No schema, dependency, requirements, ADR, Makefile, or CI workflow change.
-- No real market data or committed Parquet artefact.
-- No provider, broker, account, NAS, MT5 runtime, database, or production access.
-- No application code change.
-- No branch switch, fetch, rebase, reset, force push, or PR merge.
+- No live MT5/agent/VPS/broker/NAS/database/production access; no data acquisition.
+- No agent-host endpoint implementation; no real Parquet/raw committed.
+- No new dependency, Django app, model, migration, API endpoint or execution change.
+- No edits to the three existing v1 contract schemas, requirements, Makefile `check`
+  chain semantics beyond the new targets, or Flow A / other workstreams.
+- No PR merge or deployment.
 
 ## Evidence
 
-- Expected path: `evidence/manifests/GFX-EVD-005B-R2-utc-nullability.json`
-- Prior evidence manifests (005B, 005B-R1) are not modified.
+- Expected path: `evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json`
+- Prior evidence manifests are not modified.
 
 ## Notion record
 
-- Title: **GFX-PKT-005B-R2 — UTC Semantic and Nullable-Field Remediation v0.1**
+- Title: **GFX-PKT-006C — Synthetic Infrastructure and Contract Implementation v0.1**
   (Notion is authoritative for full text and lifecycle status.)

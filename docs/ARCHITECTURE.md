@@ -142,6 +142,27 @@ not verify**. These are kept distinct:
   logs) and the current network / public-exposure state of admin and management
   surfaces.
 
+## Market-data synthetic foundation — Implemented (synthetic) / Proposed (agent host)
+
+GFX-PKT-006C adds a canonical-repository, **synthetic-only** market-data
+client/storage/orchestration foundation under `research/market_data/`, kept
+strictly separate from the external agent host:
+
+- **In-repository (Implemented, synthetic):** request/response/manifest/timezone
+  contracts (`research/contracts/agent_history_export_*`, `raw_market_data_manifest_v1`,
+  `broker_timezone_evidence_v1`); a transport-injected read-only client that is
+  **network-inert by default**; deterministic monthly chunk planning; immutable
+  atomic raw landing with SHA-256, idempotency and quarantine; a `VERIFIED`
+  timezone gate; and synthetic M1 bid-OHLC normalisation into
+  `market_observation_v1`. `GUVFX_DATA_ROOT` is wired with no default and fails
+  closed. Gated by the `market-data-foundation` CI job.
+- **External / unimplemented (Proposed):** the Windows Agent read-only export
+  endpoint `POST /mt5/history/rates/export` is **not** present in this repository
+  (only an HTTP client boundary is defined). Real acquisition, the `GuvFXData` NAS
+  share/mount, and broker timezone/identity/cost evidence are not built. The agent
+  remains a **read-only source boundary**; execution endpoints are not reused, and
+  no component gains order/risk/promotion authority.
+
 ## Target evolution — Proposed
 
 The following are **Proposed** concepts for future direction, **not implemented**
