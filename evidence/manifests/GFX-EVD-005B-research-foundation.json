@@ -1,0 +1,99 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-005B-research-foundation",
+  "packet_id": "GFX-PKT-005B",
+  "created_at_utc": "2026-06-23T09:18:09Z",
+  "branch": "chore/eurusd-data-foundation",
+  "base_commit": "ec59f8358e7ea0e55cb754a5db614645931e4791",
+  "head_commit": null,
+  "c1_commit": null,
+  "c2_commit": null,
+  "environment": {
+    "python_version": "3.14.6",
+    "duckdb_version": "1.5.4",
+    "research_venv": ".venv-research (isolated, git-ignored, never staged)",
+    "installed_research_packages": ["pip", "duckdb==1.5.4"],
+    "setuptools_present": false,
+    "heavy_dataframe_libs_present": false,
+    "notes": "Python 3.14 venv ships without setuptools; only pip and duckdb are present. pandas/PyArrow/Polars confirmed absent."
+  },
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "c1": { "run_id": null, "run_head_sha": null, "jobs": [] },
+    "c2": { "run_id": null, "run_head_sha": null, "jobs": [] }
+  },
+  "commands": [
+    "git fetch --prune origin",
+    "git checkout -b chore/eurusd-data-foundation origin/main",
+    "python3 -m venv .venv-research",
+    ".venv-research/bin/python -m pip install --only-binary=:all: --no-deps -r requirements-research.txt",
+    ".venv-research/bin/python tools/research_smoke.py",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    "make research-check",
+    "python3 -m json.tool research/contracts/market_observation_v1.schema.json >/dev/null",
+    "python3 -m json.tool research/contracts/broker_cost_v1.schema.json >/dev/null",
+    "python3 -m json.tool research/contracts/dataset_manifest_v1.schema.json >/dev/null",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-005B-research-foundation.json >/dev/null",
+    "git diff --check",
+    "git diff --cached --check"
+  ],
+  "expected_results": [
+    "DuckDB 1.5.4 installs from a binary-only wheel with no source build and no extra dependencies",
+    "Synthetic quote/bar -> DuckDB -> Parquet -> DuckDB round trip returns status PASS, deterministic aggregates, equal written/read counts",
+    "Research unit tests pass without pandas/PyArrow/Polars; no residual temp files; no personal absolute path in output",
+    "Secret scanner reports no findings and governance unit tests pass",
+    "make research-check runs the smoke harness and research tests successfully",
+    "All three contract schemas and the evidence manifest are valid JSON",
+    "No staged or unstaged whitespace errors",
+    "CI passes governance, backend, frontend and research-foundation jobs for C1 and C2"
+  ],
+  "actual_results": [
+    "pip install: 'Successfully installed duckdb-1.5.4' from duckdb-1.5.4-cp314-cp314-macosx_11_0_arm64.whl (binary-only, --no-deps, no pip upgrade)",
+    "research_smoke: status PASS; quote_written=quote_read=5, bar_written=bar_read=5; quote_spread_sum=0.0005, bar_close_avg=1.1011, bar_high_max=1.1023; checksums deterministic across runs",
+    "research unit tests: Ran 16 tests, OK; pandas/PyArrow/Polars absent; no residual guvfx_research_smoke_* temp dirs; no personal absolute path in printed JSON",
+    "check_no_secrets: no findings (exit 0); secret-scanner unit tests OK",
+    "make governance-check: passed; make research-check: smoke PASS + 16 research tests OK",
+    "json.tool: all three schemas and this manifest parsed as valid JSON",
+    "git diff --check and git diff --cached --check produced no output",
+    "CI results recorded at C2 (run IDs filled in the post-C1 evidence update)"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Synthetic data only: no provider, NAS, broker identity, account, real EURUSD price, or ingestion pipeline was added or accessed.",
+    "Provider, broker, account, NAS path, granularity and date interval remain Open per ADR 0010; they are not chosen in this packet.",
+    "Full JSON-Schema validation via a validator library was not run (no validator installed); a local validator in tools/research_smoke.py enforces the contract rules exercised by the tests.",
+    "head_commit/c1_commit and the CI block are filled at the C2 evidence-only commit after the C1 push run concludes success; the C2 commit triggers a second CI run validated separately.",
+    "make check (full backend/frontend integration) was not run locally per packet instruction; GitHub Actions is the approved full integration gate.",
+    "The local .venv-research is git-ignored and never staged; only its versions/package list are recorded here, with no paths or user data."
+  ],
+  "artefact_locations": [
+    "docs/ADRs/0010-market-data-research-foundation.md",
+    "requirements-research.txt",
+    "research/README.md",
+    "research/contracts/market_observation_v1.schema.json",
+    "research/contracts/broker_cost_v1.schema.json",
+    "research/contracts/dataset_manifest_v1.schema.json",
+    "tools/research_smoke.py",
+    "tests/test_research_foundation.py",
+    "Makefile",
+    ".github/workflows/ci.yml",
+    "docs/DATA_CONTRACTS.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    ".gitignore",
+    "evidence/manifests/GFX-EVD-005B-research-foundation.json"
+  ],
+  "checksums": {
+    "requirements-research.txt": "sha256:1dc5b2d5f11e90ff4a4350b2038c9f4bf2ad0bd8ba6b5358904968c3922468d9",
+    "docs/ADRs/0010-market-data-research-foundation.md": "sha256:4836f2ce6abc910d562d2f972cd1985037eb94ce273c6b23f47afd4f3f656af6",
+    "research/contracts/market_observation_v1.schema.json": "sha256:bb2b63ee5759ba0fd6f272e325573ace2a5124d8136603df8bd2c76fcf28aaa4",
+    "research/contracts/broker_cost_v1.schema.json": "sha256:868b4b37d0a78cc5f66d9755a2279c805db60dff5473fe055025539da379d08b",
+    "research/contracts/dataset_manifest_v1.schema.json": "sha256:65ea1020a6f6b00426eb1473ec6d51cb0039d66546d6896875d727aa7e12cc75",
+    "tools/research_smoke.py": "sha256:da3e4c72fb90b26092f193265aa06ba4c3c7378057cc148fee8e1cfcd170037d"
+  },
+  "reviewer": null
+}

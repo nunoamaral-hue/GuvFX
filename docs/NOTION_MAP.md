@@ -25,6 +25,10 @@ in Notion when authority is required.
 - GFX-EVD-004A — PM Review and Factuality Corrections Required v0.1
 - GFX-PKT-004A-R1 — Documentation Factuality Remediation v0.1
 - GuvFX — Current State v0.12
+- GFX-EVD-005A — PM Acceptance of Data Platform Readiness Discovery v0.1
+- GFX-ADR-DATA-001 — Minimal DuckDB Research Foundation before Data Acquisition v0.1
+- GFX-PKT-005B — EURUSD Contract and DuckDB Research Foundation v0.1
+- GuvFX — Current State v0.14
 
 > The titles above are pointers. Notion holds the authoritative content and lifecycle
 > state; the repository holds implementation, tests, and concise evidence. Full text and

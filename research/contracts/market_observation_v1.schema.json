@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/market_observation_v1.schema.json",
+  "title": "GuvFX Market Observation v1",
+  "description": "Provider-independent schema for a single market-data observation (quote or bar). Carries source and time lineage so research can enforce point-in-time correctness. Assumes no provider, broker, price precision, storage path, or timezone other than the canonical UTC 'Z' representation.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "utc_timestamp": {
+      "type": "string",
+      "description": "ISO-8601 instant in canonical UTC, e.g. 2026-01-02T03:04:05Z or 2026-01-02T03:04:05.123456Z.",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "utc_timestamp_nullable": {
+      "type": ["string", "null"],
+      "description": "Nullable canonical UTC 'Z' instant.",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "sha256_hex": {
+      "type": "string",
+      "description": "Lowercase hex SHA-256 digest of the immutable raw source object.",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Contract version of this observation record."
+    },
+    "record_type": {
+      "type": "string",
+      "enum": ["quote", "bar"],
+      "description": "Discriminator selecting the quote or bar variant."
+    },
+    "instrument_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider-independent instrument identifier (e.g. a canonical symbol key)."
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the data source/feed the record came from."
+    },
+    "broker_id": {
+      "type": ["string", "null"],
+      "description": "Broker identity when the observation is broker-scoped; null otherwise."
+    },
+    "account_type": {
+      "type": ["string", "null"],
+      "description": "Account tier the observation is scoped to (e.g. research/paper/live); null when not account-scoped."
+    },
+    "observation_time_utc": {
+      "$ref": "#/definitions/utc_timestamp",
+      "description": "The instant the datum refers to."
+    },
+    "source_time_utc": {
+      "$ref": "#/definitions/utc_timestamp_nullable",
+      "description": "Timestamp assigned by the source, if distinct/known; nullable."
+    },
+    "received_time_utc": {
+      "$ref": "#/definitions/utc_timestamp_nullable",
+      "description": "Instant GuvFX received the datum; nullable."
+    },
+    "ingestion_time_utc": {
+      "$ref": "#/definitions/utc_timestamp",
+      "description": "Instant the datum was written to the store."
+    },
+    "availability_time_utc": {
+      "$ref": "#/definitions/utc_timestamp",
+      "description": "Instant the datum became usable for research/decisions; must be >= observation_time_utc."
+    },
+    "quality_flags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Quality/lineage markers (e.g. suspect, quarantined, backfilled). Empty array means none."
+    },
+    "raw_object_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Logical reference to the immutable raw source object this record was derived from."
+    },
+    "raw_object_sha256": {
+      "$ref": "#/definitions/sha256_hex",
+      "description": "SHA-256 of the immutable raw source object."
+    },
+    "bid": {
+      "type": "number",
+      "description": "Quote variant: best bid price."
+    },
+    "ask": {
+      "type": "number",
+      "description": "Quote variant: best ask price."
+    },
+    "bid_size": {
+      "type": ["number", "null"],
+      "description": "Quote variant: size available at the bid; optional/nullable."
+    },
+    "ask_size": {
+      "type": ["number", "null"],
+      "description": "Quote variant: size available at the ask; optional/nullable."
+    },
+    "frequency": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Bar variant: bar frequency/timeframe label (e.g. M1, H1). No timeframe is assumed by this schema."
+    },
+    "open": {
+      "type": "number",
+      "description": "Bar variant: opening price."
+    },
+    "high": {
+      "type": "number",
+      "description": "Bar variant: highest price."
+    },
+    "low": {
+      "type": "number",
+      "description": "Bar variant: lowest price."
+    },
+    "close": {
+      "type": "number",
+      "description": "Bar variant: closing price."
+    },
+    "volume": {
+      "type": ["number", "null"],
+      "description": "Bar variant: volume; nullable/optional."
+    },
+    "volume_unit": {
+      "type": ["string", "null"],
+      "description": "Bar variant: unit of the volume figure; nullable/optional."
+    }
+  },
+  "required": [
+    "schema_version",
+    "record_type",
+    "instrument_id",
+    "source_id",
+    "broker_id",
+    "account_type",
+    "observation_time_utc",
+    "source_time_utc",
+    "received_time_utc",
+    "ingestion_time_utc",
+    "availability_time_utc",
+    "quality_flags",
+    "raw_object_id",
+    "raw_object_sha256"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "record_type": { "const": "quote" } }
+      },
+      "then": {
+        "required": ["bid", "ask"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "record_type": { "const": "bar" } }
+      },
+      "then": {
+        "required": ["frequency", "open", "high", "low", "close"]
+      }
+    }
+  ]
+}

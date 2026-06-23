@@ -1,42 +1,48 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-004A-R1 (continuation of GFX-PKT-004A)
-- **Title:** Documentation Factuality Remediation v0.1
-- **Branch:** `chore/guvfx-documentation-convergence`
-- **Status:** Remediated — CI verified; PM review pending. **No merge is authorised.**
+- **Packet ID:** GFX-PKT-005B
+- **Title:** EURUSD Contract and DuckDB Research Foundation v0.1
+- **Branch:** `chore/eurusd-data-foundation`
+- **Status:** In progress. **No merge is authorised.**
 
 ## Scope
 
-A Green, documentation-only factuality remediation on the existing PR #32 branch,
-correcting six current-state overstatements raised in PM review:
+An Amber, additive research-foundation packet that creates the provider-independent
+market-data schema foundation and a minimal, reproducible DuckDB research
+environment, proven by a synthetic round trip locally and in CI before any real
+data is acquired:
 
-- `docs/STATUS.md` — label the domains as *documented production routes* and state
-  that route availability / live production health were not probed.
-- `docs/ARCHITECTURE.md` — qualify the PostgreSQL version (CI = 16; production =
-  Unknown without a deployment source); change production topology to *Partial*;
-  change security posture to *Partial*, separating implemented Git controls from
-  policy controls and unknown operational facts.
-- `docs/DATA_CONTRACTS.md` — record the fixed current MT5 mount-path constants and
-  the `/admin/` + `/health/` API exceptions; mark configurable paths as Proposed.
-- `docs/NOTION_MAP.md` — append three record titles (titles only).
-- this pointer + a new R1 evidence manifest.
+- `docs/ADRs/0010-market-data-research-foundation.md` — Accepted ADR for the
+  DuckDB-only research foundation and versioned contracts.
+- `requirements-research.txt` — pins exactly `duckdb==1.5.4`.
+- `research/contracts/*.schema.json` — versioned JSON Schemas for market
+  observations, broker costs, and dataset manifests.
+- `research/README.md` — research environment, `GUVFX_DATA_ROOT`, logical zones.
+- `tools/research_smoke.py` — deterministic synthetic quote/bar → Parquet → DuckDB
+  round trip (stdlib + DuckDB only).
+- `tests/test_research_foundation.py` — research unit tests (stdlib `unittest`).
+- `Makefile` — separate `research-check` target (not in `check`).
+- `.github/workflows/ci.yml` — separate `research-foundation` job.
+- `docs/DATA_CONTRACTS.md`, `docs/NOTION_MAP.md` — current-state + Notion titles.
+- this pointer + a new GFX-EVD-005B evidence manifest.
 
-## Prohibited in this packet
+## Non-goals / Prohibited in this packet
 
-- No application, CI, Makefile, scanner, rule, ADR-template, or infrastructure
-  edits.
-- No production, NAS, broker, MT5 runtime, market-data, or Notion access.
-- No branch switch, fetch, merge, rebase, reset, or force push.
-- No edit outside the six authorised paths.
-- No PR merge.
+- No real market-data download or provider research.
+- No NAS, broker, MT5 runtime, account, database, or Notion access.
+- No pandas/PyArrow/Polars/Jupyter or optional DuckDB extras; no pip upgrade; no
+  global/system Python or package changes.
+- No application/business-logic changes.
+- No real data or Parquet artefact committed.
+- No edit outside the authorised file list; `.venv-research/` is ignored, never
+  staged.
+- No PR merge or production deployment.
 
 ## Evidence
 
-- Expected path: `evidence/manifests/GFX-EVD-004A-R1-factuality-remediation.json`
-- The original `evidence/manifests/GFX-EVD-004A-documentation-convergence.json` is
-  not modified.
+- Expected path: `evidence/manifests/GFX-EVD-005B-research-foundation.json`
 
 ## Notion record
 
-- Title: **GFX-PKT-004A-R1 — Documentation Factuality Remediation v0.1**
+- Title: **GFX-PKT-005B — EURUSD Contract and DuckDB Research Foundation v0.1**
   (Notion is authoritative for full text and lifecycle status.)

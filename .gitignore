@@ -3,6 +3,10 @@ backend/.venv/
 backend/__pycache__/
 backend/**/*.pyc
 
+# Research environment (GFX-PKT-005B) — local, never staged
+/.venv-research/
+/research-data/
+
 # Django DB
 backend/db.sqlite3
 backend/wims_demo.sqlite3

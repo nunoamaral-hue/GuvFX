@@ -1,7 +1,7 @@
-.PHONY: help check backend-test backend-lint frontend-lint frontend-build secret-scan governance-check
+.PHONY: help check backend-test backend-lint frontend-lint frontend-build secret-scan governance-check research-check
 
 help:
-	@echo "Targets: check backend-test frontend-lint frontend-build secret-scan governance-check"
+	@echo "Targets: check backend-test frontend-lint frontend-build secret-scan governance-check research-check"
 
 check: governance-check backend-test frontend-lint frontend-build
 
@@ -38,3 +38,15 @@ frontend-build:
 	else \
 		echo "Skipping frontend-build: frontend/package.json not found"; \
 	fi
+
+# Research foundation (GFX-PKT-005B). Separate target; NOT part of `check`.
+# Requires the isolated DuckDB venv created per research/README.md.
+research-check:
+	@if [ ! -x .venv-research/bin/python ]; then \
+		echo "Error: .venv-research not found. Create it first:"; \
+		echo "  python3 -m venv .venv-research"; \
+		echo "  .venv-research/bin/python -m pip install --only-binary=:all: --no-deps -r requirements-research.txt"; \
+		exit 1; \
+	fi
+	.venv-research/bin/python tools/research_smoke.py
+	.venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v
