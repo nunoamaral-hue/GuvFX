@@ -143,5 +143,6 @@
     "tests/test_research_foundation.py": "sha256:d7531dc45d76fa9aa68b2f28f970eabba296d2da033a740b83017c1b3478e861",
     "research/README.md": "sha256:4397a8858c2d50cfac0bce28f370d4526d77a809642a93812c77dee28cd85432"
   },
-  "reviewer": null
+  "reviewer": null,
+  "superseded_by_r4_r2_evidence": "evidence/manifests/GFX-EVD-006C-R4-R2-constructor-acceptance.json"
 }

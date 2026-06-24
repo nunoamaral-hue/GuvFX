@@ -51,6 +51,23 @@ class ProhibitedKeyError(ContractError):
     """A prohibited credential/account-number key was present in a payload."""
 
 
+# Exact integer Unix-epoch bounds of the canonical timestamp parser's calendar
+# domain — earliest 0001-01-01T00:00:00Z and latest whole-second
+# 9999-12-31T23:59:59Z. Derived once with standard-library date/integer
+# arithmetic (calendar.timegm over an integer time tuple): no floating point and
+# no datetime.timestamp(). Direct UtcInstant construction is confined to this
+# range so it can never represent an instant the parser itself cannot.
+MIN_CANONICAL_EPOCH_S = calendar.timegm(datetime(1, 1, 1, 0, 0, 0).timetuple())
+MAX_CANONICAL_EPOCH_S = calendar.timegm(datetime(9999, 12, 31, 23, 59, 59).timetuple())
+
+# The only code points admitted inside a normalized fractional-second string.
+# Mirrors the canonical parser's ASCII ``[0-9]`` class. Python's str.isdigit()/
+# isdecimal()/isnumeric() also accept non-ASCII digit characters (Arabic-Indic,
+# extended Arabic-Indic, Devanagari, fullwidth, superscript, …), which must never
+# enter an instant value, so they are rejected by an explicit ASCII membership test.
+_ASCII_DIGITS = frozenset("0123456789")
+
+
 @total_ordering
 class UtcInstant:
     """An exact, immutable UTC instant for point-in-time comparison.
@@ -65,6 +82,12 @@ class UtcInstant:
     comparison is a direct lexicographic walk over the normalized digits, which —
     for trailing-zero-normalized fractional strings — is exactly the numeric order.
 
+    Direct construction is confined to the canonical parser's own domain: the
+    epoch must lie within ``[MIN_CANONICAL_EPOCH_S, MAX_CANONICAL_EPOCH_S]`` (the
+    years 0001–9999) and the fractional digits must be empty or normalized ASCII
+    ``[0-9]+`` (non-ASCII digit characters are rejected), so a directly built
+    instant can never represent state the parser itself could not produce.
+
     The value is immutable (attribute assignment/deletion raises) and is
     deliberately **unhashable** (``__hash__ = None``): it compares equal to a bare
     non-boolean integer Unix epoch second, so no tuple/int hash could honour
@@ -76,11 +99,19 @@ class UtcInstant:
     def __init__(self, epoch_s: int, frac_digits: str):
         if not isinstance(epoch_s, int) or isinstance(epoch_s, bool):
             raise ContractError("UtcInstant epoch must be an integer")
+        if not (MIN_CANONICAL_EPOCH_S <= epoch_s <= MAX_CANONICAL_EPOCH_S):
+            raise ContractError(
+                "UtcInstant epoch is outside the canonical year 0001-9999 domain")
         if not isinstance(frac_digits, str):
             raise ContractError("UtcInstant fractional digits must be a string")
-        if frac_digits and (not frac_digits.isdigit() or frac_digits[-1] == "0"):
+        # ASCII decimal only: an explicit membership test (never isdigit/isdecimal/
+        # isnumeric, which admit non-ASCII digits) walked linearly over the string,
+        # with a normalized, trailing-zero-free terminal digit. No int/float formed.
+        if frac_digits and (
+            not _ASCII_DIGITS.issuperset(frac_digits) or frac_digits[-1] == "0"
+        ):
             raise ContractError(
-                "UtcInstant fractional digits must be normalized decimal digits")
+                "UtcInstant fractional digits must be normalized ASCII decimal digits")
         object.__setattr__(self, "_epoch_s", epoch_s)
         object.__setattr__(self, "_frac_digits", frac_digits)
 

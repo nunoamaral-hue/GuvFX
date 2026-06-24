@@ -181,7 +181,11 @@ sixth digit, and correct for 10,000-digit fractions) with no integer/power-of-te
 float conversion and no dependence on CPython's int↔str digit limit, and with exact
 comparison to integer epoch seconds. The value is immutable (attribute writes raise)
 and deliberately unhashable (`__hash__ = None`, since it equals bare integer
-epochs). The timezone gate, research point-in-time ordering
+epochs). **R4-R2** confines direct construction to the canonical parser's own
+domain: the fractional digits must be empty or normalized ASCII `[0-9]+` (non-ASCII
+Unicode digit characters are rejected), and the epoch must lie within the canonical
+years 0001–9999, so a directly built instant can never represent state the parser
+could not produce. The timezone gate, research point-in-time ordering
 (`tools/research_smoke._parse_utc`) and manifest timestamps all use it. Strict
 manifest validation now parses and validates the exact stored request for **every
 ordinary quarantine** and derives the identity, range, directory and 16-hex

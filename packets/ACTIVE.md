@@ -1,16 +1,37 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-006C-R4-R1 (continuation of GFX-PKT-006C / R1 / R2 / R3 / R4)
-- **Title:** Exact-Instant Representation and Evidence Factuality Remediation v0.1
-- **Branch:** `fix/market-data-r4-closure`
-- **Base:** `main` @ `6dfe22aef7d6bc1a82cbd712536989c10e342602`
-- **Status:** Synthetic-only forward remediation on the existing R4 branch. The R3
-  synthetic foundation is on `main` at/after `6dfe22a…`; R4 closed the post-merge
-  exact-time and quarantine-provenance gaps and R4-R1 hardens the UTC-instant
-  representation (arbitrary-length-safe, immutable, unhashable) and corrects prior
-  evidence overstatements. **Lifecycle and merge status are authoritative in
-  Notion/GitHub** (PM-owned). **No merge, deployment, or real-data/NAS/broker/agent/
+- **Packet ID:** GFX-PKT-006C-R4-R2 (continuation of GFX-PKT-006C / R1 / R2 / R3 / R4 / R4-R1)
+- **Title:** UTC Constructor Invariant and Acceptance Reconciliation v0.1
+- **Branch:** `fix/utc-instant-constructor-invariant`
+- **Base:** `main` @ `7cb61926a1dc2ad9ea567a09a56ea0dde6a1584d`
+- **Status:** Synthetic-only forward remediation on a new branch off current `main`.
+  The R4 / R4-R1 work merged via PR #35; `main` is at/after `7cb6192…`. R4-R2 closes
+  the final constructor-domain and acceptance-factuality defects: direct `UtcInstant`
+  construction admits only normalized ASCII `[0-9]+` fractional digits and epochs
+  within the canonical year 0001–9999 parser domain, and the prior R4-R1 incremental
+  file count is corrected (12, not 11). **Lifecycle and merge status are authoritative
+  in Notion/GitHub** (PM-owned). **No merge, deployment, or real-data/NAS/broker/agent/
   credential access is authorised by this packet.**
+
+## R4-R2 remediation scope (constructor domain + acceptance factuality)
+
+1. Direct `UtcInstant` construction rejects non-ASCII Unicode digit characters
+   (Arabic-Indic, extended Arabic-Indic, Devanagari, fullwidth, superscript and
+   mixed forms) via an explicit ASCII membership test — never `str.isdigit()` /
+   `isdecimal()` / `isnumeric()` — keeping fractional state to empty or normalized
+   ASCII `[0-9]+`, with no integer/float conversion (`contracts.py`).
+2. Direct construction is bounded to the canonical parser's calendar domain: the
+   epoch must lie within `[MIN_CANONICAL_EPOCH_S, MAX_CANONICAL_EPOCH_S]`
+   (`0001-01-01T00:00:00Z` … `9999-12-31T23:59:59Z`), bounds derived once with
+   standard-library integer/date arithmetic (`contracts.py`).
+3. A direct-constructor adversarial test matrix covers Unicode digit classes,
+   normalized/trailing-zero state, epoch boundaries and non-integer epochs;
+   arbitrary-length parsing, exact ordering, immutability and unhashability remain
+   unchanged (`tests/test_market_data_foundation.py`).
+4. Repository records reflect current merged `main` and the bounded R4-R2 lifecycle
+   without claiming real capability; a new R4-R2 evidence record supersedes the
+   stale acceptance/current-state claims and the R4-R1 evidence gains only an
+   additive supersession pointer (corrected 12-file incremental count).
 
 ## R4-R1 remediation scope (exact-instant representation + evidence factuality)
 
@@ -127,10 +148,11 @@ synthetic MT5 history response → strict contract validation → immutable raw 
 
 ## Evidence
 
-- Expected path: `evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json`
-- Prior evidence manifests are not modified.
+- R4-R2 path: `evidence/manifests/GFX-EVD-006C-R4-R2-constructor-acceptance.json`
+- The R4-R1 evidence manifest gains only an additive `superseded_by_r4_r2_evidence`
+  pointer; all other prior evidence manifests are not modified.
 
 ## Notion record
 
-- Title: **GFX-PKT-006C — Synthetic Infrastructure and Contract Implementation v0.1**
-  (Notion is authoritative for full text and lifecycle status.)
+- Title: **GFX-PKT-006C-R4-R2 — UTC Constructor Invariant and Acceptance
+  Reconciliation v0.1** (Notion is authoritative for full text and lifecycle status.)

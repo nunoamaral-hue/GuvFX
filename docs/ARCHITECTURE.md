@@ -164,7 +164,10 @@ strictly separate from the external agent host:
   string compared lexicographically — no integer/power-of-ten/float conversion and
   no dependence on CPython's int↔str digit limit), genuinely **immutable**, and
   deliberately **unhashable** (it compares equal to bare integer epochs, so no
-  consistent hash exists). Ordinary quarantines are bound to their exact
+  consistent hash exists). **R4-R2** confines direct construction to the canonical
+  parser's domain: fractional digits must be empty or normalized ASCII `[0-9]+`
+  (non-ASCII Unicode digits are rejected) and the epoch must lie within the
+  canonical years 0001–9999. Ordinary quarantines are bound to their exact
   parsed/validated stored request, with the directory and 16-hex quarantine id
   derived from the exact request bytes, response bytes and reason;
   malformed/contract-invalid responses stay retainable as evidence (never validated

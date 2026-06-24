@@ -186,7 +186,10 @@ Implemented and exercised by `tools/market_data_synthetic_smoke.py` +
 > zeros removed) compared lexicographically, with no integer/power-of-ten/float
 > conversion and no dependence on CPython's int↔str digit limit, so even
 > 10,000-digit fractions parse and order correctly. The value is genuinely immutable
-> and deliberately unhashable (it compares equal to bare integer epochs). It backs
+> and deliberately unhashable (it compares equal to bare integer epochs). **R4-R2**
+> confines direct construction to the canonical parser's domain: the fractional
+> digits must be empty or normalized ASCII `[0-9]+` (non-ASCII Unicode digits are
+> rejected) and the epoch must lie within the canonical years 0001–9999. It backs
 > the timezone gate, research point-in-time ordering and manifest timestamps. Every ordinary quarantine is bound to its exact
 > parsed/validated stored request; the quarantine directory and 16-hex id derive
 > from the exact request bytes, response bytes and reason, while malformed or

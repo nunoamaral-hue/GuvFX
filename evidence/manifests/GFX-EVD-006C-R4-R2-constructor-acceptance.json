@@ -1,0 +1,156 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-006C-R4-R2-constructor-acceptance",
+  "packet_id": "GFX-PKT-006C-R4-R2",
+  "packet_version": "v0.1",
+  "created_at_utc": "2026-06-24T11:50:00Z",
+  "branch": "fix/utc-instant-constructor-invariant",
+  "base_commit": "7cb61926a1dc2ad9ea567a09a56ea0dde6a1584d",
+  "head_commit": "fb6f1ae7dd122811dbf0ddc1c26c60e216d77b3e",
+  "c13_commit": "fb6f1ae7dd122811dbf0ddc1c26c60e216d77b3e",
+  "c14_commit": null,
+  "continuation_of": "GFX-PKT-006C-R4-R1 — Exact-Instant Representation and Evidence Factuality Remediation v0.1 (merged via PR #35 into main 7cb6192)",
+  "authorising_records": [
+    "GFX-EVD-006C-R4-R1 — PM Reconciliation of Merged Head and Remaining Constructor/Evidence Defects v0.1",
+    "GFX-ADR-DATA-007 — Retain PR #35 Merge and Remediate Constructor/Evidence Forward v0.1",
+    "GuvFX — Current State v0.27"
+  ],
+  "environment": {
+    "research_python_version": "3.14.6",
+    "duckdb_version": "1.5.4",
+    "dependencies_changed": false,
+    "schemas_changed": false,
+    "ci_make_changed": false
+  },
+  "defects_corrected": {
+    "unicode_digit_constructor_defect": "UtcInstant.__init__ validated fractional digits with str.isdigit(), which returns True for non-ASCII digit characters (Arabic-Indic, extended Arabic-Indic, Devanagari, fullwidth, superscript, mixed). A directly constructed instant could therefore hold out-of-contract fractional state whose lexicographic (code-point) comparison is not the intended numeric order. Corrected: an explicit ASCII membership test (frozenset('0123456789').issuperset(frac_digits)) admits only empty or normalized ASCII [0-9]+ state; isdigit()/isdecimal()/isnumeric() are not used; no int/float is formed; the parser path is unaffected.",
+    "epoch_domain_defect": "UtcInstant.__init__ accepted any non-boolean integer epoch, including instants outside the canonical parser's representable year 0001-9999 range. Corrected: module constants MIN_CANONICAL_EPOCH_S (0001-01-01T00:00:00Z = -62135596800) and MAX_CANONICAL_EPOCH_S (9999-12-31T23:59:59Z = 253402300799), derived once via calendar.timegm over an integer time tuple (no float), bound direct construction; both boundaries are accepted and one second beyond either is rejected through ContractError.",
+    "r4_r1_file_count_overstatement": "The R4-R1 evidence's actual_results prose said '11 authorised files' for the R4-R1 incremental diff while its own files_modified (11) + files_added (1) lists, and the independently verified diff (6cedad0..660e086), total 12 files. This manifest records the corrected count of 12. The R4-R1 manifest's prior bytes are preserved; only an additive superseded_by_r4_r2_evidence pointer is added.",
+    "stale_acceptance_current_state_claims": "Supersedes the prior PM acceptance/current-state claims that predate the PR #35 merge: canonical main is now at/after 7cb6192 and repository records are realigned to the bounded R4-R2 lifecycle without asserting real capability or a point-in-time PR status."
+  },
+  "verified_r4_r1_incremental_file_count": 12,
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "required_jobs": ["governance", "backend", "frontend", "research-foundation", "market-data-foundation"],
+    "c13": {
+      "push_run_id": 28096068481,
+      "pull_request_run_id": 28096081869,
+      "run_head_sha": "fb6f1ae7dd122811dbf0ddc1c26c60e216d77b3e",
+      "jobs": [
+        { "name": "governance", "conclusion": "success" },
+        { "name": "backend", "conclusion": "success" },
+        { "name": "frontend", "conclusion": "success" },
+        { "name": "research-foundation", "conclusion": "success" },
+        { "name": "market-data-foundation", "conclusion": "success" }
+      ]
+    },
+    "c14": { "push_run_id": null, "pull_request_run_id": null, "run_head_sha": null, "jobs": [] }
+  },
+  "pull_request": {
+    "number": 36,
+    "url": "https://github.com/nunoamaral-hue/GuvFX/pull/36",
+    "base": "main",
+    "head_ref": "fix/utc-instant-constructor-invariant",
+    "state": "draft/open/unmerged",
+    "title": "Enforce UTC instant constructor invariants"
+  },
+  "files_modified": [
+    "research/market_data/contracts.py",
+    "tests/test_market_data_foundation.py",
+    "research/README.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/STATUS.md",
+    "docs/HANDOFF.md",
+    "docs/NEXT.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    "evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json"
+  ],
+  "files_added": [
+    "evidence/manifests/GFX-EVD-006C-R4-R2-constructor-acceptance.json"
+  ],
+  "r4_r1_evidence_change": "pointer-only: a single additive superseded_by_r4_r2_evidence key (plus its comma) is added to GFX-EVD-006C-R4-R1-exact-instant-factuality.json; no other byte or claim of that historical manifest is altered.",
+  "unauthorised_files_changed": false,
+  "dependencies_changed": false,
+  "schemas_changed": false,
+  "ci_make_changed": false,
+  "remediation_results": {
+    "ascii_fractional_state": "Constructor admits frac_digits only as '' (exact whole second) or a normalized ASCII [0-9]+ string whose final character is not '0'; the check is an explicit frozenset membership test walked linearly over the string, never str.isdigit()/isdecimal()/isnumeric(), and forms no int/float.",
+    "unicode_digit_rejection": "Arabic-Indic '١', extended Arabic-Indic '۱', Devanagari '१', fullwidth '１', superscript '²' and ASCII/Unicode mixtures all raise ContractError at construction, so non-ASCII code points can never enter an instant value or its comparison state.",
+    "canonical_epoch_domain": "Direct construction is bounded to [MIN_CANONICAL_EPOCH_S, MAX_CANONICAL_EPOCH_S] = [-62135596800, 253402300799]; both boundaries are accepted, one second beyond either and further out-of-range integers raise ContractError, while booleans and non-integers continue to raise ContractError; parser-produced timestamps (4-digit year, datetime.fromisoformat domain) remain within these bounds and are unaffected.",
+    "preserved_invariants": "Arbitrary-length parsing/ordering (incl. 10,000-digit fractions), exact comparison to integer epoch seconds, immutability (__setattr__/__delattr__ raise) and deliberate unhashability (__hash__ = None) are unchanged; no timestamp regex, schema, dependency, Makefile, CI workflow, timezone, storage, quarantine, publication or agent-client code was touched.",
+    "use_sites_transparent": "timezone gate, tools/research_smoke point-in-time ordering and storage manifest-instant parsing continue to consume the value only for comparison; all remain green."
+  },
+  "tests": {
+    "research_foundation_tests_total": 35,
+    "market_data_tests_total": 141,
+    "result": "OK",
+    "constructor_invariant_matrix": "TestUtcInstantConstructorInvariant (new): normalized ASCII fractions '1'/'01'/'0001'/'' accepted; trailing-zero forms '10'/'0'/'100'/'10000' rejected; Arabic-Indic/extended Arabic-Indic/Devanagari/fullwidth/superscript and mixed Unicode digit strings rejected; valid ASCII direct-constructor ordering equals parsed-timestamp ordering; a Unicode digit can no longer enter comparison state; earliest/latest canonical epoch bounds accepted; one second outside either bound rejected via ContractError; booleans/floats/strings/None as epoch rejected; a 10,000-digit ASCII fraction still constructs directly and orders after the whole second.",
+    "regression": "All prior R4/R4-R1 arbitrary-length, immutability, unhashability, integer-epoch equality, quarantine-provenance, publication, timezone, research, storage, concurrency, HTTP, security and Parquet/DuckDB tests remain green; research and market-data smokes PASS and are byte-for-byte deterministic across two runs."
+  },
+  "commands": [
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v",
+    ".venv-research/bin/python tools/research_smoke.py",
+    ".venv-research/bin/python tools/market_data_synthetic_smoke.py",
+    "make research-check",
+    "make market-data-check",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json >/dev/null",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R4-R2-constructor-acceptance.json >/dev/null",
+    "git diff --check; git status --short",
+    "git diff --name-only 7cb61926a1dc2ad9ea567a09a56ea0dde6a1584d...HEAD",
+    "git diff 7cb61926a1dc2ad9ea567a09a56ea0dde6a1584d -- evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json"
+  ],
+  "expected_results": [
+    "Constructor accepts only empty or normalized ASCII [0-9]+ fractional state",
+    "All tested Unicode digit classes are rejected through ContractError",
+    "Constructor epoch values are limited to the canonical year 0001-9999 domain; boundaries accepted, one second beyond rejected",
+    "Arbitrary-length parsing, exact ordering, immutability and unhashability remain green",
+    "All research and market-data regressions pass; smokes deterministic",
+    "Only authorised files change; dependencies, schemas, CI and Make unchanged",
+    "Historical R4-R1 evidence changes by only the additive supersession pointer; corrected R4-R1 incremental count is 12",
+    "All five CI jobs pass for the C13 (and C14) push + PR runs"
+  ],
+  "actual_results": [
+    "research foundation tests: Ran 35 tests, OK",
+    "market-data tests: Ran 141 tests, OK (incl. 8 new TestUtcInstantConstructorInvariant cases)",
+    "ASCII/Unicode constructor matrix and epoch-boundary matrix pass; out-of-range and non-integer epochs rejected",
+    "research smoke + market-data smoke: PASS; each byte-for-byte deterministic across two runs",
+    "check_no_secrets: no findings; make governance-check OK; make research-check OK; make market-data-check OK",
+    "json.tool: R4-R1 and R4-R2 manifests valid JSON",
+    "git diff --check clean; git diff --name-only 7cb6192...HEAD (at C14) = the authorised file set; the R4-R1 evidence diff vs 7cb6192 is only the additive superseded_by_r4_r2_evidence pointer",
+    "Independently verified R4-R1 incremental diff (6cedad0..660e086) = 12 files (corrects the prior '11' prose)",
+    "C13 CI: push run 28096068481 + PR run 28096081869 (head fb6f1ae) — all five required jobs success; C14 final runs recorded in the PR comment + handoff after they conclude"
+  ],
+  "no_network_proof": "All HTTP/race tests use injected fakes inside network_blocked(); NetworkAgentClient remains inert unless allow_network=True; no real socket or URL opener was invoked.",
+  "no_real_access_statement": "Synthetic-only. No Windows Agent endpoint, VPS, MT5, broker, NAS, credential or production access occurred. No deployment, restart, PR merge, G0 source/storage discovery or 006D work was performed.",
+  "status": "PASS",
+  "limitations": [
+    "Synthetic-only: no external agent endpoint, real market data, NAS path or credentials were implemented or contacted.",
+    "Backend 'core' test relies on the GitHub backend CI job (no local backend/.venv/PostgreSQL); unchanged from 006C.",
+    "head_commit/c13_commit point at the implementation commit C13 (fb6f1ae); the c14 block is filled conceptually at the evidence-only C14 commit, whose own push/PR CI runs are recorded in the PR comment and PM handoff after they conclude.",
+    "Lifecycle and merge state of the branch/PR are owned in GitHub/Notion; this evidence does not assert a point-in-time PR status.",
+    "Capability readiness remains Partial after R4-R2 until G0 source/storage discovery is completed and real access is separately approved and evidenced."
+  ],
+  "artefact_locations": [
+    "research/market_data/contracts.py",
+    "tests/test_market_data_foundation.py",
+    "research/README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/DATA_CONTRACTS.md",
+    "evidence/manifests/GFX-EVD-006C-R4-R2-constructor-acceptance.json"
+  ],
+  "checksums": {
+    "research/market_data/contracts.py": "sha256:5b3ffe7257edb2da0568b8e5756acf358c4a3e36aaaf167a9545a4875aec5cf8",
+    "tests/test_market_data_foundation.py": "sha256:c9c17f4ba45768dc96c70a944f8904f366711afdd31d551b9bd7a3c46434d3ca",
+    "research/README.md": "sha256:8f56664480a61aa97d28ce5e85a75260114a53fadd1faa4aa4c90c901fa12aae",
+    "docs/ARCHITECTURE.md": "sha256:9180b80b611c994677919de1873f71cff9d25556e8bd83b2bbf406515d379a53",
+    "docs/DATA_CONTRACTS.md": "sha256:d9fc55806bdb38c758dfc05265962d5896c20e6170eedbbdc0f6cf432a167345"
+  },
+  "reviewer": null
+}
