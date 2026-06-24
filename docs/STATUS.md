@@ -6,7 +6,7 @@
 
 ## Snapshot
 
-- Date: 2026-06-23 (UTC)
+- Date: 2026-06-24 (UTC)
 - Canonical branch: `main`
 - Current governance merge: `c17b7b8` — PR #31 *Add governance convergence
   foundation* merged into `main`. This introduced the scoped Claude rules,
@@ -21,19 +21,20 @@
   (`80ef2f8`), establishing the DuckDB research foundation and the versioned
   market-data contracts (GFX-PKT-005B / R1 / R2).
 - **GFX-PKT-006C** (synthetic market-data acquisition foundation), continued by
-  **R1**, **R2** and **R3**, is now on `main` at/after merge commit `6dfe22a…`
-  (the R3 synthetic foundation: strict contracts, immutable raw landing with
-  SHA-256/idempotency/quarantine, the `VERIFIED` timezone gate and synthetic M1
-  bid-OHLC publication). Branch `fix/market-data-r4-closure` (base `6dfe22a…`)
-  carries **GFX-PKT-006C-R4** (one shared UTC-instant primitive;
-  ordinary-quarantine request/directory/16-hex-id provenance; retainable
-  malformed/contract-invalid response evidence; governed publication request
-  failure) and the follow-up **GFX-PKT-006C-R4-R1** (arbitrary-length-safe,
-  immutable, unhashable UTC-instant representation; evidence factuality). Canonical
-  `main` remains `6dfe22a…`; merging this branch and advancing its lifecycle are
-  owned in GitHub/Notion, not asserted here. Capability remains **Partial**.
-  Synthetic-only — no real data, NAS, broker, agent acquisition or deployment
-  exists. CI runs a `market-data-foundation` job.
+  **R1**, **R2**, **R3**, **R4** and **R4-R1**, is now on `main` at/after merge
+  commit `7cb6192…` (PR #35): strict contracts, immutable raw landing with
+  SHA-256/idempotency/quarantine, the `VERIFIED` timezone gate, synthetic M1
+  bid-OHLC publication, one shared arbitrary-length-safe/immutable/unhashable
+  UTC-instant primitive, and ordinary-quarantine request/directory/16-hex-id
+  provenance. Branch `fix/utc-instant-constructor-invariant` (base `7cb6192…`)
+  carries **GFX-PKT-006C-R4-R2** — UTC-instant **constructor/evidence
+  reconciliation**: direct construction admits only normalized ASCII `[0-9]+`
+  fractional digits and epochs within the canonical year 0001–9999 domain, with the
+  R4-R1 incremental file count corrected to 12. Merging this branch and advancing its
+  lifecycle are owned in GitHub/Notion, not asserted here. Capability remains
+  **Partial**; G0 source/storage discovery and real acquisition stay **paused**
+  pending separate approval. Synthetic-only — no real data, NAS, broker, agent
+  acquisition or deployment exists. CI runs a `market-data-foundation` job.
 
 ## Verified current state
 

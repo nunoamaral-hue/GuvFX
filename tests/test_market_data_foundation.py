@@ -1334,6 +1334,88 @@ class TestExactInstantPrimitive(unittest.TestCase):
                 self._p(bad)
 
 
+class TestUtcInstantConstructorInvariant(unittest.TestCase):
+    """Direct ``UtcInstant`` construction domain (GFX-PKT-006C-R4-R2 8.3).
+
+    The parser is already exercised by ``TestExactInstantPrimitive``; these tests
+    target the constructor itself, proving non-ASCII digits and out-of-domain
+    epochs can never enter an instant value or its comparison state.
+    """
+
+    U = contracts.UtcInstant
+    MIN = contracts.MIN_CANONICAL_EPOCH_S
+    MAX = contracts.MAX_CANONICAL_EPOCH_S
+
+    # -- 8.3(1) normalized ASCII fractional state is accepted --
+    def test_normalized_ascii_fraction_accepted(self):
+        for frac in ("1", "01", "0001", ""):
+            self.U(1735689600, frac)  # no raise
+
+    # -- 8.3(2) trailing-zero (non-normalized) state is rejected --
+    def test_trailing_zero_fraction_rejected(self):
+        for frac in ("10", "0", "100", "10000"):
+            with self.assertRaises(ContractError):
+                self.U(1735689600, frac)
+
+    # -- 8.3(3) every tested Unicode digit class is rejected --
+    def test_unicode_digit_fraction_rejected(self):
+        # Arabic-Indic, extended Arabic-Indic, Devanagari, fullwidth, superscript,
+        # and ASCII/Unicode mixtures — all str.isdigit()/isdecimal() truthy.
+        for frac in ("١", "۱", "१", "１", "²",
+                     "1٢", "٢3"):
+            self.assertTrue(frac.isdigit() or frac.isnumeric())
+            with self.assertRaises(ContractError):
+                self.U(1735689600, frac)
+
+    # -- 8.3(4) valid ASCII direct-constructor order matches parsed order --
+    def test_direct_ascii_ordering_matches_parser(self):
+        base = "2025-01-01T00:00:00."
+        direct_lo = self.U(1735689600, "0000009")
+        direct_hi = self.U(1735689600, "000001")
+        parsed_lo = contracts.parse_canonical_utc_instant(base + "0000009Z")
+        parsed_hi = contracts.parse_canonical_utc_instant(base + "0000010Z")
+        self.assertTrue(direct_lo < direct_hi)
+        self.assertEqual(direct_lo, parsed_lo)
+        self.assertEqual(direct_hi, parsed_hi)
+        self.assertTrue(parsed_lo < parsed_hi)
+
+    # -- 8.3(5) Unicode code-point order cannot enter comparison state --
+    def test_unicode_order_cannot_enter_comparison(self):
+        # ٢ (Arabic-Indic two, code point 0x0662) sorts after ASCII "1"
+        # (0x31) by code point but is numerically smaller. Rejecting it at
+        # construction prevents that incorrect ordering from ever forming.
+        with self.assertRaises(ContractError):
+            self.U(1735689600, "٢")
+
+    # -- 8.3(6) earliest and latest canonical epoch bounds are accepted --
+    def test_canonical_epoch_bounds_accepted(self):
+        self.assertEqual(self.MIN, -62135596800)   # 0001-01-01T00:00:00Z
+        self.assertEqual(self.MAX, 253402300799)   # 9999-12-31T23:59:59Z
+        self.U(self.MIN, "")
+        self.U(self.MAX, "")
+        self.U(self.MAX, "5")
+
+    # -- 8.3(7) one second outside either bound fails through ContractError --
+    def test_epoch_one_second_out_of_range_rejected(self):
+        for epoch in (self.MIN - 1, self.MAX + 1, self.MIN - 10 ** 6,
+                      self.MAX + 10 ** 6):
+            with self.assertRaises(ContractError):
+                self.U(epoch, "")
+
+    # -- 8.3(8) booleans, floats and strings as epoch values fail --
+    def test_non_integer_epoch_rejected(self):
+        for epoch in (True, False, 1.0, 1735689600.0, "1735689600", None):
+            with self.assertRaises(ContractError):
+                self.U(epoch, "")
+
+    # -- 8.3(9) arbitrary-length ASCII fraction still constructs directly --
+    def test_ten_thousand_digit_direct_construction(self):
+        frac = ("0" * 9999) + "1"  # 10,000 digits, normalized (no trailing zero)
+        inst = self.U(1735689600, frac)
+        self.assertEqual(inst.epoch_seconds, 1735689600)
+        self.assertTrue(self.U(1735689600, "") < inst)
+
+
 class TestQuarantineProvenance(unittest.TestCase):
     """Ordinary-quarantine request/directory/ID provenance (GFX-PKT-006C-R4 8.3-8.5)."""
 

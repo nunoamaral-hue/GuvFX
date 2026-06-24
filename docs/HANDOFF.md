@@ -1,28 +1,28 @@
-# HANDOFF — GFX-PKT-006C-R4 / R4-R1 (exact-time & quarantine provenance)
+# HANDOFF — GFX-PKT-006C-R4-R2 (UTC constructor invariant & acceptance reconciliation)
 
 > Concise packet pointer. **Notion and GitHub are authoritative** for lifecycle and
 > merge state; the repository holds implementation, tests and concise evidence. This
 > document does not assert a point-in-time pull-request status.
 
-- Active workstream: **GFX-PKT-006C-R4 — Post-Merge Exact-Time and Quarantine
-  Provenance Closure v0.3**, plus the bounded follow-up **GFX-PKT-006C-R4-R1 —
-  Exact-Instant Representation and Evidence Factuality Remediation v0.1**
-  (continuation of GFX-PKT-006C / R1 / R2 / R3). R4 closed the post-merge gaps (one
-  shared UTC-instant primitive; ordinary-quarantine binding to the exact stored
-  request with a request/response/reason-derived 16-hex id; retainable
-  malformed/contract-invalid response evidence; governed publication request
-  failure). R4-R1 makes the UTC-instant primitive arbitrary-length-safe (normalized
-  decimal-digit fraction; no int/power-of-ten/float conversion), genuinely immutable
-  and deliberately unhashable, and corrects prior evidence overstatements.
-- Base packets: **GFX-PKT-006C** + **R1** + **R2** + **R3** (the R3 foundation is on
-  `main` at/after `6dfe22a…`).
-- Branch: `fix/market-data-r4-closure` (base `main` `6dfe22a…`).
-- Scope: synthetic-only edits under `research/market_data/`, the two foundation test
-  modules and docs. No real data, NAS, broker, agent, execution or deployment action.
-- Evidence: `evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json`
-  (006C), `…-R1-client-raw-integrity.json`, `…-R2-publication-storage-integrity.json`,
-  `…-R3-semantic-provenance-integrity.json`, `…-R4-exact-time-quarantine-provenance.json`,
-  and (R4-R1) `evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json`.
+- Active workstream: **GFX-PKT-006C-R4-R2 — UTC Constructor Invariant and Acceptance
+  Reconciliation v0.1** (continuation of GFX-PKT-006C / R1 / R2 / R3 / R4 / R4-R1).
+  R4-R2 closes the final constructor-domain and acceptance-factuality defects: direct
+  `UtcInstant` construction admits only normalized ASCII `[0-9]+` fractional digits
+  (non-ASCII Unicode digits rejected) and epochs within the canonical year 0001–9999
+  parser domain; arbitrary-length parsing, exact ordering, immutability and
+  unhashability are unchanged. The prior R4-R1 incremental file count is corrected to
+  12.
+- Base: **GFX-PKT-006C** + **R1** + **R2** + **R3** + **R4** + **R4-R1**, merged to
+  `main` at/after `7cb6192…` (PR #35).
+- Branch: `fix/utc-instant-constructor-invariant` (base `main` `7cb6192…`).
+- Scope: synthetic-only edits to `research/market_data/contracts.py`, the foundation
+  test module and docs. No real data, NAS, broker, agent, execution or deployment
+  action.
+- Evidence: prior manifests through
+  `evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json`, plus the new
+  `evidence/manifests/GFX-EVD-006C-R4-R2-constructor-acceptance.json` (recorded after
+  C13 push/PR CI is green); the R4-R1 manifest gains only an additive supersession
+  pointer.
 
 ---
 

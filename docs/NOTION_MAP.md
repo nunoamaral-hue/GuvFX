@@ -55,6 +55,10 @@ in Notion when authority is required.
 - GFX-EVD-006C-R4 — PM Review and Exact-Instant Factuality Remediation Required v0.1
 - GFX-PKT-006C-R4-R1 — Exact-Instant Representation and Evidence Factuality Remediation v0.1
 - GuvFX — Current State v0.26
+- GFX-EVD-006C-R4-R1 — PM Reconciliation of Merged Head and Remaining Constructor/Evidence Defects v0.1
+- GFX-ADR-DATA-007 — Retain PR #35 Merge and Remediate Constructor/Evidence Forward v0.1
+- GuvFX — Current State v0.27
+- GFX-PKT-006C-R4-R2 — UTC Constructor Invariant and Acceptance Reconciliation v0.1
 
 > The titles above are pointers. Notion holds the authoritative content and lifecycle
 > state; the repository holds implementation, tests, and concise evidence. Full text and
