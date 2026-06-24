@@ -24,14 +24,16 @@
   **R1**, **R2** and **R3**, is now on `main` at/after merge commit `6dfe22a…`
   (the R3 synthetic foundation: strict contracts, immutable raw landing with
   SHA-256/idempotency/quarantine, the `VERIFIED` timezone gate and synthetic M1
-  bid-OHLC publication). **GFX-PKT-006C-R4 — Post-Merge Exact-Time and Quarantine
-  Provenance Closure** (branch `fix/market-data-r4-closure`, base `6dfe22a…`)
-  closes the remaining gaps: one shared arbitrary-precision UTC-instant primitive;
+  bid-OHLC publication). Branch `fix/market-data-r4-closure` (base `6dfe22a…`)
+  carries **GFX-PKT-006C-R4** (one shared UTC-instant primitive;
   ordinary-quarantine request/directory/16-hex-id provenance; retainable
-  malformed/contract-invalid response evidence; and governed publication request
-  failure. Capability remains **Partial** pending R4 closure; lifecycle/merge
-  status is authoritative in Notion. Synthetic-only — no real data, NAS, broker,
-  agent acquisition or deployment exists. CI runs a `market-data-foundation` job.
+  malformed/contract-invalid response evidence; governed publication request
+  failure) and the follow-up **GFX-PKT-006C-R4-R1** (arbitrary-length-safe,
+  immutable, unhashable UTC-instant representation; evidence factuality). Canonical
+  `main` remains `6dfe22a…`; merging this branch and advancing its lifecycle are
+  owned in GitHub/Notion, not asserted here. Capability remains **Partial**.
+  Synthetic-only — no real data, NAS, broker, agent acquisition or deployment
+  exists. CI runs a `market-data-foundation` job.
 
 ## Verified current state
 

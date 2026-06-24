@@ -170,12 +170,18 @@ drift independently. `publish_observations` additionally requires the exact raw
 response bytes and proves `sha256(bytes)`, the parsed-object match and
 `raw_object_id == request_id` before producing any record.
 
-**GFX-PKT-006C-R4 (exact time & quarantine provenance):** a single dependency-free
-`UtcInstant` primitive (`contracts.parse_canonical_utc_instant`) parses canonical
-UTC `Z` timestamps into an integer epoch second plus an exact `fractions.Fraction`,
-so every admitted fractional digit participates in comparison (`.1Z == .100Z`;
-ordering is correct past the sixth digit) with no float and exact comparison to
-integer epoch seconds. The timezone gate, research point-in-time ordering
+**GFX-PKT-006C-R4 / R4-R1 (exact time & quarantine provenance):** a single
+dependency-free `UtcInstant` primitive (`contracts.parse_canonical_utc_instant`)
+parses canonical UTC `Z` timestamps into an integer epoch second plus a *normalized
+decimal-digit string* for the fraction (trailing zeros removed; `""` = exact whole
+second). Comparison is a direct lexicographic walk over the normalized digits — for
+trailing-zero-normalized strings this is exactly the numeric order — so every
+admitted fractional digit participates (`.1Z == .100Z`; ordering correct past the
+sixth digit, and correct for 10,000-digit fractions) with no integer/power-of-ten/
+float conversion and no dependence on CPython's int↔str digit limit, and with exact
+comparison to integer epoch seconds. The value is immutable (attribute writes raise)
+and deliberately unhashable (`__hash__ = None`, since it equals bare integer
+epochs). The timezone gate, research point-in-time ordering
 (`tools/research_smoke._parse_utc`) and manifest timestamps all use it. Strict
 manifest validation now parses and validates the exact stored request for **every
 ordinary quarantine** and derives the identity, range, directory and 16-hex

@@ -1242,11 +1242,65 @@ class TestExactInstantPrimitive(unittest.TestCase):
         self.assertTrue(self._p("2025-01-01T00:00:00.0000009Z")
                         < self._p("2025-01-01T00:00:00.0000010Z"))
 
-    def test_trailing_zero_equality_and_hash(self):
+    def test_trailing_zero_equality(self):
         a = self._p("2025-01-01T00:00:00.1Z")
         b = self._p("2025-01-01T00:00:00.100Z")
+        c = self._p("2025-01-01T00:00:00.10Z")
         self.assertEqual(a, b)
-        self.assertEqual(hash(a), hash(b))
+        self.assertEqual(a, c)
+
+    # -- R4-R1: arbitrary-length safety, immutability, unhashability --
+    def test_ten_thousand_digit_fraction_parses(self):
+        # int("0"*10000+"1") would exceed CPython's default str->int digit limit;
+        # the parser must NOT perform that conversion.
+        ts = "2025-01-01T00:00:00." + ("1" * 10000) + "Z"
+        inst = self._p(ts)  # no raw or governed failure
+        self.assertEqual(inst.epoch_seconds, 1735689600)
+
+    def test_ten_thousand_digit_fractions_order_by_final_digit(self):
+        base = "2025-01-01T00:00:00."
+        a = self._p(base + ("0" * 9999) + "1" + "Z")
+        b = self._p(base + ("0" * 9999) + "2" + "Z")
+        self.assertTrue(a < b)
+        self.assertNotEqual(a, b)
+
+    def test_ten_thousand_zero_fraction_equals_whole_second(self):
+        inst = self._p("2025-01-01T00:00:00." + ("0" * 10000) + "Z")
+        self.assertEqual(inst, self._p("2025-01-01T00:00:00Z"))
+        self.assertEqual(inst, 1735689600)
+
+    def test_long_leading_zero_fractions_order(self):
+        base = "2025-01-01T00:00:00."
+        more_zeros = self._p(base + ("0" * 5000) + "1" + "Z")
+        fewer_zeros = self._p(base + ("0" * 4999) + "1" + "Z")
+        self.assertTrue(more_zeros < fewer_zeros)
+
+    def test_no_int_conversion_limit_escapes_as_value_error(self):
+        ts = "2025-01-01T00:00:00." + ("9" * 9000) + "Z"
+        try:
+            self._p(ts)
+        except ContractError:
+            pass  # a governed error is acceptable; a raw ValueError is not
+        except ValueError as exc:  # pragma: no cover - guards against regression
+            self.fail(f"raw ValueError escaped: {exc}")
+
+    def test_instant_is_immutable(self):
+        inst = self._p("2025-01-01T00:00:00.5Z")
+        with self.assertRaises(AttributeError):
+            inst._epoch_s = 0
+        with self.assertRaises(AttributeError):
+            inst._frac_digits = "9"
+        with self.assertRaises(AttributeError):
+            inst.new_attr = 1
+        with self.assertRaises(AttributeError):
+            del inst._epoch_s
+
+    def test_instant_is_unhashable(self):
+        inst = self._p("2025-01-01T00:00:00.5Z")
+        with self.assertRaises(TypeError):
+            hash(inst)
+        with self.assertRaises(TypeError):
+            {inst}  # cannot be placed in a set
 
     def test_no_fraction_ms_us_parse_and_order(self):
         a = self._p("2025-01-01T00:00:00Z")

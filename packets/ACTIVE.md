@@ -1,14 +1,28 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-006C-R4 (continuation of GFX-PKT-006C / R1 / R2 / R3)
-- **Title:** Post-Merge Exact-Time and Quarantine Provenance Closure v0.3
+- **Packet ID:** GFX-PKT-006C-R4-R1 (continuation of GFX-PKT-006C / R1 / R2 / R3 / R4)
+- **Title:** Exact-Instant Representation and Evidence Factuality Remediation v0.1
 - **Branch:** `fix/market-data-r4-closure`
 - **Base:** `main` @ `6dfe22aef7d6bc1a82cbd712536989c10e342602`
-- **Status:** Synthetic-only forward remediation. The R3 synthetic foundation is on
-  `main` at/after `6dfe22a…`; R4 closes the remaining post-merge exact-time and
-  quarantine-provenance gaps. **Lifecycle and merge status are authoritative in
-  Notion** (PM-owned). **No merge, deployment, or real-data/NAS/broker/agent/
+- **Status:** Synthetic-only forward remediation on the existing R4 branch. The R3
+  synthetic foundation is on `main` at/after `6dfe22a…`; R4 closed the post-merge
+  exact-time and quarantine-provenance gaps and R4-R1 hardens the UTC-instant
+  representation (arbitrary-length-safe, immutable, unhashable) and corrects prior
+  evidence overstatements. **Lifecycle and merge status are authoritative in
+  Notion/GitHub** (PM-owned). **No merge, deployment, or real-data/NAS/broker/agent/
   credential access is authorised by this packet.**
+
+## R4-R1 remediation scope (exact-instant representation + evidence factuality)
+
+1. `UtcInstant` stores the fraction as a normalized decimal-digit string compared
+   lexicographically — no `int(digits)`, no `10**len`, no float, no dependence on
+   CPython's int↔str digit limit; 10,000-digit fractions parse and order correctly.
+2. The value is genuinely immutable (attribute writes/deletes raise) and
+   deliberately unhashable (`__hash__ = None`, since it equals bare integer epochs).
+3. Repository wording is lifecycle-neutral (no live draft/open/unmerged claim).
+4. A new R4-R1 evidence record corrects the prior immutability, arbitrary-length and
+   file-count (17, not 16) overstatements; the R4 manifest gains only an additive
+   supersession pointer.
 
 ## R4 remediation scope (exact time + quarantine provenance)
 

@@ -13,7 +13,6 @@ import json
 import math
 import re
 from datetime import datetime, timezone
-from fractions import Fraction
 from functools import total_ordering
 
 MINUTE_UTC_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00Z$")
@@ -58,17 +57,38 @@ class UtcInstant:
 
     Built from a canonical UTC 'Z' timestamp with ANY non-empty number of
     fractional-second digits. The whole-second component is validated as a real
-    calendar instant and stored as an integer Unix epoch second; the fractional
-    component is kept as an exact ``fractions.Fraction`` so EVERY admitted digit
-    participates in comparison — no float, no microsecond truncation. Comparable
-    with another ``UtcInstant`` or a bare integer Unix epoch second.
+    calendar instant and stored as an integer Unix epoch second. The fractional
+    component is stored as a *normalized decimal-digit string* (trailing zeros
+    removed; ``""`` means an exact whole second) — never converted to an integer,
+    a power of ten or binary floating point. This is safe for arbitrarily long
+    fractions: there is no dependence on CPython's int<->str digit limit, and
+    comparison is a direct lexicographic walk over the normalized digits, which —
+    for trailing-zero-normalized fractional strings — is exactly the numeric order.
+
+    The value is immutable (attribute assignment/deletion raises) and is
+    deliberately **unhashable** (``__hash__ = None``): it compares equal to a bare
+    non-boolean integer Unix epoch second, so no tuple/int hash could honour
+    Python's equal-objects-equal-hashes contract across both types.
     """
 
-    __slots__ = ("_epoch_s", "_frac")
+    __slots__ = ("_epoch_s", "_frac_digits")
 
-    def __init__(self, epoch_s: int, frac: Fraction):
-        self._epoch_s = epoch_s
-        self._frac = frac
+    def __init__(self, epoch_s: int, frac_digits: str):
+        if not isinstance(epoch_s, int) or isinstance(epoch_s, bool):
+            raise ContractError("UtcInstant epoch must be an integer")
+        if not isinstance(frac_digits, str):
+            raise ContractError("UtcInstant fractional digits must be a string")
+        if frac_digits and (not frac_digits.isdigit() or frac_digits[-1] == "0"):
+            raise ContractError(
+                "UtcInstant fractional digits must be normalized decimal digits")
+        object.__setattr__(self, "_epoch_s", epoch_s)
+        object.__setattr__(self, "_frac_digits", frac_digits)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("UtcInstant is immutable")
+
+    def __delattr__(self, name):
+        raise AttributeError("UtcInstant is immutable")
 
     @property
     def epoch_seconds(self) -> int:
@@ -78,36 +98,42 @@ class UtcInstant:
     @staticmethod
     def _key_of(other):
         if isinstance(other, UtcInstant):
-            return (other._epoch_s, other._frac)
+            return (other._epoch_s, other._frac_digits)
         if isinstance(other, int) and not isinstance(other, bool):
-            return (other, Fraction(0))
+            return (other, "")
         return None
 
     def __eq__(self, other):
         key = self._key_of(other)
         if key is None:
             return NotImplemented
-        return (self._epoch_s, self._frac) == key
+        # Lexicographic comparison of trailing-zero-normalized fractional digit
+        # strings equals their numeric order (shorter-as-prefix is numerically
+        # smaller because a normalized string never ends in a zero).
+        return (self._epoch_s, self._frac_digits) == key
 
     def __lt__(self, other):
         key = self._key_of(other)
         if key is None:
             return NotImplemented
-        return (self._epoch_s, self._frac) < key
+        return (self._epoch_s, self._frac_digits) < key
 
-    def __hash__(self):
-        return hash((self._epoch_s, self._frac))
+    # Equal to bare integer epochs across types ⇒ no consistent hash exists.
+    __hash__ = None
 
     def __repr__(self):
-        return f"UtcInstant(epoch_s={self._epoch_s}, frac={self._frac})"
+        return f"UtcInstant(epoch_s={self._epoch_s}, frac_digits={self._frac_digits!r})"
 
 
 def parse_canonical_utc_instant(value) -> UtcInstant:
     """Parse a canonical UTC 'Z' instant into an exact, comparable ``UtcInstant``.
 
-    Accepts any non-empty number of fractional-second digits. Rejects non-strings,
-    non-canonical representations, impossible calendar/time values and any non-UTC
-    form through ``ContractError``. No payload/value text appears in the message.
+    Accepts any non-empty number of fractional-second digits — including very long
+    fractions — without converting the digit string to an integer (no dependence on
+    CPython's int<->str digit limit) and without binary floating point. Rejects
+    non-strings, non-canonical representations, impossible calendar/time values and
+    any non-UTC form through ``ContractError``. No payload/value text appears in the
+    message.
     """
     if not isinstance(value, str):
         raise ContractError("UTC instant must be a string")
@@ -119,9 +145,10 @@ def parse_canonical_utc_instant(value) -> UtcInstant:
     except ValueError:
         raise ContractError("value is not a valid calendar instant") from None
     epoch_s = calendar.timegm(dt.timetuple())  # integer epoch; no float conversion
-    digits = m.group("frac")
-    frac = Fraction(int(digits), 10 ** len(digits)) if digits else Fraction(0)
-    return UtcInstant(epoch_s, frac)
+    # Normalize the fractional digits by removing trailing zeros only; leading
+    # zeros are significant and preserved. No int()/10**n/float is ever formed.
+    digits = m.group("frac") or ""
+    return UtcInstant(epoch_s, digits.rstrip("0"))
 
 
 def canonical_json_bytes(obj) -> bytes:
