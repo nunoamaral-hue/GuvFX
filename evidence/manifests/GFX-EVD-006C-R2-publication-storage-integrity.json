@@ -135,5 +135,6 @@
     "tools/market_data_synthetic_smoke.py": "sha256:4b6081e39adc6a6f3dcf6fe4312b2890a6a2c840efdc9eab5e8977b04ba62750",
     "tests/test_market_data_foundation.py": "sha256:01e6176f9b8de11186bae57a1c4010c1cfa8a88eb8cad18d80e177b9a9554825"
   },
-  "reviewer": null
+  "reviewer": null,
+  "superseded_by_r3_evidence": "evidence/manifests/GFX-EVD-006C-R3-semantic-provenance-integrity.json"
 }
