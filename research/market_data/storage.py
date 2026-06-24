@@ -35,10 +35,15 @@ from .contracts import (
     MINUTE_UTC_RE,
     REQUEST_SCHEMA_ID,
     RESPONSE_SCHEMA_ID,
+    ContractError,
     ProhibitedKeyError,
     canonical_json_bytes,
     find_prohibited_key,
     sha256_hex,
+    strict_json_loads,
+    validate_request,
+    validate_request_response_match,
+    validate_response,
 )
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -124,28 +129,33 @@ class RawStore:
             raise StorageError("manifest schema_version invalid")
         if manifest["object_state"] not in ("ACCEPTED", "QUARANTINED"):
             raise StorageError("manifest object_state invalid")
-        if not isinstance(manifest["source_id"], str) or not SLUG_RE.match(manifest["source_id"]):
+        if not isinstance(manifest["source_id"], str) or not SLUG_RE.match(manifest["source_id"]) \
+                or len(manifest["source_id"]) > 64:
             raise StorageError("manifest source_id invalid")
         if not isinstance(manifest["account_scope"], str) or not SLUG_RE.match(manifest["account_scope"]) \
-                or not any(c.isalpha() for c in manifest["account_scope"]):
+                or len(manifest["account_scope"]) > 64 or not any(c.isalpha() for c in manifest["account_scope"]):
             raise StorageError("manifest account_scope invalid")
         if not isinstance(manifest["symbol"], str) or not SYMBOL_RE.match(manifest["symbol"]):
             raise StorageError("manifest symbol invalid")
-        if not isinstance(manifest["timeframe"], str) or not TIMEFRAME_RE.match(manifest["timeframe"]):
-            raise StorageError("manifest timeframe invalid")
+        if manifest["timeframe"] != "M1":
+            raise StorageError("manifest timeframe must be M1")
         if manifest["representation"] != "bid_ohlc":
             raise StorageError("manifest representation invalid")
-        for f in ("range_start_utc", "range_end_utc"):
-            if not isinstance(manifest[f], str) or not MINUTE_UTC_RE.match(manifest[f]):
-                raise StorageError(f"manifest {f} invalid")
+        # Semantic timestamp parsing (reject impossible calendar/time) + strict order.
+        range_start = self._parse_manifest_instant(manifest["range_start_utc"], MINUTE_UTC_RE, "range_start_utc")
+        range_end = self._parse_manifest_instant(manifest["range_end_utc"], MINUTE_UTC_RE, "range_end_utc")
+        if not (range_end > range_start):
+            raise StorageError("manifest range_end_utc must be later than range_start_utc")
         if manifest["range_semantics"] != "[start,end)":
             raise StorageError("manifest range_semantics invalid")
         for f in ("acquired_at_utc", "received_at_utc"):
-            if not isinstance(manifest[f], str) or not INSTANT_UTC_RE.match(manifest[f]):
-                raise StorageError(f"manifest {f} invalid")
-        for f in ("request_schema_id", "response_schema_id", "code_commit"):
-            if not isinstance(manifest[f], str) or not manifest[f]:
-                raise StorageError(f"manifest {f} invalid")
+            self._parse_manifest_instant(manifest[f], INSTANT_UTC_RE, f)
+        if manifest["request_schema_id"] != REQUEST_SCHEMA_ID:
+            raise StorageError("manifest request_schema_id is not the canonical v1 id")
+        if manifest["response_schema_id"] != RESPONSE_SCHEMA_ID:
+            raise StorageError("manifest response_schema_id is not the canonical v1 id")
+        if not isinstance(manifest["code_commit"], str) or not manifest["code_commit"]:
+            raise StorageError("manifest code_commit invalid")
         for f in ("request_sha256", "response_sha256"):
             if not isinstance(manifest[f], str) or not HEX64_RE.match(manifest[f]):
                 raise StorageError(f"manifest {f} invalid")
@@ -185,6 +195,7 @@ class RawStore:
             self._resolve_under_root(*val.split("/"))  # raises if it escapes root
 
         # Stored files must exist (regular, in-root, non-symlink) and match digests.
+        stored = {}
         for name, digest_key in (("request.json", "request_sha256"),
                                  ("response.json", "response_sha256")):
             fpath = files_dir / name
@@ -193,8 +204,62 @@ class RawStore:
             resolved = fpath.resolve()
             if resolved != self.root and self.root not in resolved.parents:
                 raise StorageError(f"stored {name} resolves outside the data root")
-            if sha256_hex(fpath.read_bytes()) != manifest[digest_key]:
+            data = fpath.read_bytes()
+            if sha256_hex(data) != manifest[digest_key]:
                 raise StorageError(f"stored {name} checksum does not match manifest")
+            stored[name] = data
+
+        # Provenance binding: the manifest identity/range must be derived from the
+        # EXACT stored request/response, and the object directory must follow from
+        # the parsed request. Applied to ACCEPTED objects (which hold a canonical
+        # request and a valid response). QUARANTINED objects deliberately hold
+        # invalid/noncanonical bytes, so they get the directory-identity check only.
+        if manifest["object_state"] == "ACCEPTED":
+            try:
+                req_obj = strict_json_loads(stored["request.json"])
+                resp_obj = strict_json_loads(stored["response.json"])
+                if stored["request.json"] != canonical_json_bytes(req_obj):
+                    raise StorageError("stored request bytes are not canonical")
+                validate_request(req_obj)
+                validate_response(resp_obj)
+                validate_request_response_match(req_obj, resp_obj)
+            except ContractError as exc:
+                raise StorageError(f"stored request/response failed validation: {exc}") from None
+            if req_obj["request_id"] != expected_request_id \
+                    or resp_obj["request_id"] != expected_request_id:
+                raise StorageError("stored request/response id does not match the object directory")
+            for field in ("source_id", "account_scope", "symbol", "timeframe",
+                          "representation", "range_start_utc", "range_end_utc",
+                          "range_semantics"):
+                if manifest[field] != req_obj[field]:
+                    raise StorageError(f"manifest {field} differs from the stored request")
+            src, scope, sym, tf, yyyy, mm = self._components(req_obj)
+            derived = f"raw/mt5/{src}/{scope}/{sym}/{tf}/{yyyy}/{mm}/{expected_request_id}"
+            if expected_rel_dir != derived:
+                raise StorageError("object directory does not follow from the stored request")
+        else:
+            # Quarantine: bind the directory to the manifest's own (request-derived)
+            # identity fields and request-id without requiring decodable bytes.
+            src = _safe_component(manifest["source_id"], "source_id", SLUG_RE)
+            scope = _safe_component(manifest["account_scope"], "account_scope", SLUG_RE)
+            sym = _safe_component(manifest["symbol"], "symbol", SYMBOL_RE)
+            yyyy = manifest["range_start_utc"][0:4]
+            mm = manifest["range_start_utc"][5:7]
+            prefix = f"quarantine/mt5/{src}/{scope}/{sym}/M1/{yyyy}/{mm}/{expected_request_id}/"
+            if not expected_rel_dir.startswith(prefix):
+                raise StorageError("quarantine directory does not follow from the manifest identity")
+            tail = expected_rel_dir[len(prefix):]
+            if not tail or "/" in tail:
+                raise StorageError("quarantine directory has an invalid quarantine-id segment")
+
+    @staticmethod
+    def _parse_manifest_instant(value, pattern: re.Pattern, field: str) -> datetime:
+        if not isinstance(value, str) or not pattern.match(value):
+            raise StorageError(f"manifest {field} is not a UTC instant")
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except ValueError:
+            raise StorageError(f"manifest {field} is not a valid calendar instant") from None
 
     def _load_manifest_failclosed(self, directory: Path, *, expected_rel_dir: str,
                                   expected_request_id: str) -> dict:

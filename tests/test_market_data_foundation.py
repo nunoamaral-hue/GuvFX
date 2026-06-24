@@ -409,14 +409,18 @@ class TestNoHardcodedOffset(unittest.TestCase):
 class TestGatedPublication(unittest.TestCase):
     def setUp(self):
         self.request = _fixture("synthetic_history_request.json")
-        self.response = _fixture("synthetic_history_response.json")
+        self.response_bytes = _fixture_bytes("synthetic_history_response.json")
+        self.response = json.loads(self.response_bytes)
         self.verified = _verified_evidence(self.request)
+        self.raw_id = self.request["request_id"]
+        self.sha = contracts.sha256_hex(self.response_bytes)
 
-    def _publish(self, evidence):
-        return normalise.publish_observations(
-            self.request, self.response, evidence, raw_object_id="a" * 64,
-            response_sha256="b" * 64, received_time_utc="2026-01-01T00:00:00Z",
-            ingestion_time_utc="2026-01-01T00:00:05Z", synthetic=True)
+    def _publish(self, evidence, **over):
+        kw = dict(response_bytes=self.response_bytes, raw_object_id=self.raw_id,
+                  response_sha256=self.sha, received_time_utc="2026-01-01T00:00:00Z",
+                  ingestion_time_utc="2026-01-01T00:00:05Z", synthetic=True)
+        kw.update(over)
+        return normalise.publish_observations(self.request, self.response, evidence, **kw)
 
     def test_verified_publishes_m1_bid_ohlc_with_lineage(self):
         records = self._publish(self.verified)
@@ -428,7 +432,8 @@ class TestGatedPublication(unittest.TestCase):
             self.assertIsNone(rec["volume_unit"])
             self.assertNotIn("bid", rec)
             self.assertNotIn("ask", rec)
-            self.assertEqual(rec["raw_object_sha256"], "b" * 64)
+            self.assertEqual(rec["raw_object_sha256"], self.sha)
+            self.assertEqual(rec["raw_object_id"], self.raw_id)
             self.assertIn("bid_ohlc", rec["quality_flags"])
             self.assertIn("historical_backfill", rec["quality_flags"])
 
@@ -458,14 +463,15 @@ class TestGatedPublication(unittest.TestCase):
     def test_invalid_response_raises_before_records(self):
         bad = copy.deepcopy(self.response)
         bad["bars"][1]["time_epoch_s"] = bad["bars"][0]["time_epoch_s"]  # duplicate
+        bad_bytes = contracts.canonical_json_bytes(bad)
         with self.assertRaises(ContractError):
             normalise.publish_observations(
-                self.request, bad, self.verified, raw_object_id="a" * 64,
-                response_sha256="b" * 64, received_time_utc="2026-01-01T00:00:00Z",
+                self.request, bad, self.verified, response_bytes=bad_bytes,
+                raw_object_id=self.raw_id, response_sha256=contracts.sha256_hex(bad_bytes),
+                received_time_utc="2026-01-01T00:00:00Z",
                 ingestion_time_utc="2026-01-01T00:00:05Z", synthetic=True)
 
     def test_no_output_path_created_on_any_gate_failure(self):
-        # Every non-VERIFIED case, given a prospective output dir, leaves it absent.
         cases = [None, _fixture("synthetic_timezone_inconclusive.json")]
         conflict = copy.deepcopy(self.verified)
         conflict["assessment_status"] = "CONFLICT"
@@ -477,6 +483,33 @@ class TestGatedPublication(unittest.TestCase):
                 with self.assertRaises((normalise.PublicationError, tzgate.TimezoneError)):
                     self._publish(ev)
                 self.assertFalse(os.path.exists(out))
+
+    # -- R3: exact raw-lineage binding --
+    def test_wrong_raw_object_id_raises(self):
+        with self.assertRaises(normalise.PublicationError):
+            self._publish(self.verified, raw_object_id="f" * 64)
+
+    def test_wrong_digest_raises(self):
+        with self.assertRaises(normalise.PublicationError):
+            self._publish(self.verified, response_sha256="0" * 64)
+
+    def test_altered_bytes_raise(self):
+        with self.assertRaises(normalise.PublicationError):
+            self._publish(self.verified, response_bytes=self.response_bytes + b" ")
+
+    def test_parsed_response_byte_mismatch_raises(self):
+        other = copy.deepcopy(self.response)
+        other["bars"][0]["close"] = 1.42
+        with self.assertRaises(normalise.PublicationError):
+            normalise.publish_observations(
+                self.request, other, self.verified, response_bytes=self.response_bytes,
+                raw_object_id=self.raw_id, response_sha256=self.sha,
+                received_time_utc="2026-01-01T00:00:00Z",
+                ingestion_time_utc="2026-01-01T00:00:05Z", synthetic=True)
+
+    def test_non_bytes_response_raises(self):
+        with self.assertRaises(normalise.PublicationError):
+            self._publish(self.verified, response_bytes="not-bytes")
 
     def test_private_mapper_not_reexported(self):
         self.assertFalse(hasattr(normalise, "normalise_bid_ohlc"))
@@ -990,6 +1023,134 @@ class TestHttpHardening(unittest.TestCase):
                 client.export_rates(b'{}')
         self.assertNotIn(self.TOKEN, str(ctx.exception))
         self.assertTrue(resp.closed)
+
+
+class TestTimezoneFractional(unittest.TestCase):
+    REQ = {"source_id": "synthetic-mt5-agent", "account_scope": "synthetic-demo"}
+
+    def _ev(self, covered_start, covered_end, obs_at, *, status="VERIFIED"):
+        ev = {
+            "schema_version": "1.0",
+            "source_id": self.REQ["source_id"],
+            "account_scope": self.REQ["account_scope"],
+            "assessment_status": status,
+            "evidence_method": "synthetic_clock_compare",
+            "assessed_at_utc": "2025-01-01T00:00:00Z",
+            "covered_start_utc": covered_start,
+            "covered_end_utc": covered_end,
+            "observations": [
+                {"observed_at_utc": obs_at, "server_clock_epoch_s": 1735689600,
+                 "utc_clock_epoch_s": 1735689600, "implied_offset_seconds": 0}
+            ] if obs_at else [],
+            "dst_behaviour": "synthetic_none",
+            "limitations": ["synthetic_test_only"],
+        }
+        ev["evidence_fingerprint"] = tzgate.compute_evidence_fingerprint(ev)
+        return ev
+
+    def test_fractional_start_rejects_earlier_observation(self):
+        ev = self._ev("2025-01-01T00:00:00.900Z", "2025-02-01T00:00:00Z",
+                      "2025-01-01T00:00:00.100Z")
+        with self.assertRaises(ContractError):
+            tzgate.validate_timezone_evidence(ev)
+
+    def test_fractional_start_rejects_integer_epoch_bar(self):
+        # Valid evidence (observation at .900Z), but a bar at integer 00:00:00Z is
+        # earlier than the fractional covered start and must be rejected.
+        ev = self._ev("2025-01-01T00:00:00.900Z", "2025-02-01T00:00:00Z",
+                      "2025-01-01T00:00:00.900Z")
+        with self.assertRaises(tzgate.TimezoneError):
+            tzgate.gate_for_normalisation(
+                ev, source_id=self.REQ["source_id"],
+                account_scope=self.REQ["account_scope"], bar_epochs_s=[1735689600])
+
+    def test_fractional_instant_inside_coverage_passes(self):
+        ev = self._ev("2025-01-01T00:00:00.900Z", "2025-02-01T00:00:00Z",
+                      "2025-01-01T00:00:00.900Z")
+        # A bar one second later is within coverage.
+        tzgate.gate_for_normalisation(
+            ev, source_id=self.REQ["source_id"],
+            account_scope=self.REQ["account_scope"], bar_epochs_s=[1735689601])
+
+    def test_equal_start_observation_passes(self):
+        ev = self._ev("2025-01-01T00:00:00Z", "2025-02-01T00:00:00Z",
+                      "2025-01-01T00:00:00Z")
+        tzgate.validate_timezone_evidence(ev)  # observation == start is allowed
+
+    def test_just_before_end_passes_and_end_fails(self):
+        ev = self._ev("2025-01-01T00:00:00Z", "2025-01-01T00:02:00Z",
+                      "2025-01-01T00:00:00Z")
+        # 00:01:00Z within; 00:02:00Z == end is excluded.
+        tzgate.gate_for_normalisation(ev, source_id=self.REQ["source_id"],
+                                      account_scope=self.REQ["account_scope"],
+                                      bar_epochs_s=[1735689660])
+        with self.assertRaises(tzgate.TimezoneError):
+            tzgate.gate_for_normalisation(ev, source_id=self.REQ["source_id"],
+                                          account_scope=self.REQ["account_scope"],
+                                          bar_epochs_s=[1735689720])
+
+    def test_impossible_instant_governed_error(self):
+        ev = self._ev("2025-13-01T00:00:00Z", "2025-02-01T00:00:00Z", None)
+        with self.assertRaises(ContractError):
+            tzgate.validate_timezone_evidence(ev)
+
+
+class TestManifestProvenance(unittest.TestCase):
+    def _land(self, tmp):
+        store = storage.RawStore(tmp)
+        req = _fixture("synthetic_history_request.json")
+        rb = _fixture_bytes("synthetic_history_response.json")
+        res = orchestrator.acquire(req, FixtureTransport(rb), store, **_commit_args())
+        acc_dir = Path(os.path.join(tmp, os.path.dirname(res["manifest_path"])))
+        rel_dir = os.path.dirname(res["manifest_path"])
+        base = json.loads((acc_dir / "manifest.json").read_text("utf-8"))
+        return store, acc_dir, rel_dir, res["raw_object_id"], base
+
+    def _bad(self, store, acc_dir, rel_dir, rid, mutate):
+        m = copy.deepcopy(self._base)
+        mutate(m)
+        with self.assertRaises(storage.StorageError):
+            store._validate_manifest(m, files_dir=acc_dir, expected_rel_dir=rel_dir,
+                                     expected_request_id=rid)
+
+    def test_field_and_date_mismatches_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, acc_dir, rel_dir, rid, base = self._land(tmp)
+            self._base = base
+            # Baseline valid.
+            store._validate_manifest(base, files_dir=acc_dir, expected_rel_dir=rel_dir,
+                                     expected_request_id=rid)
+            b = lambda mut: self._bad(store, acc_dir, rel_dir, rid, mut)
+            b(lambda m: m.update(source_id="synthetic-other"))      # source mismatch
+            b(lambda m: m.update(symbol="GBPUSD"))                  # symbol mismatch
+            b(lambda m: m.update(range_start_utc="2025-02-01T00:00:00Z"))  # range mismatch
+            b(lambda m: m.update(range_start_utc="2025-13-01T00:00:00Z"))  # impossible date
+            b(lambda m: m.update(range_start_utc="2025-02-01T00:00:00Z",
+                                 range_end_utc="2025-01-01T00:00:00Z"))    # reversed
+            b(lambda m: m.update(request_schema_id="https://guvfx.local/schema/wrong.json"))
+            b(lambda m: m.update(timeframe="M5"))                   # not M1
+
+    def test_wrong_expected_request_id_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, acc_dir, rel_dir, rid, base = self._land(tmp)
+            with self.assertRaises(storage.StorageError):
+                store._validate_manifest(base, files_dir=acc_dir, expected_rel_dir=rel_dir,
+                                         expected_request_id="f" * 64)
+
+    def test_noncanonical_stored_request_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, acc_dir, rel_dir, rid, base = self._land(tmp)
+            # Replace the stored request bytes with a non-canonical (but valid-JSON)
+            # encoding and realign the manifest checksum so only the canonical check
+            # can catch it.
+            req = _fixture("synthetic_history_request.json")
+            noncanon = contracts.canonical_json_bytes(req) + b" "
+            (acc_dir / "request.json").write_bytes(noncanon)
+            m = copy.deepcopy(base)
+            m["request_sha256"] = contracts.sha256_hex(noncanon)
+            with self.assertRaises(storage.StorageError):
+                store._validate_manifest(m, files_dir=acc_dir, expected_rel_dir=rel_dir,
+                                         expected_request_id=rid)
 
 
 if __name__ == "__main__":

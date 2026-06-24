@@ -178,6 +178,13 @@ Implemented and exercised by `tools/market_data_synthetic_smoke.py` +
 - **`GUVFX_DATA_ROOT`** is now wired into backend settings with **no default**;
   real operation fails closed when it is unset/blank or resolves inside the repo.
 
+> **GFX-PKT-006C-R3 update:** timezone coverage now compares exact aware-UTC
+> instants (no fractional truncation; impossible values raise governed errors);
+> manifests are semantically timestamp-checked/ordered and ACCEPTED manifests are
+> bound to the exact stored request/response and derived directory; publication
+> requires the exact raw response bytes (sha256 + parsed-match + raw-id) before any
+> record. Still synthetic-only.
+
 > **GFX-PKT-006C-R2 update:** publication is now a single fail-closed gated
 > API (request/response/match + VERIFIED bar-covering timezone evidence before
 > any record; private mapper); timezone evidence enforces bounds, offset

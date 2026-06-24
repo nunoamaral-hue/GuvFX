@@ -21,12 +21,12 @@
   (`80ef2f8`), establishing the DuckDB research foundation and the versioned
   market-data contracts (GFX-PKT-005B / R1 / R2).
 - **GFX-PKT-006C** (synthetic market-data acquisition foundation) on branch
-  `chore/market-data-synthetic-foundation`, continued by **GFX-PKT-006C-R1** then
-  **GFX-PKT-006C-R2** (publication, manifest and concurrency remediation:
-  non-bypassable timezone-gated publication API; timezone bounds/arithmetic/coverage;
-  tightened manifest path schema; strict runtime manifest + file/checksum
-  verification; concurrency-safe unique staging with late-race resolution; HTTP
-  byte/userinfo/read-error hardening). PR **#34 remains draft and unmerged** for PM
+  `chore/market-data-synthetic-foundation`, continued by **R1**, **R2** and now
+  **GFX-PKT-006C-R3** (semantic time and provenance integrity: exact-instant
+  timezone comparison with no fractional truncation; semantic + ordered manifest
+  timestamps; manifest provenance bound to the exact stored request/response and
+  derived directory; publication bound to exact raw response bytes/SHA-256/raw-id;
+  historical evidence byte discipline). PR **#34 remains draft and unmerged** for PM
   review (not accepted). Synthetic-only: no real data, NAS, broker, agent or
   deployment action. CI runs a `market-data-foundation` job.
 

@@ -45,6 +45,9 @@ in Notion when authority is required.
 - GFX-EVD-006C-R1 — PM Review and Remaining Publication/Storage Remediation Required v0.1
 - GFX-PKT-006C-R2 — Publication, Manifest and Concurrency Remediation v0.1
 - GuvFX — Current State v0.21
+- GFX-EVD-006C-R2 — PM Review and Semantic Integrity Remediation Required v0.1
+- GFX-PKT-006C-R3 — Semantic Time and Provenance Integrity Remediation v0.1
+- GuvFX — Current State v0.22
 
 > The titles above are pointers. Notion holds the authoritative content and lifecycle
 > state; the repository holds implementation, tests, and concise evidence. Full text and

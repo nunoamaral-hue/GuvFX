@@ -1,12 +1,36 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-006C-R2 (continuation of GFX-PKT-006C / R1)
-- **Title:** Publication, Manifest and Concurrency Remediation v0.1
+- **Packet ID:** GFX-PKT-006C-R3 (continuation of GFX-PKT-006C / R1 / R2)
+- **Title:** Semantic Time and Provenance Integrity Remediation v0.1
 - **Branch:** `chore/market-data-synthetic-foundation`
 - **Base:** `main` @ `80ef2f85d6546b7d62aea09ab5db39d8859482b0`
 - **Status:** Remediation in progress — synthetic-only; PR #34 remains **draft and
   unmerged** for PM review (not accepted). **No merge and no real-data/NAS/broker/
   agent access are authorised.**
+
+## R3 remediation scope (semantic time + provenance)
+
+1. Exact-instant timezone semantics (`timezone.py`) — UTC parser raises governed
+   `ContractError` on impossible calendar/time; coverage compares aware UTC
+   `datetime` instants (no integer-epoch truncation); half-open preserved.
+2. Semantic manifest timestamps (`storage.py`) — all four UTC fields parsed,
+   `range_end > range_start` as instants, `timeframe = M1`, source/account ≤64,
+   `request_schema_id`/`response_schema_id` equal the canonical v1 IDs.
+3. Manifest provenance binding (`storage.py`) — ACCEPTED manifests are bound to the
+   exact stored request/response (canonical request bytes, `validate_request`/
+   `validate_response`/match, identity + field + derived-directory equality);
+   quarantine directories bound to manifest identity; any independent field change
+   fails closed.
+4. Publication raw-lineage binding (`normalise.publish_observations`) — requires
+   the exact response bytes; `strict_json_loads(bytes) == response`,
+   `response_sha256 == sha256(bytes)`, `raw_object_id == request_id`, before the
+   gate/mapper.
+5. Historical evidence byte discipline — R1 evidence restored to its parent form
+   with only the additive `superseded_by_r2_evidence` pointer; R2 gains only an
+   additive `superseded_by_r3_evidence` pointer.
+
+The R1/R2 scopes remain in force. The frozen `synthetic_timezone_verified.json`
+fixture stays unchanged (negative coverage test); positive evidence is in-memory.
 
 ## R2 remediation scope (closes eight findings)
 

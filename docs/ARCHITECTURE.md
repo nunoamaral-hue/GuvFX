@@ -156,6 +156,10 @@ strictly separate from the external agent host:
   timezone gate; and synthetic M1 bid-OHLC normalisation into
   `market_observation_v1`. `GUVFX_DATA_ROOT` is wired with no default and fails
   closed. Gated by the `market-data-foundation` CI job.
+- **R3 hardening (synthetic):** exact-instant timezone coverage (no fractional
+  truncation); semantic + ordered manifest timestamps; ACCEPTED manifests bound to
+  the exact stored request/response and derived directory; publication bound to the
+  exact raw response bytes (sha256 + parsed-match + raw-id).
 - **R2 hardening (synthetic):** publication is a single fail-closed gated API
   (VERIFIED bar-covering timezone evidence required before any record; private
   mapper); raw manifests are strictly validated with stored-file checksum and

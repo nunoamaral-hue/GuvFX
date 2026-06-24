@@ -121,7 +121,7 @@ def run_smoke() -> dict:
             # Gated publication: request/response/match + VERIFIED timezone evidence
             # are validated INSIDE publish_observations before any record is produced.
             records = normalise.publish_observations(
-                request, response, tz_verified,
+                request, response, tz_verified, response_bytes=response_bytes,
                 raw_object_id=acq["raw_object_id"],
                 response_sha256=acq["response_sha256"], received_time_utc=RECEIVED_AT,
                 ingestion_time_utc=INGESTION_AT, synthetic=True,

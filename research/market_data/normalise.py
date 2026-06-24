@@ -18,6 +18,9 @@ from datetime import datetime, timezone
 
 from . import timezone as tzgate
 from .contracts import (
+    SHA256_RE,
+    sha256_hex,
+    strict_json_loads,
     validate_request,
     validate_request_response_match,
     validate_response,
@@ -47,18 +50,31 @@ def _epoch_to_z(epoch_s: int) -> str:
 
 
 def publish_observations(request: dict, response: dict, timezone_evidence: dict, *,
-                         raw_object_id: str, response_sha256: str,
+                         response_bytes: bytes, raw_object_id: str, response_sha256: str,
                          received_time_utc: str, ingestion_time_utc: str,
                          synthetic: bool) -> list[dict]:
     """Fail-closed publication: validate everything, then map. Returns records.
 
-    Raises before producing any record (and without creating any output) if the
-    timezone evidence is absent/invalid/non-VERIFIED/mismatched/under-covering, or
-    if the request/response/contract checks fail.
+    Requires the EXACT raw response bytes and the acquired raw lineage. Raises
+    before producing any record (and without creating any output) if the timezone
+    evidence is absent/invalid/non-VERIFIED/mismatched/under-covering, if the
+    request/response/contract checks fail, or if the supplied raw lineage does not
+    bind exactly to the response bytes.
     """
     # 1. Timezone evidence must be present.
     if timezone_evidence is None:
         raise PublicationError("timezone evidence is required for publication")
+    # 1b. Exact raw lineage binding (before the gate or mapping).
+    if not isinstance(response_bytes, (bytes, bytearray)):
+        raise PublicationError("response_bytes must be the exact raw response bytes")
+    if strict_json_loads(response_bytes) != response:
+        raise PublicationError("response object does not match the exact response bytes")
+    if not isinstance(response_sha256, str) or not SHA256_RE.match(response_sha256):
+        raise PublicationError("response_sha256 must be a lowercase SHA-256 digest")
+    if response_sha256 != sha256_hex(bytes(response_bytes)):
+        raise PublicationError("response_sha256 does not match the exact response bytes")
+    if raw_object_id != request["request_id"]:
+        raise PublicationError("raw_object_id must equal the request id")
     # 2-4. Contract validation (raises ContractError on any problem).
     validate_request(request)
     validate_response(response)

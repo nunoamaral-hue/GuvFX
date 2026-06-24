@@ -36,7 +36,10 @@ class TimezoneError(RuntimeError):
 def _instant(value: str, field: str) -> datetime:
     if not isinstance(value, str) or not INSTANT_UTC_RE.match(value):
         raise ContractError(f"{field} must be a UTC 'Z' instant")
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        raise ContractError(f"{field} is not a valid calendar instant") from None
 
 
 def compute_evidence_fingerprint(evidence: dict) -> str:
@@ -71,8 +74,6 @@ def validate_timezone_evidence(evidence: dict) -> None:
     end = _instant(evidence["covered_end_utc"], "covered_end_utc")
     if not (end > start):
         raise ContractError("covered_end_utc must be later than covered_start_utc")
-    covered_start_s = int(start.timestamp())
-    covered_end_s = int(end.timestamp())
     if not isinstance(evidence["observations"], list):
         raise ContractError("observations must be a list")
     for obs in evidence["observations"]:
@@ -88,9 +89,9 @@ def validate_timezone_evidence(evidence: dict) -> None:
         # Offset arithmetic must be internally consistent.
         if obs["server_clock_epoch_s"] - obs["utc_clock_epoch_s"] != obs["implied_offset_seconds"]:
             raise ContractError("observation implied_offset_seconds does not match clock difference")
-        # Each observation must fall within the covered interval [start, end).
-        obs_s = int(obs_dt.timestamp())
-        if not (covered_start_s <= obs_s < covered_end_s):
+        # Each observation must fall within the covered interval [start, end),
+        # compared as exact aware-UTC instants (no fractional-second truncation).
+        if not (start <= obs_dt < end):
             raise ContractError("observation observed_at_utc outside covered interval")
     if not SHA256_RE.match(evidence["evidence_fingerprint"]):
         raise ContractError("evidence_fingerprint must be 64 lowercase hex")
@@ -121,7 +122,11 @@ def gate_for_normalisation(evidence: dict, *, source_id: str, account_scope: str
     bars = list(bar_epochs_s)
     if not bars:
         raise TimezoneError("no bar timestamps to cover")
-    covered_start = int(_instant(evidence["covered_start_utc"], "covered_start_utc").timestamp())
-    covered_end = int(_instant(evidence["covered_end_utc"], "covered_end_utc").timestamp())
-    if min(bars) < covered_start or max(bars) >= covered_end:
-        raise TimezoneError("timezone assessment interval does not cover all bar instants")
+    covered_start = _instant(evidence["covered_start_utc"], "covered_start_utc")
+    covered_end = _instant(evidence["covered_end_utc"], "covered_end_utc")
+    # Compare each bar instant as an exact aware-UTC datetime against the covered
+    # interval [start, end) — no integer-epoch truncation of fractional seconds.
+    for epoch in bars:
+        bar_dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        if not (covered_start <= bar_dt < covered_end):
+            raise TimezoneError("timezone assessment interval does not cover all bar instants")

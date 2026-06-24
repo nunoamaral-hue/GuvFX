@@ -159,3 +159,13 @@ request/response files verified by exact SHA-256 and paths tied to their object
 directory. Each landing attempt uses a unique staging directory and resolves late
 races without overwrite or data loss. The HTTP client validates its byte limit,
 rejects URL userinfo, and redacts response read errors.
+
+**GFX-PKT-006C-R3 (semantic time & provenance):** timezone coverage compares exact
+aware-UTC `datetime` instants (no fractional-second truncation) and impossible
+calendar/time values raise governed errors. Every accepted/quarantined manifest is
+semantically timestamp-checked and strictly ordered; ACCEPTED manifests are bound
+to the exact stored request/response (canonical request bytes, full validation,
+identity + field + derived-directory equality) so identity/range/provenance cannot
+drift independently. `publish_observations` additionally requires the exact raw
+response bytes and proves `sha256(bytes)`, the parsed-object match and
+`raw_object_id == request_id` before producing any record.
