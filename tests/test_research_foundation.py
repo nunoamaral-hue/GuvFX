@@ -187,10 +187,13 @@ class TestUtcSemantics(unittest.TestCase):
         q["received_time_utc"] = obs
         return q
 
-    def test_parse_utc_returns_aware_datetime(self):
-        dt = smoke._parse_utc("2026-01-02T00:00:00Z")
-        self.assertIsNotNone(dt.tzinfo)
-        self.assertEqual(dt.utcoffset().total_seconds(), 0)
+    def test_parse_utc_returns_exact_comparable_instant(self):
+        # _parse_utc now returns the shared exact-instant primitive: trailing-zero
+        # forms denote the same instant and ordering is preserved.
+        inst = smoke._parse_utc("2026-01-02T00:00:00Z")
+        self.assertEqual(inst, smoke._parse_utc("2026-01-02T00:00:00.000Z"))
+        self.assertTrue(inst < smoke._parse_utc("2026-01-02T00:00:01Z"))
+        self.assertEqual(inst.epoch_seconds, 1767312000)
 
     def test_invalid_calendar_date_rejected(self):
         with self.assertRaises(ValueError):
@@ -220,6 +223,22 @@ class TestUtcSemantics(unittest.TestCase):
     def test_equal_instants_accepted(self):
         smoke.validate_observation(self._quote_with_times(
             "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z"))
+
+    def test_seventh_digit_availability_ordering(self):
+        # The seventh fractional digit must survive: availability .0000001Z is
+        # earlier than observation .0000009Z and is rejected; availability
+        # .0000010Z is later and passes. Microsecond truncation would wrongly
+        # collapse both availabilities to the same instant.
+        with self.assertRaises(ValueError):
+            smoke.validate_observation(self._quote_with_times(
+                "2026-01-02T00:00:00.0000009Z", "2026-01-02T00:00:00.0000001Z"))
+        smoke.validate_observation(self._quote_with_times(
+            "2026-01-02T00:00:00.0000009Z", "2026-01-02T00:00:00.0000010Z"))
+
+    def test_trailing_zero_availability_equals_observation(self):
+        # .1Z and .100Z denote the same instant; availability == observation passes.
+        smoke.validate_observation(self._quote_with_times(
+            "2026-01-02T00:00:00.1Z", "2026-01-02T00:00:00.100Z"))
 
 
 class TestNullableRoundTrip(unittest.TestCase):

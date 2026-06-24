@@ -1,10 +1,12 @@
 # NEXT — Priorities (keep this list short)
 
-## Current next action (GFX-PKT-006C-R3)
-- [ ] **PM independent review of PR #34 and the GFX-PKT-006C-R3 evidence only.** PR
-  #34 remains draft/unmerged (not accepted). Do **not** start GFX-PKT-006D. No real
-  data, NAS, broker, agent or deployment action is authorised until a later scoped
-  packet.
+## Current next action (GFX-PKT-006C-R4)
+- [ ] **PM independent review of the GFX-PKT-006C-R4 PR and evidence only** (branch
+  `fix/market-data-r4-closure`, PR “Close exact-time and quarantine provenance
+  gaps”, draft/unmerged). After acceptance, repository merge remains **distinct
+  from** the later explicit GFX-PKT-006D sponsor gate. Do **not** start
+  GFX-PKT-006D. No real data, NAS, broker, agent or deployment action is authorised
+  until that separately scoped, approved packet.
 
 ## P0 (historical)
 1. [x] Resolve local docs diffs cleanly: either (a) commit `docs/HANDOFF.md` + `docs/STATUS.md` on a small `docs/...` branch and open a PR to `main`, or (b) restore them if they are outdated. — done 2025-12-16

@@ -39,12 +39,15 @@ from .contracts import (
     ProhibitedKeyError,
     canonical_json_bytes,
     find_prohibited_key,
+    parse_canonical_utc_instant,
     sha256_hex,
     strict_json_loads,
     validate_request,
     validate_request_response_match,
     validate_response,
 )
+
+QUARANTINE_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,12}$")
@@ -238,27 +241,66 @@ class RawStore:
             if expected_rel_dir != derived:
                 raise StorageError("object directory does not follow from the stored request")
         else:
-            # Quarantine: bind the directory to the manifest's own (request-derived)
-            # identity fields and request-id without requiring decodable bytes.
-            src = _safe_component(manifest["source_id"], "source_id", SLUG_RE)
-            scope = _safe_component(manifest["account_scope"], "account_scope", SLUG_RE)
-            sym = _safe_component(manifest["symbol"], "symbol", SYMBOL_RE)
-            yyyy = manifest["range_start_utc"][0:4]
-            mm = manifest["range_start_utc"][5:7]
-            prefix = f"quarantine/mt5/{src}/{scope}/{sym}/M1/{yyyy}/{mm}/{expected_request_id}/"
+            # Ordinary quarantine: parse and validate the EXACT stored request, then
+            # bind the manifest identity, the directory and the 16-hex quarantine id
+            # to those exact request bytes, the exact (possibly malformed) response
+            # bytes and the reason. The response is deliberately NOT validated as a
+            # success contract — malformed/invalid response evidence stays retainable.
+            reason = manifest["quarantine_reason"]
+            try:
+                req_obj = strict_json_loads(stored["request.json"])
+                if not isinstance(req_obj, dict):
+                    raise StorageError("quarantined request.json is not a JSON object")
+                validate_request(req_obj)
+            except ContractError as exc:
+                raise StorageError(
+                    f"quarantined stored request failed validation: {exc}") from None
+            # Canonical-byte rule: ordinary reasons require canonical request bytes;
+            # the explicit noncanonical-attempt reason instead requires bytes that
+            # decode to a valid request yet differ from the canonical encoding.
+            canonical = canonical_json_bytes(req_obj)
+            if reason == "noncanonical_request_bytes":
+                if stored["request.json"] == canonical:
+                    raise StorageError(
+                        "noncanonical_request_bytes quarantine has canonical request bytes")
+            elif stored["request.json"] != canonical:
+                raise StorageError("ordinary quarantine request bytes are not canonical")
+            # Identity and range derive from the stored request, never the manifest.
+            if req_obj["request_id"] != expected_request_id:
+                raise StorageError(
+                    "quarantined stored request id does not match the object directory")
+            for field in ("source_id", "account_scope", "symbol", "timeframe",
+                          "representation", "range_start_utc", "range_end_utc",
+                          "range_semantics"):
+                if manifest[field] != req_obj[field]:
+                    raise StorageError(
+                        f"manifest {field} differs from the stored quarantined request")
+            src, scope, sym, tf, yyyy, mm = self._components(req_obj)
+            prefix = f"quarantine/mt5/{src}/{scope}/{sym}/{tf}/{yyyy}/{mm}/{expected_request_id}/"
             if not expected_rel_dir.startswith(prefix):
-                raise StorageError("quarantine directory does not follow from the manifest identity")
+                raise StorageError("quarantine directory does not follow from the stored request")
             tail = expected_rel_dir[len(prefix):]
-            if not tail or "/" in tail:
+            if not QUARANTINE_ID_RE.match(tail):
                 raise StorageError("quarantine directory has an invalid quarantine-id segment")
+            # The 16-hex tail is the deterministic id over exact request bytes,
+            # exact response bytes and the reason; recompute and require equality.
+            expected_tail = sha256_hex(
+                stored["request.json"] + b"\x00" + stored["response.json"]
+                + b"\x00" + reason.encode("utf-8")
+            )[:16]
+            if tail != expected_tail:
+                raise StorageError("quarantine id does not match request+response+reason")
 
     @staticmethod
-    def _parse_manifest_instant(value, pattern: re.Pattern, field: str) -> datetime:
+    def _parse_manifest_instant(value, pattern: re.Pattern, field: str):
+        # The pattern fixes the field-specific shape (e.g. minute-aligned range
+        # bounds); the shared exact parser then validates the calendar/time and
+        # returns a UtcInstant that preserves every admitted fractional digit.
         if not isinstance(value, str) or not pattern.match(value):
             raise StorageError(f"manifest {field} is not a UTC instant")
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-        except ValueError:
+            return parse_canonical_utc_instant(value)
+        except ContractError:
             raise StorageError(f"manifest {field} is not a valid calendar instant") from None
 
     def _load_manifest_failclosed(self, directory: Path, *, expected_rel_dir: str,

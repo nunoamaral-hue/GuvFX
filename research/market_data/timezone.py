@@ -9,15 +9,15 @@ mismatched or under-covering evidence fails closed.
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timezone
 
 from .contracts import (
-    INSTANT_UTC_RE,
     SHA256_RE,
     SLUG_RE,
     ContractError,
+    UtcInstant,
     _require_bounded_str,
     canonical_json_bytes,
+    parse_canonical_utc_instant,
     sha256_hex,
 )
 
@@ -33,13 +33,12 @@ class TimezoneError(RuntimeError):
     """Fail-closed timezone gate error."""
 
 
-def _instant(value: str, field: str) -> datetime:
-    if not isinstance(value, str) or not INSTANT_UTC_RE.match(value):
-        raise ContractError(f"{field} must be a UTC 'Z' instant")
+def _instant(value: str, field: str) -> UtcInstant:
+    """Parse a canonical UTC 'Z' instant exactly (every fractional digit kept)."""
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-    except ValueError:
-        raise ContractError(f"{field} is not a valid calendar instant") from None
+        return parse_canonical_utc_instant(value)
+    except ContractError as exc:
+        raise ContractError(f"{field}: {exc}") from None
 
 
 def compute_evidence_fingerprint(evidence: dict) -> str:
@@ -124,9 +123,11 @@ def gate_for_normalisation(evidence: dict, *, source_id: str, account_scope: str
         raise TimezoneError("no bar timestamps to cover")
     covered_start = _instant(evidence["covered_start_utc"], "covered_start_utc")
     covered_end = _instant(evidence["covered_end_utc"], "covered_end_utc")
-    # Compare each bar instant as an exact aware-UTC datetime against the covered
-    # interval [start, end) — no integer-epoch truncation of fractional seconds.
+    # Each bar is a whole-second epoch. Compare it directly against the exact
+    # covered interval [start, end); the covered bounds preserve every fractional
+    # digit, so a bar at the same whole second as a fractional start is rejected.
     for epoch in bars:
-        bar_dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
-        if not (covered_start <= bar_dt < covered_end):
+        if not isinstance(epoch, int) or isinstance(epoch, bool):
+            raise TimezoneError("bar epoch must be an integer second")
+        if not (covered_start <= epoch < covered_end):
             raise TimezoneError("timezone assessment interval does not cover all bar instants")

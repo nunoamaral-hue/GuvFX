@@ -156,6 +156,15 @@ strictly separate from the external agent host:
   timezone gate; and synthetic M1 bid-OHLC normalisation into
   `market_observation_v1`. `GUVFX_DATA_ROOT` is wired with no default and fails
   closed. Gated by the `market-data-foundation` CI job.
+- **R4 hardening (synthetic):** one shared arbitrary-precision UTC-instant
+  primitive parses/compares canonical `Z` timestamps, preserving every admitted
+  fractional digit (trailing zeros are equal; ordering survives past the sixth
+  digit) — used by the timezone gate, research point-in-time ordering and manifest
+  timestamps. Ordinary quarantines are now bound to their exact parsed/validated
+  stored request, with the directory and 16-hex quarantine id derived from the
+  exact request bytes, response bytes and reason; malformed/contract-invalid
+  responses stay retainable as evidence (never validated as success); publication
+  validates the request through governed exceptions before indexing any field.
 - **R3 hardening (synthetic):** exact-instant timezone coverage (no fractional
   truncation); semantic + ordered manifest timestamps; ACCEPTED manifests bound to
   the exact stored request/response and derived directory; publication bound to the

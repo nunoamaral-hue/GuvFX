@@ -515,6 +515,40 @@ class TestGatedPublication(unittest.TestCase):
         self.assertFalse(hasattr(normalise, "normalise_bid_ohlc"))
         self.assertTrue(hasattr(normalise, "_map_bid_ohlc"))  # private, present
 
+    # -- R4: governed publication request failure (no raw KeyError/TypeError) --
+    def _publish_with_request(self, request):
+        return normalise.publish_observations(
+            request, self.response, self.verified, response_bytes=self.response_bytes,
+            raw_object_id=self.raw_id, response_sha256=self.sha,
+            received_time_utc="2026-01-01T00:00:00Z",
+            ingestion_time_utc="2026-01-01T00:00:05Z", synthetic=True)
+
+    def test_missing_request_id_raises_governed_error(self):
+        req = copy.deepcopy(self.request)
+        del req["request_id"]
+        with self.assertRaises((ContractError, normalise.PublicationError)):
+            self._publish_with_request(req)
+
+    def test_non_dict_request_raises_governed_error(self):
+        for bad in ("not-a-dict", None, 123, ["x"]):
+            with self.assertRaises((ContractError, normalise.PublicationError)):
+                self._publish_with_request(bad)
+
+    def test_invalid_request_field_type_raises_governed_error(self):
+        req = copy.deepcopy(self.request)
+        req["source_id"] = 123  # wrong type
+        with self.assertRaises((ContractError, normalise.PublicationError)):
+            self._publish_with_request(req)
+
+    def test_governed_request_failure_returns_no_records(self):
+        req = copy.deepcopy(self.request)
+        del req["request_id"]
+        try:
+            self._publish_with_request(req)
+            self.fail("expected a governed publication failure")
+        except (ContractError, normalise.PublicationError):
+            pass  # governed exception, never a raw KeyError/TypeError, no records
+
 
 class TestSmokeEndToEnd(unittest.TestCase):
     def test_smoke_pass_and_manifest_conforms(self):
@@ -1094,6 +1128,33 @@ class TestTimezoneFractional(unittest.TestCase):
         with self.assertRaises(ContractError):
             tzgate.validate_timezone_evidence(ev)
 
+    # -- R4: seventh-and-beyond fractional digit precision --
+    def test_seventh_digit_start_rejects_earlier_observation(self):
+        # Covered start .0000009Z; an observation at .0000001Z is strictly earlier
+        # and falls outside [start, end). Microsecond truncation would wrongly
+        # treat both as 00:00:00.000000Z and accept it.
+        ev = self._ev("2025-01-01T00:00:00.0000009Z", "2025-02-01T00:00:00Z",
+                      "2025-01-01T00:00:00.0000001Z")
+        with self.assertRaises(ContractError):
+            tzgate.validate_timezone_evidence(ev)
+
+    def test_seventh_digit_start_rejects_same_second_bar(self):
+        # Valid evidence (observation at .0000009Z); a bar at the same whole-second
+        # epoch is earlier than the fractional covered start and must be rejected.
+        ev = self._ev("2025-01-01T00:00:00.0000009Z", "2025-02-01T00:00:00Z",
+                      "2025-01-01T00:00:00.0000009Z")
+        with self.assertRaises(tzgate.TimezoneError):
+            tzgate.gate_for_normalisation(
+                ev, source_id=self.REQ["source_id"],
+                account_scope=self.REQ["account_scope"], bar_epochs_s=[1735689600])
+
+    def test_trailing_zero_start_equals_observation(self):
+        # .100Z covered start and .1Z observation denote the same instant; the
+        # observation == start boundary is allowed.
+        ev = self._ev("2025-01-01T00:00:00.100Z", "2025-02-01T00:00:00Z",
+                      "2025-01-01T00:00:00.1Z")
+        tzgate.validate_timezone_evidence(ev)
+
 
 class TestManifestProvenance(unittest.TestCase):
     def _land(self, tmp):
@@ -1151,6 +1212,303 @@ class TestManifestProvenance(unittest.TestCase):
             with self.assertRaises(storage.StorageError):
                 store._validate_manifest(m, files_dir=acc_dir, expected_rel_dir=rel_dir,
                                          expected_request_id=rid)
+
+    def test_manifest_instants_use_exact_parser_no_new_ordering(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, acc_dir, rel_dir, rid, base = self._land(tmp)
+            # Fractional acquired/received instants parse via the shared exact
+            # primitive; there is NO acquired-vs-received ordering rule, so a
+            # received instant earlier than acquired remains valid.
+            m = copy.deepcopy(base)
+            m["acquired_at_utc"] = "2026-01-01T00:00:00.0000009Z"
+            m["received_at_utc"] = "2026-01-01T00:00:00.0000001Z"
+            store._validate_manifest(m, files_dir=acc_dir, expected_rel_dir=rel_dir,
+                                     expected_request_id=rid)
+            # An impossible instant fails closed through the shared parser.
+            m2 = copy.deepcopy(base)
+            m2["acquired_at_utc"] = "2026-01-01T00:00:61Z"
+            with self.assertRaises(storage.StorageError):
+                store._validate_manifest(m2, files_dir=acc_dir, expected_rel_dir=rel_dir,
+                                         expected_request_id=rid)
+
+
+class TestExactInstantPrimitive(unittest.TestCase):
+    """Arbitrary-precision UTC instant parsing/comparison (GFX-PKT-006C-R4 8.1)."""
+
+    def _p(self, v):
+        return contracts.parse_canonical_utc_instant(v)
+
+    def test_seventh_digit_ordering(self):
+        self.assertTrue(self._p("2025-01-01T00:00:00.0000009Z")
+                        < self._p("2025-01-01T00:00:00.0000010Z"))
+
+    def test_trailing_zero_equality_and_hash(self):
+        a = self._p("2025-01-01T00:00:00.1Z")
+        b = self._p("2025-01-01T00:00:00.100Z")
+        self.assertEqual(a, b)
+        self.assertEqual(hash(a), hash(b))
+
+    def test_no_fraction_ms_us_parse_and_order(self):
+        a = self._p("2025-01-01T00:00:00Z")
+        b = self._p("2025-01-01T00:00:00.123Z")
+        c = self._p("2025-01-01T00:00:00.123456Z")
+        self.assertTrue(a < b)
+        self.assertTrue(b < c)
+        self.assertEqual(a.epoch_seconds, 1735689600)
+
+    def test_integer_epoch_comparison_without_float(self):
+        inst = self._p("2025-01-01T00:00:00.5Z")
+        self.assertTrue(1735689600 < inst)
+        self.assertTrue(inst < 1735689601)
+        self.assertTrue(inst > 1735689600)
+        self.assertEqual(self._p("2025-01-01T00:00:00Z"), 1735689600)
+
+    def test_impossible_values_governed(self):
+        for bad in ("2025-13-01T00:00:00Z", "2025-02-30T00:00:00Z",
+                    "2025-01-01T25:00:00Z", "2025-01-01T00:61:00Z",
+                    "2025-01-01T00:00:61Z"):
+            with self.assertRaises(ContractError):
+                self._p(bad)
+
+    def test_non_canonical_and_non_string_rejected(self):
+        for bad in ("2025-01-01 00:00:00Z", "2025-01-01T00:00:00",
+                    "2025-01-01T00:00:00+00:00", "2025-01-01T00:00:00.Z"):
+            with self.assertRaises(ContractError):
+                self._p(bad)
+        for bad in (None, 123, 1.0, b"2025-01-01T00:00:00Z"):
+            with self.assertRaises(ContractError):
+                self._p(bad)
+
+
+class TestQuarantineProvenance(unittest.TestCase):
+    """Ordinary-quarantine request/directory/ID provenance (GFX-PKT-006C-R4 8.3-8.5)."""
+
+    def setUp(self):
+        self.req = _fixture("synthetic_history_request.json")
+        self.rb = _fixture_bytes("synthetic_history_response.json")
+        self.canon_req = contracts.canonical_json_bytes(self.req)
+
+    def _info(self, tmp, res):
+        rel = os.path.dirname(res["manifest_path"])
+        return Path(os.path.join(tmp, rel)), rel, res["raw_object_id"]
+
+    def _malformed(self, store):
+        # Valid request, malformed (non-JSON) response -> reason invalid_json.
+        return orchestrator.acquire(self.req, FixtureTransport(b"not valid json at all"),
+                                    store, **_commit_args())
+
+    def _contract_invalid(self, store):
+        # Valid request, valid-JSON but contract-invalid response (ok != true).
+        bad = json.loads(self.rb)
+        bad["ok"] = False
+        return orchestrator.acquire(self.req, FixtureTransport(contracts.canonical_json_bytes(bad)),
+                                    store, **_commit_args())
+
+    def _conflict(self, store):
+        orchestrator.acquire(self.req, FixtureTransport(self.rb), store, **_commit_args())
+        other = json.loads(self.rb)
+        other["bars"][0]["close"] = 1.99999
+        return store.land(self.req, other, self.canon_req,
+                          contracts.canonical_json_bytes(other), **_commit_args())
+
+    def _noncanonical(self, store):
+        # Valid request object, deliberately non-canonical request bytes.
+        return store.land(self.req, json.loads(self.rb), self.canon_req + b" ",
+                          self.rb, **_commit_args())
+
+    # 1
+    def test_malformed_quarantine_readable_checksums_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._malformed(store)
+            self.assertEqual(res["object_state"], "QUARANTINED")
+            qdir, rel, rid = self._info(tmp, res)
+            m = store._load_manifest_failclosed(qdir, expected_rel_dir=rel, expected_request_id=rid)
+            self.assertEqual(m["object_state"], "QUARANTINED")
+            self.assertEqual(m["quarantine_reason"], "invalid_json")
+            self.assertEqual(res["request_sha256"],
+                             contracts.sha256_hex((qdir / "request.json").read_bytes()))
+            self.assertEqual(res["response_sha256"],
+                             contracts.sha256_hex((qdir / "response.json").read_bytes()))
+
+    # 2
+    def test_contract_invalid_quarantine_readable_stays_quarantined(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._contract_invalid(store)
+            self.assertEqual(res["object_state"], "QUARANTINED")
+            qdir, rel, rid = self._info(tmp, res)
+            m = store._load_manifest_failclosed(qdir, expected_rel_dir=rel, expected_request_id=rid)
+            self.assertEqual(m["object_state"], "QUARANTINED")
+            self.assertTrue(m["quarantine_reason"].startswith("contract_invalid"))
+
+    # 3
+    def test_conflict_quarantine_readable_when_request_canonical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._conflict(store)
+            self.assertEqual(res["status"], "QUARANTINED_CONFLICT")
+            qdir, rel, rid = self._info(tmp, res)
+            m = store._load_manifest_failclosed(qdir, expected_rel_dir=rel, expected_request_id=rid)
+            self.assertEqual(m["object_state"], "QUARANTINED")
+
+    # 4
+    def test_independent_identity_field_changes_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._malformed(store)
+            qdir, rel, rid = self._info(tmp, res)
+            base = json.loads((qdir / "manifest.json").read_text("utf-8"))
+            store._validate_manifest(base, files_dir=qdir, expected_rel_dir=rel,
+                                     expected_request_id=rid)  # baseline valid
+            mutations = {
+                "source_id": "synthetic-other",
+                "account_scope": "synthetic-other",
+                "symbol": "GBPUSD",
+                "timeframe": "M5",
+                "range_start_utc": "2025-02-01T00:00:00Z",
+                "range_end_utc": "2025-03-01T00:00:00Z",
+                "range_semantics": "(start,end)",
+            }
+            for field, value in mutations.items():
+                m = copy.deepcopy(base)
+                m[field] = value
+                with self.assertRaises(storage.StorageError):
+                    store._validate_manifest(m, files_dir=qdir, expected_rel_dir=rel,
+                                             expected_request_id=rid)
+
+    # 5
+    def test_noncanonical_request_fails_for_ordinary_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._malformed(store)  # ordinary reason invalid_json
+            qdir, rel, rid = self._info(tmp, res)
+            noncanon = self.canon_req + b" "
+            (qdir / "request.json").write_bytes(noncanon)
+            base = json.loads((qdir / "manifest.json").read_text("utf-8"))
+            m = copy.deepcopy(base)
+            m["request_sha256"] = contracts.sha256_hex(noncanon)  # realign checksum
+            with self.assertRaises(storage.StorageError):
+                store._validate_manifest(m, files_dir=qdir, expected_rel_dir=rel,
+                                         expected_request_id=rid)
+
+    # 6
+    def test_noncanonical_special_readable_never_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._noncanonical(store)
+            self.assertEqual(res["status"], "QUARANTINED_CONFLICT")
+            self.assertEqual(res["object_state"], "QUARANTINED")
+            qdir, rel, rid = self._info(tmp, res)
+            m = store._load_manifest_failclosed(qdir, expected_rel_dir=rel, expected_request_id=rid)
+            self.assertEqual(m["object_state"], "QUARANTINED")
+            self.assertEqual(m["quarantine_reason"], "noncanonical_request_bytes")
+            # Re-landing identical non-canonical bytes stays QUARANTINED, never
+            # ALREADY_PRESENT (it can never become accepted/idempotent data).
+            res2 = store.land(self.req, json.loads(self.rb), self.canon_req + b" ",
+                              self.rb, **_commit_args())
+            self.assertEqual(res2["object_state"], "QUARANTINED")
+            self.assertNotEqual(res2["status"], "ALREADY_PRESENT")
+
+    # 7
+    def test_invalid_request_fingerprint_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._malformed(store)
+            qdir, rel, rid = self._info(tmp, res)
+            tampered = copy.deepcopy(self.req)
+            tampered["symbol"] = "GBPUSD"  # request_id no longer matches its fields
+            tb = contracts.canonical_json_bytes(tampered)
+            (qdir / "request.json").write_bytes(tb)
+            base = json.loads((qdir / "manifest.json").read_text("utf-8"))
+            m = copy.deepcopy(base)
+            m["request_sha256"] = contracts.sha256_hex(tb)
+            with self.assertRaises(storage.StorageError):
+                store._validate_manifest(m, files_dir=qdir, expected_rel_dir=rel,
+                                         expected_request_id=rid)
+
+    # 8
+    def test_changed_reason_without_matching_directory_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._malformed(store)
+            qdir, rel, rid = self._info(tmp, res)
+            base = json.loads((qdir / "manifest.json").read_text("utf-8"))
+            m = copy.deepcopy(base)
+            m["quarantine_reason"] = "some_other_reason"
+            with self.assertRaises(storage.StorageError):
+                store._validate_manifest(m, files_dir=qdir, expected_rel_dir=rel,
+                                         expected_request_id=rid)
+
+    # 9
+    def test_changed_hex_tail_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._malformed(store)
+            qdir, rel, rid = self._info(tmp, res)
+            base = json.loads((qdir / "manifest.json").read_text("utf-8"))
+            bad_rel = os.path.dirname(rel) + "/" + ("0" * 16)
+            m = copy.deepcopy(base)
+            for key in ("request_path", "response_path", "manifest_path"):
+                m[key] = bad_rel + "/" + os.path.basename(m[key])
+            with self.assertRaises(storage.StorageError):
+                store._validate_manifest(m, files_dir=qdir, expected_rel_dir=bad_rel,
+                                         expected_request_id=rid)
+
+    # 10
+    def test_exact_bytes_recompute_stored_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._malformed(store)
+            qdir, rel, rid = self._info(tmp, res)
+            tail = rel.rsplit("/", 1)[1]
+            expected = contracts.sha256_hex(
+                (qdir / "request.json").read_bytes() + b"\x00"
+                + (qdir / "response.json").read_bytes() + b"\x00"
+                + b"invalid_json")[:16]
+            self.assertEqual(tail, expected)
+
+    # 11
+    def test_tampered_and_missing_files_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._malformed(store)
+            qdir, rel, rid = self._info(tmp, res)
+            base = json.loads((qdir / "manifest.json").read_text("utf-8"))
+            (qdir / "response.json").write_bytes(b"tampered")  # checksum mismatch
+            with self.assertRaises(storage.StorageError):
+                store._validate_manifest(base, files_dir=qdir, expected_rel_dir=rel,
+                                         expected_request_id=rid)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._malformed(store)
+            qdir, rel, rid = self._info(tmp, res)
+            (qdir / "request.json").unlink()  # missing file
+            with self.assertRaises(storage.StorageError):
+                store._load_manifest_failclosed(qdir, expected_rel_dir=rel,
+                                                expected_request_id=rid)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            res = self._malformed(store)
+            qdir, rel, rid = self._info(tmp, res)
+            data = (qdir / "response.json").read_bytes()
+            sidecar = qdir / "sidecar.bin"
+            sidecar.write_bytes(data)
+            (qdir / "response.json").unlink()
+            (qdir / "response.json").symlink_to(sidecar)  # symlink instead of regular file
+            base = json.loads((qdir / "manifest.json").read_text("utf-8"))
+            with self.assertRaises(storage.StorageError):
+                store._validate_manifest(base, files_dir=qdir, expected_rel_dir=rel,
+                                         expected_request_id=rid)
+
+    # 12
+    def test_accepted_and_idempotency_remain_green(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = storage.RawStore(tmp)
+            r1 = orchestrator.acquire(self.req, FixtureTransport(self.rb), store, **_commit_args())
+            r2 = orchestrator.acquire(self.req, FixtureTransport(self.rb), store, **_commit_args())
+            self.assertEqual(r1["status"], "ACCEPTED")
+            self.assertEqual(r2["status"], "ALREADY_PRESENT")
 
 
 if __name__ == "__main__":

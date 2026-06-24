@@ -7,14 +7,23 @@ the schemas alone cannot (request/response match, ordering, prohibited keys).
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
 import math
 import re
 from datetime import datetime, timezone
+from fractions import Fraction
+from functools import total_ordering
 
 MINUTE_UTC_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00Z$")
 INSTANT_UTC_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$")
+# Canonical UTC 'Z' instant split into a whole-second component and an optional,
+# arbitrary-length fractional-second digit string (no float anywhere).
+_CANONICAL_INSTANT_RE = re.compile(
+    r"^(?P<whole>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+    r"(?:\.(?P<frac>[0-9]+))?Z$"
+)
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,12}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -41,6 +50,78 @@ class ContractError(ValueError):
 
 class ProhibitedKeyError(ContractError):
     """A prohibited credential/account-number key was present in a payload."""
+
+
+@total_ordering
+class UtcInstant:
+    """An exact, immutable UTC instant for point-in-time comparison.
+
+    Built from a canonical UTC 'Z' timestamp with ANY non-empty number of
+    fractional-second digits. The whole-second component is validated as a real
+    calendar instant and stored as an integer Unix epoch second; the fractional
+    component is kept as an exact ``fractions.Fraction`` so EVERY admitted digit
+    participates in comparison — no float, no microsecond truncation. Comparable
+    with another ``UtcInstant`` or a bare integer Unix epoch second.
+    """
+
+    __slots__ = ("_epoch_s", "_frac")
+
+    def __init__(self, epoch_s: int, frac: Fraction):
+        self._epoch_s = epoch_s
+        self._frac = frac
+
+    @property
+    def epoch_seconds(self) -> int:
+        """The whole-second Unix epoch (microsecond zero), as an exact integer."""
+        return self._epoch_s
+
+    @staticmethod
+    def _key_of(other):
+        if isinstance(other, UtcInstant):
+            return (other._epoch_s, other._frac)
+        if isinstance(other, int) and not isinstance(other, bool):
+            return (other, Fraction(0))
+        return None
+
+    def __eq__(self, other):
+        key = self._key_of(other)
+        if key is None:
+            return NotImplemented
+        return (self._epoch_s, self._frac) == key
+
+    def __lt__(self, other):
+        key = self._key_of(other)
+        if key is None:
+            return NotImplemented
+        return (self._epoch_s, self._frac) < key
+
+    def __hash__(self):
+        return hash((self._epoch_s, self._frac))
+
+    def __repr__(self):
+        return f"UtcInstant(epoch_s={self._epoch_s}, frac={self._frac})"
+
+
+def parse_canonical_utc_instant(value) -> UtcInstant:
+    """Parse a canonical UTC 'Z' instant into an exact, comparable ``UtcInstant``.
+
+    Accepts any non-empty number of fractional-second digits. Rejects non-strings,
+    non-canonical representations, impossible calendar/time values and any non-UTC
+    form through ``ContractError``. No payload/value text appears in the message.
+    """
+    if not isinstance(value, str):
+        raise ContractError("UTC instant must be a string")
+    m = _CANONICAL_INSTANT_RE.match(value)
+    if not m:
+        raise ContractError("value is not a canonical UTC 'Z' instant")
+    try:
+        dt = datetime.fromisoformat(m.group("whole") + "+00:00").astimezone(timezone.utc)
+    except ValueError:
+        raise ContractError("value is not a valid calendar instant") from None
+    epoch_s = calendar.timegm(dt.timetuple())  # integer epoch; no float conversion
+    digits = m.group("frac")
+    frac = Fraction(int(digits), 10 ** len(digits)) if digits else Fraction(0)
+    return UtcInstant(epoch_s, frac)
 
 
 def canonical_json_bytes(obj) -> bytes:

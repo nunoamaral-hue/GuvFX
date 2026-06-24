@@ -1,25 +1,27 @@
-# HANDOFF — GFX-PKT-006C-R3 (semantic time & provenance integrity)
+# HANDOFF — GFX-PKT-006C-R4 (exact-time & quarantine provenance)
 
 > Concise packet pointer. **Notion is authoritative** for full packet text and
-> lifecycle status; the repository holds implementation, tests and concise evidence.
+> lifecycle/merge status; the repository holds implementation, tests and concise
+> evidence.
 
-- Active packet: **GFX-PKT-006C-R3 — Semantic Time and Provenance Integrity
-  Remediation** (continuation of GFX-PKT-006C / R1 / R2). Closes the remaining
-  semantic gaps: exact-instant timezone comparison (no fractional truncation);
-  semantic + ordered manifest timestamps; manifest provenance bound to the exact
-  stored request/response and derived directory; publication bound to exact raw
-  response bytes/SHA-256/raw-id; historical evidence byte discipline.
-- Base packets: **GFX-PKT-006C** + **R1** + **R2**.
-- Branch: `chore/market-data-synthetic-foundation` (base `main` `80ef2f8`); PR #34
-  remains **draft and unmerged** for PM review (not accepted).
-- Scope: synthetic-only client/storage/orchestration foundation under
-  `research/market_data/` + four contracts + `GUVFX_DATA_ROOT` wiring (no default) +
-  `market-data-foundation` CI job. No real data, NAS, broker, agent, execution or
-  deployment action.
+- Active packet: **GFX-PKT-006C-R4 — Post-Merge Exact-Time and Quarantine
+  Provenance Closure v0.3** (continuation of GFX-PKT-006C / R1 / R2 / R3). Closes
+  the remaining post-merge gaps: one shared arbitrary-precision UTC-instant
+  primitive (timezone gate, research ordering, manifest timestamps);
+  ordinary-quarantine binding to the exact parsed/validated stored request with a
+  request/response/reason-derived 16-hex id; retainable malformed/contract-invalid
+  response evidence; governed publication request failure.
+- Base packets: **GFX-PKT-006C** + **R1** + **R2** + **R3** (the R3 foundation is
+  on `main` at/after `6dfe22a…`).
+- Branch: `fix/market-data-r4-closure` (base `main` `6dfe22a…`); pull-request title
+  **“Close exact-time and quarantine provenance gaps”** (draft, for PM review).
+- Scope: synthetic-only edits under `research/market_data/`, `tools/research_smoke.py`,
+  the two foundation test modules and docs. No real data, NAS, broker, agent,
+  execution or deployment action.
 - Evidence: `evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json`
-  (006C), `evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json` (R1), and
-  `evidence/manifests/GFX-EVD-006C-R2-publication-storage-integrity.json` (R2), and
-  `evidence/manifests/GFX-EVD-006C-R3-semantic-provenance-integrity.json` (R3).
+  (006C), `…-R1-client-raw-integrity.json`, `…-R2-publication-storage-integrity.json`,
+  `…-R3-semantic-provenance-integrity.json`, and (R4)
+  `evidence/manifests/GFX-EVD-006C-R4-exact-time-quarantine-provenance.json`.
 
 ---
 

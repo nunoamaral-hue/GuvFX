@@ -27,13 +27,26 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
-from datetime import datetime, timezone
 
 import duckdb
 
-# Canonical UTC 'Z' timestamp (no other timezone is assumed anywhere).
-UTC_TS_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$")
+# The exact-instant primitive lives in the market-data contracts module; reuse it
+# so availability-versus-observation ordering preserves every fractional digit
+# (no microsecond truncation). Ensure the repo root is importable when this file
+# is run directly as a script (sys.path[0] is then the tools/ directory).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from research.market_data.contracts import (  # noqa: E402
+    ContractError,
+    parse_canonical_utc_instant,
+)
+
+# Canonical UTC 'Z' timestamps are validated by the shared exact-instant primitive
+# (see ``_parse_utc``); no other timezone is assumed anywhere.
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # Clearly-fake source identifier. Never a real provider.
@@ -119,23 +132,19 @@ def _is_number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _parse_utc(value: str) -> datetime:
-    """Parse a canonical UTC 'Z' timestamp into a tz-aware UTC datetime instant.
+def _parse_utc(value: str):
+    """Parse a canonical UTC 'Z' timestamp into an exact, comparable instant.
 
-    The regex is only a representation gate; semantic parsing then rejects
-    impossible calendar/time values (e.g. 2026-02-30 or hour 25) and any non-UTC
-    representation. The original string is never mutated by callers — this returns
-    a datetime purely for instant comparison.
+    Delegates to the shared arbitrary-precision ``UtcInstant`` primitive so every
+    admitted fractional-second digit participates in comparison (no microsecond
+    truncation). Impossible calendar/time values and non-UTC forms are rejected.
+    The governed ``ContractError`` is translated to this module's established
+    ``ValueError`` interface without exposing raw parser internals.
     """
-    if not isinstance(value, str) or not UTC_TS_RE.match(value):
-        raise ValueError(f"not a canonical UTC 'Z' timestamp: {value!r}")
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError(f"impossible calendar/time value: {value!r}") from exc
-    if dt.tzinfo is None or dt.utcoffset().total_seconds() != 0:
-        raise ValueError(f"timestamp must be UTC: {value!r}")
-    return dt.astimezone(timezone.utc)
+        return parse_canonical_utc_instant(value)
+    except ContractError as exc:
+        raise ValueError(str(exc)) from None
 
 
 def validate_observation(record: dict) -> None:

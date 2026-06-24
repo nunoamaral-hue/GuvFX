@@ -1,12 +1,33 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-006C-R3 (continuation of GFX-PKT-006C / R1 / R2)
-- **Title:** Semantic Time and Provenance Integrity Remediation v0.1
-- **Branch:** `chore/market-data-synthetic-foundation`
-- **Base:** `main` @ `80ef2f85d6546b7d62aea09ab5db39d8859482b0`
-- **Status:** Remediation in progress — synthetic-only; PR #34 remains **draft and
-  unmerged** for PM review (not accepted). **No merge and no real-data/NAS/broker/
-  agent access are authorised.**
+- **Packet ID:** GFX-PKT-006C-R4 (continuation of GFX-PKT-006C / R1 / R2 / R3)
+- **Title:** Post-Merge Exact-Time and Quarantine Provenance Closure v0.3
+- **Branch:** `fix/market-data-r4-closure`
+- **Base:** `main` @ `6dfe22aef7d6bc1a82cbd712536989c10e342602`
+- **Status:** Synthetic-only forward remediation. The R3 synthetic foundation is on
+  `main` at/after `6dfe22a…`; R4 closes the remaining post-merge exact-time and
+  quarantine-provenance gaps. **Lifecycle and merge status are authoritative in
+  Notion** (PM-owned). **No merge, deployment, or real-data/NAS/broker/agent/
+  credential access is authorised by this packet.**
+
+## R4 remediation scope (exact time + quarantine provenance)
+
+1. One shared arbitrary-precision UTC-instant primitive (`contracts.py`) parses and
+   compares canonical `Z` timestamps preserving every admitted fractional digit
+   (no float; exact comparison to integer epoch seconds); used by the timezone
+   gate (`timezone.py`), research point-in-time ordering (`tools/research_smoke.py`)
+   and manifest timestamps (`storage.py`).
+2. Every ordinary quarantine is bound to its exact parsed/validated stored request
+   (`storage.py`): identity, range and directory derive from the request, and the
+   16-hex quarantine id is recomputed from exact request bytes, response bytes and
+   reason. Canonical request bytes are required except for the explicit
+   `noncanonical_request_bytes` attempt, which stays quarantine/conflict evidence
+   and never becomes accepted/idempotent.
+3. Malformed and contract-invalid responses remain retainable as immutable evidence
+   and are never validated as a success response.
+4. `publish_observations` validates the request first, so invalid request input
+   fails through governed `ContractError`/`PublicationError` (never raw
+   `KeyError`/`TypeError`) and yields no records.
 
 ## R3 remediation scope (semantic time + provenance)
 
