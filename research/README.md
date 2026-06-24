@@ -104,3 +104,68 @@ proving they materialise as null through the typed DuckDB/Parquet columns.
   (`docs/DATA_CONTRACTS.md`, ADR 0010).
 - Generated temporary smoke artefacts are written to a `TemporaryDirectory` and
   **deleted automatically** on exit; nothing persistent is produced.
+
+## Synthetic market-data acquisition foundation (GFX-PKT-006C)
+
+`research/market_data/` is a **synthetic-only, fail-closed** client/storage/
+orchestration foundation for a LATER, separately authorised read-only MT5 history
+export endpoint on the GuvFX Windows Agent. It performs **no** live MT5, broker,
+NAS or real-data action and makes **no** network calls (a guard proves zero
+egress).
+
+Flow proven by `tools/market_data_synthetic_smoke.py`:
+synthetic request → strict contract validation → immutable raw landing →
+SHA-256 / idempotency / quarantine → `VERIFIED` timezone gate →
+`market_observation_v1` M1 bid-OHLC normalisation → temporary Parquet/DuckDB
+round trip → `dataset_manifest_v1`.
+
+Data-root rules:
+
+- `GUVFX_DATA_ROOT` is required for any **real** operation, must be an absolute
+  path **outside** the repository, and has **no default / no fallback**. Real mode
+  fails closed when it is unset/blank/unsafe.
+- Synthetic mode uses only an explicit caller-supplied temporary root (never the
+  environment, never the repo) and deletes it on exit.
+
+Commands:
+
+```bash
+make market-data-check          # smoke + market-data unit tests
+.venv-research/bin/python tools/market_data_synthetic_smoke.py
+.venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v
+```
+
+No real data exists from this packet. The Windows Agent export endpoint, the
+`GuvFXData` NAS share, broker timezone/identity evidence and real acquisition are
+**not** implemented here.
+
+**GFX-PKT-006C-R1 (client & raw integrity):** `agent_client.NetworkAgentClient` is
+now an actual standard-library HTTP client, but it is **inert unless explicitly
+constructed with `allow_network=True`** (plus base URL + token) by a future
+authorised packet; it makes no call here and never logs the token or any body.
+Response decoding is strict (rejects invalid UTF-8/JSON and `NaN`/`Infinity`);
+prices must be finite; runtime validation enforces the schema type/length bounds.
+Raw landing is exactly idempotent (an unchanged re-acquire returns the stored
+checksums) and any request/response byte difference is quarantined without touching
+accepted raw.
+
+**GFX-PKT-006C-R2 (publication, manifest & concurrency):** publication now goes
+through the single fail-closed `normalise.publish_observations` API, which validates
+the request, response, request/response match and a `VERIFIED`, bar-covering
+timezone assessment before any record is produced (the mapper is private). Timezone
+evidence enforces type/length bounds, offset arithmetic and observation coverage.
+Every raw manifest is strictly validated before write and on read, with stored
+request/response files verified by exact SHA-256 and paths tied to their object
+directory. Each landing attempt uses a unique staging directory and resolves late
+races without overwrite or data loss. The HTTP client validates its byte limit,
+rejects URL userinfo, and redacts response read errors.
+
+**GFX-PKT-006C-R3 (semantic time & provenance):** timezone coverage compares exact
+aware-UTC `datetime` instants (no fractional-second truncation) and impossible
+calendar/time values raise governed errors. Every accepted/quarantined manifest is
+semantically timestamp-checked and strictly ordered; ACCEPTED manifests are bound
+to the exact stored request/response (canonical request bytes, full validation,
+identity + field + derived-directory equality) so identity/range/provenance cannot
+drift independently. `publish_observations` additionally requires the exact raw
+response bytes and proves `sha256(bytes)`, the parsed-object match and
+`raw_object_id == request_id` before producing any record.

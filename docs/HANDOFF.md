@@ -1,3 +1,28 @@
+# HANDOFF — GFX-PKT-006C-R3 (semantic time & provenance integrity)
+
+> Concise packet pointer. **Notion is authoritative** for full packet text and
+> lifecycle status; the repository holds implementation, tests and concise evidence.
+
+- Active packet: **GFX-PKT-006C-R3 — Semantic Time and Provenance Integrity
+  Remediation** (continuation of GFX-PKT-006C / R1 / R2). Closes the remaining
+  semantic gaps: exact-instant timezone comparison (no fractional truncation);
+  semantic + ordered manifest timestamps; manifest provenance bound to the exact
+  stored request/response and derived directory; publication bound to exact raw
+  response bytes/SHA-256/raw-id; historical evidence byte discipline.
+- Base packets: **GFX-PKT-006C** + **R1** + **R2**.
+- Branch: `chore/market-data-synthetic-foundation` (base `main` `80ef2f8`); PR #34
+  remains **draft and unmerged** for PM review (not accepted).
+- Scope: synthetic-only client/storage/orchestration foundation under
+  `research/market_data/` + four contracts + `GUVFX_DATA_ROOT` wiring (no default) +
+  `market-data-foundation` CI job. No real data, NAS, broker, agent, execution or
+  deployment action.
+- Evidence: `evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json`
+  (006C), `evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json` (R1), and
+  `evidence/manifests/GFX-EVD-006C-R2-publication-storage-integrity.json` (R2), and
+  `evidence/manifests/GFX-EVD-006C-R3-semantic-provenance-integrity.json` (R3).
+
+---
+
 # HANDOFF (2025-12-16)
 
 > Outgoing coder updates this at the end of **every** session.

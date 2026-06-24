@@ -1,6 +1,12 @@
 # NEXT — Priorities (keep this list short)
 
-## P0 (do next)
+## Current next action (GFX-PKT-006C-R3)
+- [ ] **PM independent review of PR #34 and the GFX-PKT-006C-R3 evidence only.** PR
+  #34 remains draft/unmerged (not accepted). Do **not** start GFX-PKT-006D. No real
+  data, NAS, broker, agent or deployment action is authorised until a later scoped
+  packet.
+
+## P0 (historical)
 1. [x] Resolve local docs diffs cleanly: either (a) commit `docs/HANDOFF.md` + `docs/STATUS.md` on a small `docs/...` branch and open a PR to `main`, or (b) restore them if they are outdated. — done 2025-12-16
 2. [x] Confirm repo health: run `make check` on `main` and on the active feature branch. — done 2025-12-16
 3. [x] Broker autocomplete MVP: define acceptance criteria and implement debounced broker search + selection flow. — done 2025-12-16

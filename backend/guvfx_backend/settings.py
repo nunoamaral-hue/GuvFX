@@ -119,6 +119,13 @@ GUVFX_WINDOWS_AGENT_BASE_URL = env(
 )
 GUVFX_WINDOWS_AGENT_TOKEN = env("GUVFX_WINDOWS_AGENT_TOKEN", "")
 
+# Market-data research data root (GFX-PKT-006C).
+# Intentionally has NO default and is NOT required: the application starts without
+# a data root. Any real market-data operation must validate this separately and
+# fail closed when it is unset/blank (see research/market_data/config.py). There is
+# no repository fallback.
+GUVFX_DATA_ROOT = env("GUVFX_DATA_ROOT")
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators

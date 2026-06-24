@@ -1,7 +1,7 @@
-.PHONY: help check backend-test backend-lint frontend-lint frontend-build secret-scan governance-check research-check
+.PHONY: help check backend-test backend-lint frontend-lint frontend-build secret-scan governance-check research-check research-foundation-check market-data-check require-research-venv
 
 help:
-	@echo "Targets: check backend-test frontend-lint frontend-build secret-scan governance-check research-check"
+	@echo "Targets: check backend-test frontend-lint frontend-build secret-scan governance-check research-check market-data-check"
 
 check: governance-check backend-test frontend-lint frontend-build
 
@@ -39,14 +39,24 @@ frontend-build:
 		echo "Skipping frontend-build: frontend/package.json not found"; \
 	fi
 
-# Research foundation (GFX-PKT-005B). Separate target; NOT part of `check`.
-# Requires the isolated DuckDB venv created per research/README.md.
-research-check:
+# Research + market-data foundations (GFX-PKT-005B / 006C). Separate targets;
+# NOT part of `check`. Require the isolated DuckDB venv (see research/README.md).
+require-research-venv:
 	@if [ ! -x .venv-research/bin/python ]; then \
 		echo "Error: .venv-research not found. Create it first:"; \
 		echo "  python3 -m venv .venv-research"; \
 		echo "  .venv-research/bin/python -m pip install --only-binary=:all: --no-deps -r requirements-research.txt"; \
 		exit 1; \
 	fi
+
+research-foundation-check: require-research-venv
 	.venv-research/bin/python tools/research_smoke.py
 	.venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v
+
+# GFX-PKT-006C synthetic market-data gate.
+market-data-check: require-research-venv
+	.venv-research/bin/python tools/market_data_synthetic_smoke.py
+	.venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v
+
+# research-check composes both foundations so the market-data gate is not bypassed.
+research-check: research-foundation-check market-data-check

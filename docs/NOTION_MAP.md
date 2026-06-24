@@ -35,6 +35,19 @@ in Notion when authority is required.
 - GFX-EVD-005B-R1 — PM Review and UTC Semantics Remediation Required v0.1
 - GFX-PKT-005B-R2 — UTC Semantic and Nullable-Field Remediation v0.1
 - GuvFX — Current State v0.16
+- GFX-EVD-006B — PM Acceptance of MT5 VPS History Export and NAS Landing Design v0.1
+- GFX-ADR-DATA-004 — Staged Market-Data Acquisition and Publication Sequence v0.1
+- GFX-PKT-006C — Synthetic Infrastructure and Contract Implementation v0.1
+- GuvFX — Current State v0.19
+- GFX-EVD-006C — PM Review and Remediation Required v0.1
+- GFX-PKT-006C-R1 — Client and Raw-Integrity Remediation v0.1
+- GuvFX — Current State v0.20
+- GFX-EVD-006C-R1 — PM Review and Remaining Publication/Storage Remediation Required v0.1
+- GFX-PKT-006C-R2 — Publication, Manifest and Concurrency Remediation v0.1
+- GuvFX — Current State v0.21
+- GFX-EVD-006C-R2 — PM Review and Semantic Integrity Remediation Required v0.1
+- GFX-PKT-006C-R3 — Semantic Time and Provenance Integrity Remediation v0.1
+- GuvFX — Current State v0.22
 
 > The titles above are pointers. Notion holds the authoritative content and lifecycle
 > state; the repository holds implementation, tests, and concise evidence. Full text and
