@@ -152,5 +152,6 @@
     "tests/test_market_data_foundation.py": "sha256:2d5177c85968ab4cf144e24702659e0a4ebcbf3424ce6219a2f20aff17f68fd1",
     "tests/test_research_foundation.py": "sha256:d7531dc45d76fa9aa68b2f28f970eabba296d2da033a740b83017c1b3478e861"
   },
-  "reviewer": null
+  "reviewer": null,
+  "superseded_by_r4_r1_evidence": "evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json"
 }

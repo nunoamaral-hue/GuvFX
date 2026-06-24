@@ -1,0 +1,147 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-006C-R4-R1-exact-instant-factuality",
+  "packet_id": "GFX-PKT-006C-R4-R1",
+  "packet_version": "v0.1",
+  "created_at_utc": "2026-06-24T09:57:41Z",
+  "branch": "fix/market-data-r4-closure",
+  "base_commit": "6cedad0912c39cc6711f0cc4d9eff188545b0e97",
+  "head_commit": "674f5c051851c5f3cbfdcd602b7696291466d31f",
+  "c11_commit": "674f5c051851c5f3cbfdcd602b7696291466d31f",
+  "c12_commit": null,
+  "continuation_of": "GFX-PKT-006C-R4 — Post-Merge Exact-Time and Quarantine Provenance Closure v0.3 (PR #35, same branch)",
+  "authorising_review": "GFX-EVD-006C-R4 — PM Review and Exact-Instant Factuality Remediation Required v0.1",
+  "environment": {
+    "research_python_version": "3.14.6",
+    "duckdb_version": "1.5.4",
+    "dependencies_changed": false,
+    "schemas_changed": false,
+    "ci_make_changed": false
+  },
+  "prior_defects_corrected": {
+    "decimal_string_conversion_limit": "R4 v0.3 parse_canonical_utc_instant used Fraction(int(digits), 10 ** len(digits)); int(digits) depends on CPython's int<->str digit limit (default 4300), so a schema-valid fraction with more digits would raise a raw ValueError. Corrected: the fraction is stored as a normalized decimal-digit string (trailing zeros removed; '' == whole second) and compared lexicographically; no int()/10**n/float is ever formed, so arbitrary-length fractions parse and order correctly.",
+    "mutability_overstatement": "R4 v0.3 described UtcInstant as 'immutable' but it used plain __slots__ whose attributes were assignable. Corrected: __setattr__/__delattr__ now raise; state is set only via object.__setattr__ in a validating constructor.",
+    "hash_equality_inconsistency": "R4 v0.3 defined __hash__ = hash((epoch, frac)) while __eq__ compared equal to bare non-boolean integer epochs, so equal objects (instant vs int) could hash differently — a data-model contract violation. Corrected: __hash__ = None (deliberately unhashable) while exact equality/order with another UtcInstant and with bare integer epochs is retained.",
+    "arbitrary_precision_overstatement": "R4 v0.3 evidence/docs called the representation 'arbitrary-precision'; with the int-conversion limit it was not. The implementation is now genuinely arbitrary-length-safe and the wording is corrected.",
+    "file_count_overstatement": "R4 v0.3 evidence prose said '16 authorised files changed vs base'; the independently verified R4 v0.3 PR diff (base 6dfe22a..C10 6cedad0) is 17 files. This manifest records the correct count of 17. The R4 manifest's prior bytes are preserved; only an additive supersession pointer is added."
+  },
+  "verified_r4_v03_pr_file_count": 17,
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "required_jobs": ["governance", "backend", "frontend", "research-foundation", "market-data-foundation"],
+    "c11": {
+      "push_run_id": 28090426169,
+      "pull_request_run_id": 28090428050,
+      "run_head_sha": "674f5c051851c5f3cbfdcd602b7696291466d31f",
+      "jobs": [
+        { "name": "governance", "conclusion": "success" },
+        { "name": "backend", "conclusion": "success" },
+        { "name": "frontend", "conclusion": "success" },
+        { "name": "research-foundation", "conclusion": "success" },
+        { "name": "market-data-foundation", "conclusion": "success" }
+      ]
+    },
+    "c12": { "push_run_id": null, "pull_request_run_id": null, "run_head_sha": null, "jobs": [] }
+  },
+  "files_modified": [
+    "research/market_data/contracts.py",
+    "tests/test_market_data_foundation.py",
+    "research/README.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/STATUS.md",
+    "docs/HANDOFF.md",
+    "docs/NEXT.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    "evidence/manifests/GFX-EVD-006C-R4-exact-time-quarantine-provenance.json"
+  ],
+  "files_added": [
+    "evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json"
+  ],
+  "files_unchanged_authorised": [
+    "tests/test_research_foundation.py (no change required this round)",
+    "tools/research_smoke.py (no interface change required; left unchanged)"
+  ],
+  "unauthorised_files_changed": false,
+  "dependencies_changed": false,
+  "schemas_changed": false,
+  "ci_make_changed": false,
+  "remediation_results": {
+    "normalized_decimal_representation": "UtcInstant stores (int epoch second, normalized fractional digit string). parse_canonical_utc_instant normalizes via digits.rstrip('0'); leading zeros preserved. Comparison uses native tuple/str ordering: for trailing-zero-normalized fractional strings, lexicographic order equals numeric order (a shorter string that is a prefix is numerically smaller because a normalized string never ends in a zero). No int()/10**n/float; no dependence on sys.set_int_max_str_digits.",
+    "immutability": "__setattr__ and __delattr__ raise AttributeError; state is written only by object.__setattr__ in a constructor that rejects non-int epoch, non-str fraction, or a non-normalized fraction (non-digit or trailing-zero). repr contains only epoch + normalized digits (synthetic; no input path/data).",
+    "unhashable": "__hash__ = None — hash(instant) raises TypeError and the value cannot be placed in a set/dict, while equality/order with another UtcInstant and with bare non-boolean integer epochs is exact.",
+    "use_sites_transparent": "timezone.validate_timezone_evidence/gate_for_normalisation, tools/research_smoke._parse_utc (availability-vs-observation ordering) and storage._parse_manifest_instant continue to use the value purely for comparison; none hashes it; all remain green.",
+    "governed_invalid_input": "non-string, non-canonical, impossible calendar/time and non-UTC inputs still raise ContractError (timezone/research) or StorageError (manifest); a raw ValueError never escapes."
+  },
+  "tests": {
+    "research_foundation_tests_total": 35,
+    "market_data_tests_total": 132,
+    "result": "OK",
+    "exact_representation_matrix": "TestExactInstantPrimitive R4-R1 additions: 10,000-digit fraction parses without raw/governed failure; two 10,000-digit fractions differing at the final digit order correctly; a 10,000-zero fraction equals the whole-second timestamp and the integer epoch; long leading-zero fractions order correctly (more leading zeros => smaller); no int conversion-limit ValueError escapes; .1Z == .10Z == .100Z; seventh-digit/ms/us cases remain green; assignment/deletion of internal state raises AttributeError; hash(instant) raises TypeError and {instant} raises; whole-second equality/order with an integer epoch correct; impossible/noncanonical input raises ContractError.",
+    "regression": "All prior R4 quarantine-provenance, publication, timezone, research, storage, concurrency, HTTP, security, Parquet/DuckDB and CI behavior remain green; research and market-data smokes PASS and are byte-for-byte deterministic across two runs."
+  },
+  "commands": [
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v",
+    ".venv-research/bin/python tools/research_smoke.py",
+    ".venv-research/bin/python tools/market_data_synthetic_smoke.py",
+    "make research-check",
+    "make market-data-check",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R4-exact-time-quarantine-provenance.json >/dev/null",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json >/dev/null",
+    "git diff --check; git status --short",
+    "git diff --name-only 6cedad0912c39cc6711f0cc4d9eff188545b0e97...HEAD",
+    "git diff 6cedad0912c39cc6711f0cc4d9eff188545b0e97 -- evidence/manifests/GFX-EVD-006C-R4-exact-time-quarantine-provenance.json"
+  ],
+  "expected_results": [
+    "Schema-valid fractions of any length (incl. 10,000 digits) parse and compare without integer-string conversion and without a raw ValueError",
+    "Every admitted digit participates in ordering; trailing-zero forms are equal",
+    "Instant values are genuinely immutable",
+    "The type is unhashable while remaining equal/ordered with integer epochs",
+    "Governed invalid-input behavior retained; all existing use sites green",
+    "Repository wording is lifecycle-neutral and factual",
+    "Prior R4 evidence changes by only the additive supersession pointer; the R4 PR file count is 17",
+    "All five CI jobs pass for the C11 (and C12) push + PR runs"
+  ],
+  "actual_results": [
+    "research foundation tests: Ran 35 tests, OK",
+    "market-data tests: Ran 132 tests, OK",
+    "10,000-digit parse/order/equality and immutability/unhashable tests pass",
+    "research smoke + market-data smoke: PASS; each byte-for-byte deterministic across two runs",
+    "check_no_secrets: no findings; make governance-check OK; make research-check OK; make market-data-check OK",
+    "json.tool: R4 and R4-R1 manifests valid JSON",
+    "git diff --check clean; git diff --name-only 6cedad0...HEAD = 11 authorised files (10 in C11 + the new R4-R1 manifest in C12); the R4 evidence diff vs 6cedad0 is only the additive superseded_by_r4_r1_evidence pointer",
+    "C11 CI: push run 28090426169 + PR run 28090428050 (head 674f5c0) — all five required jobs success; C12 final runs recorded in the PR comment + handoff",
+    "Independently verified R4 v0.3 PR diff (6dfe22a..6cedad0) = 17 files"
+  ],
+  "no_network_proof": "All HTTP/race tests use injected fakes inside network_blocked(); NetworkAgentClient remains inert unless allow_network=True; no real socket or URL opener was invoked.",
+  "no_real_access_statement": "Synthetic-only. No Windows Agent endpoint, VPS, MT5, broker, NAS, credential or production access occurred. No deployment, restart, PR merge or 006D work was performed.",
+  "status": "PASS",
+  "limitations": [
+    "Synthetic-only: no external agent endpoint, real market data, NAS path or credentials were implemented or contacted.",
+    "Backend 'core' test relies on the GitHub backend CI job (no local backend/.venv/PostgreSQL); unchanged from 006C.",
+    "head_commit/c11_commit point at the implementation commit C11 (674f5c0); the c12 block is filled at the evidence-only C12 commit, whose own push/PR CI runs are recorded in the PR comment and PM handoff after they conclude.",
+    "tools/research_smoke.py and tests/test_research_foundation.py were authorised but required no change this round and were left unchanged.",
+    "Lifecycle and merge state of the branch/PR are owned in GitHub/Notion; this evidence does not assert a point-in-time PR status.",
+    "Capability readiness remains Partial until the external agent endpoint, NAS target, real source identity/timezone and first supervised raw acquisition are separately approved and evidenced."
+  ],
+  "artefact_locations": [
+    "research/market_data/contracts.py",
+    "tests/test_market_data_foundation.py",
+    "tests/test_research_foundation.py",
+    "research/README.md",
+    "evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json"
+  ],
+  "checksums": {
+    "research/market_data/contracts.py": "sha256:e8eb7626040369448d505cf442fadedf0049c25f54f2b6b722e8836417114354",
+    "tests/test_market_data_foundation.py": "sha256:deebbd613c03df55674d8013425074224230648f7619218ab1a488756be704ef",
+    "tests/test_research_foundation.py": "sha256:d7531dc45d76fa9aa68b2f28f970eabba296d2da033a740b83017c1b3478e861",
+    "research/README.md": "sha256:4397a8858c2d50cfac0bce28f370d4526d77a809642a93812c77dee28cd85432"
+  },
+  "reviewer": null
+}
