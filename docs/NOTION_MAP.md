@@ -48,6 +48,13 @@ in Notion when authority is required.
 - GFX-EVD-006C-R2 — PM Review and Semantic Integrity Remediation Required v0.1
 - GFX-PKT-006C-R3 — Semantic Time and Provenance Integrity Remediation v0.1
 - GuvFX — Current State v0.22
+- GFX-EVD-006C-M1 — PM Reconciliation of PR #34 Main Merge and R4 Gate Block v0.1
+- GFX-ADR-DATA-005 — Retain PR #34 Main Merge and Remediate Forward v0.1
+- GuvFX — Current State v0.25
+- GFX-PKT-006C-R4 — Post-Merge Exact-Time and Quarantine Provenance Closure v0.3
+- GFX-EVD-006C-R4 — PM Review and Exact-Instant Factuality Remediation Required v0.1
+- GFX-PKT-006C-R4-R1 — Exact-Instant Representation and Evidence Factuality Remediation v0.1
+- GuvFX — Current State v0.26
 
 > The titles above are pointers. Notion holds the authoritative content and lifecycle
 > state; the repository holds implementation, tests, and concise evidence. Full text and

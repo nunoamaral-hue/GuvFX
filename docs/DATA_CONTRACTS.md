@@ -178,6 +178,22 @@ Implemented and exercised by `tools/market_data_synthetic_smoke.py` +
 - **`GUVFX_DATA_ROOT`** is now wired into backend settings with **no default**;
   real operation fails closed when it is unset/blank or resolves inside the repo.
 
+> **GFX-PKT-006C-R4 / R4-R1 update:** a single shared UTC-instant primitive parses
+> and compares canonical `Z` timestamps — every admitted fractional digit
+> participates (`.1Z`, `.10Z`, `.100Z` are one instant; ordering survives past the
+> sixth digit), with exact comparison to integer epoch seconds. R4-R1 makes it
+> arbitrary-length-safe: the fraction is a normalized decimal-digit string (trailing
+> zeros removed) compared lexicographically, with no integer/power-of-ten/float
+> conversion and no dependence on CPython's int↔str digit limit, so even
+> 10,000-digit fractions parse and order correctly. The value is genuinely immutable
+> and deliberately unhashable (it compares equal to bare integer epochs). It backs
+> the timezone gate, research point-in-time ordering and manifest timestamps. Every ordinary quarantine is bound to its exact
+> parsed/validated stored request; the quarantine directory and 16-hex id derive
+> from the exact request bytes, response bytes and reason, while malformed or
+> contract-invalid responses remain retainable evidence (never treated as a valid
+> success response). Publication validates the request through governed exceptions
+> before indexing any field. Still synthetic-only; no real acquisition.
+
 > **GFX-PKT-006C-R3 update:** timezone coverage now compares exact aware-UTC
 > instants (no fractional truncation; impossible values raise governed errors);
 > manifests are semantically timestamp-checked/ordered and ACCEPTED manifests are

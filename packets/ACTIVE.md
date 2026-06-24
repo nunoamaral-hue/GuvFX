@@ -1,12 +1,47 @@
 # Active Packet
 
-- **Packet ID:** GFX-PKT-006C-R3 (continuation of GFX-PKT-006C / R1 / R2)
-- **Title:** Semantic Time and Provenance Integrity Remediation v0.1
-- **Branch:** `chore/market-data-synthetic-foundation`
-- **Base:** `main` @ `80ef2f85d6546b7d62aea09ab5db39d8859482b0`
-- **Status:** Remediation in progress — synthetic-only; PR #34 remains **draft and
-  unmerged** for PM review (not accepted). **No merge and no real-data/NAS/broker/
-  agent access are authorised.**
+- **Packet ID:** GFX-PKT-006C-R4-R1 (continuation of GFX-PKT-006C / R1 / R2 / R3 / R4)
+- **Title:** Exact-Instant Representation and Evidence Factuality Remediation v0.1
+- **Branch:** `fix/market-data-r4-closure`
+- **Base:** `main` @ `6dfe22aef7d6bc1a82cbd712536989c10e342602`
+- **Status:** Synthetic-only forward remediation on the existing R4 branch. The R3
+  synthetic foundation is on `main` at/after `6dfe22a…`; R4 closed the post-merge
+  exact-time and quarantine-provenance gaps and R4-R1 hardens the UTC-instant
+  representation (arbitrary-length-safe, immutable, unhashable) and corrects prior
+  evidence overstatements. **Lifecycle and merge status are authoritative in
+  Notion/GitHub** (PM-owned). **No merge, deployment, or real-data/NAS/broker/agent/
+  credential access is authorised by this packet.**
+
+## R4-R1 remediation scope (exact-instant representation + evidence factuality)
+
+1. `UtcInstant` stores the fraction as a normalized decimal-digit string compared
+   lexicographically — no `int(digits)`, no `10**len`, no float, no dependence on
+   CPython's int↔str digit limit; 10,000-digit fractions parse and order correctly.
+2. The value is genuinely immutable (attribute writes/deletes raise) and
+   deliberately unhashable (`__hash__ = None`, since it equals bare integer epochs).
+3. Repository wording is lifecycle-neutral (no live draft/open/unmerged claim).
+4. A new R4-R1 evidence record corrects the prior immutability, arbitrary-length and
+   file-count (17, not 16) overstatements; the R4 manifest gains only an additive
+   supersession pointer.
+
+## R4 remediation scope (exact time + quarantine provenance)
+
+1. One shared arbitrary-precision UTC-instant primitive (`contracts.py`) parses and
+   compares canonical `Z` timestamps preserving every admitted fractional digit
+   (no float; exact comparison to integer epoch seconds); used by the timezone
+   gate (`timezone.py`), research point-in-time ordering (`tools/research_smoke.py`)
+   and manifest timestamps (`storage.py`).
+2. Every ordinary quarantine is bound to its exact parsed/validated stored request
+   (`storage.py`): identity, range and directory derive from the request, and the
+   16-hex quarantine id is recomputed from exact request bytes, response bytes and
+   reason. Canonical request bytes are required except for the explicit
+   `noncanonical_request_bytes` attempt, which stays quarantine/conflict evidence
+   and never becomes accepted/idempotent.
+3. Malformed and contract-invalid responses remain retainable as immutable evidence
+   and are never validated as a success response.
+4. `publish_observations` validates the request first, so invalid request input
+   fails through governed `ContractError`/`PublicationError` (never raw
+   `KeyError`/`TypeError`) and yields no records.
 
 ## R3 remediation scope (semantic time + provenance)
 

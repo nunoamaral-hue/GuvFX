@@ -132,5 +132,6 @@
     "tools/market_data_synthetic_smoke.py": "sha256:d9f7393b3b9c10d8674100e12cd8280de40d8a3d46abe36fb6121f97305693e9",
     "tests/test_market_data_foundation.py": "sha256:886250e396c18eb49ee5e4b7d17017d3094ee4bab575c24d20d1093580d13457"
   },
-  "reviewer": null
+  "reviewer": null,
+  "superseded_by_r4_evidence": "evidence/manifests/GFX-EVD-006C-R4-exact-time-quarantine-provenance.json"
 }

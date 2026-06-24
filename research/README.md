@@ -169,3 +169,28 @@ identity + field + derived-directory equality) so identity/range/provenance cann
 drift independently. `publish_observations` additionally requires the exact raw
 response bytes and proves `sha256(bytes)`, the parsed-object match and
 `raw_object_id == request_id` before producing any record.
+
+**GFX-PKT-006C-R4 / R4-R1 (exact time & quarantine provenance):** a single
+dependency-free `UtcInstant` primitive (`contracts.parse_canonical_utc_instant`)
+parses canonical UTC `Z` timestamps into an integer epoch second plus a *normalized
+decimal-digit string* for the fraction (trailing zeros removed; `""` = exact whole
+second). Comparison is a direct lexicographic walk over the normalized digits — for
+trailing-zero-normalized strings this is exactly the numeric order — so every
+admitted fractional digit participates (`.1Z == .100Z`; ordering correct past the
+sixth digit, and correct for 10,000-digit fractions) with no integer/power-of-ten/
+float conversion and no dependence on CPython's int↔str digit limit, and with exact
+comparison to integer epoch seconds. The value is immutable (attribute writes raise)
+and deliberately unhashable (`__hash__ = None`, since it equals bare integer
+epochs). The timezone gate, research point-in-time ordering
+(`tools/research_smoke._parse_utc`) and manifest timestamps all use it. Strict
+manifest validation now parses and validates the exact stored request for **every
+ordinary quarantine** and derives the identity, range, directory and 16-hex
+quarantine id from it — the id is recomputed as
+`sha256(request_bytes + NUL + response_bytes + NUL + reason)[:16]`. Canonical
+request bytes are required except for the explicit `noncanonical_request_bytes`
+attempt, which stays quarantine/conflict evidence and never becomes accepted or
+idempotent. Malformed and contract-invalid responses remain retainable as
+immutable evidence (never validated as a success response). `publish_observations`
+validates the request first, so a missing/non-dict/wrong-typed request fails
+through a governed `ContractError`/`PublicationError`, never a raw
+`KeyError`/`TypeError`, and returns no records.

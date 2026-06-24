@@ -20,15 +20,20 @@
 - Research/data foundation: PR #32 and PR #33 are merged to `main`
   (`80ef2f8`), establishing the DuckDB research foundation and the versioned
   market-data contracts (GFX-PKT-005B / R1 / R2).
-- **GFX-PKT-006C** (synthetic market-data acquisition foundation) on branch
-  `chore/market-data-synthetic-foundation`, continued by **R1**, **R2** and now
-  **GFX-PKT-006C-R3** (semantic time and provenance integrity: exact-instant
-  timezone comparison with no fractional truncation; semantic + ordered manifest
-  timestamps; manifest provenance bound to the exact stored request/response and
-  derived directory; publication bound to exact raw response bytes/SHA-256/raw-id;
-  historical evidence byte discipline). PR **#34 remains draft and unmerged** for PM
-  review (not accepted). Synthetic-only: no real data, NAS, broker, agent or
-  deployment action. CI runs a `market-data-foundation` job.
+- **GFX-PKT-006C** (synthetic market-data acquisition foundation), continued by
+  **R1**, **R2** and **R3**, is now on `main` at/after merge commit `6dfe22a…`
+  (the R3 synthetic foundation: strict contracts, immutable raw landing with
+  SHA-256/idempotency/quarantine, the `VERIFIED` timezone gate and synthetic M1
+  bid-OHLC publication). Branch `fix/market-data-r4-closure` (base `6dfe22a…`)
+  carries **GFX-PKT-006C-R4** (one shared UTC-instant primitive;
+  ordinary-quarantine request/directory/16-hex-id provenance; retainable
+  malformed/contract-invalid response evidence; governed publication request
+  failure) and the follow-up **GFX-PKT-006C-R4-R1** (arbitrary-length-safe,
+  immutable, unhashable UTC-instant representation; evidence factuality). Canonical
+  `main` remains `6dfe22a…`; merging this branch and advancing its lifecycle are
+  owned in GitHub/Notion, not asserted here. Capability remains **Partial**.
+  Synthetic-only — no real data, NAS, broker, agent acquisition or deployment
+  exists. CI runs a `market-data-foundation` job.
 
 ## Verified current state
 

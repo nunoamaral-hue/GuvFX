@@ -1,25 +1,28 @@
-# HANDOFF — GFX-PKT-006C-R3 (semantic time & provenance integrity)
+# HANDOFF — GFX-PKT-006C-R4 / R4-R1 (exact-time & quarantine provenance)
 
-> Concise packet pointer. **Notion is authoritative** for full packet text and
-> lifecycle status; the repository holds implementation, tests and concise evidence.
+> Concise packet pointer. **Notion and GitHub are authoritative** for lifecycle and
+> merge state; the repository holds implementation, tests and concise evidence. This
+> document does not assert a point-in-time pull-request status.
 
-- Active packet: **GFX-PKT-006C-R3 — Semantic Time and Provenance Integrity
-  Remediation** (continuation of GFX-PKT-006C / R1 / R2). Closes the remaining
-  semantic gaps: exact-instant timezone comparison (no fractional truncation);
-  semantic + ordered manifest timestamps; manifest provenance bound to the exact
-  stored request/response and derived directory; publication bound to exact raw
-  response bytes/SHA-256/raw-id; historical evidence byte discipline.
-- Base packets: **GFX-PKT-006C** + **R1** + **R2**.
-- Branch: `chore/market-data-synthetic-foundation` (base `main` `80ef2f8`); PR #34
-  remains **draft and unmerged** for PM review (not accepted).
-- Scope: synthetic-only client/storage/orchestration foundation under
-  `research/market_data/` + four contracts + `GUVFX_DATA_ROOT` wiring (no default) +
-  `market-data-foundation` CI job. No real data, NAS, broker, agent, execution or
-  deployment action.
+- Active workstream: **GFX-PKT-006C-R4 — Post-Merge Exact-Time and Quarantine
+  Provenance Closure v0.3**, plus the bounded follow-up **GFX-PKT-006C-R4-R1 —
+  Exact-Instant Representation and Evidence Factuality Remediation v0.1**
+  (continuation of GFX-PKT-006C / R1 / R2 / R3). R4 closed the post-merge gaps (one
+  shared UTC-instant primitive; ordinary-quarantine binding to the exact stored
+  request with a request/response/reason-derived 16-hex id; retainable
+  malformed/contract-invalid response evidence; governed publication request
+  failure). R4-R1 makes the UTC-instant primitive arbitrary-length-safe (normalized
+  decimal-digit fraction; no int/power-of-ten/float conversion), genuinely immutable
+  and deliberately unhashable, and corrects prior evidence overstatements.
+- Base packets: **GFX-PKT-006C** + **R1** + **R2** + **R3** (the R3 foundation is on
+  `main` at/after `6dfe22a…`).
+- Branch: `fix/market-data-r4-closure` (base `main` `6dfe22a…`).
+- Scope: synthetic-only edits under `research/market_data/`, the two foundation test
+  modules and docs. No real data, NAS, broker, agent, execution or deployment action.
 - Evidence: `evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json`
-  (006C), `evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json` (R1), and
-  `evidence/manifests/GFX-EVD-006C-R2-publication-storage-integrity.json` (R2), and
-  `evidence/manifests/GFX-EVD-006C-R3-semantic-provenance-integrity.json` (R3).
+  (006C), `…-R1-client-raw-integrity.json`, `…-R2-publication-storage-integrity.json`,
+  `…-R3-semantic-provenance-integrity.json`, `…-R4-exact-time-quarantine-provenance.json`,
+  and (R4-R1) `evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json`.
 
 ---
 

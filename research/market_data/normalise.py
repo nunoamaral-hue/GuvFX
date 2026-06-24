@@ -64,6 +64,10 @@ def publish_observations(request: dict, response: dict, timezone_evidence: dict,
     # 1. Timezone evidence must be present.
     if timezone_evidence is None:
         raise PublicationError("timezone evidence is required for publication")
+    # 1a. Validate the request FIRST so a missing/typed/non-dict request fails
+    # through a governed ContractError, never a raw KeyError/TypeError, before any
+    # request field is indexed below.
+    validate_request(request)
     # 1b. Exact raw lineage binding (before the gate or mapping).
     if not isinstance(response_bytes, (bytes, bytearray)):
         raise PublicationError("response_bytes must be the exact raw response bytes")
@@ -75,8 +79,7 @@ def publish_observations(request: dict, response: dict, timezone_evidence: dict,
         raise PublicationError("response_sha256 does not match the exact response bytes")
     if raw_object_id != request["request_id"]:
         raise PublicationError("raw_object_id must equal the request id")
-    # 2-4. Contract validation (raises ContractError on any problem).
-    validate_request(request)
+    # 2-4. Remaining contract validation (raises ContractError on any problem).
     validate_response(response)
     validate_request_response_match(request, response)
     # 5. Timezone gate over EVERY bar epoch (raises TimezoneError on failure).
