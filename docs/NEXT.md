@@ -1,14 +1,30 @@
 # NEXT — Priorities (keep this list short)
 
-## Current next action (GFX-PKT-006C-R4-R2)
-- [ ] **PM independent review of the GFX-PKT-006C-R4-R2 PR and evidence only** (branch
-  `fix/utc-instant-constructor-invariant`). Governed sequence: (1) PM review of the
-  R4-R2 PR and evidence; (2) repository merge of the branch **only after** PM
-  acceptance — lifecycle and merge state are owned in Notion/GitHub, not asserted
-  here; (3) resume **G0 v0.2** source/storage discovery only after acceptance. Do
-  **not** start GFX-PKT-006D and do **not** execute G0 yet. No real data, NAS,
-  broker, agent or deployment action is authorised until that separately scoped,
-  approved packet.
+## Current next action (single, blocking)
+- [ ] **OWNER ACTION — GFX-PKT-006D-S1:** provision/expose the approved dedicated
+  `GuvFXData` storage root and set `GUVFX_DATA_ROOT` on the Mac controller (NAS now
+  reachable over Tailscale), then return the S1 logical/boolean completion
+  statement (no paths/hostnames/credentials in chat). This is the single blocker
+  for the entire real-data workstream.
+- [ ] **THEN — re-run GFX-PKT-006D-A2-P5 unchanged** to write the first durable
+  immutable raw EURUSD M1 object + manifest to approved storage.
+
+> The synthetic 006C foundation arc is fully merged (PR #36, `main` `148437a`). The
+> live frontier is the **006D** real-data acquisition workstream in the dedicated
+> `guvfx-windows-history-agent` repo + governed VPS probes — see
+> `docs/PROGRAMME_STATE.md`. Notion (*Current State v0.52*) is authoritative.
+
+## PM improvement backlog (in progress, Claude-as-PM)
+Green/Amber items proceed autonomously; Red items are flagged for Nuno's approval.
+- [x] **A — reconcile these stale handoff docs** to the true 006D/S1 state.
+- [x] **B — `docs/PROGRAMME_STATE.md`** consolidated packet→repo→status→evidence index.
+- [ ] **C — `GUVFX_DATA_ROOT` preflight validator** (boolean storage-gate check).
+- [ ] **D — evidence-factuality linter** (file/test counts, clean-tree, checksums).
+- [ ] **E — enforce read-only MT5 boundary** (verify/added CI AST guard).
+- [ ] **F — broker-server timezone probe** — **NEEDS NUNO APPROVAL (Red, data)**.
+- [ ] **G — live Trading path standing risk-watch** (kill-switch, failure modes).
+- [ ] **H — ratify the Blueprint** (Proposed → Approved) — **NEEDS NUNO SIGN-OFF**.
+- [ ] **I — reconcile role vocab + ADR-009 numbering collision**.
 
 ## P0 (historical)
 1. [x] Resolve local docs diffs cleanly: either (a) commit `docs/HANDOFF.md` + `docs/STATUS.md` on a small `docs/...` branch and open a PR to `main`, or (b) restore them if they are outdated. — done 2025-12-16
