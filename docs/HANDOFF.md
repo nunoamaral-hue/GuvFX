@@ -1,28 +1,22 @@
-# HANDOFF — GFX-PKT-006C-R4-R2 (UTC constructor invariant & acceptance reconciliation)
+# HANDOFF — live frontier pointer (2026-06-27)
 
-> Concise packet pointer. **Notion and GitHub are authoritative** for lifecycle and
-> merge state; the repository holds implementation, tests and concise evidence. This
-> document does not assert a point-in-time pull-request status.
+> Concise pointer. **Notion is the source of truth** for the full programme
+> lifecycle (*GuvFX — Current State v0.52*); GitHub holds implementation, tests and
+> concise evidence. This file does not assert point-in-time PR status. Full state
+> map: [`docs/PROGRAMME_STATE.md`](PROGRAMME_STATE.md).
 
-- Active workstream: **GFX-PKT-006C-R4-R2 — UTC Constructor Invariant and Acceptance
-  Reconciliation v0.1** (continuation of GFX-PKT-006C / R1 / R2 / R3 / R4 / R4-R1).
-  R4-R2 closes the final constructor-domain and acceptance-factuality defects: direct
-  `UtcInstant` construction admits only normalized ASCII `[0-9]+` fractional digits
-  (non-ASCII Unicode digits rejected) and epochs within the canonical year 0001–9999
-  parser domain; arbitrary-length parsing, exact ordering, immutability and
-  unhashability are unchanged. The prior R4-R1 incremental file count is corrected to
-  12.
-- Base: **GFX-PKT-006C** + **R1** + **R2** + **R3** + **R4** + **R4-R1**, merged to
-  `main` at/after `7cb6192…` (PR #35).
-- Branch: `fix/utc-instant-constructor-invariant` (base `main` `7cb6192…`).
-- Scope: synthetic-only edits to `research/market_data/contracts.py`, the foundation
-  test module and docs. No real data, NAS, broker, agent, execution or deployment
-  action.
-- Evidence: prior manifests through
-  `evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json`, plus the new
-  `evidence/manifests/GFX-EVD-006C-R4-R2-constructor-acceptance.json` (recorded after
-  C13 push/PR CI is green); the R4-R1 manifest gains only an additive supersession
-  pointer.
+- **Synthetic foundation (006C arc) — DONE.** 006C + R1…R4-R2 merged to `main`
+  (R4-R2 via PR #36; `main` `148437ae`). Synthetic-only; no real data/NAS/broker in
+  this repository.
+- **Live frontier — real data acquisition (006D).** Runs in the dedicated repo
+  `nunoamaral-hue/guvfx-windows-history-agent` (`main` `46c81057…`) + governed
+  read-only VPS probes. Probe ladder PASSED through P4 (history retrieval feasible);
+  **P5 (first durable raw object) is BLOCKED** at the storage gate.
+- **Single blocker:** owner action **GFX-PKT-006D-S1** — provision/expose
+  `GuvFXData` / `GUVFX_DATA_ROOT` to the Mac controller (NAS now on Tailscale).
+- **PM:** Claude Code is acting PM (documentation/authoring/tracking + Green/Amber
+  self-acceptance). New live-order/credential/risk-limit/promotion authorizations
+  and lifecycle ratification remain Nuno's explicit gate.
 
 ---
 

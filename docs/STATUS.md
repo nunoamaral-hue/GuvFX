@@ -6,8 +6,12 @@
 
 ## Snapshot
 
-- Date: 2026-06-24 (UTC)
-- Canonical branch: `main`
+- Date: 2026-06-27 (UTC)
+- Canonical branch: `main` @ `148437ae8bc651f6eb818e15bd9a16cf9d3a993f`
+- **Authority:** Notion is the source of truth for the full programme lifecycle
+  (latest *GuvFX — Current State v0.52*). This file is the Git-side mirror and
+  must be kept consistent with it. For the live data-acquisition frontier see
+  [`docs/PROGRAMME_STATE.md`](PROGRAMME_STATE.md).
 - Current governance merge: `c17b7b8` — PR #31 *Add governance convergence
   foundation* merged into `main`. This introduced the scoped Claude rules,
   authority/packet boundaries, the secret scanner + governance Make/CI gate, the
@@ -20,21 +24,28 @@
 - Research/data foundation: PR #32 and PR #33 are merged to `main`
   (`80ef2f8`), establishing the DuckDB research foundation and the versioned
   market-data contracts (GFX-PKT-005B / R1 / R2).
-- **GFX-PKT-006C** (synthetic market-data acquisition foundation), continued by
-  **R1**, **R2**, **R3**, **R4** and **R4-R1**, is now on `main` at/after merge
-  commit `7cb6192…` (PR #35): strict contracts, immutable raw landing with
-  SHA-256/idempotency/quarantine, the `VERIFIED` timezone gate, synthetic M1
-  bid-OHLC publication, one shared arbitrary-length-safe/immutable/unhashable
-  UTC-instant primitive, and ordinary-quarantine request/directory/16-hex-id
-  provenance. Branch `fix/utc-instant-constructor-invariant` (base `7cb6192…`)
-  carries **GFX-PKT-006C-R4-R2** — UTC-instant **constructor/evidence
-  reconciliation**: direct construction admits only normalized ASCII `[0-9]+`
-  fractional digits and epochs within the canonical year 0001–9999 domain, with the
-  R4-R1 incremental file count corrected to 12. Merging this branch and advancing its
-  lifecycle are owned in GitHub/Notion, not asserted here. Capability remains
-  **Partial**; G0 source/storage discovery and real acquisition stay **paused**
-  pending separate approval. Synthetic-only — no real data, NAS, broker, agent
-  acquisition or deployment exists. CI runs a `market-data-foundation` job.
+- **Synthetic market-data foundation (GFX-PKT-006C arc) — COMPLETE & MERGED.**
+  006C + R1 + R2 + R3 + R4 + R4-R1 + **R4-R2** are all merged to `main`; the final
+  R4-R2 (UTC-instant constructor/evidence reconciliation) merged via **PR #36**, so
+  `main` is at `148437ae`. This delivered strict contracts, immutable raw landing
+  with SHA-256/idempotency/quarantine, the `VERIFIED` timezone gate, synthetic M1
+  bid-OHLC publication, one arbitrary-length-safe/immutable/unhashable UTC-instant
+  primitive, and ordinary-quarantine provenance. It is **synthetic-only** — no real
+  data, NAS, broker, agent acquisition or deployment lives in this repository.
+- **LIVE PROGRAMME FRONTIER — real market-data acquisition (006D).** The active
+  frontier is **NOT in this repository**. It runs in the dedicated private repo
+  `nunoamaral-hue/guvfx-windows-history-agent` (`main` `46c81057…`; A0/A1/A2/A2-P1
+  merged) plus a ladder of governed read-only probes executed over SSH/Tailscale
+  against the Windows VPS MT5 terminal. All probes to date have PASSED: package
+  import (P0/P1), terminal lifecycle (P2), session-dependent runtime accepted
+  (H0/H1/ADR-DATA-017), source identity (P3), and history retrieval (P4: 6 EURUSD
+  M1 rows). **P5 (first durable immutable raw object) is BLOCKED** at its storage
+  gate — `GUVFX_DATA_ROOT` / the approved `GuvFXData` target is not yet provisioned
+  to the controller. The whole workstream is gated on **owner action GFX-PKT-006D-S1**.
+  Full packet→repo→status→evidence map: [`docs/PROGRAMME_STATE.md`](PROGRAMME_STATE.md).
+- **Capability (Notion Capability Registry, v0.52):** 1 of 10 domains GREEN
+  (*Trading* — production, live order path exists today); the other 9 AMBER. The
+  *Market Data & Research Platform* domain is the weakest and gates strategy quality.
 
 ## Verified current state
 
@@ -70,6 +81,18 @@ Facts supported by code, Git history, or CI in this repository:
 
 Current, evidenced items only:
 
+- **Data-acquisition blocked on owner action S1:** no durable real market-data
+  object exists yet; `GUVFX_DATA_ROOT` / `GuvFXData` is unprovisioned (P5 stops at
+  its storage gate). Owner-only step (NAS credentials); see `docs/PROGRAMME_STATE.md`.
+- **Broker-server timezone is UNVERIFIED** for the demo source (TradersWay-Demo).
+  MT5 bar times are broker-server time, not guaranteed UTC; no offset may be
+  hardcoded and no normalised dataset may be published until this is evidenced.
+- **MT5 runtime is desktop-session dependent** (autologon/kiosk console) per
+  ADR-DATA-017; a true headless/service-managed model is unproven and deferred.
+- **Live Trading path governance gap:** the GREEN *Trading* domain runs a real
+  order path today (Windows bridge), governed by the legacy programme; Blueprint
+  doc 06 requires reconciling it with the target execution architecture before any
+  execution-layer packet — not yet done.
 - Local `make check` cannot complete on a machine without a `backend/.venv` and a
   reachable PostgreSQL (`127.0.0.1:5432`); backend Django tests need a running
   PostgreSQL. GitHub Actions is the approved full-integration gate.
