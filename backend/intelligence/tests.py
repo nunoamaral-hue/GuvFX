@@ -7,6 +7,7 @@ accepts the object, and ADR-009 holds (no producer-side models, no WIMS trade
 objects).
 """
 
+import base64
 import dataclasses
 from decimal import Decimal
 from io import StringIO
@@ -254,7 +255,14 @@ from intelligence.delivery import (  # noqa: E402
     ingest_winning_trade,
     is_winning_trade,
 )
-from intelligence.results_card import render_results_card, row_from_trade  # noqa: E402
+from intelligence.caption import build_caption  # noqa: E402
+from intelligence.results_card import (  # noqa: E402
+    build_card_model,
+    render_card,
+    row_from_trade,
+    to_png_bytes,
+    to_svg,
+)
 
 WAYOND_MSG = (
     "NZDJPY | Potential upward movement\n\nNZDJPY | BUY 91.300\n\n"
@@ -262,12 +270,29 @@ WAYOND_MSG = (
 )
 
 WIN_TRADE = {
-    "ticket": "100245789", "symbol": "EURUSD", "side": "BUY",
+    "ticket": "100245789", "symbol": "EURUSD", "side": "BUY", "volume": "0.50",
     "open_time": "2026-06-13T09:15:00Z", "close_time": "2026-06-13T11:45:00Z",
     "open_price": "1.10200", "close_price": "1.10850",
     "profit": "325.00", "commission": "-4.00", "swap": "-1.20",
 }
 LOSS_TRADE = dict(WIN_TRADE, profit="-120.00", close_price="1.10080")
+ZERO_TRADE = dict(WIN_TRADE, profit="0.00", commission="0", swap="0")
+
+# XAUUSD SELL partial-close sequence (Nuno's example): 120.13 + 325.54 + 651.08
+XAUUSD_PARTIALS = [
+    {"ticket": "1", "symbol": "XAUUSD", "side": "SELL", "volume": "0.41",
+     "open_time": "2026-06-24T11:20:00Z", "close_time": "2026-06-24T11:36:05Z",
+     "open_price": "4085.93", "close_price": "4083.00", "profit": "120.13",
+     "commission": "0", "swap": "0"},
+    {"ticket": "2", "symbol": "XAUUSD", "side": "SELL", "volume": "0.41",
+     "open_time": "2026-06-24T11:20:00Z", "close_time": "2026-06-24T11:47:43Z",
+     "open_price": "4085.94", "close_price": "4078.00", "profit": "325.54",
+     "commission": "0", "swap": "0"},
+    {"ticket": "3", "symbol": "XAUUSD", "side": "SELL", "volume": "0.41",
+     "open_time": "2026-06-24T11:20:00Z", "close_time": "2026-06-24T12:29:39Z",
+     "open_price": "4085.88", "close_price": "4070.00", "profit": "651.08",
+     "commission": "0", "swap": "0"},
+]
 
 
 class WayondTelegramParserTests(TestCase):
@@ -340,25 +365,68 @@ class WinningTradePacketTests(TestCase):
             username="win", email="win@example.invalid", password="x"
         )
 
-    def test_winner_creates_packet_with_results_card_media(self):
+    def test_winner_creates_contract_media_caption_and_image(self):
         env, contract = ingest_winning_trade(WIN_TRADE, actor=self.user)
+        # WIMS contract
         self.assertEqual(contract.result_type, "WIN")
+        self.assertEqual(contract.source_type, ConsumptionContract.SourceType.TRADE_RESULT)
+        # media attachment + image payload (PNG, real raster)
         card = contract.media.get("results_card", {})
-        self.assertEqual(card.get("format"), "svg")
-        self.assertIn("<svg", card.get("svg", ""))
-        self.assertIn("Profit:", card["svg"])
+        self.assertEqual(card.get("format"), "png")
+        png = base64.b64decode(card["png_base64"])
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))  # PNG magic
+        self.assertGreater(len(png), 1000)
+        self.assertTrue(card.get("data_uri", "").startswith("data:image/png;base64,"))
+        self.assertIn("<svg", card.get("svg", ""))  # internal svg retained
+        # caption
+        caption = contract.media.get("caption", "")
+        self.assertIn("EURUSD", caption)
+        self.assertIn("Net Profit", caption)
 
-    def test_loser_is_rejected_and_never_persisted(self):
+    def test_loser_is_rejected_no_packet_no_media(self):
         self.assertFalse(is_winning_trade(LOSS_TRADE))
         with self.assertRaises(ValueError):
             ingest_winning_trade(LOSS_TRADE, actor=self.user)
         self.assertEqual(ConsumptionContract.objects.count(), 0)
+        self.assertEqual(Content.objects.count(), 0)
 
-    def test_results_card_renders_from_trade(self):
-        svg = render_results_card([row_from_trade(WIN_TRADE)], title="EURUSD BUY — WIN")
-        self.assertTrue(svg.startswith("<svg"))
-        self.assertIn("EURUSD", svg)
-        self.assertIn("Profit:", svg)
+    def test_zero_profit_is_rejected(self):
+        self.assertFalse(is_winning_trade(ZERO_TRADE))
+        with self.assertRaises(ValueError):
+            ingest_winning_trade(ZERO_TRADE, actor=self.user)
+        self.assertEqual(ConsumptionContract.objects.count(), 0)
+
+    def test_result_image_includes_all_required_fields(self):
+        # the SVG (same layout model as the PNG) must carry every required field
+        svg = to_svg(build_card_model([row_from_trade(WIN_TRADE)], total_profit="319.80"))
+        for token in ("EURUSD", "buy", "0.50", "1.10200", "1.10850",
+                      "2026.06.13", "319.80", "Total Profit"):
+            self.assertIn(token, svg, f"missing {token!r} in card")
+
+    def test_multiple_partial_closes_render_rows_and_total(self):
+        env, contract = ingest_winning_trade(XAUUSD_PARTIALS, actor=self.user)
+        # total profit correct: 120.13 + 325.54 + 651.08 = 1096.75
+        self.assertEqual(contract.profit_loss, Decimal("1096.75"))
+        svg = contract.media["results_card"]["svg"]
+        # three close rows present
+        for p in ("120.13", "325.54", "651.08"):
+            self.assertIn(p, svg)
+        self.assertIn("4083.00", svg)  # first close
+        self.assertIn("4070.00", svg)  # last close
+        self.assertIn("Total Profit", svg)
+        self.assertIn("1,096.75", svg)
+        # PNG renders for the multi-row card too
+        png = base64.b64decode(contract.media["results_card"]["png_base64"])
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_caption_has_symbol_direction_profit_and_pips(self):
+        # XAUUSD SELL 4085.88 -> 4070.00 = 158 pips (pip size 0.1)
+        caption = build_caption([row_from_trade(XAUUSD_PARTIALS[2])],
+                                net_profit=Decimal("651.08"))
+        self.assertIn("XAUUSD SELL", caption)
+        self.assertIn("+158 pips", caption)
+        self.assertIn("Net Profit: $651.08", caption)
+        self.assertNotIn("guaranteed", caption.lower())
 
     def test_publish_command_holds_at_review_gate(self):
         out = StringIO()
@@ -366,5 +434,12 @@ class WinningTradePacketTests(TestCase):
         output = out.getvalue()
         self.assertIn("PASS", output)
         self.assertIn("human-review gate", output)
-        # nothing published without approval
-        self.assertEqual(Publish.objects.count(), 0)
+        self.assertEqual(Publish.objects.count(), 0)  # nothing published without approval
+
+    def test_publish_command_rejects_loser(self):
+        import json as _json
+        out = StringIO()
+        call_command("publish_winning_trade", "--trade", _json.dumps(LOSS_TRADE),
+                     stdout=out, stderr=StringIO())
+        self.assertIn("never published", out.getvalue())
+        self.assertEqual(ConsumptionContract.objects.count(), 0)

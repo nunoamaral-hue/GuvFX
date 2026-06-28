@@ -79,25 +79,33 @@ class Command(BaseCommand):
             path = Path(settings.BASE_DIR) / rel
         if not path.exists():
             raise CommandError(f"Closed-trade fixture not found: {path}")
+        # A fixture may be a single trade OR a list of partial closes.
         return json.loads(path.read_text()), f"fixture {rel}"
 
     def handle(self, *args, **opts):
+        import base64
         actor = self._actor(opts.get("actor"))
         trade, origin = self._load_trade(opts)
+        rows_in = trade if isinstance(trade, list) else [trade]
 
         self.stdout.write(self.style.SUCCESS(
-            "\nWinning trade -> results card -> WIMS packet (WIN-only)"
+            "\nWinning trade -> trade result card -> WIMS packet (WIN-only)"
         ))
-        self.stdout.write(f"  trade source: {origin}")
+        self.stdout.write(f"  trade source: {origin} ({len(rows_in)} close row(s))")
 
-        if not is_winning_trade(trade):
+        from decimal import Decimal
+        from intelligence.delivery import _net_pnl
+        total_net = sum((_net_pnl(t) for t in rows_in), Decimal("0"))
+        if total_net <= 0:
             self.stdout.write(self.style.NOTICE(
-                "  Trade is NOT a winner — losers are never published. Nothing created."
+                "  NOT a net winner (total pnl <= 0) — losers/breakeven are never "
+                "published. Nothing created."
             ))
             return
 
         envelope, contract = ingest_winning_trade(trade, actor=actor)
-        card = contract.media.get("results_card", {}).get("svg", "")
+        card = contract.media.get("results_card", {})
+        caption = contract.media.get("caption", "")
 
         self.stdout.write("  + WIN detected; packet created:")
         self.stdout.write(
@@ -105,11 +113,21 @@ class Command(BaseCommand):
             f"{contract.result_type}, pnl={contract.profit_loss}) "
             f"workflow={workflow_state_for_contract(contract)}"
         )
-        self.stdout.write(f"    results card: {len(card)} bytes SVG attached as media")
+        self.stdout.write(
+            f"    result card: format={card.get('format')} "
+            f"png={len(card.get('png_base64',''))}b64 + svg internal; caption attached"
+        )
 
-        if opts.get("out") and card:
-            Path(opts["out"]).write_text(card)
-            self.stdout.write(f"    wrote SVG -> {opts['out']}")
+        if opts.get("out") and card.get("png_base64"):
+            out = opts["out"]
+            if not out.lower().endswith((".png", ".jpg", ".jpeg")):
+                out = out + ".png"
+            Path(out).write_bytes(base64.b64decode(card["png_base64"]))
+            self.stdout.write(f"    wrote PNG -> {out}")
+
+        self.stdout.write("    caption:")
+        for line in caption.splitlines():
+            self.stdout.write(f"      | {line}")
 
         # Build content from the consumed contract and take it to the review gate.
         ctx = services.create_context_from_contract(
@@ -125,7 +143,7 @@ class Command(BaseCommand):
             context=ctx,
             title=f"Result: {envelope.structured_payload.market} "
                   f"{envelope.structured_payload.direction} (+{contract.profit_loss})",
-            content_text="Audience-facing recap generated from the winning-trade packet.",
+            content_text=caption,  # the social caption IS the audience-facing copy
             actor=actor,
         )
         services.submit_for_review(content=content, actor=actor)

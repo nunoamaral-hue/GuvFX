@@ -223,24 +223,57 @@ def _net_pnl(trade) -> Decimal:
 
 
 def is_winning_trade(trade) -> bool:
+    """True only when net pnl is strictly positive (zero/breakeven is not a win)."""
     return _net_pnl(trade) > 0
 
 
+def _g(t, k):
+    return t.get(k) if isinstance(t, Mapping) else getattr(t, k, None)
+
+
+def _aggregate_trade(trades, total_net):
+    """Synthesise a single aggregate trade dict from a partial-close sequence."""
+    if len(trades) == 1:
+        return trades[0]
+    first, last = trades[0], trades[-1]
+    return {
+        "ticket": str(_g(first, "ticket") or ""),
+        "symbol": _g(first, "symbol"),
+        "side": _g(first, "side"),
+        "open_time": _g(first, "open_time"),
+        "close_time": _g(last, "close_time"),
+        "open_price": _g(first, "open_price"),
+        "close_price": _g(last, "close_price"),
+        "profit": str(total_net),
+        "commission": "0",
+        "swap": "0",
+    }
+
+
 @transaction.atomic
-def ingest_winning_trade(trade, actor=None, account_label="GuvFX"):
-    """WIN-ONLY: closed winning trade -> trade-result envelope + results card -> WIMS.
+def ingest_winning_trade(trade, actor=None, account_label="GuvFX", currency="$"):
+    """WIN-ONLY: a closed winning trade (or partial-close sequence) -> WIMS packet.
 
-    Losers are rejected here (``ValueError``) so they never enter the publish
-    pipeline. The rendered results card is attached as content-side ``media`` and
-    rides WP-3 -> Context -> Content -> human Review -> Publish. Returns
-    ``(envelope, contract)``.
+    ``trade`` is a single ``trading.models.Trade``-like object/mapping, or a list
+    of them (partial closes of one order sequence). Rejects (``ValueError``) when
+    total net pnl is <= 0, so losers AND breakeven/zero never enter the publish
+    pipeline. Attaches a mobile trade-result card (PNG + internal SVG) and a
+    social caption as content-side ``media`` and rides WP-3 -> Context -> Content
+    -> human Review -> Publish. Returns ``(envelope, contract)``.
     """
-    if not is_winning_trade(trade):
-        raise ValueError("Trade is not a winner (net pnl <= 0); losers are not published.")
+    from .caption import build_caption          # local imports: avoid cycles
+    from .results_card import render_card, row_from_trade
 
-    from .results_card import render_results_card, row_from_trade  # local import
+    trades = list(trade) if isinstance(trade, (list, tuple)) else [trade]
+    total_net = sum((_net_pnl(t) for t in trades), Decimal("0"))
+    if total_net <= 0:
+        raise ValueError(
+            "Not a net-winning trade (total pnl <= 0); losers and breakeven are not published."
+        )
 
-    envelope = TradeResultProducer().produce(trade)
+    rows = [row_from_trade(t) for t in trades]
+    envelope = TradeResultProducer().produce(_aggregate_trade(trades, total_net))
+
     record_audit_ref(
         actor, AuditEvent.Event.TRADE_DETECTED,
         object_type=_TRADE_TYPE, object_id=0,
@@ -254,19 +287,13 @@ def ingest_winning_trade(trade, actor=None, account_label="GuvFX"):
         intelligence_type=envelope.intelligence_type,
     )
 
-    card_svg = render_results_card(
-        [row_from_trade(trade)],
-        title=f"{envelope.structured_payload.market} "
-              f"{envelope.structured_payload.direction} — WIN",
-        account_label=account_label,
-        total_profit=str(_net_pnl(trade)),
+    card = render_card(
+        rows,
+        title=f"{rows[0].symbol} {rows[0].direction} winning trade",
+        total_profit=str(total_net),
     )
-    media = {
-        "results_card": {
-            "format": "svg",
-            "kind": "trade_history_results",
-            "svg": card_svg,
-        }
-    }
+    caption = build_caption(rows, net_profit=total_net, currency=currency)
+    media = {"results_card": card, "caption": caption}
+
     contract = deliver_trade_result(envelope, actor=actor, media=media)
     return envelope, contract

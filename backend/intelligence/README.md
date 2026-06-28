@@ -94,9 +94,13 @@ Two additive, content-side capabilities. Neither places a trade.
   `parse_message` → `ParsedSignal` (SIGNAL / UPDATE / UNKNOWN); `classify_messages`
   dedups by message id and **quarantines** anything unparseable. `to_producer_signal`
   maps a SIGNAL onto the Phase 7A producer shape.
-- **`results_card.py`** — dependency-free **SVG** of the MT5-style results/history
-  row(s) filtered to one order/day (not a chart, not a screen-capture). Generated
-  from GuvFX trade data, so there is no broker-ToS / VPS-automation concern.
+- **`results_card.py`** — mobile **trade result card** from a single layout model →
+  **PNG** (Telegram/Instagram-ready, via Pillow) + internal SVG. White app-style bg,
+  green winner bar, symbol + buy/sell + lot, entry→close, close time, prominent blue
+  profit, Total Profit summary; one row or multiple partial-close rows. Generated
+  from trade data — not a chart, not a screen-capture (no broker-ToS / VPS concern).
+- **`caption.py`** — `build_caption`: non-overclaiming social copy (win statement,
+  symbol, direction, pips where computable, net profit + currency).
 - **`delivery.ingest_wayond_telegram_signal`** — a parsed Wayond signal → WIMS
   *content* `ConsumptionContract` (reuses Phase 7A `ingest_wayond_signal`).
 - **`delivery.ingest_winning_trade`** — **WIN-only**: a closed winning trade →

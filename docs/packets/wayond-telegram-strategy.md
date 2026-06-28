@@ -28,16 +28,27 @@ an order trigger (ADR-009: WIMS never trades).
 ## Delivered in this packet (content-only, no trading) — branch `feat/wayond-telegram-wims-content`
 
 - `intelligence/telegram_source.py` — Wayond message parser, dedup, quarantine.
-- `intelligence/results_card.py` — dependency-free SVG results/history card
-  (filtered to order/day; generated from trade data, not a screenshot).
+- `intelligence/results_card.py` — mobile **trade result card**: one layout model
+  → **PNG** (Telegram/Instagram-ready, via Pillow) + internal SVG. White app-style
+  background, green winner bar, symbol + buy/sell + lot, entry→close (vector arrow),
+  close time, prominent blue profit, and a Total Profit summary. Supports one row
+  or multiple partial-close rows. Generated from trade data — not a screenshot, no
+  broker branding.
+- `intelligence/caption.py` — `build_caption`: win statement, symbol, direction,
+  pips (where computable), net profit + currency, non-overclaiming automation
+  wording. Becomes the audience-facing `Content.content_text`.
 - `intelligence/delivery.ingest_wayond_telegram_signal` — signal → WIMS content.
-- `intelligence/delivery.ingest_winning_trade` — WIN-only winner → card → WIMS packet.
+- `intelligence/delivery.ingest_winning_trade` — WIN-only winner (single trade or a
+  partial-close list) → card (PNG) + caption → WIMS packet. Rejects total pnl ≤ 0
+  (losers AND breakeven).
 - `wims.ConsumptionContract.media` (additive JSONField; migration `0006`) — carries
-  the card on the content side only.
-- Management commands `ingest_wayond_telegram`, `publish_winning_trade`.
-- Tests (37 wims+intelligence) + fixtures.
+  `{results_card:{png_base64,data_uri,svg,format}, caption}` on the content side only.
+- Management commands `ingest_wayond_telegram`, `publish_winning_trade` (`--out` writes
+  the PNG; `--fixture` accepts a single trade or a partial-close list).
+- Tests (41 wims+intelligence) + fixtures (incl. `xauusd_partial_closes.json`).
+- New dependency: `Pillow>=10.1` (PNG rendering; bundled scalable font, no font files committed).
 
-Loser-suppression is enforced twice: `ingest_winning_trade` rejects non-winners,
+Loser-suppression is enforced twice: `ingest_winning_trade` rejects non-winners/breakeven,
 and WIMS' mandatory human-review gate (`services.py`) blocks any unapproved publish.
 
 ## NOT delivered here — execution flow (governance Red, blocked)

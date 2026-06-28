@@ -1,169 +1,266 @@
 """
-Results card renderer (Phase: Wayond content).
+Trade result card renderer (Wayond / WIMS content).
 
-Renders the *results / history* section of a winning trade as a self-contained
-SVG — the MT5 "Account History"-style row(s) filtered to a single order or day,
-with the profit highlighted. This is what rides the WIMS packet to add
-legitimacy to social content. It is NOT a chart and does NOT screen-capture the
-terminal: it is generated from GuvFX trade data, so there is no broker-ToS or
-VPS-automation concern.
+Renders a winning trade as a clean, mobile/social-style **trade result card**
+(a.k.a. trade receipt / trade history card) — readable on Telegram and Instagram,
+with the profit prominent. It is generated from GuvFX trade data; it is NOT a
+broker screenshot and carries no broker branding.
 
-Pure / dependency-free (string SVG). PNG conversion, if ever needed, is a
-downstream step and intentionally out of scope here.
+One layout model drives both outputs so they never drift:
+  * ``to_png_bytes`` — the Telegram/social-ready raster (the attached deliverable)
+  * ``to_svg``       — vector, internal/preview only
+
+Supports one row or multiple partial-close rows; a Total Profit summary is shown
+when there is more than one row.
 """
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from decimal import Decimal
 
-COLUMNS = [
-    ("open_time", "Open Time", 168),
-    ("symbol", "Symbol", 90),
-    ("type", "Type", 64),
-    ("volume", "Volume", 78),
-    ("open_price", "Open Price", 104),
-    ("sl", "S / L", 96),
-    ("tp", "T / P", 96),
-    ("close_time", "Close Time", 168),
-    ("close_price", "Close Price", 104),
-    ("profit", "Profit", 96),
-]
+from PIL import Image, ImageDraw, ImageFont
 
-_PALETTE = {
-    "bg": "#0b0e11",
-    "panel": "#11161c",
-    "header": "#1b2530",
-    "grid": "#243140",
-    "text": "#e6edf3",
-    "muted": "#8b98a5",
-    "win": "#2ec27e",
-    "brand": "#8b5cf6",
-}
+# ---- palette (deliberately app-neutral; not a broker theme) ----------------
+WHITE = "#ffffff"
+INK = "#111827"
+MUTED = "#6b7280"
+DIVIDER = "#edeff2"
+BUY = "#2563eb"
+SELL = "#e23b3b"
+PROFIT = "#1f74e0"   # profit stands out in blue, matching the reference
+ACCENT = "#16a34a"   # green left bar = winning trade marker
+
+W = 1080
+MARGIN = 56
+ROW_H = 150
+HEADER_H = 0
+FOOTER_H = 200
+
+_SCRATCH = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+
+def _font(size: int):
+    return ImageFont.load_default(size=size)  # scalable DejaVu (Pillow >= 10.1)
+
+
+def _measure(text: str, size: int) -> float:
+    return _SCRATCH.textlength(str(text), font=_font(size))
 
 
 @dataclass
-class ResultRow:
-    open_time: str
+class TradeRow:
     symbol: str
-    type: str
+    direction: str   # BUY / SELL
     volume: str
-    open_price: str
-    sl: str
-    tp: str
+    entry: str
+    close: str
     close_time: str
-    close_price: str
-    profit: str
+    profit: str      # net, formatted
 
 
-def _esc(s) -> str:
+def _net(trade) -> Decimal:
+    def g(k):
+        return trade.get(k, 0) if isinstance(trade, dict) else getattr(trade, k, 0)
     return (
-        str(s)
-        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        .replace('"', "&quot;")
+        Decimal(str(g("profit") or 0))
+        + Decimal(str(g("commission") or 0))
+        + Decimal(str(g("swap") or 0))
     )
 
 
-def _fmt(value, places=None) -> str:
+def _num(value, places) -> str:
     if value in (None, ""):
         return ""
-    if places is not None:
-        try:
-            return f"{Decimal(str(value)):.{places}f}"
-        except Exception:
-            return str(value)
+    try:
+        return f"{Decimal(str(value)):.{places}f}"
+    except Exception:
+        return str(value)
+
+
+def _price(value) -> str:
+    """Show a price at its natural precision (5dp FX, 2dp metals/indices)."""
+    if value in (None, ""):
+        return ""
     return str(value)
 
 
-def row_from_trade(trade) -> ResultRow:
-    """Build a ResultRow from a trading.models.Trade-like object or mapping."""
-    def g(k, default=""):
-        if isinstance(trade, dict):
-            return trade.get(k, default)
-        return getattr(trade, k, default)
+def _fmt_time(value) -> str:
+    """Normalise an ISO timestamp to 'YYYY.MM.DD HH:MM:SS' (broker-style)."""
+    s = str(value or "")
+    if not s:
+        return ""
+    s = s.replace("Z", "").split("+")[0].split(".")[0]
+    if "T" in s:
+        d, _, t = s.partition("T")
+    elif " " in s:
+        d, _, t = s.partition(" ")
+    else:
+        return s
+    return f"{d.replace('-', '.')} {t}".strip()
 
-    net = (
-        Decimal(str(g("profit", 0) or 0))
-        + Decimal(str(g("commission", 0) or 0))
-        + Decimal(str(g("swap", 0) or 0))
-    )
-    return ResultRow(
-        open_time=str(g("open_time", "")),
+
+def row_from_trade(trade) -> TradeRow:
+    """Build a TradeRow from a trading.models.Trade-like object or mapping."""
+    def g(k, d=""):
+        return trade.get(k, d) if isinstance(trade, dict) else getattr(trade, k, d)
+    return TradeRow(
         symbol=str(g("symbol", "")),
-        type=str(g("side", "")).lower(),
-        volume=_fmt(g("volume", ""), 2),
-        open_price=_fmt(g("open_price", ""), 5),
-        sl=_fmt(g("stop_loss", g("sl", "")), 5) if g("stop_loss", g("sl", "")) else "",
-        tp=_fmt(g("take_profit", g("tp", "")), 5) if g("take_profit", g("tp", "")) else "",
-        close_time=str(g("close_time", "")),
-        close_price=_fmt(g("close_price", ""), 5),
-        profit=_fmt(net, 2),
+        direction=str(g("side", "")).upper(),
+        volume=_num(g("volume", ""), 2),
+        entry=_price(g("open_price", "")),
+        close=_price(g("close_price", "")),
+        close_time=_fmt_time(g("close_time", "")),
+        profit=_num(_net(trade), 2),
     )
 
 
-def render_results_card(rows, *, title="Closed Trade Result",
-                        account_label="GuvFX", total_profit=None) -> str:
-    """Render the results rows as an SVG string (winners only by convention)."""
-    width = sum(w for _, _, w in COLUMNS) + 32
-    header_h, row_h, top = 64, 30, 104
-    height = top + row_h * (len(rows) + 1) + 56
+def _money(value) -> str:
+    d = Decimal(str(value))
+    return f"{d:,.2f}"
 
+
+# ---------------------------------------------------------------------------
+# Layout model: list of primitive draw ops shared by SVG + PNG renderers
+# ---------------------------------------------------------------------------
+def build_card_model(rows, *, title="Trade result", total_profit=None):
+    """Return ``(width, height, ops)`` for the given rows.
+
+    ``ops`` are dicts: rect / line / text (text y is the baseline).
+    """
+    multi = len(rows) > 1
+    height = 96 + ROW_H * len(rows) + (FOOTER_H if (multi or rows) else 0)
+    ops = []
+    ops.append({"op": "rect", "x": 0, "y": 0, "w": W, "h": height, "fill": WHITE})
+
+    # title strip
+    ops.append({"op": "text", "x": MARGIN, "y": 64, "t": title, "size": 34,
+                "fill": MUTED, "anchor": "start", "bold": False})
+
+    y0 = 96
+    for i, r in enumerate(rows):
+        top = y0 + i * ROW_H
+        # green winning-trade accent bar
+        ops.append({"op": "rect", "x": 0, "y": top + 18, "w": 12, "h": ROW_H - 36,
+                    "fill": ACCENT})
+        # line 1: SYMBOL  direction volume  .......  PROFIT
+        bx = MARGIN
+        base1 = top + 64
+        ops.append({"op": "text", "x": bx, "y": base1, "t": r.symbol, "size": 48,
+                    "fill": INK, "anchor": "start", "bold": True})
+        bx += _measure(r.symbol + "  ", 48)
+        dcol = BUY if r.direction == "BUY" else SELL
+        dtext = f"{r.direction.lower()} {r.volume}".strip()
+        ops.append({"op": "text", "x": bx, "y": base1, "t": dtext, "size": 40,
+                    "fill": dcol, "anchor": "start", "bold": True})
+        ops.append({"op": "text", "x": W - MARGIN, "y": base1, "t": r.profit,
+                    "size": 54, "fill": PROFIT, "anchor": "end", "bold": True})
+        # line 2: entry -[arrow]- close .......... close time
+        # The arrow is drawn as a vector (the bundled font lacks U+2192), so it
+        # renders identically in PNG and SVG with no missing-glyph boxes.
+        base2 = top + 118
+        ops.append({"op": "text", "x": MARGIN, "y": base2, "t": r.entry,
+                    "size": 36, "fill": MUTED, "anchor": "start", "bold": False})
+        ax = MARGIN + _measure(r.entry, 36) + 18
+        ops.append({"op": "arrow", "x": ax, "y": base2 - 12, "len": 38, "stroke": MUTED})
+        ops.append({"op": "text", "x": ax + 38 + 18, "y": base2, "t": r.close,
+                    "size": 36, "fill": MUTED, "anchor": "start", "bold": False})
+        ops.append({"op": "text", "x": W - MARGIN, "y": base2, "t": r.close_time,
+                    "size": 34, "fill": MUTED, "anchor": "end", "bold": False})
+        # row divider
+        ops.append({"op": "line", "x1": MARGIN, "y1": top + ROW_H - 2,
+                    "x2": W - MARGIN, "y2": top + ROW_H - 2, "stroke": DIVIDER})
+
+    # footer total
     if total_profit is None:
         total = sum(Decimal(str(r.profit or 0)) for r in rows)
     else:
         total = Decimal(str(total_profit))
+    fy = y0 + ROW_H * len(rows)
+    ops.append({"op": "line", "x1": MARGIN, "y1": fy + 24, "x2": W - MARGIN,
+                "y2": fy + 24, "stroke": DIVIDER})
+    ops.append({"op": "text", "x": W // 2, "y": fy + 86, "t": "Total Profit",
+                "size": 36, "fill": MUTED, "anchor": "middle", "bold": False})
+    ops.append({"op": "text", "x": W // 2, "y": fy + 162, "t": _money(total),
+                "size": 76, "fill": INK, "anchor": "middle", "bold": True})
+    return W, height, ops
 
-    p = _PALETTE
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" font-family="ui-monospace,Menlo,Consolas,monospace">',
-        f'<rect width="{width}" height="{height}" fill="{p["bg"]}"/>',
-        f'<rect x="16" y="16" width="{width-32}" height="{height-32}" rx="10" fill="{p["panel"]}"/>',
-        # brand bar + title
-        f'<rect x="16" y="16" width="6" height="{height-32}" fill="{p["brand"]}"/>',
-        f'<text x="36" y="46" fill="{p["text"]}" font-size="20" font-weight="700">{_esc(title)}</text>',
-        f'<text x="36" y="70" fill="{p["muted"]}" font-size="13">{_esc(account_label)}'
-        f' · results filtered to order/day</text>',
-    ]
 
-    # table header
-    x = 32
-    y = top - row_h
-    parts.append(f'<rect x="24" y="{y-20}" width="{width-48}" height="{header_h-40}" fill="{p["header"]}"/>')
-    for key, label, w in COLUMNS:
-        anchor = "end" if key in ("profit", "volume", "open_price", "close_price", "sl", "tp") else "start"
-        tx = x + (w - 10 if anchor == "end" else 4)
-        parts.append(
-            f'<text x="{tx}" y="{y-2}" fill="{p["muted"]}" font-size="12" '
-            f'text-anchor="{anchor}">{_esc(label)}</text>'
-        )
-        x += w
+_SVG_ANCHOR = {"start": "start", "middle": "middle", "end": "end"}
+_PNG_ANCHOR = {"start": "ls", "middle": "ms", "end": "rs"}
 
-    # rows
-    for i, r in enumerate(rows):
-        ry = top + i * row_h
-        if i % 2 == 0:
-            parts.append(f'<rect x="24" y="{ry-18}" width="{width-48}" height="{row_h}" fill="#0e141b"/>')
-        x = 32
-        for key, _label, w in COLUMNS:
-            val = getattr(r, key)
-            is_profit = key == "profit"
-            anchor = "end" if key in ("profit", "volume", "open_price", "close_price", "sl", "tp") else "start"
-            tx = x + (w - 10 if anchor == "end" else 4)
-            color = p["win"] if is_profit else p["text"]
-            weight = "700" if is_profit else "400"
-            parts.append(
-                f'<text x="{tx}" y="{ry+2}" fill="{color}" font-size="12" '
-                f'font-weight="{weight}" text-anchor="{anchor}">{_esc(val)}</text>'
+
+def _esc(s) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def to_svg(model) -> str:
+    width, height, ops = model
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+           f'viewBox="0 0 {width} {height}" font-family="Helvetica,Arial,sans-serif">']
+    for o in ops:
+        if o["op"] == "rect":
+            out.append(f'<rect x="{o["x"]}" y="{o["y"]}" width="{o["w"]}" '
+                       f'height="{o["h"]}" fill="{o["fill"]}"/>')
+        elif o["op"] == "line":
+            out.append(f'<line x1="{o["x1"]}" y1="{o["y1"]}" x2="{o["x2"]}" '
+                       f'y2="{o["y2"]}" stroke="{o["stroke"]}" stroke-width="2"/>')
+        elif o["op"] == "arrow":
+            x, y, ln, c = o["x"], o["y"], o["len"], o["stroke"]
+            out.append(f'<line x1="{x}" y1="{y}" x2="{x+ln}" y2="{y}" '
+                       f'stroke="{c}" stroke-width="4"/>')
+            out.append(f'<polygon points="{x+ln},{y} {x+ln-13},{y-8} {x+ln-13},{y+8}" '
+                       f'fill="{c}"/>')
+        elif o["op"] == "text":
+            weight = "700" if o["bold"] else "400"
+            out.append(
+                f'<text x="{o["x"]:.0f}" y="{o["y"]}" fill="{o["fill"]}" '
+                f'font-size="{o["size"]}" font-weight="{weight}" '
+                f'text-anchor="{_SVG_ANCHOR[o["anchor"]]}">{_esc(o["t"])}</text>'
             )
-            x += w
+    out.append("</svg>")
+    return "".join(out)
 
-    # total footer
-    fy = top + len(rows) * row_h + 16
-    parts.append(f'<line x1="24" y1="{fy-8}" x2="{width-24}" y2="{fy-8}" stroke="{p["grid"]}"/>')
-    parts.append(
-        f'<text x="{width-26}" y="{fy+16}" fill="{p["win"]}" font-size="16" '
-        f'font-weight="700" text-anchor="end">Profit: {_fmt(total, 2)}</text>'
-    )
-    parts.append("</svg>")
-    return "".join(parts)
+
+def to_png_bytes(model) -> bytes:
+    import io
+    width, height, ops = model
+    img = Image.new("RGB", (width, height), WHITE)
+    d = ImageDraw.Draw(img)
+    for o in ops:
+        if o["op"] == "rect":
+            d.rectangle([o["x"], o["y"], o["x"] + o["w"], o["y"] + o["h"]], fill=o["fill"])
+        elif o["op"] == "line":
+            d.line([o["x1"], o["y1"], o["x2"], o["y2"]], fill=o["stroke"], width=2)
+        elif o["op"] == "arrow":
+            x, y, ln, c = o["x"], o["y"], o["len"], o["stroke"]
+            d.line([x, y, x + ln, y], fill=c, width=4)
+            d.polygon([(x + ln, y), (x + ln - 13, y - 8), (x + ln - 13, y + 8)], fill=c)
+        elif o["op"] == "text":
+            sw = 1 if o["bold"] else 0
+            d.text((o["x"], o["y"]), str(o["t"]), font=_font(o["size"]),
+                   fill=o["fill"], anchor=_PNG_ANCHOR[o["anchor"]],
+                   stroke_width=sw, stroke_fill=o["fill"])
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def render_card(rows, *, title="Trade result", total_profit=None) -> dict:
+    """Render rows to both PNG (deliverable) and SVG (internal).
+
+    Returns a media dict ready to attach to a WIMS ConsumptionContract:
+    ``{format, kind, png_base64, data_uri, svg}``.
+    """
+    model = build_card_model(rows, title=title, total_profit=total_profit)
+    png = to_png_bytes(model)
+    b64 = base64.b64encode(png).decode("ascii")
+    return {
+        "format": "png",
+        "kind": "trade_result_card",
+        "png_base64": b64,
+        "data_uri": f"data:image/png;base64,{b64}",
+        "svg": to_svg(model),
+    }
