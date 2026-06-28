@@ -155,7 +155,7 @@ def ingest_trade_result(trade, actor=None):
 
 @transaction.atomic
 def deliver_trade_result(envelope: TradeResultIntelligenceEnvelope,
-                         actor=None) -> ConsumptionContract:
+                         actor=None, media=None) -> ConsumptionContract:
     """Deliver a trade-result envelope to WIMS and consume it as a contract."""
     p = envelope.structured_payload
 
@@ -182,6 +182,7 @@ def deliver_trade_result(envelope: TradeResultIntelligenceEnvelope,
         commentary=p.summary,
         tags=["trade-result", p.outcome.lower()] if p.outcome else ["trade-result"],
         raw_signal=json.dumps(envelope.to_dict()),
+        media=media,
     )
 
     # 4 — envelope consumed
@@ -191,3 +192,108 @@ def deliver_trade_result(envelope: TradeResultIntelligenceEnvelope,
         intelligence_id=envelope.intelligence_id,
     )
     return contract
+
+
+# ---------------------------------------------------------------------------
+# Wayond content: Telegram signal -> WIMS content (NO execution)
+# ---------------------------------------------------------------------------
+def ingest_wayond_telegram_signal(parsed, actor=None, timestamp=""):
+    """Content-only: a parsed Wayond Telegram SIGNAL -> WIMS ConsumptionContract.
+
+    Reuses the unchanged Phase 7A signal path (``ingest_wayond_signal``). This
+    feeds *educational content* only and never touches execution. ``parsed`` is a
+    ``telegram_source.ParsedSignal`` (must be a tradeable SIGNAL shape).
+    """
+    from .telegram_source import to_producer_signal  # local import: avoid cycle
+    signal = to_producer_signal(parsed, timestamp=timestamp)
+    return ingest_wayond_signal(signal, actor=actor)
+
+
+# ---------------------------------------------------------------------------
+# Winning trade -> results card -> WIMS packet (WIN-ONLY; losers never enter)
+# ---------------------------------------------------------------------------
+def _net_pnl(trade) -> Decimal:
+    def g(k):
+        return trade.get(k, 0) if isinstance(trade, Mapping) else getattr(trade, k, 0)
+    return (
+        Decimal(str(g("profit") or 0))
+        + Decimal(str(g("commission") or 0))
+        + Decimal(str(g("swap") or 0))
+    )
+
+
+def is_winning_trade(trade) -> bool:
+    """True only when net pnl is strictly positive (zero/breakeven is not a win)."""
+    return _net_pnl(trade) > 0
+
+
+def _g(t, k):
+    return t.get(k) if isinstance(t, Mapping) else getattr(t, k, None)
+
+
+def _aggregate_trade(trades, total_net):
+    """Synthesise a single aggregate trade dict from a partial-close sequence."""
+    if len(trades) == 1:
+        return trades[0]
+    first, last = trades[0], trades[-1]
+    return {
+        "ticket": str(_g(first, "ticket") or ""),
+        "symbol": _g(first, "symbol"),
+        "side": _g(first, "side"),
+        "open_time": _g(first, "open_time"),
+        "close_time": _g(last, "close_time"),
+        "open_price": _g(first, "open_price"),
+        "close_price": _g(last, "close_price"),
+        "profit": str(total_net),
+        "commission": "0",
+        "swap": "0",
+    }
+
+
+@transaction.atomic
+def ingest_winning_trade(trade, actor=None, account_label="GuvFX", currency="$"):
+    """WIN-ONLY: a closed winning trade (or partial-close sequence) -> WIMS packet.
+
+    ``trade`` is a single ``trading.models.Trade``-like object/mapping, or a list
+    of them (partial closes of one order sequence). Rejects (``ValueError``) when
+    total net pnl is <= 0, so losers AND breakeven/zero never enter the publish
+    pipeline. Attaches a mobile trade-result card (PNG + internal SVG) and a
+    social caption as content-side ``media`` and rides WP-3 -> Context -> Content
+    -> human Review -> Publish. Returns ``(envelope, contract)``.
+    """
+    from .caption import build_caption          # local imports: avoid cycles
+    from .results_card import render_card, row_from_trade
+
+    trades = list(trade) if isinstance(trade, (list, tuple)) else [trade]
+    total_net = sum((_net_pnl(t) for t in trades), Decimal("0"))
+    if total_net <= 0:
+        raise ValueError(
+            "Not a net-winning trade (total pnl <= 0); losers and breakeven are not published."
+        )
+
+    rows = [row_from_trade(t) for t in trades]
+    envelope = TradeResultProducer().produce(_aggregate_trade(trades, total_net))
+
+    record_audit_ref(
+        actor, AuditEvent.Event.TRADE_DETECTED,
+        object_type=_TRADE_TYPE, object_id=0,
+        intelligence_id=envelope.intelligence_id,
+        trade_id=envelope.structured_payload.trade_id, source=envelope.source,
+    )
+    record_audit_ref(
+        actor, AuditEvent.Event.ENVELOPE_CREATED,
+        object_type=_TR_ENVELOPE_TYPE, object_id=0,
+        intelligence_id=envelope.intelligence_id, version=envelope.version,
+        intelligence_type=envelope.intelligence_type,
+    )
+
+    card = render_card(
+        rows,
+        title=f"{rows[0].symbol} {rows[0].direction} winning trade",
+        total_profit=str(total_net),
+    )
+    caption = build_caption(rows, net_profit=total_net, currency=currency)
+    media = {"results_card": card, "caption": caption}
+
+    contract = deliver_trade_result(envelope, actor=actor, media=media)
+    return envelope, contract

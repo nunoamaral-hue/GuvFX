@@ -85,7 +85,7 @@ def create_contract(*, symbol: str = "", direction: str = "", actor=None,
                     # WP-3 — trade-result fields (used when source_type=TRADE_RESULT)
                     exit_price=None, result_type: str = "", profit_loss=None,
                     pips=None, close_time=None, commentary: str = "",
-                    tags=None) -> ConsumptionContract:
+                    tags=None, media=None) -> ConsumptionContract:
     """Record externally-sourced intelligence as a consumption contract.
 
     Source-type agnostic: handles Wayond entry signals (WP-2) and external trade
@@ -113,6 +113,7 @@ def create_contract(*, symbol: str = "", direction: str = "", actor=None,
         close_time=close_time,
         commentary=commentary,
         tags=tags if tags is not None else [],
+        media=media if media is not None else {},
         status=ConsumptionContract.Status.RECEIVED,
     )
     record_audit(actor, AuditEvent.Event.CONTRACT_CREATED, contract,
