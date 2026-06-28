@@ -95,7 +95,8 @@ Current, evidenced items only:
 - **Live Trading path governance gap:** the GREEN *Trading* domain runs a real
   order path today (Windows bridge), governed by the legacy programme; Blueprint
   doc 06 requires reconciling it with the target execution architecture before any
-  execution-layer packet — not yet done.
+  execution-layer packet — not yet done. Safety reference (how to stop it now,
+  single points of failure, recovery): [`docs/LIVE_TRADING_RISK_WATCH.md`](LIVE_TRADING_RISK_WATCH.md).
 - Local `make check` cannot complete on a machine without a `backend/.venv` and a
   reachable PostgreSQL (`127.0.0.1:5432`); backend Django tests need a running
   PostgreSQL. GitHub Actions is the approved full-integration gate.
