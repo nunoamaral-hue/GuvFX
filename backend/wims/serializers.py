@@ -37,7 +37,7 @@ class ConsumptionContractSerializer(serializers.ModelSerializer):
             "direction", "entry_price", "stop_loss", "take_profit", "confidence",
             # WP-3 — trade-result fields
             "exit_price", "result_type", "profit_loss", "pips", "close_time",
-            "commentary", "tags",
+            "commentary", "tags", "media",
             "status", "raw_signal", "workflow_state", "created_by", "created_at",
         )
         read_only_fields = ("status", "created_by", "created_at")

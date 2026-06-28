@@ -155,7 +155,7 @@ def ingest_trade_result(trade, actor=None):
 
 @transaction.atomic
 def deliver_trade_result(envelope: TradeResultIntelligenceEnvelope,
-                         actor=None) -> ConsumptionContract:
+                         actor=None, media=None) -> ConsumptionContract:
     """Deliver a trade-result envelope to WIMS and consume it as a contract."""
     p = envelope.structured_payload
 
@@ -182,6 +182,7 @@ def deliver_trade_result(envelope: TradeResultIntelligenceEnvelope,
         commentary=p.summary,
         tags=["trade-result", p.outcome.lower()] if p.outcome else ["trade-result"],
         raw_signal=json.dumps(envelope.to_dict()),
+        media=media,
     )
 
     # 4 — envelope consumed
@@ -191,3 +192,81 @@ def deliver_trade_result(envelope: TradeResultIntelligenceEnvelope,
         intelligence_id=envelope.intelligence_id,
     )
     return contract
+
+
+# ---------------------------------------------------------------------------
+# Wayond content: Telegram signal -> WIMS content (NO execution)
+# ---------------------------------------------------------------------------
+def ingest_wayond_telegram_signal(parsed, actor=None, timestamp=""):
+    """Content-only: a parsed Wayond Telegram SIGNAL -> WIMS ConsumptionContract.
+
+    Reuses the unchanged Phase 7A signal path (``ingest_wayond_signal``). This
+    feeds *educational content* only and never touches execution. ``parsed`` is a
+    ``telegram_source.ParsedSignal`` (must be a tradeable SIGNAL shape).
+    """
+    from .telegram_source import to_producer_signal  # local import: avoid cycle
+    signal = to_producer_signal(parsed, timestamp=timestamp)
+    return ingest_wayond_signal(signal, actor=actor)
+
+
+# ---------------------------------------------------------------------------
+# Winning trade -> results card -> WIMS packet (WIN-ONLY; losers never enter)
+# ---------------------------------------------------------------------------
+def _net_pnl(trade) -> Decimal:
+    def g(k):
+        return trade.get(k, 0) if isinstance(trade, Mapping) else getattr(trade, k, 0)
+    return (
+        Decimal(str(g("profit") or 0))
+        + Decimal(str(g("commission") or 0))
+        + Decimal(str(g("swap") or 0))
+    )
+
+
+def is_winning_trade(trade) -> bool:
+    return _net_pnl(trade) > 0
+
+
+@transaction.atomic
+def ingest_winning_trade(trade, actor=None, account_label="GuvFX"):
+    """WIN-ONLY: closed winning trade -> trade-result envelope + results card -> WIMS.
+
+    Losers are rejected here (``ValueError``) so they never enter the publish
+    pipeline. The rendered results card is attached as content-side ``media`` and
+    rides WP-3 -> Context -> Content -> human Review -> Publish. Returns
+    ``(envelope, contract)``.
+    """
+    if not is_winning_trade(trade):
+        raise ValueError("Trade is not a winner (net pnl <= 0); losers are not published.")
+
+    from .results_card import render_results_card, row_from_trade  # local import
+
+    envelope = TradeResultProducer().produce(trade)
+    record_audit_ref(
+        actor, AuditEvent.Event.TRADE_DETECTED,
+        object_type=_TRADE_TYPE, object_id=0,
+        intelligence_id=envelope.intelligence_id,
+        trade_id=envelope.structured_payload.trade_id, source=envelope.source,
+    )
+    record_audit_ref(
+        actor, AuditEvent.Event.ENVELOPE_CREATED,
+        object_type=_TR_ENVELOPE_TYPE, object_id=0,
+        intelligence_id=envelope.intelligence_id, version=envelope.version,
+        intelligence_type=envelope.intelligence_type,
+    )
+
+    card_svg = render_results_card(
+        [row_from_trade(trade)],
+        title=f"{envelope.structured_payload.market} "
+              f"{envelope.structured_payload.direction} — WIN",
+        account_label=account_label,
+        total_profit=str(_net_pnl(trade)),
+    )
+    media = {
+        "results_card": {
+            "format": "svg",
+            "kind": "trade_history_results",
+            "svg": card_svg,
+        }
+    }
+    contract = deliver_trade_result(envelope, actor=actor, media=media)
+    return envelope, contract

@@ -159,6 +159,9 @@ class ConsumptionContract(models.Model):
     close_time = models.DateTimeField(null=True, blank=True)
     commentary = models.TextField(blank=True)
     tags = models.JSONField(default=list, blank=True)
+    # Content-side media artefacts (e.g. a rendered results card for a winning
+    # trade). WIMS-only, advisory/presentational — never an execution input.
+    media = models.JSONField(default=dict, blank=True)
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.RECEIVED
     )
