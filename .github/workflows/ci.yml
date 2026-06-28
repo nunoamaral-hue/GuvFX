@@ -116,6 +116,9 @@ jobs:
       - name: Governance unit tests (standard library only)
         run: python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v
 
+      - name: Data-root preflight validator tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_data_root.py' -v
+
   research-foundation:
     runs-on: ubuntu-latest
     steps:

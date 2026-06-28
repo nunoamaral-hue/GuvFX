@@ -10,6 +10,7 @@ secret-scan:
 
 governance-check: secret-scan
 	python3 -m unittest discover -s tests -p 'test_no_secrets.py'
+	python3 -m unittest discover -s tests -p 'test_data_root.py'
 
 backend-test:
 	@if [ -f backend/manage.py ]; then \

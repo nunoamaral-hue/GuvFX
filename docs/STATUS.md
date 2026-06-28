@@ -6,7 +6,7 @@
 
 ## Snapshot
 
-- Date: 2026-06-27 (UTC)
+- Date: 2026-06-28 (UTC)
 - Canonical branch: `main` @ `148437ae8bc651f6eb818e15bd9a16cf9d3a993f`
 - **Authority:** Notion is the source of truth for the full programme lifecycle
   (latest *GuvFX — Current State v0.52*). This file is the Git-side mirror and
@@ -39,10 +39,11 @@
   against the Windows VPS MT5 terminal. All probes to date have PASSED: package
   import (P0/P1), terminal lifecycle (P2), session-dependent runtime accepted
   (H0/H1/ADR-DATA-017), source identity (P3), and history retrieval (P4: 6 EURUSD
-  M1 rows). **P5 (first durable immutable raw object) is BLOCKED** at its storage
-  gate — `GUVFX_DATA_ROOT` / the approved `GuvFXData` target is not yet provisioned
-  to the controller. The whole workstream is gated on **owner action GFX-PKT-006D-S1**.
-  Full packet→repo→status→evidence map: [`docs/PROGRAMME_STATE.md`](PROGRAMME_STATE.md).
+  M1 rows). **First durable raw object (P5) — DONE (2026-06-28):** S1 provisioned the
+  approved `GuvFXData` store and the first real GuvFX market-data object + provenance
+  manifest are now published and SHA-256-verified there (immutable, content-addressed,
+  idempotent). The next real gate is **broker-server timezone verification** before any
+  normalisation or broad backfill. Full map: [`docs/PROGRAMME_STATE.md`](PROGRAMME_STATE.md).
 - **Capability (Notion Capability Registry, v0.52):** 1 of 10 domains GREEN
   (*Trading* — production, live order path exists today); the other 9 AMBER. The
   *Market Data & Research Platform* domain is the weakest and gates strategy quality.
@@ -81,12 +82,14 @@ Facts supported by code, Git history, or CI in this repository:
 
 Current, evidenced items only:
 
-- **Data-acquisition blocked on owner action S1:** no durable real market-data
-  object exists yet; `GUVFX_DATA_ROOT` / `GuvFXData` is unprovisioned (P5 stops at
-  its storage gate). Owner-only step (NAS credentials); see `docs/PROGRAMME_STATE.md`.
-- **Broker-server timezone is UNVERIFIED** for the demo source (TradersWay-Demo).
-  MT5 bar times are broker-server time, not guaranteed UTC; no offset may be
-  hardcoded and no normalised dataset may be published until this is evidenced.
+- **Storage provisioned; first real object stored (S1 + P5 done 2026-06-28).** The
+  approved `GuvFXData` root is live (validated by `scripts/check_data_root.py`) and
+  the first immutable raw object + manifest are published & SHA-verified there.
+  Backups: Phase-1 NAS-local (RAID) per sponsor decision; offsite deferred.
+- **Broker-server timezone is UNVERIFIED** for the demo source (TradersWay-Demo) —
+  **this is now the active gate.** MT5 bar times are broker-server time, not
+  guaranteed UTC; no offset may be hardcoded and no normalised dataset may be
+  published, and no broad backfill started, until this is evidenced (a Red probe).
 - **MT5 runtime is desktop-session dependent** (autologon/kiosk console) per
   ADR-DATA-017; a true headless/service-managed model is unproven and deferred.
 - **Live Trading path governance gap:** the GREEN *Trading* domain runs a real
