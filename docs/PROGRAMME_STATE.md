@@ -3,7 +3,7 @@
 > **Purpose:** one cold-start map of where the real-data programme actually is, so
 > any session (human or AI) can reconstruct truth without walking Notion ancestor
 > chains. **Notion is authoritative** for lifecycle (*GuvFX — Current State v0.52*);
-> this file mirrors it and must be kept consistent. Last reconciled: **2026-06-27**.
+> this file mirrors it and must be kept consistent. Last reconciled: **2026-06-28**.
 
 ## Repositories
 
@@ -26,8 +26,8 @@ the Windows VPS MT5 terminal, return privacy-safe evidence only, and were sponso
 | A2-P2-R0 | Post-maintenance health: MT5 + bridge:8788 recovered | PASS / accepted | ADR-DATA-017 (session-dependent model accepted) |
 | A2-P3 | Source identity metadata feasible | PASS / accepted | ADR-DATA-017 |
 | A2-P4 | History retrieval feasible (6 EURUSD M1 rows, schema + bounds, digest only) | PASS / accepted | GFX-Q-006D-006 (closed-approved) |
-| **A2-P5** | **First durable immutable raw object** | **BLOCKED at storage gate** | GFX-Q-006D-007 (closed-approved) |
-| **S1** | **Owner provisions `GuvFXData` / `GUVFX_DATA_ROOT`** | **OPEN — owner action** | owner-only (NAS credentials) |
+| **S1** | Provision `GuvFXData` / `GUVFX_DATA_ROOT` | **DONE** — storage gate PASS (owner-delegated to Claude; NAS share already mounted, no creds) | GFX-EVD-006D-S1 |
+| **A2-P5** | **First durable immutable raw object + manifest** | **DONE / PASS** — published & SHA-verified to GuvFXData; idempotent no-overwrite proven | GFX-Q-006D-007 + GFX-EVD-006D-A2-P5 |
 
 **Accepted source identity (from P3, non-secret):** `account_type` = demo · broker
 `TW Corp LLC` · server `TradersWay-Demo` · terminal build `5833` · MT5 version `500`.
@@ -35,12 +35,17 @@ the Windows VPS MT5 terminal, return privacy-safe evidence only, and were sponso
 **Accepted P4 retrieval:** `copy_rates_range("EURUSD", M1, 2026-06-26T12:00→12:05Z)`
 returned 6 rows; row digest `fc06a585…36b3e3`. No raw OHLCV recorded.
 
+**First stored object (P5, 2026-06-28):** `guvfx.raw.mt5.rates.v1` object
+`raw/objects/sha256/01/012d60f1…a89b5f76.json` (1082 B) + `guvfx.raw_object_manifest.v1`
+`raw/manifests/sha256/31/31691cfb…c4ff139e.json` (1315 B), both SHA-verified on disk in
+GuvFXData; `p4_digest_match = true`. Validated by `scripts/check_data_root.py` (storage gate).
+
 ## Open gates
 
 | Gate | Type | Owner | Blocks |
 |---|---|---|---|
-| **S1** — provision `GuvFXData` / `GUVFX_DATA_ROOT` | OWNER infra (creds) | Nuno | the entire real-data workstream (P5) |
-| Broker-server timezone verification (TradersWay-Demo) | RED, data | Nuno to approve probe | any normalised dataset publication |
+| ~~S1 — provision `GuvFXData` / `GUVFX_DATA_ROOT`~~ | ✅ DONE 2026-06-28 | — | (cleared) |
+| Broker-server timezone verification (TradersWay-Demo) | RED, data | Nuno to approve probe | **next** — any normalised dataset publication / broad backfill |
 | Windows MT5 headless / service-hardening | future ADR | Nuno | durable unattended acquisition |
 | Blueprint ratification (Proposed v0.1 → Approved) | lifecycle | Nuno | stable target for downstream packets |
 | Any model promotion to limited-live / production | RED | Nuno | strategy go-live |
