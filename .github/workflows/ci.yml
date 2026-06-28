@@ -119,6 +119,12 @@ jobs:
       - name: Data-root preflight validator tests (standard library only)
         run: python3 -m unittest discover -s tests -p 'test_data_root.py' -v
 
+      - name: Evidence manifest linter (standard library only)
+        run: python3 scripts/check_evidence_manifests.py
+
+      - name: Evidence manifest linter tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_evidence_manifests.py' -v
+
   research-foundation:
     runs-on: ubuntu-latest
     steps:
