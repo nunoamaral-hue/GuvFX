@@ -1,0 +1,127 @@
+"""
+Signal-intake services (E0, SHADOW).
+
+Reuses the deployed Wayond parser (``intelligence.telegram_source``) to turn
+Telegram messages into ``PendingSignalApproval`` rows for human review.
+
+HARD BOUNDARY: this module must NEVER create an ExecutionJob, place an order,
+or import ``execution``. Approving a signal only records the decision. The
+signal→order bridge is a later, separately-gated packet.
+"""
+
+from __future__ import annotations
+
+from django.db import transaction
+from django.utils import timezone
+
+# Reuse the already-deployed, pure Wayond parser (content side). Importing this
+# parsing utility does NOT couple the execution and content flows: this app never
+# touches the WIMS ConsumptionContract, and never creates an order.
+from intelligence.telegram_source import Kind, classify_messages, parse_message
+
+from .models import PendingSignalApproval, SignalAuditEvent
+
+SOURCE = PendingSignalApproval.Source.WAYOND_TELEGRAM
+
+
+def _audit(actor, event, approval, **detail):
+    return SignalAuditEvent.objects.create(
+        actor=actor, event=event, approval=approval, detail=detail,
+    )
+
+
+@transaction.atomic
+def intake_parsed(parsed, *, actor=None, source=SOURCE) -> PendingSignalApproval:
+    """Create or return the PendingSignalApproval for a parsed Telegram message.
+
+    Idempotent on (source, message_id): a duplicate message returns the existing
+    record and creates nothing new. UNKNOWN/unparseable messages are quarantined,
+    never turned into a tradeable approval. Creates NO ExecutionJob.
+    """
+    mid = parsed.message_id or f"{parsed.market}-{parsed.direction}-{parsed.entry}"
+
+    existing = PendingSignalApproval.objects.filter(source=source, message_id=mid).first()
+    if existing is not None:
+        return existing  # dedup / replay-safe
+
+    if parsed.kind == Kind.SIGNAL and parsed.is_tradeable_shape():
+        approval = PendingSignalApproval.objects.create(
+            source=source, message_id=mid,
+            symbol=parsed.market, direction=parsed.direction,
+            entry=parsed.entry, stop_loss=parsed.stop_loss,
+            take_profit=(parsed.take_profits[0] if parsed.take_profits else ""),
+            take_profits=list(parsed.take_profits),
+            raw_payload={"raw_text": parsed.raw_text, "kind": parsed.kind},
+            status=PendingSignalApproval.Status.PENDING_APPROVAL,
+        )
+        _audit(actor, SignalAuditEvent.Event.SIGNAL_RECEIVED, approval,
+               message_id=mid, symbol=parsed.market, direction=parsed.direction)
+        return approval
+
+    # Not a tradeable signal -> quarantine (do not guess into an approval).
+    approval = PendingSignalApproval.objects.create(
+        source=source, message_id=mid,
+        raw_payload={"raw_text": parsed.raw_text, "kind": parsed.kind,
+                     "reason": getattr(parsed, "reason", "") or "not a tradeable signal"},
+        status=PendingSignalApproval.Status.QUARANTINED,
+    )
+    _audit(actor, SignalAuditEvent.Event.SIGNAL_QUARANTINED, approval,
+           message_id=mid, kind=parsed.kind)
+    return approval
+
+
+def intake_message(text: str, message_id: str = "", *, actor=None) -> PendingSignalApproval:
+    """Parse a single raw Telegram message body and intake it."""
+    return intake_parsed(parse_message(text, message_id), actor=actor)
+
+
+def ingest_messages(messages, *, actor=None) -> dict:
+    """Classify + intake a batch of {message_id, text} dicts (dedup-aware).
+
+    Returns a summary; UPDATE messages (TP-hit/move-SL) are not new signals and
+    are skipped. Creates NO ExecutionJob.
+    """
+    seen = set(
+        PendingSignalApproval.objects.filter(source=SOURCE)
+        .values_list("message_id", flat=True)
+    )
+    plan = classify_messages(messages, seen_ids=seen)
+    created, quarantined = [], []
+    for p in plan.signals:
+        a = intake_parsed(p, actor=actor)
+        created.append(a)
+    for p in plan.quarantined:
+        quarantined.append(intake_parsed(p, actor=actor))
+    return {
+        "created": created,
+        "quarantined": quarantined,
+        "updates_skipped": len(plan.updates),
+        "duplicates_skipped": len(plan.duplicates),
+    }
+
+
+@transaction.atomic
+def approve(approval: PendingSignalApproval, *, reviewer=None, notes="") -> PendingSignalApproval:
+    """Approve a pending signal. SHADOW: records the decision only.
+
+    Deliberately creates NO ExecutionJob and places NO order. The approved status
+    is a human decision that a *future*, separately-gated bridge would act on.
+    """
+    approval.status = PendingSignalApproval.Status.APPROVED
+    approval.reviewer = reviewer
+    approval.reviewed_at = timezone.now()
+    approval.review_notes = notes
+    approval.save(update_fields=["status", "reviewer", "reviewed_at", "review_notes"])
+    _audit(reviewer, SignalAuditEvent.Event.SIGNAL_APPROVED, approval, notes=notes)
+    return approval
+
+
+@transaction.atomic
+def reject(approval: PendingSignalApproval, *, reviewer=None, notes="") -> PendingSignalApproval:
+    approval.status = PendingSignalApproval.Status.REJECTED
+    approval.reviewer = reviewer
+    approval.reviewed_at = timezone.now()
+    approval.review_notes = notes
+    approval.save(update_fields=["status", "reviewer", "reviewed_at", "review_notes"])
+    _audit(reviewer, SignalAuditEvent.Event.SIGNAL_REJECTED, approval, notes=notes)
+    return approval
