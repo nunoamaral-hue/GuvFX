@@ -2,6 +2,20 @@
 
 List active problems with reproduction steps and workarounds.
 
+## Backend migrations / tests (2026-06-29)
+
+- **Pre-existing migration drift in `research` + `strategies`.** `manage.py
+  makemigrations --check --dry-run` reports unmade migrations for
+  `research.researchobservation` (id / quality_buckets field alters) and
+  `strategies` (StrategyRuntimeEvent/State index renames). This predates EXEC-E1a
+  (the `execution` app is clean) and was observed, not introduced. Out of scope to
+  fix here; flag for a dedicated `chore:` migration-reconciliation packet.
+- **Execution-app tests require PostgreSQL.** The trading apps carry Postgres-only
+  RunSQL migrations, so the WIMS SQLite shim cannot run them. To run
+  `execution`/`signal_intake` tests locally, point at a local Postgres `dev`
+  database (a throwaway local fixture — never a real credential). CI already runs
+  the full suite on Postgres.
+
 ## Programme / data-acquisition (2026-06-27)
 
 - **Storage not provisioned — data workstream blocked.** `GUVFX_DATA_ROOT` /

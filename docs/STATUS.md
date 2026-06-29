@@ -4,6 +4,26 @@
 > snapshot; deeper operational detail lives in `docs/RUNBOOK.md` and the handoff
 > docs.
 
+## Execution workstream log
+
+- **2026-06-29 — EXEC-E1a: approval → ProposedSignalOrder bridge (no order).**
+  Added `execution.ProposedSignalOrder` (non-executable candidate — NOT an
+  `ExecutionJob`, structurally invisible to the worker claim path),
+  `execution.ExecutionControl` (functional DB kill switch + signal-specific
+  disable, replacing the MVP 501 stub), and `execution.ProposalAuditEvent`
+  (append-only). Bridge `execution.signal_proposals.propose_order_from_approval`
+  creates proposals only — places no order, queues no job, contacts no broker.
+  Gates: approved-only, kill switch / env kill switch, demo-only, symbol
+  allowlist, lot/daily/concurrent caps, one-per-approval. `/api/execution/kill-all/`
+  is now functional (engages the DB switch; release is admin-only). Operator
+  entry: `manage.py propose_signal_order`. 35 tests green on local Postgres
+  (incl. `ExecutionJob.objects.count()` unchanged + static no-order AST guard);
+  E0 ADR-009 boundary guard still green. Branch
+  `feat/wayond-exec-e1a-proposed-orders` off `origin/main` (`49d5026`). Backend
+  only; no production access, no deployment, no migration against production.
+  Detail: `backend/execution/SIGNAL_PROPOSALS.md`,
+  `docs/SECURITY_EXECUTION_MODEL.md` §1.4/§1.4a.
+
 ## Snapshot
 
 - Date: 2026-06-28 (UTC)

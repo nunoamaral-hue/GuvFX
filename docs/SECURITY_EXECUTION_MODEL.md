@@ -84,15 +84,38 @@ An append-only audit log table capturing:
 
 ### 1.4 Execution Control Stubs
 
-**Endpoints (all return 501 Not Implemented):**
+**Endpoints:**
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/execution/enable/<account_id>/` | POST | Enable execution (stub) |
-| `/api/execution/disable/<account_id>/` | POST | Disable execution (stub) |
-| `/api/execution/kill-all/` | POST | Global kill switch (stub) |
+| `/api/execution/enable/<account_id>/` | POST | Enable execution (stub, 501) |
+| `/api/execution/disable/<account_id>/` | POST | Disable execution (stub, 501) |
+| `/api/execution/kill-all/` | POST | Global kill switch — **functional (EXEC-E1a)** |
 
 All attempts are logged to audit log with severity WARN.
+
+**EXEC-E1a — kill switch is now functional for the signal-proposal path.**
+`POST /api/execution/kill-all/` (admin-only) engages a DB-backed
+`execution.ExecutionControl` singleton (`kill_switch_engaged`) and returns `200`.
+The signal→proposal bridge (`execution.signal_proposals`) fails closed while it
+is engaged, and the legacy `GUVFX_EXECUTION_DISABLED` env flag remains honoured
+as defence-in-depth. Releasing the switch is **not** exposed over the API
+(admin/server-side only) so the web surface can only fail safe. There is still no
+live execution path for it to stop — proposals place no orders (see below).
+
+### 1.4a EXEC-E1a — signal → ProposedSignalOrder bridge (no order)
+
+The execution-side bridge turns an **APPROVED** `signal_intake.PendingSignalApproval`
+into a **non-executable** `execution.ProposedSignalOrder` on a **demo** account.
+A `ProposedSignalOrder` is **not** an `ExecutionJob` and has no PENDING/worker-claim
+path, so the MT5 worker (`ExecutionJob.objects.filter(status=PENDING)`) can never
+see it: "no order" is a structural guarantee, tested by asserting
+`ExecutionJob.objects.count()` is unchanged. Gates: approved-only, kill switch /
+signal disable, demo-only (rejects live accounts and live broker environments),
+symbol allowlist, lot cap `SIGNAL_MAX_LOT_SIZE`, daily/concurrent caps, and
+one-proposal-per-approval. All outcomes write an append-only
+`execution.ProposalAuditEvent` linked to the approval. Full detail:
+`backend/execution/SIGNAL_PROPOSALS.md`.
 
 ### 1.5 Security Headers (Frontend)
 
@@ -176,7 +199,8 @@ curl -I https://guvfx.com/ 2>/dev/null | grep -E "(Strict-Transport|X-Frame|X-Co
 - [ ] MT5 terminal management (start, stop, health check)
 - [ ] Strategy compilation to EA
 - [ ] Per-account terminal isolation
-- [ ] Kill switch implementation
+- [x] Kill switch implementation — DB-backed `ExecutionControl`, functional for
+  the signal-proposal path (EXEC-E1a). Extend to live execution when that path exists.
 
 ### 3.2 Security Enhancements
 
