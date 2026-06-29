@@ -1,0 +1,157 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-006C-R4-exact-time-quarantine-provenance",
+  "packet_id": "GFX-PKT-006C-R4",
+  "packet_version": "v0.3",
+  "created_at_utc": "2026-06-24T08:44:05Z",
+  "branch": "fix/market-data-r4-closure",
+  "base_commit": "6dfe22aef7d6bc1a82cbd712536989c10e342602",
+  "head_commit": "b154244e89991e75337abbf2c718de6b714414c3",
+  "c9_commit": "b154244e89991e75337abbf2c718de6b714414c3",
+  "c10_commit": null,
+  "continuation_of": "GFX-PKT-006C / R1 / R2 / R3 (the R3 synthetic foundation is on main at/after 6dfe22a)",
+  "authorising_records": [
+    "GFX-EVD-006C-M1 — PM Reconciliation of PR #34 Main Merge and R4 Gate Block v0.1",
+    "GFX-ADR-DATA-005 — Retain PR #34 Main Merge and Remediate Forward v0.1",
+    "GuvFX — Current State v0.25"
+  ],
+  "environment": {
+    "research_python_version": "3.14.6",
+    "duckdb_version": "1.5.4",
+    "dependencies_changed": false,
+    "schemas_changed": false,
+    "ci_make_changed": false
+  },
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "required_jobs": ["governance", "backend", "frontend", "research-foundation", "market-data-foundation"],
+    "c9": {
+      "push_run_id": 28086329287,
+      "pull_request_run_id": 28086344986,
+      "run_head_sha": "b154244e89991e75337abbf2c718de6b714414c3",
+      "jobs": [
+        { "name": "governance", "conclusion": "success" },
+        { "name": "backend", "conclusion": "success" },
+        { "name": "frontend", "conclusion": "success" },
+        { "name": "research-foundation", "conclusion": "success" },
+        { "name": "market-data-foundation", "conclusion": "success" }
+      ]
+    },
+    "c10": { "push_run_id": null, "pull_request_run_id": null, "run_head_sha": null, "jobs": [] }
+  },
+  "files_modified": [
+    "research/market_data/contracts.py",
+    "research/market_data/timezone.py",
+    "research/market_data/storage.py",
+    "research/market_data/normalise.py",
+    "tools/research_smoke.py",
+    "tests/test_research_foundation.py",
+    "tests/test_market_data_foundation.py",
+    "research/README.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/STATUS.md",
+    "docs/HANDOFF.md",
+    "docs/NEXT.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    "evidence/manifests/GFX-EVD-006C-R3-semantic-provenance-integrity.json"
+  ],
+  "files_added": [
+    "evidence/manifests/GFX-EVD-006C-R4-exact-time-quarantine-provenance.json"
+  ],
+  "unauthorised_files_changed": false,
+  "dependencies_changed": false,
+  "schemas_changed": false,
+  "ci_make_changed": false,
+  "remediation_results": {
+    "exact_instant_primitive": "contracts.UtcInstant (immutable, total-ordering) + parse_canonical_utc_instant validate the whole-second component via datetime.fromisoformat (rejecting impossible calendar/time) and store an integer epoch second (calendar.timegm; no float) plus an exact fractions.Fraction over the full fractional-digit string; every admitted digit participates in comparison and the instant is exactly comparable with a bare integer Unix epoch second. ContractError on non-string/non-canonical/impossible/non-UTC, with no value text in the message.",
+    "exact_utc_representation": "YYYY-MM-DDThh:mm:ss(.<one-or-more digits>)?Z; arbitrary fractional precision (NOT restricted to six digits); no dependency added.",
+    "seventh_plus_digit_ordering": "parse('....0000009Z') < parse('....0000010Z') is True; covered start .0000009Z rejects observation .0000001Z (ContractError) and rejects a bar at the same whole-second epoch (TimezoneError); availability .0000001Z is rejected for observation .0000009Z while .0000010Z passes (research point-in-time ordering).",
+    "trailing_zero_equality": ".1Z == .10Z == .100Z (equal value and equal hash); trailing-zero covered start equals a trailing-zero observation at the start boundary.",
+    "shared_primitive_use_sites": "timezone.validate_timezone_evidence + timezone.gate_for_normalisation (whole-second bar epochs compared directly against the exact covered interval); tools/research_smoke._parse_utc (ContractError translated to the established ValueError without exposing parser internals); storage._parse_manifest_instant (field-specific regex retained as a shape gate, semantic/exact validation via the shared parser; StorageError on failure). No new acquired/received ordering rule was introduced.",
+    "impossible_time_governed": "month/day/hour/minute/second out-of-range values raise ContractError (timezone, research) or StorageError (manifest) — never raw ValueError to the caller.",
+    "quarantine_request_binding": "Strict manifest validation now parses and validate_request()s the exact stored request.json for every ordinary QUARANTINED object: requires a JSON object, parsed request_id == manifest.raw_object_id == expected request-id directory, and manifest source_id/account_scope/symbol/timeframe/representation/range_start/range_end/range_semantics equal to the validated stored request. Identity/range/path derive from the stored request, never the manifest.",
+    "canonical_byte_rule": "Ordinary reasons (invalid_json, contract_invalid:*, request/response byte conflict) require request_bytes == canonical_json_bytes(parsed request). The reason 'noncanonical_request_bytes' permits attempted bytes only when they strict-decode to a valid request AND differ from canonical encoding, with all identity/path fields derived from the parsed request; the object stays QUARANTINED/conflict evidence and never becomes accepted or idempotent. Any other reason with noncanonical bytes fails closed.",
+    "quarantine_directory_and_id": "Directory quarantine/mt5/{source}/{scope}/{symbol}/{timeframe}/{YYYY}/{MM}/{request_id}/{quarantine_id} with all components except the tail derived from the validated stored request; the 16-lowercase-hex tail is recomputed as sha256(request_bytes + NUL + response_bytes + NUL + reason)[:16] and must equal the directory tail. Changing request bytes, response bytes, reason, request identity or the tail fails closed. Security-stop records under quarantine/security/ remain digest-only and outside this manifest contract.",
+    "malformed_response_retention": "Malformed (non-JSON) and contract-invalid (valid-JSON but failing the success contract) responses remain readable QUARANTINED evidence with stored-file checksums matching the manifest; a quarantined response is never validated against the success-response contract.",
+    "publication_governed_failure": "publish_observations validates the request FIRST (before indexing request_id or any field); a missing request_id, a non-dict request, or a wrong-typed field raises ContractError/PublicationError (never raw KeyError/TypeError) and returns no records. The exact response-byte/object/SHA checks, request/response match, timezone gate and private mapper order are retained."
+  },
+  "tests": {
+    "research_foundation_tests_total": 35,
+    "market_data_tests_total": 125,
+    "result": "OK",
+    "exact_time_matrix": "TestExactInstantPrimitive (seventh-digit ordering, trailing-zero equality+hash, no-fraction/ms/us ordering, integer-epoch comparison without float, impossible values governed, non-canonical/non-string rejected); TestTimezoneFractional R4 additions (seventh-digit start vs earlier observation and same-second bar, trailing-zero start equals observation); TestUtcSemantics research additions (seventh-digit availability ordering, trailing-zero availability equals observation); TestManifestProvenance.test_manifest_instants_use_exact_parser_no_new_ordering.",
+    "quarantine_provenance_matrix": "TestQuarantineProvenance (12 tests): malformed-response readable + checksums; contract-invalid readable + stays QUARANTINED; conflict readable when request canonical; independent identity-field changes fail closed; noncanonical request fails for ordinary reason even with realigned checksum; noncanonical special readable + never ALREADY_PRESENT; invalid request fingerprint fails closed; changed reason fails closed; changed 16-hex tail fails closed; exact bytes recompute the stored id; tampered/missing/symlink files fail closed; accepted + idempotency remain green.",
+    "publication_matrix": "TestGatedPublication R4 additions (missing request_id, non-dict request, invalid request field type, governed failure returns no records).",
+    "regression": "All prior accepted-object, idempotency, concurrency/staging, late-race, HTTP, security-stop, publication and Parquet/DuckDB tests remain green."
+  },
+  "commands": [
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v",
+    ".venv-research/bin/python tools/research_smoke.py",
+    ".venv-research/bin/python tools/market_data_synthetic_smoke.py",
+    "make research-check",
+    "make market-data-check",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R3-semantic-provenance-integrity.json >/dev/null",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R4-exact-time-quarantine-provenance.json >/dev/null",
+    "git diff --check; git status --short",
+    "git diff --name-only 6dfe22aef7d6bc1a82cbd712536989c10e342602...HEAD",
+    "git diff 6dfe22aef7d6bc1a82cbd712536989c10e342602 -- evidence/manifests/GFX-EVD-006C-R3-semantic-provenance-integrity.json"
+  ],
+  "expected_results": [
+    "Every admitted fractional digit participates in instant comparison; trailing zeros are equal; impossible values fail through governed errors",
+    "Timezone gating and research point-in-time ordering use one shared exact-instant primitive",
+    "Every ordinary quarantine derives identity/range/path from its parsed validated stored request; canonical request bytes required except the explicit noncanonical-attempt rule",
+    "The 16-hex quarantine id recomputes from exact request bytes + response bytes + reason; any change fails closed",
+    "Malformed and contract-invalid responses remain retainable but never accepted",
+    "Invalid publication requests produce governed errors and no records",
+    "Only authorised files change; no dependency/schema/CI/Make change; R3 evidence change is pointer-only",
+    "All five CI jobs pass for the C9 (and C10) push + PR runs"
+  ],
+  "actual_results": [
+    "research foundation tests: Ran 35 tests, OK",
+    "market-data tests: Ran 125 tests, OK",
+    "research smoke + market-data smoke: PASS; each deterministic byte-for-byte across two runs",
+    "check_no_secrets: no findings; make governance-check OK; make research-check OK; make market-data-check OK",
+    "json.tool: R3 and R4 manifests valid JSON",
+    "git diff --check clean; only the 16 authorised files changed vs base (15 code/test/doc/pointer in C9 + the new R4 manifest in C10); R3 evidence diff vs base is only the additive superseded_by_r4_evidence pointer",
+    "C9 CI: push run 28086329287 + PR run 28086344986 (head b154244) — all five required jobs success; C10 final runs recorded in the PR comment + handoff"
+  ],
+  "no_network_proof": "All HTTP/race tests use injected fakes inside network_blocked(); NetworkAgentClient remains inert unless allow_network=True; no real socket or URL opener was invoked. No real agent endpoint, market data, NAS path or credential was implemented or contacted.",
+  "no_real_access_statement": "Synthetic-only. No Windows Agent endpoint/protocol, VPS, MT5, broker, NAS, credential or production access occurred. No deployment, restart, PR merge or 006D work was performed.",
+  "status": "PASS",
+  "limitations": [
+    "Synthetic-only: no external agent endpoint, real market data, NAS path or credentials were implemented or contacted.",
+    "Backend 'core' test relies on the GitHub backend CI job (no local backend/.venv/PostgreSQL); unchanged from 006C.",
+    "head_commit/c9_commit point at the implementation commit C9 (b154244); the c10 block is filled at the evidence-only C10 commit, whose own push/PR CI runs are recorded in the PR comment and PM handoff after they conclude.",
+    "Capability readiness after R4 PASS remains Partial until the external agent endpoint, NAS target, real source identity/timezone and first supervised raw acquisition are separately approved and evidenced.",
+    "The frozen synthetic_timezone_verified.json fixture is retained unchanged (negative coverage test); positive VERIFIED evidence is built in-memory.",
+    "UTC_TS_RE and the unused datetime import in tools/research_smoke.py were removed because the shared primitive made them dead; no behavioural change."
+  ],
+  "artefact_locations": [
+    "research/market_data/contracts.py",
+    "research/market_data/timezone.py",
+    "research/market_data/storage.py",
+    "research/market_data/normalise.py",
+    "tools/research_smoke.py",
+    "tests/test_market_data_foundation.py",
+    "tests/test_research_foundation.py",
+    "evidence/manifests/GFX-EVD-006C-R4-exact-time-quarantine-provenance.json"
+  ],
+  "checksums": {
+    "research/market_data/contracts.py": "sha256:109a630f5c94c119b5aba957179a64c87fec20b61c93590f562a4dcabdaaa70e",
+    "research/market_data/timezone.py": "sha256:55a094947861d003439c184ed742d6658d95f43229838762e20dc70c694fe957",
+    "research/market_data/storage.py": "sha256:4b3c80634d0550dafa92bb508d806709b0a012a35c988569de07509de6c92e48",
+    "research/market_data/normalise.py": "sha256:9f5dcac1d476bf53c75a900c51b366f5a4d4cead78a9cae9b823c06ac756bd68",
+    "tools/research_smoke.py": "sha256:17fa4dee698333e90b8393655d7ee57fe27fa117adb296dc2a3507e46fd2f503",
+    "tests/test_market_data_foundation.py": "sha256:2d5177c85968ab4cf144e24702659e0a4ebcbf3424ce6219a2f20aff17f68fd1",
+    "tests/test_research_foundation.py": "sha256:d7531dc45d76fa9aa68b2f28f970eabba296d2da033a740b83017c1b3478e861"
+  },
+  "reviewer": null,
+  "superseded_by_r4_r1_evidence": "evidence/manifests/GFX-EVD-006C-R4-R1-exact-instant-factuality.json"
+}

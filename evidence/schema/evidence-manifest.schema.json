@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/evidence-manifest.schema.json",
+  "title": "GuvFX Evidence Manifest",
+  "description": "Machine-readable evidence manifest for a GuvFX packet handoff.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "handoff_id",
+    "packet_id",
+    "created_at_utc",
+    "branch",
+    "base_commit",
+    "head_commit",
+    "commands",
+    "expected_results",
+    "actual_results",
+    "status",
+    "limitations",
+    "artefact_locations",
+    "checksums",
+    "reviewer"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "handoff_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packet_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at_utc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_commit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "head_commit": {
+      "type": ["string", "null"]
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expected_results": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "actual_results": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "PARTIAL", "FAIL"]
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "artefact_locations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "checksums": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "reviewer": {
+      "type": ["string", "null"]
+    }
+  }
+}

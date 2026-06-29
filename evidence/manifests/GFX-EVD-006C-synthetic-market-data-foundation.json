@@ -1,0 +1,160 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-006C-synthetic-market-data-foundation",
+  "packet_id": "GFX-PKT-006C",
+  "created_at_utc": "2026-06-23T18:53:41Z",
+  "branch": "chore/market-data-synthetic-foundation",
+  "base_commit": "80ef2f85d6546b7d62aea09ab5db39d8859482b0",
+  "head_commit": "9bc729086ae4db61c9863befc506061f09ea5074",
+  "c1_commit": "9bc729086ae4db61c9863befc506061f09ea5074",
+  "c2_commit": null,
+  "environment": {
+    "research_python_version": "3.14.6",
+    "duckdb_version": "1.5.4",
+    "dependencies_changed": false,
+    "requirements_research_unchanged": true,
+    "existing_v1_schemas_changed": false,
+    "heavy_dataframe_libs_present": false,
+    "backend_local_limitation": "backend/.venv and PostgreSQL absent locally (ModuleNotFoundError: django); 'manage.py test core' could not run locally. The GitHub backend CI job is the authoritative gate and passed."
+  },
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "c1": {
+      "push_run_id": 28049322979,
+      "pull_request_run_id": 28049365131,
+      "run_head_sha": "9bc729086ae4db61c9863befc506061f09ea5074",
+      "jobs": [
+        { "name": "governance", "conclusion": "success" },
+        { "name": "backend", "conclusion": "success" },
+        { "name": "frontend", "conclusion": "success" },
+        { "name": "research-foundation", "conclusion": "success" },
+        { "name": "market-data-foundation", "conclusion": "success" }
+      ]
+    },
+    "c2": { "push_run_id": null, "pull_request_run_id": null, "run_head_sha": null, "jobs": [] }
+  },
+  "files_added": [
+    "research/market_data/__init__.py",
+    "research/market_data/config.py",
+    "research/market_data/contracts.py",
+    "research/market_data/chunking.py",
+    "research/market_data/agent_client.py",
+    "research/market_data/storage.py",
+    "research/market_data/timezone.py",
+    "research/market_data/normalise.py",
+    "research/market_data/orchestrator.py",
+    "research/contracts/agent_history_export_request_v1.schema.json",
+    "research/contracts/agent_history_export_response_v1.schema.json",
+    "research/contracts/raw_market_data_manifest_v1.schema.json",
+    "research/contracts/broker_timezone_evidence_v1.schema.json",
+    "tests/fixtures/market_data/synthetic_history_request.json",
+    "tests/fixtures/market_data/synthetic_history_response.json",
+    "tests/fixtures/market_data/synthetic_timezone_verified.json",
+    "tests/fixtures/market_data/synthetic_timezone_inconclusive.json",
+    "tools/market_data_synthetic_smoke.py",
+    "tests/test_market_data_foundation.py",
+    "evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json"
+  ],
+  "files_modified": [
+    "backend/guvfx_backend/settings.py",
+    "backend/core/tests.py",
+    "Makefile",
+    ".github/workflows/ci.yml",
+    "research/README.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/STATUS.md",
+    "docs/HANDOFF.md",
+    "docs/NEXT.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md"
+  ],
+  "commands": [
+    "python3 -m json.tool research/contracts/agent_history_export_request_v1.schema.json >/dev/null",
+    "python3 -m json.tool research/contracts/agent_history_export_response_v1.schema.json >/dev/null",
+    "python3 -m json.tool research/contracts/raw_market_data_manifest_v1.schema.json >/dev/null",
+    "python3 -m json.tool research/contracts/broker_timezone_evidence_v1.schema.json >/dev/null",
+    "python3 -m json.tool tests/fixtures/market_data/*.json >/dev/null",
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v",
+    ".venv-research/bin/python tools/market_data_synthetic_smoke.py",
+    "make research-check",
+    "make market-data-check",
+    "cd backend && python3 manage.py test core  (local: ModuleNotFoundError django — CI backend job is the gate)",
+    "git diff --check; git status --short",
+    "synthetic smoke run twice; canonical JSON outputs identical byte-for-byte",
+    "stdlib scope/privacy audit: only authorised files changed; no real-data artefact/personal path/secret; required UTC + null tests present"
+  ],
+  "expected_results": [
+    "Four strict schemas + four synthetic fixtures parse as valid JSON",
+    "Secret scan + governance unit tests pass",
+    "Research foundation tests remain green",
+    "Market-data foundation tests pass (43) covering all required areas",
+    "Synthetic smoke returns PASS, is deterministic byte-for-byte, leaves no persistent artefact, prints no absolute path",
+    "make research-check and make market-data-check pass",
+    "Only authorised files change; no dependency change; existing v1 schemas unchanged",
+    "All five CI jobs pass for C1 push and PR runs and for the C2 final head"
+  ],
+  "actual_results": [
+    "json.tool: all four schemas and four fixtures valid",
+    "check_no_secrets: no findings; secret-scanner unit tests OK; make governance-check OK",
+    "research foundation: OK; market-data foundation: Ran 43 tests OK",
+    "smoke: status PASS; acquire ACCEPTED; rerun ALREADY_PRESENT; timezone VERIFIED; 5 normalised bars; Parquet round trip OK; dataset_manifest_v1 conforms",
+    "smoke determinism: two runs byte-for-byte identical",
+    "make research-check OK; make market-data-check OK",
+    "scope/privacy audit: 31 changed files all authorised; 3 existing v1 schemas + requirements-research.txt untouched; no personal paths/IPs/account numbers/broker names/secrets/real-data artefacts (only the test's own assertNotIn('UTC+2'/'+02:00') needles match a textual scan)",
+    "git diff --check clean",
+    "C1 CI: push run 28049322979 + pull_request run 28049365131 (head 9bc7290) — governance/backend/frontend/research-foundation/market-data-foundation all success; C2 final CI recorded in PR comment + handoff"
+  ],
+  "synthetic_raw_checksums": {
+    "request_sha256": "a8806ec9f7caaf6e348ad14f9d7eef49a17e538906e1791a1627b00a2d8469f1",
+    "response_sha256": "2d2b5923bb70b38e75f05d79f9a2b55647b65e7f5aae813add0e66cc4c3786a3"
+  },
+  "outcomes": {
+    "request_id": "48a5fd6c46fc8ac807194a1ccc46ce131ef9e3dfcef88232d8258af4ee156595",
+    "idempotency": "second identical acquire returns ALREADY_PRESENT; accepted bytes unchanged",
+    "conflict": "same request_id with different bytes -> QUARANTINED_CONFLICT; accepted raw untouched",
+    "malformed": "non-JSON / contract-invalid response -> QUARANTINED",
+    "credential_stop": "prohibited key -> ProhibitedKeyError; only digest + redacted reason persisted; no accepted object",
+    "timezone": "VERIFIED permits normalisation; INCONCLUSIVE/CONFLICT/mismatch/uncovered/tampered block it; no UTC+2/offset constant in production code",
+    "normalisation": "M1 bid-OHLC only; volume/unit null; exact raw lineage; no ask/spread/tick",
+    "no_network_proof": "network_blocked() guard active in tests/smoke; NetworkAgentClient inert without allow_network; token redacted in repr"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Synthetic-only: no real market data, provider, NAS, broker identity/account, agent endpoint, or ingestion was added or accessed.",
+    "The Windows Agent server endpoint (POST /mt5/history/rates/export) is NOT implemented or tested in this repository; only a client transport boundary exists. The agent-host code location remains unestablished here.",
+    "No JSON-Schema validator dependency was added; contract enforcement is via dependency-free validators mirroring the draft-07 schemas.",
+    "Backend 'core' test could not run locally (no backend/.venv, no PostgreSQL); the GitHub backend CI job is the authoritative gate and passed.",
+    "head_commit/c1_commit point at C1 (9bc7290); the C2 block is filled at the evidence-only C2 commit after the C1 runs concluded success; the C2 commit triggers further CI validated separately and recorded in the PR comment/handoff.",
+    "Capability readiness remains PARTIAL: agent endpoint, NAS target, source/timezone evidence and real acquisition are still absent."
+  ],
+  "artefact_locations": [
+    "research/market_data/",
+    "research/contracts/agent_history_export_request_v1.schema.json",
+    "research/contracts/agent_history_export_response_v1.schema.json",
+    "research/contracts/raw_market_data_manifest_v1.schema.json",
+    "research/contracts/broker_timezone_evidence_v1.schema.json",
+    "tests/fixtures/market_data/",
+    "tools/market_data_synthetic_smoke.py",
+    "tests/test_market_data_foundation.py",
+    "evidence/manifests/GFX-EVD-006C-synthetic-market-data-foundation.json"
+  ],
+  "checksums": {
+    "research/contracts/agent_history_export_request_v1.schema.json": "sha256:bbafa2fe1b3170167c1778b13dde369a406721f3a6fb2244daee0ffe82796a23",
+    "research/contracts/agent_history_export_response_v1.schema.json": "sha256:2e952cba01057536604bad720b8546c31e6e872a3d62f34a37cd5a8ac178fe24",
+    "research/contracts/raw_market_data_manifest_v1.schema.json": "sha256:347ca0f74afe43f32edbdcd12da2e01ac32cdf2f494dfd53d1afc16292997547",
+    "research/contracts/broker_timezone_evidence_v1.schema.json": "sha256:074fbc79344b4b549fbd674df36119eed6598b8258444cd11f15973e011477ab",
+    "tests/fixtures/market_data/synthetic_history_request.json": "sha256:d8853751b8be3baca6f28752ca7f4bcbaca59c7262958b28d8079f006abf0080",
+    "tests/fixtures/market_data/synthetic_history_response.json": "sha256:2d2b5923bb70b38e75f05d79f9a2b55647b65e7f5aae813add0e66cc4c3786a3",
+    "tests/fixtures/market_data/synthetic_timezone_verified.json": "sha256:5ce62ddff1df7966db4fd164b70c2989e3e93a22d91397588531a870eda36fe6",
+    "tests/fixtures/market_data/synthetic_timezone_inconclusive.json": "sha256:bb7e62c745fa439da1b463fa47bd498c555af936335fd4db1d2b5eb3e3c47a4d",
+    "tools/market_data_synthetic_smoke.py": "sha256:900f0bc10f5c59111b4c377e994ca888d7bb61ecf47a711e25a3bfd50835aeb9",
+    "tests/test_market_data_foundation.py": "sha256:df41a5d1ae6ebf5bf55bc993afb71011f6085ceeab8202038d6a291338ed2cd6"
+  },
+  "reviewer": null
+}

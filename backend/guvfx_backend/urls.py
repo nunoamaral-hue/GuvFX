@@ -44,6 +44,7 @@ urlpatterns = [
     path("api/mt5-interaction/", include("mt5.urls_interaction")),
     path("api/onboarding/", include("onboarding.urls")),
     path("api/reliability/", include("reliability.urls")),  # RX-2 Reliability Core
+    path("api/wims/", include("wims.urls")),
     path("health/", health),
     # Windows Agent MVP endpoints (direct wiring)
     path(

@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-003I-B-ci-validation",
+  "packet_id": "GFX-PKT-003I-B",
+  "created_at_utc": "2026-06-22T13:25:20Z",
+  "branch": "chore/guvfx-governance-convergence",
+  "base_commit": "b041123c94e8993a4662f3acd8c625dabf8d5851",
+  "head_commit": "76458af79bf6764594376162a9a8c9c06ede6338",
+  "c1_commit": "76458af79bf6764594376162a9a8c9c06ede6338",
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "event": "push",
+    "run_id": 27956004590,
+    "run_head_sha": "76458af79bf6764594376162a9a8c9c06ede6338",
+    "jobs": [
+      { "name": "governance", "conclusion": "success" },
+      { "name": "backend", "conclusion": "success" },
+      { "name": "frontend", "conclusion": "success" }
+    ]
+  },
+  "commands": [
+    "git push -u origin chore/guvfx-governance-convergence (SSH transport; see limitations)",
+    "gh run watch 27956004590 --exit-status",
+    "gh run view 27956004590 --json status,conclusion,jobs"
+  ],
+  "expected_results": [
+    "C1 commit present on remote branch",
+    "GitHub Actions CI push run for head_sha == C1 completes",
+    "Every non-skipped CI job concludes success"
+  ],
+  "actual_results": [
+    "Remote branch chore/guvfx-governance-convergence at 76458af79bf6764594376162a9a8c9c06ede6338",
+    "CI run 27956004590 status completed, conclusion success",
+    "jobs governance=success, backend=success, frontend=success"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Application integration (backend Django tests with PostgreSQL, frontend lint/build) ran in GitHub Actions, not on the local Mac. The local environment lacks Django/venv/PostgreSQL, so 'make check' was not runnable locally; GitHub Actions is the approved full integration gate. The GFX-PKT-003I-A local evidence manifest remains truthfully PARTIAL.",
+    "The branch push used SSH transport (git@github.com) because the local HTTPS OAuth credential lacked the 'workflow' scope required to push the changed .github/workflows/ci.yml. The persisted origin URL was not modified."
+  ],
+  "artefact_locations": [
+    "evidence/manifests/GFX-EVD-003I-B-ci-validation.json",
+    "evidence/manifests/GFX-EVD-003I-A-governance-foundation.json",
+    "packets/ACTIVE.md"
+  ],
+  "checksums": {},
+  "reviewer": null
+}

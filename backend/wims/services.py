@@ -1,0 +1,304 @@
+"""
+WIMS workflow services (WP-1).
+
+All state transitions for the Educational Content Flow go through this module
+so that:
+
+  * the legal status transitions are enforced in one place, and
+  * every transition writes a matching ``AuditEvent`` row in the same DB
+    transaction (audit can never silently drift from state).
+
+The pipeline:
+
+    create_topic -> create_context -> create_content
+        -> submit_for_review -> review (approve/reject) -> publish
+"""
+
+from __future__ import annotations
+
+from django.core.exceptions import ValidationError
+from django.db import transaction
+
+from .models import (
+    AuditEvent,
+    ConsumptionContract,
+    Content,
+    Context,
+    EducationalTopic,
+    Publish,
+    Review,
+    WorkflowState,
+)
+
+
+def record_audit(actor, event: str, obj, **detail) -> AuditEvent:
+    """Append an immutable audit row describing ``event`` on ``obj``."""
+    return AuditEvent.objects.create(
+        actor=actor,
+        event=event,
+        object_type=obj.__class__.__name__,
+        object_id=obj.pk,
+        detail=detail,
+    )
+
+
+def record_audit_ref(actor, event: str, *, object_type: str,
+                     object_id: int = 0, **detail) -> AuditEvent:
+    """Append an audit row for an object referenced by type/id only.
+
+    Same audit capability as :func:`record_audit`, for events about things that
+    are not (yet) persisted WIMS rows — e.g. a transient Signal Intelligence
+    Envelope before its ConsumptionContract exists (Phase 7A). ``object_id`` may
+    be 0 when the referent has no integer pk.
+    """
+    return AuditEvent.objects.create(
+        actor=actor,
+        event=event,
+        object_type=object_type,
+        object_id=object_id,
+        detail=detail,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step 1 — Educational Topic (source)
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def create_topic(*, title: str, description: str = "", actor=None,
+                 status: str = EducationalTopic.Status.DRAFT) -> EducationalTopic:
+    topic = EducationalTopic.objects.create(
+        title=title, description=description, created_by=actor, status=status
+    )
+    record_audit(actor, AuditEvent.Event.SOURCE_CREATED, topic, title=title)
+    return topic
+
+
+# ---------------------------------------------------------------------------
+# Step 1b (WP-2) — Consumption Contract (first WIMS-side object)
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def create_contract(*, symbol: str = "", direction: str = "", actor=None,
+                    source_type: str = ConsumptionContract.SourceType.WAYOND,
+                    source_reference: str = "", signal_type: str = "",
+                    entry_price=None, stop_loss=None, take_profit=None,
+                    confidence=None, raw_signal: str = "",
+                    # WP-3 — trade-result fields (used when source_type=TRADE_RESULT)
+                    exit_price=None, result_type: str = "", profit_loss=None,
+                    pips=None, close_time=None, commentary: str = "",
+                    tags=None, media=None) -> ConsumptionContract:
+    """Record externally-sourced intelligence as a consumption contract.
+
+    Source-type agnostic: handles Wayond entry signals (WP-2) and external trade
+    results (WP-3). This does NOT create a Signal / Trade / Position / Deal /
+    Execution object; WIMS only persists the contract describing the
+    intelligence it received (ADR-009 boundary). The trade-result fields are
+    descriptive content-generation input, not a settled trade record.
+    """
+    contract = ConsumptionContract.objects.create(
+        source_type=source_type,
+        source_reference=source_reference,
+        created_by=actor,
+        signal_type=signal_type,
+        symbol=symbol,
+        direction=direction,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        confidence=confidence,
+        raw_signal=raw_signal,
+        exit_price=exit_price,
+        result_type=result_type,
+        profit_loss=profit_loss,
+        pips=pips,
+        close_time=close_time,
+        commentary=commentary,
+        tags=tags if tags is not None else [],
+        media=media if media is not None else {},
+        status=ConsumptionContract.Status.RECEIVED,
+    )
+    record_audit(actor, AuditEvent.Event.CONTRACT_CREATED, contract,
+                 source_type=source_type, symbol=symbol, direction=direction,
+                 result_type=result_type or None)
+    return contract
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — Context (from a topic [WP-1] or a consumption contract [WP-2])
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def create_context(*, topic: EducationalTopic, context_text: str, actor=None,
+                   status: str = Context.Status.READY_FOR_CONTENT) -> Context:
+    if topic.status == EducationalTopic.Status.ARCHIVED:
+        raise ValidationError("Cannot create context for an archived topic.")
+    ctx = Context.objects.create(
+        source=topic, context_text=context_text, created_by=actor, status=status
+    )
+    record_audit(actor, AuditEvent.Event.CONTEXT_CREATED, ctx, source_id=topic.pk)
+    return ctx
+
+
+@transaction.atomic
+def create_context_from_contract(
+    *, contract: ConsumptionContract, context_text: str, actor=None,
+    status: str = Context.Status.READY_FOR_CONTENT,
+) -> Context:
+    """Deliverable 2 (WP-2) — turn a consumption contract into educational Context.
+
+    Marks the contract PROCESSED and emits CONTRACT_PROCESSED. The resulting
+    Context feeds the identical, unchanged WP-1 Content → Review → Publish flow.
+    """
+    if contract.status == ConsumptionContract.Status.ARCHIVED:
+        raise ValidationError("Cannot create context for an archived contract.")
+    if contract.status == ConsumptionContract.Status.PROCESSED:
+        raise ValidationError("Contract has already been processed into context.")
+
+    ctx = Context.objects.create(
+        contract=contract, context_text=context_text, created_by=actor,
+        status=status,
+    )
+    record_audit(actor, AuditEvent.Event.CONTEXT_CREATED, ctx,
+                 contract_id=contract.pk)
+
+    contract.status = ConsumptionContract.Status.PROCESSED
+    contract.save(update_fields=["status"])
+    record_audit(actor, AuditEvent.Event.CONTRACT_PROCESSED, contract,
+                 context_id=ctx.pk)
+    return ctx
+
+
+# ---------------------------------------------------------------------------
+# Step 3 — Content
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def create_content(*, context: Context, title: str, content_text: str,
+                   actor=None) -> Content:
+    content = Content.objects.create(
+        context=context,
+        title=title,
+        content_text=content_text,
+        created_by=actor,
+        status=Content.Status.DRAFT,
+    )
+    record_audit(actor, AuditEvent.Event.CONTENT_CREATED, content,
+                 context_id=context.pk)
+    return content
+
+
+# ---------------------------------------------------------------------------
+# Step 4 — Submit for review
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def submit_for_review(*, content: Content, actor=None) -> Content:
+    if content.status != Content.Status.DRAFT:
+        raise ValidationError(
+            f"Only DRAFT content can be submitted for review (was {content.status})."
+        )
+    content.status = Content.Status.READY_FOR_REVIEW
+    content.save(update_fields=["status"])
+    record_audit(actor, AuditEvent.Event.SUBMITTED_FOR_REVIEW, content)
+    return content
+
+
+# ---------------------------------------------------------------------------
+# Step 5 — Human review (mandatory)
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def review_content(*, content: Content, decision: str, reviewer=None,
+                   notes: str = "") -> Review:
+    if content.status != Content.Status.READY_FOR_REVIEW:
+        raise ValidationError(
+            f"Content must be READY_FOR_REVIEW to be reviewed (was {content.status})."
+        )
+    if decision not in Review.Decision.values:
+        raise ValidationError(f"Unknown review decision: {decision!r}")
+
+    review = Review.objects.create(
+        content=content,
+        reviewer=reviewer,
+        review_decision=decision,
+        review_notes=notes,
+    )
+    content.status = (
+        Content.Status.APPROVED
+        if decision == Review.Decision.APPROVE
+        else Content.Status.REJECTED
+    )
+    content.save(update_fields=["status"])
+    record_audit(reviewer, AuditEvent.Event.REVIEW_DECISION, content,
+                 decision=decision, review_id=review.pk)
+    return review
+
+
+# ---------------------------------------------------------------------------
+# Step 6 — Publish (manual only; channel delivery simulated for WP-1)
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def publish_content(*, content: Content, channel: str, publisher=None,
+                    simulated: bool = True) -> Publish:
+    if content.status != Content.Status.APPROVED:
+        raise ValidationError(
+            f"Only APPROVED content can be published (was {content.status})."
+        )
+    if channel not in Publish.Channel.values:
+        raise ValidationError(f"Unknown channel: {channel!r}")
+
+    pub = Publish.objects.create(
+        content=content,
+        published_by=publisher,
+        channel=channel,
+        simulated=simulated,
+    )
+    content.status = Content.Status.PUBLISHED
+    content.save(update_fields=["status"])
+    record_audit(publisher, AuditEvent.Event.PUBLISHED, content,
+                 channel=channel, publish_id=pub.pk, simulated=simulated)
+    return pub
+
+
+# ---------------------------------------------------------------------------
+# Deliverable 4 — operator-facing workflow state for a topic
+# ---------------------------------------------------------------------------
+def workflow_state_for_topic(topic: EducationalTopic) -> str:
+    """Derive the single stage the topic's pipeline is currently waiting on.
+
+    Distinct from the per-object ``status`` fields: this answers the operator's
+    question "what is this topic blocked on right now?".
+    """
+    if topic.status == EducationalTopic.Status.ARCHIVED:
+        return WorkflowState.ARCHIVED
+
+    contents = list(
+        Content.objects.filter(context__source=topic).order_by("-created_at")
+    )
+    if any(c.status == Content.Status.PUBLISHED for c in contents):
+        return WorkflowState.PUBLISHED
+    if any(c.status == Content.Status.APPROVED for c in contents):
+        return WorkflowState.AWAITING_PUBLISH
+    if any(c.status == Content.Status.READY_FOR_REVIEW for c in contents):
+        return WorkflowState.AWAITING_REVIEW
+
+    has_context = Context.objects.filter(source=topic).exists()
+    if not has_context:
+        return WorkflowState.AWAITING_CONTEXT
+    # Context exists but no content past draft yet.
+    return WorkflowState.AWAITING_CONTENT
+
+
+def workflow_state_for_contract(contract: ConsumptionContract) -> str:
+    """Operator-facing pipeline stage for a consumption contract (WP-2)."""
+    if contract.status == ConsumptionContract.Status.ARCHIVED:
+        return WorkflowState.ARCHIVED
+
+    contents = list(
+        Content.objects.filter(context__contract=contract).order_by("-created_at")
+    )
+    if any(c.status == Content.Status.PUBLISHED for c in contents):
+        return WorkflowState.PUBLISHED
+    if any(c.status == Content.Status.APPROVED for c in contents):
+        return WorkflowState.AWAITING_PUBLISH
+    if any(c.status == Content.Status.READY_FOR_REVIEW for c in contents):
+        return WorkflowState.AWAITING_REVIEW
+
+    if not Context.objects.filter(contract=contract).exists():
+        return WorkflowState.AWAITING_CONTEXT
+    return WorkflowState.AWAITING_CONTENT

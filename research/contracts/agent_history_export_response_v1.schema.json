@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/agent_history_export_response_v1.schema.json",
+  "title": "GuvFX Agent History Export Success Response v1",
+  "description": "Successful read-only MT5 copy_rates_range export. Bid OHLC bars only; no ask, spread, reconstructed price, credential or numeric account field. Synthetic/design contract under GFX-PKT-006C.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "minute_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00Z$"
+    },
+    "instant_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 64 },
+    "scope_slug": { "type": "string", "pattern": "^(?=.*[a-z])[a-z0-9][a-z0-9_-]*$", "maxLength": 64 },
+    "sha256_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "request_id": { "$ref": "#/definitions/sha256_hex" },
+    "ok": { "const": true },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_id": { "$ref": "#/definitions/slug" },
+        "account_scope": { "$ref": "#/definitions/scope_slug" },
+        "broker_reported": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "server_reported": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "account_type": { "type": "string", "enum": ["demo", "live", "contest"] },
+        "terminal_build": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "adapter_operation": { "const": "copy_rates_range" }
+      },
+      "required": [
+        "source_id", "account_scope", "broker_reported", "server_reported",
+        "account_type", "terminal_build", "adapter_operation"
+      ]
+    },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9]{3,12}$" },
+    "timeframe": { "type": "string", "enum": ["M1"] },
+    "representation": { "type": "string", "enum": ["bid_ohlc"] },
+    "range_start_utc": { "$ref": "#/definitions/minute_utc" },
+    "range_end_utc": { "$ref": "#/definitions/minute_utc" },
+    "range_semantics": { "const": "[start,end)" },
+    "exported_at_utc": { "$ref": "#/definitions/instant_utc" },
+    "bars": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sequence": { "type": "integer", "minimum": 0 },
+          "time_epoch_s": { "type": "integer", "minimum": 0 },
+          "open": { "type": "number" },
+          "high": { "type": "number" },
+          "low": { "type": "number" },
+          "close": { "type": "number" }
+        },
+        "required": ["sequence", "time_epoch_s", "open", "high", "low", "close"]
+      }
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": [
+    "schema_version", "request_id", "ok", "source", "symbol", "timeframe",
+    "representation", "range_start_utc", "range_end_utc", "range_semantics",
+    "exported_at_utc", "bars", "limitations"
+  ]
+}

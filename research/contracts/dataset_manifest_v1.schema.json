@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/dataset_manifest_v1.schema.json",
+  "title": "GuvFX Dataset Manifest v1",
+  "description": "Provider-independent manifest describing a derived/curated dataset so it is reproducible from immutable raw inputs plus recorded config. Artefact location is a logical/configurable reference, never a personal absolute path.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "utc_timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_object_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_object_id": { "type": "string", "minLength": 1 },
+        "source_object_sha256": { "$ref": "#/definitions/sha256_hex" }
+      },
+      "required": ["source_object_id", "source_object_sha256"]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Contract version of this manifest record."
+    },
+    "dataset_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Logical identifier of the dataset."
+    },
+    "dataset_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Version of the dataset content/build."
+    },
+    "created_at_utc": {
+      "$ref": "#/definitions/utc_timestamp",
+      "description": "Instant this dataset/manifest was produced."
+    },
+    "instrument_universe": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Instrument(s) covered by the dataset."
+    },
+    "record_type": {
+      "type": "string",
+      "enum": ["quote", "bar"],
+      "description": "Observation record type the dataset holds, so quote vs bar datasets are unambiguous."
+    },
+    "interval": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Frequency/interval of the dataset rows (e.g. 'event' for quotes, 'M1' for bars). No interval is assumed by this schema."
+    },
+    "source_objects": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/source_object_ref" },
+      "description": "Immutable raw source objects (id + checksum) the dataset derives from."
+    },
+    "schema_versions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Contract schema versions the dataset rows conform to."
+    },
+    "code_commit": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Code version/commit that produced the dataset."
+    },
+    "config_hash": {
+      "$ref": "#/definitions/sha256_hex",
+      "description": "Lowercase hex SHA-256 of the configuration used to build the dataset."
+    },
+    "point_in_time_policy": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stated point-in-time correctness policy applied (e.g. availability-time gating, no look-ahead)."
+    },
+    "row_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total rows in the dataset."
+    },
+    "partition_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of partitions/files comprising the dataset."
+    },
+    "content_checksums": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/definitions/sha256_hex" },
+      "description": "Map of artefact name -> SHA-256 content checksum."
+    },
+    "quality_result": {
+      "type": "string",
+      "enum": ["PASS", "PARTIAL", "FAIL"],
+      "description": "Quality validation outcome for the dataset build."
+    },
+    "artefact_location": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Logical/configurable reference to where the artefacts live (e.g. a GUVFX_DATA_ROOT-relative logical path). Never a personal absolute path."
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Known limitations or caveats. Empty array means none stated."
+    }
+  },
+  "required": [
+    "schema_version",
+    "dataset_id",
+    "dataset_version",
+    "created_at_utc",
+    "record_type",
+    "instrument_universe",
+    "interval",
+    "source_objects",
+    "schema_versions",
+    "code_commit",
+    "config_hash",
+    "point_in_time_policy",
+    "row_count",
+    "partition_count",
+    "content_checksums",
+    "quality_result",
+    "artefact_location",
+    "limitations"
+  ]
+}

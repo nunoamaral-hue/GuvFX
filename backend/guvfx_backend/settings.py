@@ -63,6 +63,8 @@ INSTALLED_APPS = [
     "onboarding",
     "reliability",  # RX-2 Reliability Core (Phase 1: detection/visibility/alerting)
     "terminal_provisioning",  # TX-1A/TX-1B Terminal Isolation foundation (additive)
+    "wims",  # WP-1 — Educational Content Flow (logically separate per ADR-009)
+    "intelligence",  # Phase 7A — GuvFX Signal Intelligence Producer (produces; WIMS consumes)
 ]
 
 MIDDLEWARE = [
@@ -127,6 +129,13 @@ GUVFX_WINDOWS_AGENT_TOKEN = env("GUVFX_WINDOWS_AGENT_TOKEN", "")
 # Legacy worker token toggle.  Set to "false" to disable legacy X-Worker-Token
 # header authentication and require all workers to use WorkerIdentity credentials.
 ENABLE_LEGACY_WORKER_TOKEN: bool = env("ENABLE_LEGACY_WORKER_TOKEN", "true").lower() == "true"
+
+# Market-data research data root (GFX-PKT-006C).
+# Intentionally has NO default and is NOT required: the application starts without
+# a data root. Any real market-data operation must validate this separately and
+# fail closed when it is unset/blank (see research/market_data/config.py). There is
+# no repository fallback.
+GUVFX_DATA_ROOT = env("GUVFX_DATA_ROOT")
 
 
 # Password validation

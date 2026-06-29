@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "operation": "copy_rates_range",
+  "source_id": "synthetic-mt5-agent",
+  "account_scope": "synthetic-demo",
+  "symbol": "EURUSD",
+  "timeframe": "M1",
+  "representation": "bid_ohlc",
+  "range_start_utc": "2025-01-01T00:00:00Z",
+  "range_end_utc": "2025-02-01T00:00:00Z",
+  "range_semantics": "[start,end)",
+  "request_id": "48a5fd6c46fc8ac807194a1ccc46ce131ef9e3dfcef88232d8258af4ee156595"
+}

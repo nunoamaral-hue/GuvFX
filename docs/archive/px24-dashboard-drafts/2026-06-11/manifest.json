@@ -1,0 +1,34 @@
+{
+  "packet_id": "GFX-PKT-003X",
+  "preservation_base_commit": "ddda0686ccbe8cd1b97318cc94cd605d5c0b452b",
+  "archive_date": "2026-06-11",
+  "drafts": [
+    {
+      "filename": "px24_dashboard_final_20260611.tsx",
+      "source_relative_path": ".claude/px24_dashboard_final_20260611.tsx",
+      "archival_relative_path": "docs/archive/px24-dashboard-drafts/2026-06-11/px24_dashboard_final_20260611.tsx",
+      "byte_size": 59155,
+      "sha256": "17cbee975315d817cb5a80fff81e846a87635b5fe84f2c61a2685f9abc68f632",
+      "classification": "unique_uncommitted_px24_draft",
+      "source_timestamp": "2026-06-15T09:07:33+0100"
+    },
+    {
+      "filename": "px24_rx2_merged_dashboard_20260611.tsx",
+      "source_relative_path": ".claude/px24_rx2_merged_dashboard_20260611.tsx",
+      "archival_relative_path": "docs/archive/px24-dashboard-drafts/2026-06-11/px24_rx2_merged_dashboard_20260611.tsx",
+      "byte_size": 64389,
+      "sha256": "4b8943e26500643be07063a308d453f7b39b96655e18a33c4cafee8390732dfa",
+      "classification": "unique_uncommitted_px24_draft",
+      "source_timestamp": "2026-06-15T09:07:33+0100"
+    },
+    {
+      "filename": "px24_rx2_status_cleanup_20260611.tsx",
+      "source_relative_path": ".claude/px24_rx2_status_cleanup_20260611.tsx",
+      "archival_relative_path": "docs/archive/px24-dashboard-drafts/2026-06-11/px24_rx2_status_cleanup_20260611.tsx",
+      "byte_size": 60403,
+      "sha256": "aed2374ec1103ebdd9924869edef09a190d0a89caf429cd4407874388dae847e",
+      "classification": "unique_uncommitted_px24_draft",
+      "source_timestamp": "2026-06-15T09:07:33+0100"
+    }
+  ]
+}

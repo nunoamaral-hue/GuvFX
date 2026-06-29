@@ -1,3 +1,25 @@
+# HANDOFF — live frontier pointer (2026-06-27)
+
+> Concise pointer. **Notion is the source of truth** for the full programme
+> lifecycle (*GuvFX — Current State v0.52*); GitHub holds implementation, tests and
+> concise evidence. This file does not assert point-in-time PR status. Full state
+> map: [`docs/PROGRAMME_STATE.md`](PROGRAMME_STATE.md).
+
+- **Synthetic foundation (006C arc) — DONE.** 006C + R1…R4-R2 merged to `main`
+  (R4-R2 via PR #36; `main` `148437ae`). Synthetic-only; no real data/NAS/broker in
+  this repository.
+- **Live frontier — real data acquisition (006D).** Runs in the dedicated repo
+  `nunoamaral-hue/guvfx-windows-history-agent` (`main` `46c81057…`) + governed
+  read-only VPS probes. Probe ladder PASSED through P4 (history retrieval feasible);
+  **P5 (first durable raw object) is BLOCKED** at the storage gate.
+- **Single blocker:** owner action **GFX-PKT-006D-S1** — provision/expose
+  `GuvFXData` / `GUVFX_DATA_ROOT` to the Mac controller (NAS now on Tailscale).
+- **PM:** Claude Code is acting PM (documentation/authoring/tracking + Green/Amber
+  self-acceptance). New live-order/credential/risk-limit/promotion authorizations
+  and lifecycle ratification remain Nuno's explicit gate.
+
+---
+
 # HANDOFF (2025-12-16)
 
 > Outgoing coder updates this at the end of **every** session.
