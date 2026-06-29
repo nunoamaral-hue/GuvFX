@@ -71,3 +71,10 @@ List active problems with reproduction steps and workarounds.
 - **`make check` backend tests**
   - Status: runs `backend/.venv/bin/python manage.py test`, so no manual activation is needed.
   - Remaining requirement: ensure `backend/.venv` exists (see `docs/RUNBOOK.md` for how to prepare it).
+
+- **Resolved: Traefik stale backend routing causing intermittent 502 / auth failures (2026-03-17)**
+  - Symptom: Intermittent 502 Bad Gateway from `api.guvfx.com`, browser login failure ("Failed to fetch"), CORS preflight failures — with no backend application errors.
+  - Root cause: Traefik routing table retained a stale container IP alongside the valid one after container recreation. Requests randomly routed to the dead container.
+  - Resolution: `docker compose down --remove-orphans && docker compose up -d` from `/home/ubuntu/guvfx-prod`.
+  - Operational rule added to `docs/RUNBOOK.md`: if intermittent 502s occur with no backend errors, suspect stale Traefik routing and run the above command before investigating application-level issues.
+  - Status: RESOLVED — no architecture or infrastructure changes required.

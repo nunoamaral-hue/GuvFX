@@ -47,6 +47,17 @@ class TradingAccount(models.Model):
         blank=True,
     )
 
+    # Node-aware routing: which execution host services this account.
+    # NULL means "not yet assigned to a node" (legacy accounts).
+    terminal_node = models.ForeignKey(
+        "execution.TerminalNode",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="trading_accounts",
+        help_text="Execution host that services this account.",
+    )
+
     name = models.CharField(max_length=100)
 
     broker_server = models.ForeignKey(
@@ -65,6 +76,23 @@ class TradingAccount(models.Model):
 
     is_demo = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
+
+    # Multicurrency: account denomination (e.g. "USD", "EUR").
+    # Nullable for backward compatibility; populated from MT5 account info.
+    account_currency = models.CharField(
+        max_length=8,
+        null=True,
+        blank=True,
+        help_text="Account denomination currency (e.g. USD, EUR). Populated from MT5.",
+    )
+
+    # Cutover: deals with deal.time < cutover are skipped during ingest.
+    # Set after wiping trades so old MT5 history doesn't re-import.
+    ingest_cutover_time = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Skip deals older than this timestamp during trade ingest.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -107,6 +135,15 @@ class Trade(models.Model):
         (SELL, "Sell"),
     ]
 
+    STAGE_TEST = "TEST"
+    STAGE_LIVE = "LIVE"
+    STAGE_UNKNOWN = "UNKNOWN"
+    SOURCE_STAGE_CHOICES = [
+        (STAGE_TEST, "Test"),
+        (STAGE_LIVE, "Live"),
+        (STAGE_UNKNOWN, "Unknown"),
+    ]
+
     account = models.ForeignKey(
         TradingAccount,
         on_delete=models.CASCADE,
@@ -128,9 +165,31 @@ class Trade(models.Model):
     commission = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     swap = models.DecimalField(max_digits=20, decimal_places=2, default=0)
 
+    # Multicurrency: currency denomination of monetary amounts.
+    # Nullable for backward compatibility; populated from MT5 account currency.
+    profit_currency = models.CharField(
+        max_length=8, null=True, blank=True,
+        help_text="Currency of profit field (e.g. USD). Populated from MT5.",
+    )
+    commission_currency = models.CharField(
+        max_length=8, null=True, blank=True,
+        help_text="Currency of commission field. Populated from MT5.",
+    )
+    swap_currency = models.CharField(
+        max_length=8, null=True, blank=True,
+        help_text="Currency of swap field. Populated from MT5.",
+    )
+
     magic_number = models.IntegerField(null=True, blank=True)
     comment = models.CharField(max_length=255, blank=True)
     opened_by = models.CharField(max_length=64, blank=True)
+
+    source_stage = models.CharField(
+        max_length=8,
+        choices=SOURCE_STAGE_CHOICES,
+        default=STAGE_UNKNOWN,
+        help_text="TEST, LIVE, or UNKNOWN — inferred from job comment tag during ingest.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 

@@ -57,6 +57,10 @@ GuvPay-pr/
 * ([0-9]).md
 * ([0-9]).config.mjs
 
+# Python cache
+__pycache__/
+*.pyc
+
 # Local Claude material — ignore specific local files only.
 # Do NOT ignore the whole .claude/ directory: .claude/rules/*.md stay tracked.
 /.claude/settings.local.json

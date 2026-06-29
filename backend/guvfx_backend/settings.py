@@ -57,6 +57,12 @@ INSTALLED_APPS = [
     "execution",  # NEW
     "hosting",
     "mt5",
+    "billing",
+    "reconciliation",
+    "admin_ops",
+    "onboarding",
+    "reliability",  # RX-2 Reliability Core (Phase 1: detection/visibility/alerting)
+    "terminal_provisioning",  # TX-1A/TX-1B Terminal Isolation foundation (additive)
     "wims",  # WP-1 — Educational Content Flow (logically separate per ADR-009)
     "intelligence",  # Phase 7A — GuvFX Signal Intelligence Producer (produces; WIMS consumes)
 ]
@@ -64,6 +70,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     'django.middleware.security.SecurityMiddleware',
+    'core.middleware.SecurityHeadersMiddleware',  # Custom security headers (HSTS, CSP, etc.)
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -118,6 +125,10 @@ GUVFX_WINDOWS_AGENT_BASE_URL = env(
     "http://10.50.0.2:8787",
 )
 GUVFX_WINDOWS_AGENT_TOKEN = env("GUVFX_WINDOWS_AGENT_TOKEN", "")
+
+# Legacy worker token toggle.  Set to "false" to disable legacy X-Worker-Token
+# header authentication and require all workers to use WorkerIdentity credentials.
+ENABLE_LEGACY_WORKER_TOKEN: bool = env("ENABLE_LEGACY_WORKER_TOKEN", "true").lower() == "true"
 
 # Market-data research data root (GFX-PKT-006C).
 # Intentionally has NO default and is NOT required: the application starts without
@@ -178,7 +189,53 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "core.throttling.GuvFXUserRateThrottle",
+        "core.throttling.GuvFXIPRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "user": "100/min",
+        "ip": "1000/min",
+        "csrf": "60/min",
+        "auth": "20/min",
+    },
 }
+
+# Cache configuration for rate limiting
+# Production: DatabaseCache (shared across gunicorn workers, uses existing Postgres)
+# Development: LocMemCache (simpler, no setup needed)
+# Optional: Redis if REDIS_URL is set (fastest option)
+
+_redis_url = env("REDIS_URL", "")
+
+if _redis_url:
+    # Redis available - use it (fastest, best for high traffic)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": _redis_url,
+        }
+    }
+elif DEBUG:
+    # Development mode - use in-memory cache (simple, per-process)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "guvfx-rate-limit-cache",
+        }
+    }
+else:
+    # Production without Redis - use DatabaseCache (shared across workers)
+    # Requires: python manage.py createcachetable
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "django_cache",
+            "OPTIONS": {
+                "MAX_ENTRIES": 10000,  # Reasonable limit for rate limiting
+            },
+        }
+    }
 
 SIMPLE_JWT = {
     "ALGORITHM": "HS256",
@@ -201,18 +258,35 @@ _raw_cors = env("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
 CORS_ALLOWED_ORIGINS = ["https://guvfx.com", "https://www.guvfx.com"]
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "Authorization",
+    "X-CSRFToken",
 ]
 
+# CSRF Settings
+CSRF_TRUSTED_ORIGINS = [
+    "https://guvfx.com",
+    "https://www.guvfx.com",
+    "https://api.guvfx.com",
+]
+CSRF_COOKIE_DOMAIN = ".guvfx.com"
+CSRF_COOKIE_HTTPONLY = False  # Must be False so JS can read and send X-CSRFToken header
+CSRF_USE_SESSIONS = False  # Use cookie-based CSRF (double-submit pattern)
+
 # Security Settings
+# SameSite=None requires Secure=True (enforced by browsers).
+# Cross-origin cookie auth (guvfx.com → api.guvfx.com) needs SameSite=None.
 if not DEBUG:
+    SESSION_COOKIE_SAMESITE = "None"
     SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SAMESITE = "None"
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = int(env("DJANGO_HSTS_SECONDS", "31536000"))  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     SECURE_SSL_REDIRECT = env("DJANGO_SSL_REDIRECT", "True").lower() == "true"
 else:
+    SESSION_COOKIE_SAMESITE = "Lax"
     SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SAMESITE = "Lax"
     CSRF_COOKIE_SECURE = False
     SECURE_HSTS_SECONDS = 0
     SECURE_HSTS_INCLUDE_SUBDOMAINS = False
@@ -243,6 +317,11 @@ LOGGING = {
         "level": env("DJANGO_LOG_LEVEL", "INFO"),
     },
 }
+# Backtest Artifact Storage (Packet B — B3)
+# Local filesystem root for artifact files.  PostgreSQL stores metadata only.
+BACKTEST_ARTIFACT_ROOT = env("BACKTEST_ARTIFACT_ROOT", str(BASE_DIR / "backtest_artifacts"))
+BACKTEST_ARTIFACT_MAX_BYTES = int(env("BACKTEST_ARTIFACT_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB
+
 # --- Behind Traefik (TLS terminated upstream) ---
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True

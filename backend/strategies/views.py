@@ -13,13 +13,31 @@ from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
 from trading.models import TradingAccount
 
-from .models import Strategy, StrategyAssignment, StrategyChangeLog
+from .models import (
+    Strategy,
+    StrategyAssignment,
+    StrategyChangeLog,
+    StrategyRuntimeState,
+    StrategyRuntimeEvent,
+)
 from .serializers import (
     StrategySerializer,
     StrategyAssignmentSerializer,
     StrategyChangeLogSerializer,
 )
+from .execution import (
+    validate_strategy_for_execution,
+    prepare_execution_config,
+    get_execution_status,
+)
 from backtests.models import BacktestConfig, BacktestRun
+from billing.enforcement import require_entitlement
+from core.audit import (
+    log_strategy_created,
+    log_strategy_updated,
+    log_strategy_deleted,
+    log_assignment_created,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +77,256 @@ MARKETPLACE_STRATEGIES = {
             "auto_optimize_by_ai": False,
         },
     },
+    "mp-005": {
+        "name": "Trendline Break Pocket",
+        "description": "HTF zone + trendline break + structure shift. Fixed 2R model. Manual zones editable.",
+        "trader": "Ali",
+        "category": "System-grade",
+        "template_slug": "trendline-break-pocket-ali",
+        "marketplace_listed": True,
+        "automation_ready": True,
+        "defaults": {
+            "timeframe": "H4",
+            "symbol_universe": "EURUSD,GBPUSD",
+            "edge_type": "BREAKOUT",
+            "risk_per_trade_pct": 0.1,
+            "auto_optimize_by_ai": False,
+            # Strategy-specific parameters stored in filters JSON
+            "filters": {
+                "template_slug": "trendline-break-pocket-ali",
+                "enabled": True,
+                "direction_mode": "both",
+                "pairs_enabled": ["EURUSD", "GBPUSD"],
+                "htf_timeframe": "D1",
+                "execution_timeframe": "H4",
+                "rr_target": 2.0,
+                "trendline_lookback_bars": 101,
+                "trendline_pivot_strength": 2,
+                "break_confirm_bars": 1,
+                "swing_break_mode": "close_break",
+                "swing_lookback": 7,
+                "pocket_retest_required": True,
+                "entry_buffer_pips": {"EURUSD": 2, "GBPUSD": 3},
+                "overshoot_max_pips": {"EURUSD": 12, "GBPUSD": 18},
+                "clean_air_min_pips": {"EURUSD": 8, "GBPUSD": 12},
+                "max_trades_per_day": 1,
+                "news_filter_mode": "major_only",
+                "zones": {
+                    "EURUSD": [
+                        {"zone_name": "Supply 1", "zone_type": "supply", "low": 1.1830, "high": 1.1860, "source": "seeded"},
+                        {"zone_name": "Pivot", "zone_type": "pivot", "low": 1.1775, "high": 1.1795, "source": "seeded"},
+                        {"zone_name": "Demand 1", "zone_type": "demand", "low": 1.1715, "high": 1.1745, "source": "seeded"},
+                    ],
+                    "GBPUSD": [
+                        {"zone_name": "Supply 1", "zone_type": "supply", "low": 1.3600, "high": 1.3640, "source": "seeded"},
+                        {"zone_name": "Pivot", "zone_type": "pivot", "low": 1.3490, "high": 1.3530, "source": "seeded"},
+                        {"zone_name": "Demand 1", "zone_type": "demand", "low": 1.3380, "high": 1.3420, "source": "seeded"},
+                    ],
+                },
+            },
+            # Entry/exit logic descriptions
+            "entry_logic": "1. Price in HTF zone (D1 supply/demand)\n2. Trendline break confirmed (close beyond TL)\n3. Structure shift (swing break)\n4. Retest pocket entry (if enabled)\n5. Clean air validation",
+            "exit_logic": "Fixed 2R target from entry. Stop at structural invalidation.",
+        },
+    },
+    "mp-006": {
+        "name": "Adaptive Liquidity Trap Scalper",
+        "description": "Range-regime liquidity sweep + displacement + confirmation. M5 execution with M15 regime filter.",
+        "category": "System-grade",
+        "template_slug": "adaptive-liquidity-trap-scalper",
+        "marketplace_listed": True,
+        "automation_ready": True,
+        "defaults": {
+            "timeframe": "M5",
+            "symbol_universe": "EURUSD,GBPUSD",
+            "edge_type": "MEAN_REVERSION",
+            "risk_per_trade_pct": 0.1,
+            "auto_optimize_by_ai": False,
+            "filters": {
+                "template_slug": "adaptive-liquidity-trap-scalper",
+                "enabled": True,
+                "direction_mode": "both",
+                "pairs_enabled": ["EURUSD", "GBPUSD"],
+                "execution_timeframe": "M5",
+                "regime_timeframe": "M15",
+                "rr_target": 2.0,
+                "max_trades_per_day": 10,
+            },
+            "entry_logic": "1. M15 regime = range (ADX < 25, price within Keltner)\n2. Liquidity sweep beyond session high/low\n3. Displacement candle confirmation (body > 1.0 ATR)\n4. Entry on pullback into displacement origin",
+            "exit_logic": "Fixed 2R target from entry. Stop beyond sweep extreme.",
+        },
+    },
+    "mp-007": {
+        "name": "Structural Continuation Engine",
+        "description": "H4 bias + H1 BOS + pullback + rejection continuation. H1 execution with H4 context.",
+        "category": "System-grade",
+        "template_slug": "structural-continuation-engine",
+        "marketplace_listed": True,
+        "automation_ready": True,
+        "defaults": {
+            "timeframe": "H1",
+            "symbol_universe": "EURUSD,GBPUSD",
+            "edge_type": "TREND_FOLLOWING",
+            "risk_per_trade_pct": 0.1,
+            "auto_optimize_by_ai": False,
+            "filters": {
+                "template_slug": "structural-continuation-engine",
+                "enabled": True,
+                "direction_mode": "both",
+                "pairs_enabled": ["EURUSD", "GBPUSD"],
+                "htf_timeframe": "H4",
+                "execution_timeframe": "H1",
+                "rr_target": 2.0,
+                "max_trades_per_day": 4,
+            },
+            "entry_logic": "1. H4 directional bias established (fractal HH/HL or LH/LL + ADX)\n2. H1 break of structure (BOS) in bias direction\n3. Pullback into 38-62% Fibonacci zone\n4. Rejection candle confirmation (body > 0.5 ATR)",
+            "exit_logic": "Fixed 2R target from entry. Stop at structural invalidation.",
+        },
+    },
+    "mp-008": {
+        "name": "Trend Continuation Engine v1",
+        "description": "EMA50/200 trend filter + ATR pullback zone + confirmation candle. H4 execution, fixed 1.5R.",
+        "category": "System-grade",
+        "template_slug": "tc1-engine-v1",
+        "marketplace_listed": True,
+        "automation_ready": True,
+        "defaults": {
+            "timeframe": "H4",
+            "symbol_universe": "EURUSD,GBPUSD",
+            "edge_type": "TREND_FOLLOWING",
+            "risk_per_trade_pct": 1.5,
+            "auto_optimize_by_ai": False,
+            "filters": {
+                "template_slug": "tc1-engine-v1",
+                "enabled": True,
+                "direction_mode": "both",
+                "pairs_enabled": ["EURUSD", "GBPUSD"],
+                "execution_timeframe": "H4",
+                "ema_fast": 50,
+                "ema_slow": 200,
+                "atr_period": 14,
+                "pullback_atr_mult": 0.25,
+                "sl_atr_mult": 1.2,
+                "rr_fixed": 1.5,
+                "risk_pct": 1.5,
+                "max_trades_per_day": 4,
+            },
+            "entry_logic": "1. EMA50 > EMA200 (bull) or EMA50 < EMA200 (bear) establishes trend\n2. Price enters pullback zone within 0.25 × ATR14 of EMA50\n3. Confirmation candle closes in trend direction\n4. Market entry at next bar open",
+            "exit_logic": "SL = 1.2 × ATR14 beyond entry. TP = 1.5 × SL distance (fixed 1.5R).",
+        },
+    },
+    "mp-009": {
+        "name": "TBP V3 Hybrid Sleeve v1",
+        "description": "Wrapper: CORE (TBP trendline break pocket) + SLEEVE (TC1 trend continuation on risk-on days, EURUSD/GBPUSD only). H4 execution.",
+        "category": "System-grade",
+        "template_slug": "tbp-v3-hybrid-sleeve-v1",
+        "marketplace_listed": True,
+        "automation_ready": True,
+        "defaults": {
+            "timeframe": "H4",
+            "symbol_universe": "EURUSD,GBPUSD",
+            "edge_type": "TREND_FOLLOWING",
+            "risk_per_trade_pct": 0.03,
+            "auto_optimize_by_ai": False,
+            "filters": {
+                "template_slug": "tbp-v3-hybrid-sleeve-v1",
+                "enabled": True,
+                "direction_mode": "both",
+                "pairs_enabled": ["EURUSD", "GBPUSD"],
+                "alpha": 0.25,
+                "max_trades_per_day": 4,
+                # TBP-compatible fields (CORE)
+                "htf_timeframe": "D1",
+                "execution_timeframe": "H4",
+                "rr_target": 2.0,
+                "trendline_lookback_bars": 101,
+                "trendline_pivot_strength": 2,
+                "break_confirm_bars": 1,
+                "swing_break_mode": "close_break",
+                "swing_lookback": 7,
+                "pocket_retest_required": True,
+                "entry_buffer_pips": {"EURUSD": 2, "GBPUSD": 3},
+                "overshoot_max_pips": {"EURUSD": 12, "GBPUSD": 18},
+                "clean_air_min_pips": {"EURUSD": 8, "GBPUSD": 12},
+                "news_filter_mode": "major_only",
+                "zones": {
+                    "EURUSD": [
+                        {"zone_name": "Supply 1", "zone_type": "supply", "low": 1.1830, "high": 1.1860, "source": "seeded"},
+                        {"zone_name": "Pivot", "zone_type": "pivot", "low": 1.1775, "high": 1.1795, "source": "seeded"},
+                        {"zone_name": "Demand 1", "zone_type": "demand", "low": 1.1715, "high": 1.1745, "source": "seeded"},
+                    ],
+                    "GBPUSD": [
+                        {"zone_name": "Supply 1", "zone_type": "supply", "low": 1.3600, "high": 1.3640, "source": "seeded"},
+                        {"zone_name": "Pivot", "zone_type": "pivot", "low": 1.3490, "high": 1.3530, "source": "seeded"},
+                        {"zone_name": "Demand 1", "zone_type": "demand", "low": 1.3380, "high": 1.3420, "source": "seeded"},
+                    ],
+                },
+            },
+            "entry_logic": "CORE: HTF zone + trendline break + structure shift (TBP, fixed 2R). SLEEVE: EMA50/200 trend + ATR pullback + confirmation (TC1, 1.5R) — only on risk-on days for EURUSD/GBPUSD.",
+            "exit_logic": "CORE: Fixed 2R target from entry. SLEEVE: SL = 1.2 × ATR14, TP = 1.5R. Selection: CORE_PRIORITY (TBP first, TC1 fallback).",
+        },
+    },
 }
+
+
+def validate_trendline_break_pocket_filters(filters: dict) -> dict:
+    """
+    Validate Trendline Break Pocket (Ali) strategy-specific filter parameters.
+    Returns dict of validation errors (empty if valid).
+    """
+    errors = {}
+    template_slug = filters.get("template_slug", "")
+
+    # Only validate if this is the Trendline Break Pocket template
+    if template_slug != "trendline-break-pocket-ali":
+        return errors
+
+    # direction_mode validation
+    direction_mode = filters.get("direction_mode")
+    valid_direction_modes = {"both", "long", "short"}
+    if direction_mode and direction_mode not in valid_direction_modes:
+        errors["direction_mode"] = f"direction_mode must be one of: {', '.join(valid_direction_modes)}"
+
+    # trendline_lookback_bars validation (must be >= 50)
+    lookback = filters.get("trendline_lookback_bars")
+    if lookback is not None:
+        try:
+            lookback_int = int(lookback)
+            if lookback_int < 50:
+                errors["trendline_lookback_bars"] = "trendline_lookback_bars must be >= 50"
+        except (TypeError, ValueError):
+            errors["trendline_lookback_bars"] = "trendline_lookback_bars must be an integer"
+
+    # rr_target validation (must be > 0)
+    rr_target = filters.get("rr_target")
+    if rr_target is not None:
+        try:
+            rr_float = float(rr_target)
+            if rr_float <= 0:
+                errors["rr_target"] = "rr_target must be > 0"
+        except (TypeError, ValueError):
+            errors["rr_target"] = "rr_target must be a number"
+
+    # Zone validation (low < high for each zone)
+    zones = filters.get("zones") or {}
+    for symbol, zone_list in zones.items():
+        if not isinstance(zone_list, list):
+            continue
+        for i, zone in enumerate(zone_list):
+            if not isinstance(zone, dict):
+                continue
+            low = zone.get("low")
+            high = zone.get("high")
+            if low is not None and high is not None:
+                try:
+                    low_f = float(low)
+                    high_f = float(high)
+                    if low_f >= high_f:
+                        errors[f"zones.{symbol}[{i}]"] = f"Zone low ({low_f}) must be < high ({high_f})"
+                except (TypeError, ValueError):
+                    errors[f"zones.{symbol}[{i}]"] = "Zone low/high must be numbers"
+
+    return errors
 
 class StrategyViewSet(viewsets.ModelViewSet):
     queryset = Strategy.objects.all()
@@ -72,6 +339,18 @@ class StrategyViewSet(viewsets.ModelViewSet):
         if not user.is_staff:
             qs = qs.filter(owner=user)
         return qs
+
+    def perform_create(self, serializer):
+        """Create strategy and log audit event."""
+        instance = serializer.save()
+        log_strategy_created(self.request, instance)
+
+    def perform_destroy(self, instance):
+        """Delete strategy and log audit event."""
+        strategy_id = instance.id
+        strategy_name = instance.name
+        instance.delete()
+        log_strategy_deleted(self.request, strategy_id, strategy_name)
 
     def perform_update(self, serializer):
         user = self.request.user
@@ -107,10 +386,364 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 before_settings=before_settings,
                 after_settings=after_settings,
             )
+            # Audit log
+            changed_fields = [k for k, v in after_settings.items() if before_settings.get(k) != v]
+            log_strategy_updated(self.request, updated, changed_fields)
+
+    @action(detail=True, methods=["get"], url_path="execution/validate")
+    def execution_validate(self, request, pk=None):
+        """
+        Validate if a strategy is ready for execution.
+
+        Returns validation status, errors, and warnings.
+        This is a placeholder endpoint - execution engine is not yet implemented.
+        """
+        strategy = self.get_object()
+        validation = validate_strategy_for_execution(strategy)
+        return Response({
+            "strategy_id": strategy.id,
+            "strategy_name": strategy.name,
+            **validation,
+        })
+
+    @action(detail=True, methods=["get"], url_path="execution/config")
+    def execution_config(self, request, pk=None):
+        """
+        Get the execution configuration for a strategy.
+
+        Returns the configuration that would be sent to the execution engine.
+        NOTE: This is a placeholder - no trades are executed.
+        """
+        strategy = self.get_object()
+        config = prepare_execution_config(strategy)
+        return Response(config)
+
+    @action(detail=True, methods=["get"], url_path="execution/status")
+    def execution_status(self, request, pk=None):
+        """
+        Get the current execution status of a strategy.
+
+        Returns status information about the strategy's execution state.
+        NOTE: Execution engine is not yet implemented.
+        """
+        strategy = self.get_object()
+        status_info = get_execution_status(strategy)
+        return Response(status_info)
+
+    @action(detail=True, methods=["get"], url_path="execution/live-status")
+    def execution_live_status(self, request, pk=None):
+        """
+        GET /api/strategies/strategies/<id>/execution/live-status/?account_id=<id>
+
+        Health-check whether this strategy is "live" end-to-end:
+        strategy active, assignment active, scheduler running, agents reachable, ingest healthy.
+
+        Returns:
+            { overall: "PASS"|"FAIL"|"DEGRADED", strategy_id, account_id,
+              checked_at, checks: [{name, status, detail}, ...] }
+        """
+        import os
+        import json as _json
+        import urllib.request
+        import urllib.parse
+        from datetime import timedelta
+        from execution.models import ExecutionJob
+        from core.models import AuditEvent
+
+        strategy = self.get_object()
+        account_id = request.query_params.get("account_id")
+        if not account_id:
+            return Response(
+                {"ok": False, "reason": "account_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        account = TradingAccount.objects.filter(id=account_id).first()
+        if not account:
+            return Response(
+                {"ok": False, "reason": f"Account {account_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        now = timezone.now()
+        lookback_24h = now - timedelta(hours=24)
+        checks = []
+
+        # 1. Strategy active
+        if not strategy.is_active:
+            checks.append({"name": "strategy_active", "status": "FAIL",
+                           "detail": f"Strategy '{strategy.name}' is_active=False"})
+        else:
+            checks.append({"name": "strategy_active", "status": "PASS",
+                           "detail": f"Strategy '{strategy.name}' is_active=True"})
+
+        # 2. Account active + demo
+        if not account.is_active:
+            checks.append({"name": "account_active", "status": "FAIL",
+                           "detail": f"Account {account_id} is_active=False"})
+        elif not account.is_demo:
+            checks.append({"name": "account_demo", "status": "WARN",
+                           "detail": f"Account {account_id} is_demo=False"})
+        else:
+            checks.append({"name": "account_active", "status": "PASS",
+                           "detail": f"Account {account_id} is_active=True, is_demo=True"})
+
+        # 3. Assignment active
+        assignment = StrategyAssignment.objects.filter(
+            strategy=strategy, account=account, is_active=True,
+        ).first()
+        if not assignment:
+            checks.append({"name": "assignment_active", "status": "FAIL",
+                           "detail": f"No active assignment for strategy={strategy.id} account={account_id}"})
+        else:
+            checks.append({"name": "assignment_active", "status": "PASS",
+                           "detail": f"Assignment id={assignment.id} is_active=True"})
+
+        # 4. Recent PLACE_ORDER jobs (scheduler activity)
+        recent_po = ExecutionJob.objects.filter(
+            account_id=account_id, strategy_id=strategy.id,
+            job_type=ExecutionJob.JobType.PLACE_ORDER,
+            created_at__gte=lookback_24h,
+        ).order_by("-created_at")
+        po_count = recent_po.count()
+        if po_count > 0:
+            latest = recent_po.first()
+            checks.append({"name": "scheduler_recent", "status": "PASS",
+                           "detail": f"{po_count} PLACE_ORDER jobs in 24h, latest={latest.status} at {latest.created_at.isoformat()}"})
+        else:
+            recent_evals = AuditEvent.objects.filter(
+                event_type="SIGNAL_EVALUATED", entity_type="strategy",
+                entity_id=str(strategy.id), created_at__gte=lookback_24h,
+            ).count()
+            if recent_evals > 0:
+                checks.append({"name": "scheduler_recent", "status": "PASS",
+                               "detail": f"0 PLACE_ORDER but {recent_evals} SIGNAL_EVALUATED in 24h"})
+            else:
+                checks.append({"name": "scheduler_recent", "status": "FAIL",
+                               "detail": "No PLACE_ORDER or SIGNAL_EVALUATED events in 24h"})
+
+        # 5. Ingest worker (recent SYNC_POSITIONS)
+        sync_count = ExecutionJob.objects.filter(
+            account_id=account_id,
+            job_type=ExecutionJob.JobType.SYNC_POSITIONS,
+            created_at__gte=lookback_24h,
+        ).count()
+        if sync_count > 0:
+            checks.append({"name": "ingest_worker", "status": "PASS",
+                           "detail": f"{sync_count} SYNC_POSITIONS in 24h"})
+        else:
+            checks.append({"name": "ingest_worker", "status": "WARN",
+                           "detail": "No SYNC_POSITIONS in 24h (normal if no trades)"})
+
+        # Overall verdict
+        fail_count = sum(1 for c in checks if c["status"] == "FAIL")
+        warn_count = sum(1 for c in checks if c["status"] == "WARN")
+        overall = "FAIL" if fail_count > 0 else ("DEGRADED" if warn_count > 0 else "PASS")
+
+        return Response({
+            "overall": overall,
+            "strategy_id": strategy.id,
+            "account_id": int(account_id),
+            "checked_at": now.isoformat(),
+            "checks": checks,
+        })
+
+    @action(detail=True, methods=["get"], url_path="execution/engine-status")
+    def execution_engine_status(self, request, pk=None):
+        """
+        GET /api/strategies/strategies/<id>/execution/engine-status/?account_id=<id>
+
+        Returns per-engine, per-symbol runtime state and recent evaluation events
+        for the active assignment. Used by the frontend observability dashboard.
+
+        Response:
+            { strategy_id, account_id, assignment_id, stage,
+              checked_at, runtime_states: [...], recent_events: [...] }
+        """
+        strategy = self.get_object()
+        account_id = request.query_params.get("account_id")
+        if not account_id:
+            return Response(
+                {"ok": False, "reason": "account_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        account = TradingAccount.objects.filter(id=account_id).first()
+        if not account:
+            return Response(
+                {"ok": False, "reason": f"Account {account_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        assignment = StrategyAssignment.objects.filter(
+            strategy=strategy, account=account, is_active=True,
+        ).order_by("-id").first()
+        if not assignment:
+            return Response(
+                {"ok": False, "reason": "no_active_assignment"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Fetch all runtime states for this assignment
+        states = StrategyRuntimeState.objects.filter(
+            assignment=assignment,
+        ).order_by("strategy_key", "symbol")
+
+        runtime_states = []
+        for s in states:
+            runtime_states.append({
+                "strategy_key": s.strategy_key,
+                "symbol": s.symbol,
+                "last_eval_at": s.last_eval_at.isoformat() if s.last_eval_at else None,
+                "daily_r_pnl": str(s.daily_r_pnl),
+                "daily_trade_count": s.daily_trade_count,
+                "weekly_r_pnl": str(s.weekly_r_pnl),
+                "consecutive_losses": s.consecutive_losses,
+                "paused_until": s.paused_until.isoformat() if s.paused_until else None,
+                "pause_reason": s.pause_reason,
+                "regime_blob": s.regime_blob or {},
+                "updated_at": s.updated_at.isoformat(),
+            })
+
+        # Fetch recent events (last 50)
+        events = StrategyRuntimeEvent.objects.filter(
+            assignment=assignment,
+        ).order_by("-created_at")[:50]
+
+        recent_events = []
+        for e in events:
+            recent_events.append({
+                "event_type": e.event_type,
+                "strategy_key": e.strategy_key,
+                "symbol": e.symbol,
+                "reason_code": e.reason_code,
+                "bar_close_time": e.bar_close_time,
+                "created_at": e.created_at.isoformat(),
+            })
+
+        return Response({
+            "strategy_id": strategy.id,
+            "account_id": int(account_id),
+            "assignment_id": assignment.id,
+            "stage": assignment.stage,
+            "checked_at": timezone.now().isoformat(),
+            "runtime_states": runtime_states,
+            "recent_events": recent_events,
+        })
+
+    @action(detail=True, methods=["post"], url_path="execution/run-signal")
+    def run_signal(self, request, pk=None):
+        """
+        Evaluate and execute a signal for the Trendline Break Pocket strategy.
+
+        POST /api/strategies/{id}/execution/run-signal/
+
+        Query params:
+            account_id: Required. The trading account ID.
+
+        Request body (optional, for manual test signals):
+            {
+                "symbol": "EURUSD",  # Required
+                "manual": true,      # If true, uses manual_params below
+                "side": "BUY",       # "BUY" or "SELL"
+                "entry_price": 1.0850,
+                "sl_price": 1.0800,
+                "tp_price": 1.0950
+            }
+
+        Returns:
+            {
+                "ok": true/false,
+                "signal_type": "BUY" or "SELL" or null,
+                "symbol": "EURUSD",
+                "entry_price": 1.0850,
+                "sl_price": 1.0800,
+                "tp_price": 1.0950,
+                "lots": 0.01,
+                "reason": "job_queued" or rejection reason,
+                "job_id": 123 or null,
+                "details": {...}
+            }
+        """
+        from .signal_engine import run_signal_evaluation
+
+        strategy = self.get_object()
+        user = request.user
+
+        # Get account_id from query params
+        account_id = request.query_params.get("account_id")
+        if not account_id:
+            return Response(
+                {"ok": False, "reason": "account_id_required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate account ownership
+        account = TradingAccount.objects.filter(id=account_id).first()
+        if not account:
+            return Response(
+                {"ok": False, "reason": "account_not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not user.is_staff and account.user_id != user.id:
+            return Response(
+                {"ok": False, "reason": "account_not_owned"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Validate strategy ownership
+        if not user.is_staff and strategy.owner_id != user.id:
+            return Response(
+                {"ok": False, "reason": "strategy_not_owned"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Get symbol from request body
+        symbol = request.data.get("symbol", "EURUSD").upper()
+
+        # Check for manual test signal params
+        manual_params = None
+        if request.data.get("manual"):
+            manual_params = {
+                "side": request.data.get("side", "BUY"),
+                "entry_price": request.data.get("entry_price"),
+                "sl_price": request.data.get("sl_price"),
+                "tp_price": request.data.get("tp_price"),
+            }
+            # Optional explicit lots override (validated in signal engine)
+            if "lots" in request.data:
+                manual_params["lots"] = request.data.get("lots")
+
+            # Validate required fields for manual signal
+            if not all([
+                manual_params.get("entry_price"),
+                manual_params.get("sl_price"),
+                manual_params.get("tp_price"),
+            ]):
+                return Response(
+                    {"ok": False, "reason": "manual_signal_missing_prices"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Run signal evaluation
+        result = run_signal_evaluation(
+            request=request,
+            strategy=strategy,
+            account=account,
+            symbol=symbol,
+            user=user,
+            manual_params=manual_params,
+        )
+
+        return Response(result.to_dict())
 
     @action(detail=False, methods=["post"], url_path="marketplace/assign")
     def marketplace_assign(self, request):
         user = request.user
+
+        # Entitlement gate: user must have can_assign_strategies
+        require_entitlement(user, "can_assign_strategies")
 
         marketplace_strategy_id = request.data.get("marketplace_strategy_id")
         account_id = request.data.get("account_id")
@@ -151,76 +784,81 @@ class StrategyViewSet(viewsets.ModelViewSet):
         if "description" in allowed_fields:
             create_kwargs["description"] = tpl.get("description") or ""
 
-        with transaction.atomic():
-            # 1. Lock and fetch existing active assignment for this account
-            existing = (
-                StrategyAssignment.objects
-                .select_for_update()
-                .filter(account=account, is_active=True)
-                .first()
+        try:
+            with transaction.atomic():
+                # 1. Find or create the Strategy row for this marketplace template
+                if "owner" in allowed_fields:
+                    existing_strategy = (
+                        Strategy.objects
+                        .filter(owner=user, name=template_name)
+                        .order_by("-id")
+                        .first()
+                    )
+                else:
+                    existing_strategy = (
+                        Strategy.objects
+                        .filter(name=template_name)
+                        .order_by("-id")
+                        .first()
+                    )
+
+                if existing_strategy:
+                    strategy_to_use = existing_strategy
+                    # Update filters on existing strategy if stale (ensures engine picks up config)
+                    tpl_filters = defaults.get("filters")
+                    if tpl_filters and existing_strategy.filters != tpl_filters:
+                        existing_strategy.filters = tpl_filters
+                        existing_strategy.save(update_fields=["filters", "updated_at"])
+                else:
+                    strategy_to_use = Strategy.objects.create(**create_kwargs)
+
+                # 2. Look for existing assignment scoped to (account, strategy)
+                existing = (
+                    StrategyAssignment.objects
+                    .select_for_update()
+                    .filter(account=account, strategy=strategy_to_use)
+                    .order_by("-id")
+                    .first()
+                )
+
+                # 3. Idempotency: if assignment already exists and is active, return early
+                if existing and existing.is_active:
+                    return Response(
+                        {
+                            "ok": True,
+                            "marketplace_strategy_id": marketplace_strategy_id,
+                            "strategy_id": existing.strategy_id,
+                            "assignment_id": existing.id,
+                            "strategy_name": getattr(existing.strategy, "name", ""),
+                            "account_id": account.id,
+                            "stage": existing.stage,
+                            "already_assigned": True,
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+
+                # 4. Re-activate if deactivated, else create new
+                if existing:
+                    existing.is_active = True
+                    existing.stage = StrategyAssignment.STAGE_TEST
+                    existing.save(update_fields=["is_active", "stage", "updated_at"])
+                    assignment = existing
+                else:
+                    assignment = StrategyAssignment.objects.create(
+                        strategy=strategy_to_use,
+                        account=account,
+                        is_active=True,
+                        stage=StrategyAssignment.STAGE_TEST,
+                    )
+
+        except Exception:
+            logger.exception("marketplace_assign failed for %s account=%s", marketplace_strategy_id, account_id)
+            return Response(
+                {"ok": False, "detail": "Internal error during assignment. Check server logs."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-            # 2. Try to find an existing Strategy for this user with the marketplace template name
-            if "owner" in allowed_fields:
-                existing_strategy = (
-                    Strategy.objects
-                    .filter(owner=user, name=template_name)
-                    .order_by("-id")
-                    .first()
-                )
-            else:
-                # Fallback for staff or if owner field isn't present
-                existing_strategy = (
-                    Strategy.objects
-                    .filter(name=template_name)
-                    .order_by("-id")
-                    .first()
-                )
-
-            # 3. Idempotency: if assignment exists and already points to this template, return early
-            if existing and getattr(existing.strategy, "name", "") == template_name:
-                return Response(
-                    {
-                        "ok": True,
-                        "marketplace_strategy_id": marketplace_strategy_id,
-                        "strategy_id": existing.strategy_id,
-                        "assignment_id": existing.id,
-                        "strategy_name": getattr(existing.strategy, "name", ""),
-                        "account_id": account.id,
-                        "already_assigned": True,
-                    },
-                    status=status.HTTP_200_OK,
-                )
-
-            # 4/5. Choose strategy_to_use: prefer existing_strategy, else create new
-            if existing_strategy:
-                strategy_to_use = existing_strategy
-            else:
-                strategy_to_use = Strategy.objects.create(**create_kwargs)
-
-            # 4. If assignment exists but points to different strategy, update it
-            if existing:
-                existing.strategy = strategy_to_use
-                existing.is_active = True
-                existing.save(update_fields=["strategy", "is_active", "updated_at"])
-                assignment = existing
-            else:
-                # 5. No assignment exists, create one
-                assignment = StrategyAssignment.objects.create(
-                    strategy=strategy_to_use,
-                    account=account,
-                    is_active=True,
-                )
-
-            # Deactivate other active assignments on the same MT5 instance
-            if assignment.account.mt5_instance_id:
-                StrategyAssignment.objects.filter(
-                    account__mt5_instance_id=assignment.account.mt5_instance_id,
-                    account__user_id=assignment.account.user_id,
-                    is_active=True,
-                ).exclude(id=assignment.id).update(is_active=False)
-
-        # 6. Return payload
+        # 5. Return payload
         return Response(
             {
                 "ok": True,
@@ -229,6 +867,7 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 "assignment_id": assignment.id,
                 "strategy_name": getattr(strategy_to_use, "name", ""),
                 "account_id": account.id,
+                "stage": assignment.stage,
                 "already_assigned": False,
             },
             status=status.HTTP_201_CREATED,
@@ -241,6 +880,8 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
+        require_entitlement(user, "can_assign_strategies")
+
         assignment = serializer.validated_data
         account = assignment["account"]
 
@@ -257,6 +898,9 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
                     account__user_id=obj.account.user_id,
                     is_active=True,
                 ).exclude(id=obj.id).update(is_active=False)
+
+            # Audit log
+            log_assignment_created(self.request, obj)
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -288,6 +932,8 @@ class StrategyAutoTuneView(APIView):
 
     def post(self, request, pk: int):
         user = request.user
+        require_entitlement(user, "can_run_backtests")
+
         try:
             strategy = Strategy.objects.get(pk=pk)
         except Strategy.DoesNotExist:

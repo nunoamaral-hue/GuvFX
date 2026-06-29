@@ -1,5 +1,4 @@
 from django.urls import path
-from .demo_endpoints import account_add_verify, launch
 from .views import (
     ValidateMt5View,
     Mt5StatusView,
@@ -16,7 +15,4 @@ urlpatterns = [
     path("launch-apply/", Mt5LaunchApplyView.as_view()),
     path("pool-status/", Mt5PoolStatusView.as_view(), name="mt5-pool-status"),
     path("release/", Mt5ReleaseView.as_view(), name="mt5-release"),
-
-    path("account/add-verify/", account_add_verify, name="mt5_account_add_verify"),
-    path("launch/", launch, name="mt5_launch"),
 ]

@@ -1,3 +1,11 @@
+"""
+DEPRECATED — Demo-only endpoints, removed from URL routing.
+
+These functions are retained for reference but are NOT routed in urls.py.
+All MT5 terminal access goes through Mt5DesktopLinkView (desktop-link/)
+and Packet A interaction endpoints (mt5-interaction/).
+"""
+
 import secrets
 import string
 from django.utils import timezone
@@ -6,6 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Mt5Credential, Mt5Instance
+from .crypto import encrypt_password
 from .services.windows_agent import provision_windows_user
 from .services.guac_db import ensure_rdp_connection
 from .services.guac_api import launch_url, guac_token
@@ -45,11 +54,11 @@ def account_add_verify(request):
 
     cred, _ = Mt5Credential.objects.get_or_create(
         user=request.user,
-        defaults={"login": login, "server": server, "password_enc": password},  # demo only
+        defaults={"login": login, "server": server, "password_enc": encrypt_password(password)},
     )
     cred.login = login
     cred.server = server
-    cred.password_enc = password  # demo only
+    cred.password_enc = encrypt_password(password)
     cred.last_status = "PENDING"
     cred.last_error = ""
     cred.last_verified_at = timezone.now()
@@ -70,7 +79,7 @@ def account_add_verify(request):
             inst.leased_to = request.user
             inst.lease_expires_at = None
             inst.windows_username = win_user
-            inst.windows_password_enc = win_pass  # demo only
+            inst.windows_password_enc = encrypt_password(win_pass)
             inst.guac_connection_id = cid
             inst.save(update_fields=[
                 "is_leased","leased_to","lease_expires_at",

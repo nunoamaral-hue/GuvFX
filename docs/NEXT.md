@@ -51,3 +51,6 @@ Green/Amber items proceed autonomously; Red items are flagged for Nuno's approva
 
 ## Parking lot (later)
 - Ideas/notes that are **not** committed work
+
+## Backlog (documented, not scheduled)
+- [ ] **Registration Flow Enhancement** — Multi-step registration with email verification, hosting selection, compliance acknowledgments, and 2FA. See [`docs/REGISTER_FLOW_TODO.md`](./REGISTER_FLOW_TODO.md) for full plan.

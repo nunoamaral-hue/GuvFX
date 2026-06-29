@@ -1,0 +1,435 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
+import { LegalFooter } from "@/components/LegalFooter";
+import { LanguageDropdown } from "@/components/LanguageDropdown";
+import { apiFetch } from "@/lib/api";
+
+/**
+ * Validates returnTo parameter for safe redirect.
+ * Must start with "/" and NOT contain protocol, domain, or "//".
+ */
+function isValidReturnTo(value: string | null): boolean {
+  if (!value) return false;
+  // Must start with single /
+  if (!value.startsWith("/")) return false;
+  // Must not contain // (prevents //evil.com)
+  if (value.includes("//")) return false;
+  // Must not contain protocol
+  if (value.includes(":")) return false;
+  return true;
+}
+
+export default function LoginPage() {
+  const router = useRouter();
+
+  // Language detection (not inside AppShell, so use detectLang directly)
+  const [lang, setLang] = useState<Lang>("en");
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [returnTo, setReturnTo] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Detect language from cookie/localStorage/navigator
+    setLang(detectLang());
+
+    const params = new URLSearchParams(window.location.search);
+    const reason = params.get("reason");
+    const returnToParam = params.get("returnTo");
+
+    if (isValidReturnTo(returnToParam)) {
+      setReturnTo(returnToParam);
+    }
+
+    if (reason === "expired" || reason === "token_expired") {
+      setInfoMessage("expired");
+    } else if (reason === "unauthenticated") {
+      setInfoMessage("unauthenticated");
+    } else if (reason === "logged_out") {
+      setInfoMessage("logged_out");
+    } else {
+      setInfoMessage(null);
+    }
+
+    // Redirect already-authenticated users to onboarding or dashboard
+    if (!reason) {
+      fetch("https://api.guvfx.com/api/onboarding/state/", {
+        method: "GET",
+        credentials: "include",
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data) return;
+          if (data.onboarding_completed) {
+            window.location.replace("/dashboard");
+          } else {
+            window.location.replace("/onboarding");
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+
+    if (!email || !password) {
+      setError(t(lang, "login.errorEmptyFields"));
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const body = {
+        email,
+        username: email,
+        password,
+      };
+
+      // Use apiFetch which handles CSRF token automatically
+      await apiFetch("/api/auth/cookie/login/", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+
+      setSuccess(t(lang, "login.success"));
+      
+      // Post-login redirect: use validated returnTo or default to /dashboard
+      const redirectPath = returnTo || "/dashboard";
+      
+      // Small delay to show message, then redirect
+      setTimeout(() => {
+        router.push(redirectPath);
+      }, 700);
+    } catch (err: unknown) {
+      console.error(err);
+      const message =
+        err instanceof Error
+          ? err.message
+          : t(lang, "login.errorDefault");
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        width: "100%",
+        display: "flex",
+        flexDirection: "column",
+        background:
+          "radial-gradient(circle at 0 0, #12263f 0, #050816 40%, #050816 100%)",
+        color: "#e5f4ff",
+        fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+      }}
+    >
+      <div style={{ flex: 1, display: "flex" }}>
+      {/* Left panel */}
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          padding: "3rem 4rem",
+        }}
+      >
+        <div>
+          <p
+            style={{
+              textTransform: "uppercase",
+              letterSpacing: "0.15em",
+              fontSize: "0.75rem",
+              color: "#4ab3ff",
+              marginBottom: "0.5rem",
+            }}
+          >
+            {t(lang, "login.welcomeBack")}
+          </p>
+          <h1
+            style={{
+              fontSize: "3rem",
+              margin: 0,
+              background:
+                "linear-gradient(120deg, #4ab3ff 0%, #7af0ff 40%, #4ab3ff 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+            }}
+          >
+            GuvFX
+          </h1>
+          <p
+            style={{
+              fontSize: "1rem",
+              marginTop: "1rem",
+              maxWidth: 320,
+              color: "#9ab0c5",
+            }}
+          >
+            {t(lang, "login.subtitle")}
+          </p>
+
+          <div style={{ marginTop: "2.5rem", display: "flex", gap: "0.6rem", alignItems: "center" }}>
+            <button
+              style={{
+                padding: "0.55rem 1.1rem",
+                borderRadius: 7,
+                border: "1px solid rgba(255,255,255,0.1)",
+                fontSize: "0.82rem",
+                fontWeight: 500,
+                cursor: "pointer",
+                background: "rgba(255,255,255,0.03)",
+                color: "#8fa0b7",
+                whiteSpace: "nowrap" as const,
+              }}
+              onClick={() => router.push("/")}
+            >
+              Home
+            </button>
+            <button
+              style={{
+                padding: "0.55rem 1.25rem",
+                borderRadius: 7,
+                border: "none",
+                fontSize: "0.82rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                background: "linear-gradient(135deg, #2563eb 0%, #0284c7 100%)",
+                color: "#ffffff",
+                boxShadow: "0 3px 12px rgba(37, 99, 235, 0.25)",
+                whiteSpace: "nowrap" as const,
+              }}
+              onClick={() => router.push("/register")}
+            >
+              Create account
+            </button>
+            <LanguageDropdown
+              lang={lang}
+              onChange={(next) => { persistLang(next); setLang(next); }}
+              variant="compact"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Right panel */}
+      <div
+        style={{
+          flex: 1,
+          borderLeft: "1px solid rgba(255,255,255,0.05)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "3rem 4rem",
+        }}
+      >
+        <div
+          id="login-panel"
+          style={{
+            width: "100%",
+            maxWidth: 380,
+            background: "rgba(5, 8, 22, 0.9)",
+            borderRadius: 18,
+            padding: "2rem",
+            boxShadow: "0 20px 60px rgba(0,0,0,0.8)",
+            border: "1px solid rgba(74,179,255,0.18)",
+          }}
+        >
+          <h2
+            style={{
+              fontSize: "1.6rem",
+              margin: 0,
+              marginBottom: "0.5rem",
+              color: "#e9f4ff",
+            }}
+          >
+            {t(lang, "login.panelTitle")}
+          </h2>
+          <p
+            style={{
+              fontSize: "0.8rem",
+              color: "#8fa0b7",
+              margin: 0,
+              marginBottom: "1.2rem",
+            }}
+          >
+            {t(lang, "login.panelSubtitle")}
+          </p>
+
+          {/* Progress bar (full for login) */}
+          <div
+            style={{
+              height: 4,
+              borderRadius: 999,
+              background: "rgba(255,255,255,0.06)",
+              overflow: "hidden",
+              marginBottom: "1.5rem",
+            }}
+          >
+            <div
+              style={{
+                width: "100%",
+                height: "100%",
+                background:
+                  "linear-gradient(90deg, #4ab3ff 0%, #7af0ff 100%)",
+              }}
+            />
+          </div>
+
+          {/* Messages */}
+          {infoMessage && (
+            <div
+              style={{
+                background: "rgba(74, 179, 255, 0.08)",
+                border: "1px solid rgba(74, 179, 255, 0.4)",
+                borderRadius: 8,
+                padding: "0.5rem 0.75rem",
+                marginBottom: "0.75rem",
+                fontSize: "0.8rem",
+                color: "#c9ecff",
+              }}
+            >
+              {infoMessage === "expired" && t(lang, "login.reasonExpired")}
+              {infoMessage === "unauthenticated" && t(lang, "login.reasonUnauthenticated")}
+              {infoMessage === "logged_out" && t(lang, "login.reasonLoggedOut")}
+            </div>
+          )}
+
+          {error && (
+            <div
+              style={{
+                background: "rgba(255, 76, 76, 0.1)",
+                border: "1px solid rgba(255, 76, 76, 0.4)",
+                borderRadius: 8,
+                padding: "0.5rem 0.75rem",
+                marginBottom: "0.75rem",
+                fontSize: "0.8rem",
+                color: "#ff9b9b",
+              }}
+            >
+              {error}
+            </div>
+          )}
+
+          {success && (
+            <div
+              style={{
+                background: "rgba(74, 179, 255, 0.1)",
+                border: "1px solid rgba(74, 179, 255, 0.5)",
+                borderRadius: 8,
+                padding: "0.5rem 0.75rem",
+                marginBottom: "0.75rem",
+                fontSize: "0.8rem",
+                color: "#c9ecff",
+              }}
+            >
+              {success}
+            </div>
+          )}
+
+          {/* Form */}
+          <form onSubmit={handleSubmit}>
+            {/* Email */}
+            <label
+              htmlFor="email"
+              style={{
+                display: "block",
+                fontSize: "0.85rem",
+                marginBottom: "0.3rem",
+              }}
+            >
+              {t(lang, "login.email")}
+            </label>
+            <input
+              id="email"
+              type="email"
+              required
+              placeholder={t(lang, "login.emailPlaceholder")}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "0.6rem 0.8rem",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(8, 12, 32, 0.9)",
+                color: "#e5f4ff",
+                fontSize: "0.9rem",
+                marginBottom: "1rem",
+                outline: "none",
+              }}
+            />
+
+            {/* Password */}
+            <label
+              htmlFor="password"
+              style={{
+                display: "block",
+                fontSize: "0.85rem",
+                marginBottom: "0.3rem",
+              }}
+            >
+              {t(lang, "login.password")}
+            </label>
+            <input
+              id="password"
+              type="password"
+              required
+              placeholder={t(lang, "login.passwordPlaceholder")}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "0.6rem 0.8rem",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(8, 12, 32, 0.9)",
+                color: "#e5f4ff",
+                fontSize: "0.9rem",
+                marginBottom: "1.4rem",
+                outline: "none",
+              }}
+            />
+
+            <button
+              type="submit"
+              disabled={loading}
+              style={{
+                width: "100%",
+                padding: "0.85rem 1rem",
+                borderRadius: 999,
+                border: "none",
+                fontSize: "1rem",
+                fontWeight: 500,
+                cursor: loading ? "not-allowed" : "pointer",
+                background: loading
+                  ? "linear-gradient(135deg,#5579ff,#76c3ff)"
+                  : "linear-gradient(135deg,#2979ff,#3fe0ff,#2979ff)",
+                color: "#ffffff",
+                boxShadow: "0 12px 30px rgba(0,0,0,0.7)",
+                transition: "opacity 0.15s ease",
+                opacity: loading ? 0.8 : 1,
+              }}
+            >
+              {loading ? t(lang, "login.loggingIn") : t(lang, "login.continue")}
+            </button>
+          </form>
+        </div>
+      </div>
+      </div>
+      <LegalFooter lang={lang} />
+    </div>
+  );
+}

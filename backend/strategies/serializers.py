@@ -5,6 +5,78 @@ from .models import Strategy, StrategyAssignment, StrategyChangeLog
 from trading.models import Trade
 
 
+def validate_trendline_break_pocket_filters(filters: dict) -> dict:
+    """
+    Validate Trendline Break Pocket (Ali) strategy-specific filter parameters.
+    Returns dict of validation errors (empty if valid).
+
+    NOTE: This function lives in serializers.py to avoid circular import with views.py.
+    """
+    errors = {}
+
+    if not isinstance(filters, dict):
+        return errors
+
+    template_slug = filters.get("template_slug", "")
+
+    # Only validate if this is the Trendline Break Pocket template
+    if template_slug != "trendline-break-pocket-ali":
+        return errors
+
+    # direction_mode validation
+    direction_mode = filters.get("direction_mode")
+    valid_direction_modes = {"both", "long", "short"}
+    if direction_mode and direction_mode not in valid_direction_modes:
+        errors["direction_mode"] = f"direction_mode must be one of: {', '.join(valid_direction_modes)}"
+
+    # trendline_lookback_bars validation (must be >= 50)
+    lookback = filters.get("trendline_lookback_bars")
+    if lookback is not None:
+        try:
+            lookback_int = int(lookback)
+            if lookback_int < 50:
+                errors["trendline_lookback_bars"] = "trendline_lookback_bars must be >= 50"
+        except (TypeError, ValueError):
+            errors["trendline_lookback_bars"] = "trendline_lookback_bars must be an integer"
+
+    # rr_target validation (must be > 0)
+    rr_target = filters.get("rr_target")
+    if rr_target is not None:
+        try:
+            rr_float = float(rr_target)
+            if rr_float <= 0:
+                errors["rr_target"] = "rr_target must be > 0"
+        except (TypeError, ValueError):
+            errors["rr_target"] = "rr_target must be a number"
+
+    # Zone validation (low < high for each zone, zone_type valid)
+    zones = filters.get("zones") or {}
+    valid_zone_types = {"supply", "demand", "pivot"}
+    for symbol, zone_list in zones.items():
+        if not isinstance(zone_list, list):
+            continue
+        for i, zone in enumerate(zone_list):
+            if not isinstance(zone, dict):
+                continue
+            low = zone.get("low")
+            high = zone.get("high")
+            zone_type = zone.get("zone_type")
+
+            if low is not None and high is not None:
+                try:
+                    low_f = float(low)
+                    high_f = float(high)
+                    if low_f >= high_f:
+                        errors[f"zones.{symbol}[{i}]"] = f"Zone low ({low_f}) must be < high ({high_f})"
+                except (TypeError, ValueError):
+                    errors[f"zones.{symbol}[{i}]"] = "Zone low/high must be numbers"
+
+            if zone_type and zone_type not in valid_zone_types:
+                errors[f"zones.{symbol}[{i}].zone_type"] = f"zone_type must be one of: {', '.join(valid_zone_types)}"
+
+    return errors
+
+
 class StrategySerializer(serializers.ModelSerializer):
     class Meta:
         model = Strategy
@@ -49,6 +121,34 @@ class StrategySerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         owner = self.context["request"].user
         return Strategy.objects.create(owner=owner, **validated_data)
+
+    def update(self, instance, validated_data):
+        """
+        Override update to implement MERGE semantics for JSON fields like 'filters'.
+
+        This prevents accidental data loss when PATCH includes only partial filters.
+        For example, PATCH with {"filters": {"max_trades_per_day": 10}} should NOT
+        wipe out existing zones - it should merge.
+
+        Merge rules for 'filters':
+        - Shallow merge: existing keys are kept unless overwritten by incoming data
+        - If incoming data has a key, it replaces the existing key entirely
+        - This allows updating individual fields while preserving zones
+        """
+        # Handle filters merge for PATCH requests
+        if "filters" in validated_data and self.instance is not None:
+            existing_filters = self.instance.filters or {}
+            incoming_filters = validated_data.get("filters") or {}
+
+            # Shallow merge: existing + incoming (incoming wins on conflict)
+            merged_filters = {**existing_filters, **incoming_filters}
+            validated_data["filters"] = merged_filters
+
+        # Standard update for all other fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        return instance
 
     def validate(self, attrs):
         errors = {}
@@ -146,6 +246,15 @@ class StrategySerializer(serializers.ModelSerializer):
         if max_trades is not None and max_trades < 0:
             errors["filters"] = "Max trades per day cannot be negative."
 
+        # Template-specific validation: Trendline Break Pocket (Ali)
+        tbp_errors = validate_trendline_break_pocket_filters(filters)
+        if tbp_errors:
+            # Merge errors; if filters already has an error, append
+            if "filters" in errors:
+                errors["filters"] = f"{errors['filters']} | {tbp_errors}"
+            else:
+                errors["filters"] = tbp_errors
+
         news_filter = filters.get("news_filter") or {}
         if news_filter.get("pre_event_minutes") is not None and news_filter[
             "pre_event_minutes"
@@ -204,6 +313,7 @@ class StrategyAssignmentSerializer(serializers.ModelSerializer):
             "strategy",
             "account",
             "is_active",
+            "stage",
             "risk_per_trade_override_pct",
             "created_at",
             "updated_at",

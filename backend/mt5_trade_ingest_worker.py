@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from decimal import Decimal
@@ -13,25 +14,41 @@ django.setup()
 from django.utils.dateparse import parse_datetime
 from trading.models import TradingAccount, Trade
 
-API_BASE = "http://127.0.0.1:8000"
-API_HOST = "api.guvfx.com"
+API_BASE = os.getenv("GUVFX_API_BASE", "http://guvfx-backend:8000")
+API_HOST = os.getenv("GUVFX_API_HOST", "api.guvfx.com")
 WORKER_ID = os.getenv("MT5_WORKER_ID", "mt5-trade-ingest-1")
 
 WORKER_TOKEN = os.getenv("MT5_WORKER_TOKEN", "")
-AGENT_BASE = (os.getenv("GUVFX_AGENT_URL") or os.getenv("WINDOWS_AGENT_BASE") or "").rstrip("/")
-AGENT_TOKEN = (os.getenv("GUVFX_AGENT_TOKEN") or os.getenv("WINDOWS_AGENT_TOKEN") or "").strip().strip('"')
+AGENT_BASE = (os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL") or os.getenv("GUVFX_AGENT_URL") or os.getenv("WINDOWS_AGENT_BASE") or "").rstrip("/")
+AGENT_ORDER_BASE = AGENT_BASE
+AGENT_TOKEN = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip().strip('"')
 
 SLEEP_SEC = float(os.getenv("MT5_WORKER_SLEEP", "2.0"))
 
+# Retry settings for auto-sync when expected deal not found
+AUTO_SYNC_MAX_RETRIES = int(os.getenv("AUTO_SYNC_MAX_RETRIES", "5"))
+AUTO_SYNC_RETRY_DELAY = float(os.getenv("AUTO_SYNC_RETRY_DELAY", "2.0"))
+
 def api_headers():
-    return {
+    headers = {
         "Host": API_HOST,
         "X-Forwarded-Proto": "https",
-        "X-Worker-Token": WORKER_TOKEN,
+        "X-Worker-Id": WORKER_ID,
+        "X-Worker-Secret": WORKER_TOKEN,
     }
+    if os.getenv("GUVFX_USE_LEGACY_AUTH"):
+        headers = {
+            "Host": API_HOST,
+            "X-Forwarded-Proto": "https",
+            "X-Worker-Token": WORKER_TOKEN,
+        }
+    return headers
 
-def claim_next_job():
-    url = f"{API_BASE}/api/execution/jobs/next/?worker_id={urllib.parse.quote(WORKER_ID)}"
+def claim_next_job(job_type: str | None = None):
+    params = f"worker_id={urllib.parse.quote(WORKER_ID)}"
+    if job_type:
+        params += f"&job_type={urllib.parse.quote(job_type)}"
+    url = f"{API_BASE}/api/execution/jobs/next/?{params}"
     req = urllib.request.Request(url, method="GET", headers=api_headers())
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -62,6 +79,27 @@ def agent_get(kind: str, username: str):
         raw = r.read().decode("utf-8", "ignore")
         return json.loads(raw) if raw else {}
 
+def agent_order(payload: dict) -> dict:
+    """POST /mt5/order on the Windows agent (signal bridge port 8788)."""
+    url = f"{AGENT_ORDER_BASE}/mt5/order"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"X-GuvFX-Agent-Token": AGENT_TOKEN, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read().decode("utf-8", "ignore")
+            return json.loads(raw) if raw else {"ok": False, "error": "empty_response"}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")[:500]
+        try:
+            return json.loads(body)
+        except Exception:
+            return {"ok": False, "error": f"http_{e.code}", "detail": body}
+    except Exception as e:
+        return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
+
 def to_dt(x):
     if not x:
         return None
@@ -73,13 +111,148 @@ def to_dec(x, default="0"):
         return Decimal(default)
     return Decimal(str(x))
 
+def find_expected_tag_in_deals(
+    deals: list[dict],
+    expected_tag: str,
+    expected_order=None,
+    expected_deal=None,
+) -> bool:
+    """Check whether the placed trade is present in the deals snapshot.
+
+    MT5 / the broker truncates or strips the order comment on the stored
+    history deal (e.g. "GUVFX_DEMO_JOB:30" is persisted as "GUVFX_DEMO_JOB:3",
+    a hard 16-char cut), so matching purely on comment fails for any job id
+    >= 10. We therefore match primarily on the order / position / deal ticket
+    returned by the PLACE result (which MT5 never mutates), and fall back to an
+    exact comment match for legacy callers that pass only a tag.
+    """
+    def _norm(v):
+        s = str(v).strip() if v is not None else ""
+        return s if s and s != "0" else None
+
+    eo = _norm(expected_order)
+    ed = _norm(expected_deal)
+    tag = str(expected_tag or "").strip()
+    if not (eo or ed or tag):
+        return True  # nothing to match against, consider it found
+    for d in deals:
+        if eo and (str(d.get("order")).strip() == eo or str(d.get("position_id")).strip() == eo):
+            return True
+        if ed and str(d.get("ticket")).strip() == ed:
+            return True
+        if tag and str(d.get("comment") or "").strip() == tag:
+            return True
+    return False
+
+
+def get_expected_ids_from_trigger_job(trigger_job_id: int):
+    """Return (tag, order_ticket, deal_ticket) for the placed trade.
+
+    The order/deal tickets come from the PLACE job's result (set by the agent
+    when the order is filled) and are the reliable join key for SYNC, since the
+    comment tag is truncated by MT5 in history deals.
+    """
+    from execution.models import ExecutionJob
+    try:
+        job = ExecutionJob.objects.get(id=trigger_job_id)
+    except ExecutionJob.DoesNotExist:
+        return (None, None, None)
+    except Exception:
+        return (None, None, None)
+    payload = job.payload or {}
+    result = job.result or {}
+    tag = payload.get("comment") or result.get("comment")
+    tag = str(tag).strip() if tag else None
+    order_ticket = result.get("order") or payload.get("order")
+    deal_ticket = result.get("deal")
+    return (tag, order_ticket, deal_ticket)
+
+
+def get_expected_tag_from_trigger_job(trigger_job_id: int) -> str | None:
+    """
+    Get the expected comment tag from a trigger job (PLACE_ORDER).
+    Returns the comment from payload or result, or None if not found.
+    """
+    from execution.models import ExecutionJob
+    try:
+        trigger_job = ExecutionJob.objects.get(id=trigger_job_id)
+        # Try payload.comment first (where we set it)
+        payload = trigger_job.payload or {}
+        tag = payload.get("comment")
+        if tag:
+            return str(tag).strip()
+        # Fallback to result.comment (if MT5 modified it)
+        result = trigger_job.result or {}
+        tag = result.get("comment")
+        if tag:
+            return str(tag).strip()
+        return None
+    except ExecutionJob.DoesNotExist:
+        return None
+    except Exception:
+        return None
+
+
+import re
+import datetime as dt_module
+from execution.models import ExecutionJob
+
+# Regex for GJ/GS tags
+_GJ_TAG_RE = re.compile(r"^GJ\d{4}$")
+_GS_TAG_RE = re.compile(r"^GS(\d{4})$")
+
+
+def _worker_infer_source_stage(comment: str) -> str:
+    """Infer Trade.source_stage from comment tag in ingest worker."""
+    if not comment:
+        return "UNKNOWN"
+    if _GJ_TAG_RE.match(comment):
+        return "TEST"
+    gs_match = _GS_TAG_RE.match(comment)
+    if gs_match:
+        job_id = int(gs_match.group(1))
+        try:
+            job = ExecutionJob.objects.get(id=job_id)
+            payload = job.payload or {}
+            stage = payload.get("assignment_stage")
+            if stage in ("TEST", "LIVE"):
+                return stage
+            if payload.get("signal_reason") == "forced_once_test":
+                return "TEST"
+            if payload.get("signal_reason") == "trendline_break_pocket_signal":
+                return "LIVE"
+        except Exception:
+            pass
+    return "UNKNOWN"
+
+
+def _deal_time_to_utc(d: dict):
+    """Extract deal.time (unix seconds) as aware UTC datetime."""
+    raw = d.get("time")
+    if raw and isinstance(raw, (int, float)):
+        try:
+            return dt_module.datetime.utcfromtimestamp(raw).replace(tzinfo=dt_module.timezone.utc)
+        except (ValueError, OSError):
+            pass
+    return None
+
+
 def upsert_trades(account: TradingAccount, deals: list[dict]):
     inserted = 0
     updated = 0
+    skipped = 0
+
+    cutover = account.ingest_cutover_time
 
     for d in deals:
         ticket = str(d.get("ticket") or d.get("position_ticket") or d.get("deal_id") or "").strip()
         if not ticket:
+            continue
+
+        # Cutover check (deal.time is unix seconds)
+        deal_time_utc = _deal_time_to_utc(d)
+        if cutover and deal_time_utc and deal_time_utc < cutover:
+            skipped += 1
             continue
 
         symbol = (d.get("symbol") or "").strip()
@@ -104,6 +277,7 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
             magic = None
 
         comment = str(d.get("comment") or "").strip()
+        source_stage = _worker_infer_source_stage(comment)
 
         obj, created = Trade.objects.get_or_create(
             account=account,
@@ -122,6 +296,7 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
                 "magic_number": magic,
                 "comment": comment,
                 "opened_by": "EA",
+                "source_stage": source_stage,
             },
         )
         if created:
@@ -143,6 +318,11 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
                 setattr(obj, field, val)
                 changed = True
 
+        # Update source_stage if UNKNOWN and we now have a valid one
+        if obj.source_stage == "UNKNOWN" and source_stage != "UNKNOWN":
+            obj.source_stage = source_stage
+            changed = True
+
         if changed:
             obj.save()
             updated += 1
@@ -155,10 +335,20 @@ def main():
     if not AGENT_BASE or not AGENT_TOKEN:
         raise SystemExit("GUVFX_AGENT_URL/TOKEN (or WINDOWS_AGENT_BASE/TOKEN) missing")
 
-    print("worker:", WORKER_ID)
+    print("worker:", WORKER_ID, "agent_order_base:", AGENT_ORDER_BASE)
     while True:
         try:
-            job = claim_next_job()
+            try:  # RX-2C: heartbeat (never break the worker loop)
+                from reliability.services.heartbeat import record_beat
+                record_beat("ingest_worker", interval_s=60)
+            except Exception:
+                pass
+            # Claim priority: PLACE_TEST_ORDER > PLACE_ORDER > SYNC_POSITIONS
+            job = (
+                claim_next_job("PLACE_TEST_ORDER")
+                or claim_next_job("PLACE_ORDER")
+                or claim_next_job()
+            )
             if not job:
                 time.sleep(SLEEP_SEC)
                 continue
@@ -168,8 +358,70 @@ def main():
             payload = job.get("payload") or {}
             account_id = int(job.get("account"))
 
+            if jt in ("PLACE_TEST_ORDER", "PLACE_ORDER"):
+                # --- Order execution via Windows agent ---
+                windows_username = payload.get("windows_username")
+                symbol = payload.get("symbol")
+                side = payload.get("side")
+                lots = payload.get("lots")
+                magic = payload.get("magic", 0)
+                comment = payload.get("comment", "")
+
+                if not all([windows_username, symbol, side, lots, comment]):
+                    complete_job(job_id, "FAILED", {"ok": False, "reason": "missing_payload_fields"},
+                                 f"{jt} requires windows_username, symbol, side, lots, comment")
+                    continue
+
+                # Safety: enforce lot cap
+                max_lots = 0.02
+                if float(lots) > max_lots:
+                    complete_job(job_id, "FAILED", {"ok": False, "reason": "lots_exceeded",
+                                 "lots": lots, "max": max_lots}, f"Lot size {lots} exceeds max {max_lots}")
+                    continue
+
+                label = "SIGNAL" if jt == "PLACE_ORDER" else "DEMO"
+                print(f"[{label}] Executing {jt} job_id={job_id}: {symbol} {side} {lots}")
+
+                # Build agent order payload — include SL/TP for signal orders
+                agent_payload = {
+                    "username": windows_username,
+                    "symbol": symbol,
+                    "side": side,
+                    "lots": lots,
+                    "magic": magic,
+                    "comment": comment,
+                }
+                # Pass SL/TP if present (PLACE_ORDER from signal engine)
+                sl = payload.get("sl_price")
+                tp = payload.get("tp_price")
+                if sl is not None:
+                    agent_payload["sl"] = float(sl)
+                if tp is not None:
+                    agent_payload["tp"] = float(tp)
+
+                order_result = agent_order(agent_payload)
+
+                if order_result.get("ok"):
+                    print(f"[{label}] SUCCESS job_id={job_id}: order={order_result.get('order')}, price={order_result.get('price')}")
+                    complete_job(job_id, "SUCCESS", {
+                        "ok": True,
+                        "order": order_result.get("order"),
+                        "deal": order_result.get("deal"),
+                        "price": order_result.get("price"),
+                        "volume": order_result.get("volume"),
+                        "retcode": order_result.get("retcode"),
+                        "comment": order_result.get("comment"),
+                    }, "")
+                else:
+                    error_msg = order_result.get("error", "unknown_error")
+                    detail = order_result.get("detail", "")
+                    print(f"[{label}] FAILED job_id={job_id}: {error_msg} {detail}")
+                    complete_job(job_id, "FAILED", order_result, f"Agent order failed: {error_msg}")
+                continue
+
             if jt != "SYNC_POSITIONS":
-                complete_job(job_id, "FAILED", {"ok": False, "reason": "unsupported_job_type", "job_type": jt}, "Worker only supports SYNC_POSITIONS in A2.1")
+                complete_job(job_id, "FAILED", {"ok": False, "reason": "unsupported_job_type", "job_type": jt},
+                             "Worker supports SYNC_POSITIONS, PLACE_TEST_ORDER, and PLACE_ORDER")
                 continue
 
             # MVP: require windows_username in payload. (We can later fetch from MT5 instance.)
@@ -180,17 +432,72 @@ def main():
 
             account = TradingAccount.objects.get(id=account_id)
 
-            deals_resp = agent_get("deals", windows_username)
-            # allow different response shapes
-            deals = deals_resp.get("deals") or (deals_resp.get("data") or {}).get("deals") or []
+            # Check if this is an auto-sync triggered by a PLACE_ORDER job
+            is_auto_sync = payload.get("auto_sync", False)
+            trigger_job_id = payload.get("trigger_job_id")
+            expected_tag = None
+            expected_order = None
+            expected_deal = None
+
+            if is_auto_sync and trigger_job_id:
+                expected_tag, expected_order, expected_deal = get_expected_ids_from_trigger_job(trigger_job_id)
+                print(f"[SYNC] Auto-sync for trigger_job_id={trigger_job_id}, expected_tag={expected_tag} order={expected_order} deal={expected_deal}")
+
+            # Has the placed trade landed in the deals snapshot yet?
+            have_expected = lambda dl: find_expected_tag_in_deals(dl, expected_tag, expected_order, expected_deal)
+
+            # Fetch deals with retry logic for auto-sync
+            has_expected_key = bool(expected_tag or expected_order or expected_deal)
+            deals = []
+            retry_count = 0
+            max_retries = AUTO_SYNC_MAX_RETRIES if (is_auto_sync and has_expected_key) else 1
+
+            while retry_count < max_retries:
+                deals_resp = agent_get("deals", windows_username)
+                # allow different response shapes
+                deals = deals_resp.get("deals") or (deals_resp.get("data") or {}).get("deals") or []
+
+                # For auto-sync: check if expected deal is present (by ticket, comment fallback)
+                if has_expected_key:
+                    if have_expected(deals):
+                        print(f"[SYNC] Found expected trade (order={expected_order} deal={expected_deal} tag={expected_tag}) on attempt {retry_count + 1}")
+                        break
+                    else:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            print(f"[SYNC] Expected trade order={expected_order} not found, retry {retry_count}/{max_retries} in {AUTO_SYNC_RETRY_DELAY}s")
+                            time.sleep(AUTO_SYNC_RETRY_DELAY)
+                        else:
+                            print(f"[SYNC] Expected trade order={expected_order} deal={expected_deal} tag={expected_tag} NOT FOUND after {max_retries} retries")
+                else:
+                    break  # No expected key, single pass
+
             inserted, updated = upsert_trades(account, deals)
 
-            complete_job(
-                job_id,
-                "SUCCESS",
-                {"ok": True, "account_id": account_id, "inserted": inserted, "updated": updated, "deals_count": len(deals)},
-                "",
-            )
+            # Determine if we should fail due to missing expected deal
+            if has_expected_key and not have_expected(deals):
+                complete_job(
+                    job_id,
+                    "FAILED",
+                    {
+                        "ok": False,
+                        "reason": "expected_deal_not_found_after_retries",
+                        "expected_tag": expected_tag,
+                        "expected_order": expected_order,
+                        "expected_deal": expected_deal,
+                        "trigger_job_id": trigger_job_id,
+                        "retries": max_retries,
+                        "deals_count": len(deals),
+                    },
+                    f"Expected trade order={expected_order} deal={expected_deal} not found after {max_retries} retries",
+                )
+            else:
+                complete_job(
+                    job_id,
+                    "SUCCESS",
+                    {"ok": True, "account_id": account_id, "inserted": inserted, "updated": updated, "deals_count": len(deals)},
+                    "",
+                )
 
         except Exception as e:
             print("loop_error:", repr(e))

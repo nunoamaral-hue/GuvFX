@@ -27,6 +27,39 @@ def _agent_token() -> str:
     return (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
 
 
+# ─── RX-2C reliability heartbeat (best-effort; never affects validation) ───
+HEARTBEAT_SOURCE = "validate_worker"
+HEARTBEAT_INTERVAL_S = int(os.getenv("RELIABILITY_HEARTBEAT_INTERVAL_S", "60"))
+
+
+def _backend_base() -> str:
+    # Public HTTPS base by default: the backend enforces SSL-redirect, so an
+    # internal http:// call 301s to https on a plain port and fails. The public
+    # endpoint terminates TLS at Traefik. Override with GUVFX_API_BASE if needed.
+    return (os.getenv("GUVFX_API_BASE") or "https://api.guvfx.com").rstrip("/")
+
+
+def _worker_token() -> str:
+    # Legacy worker token (X-Worker-Token). On this host GUVFX_AGENT_TOKEN == MT5_WORKER_TOKEN.
+    return (os.getenv("MT5_WORKER_TOKEN") or os.getenv("GUVFX_WORKER_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
+
+
+def emit_heartbeat() -> None:
+    base = _backend_base()
+    token = _worker_token()
+    if not base or not token:
+        return
+    try:
+        requests.post(
+            f"{base}/api/reliability/heartbeat/",
+            json={"source": HEARTBEAT_SOURCE, "expected_interval_s": HEARTBEAT_INTERVAL_S},
+            headers={"X-Worker-Token": token},
+            timeout=8,
+        )
+    except Exception:
+        pass  # heartbeat is best-effort; validation must not be affected
+
+
 def _infer_username(user_dir: Path, cred: dict) -> str:
     """
     Priority:
@@ -147,7 +180,12 @@ def handle_validate_once() -> None:
 
 def main() -> None:
     print("[validate] mt5_validate_worker starting (WINDOWS / EA)", flush=True)
+    last_hb = 0.0
     while True:
+        now = time.time()
+        if now - last_hb >= HEARTBEAT_INTERVAL_S:
+            emit_heartbeat()  # RX-2C: best-effort liveness, throttled
+            last_hb = now
         handle_validate_once()
         time.sleep(POLL_INTERVAL)
 

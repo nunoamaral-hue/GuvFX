@@ -8,18 +8,270 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, NotFound
 
-from .models import BacktestConfig, BacktestRun, WindowsBacktestJob
+from .models import BacktestConfig, BacktestExecution, BacktestJob, BacktestRun, PromotionCandidate, WindowsBacktestJob
 from .serializers import (
+    BacktestArtifactMetadataSerializer,
     BacktestConfigSerializer,
+    BacktestResultsResponseSerializer,
+    BacktestRunRequestSerializer,
+    BacktestRunResponseSerializer,
     BacktestRunSerializer,
+    BacktestStatusResponseSerializer,
+    ExecutionCandidateResponseSerializer,
+    PromotionCandidateReviewSerializer,
+    PromotionCandidateSerializer,
     WindowsBacktestRunRequestSerializer,
     WindowsBacktestJobSerializer,
     AIBacktestRecommendationRequestSerializer,
 )
+from .services import (
+    create_backtest_request,
+    create_promotion_candidate_for_execution_for_user,
+    get_backtest_status_for_user,
+    get_backtest_results_for_user,
+    list_backtest_artifacts_for_user,
+    review_promotion_candidate,
+    create_execution_candidate,
+    PromotionNotApprovedError,
+)
+from admin_ops.permissions import IsSuperOrOpsAdmin
 from strategies.models import Strategy
 from trading.models import TradingAccount
+from billing.enforcement import require_entitlement
+from core.audit import (
+    log_backtest_config_created,
+    log_backtest_job_created,
+    log_backtest_run_created,
+    log_backtest_status_viewed,
+    log_backtest_results_viewed,
+    log_backtest_artifacts_viewed,
+    log_backtests_processed,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# =========================================================================
+# Packet B — B5: Canonical backtest API views
+# =========================================================================
+
+
+class BacktestJobRunView(APIView):
+    """
+    POST /api/backtests/jobs/run/
+
+    Create a BacktestJob + initial BacktestExecution in queued state.
+    Respects entitlements and ownership.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = BacktestRunRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = request.user
+
+        # Entitlement gate
+        require_entitlement(user, "can_run_backtests")
+
+        # Ownership check: non-staff must own the strategy
+        strategy = Strategy.objects.get(id=data["strategy_id"])
+        if not user.is_staff and strategy.owner != user:
+            raise PermissionDenied("You can only run backtests on your own strategies.")
+
+        # Service layer: create job + execution
+        job, execution = create_backtest_request(
+            user=user,
+            strategy=strategy,
+            symbol=data["symbol"],
+            timeframe=data["timeframe"],
+            start_date=data["start_date"],
+            end_date=data["end_date"],
+            parameter_set=data.get("parameter_set"),
+            data_source=data.get("data_source", ""),
+        )
+
+        # Audit
+        log_backtest_job_created(
+            request,
+            job_id=job.pk,
+            execution_id=execution.pk,
+            strategy_id=strategy.pk,
+            symbol=data["symbol"],
+        )
+
+        response_data = {
+            "backtest_job_id": job.pk,
+            "backtest_execution_id": execution.pk,
+            "run_identifier": execution.run_identifier,
+            "status": job.status,
+            "requested_at": job.requested_at,
+        }
+        response_serializer = BacktestRunResponseSerializer(response_data)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class BacktestJobStatusView(APIView):
+    """
+    GET /api/backtests/jobs/{id}/status/
+
+    Return safe status/lifecycle information for a BacktestJob.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, job_id):
+        try:
+            data = get_backtest_status_for_user(job_id, request.user)
+        except BacktestJob.DoesNotExist:
+            raise NotFound("Backtest job not found.")
+
+        log_backtest_status_viewed(request, job_id=job_id)
+
+        serializer = BacktestStatusResponseSerializer(data)
+        return Response(serializer.data)
+
+
+class BacktestJobResultsView(APIView):
+    """
+    GET /api/backtests/jobs/{id}/results/
+
+    Return BacktestSummary + safe execution result metadata.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, job_id):
+        try:
+            data = get_backtest_results_for_user(job_id, request.user)
+        except BacktestJob.DoesNotExist:
+            raise NotFound("Backtest job not found.")
+
+        log_backtest_results_viewed(request, job_id=job_id)
+
+        serializer = BacktestResultsResponseSerializer(data)
+        return Response(serializer.data)
+
+
+class BacktestJobArtifactsView(APIView):
+    """
+    GET /api/backtests/jobs/{id}/artifacts/
+
+    Return safe artifact metadata listing for a BacktestJob.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, job_id):
+        try:
+            artifacts = list_backtest_artifacts_for_user(job_id, request.user)
+        except BacktestJob.DoesNotExist:
+            raise NotFound("Backtest job not found.")
+
+        log_backtest_artifacts_viewed(request, job_id=job_id)
+
+        serializer = BacktestArtifactMetadataSerializer(artifacts, many=True)
+        return Response(serializer.data)
+
+
+class BacktestPromoteView(APIView):
+    """
+    POST /api/backtests/{execution_id}/promote/
+
+    Idempotently create a PromotionCandidate for an execution.
+    Returns existing candidate if already present.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, execution_id):
+        try:
+            candidate, created = create_promotion_candidate_for_execution_for_user(
+                execution_id, request.user, request=request
+            )
+        except BacktestExecution.DoesNotExist:
+            raise NotFound("Backtest execution not found.")
+
+        serializer = PromotionCandidateSerializer(candidate)
+        return Response(
+            serializer.data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class PromotionCandidateReviewView(APIView):
+    """
+    POST /api/backtests/candidates/{id}/review/
+
+    Apply a review decision (approved/rejected) to a PromotionCandidate.
+    Restricted to ops_admin and super_admin roles.
+    """
+
+    permission_classes = [IsSuperOrOpsAdmin]
+
+    def post(self, request, candidate_id):
+        serializer = PromotionCandidateReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            candidate = review_promotion_candidate(
+                candidate_id=candidate_id,
+                decision=serializer.validated_data["decision"],
+                notes=serializer.validated_data.get("notes", ""),
+                reviewer=request.user,
+                request=request,
+            )
+        except PromotionCandidate.DoesNotExist:
+            raise NotFound("Promotion candidate not found.")
+
+        output = PromotionCandidateSerializer(candidate)
+        return Response(output.data)
+
+
+class ExecutionCandidateStageView(APIView):
+    """
+    POST /api/backtests/candidates/{id}/stage/
+
+    Stage an approved PromotionCandidate as an ExecutionCandidate.
+    Idempotent: returns existing ExecutionCandidate if already staged.
+    Restricted to ops_admin and super_admin roles.
+
+    Metadata-only — does NOT create ExecutionJobs, trigger workers,
+    or modify the execution pipeline.
+    """
+
+    permission_classes = [IsSuperOrOpsAdmin]
+
+    def post(self, request, candidate_id):
+        try:
+            promo = PromotionCandidate.objects.get(pk=candidate_id)
+        except PromotionCandidate.DoesNotExist:
+            raise NotFound("Promotion candidate not found.")
+
+        try:
+            ec, created = create_execution_candidate(
+                promotion_candidate=promo,
+                actor_user=request.user,
+                request=request,
+            )
+        except PromotionNotApprovedError as e:
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        serializer = ExecutionCandidateResponseSerializer(ec)
+        return Response(
+            serializer.data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+# =========================================================================
+# Legacy views (existing — unchanged)
+# =========================================================================
 
 
 class BacktestConfigViewSet(viewsets.ModelViewSet):
@@ -44,7 +296,8 @@ class BacktestConfigViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save()  # BacktestConfigSerializer.create() sets owner
+        instance = serializer.save()  # BacktestConfigSerializer.create() sets owner
+        log_backtest_config_created(self.request, instance)
 
 
 class BacktestRunViewSet(viewsets.ModelViewSet):
@@ -70,14 +323,25 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
         if not user.is_staff:
             qs = qs.filter(config__owner=user)
+
+        # Filter by strategy ID
         strategy_id = self.request.query_params.get("strategy")
         if strategy_id:
             qs = qs.filter(config__strategy_id=strategy_id)
+
+        # Filter by config ID (supports both 'config' and 'config_id' params)
+        config_id = self.request.query_params.get("config") or self.request.query_params.get("config_id")
+        if config_id:
+            qs = qs.filter(config_id=config_id)
+
         return qs
 
     def perform_create(self, serializer):
         user = self.request.user
         config = serializer.validated_data["config"]
+
+        # Entitlement gate: user must have can_run_backtests
+        require_entitlement(user, "can_run_backtests")
 
         # Ownership check: non-staff can only create runs on their own configs
         if (not user.is_staff) and config.owner != user:
@@ -99,16 +363,697 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         # If you wanted a fake/dummy "instant completion" for now, you could update here.
         # For now we leave it as PENDING to be picked up by a future worker.
 
+        # Audit log
+        log_backtest_run_created(self.request, run)
+
         # Ensure serializer instance is set for response rendering
         serializer.instance = run
+
+
+class StrategyFamiliesView(APIView):
+    """GET /api/backtests/strategy-families/ — taxonomy families (read-only)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.strategy_taxonomy import StrategyFamilyRegistry, MarketStateSuitabilityRegistry
+        return Response({
+            "ok": True,
+            "families": StrategyFamilyRegistry.all(),
+            "market_state_suitability": MarketStateSuitabilityRegistry.all(),
+            "mode": "research",
+        })
+
+
+class StrategyDefinitionsView(APIView):
+    """GET /api/backtests/strategy-definitions/ — concrete strategies (read-only)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.strategy_taxonomy import StrategyDefinitionRegistry, SetupTypeRegistry, AssetClassRegistry
+        return Response({
+            "ok": True,
+            "definitions": StrategyDefinitionRegistry.all(),
+            "setup_types": SetupTypeRegistry.all(),
+            "asset_classes": AssetClassRegistry.all(),
+            "mode": "research",
+        })
+
+
+class TraderProfilesView(APIView):
+    """GET /api/backtests/trader-profiles/ — trader archetypes (read-only)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.strategy_taxonomy import TraderProfileRegistry
+        return Response({"ok": True, "trader_profiles": TraderProfileRegistry.all(), "mode": "research"})
+
+
+class MarketStateView(APIView):
+    """
+    GET /api/backtests/market-state/?symbol=&timeframe=&bar_count=
+
+    Deterministic market-state classification. Read-only, Research Mode.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.engine import fetch_bars
+        from backtests.market_state import classify_market_state
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+        symbol = request.query_params.get("symbol", "EURUSD")
+        timeframe = request.query_params.get("timeframe", "H1")
+        try:
+            bar_count = min(int(request.query_params.get("bar_count", 1000)), 2000)
+        except (TypeError, ValueError):
+            bar_count = 1000
+        try:
+            bars = fetch_bars(symbol, timeframe, count=bar_count)
+        except Exception as e:
+            return Response({"ok": False, "error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        result = classify_market_state(bars, symbol=symbol, timeframe=timeframe)
+        return Response({"ok": True, **result})
+
+
+class StrategySelectionView(APIView):
+    """
+    GET /api/backtests/strategy-selection/?symbol=&timeframe=&bar_count=
+
+    Research guidance: preferred families/strategies for the current market
+    state. Read-only, Research Mode. No execution, no deployment.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.engine import fetch_bars
+        from backtests.strategy_selection import select_strategies
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+        symbol = request.query_params.get("symbol", "EURUSD")
+        timeframe = request.query_params.get("timeframe", "H1")
+        try:
+            bar_count = min(int(request.query_params.get("bar_count", 1000)), 2000)
+        except (TypeError, ValueError):
+            bar_count = 1000
+        try:
+            bars = fetch_bars(symbol, timeframe, count=bar_count)
+        except Exception as e:
+            return Response({"ok": False, "error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        result = select_strategies(bars, symbol=symbol, timeframe=timeframe)
+        return Response({"ok": True, **result})
+
+
+class TradeNarrativeView(APIView):
+    """
+    GET /api/backtests/trade-narrative/
+
+    Generate deterministic human-readable explanation formats (trader/analyst/
+    journal/education) from a B19 Trade Intelligence Record. Read-only, Research
+    Mode. No ML, no LLM, no external calls, no prediction, no execution.
+    Public-safe language enforced.
+
+    Query params: observation_id, symbol, template, timeframe,
+    format (all|trader|analyst|journal|education).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.trade_intelligence import generate_record
+        from backtests.trade_narrative import generate_narrative
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        obs_id = request.query_params.get("observation_id")
+        try:
+            obs_id = int(obs_id) if obs_id else None
+        except (TypeError, ValueError):
+            obs_id = None
+
+        gen = generate_record(
+            observation_id=obs_id,
+            symbol=request.query_params.get("symbol"),
+            template=request.query_params.get("template"),
+            timeframe=request.query_params.get("timeframe"),
+        )
+        record = gen.get("record")
+        warnings = list(gen.get("warnings", []))
+        fmt = request.query_params.get("format", "all")
+        narrative = generate_narrative(record, fmt=fmt)
+        warnings.extend(narrative.get("warnings", []))
+
+        return Response({
+            "ok": True,
+            "record": record,
+            "narrative": narrative,
+            "content_safety_mode": narrative.get("content_safety_mode", "public_safe"),
+            "public_language_pass": narrative.get("public_language_pass", True),
+            "warnings": warnings,
+        })
+
+
+class TradeIntelligenceView(APIView):
+    """
+    GET /api/backtests/trade-intelligence/
+
+    Deterministically generate a structured Trade Intelligence Record
+    (rationale + risks + evidence) for an observation or a combination.
+    Read-only, Research Mode. No ML, no LLM, no prediction, no execution.
+    Public-safe language enforced.
+
+    Query params: observation_id, symbol, template, timeframe.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.trade_intelligence import generate_record
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        obs_id = request.query_params.get("observation_id")
+        try:
+            obs_id = int(obs_id) if obs_id else None
+        except (TypeError, ValueError):
+            obs_id = None
+
+        result = generate_record(
+            observation_id=obs_id,
+            symbol=request.query_params.get("symbol"),
+            template=request.query_params.get("template"),
+            timeframe=request.query_params.get("timeframe"),
+        )
+        return Response(result)
+
+
+class FeatureAttributionView(APIView):
+    """
+    GET /api/backtests/feature-attribution/
+
+    Deterministic statistical attribution over the Research Knowledge Base —
+    which market contexts associate with strong/weak research outcomes.
+    Read-only, Research Mode. No ML, no prediction, no deployment.
+
+    Query params: template, symbol, timeframe, min_count (default 3), feature.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.attribution import run_attribution
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        try:
+            min_count = max(1, int(request.query_params.get("min_count", 3)))
+        except (TypeError, ValueError):
+            min_count = 3
+
+        result = run_attribution(
+            template=request.query_params.get("template"),
+            symbol=request.query_params.get("symbol"),
+            timeframe=request.query_params.get("timeframe"),
+            min_count=min_count,
+            feature=request.query_params.get("feature"),
+        )
+        return Response({"ok": True, **result})
+
+
+class ResearchKnowledgeBaseView(APIView):
+    """
+    GET /api/backtests/research-knowledge/
+
+    Query the Research Knowledge Base for aggregated long-term research metrics.
+    Returns strongest, weakest, most tested, and highest confidence combinations.
+
+    Research Mode only — no live execution side effects.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.knowledge_base import query_knowledge_base, result_to_dict as kb_to_dict
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        symbol = request.query_params.get("symbol")
+        template = request.query_params.get("template")
+        timeframe = request.query_params.get("timeframe")
+        min_runs = int(request.query_params.get("min_runs", 1))
+        top_n = min(int(request.query_params.get("top_n", 10)), 50)
+
+        result = query_knowledge_base(
+            symbol=symbol, template=template, timeframe=timeframe,
+            min_runs=min_runs, top_n=top_n,
+        )
+
+        return Response({"ok": True, **kb_to_dict(result)})
+
+
+class BacktestRecommendationsView(APIView):
+    """
+    POST /api/backtests/research-recommendations/
+
+    Generate research recommendations from matrix, regime, and portfolio data.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.research_matrix import run_research_matrix, matrix_to_dict
+        from backtests.regime_engine import classify_regimes, analysis_to_dict, RegimeParams
+        from backtests.regime_filter import run_regime_comparison, RegimeFilterConfig, comparison_to_dict
+        from backtests.portfolio_research import build_portfolio, portfolio_to_dict
+        from backtests.research_recommender import generate_recommendations, result_to_dict
+        from backtests.engine import fetch_bars
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        data = request.data
+        scope = data.get("scope", "all")
+        symbols = data.get("symbols")
+        templates = data.get("templates")
+        include_regime = data.get("include_regime", True)
+        include_portfolio = data.get("include_portfolio", True)
+
+        # 1. Run research matrix
+        matrix_result = run_research_matrix(
+            symbols=symbols, templates=templates,
+            timeframes=["H1"], bar_count=1000,
+        )
+        matrix_dict = matrix_to_dict(matrix_result)
+        matrix_rows = matrix_dict.get("all_rows", [])
+
+        # B14: Record matrix observations in Knowledge Base
+        from backtests.knowledge_base import record_from_matrix_row
+        for row in matrix_rows:
+            record_from_matrix_row(row, source="recommendations")
+
+        # 2. Regime analysis (on first symbol)
+        regime_data = None
+        filter_data = None
+        if include_regime and matrix_rows:
+            first_sym = matrix_rows[0]["symbol"] if matrix_rows else "EURUSD"
+            try:
+                bars = fetch_bars(first_sym, "H1", count=1000)
+                ra = classify_regimes(bars, RegimeParams())
+                regime_data = analysis_to_dict(ra)
+
+                # Quick regime filter test on best RSI combo
+                rsi_rows = [r for r in matrix_rows if r.get("template") == "rsi_mean_reversion"]
+                if rsi_rows:
+                    best_rsi = max(rsi_rows, key=lambda r: r.get("research_score", 0))
+                    filter_result = run_regime_comparison(
+                        bars, "rsi_mean_reversion",
+                        RegimeFilterConfig(enabled=True, allowed_entry_regimes=["BULL", "SIDEWAYS"]),
+                        symbol=best_rsi["symbol"], timeframe="H1",
+                    )
+                    filter_data = comparison_to_dict(filter_result)
+            except Exception:
+                pass
+
+        # 3. Portfolio (top 4 if requested)
+        portfolios = []
+        if include_portfolio and len(matrix_rows) >= 4:
+            try:
+                top4 = sorted(matrix_rows, key=lambda r: r.get("research_score", 0), reverse=True)[:4]
+                specs = [{"symbol": r["symbol"], "template": r["template"], "timeframe": "H1"} for r in top4]
+                port = build_portfolio(specs, name="Auto: Top 4")
+                portfolios.append(portfolio_to_dict(port))
+            except Exception:
+                pass
+
+        # 4. Generate recommendations
+        result = generate_recommendations(
+            matrix_rows=matrix_rows,
+            regime_data=regime_data,
+            filter_data=filter_data.get("comparison") if isinstance(filter_data, dict) else None,
+            portfolios=portfolios,
+            scope=scope,
+        )
+
+        return Response({"ok": True, **result_to_dict(result)})
+
+
+class BacktestPortfolioResearchView(APIView):
+    """
+    POST /api/backtests/portfolio-research/
+
+    Build and analyse portfolio combinations.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.portfolio_research import build_portfolio, portfolio_to_dict
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        data = request.data
+        components = data.get("components", [])
+        name = data.get("name", "Custom Portfolio")
+        bar_count = int(data.get("bar_count", 1000))
+
+        if not components or len(components) < 2:
+            return Response({"ok": False, "error": "At least 2 components required"}, status=400)
+        if len(components) > 8:
+            return Response({"ok": False, "error": "Max 8 components"}, status=400)
+
+        result = build_portfolio(
+            specs=components, bar_count=bar_count, name=name,
+        )
+
+        if result.error:
+            return Response({"ok": False, "error": result.error}, status=400)
+
+        return Response({"ok": True, **portfolio_to_dict(result)})
+
+
+class BacktestResearchMatrixView(APIView):
+    """
+    POST /api/backtests/research-matrix/
+
+    Run multi-symbol Research Matrix.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.research_matrix import run_research_matrix, matrix_to_dict, TIER1_SYMBOLS, ALL_TEMPLATES
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        data = request.data
+        symbols = data.get("symbols", TIER1_SYMBOLS)
+        timeframes = data.get("timeframes", ["H1"])
+        templates = data.get("templates", ALL_TEMPLATES)
+        bar_count = int(data.get("bar_count", 1000))
+        max_combos = min(int(data.get("max_combinations", 200)), 200)
+
+        result = run_research_matrix(
+            symbols=symbols, timeframes=timeframes,
+            templates=templates, bar_count=bar_count,
+            max_combinations=max_combos,
+        )
+
+        # B14: Record observations in Knowledge Base
+        from backtests.knowledge_base import record_from_matrix_row
+        result_dict = matrix_to_dict(result)
+        for row in result_dict.get("all_rows", []):
+            record_from_matrix_row(row, source="research_matrix")
+
+        return Response({"ok": True, **result_dict})
+
+
+class BacktestRegimeFilterView(APIView):
+    """
+    POST /api/backtests/regime-filter/
+
+    Run a baseline vs regime-filtered backtest comparison.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.engine import fetch_bars
+        from backtests.regime_filter import (
+            run_regime_comparison, RegimeFilterConfig, comparison_to_dict,
+        )
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        data = request.data
+        template_name = data.get("template_name", "rsi_mean_reversion")
+        symbol = data.get("symbol", "EURUSD")
+        timeframe = data.get("timeframe", "H1")
+        bar_count = int(data.get("bar_count", 1000))
+        template_params = data.get("params", {})
+
+        regime_cfg = data.get("regime_filter", {})
+        filter_config = RegimeFilterConfig(
+            enabled=True,
+            allowed_entry_regimes=regime_cfg.get("allowed_entry_regimes", ["BULL", "SIDEWAYS"]),
+        )
+
+        try:
+            bars = fetch_bars(symbol, timeframe, count=bar_count)
+        except Exception as e:
+            return Response({"ok": False, "error": str(e)}, status=502)
+
+        if not bars:
+            return Response({"ok": False, "error": "No bars"}, status=400)
+
+        try:
+            result = run_regime_comparison(
+                bars, template_name, filter_config,
+                params=template_params,
+                symbol=symbol, timeframe=timeframe,
+            )
+        except KeyError as e:
+            return Response({"ok": False, "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if result.error:
+            return Response({"ok": False, "error": result.error}, status=400)
+
+        # B14: Record baseline observation in Knowledge Base
+        # B16: attach normalised market-context feature dict
+        from backtests.knowledge_base import record_from_backtest_metrics
+        cmp = comparison_to_dict(result)
+        baseline = cmp.get("comparison", {})
+
+        feature_context = {}
+        try:
+            from backtests.feature_extractor import extract_feature_context, apply_risk_warnings
+            feature_context = extract_feature_context(bars, symbol=symbol, timeframe=timeframe)
+            base_perf = {
+                "max_drawdown": baseline.get("baseline_max_drawdown", 0),
+                "profit_factor": baseline.get("baseline_profit_factor", 0),
+                "win_rate": baseline.get("baseline_win_rate", 0),
+                "total_trades": baseline.get("baseline_trades", 0),
+            }
+            apply_risk_warnings(feature_context, base_perf)
+            try:
+                from backtests.trade_quality import score_trade_quality
+                feature_context["trade_quality"] = score_trade_quality(
+                    symbol, template_name, timeframe, feature_context, params=template_params, perf=base_perf,
+                )
+            except Exception:
+                pass
+        except Exception:
+            feature_context = {}
+
+        if baseline.get("baseline_trades", 0) > 0:
+            record_from_backtest_metrics(
+                symbol=symbol, template=template_name, timeframe=timeframe,
+                metrics={
+                    "profit_factor": baseline.get("baseline_profit_factor", 0),
+                    "max_drawdown": baseline.get("baseline_max_drawdown", 0),
+                    "net_profit": baseline.get("baseline_net_profit", 0),
+                    "win_rate": baseline.get("baseline_win_rate", 0),
+                    "total_trades": baseline.get("baseline_trades", 0),
+                    "total_return_pct": 0,
+                    "expectancy": 0,
+                },
+                params=template_params,
+                bar_count=bar_count,
+                feature_context=feature_context,
+                source="regime_filter",
+            )
+
+        return Response({"ok": True, "feature_context": feature_context, **cmp})
+
+
+class BacktestRegimeAnalysisView(APIView):
+    """
+    POST /api/backtests/regime-analysis/
+
+    Analyse market regime for a symbol/timeframe.
+    Returns current regime, transition matrix, regime distribution.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.engine import fetch_bars
+        from backtests.regime_engine import classify_regimes, analysis_to_dict, RegimeParams
+
+        data = request.data
+        symbol = data.get("symbol", "EURUSD")
+        timeframe = data.get("timeframe", "H1")
+        bar_count = int(data.get("bar_count", 1000))
+        lookback = int(data.get("lookback", 20))
+        k = float(data.get("k", 1.0))
+
+        try:
+            bars = fetch_bars(symbol, timeframe, count=bar_count)
+        except Exception as e:
+            return Response({"ok": False, "error": str(e)}, status=502)
+
+        if not bars:
+            return Response({"ok": False, "error": "No bars"}, status=400)
+
+        analysis = classify_regimes(bars, RegimeParams(lookback=lookback, k=k))
+        if analysis.error:
+            return Response({"ok": False, "error": analysis.error}, status=400)
+
+        result = analysis_to_dict(analysis)
+        result["ok"] = True
+        result["symbol"] = symbol
+        result["timeframe"] = timeframe
+        result["mode"] = "research"
+        return Response(result)
+
+
+class BacktestOptimiseView(APIView):
+    """
+    POST /api/backtests/optimise/
+
+    Run parameter optimisation with walk-forward validation.
+    Research Mode only — no live execution.
+
+    Body: {
+        "template_name": "rsi_mean_reversion",
+        "symbol": "EURUSD",
+        "timeframe": "H1",
+        "bar_count": 1000,
+        "score_metric": "profit_factor",
+        "param_grid": {
+            "rsi_period": [10, 14, 21],
+            "sl_pips": [20, 25, 30]
+        },
+        "walk_forward": true,
+        "top_n": 10
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from backtests.engine import fetch_bars
+        from backtests.optimiser import run_optimisation, result_to_dict
+        from billing.enforcement import require_entitlement
+
+        require_entitlement(request.user, "can_run_backtests")
+
+        data = request.data
+        template_name = data.get("template_name", "ema_trend")
+        symbol = data.get("symbol", "EURUSD")
+        timeframe = data.get("timeframe", "H1")
+        bar_count = int(data.get("bar_count", 1000))
+        score_metric = data.get("score_metric", "profit_factor")
+        param_grid = data.get("param_grid", {})
+        walk_forward = data.get("walk_forward", True)
+        top_n = min(int(data.get("top_n", 10)), 20)
+
+        if not param_grid:
+            return Response(
+                {"ok": False, "error": "param_grid is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            bars = fetch_bars(symbol, timeframe, count=bar_count)
+        except Exception as e:
+            return Response(
+                {"ok": False, "error": f"Failed to fetch data: {e}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if not bars:
+            return Response(
+                {"ok": False, "error": f"No bars for {symbol} {timeframe}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = run_optimisation(
+            bars=bars, template_name=template_name,
+            param_grid=param_grid, score_metric=score_metric,
+            symbol=symbol, timeframe=timeframe,
+            walk_forward=walk_forward, top_n=top_n,
+        )
+
+        if result.error:
+            return Response(
+                {"ok": False, "error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # B14: Record top result in Knowledge Base
+        # B16: attach normalised market-context feature dict
+        from backtests.knowledge_base import record_observation
+        opt_dict = result_to_dict(result)
+        top = opt_dict.get("top_results", [])
+        wf = opt_dict.get("walk_forward", [])
+
+        feature_context = {}
+        try:
+            from backtests.feature_extractor import extract_feature_context, apply_risk_warnings
+            feature_context = extract_feature_context(bars, symbol=symbol, timeframe=timeframe)
+            if top:
+                best0 = top[0]
+                best_perf = {
+                    "max_drawdown": float(best0.get("max_drawdown", 0)),
+                    "profit_factor": float(best0.get("profit_factor", 0)),
+                    "win_rate": float(best0.get("win_rate", 0)),
+                    "total_trades": int(best0.get("trade_count", 0)),
+                }
+                apply_risk_warnings(feature_context, best_perf)
+                try:
+                    from backtests.trade_quality import score_trade_quality
+                    feature_context["trade_quality"] = score_trade_quality(
+                        symbol, template_name, timeframe, feature_context, params=best0.get("params", {}), perf=best_perf,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            feature_context = {}
+
+        if top:
+            best = top[0]
+            wf_deg = wf[0].get("degradation_pct") if wf else None
+            wf_rob = wf[0].get("robust") if wf else None
+            record_observation(
+                symbol=symbol, template=template_name, timeframe=timeframe,
+                parameters=best.get("params", {}),
+                profit_factor=float(best.get("profit_factor", 0)),
+                max_drawdown=float(best.get("max_drawdown", 0)),
+                net_profit=float(best.get("net_profit", 0)),
+                win_rate=float(best.get("win_rate", 0)),
+                total_trades=int(best.get("trade_count", 0)),
+                walk_forward_degradation=wf_deg,
+                walk_forward_robust=wf_rob,
+                bar_count=bar_count,
+                feature_context=feature_context,
+                source="optimise",
+            )
+
+        return Response({"ok": True, "feature_context": feature_context, **opt_dict})
+
+
+class BacktestTemplateListView(APIView):
+    """
+    GET /api/backtests/templates/
+
+    List available backtest strategy templates with default parameters.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from backtests.strategy_templates import list_templates
+        return Response({"templates": list_templates()})
 
 
 class ProcessPendingBacktestsView(APIView):
     """
     POST /api/backtests/process-pending/
 
-    Processes all PENDING BacktestRun objects using the same dummy logic
-    as the management command, and returns how many runs were updated.
+    Processes all PENDING BacktestRun objects using the real MT5-data
+    backtesting engine (EMA crossover strategy).
+
+    Fetches OHLC bars from the MT5 signal bridge, runs a deterministic
+    simulation, and stores metrics + equity curve + trade list.
+
+    No live execution.  No ExecutionJob created.  No MT5 orders sent.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -133,15 +1078,19 @@ class ProcessPendingBacktestsView(APIView):
             run.started_at = timezone.now()
             run.save(update_fields=["status", "started_at"])
 
-            # Generate dummy metrics
-            metrics, equity_curve = self._generate_dummy_results(run)
+            try:
+                metrics, equity_curve = self._run_real_backtest(run)
+                run.status = BacktestRun.STATUS_COMPLETED
+                run.error_message = ""
+            except Exception as e:
+                metrics = {"error": str(e), "demo": False}
+                equity_curve = []
+                run.status = BacktestRun.STATUS_FAILED
+                run.error_message = str(e)[:500]
 
-            # Mark as COMPLETED
-            run.status = BacktestRun.STATUS_COMPLETED
             run.finished_at = timezone.now()
             run.metrics = metrics
             run.equity_curve = equity_curve
-            run.error_message = ""
 
             run.save(
                 update_fields=[
@@ -155,6 +1104,10 @@ class ProcessPendingBacktestsView(APIView):
 
             processed_count += 1
 
+        # Audit log
+        if processed_count > 0:
+            log_backtests_processed(request, processed_count)
+
         return Response(
             {
                 "processed_runs": processed_count,
@@ -163,33 +1116,205 @@ class ProcessPendingBacktestsView(APIView):
             status=200,
         )
 
+    def _run_real_backtest(self, run: BacktestRun):
+        """
+        Run real MT5-data backtest using a strategy template.
+
+        Fetches OHLC bars from the signal bridge, runs the selected
+        strategy template, returns (metrics_dict, equity_curve_list).
+        """
+        from backtests.engine import fetch_bars, run_template_backtest
+
+        symbol = run.symbol or run.config.symbol
+        timeframe = run.timeframe or run.config.timeframe
+        initial_balance = float(run.initial_balance)
+
+        # Strategy parameters from config
+        strategy = run.config.strategy
+        lots = float(getattr(strategy, "fixed_lot_size", None) or 0.01)
+
+        # Template selection priority:
+        # 1. Config description JSON (if parseable) — allows per-config override
+        # 2. Strategy filters
+        # 3. Default: ema_trend
+        import json as _json
+        config_meta = {}
+        try:
+            config_meta = _json.loads(run.config.description or "{}")
+        except (ValueError, TypeError):
+            pass
+
+        template_name = (
+            config_meta.get("backtest_template")
+            or (strategy.filters or {}).get("backtest_template")
+            or "ema_trend"
+        )
+        template_params = (
+            config_meta.get("backtest_params")
+            or (strategy.filters or {}).get("backtest_params")
+            or {}
+        )
+        bar_count_override = config_meta.get("bar_count")
+        spread_override = config_meta.get("spread_pips")
+        lots_override = config_meta.get("lots")
+
+        # Fetch bars
+        bar_count = int(bar_count_override or 1000)
+        bars = fetch_bars(symbol, timeframe, count=bar_count)
+
+        if not bars:
+            raise RuntimeError(f"No bars returned for {symbol} {timeframe}")
+
+        result = run_template_backtest(
+            bars, template_name=template_name,
+            params=template_params,
+            symbol=symbol, timeframe=timeframe,
+            initial_balance=initial_balance,
+            lots=float(lots_override or lots),
+            spread_pips=float(spread_override or 1.5),
+        )
+
+        if result.error:
+            raise RuntimeError(result.error)
+
+        # Build metrics dict (frontend-compatible format)
+        dq = result.data_quality
+        metrics = {
+            **result.metrics,
+            "equity_curve": result.equity_curve,
+            # Data source + quality
+            "data_source": "MT5",
+            "data_quality": {
+                "status": dq.status,
+                "bar_count": dq.bar_count,
+                "first_bar_time": dq.first_bar_time,
+                "last_bar_time": dq.last_bar_time,
+                "notes": dq.notes,
+            },
+            # Strategy template + params
+            "strategy_template": template_name,
+            "strategy_params": result.reconciliation.get("strategy_params", {}),
+            # Reconciliation metadata
+            "reconciliation": result.reconciliation,
+            # Display metadata
+            "bars_count": result.bars_count,
+            "date_range": f"{result.start_date} to {result.end_date}",
+            "mode": "research",
+            "mode_label": "Research Mode Backtest",
+            "mode_disclaimer": (
+                "Results are simulated using MT5 OHLC data and GuvFX execution assumptions. "
+                "They may differ from MT5 Strategy Tester or live execution."
+            ),
+            # Trade list
+            "trades": [
+                {
+                    "trade_number": t.trade_number,
+                    "side": t.side,
+                    "entry_time": t.entry_time,
+                    "exit_time": t.exit_time,
+                    "entry_price": t.entry_price,
+                    "exit_price": t.exit_price,
+                    "sl": t.sl,
+                    "tp": t.tp,
+                    "lots": t.lots,
+                    "pnl": t.pnl,
+                    "exit_reason": t.exit_reason,
+                }
+                for t in result.trades
+            ],
+            "demo": False,
+        }
+
+        return metrics, result.equity_curve
+
     def _generate_dummy_results(self, run: BacktestRun):
         """
-        Same dummy result generator as the management command.
+        Legacy: Deterministic demo result generator seeded by (config.id, run.id).
+        Produces realistic equity curve with drawdown phases and timestamps.
+        Marked as demo data for compliance.
         """
-        total_return_pct = 12.5
-        max_drawdown_pct = 8.0
-        win_rate_pct = 57.0
-        num_trades = 120
+        import random
+        import math
+        from datetime import datetime, timedelta
+
+        # Seed for determinism: same config+run always produces same data
+        seed = (run.config_id * 1000) + run.id
+        rng = random.Random(seed)
 
         initial_equity = float(run.initial_balance)
-        final_equity = initial_equity * (1 + total_return_pct / 100.0)
 
-        equity_curve = [
-            {"step": 0, "equity": initial_equity},
-            {"step": 1, "equity": initial_equity * 0.98},
-            {"step": 2, "equity": initial_equity * 1.03},
-            {"step": 3, "equity": initial_equity * 1.05},
-            {"step": 4, "equity": final_equity},
-        ]
+        # Seeded parameters for variety across runs
+        base_return = rng.uniform(-5.0, 25.0)  # Range: loss to gain
+        volatility = rng.uniform(0.5, 2.5)  # Daily % volatility
+        win_rate_pct = rng.uniform(35.0, 65.0)
+        num_trades = rng.randint(40, 200)
+
+        # Generate 60 equity points (e.g., 60 days of trading)
+        num_points = 60
+        equity_curve = []
+
+        # Parse date range for timestamps
+        try:
+            start_date = datetime.strptime(str(run.date_from), "%Y-%m-%d")
+            end_date = datetime.strptime(str(run.date_to), "%Y-%m-%d")
+            days_span = max((end_date - start_date).days, num_points)
+        except (ValueError, TypeError):
+            start_date = datetime(2024, 1, 1)
+            days_span = 90
+
+        day_step = max(1, days_span // num_points)
+
+        equity = initial_equity
+        running_max = initial_equity
+        max_drawdown = 0.0
+
+        for i in range(num_points):
+            # Calculate timestamp
+            point_date = start_date + timedelta(days=i * day_step)
+            timestamp = point_date.strftime("%Y-%m-%dT09:00:00Z")
+
+            # Random walk with trend toward base_return
+            trend = (base_return / 100.0) / num_points
+            noise = rng.gauss(0, volatility / 100.0)
+
+            # Add occasional larger moves (drawdowns or rallies)
+            if rng.random() < 0.1:
+                noise *= 2.5
+
+            daily_return = trend + noise
+            equity *= (1 + daily_return)
+
+            # Track max drawdown
+            if equity > running_max:
+                running_max = equity
+            current_dd = ((running_max - equity) / running_max) * 100
+            if current_dd > max_drawdown:
+                max_drawdown = current_dd
+
+            equity_curve.append({
+                "timestamp": timestamp,
+                "equity": round(equity, 2),
+                "step": i,
+            })
+
+        final_equity = equity_curve[-1]["equity"]
+        total_return_pct = ((final_equity - initial_equity) / initial_equity) * 100
+
+        # Clamp max_drawdown to 0-100 range for safety
+        max_drawdown = min(max(max_drawdown, 0.0), 100.0)
 
         metrics = {
-            "total_return_pct": total_return_pct,
-            "max_drawdown_pct": max_drawdown_pct,
-            "win_rate_pct": win_rate_pct,
+            "total_return_pct": round(total_return_pct, 2),
+            "max_drawdown_pct": round(max_drawdown, 2),
+            "win_rate_pct": round(win_rate_pct, 1),
             "num_trades": num_trades,
-            "initial_balance": float(run.initial_balance),
-            "final_balance": final_equity,
+            "initial_balance": initial_equity,
+            "final_balance": round(final_equity, 2),
+            # Include equity_curve in metrics for frontend compatibility
+            "equity_curve": equity_curve,
+            # Demo flag for compliance
+            "demo": True,
+            "notes": "Demo data. For illustrative purposes only. Not real execution.",
         }
 
         return metrics, equity_curve

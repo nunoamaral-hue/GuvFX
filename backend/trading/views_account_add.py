@@ -79,6 +79,9 @@ class AddAccountWithMt5LoginView(APIView):
                 status=200,
             )
 
+        # Extract account currency from agent response if available
+        account_currency = str(agent.get("currency") or "").strip() or None
+
         # Normalized values used for uniqueness
         norm_broker_name = broker_name or (broker_server.server_name if broker_server else "")
 
@@ -106,6 +109,7 @@ class AddAccountWithMt5LoginView(APIView):
                         account_number=account_number,
                         is_demo=is_demo,
                         is_active=True,
+                        account_currency=account_currency,
                     )
 
                     # Apply password encryption through serializer logic

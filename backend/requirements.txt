@@ -25,4 +25,5 @@ requests==2.32.5
 sqlparse==0.5.4
 urllib3==2.6.1
 cryptography>=42.0.0
+pyotp>=2.9.0
 Pillow>=10.1  # trade-result card PNG rendering (intelligence/results_card.py)

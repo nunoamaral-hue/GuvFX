@@ -5,6 +5,7 @@ export type EquityPoint = {
 
 export type BacktestMetrics = {
   total_trades?: number;
+  num_trades?: number;
   win_rate_pct?: number;
   avg_rr?: number;
   net_profit?: number;
@@ -13,6 +14,11 @@ export type BacktestMetrics = {
 
   max_drawdown_pct?: number;
   total_return_pct?: number;
+
+  // Demo mode flag (Phase 1 confirmable pipeline)
+  demo?: boolean;
+  notes?: string;
+
   [key: string]: unknown;
 };
 
@@ -38,7 +44,44 @@ export type BacktestRun = {
   started_at: string | null;
   finished_at: string | null;
   metrics: BacktestMetrics | null;
+  equity_curve?: EquityPoint[] | null;
   created_at: string;
+};
+
+// B5 Canonical: Promotion candidate (Packet B — B7)
+export type PromotionCandidate = {
+  id: number;
+  backtest_execution_id: number;
+  state: string; // "pending" | "approved" | "rejected"
+  created_at: string;
+  updated_at: string;
+};
+
+// C2: Execution candidate (Packet C2)
+export type ExecutionCandidateResponse = {
+  execution_candidate_id: number;
+  promotion_candidate_id: number;
+  created_at: string;
+};
+
+// B5 Canonical: Results response shape (GET /api/backtests/results/{job_id}/)
+export type BacktestResultsResponse = {
+  job_id: number;
+  status: string;
+  summary_available: boolean;
+  summary: {
+    total_trades: number;
+    win_rate: number | null;
+    profit_factor: number | null;
+    max_drawdown: number | null;
+    sharpe_ratio: number | null;
+    expectancy: number | null;
+  } | null;
+  execution_id: number | null;
+  execution_status: string | null;
+  artifact_count: number;
+  promotion_candidate: PromotionCandidate | null;
+  execution_candidate: ExecutionCandidateResponse | null;
 };
 
 export type BacktestConfig = {

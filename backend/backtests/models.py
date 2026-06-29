@@ -239,3 +239,563 @@ class WindowsBacktestJob(models.Model):
 
     def __str__(self) -> str:
         return f"WindowsBacktestJob {self.job_id} | {self.owner} | {self.state}"
+
+
+# =========================================================================
+# Packet B — B1: Canonical Backtesting Domain Models
+# =========================================================================
+#
+# New models below coexist with the existing BacktestConfig/BacktestRun/
+# WindowsBacktestJob above.  The B1 models represent the formal, pipeline-
+# oriented backtesting subsystem.
+#
+# Naming note: The B1 canonical execution model is "BacktestExecution"
+# per Program Director naming decision.  The existing legacy BacktestRun
+# (which references BacktestConfig) remains unchanged.
+# =========================================================================
+
+
+class BacktestStatus(models.TextChoices):
+    """
+    Canonical status values for BacktestJob and BacktestExecution.
+
+    Used by both models via ``choices=BacktestStatus.choices``.
+    """
+
+    QUEUED = "queued", "Queued"
+    RUNNING = "running", "Running"
+    COMPLETED = "completed", "Completed"
+    FAILED = "failed", "Failed"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+class BacktestJob(models.Model):
+    """
+    A formal backtest job request.
+
+    Represents a user's request to execute a backtest of a strategy
+    over a specific symbol/timeframe/date range with given parameters.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="backtest_jobs",
+    )
+    strategy = models.ForeignKey(
+        Strategy,
+        on_delete=models.CASCADE,
+        related_name="backtest_jobs",
+    )
+
+    symbol = models.CharField(max_length=32, help_text="Symbol to backtest (e.g. EURUSD).")
+    timeframe = models.CharField(max_length=20, help_text="Timeframe (e.g. H1, H4, D1).")
+    start_date = models.DateField(help_text="Backtest start date.")
+    end_date = models.DateField(help_text="Backtest end date.")
+
+    parameter_set = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Strategy parameter overrides for this job (JSON).",
+    )
+    data_source = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Data source identifier (e.g. broker tick data, synthetic).",
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=BacktestStatus.choices,
+        default=BacktestStatus.QUEUED,
+        db_index=True,
+    )
+
+    requested_at = models.DateTimeField(
+        auto_now_add=True,
+        help_text="When the job was first requested.",
+    )
+    started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When a worker began processing the job.",
+    )
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the job finished (success or failure).",
+    )
+
+    worker_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Identifier of the worker that claimed the job.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "status"], name="bt_job_user_status_idx"),
+            models.Index(fields=["-requested_at"], name="bt_job_requested_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"BacktestJob #{self.pk} | {self.user_id} | {self.strategy_id} | {self.status}"
+
+
+class BacktestExecution(models.Model):
+    """
+    A single execution run within a BacktestJob.
+
+    One job may produce multiple executions (e.g. parameter sweeps, retries).
+    Each execution tracks its own status, worker, timing, and log location.
+    """
+
+    backtest_job = models.ForeignKey(
+        BacktestJob,
+        on_delete=models.CASCADE,
+        related_name="executions",
+    )
+
+    run_identifier = models.CharField(
+        max_length=255,
+        unique=True,
+        db_index=True,
+        help_text="Unique identifier for this run (e.g. UUID or slug).",
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=BacktestStatus.choices,
+        default=BacktestStatus.QUEUED,
+        db_index=True,
+    )
+
+    worker_hostname = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Hostname of the worker executing this run.",
+    )
+
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    duration_seconds = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        help_text="Wall-clock duration of the run in seconds.",
+    )
+
+    log_path = models.CharField(
+        max_length=1024,
+        blank=True,
+        default="",
+        help_text="Path or URI to the run's log output.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["backtest_job", "status"], name="bt_exec_job_status_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"BacktestExecution {self.run_identifier} | {self.status}"
+
+
+# ── BacktestArtifact immutability infrastructure ──
+
+
+class BacktestArtifactQuerySet(models.QuerySet):
+    """QuerySet that blocks bulk update and delete to enforce immutability."""
+
+    def update(self, **kwargs):
+        raise ValueError("BacktestArtifact records are immutable and cannot be updated.")
+
+    def delete(self):
+        raise ValueError("BacktestArtifact records are immutable and cannot be deleted.")
+
+
+class BacktestArtifactManager(models.Manager):
+    def get_queryset(self):
+        return BacktestArtifactQuerySet(self.model, using=self._db)
+
+
+class BacktestArtifact(models.Model):
+    """
+    An immutable output artifact produced by a BacktestExecution.
+
+    Artifacts are append-only: once created they cannot be updated or
+    deleted.  This follows the same immutability pattern as core.AuditEvent.
+
+    Examples: equity curve CSV, trade log, HTML report, screenshot.
+    """
+
+    objects = BacktestArtifactManager()
+
+    execution = models.ForeignKey(
+        BacktestExecution,
+        on_delete=models.CASCADE,
+        related_name="artifacts",
+    )
+
+    artifact_type = models.CharField(
+        max_length=100,
+        help_text="Type of artifact (e.g. equity_curve, trade_log, html_report).",
+    )
+    file_path = models.CharField(
+        max_length=1024,
+        help_text="Path or URI to the stored artifact file.",
+    )
+    file_size = models.BigIntegerField(
+        null=True,
+        blank=True,
+        help_text="File size in bytes.",
+    )
+    checksum = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text="Integrity checksum (e.g. SHA-256 hex digest).",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["execution", "artifact_type"], name="bt_artifact_exec_type_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"BacktestArtifact #{self.pk} | {self.artifact_type} | exec={self.execution_id}"
+
+    def save(self, *args, **kwargs):
+        # Append-only: block updates to existing records
+        if self.pk and BacktestArtifact.objects.filter(pk=self.pk).exists():
+            raise ValueError("BacktestArtifact records are immutable and cannot be updated.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("BacktestArtifact records are immutable and cannot be deleted.")
+
+
+class ReviewStatus(models.TextChoices):
+    """
+    Review lifecycle states for PromotionCandidate.
+
+    Research-only: marks whether a backtest execution has been reviewed
+    for promotion candidacy.  Does not imply deployment.
+    """
+
+    PENDING = "pending", "Pending"
+    APPROVED = "approved", "Approved"
+    REJECTED = "rejected", "Rejected"
+
+
+class PromotionCandidate(models.Model):
+    """
+    Marks a BacktestExecution as a research promotion candidate.
+
+    This is metadata-only — it does NOT trigger strategy deployment,
+    modify execution infrastructure, or alter worker behaviour.
+    One candidate record per execution (OneToOneField).
+    """
+
+    backtest_execution = models.OneToOneField(
+        BacktestExecution,
+        on_delete=models.CASCADE,
+        related_name="promotion_candidate",
+    )
+
+    review_status = models.CharField(
+        max_length=20,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.PENDING,
+        db_index=True,
+    )
+
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_promotions",
+        help_text="User who reviewed this candidate.",
+    )
+    review_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Reviewer notes or rationale.",
+    )
+    reviewed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the review decision was made.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return (
+            f"PromotionCandidate #{self.pk} | "
+            f"exec={self.backtest_execution_id} | {self.review_status}"
+        )
+
+
+class ExecutionCandidate(models.Model):
+    """
+    Records that an approved PromotionCandidate has been staged for
+    potential future execution consideration.
+
+    This is metadata-only — it does NOT create ExecutionJobs,
+    reference TerminalNodes, trigger workers, or modify the
+    execution pipeline in any way.
+
+    One record per PromotionCandidate (OneToOneField).
+    """
+
+    promotion_candidate = models.OneToOneField(
+        PromotionCandidate,
+        on_delete=models.CASCADE,
+        related_name="execution_candidate",
+    )
+    created_by_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_execution_candidates",
+        help_text="Admin user who staged this candidate.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return (
+            f"ExecutionCandidate #{self.pk} | "
+            f"promo={self.promotion_candidate_id}"
+        )
+
+
+class ResearchObservation(models.Model):
+    """
+    A single research observation from the Research Knowledge Base.
+
+    Each time Strategy Lab, Research Matrix, or any research endpoint runs
+    a backtest for a (symbol, template, timeframe) combination, the result
+    is recorded here.  Multiple observations accumulate over time, enabling
+    long-term confidence tracking.
+
+    Research Mode only — no live execution side effects.
+    """
+
+    symbol = models.CharField(max_length=32, db_index=True)
+    template = models.CharField(max_length=64, db_index=True)
+    timeframe = models.CharField(max_length=20, db_index=True)
+    parameters = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Strategy parameters used for this observation.",
+    )
+
+    # Core metrics
+    research_score = models.IntegerField(
+        default=0,
+        help_text="Composite research score (0-100).",
+    )
+    robustness_label = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="STRONG / PROMISING / WATCHLIST / WEAK",
+    )
+    profit_factor = models.FloatField(default=0.0)
+    max_drawdown = models.FloatField(default=0.0, help_text="Max drawdown as pct.")
+    net_profit = models.FloatField(default=0.0)
+    total_return_pct = models.FloatField(default=0.0)
+    win_rate = models.FloatField(default=0.0)
+    total_trades = models.IntegerField(default=0)
+    expectancy = models.FloatField(default=0.0)
+
+    # Regime context
+    regime_at_observation = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="Market regime at observation time (BULL/BEAR/SIDEWAYS).",
+    )
+
+    # Walk-forward (if available)
+    walk_forward_degradation = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Walk-forward degradation pct (null if not run).",
+    )
+    walk_forward_robust = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text="Walk-forward robustness flag.",
+    )
+
+    # Data quality
+    bar_count = models.IntegerField(default=0)
+    data_quality_status = models.CharField(max_length=20, blank=True, default="OK")
+
+    # B16 — Feature framework: normalised market context at observation time
+    feature_context = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Full normalised market-context feature dict (trend/volatility/session/structure/normalisation).",
+    )
+    trend_state = models.CharField(max_length=24, blank=True, default="", db_index=True)
+    volatility_state = models.CharField(max_length=24, blank=True, default="", db_index=True)
+    session_bucket = models.CharField(max_length=24, blank=True, default="")
+    breakout_state = models.CharField(max_length=24, blank=True, default="")
+    position_size_warning = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True if result may need position-size normalization before comparison.",
+    )
+
+    # B16.5 — Economic event context (factual metadata only; no NLP/sentiment/ML)
+    news_impact = models.CharField(
+        max_length=12, blank=True, default="NONE", db_index=True,
+        help_text="Nearest relevant event impact: NONE/LOW/MEDIUM/HIGH.",
+    )
+    news_type = models.CharField(max_length=40, blank=True, default="")
+    news_currency = models.CharField(max_length=8, blank=True, default="")
+    event_relevance = models.CharField(
+        max_length=12, blank=True, default="NONE", db_index=True,
+        help_text="Event relevance to this symbol: NONE/LOW/MEDIUM/HIGH.",
+    )
+    minutes_to_event = models.IntegerField(
+        null=True, blank=True,
+        help_text="Minutes to the nearest relevant upcoming event (null if none).",
+    )
+
+    # B18 — Trade Quality Framework (decision quality, not profitability)
+    quality_score = models.IntegerField(
+        null=True, blank=True, db_index=True,
+        help_text="Overall trade-quality score (0-100); null if not scored.",
+    )
+    quality_label = models.CharField(
+        max_length=16, blank=True, default="",
+        help_text="Elite / Excellent / Good / Acceptable / Weak.",
+    )
+    quality_buckets = models.JSONField(
+        default=dict, blank=True,
+        help_text="Per-bucket quality scores (market_selection/context/macro/entry/risk/management/discipline).",
+    )
+
+    # Source tracking
+    source = models.CharField(
+        max_length=40,
+        default="strategy_lab",
+        help_text="Which endpoint created this: strategy_lab, research_matrix, optimise, etc.",
+    )
+
+    observed_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-observed_at"]
+        indexes = [
+            models.Index(
+                fields=["symbol", "template", "timeframe"],
+                name="ro_sym_tmpl_tf_idx",
+            ),
+            models.Index(
+                fields=["research_score"],
+                name="ro_score_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"ResearchObservation {self.symbol}/{self.template}/{self.timeframe} "
+            f"score={self.research_score} @ {self.observed_at}"
+        )
+
+
+class BacktestSummary(models.Model):
+    """
+    Aggregated performance summary for a BacktestExecution.
+
+    Stores the canonical performance metrics produced by the
+    backtesting engine after an execution completes.
+    """
+
+    execution = models.OneToOneField(
+        BacktestExecution,
+        on_delete=models.CASCADE,
+        related_name="summary",
+    )
+
+    total_trades = models.IntegerField(
+        default=0,
+        help_text="Total number of trades executed.",
+    )
+    win_rate = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text="Win rate as a decimal (e.g. 0.5500 = 55%).",
+    )
+    profit_factor = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text="Gross profit / gross loss.",
+    )
+    max_drawdown = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text="Maximum drawdown as a decimal (e.g. 0.1200 = 12%).",
+    )
+    sharpe_ratio = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text="Annualized Sharpe ratio.",
+    )
+    expectancy = models.DecimalField(
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text="Expected value per trade in account currency.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return (
+            f"BacktestSummary | exec={self.execution_id} | "
+            f"trades={self.total_trades} | wr={self.win_rate}"
+        )

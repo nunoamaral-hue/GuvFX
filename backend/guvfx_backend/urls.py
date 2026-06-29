@@ -25,6 +25,7 @@ urlpatterns = [
     path("api/backtests/", include("backtests.urls")),
     path("api/analytics/", include("analytics.urls")),
     path("api/ai/", include("ai_helper.urls")),
+    path("api/execution/", include("execution.urls")),  # Execution control stubs
     path(
         "api/execution/open-trade/",
         CreateOpenTradeJobView.as_view(),
@@ -37,7 +38,12 @@ urlpatterns = [
     ),
     path("api/", include(router.urls)),
     path("api/hosting/", include("hosting.urls")),
+    path("api/billing/", include("billing.urls")),
+    path("api/admin/", include("admin_ops.urls")),
     path("api/mt5/", include("mt5.urls")),
+    path("api/mt5-interaction/", include("mt5.urls_interaction")),
+    path("api/onboarding/", include("onboarding.urls")),
+    path("api/reliability/", include("reliability.urls")),  # RX-2 Reliability Core
     path("api/wims/", include("wims.urls")),
     path("health/", health),
     # Windows Agent MVP endpoints (direct wiring)
