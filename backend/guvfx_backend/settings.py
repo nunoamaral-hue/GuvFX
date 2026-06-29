@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     "terminal_provisioning",  # TX-1A/TX-1B Terminal Isolation foundation (additive)
     "wims",  # WP-1 — Educational Content Flow (logically separate per ADR-009)
     "intelligence",  # Phase 7A — GuvFX Signal Intelligence Producer (produces; WIMS consumes)
+    "signal_intake",  # EXEC-E0 — Wayond signal -> human PendingSignalApproval (shadow; no execution)
 ]
 
 MIDDLEWARE = [

@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "users",
     "wims",
     "intelligence",  # Phase 7A — GuvFX-side producer (no models; demo/tests)
+    "signal_intake",  # EXEC-E0 — shadow signal intake (demo/tests)
 ]
 
 ROOT_URLCONF = "wims._demo_urls"
