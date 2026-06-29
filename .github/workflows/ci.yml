@@ -108,3 +108,67 @@ jobs:
         run: |
           cd "${{ steps.detect.outputs.path }}"
           npm run build
+
+  governance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Secret scan (standard library only)
+        run: python3 scripts/check_no_secrets.py
+
+      - name: Governance unit tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v
+
+      - name: Data-root preflight validator tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_data_root.py' -v
+
+      - name: Evidence manifest linter (standard library only)
+        run: python3 scripts/check_evidence_manifests.py
+
+      - name: Evidence manifest linter tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_evidence_manifests.py' -v
+
+  research-foundation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install DuckDB (binary-only, no extras)
+        run: |
+          python -m pip install --only-binary=:all: --no-deps -r requirements-research.txt
+
+      - name: Synthetic Parquet round-trip smoke
+        run: |
+          python tools/research_smoke.py
+
+      - name: Research foundation unit tests
+        run: |
+          python -m unittest discover -s tests -p 'test_research_foundation.py' -v
+
+  market-data-foundation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install DuckDB (binary-only, no extras)
+        run: |
+          python -m pip install --only-binary=:all: --no-deps -r requirements-research.txt
+
+      - name: Synthetic market-data smoke (no data root, agent or credentials)
+        run: |
+          python tools/market_data_synthetic_smoke.py
+
+      - name: Market-data foundation unit tests
+        run: |
+          python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v

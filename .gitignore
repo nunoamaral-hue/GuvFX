@@ -3,8 +3,14 @@ backend/.venv/
 backend/__pycache__/
 backend/**/*.pyc
 
+# Research environment (GFX-PKT-005B) — local, never staged
+/.venv-research/
+/research-data/
+
 # Django DB
 backend/db.sqlite3
+backend/wims_demo.sqlite3
+backend/flow_a_shadow.sqlite3
 
 # Next.js / Node
 frontend/node_modules/
@@ -54,3 +60,11 @@ GuvPay-pr/
 # Python cache
 __pycache__/
 *.pyc
+
+# Local Claude material — ignore specific local files only.
+# Do NOT ignore the whole .claude/ directory: .claude/rules/*.md stay tracked.
+/.claude/settings.local.json
+/.claude/launch.json
+/.claude/px24_dashboard_final_20260611.tsx
+/.claude/px24_rx2_merged_dashboard_20260611.tsx
+/.claude/px24_rx2_status_cleanup_20260611.tsx

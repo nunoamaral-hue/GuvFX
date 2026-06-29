@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-003I-A-governance-foundation",
+  "packet_id": "GFX-PKT-003I-A",
+  "created_at_utc": "2026-06-22T12:52:46Z",
+  "branch": "chore/guvfx-governance-convergence",
+  "base_commit": "b041123c94e8993a4662f3acd8c625dabf8d5851",
+  "head_commit": null,
+  "preservation": {
+    "source_commit": "ddaa03bac8eacf775eade94c7820ffb2a70c940a",
+    "cherry_pick_commit": "dcca1934cfa788a23f5b37609c7b90d9feaf73b9",
+    "identity": "GuvFX Automation <guvfx-automation@local.invalid>",
+    "files": [
+      "docs/archive/px24-dashboard-drafts/2026-06-11/README.md",
+      "docs/archive/px24-dashboard-drafts/2026-06-11/manifest.json",
+      "docs/archive/px24-dashboard-drafts/2026-06-11/px24_dashboard_final_20260611.tsx",
+      "docs/archive/px24-dashboard-drafts/2026-06-11/px24_rx2_merged_dashboard_20260611.tsx",
+      "docs/archive/px24-dashboard-drafts/2026-06-11/px24_rx2_status_cleanup_20260611.tsx"
+    ]
+  },
+  "commands": [
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "python3 -m json.tool evidence/schema/evidence-manifest.schema.json",
+    "make governance-check",
+    "make check",
+    "git diff --cached --check",
+    "git check-ignore -v .claude/settings.local.json",
+    "git ls-files .claude/rules"
+  ],
+  "expected_results": [
+    "Secret scanner reports no findings and exits 0",
+    "All secret-scanner unit tests pass",
+    "Evidence schema is valid JSON",
+    "governance-check (secret scan + unit tests) passes",
+    "Full check (governance + backend + frontend) passes without bypass",
+    "No staged whitespace errors",
+    "Local .claude secret/local files are ignored",
+    "Seven .claude/rules/*.md files are tracked"
+  ],
+  "actual_results": [
+    "check_no_secrets: no findings (exit 0)",
+    "Ran 13 tests; OK",
+    "evidence schema parsed as valid JSON",
+    "governance-check passed",
+    "make check FAILED at backend-test: ModuleNotFoundError: No module named 'django' (no backend/.venv present); pre-existing environment/tooling issue, governance-check stage passed first; not bypassed",
+    "git diff --cached --check produced no output",
+    "all five local .claude files reported ignored by exact rules",
+    "seven rule files listed by git ls-files .claude/rules"
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "head_commit is null: at evidence authoring time no governance commit exists. The commit was intentionally NOT created because 'make check' did not pass (see below); per packet the commit is gated on all checks passing.",
+    "make check could not pass locally: Django is not installed and no backend/.venv exists. This is a pre-existing environment/tooling issue unrelated to this packet (no backend files are changed). Remediation: create backend/.venv with project dependencies, ensure local PostgreSQL, then re-run 'make check' and create the governance commit.",
+    "No Stage 0 temporary reference repository was present locally; rule files and scanner were authored directly from the packet specification."
+  ],
+  "artefact_locations": [
+    "scripts/check_no_secrets.py",
+    "tests/test_no_secrets.py",
+    "evidence/schema/evidence-manifest.schema.json",
+    ".claude/rules/",
+    "docs/NOTION_MAP.md",
+    "docs/HANDOFF_TEMPLATE.md",
+    "packets/ACTIVE.md",
+    "packets/README.md"
+  ],
+  "checksums": {
+    "scripts/check_no_secrets.py": "sha256:1aa2b2a48e7c6d83e781760cc8066790eff171d90f935b1f52c1b1b06d57dd2f",
+    "tests/test_no_secrets.py": "sha256:ee9ed80e19f14eb205ddfaa27bf2ebfe720a591a1307b9df7a0f96fd2be6daf6",
+    "evidence/schema/evidence-manifest.schema.json": "sha256:232f15d5702b9469361ecac728994f9d84a5c83d3d8ab348ba9c04aa4e529e5d",
+    ".claude/rules/architecture.md": "sha256:0f6dfb03b035441d23cbc6a3a9714abaf1581653ce30c4a23c5d24c006d109bc",
+    ".claude/rules/data.md": "sha256:2c5845a19641dd0f8c733c74966d0cccdae0404126ad4656f6b5b69a0fbb7224",
+    ".claude/rules/research.md": "sha256:2f21c0f4c0cb5b1cd6de8804e3a05af44af626784760f558f92cb2dc9d017b7b",
+    ".claude/rules/security.md": "sha256:db34c7f4b597ff89ce0f5da122d70bfc38cd4fd9675917e166ea8e879915ea90",
+    ".claude/rules/evidence.md": "sha256:79fa8f829190fbac0f3989b24c5745a1d2b32e49bfa62c4b8ab269ddf0bcb3b9",
+    ".claude/rules/handoff.md": "sha256:f17bb7ae3cd0cd0f9380a93a58a402caa626f350d40238ed3e05babc76231b0a",
+    ".claude/rules/notion.md": "sha256:c85d6941730c30698c1a0461ae01f706a9f4fd4a0c535d2336e12f5c2dc73334"
+  },
+  "reviewer": null
+}

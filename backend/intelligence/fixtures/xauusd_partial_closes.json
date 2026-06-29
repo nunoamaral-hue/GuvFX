@@ -1,0 +1,41 @@
+[
+  {
+    "ticket": "200310001",
+    "symbol": "XAUUSD",
+    "side": "SELL",
+    "volume": "0.41",
+    "open_time": "2026-06-24T11:20:00Z",
+    "close_time": "2026-06-24T11:36:05Z",
+    "open_price": "4085.93",
+    "close_price": "4083.00",
+    "profit": "120.13",
+    "commission": "0",
+    "swap": "0"
+  },
+  {
+    "ticket": "200310002",
+    "symbol": "XAUUSD",
+    "side": "SELL",
+    "volume": "0.41",
+    "open_time": "2026-06-24T11:20:00Z",
+    "close_time": "2026-06-24T11:47:43Z",
+    "open_price": "4085.94",
+    "close_price": "4078.00",
+    "profit": "325.54",
+    "commission": "0",
+    "swap": "0"
+  },
+  {
+    "ticket": "200310003",
+    "symbol": "XAUUSD",
+    "side": "SELL",
+    "volume": "0.41",
+    "open_time": "2026-06-24T11:20:00Z",
+    "close_time": "2026-06-24T12:29:39Z",
+    "open_price": "4085.88",
+    "close_price": "4070.00",
+    "profit": "651.08",
+    "commission": "0",
+    "swap": "0"
+  }
+]

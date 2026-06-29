@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "request_id": "48a5fd6c46fc8ac807194a1ccc46ce131ef9e3dfcef88232d8258af4ee156595",
+  "ok": true,
+  "source": {
+    "source_id": "synthetic-mt5-agent",
+    "account_scope": "synthetic-demo",
+    "broker_reported": "SyntheticBroker",
+    "server_reported": "SyntheticServer",
+    "account_type": "demo",
+    "terminal_build": "synthetic",
+    "adapter_operation": "copy_rates_range"
+  },
+  "symbol": "EURUSD",
+  "timeframe": "M1",
+  "representation": "bid_ohlc",
+  "range_start_utc": "2025-01-01T00:00:00Z",
+  "range_end_utc": "2025-02-01T00:00:00Z",
+  "range_semantics": "[start,end)",
+  "exported_at_utc": "2026-01-01T00:00:00Z",
+  "bars": [
+    {
+      "sequence": 0,
+      "time_epoch_s": 1735689600,
+      "open": 1.1,
+      "high": 1.1003,
+      "low": 1.0998,
+      "close": 1.1001
+    },
+    {
+      "sequence": 1,
+      "time_epoch_s": 1735689660,
+      "open": 1.1001,
+      "high": 1.1004,
+      "low": 1.0999,
+      "close": 1.1002
+    },
+    {
+      "sequence": 2,
+      "time_epoch_s": 1735689720,
+      "open": 1.1002,
+      "high": 1.1005,
+      "low": 1.1,
+      "close": 1.1003
+    },
+    {
+      "sequence": 3,
+      "time_epoch_s": 1735689780,
+      "open": 1.1003,
+      "high": 1.1006,
+      "low": 1.1001,
+      "close": 1.1004
+    },
+    {
+      "sequence": 4,
+      "time_epoch_s": 1735689840,
+      "open": 1.1004,
+      "high": 1.1007,
+      "low": 1.1002,
+      "close": 1.1005
+    }
+  ],
+  "limitations": [
+    "synthetic_test_only"
+  ]
+}

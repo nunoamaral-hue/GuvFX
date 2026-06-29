@@ -1,0 +1,137 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-006C-R3-semantic-provenance-integrity",
+  "packet_id": "GFX-PKT-006C-R3",
+  "created_at_utc": "2026-06-24T06:07:52Z",
+  "branch": "chore/market-data-synthetic-foundation",
+  "base_commit": "a22103a7e9e435ebdc9bd280742eba2a56c3ef73",
+  "head_commit": "0347e118e54cbbb484d1cf8bec54e4147e743782",
+  "c7_commit": "0347e118e54cbbb484d1cf8bec54e4147e743782",
+  "c8_commit": null,
+  "continuation_of": "GFX-PKT-006C / R1 / R2 (prior evidence manifests carry only additive supersession pointers)",
+  "environment": {
+    "research_python_version": "3.14.6",
+    "duckdb_version": "1.5.4",
+    "dependencies_changed": false,
+    "schemas_changed": false,
+    "ci_make_changed": false
+  },
+  "ci": {
+    "provider": "GitHub Actions",
+    "workflow_name": "CI",
+    "c7": {
+      "push_run_id": 28078839668,
+      "pull_request_run_id": 28078841325,
+      "run_head_sha": "0347e118e54cbbb484d1cf8bec54e4147e743782",
+      "jobs": [
+        { "name": "governance", "conclusion": "success" },
+        { "name": "backend", "conclusion": "success" },
+        { "name": "frontend", "conclusion": "success" },
+        { "name": "research-foundation", "conclusion": "success" },
+        { "name": "market-data-foundation", "conclusion": "success" }
+      ]
+    },
+    "c8": { "push_run_id": null, "pull_request_run_id": null, "run_head_sha": null, "jobs": [] }
+  },
+  "files_modified": [
+    "research/market_data/timezone.py",
+    "research/market_data/storage.py",
+    "research/market_data/normalise.py",
+    "tools/market_data_synthetic_smoke.py",
+    "tests/test_market_data_foundation.py",
+    "research/README.md",
+    "docs/DATA_CONTRACTS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/STATUS.md",
+    "docs/HANDOFF.md",
+    "docs/NEXT.md",
+    "docs/NOTION_MAP.md",
+    "packets/ACTIVE.md",
+    "evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json",
+    "evidence/manifests/GFX-EVD-006C-R2-publication-storage-integrity.json"
+  ],
+  "files_added": [
+    "evidence/manifests/GFX-EVD-006C-R3-semantic-provenance-integrity.json"
+  ],
+  "unauthorised_files_changed": false,
+  "dependencies_changed": false,
+  "schemas_changed": false,
+  "ci_make_changed": false,
+  "contracts_py_changed": false,
+  "remediation_results": {
+    "exact_instant_timezone": "timezone._instant raises governed ContractError on impossible calendar/time; observation coverage compares aware-UTC datetimes directly; gate_for_normalisation converts each integer bar epoch to an aware UTC datetime and compares directly against covered start/end; no integer-epoch truncation; half-open covered_start <= instant < covered_end preserved; fingerprint/status/source/scope/arithmetic/no-default-offset controls retained",
+    "fractional_tests": "covered start 00:00:00.900Z rejects observation 00:00:00.100Z and rejects a bar at integer epoch 00:00:00Z; a bar one second later passes; equal-start passes; just-before-end passes while ==end fails; impossible 2025-13-01 raises ContractError",
+    "manifest_semantic_timestamps": "the strict validator parses all four UTC fields semantically (rejecting impossible calendar/time), requires range_end_utc > range_start_utc as instants, timeframe == M1, source/account <= 64 with the logical-account letter rule, and request/response schema ids equal to the canonical v1 ids",
+    "manifest_provenance_binding": "for ACCEPTED objects the validator strict-decodes the exact stored request/response, requires request bytes == canonical_json_bytes(parsed request), runs validate_request/validate_response/validate_request_response_match, requires request/response request_id == raw_object_id == expected request-id directory, requires manifest source/scope/symbol/timeframe/representation/range/semantics to equal the parsed request, and requires the derived raw/mt5/.../<id> directory to equal the validated directory; quarantine directories are bound to the manifest identity + request-id prefix; any independent field change fails closed",
+    "publication_lineage_binding": "publish_observations now requires the exact raw response bytes; it strict-decodes them and requires the decoded object to equal the supplied response, response_sha256 == sha256(exact bytes) with a valid lowercase digest, raw_object_id == request['request_id'], all before the timezone gate and private mapper; every mismatch raises PublicationError before any record",
+    "historical_evidence_discipline": "GFX-EVD-006C-R1 restored to its parent (a3578941) byte form with only the additive superseded_by_r2_evidence field (one comma + one line); GFX-EVD-006C-R2 gains only the additive superseded_by_r3_evidence field with no other change",
+    "notion_titles": "GFX-EVD-006C-R2, GFX-PKT-006C-R3 and GuvFX — Current State v0.22 added with exact titles"
+  },
+  "tests": {
+    "market_data_tests_total": 99,
+    "result": "OK",
+    "timezone_fractional": "TestTimezoneFractional — fractional start vs earlier observation/integer-epoch bar, inside-coverage pass, equal-start, just-before-end vs end, impossible instant",
+    "publication_lineage": "TestGatedPublication — wrong raw id, wrong digest, altered bytes, parsed/byte mismatch, non-bytes input all raise PublicationError with no records",
+    "manifest_provenance": "TestManifestProvenance — mismatched source/symbol/range, impossible/reversed dates, wrong schema id, non-M1, wrong expected request-id and noncanonical stored request all fail closed",
+    "frozen_fixture_note": "synthetic_timezone_verified.json retained unchanged (negative coverage test); positive VERIFIED evidence built in-memory"
+  },
+  "commands": [
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' -v",
+    "make governance-check",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v",
+    ".venv-research/bin/python tools/market_data_synthetic_smoke.py",
+    "make research-check",
+    "make market-data-check",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json >/dev/null",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R2-publication-storage-integrity.json >/dev/null",
+    "python3 -m json.tool evidence/manifests/GFX-EVD-006C-R3-semantic-provenance-integrity.json >/dev/null",
+    "git diff --check; git status --short",
+    "git diff --name-only a22103a7e9e435ebdc9bd280742eba2a56c3ef73...HEAD",
+    "git diff a3578941d239c0b49f396b0605fb05b1d63dfe42 -- evidence/manifests/GFX-EVD-006C-R1-client-raw-integrity.json"
+  ],
+  "expected_results": [
+    "Timezone comparisons preserve fractional precision; impossible values fail through governed errors",
+    "Manifest timestamps are semantic + strictly ordered; identity/range/provenance bound to the exact stored request/response and derived directory",
+    "Publication proves raw id + exact response bytes + SHA-256 before any record",
+    "R1 evidence diff vs parent is only the authorised R2 pointer; R2 gains only the R3 pointer",
+    "Only authorised files change; no dependency/schema/CI/Make change",
+    "All five CI jobs pass for C7 and C8 push + PR runs"
+  ],
+  "actual_results": [
+    "market-data tests: Ran 99 tests, OK",
+    "research foundation: OK; synthetic smoke: PASS via exact-lineage gated publish; deterministic byte-for-byte across two runs",
+    "check_no_secrets: no findings; make governance-check OK; make research-check OK; make market-data-check OK",
+    "json.tool: R1, R2 and R3 manifests valid JSON",
+    "git diff a3578941 -- R1 manifest: only '  \"reviewer\": null,' + one superseded_by_r2_evidence line; R2 diff: only the superseded_by_r3_evidence line",
+    "git diff --check clean; only the 15 authorised files changed (contracts.py untouched)",
+    "C7 CI: push 28078839668 + PR 28078841325 (head 0347e11) — all five jobs success; C8 final runs recorded in the PR comment + handoff"
+  ],
+  "no_network_proof": "all HTTP/race tests use injected fakes inside network_blocked(); NetworkAgentClient remains inert unless allow_network=True; no real socket/URL opener invoked",
+  "status": "PASS",
+  "limitations": [
+    "Synthetic-only: no external agent endpoint, real market data, NAS path or credentials were implemented or contacted.",
+    "Backend 'core' test relies on the GitHub backend CI job locally (no backend/.venv/PostgreSQL); unchanged from 006C.",
+    "head_commit/c7_commit point at C7 (0347e11); the C8 block is filled at the evidence-only C8 commit after C7 runs concluded success; C8 triggers further CI recorded in the PR comment/handoff.",
+    "The frozen synthetic_timezone_verified.json fixture is retained unchanged and intentionally fails the observation-coverage rule; it drives a negative test while positive VERIFIED evidence is built in-memory.",
+    "Prior 006C/R1/R2 evidence manifests' historical command/result/status fields are unchanged; only additive supersession pointers were added."
+  ],
+  "artefact_locations": [
+    "research/market_data/timezone.py",
+    "research/market_data/storage.py",
+    "research/market_data/normalise.py",
+    "tools/market_data_synthetic_smoke.py",
+    "tests/test_market_data_foundation.py",
+    "evidence/manifests/GFX-EVD-006C-R3-semantic-provenance-integrity.json"
+  ],
+  "checksums": {
+    "research/market_data/timezone.py": "sha256:78b6fdfd1261348e840114d2e2dcf29cc1ce9ba485ea887ca7e6e8a42ab90f2c",
+    "research/market_data/storage.py": "sha256:72a708d14188689f8e6ba30d307d386aa96300f835927bd30c3cefe0371271f3",
+    "research/market_data/normalise.py": "sha256:388c9d3aa3d45602d9e203f7074a309a2f13c47b63a548481c0bf7e535015b57",
+    "tools/market_data_synthetic_smoke.py": "sha256:d9f7393b3b9c10d8674100e12cd8280de40d8a3d46abe36fb6121f97305693e9",
+    "tests/test_market_data_foundation.py": "sha256:886250e396c18eb49ee5e4b7d17017d3094ee4bab575c24d20d1093580d13457"
+  },
+  "reviewer": null,
+  "superseded_by_r4_evidence": "evidence/manifests/GFX-EVD-006C-R4-exact-time-quarantine-provenance.json"
+}

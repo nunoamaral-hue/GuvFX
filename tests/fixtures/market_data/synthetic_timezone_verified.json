@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "source_id": "synthetic-mt5-agent",
+  "account_scope": "synthetic-demo",
+  "assessment_status": "VERIFIED",
+  "evidence_method": "synthetic_clock_compare",
+  "assessed_at_utc": "2026-01-01T00:00:00Z",
+  "covered_start_utc": "2025-01-01T00:00:00Z",
+  "covered_end_utc": "2025-02-01T00:00:00Z",
+  "observations": [
+    {
+      "observed_at_utc": "2026-01-01T00:00:00Z",
+      "server_clock_epoch_s": 1735689600,
+      "utc_clock_epoch_s": 1735689600,
+      "implied_offset_seconds": 0
+    }
+  ],
+  "dst_behaviour": "synthetic_none",
+  "limitations": [
+    "synthetic_test_only",
+    "invented_offset_for_interface_test"
+  ],
+  "evidence_fingerprint": "6af8bbf9fa543abab365a5244743de1949195afc44b370ea89bad5ac1cad9f88"
+}

@@ -2,6 +2,26 @@
 
 List active problems with reproduction steps and workarounds.
 
+## Programme / data-acquisition (2026-06-27)
+
+- **Storage not provisioned — data workstream blocked.** `GUVFX_DATA_ROOT` /
+  `GuvFXData` does not exist on the controller; GFX-PKT-006D-A2-P5 correctly stops
+  at its storage gate. Resolved only by owner action GFX-PKT-006D-S1 (NAS creds).
+- **Broker-server timezone UNVERIFIED.** MT5 bar times are broker-server time, not
+  guaranteed UTC. Do not hardcode an offset and do not publish any normalised
+  dataset until the demo source (TradersWay-Demo) timezone is evidenced.
+- **MT5 runtime is desktop-session dependent.** `initialize()` succeeds only with
+  the autologon/kiosk console session present (H1 confirmed a single logoff is
+  re-created by autologon within seconds). Headless/service-managed model unproven
+  (ADR-DATA-017). A console logoff is a live-impacting action (it disrupts the MT5
+  terminal + signal bridge until on-logon tasks restore them — R0 verified recovery).
+- **Read-only MT5 boundary is design/test-enforced only.** `order_send`/`login`
+  live in the same package surface as `copy_rates_range`; the prohibition currently
+  rests on adapter design + tests, not a verified CI/network control (backlog item E).
+- **Live Trading path not reconciled with the target architecture.** The GREEN
+  *Trading* domain places real orders today; Blueprint doc 06 requires reconciling
+  it before any execution-layer packet (backlog item G).
+
 ## Example
 - **Tests fail: permission denied to create database**
   - Symptom: `permission denied to create database`
