@@ -86,8 +86,9 @@ def split_volume(total_lot, n, *, lot_step=_STEP, max_per_leg=_MAX_PER_LEG, max_
         requested = Decimal(str(total_lot))
     except (InvalidOperation, ValueError, TypeError):
         raise VolumeSplitError("invalid_total", f"total_lot {total_lot!r} not a number")
-    if requested <= 0:
-        raise VolumeSplitError("invalid_total", f"total_lot {requested} must be positive")
+    # NaN/Infinity must be caught BEFORE any comparison (NaN comparisons raise).
+    if requested.is_nan() or requested.is_infinite() or requested <= 0:
+        raise VolumeSplitError("invalid_total", f"total_lot {total_lot!r} is not a valid positive lot")
 
     effective = min(requested, n * max_per_leg, max_total)
     total_units = int((effective / lot_step).to_integral_value(rounding=ROUND_DOWN))
@@ -122,16 +123,39 @@ def _audit(event, *, plan=None, leg=None, approval=None, actor=None, **detail):
     )
 
 
+def _aware(dt):
+    """Return a timezone-aware datetime, or None on failure.
+
+    A naive datetime (common in real Telegram payloads) is interpreted in the
+    configured default timezone via ``make_aware`` so the staleness subtraction
+    never raises ``TypeError`` (aware − naive).
+    """
+    if dt is None:
+        return None
+    if timezone.is_naive(dt):
+        try:
+            return timezone.make_aware(dt, timezone.get_default_timezone())
+        except Exception:
+            return None
+    return dt
+
+
 def _signal_timestamp(approval, override):
+    """Resolve an AWARE signal timestamp; always falls back to the (aware)
+    ``approval.created_at`` so age calculation can never crash."""
     if override is not None:
-        return override
+        return _aware(override) or approval.created_at
     raw = approval.raw_payload or {}
     for key in ("signal_timestamp", "date", "timestamp"):
         val = raw.get(key)
         if isinstance(val, str):
-            parsed = parse_datetime(val)
-            if parsed is not None:
-                return parsed
+            try:
+                parsed = parse_datetime(val)
+            except ValueError:
+                parsed = None
+            aware = _aware(parsed)
+            if aware is not None:
+                return aware
     return approval.created_at
 
 
@@ -231,9 +255,10 @@ def plan_demo_execution(
     if age > SIGNAL_MAX_AGE_SECONDS:
         return _void(common, actor, "stale_signal", age_seconds=age)
 
-    # 9. Deterministic split + volume allocation.
+    # 9. Deterministic split + volume allocation. Pass the raw total to
+    # split_volume, which normalises/validates it (invalid → clean HELD).
     n = min(len(tps), MAX_PLAN_LEGS)
-    configured_total = Decimal(str(total_lot)) if total_lot is not None else cfg.total_lot_target
+    configured_total = total_lot if total_lot is not None else cfg.total_lot_target
     try:
         leg_lots, split_meta = split_volume(configured_total, n)
     except VolumeSplitError as exc:
@@ -266,26 +291,41 @@ def plan_demo_execution(
     return plan
 
 
+def _existing_or_raise(approval):
+    """Lost a race on the OneToOne(approval) / (source,chat,message) constraint —
+    return the already-created plan idempotently, else surface the integrity error."""
+    existing = SignalExecutionPlan.objects.filter(approval=approval).first()
+    if existing:
+        return existing
+    raise PlanRejected("duplicate_plan", f"approval #{approval.id} already planned")
+
+
 def _hold(common, actor, reason, *, detail="") -> SignalExecutionPlan:
-    with transaction.atomic():
-        plan = SignalExecutionPlan.objects.create(
-            **common, order_type="MARKET", total_lot=Decimal("0.00"),
-            status=SignalExecutionPlan.Status.HELD, hold_reason=reason,
-        )
-        _audit(PlanAuditEvent.Event.PLAN_HELD, plan=plan, approval=common["approval"],
-               actor=actor, reason=reason, detail=detail)
-    return plan
+    try:
+        with transaction.atomic():
+            plan = SignalExecutionPlan.objects.create(
+                **common, order_type="MARKET", total_lot=Decimal("0.00"),
+                status=SignalExecutionPlan.Status.HELD, hold_reason=reason,
+            )
+            _audit(PlanAuditEvent.Event.PLAN_HELD, plan=plan, approval=common["approval"],
+                   actor=actor, reason=reason, detail=detail)
+        return plan
+    except IntegrityError:
+        return _existing_or_raise(common["approval"])
 
 
 def _void(common, actor, reason, **extra) -> SignalExecutionPlan:
-    with transaction.atomic():
-        plan = SignalExecutionPlan.objects.create(
-            **common, order_type="MARKET", total_lot=Decimal("0.00"),
-            status=SignalExecutionPlan.Status.VOIDED, hold_reason=reason,
-        )
-        _audit(PlanAuditEvent.Event.PLAN_VOIDED, plan=plan, approval=common["approval"],
-               actor=actor, reason=reason, **extra)
-    return plan
+    try:
+        with transaction.atomic():
+            plan = SignalExecutionPlan.objects.create(
+                **common, order_type="MARKET", total_lot=Decimal("0.00"),
+                status=SignalExecutionPlan.Status.VOIDED, hold_reason=reason,
+            )
+            _audit(PlanAuditEvent.Event.PLAN_VOIDED, plan=plan, approval=common["approval"],
+                   actor=actor, reason=reason, **extra)
+        return plan
+    except IntegrityError:
+        return _existing_or_raise(common["approval"])
 
 
 # ---------------------------------------------------------------------------
