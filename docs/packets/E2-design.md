@@ -30,7 +30,7 @@ All four job-claiming consumers were checked; **none request `PLACE_ORDER_SHADOW
 | Consumer | Requests job_type | Evidence |
 |---|---|---|
 | Linux ingest worker | `PLACE_TEST_ORDER` → `PLACE_ORDER` → default(`SYNC_POSITIONS`) | `backend/mt5_trade_ingest_worker.py:347‑350` |
-| MT5 **signal bridge poller** (co-located with `order_send`) | `PLACE_ORDER` only (rejects ≠ PLACE_ORDER); places via its own `order_send` at `:593`/`:1069` | `scripts/mt5_signal_bridge.py:198,289,593,1069` |
+| MT5 **signal bridge poller** (co-located with `order_send`) | `PLACE_ORDER` only (rejects ≠ PLACE_ORDER); **places** via its own `order_send` at `:593` (also a position-**close** `order_send` at `:1069`) | `scripts/mt5_signal_bridge.py:198,289,593,1069` |
 | MT5 demo bridge | `PLACE_TEST_ORDER` only | `scripts/mt5_demo_bridge.py:185` |
 | Dev/dummy worker | none → `SYNC_POSITIONS` default (and is a no-op stub anyway) | `mt5_worker/mt5_worker.py:11‑12` |
 
