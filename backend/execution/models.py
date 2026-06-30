@@ -1,4 +1,5 @@
 import hashlib
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
@@ -293,3 +294,220 @@ class WorkerIdentity(models.Model):
     def hash_secret(raw_secret: str) -> str:
         """Return the SHA-256 hex digest of *raw_secret*."""
         return hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()
+
+
+# =============================================================================
+# EXEC-E1a — Signal → ProposedSignalOrder bridge (NEVER places an order)
+# =============================================================================
+#
+# A ``ProposedSignalOrder`` is a NON-EXECUTABLE candidate derived from an
+# APPROVED ``signal_intake.PendingSignalApproval``. It is deliberately NOT an
+# ``ExecutionJob``: the MT5 worker claims work via
+# ``ExecutionJob.objects.filter(status=PENDING)`` (see ``execution.views``
+# ``next_job``) and never queries this table, so a proposal can never reach a
+# broker. "No real order" is therefore a STRUCTURAL guarantee, not merely a
+# policy one. Promotion of a proposal to an executable job is a separate,
+# sponsor-gated packet (E2+).
+#
+# The bridge that creates these rows lives in ``execution.signal_proposals`` and
+# is the only writer. It imports ``signal_intake`` (one-way: execution may read
+# signal_intake; signal_intake/wims/intelligence never import execution).
+
+
+class ExecutionControl(models.Model):
+    """Singleton DB-backed execution control state — the functional kill switch.
+
+    Replaces the MVP 501 stub. The signal-proposal bridge fails closed when the
+    global kill switch is engaged or signal proposals are disabled. The legacy
+    ``GUVFX_EXECUTION_DISABLED`` environment flag remains honoured as
+    defence-in-depth (see ``execution.views._is_execution_globally_disabled``).
+    """
+
+    SINGLETON_ID = 1
+
+    kill_switch_engaged = models.BooleanField(
+        default=False,
+        help_text="When true, the signal-proposal bridge fails closed.",
+    )
+    signal_proposals_enabled = models.BooleanField(
+        default=True,
+        help_text="Signal-specific disable: blocks proposals without a full kill.",
+    )
+    reason = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Execution Control"
+        verbose_name_plural = "Execution Control"
+
+    def __str__(self) -> str:
+        if self.kill_switch_engaged:
+            state = "KILLED"
+        else:
+            state = "proposals-on" if self.signal_proposals_enabled else "proposals-off"
+        return f"ExecutionControl(#{self.pk}: {state})"
+
+    def save(self, *args, **kwargs):
+        # Enforce singleton: there is exactly one control row.
+        self.pk = self.SINGLETON_ID
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_solo(cls) -> "ExecutionControl":
+        obj, _ = cls.objects.get_or_create(pk=cls.SINGLETON_ID)
+        return obj
+
+
+class ProposedSignalOrder(models.Model):
+    """Non-executable order candidate derived from an APPROVED signal.
+
+    NOT an ``ExecutionJob`` — structurally invisible to the MT5 worker claim
+    path. Creating one places no order, queues no job, and contacts no broker.
+    """
+
+    class Status(models.TextChoices):
+        PROPOSED = "PROPOSED", "Proposed (no order placed)"
+        REJECTED = "REJECTED", "Rejected"
+        SUPERSEDED = "SUPERSEDED", "Superseded"
+
+    class Direction(models.TextChoices):
+        BUY = "BUY", "Buy"
+        SELL = "SELL", "Sell"
+
+    # One proposal per approval — DB-level duplicate protection.
+    approval = models.OneToOneField(
+        "signal_intake.PendingSignalApproval",
+        on_delete=models.PROTECT,
+        related_name="proposed_order",
+    )
+    account = models.ForeignKey(
+        TradingAccount,
+        on_delete=models.PROTECT,
+        related_name="proposed_signal_orders",
+    )
+
+    symbol = models.CharField(max_length=32)
+    direction = models.CharField(max_length=8, choices=Direction.choices)
+    entry = models.CharField(max_length=32, blank=True)
+    stop_loss = models.CharField(max_length=32, blank=True)
+    take_profit = models.CharField(max_length=32, blank=True)
+
+    lot_size = models.DecimalField(max_digits=6, decimal_places=2)
+    risk_per_trade_pct = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("1.00")
+    )
+
+    # Captured account context at proposal time (decision immutability).
+    is_demo = models.BooleanField()
+    account_environment = models.CharField(max_length=16, blank=True)
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PROPOSED
+    )
+    notes = models.TextField(blank=True)
+
+    proposed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="proposed_signal_orders",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Proposed Signal Order"
+        verbose_name_plural = "Proposed Signal Orders"
+
+    def __str__(self) -> str:
+        return (
+            f"Proposal #{self.pk} {self.direction} {self.symbol} "
+            f"(demo={self.is_demo}, {self.status}) — NO ORDER"
+        )
+
+    @classmethod
+    def count_today(cls, account_id: int, symbol: str) -> int:
+        """Non-rejected proposals created today for account+symbol.
+
+        Mirrors ``ExecutionJob.count_today_signal_trades`` semantics for the
+        proposal layer, enforcing ``SIGNAL_MAX_TRADES_PER_DAY``.
+        """
+        today_start = timezone.now().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return cls.objects.filter(
+            account_id=account_id,
+            symbol=symbol,
+            created_at__gte=today_start,
+        ).exclude(status=cls.Status.REJECTED).count()
+
+    @classmethod
+    def count_active(cls, account_id: int, symbol: str) -> int:
+        """Currently-PROPOSED proposals for account+symbol.
+
+        Mirrors ``ExecutionJob.count_pending_signal_jobs`` for the proposal
+        layer, enforcing ``SIGNAL_MAX_CONCURRENT_POSITIONS``.
+        """
+        return cls.objects.filter(
+            account_id=account_id,
+            symbol=symbol,
+            status=cls.Status.PROPOSED,
+        ).count()
+
+
+class ProposalAuditEvent(models.Model):
+    """Append-only audit for the signal → proposal bridge and kill switch.
+
+    Extends the signal audit chain begun in ``signal_intake.SignalAuditEvent``
+    (SIGNAL_RECEIVED → APPROVED) with the proposal lifecycle. Linked back to the
+    originating approval so the full chain is traceable.
+    """
+
+    class Event(models.TextChoices):
+        PROPOSAL_CREATED = "PROPOSAL_CREATED", "Proposal created (no order)"
+        PROPOSAL_REJECTED = "PROPOSAL_REJECTED", "Proposal rejected"
+        KILL_SWITCH_ENGAGED = "KILL_SWITCH_ENGAGED", "Kill switch engaged"
+        KILL_SWITCH_RELEASED = "KILL_SWITCH_RELEASED", "Kill switch released"
+        PROPOSALS_DISABLED = "PROPOSALS_DISABLED", "Signal proposals disabled"
+        PROPOSALS_ENABLED = "PROPOSALS_ENABLED", "Signal proposals enabled"
+
+    event = models.CharField(max_length=32, choices=Event.choices)
+    proposal = models.ForeignKey(
+        ProposedSignalOrder,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="audit_events",
+    )
+    approval = models.ForeignKey(
+        "signal_intake.PendingSignalApproval",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="proposal_audit_events",
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    detail = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Proposal Audit Event"
+        verbose_name_plural = "Proposal Audit Events"
+
+    def __str__(self) -> str:
+        return f"{self.event} @ {self.created_at:%Y-%m-%d %H:%M:%S}"

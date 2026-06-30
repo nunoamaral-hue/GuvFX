@@ -839,33 +839,43 @@ class ExecutionKillAllView(APIView):
     """
     POST /api/execution/kill-all/
 
-    Emergency kill switch - disable all execution globally.
+    Emergency kill switch — engage the global execution control (fail closed).
 
-    STATUS: 501 Not Implemented
-    POST-MVP: Will immediately disable execution on all accounts.
-    Requires admin/staff permissions.
+    EXEC-E1a: this is now FUNCTIONAL for the signal-proposal bridge. Engaging it
+    sets ``ExecutionControl.kill_switch_engaged`` so the bridge refuses to create
+    any ``ProposedSignalOrder``. It does not (and in E1a cannot) touch a broker —
+    there is no live execution path to stop. Releasing the switch is intentionally
+    NOT exposed over the API (admin-only, server-side) so the web surface can only
+    fail safe. Requires admin/staff permissions.
     """
 
     permission_classes = [permissions.IsAdminUser]
 
     def post(self, request):
-        # Log attempt (even though not implemented)
+        # Local import keeps execution.views import-time free of the bridge.
+        from execution.signal_proposals import engage_kill_switch
+
+        reason = ""
+        if isinstance(getattr(request, "data", None), dict):
+            reason = str(request.data.get("reason", ""))[:500]
+
+        engage_kill_switch(actor=request.user, reason=reason or "kill-all via API")
+
         log_execution_attempt(
             request,
             event_type="EXECUTION_KILL_ATTEMPT",
             account_id="global",
-            reason="Feature not implemented. Kill switch is disabled in MVP.",
+            reason="Kill switch engaged via API.",
         )
 
         return Response(
             {
-                "ok": False,
-                "error": "not_implemented",
-                "message": "Kill switch is not yet available. "
-                           "This feature is planned for a future release.",
+                "ok": True,
                 "scope": "global",
+                "kill_switch_engaged": True,
+                "message": "Execution kill switch engaged. Signal proposals are blocked.",
             },
-            status=status.HTTP_501_NOT_IMPLEMENTED,
+            status=status.HTTP_200_OK,
         )
 
 
