@@ -6,6 +6,17 @@
 
 ## Execution workstream log
 
+- **2026-06-30 — EXEC-E1b-R2: fail-closed robustness cleanup (no order).**
+  From the PR #48 review: `_signal_timestamp` now makes naive parsed timestamps
+  timezone-aware (falls back to the aware `created_at`), so a naive Telegram
+  date no longer raises `TypeError` during the staleness check; `_hold`/`_void`
+  gained the same `IntegrityError`→existing-plan idempotency fallback as the
+  PLANNED path; and invalid/NaN/Inf total-lot values now become a clean `HELD`
+  (`volume_split_invalid`) instead of crashing. 11 new tests; 95
+  execution+signal_intake + governance green on local Postgres. No schema change.
+  Backend only; no production access/deploy/migration. E1b's no-order guarantee
+  preserved (asserted).
+
 - **2026-06-30 — EXEC-E1b: non-executable multi-leg demo execution plan (no order).**
   Added `execution.SignalExecutionPlan` + `ProposedOrderLeg` (non-executable —
   NOT ExecutionJobs, invisible to the worker claim path), `SignalSourceConfig`
