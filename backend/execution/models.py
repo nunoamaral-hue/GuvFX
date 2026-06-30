@@ -1,4 +1,5 @@
 import hashlib
+import os
 from decimal import Decimal
 
 from django.conf import settings
@@ -201,6 +202,20 @@ class ExecutionJob(models.Model):
     def __str__(self) -> str:
         return f"{self.job_type} for account {self.account_id} (status={self.status})"
 
+    def save(self, *args, **kwargs):
+        # EXEC-HARDEN-JOBS: functional kill switch at the model layer. Block
+        # creation of an exposure-OPENING job while the kill switch (or the
+        # GUVFX_EXECUTION_DISABLED env flag) is engaged, so EVERY creation path
+        # (generic API, services, strategy automation, demo) fails closed — not
+        # just the ones that remember to check. Applies only on INSERT of an
+        # order-opening job_type; updates and non-order jobs (SYNC_POSITIONS,
+        # TEST_CONNECTION, CLOSE_TRADE) are unaffected.
+        if self._state.adding and self.job_type in KILL_SWITCH_BLOCKED_JOB_TYPES:
+            reason = order_creation_kill_reason()
+            if reason:
+                raise ExecutionKillSwitchEngaged(reason)
+        super().save(*args, **kwargs)
+
     @classmethod
     def count_today_demo_trades(cls, account_id: int) -> int:
         """
@@ -247,6 +262,45 @@ class ExecutionJob(models.Model):
             payload__symbol=symbol,
             status__in=[cls.Status.PENDING, cls.Status.RUNNING],
         ).count()
+
+
+# =============================================================================
+# EXEC-HARDEN-JOBS — functional kill switch for order-bearing job creation
+# =============================================================================
+# Single source of truth used by the model-layer guard above, the user-facing
+# order endpoints, and the E1a proposal bridge. Read-only (never creates the
+# ExecutionControl row). ExecutionControl is defined later in this module; the
+# name is resolved at call time.
+
+# Job types that OPEN / increase market exposure. CLOSE_TRADE is intentionally
+# excluded so positions can still be flattened while the switch is engaged.
+KILL_SWITCH_BLOCKED_JOB_TYPES = (
+    ExecutionJob.JobType.OPEN_TRADE,
+    ExecutionJob.JobType.PLACE_ORDER,
+    ExecutionJob.JobType.PLACE_TEST_ORDER,
+)
+
+
+class ExecutionKillSwitchEngaged(Exception):
+    """Raised when an order-opening ExecutionJob is created while the kill switch
+    (ExecutionControl) or the GUVFX_EXECUTION_DISABLED env flag is engaged."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"execution kill switch engaged: {reason}")
+
+
+def order_creation_kill_reason():
+    """Stable reason code if order-opening job creation is currently blocked,
+    else None. Honours GUVFX_EXECUTION_DISABLED (defence in depth) and the DB
+    ExecutionControl.kill_switch_engaged flag; performs no writes."""
+    if os.getenv("GUVFX_EXECUTION_DISABLED", "").lower() in ("true", "1", "yes"):
+        return "execution_globally_disabled"
+    if ExecutionControl.objects.filter(
+        pk=ExecutionControl.SINGLETON_ID, kill_switch_engaged=True
+    ).exists():
+        return "kill_switch_engaged"
+    return None
 
 
 # =============================================================================
@@ -320,7 +374,7 @@ class ExecutionControl(models.Model):
     Replaces the MVP 501 stub. The signal-proposal bridge fails closed when the
     global kill switch is engaged or signal proposals are disabled. The legacy
     ``GUVFX_EXECUTION_DISABLED`` environment flag remains honoured as
-    defence-in-depth (see ``execution.views._is_execution_globally_disabled``).
+    defence-in-depth (see ``order_creation_kill_reason`` in this module).
     """
 
     SINGLETON_ID = 1

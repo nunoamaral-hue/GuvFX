@@ -6,6 +6,22 @@
 
 ## Execution workstream log
 
+- **2026-06-30 — EXEC-HARDEN-JOBS: lock down generic ExecutionJob creation.**
+  Disabled the generic DRF write surface on `ExecutionJobViewSet`
+  (`POST/PUT/PATCH/DELETE` → 405) so an ordinary authenticated user can no longer
+  create or mutate an order-bearing job directly (pre-existing gap surfaced in the
+  E1a review). `ExecutionJob`s now come only from sanctioned gated paths
+  (strategy automation, `OpenTradeJobView`, `CreateDemoTradeJobView`, admin_ops
+  retry). Order-defining serializer fields made read-only. Functional kill switch
+  enforced at the **model layer** (`ExecutionJob.save()` blocks order-opening job
+  types when `ExecutionControl.kill_switch_engaged` / `GUVFX_EXECUTION_DISABLED`),
+  covering every creation path; `OpenTradeJobView`/demo endpoints fail closed with
+  503; `CLOSE_TRADE` exempt (flattening). Single source of truth
+  `order_creation_kill_reason`. 13 new tests + E1a/exec/strategies/governance all
+  green on local Postgres. Removed 184 untracked iCloud ` 2.` duplicate strays that
+  were breaking the migration graph (none git-tracked; `.gitignore` already lists
+  the pattern). Backend only; no production access/deploy/migration.
+
 - **2026-06-29 — EXEC-E1a: approval → ProposedSignalOrder bridge (no order).**
   Added `execution.ProposedSignalOrder` (non-executable candidate — NOT an
   `ExecutionJob`, structurally invisible to the worker claim path),
