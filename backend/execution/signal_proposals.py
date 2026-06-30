@@ -21,7 +21,6 @@ import ``execution`` — enforced by the ADR-009 guard tests.
 """
 from __future__ import annotations
 
-import os
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
@@ -36,6 +35,7 @@ from execution.models import (
     ExecutionControl,
     ProposalAuditEvent,
     ProposedSignalOrder,
+    order_creation_kill_reason,
 )
 from signal_intake.models import PendingSignalApproval
 
@@ -74,19 +74,16 @@ def _audit(event, *, proposal=None, approval=None, actor=None, **detail) -> None
 # ---------------------------------------------------------------------------
 
 
-def _env_kill_engaged() -> bool:
-    """Mirror ``execution.views._is_execution_globally_disabled`` (defence-in-depth)."""
-    return os.getenv("GUVFX_EXECUTION_DISABLED", "").lower() in ("true", "1", "yes")
-
-
 def control_block_reason() -> Optional[str]:
-    """Return a stable reason code if proposals are currently blocked, else None."""
-    if _env_kill_engaged():
-        return "execution_globally_disabled"
-    control = ExecutionControl.get_solo()
-    if control.kill_switch_engaged:
-        return "kill_switch_engaged"
-    if not control.signal_proposals_enabled:
+    """Return a stable reason code if proposals are currently blocked, else None.
+
+    Reuses the shared kill-switch source (env flag + DB ``kill_switch_engaged``)
+    and adds the proposal-specific ``signal_proposals_enabled`` disable.
+    """
+    reason = order_creation_kill_reason()
+    if reason:
+        return reason
+    if not ExecutionControl.get_solo().signal_proposals_enabled:
         return "signal_proposals_disabled"
     return None
 

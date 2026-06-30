@@ -5,7 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, MethodNotAllowed
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -14,6 +14,7 @@ from .models import (
     DEMO_ALLOWED_SYMBOLS,
     DEMO_FIXED_LOT_SIZE,
     DEMO_MAX_TRADES_PER_DAY,
+    order_creation_kill_reason,
 )
 from .serializers import (
     ExecutionJobSerializer,
@@ -110,8 +111,33 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
 
         return qs
 
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+    # EXEC-HARDEN-JOBS: the generic CRUD write surface (create/update/delete) is
+    # disabled. ExecutionJobs are created ONLY through sanctioned, gated paths —
+    #   * strategy automation (strategies.signal_engine / schedulers, internal),
+    #   * execution.services.create_open_trade_job (OpenTradeJobView: entitlement
+    #     + ownership + kill-switch gated),
+    #   * CreateDemoTradeJobView (demo-only, allowlisted, kill-switch gated),
+    #   * admin_ops.AdminExecutionJobViewSet (staff retry).
+    # Worker/operator mutations use the explicit @actions (next / complete /
+    # set-status / assign-account). This closes the previously-ungated ability of
+    # an ordinary authenticated user to POST/PATCH an order-bearing job directly.
+    _DISABLED_MSG = (
+        "Direct ExecutionJob create/update/delete is disabled. Jobs are created "
+        "only through sanctioned, gated services (demo endpoint / strategy "
+        "automation); use the documented action endpoints for mutations."
+    )
+
+    def create(self, request, *args, **kwargs):
+        raise MethodNotAllowed("POST", detail=self._DISABLED_MSG)
+
+    def update(self, request, *args, **kwargs):
+        raise MethodNotAllowed(request.method, detail=self._DISABLED_MSG)
+
+    def partial_update(self, request, *args, **kwargs):
+        raise MethodNotAllowed(request.method, detail=self._DISABLED_MSG)
+
+    def destroy(self, request, *args, **kwargs):
+        raise MethodNotAllowed(request.method, detail=self._DISABLED_MSG)
 
     @action(detail=False, methods=["get"], url_path="next")
     def next_job(self, request):
@@ -385,6 +411,21 @@ class CreateOpenTradeJobView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
+        # EXEC-HARDEN-JOBS: the global kill switch is a system-wide gate and is
+        # checked FIRST — before per-user entitlement — so an engaged switch fails
+        # closed for everyone. The model-layer guard is the backstop for all paths.
+        kill_reason = order_creation_kill_reason()
+        if kill_reason:
+            return Response(
+                {
+                    "ok": False,
+                    "error": "execution_disabled",
+                    "message": "Execution is currently disabled (kill switch engaged).",
+                    "reason": kill_reason,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         serializer = OpenTradeJobRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -479,12 +520,9 @@ class WorkerAccountCredentialsView(APIView):
 # =============================================================================
 
 
-def _is_execution_globally_disabled() -> bool:
-    """
-    Check if execution is globally disabled via environment variable.
-    This is the kill switch for all execution.
-    """
-    return os.getenv("GUVFX_EXECUTION_DISABLED", "").lower() in ("true", "1", "yes")
+# Kill-switch state is resolved via execution.models.order_creation_kill_reason
+# (env flag + DB ExecutionControl). The former local env-only helper was removed
+# in EXEC-HARDEN-JOBS in favour of that single source of truth.
 
 
 class CreateDemoTradeJobView(APIView):
@@ -518,14 +556,16 @@ class CreateDemoTradeJobView(APIView):
         require_entitlement(request.user, "can_deploy_automation")
 
         # =====================================================================
-        # Safety Check 1: Global kill switch
+        # Safety Check 1: Global kill switch (env flag OR DB ExecutionControl)
         # =====================================================================
-        if _is_execution_globally_disabled():
+        kill_reason = order_creation_kill_reason()
+        if kill_reason:
             return Response(
                 {
                     "ok": False,
                     "error": "execution_disabled",
                     "message": "Execution is currently disabled globally.",
+                    "reason": kill_reason,
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )

@@ -37,11 +37,25 @@ class ExecutionJobSerializer(serializers.ModelSerializer):
     class Meta:
         model = ExecutionJob
         fields = "__all__"
+        # EXEC-HARDEN-JOBS: order-defining fields (job_type, account, strategy,
+        # assignment, terminal_node, payload) are read-only so they can never be
+        # set or changed through the serializer by client input. ExecutionJobs are
+        # created only through sanctioned, gated server-side paths; this serializer
+        # shapes read/response output, not client-driven writes.
         read_only_fields = (
+            "job_type",
+            "account",
+            "strategy",
+            "assignment",
+            "terminal_node",
+            "payload",
             "status",
             "worker_id",
             "result",
             "error_message",
+            "lease_expires_at",
+            "recovered",
+            "recovery_reason",
             "created_at",
             "started_at",
             "finished_at",

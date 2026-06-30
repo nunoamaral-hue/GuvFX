@@ -117,6 +117,25 @@ one-proposal-per-approval. All outcomes write an append-only
 `execution.ProposalAuditEvent` linked to the approval. Full detail:
 `backend/execution/SIGNAL_PROPOSALS.md`.
 
+### 1.4b EXEC-HARDEN-JOBS — locked-down ExecutionJob creation
+
+`ExecutionJob`s are created **only** through sanctioned, gated server-side
+paths: strategy automation (`strategies.signal_engine` / schedulers), the
+entitlement+ownership-gated `OpenTradeJobView` → `create_open_trade_job`, the
+demo-only `CreateDemoTradeJobView`, and the staff `admin_ops` retry. The generic
+DRF write surface on `ExecutionJobViewSet` (`POST/PUT/PATCH/DELETE`) is
+**disabled** (405) — closing a pre-existing gap where an ordinary authenticated
+user could post or mutate an order-bearing job directly. Order-defining fields
+(`job_type`, `account`, `strategy`, `assignment`, `terminal_node`, `payload`)
+are read-only on the serializer. The functional kill switch is now enforced at
+the **model layer**: `ExecutionJob.save()` blocks creation of any
+order-opening job type (`OPEN_TRADE` / `PLACE_ORDER` / `PLACE_TEST_ORDER`) while
+`ExecutionControl.kill_switch_engaged` or `GUVFX_EXECUTION_DISABLED` is set —
+covering every creation path, not just the proposal bridge. `CLOSE_TRADE` is
+intentionally exempt so positions can still be flattened. Worker claim/complete
+actions are unaffected. Single source of truth:
+`execution.models.order_creation_kill_reason`.
+
 ### 1.5 Security Headers (Frontend)
 
 | Header | Value | Purpose |
