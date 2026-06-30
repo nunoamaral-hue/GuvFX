@@ -666,6 +666,7 @@ class StrategyViewSet(viewsets.ModelViewSet):
             }
         """
         from .signal_engine import run_signal_evaluation
+        from execution.models import ExecutionKillSwitchEngaged
 
         strategy = self.get_object()
         user = request.user
@@ -726,15 +727,28 @@ class StrategyViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # Run signal evaluation
-        result = run_signal_evaluation(
-            request=request,
-            strategy=strategy,
-            account=account,
-            symbol=symbol,
-            user=user,
-            manual_params=manual_params,
-        )
+        # Run signal evaluation. If the kill switch is engaged, the order-job
+        # creation fails closed at the model layer (no order placed); translate
+        # that to a clean 503 instead of an unhandled 500.
+        try:
+            result = run_signal_evaluation(
+                request=request,
+                strategy=strategy,
+                account=account,
+                symbol=symbol,
+                user=user,
+                manual_params=manual_params,
+            )
+        except ExecutionKillSwitchEngaged as exc:
+            return Response(
+                {
+                    "ok": False,
+                    "reason": "execution_disabled",
+                    "detail": "Execution is currently disabled (kill switch engaged); no order was placed.",
+                    "kill_reason": exc.reason,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         return Response(result.to_dict())
 
