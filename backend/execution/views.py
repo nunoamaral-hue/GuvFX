@@ -205,10 +205,18 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         # Node-aware filtering
         # ------------------------------------------------------------------
         worker_identity = getattr(request, "_worker_identity", None)
-        authorized_nodes = []
-        if worker_identity:
-            perms = worker_identity.worker_permissions or {}
-            authorized_nodes = perms.get("authorized_nodes", [])
+        perms = (worker_identity.worker_permissions or {}) if worker_identity else {}
+        authorized_nodes = perms.get("authorized_nodes", [])
+
+        # EXEC-E2a endpoint guard: order-bearing SHADOW jobs are served ONLY to a
+        # caller carrying an explicit ``shadow_worker`` worker-permission. Every
+        # other caller — including a validated worker that explicitly requests
+        # ?job_type=PLACE_ORDER_SHADOW, or a staff user — is served nothing. This
+        # makes shadow-job un-claimability an ENFORCED endpoint property, not just
+        # the emergent "no deployed consumer asks for it" fact. No deployed worker
+        # carries this permission today, so no shadow job is ever served.
+        if not bool(perms.get("shadow_worker")):
+            qs = qs.exclude(job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW)
 
         # Determine routing mode for audit trail
         routing_mode = "node_aware" if authorized_nodes else "legacy_null_node"

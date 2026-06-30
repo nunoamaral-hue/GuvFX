@@ -11,6 +11,7 @@ from .models import (
     SignalExecutionPlan,
     ProposedOrderLeg,
     PlanAuditEvent,
+    PromotionAuditEvent,
 )
 
 
@@ -190,7 +191,7 @@ class ProposedOrderLegInline(admin.TabularInline):
     can_delete = False
     readonly_fields = (
         "leg_index", "take_profit", "stop_loss", "lot_size", "order_type",
-        "status", "hold_reason", "created_at",
+        "status", "hold_reason", "execution_job", "created_at",
     )
 
     def has_add_permission(self, request, obj=None):
@@ -224,16 +225,33 @@ class SignalExecutionPlanAdmin(admin.ModelAdmin):
 class ProposedOrderLegAdmin(admin.ModelAdmin):
     list_display = (
         "id", "plan", "leg_index", "take_profit", "lot_size", "order_type",
-        "status", "created_at",
+        "status", "execution_job", "created_at",
     )
     list_filter = ("status", "order_type")
-    raw_id_fields = ("plan",)
+    raw_id_fields = ("plan", "execution_job")
     readonly_fields = (
         "plan", "leg_index", "take_profit", "stop_loss", "lot_size",
-        "order_type", "status", "hold_reason", "created_at",
+        "order_type", "status", "hold_reason", "execution_job", "created_at",
     )
 
     def has_add_permission(self, request):
+        return False
+
+
+@admin.register(PromotionAuditEvent)
+class PromotionAuditEventAdmin(admin.ModelAdmin):
+    list_display = ("id", "event", "plan", "leg", "job", "approval", "actor", "created_at")
+    list_filter = ("event",)
+    raw_id_fields = ("plan", "leg", "job", "approval", "actor")
+    readonly_fields = ("event", "plan", "leg", "job", "approval", "actor", "detail", "created_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
         return False
 
 
