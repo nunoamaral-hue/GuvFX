@@ -85,9 +85,35 @@ class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
 
         return False
 
+
+class IsWorkerToken(permissions.BasePermission):
+    """Allow only validated workers (or staff) — for the worker-protocol actions
+    (claim / complete) so ordinary authenticated users cannot claim or complete
+    jobs. Relies on ``IsAuthenticatedOrWorkerToken`` running first to populate
+    ``request._worker_identity`` from valid X-Worker-Id/Secret (or legacy token).
+    """
+
+    message = "This action requires worker credentials."
+
+    def has_permission(self, request, view):
+        if getattr(request, "_worker_identity", None) is not None:
+            return True
+        user = getattr(request, "user", None)
+        return bool(user and user.is_authenticated and user.is_staff)
+
+
 class ExecutionJobViewSet(viewsets.ModelViewSet):
     serializer_class = ExecutionJobSerializer
     permission_classes = [IsAuthenticatedOrWorkerToken]
+
+    # EXEC-HARDEN-JOBS-R2: the worker-protocol actions (claim/complete) are
+    # gated to validated worker credentials (or staff). IsAuthenticatedOrWorkerToken
+    # runs first to authenticate the worker and set request._worker_identity;
+    # IsWorkerToken then rejects ordinary authenticated users.
+    def get_permissions(self):
+        if getattr(self, "action", None) in ("next_job", "complete"):
+            return [IsAuthenticatedOrWorkerToken(), IsWorkerToken()]
+        return super().get_permissions()
 
     def get_queryset(self):
         qs = ExecutionJob.objects.select_related("account", "strategy", "assignment").all()
@@ -118,9 +144,11 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
     #     + ownership + kill-switch gated),
     #   * CreateDemoTradeJobView (demo-only, allowlisted, kill-switch gated),
     #   * admin_ops.AdminExecutionJobViewSet (staff retry).
-    # Worker/operator mutations use the explicit @actions (next / complete /
-    # set-status / assign-account). This closes the previously-ungated ability of
-    # an ordinary authenticated user to POST/PATCH an order-bearing job directly.
+    # The only mutating @actions on THIS viewset are the worker-protocol
+    # endpoints next (claim) and complete (report result), now gated to worker
+    # credentials (see get_permissions). (set-status / assign-account live on the
+    # separate, IsAdminUser-gated TerminalNodeViewSet.) This closes the
+    # previously-ungated ability of an ordinary user to POST/PATCH a job directly.
     _DISABLED_MSG = (
         "Direct ExecutionJob create/update/delete is disabled. Jobs are created "
         "only through sanctioned, gated services (demo endpoint / strategy "

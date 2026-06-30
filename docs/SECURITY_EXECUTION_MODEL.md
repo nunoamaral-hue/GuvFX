@@ -132,9 +132,17 @@ the **model layer**: `ExecutionJob.save()` blocks creation of any
 order-opening job type (`OPEN_TRADE` / `PLACE_ORDER` / `PLACE_TEST_ORDER`) while
 `ExecutionControl.kill_switch_engaged` or `GUVFX_EXECUTION_DISABLED` is set —
 covering every creation path, not just the proposal bridge. `CLOSE_TRADE` is
-intentionally exempt so positions can still be flattened. Worker claim/complete
-actions are unaffected. Single source of truth:
+intentionally exempt so positions can still be flattened. Single source of truth:
 `execution.models.order_creation_kill_reason`.
+
+**EXEC-HARDEN-JOBS-R2 (follow-up).** The worker-protocol actions `next` (claim)
+and `complete` on `ExecutionJobViewSet` are gated to validated worker credentials
+(or staff) via `IsWorkerToken` — ordinary authenticated users can no longer claim
+or complete jobs (closes a pre-existing claim-hijack). The kill-switch exception
+(`ExecutionKillSwitchEngaged`) is now caught and translated to a clean 503 on the
+`run_signal` and admin-retry endpoints, and to a labelled clean skip in the H1/M5
+schedulers — instead of an unhandled 500. In every case no order is placed (the
+model guard fails closed first).
 
 ### 1.5 Security Headers (Frontend)
 

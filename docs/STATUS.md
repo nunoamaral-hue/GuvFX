@@ -6,6 +6,18 @@
 
 ## Execution workstream log
 
+- **2026-06-30 — EXEC-HARDEN-JOBS-R2: worker-action gating + clean kill-switch handling.**
+  Gated the worker-protocol actions `next`(claim)/`complete` on
+  `ExecutionJobViewSet` to validated worker credentials (or staff) via a new
+  `IsWorkerToken` permission — ordinary authenticated users can no longer claim or
+  complete jobs (closes the pre-existing claim-hijack). Translated
+  `ExecutionKillSwitchEngaged` to a clean 503 on the `run_signal` and admin-retry
+  endpoints and to a labelled clean skip in the H1/M5 schedulers, replacing
+  unhandled 500s (no order is ever placed — the model guard fails closed first).
+  Fixed the misleading `views.py` comment. 9 new tests + execution/signal_intake/
+  admin_ops/strategies (84) + governance all green on local Postgres. No schema
+  change. Backend only; no production access/deploy/migration.
+
 - **2026-06-30 — EXEC-HARDEN-JOBS: lock down generic ExecutionJob creation.**
   Disabled the generic DRF write surface on `ExecutionJobViewSet`
   (`POST/PUT/PATCH/DELETE` → 405) so an ordinary authenticated user can no longer

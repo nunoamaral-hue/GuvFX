@@ -22,7 +22,7 @@ from rest_framework.views import APIView
 from billing.entitlements import resolve_entitlements
 from billing.models import PaymentEvent, UserSubscriptionState
 from core.audit import log_admin_override, log_event
-from execution.models import ExecutionJob, WorkerIdentity
+from execution.models import ExecutionJob, ExecutionKillSwitchEngaged, WorkerIdentity
 from reconciliation.reconciliation_models import ReconciliationEvent
 
 from .models import EntitlementOverride
@@ -622,17 +622,28 @@ class AdminExecutionJobViewSet(viewsets.ReadOnlyModelViewSet):
         ser = ExecutionJobRetrySerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
-        # Create new job preserving the original's parameters
-        new_job = ExecutionJob.objects.create(
-            job_type=original.job_type,
-            account=original.account,
-            strategy=original.strategy,
-            assignment=original.assignment,
-            terminal_node=original.terminal_node,
-            payload=original.payload,
-            status=ExecutionJob.Status.PENDING,
-            created_by=request.user,
-        )
+        # Create new job preserving the original's parameters. If the kill switch
+        # is engaged, retrying an order-opening job fails closed at the model layer
+        # (no order placed); translate to a clean 503 instead of an unhandled 500.
+        try:
+            new_job = ExecutionJob.objects.create(
+                job_type=original.job_type,
+                account=original.account,
+                strategy=original.strategy,
+                assignment=original.assignment,
+                terminal_node=original.terminal_node,
+                payload=original.payload,
+                status=ExecutionJob.Status.PENDING,
+                created_by=request.user,
+            )
+        except ExecutionKillSwitchEngaged as exc:
+            return Response(
+                {
+                    "detail": "Execution is currently disabled (kill switch engaged); no order was placed.",
+                    "kill_reason": exc.reason,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         log_admin_override(
             request,

@@ -41,6 +41,7 @@ from strategies.management.commands.run_h4_scheduler import job_exists_for_bar_c
 from strategies.models import Strategy, StrategyAssignment, StrategyRuntimeEvent
 from strategies.risk_manager import record_signal_event, ORDER_PLACED
 from strategies.signal_engine import create_place_order_job
+from execution.models import ExecutionKillSwitchEngaged
 from trading.models import TradingAccount
 
 logger = logging.getLogger(__name__)
@@ -505,6 +506,15 @@ class Command(BaseCommand):
                             f"reason={result.reason}"
                         )
 
+            except ExecutionKillSwitchEngaged:
+                # Kill switch engaged — order creation failed closed (no order
+                # placed). Clean skip rather than a noisy error trace.
+                self.stdout.write(
+                    f"  [SKIP-KILLSWITCH] execution disabled — no order placed: "
+                    f"account={account.id} strategy={strategy.id} symbol={symbol}"
+                )
+                logger.warning("M5 LIVE: kill switch engaged — order creation blocked, skipping")
+                continue
             except Exception as e:
                 self.stderr.write(
                     f"  [ERROR] Exception: account={account.id} "
