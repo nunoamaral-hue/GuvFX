@@ -113,6 +113,20 @@ SIGNAL_MAX_LOT_SIZE = 0.02  # Hard cap on lot size for strategy signals
 SIGNAL_MAX_TRADES_PER_DAY = 10  # Maximum signal trades per account+strategy+symbol per day (SUCCESS only)
 SIGNAL_MAX_CONCURRENT_POSITIONS = 1  # Max concurrent positions per account+strategy+symbol
 
+# =============================================================================
+# EXEC-E1b — Multi-leg demo execution PLAN safety constants (NO order is placed)
+# =============================================================================
+# These bound the NON-EXECUTABLE planning layer (SignalExecutionPlan +
+# ProposedOrderLeg). They never reach a broker — a plan is not an ExecutionJob.
+
+MAX_PLAN_LEGS = 3  # A signal is split into at most this many legs (one per TP).
+LOT_STEP = "0.01"  # Broker minimum lot increment used by the volume split.
+MAX_TOTAL_LOT_PER_SIGNAL = "0.06"  # Hard cap on the summed lot across a plan's legs.
+DEMO_SOURCE_TOTAL_LOT_DEFAULT = "0.03"  # Default per-source total lot target.
+SIGNAL_MAX_AGE_SECONDS = 120  # A signal older than this is voided (stale).
+PLAN_MAX_GROUPS_PER_DAY = 10  # Max signal-GROUPS (plans) per account+symbol per day.
+PLAN_MAX_CONCURRENT_GROUPS = 1  # Max concurrent PLANNED groups per account+symbol.
+
 
 class ExecutionJob(models.Model):
     class JobType(models.TextChoices):
@@ -562,6 +576,217 @@ class ProposalAuditEvent(models.Model):
         ordering = ["-created_at"]
         verbose_name = "Proposal Audit Event"
         verbose_name_plural = "Proposal Audit Events"
+
+    def __str__(self) -> str:
+        return f"{self.event} @ {self.created_at:%Y-%m-%d %H:%M:%S}"
+
+
+# =============================================================================
+# EXEC-E1b — Multi-leg demo execution PLAN (NEVER places an order)
+# =============================================================================
+#
+# A SignalExecutionPlan + its ProposedOrderLeg children are a NON-EXECUTABLE
+# representation of how an APPROVED Telegram signal would be split into up to
+# three demo market orders (common SL, one TP per leg). They are NOT
+# ExecutionJobs: the MT5 worker claims work via
+# ``ExecutionJob.objects.filter(status=PENDING)`` and never queries these
+# tables, so a plan/leg can never reach a broker. "No order" is structural.
+# Promotion of a plan to executable (worker-suppressed) jobs is a separate,
+# sponsor-gated packet (E2+).
+
+
+class SignalSourceConfig(models.Model):
+    """Per-source demo auto-execution configuration. Default OFF.
+
+    A signal source (e.g. ``WAYOND_TELEGRAM``) is only eligible for demo
+    auto-planning when a config row exists AND ``auto_demo_execution_enabled``
+    is true. This is an independent fail-closed gate on top of the kill switch.
+    """
+
+    source = models.CharField(max_length=32, unique=True)
+    auto_demo_execution_enabled = models.BooleanField(default=False)
+    total_lot_target = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal(DEMO_SOURCE_TOTAL_LOT_DEFAULT)
+    )
+    notes = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Signal Source Config"
+        verbose_name_plural = "Signal Source Configs"
+
+    def __str__(self) -> str:
+        state = "ENABLED" if self.auto_demo_execution_enabled else "disabled"
+        return f"SignalSourceConfig({self.source}: {state})"
+
+
+class SignalExecutionPlan(models.Model):
+    """Non-executable plan (signal-GROUP) derived from an APPROVED signal.
+
+    NOT an ``ExecutionJob`` — structurally invisible to the worker claim path.
+    Carries up to ``MAX_PLAN_LEGS`` ``ProposedOrderLeg`` children sharing one SL.
+    """
+
+    class Status(models.TextChoices):
+        PLANNED = "PLANNED", "Planned (no order placed)"
+        HELD = "HELD", "Held (data/safety)"
+        VOIDED = "VOIDED", "Voided"
+        SUPERSEDED = "SUPERSEDED", "Superseded"
+
+    class Direction(models.TextChoices):
+        BUY = "BUY", "Buy"
+        SELL = "SELL", "Sell"
+
+    # One plan per approval — hard idempotency.
+    approval = models.OneToOneField(
+        "signal_intake.PendingSignalApproval",
+        on_delete=models.PROTECT, related_name="execution_plan",
+    )
+    account = models.ForeignKey(
+        TradingAccount, on_delete=models.PROTECT, related_name="signal_execution_plans",
+    )
+
+    # Dedup identity (source/chat/message) — REQUIRED idempotency at plan level.
+    source = models.CharField(max_length=32)
+    chat_id = models.CharField(max_length=64, blank=True)
+    message_id = models.CharField(max_length=128)
+
+    symbol = models.CharField(max_length=32)
+    direction = models.CharField(max_length=8, choices=Direction.choices)
+    entry = models.CharField(max_length=32, blank=True)  # informational; market order
+    stop_loss = models.CharField(max_length=32, blank=True)  # common SL for all legs
+    order_type = models.CharField(max_length=8, default="MARKET")  # market-only
+
+    total_lot = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    is_demo = models.BooleanField()
+    account_environment = models.CharField(max_length=16, blank=True)
+    signal_timestamp = models.DateTimeField(null=True, blank=True)
+
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PLANNED)
+    hold_reason = models.CharField(max_length=64, blank=True)
+    notes = models.TextField(blank=True)
+
+    proposed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="signal_execution_plans",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source", "chat_id", "message_id"],
+                name="uniq_plan_source_chat_message",
+            ),
+        ]
+        verbose_name = "Signal Execution Plan"
+        verbose_name_plural = "Signal Execution Plans"
+
+    def __str__(self) -> str:
+        return (
+            f"Plan #{self.pk} {self.direction} {self.symbol} "
+            f"(legs={self.legs.count()}, {self.status}) — NO ORDER"
+        )
+
+    @classmethod
+    def count_today(cls, account_id: int, symbol: str) -> int:
+        """PLANNED groups created today for account+symbol (per-group daily cap)."""
+        today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        return cls.objects.filter(
+            account_id=account_id, symbol=symbol, status=cls.Status.PLANNED,
+            created_at__gte=today_start,
+        ).count()
+
+    @classmethod
+    def count_active(cls, account_id: int, symbol: str) -> int:
+        """Currently-PLANNED groups for account+symbol (per-group concurrency)."""
+        return cls.objects.filter(
+            account_id=account_id, symbol=symbol, status=cls.Status.PLANNED,
+        ).count()
+
+
+class ProposedOrderLeg(models.Model):
+    """One non-executable leg of a SignalExecutionPlan (one TP, shared SL).
+
+    NOT an ``ExecutionJob`` and has no claimable status — placing none.
+    """
+
+    class Status(models.TextChoices):
+        PLANNED = "PLANNED", "Planned (no order placed)"
+        HELD = "HELD", "Held"
+        VOIDED = "VOIDED", "Voided"
+
+    plan = models.ForeignKey(
+        SignalExecutionPlan, on_delete=models.CASCADE, related_name="legs",
+    )
+    leg_index = models.PositiveSmallIntegerField()  # 1..MAX_PLAN_LEGS
+    take_profit = models.CharField(max_length=32)  # distinct TP for this leg
+    stop_loss = models.CharField(max_length=32, blank=True)  # shared SL (denormalised)
+    lot_size = models.DecimalField(max_digits=6, decimal_places=2)
+    order_type = models.CharField(max_length=8, default="MARKET")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PLANNED)
+    hold_reason = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["plan", "leg_index"]
+        constraints = [
+            models.UniqueConstraint(fields=["plan", "leg_index"], name="uniq_plan_leg"),
+        ]
+        verbose_name = "Proposed Order Leg"
+        verbose_name_plural = "Proposed Order Legs"
+
+    def __str__(self) -> str:
+        return (
+            f"Leg {self.leg_index} of plan #{self.plan_id} "
+            f"TP={self.take_profit} lot={self.lot_size} — NO ORDER"
+        )
+
+
+class PlanAuditEvent(models.Model):
+    """Append-only audit for the signal → plan → leg lifecycle.
+
+    Extends the signal audit chain (signal_intake.SignalAuditEvent) with the
+    plan lifecycle, linked back to the originating approval.
+    """
+
+    class Event(models.TextChoices):
+        PLAN_CREATED = "PLAN_CREATED", "Plan created (no order)"
+        PLAN_HELD = "PLAN_HELD", "Plan held"
+        PLAN_VOIDED = "PLAN_VOIDED", "Plan voided"
+        LEG_CREATED = "LEG_CREATED", "Leg created (no order)"
+        LEG_HELD = "LEG_HELD", "Leg held"
+        LEG_VOIDED = "LEG_VOIDED", "Leg voided"
+
+    event = models.CharField(max_length=32, choices=Event.choices)
+    plan = models.ForeignKey(
+        SignalExecutionPlan, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="audit_events",
+    )
+    leg = models.ForeignKey(
+        ProposedOrderLeg, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="audit_events",
+    )
+    approval = models.ForeignKey(
+        "signal_intake.PendingSignalApproval", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="plan_audit_events",
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="+",
+    )
+    detail = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Plan Audit Event"
+        verbose_name_plural = "Plan Audit Events"
 
     def __str__(self) -> str:
         return f"{self.event} @ {self.created_at:%Y-%m-%d %H:%M:%S}"

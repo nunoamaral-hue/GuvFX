@@ -6,6 +6,24 @@
 
 ## Execution workstream log
 
+- **2026-06-30 — EXEC-E1b: non-executable multi-leg demo execution plan (no order).**
+  Added `execution.SignalExecutionPlan` + `ProposedOrderLeg` (non-executable —
+  NOT ExecutionJobs, invisible to the worker claim path), `SignalSourceConfig`
+  (per-source `auto_demo_execution_enabled`, default OFF), and `PlanAuditEvent`
+  (append-only). Planner `execution.signal_planning.plan_demo_execution` reads an
+  APPROVED `PendingSignalApproval`, carries `take_profits` through, splits into up
+  to 3 legs (shared SL, one TP/leg) with a deterministic capped volume split,
+  holds on missing SL/TP, voids on stale signal, and rejects on
+  kill-switch/source-disabled/non-demo/symbol/per-group-cap — creating **no
+  ExecutionJob, no order, no listener** (per-group caps, source+message
+  idempotency, full signal→plan→leg audit). 27 new tests (incl. static no-order
+  AST guard, `ExecutionJob.objects.count()` unchanged, worker-invisible); 84
+  execution+signal_intake + governance all green on local Postgres. Operator
+  entry: `manage.py plan_demo_execution`. Detail:
+  `backend/execution/DEMO_EXECUTION_PLAN.md`. Backend only; no production
+  access/deploy/migration. The EXECUTING rungs (E2 suppressed → E3 real demo)
+  remain behind Nuno's recorded sign-off per the D17 governance gate.
+
 - **2026-06-30 — EXEC-HARDEN-JOBS-R2: worker-action gating + clean kill-switch handling.**
   Gated the worker-protocol actions `next`(claim)/`complete` on
   `ExecutionJobViewSet` to validated worker credentials (or staff) via a new

@@ -7,6 +7,10 @@ from .models import (
     ExecutionControl,
     ProposedSignalOrder,
     ProposalAuditEvent,
+    SignalSourceConfig,
+    SignalExecutionPlan,
+    ProposedOrderLeg,
+    PlanAuditEvent,
 )
 
 
@@ -149,6 +153,96 @@ class ProposalAuditEventAdmin(admin.ModelAdmin):
     list_filter = ("event",)
     raw_id_fields = ("proposal", "approval", "actor")
     readonly_fields = ("event", "proposal", "approval", "actor", "detail", "created_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+# =============================================================================
+# EXEC-E1b — demo execution plans (no order surface)
+# =============================================================================
+
+
+@admin.register(SignalSourceConfig)
+class SignalSourceConfigAdmin(admin.ModelAdmin):
+    """Per-source auto-demo arming. The ONLY editable execution-planning surface."""
+
+    list_display = (
+        "source",
+        "auto_demo_execution_enabled",
+        "total_lot_target",
+        "updated_by",
+        "updated_at",
+    )
+    list_filter = ("auto_demo_execution_enabled",)
+    readonly_fields = ("updated_at",)
+
+
+class ProposedOrderLegInline(admin.TabularInline):
+    model = ProposedOrderLeg
+    extra = 0
+    can_delete = False
+    readonly_fields = (
+        "leg_index", "take_profit", "stop_loss", "lot_size", "order_type",
+        "status", "hold_reason", "created_at",
+    )
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SignalExecutionPlan)
+class SignalExecutionPlanAdmin(admin.ModelAdmin):
+    """Read-only. Plans are created ONLY via the safety-gated planner."""
+
+    list_display = (
+        "id", "status", "direction", "symbol", "total_lot", "is_demo",
+        "account", "hold_reason", "created_at",
+    )
+    list_filter = ("status", "direction", "is_demo", "symbol", "source")
+    search_fields = ("symbol", "message_id", "account__account_number")
+    raw_id_fields = ("approval", "account", "proposed_by")
+    inlines = (ProposedOrderLegInline,)
+    readonly_fields = (
+        "approval", "account", "source", "chat_id", "message_id", "symbol",
+        "direction", "entry", "stop_loss", "order_type", "total_lot", "is_demo",
+        "account_environment", "signal_timestamp", "status", "hold_reason",
+        "proposed_by", "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(ProposedOrderLeg)
+class ProposedOrderLegAdmin(admin.ModelAdmin):
+    list_display = (
+        "id", "plan", "leg_index", "take_profit", "lot_size", "order_type",
+        "status", "created_at",
+    )
+    list_filter = ("status", "order_type")
+    raw_id_fields = ("plan",)
+    readonly_fields = (
+        "plan", "leg_index", "take_profit", "stop_loss", "lot_size",
+        "order_type", "status", "hold_reason", "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(PlanAuditEvent)
+class PlanAuditEventAdmin(admin.ModelAdmin):
+    list_display = ("id", "event", "plan", "leg", "approval", "actor", "created_at")
+    list_filter = ("event",)
+    raw_id_fields = ("plan", "leg", "approval", "actor")
+    readonly_fields = ("event", "plan", "leg", "approval", "actor", "detail", "created_at")
 
     def has_add_permission(self, request):
         return False
