@@ -13,11 +13,17 @@ from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
+from rest_framework.test import APIClient
 
 from core.observability import emit_metric, log_stage, new_correlation_id
 from execution.signal_planning import plan_demo_execution
 from execution.signal_promotion import promote_plan_to_shadow_jobs
-from execution.models import SignalExecutionPlan, SignalSourceConfig
+from execution.models import (
+    ExecutionJob,
+    SignalExecutionPlan,
+    SignalSourceConfig,
+    WorkerIdentity,
+)
 from signal_intake import services as intake_services
 from signal_intake.models import PendingSignalApproval
 from trading.models import TradingAccount
@@ -165,3 +171,51 @@ class WorkerShadowLifecycleTests(SimpleTestCase):
         outcome = [r for r in life if r["stage"] == "validation_outcome"][0]
         self.assertFalse(outcome["ok"])
         self.assertIn("validation_failure", {m["metric"] for m in metrics})
+
+
+class NextJobClaimObservabilityTests(TestCase):
+    """Stage 5 is server-side (views.next_job), so it needs a real endpoint call.
+
+    Confirms claiming a PLACE_ORDER_SHADOW job through the actual next_job endpoint
+    emits the `worker_claimed` lifecycle stage (under the payload's correlation id)
+    plus the `worker_claim_latency` and `shadow_queue_depth` metrics.
+    """
+
+    NEXT_URL = "/api/execution/jobs/next/"
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="op", email="op@x.invalid", password="x")
+        self.demo = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="D1", is_demo=True
+        )
+        self.job = ExecutionJob.objects.create(
+            job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW,
+            account=self.demo, status=ExecutionJob.Status.PENDING, terminal_node=None,
+            payload={"symbol": "EURUSD", "side": "BUY", "lots": "0.01",
+                     "execution_mode": "SHADOW", "comment": "WAY1L1",
+                     "correlation_id": "corr-claim-5"},
+        )
+
+    def _shadow_worker(self):
+        WorkerIdentity.objects.create(
+            worker_id="obs-shadow", worker_secret_hash=WorkerIdentity.hash_secret("sek"),
+            worker_permissions={"shadow_worker": True}, status=WorkerIdentity.Status.ACTIVE,
+        )
+        return APIClient(), dict(HTTP_X_WORKER_ID="obs-shadow", HTTP_X_WORKER_SECRET="sek")
+
+    def test_claiming_shadow_job_emits_stage5_and_claim_metrics(self):
+        c, h = self._shadow_worker()
+        with self.assertLogs("guvfx.execution.lifecycle", level="INFO") as lc, \
+             self.assertLogs("guvfx.execution.metrics", level="INFO") as mc:
+            resp = c.get(self.NEXT_URL + "?job_type=PLACE_ORDER_SHADOW", **h)
+        self.assertEqual(resp.status_code, 200)  # claim behaviour unchanged
+        self.assertEqual(resp.data["id"], self.job.id)
+
+        life = _records(lc)
+        claimed = [r for r in life if r["stage"] == "worker_claimed"]
+        self.assertTrue(claimed, "worker_claimed stage not emitted")
+        self.assertEqual(claimed[0]["correlation_id"], "corr-claim-5")
+
+        names = {m["metric"] for m in _records(mc)}
+        self.assertIn("worker_claim_latency", names)
+        self.assertIn("shadow_queue_depth", names)

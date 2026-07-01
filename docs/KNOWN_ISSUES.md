@@ -25,6 +25,16 @@ List active problems with reproduction steps and workarounds.
   structurally cannot place an order; flag OFF is unchanged. Unblocks a re-run of
   the D2 persistent-shadow-worker deployment.
 
+## Execution observability (2026-07-01)
+
+- **`shadow_queue_depth` metric runs a COUNT per shadow claim.** `next_job` emits a
+  `ExecutionJob.objects.filter(status=PENDING, job_type=PLACE_ORDER_SHADOW).count()`
+  on every `PLACE_ORDER_SHADOW` claim (one extra query per claim, outside the atomic
+  claim). It is fail-open, observational only (never consulted for an execution
+  decision), gated to shadow claims, and cheap on the small shadow queue — fine for
+  the pilot. If many shadow workers poll concurrently at scale, consider sampling the
+  metric or moving it off the hot claim path. Not a behaviour/order risk.
+
 ## Backend migrations / tests (2026-06-29)
 
 - **Pre-existing migration drift in `research` + `strategies`.** `manage.py
