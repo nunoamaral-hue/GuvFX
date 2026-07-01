@@ -34,6 +34,7 @@ from core.audit import (
     log_worker_auth_success,
     log_worker_auth_failed,
 )
+from core.observability import emit_metric, log_stage
 from billing.enforcement import require_entitlement
 
 class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
@@ -311,6 +312,26 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
             routing_mode=routing_mode,
             terminal_node_id=job.terminal_node_id,
         )
+
+        # OPS-OBSERVABILITY (stage 5): shadow-execution lifecycle + claim metrics.
+        # Fail-open, additive; no effect on the claim result above.
+        if job.job_type == ExecutionJob.JobType.PLACE_ORDER_SHADOW:
+            correlation_id = (job.payload or {}).get("correlation_id", "")
+            claim_latency_ms = None
+            if job.created_at and job.started_at:
+                claim_latency_ms = int((job.started_at - job.created_at).total_seconds() * 1000)
+            queue_depth = ExecutionJob.objects.filter(
+                status=ExecutionJob.Status.PENDING,
+                job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW,
+            ).count()
+            log_stage("worker_claimed", correlation_id, job_id=job.id,
+                      worker_id=worker_id, claim_latency_ms=claim_latency_ms,
+                      queue_depth=queue_depth)
+            if claim_latency_ms is not None:
+                emit_metric("worker_claim_latency", claim_latency_ms, unit="ms",
+                            correlation_id=correlation_id, job_type=job.job_type)
+            emit_metric("shadow_queue_depth", queue_depth, unit="jobs",
+                        job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW)
 
         serializer = self.get_serializer(job)
         return Response(serializer.data)

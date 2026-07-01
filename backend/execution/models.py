@@ -692,6 +692,11 @@ class SignalExecutionPlan(models.Model):
     hold_reason = models.CharField(max_length=64, blank=True)
     notes = models.TextField(blank=True)
 
+    # OPS-OBSERVABILITY: correlation id copied from the source approval (fresh
+    # fallback if absent) and propagated into each shadow job's payload. Nullable/
+    # blank for backwards compatibility with pre-existing rows.
+    correlation_id = models.CharField(max_length=64, blank=True, default="")
+
     proposed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="signal_execution_plans",
