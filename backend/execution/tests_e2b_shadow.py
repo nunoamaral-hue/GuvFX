@@ -11,6 +11,7 @@ non-SHADOW modes, and stores validation (no ticket) on SUCCESS.
 """
 
 import importlib.util
+import os
 import sys
 from unittest import mock
 
@@ -215,3 +216,108 @@ class ShadowWorkerTests(SimpleTestCase):
         attrs = {n.attr for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Attribute)}
         self.assertNotIn("order_send", attrs)
         self.assertIn("agent_order_check", src)
+
+
+class ShadowPollGateTests(SimpleTestCase):
+    """EXEC-E2b-R1: PLACE_ORDER_SHADOW polling is opt-in via MT5_SHADOW_WORKER.
+
+    The normal ingest worker must NOT claim shadow jobs (that extra poll per loop
+    is what pushed it over the request throttle); only a dedicated shadow worker
+    (flag ON) makes the claim. The live PLACE_TEST_ORDER / PLACE_ORDER / default
+    SYNC claim sequence is unchanged in both modes.
+    """
+
+    def setUp(self):
+        import mt5_trade_ingest_worker as worker
+        self.worker = worker
+
+    def _claim_args(self, shadow_enabled):
+        """Run claim_worker_job with every claim returning None; return the
+        ordered list of job_type args passed to claim_next_job."""
+        calls = []
+
+        def fake_claim(job_type=None):
+            calls.append(job_type)
+            return None
+
+        with mock.patch.object(self.worker, "claim_next_job", side_effect=fake_claim), \
+             mock.patch.object(self.worker, "SHADOW_WORKER_ENABLED", shadow_enabled):
+            job = self.worker.claim_worker_job()
+        self.assertIsNone(job)
+        return calls
+
+    def test_default_worker_does_not_claim_shadow(self):
+        # THE regression fix: flag OFF (default) → no PLACE_ORDER_SHADOW claim.
+        calls = self._claim_args(shadow_enabled=False)
+        self.assertNotIn("PLACE_ORDER_SHADOW", calls)
+        # Exact pre-E2b 3-claim sequence preserved (below the throttle budget).
+        self.assertEqual(calls, ["PLACE_TEST_ORDER", "PLACE_ORDER", None])
+
+    def test_shadow_worker_claims_shadow(self):
+        # Flag ON → the dedicated shadow worker DOES make the shadow claim.
+        calls = self._claim_args(shadow_enabled=True)
+        self.assertIn("PLACE_ORDER_SHADOW", calls)
+        self.assertEqual(
+            calls, ["PLACE_TEST_ORDER", "PLACE_ORDER", "PLACE_ORDER_SHADOW", None]
+        )
+
+    def test_live_claim_paths_unchanged_in_both_modes(self):
+        # PLACE_TEST_ORDER, PLACE_ORDER, and the default SYNC claim (job_type=None)
+        # are made in the same order and position regardless of the flag.
+        for enabled in (False, True):
+            calls = self._claim_args(shadow_enabled=enabled)
+            self.assertEqual(calls[0], "PLACE_TEST_ORDER")
+            self.assertEqual(calls[1], "PLACE_ORDER")
+            self.assertEqual(calls[-1], None)  # default SYNC_POSITIONS claim last
+
+    def test_shadow_claim_sits_between_place_order_and_sync(self):
+        calls = self._claim_args(shadow_enabled=True)
+        self.assertEqual(calls.index("PLACE_ORDER_SHADOW"), calls.index("PLACE_ORDER") + 1)
+        self.assertEqual(calls.index("PLACE_ORDER_SHADOW"), calls.index(None) - 1)
+
+    def test_claim_short_circuits_on_first_hit(self):
+        # If an earlier claim yields a job, later claims (incl. shadow) never run.
+        calls = []
+
+        def fake_claim(job_type=None):
+            calls.append(job_type)
+            return {"id": 1, "job_type": "PLACE_TEST_ORDER"} if job_type == "PLACE_TEST_ORDER" else None
+
+        with mock.patch.object(self.worker, "claim_next_job", side_effect=fake_claim), \
+             mock.patch.object(self.worker, "SHADOW_WORKER_ENABLED", True):
+            job = self.worker.claim_worker_job()
+        self.assertEqual(job.get("id"), 1)
+        self.assertEqual(calls, ["PLACE_TEST_ORDER"])  # short-circuited, no shadow claim
+
+    def test_flag_default_off_when_env_absent(self):
+        with mock.patch.dict(os.environ, clear=False):
+            os.environ.pop("MT5_SHADOW_WORKER", None)
+            self.assertFalse(self.worker._env_truthy("MT5_SHADOW_WORKER"))
+
+    def test_flag_truthy_values_enable(self):
+        for v in ("1", "true", "TRUE", "yes", "on", " on "):
+            with mock.patch.dict(os.environ, {"MT5_SHADOW_WORKER": v}):
+                self.assertTrue(self.worker._env_truthy("MT5_SHADOW_WORKER"), v)
+
+    def test_flag_falsey_values_disable(self):
+        for v in ("", "0", "false", "no", "off", "disabled"):
+            with mock.patch.dict(os.environ, {"MT5_SHADOW_WORKER": v}):
+                self.assertFalse(self.worker._env_truthy("MT5_SHADOW_WORKER"), v)
+
+    def test_module_global_off_by_default_and_on_with_env(self):
+        # Requirement 1 at the MODULE level: SHADOW_WORKER_ENABLED is computed
+        # once at import from MT5_SHADOW_WORKER. Re-exec the module under a
+        # controlled environment and assert the ACTUAL global (not just the
+        # helper), so a "default ON" regression is caught even if the ambient
+        # test/CI environment happens to have the var set. Restore afterwards.
+        import importlib
+        try:
+            with mock.patch.dict(os.environ, clear=False):
+                os.environ.pop("MT5_SHADOW_WORKER", None)
+                reloaded = importlib.reload(self.worker)
+                self.assertFalse(reloaded.SHADOW_WORKER_ENABLED)  # default OFF
+            with mock.patch.dict(os.environ, {"MT5_SHADOW_WORKER": "1"}):
+                reloaded = importlib.reload(self.worker)
+                self.assertTrue(reloaded.SHADOW_WORKER_ENABLED)  # opt-in ON
+        finally:
+            importlib.reload(self.worker)  # restore module global to ambient env

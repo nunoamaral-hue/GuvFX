@@ -6,6 +6,23 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — EXEC-E2b-R1: env-gate shadow-worker polling (repo-only, no order).**
+  Fixes the E2b polling regression found during the E2b-DEPLOY-D1 dry-run: the
+  worker's unconditional 4th `claim_next_job("PLACE_ORDER_SHADOW")` pushed its
+  poll rate (~120/min) over the 100/min request throttle and the live worker
+  looped on HTTP 429. The shadow claim is now **opt-in** behind `MT5_SHADOW_WORKER`
+  (default OFF): `mt5_trade_ingest_worker` extracts the claim sequence into
+  `claim_worker_job()`, which makes the `PLACE_ORDER_SHADOW` claim ONLY when the
+  flag is set. The normal worker keeps its exact pre-E2b 3-claim sequence
+  (`PLACE_TEST_ORDER` → `PLACE_ORDER` → default SYNC), so its request rate is
+  unchanged and below the throttle. The next_job endpoint still independently
+  gates shadow jobs on `worker_permissions.shadow_worker`. 9 new poll-gate tests
+  (flag default-off / on, sequence unchanged in both modes, shadow claim position,
+  short-circuit, env-flag truthy/falsey parsing); the E2b order_check-only /
+  order_send-0× guarantees are untouched. 126 execution tests green on local
+  Postgres. No new migration. Worker + tests + docs only — **NO deployment**; the
+  dedicated shadow worker (flag ON) is deployed only by a separate, gated action.
+
 - **2026-07-01 — EXEC-E2b: shadow worker + bridge mt5.order_check() dry-run (no order).**
   First MT5 execution rung — proves the full pipeline shadow job → worker → bridge
   → MT5 validation while guaranteeing `mt5.order_send()` is NEVER called. Worker

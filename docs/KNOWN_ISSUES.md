@@ -2,6 +2,21 @@
 
 List active problems with reproduction steps and workarounds.
 
+## Execution worker — shadow polling throttle (2026-07-01)
+
+- **Fixed (EXEC-E2b-R1): unconditional shadow poll tripped the request throttle.**
+  As shipped in E2b, `mt5_trade_ingest_worker` claimed four job types per loop
+  (`PLACE_TEST_ORDER`, `PLACE_ORDER`, `PLACE_ORDER_SHADOW`, default sync). At the
+  ~2 s loop cadence the fourth (shadow) claim pushed the poll rate to ~120/min,
+  over the 100/min `GuvFXUserRateThrottle`, so the live worker looped on HTTP 429.
+  Observed during the E2b-DEPLOY-D1 dry-run; mitigated then by reverting the worker
+  script. **Fix:** the `PLACE_ORDER_SHADOW` claim is now opt-in behind the
+  `MT5_SHADOW_WORKER` env flag (default OFF), so the normal worker keeps its
+  pre-E2b 3-claim sequence. Only a dedicated shadow worker (flag ON) makes the
+  fourth claim. The next_job endpoint still independently requires
+  `worker_permissions.shadow_worker`. Deployment of the dedicated shadow worker
+  remains a separate, gated operational action.
+
 ## Backend migrations / tests (2026-06-29)
 
 - **Pre-existing migration drift in `research` + `strategies`.** `manage.py

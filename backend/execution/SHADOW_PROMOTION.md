@@ -78,5 +78,13 @@ EXACT SAME MT5 request as `execute_demo_order`, then `mt5.order_check(request)` 
 `backend/execution/tests_e2b_shadow.py`. It runs on the production MT5 box, so it
 is **deployment-gated**: no shadow worker executes until a `WorkerIdentity` is
 granted `shadow_worker` there (a separate, gated operational action).
+
+**E2b-R1 — shadow polling is opt-in.** The `PLACE_ORDER_SHADOW` claim in the
+worker loop (`claim_worker_job`) is gated behind the `MT5_SHADOW_WORKER` env flag
+(default OFF), so the normal ingest worker keeps its pre-E2b 3-claim sequence and
+stays under the API request throttle; only a dedicated shadow worker (flag ON)
+polls for shadow jobs. This is a **second, worker-side** gate on top of the
+next_job `shadow_worker` permission — a shadow worker needs BOTH the flag (to poll)
+and the permission (to be served).
 **E3** — real demo placement (remove suppression on demo only). Behind Nuno's
 recorded sign-off.

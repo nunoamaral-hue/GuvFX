@@ -29,6 +29,19 @@ SLEEP_SEC = float(os.getenv("MT5_WORKER_SLEEP", "2.0"))
 AUTO_SYNC_MAX_RETRIES = int(os.getenv("AUTO_SYNC_MAX_RETRIES", "5"))
 AUTO_SYNC_RETRY_DELAY = float(os.getenv("AUTO_SYNC_RETRY_DELAY", "2.0"))
 
+
+def _env_truthy(name: str) -> bool:
+    """True only for an explicit truthy value of env var ``name`` (default OFF)."""
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# EXEC-E2b-R1: PLACE_ORDER_SHADOW polling is OPT-IN. Only a dedicated shadow
+# worker (MT5_SHADOW_WORKER set) makes the extra shadow claim each loop; the
+# normal ingest worker keeps its pre-E2b 3-claim sequence, so its request rate
+# stays under the API throttle. Default OFF. This gates only *polling* — the
+# next_job endpoint still independently requires worker_permissions.shadow_worker.
+SHADOW_WORKER_ENABLED = _env_truthy("MT5_SHADOW_WORKER")
+
 def api_headers():
     headers = {
         "Host": API_HOST,
@@ -434,6 +447,26 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
 
     return inserted, updated
 
+
+def claim_worker_job():
+    """Claim the next job for this worker in priority order.
+
+    PLACE_TEST_ORDER > PLACE_ORDER > [PLACE_ORDER_SHADOW iff shadow worker] >
+    SYNC_POSITIONS (default). The PLACE_ORDER_SHADOW claim is made ONLY when this
+    process is a dedicated shadow worker (``SHADOW_WORKER_ENABLED`` /
+    ``MT5_SHADOW_WORKER``); the normal worker therefore keeps its pre-E2b
+    3-claim sequence and its request rate stays under the API throttle. Even a
+    shadow worker's claim is still gated server-side by the next_job endpoint,
+    which requires ``worker_permissions.shadow_worker``.
+    """
+    return (
+        claim_next_job("PLACE_TEST_ORDER")
+        or claim_next_job("PLACE_ORDER")
+        or (claim_next_job("PLACE_ORDER_SHADOW") if SHADOW_WORKER_ENABLED else None)
+        or claim_next_job()
+    )
+
+
 def main():
     if not WORKER_TOKEN:
         raise SystemExit("MT5_WORKER_TOKEN missing")
@@ -448,17 +481,11 @@ def main():
                 record_beat("ingest_worker", interval_s=60)
             except Exception:
                 pass
-            # Claim priority: PLACE_TEST_ORDER > PLACE_ORDER > PLACE_ORDER_SHADOW
-            # > SYNC_POSITIONS. The shadow claim yields a job ONLY if this worker's
-            # WorkerIdentity carries worker_permissions.shadow_worker (next_job
-            # endpoint guard); otherwise it returns nothing — no behaviour change
-            # for workers without that permission.
-            job = (
-                claim_next_job("PLACE_TEST_ORDER")
-                or claim_next_job("PLACE_ORDER")
-                or claim_next_job("PLACE_ORDER_SHADOW")
-                or claim_next_job()
-            )
+            # Claim priority (see claim_worker_job): PLACE_TEST_ORDER >
+            # PLACE_ORDER > [PLACE_ORDER_SHADOW iff MT5_SHADOW_WORKER] >
+            # SYNC_POSITIONS. The normal worker makes no shadow claim (default
+            # OFF), keeping its poll rate under the throttle.
+            job = claim_worker_job()
             if not job:
                 time.sleep(SLEEP_SEC)
                 continue
