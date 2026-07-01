@@ -91,5 +91,12 @@ a **second, worker-side** gate on top of the next_job `shadow_worker` permission
 a shadow worker needs BOTH the flag (to poll shadow-only) and the permission (to
 be served).
 
+**E2b-PERSIST — managed shadow worker service.** The persistent, restart-safe form
+of the shadow worker (proven ad-hoc in `E2b-DEPLOY-D2R`) ships as a compose service
+under `deploy/shadow-worker/` (`docker-compose.shadow-worker.yml` + runbook +
+`verify_shadow_dryrun.sh`), provisioned via `manage.py provision_shadow_worker`
+(distinct identity, secret from env, never printed). See
+`deploy/shadow-worker/README.md`.
+
 **E3** — real demo placement (remove suppression on demo only). Behind Nuno's
 recorded sign-off.
