@@ -12,10 +12,18 @@ List active problems with reproduction steps and workarounds.
   Observed during the E2b-DEPLOY-D1 dry-run; mitigated then by reverting the worker
   script. **Fix:** the `PLACE_ORDER_SHADOW` claim is now opt-in behind the
   `MT5_SHADOW_WORKER` env flag (default OFF), so the normal worker keeps its
-  pre-E2b 3-claim sequence. Only a dedicated shadow worker (flag ON) makes the
-  fourth claim. The next_job endpoint still independently requires
+  pre-E2b 3-claim sequence. The next_job endpoint still independently requires
   `worker_permissions.shadow_worker`. Deployment of the dedicated shadow worker
   remains a separate, gated operational action.
+- **Fixed (EXEC-E2b-R2): dedicated shadow worker is now shadow-only.**
+  E2b-DEPLOY-D2 preflight found that with R1 a shadow worker (flag ON) still made
+  the unconditional `PLACE_TEST_ORDER`/`PLACE_ORDER` claims, so run persistently
+  alongside the live worker it could win a real order and route it to the live
+  `order_send` path (→ real demo ticket), failing the D2 no-order gates. R2 makes
+  `claim_worker_job()` branch: flag ON claims **only** `PLACE_ORDER_SHADOW` (no
+  executable claims, no default sync — 1 claim/loop), so a shadow worker
+  structurally cannot place an order; flag OFF is unchanged. Unblocks a re-run of
+  the D2 persistent-shadow-worker deployment.
 
 ## Backend migrations / tests (2026-06-29)
 

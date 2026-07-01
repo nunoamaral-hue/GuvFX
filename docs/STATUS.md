@@ -6,6 +6,24 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — EXEC-E2b-R2: shadow-only worker claim mode (repo-only, no order).**
+  Closes the blocker found at E2b-DEPLOY-D2 preflight: with the R1 code a
+  dedicated shadow worker (`MT5_SHADOW_WORKER=1`) still claimed the executable
+  `PLACE_TEST_ORDER`/`PLACE_ORDER` types (unconditional in `claim_worker_job`),
+  so run persistently it could win a real order and route it to the live
+  `order_send` path (→ real demo ticket), failing the D2 no-order gates. R2 makes
+  shadow mode **shadow-only**: `claim_worker_job()` now branches — flag ON returns
+  `claim_next_job("PLACE_ORDER_SHADOW")` and nothing else (no executable claims,
+  no default SYNC); flag OFF keeps the exact pre-E2b 3-claim sequence. A dedicated
+  shadow worker therefore **structurally cannot** place an order, and its poll
+  rate drops to 1 claim/loop (~30/min at the default 2s sleep — well under the
+  100/min throttle, no special sleep config needed). Tests rewritten: shadow mode
+  claims only `PLACE_ORDER_SHADOW` / never the executable types / never default
+  sync / single claim per loop; normal mode unchanged + short-circuit. 140
+  execution+signal_intake tests green on local Postgres. No bridge change, no new
+  migration. Worker + tests + docs only — **NO deployment**. Unblocks a re-run of
+  E2b-DEPLOY-D2 (persistent shadow worker).
+
 - **2026-07-01 — EXEC-E2b-R1: env-gate shadow-worker polling (repo-only, no order).**
   Fixes the E2b polling regression found during the E2b-DEPLOY-D1 dry-run: the
   worker's unconditional 4th `claim_next_job("PLACE_ORDER_SHADOW")` pushed its

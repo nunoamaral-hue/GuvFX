@@ -449,20 +449,25 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
 
 
 def claim_worker_job():
-    """Claim the next job for this worker in priority order.
+    """Claim the next job for this worker, by mode.
 
-    PLACE_TEST_ORDER > PLACE_ORDER > [PLACE_ORDER_SHADOW iff shadow worker] >
-    SYNC_POSITIONS (default). The PLACE_ORDER_SHADOW claim is made ONLY when this
-    process is a dedicated shadow worker (``SHADOW_WORKER_ENABLED`` /
-    ``MT5_SHADOW_WORKER``); the normal worker therefore keeps its pre-E2b
-    3-claim sequence and its request rate stays under the API throttle. Even a
-    shadow worker's claim is still gated server-side by the next_job endpoint,
-    which requires ``worker_permissions.shadow_worker``.
+    A **dedicated shadow worker** (``SHADOW_WORKER_ENABLED`` / ``MT5_SHADOW_WORKER``)
+    claims **only** ``PLACE_ORDER_SHADOW`` — never the executable
+    ``PLACE_TEST_ORDER``/``PLACE_ORDER`` types and never the default SYNC. This
+    is structural: a shadow worker can never win a real order and route it to
+    the live ``order_send`` path (E2b-R2), and its poll rate is one claim per
+    loop (well under the API throttle). Its claim is still gated server-side by
+    the next_job endpoint, which requires ``worker_permissions.shadow_worker``.
+
+    The **normal worker** (flag OFF, the default) keeps its exact pre-E2b claim
+    sequence: PLACE_TEST_ORDER > PLACE_ORDER > SYNC_POSITIONS (default). It never
+    claims ``PLACE_ORDER_SHADOW``.
     """
+    if SHADOW_WORKER_ENABLED:
+        return claim_next_job("PLACE_ORDER_SHADOW")
     return (
         claim_next_job("PLACE_TEST_ORDER")
         or claim_next_job("PLACE_ORDER")
-        or (claim_next_job("PLACE_ORDER_SHADOW") if SHADOW_WORKER_ENABLED else None)
         or claim_next_job()
     )
 
@@ -481,10 +486,10 @@ def main():
                 record_beat("ingest_worker", interval_s=60)
             except Exception:
                 pass
-            # Claim priority (see claim_worker_job): PLACE_TEST_ORDER >
-            # PLACE_ORDER > [PLACE_ORDER_SHADOW iff MT5_SHADOW_WORKER] >
-            # SYNC_POSITIONS. The normal worker makes no shadow claim (default
-            # OFF), keeping its poll rate under the throttle.
+            # Claim by mode (see claim_worker_job): a dedicated shadow worker
+            # (MT5_SHADOW_WORKER) claims ONLY PLACE_ORDER_SHADOW; the normal
+            # worker (default) claims PLACE_TEST_ORDER > PLACE_ORDER >
+            # SYNC_POSITIONS and never a shadow job.
             job = claim_worker_job()
             if not job:
                 time.sleep(SLEEP_SEC)

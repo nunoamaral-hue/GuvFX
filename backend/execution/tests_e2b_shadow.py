@@ -219,76 +219,86 @@ class ShadowWorkerTests(SimpleTestCase):
 
 
 class ShadowPollGateTests(SimpleTestCase):
-    """EXEC-E2b-R1: PLACE_ORDER_SHADOW polling is opt-in via MT5_SHADOW_WORKER.
+    """EXEC-E2b-R2: shadow-worker mode (MT5_SHADOW_WORKER) is SHADOW-ONLY.
 
-    The normal ingest worker must NOT claim shadow jobs (that extra poll per loop
-    is what pushed it over the request throttle); only a dedicated shadow worker
-    (flag ON) makes the claim. The live PLACE_TEST_ORDER / PLACE_ORDER / default
-    SYNC claim sequence is unchanged in both modes.
+    A dedicated shadow worker (flag ON) claims ONLY PLACE_ORDER_SHADOW — never
+    the executable PLACE_TEST_ORDER/PLACE_ORDER types and never the default SYNC.
+    That is structural: a shadow worker can never win a real order and route it
+    to the live order_send path, and its poll rate is one claim/loop (well under
+    the throttle). The normal worker (flag OFF, default) keeps its exact pre-E2b
+    3-claim sequence (PLACE_TEST_ORDER → PLACE_ORDER → default SYNC) and never
+    claims a shadow job.
     """
 
     def setUp(self):
         import mt5_trade_ingest_worker as worker
         self.worker = worker
 
-    def _claim_args(self, shadow_enabled):
-        """Run claim_worker_job with every claim returning None; return the
-        ordered list of job_type args passed to claim_next_job."""
+    def _run_claim(self, shadow_enabled, responder=None):
+        """Run claim_worker_job under the given flag; return (job, calls) where
+        calls is the ordered list of job_type args passed to claim_next_job.
+        ``responder(job_type)`` supplies the return value for each claim (default
+        None -> nothing claimable)."""
         calls = []
 
         def fake_claim(job_type=None):
             calls.append(job_type)
-            return None
+            return responder(job_type) if responder else None
 
         with mock.patch.object(self.worker, "claim_next_job", side_effect=fake_claim), \
              mock.patch.object(self.worker, "SHADOW_WORKER_ENABLED", shadow_enabled):
             job = self.worker.claim_worker_job()
+        return job, calls
+
+    # --- normal mode (flag OFF, default) -----------------------------------
+    def test_normal_mode_claim_sequence_unchanged(self):
+        # Req 1/6: exact pre-E2b 3-claim sequence, no shadow claim.
+        job, calls = self._run_claim(shadow_enabled=False)
         self.assertIsNone(job)
-        return calls
-
-    def test_default_worker_does_not_claim_shadow(self):
-        # THE regression fix: flag OFF (default) → no PLACE_ORDER_SHADOW claim.
-        calls = self._claim_args(shadow_enabled=False)
-        self.assertNotIn("PLACE_ORDER_SHADOW", calls)
-        # Exact pre-E2b 3-claim sequence preserved (below the throttle budget).
         self.assertEqual(calls, ["PLACE_TEST_ORDER", "PLACE_ORDER", None])
+        self.assertNotIn("PLACE_ORDER_SHADOW", calls)
 
-    def test_shadow_worker_claims_shadow(self):
-        # Flag ON → the dedicated shadow worker DOES make the shadow claim.
-        calls = self._claim_args(shadow_enabled=True)
-        self.assertIn("PLACE_ORDER_SHADOW", calls)
-        self.assertEqual(
-            calls, ["PLACE_TEST_ORDER", "PLACE_ORDER", "PLACE_ORDER_SHADOW", None]
+    def test_normal_mode_short_circuits(self):
+        # If PLACE_TEST_ORDER yields a job, no further claims are made.
+        job, calls = self._run_claim(
+            shadow_enabled=False,
+            responder=lambda jt: {"id": 1} if jt == "PLACE_TEST_ORDER" else None,
         )
+        self.assertEqual(job, {"id": 1})
+        self.assertEqual(calls, ["PLACE_TEST_ORDER"])
 
-    def test_live_claim_paths_unchanged_in_both_modes(self):
-        # PLACE_TEST_ORDER, PLACE_ORDER, and the default SYNC claim (job_type=None)
-        # are made in the same order and position regardless of the flag.
-        for enabled in (False, True):
-            calls = self._claim_args(shadow_enabled=enabled)
-            self.assertEqual(calls[0], "PLACE_TEST_ORDER")
-            self.assertEqual(calls[1], "PLACE_ORDER")
-            self.assertEqual(calls[-1], None)  # default SYNC_POSITIONS claim last
+    # --- shadow mode (flag ON) ---------------------------------------------
+    def test_shadow_mode_claims_only_shadow(self):
+        # Req 2: the ONLY claim a shadow worker makes is PLACE_ORDER_SHADOW.
+        job, calls = self._run_claim(shadow_enabled=True)
+        self.assertIsNone(job)
+        self.assertEqual(calls, ["PLACE_ORDER_SHADOW"])
 
-    def test_shadow_claim_sits_between_place_order_and_sync(self):
-        calls = self._claim_args(shadow_enabled=True)
-        self.assertEqual(calls.index("PLACE_ORDER_SHADOW"), calls.index("PLACE_ORDER") + 1)
-        self.assertEqual(calls.index("PLACE_ORDER_SHADOW"), calls.index(None) - 1)
+    def test_shadow_mode_never_claims_executable_or_sync(self):
+        # Req 3/4/5: never PLACE_TEST_ORDER, never PLACE_ORDER, never default sync.
+        _, calls = self._run_claim(shadow_enabled=True)
+        self.assertNotIn("PLACE_TEST_ORDER", calls)
+        self.assertNotIn("PLACE_ORDER", calls)
+        self.assertNotIn(None, calls)  # None == the default SYNC_POSITIONS claim
 
-    def test_claim_short_circuits_on_first_hit(self):
-        # If an earlier claim yields a job, later claims (incl. shadow) never run.
-        calls = []
+    def test_shadow_mode_returns_claimed_shadow_job(self):
+        # Shadow mode short-circuit: the single shadow claim's job is returned,
+        # and exactly one claim is made.
+        job, calls = self._run_claim(
+            shadow_enabled=True,
+            responder=lambda jt: {"id": 7, "job_type": "PLACE_ORDER_SHADOW"}
+            if jt == "PLACE_ORDER_SHADOW" else None,
+        )
+        self.assertEqual(job.get("id"), 7)
+        self.assertEqual(calls, ["PLACE_ORDER_SHADOW"])
 
-        def fake_claim(job_type=None):
-            calls.append(job_type)
-            return {"id": 1, "job_type": "PLACE_TEST_ORDER"} if job_type == "PLACE_TEST_ORDER" else None
+    def test_shadow_mode_single_claim_per_loop(self):
+        # Req 7 (poll rate): shadow mode makes exactly ONE API claim per loop →
+        # ~30/min at the default 2s sleep, well under the 100/min throttle.
+        _, calls = self._run_claim(shadow_enabled=True)
+        self.assertEqual(len(calls), 1)
 
-        with mock.patch.object(self.worker, "claim_next_job", side_effect=fake_claim), \
-             mock.patch.object(self.worker, "SHADOW_WORKER_ENABLED", True):
-            job = self.worker.claim_worker_job()
-        self.assertEqual(job.get("id"), 1)
-        self.assertEqual(calls, ["PLACE_TEST_ORDER"])  # short-circuited, no shadow claim
-
+    # --- env-flag parsing ---------------------------------------------------
     def test_flag_default_off_when_env_absent(self):
         with mock.patch.dict(os.environ, clear=False):
             os.environ.pop("MT5_SHADOW_WORKER", None)
