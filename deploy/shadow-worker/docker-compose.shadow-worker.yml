@@ -1,0 +1,44 @@
+# EXEC-E2b-PERSIST — managed, restart-safe shadow worker service.
+#
+# A dedicated shadow worker that claims ONLY PLACE_ORDER_SHADOW jobs and runs the
+# bridge /mt5/order_check dry-run (NEVER order_send). It reuses the normal ingest
+# worker's full configuration (image, volumes, network, shared env) via `extends`,
+# overriding ONLY the identity, token, and shadow flag. NO secret is stored here:
+# the token comes from the MT5_SHADOW_WORKER_TOKEN environment variable at deploy
+# time (fail-fast if unset).
+#
+# Deploy (from the prod compose directory; base file resolved via GUVFX_COMPOSE_BASE):
+#   1. Provision the identity (see deploy/shadow-worker/README.md):
+#        MT5_SHADOW_WORKER_TOKEN=... docker compose exec -T guvfx-backend \
+#          python manage.py provision_shadow_worker
+#   2. Bring up ONLY the shadow service (does not touch the normal worker):
+#        MT5_SHADOW_WORKER_TOKEN=... \
+#        docker compose -f docker-compose.yml -f /path/to/docker-compose.shadow-worker.yml \
+#          up -d --no-deps guvfx-mt5-shadow-worker
+#
+# Rollback:
+#        docker compose ... stop guvfx-mt5-shadow-worker && \
+#        docker compose ... rm -f guvfx-mt5-shadow-worker
+#        docker compose exec -T guvfx-backend python manage.py provision_shadow_worker --revoke
+#
+# This file makes NO change to the normal worker service. It never sets
+# MT5_SHADOW_WORKER on the normal worker.
+
+services:
+  guvfx-mt5-shadow-worker:
+    # Inherit image, command, volumes, networks and the shared environment
+    # (DB / Django / Windows-agent creds) from the normal ingest worker so we do
+    # not duplicate — or relocate — any secret. GUVFX_COMPOSE_BASE defaults to the
+    # sibling docker-compose.yml in the prod compose directory.
+    extends:
+      file: "${GUVFX_COMPOSE_BASE:-docker-compose.yml}"
+      service: guvfx-mt5-trade-ingest-worker
+    container_name: guvfx-mt5-shadow-worker
+    restart: unless-stopped
+    environment:
+      # Distinct identity — MUST differ from the normal worker (REQUIRED 1).
+      MT5_WORKER_ID: "${MT5_SHADOW_WORKER_ID:-mt5-shadow-worker-1}"
+      # Distinct secret, supplied at deploy time; never committed. Fail fast if unset.
+      MT5_WORKER_TOKEN: "${MT5_SHADOW_WORKER_TOKEN:?set MT5_SHADOW_WORKER_TOKEN for the shadow worker}"
+      # Shadow-only claim mode (claim_worker_job → PLACE_ORDER_SHADOW only).
+      MT5_SHADOW_WORKER: "1"

@@ -6,6 +6,22 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — EXEC-E2b-PERSIST: managed shadow worker service (repo/infra-only, no order).**
+  Converts the ad-hoc `E2b-DEPLOY-D2R` dry-run into a managed, restart-safe form.
+  Adds `deploy/shadow-worker/`: a compose service `guvfx-mt5-shadow-worker` that
+  `extends` the normal worker (inherits image/volumes/network/shared env), overrides
+  ONLY the identity/token/flag (`MT5_SHADOW_WORKER=1`, distinct `MT5_WORKER_ID`,
+  token via `${MT5_SHADOW_WORKER_TOKEN}` — no secret committed, fail-fast if unset),
+  and adds `restart: unless-stopped`; a `verify_shadow_dryrun.sh` post-deploy check
+  (one dry-run job → `order_check` only → asserts no order/ticket/deal, cleans up);
+  and a README runbook with deploy + **rollback** notes. Adds
+  `manage.py provision_shadow_worker` — idempotent create/revoke of the distinct
+  shadow `WorkerIdentity` + `shadow_worker` grant, secret read from env (never a CLI
+  arg) and never printed, refuses to reuse the normal worker id. 6 provision tests +
+  the shadow-only/order_check guarantees (existing `ShadowPollGateTests` /
+  `ShadowWorkerTests`). No change to the normal worker service; no bridge change; no
+  migration; **NO production change** (deploy is a separate, gated operational action).
+
 - **2026-07-01 — EXEC-E2b-R2: shadow-only worker claim mode (repo-only, no order).**
   Closes the blocker found at E2b-DEPLOY-D2 preflight: with the R1 code a
   dedicated shadow worker (`MT5_SHADOW_WORKER=1`) still claimed the executable
