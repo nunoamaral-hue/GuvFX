@@ -6,6 +6,24 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — OPS-OBSERVABILITY-FOUNDATION: execution lifecycle logging + metrics (additive, no order).**
+  End-to-end structured visibility for every shadow execution attempt, ahead of E3.
+  A single `correlation_id` is minted at signal receipt and propagated
+  approval → plan → shadow-job payload → worker (new nullable columns
+  `signal_intake.0002`, `execution.0008`; fresh-id fallback for old rows). New
+  `core/observability.py` emits single-line JSON to `guvfx.execution.lifecycle`
+  and `guvfx.execution.metrics` (root console → stdout → Loki-ready), fail-open.
+  9 lifecycle stages instrumented (signal_received → cleanup_complete) across
+  `signal_intake.services`, `signal_planning`, `signal_promotion`, `views.next_job`,
+  and the worker's `handle_shadow_job`. Metrics: worker_claim_latency, shadow_queue_depth,
+  mt5_response_latency, validation_success/failure (→ success rate downstream),
+  execution_duration. NO change to execution/risk/trading logic; no `order_send`;
+  the worker AST guard (no order_send / no MetaTrader5) still holds. 9 new
+  observability tests (correlation propagation + stage/metric emission); 157
+  execution+signal_intake+core tests green on local Postgres. See
+  `docs/OBSERVABILITY.md` (schema + deployment + rollback). Repo-only in this
+  packet — **deployment is a separate step**.
+
 - **2026-07-01 — EXEC-E2b-PERSIST: managed shadow worker service (repo/infra-only, no order).**
   Converts the ad-hoc `E2b-DEPLOY-D2R` dry-run into a managed, restart-safe form.
   Adds `deploy/shadow-worker/`: a compose service `guvfx-mt5-shadow-worker` that

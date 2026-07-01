@@ -48,6 +48,11 @@ class PendingSignalApproval(models.Model):
     take_profits = models.JSONField(default=list, blank=True)
     raw_payload = models.JSONField(default=dict, blank=True)
 
+    # OPS-OBSERVABILITY: correlation id tying every lifecycle stage of one
+    # execution attempt together (signal → plan → shadow job → order_check).
+    # Nullable/blank for backwards compatibility with pre-existing rows.
+    correlation_id = models.CharField(max_length=64, blank=True, default="")
+
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.PENDING_APPROVAL
     )

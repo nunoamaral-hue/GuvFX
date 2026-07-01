@@ -19,6 +19,10 @@ from django.utils import timezone
 # touches the WIMS ConsumptionContract, and never creates an order.
 from intelligence.telegram_source import Kind, classify_messages, parse_message
 
+# core is shared infrastructure (NOT the execution app) — importing it does not
+# cross the one-way signal_intake→execution boundary.
+from core.observability import log_stage, new_correlation_id
+
 from .models import PendingSignalApproval, SignalAuditEvent
 
 SOURCE = PendingSignalApproval.Source.WAYOND_TELEGRAM
@@ -45,6 +49,10 @@ def intake_parsed(parsed, *, actor=None, source=SOURCE) -> PendingSignalApproval
         return existing  # dedup / replay-safe
 
     if parsed.kind == Kind.SIGNAL and parsed.is_tradeable_shape():
+        # OPS-OBSERVABILITY: mint the correlation id that ties this execution
+        # attempt's lifecycle together (stages 1-2 here → planning → shadow job).
+        correlation_id = new_correlation_id()
+        log_stage("signal_received", correlation_id, source=str(source), message_id=mid)
         approval = PendingSignalApproval.objects.create(
             source=source, message_id=mid,
             symbol=parsed.market, direction=parsed.direction,
@@ -52,10 +60,13 @@ def intake_parsed(parsed, *, actor=None, source=SOURCE) -> PendingSignalApproval
             take_profit=(parsed.take_profits[0] if parsed.take_profits else ""),
             take_profits=list(parsed.take_profits),
             raw_payload={"raw_text": parsed.raw_text, "kind": parsed.kind},
+            correlation_id=correlation_id,
             status=PendingSignalApproval.Status.PENDING_APPROVAL,
         )
         _audit(actor, SignalAuditEvent.Event.SIGNAL_RECEIVED, approval,
                message_id=mid, symbol=parsed.market, direction=parsed.direction)
+        log_stage("parse_complete", correlation_id, approval_id=approval.id,
+                  symbol=parsed.market, direction=parsed.direction, kind=str(parsed.kind))
         return approval
 
     # Not a tradeable signal -> quarantine (do not guess into an approval).

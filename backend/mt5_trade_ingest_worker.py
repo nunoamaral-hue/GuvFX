@@ -13,6 +13,7 @@ django.setup()
 
 from django.utils.dateparse import parse_datetime
 from trading.models import TradingAccount, Trade
+from core.observability import emit_metric, log_stage  # structured lifecycle logging (fail-open)
 
 API_BASE = os.getenv("GUVFX_API_BASE", "http://guvfx-backend:8000")
 API_HOST = os.getenv("GUVFX_API_HOST", "api.guvfx.com")
@@ -155,6 +156,28 @@ def handle_shadow_job(job: dict) -> dict:
     payload = job.get("payload") or {}
     mode = str(payload.get("execution_mode", "")).upper()
 
+    # OPS-OBSERVABILITY (stages 6-9): correlation id from the payload + a helper to
+    # compute execution duration (now − job.created_at). All emissions are fail-open.
+    correlation_id = payload.get("correlation_id", "")
+    _created = to_dt(job.get("created_at"))
+
+    def _duration_ms():
+        if not _created:
+            return None
+        try:
+            return int((dt_module.datetime.now(dt_module.timezone.utc) - _created).total_seconds() * 1000)
+        except Exception:
+            return None
+
+    def _finalize_outcome(ok, **extra):
+        log_stage("validation_outcome", correlation_id, job_id=job_id, ok=ok, **extra)
+        emit_metric("validation_success" if ok else "validation_failure", 1,
+                    correlation_id=correlation_id, **extra)
+        dur = _duration_ms()
+        log_stage("cleanup_complete", correlation_id, job_id=job_id, execution_duration_ms=dur)
+        if dur is not None:
+            emit_metric("execution_duration", dur, unit="ms", correlation_id=correlation_id)
+
     # execution_mode handling: only SHADOW is executed here; LIVE and unknown
     # fail closed (E2b never places an order — LIVE placement is a later, gated
     # packet). Nothing is ever routed to the live agent_order/order_send path.
@@ -164,6 +187,7 @@ def handle_shadow_job(job: dict) -> dict:
         complete_job(job_id, "FAILED", result,
                      f"Shadow job {job_id}: execution_mode={mode or '(missing)'} is not SHADOW — refused")
         print(f"[SHADOW] REFUSED job_id={job_id}: execution_mode={mode or '(missing)'} (fail-closed, no order)")
+        _finalize_outcome(False, reason="execution_mode_not_shadow")
         return result
 
     symbol = payload.get("symbol")
@@ -175,6 +199,7 @@ def handle_shadow_job(job: dict) -> dict:
                   "error": "missing_payload_fields"}
         complete_job(job_id, "FAILED", result,
                      f"Shadow job {job_id} requires symbol, side, lots, comment")
+        _finalize_outcome(False, reason="missing_payload_fields")
         return result
 
     check_payload = {
@@ -187,9 +212,15 @@ def handle_shadow_job(job: dict) -> dict:
         check_payload["tp"] = float(payload["tp_price"])
 
     print(f"[SHADOW] Validating (NO order) job_id={job_id}: {symbol} {side} {lots}")
+    log_stage("order_check_request", correlation_id, job_id=job_id,
+              symbol=symbol, side=side, lots=str(lots))
     t0 = time.monotonic()
     check = agent_order_check(check_payload)  # bridge → mt5.order_check, never order_send
     latency_ms = int((time.monotonic() - t0) * 1000)
+    log_stage("order_check_response", correlation_id, job_id=job_id,
+              ok=bool(check.get("ok")), retcode=check.get("retcode"),
+              mt5_response_latency_ms=latency_ms)
+    emit_metric("mt5_response_latency", latency_ms, unit="ms", correlation_id=correlation_id)
 
     validation = {
         "shadow": True,
@@ -209,12 +240,14 @@ def handle_shadow_job(job: dict) -> dict:
         # EXEC-E2b metric line (shadow jobs completed + validation latency).
         print(f"[SHADOW_METRIC] completed job_id={job_id} retcode={check.get('retcode')} "
               f"margin={check.get('margin')} latency_ms={latency_ms}")
+        _finalize_outcome(True, retcode=check.get("retcode"))
         return {**validation, "ok": True}
 
     err = check.get("error", "order_check_failed")
     complete_job(job_id, "FAILED", {**validation, "ok": False},
                  f"Shadow validation failed: {err}")
     print(f"[SHADOW_METRIC] failed job_id={job_id} error={err} latency_ms={latency_ms}")
+    _finalize_outcome(False, reason=str(err))
     return {**validation, "ok": False}
 
 

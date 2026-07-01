@@ -26,6 +26,7 @@ from typing import Optional
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from core.observability import log_stage
 from execution.models import (
     MAX_TOTAL_LOT_PER_SIGNAL,
     SIGNAL_ALLOWED_SYMBOLS,
@@ -75,6 +76,9 @@ def _shadow_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg) -> dict:
         "comment": f"WAY{plan.id}L{leg.leg_index}",  # correlation tag
         "plan_id": plan.id,
         "leg_index": leg.leg_index,
+        # OPS-OBSERVABILITY: propagate the correlation id into the job payload so
+        # the worker can log stages 5-9 under the same id.
+        "correlation_id": plan.correlation_id,
         "windows_username": windows_username,
     }
 
@@ -175,6 +179,8 @@ def promote_plan_to_shadow_jobs(plan: SignalExecutionPlan, *, actor=None, now=No
                 _audit(PromotionAuditEvent.Event.JOB_CREATED, plan=plan, leg=leg, job=job,
                        approval=plan.approval, actor=actor, leg_index=leg.leg_index,
                        job_type=job.job_type, execution_mode="SHADOW")
+                log_stage("shadow_job_created", plan.correlation_id, plan_id=plan.id,
+                          job_id=job.id, leg_index=leg.leg_index, job_type=job.job_type)
                 jobs.append(job)
 
             plan.status = SignalExecutionPlan.Status.PROMOTED

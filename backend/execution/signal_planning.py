@@ -43,6 +43,8 @@ from execution.models import (
 )
 from signal_intake.models import PendingSignalApproval
 
+from core.observability import log_stage, new_correlation_id
+
 _STEP = Decimal(LOT_STEP)
 _MAX_PER_LEG = Decimal(str(SIGNAL_MAX_LOT_SIZE))
 _MAX_TOTAL = Decimal(MAX_TOTAL_LOT_PER_SIGNAL)
@@ -235,12 +237,15 @@ def plan_demo_execution(
                 f"concurrent group limit reached ({PLAN_MAX_CONCURRENT_GROUPS})")
 
     sig_ts = _signal_timestamp(approval, signal_timestamp)
+    # OPS-OBSERVABILITY: carry the approval's correlation id forward (fresh
+    # fallback for pre-existing approvals that predate the field).
+    correlation_id = approval.correlation_id or new_correlation_id()
     common = dict(
         approval=approval, account=account, source=source, chat_id=chat_id,
         message_id=message_id, symbol=symbol, direction=direction,
         entry=approval.entry or "", stop_loss=approval.stop_loss or "",
         is_demo=account.is_demo, account_environment=env, signal_timestamp=sig_ts,
-        proposed_by=actor,
+        correlation_id=correlation_id, proposed_by=actor,
     )
 
     # 7. Reject/hold if SL or required TP is missing → HELD plan, no legs.
@@ -288,6 +293,8 @@ def plan_demo_execution(
             return existing
         raise PlanRejected("duplicate_plan", f"approval #{approval.id} already planned")
 
+    log_stage("planning_complete", correlation_id, plan_id=plan.id,
+              symbol=symbol, direction=direction, legs=n, status=plan.status)
     return plan
 
 
