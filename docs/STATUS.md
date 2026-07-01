@@ -6,6 +6,23 @@
 
 ## Execution workstream log
 
+- **2026-06-30 — EXEC-E2a: plan → suppressed, un-claimable shadow jobs (no order).**
+  First rung creating real `ExecutionJob` records (under the recorded D17 sign-off),
+  but suppressed and un-claimable. `execution.signal_promotion.promote_plan_to_shadow_jobs`
+  promotes a PLANNED `SignalExecutionPlan` into one `PLACE_ORDER_SHADOW` job per leg
+  (`execution_mode=SHADOW`), linking `ProposedOrderLeg.execution_job`. No order, no
+  MT5/`order_send`/`order_check`/agent/network call, no executable PLACE_ORDER job
+  (AST guard). Three suppression layers: the SHADOW flag, no deployed consumer
+  requests the type, and a new **`next_job` endpoint guard** that serves shadow
+  jobs only to a `worker_permissions.shadow_worker` caller (none exists). Added
+  `ExecutionControl.signal_execution_mode` (SHADOW gate), `PROMOTED` statuses,
+  `PromotionAuditEvent`, idempotency, re-validated gates, operator command
+  `promote_plan_to_shadow`. 20 new tests; 142 execution+signal_intake+admin_ops+
+  strategies + governance green on local Postgres. Backend only; no worker/bridge
+  change, no deployment, no production access/migration. E2b (shadow worker +
+  bridge dry-run on the production MT5 box) remains separately deployment-gated.
+  Detail: `backend/execution/SHADOW_PROMOTION.md`.
+
 - **2026-06-30 — EXEC-E1b-R2: fail-closed robustness cleanup (no order).**
   From the PR #48 review: `_signal_timestamp` now makes naive parsed timestamps
   timezone-aware (falls back to the aware `created_at`), so a naive Telegram

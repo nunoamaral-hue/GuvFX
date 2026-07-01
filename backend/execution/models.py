@@ -136,6 +136,11 @@ class ExecutionJob(models.Model):
         SYNC_POSITIONS = "SYNC_POSITIONS", "Sync positions"
         PLACE_TEST_ORDER = "PLACE_TEST_ORDER", "Place test order (demo)"
         PLACE_ORDER = "PLACE_ORDER", "Place order (strategy signal)"
+        # EXEC-E2a — a SUPPRESSED, un-claimable shadow job promoted from a demo
+        # plan. Distinct from PLACE_ORDER so no deployed worker claims it, and
+        # served by next_job only to a shadow_worker (see views.next_job guard).
+        # No consumer executes it in E2a; it places no order.
+        PLACE_ORDER_SHADOW = "PLACE_ORDER_SHADOW", "Place order (shadow / suppressed — no order)"
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
@@ -292,6 +297,10 @@ KILL_SWITCH_BLOCKED_JOB_TYPES = (
     ExecutionJob.JobType.OPEN_TRADE,
     ExecutionJob.JobType.PLACE_ORDER,
     ExecutionJob.JobType.PLACE_TEST_ORDER,
+    # EXEC-E2a — belt-and-braces: the kill switch also blocks creating a shadow
+    # job. (Not load-bearing — a shadow job no consumer executes cannot reach a
+    # broker regardless — but keeps promotion fail-closed under an engaged kill.)
+    ExecutionJob.JobType.PLACE_ORDER_SHADOW,
 )
 
 
@@ -393,6 +402,12 @@ class ExecutionControl(models.Model):
 
     SINGLETON_ID = 1
 
+    class SignalExecutionMode(models.TextChoices):
+        # EXEC-E2a — the ONLY valid value today. Promotion refuses anything else.
+        # LIVE is intentionally NOT defined; enabling real placement is a separate,
+        # far-future, separately-gated packet (E3+).
+        SHADOW = "SHADOW", "Shadow (suppressed — no order placed)"
+
     kill_switch_engaged = models.BooleanField(
         default=False,
         help_text="When true, the signal-proposal bridge fails closed.",
@@ -400,6 +415,12 @@ class ExecutionControl(models.Model):
     signal_proposals_enabled = models.BooleanField(
         default=True,
         help_text="Signal-specific disable: blocks proposals without a full kill.",
+    )
+    signal_execution_mode = models.CharField(
+        max_length=16,
+        choices=SignalExecutionMode.choices,
+        default=SignalExecutionMode.SHADOW,
+        help_text="E2a global gate: promotion only proceeds in SHADOW mode.",
     )
     reason = models.TextField(blank=True)
     updated_by = models.ForeignKey(
@@ -636,6 +657,7 @@ class SignalExecutionPlan(models.Model):
         HELD = "HELD", "Held (data/safety)"
         VOIDED = "VOIDED", "Voided"
         SUPERSEDED = "SUPERSEDED", "Superseded"
+        PROMOTED = "PROMOTED", "Promoted to shadow jobs (no order placed)"
 
     class Direction(models.TextChoices):
         BUY = "BUY", "Buy"
@@ -720,6 +742,7 @@ class ProposedOrderLeg(models.Model):
         PLANNED = "PLANNED", "Planned (no order placed)"
         HELD = "HELD", "Held"
         VOIDED = "VOIDED", "Voided"
+        PROMOTED = "PROMOTED", "Promoted to a shadow job (no order placed)"
 
     plan = models.ForeignKey(
         SignalExecutionPlan, on_delete=models.CASCADE, related_name="legs",
@@ -731,6 +754,13 @@ class ProposedOrderLeg(models.Model):
     order_type = models.CharField(max_length=8, default="MARKET")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PLANNED)
     hold_reason = models.CharField(max_length=64, blank=True)
+    # EXEC-E2a — link to the SUPPRESSED shadow ExecutionJob promoted from this leg
+    # (one leg ↔ one shadow job). OneToOne ⇒ duplicate-promotion is impossible.
+    execution_job = models.OneToOneField(
+        "execution.ExecutionJob",
+        null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="proposed_order_leg",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -787,6 +817,52 @@ class PlanAuditEvent(models.Model):
         ordering = ["-created_at"]
         verbose_name = "Plan Audit Event"
         verbose_name_plural = "Plan Audit Events"
+
+    def __str__(self) -> str:
+        return f"{self.event} @ {self.created_at:%Y-%m-%d %H:%M:%S}"
+
+
+class PromotionAuditEvent(models.Model):
+    """Append-only audit for EXEC-E2a plan → shadow-job promotion.
+
+    Extends the signal audit chain (SignalAuditEvent → ProposalAuditEvent →
+    PlanAuditEvent) with the promotion lifecycle, linked to plan/leg/job/approval
+    so the full chain signal → plan → leg → suppressed job is traceable.
+    """
+
+    class Event(models.TextChoices):
+        PROMOTION_CREATED = "PROMOTION_CREATED", "Promotion created (no order)"
+        JOB_CREATED = "JOB_CREATED", "Shadow job created (no order)"
+        PROMOTION_REJECTED = "PROMOTION_REJECTED", "Promotion rejected"
+
+    event = models.CharField(max_length=32, choices=Event.choices)
+    plan = models.ForeignKey(
+        SignalExecutionPlan, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="promotion_audit_events",
+    )
+    leg = models.ForeignKey(
+        ProposedOrderLeg, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="promotion_audit_events",
+    )
+    job = models.ForeignKey(
+        ExecutionJob, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="promotion_audit_events",
+    )
+    approval = models.ForeignKey(
+        "signal_intake.PendingSignalApproval", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="promotion_audit_events",
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="+",
+    )
+    detail = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Promotion Audit Event"
+        verbose_name_plural = "Promotion Audit Events"
 
     def __str__(self) -> str:
         return f"{self.event} @ {self.created_at:%Y-%m-%d %H:%M:%S}"
