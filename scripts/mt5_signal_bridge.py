@@ -898,6 +898,126 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # =============================================================================
+# =============================================================================
+# EXEC-E2b — SHADOW dry-run: mt5.order_check() ONLY, never mt5.order_send()
+# =============================================================================
+# shadow_order_check runs the SAME demo validation and builds the EXACT SAME MT5
+# request as execute_demo_order (above), then calls mt5.order_check(request) —
+# a broker-side validation that computes margin/retcode WITHOUT placing a trade.
+# It NEVER calls mt5.order_send: no order, no ticket, no deal. execute_demo_order
+# is left byte-for-byte unchanged; a test pins that shadow_order_check builds an
+# identical request. Called by the HTTP handler for POST /mt5/order_check.
+
+
+def shadow_order_check(params: Dict[str, Any]) -> Dict[str, Any]:
+    """SHADOW dry-run of a demo market order: validate + order_check, NO order_send.
+
+    Returns validation diagnostics (retcode, margin, free margin, comment,
+    request). Never places a trade — there is no ``mt5.order_send`` call in this
+    function.
+    """
+    symbol = str(params.get("symbol", "")).upper()
+    side = str(params.get("side", "")).upper()
+    lots = float(params.get("lots", 0))
+    magic = int(params.get("magic", 0))
+    comment = str(params.get("comment", ""))
+
+    # --- Safety validation (identical to execute_demo_order — nothing bypassed) ---
+    if symbol not in DEMO_ORDER_ALLOWED_SYMBOLS:
+        return {"ok": False, "shadow": True, "error": "symbol_not_allowed", "detail": f"{symbol} not in {DEMO_ORDER_ALLOWED_SYMBOLS}"}
+    if side not in DEMO_ORDER_ALLOWED_SIDES:
+        return {"ok": False, "shadow": True, "error": "side_not_allowed", "detail": f"{side} not in {DEMO_ORDER_ALLOWED_SIDES}"}
+    if lots <= 0 or lots > DEMO_ORDER_MAX_LOT_SIZE:
+        return {"ok": False, "shadow": True, "error": "lots_out_of_range", "detail": f"lots={lots}, max={DEMO_ORDER_MAX_LOT_SIZE}"}
+    if not comment:
+        return {"ok": False, "shadow": True, "error": "comment_required"}
+
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return {"ok": False, "shadow": True, "error": "mt5_not_installed"}
+
+    init_kwargs = {}
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+
+    if not mt5.initialize(**init_kwargs):
+        return {"ok": False, "shadow": True, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
+
+    try:
+        # Verify account is demo (broker truth — same check as the live path).
+        account_info = mt5.account_info()
+        if account_info is None:
+            return {"ok": False, "shadow": True, "error": "account_info_failed"}
+        if account_info.trade_mode != 0:  # 0=DEMO, 1=CONTEST, 2=REAL
+            return {"ok": False, "shadow": True, "error": "account_not_demo", "detail": f"trade_mode={account_info.trade_mode}"}
+
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            return {"ok": False, "shadow": True, "error": "symbol_not_found"}
+        if not symbol_info.visible:
+            if not mt5.symbol_select(symbol, True):
+                return {"ok": False, "shadow": True, "error": "symbol_select_failed"}
+
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            return {"ok": False, "shadow": True, "error": "tick_failed"}
+
+        order_type = mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL
+        price = tick.ask if side == "BUY" else tick.bid
+
+        # EXACT SAME request dict as execute_demo_order.
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lots,
+            "type": order_type,
+            "price": price,
+            "deviation": int(params.get("deviation", 20)),
+            "magic": magic,
+            "comment": comment[:31],
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        sl = params.get("sl")
+        tp = params.get("tp")
+        if sl is not None:
+            request["sl"] = float(sl)
+        if tp is not None:
+            request["tp"] = float(tp)
+
+        logger.info(
+            f"[/mt5/order_check] SHADOW validating (NO order): {symbol} {side} {lots} @ {price} "
+            f"comment='{comment[:31]}'"
+        )
+        # DRY RUN — validation only. There is deliberately NO mt5.order_send here.
+        check = mt5.order_check(request)
+        if check is None:
+            return {"ok": False, "shadow": True, "error": "order_check_none",
+                    "detail": str(mt5.last_error()), "request": request}
+
+        # order_check retcode 0 == request is valid (would be accepted).
+        return {
+            "ok": bool(check.retcode == 0),
+            "shadow": True,
+            "suppressed": True,
+            "order_send_called": False,
+            "retcode": int(check.retcode),
+            "comment": getattr(check, "comment", ""),
+            "margin": getattr(check, "margin", None),
+            "free_margin": getattr(check, "margin_free", None),
+            "balance": getattr(check, "balance", None),
+            "request": request,
+        }
+
+    except Exception as e:
+        logger.exception(f"[/mt5/order_check] Exception: {e}")
+        return {"ok": False, "shadow": True, "error": "exception", "detail": str(e)}
+
+    finally:
+        mt5.shutdown()
+
+
 # Deals Snapshot (GET /mt5/snapshots/deals — used by SYNC_POSITIONS worker)
 # =============================================================================
 
@@ -1249,6 +1369,8 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/mt5/order":
                 self._handle_order_request()
+            elif path == "/mt5/order_check":
+                self._handle_order_check_request()
             elif path == "/mt5/close-position":
                 self._handle_close_position_request()
             elif path == "/mt5/login-and-validate":
@@ -1281,6 +1403,30 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
             return
 
         result = execute_demo_order(body)
+        status_code = 200 if result.get("ok") else 400
+        self._send_json_response(result, status_code)
+
+    def _handle_order_check_request(self):
+        """Handle POST /mt5/order_check — SHADOW dry-run (order_check, no order_send)."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            self._send_json_response({"ok": False, "error": "empty_body"}, 400)
+            return
+
+        raw = self.rfile.read(content_length)
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json_response({"ok": False, "error": "invalid_json"}, 400)
+            return
+
+        required = ["symbol", "side", "lots", "comment"]
+        missing = [k for k in required if k not in body]
+        if missing:
+            self._send_json_response({"ok": False, "error": "missing_fields", "detail": missing}, 400)
+            return
+
+        result = shadow_order_check(body)
         status_code = 200 if result.get("ok") else 400
         self._send_json_response(result, status_code)
 

@@ -66,10 +66,17 @@ python manage.py promote_plan_to_shadow --plan <id>
 Admin is read-only for plans/legs/jobs; only `SignalSourceConfig` (arming) is
 editable. There is no automatic promotion trigger.
 
-## Next (gated, NOT in this packet)
+## Next (gated)
 
-**E2b** — the shadow worker branch (claim `PLACE_ORDER_SHADOW`) + the bridge
-`dry_run` path (which must **add** `mt5.order_check` to `execute_demo_order` after
-the `trade_mode != 0` check and before `order_send`, asserted called 0×). These
-run on the production MT5 box — a separate, deployment-gated, sponsor-gated packet.
-**E3** — real demo placement. Both behind Nuno's recorded sign-off.
+**E2b — BUILT (not deployed).** The worker now claims `PLACE_ORDER_SHADOW` (with
+the `shadow_worker` permission) and calls the bridge's new `/mt5/order_check`
+endpoint (`shadow_order_check`), which runs the same demo validation + builds the
+EXACT SAME MT5 request as `execute_demo_order`, then `mt5.order_check(request)` —
+**never `order_send`**. `execute_demo_order` is byte-for-byte unchanged. See
+`backend/mt5_trade_ingest_worker.py` (`handle_shadow_job`) and
+`scripts/mt5_signal_bridge.py` (`shadow_order_check`), tested in
+`backend/execution/tests_e2b_shadow.py`. It runs on the production MT5 box, so it
+is **deployment-gated**: no shadow worker executes until a `WorkerIdentity` is
+granted `shadow_worker` there (a separate, gated operational action).
+**E3** — real demo placement (remove suppression on demo only). Behind Nuno's
+recorded sign-off.

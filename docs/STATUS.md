@@ -6,6 +6,28 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — EXEC-E2b: shadow worker + bridge mt5.order_check() dry-run (no order).**
+  First MT5 execution rung — proves the full pipeline shadow job → worker → bridge
+  → MT5 validation while guaranteeing `mt5.order_send()` is NEVER called. Worker
+  (`backend/mt5_trade_ingest_worker.py`) gains `handle_shadow_job` + `agent_order_check`
+  and a `PLACE_ORDER_SHADOW` claim; for `execution_mode=SHADOW` it POSTs
+  `/mt5/order_check` (never the live `/mt5/order`), completes SUCCESS storing the
+  validation (retcode/margin/latency — no ticket/deal/order id) or FAILED; LIVE and
+  unknown modes fail closed. Bridge (`scripts/mt5_signal_bridge.py`) gains
+  `shadow_order_check` + `/mt5/order_check` route: same demo validation
+  (is_demo/trade_mode/symbol/lots) and the EXACT SAME MT5 request as
+  `execute_demo_order`, then `mt5.order_check(request)` — never `order_send`.
+  `execute_demo_order` is byte-for-byte unchanged (additive only). 15 tests
+  (mocked MT5): order_check called once / order_send **0×**, shadow request ==
+  live request, live path still calls order_send, demo enforcement preserved,
+  invalid symbol / market-closed / non-demo / tick fail safely, worker routes
+  SHADOW→order_check never live, LIVE/unknown fail closed, SUCCESS stores
+  validation no ticket. 132 execution+signal_intake+strategies + governance green
+  on local Postgres. No new migration. Backend/scripts only — **NO deployment**;
+  no shadow worker runs until a WorkerIdentity is granted `shadow_worker` on the
+  production box (a separate, gated operational action). E3 (real demo placement)
+  remains gated.
+
 - **2026-06-30 — EXEC-E2a: plan → suppressed, un-claimable shadow jobs (no order).**
   First rung creating real `ExecutionJob` records (under the recorded D17 sign-off),
   but suppressed and un-claimable. `execution.signal_promotion.promote_plan_to_shadow_jobs`
