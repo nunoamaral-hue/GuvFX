@@ -100,6 +100,111 @@ def agent_order(payload: dict) -> dict:
     except Exception as e:
         return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
 
+
+def agent_order_check(payload: dict) -> dict:
+    """EXEC-E2b: POST /mt5/order_check on the bridge — SHADOW dry-run.
+
+    The bridge validates via mt5.order_check() and NEVER calls mt5.order_send().
+    This is the ONLY bridge call the shadow path makes; it never touches
+    agent_order (the live /mt5/order → order_send endpoint).
+    """
+    url = f"{AGENT_ORDER_BASE}/mt5/order_check"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"X-GuvFX-Agent-Token": AGENT_TOKEN, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read().decode("utf-8", "ignore")
+            return json.loads(raw) if raw else {"ok": False, "error": "empty_response"}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")[:500]
+        try:
+            return json.loads(body)
+        except Exception:
+            return {"ok": False, "error": f"http_{e.code}", "detail": body}
+    except Exception as e:
+        return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
+
+
+def handle_shadow_job(job: dict) -> dict:
+    """EXEC-E2b: process a PLACE_ORDER_SHADOW job — validate only, place no order.
+
+    Reads ``execution_mode`` (fail-closed on anything but SHADOW), calls the
+    bridge SHADOW dry-run (``agent_order_check`` → ``mt5.order_check``, never
+    ``order_send``), and completes the job SUCCESS (storing the validation
+    diagnostics — no ticket/deal/order id) or FAILED (invalid symbol, margin,
+    market closed, invalid stops). Returns the completion result for testability.
+    Never routes into the live execution path.
+    """
+    job_id = int(job["id"])
+    payload = job.get("payload") or {}
+    mode = str(payload.get("execution_mode", "")).upper()
+
+    # execution_mode handling: only SHADOW is executed here; LIVE and unknown
+    # fail closed (E2b never places an order — LIVE placement is a later, gated
+    # packet). Nothing is ever routed to the live agent_order/order_send path.
+    if mode != "SHADOW":
+        result = {"ok": False, "shadow": True, "order_send_called": False,
+                  "error": "execution_mode_not_shadow", "execution_mode": mode or "(missing)"}
+        complete_job(job_id, "FAILED", result,
+                     f"Shadow job {job_id}: execution_mode={mode or '(missing)'} is not SHADOW — refused")
+        print(f"[SHADOW] REFUSED job_id={job_id}: execution_mode={mode or '(missing)'} (fail-closed, no order)")
+        return result
+
+    symbol = payload.get("symbol")
+    side = payload.get("side")
+    lots = payload.get("lots")
+    comment = payload.get("comment", "")
+    if not all([symbol, side, lots, comment]):
+        result = {"ok": False, "shadow": True, "order_send_called": False,
+                  "error": "missing_payload_fields"}
+        complete_job(job_id, "FAILED", result,
+                     f"Shadow job {job_id} requires symbol, side, lots, comment")
+        return result
+
+    check_payload = {
+        "symbol": symbol, "side": side, "lots": lots,
+        "magic": payload.get("magic", 0), "comment": comment,
+    }
+    if payload.get("sl_price") is not None:
+        check_payload["sl"] = float(payload["sl_price"])
+    if payload.get("tp_price") is not None:
+        check_payload["tp"] = float(payload["tp_price"])
+
+    print(f"[SHADOW] Validating (NO order) job_id={job_id}: {symbol} {side} {lots}")
+    t0 = time.monotonic()
+    check = agent_order_check(check_payload)  # bridge → mt5.order_check, never order_send
+    latency_ms = int((time.monotonic() - t0) * 1000)
+
+    validation = {
+        "shadow": True,
+        "order_send_called": False,   # structural: the shadow path calls only order_check
+        "execution_mode": "SHADOW",
+        "validation_latency_ms": latency_ms,
+        "retcode": check.get("retcode"),
+        "margin": check.get("margin"),
+        "free_margin": check.get("free_margin"),
+        "comment": check.get("comment"),
+        "request": check.get("request"),
+        "error": check.get("error"),
+    }
+
+    if check.get("ok"):
+        complete_job(job_id, "SUCCESS", {**validation, "ok": True}, "")
+        # EXEC-E2b metric line (shadow jobs completed + validation latency).
+        print(f"[SHADOW_METRIC] completed job_id={job_id} retcode={check.get('retcode')} "
+              f"margin={check.get('margin')} latency_ms={latency_ms}")
+        return {**validation, "ok": True}
+
+    err = check.get("error", "order_check_failed")
+    complete_job(job_id, "FAILED", {**validation, "ok": False},
+                 f"Shadow validation failed: {err}")
+    print(f"[SHADOW_METRIC] failed job_id={job_id} error={err} latency_ms={latency_ms}")
+    return {**validation, "ok": False}
+
+
 def to_dt(x):
     if not x:
         return None
@@ -343,10 +448,15 @@ def main():
                 record_beat("ingest_worker", interval_s=60)
             except Exception:
                 pass
-            # Claim priority: PLACE_TEST_ORDER > PLACE_ORDER > SYNC_POSITIONS
+            # Claim priority: PLACE_TEST_ORDER > PLACE_ORDER > PLACE_ORDER_SHADOW
+            # > SYNC_POSITIONS. The shadow claim yields a job ONLY if this worker's
+            # WorkerIdentity carries worker_permissions.shadow_worker (next_job
+            # endpoint guard); otherwise it returns nothing — no behaviour change
+            # for workers without that permission.
             job = (
                 claim_next_job("PLACE_TEST_ORDER")
                 or claim_next_job("PLACE_ORDER")
+                or claim_next_job("PLACE_ORDER_SHADOW")
                 or claim_next_job()
             )
             if not job:
@@ -357,6 +467,12 @@ def main():
             jt = job.get("job_type")
             payload = job.get("payload") or {}
             account_id = int(job.get("account"))
+
+            # EXEC-E2b: SHADOW jobs go to the dry-run path (order_check only),
+            # NEVER the live PLACE_ORDER/order_send path below.
+            if jt == "PLACE_ORDER_SHADOW":
+                handle_shadow_job(job)
+                continue
 
             if jt in ("PLACE_TEST_ORDER", "PLACE_ORDER"):
                 # --- Order execution via Windows agent ---
