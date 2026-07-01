@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — E3-RUNTIME-RISK-CONTROLS: pre-E3 runtime risk gates (shadow-only, no order).**
+  Additive, fail-closed risk controls required before any demo-live path. New
+  `execution/risk_controls.py` (`evaluate_promotion_risk`, pure/fail-closed) wired
+  into `signal_promotion._validate`: per-account + per-symbol exposure, max
+  open-positions/active-jobs, daily drawdown, and concurrent-position enforcement —
+  each blocks via `PromotionRejected` (persisted `PROMOTION_REJECTED` audit). Exposure
+  counts BOTH paths on the shared account (open `Trade`s + `PROMOTED`-plan leg lots,
+  per Blueprint 06). Runtime staleness re-check added to the worker's
+  `handle_shadow_job` (refuses a stale shadow job before `order_check`); `signal_timestamp`
+  propagated into the shadow payload. No `order_send`, no E3 LIVE mode, no kill-switch
+  change; within-limit fresh promotions and timestamp-less dry-run jobs are unaffected.
+  10 new tests (each control blocks + clean promotes + fail-closed + worker staleness);
+  166 execution+signal_intake tests green on local Postgres. No migration. Caps are
+  env-overridable — see `backend/execution/RISK_CONTROLS.md`. Repo-only — **NO deployment**.
+
 - **2026-07-01 — OPS-OBSERVABILITY-FOUNDATION: execution lifecycle logging + metrics (additive, no order).**
   End-to-end structured visibility for every shadow execution attempt, ahead of E3.
   A single `correlation_id` is minted at signal receipt and propagated
