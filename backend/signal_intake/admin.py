@@ -14,7 +14,11 @@ class PendingSignalApprovalAdmin(admin.ModelAdmin):
     )
     list_filter = ("status", "source", "direction")
     search_fields = ("message_id", "symbol")
-    readonly_fields = ("created_at", "reviewed_at")
+    # E3-APPROVAL-RBAC: the review decision fields are read-only in the change
+    # form — status may ONLY change via the gated approve/reject actions (which
+    # enforce review_signals + write the audit). Editing status directly in the
+    # form would otherwise bypass the RBAC gate and the audit trail.
+    readonly_fields = ("status", "reviewer", "reviewed_at", "review_notes", "created_at")
     actions = ("action_approve", "action_reject")
 
     # E3-APPROVAL-RBAC: the approve/reject actions require the dedicated
