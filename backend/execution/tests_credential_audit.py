@@ -51,6 +51,13 @@ class CredentialAuditTests(TestCase):
             self.assertEqual(e.entity_id, SHADOW)
             self.assertEqual(e.metadata.get("actor"), "provision_shadow_worker")
 
+    def test_reprovision_same_token_is_not_a_rotation(self):
+        self._provision(token=TOKEN)          # CREATED
+        self._provision(token=TOKEN)          # same secret -> NOT a rotation
+        types = [e.event_type for e in _cred_events()]
+        self.assertEqual(types.count("CREDENTIAL_CREATED"), 1)
+        self.assertEqual(types.count("CREDENTIAL_ROTATED"), 0)  # no spurious rotation
+
     def test_no_secret_value_in_any_audit_metadata(self):
         self._provision()
         self._provision(token=TOKEN)

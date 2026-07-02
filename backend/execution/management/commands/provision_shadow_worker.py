@@ -89,29 +89,34 @@ class Command(BaseCommand):
                 "(the secret is never accepted as a CLI argument)"
             )
 
+        new_hash = WorkerIdentity.hash_secret(token)
         obj, created = WorkerIdentity.objects.get_or_create(
             worker_id=worker_id,
             defaults={
-                "worker_secret_hash": WorkerIdentity.hash_secret(token),
+                "worker_secret_hash": new_hash,
                 "worker_permissions": {"shadow_worker": True},
                 "status": WorkerIdentity.Status.ACTIVE,
             },
         )
+        secret_changed = False
         if not created:
+            secret_changed = obj.worker_secret_hash != new_hash  # compare BEFORE overwrite
             perms = dict(obj.worker_permissions or {})
             perms["shadow_worker"] = True
             obj.worker_permissions = perms
-            obj.worker_secret_hash = WorkerIdentity.hash_secret(token)
+            obj.worker_secret_hash = new_hash
             obj.status = WorkerIdentity.Status.ACTIVE
             obj.save(update_fields=["worker_secret_hash", "worker_permissions", "status"])
 
-        # Credential lifecycle audit — CREATED on first provision, ROTATED when the
-        # secret hash is re-set on an existing identity. The secret is never logged.
-        log_credential_event(
-            "CREATED" if created else "ROTATED",
-            entity_type="WorkerIdentity", entity_id=worker_id,
-            actor="provision_shadow_worker",
-        )
+        # Credential lifecycle audit — CREATED on first provision, ROTATED only when
+        # the secret hash actually changed (re-provisioning the SAME token is not a
+        # rotation and emits no credential event). The secret is never logged.
+        if created:
+            log_credential_event("CREATED", entity_type="WorkerIdentity",
+                                 entity_id=worker_id, actor="provision_shadow_worker")
+        elif secret_changed:
+            log_credential_event("ROTATED", entity_type="WorkerIdentity",
+                                 entity_id=worker_id, actor="provision_shadow_worker")
 
         # Never print the secret — only the id and resulting state.
         self.stdout.write(
