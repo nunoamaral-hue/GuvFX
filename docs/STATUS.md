@@ -6,6 +6,24 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — SIGNAL-ACQUISITION-MVP-CORE: provider platform Phase 1 (repo-only, no order).**
+  The acquisition core (no Telegram/listener/session). New `signal_intake` models
+  `SignalProvider` (status lifecycle ONBOARDING/ARMED/PAUSED/INACTIVE/RETIRED,
+  chat-id trust boundary, per-provider window), `ParserProfile`, `AcquiredMessage`
+  (append-only ledger + `(provider,message_id)` dedup key), `SignalUpdate`
+  (recorded-not-acted); nullable `PendingSignalApproval.provider`; additive migration
+  `0004`. New `signal_intake/parsers.py` registry (`wayond_v1` wraps the deployed
+  Wayond parser) and `acquisition.py` **pure fail-closed dispatcher** `acquire_message`
+  (dedup → armed → 5–10 min staleness → edit/media/empty guard → parser dispatch →
+  route: tradeable→intake / update→recorded / else→quarantine → watermark +
+  last_signal_at). `onboard_provider` command; admin (providers editable, ledgers
+  read-only). The dispatcher imports **only** signal_intake (+ the shared parser) —
+  never `execution` (AST-guarded), never `order_send`. Existing manual ladder
+  unchanged; `intake_parsed` additively accepts a provider. 14 new tests (intake,
+  dedup, stale, edit/media/empty/unknown quarantine, update, non-armed drop, unknown
+  parser fail-closed, watermark, onboard, boundary). 203 signal_intake+execution
+  tests green on local Postgres. Repo-only — **NO deployment, no listener, no order.**
+
 - **2026-07-01 — SEC-CREDENTIAL-ROTATION: credential-lifecycle audit + rotation framework (repo-only, no order).**
   Last pre-E3 must-fix. **Repo-only + docs** — no prod secret rotated, no secret/`.env`
   printed (only credential *surfaces* reviewed). New `core.audit.log_credential_event`

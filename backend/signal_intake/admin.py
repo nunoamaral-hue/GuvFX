@@ -3,7 +3,14 @@
 from django.contrib import admin, messages
 
 from . import services
-from .models import PendingSignalApproval, SignalAuditEvent
+from .models import (
+    AcquiredMessage,
+    ParserProfile,
+    PendingSignalApproval,
+    SignalAuditEvent,
+    SignalProvider,
+    SignalUpdate,
+)
 
 
 @admin.register(PendingSignalApproval)
@@ -66,6 +73,80 @@ class SignalAuditEventAdmin(admin.ModelAdmin):
     list_display = ("timestamp", "event", "approval", "actor")
     list_filter = ("event",)
     readonly_fields = ("timestamp", "actor", "event", "approval", "detail")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+# --- SIGNAL-ACQUISITION-MVP admin (providers editable; ledger read-only) ------
+
+
+@admin.register(ParserProfile)
+class ParserProfileAdmin(admin.ModelAdmin):
+    list_display = ("slug", "version", "active", "created_at")
+    list_filter = ("active",)
+
+
+@admin.register(SignalProvider)
+class SignalProviderAdmin(admin.ModelAdmin):
+    list_display = (
+        "slug", "name", "status", "telegram_chat_id", "parser_profile",
+        "acquisition_window_seconds", "last_signal_at", "updated_at",
+    )
+    list_filter = ("status", "parser_profile")
+    search_fields = ("slug", "name", "telegram_chat_id")
+    readonly_fields = ("last_signal_at", "watermark_last_message_id", "created_at", "updated_at")
+    actions = ("action_arm", "action_pause")
+
+    @admin.action(description="Arm selected providers (begin acquisition)")
+    def action_arm(self, request, queryset):
+        armed = 0
+        for p in queryset:
+            if p.telegram_chat_id:
+                p.status = SignalProvider.Status.ARMED
+                p.disabled_reason = ""
+                p.save(update_fields=["status", "disabled_reason", "updated_at"])
+                armed += 1
+        self.message_user(request, f"{armed} provider(s) armed.", level=messages.SUCCESS)
+
+    @admin.action(description="Pause selected providers (stop acquisition)")
+    def action_pause(self, request, queryset):
+        queryset.update(status=SignalProvider.Status.PAUSED)
+        self.message_user(request, "Provider(s) paused.", level=messages.SUCCESS)
+
+
+@admin.register(AcquiredMessage)
+class AcquiredMessageAdmin(admin.ModelAdmin):
+    """Read-only acquisition ledger."""
+
+    list_display = ("acquired_at", "provider", "message_id", "outcome", "reason", "approval")
+    list_filter = ("outcome", "provider")
+    search_fields = ("message_id", "chat_id")
+    readonly_fields = tuple(f.name for f in AcquiredMessage._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SignalUpdate)
+class SignalUpdateAdmin(admin.ModelAdmin):
+    """Read-only update ledger (recorded, not acted on in MVP)."""
+
+    list_display = ("created_at", "provider", "message_id", "kind", "reply_to_message_id", "processed")
+    list_filter = ("kind", "processed", "provider")
+    readonly_fields = tuple(f.name for f in SignalUpdate._meta.fields)
 
     def has_add_permission(self, request):
         return False
