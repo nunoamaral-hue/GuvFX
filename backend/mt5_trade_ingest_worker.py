@@ -30,6 +30,11 @@ SLEEP_SEC = float(os.getenv("MT5_WORKER_SLEEP", "2.0"))
 AUTO_SYNC_MAX_RETRIES = int(os.getenv("AUTO_SYNC_MAX_RETRIES", "5"))
 AUTO_SYNC_RETRY_DELAY = float(os.getenv("AUTO_SYNC_RETRY_DELAY", "2.0"))
 
+# E3-RUNTIME-RISK-CONTROLS: a shadow job whose signal aged past this at execution
+# time is refused before validation (runtime staleness re-check). Default matches
+# execution.models.SIGNAL_MAX_AGE_SECONDS.
+STALE_MAX_AGE_SEC = int(os.getenv("MT5_SIGNAL_MAX_AGE_SECONDS", "120"))
+
 
 def _env_truthy(name: str) -> bool:
     """True only for an explicit truthy value of env var ``name`` (default OFF)."""
@@ -201,6 +206,28 @@ def handle_shadow_job(job: dict) -> dict:
                      f"Shadow job {job_id} requires symbol, side, lots, comment")
         _finalize_outcome(False, reason="missing_payload_fields")
         return result
+
+    # E3-RUNTIME-RISK-CONTROLS (runtime staleness re-check): if the signal aged
+    # past STALE_MAX_AGE_SEC while the job waited in the queue, refuse it BEFORE
+    # validation (no order_check). Only applies when a signal_timestamp is present
+    # (directly-created dry-run jobs without one are unaffected). Fail-closed: an
+    # unparseable timestamp is treated as stale.
+    sig_ts_raw = payload.get("signal_timestamp")
+    if sig_ts_raw:
+        try:
+            sig_ts = to_dt(sig_ts_raw)
+            age = (dt_module.datetime.now(dt_module.timezone.utc) - sig_ts).total_seconds()
+            stale = age > STALE_MAX_AGE_SEC
+        except Exception:
+            age, stale = -1, True  # fail-closed: cannot determine age → refuse
+        if stale:
+            result = {"ok": False, "shadow": True, "order_send_called": False,
+                      "error": "stale_at_execution", "age_seconds": int(age)}
+            complete_job(job_id, "FAILED", result,
+                         f"Shadow job {job_id}: signal aged {int(age)}s > {STALE_MAX_AGE_SEC}s at execution — refused")
+            print(f"[SHADOW] STALE job_id={job_id}: age={int(age)}s (no order_check, no order)")
+            _finalize_outcome(False, reason="stale_at_execution")
+            return result
 
     check_payload = {
         "symbol": symbol, "side": side, "lots": lots,

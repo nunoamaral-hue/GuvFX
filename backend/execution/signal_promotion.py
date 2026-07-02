@@ -27,6 +27,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from core.observability import log_stage
+from execution.risk_controls import evaluate_promotion_risk
 from execution.models import (
     MAX_TOTAL_LOT_PER_SIGNAL,
     SIGNAL_ALLOWED_SYMBOLS,
@@ -79,6 +80,9 @@ def _shadow_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg) -> dict:
         # OPS-OBSERVABILITY: propagate the correlation id into the job payload so
         # the worker can log stages 5-9 under the same id.
         "correlation_id": plan.correlation_id,
+        # E3-RUNTIME-RISK-CONTROLS: carry the signal timestamp so the worker can
+        # re-check staleness before it validates (runtime staleness re-check).
+        "signal_timestamp": plan.signal_timestamp.isoformat() if plan.signal_timestamp else None,
         "windows_username": windows_username,
     }
 
@@ -134,6 +138,13 @@ def _validate(plan: SignalExecutionPlan, *, now) -> None:
         total += leg.lot_size
     if total > Decimal(MAX_TOTAL_LOT_PER_SIGNAL):
         raise PromotionRejected("total_lot_exceeds_cap", f"total {total} > {MAX_TOTAL_LOT_PER_SIGNAL}")
+
+    # E3-RUNTIME-RISK-CONTROLS — pre-E3 runtime risk gates (exposure, max-open,
+    # drawdown, concurrent). Fail-closed. Raises PromotionRejected (→ a persisted
+    # PROMOTION_REJECTED audit) so every block decision is audited. Places no order.
+    risk_reason = evaluate_promotion_risk(plan, legs)
+    if risk_reason:
+        raise PromotionRejected(risk_reason, f"runtime risk control blocked promotion: {risk_reason}")
 
 
 def promote_plan_to_shadow_jobs(plan: SignalExecutionPlan, *, actor=None, now=None) -> list:
