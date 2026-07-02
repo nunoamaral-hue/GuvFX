@@ -134,3 +134,15 @@ class ApprovalRbacTests(TestCase):
         self.assertTrue(User.objects.get(pk=self.staff.pk).has_perm(services.REVIEW_PERMISSION))
         call_command("grant_signal_reviewer", "plain-staff", "--revoke", stdout=out)
         self.assertFalse(User.objects.get(pk=self.staff.pk).has_perm(services.REVIEW_PERMISSION))
+
+    def test_grant_command_works_by_email(self):
+        out = StringIO()
+        call_command("grant_signal_reviewer", "staff@x.invalid", stdout=out)
+        self.assertTrue(User.objects.get(pk=self.staff.pk).has_perm(services.REVIEW_PERMISSION))
+        call_command("grant_signal_reviewer", "staff@x.invalid", "--revoke", stdout=out)
+        self.assertFalse(User.objects.get(pk=self.staff.pk).has_perm(services.REVIEW_PERMISSION))
+
+    def test_grant_command_unknown_user_errors(self):
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command("grant_signal_reviewer", "nobody-here", stdout=StringIO())
