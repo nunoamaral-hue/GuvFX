@@ -61,8 +61,12 @@ def _classify(provider, message, mid, chat_id, tg_date, now):
             return O.DROPPED_NOT_ARMED, f"provider status={provider.status}", None
 
         # Staleness window (Nuno's 5-10 min rule; per-provider override).
+        # FAIL-CLOSED: a message whose date cannot be determined has indeterminate
+        # freshness → dismiss as STALE rather than parse it.
         window = provider.acquisition_window_seconds or 600
-        if tg_date is not None and (now - tg_date).total_seconds() > window:
+        if tg_date is None:
+            return O.STALE, "indeterminate_date", None
+        if (now - tg_date).total_seconds() > window:
             return O.STALE, f"age>{window}s", None
 
         # Edit guard — an edited signal is suspicious; never mutate the original.

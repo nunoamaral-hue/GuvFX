@@ -87,6 +87,12 @@ class AcquisitionDispatcherTests(TestCase):
         self.assertIsNone(acq.approval)
         self.assertEqual(PendingSignalApproval.objects.count(), 0)  # never parsed
 
+    def test_indeterminate_date_dismissed_fail_closed(self):
+        acq = self._acq({"message_id": "2b", "chat_id": "1001", "text": SIGNAL_MSG})  # no date
+        self.assertEqual(acq.outcome, self.O.STALE)
+        self.assertEqual(acq.reason, "indeterminate_date")
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)  # freshness unknown → not parsed
+
     # --- edit / media / empty guards --------------------------------------
     def test_edited_message_quarantined(self):
         acq = self._acq(self._msg("3", edit_date=1))
