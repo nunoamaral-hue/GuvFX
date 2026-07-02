@@ -54,9 +54,14 @@ List active problems with reproduction steps and workarounds.
 - **Storage not provisioned — data workstream blocked.** `GUVFX_DATA_ROOT` /
   `GuvFXData` does not exist on the controller; GFX-PKT-006D-A2-P5 correctly stops
   at its storage gate. Resolved only by owner action GFX-PKT-006D-S1 (NAS creds).
-- **Broker-server timezone UNVERIFIED.** MT5 bar times are broker-server time, not
-  guaranteed UTC. Do not hardcode an offset and do not publish any normalised
-  dataset until the demo source (TradersWay-Demo) timezone is evidenced.
+- **Broker-server timezone — summer offset VERIFIED (UTC+3), winter re-probe pending.**
+  GFX-PKT-006D-TZ-PROBE (2026-07-01, read-only) evidenced TradersWay-Demo server time
+  = **UTC+3** (EEST) via a fresh EURUSD M1 bar vs NTP-synced UTC — see
+  `docs/evidence/broker_timezone_evidence_v1.md`. **DST-dependent:** this is the
+  summer offset only; likely UTC+2 in winter. Re-probe after the EU DST transition
+  (late Oct 2026) for a year-round mapping. Downstream must READ the recorded offset,
+  never hardcode; no winter entry exists yet, so do not rely on the mapping across a
+  DST boundary.
 - **MT5 runtime is desktop-session dependent.** `initialize()` succeeds only with
   the autologon/kiosk console session present (H1 confirmed a single logoff is
   re-created by autologon within seconds). Headless/service-managed model unproven
