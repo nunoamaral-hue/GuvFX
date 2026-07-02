@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — E3-APPROVAL-RBAC: dedicated signal-reviewer permission (fail-closed, no order).**
+  Pre-E3 must-fix (gap Area 6/7). Approving/rejecting a signal now requires the
+  dedicated `signal_intake.review_signals` permission — plain Django-admin/staff
+  access is no longer sufficient. Service layer enforces fail-closed
+  (`services.can_review`: None/inactive/unauthorised/error → deny) with a persisted
+  `APPROVAL_DENIED` audit written BEFORE the atomic block (survives the raise);
+  admin approve/reject actions are hidden from unauthorised staff (Django action
+  `permissions=["review"]`) with the service check as defence-in-depth. Who
+  approved/rejected is recorded (reviewer FK + SIGNAL_APPROVED/REJECTED audit actor).
+  New `manage.py grant_signal_reviewer <user> [--revoke]` (idempotent). Migration
+  `signal_intake.0003` (Meta permission + audit event choice). **Behaviour change
+  (intended):** unauthorised approvals now fail — operators must be granted the
+  permission (E3 checklist item). 10 new tests; 182 execution+signal_intake tests
+  green on local Postgres. No order_send, no deployment.
+
 - **2026-07-01 — E3-NODE-ASSIGNMENT-ENFORCEMENT: terminal-node gate + audit (flag-gated, no order).**
   Pre-E3 must-fix (gap Area 5/8). Promotion now optionally requires the account to
   have an operator-declared **ACTIVE** `TerminalNode`: new

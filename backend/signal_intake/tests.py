@@ -34,6 +34,14 @@ class IntakeTests(TestCase):
         self.user = User.objects.create_user(
             username="op", email="op@example.invalid", password="x"
         )
+        # E3-APPROVAL-RBAC: approve/reject now require the review_signals
+        # permission; grant it to the test operator (and refresh the perm cache).
+        from django.contrib.auth.models import Permission
+        self.user.user_permissions.add(
+            Permission.objects.get(codename="review_signals",
+                                   content_type__app_label="signal_intake")
+        )
+        self.user = User.objects.get(pk=self.user.pk)
 
     def test_parsed_signal_becomes_pending_approval(self):
         a = services.intake_message(SIGNAL_MSG, "m1", actor=self.user)

@@ -29,13 +29,20 @@ never import `execution`.
 - `PendingSignalApproval` — source, `message_id` (dedup key, unique with source),
   symbol/direction/entry/SL/TP, raw payload, status
   (PENDING_APPROVAL/APPROVED/REJECTED/EXPIRED/QUARANTINED), reviewer/reviewed_at/notes.
-- `SignalAuditEvent` — append-only: SIGNAL_RECEIVED / QUARANTINED / APPROVED / REJECTED.
+- `SignalAuditEvent` — append-only: SIGNAL_RECEIVED / QUARANTINED / APPROVED /
+  REJECTED / APPROVAL_DENIED.
 
 ## Services / command
 
 - `services.intake_parsed` / `intake_message` — idempotent on `(source, message_id)`;
   unparseable → quarantined; creates no order.
-- `services.approve` / `reject` — status + audit only.
+- `services.approve` / `reject` — status + audit only. **E3-APPROVAL-RBAC:** both
+  require the dedicated `signal_intake.review_signals` permission (fail-closed —
+  plain staff/admin access is NOT sufficient; superusers qualify). A refused
+  attempt raises `ReviewPermissionDenied` and writes a persisted APPROVAL_DENIED
+  audit; the admin approve/reject actions are hidden from unauthorised staff.
+- `manage.py grant_signal_reviewer <username_or_email> [--revoke]` — idempotent
+  grant/revoke of the reviewer permission (operator entry point).
 - `manage.py ingest_wayond_signals_for_approval [--file export.json]` — shadow batch
   intake (default fixture `signal_intake/fixtures/wayond_signals_sample.json`).
 

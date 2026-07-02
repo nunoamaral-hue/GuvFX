@@ -111,28 +111,68 @@ def ingest_messages(messages, *, actor=None) -> dict:
     }
 
 
-@transaction.atomic
+REVIEW_PERMISSION = "signal_intake.review_signals"
+
+
+class ReviewPermissionDenied(Exception):
+    """Raised when a caller without the ``review_signals`` permission attempts to
+    approve/reject. A persisted APPROVAL_DENIED audit is written first (in
+    autocommit, before the atomic mutation block, so it survives the raise)."""
+
+
+def can_review(reviewer) -> bool:
+    """FAIL-CLOSED reviewer check: an active user holding
+    ``signal_intake.review_signals`` (superusers qualify via has_perm). None,
+    inactive, unauthorised, or any error → False."""
+    try:
+        return bool(
+            reviewer is not None
+            and getattr(reviewer, "is_active", False)
+            and reviewer.has_perm(REVIEW_PERMISSION)
+        )
+    except Exception:
+        return False  # indeterminate permission state must deny, never allow
+
+
+def _require_reviewer(reviewer, approval, action: str) -> None:
+    if can_review(reviewer):
+        return
+    # Audit the refused attempt BEFORE raising (autocommit → persists).
+    _audit(
+        reviewer if getattr(reviewer, "pk", None) else None,
+        SignalAuditEvent.Event.APPROVAL_DENIED, approval,
+        action=action, reviewer=str(reviewer) if reviewer else "(none)",
+    )
+    raise ReviewPermissionDenied(
+        f"{action} denied: reviewer {reviewer!r} lacks {REVIEW_PERMISSION}"
+    )
+
+
 def approve(approval: PendingSignalApproval, *, reviewer=None, notes="") -> PendingSignalApproval:
     """Approve a pending signal. SHADOW: records the decision only.
 
     Deliberately creates NO ExecutionJob and places NO order. The approved status
     is a human decision that a *future*, separately-gated bridge would act on.
+    E3-APPROVAL-RBAC: requires the ``review_signals`` permission (fail-closed).
     """
-    approval.status = PendingSignalApproval.Status.APPROVED
-    approval.reviewer = reviewer
-    approval.reviewed_at = timezone.now()
-    approval.review_notes = notes
-    approval.save(update_fields=["status", "reviewer", "reviewed_at", "review_notes"])
-    _audit(reviewer, SignalAuditEvent.Event.SIGNAL_APPROVED, approval, notes=notes)
+    _require_reviewer(reviewer, approval, "approve")
+    with transaction.atomic():
+        approval.status = PendingSignalApproval.Status.APPROVED
+        approval.reviewer = reviewer
+        approval.reviewed_at = timezone.now()
+        approval.review_notes = notes
+        approval.save(update_fields=["status", "reviewer", "reviewed_at", "review_notes"])
+        _audit(reviewer, SignalAuditEvent.Event.SIGNAL_APPROVED, approval, notes=notes)
     return approval
 
 
-@transaction.atomic
 def reject(approval: PendingSignalApproval, *, reviewer=None, notes="") -> PendingSignalApproval:
-    approval.status = PendingSignalApproval.Status.REJECTED
-    approval.reviewer = reviewer
-    approval.reviewed_at = timezone.now()
-    approval.review_notes = notes
-    approval.save(update_fields=["status", "reviewer", "reviewed_at", "review_notes"])
-    _audit(reviewer, SignalAuditEvent.Event.SIGNAL_REJECTED, approval, notes=notes)
+    _require_reviewer(reviewer, approval, "reject")
+    with transaction.atomic():
+        approval.status = PendingSignalApproval.Status.REJECTED
+        approval.reviewer = reviewer
+        approval.reviewed_at = timezone.now()
+        approval.review_notes = notes
+        approval.save(update_fields=["status", "reviewer", "reviewed_at", "review_notes"])
+        _audit(reviewer, SignalAuditEvent.Event.SIGNAL_REJECTED, approval, notes=notes)
     return approval
