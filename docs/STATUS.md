@@ -6,6 +6,16 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — 006D-TZ-PROBE: broker-server timezone verified UTC+3 (summer), read-only, no order.**
+  Nuno-authorised read-only probe (Option A): compared a fresh EURUSD M1 server-time
+  bar (existing `/mt5/snapshots/rates`) against NTP-synced UTC on TradersWay-Demo
+  (acct 1121106). Result: server = **UTC+3** (EEST) — raw diff 10776 s ≈ 3h, fresh
+  bar (24 s residual, market open), NTP-synced host, VALID. No order/order_check/
+  account change/restart/code change. Evidence: `docs/evidence/broker_timezone_evidence_v1.md`.
+  **DST caveat:** summer offset only; re-probe after the late-Oct-2026 DST transition
+  for the winter (likely UTC+2) entry. This clears one of the three E3 hard blockers
+  (Blueprint doc 06 + Nuno E3 sign-off remain).
+
 - **2026-07-01 — OPS-OBSERVABILITY-FOUNDATION: execution lifecycle logging + metrics (additive, no order).**
   End-to-end structured visibility for every shadow execution attempt, ahead of E3.
   A single `correlation_id` is minted at signal receipt and propagated
