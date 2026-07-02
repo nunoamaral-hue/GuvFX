@@ -66,6 +66,11 @@ class PendingSignalApproval(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
+        # E3-APPROVAL-RBAC: approving/rejecting a signal requires this dedicated
+        # permission — plain Django-admin/staff access is NOT sufficient.
+        permissions = [
+            ("review_signals", "Can approve or reject pending signals"),
+        ]
         constraints = [
             # Deduplication: one record per (source, message_id).
             models.UniqueConstraint(
@@ -87,6 +92,8 @@ class SignalAuditEvent(models.Model):
         SIGNAL_QUARANTINED = "SIGNAL_QUARANTINED", "Signal quarantined"
         SIGNAL_APPROVED = "SIGNAL_APPROVED", "Signal approved (shadow — no order)"
         SIGNAL_REJECTED = "SIGNAL_REJECTED", "Signal rejected"
+        # E3-APPROVAL-RBAC: refused approve/reject attempts are audited too.
+        APPROVAL_DENIED = "APPROVAL_DENIED", "Approve/reject attempt denied (no reviewer permission)"
 
     timestamp = models.DateTimeField(auto_now_add=True)
     actor = models.ForeignKey(
