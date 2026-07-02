@@ -6,6 +6,20 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — E3-NODE-ASSIGNMENT-ENFORCEMENT: terminal-node gate + audit (flag-gated, no order).**
+  Pre-E3 must-fix (gap Area 5/8). Promotion now optionally requires the account to
+  have an operator-declared **ACTIVE** `TerminalNode`: new
+  `risk_controls.node_assignment_block_reason` (control 0) inside the fail-closed
+  `evaluate_promotion_risk` — blocks `account_node_unassigned` / `node_not_active`
+  with the persisted `PROMOTION_REJECTED` audit. **Flag-gated `RISK_REQUIRE_TERMINAL_NODE`,
+  default OFF** (prod accounts currently ride the legacy null-node route — behaviour
+  preserved; enable at E3 after the audit passes). New read-only
+  `manage.py audit_node_assignments [--strict]` reports PASS/FAIL per account (the
+  pre-E3 checklist item). 6 new tests (flag-off unchanged, unassigned/draining
+  blocked + audited, active promotes with node snapshot, audit report + strict exit);
+  172 execution+signal_intake tests green on local Postgres. No migration, no
+  order_send, no deployment.
+
 - **2026-07-01 — E3-RUNTIME-RISK-CONTROLS: pre-E3 runtime risk gates (shadow-only, no order).**
   Additive, fail-closed risk controls required before any demo-live path. New
   `execution/risk_controls.py` (`evaluate_promotion_risk`, pure/fail-closed) wired
