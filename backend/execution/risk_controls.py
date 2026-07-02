@@ -60,6 +60,28 @@ MAX_SYMBOL_EXPOSURE_LOT = _dec_env("RISK_MAX_SYMBOL_EXPOSURE_LOT", MAX_TOTAL_LOT
 MAX_OPEN_POSITIONS_PER_ACCOUNT = _int_env("RISK_MAX_OPEN_POSITIONS", 3)
 MAX_DAILY_DRAWDOWN_ABS = _dec_env("RISK_MAX_DAILY_DRAWDOWN_ABS", "100.00")
 
+
+def _require_terminal_node() -> bool:
+    """E3-NODE-ASSIGNMENT-ENFORCEMENT: opt-in (default OFF) so existing behaviour
+    is preserved — prod accounts currently ride the legacy null-node claim route.
+    Read per-call (not import-time) so tests and a deploy-time enable need no
+    reload. Enable at E3 only after every real account has an ACTIVE node."""
+    return os.getenv("RISK_REQUIRE_TERMINAL_NODE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def node_assignment_block_reason(account) -> str | None:
+    """Terminal-node enforcement for one account (flag-gated, fail-closed by the
+    caller's wrapper). Blocks promotion when the account has no terminal node or
+    its node is not operator-declared ACTIVE (draining/offline/disabled)."""
+    if not _require_terminal_node():
+        return None
+    node = account.terminal_node
+    if node is None:
+        return "account_node_unassigned"
+    if node.status != node.Status.ACTIVE:
+        return "node_not_active"
+    return None
+
 _ORDER_OPENING_JOBS = (
     ExecutionJob.JobType.OPEN_TRADE,
     ExecutionJob.JobType.PLACE_ORDER,
@@ -122,6 +144,11 @@ def evaluate_promotion_risk(plan, legs) -> str | None:
         account_id = plan.account_id
         symbol = plan.symbol
         new_total = sum((leg.lot_size for leg in legs), Decimal("0"))
+
+        # 0: terminal-node assignment enforcement (flag-gated, default OFF)
+        node_reason = node_assignment_block_reason(plan.account)
+        if node_reason:
+            return node_reason
 
         # 1 + 2: exposure (shared budget: open positions + in-flight signal legs)
         acct_exposure = _open_position_lots(account_id) + _active_signal_lots(

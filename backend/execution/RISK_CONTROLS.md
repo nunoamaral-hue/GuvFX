@@ -9,6 +9,7 @@ promotion and shadow-worker execution only.
 
 | # | Control | Where | Block reason code |
 |---|---------|-------|-------------------|
+| 0 | Terminal-node assignment (flag-gated, default OFF) | promotion `_validate` → `evaluate_promotion_risk` | `account_node_unassigned` / `node_not_active` |
 | 1 | Per-account exposure limit | promotion `_validate` → `evaluate_promotion_risk` | `account_exposure_exceeded` |
 | 2 | Per-symbol exposure limit | promotion | `symbol_exposure_exceeded` |
 | 3 | Max open positions / active jobs | promotion | `max_open_positions_reached` |
@@ -41,6 +42,7 @@ staleness check treats an unparseable `signal_timestamp` as stale.
 
 | Env | Default | Meaning |
 |-----|---------|---------|
+| `RISK_REQUIRE_TERMINAL_NODE` | **OFF** | When truthy, promotion requires the account to have an operator-declared ACTIVE terminal node. Default OFF: prod accounts currently ride the legacy null-node claim route; enable at E3 only after `manage.py audit_node_assignments --strict` passes. |
 | `RISK_MAX_ACCOUNT_EXPOSURE_LOT` | `0.10` | Max total open lots per account |
 | `RISK_MAX_SYMBOL_EXPOSURE_LOT` | `MAX_TOTAL_LOT_PER_SIGNAL` (0.06) | Max open lots per account+symbol |
 | `RISK_MAX_OPEN_POSITIONS` | `3` | Max open positions + active order jobs |
