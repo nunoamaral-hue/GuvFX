@@ -25,6 +25,7 @@ import os
 
 from django.core.management.base import BaseCommand, CommandError
 
+from core.audit import log_credential_event
 from execution.models import WorkerIdentity
 
 DEFAULT_SHADOW_WORKER_ID = "mt5-shadow-worker-1"
@@ -73,6 +74,9 @@ class Command(BaseCommand):
                 status=WorkerIdentity.Status.REVOKED,
                 worker_permissions={},
             )
+            if updated:
+                log_credential_event("REVOKED", entity_type="WorkerIdentity",
+                                     entity_id=worker_id, actor="provision_shadow_worker")
             self.stdout.write(
                 f"shadow worker identity '{worker_id}' revoked (rows={updated})"
             )
@@ -100,6 +104,14 @@ class Command(BaseCommand):
             obj.worker_secret_hash = WorkerIdentity.hash_secret(token)
             obj.status = WorkerIdentity.Status.ACTIVE
             obj.save(update_fields=["worker_secret_hash", "worker_permissions", "status"])
+
+        # Credential lifecycle audit — CREATED on first provision, ROTATED when the
+        # secret hash is re-set on an existing identity. The secret is never logged.
+        log_credential_event(
+            "CREATED" if created else "ROTATED",
+            entity_type="WorkerIdentity", entity_id=worker_id,
+            actor="provision_shadow_worker",
+        )
 
         # Never print the secret — only the id and resulting state.
         self.stdout.write(
