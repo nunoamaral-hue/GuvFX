@@ -564,6 +564,42 @@ def log_worker_auth_failed(
 
 
 # =============================================================================
+# Credential Lifecycle Audit (SEC-CREDENTIAL-ROTATION)
+# =============================================================================
+
+CREDENTIAL_ACTIONS = ("CREATED", "ROTATED", "REVOKED")
+
+
+def log_credential_event(
+    action: str,
+    *,
+    entity_type: str,
+    entity_id: str,
+    actor: str = "",
+    request: HttpRequest | None = None,
+    **detail,
+) -> None:
+    """Append-only audit for a credential lifecycle change (create / rotate /
+    revoke). NEVER pass a secret value — record only identifiers, the action, and
+    who performed it (``_sanitize_metadata`` scrubs known secret keys as a further
+    guard). Fail-open via ``log_event``.
+
+    ``action`` should be one of ``CREDENTIAL_ACTIONS``; ``entity_type`` names the
+    credential holder (e.g. ``"WorkerIdentity"``), ``entity_id`` its stable id;
+    ``actor`` is a string label (management commands have no request/user).
+    """
+    act = str(action).upper()
+    log_event(
+        request,
+        event_type=f"CREDENTIAL_{act}",
+        severity="WARN" if act == "REVOKED" else "INFO",
+        entity_type=entity_type,
+        entity_id=str(entity_id),
+        metadata={"action": act, "actor": actor or "(system)", **detail},
+    )
+
+
+# =============================================================================
 # Subscription Mutation Audit Helpers
 # =============================================================================
 

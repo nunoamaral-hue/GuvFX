@@ -25,6 +25,7 @@ import os
 
 from django.core.management.base import BaseCommand, CommandError
 
+from core.audit import log_credential_event
 from execution.models import WorkerIdentity
 
 DEFAULT_SHADOW_WORKER_ID = "mt5-shadow-worker-1"
@@ -73,6 +74,9 @@ class Command(BaseCommand):
                 status=WorkerIdentity.Status.REVOKED,
                 worker_permissions={},
             )
+            if updated:
+                log_credential_event("REVOKED", entity_type="WorkerIdentity",
+                                     entity_id=worker_id, actor="provision_shadow_worker")
             self.stdout.write(
                 f"shadow worker identity '{worker_id}' revoked (rows={updated})"
             )
@@ -85,21 +89,34 @@ class Command(BaseCommand):
                 "(the secret is never accepted as a CLI argument)"
             )
 
+        new_hash = WorkerIdentity.hash_secret(token)
         obj, created = WorkerIdentity.objects.get_or_create(
             worker_id=worker_id,
             defaults={
-                "worker_secret_hash": WorkerIdentity.hash_secret(token),
+                "worker_secret_hash": new_hash,
                 "worker_permissions": {"shadow_worker": True},
                 "status": WorkerIdentity.Status.ACTIVE,
             },
         )
+        secret_changed = False
         if not created:
+            secret_changed = obj.worker_secret_hash != new_hash  # compare BEFORE overwrite
             perms = dict(obj.worker_permissions or {})
             perms["shadow_worker"] = True
             obj.worker_permissions = perms
-            obj.worker_secret_hash = WorkerIdentity.hash_secret(token)
+            obj.worker_secret_hash = new_hash
             obj.status = WorkerIdentity.Status.ACTIVE
             obj.save(update_fields=["worker_secret_hash", "worker_permissions", "status"])
+
+        # Credential lifecycle audit — CREATED on first provision, ROTATED only when
+        # the secret hash actually changed (re-provisioning the SAME token is not a
+        # rotation and emits no credential event). The secret is never logged.
+        if created:
+            log_credential_event("CREATED", entity_type="WorkerIdentity",
+                                 entity_id=worker_id, actor="provision_shadow_worker")
+        elif secret_changed:
+            log_credential_event("ROTATED", entity_type="WorkerIdentity",
+                                 entity_id=worker_id, actor="provision_shadow_worker")
 
         # Never print the secret — only the id and resulting state.
         self.stdout.write(

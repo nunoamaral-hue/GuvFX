@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-07-01 — SEC-CREDENTIAL-ROTATION: credential-lifecycle audit + rotation framework (repo-only, no order).**
+  Last pre-E3 must-fix. **Repo-only + docs** — no prod secret rotated, no secret/`.env`
+  printed (only credential *surfaces* reviewed). New `core.audit.log_credential_event`
+  (`CREDENTIAL_CREATED/ROTATED/REVOKED`, secret-sanitising, fail-open) wired into
+  `provision_shadow_worker` (create/rotate/revoke now audited — item 8, closes the
+  WorkerIdentity-lifecycle gap). `docs/CREDENTIAL_ROTATION.md` covers all 10 items:
+  redacted secret inventory (S1–S7, exposed ones flagged for Nuno rotation),
+  zero-downtime worker-token dual-identity rotation, agent-token 2-sided rotation,
+  Fernet `MultiFernet` re-encrypt approach, **legacy `X-Worker-Token` disablement plan**
+  (`ENABLE_LEGACY_WORKER_TOKEN` defaults `true` — documented, NOT silently flipped),
+  emergency revoke, leak-incident playbook, downtime summary, and the Nuno-held prod
+  actions. 4 new tests (create/rotate/revoke audited, no secret in metadata, fail-open).
+  190 execution+signal_intake+core tests green on local Postgres. No migration, no
+  order_send, no deployment, no credential change.
+
 - **2026-07-01 — E3-APPROVAL-RBAC: dedicated signal-reviewer permission (fail-closed, no order).**
   Pre-E3 must-fix (gap Area 6/7). Approving/rejecting a signal now requires the
   dedicated `signal_intake.review_signals` permission — plain Django-admin/staff
