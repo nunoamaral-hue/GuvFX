@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as _dt
 
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from intelligence.telegram_source import Kind
@@ -111,17 +112,24 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
 
     outcome, reason, approval = _classify(provider, message, mid, chat_id, tg_date, now)
 
-    acq = AcquiredMessage.objects.create(
-        provider=provider, chat_id=chat_id, message_id=mid,
-        outcome=outcome, reason=reason, telegram_date=tg_date,
-        raw_payload={
-            "text": message.get("text") or "",
-            "edit_date": bool(message.get("edit_date")),
-            "reply_to_message_id": message.get("reply_to_message_id"),
-            "media": bool(message.get("media")),
-        },
-        approval=approval,
-    )
+    try:
+        with transaction.atomic():
+            acq = AcquiredMessage.objects.create(
+                provider=provider, chat_id=chat_id, message_id=mid,
+                outcome=outcome, reason=reason, telegram_date=tg_date,
+                raw_payload={
+                    "text": message.get("text") or "",
+                    "edit_date": bool(message.get("edit_date")),
+                    "reply_to_message_id": message.get("reply_to_message_id"),
+                    "media": bool(message.get("media")),
+                },
+                approval=approval,
+            )
+    except IntegrityError:
+        # A concurrent caller won the (provider, message_id) race — return their
+        # row (idempotent; downstream intake_parsed is itself dedup-safe so no
+        # duplicate approval results). Never raises for a duplicate.
+        return AcquiredMessage.objects.get(provider=provider, message_id=mid)
 
     # Bookkeeping: advance watermark + provider health, except for a non-armed drop
     # (a paused/retired provider isn't a live signal source).
