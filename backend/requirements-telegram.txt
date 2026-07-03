@@ -1,0 +1,4 @@
+# GFX Telegram acquisition track — installed ONLY where the provisioning helper /
+# listener run (Nuno's machine or the listener container), NOT in the main backend.
+# Keeps the API/worker images lean; the command lazy-imports Telethon.
+telethon>=1.36,<2

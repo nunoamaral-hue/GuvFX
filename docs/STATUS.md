@@ -6,6 +6,27 @@
 
 ## Execution workstream log
 
+- **2026-07-03 — TELEGRAM-ACCOUNT-PROVISIONING-HELPER: interactive session generator (repo-only, no login run).**
+  Safest/fastest path for Nuno to mint + verify the dedicated **GFX** Telegram account's
+  Telethon StringSession. New `provision_telegram_session` management command
+  (`signal_intake/management/commands/`): reads `TELEGRAM_API_ID/HASH` from env
+  (never CLI/never logged), **lazy-imports** Telethon (backend/image stay lean —
+  Telethon lives only in new `backend/requirements-telegram.txt`), logs in
+  interactively (Nuno types the code Telegram sends — no 2FA yet, deferred),
+  verifies identity via `get_me()` + optional read-only Wayond check
+  (`get_entity` + one `get_messages(limit=1)` → latest id only, no content),
+  prints **only safe metadata** (telegram user id, display name, username, chat
+  title, chat id, latest message id — **never phone, never session**), and writes
+  the session to a **600-mode** file (default `~/.guvfx/telegram_gfx.session`).
+  The session is **NOT printed** unless an explicit `--print-secret` flag is given,
+  which fences it in two loud SECURITY-WARNING banners. Cleanup/revoke note printed
+  (terminate session on the GFX account → re-run; enable 2FA after verification).
+  Operator runbook `docs/TELEGRAM_PROVISIONING.md`. 7 new tests (chmod-600,
+  print-secret gating both branches, metadata excludes phone/session, missing-creds
+  + missing-Telethon guards) — all run **without** Telethon or any real login.
+  **Repo-only — no listener, no ingestion, no provider arming, no deploy, no order.**
+  E3 unaffected (RED).
+
 - **2026-07-01 — SIGNAL-ACQUISITION-MVP-CORE: provider platform Phase 1 (repo-only, no order).**
   The acquisition core (no Telegram/listener/session). New `signal_intake` models
   `SignalProvider` (status lifecycle ONBOARDING/ARMED/PAUSED/INACTIVE/RETIRED,
