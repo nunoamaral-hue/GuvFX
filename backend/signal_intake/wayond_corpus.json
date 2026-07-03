@@ -1,0 +1,14 @@
+{
+  "_README": "PERMANENT Wayond certification corpus. REAL observed messages ONLY — never synthetic (GFX-PKT-WAYOND-PARSER-CERTIFICATION). Each entry Nuno supplies becomes a fixed regression case. expected_type is the human-certified ground truth; the framework asserts the pipeline routes it safely (only ENTRY_SIGNAL may become tradeable). meta flags: is_edit / media / is_reply / stale.",
+  "expected_type_values": ["ENTRY_SIGNAL", "UPDATE", "WARNING", "CHATTER", "STALE", "QUARANTINED", "UNKNOWN"],
+  "messages": [
+    {
+      "id": "warning-nfp-cet-2026-07-03",
+      "source": "observed-in-channel-list-screenshot-2026-07-03",
+      "text": "Remember we have NFP today at 14:30 CET so be carefull trading.",
+      "expected_type": "WARNING",
+      "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
+      "notes": "Real Wayond message seen in the GFX account's chat list (screenshot). Genuinely observed, not synthetic. A news/caution note — must be safely quarantined, never traded."
+    }
+  ]
+}
