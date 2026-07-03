@@ -19,6 +19,7 @@ NOT import ``execution`` and cannot place an order (enforced by tests).
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -28,6 +29,36 @@ from intelligence.telegram_source import Kind
 from .models import AcquiredMessage, SignalProvider, SignalUpdate
 from .parsers import get_parser
 from . import services
+
+logger = logging.getLogger(__name__)
+
+# Whitelisted, scalar media-reference fields the listener may supply — everything
+# else is dropped so raw image BYTES / large blobs never reach the DB (data.md).
+_MEDIA_REF_FIELDS = ("file_id", "file_unique_id", "type", "mime_type",
+                     "width", "height", "duration", "size")
+
+
+def _media_evidence(media):
+    """Coerce listener-supplied media into a SAFE, bounded REFERENCE (never bytes).
+
+    Retains only a small reference so the media is evidence, not stored content
+    (WAYOND-EDIT-MEDIA policy / data.md: no bulk/binary in the DB)."""
+    if not media:
+        return None
+    if isinstance(media, bool):
+        return True
+    if isinstance(media, (int, str)):
+        return str(media)[:256]
+    if isinstance(media, dict):
+        ref = {}
+        for k in _MEDIA_REF_FIELDS:
+            v = media.get(k)
+            if isinstance(v, (bool, int)):
+                ref[k] = v
+            elif isinstance(v, str):
+                ref[k] = v[:256]
+        return ref or {"present": True}
+    return {"present": True}  # unknown shape -> record presence only, never the blob
 
 
 def _to_aware(value):
@@ -127,6 +158,15 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
     # replay) returns the existing row and is NOT reprocessed.
     existing = AcquiredMessage.objects.filter(provider=provider, message_id=mid).first()
     if existing is not None:
+        # Immutable original: an edit to an already-acquired message is NOT diffed in
+        # MVP (deferred — WAYOND_EDIT_MEDIA_POLICY.md). Never overwrite; but log the
+        # edit so it is visible rather than silently swallowed.
+        if message.get("edit_date") and not (existing.raw_payload or {}).get("edit_date"):
+            logger.warning(
+                "wayond edit-after-acquisition (deferred edit-diff): provider=%s "
+                "message_id=%s — original left immutable, not re-reviewed",
+                getattr(provider, "slug", "?"), mid,
+            )
         return existing
 
     outcome, reason, approval = _classify(provider, message, mid, chat_id, tg_date, now)
@@ -141,9 +181,9 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
                     "edit_date": bool(message.get("edit_date")),
                     "reply_to_message_id": message.get("reply_to_message_id"),
                     "media": bool(message.get("media")),
-                    # WAYOND-EDIT-MEDIA: retain the media reference as EVIDENCE (a
-                    # listener-supplied id/type) — image BYTES are never stored (data.md).
-                    "media_evidence": message.get("media") or None,
+                    # WAYOND-EDIT-MEDIA: retain a SAFE, bounded media REFERENCE as
+                    # evidence — image BYTES / large blobs are never stored (data.md).
+                    "media_evidence": _media_evidence(message.get("media")),
                 },
                 approval=approval,
             )

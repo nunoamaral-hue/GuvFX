@@ -138,6 +138,29 @@ class AcquisitionDispatcherTests(TestCase):
         self.assertEqual(su.reply_to_message_id, "orig1")
         self.assertEqual(su.raw_payload.get("origin_acquired_id"), orig.id)   # linked
 
+    def test_edit_after_acquisition_deduped_original_immutable(self):
+        # MVP limitation (deferred edit-diff, WAYOND_EDIT_MEDIA_POLICY.md): an edit to
+        # an already-acquired message is deduped — the ORIGINAL is never overwritten,
+        # no second approval is created, and the edit is logged (not silently lost).
+        a1 = self._acq(self._msg("e1"))                         # clean entry -> INTAKEN
+        self.assertFalse(a1.approval.source_edited)
+        with self.assertLogs("signal_intake.acquisition", level="WARNING") as cm:
+            a2 = self._acq(self._msg("e1", edit_date=1))        # edited re-delivery
+        self.assertEqual(a1.id, a2.id)                          # deduped (same row)
+        a1.approval.refresh_from_db()
+        self.assertFalse(a1.approval.source_edited)             # original immutable
+        self.assertEqual(PendingSignalApproval.objects.count(), 1)   # no duplicate
+        self.assertTrue(any("edit-after-acquisition" in m for m in cm.output))  # visible
+
+    def test_media_evidence_is_a_bounded_reference_not_bytes(self):
+        # A buggy/hostile listener passing a huge blob must NOT land bytes in the DB.
+        big = {"file_id": "abc123", "type": "photo", "bytes": "X" * 100000, "junk": [1] * 9999}
+        acq = self._acq(self._msg("mv", text=SIGNAL_MSG, media=big))
+        ev = acq.raw_payload.get("media_evidence")
+        self.assertEqual(ev, {"file_id": "abc123", "type": "photo"})   # only whitelisted refs
+        self.assertNotIn("bytes", ev)
+        self.assertNotIn("junk", ev)
+
     # --- update recording --------------------------------------------------
     def test_update_recorded_not_intaken(self):
         acq = self._acq(self._msg("6", text=UPDATE_MSG))
