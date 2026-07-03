@@ -6,6 +6,20 @@
 
 ## Execution workstream log
 
+- **2026-07-03 — WAYOND-EDIT-AND-MEDIA-POLICY: dispatcher policy DESIGN (PROPOSED, no code).**
+  Design-only governance doc `docs/WAYOND_EDIT_MEDIA_POLICY.md` resolving how the pipeline
+  should treat edited / media-bearing / reply-quoted Wayond messages (exposed by corpus V1).
+  Grounded in `acquisition.py`: no entry is ever auto-traded (PENDING approval + RBAC),
+  updates are never acted on, and dedup-by-message_id silently swallows edits to
+  already-ingested messages. Recommended MVP: **media → evidence not a hard block** (parse
+  text-bearing media; quarantine screenshot-only), **edited entries → human review /
+  edited updates → recorded** (never overwrite the immutable original), **reply-quoted
+  updates → linked via reply_to_message_id**; edit-diff detection deferred. Challenges the
+  PM default where the approval gate makes "quarantine media entries" over-conservative,
+  and flags that scope-item-10 (edit changes entry/SL/TP) is only partly achievable under
+  current dedup. Amber change → **Nuno ratification required before any dispatcher code**.
+  GOVERNANCE PR held open. No code, no dispatcher change, no order. E3 unaffected (RED).
+
 - **2026-07-03 — WAYOND-CORPUS-SEED-FROM-SCREENSHOTS: corpus V1 from real messages + parser fixes (repo-only, no order).**
   Extracted **21 real Wayond messages** from Nuno's screenshots (24 Jun–02 Jul) into the
   certified corpus (`wayond_corpus.json`) — 7 entries (6 BUY + 1 SELL), 9 updates (TP-hit /
