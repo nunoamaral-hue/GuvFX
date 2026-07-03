@@ -6,6 +6,27 @@
 
 ## Execution workstream log
 
+- **2026-07-03 — WAYOND-EDIT-MEDIA-DISPATCHER: implement ratified edit/media/reply policy (repo-only, no order).**
+  Implements the policy ratified in PR #72. Dispatcher (`acquisition.py`): **media is now
+  EVIDENCE, not a hard blocker** — a text-bearing media message is parsed (media reference
+  retained in `raw_payload.media_evidence`; bytes never stored); a **screenshot-only** message
+  (media, no parseable text) → QUARANTINED `media_only`. **Edited** messages are never
+  auto-intaken: an edited tradeable signal → the existing human-approval gate (INTAKEN,
+  `reason=edited_review`) FLAGGED via new `PendingSignalApproval.source_edited` (migration
+  0005, admin list/filter/readonly) — still human-gated, never auto-traded; an edited update
+  → recorded `SignalUpdate` (`raw_payload.edited=true`), never acted. **Reply-quoted updates**
+  link to the originating `AcquiredMessage` via `reply_to_message_id`
+  (`raw_payload.origin_acquired_id`, soft link). Originals immutable (an edit is a new record).
+  Certification `classify()` updated to mirror the new policy (edit/media no longer force
+  quarantine; only no-text does) + drift guard extended (screenshot-only case). Corpus V1
+  relabelled: edited EURGBP entry QUARANTINED→ENTRY_SIGNAL, edited AUDCAD update
+  QUARANTINED→UPDATE, 4 position-screenshot updates now `media:true` (still certify UPDATE).
+  Corpus CERTIFIED (21, 0 unsafe/fail), confidence MEDIUM (QUARANTINED+UNKNOWN coverage now
+  absent — edited msgs no longer quarantine; no screenshot-only/malformed real message).
+  +5 dispatcher tests (edited-entry-flagged / media-only-quar / media+text-parsed /
+  edited-update-recorded / reply-link). 285 signal_intake+intelligence+execution tests green.
+  ADR-009 boundary intact (no execution import, no order_send). Repo-only. E3 unaffected (RED).
+
 - **2026-07-03 — WAYOND-EDIT-AND-MEDIA-POLICY: dispatcher policy DESIGN (PROPOSED, no code).**
   Design-only governance doc `docs/WAYOND_EDIT_MEDIA_POLICY.md` resolving how the pipeline
   should treat edited / media-bearing / reply-quoted Wayond messages (exposed by corpus V1).

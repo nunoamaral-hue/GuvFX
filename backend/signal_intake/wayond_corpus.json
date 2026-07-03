@@ -62,9 +62,9 @@
       "id": "edited-eurgbp-buy-086070",
       "source": "screenshot-2026-07 wayond 30Jun (edited)",
       "text": "EURGBP | Potential upward movement\n\nEURGBP | BUY 0.86070\n\n❌ Stop Loss 0.85820 (25 pips)\n\n✅TP1 0.86220\n✅TP2 0.86600\n✅TP3 0.87070",
-      "expected_type": "QUARANTINED",
+      "expected_type": "ENTRY_SIGNAL",
       "meta": {"is_edit": true, "media": false, "is_reply": false, "stale": false},
-      "notes": "A BUY ENTRY that arrived EDITED ('8 edited 10:37'). Per the fail-closed edit guard an edited message is QUARANTINED (never traded). FINDING: Wayond edits some signal messages, so an edited entry is dropped — flag for a policy decision (accept first version vs edited)."
+      "notes": "A BUY ENTRY that arrived EDITED ('8 edited 10:37'). Ratified WAYOND-EDIT-MEDIA policy (PR #72): an edited entry is NOT dropped — it is surfaced to the human-approval gate FLAGGED (PendingSignalApproval.source_edited=true) so the reviewer verifies entry/SL/TP. Still human-gated (never auto-traded), so its routing taxonomy is ENTRY_SIGNAL."
     },
     {
       "id": "update-btcusd-tp1-250-movesl",
@@ -95,32 +95,32 @@
       "source": "screenshot-2026-07 wayond 24Jun (reply, position card)",
       "text": "Double trouble\n\nTP2 hit! That gives us +80 pips.",
       "expected_type": "UPDATE",
-      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
-      "notes": "'Double trouble' commentary + TP2-hit (reply to XAUUSD SELL 4086). Original carried an MT5 position screenshot; classified by TEXT (media handling flagged as dispatcher concern; OCR_UNCERTAIN whether the position card is an attachment)."
+      "meta": {"is_edit": false, "media": true, "is_reply": true, "stale": false},
+      "notes": "'Double trouble' commentary + TP2-hit (reply to XAUUSD SELL 4086) carrying an MT5 position screenshot. Ratified policy: media is EVIDENCE, text-bearing message is parsed → UPDATE (media reference retained, bytes not stored)."
     },
     {
       "id": "update-hattrick-tp3-160",
       "source": "screenshot-2026-07 wayond 24Jun (reply, position card)",
       "text": "HATTRICK\n\nTP3 hit! That gives us +160 pips.",
       "expected_type": "UPDATE",
-      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
-      "notes": "'HATTRICK' commentary + TP3-hit (reply to XAUUSD SELL 4086). Original carried a position screenshot; classified by TEXT."
+      "meta": {"is_edit": false, "media": true, "is_reply": true, "stale": false},
+      "notes": "'HATTRICK' commentary + TP3-hit (reply to XAUUSD SELL 4086) with a position screenshot. Media = evidence; parsed from text → UPDATE."
     },
     {
       "id": "update-xauusd-tp1-30-movesl",
       "source": "screenshot-2026-07 wayond 24-25Jun (reply, position card)",
       "text": "TP1 hit! That gives us +30 pips.\n\nMove SL to 3992",
       "expected_type": "UPDATE",
-      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
-      "notes": "TP1-hit + move-SL (reply to XAUUSD BUY 3992). Original carried a position screenshot; classified by TEXT."
+      "meta": {"is_edit": false, "media": true, "is_reply": true, "stale": false},
+      "notes": "TP1-hit + move-SL (reply to XAUUSD BUY 3992) with a position screenshot. Media = evidence; parsed from text → UPDATE."
     },
     {
       "id": "update-audusd-tp1-23-movesl-be",
       "source": "screenshot-2026-07 wayond 01Jul (reply, position card)",
       "text": "TP1 HIT! That gives us +23 pips.\n\nMove SL to BE",
       "expected_type": "UPDATE",
-      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
-      "notes": "TP1-hit (caps 'HIT') + 'Move SL to BE' (break-even, non-numeric) — reply to AUDUSD BUY 0.68920. Recognised via the TP1-HIT token; 'Move SL to BE' has no numeric target so the move-SL regex does not fire (informational). Original carried a position screenshot; classified by TEXT."
+      "meta": {"is_edit": false, "media": true, "is_reply": true, "stale": false},
+      "notes": "TP1-hit (caps 'HIT') + 'Move SL to BE' (break-even, non-numeric) — reply to AUDUSD BUY 0.68920, with a position screenshot. Recognised via the TP1-HIT token; 'Move SL to BE' has no numeric target so the move-SL regex does not fire (informational). Media = evidence; parsed from text → UPDATE."
     },
     {
       "id": "update-sl-hit-btcusd-60350",
@@ -142,9 +142,9 @@
       "id": "edited-audcad-update-tp1-19",
       "source": "screenshot-2026-07 wayond 30Jun (reply, edited)",
       "text": "TP1 hit! That gives us +19 pips.\n\nMove SL to 0.97860",
-      "expected_type": "QUARANTINED",
+      "expected_type": "UPDATE",
       "meta": {"is_edit": true, "media": false, "is_reply": true, "stale": false},
-      "notes": "A TP1-hit + move-SL UPDATE that arrived EDITED ('8 edited 11:59', reply to AUDCAD BUY 0.97860). Edit guard quarantines it (safe — updates are not traded)."
+      "notes": "A TP1-hit + move-SL UPDATE that arrived EDITED ('8 edited 11:59', reply to AUDCAD BUY 0.97860). Ratified policy: an edited update is RECORDED as a SignalUpdate flagged edited (raw_payload.edited=true) and never acted on — routing taxonomy UPDATE."
     },
     {
       "id": "chatter-power-of-right-moment",

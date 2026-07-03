@@ -17,15 +17,20 @@ from .models import (
 class PendingSignalApprovalAdmin(admin.ModelAdmin):
     list_display = (
         "id", "source", "message_id", "symbol", "direction", "entry",
-        "stop_loss", "take_profit", "status", "reviewer", "reviewed_at", "created_at",
+        "stop_loss", "take_profit", "status", "source_edited", "reviewer",
+        "reviewed_at", "created_at",
     )
-    list_filter = ("status", "source", "direction")
+    # WAYOND-EDIT-MEDIA: surface the edited flag so reviewers can see/filter entries
+    # whose source message was edited (verify entry/SL/TP before approving).
+    list_filter = ("status", "source", "direction", "source_edited")
     search_fields = ("message_id", "symbol")
     # E3-APPROVAL-RBAC: the review decision fields are read-only in the change
     # form — status may ONLY change via the gated approve/reject actions (which
     # enforce review_signals + write the audit). Editing status directly in the
-    # form would otherwise bypass the RBAC gate and the audit trail.
-    readonly_fields = ("status", "reviewer", "reviewed_at", "review_notes", "created_at")
+    # form would otherwise bypass the RBAC gate and the audit trail. source_edited
+    # is a system-set provenance flag → read-only too.
+    readonly_fields = ("status", "source_edited", "reviewer", "reviewed_at",
+                       "review_notes", "created_at")
     actions = ("action_approve", "action_reject")
 
     # E3-APPROVAL-RBAC: the approve/reject actions require the dedicated

@@ -174,7 +174,7 @@ class ConfidenceTests(SimpleTestCase):
             ("UPDATE", UPDATE_SHAPE, {}),
             ("WARNING", WARNING_SHAPE, {}),
             ("CHATTER", CHATTER_SHAPE, {}),
-            ("QUARANTINED", SIGNAL_SHAPE, {"media": True}),
+            ("QUARANTINED", "", {"media": True}),   # screenshot-only (no text)
             ("UNKNOWN", "totally random text", {}),
         ]))
         self.assertEqual(conf["level"], "HIGH")
@@ -194,7 +194,7 @@ class ConfidenceTests(SimpleTestCase):
             ("UPDATE", "not really an update", {}),     # DEGRADED (missed)
             ("WARNING", WARNING_SHAPE, {}),
             ("CHATTER", CHATTER_SHAPE, {}),
-            ("QUARANTINED", SIGNAL_SHAPE, {"media": True}),
+            ("QUARANTINED", "", {"media": True}),   # screenshot-only (no text)
             ("UNKNOWN", "random text", {}),
         ]))
         self.assertEqual(conf["level"], "MEDIUM")

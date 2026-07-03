@@ -63,6 +63,10 @@ class PendingSignalApproval(models.Model):
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.PENDING_APPROVAL
     )
+    # WAYOND-EDIT-MEDIA policy: the source Telegram message was EDITED. Such an entry
+    # is surfaced to the human reviewer (not auto-traded — the approval gate still
+    # applies) but visibly flagged so the reviewer verifies entry/SL/TP before approving.
+    source_edited = models.BooleanField(default=False)
     reviewer = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="signal_approvals",
