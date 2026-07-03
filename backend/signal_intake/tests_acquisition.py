@@ -20,6 +20,7 @@ from django.utils import timezone
 from signal_intake.acquisition import acquire_message
 from signal_intake.models import (
     AcquiredMessage,
+    MessageAmendment,
     ParserProfile,
     PendingSignalApproval,
     SignalProvider,
@@ -138,19 +139,59 @@ class AcquisitionDispatcherTests(TestCase):
         self.assertEqual(su.reply_to_message_id, "orig1")
         self.assertEqual(su.raw_payload.get("origin_acquired_id"), orig.id)   # linked
 
-    def test_edit_after_acquisition_deduped_original_immutable(self):
-        # MVP limitation (deferred edit-diff, WAYOND_EDIT_MEDIA_POLICY.md): an edit to
-        # an already-acquired message is deduped — the ORIGINAL is never overwritten,
-        # no second approval is created, and the edit is logged (not silently lost).
+    def test_edit_same_values_records_amendment_no_reflag(self):
+        # WAYOND-EDIT-DIFF: an edit that does NOT change entry/SL/TP records an
+        # immutable amendment but does not re-flag the approval; original untouched.
         a1 = self._acq(self._msg("e1"))                         # clean entry -> INTAKEN
         self.assertFalse(a1.approval.source_edited)
-        with self.assertLogs("signal_intake.acquisition", level="WARNING") as cm:
-            a2 = self._acq(self._msg("e1", edit_date=1))        # edited re-delivery
-        self.assertEqual(a1.id, a2.id)                          # deduped (same row)
+        a2 = self._acq(self._msg("e1", edit_date=1))            # edit, same values
+        self.assertEqual(a1.id, a2.id)                          # original deduped
+        self.assertEqual(PendingSignalApproval.objects.count(), 1)   # no duplicate approval
+        am = MessageAmendment.objects.get(original=a1, message_id="e1")
+        self.assertEqual(am.changed_fields, {})
+        self.assertFalse(am.approval_reflagged)
         a1.approval.refresh_from_db()
-        self.assertFalse(a1.approval.source_edited)             # original immutable
-        self.assertEqual(PendingSignalApproval.objects.count(), 1)   # no duplicate
-        self.assertTrue(any("edit-after-acquisition" in m for m in cm.output))  # visible
+        self.assertFalse(a1.approval.source_edited)             # not re-flagged (unchanged)
+
+    def test_edit_changing_sl_flags_approval_for_rereview(self):
+        # An edit that CHANGES entry/SL/TP creates an amendment with the diff AND flags
+        # the related approval for human re-review — never auto-applied.
+        orig_text = ("XAUUSD | SELL 3350.0\n❌ Stop Loss 3360.0 (100 pips)\n✅ TP1 3335.0")
+        edited_text = ("XAUUSD | SELL 3350.0\n❌ Stop Loss 3400.0 (500 pips)\n✅ TP1 3335.0")
+        a1 = self._acq(self._msg("e2", text=orig_text))
+        self.assertEqual(a1.outcome, self.O.INTAKEN)
+        a2 = self._acq(self._msg("e2", text=edited_text, edit_date=1))
+        self.assertEqual(a1.id, a2.id)                          # original not overwritten
+        am = MessageAmendment.objects.get(original=a1, message_id="e2")
+        self.assertEqual(am.changed_fields.get("stop_loss"), ["3360.0", "3400.0"])
+        self.assertTrue(am.approval_reflagged)
+        a1.approval.refresh_from_db()
+        self.assertTrue(a1.approval.source_edited)              # flagged for re-review
+        self.assertEqual(a1.approval.stop_loss, "3360.0")       # ORIGINAL value NOT auto-applied
+        self.assertEqual(a1.approval.status,
+                         PendingSignalApproval.Status.PENDING_APPROVAL)  # not auto-actioned
+
+    def test_edit_is_idempotent_no_duplicate_amendment(self):
+        a1 = self._acq(self._msg("e3"))
+        self._acq(self._msg("e3", edit_date=1))
+        self._acq(self._msg("e3", edit_date=2))                 # same edited text re-delivered
+        self.assertEqual(MessageAmendment.objects.filter(original=a1).count(), 1)
+
+    def test_amended_update_is_recorded_only(self):
+        a1 = self._acq(self._msg("u1", text=UPDATE_MSG))        # original update
+        self.assertEqual(a1.outcome, self.O.UPDATE)
+        edited = "TP2 hit! +250 pips. Move SL to 3400.0"        # edited update (changed text)
+        self._acq(self._msg("u1", text=edited, edit_date=1))
+        am = MessageAmendment.objects.get(original=a1, message_id="u1")
+        self.assertEqual(am.reparsed_kind, "UPDATE")
+        self.assertTrue(am.raw_payload.get("amended_update"))
+        self.assertEqual(SignalUpdate.objects.filter(message_id="u1").count(), 2)  # orig + amended
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)   # updates never intaken
+
+    def test_true_duplicate_unchanged_records_no_amendment(self):
+        a1 = self._acq(self._msg("d1"))
+        self._acq(self._msg("d1"))                              # identical, no edit
+        self.assertEqual(MessageAmendment.objects.filter(original=a1).count(), 0)  # dedup preserved
 
     def test_media_evidence_is_a_bounded_reference_not_bytes(self):
         # A buggy/hostile listener passing a huge blob must NOT land bytes in the DB.

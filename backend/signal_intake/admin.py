@@ -5,6 +5,7 @@ from django.contrib import admin, messages
 from . import services
 from .models import (
     AcquiredMessage,
+    MessageAmendment,
     ParserProfile,
     PendingSignalApproval,
     SignalAuditEvent,
@@ -152,6 +153,26 @@ class SignalUpdateAdmin(admin.ModelAdmin):
     list_display = ("created_at", "provider", "message_id", "kind", "reply_to_message_id", "processed")
     list_filter = ("kind", "processed", "provider")
     readonly_fields = tuple(f.name for f in SignalUpdate._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(MessageAmendment)
+class MessageAmendmentAdmin(admin.ModelAdmin):
+    """Read-only immutable ledger of edits to already-acquired messages."""
+
+    list_display = ("created_at", "provider", "message_id", "reparsed_kind",
+                    "approval_reflagged", "original")
+    list_filter = ("reparsed_kind", "approval_reflagged", "provider")
+    search_fields = ("message_id",)
+    readonly_fields = tuple(f.name for f in MessageAmendment._meta.fields)
 
     def has_add_permission(self, request):
         return False
