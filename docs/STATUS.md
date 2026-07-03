@@ -6,6 +6,22 @@
 
 ## Execution workstream log
 
+- **2026-07-03 — WAYOND-PARSER-CERTIFICATION: replay + certification framework (repo-only, no order).**
+  Permanent regression suite that certifies the `wayond_v1` parser against **real**
+  Wayond messages (no Telegram, no session, no listener, no order). New
+  `signal_intake/certification.py` — a pure `classify()` mirroring the dispatcher's
+  content precedence + a `_verdict()` whose only UNSAFE outcomes are a *missed*
+  ENTRY_SIGNAL or a non-signal *read as* tradeable; `build_report()` over a corpus.
+  New `wayond_corpus.json` (**real observed messages only**, seeded with the one
+  genuinely-seen message — the "NFP today at 14:30 CET" WARNING — which certifies as
+  safely quarantined). New `certify_wayond` command (prints report; exits non-zero on
+  any UNSAFE/FAIL → CI-gate ready). Taxonomy: ENTRY_SIGNAL / UPDATE / WARNING /
+  CHATTER / STALE / QUARANTINED / UNKNOWN. 11 tests incl. a **drift guard** proving the
+  pure classifier agrees with the *real* dispatcher (`acquire_message`) on the safety
+  group. Parser UNCHANGED (no real message required a change yet). 65 signal_intake
+  tests green. Corpus grows as Nuno supplies messages; `docs/WAYOND_CERTIFICATION.md`
+  is the operator guide. Repo-only. E3 unaffected (RED).
+
 - **2026-07-03 — TELEGRAM-SESSION-RUN outcome + device-fingerprint hardening (repo-only, no order).**
   Ran the provisioning helper against the real dedicated **GFX** account (Nuno's hands).
   Login succeeded and a valid 0600 `StringSession` was minted, but Telegram **de-authorised
