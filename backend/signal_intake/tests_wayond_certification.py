@@ -87,12 +87,15 @@ class FrameworkSelfTests(SimpleTestCase):
         self.assertEqual(cert.classify("SL hit"), "UPDATE")
         self.assertEqual(cert.classify("SL hit, 4035 for re-entries!"), "UPDATE")
 
-    def test_edit_media_empty_stale_fail_closed_even_over_a_signal(self):
-        # A signal-shaped body must NOT be tradeable when edited/media/empty/stale.
-        self.assertEqual(cert.classify(SIGNAL_SHAPE, is_edit=True), "QUARANTINED")
-        self.assertEqual(cert.classify(SIGNAL_SHAPE, media=True), "QUARANTINED")
+    def test_media_and_edit_no_longer_force_quarantine(self):
+        # Ratified WAYOND-EDIT-MEDIA policy: a text-bearing edited/media signal still
+        # routes to the human-gated intake (ENTRY_SIGNAL); only no-text quarantines,
+        # and freshness stays fail-closed.
+        self.assertEqual(cert.classify(SIGNAL_SHAPE, is_edit=True), "ENTRY_SIGNAL")
+        self.assertEqual(cert.classify(SIGNAL_SHAPE, media=True), "ENTRY_SIGNAL")
         self.assertEqual(cert.classify(SIGNAL_SHAPE, stale=True), "STALE")
-        self.assertEqual(cert.classify("   "), "QUARANTINED")
+        self.assertEqual(cert.classify("", media=True), "QUARANTINED")   # screenshot-only
+        self.assertEqual(cert.classify("   "), "QUARANTINED")            # empty
 
     def test_verdict_flags_missed_signal_and_false_positive_as_unsafe(self):
         self.assertEqual(cert._verdict("ENTRY_SIGNAL", "UNKNOWN"), ("FAIL", "UNSAFE"))
@@ -133,12 +136,13 @@ class DispatcherAgreementTests(TestCase):
 
     def test_pure_classifier_matches_dispatcher_on_safety_group(self):
         cases = [
-            # (text, classify-kwargs, dispatch-kwargs)
+            # (text, classify-kwargs, dispatch-kwargs) — post WAYOND-EDIT-MEDIA policy
             (SIGNAL_SHAPE, {}, {}),
             (UPDATE_SHAPE, {}, {}),
             (WARNING_SHAPE, {}, {}),
-            (SIGNAL_SHAPE, {"is_edit": True}, {"edit_date": 111}),   # edited over a signal
-            (SIGNAL_SHAPE, {"media": True}, {"media": True}),
+            (SIGNAL_SHAPE, {"is_edit": True}, {"edit_date": 111}),   # edited entry -> human-gated intake (TRADED)
+            (SIGNAL_SHAPE, {"media": True}, {"media": True}),        # media+text -> parsed (TRADED)
+            ("", {"media": True}, {"media": True}),                 # screenshot-only -> QUARANTINED
             ("   ", {}, {}),                                         # empty
             (SIGNAL_SHAPE, {"stale": True}, {"age_s": 5000}),        # stale over a signal
             (SIGNAL_SHAPE, {"stale": True}, {"date": None}),         # indeterminate date -> STALE

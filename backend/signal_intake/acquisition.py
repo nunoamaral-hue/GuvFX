@@ -44,18 +44,37 @@ def _to_aware(value):
         return None
 
 
-def _record_update(provider, message, parsed, mid, chat_id):
+def _record_update(provider, message, parsed, mid, chat_id, *, edited=False):
     kind_map = {"TP_HIT": SignalUpdate.Kind.TP_HIT, "MOVE_SL": SignalUpdate.Kind.MOVE_SL}
+    reply_to = str(message.get("reply_to_message_id") or "")
+    # Link to the originating signal's acquired-message where the reply metadata
+    # resolves (soft link — never fabricated; None when the original isn't present).
+    origin_id = None
+    if reply_to:
+        origin_id = (AcquiredMessage.objects
+                     .filter(provider=provider, message_id=reply_to)
+                     .values_list("id", flat=True).first())
     SignalUpdate.objects.create(
         provider=provider, chat_id=chat_id, message_id=mid,
-        reply_to_message_id=str(message.get("reply_to_message_id") or ""),
+        reply_to_message_id=reply_to,
         kind=kind_map.get(getattr(parsed, "update_type", ""), SignalUpdate.Kind.OTHER),
-        raw_payload={"raw_text": getattr(parsed, "raw_text", "")},
+        raw_payload={"raw_text": getattr(parsed, "raw_text", ""),
+                     "edited": bool(edited),
+                     "origin_acquired_id": origin_id},
     )
 
 
 def _classify(provider, message, mid, chat_id, tg_date, now):
-    """Return (outcome, reason, approval). FAIL-CLOSED — any error → QUARANTINED."""
+    """Return (outcome, reason, approval). FAIL-CLOSED — any error → QUARANTINED.
+
+    WAYOND-EDIT-MEDIA policy (ratified, PR #72): media is EVIDENCE retained in
+    raw_payload, NOT a hard blocker — a text-bearing media message is parsed, a
+    screenshot-only message (media with no parseable text) is quarantined. An EDITED
+    message is never auto-intaken: a tradeable signal is surfaced to the existing
+    human-approval gate FLAGGED as edited (still requires human approval — never
+    auto-traded); an edited update is recorded (never acted). Originals are immutable
+    (data.md): an edit produces a new record, never an overwrite.
+    """
     O = AcquiredMessage.Outcome
     try:
         if not provider.is_armed():
@@ -70,24 +89,24 @@ def _classify(provider, message, mid, chat_id, tg_date, now):
         if (now - tg_date).total_seconds() > window:
             return O.STALE, f"age>{window}s", None
 
-        # Edit guard — an edited signal is suspicious; never mutate the original.
-        if message.get("edit_date"):
-            return O.QUARANTINED, "edited_message", None
-        # Media / screenshot — no OCR in MVP.
-        if message.get("media"):
-            return O.QUARANTINED, "media", None
-
         text = message.get("text") or ""
-        if not text.strip():
-            return O.QUARANTINED, "empty_text", None
+        has_text = bool(text.strip())
+        edited = bool(message.get("edit_date"))
+        # Media is EVIDENCE, not a blocker: only screenshot-only / empty messages
+        # quarantine here (no OCR in MVP); text-bearing media is parsed below.
+        if not has_text:
+            return O.QUARANTINED, ("media_only" if message.get("media") else "empty_text"), None
 
         parsed = get_parser(provider.parser_profile.slug)(text, mid)  # never raises here
         if parsed.kind == Kind.SIGNAL and parsed.is_tradeable_shape():
-            approval = services.intake_parsed(parsed, provider=provider)
-            return O.INTAKEN, "", approval
+            # Human-gated intake either way; an edited entry is FLAGGED so the reviewer
+            # verifies entry/SL/TP (never auto-applied — approval still required).
+            approval = services.intake_parsed(parsed, provider=provider, edited=edited)
+            return O.INTAKEN, ("edited_review" if edited else ""), approval
         if parsed.kind == Kind.UPDATE:
-            _record_update(provider, message, parsed, mid, chat_id)
-            return O.UPDATE, getattr(parsed, "update_type", "") or "update", None
+            _record_update(provider, message, parsed, mid, chat_id, edited=edited)
+            base = getattr(parsed, "update_type", "") or "update"
+            return O.UPDATE, (base + "_edited" if edited else base), None
         return O.QUARANTINED, getattr(parsed, "reason", "") or "not_tradeable", None
     except Exception as exc:  # unknown parser / malformed → fail closed
         return O.QUARANTINED, f"dispatch_error:{type(exc).__name__}", None
@@ -122,6 +141,9 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
                     "edit_date": bool(message.get("edit_date")),
                     "reply_to_message_id": message.get("reply_to_message_id"),
                     "media": bool(message.get("media")),
+                    # WAYOND-EDIT-MEDIA: retain the media reference as EVIDENCE (a
+                    # listener-supplied id/type) — image BYTES are never stored (data.md).
+                    "media_evidence": message.get("media") or None,
                 },
                 approval=approval,
             )

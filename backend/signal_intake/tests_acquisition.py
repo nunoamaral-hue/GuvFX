@@ -93,21 +93,50 @@ class AcquisitionDispatcherTests(TestCase):
         self.assertEqual(acq.reason, "indeterminate_date")
         self.assertEqual(PendingSignalApproval.objects.count(), 0)  # freshness unknown → not parsed
 
-    # --- edit / media / empty guards --------------------------------------
-    def test_edited_message_quarantined(self):
+    # --- WAYOND-EDIT-MEDIA policy (ratified PR #72) -----------------------
+    def test_edited_entry_intaken_flagged_for_human_review(self):
+        # Edited entry is NOT dropped — surfaced to the human-approval gate FLAGGED.
         acq = self._acq(self._msg("3", edit_date=1))
-        self.assertEqual(acq.outcome, self.O.QUARANTINED)
-        self.assertEqual(acq.reason, "edited_message")
-        self.assertEqual(PendingSignalApproval.objects.count(), 0)
+        self.assertEqual(acq.outcome, self.O.INTAKEN)
+        self.assertEqual(acq.reason, "edited_review")
+        appr = acq.approval
+        self.assertIsNotNone(appr)
+        self.assertTrue(appr.source_edited)                                     # visibly flagged
+        self.assertEqual(appr.status, PendingSignalApproval.Status.PENDING_APPROVAL)  # human-gated, not auto-traded
 
-    def test_media_message_quarantined(self):
+    def test_media_only_message_quarantined(self):
+        # Screenshot-only (media, no parseable text) still quarantines.
         acq = self._acq(self._msg("4", text="", media=True))
         self.assertEqual(acq.outcome, self.O.QUARANTINED)
-        self.assertEqual(acq.reason, "media")
+        self.assertEqual(acq.reason, "media_only")
 
     def test_empty_text_quarantined(self):
         acq = self._acq(self._msg("5", text="   "))
         self.assertEqual(acq.outcome, self.O.QUARANTINED)
+        self.assertEqual(acq.reason, "empty_text")
+
+    def test_media_with_text_is_parsed_media_retained_as_evidence(self):
+        acq = self._acq(self._msg("m1", text=SIGNAL_MSG, media=True))
+        self.assertEqual(acq.outcome, self.O.INTAKEN)          # text-bearing media parsed
+        self.assertIsNotNone(acq.approval)
+        self.assertFalse(acq.approval.source_edited)
+        self.assertTrue(acq.raw_payload.get("media"))
+        self.assertIsNotNone(acq.raw_payload.get("media_evidence"))  # evidence retained
+
+    def test_edited_update_recorded_never_intaken(self):
+        acq = self._acq(self._msg("u-e", text=UPDATE_MSG, edit_date=1))
+        self.assertEqual(acq.outcome, self.O.UPDATE)
+        su = SignalUpdate.objects.get(provider=self.provider, message_id="u-e")
+        self.assertTrue(su.raw_payload.get("edited"))
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)   # never intaken
+
+    def test_reply_update_links_to_originating_message(self):
+        orig = self._acq(self._msg("orig1"))                         # original entry
+        upd = self._acq(self._msg("rep1", text=UPDATE_MSG, reply_to_message_id="orig1"))
+        self.assertEqual(upd.outcome, self.O.UPDATE)
+        su = SignalUpdate.objects.get(provider=self.provider, message_id="rep1")
+        self.assertEqual(su.reply_to_message_id, "orig1")
+        self.assertEqual(su.raw_payload.get("origin_acquired_id"), orig.id)   # linked
 
     # --- update recording --------------------------------------------------
     def test_update_recorded_not_intaken(self):

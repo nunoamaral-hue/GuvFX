@@ -35,7 +35,7 @@ def _audit(actor, event, approval, **detail):
 
 
 @transaction.atomic
-def intake_parsed(parsed, *, actor=None, source=SOURCE, provider=None) -> PendingSignalApproval:
+def intake_parsed(parsed, *, actor=None, source=SOURCE, provider=None, edited=False) -> PendingSignalApproval:
     """Create or return the PendingSignalApproval for a parsed Telegram message.
 
     Idempotent on (source, message_id): a duplicate message returns the existing
@@ -68,6 +68,7 @@ def intake_parsed(parsed, *, actor=None, source=SOURCE, provider=None) -> Pendin
             raw_payload={"raw_text": parsed.raw_text, "kind": parsed.kind},
             correlation_id=correlation_id,
             status=PendingSignalApproval.Status.PENDING_APPROVAL,
+            source_edited=bool(edited),
         )
         _audit(actor, SignalAuditEvent.Event.SIGNAL_RECEIVED, approval,
                message_id=mid, symbol=parsed.market, direction=parsed.direction)

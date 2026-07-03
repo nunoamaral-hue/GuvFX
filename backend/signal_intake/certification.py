@@ -53,23 +53,21 @@ def classify(text, *, is_edit=False, media=False, stale=False):
     """Classify one message to a taxonomy label, mirroring the dispatcher's content +
     freshness precedence for an ARMED, registered provider. Pure — no DB.
 
-    Precedence (matches signal_intake.acquisition._classify): stale > edited > media >
-    empty > parser(SIGNAL/UPDATE/UNKNOWN). ``stale`` faithfully abstracts BOTH
-    dispatcher STALE paths (age>window AND indeterminate/None date). The provider-
-    arming gate (non-armed → DROPPED_NOT_ARMED) and the unknown-parser-profile gate
-    (unregistered slug → QUARANTINED) are ORTHOGONAL, fail-closed dispatcher gates,
-    intentionally not modelled here — this certifies the PARSER given a live provider,
-    and those gates are covered by signal_intake.tests_acquisition. A drift test
-    asserts this content + freshness precedence stays in lock-step with the dispatcher.
+    WAYOND-EDIT-MEDIA policy (ratified, PR #72): media is EVIDENCE, not a blocker, and
+    an edit does not change ROUTING — so precedence is: stale > no-text (screenshot-only
+    / empty → QUARANTINED) > parser(SIGNAL/UPDATE/UNKNOWN). A text-bearing edited signal
+    still routes to the human-gated intake (taxonomy ENTRY_SIGNAL) and an edited update
+    to the ledger (UPDATE); the 'edited' flag is metadata (PendingSignalApproval.
+    source_edited), tested in tests_acquisition — not a routing change. ``is_edit`` /
+    ``media`` are kept in the signature for stability but no longer alter the label.
+    ``stale`` faithfully abstracts both dispatcher STALE paths (age>window AND None date).
+    The provider-arming and unknown-parser-profile gates are orthogonal, fail-closed, and
+    covered by tests_acquisition. A drift test keeps this in lock-step with the dispatcher.
     """
     if stale:
         return "STALE"
-    if is_edit:
-        return "QUARANTINED"
-    if media:
-        return "QUARANTINED"
     if not (text or "").strip():
-        return "QUARANTINED"
+        return "QUARANTINED"  # screenshot-only (media, no text) or empty
     parsed = parse_message(text)
     if parsed.kind == Kind.SIGNAL and parsed.is_tradeable_shape():
         return "ENTRY_SIGNAL"
