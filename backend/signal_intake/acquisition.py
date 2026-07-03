@@ -19,6 +19,7 @@ NOT import ``execution`` and cannot place an order (enforced by tests).
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import logging
 
 from django.db import IntegrityError, transaction
@@ -26,7 +27,7 @@ from django.utils import timezone
 
 from intelligence.telegram_source import Kind
 
-from .models import AcquiredMessage, SignalProvider, SignalUpdate
+from .models import AcquiredMessage, MessageAmendment, SignalProvider, SignalUpdate
 from .parsers import get_parser
 from . import services
 
@@ -95,6 +96,73 @@ def _record_update(provider, message, parsed, mid, chat_id, *, edited=False):
     )
 
 
+def _record_amendment(provider, original, message, mid, tg_date, now):
+    """Record an immutable amendment for an edit to an ALREADY-acquired message.
+
+    Never overwrites the original. Re-parses the edited text; if tradeable values
+    (entry/SL/TP) changed vs the original approval, flags that approval for human
+    RE-REVIEW (never auto-applies the edited values); an edited update records an
+    amended SignalUpdate (record-only). Idempotent per (original, edit content).
+    """
+    edited_text = message.get("text") or ""
+    edit_hash = hashlib.sha256(edited_text.encode("utf-8")).hexdigest()
+    if MessageAmendment.objects.filter(original=original, edit_hash=edit_hash).exists():
+        return None  # same edit re-delivered → already recorded
+
+    try:
+        parsed = get_parser(provider.parser_profile.slug)(edited_text, mid)
+    except Exception:  # unknown parser / malformed → record the amendment, parse UNKNOWN
+        parsed = None
+
+    approval = original.approval
+    is_signal = (parsed is not None and parsed.kind == Kind.SIGNAL
+                 and parsed.is_tradeable_shape())
+    is_update = parsed is not None and parsed.kind == Kind.UPDATE
+
+    # Read-only diff of tradeable values vs the original approval (decided before writes).
+    changed_fields = {}
+    if is_signal and approval is not None:
+        new_tp = parsed.take_profits[0] if parsed.take_profits else ""
+        for field, old, new in (("entry", approval.entry, parsed.entry),
+                                 ("stop_loss", approval.stop_loss, parsed.stop_loss),
+                                 ("take_profit", approval.take_profit, new_tp)):
+            if str(old or "") != str(new or ""):
+                changed_fields[field] = [old, new]
+    new_approval = is_signal and approval is None  # edit produced a signal where none was
+
+    logger.warning("wayond edit-after-acquisition amendment: provider=%s message_id=%s "
+                   "changed=%s new_approval=%s", getattr(provider, "slug", "?"), mid,
+                   sorted(changed_fields), new_approval)
+    try:
+        # All side-effects live INSIDE the atomic block, AFTER the amendment create whose
+        # unique (original, edit_hash) is the race guard — so a concurrent identical edit
+        # rolls back entirely (no duplicate SignalUpdate, no double flag/approval).
+        with transaction.atomic():
+            amendment = MessageAmendment.objects.create(
+                provider=provider, original=original, message_id=mid,
+                edit_hash=edit_hash, edited_text=edited_text,
+                edit_date=_to_aware(message.get("edit_date")),
+                reparsed_kind=(parsed.kind if parsed is not None else "UNKNOWN"),
+                changed_fields=changed_fields, approval_reflagged=bool(changed_fields),
+                raw_payload={"amended_update": is_update, "new_approval": bool(new_approval),
+                             "reason": (getattr(parsed, "reason", "") if parsed else "parse_error")},
+            )
+            if changed_fields and approval is not None and not approval.source_edited:
+                # Flag the existing approval for HUMAN RE-REVIEW — never auto-apply values.
+                approval.source_edited = True
+                approval.save(update_fields=["source_edited"])
+            elif new_approval:
+                # An edit turned a non-signal into a tradeable signal → surface it to the
+                # human-approval gate FLAGGED (never auto-traded; intake_parsed is dedup-safe).
+                services.intake_parsed(parsed, provider=provider, edited=True)
+            if is_update:
+                _record_update(provider, message, parsed, mid,
+                               str(message.get("chat_id") or ""), edited=True)
+            return amendment
+    except IntegrityError:  # concurrent identical edit won the race
+        return MessageAmendment.objects.filter(original=original, edit_hash=edit_hash).first()
+
+
 def _classify(provider, message, mid, chat_id, tg_date, now):
     """Return (outcome, reason, approval). FAIL-CLOSED — any error → QUARANTINED.
 
@@ -158,15 +226,14 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
     # replay) returns the existing row and is NOT reprocessed.
     existing = AcquiredMessage.objects.filter(provider=provider, message_id=mid).first()
     if existing is not None:
-        # Immutable original: an edit to an already-acquired message is NOT diffed in
-        # MVP (deferred — WAYOND_EDIT_MEDIA_POLICY.md). Never overwrite; but log the
-        # edit so it is visible rather than silently swallowed.
-        if message.get("edit_date") and not (existing.raw_payload or {}).get("edit_date"):
-            logger.warning(
-                "wayond edit-after-acquisition (deferred edit-diff): provider=%s "
-                "message_id=%s — original left immutable, not re-reviewed",
-                getattr(provider, "slug", "?"), mid,
-            )
+        # WAYOND-EDIT-DIFF: an EDIT (edit_date) or a CHANGED body for an already-acquired
+        # message records an immutable linked amendment (the original is NEVER
+        # overwritten). A true unchanged duplicate just dedups. Never re-processes the
+        # original, never auto-applies edited values, never places an order.
+        stored_text = ((existing.raw_payload or {}).get("text") or "")
+        incoming_text = message.get("text") or ""
+        if message.get("edit_date") or incoming_text.strip() != stored_text.strip():
+            _record_amendment(provider, existing, message, mid, tg_date, now)
         return existing
 
     outcome, reason, approval = _classify(provider, message, mid, chat_id, tg_date, now)

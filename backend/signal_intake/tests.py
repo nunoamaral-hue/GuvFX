@@ -190,5 +190,6 @@ class Adr009BoundaryGuardTests(TestCase):
             sorted([
                 "PendingSignalApproval", "SignalAuditEvent",
                 "SignalProvider", "ParserProfile", "AcquiredMessage", "SignalUpdate",
+                "MessageAmendment",
             ]),
         )

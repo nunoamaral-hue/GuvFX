@@ -260,3 +260,40 @@ class SignalUpdate(models.Model):
 
     def __str__(self) -> str:
         return f"{self.kind} {self.provider_id}:{self.message_id}"
+
+
+class MessageAmendment(models.Model):
+    """WAYOND-EDIT-DIFF: an immutable ledger of an EDIT to an already-acquired message.
+
+    The original ``AcquiredMessage`` is NEVER overwritten — each edit is a new linked
+    record capturing the edited text, the re-parse, and any changed tradeable values.
+    Record-only: it never auto-applies the edited values and never places an order. If
+    tradeable values changed, the related approval is flagged for human RE-REVIEW.
+    """
+
+    provider = models.ForeignKey(
+        "signal_intake.SignalProvider", on_delete=models.CASCADE, related_name="amendments",
+    )
+    original = models.ForeignKey(
+        "signal_intake.AcquiredMessage", on_delete=models.CASCADE, related_name="amendments",
+    )
+    message_id = models.CharField(max_length=64)
+    edit_hash = models.CharField(max_length=64, blank=True)   # dedup identical re-delivered edits
+    edited_text = models.TextField(blank=True)
+    edit_date = models.DateTimeField(null=True, blank=True)   # edit timestamp if available
+    reparsed_kind = models.CharField(max_length=16, blank=True)
+    changed_fields = models.JSONField(default=dict, blank=True)   # {field: [old, new]}
+    approval_reflagged = models.BooleanField(default=False)
+    raw_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["original", "edit_hash"], name="uniq_amendment_edit",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"amend {self.message_id} ({self.reparsed_kind})"

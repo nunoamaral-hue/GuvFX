@@ -6,6 +6,22 @@
 
 ## Execution workstream log
 
+- **2026-07-03 — WAYOND-EDIT-DIFF: immutable edit-diff handling (repo-only, no order).**
+  Closes the last edit blind spot before the listener. New `MessageAmendment` model
+  (migration 0006) — an **immutable linked ledger** of an edit to an already-acquired
+  message: `original` FK (never overwritten), `edited_text`, `edit_date`, `reparsed_kind`,
+  `changed_fields` diff, `approval_reflagged`, unique `(original, edit_hash)` (idempotent).
+  Dispatcher (`acquisition.py`): when an edit (`edit_date`) or changed body arrives for an
+  existing `(provider, message_id)`, `_record_amendment` re-parses the edited text, diffs
+  entry/SL/TP vs the original approval, and — if changed — **flags that approval
+  `source_edited=True` for human RE-REVIEW (never auto-applies the edited values, never
+  reverts/actions)**; an edited update records an **amended `SignalUpdate`** (record-only).
+  True unchanged duplicates still dedup (no amendment). Admin: read-only amendment ledger.
+  +6 tests (same-values→amendment-no-reflag, SL-change→reflag+original-value-preserved,
+  idempotent, amended-update-record-only, true-dup→no-amendment) + ADR-009 allowlist updated.
+  336 backend tests green; corpus still CERTIFIED (parser/corpus untouched); ADR-009 boundary
+  intact. Repo-only. E3 unaffected (RED).
+
 - **2026-07-03 — WAYOND-EDIT-MEDIA-DISPATCHER: implement ratified edit/media/reply policy (repo-only, no order).**
   Implements the policy ratified in PR #72. Dispatcher (`acquisition.py`): **media is now
   EVIDENCE, not a hard blocker** — a text-bearing media message is parsed (media reference
