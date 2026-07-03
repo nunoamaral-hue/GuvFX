@@ -29,25 +29,70 @@ Each message is certified against a human-labelled `expected_type`:
 Every other type must not (fail-closed). The only **UNSAFE** verdicts are a *missed*
 entry signal or a non-signal *read as* tradeable — both fail the suite.
 
-## Add a real message to the corpus
+## Fast intake: paste → stage → confirm → promote
 
-Append an entry to `wayond_corpus.json` → `messages`:
+Copy real Wayond messages and separate each with a line that is exactly `---`:
 
-```json
-{
-  "id": "buy-eurusd-2026-07-10",
-  "source": "wayond-channel-copied-2026-07-10",
-  "text": "EURUSD | BUY 1.0850\n❌ Stop Loss 1.0820\n✅ TP1 1.0880",
-  "expected_type": "ENTRY_SIGNAL",
-  "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
-  "notes": "real entry signal"
-}
+```
+EURUSD | BUY 1.0850
+❌ Stop Loss 1.0820
+✅ TP1 1.0880
+---
+TP1 hit! +30 pips
+---
+Heads up: NFP at 13:30, trade carefully.
 ```
 
-- `text` — the message **verbatim** (use `\n` for line breaks).
-- `expected_type` — one of the taxonomy values above (the certified truth).
-- `meta` — set `is_edit` / `media` / `stale` when the real message was edited, a
-  screenshot/image, or arrived outside the window.
+Optional **leading** `@directives` per block (a `@` inside the message body is
+ignored — only leading lines count):
+
+| directive | effect |
+|-----------|--------|
+| `@type: ENTRY_SIGNAL` | declare the ground-truth type → marks the entry **confirmed** |
+| `@edit` / `@media` / `@reply` / `@stale` | set `meta` (edited / screenshot / reply / outside-window) |
+| `@id: my-slug` | give the entry an explicit id |
+
+**Stage** the paste into a reviewable draft (never the permanent corpus):
+
+```bash
+cd backend
+pbpaste | python manage.py stage_wayond --out wayond_staging.json      # or --in paste.txt
+```
+
+It splits, classifies each message, **proposes** a type (the parser's *observed*
+result), and flags entries that **need review** — anything unconfirmed, a proposed
+trade, or a signal-shaped message the parser did **not** read as tradeable (a likely
+parser gap).
+
+**Confirm/correct** each entry in `wayond_staging.json`: set the true `expected_type`
+and `"confirmed": true`. The `expected_type` is *your* ground truth — if it disagrees
+with the parser's `observed`, certification will FAIL, which is exactly how a parser
+gap surfaces.
+
+**Promote** the confirmed entries into the permanent corpus (skips unconfirmed /
+duplicate / bad-type, with reasons):
+
+```bash
+python manage.py promote_wayond --in wayond_staging.json
+python manage.py certify_wayond        # re-certify
+```
+
+### Manual alternative
+You can also hand-append an entry to `wayond_corpus.json` → `messages`
+(`id`, `source`, `text` verbatim with `\n`, `expected_type`, `meta`, `notes`).
+
+## Certification confidence
+
+`certify_wayond` prints a confidence level from **real-message coverage**, honest by
+construction:
+
+- **LOW** — any UNSAFE/FAIL, **or** no real certified example of the safety-critical
+  types (`ENTRY_SIGNAL`, `UPDATE`). A WARNING-only corpus proves the pipeline is
+  *safe*, not that Wayond *signals* are understood → LOW.
+- **MEDIUM** — `ENTRY_SIGNAL` + `UPDATE` certified, but some target types still
+  missing.
+- **HIGH** — every target type (`ENTRY_SIGNAL, UPDATE, WARNING, CHATTER, QUARANTINED,
+  UNKNOWN`) certified with 0 unsafe / 0 fail.
 
 ## Run the certification report
 

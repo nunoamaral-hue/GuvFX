@@ -68,3 +68,7 @@ __pycache__/
 /.claude/px24_dashboard_final_20260611.tsx
 /.claude/px24_rx2_merged_dashboard_20260611.tsx
 /.claude/px24_rx2_status_cleanup_20260611.tsx
+
+# Wayond certification draft staging files (drafts, never committed)
+wayond_staging.json
+**/wayond_staging*.json

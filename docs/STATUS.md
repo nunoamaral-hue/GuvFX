@@ -6,6 +6,22 @@
 
 ## Execution workstream log
 
+- **2026-07-03 — WAYOND-CORPUS-SEED-READY: real-message intake workflow (repo-only, no order).**
+  Removes friction from seeding the certification corpus. New `signal_intake/staging.py`
+  — `parse_paste` (split on `---`, optional leading `@type/@edit/@media/@reply/@stale/@id`
+  directives), `stage_entries` (classify + PROPOSE type from the parser's observed result
+  + flag needs-review: unconfirmed / a proposed trade / a signal-shaped message NOT read
+  as tradeable), `promote` (append ONLY confirmed entries; skip unconfirmed/duplicate/
+  bad-type). New `stage_wayond` (paste→draft, never the permanent corpus) and
+  `promote_wayond` (reviewed draft→corpus) commands. `certification.py` gains
+  `certification_confidence()` (LOW until ENTRY_SIGNAL+UPDATE have real PASSING examples;
+  MEDIUM partial; HIGH full coverage) surfaced by `certify_wayond`. NO fabricated messages
+  — proposals are review aids, ground-truth `expected_type` is Nuno's; only confirmed real
+  messages promote. 14 new tests (paste parsing, staging/review flags, promote confirmed-
+  only + dedup, confidence levels). Real corpus confidence = **LOW** (only the 1 WARNING).
+  `docs/WAYOND_CERTIFICATION.md` documents paste format + commands. 79 signal_intake tests
+  green. Repo-only. E3 unaffected (RED).
+
 - **2026-07-03 — WAYOND-PARSER-CERTIFICATION: replay + certification framework (repo-only, no order).**
   Permanent regression suite that certifies the `wayond_v1` parser against **real**
   Wayond messages (no Telegram, no session, no listener, no order). New
