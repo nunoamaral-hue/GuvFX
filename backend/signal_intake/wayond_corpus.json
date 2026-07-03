@@ -1,14 +1,174 @@
 {
-  "_README": "PERMANENT Wayond certification corpus. REAL observed messages ONLY — never synthetic (GFX-PKT-WAYOND-PARSER-CERTIFICATION). Each entry Nuno supplies becomes a fixed regression case. expected_type is the human-certified ground truth; the framework asserts the pipeline routes it safely (only ENTRY_SIGNAL may become tradeable). meta flags: is_edit / media / is_reply / stale.",
+  "_README": "PERMANENT Wayond certification corpus. REAL observed messages ONLY — never synthetic (GFX-PKT-WAYOND-CORPUS-SEED-FROM-SCREENSHOTS). V1 extracted from Nuno's Telegram screenshots (channel 'Wayond | FX Signals', 24 Jun–02 Jul 2026). Each entry Nuno supplies becomes a fixed regression case. expected_type is the human-certified ground truth; the framework asserts the pipeline routes it safely (only ENTRY_SIGNAL may become tradeable). meta flags: is_edit / media / is_reply / stale. NOTE: many TP-hit updates carry an MT5 position screenshot; classified by their TEXT here (media handling is a dispatcher concern) — flagged per entry. Prices transcribed verbatim from the screenshots; no prices guessed.",
   "expected_type_values": ["ENTRY_SIGNAL", "UPDATE", "WARNING", "CHATTER", "STALE", "QUARANTINED", "UNKNOWN"],
   "messages": [
     {
-      "id": "warning-nfp-cet-2026-07-03",
-      "source": "observed-in-channel-list-screenshot-2026-07-03",
+      "id": "entry-xauusd-buy-3992",
+      "source": "screenshot-2026-07 wayond 24-25Jun",
+      "text": "XAUUSD | Potential upward movement\n\nXAUUSD | BUY 3992\n\n❌ Stop Loss 3985 (70 pips)\n\n✅TP1 3995\n✅TP2 4000\n✅TP3 4010",
+      "expected_type": "ENTRY_SIGNAL",
+      "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
+      "notes": "Real BUY entry. Standard BUY format (no colon after 'Stop Loss'/'TP')."
+    },
+    {
+      "id": "entry-btcusd-buy-59450",
+      "source": "screenshot-2026-07 wayond 25-26Jun",
+      "text": "BTCUSD | Potential upward movement\n\nBTCUSD | BUY 59450\n\n❌ Stop Loss 58900 (550 pips)\n\n✅TP1 59800\n✅TP2 60400\n✅TP3 61100",
+      "expected_type": "ENTRY_SIGNAL",
+      "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
+      "notes": "Real BUY entry. This exact message appears twice in the screenshots (10 18:16 and 26Jun 10 12:35); deduped to one corpus entry by text."
+    },
+    {
+      "id": "entry-nzdjpy-buy-91300",
+      "source": "screenshot-2026-07 wayond 26Jun",
+      "text": "NZDJPY | Potential upward movement\n\nNZDJPY | BUY 91.300\n\n❌ Stop Loss 90.900 (40 pips)\n\n✅TP1 91.450\n✅TP2 91.700\n✅TP3 92.100",
+      "expected_type": "ENTRY_SIGNAL",
+      "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
+      "notes": "Real BUY entry, JPY-cross decimals."
+    },
+    {
+      "id": "entry-btcusd-buy-60350",
+      "source": "screenshot-2026-07 wayond 28Jun",
+      "text": "BTCUSD | Potential upward movement\n\nBTCUSD | BUY 60350\n\n❌ Stop Loss 59800 (550 pips)\n\n✅TP1 60700\n✅TP2 61000\n✅TP3 61500",
+      "expected_type": "ENTRY_SIGNAL",
+      "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
+      "notes": "Real BUY entry."
+    },
+    {
+      "id": "entry-audcad-buy-097860",
+      "source": "screenshot-2026-07 wayond 29Jun",
+      "text": "AUDCAD | Potential upward movement\n\nAUDCAD | BUY 0.97860\n\n❌ Stop Loss 0.97400 (46 pips)\n\n✅TP1 0.98050\n✅TP2 0.98300\n✅TP3 0.98800",
+      "expected_type": "ENTRY_SIGNAL",
+      "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
+      "notes": "Real BUY entry."
+    },
+    {
+      "id": "entry-audusd-buy-068920",
+      "source": "screenshot-2026-07 wayond 01Jul",
+      "text": "AUDUSD | Potential upward movement\n\nAUDUSD | BUY 0.68920\n\n❌ Stop Loss 0.68550 (37 pips)\n\n✅TP1 0.69150\n✅TP2 0.69400\n✅TP3 0.69750",
+      "expected_type": "ENTRY_SIGNAL",
+      "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
+      "notes": "Real BUY entry."
+    },
+    {
+      "id": "entry-xauusd-sell-4020",
+      "source": "screenshot-2026-07 wayond 29Jun",
+      "text": "XAUUSD | Potential downward movement\n\nXAUUSD | SELL 4020\n\n❌ STOP LOSS: 4028 (80 pips)\n\n✅TP1: 4015\n✅TP2: 4010\n✅TP3: 4000",
+      "expected_type": "ENTRY_SIGNAL",
+      "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
+      "notes": "Real SELL entry. IMPORTANT format divergence: SELL messages use 'STOP LOSS:' and 'TP1:' with COLONS (BUY messages do not). The original parser's 'Stop Loss\\s+<num>' misses this -> parser gap fixed in this packet."
+    },
+    {
+      "id": "edited-eurgbp-buy-086070",
+      "source": "screenshot-2026-07 wayond 30Jun (edited)",
+      "text": "EURGBP | Potential upward movement\n\nEURGBP | BUY 0.86070\n\n❌ Stop Loss 0.85820 (25 pips)\n\n✅TP1 0.86220\n✅TP2 0.86600\n✅TP3 0.87070",
+      "expected_type": "QUARANTINED",
+      "meta": {"is_edit": true, "media": false, "is_reply": false, "stale": false},
+      "notes": "A BUY ENTRY that arrived EDITED ('8 edited 10:37'). Per the fail-closed edit guard an edited message is QUARANTINED (never traded). FINDING: Wayond edits some signal messages, so an edited entry is dropped — flag for a policy decision (accept first version vs edited)."
+    },
+    {
+      "id": "update-btcusd-tp1-250-movesl",
+      "source": "screenshot-2026-07 wayond 25Jun (reply)",
+      "text": "TP1 hit! That gives us +250 pips. 🏅\n\nMove SL to 59200",
+      "expected_type": "UPDATE",
+      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
+      "notes": "TP1-hit + move-SL update (reply to BTCUSD BUY 59450)."
+    },
+    {
+      "id": "update-btcusd-tp1-300-movesl",
+      "source": "screenshot-2026-07 wayond 26Jun (reply)",
+      "text": "TP1 hit! That gives us +300 pips. 🏅\n\nMove SL to 59200",
+      "expected_type": "UPDATE",
+      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
+      "notes": "TP1-hit + move-SL update (reply to BTCUSD BUY 59450)."
+    },
+    {
+      "id": "update-nzdjpy-tp1-15-movesl",
+      "source": "screenshot-2026-07 wayond 29Jun (reply)",
+      "text": "TP1 hit! That gives us +15 pips. 🏅\n\nMove SL to 91.300",
+      "expected_type": "UPDATE",
+      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
+      "notes": "TP1-hit + move-SL update (reply to NZDJPY BUY 91.300)."
+    },
+    {
+      "id": "update-doubletrouble-tp2-80",
+      "source": "screenshot-2026-07 wayond 24Jun (reply, position card)",
+      "text": "Double trouble\n\nTP2 hit! That gives us +80 pips.",
+      "expected_type": "UPDATE",
+      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
+      "notes": "'Double trouble' commentary + TP2-hit (reply to XAUUSD SELL 4086). Original carried an MT5 position screenshot; classified by TEXT (media handling flagged as dispatcher concern; OCR_UNCERTAIN whether the position card is an attachment)."
+    },
+    {
+      "id": "update-hattrick-tp3-160",
+      "source": "screenshot-2026-07 wayond 24Jun (reply, position card)",
+      "text": "HATTRICK\n\nTP3 hit! That gives us +160 pips.",
+      "expected_type": "UPDATE",
+      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
+      "notes": "'HATTRICK' commentary + TP3-hit (reply to XAUUSD SELL 4086). Original carried a position screenshot; classified by TEXT."
+    },
+    {
+      "id": "update-xauusd-tp1-30-movesl",
+      "source": "screenshot-2026-07 wayond 24-25Jun (reply, position card)",
+      "text": "TP1 hit! That gives us +30 pips.\n\nMove SL to 3992",
+      "expected_type": "UPDATE",
+      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
+      "notes": "TP1-hit + move-SL (reply to XAUUSD BUY 3992). Original carried a position screenshot; classified by TEXT."
+    },
+    {
+      "id": "update-audusd-tp1-23-movesl-be",
+      "source": "screenshot-2026-07 wayond 01Jul (reply, position card)",
+      "text": "TP1 HIT! That gives us +23 pips.\n\nMove SL to BE",
+      "expected_type": "UPDATE",
+      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
+      "notes": "TP1-hit (caps 'HIT') + 'Move SL to BE' (break-even, non-numeric) — reply to AUDUSD BUY 0.68920. Recognised via the TP1-HIT token; 'Move SL to BE' has no numeric target so the move-SL regex does not fire (informational). Original carried a position screenshot; classified by TEXT."
+    },
+    {
+      "id": "update-sl-hit-btcusd-60350",
+      "source": "screenshot-2026-07 wayond 29Jun (reply)",
+      "text": "SL hit",
+      "expected_type": "UPDATE",
+      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
+      "notes": "Stop-loss-hit update (reply to BTCUSD BUY 60350). Original parser did NOT recognise 'SL hit' -> parser gap fixed in this packet."
+    },
+    {
+      "id": "update-sl-hit-xauusd-reentry",
+      "source": "screenshot-2026-07 wayond 29Jun (reply)",
+      "text": "SL hit, 4035 for re-entries!",
+      "expected_type": "UPDATE",
+      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
+      "notes": "Stop-loss-hit + re-entry note (reply to XAUUSD SELL 4020). Recognised via the new 'SL hit' rule; the re-entry price is informational only (never auto-traded)."
+    },
+    {
+      "id": "edited-audcad-update-tp1-19",
+      "source": "screenshot-2026-07 wayond 30Jun (reply, edited)",
+      "text": "TP1 hit! That gives us +19 pips.\n\nMove SL to 0.97860",
+      "expected_type": "QUARANTINED",
+      "meta": {"is_edit": true, "media": false, "is_reply": true, "stale": false},
+      "notes": "A TP1-hit + move-SL UPDATE that arrived EDITED ('8 edited 11:59', reply to AUDCAD BUY 0.97860). Edit guard quarantines it (safe — updates are not traded)."
+    },
+    {
+      "id": "chatter-power-of-right-moment",
+      "source": "screenshot-2026-07 wayond 24Jun",
+      "text": "This is what you call the power of the right moment!",
+      "expected_type": "CHATTER",
+      "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
+      "notes": "General commentary. Correctly not tradeable."
+    },
+    {
+      "id": "chatter-edging-tp1",
+      "source": "screenshot-2026-07 wayond 30Jun (reply)",
+      "text": "Edging TP1!",
+      "expected_type": "CHATTER",
+      "meta": {"is_edit": false, "media": false, "is_reply": true, "stale": false},
+      "notes": "Progress commentary (not a TP-hit, not actionable) — reply to AUDCAD BUY. Correctly not tradeable."
+    },
+    {
+      "id": "warning-nfp-cet-2026-07-02",
+      "source": "screenshot-2026-07 wayond 02Jul (economic-calendar image + caption)",
       "text": "Remember we have NFP today at 14:30 CET so be carefull trading.",
       "expected_type": "WARNING",
-      "meta": {"is_edit": false, "media": false, "is_reply": false, "stale": false},
-      "notes": "Real Wayond message seen in the GFX account's chat list (screenshot). Genuinely observed, not synthetic. A news/caution note — must be safely quarantined, never traded."
+      "meta": {"is_edit": false, "media": true, "is_reply": false, "stale": false},
+      "notes": "News/NFP caution. The message is an economic-calendar IMAGE with this caption; media guard quarantines it (safe — warnings are never traded). This is the same message previously seeded from the channel-list preview."
     }
   ]
 }
