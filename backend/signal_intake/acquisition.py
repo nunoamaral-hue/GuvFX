@@ -114,40 +114,51 @@ def _record_amendment(provider, original, message, mid, tg_date, now):
     except Exception:  # unknown parser / malformed → record the amendment, parse UNKNOWN
         parsed = None
 
-    changed_fields, reflagged, amended_update = {}, False, False
     approval = original.approval
-    if (parsed is not None and parsed.kind == Kind.SIGNAL
-            and parsed.is_tradeable_shape() and approval is not None):
+    is_signal = (parsed is not None and parsed.kind == Kind.SIGNAL
+                 and parsed.is_tradeable_shape())
+    is_update = parsed is not None and parsed.kind == Kind.UPDATE
+
+    # Read-only diff of tradeable values vs the original approval (decided before writes).
+    changed_fields = {}
+    if is_signal and approval is not None:
         new_tp = parsed.take_profits[0] if parsed.take_profits else ""
         for field, old, new in (("entry", approval.entry, parsed.entry),
                                  ("stop_loss", approval.stop_loss, parsed.stop_loss),
                                  ("take_profit", approval.take_profit, new_tp)):
             if str(old or "") != str(new or ""):
                 changed_fields[field] = [old, new]
-        if changed_fields and not approval.source_edited:
-            # Flag for HUMAN RE-REVIEW — never auto-apply the edited values.
-            approval.source_edited = True
-            approval.save(update_fields=["source_edited"])
-        reflagged = bool(changed_fields)
-    if parsed is not None and parsed.kind == Kind.UPDATE:
-        _record_update(provider, message, parsed, mid, str(message.get("chat_id") or ""),
-                       edited=True)
-        amended_update = True
+    new_approval = is_signal and approval is None  # edit produced a signal where none was
 
     logger.warning("wayond edit-after-acquisition amendment: provider=%s message_id=%s "
-                   "changed=%s reflagged=%s", getattr(provider, "slug", "?"), mid,
-                   sorted(changed_fields), reflagged)
+                   "changed=%s new_approval=%s", getattr(provider, "slug", "?"), mid,
+                   sorted(changed_fields), new_approval)
     try:
+        # All side-effects live INSIDE the atomic block, AFTER the amendment create whose
+        # unique (original, edit_hash) is the race guard — so a concurrent identical edit
+        # rolls back entirely (no duplicate SignalUpdate, no double flag/approval).
         with transaction.atomic():
-            return MessageAmendment.objects.create(
+            amendment = MessageAmendment.objects.create(
                 provider=provider, original=original, message_id=mid,
                 edit_hash=edit_hash, edited_text=edited_text,
                 edit_date=_to_aware(message.get("edit_date")),
                 reparsed_kind=(parsed.kind if parsed is not None else "UNKNOWN"),
-                changed_fields=changed_fields, approval_reflagged=reflagged,
-                raw_payload={"amended_update": amended_update,
+                changed_fields=changed_fields, approval_reflagged=bool(changed_fields),
+                raw_payload={"amended_update": is_update, "new_approval": bool(new_approval),
                              "reason": (getattr(parsed, "reason", "") if parsed else "parse_error")},
             )
+            if changed_fields and approval is not None and not approval.source_edited:
+                # Flag the existing approval for HUMAN RE-REVIEW — never auto-apply values.
+                approval.source_edited = True
+                approval.save(update_fields=["source_edited"])
+            elif new_approval:
+                # An edit turned a non-signal into a tradeable signal → surface it to the
+                # human-approval gate FLAGGED (never auto-traded; intake_parsed is dedup-safe).
+                services.intake_parsed(parsed, provider=provider, edited=True)
+            if is_update:
+                _record_update(provider, message, parsed, mid,
+                               str(message.get("chat_id") or ""), edited=True)
+            return amendment
     except IntegrityError:  # concurrent identical edit won the race
         return MessageAmendment.objects.filter(original=original, edit_hash=edit_hash).first()
 

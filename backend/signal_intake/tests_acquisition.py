@@ -193,6 +193,21 @@ class AcquisitionDispatcherTests(TestCase):
         self._acq(self._msg("d1"))                              # identical, no edit
         self.assertEqual(MessageAmendment.objects.filter(original=a1).count(), 0)  # dedup preserved
 
+    def test_edit_turning_non_signal_into_signal_surfaces_flagged_approval(self):
+        # An edit that transforms a quarantined non-signal into a tradeable signal must
+        # NOT be trapped in the ledger — it is surfaced to the human gate, flagged.
+        a1 = self._acq(self._msg("x1", text="gm everyone, good luck today"))  # QUARANTINED, no approval
+        self.assertEqual(a1.outcome, self.O.QUARANTINED)
+        self.assertIsNone(a1.approval)
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)
+        self._acq(self._msg("x1", text=SIGNAL_MSG, edit_date=1))              # edited into a signal
+        am = MessageAmendment.objects.get(original=a1, message_id="x1")
+        self.assertEqual(am.reparsed_kind, "SIGNAL")
+        self.assertTrue(am.raw_payload.get("new_approval"))
+        appr = PendingSignalApproval.objects.get(source="wayond", message_id="x1")
+        self.assertEqual(appr.status, PendingSignalApproval.Status.PENDING_APPROVAL)  # human-gated
+        self.assertTrue(appr.source_edited)                    # flagged as edited-sourced
+
     def test_media_evidence_is_a_bounded_reference_not_bytes(self):
         # A buggy/hostile listener passing a huge blob must NOT land bytes in the DB.
         big = {"file_id": "abc123", "type": "photo", "bytes": "X" * 100000, "junk": [1] * 9999}
