@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-07-03 — TELEGRAM-SESSION-RUN outcome + device-fingerprint hardening (repo-only, no order).**
+  Ran the provisioning helper against the real dedicated **GFX** account (Nuno's hands).
+  Login succeeded and a valid 0600 `StringSession` was minted, but Telegram **de-authorised
+  it server-side within minutes** and logged the account out everywhere — reproducible with
+  2FA OFF *and* ON. Root cause = brand-new account anti-abuse, **not** a code bug (session
+  string verified complete: `has_auth_key=True`, `authorised=False` on reuse). Account is a
+  real eSIM and recovers via official-app SMS re-login (not banned). `verification_result =
+  FAIL/BLOCKED`; full trace in memory `project-telegram-session-deauth`. Remediation = age
+  the account 7–14 days + stable device fingerprint, then retry. Hardening shipped here: the
+  provisioning command now passes an **env-driven, stable device fingerprint**
+  (`TELEGRAM_DEVICE_MODEL/SYSTEM_VERSION/APP_VERSION`, defaults applied) to `TelegramClient`
+  instead of Telethon's defaults (which flag fresh accounts) — additive, +2 tests (15 total).
+  Runbook updated with the aging + fingerprint + IP-consistency guidance. **No listener, no
+  ingestion, no provider arming, no deploy, no order.** E3 unaffected (RED).
+
 - **2026-07-03 — TELEGRAM-ACCOUNT-PROVISIONING-HELPER: interactive session generator (repo-only, no login run).**
   Safest/fastest path for Nuno to mint + verify the dedicated **GFX** Telegram account's
   Telethon StringSession. New `provision_telegram_session` management command

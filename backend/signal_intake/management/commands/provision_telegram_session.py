@@ -142,7 +142,19 @@ class Command(BaseCommand):
 
         self.stdout.write("Starting Telegram login for the DEDICATED GuvFX account…")
         self.stdout.write("Telegram will send a login code to that account — type it below.")
-        client = TelegramClient(StringSession(), api_id_int, api_hash)
+        # Stable, realistic device fingerprint. Telethon's library defaults advertise
+        # the client as an automated Telethon session — a known flag for fresh
+        # accounts — and a fingerprint that changes between logins is itself a flag.
+        # Source these from env and FREEZE them: the listener MUST reuse identical
+        # values so Telegram sees one stable device, not a new one each connect.
+        device_kwargs = dict(
+            device_model=os.environ.get("TELEGRAM_DEVICE_MODEL", "Desktop"),
+            system_version=os.environ.get("TELEGRAM_SYSTEM_VERSION", "Windows 10"),
+            app_version=os.environ.get("TELEGRAM_APP_VERSION", "4.16.8"),
+            system_lang_code="en",
+            lang_code="en",
+        )
+        client = TelegramClient(StringSession(), api_id_int, api_hash, **device_kwargs)
         try:
             # No 2FA yet (deferred): start() prompts for the code only. If a 2FA
             # password is ever set, Telethon will additionally prompt for it.

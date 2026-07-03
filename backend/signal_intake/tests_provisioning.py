@@ -42,9 +42,11 @@ class _Chat:
     username = "wayond"
 
 
-def _fake_telethon(me, *, chat=None, msgs=None, session=SESSION, start_exc=None):
+def _fake_telethon(me, *, chat=None, msgs=None, session=SESSION, start_exc=None,
+                   captured=None):
     """A stand-in telethon package injected into sys.modules so the command's lazy
-    import resolves without the real library or any network/login."""
+    import resolves without the real library or any network/login. If ``captured`` is
+    given, the TelegramClient constructor args/kwargs are recorded into it."""
     telethon = types.ModuleType("telethon")
     sync = types.ModuleType("telethon.sync")
     sessions = types.ModuleType("telethon.sessions")
@@ -59,6 +61,9 @@ def _fake_telethon(me, *, chat=None, msgs=None, session=SESSION, start_exc=None)
 
     class FakeClient:
         def __init__(self, *a, **k):
+            if captured is not None:
+                captured["args"] = a
+                captured["kwargs"] = k
             self.session = FakeSession()
             self.disconnected = False
 
@@ -160,8 +165,11 @@ class ProvisioningCommandGuardTests(SimpleTestCase):
         self.assertIn("TELEGRAM_API_ID", str(cm.exception))
 
     def test_missing_telethon_errors_with_install_hint(self):
-        # Creds present but Telethon not installed (as in CI) → clear install hint.
-        with mock.patch.dict(os.environ, {"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "h"}):
+        # Force the lazy Telethon import to fail regardless of whether the library
+        # happens to be installed here (None in sys.modules makes import raise).
+        with mock.patch.dict(os.environ, {"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "h"}), \
+                mock.patch.dict(sys.modules, {"telethon": None, "telethon.sync": None,
+                                              "telethon.sessions": None}):
             with self.assertRaises(CommandError) as cm:
                 call_command("provision_telegram_session", stdout=StringIO())
         self.assertIn("Telethon", str(cm.exception))
@@ -218,3 +226,37 @@ class ProvisioningHandleIntegrationTests(SimpleTestCase):
             self._run(fake, api_id="not-an-int")
         self.assertNotIn("not-an-int", str(cm.exception))
         self.assertIn("TELEGRAM_API_ID", str(cm.exception))
+
+    def _run_capturing(self, extra_env=None):
+        """Run the full flow against a fake telethon and return the captured
+        TelegramClient constructor kwargs."""
+        cap = {}
+        fake = _fake_telethon(_Me(), captured=cap)
+        env = {"TELEGRAM_API_ID": "12345", "TELEGRAM_API_HASH": "hash",
+               "TELEGRAM_PHONE": PHONE}
+        if extra_env:
+            env.update(extra_env)
+        path = os.path.join(tempfile.mkdtemp(), "s.session")
+        with mock.patch.dict(sys.modules, fake), \
+                mock.patch.dict(os.environ, env), \
+                mock.patch("builtins.input", return_value="00000"):
+            call_command("provision_telegram_session", "--session-out", path,
+                         stdout=StringIO())
+        return cap["kwargs"]
+
+    def test_client_gets_stable_non_default_device_fingerprint(self):
+        kw = self._run_capturing()
+        for key in ("device_model", "system_version", "app_version",
+                    "system_lang_code", "lang_code"):
+            self.assertIn(key, kw)          # explicitly set, not Telethon's default
+            self.assertTrue(kw[key])        # non-empty
+
+    def test_device_fingerprint_is_env_overridable(self):
+        kw = self._run_capturing(extra_env={
+            "TELEGRAM_DEVICE_MODEL": "MyBox",
+            "TELEGRAM_SYSTEM_VERSION": "Ubuntu 24.04",
+            "TELEGRAM_APP_VERSION": "9.9.9",
+        })
+        self.assertEqual(kw["device_model"], "MyBox")
+        self.assertEqual(kw["system_version"], "Ubuntu 24.04")
+        self.assertEqual(kw["app_version"], "9.9.9")
