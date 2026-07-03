@@ -11,7 +11,7 @@ so it can serve as a regression gate. No Telegram, no DB writes, no order.
 
 from django.core.management.base import BaseCommand, CommandError
 
-from signal_intake.certification import build_report, load_corpus
+from signal_intake.certification import build_report, certification_confidence, load_corpus
 
 
 class Command(BaseCommand):
@@ -48,6 +48,12 @@ class Command(BaseCommand):
         self.stdout.write(f"Verdicts: PASS={v['PASS']} DEGRADED={v['DEGRADED']} FAIL={v['FAIL']}")
         self.stdout.write("Unsafe: " + (", ".join(s["unsafe"]) or "none"))
         self.stdout.write("Degraded (safe, parser could improve): " + (", ".join(s["degraded"]) or "none"))
+
+        conf = certification_confidence(report)
+        self.stdout.write(
+            f"Coverage: {len(conf['covered'])}/{len(conf['covered']) + len(conf['missing'])} target types"
+            + (f"  (missing: {', '.join(conf['missing'])})" if conf["missing"] else ""))
+        self.stdout.write(f"Confidence: {conf['level']} — {conf['rationale']}")
 
         if s["certified"]:
             self.stdout.write(self.style.SUCCESS(
