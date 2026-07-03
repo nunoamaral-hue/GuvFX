@@ -179,5 +179,16 @@ class Adr009BoundaryGuardTests(TestCase):
     def test_no_executionjob_model_in_signal_intake(self):
         from django.apps import apps
         names = [m.__name__ for m in apps.get_app_config("signal_intake").get_models()]
+        # ADR-009: no execution/order model may live in signal_intake.
         self.assertNotIn("ExecutionJob", names)
-        self.assertEqual(sorted(names), ["PendingSignalApproval", "SignalAuditEvent"])
+        for banned in ("ExecutionJob", "ProposedSignalOrder", "SignalExecutionPlan",
+                       "ProposedOrderLeg"):
+            self.assertNotIn(banned, names)
+        # Allowlist: intake + SIGNAL-ACQUISITION-MVP provider-platform models only.
+        self.assertEqual(
+            sorted(names),
+            sorted([
+                "PendingSignalApproval", "SignalAuditEvent",
+                "SignalProvider", "ParserProfile", "AcquiredMessage", "SignalUpdate",
+            ]),
+        )

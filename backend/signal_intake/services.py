@@ -35,13 +35,19 @@ def _audit(actor, event, approval, **detail):
 
 
 @transaction.atomic
-def intake_parsed(parsed, *, actor=None, source=SOURCE) -> PendingSignalApproval:
+def intake_parsed(parsed, *, actor=None, source=SOURCE, provider=None) -> PendingSignalApproval:
     """Create or return the PendingSignalApproval for a parsed Telegram message.
 
     Idempotent on (source, message_id): a duplicate message returns the existing
     record and creates nothing new. UNKNOWN/unparseable messages are quarantined,
     never turned into a tradeable approval. Creates NO ExecutionJob.
+
+    SIGNAL-ACQUISITION: when ``provider`` is given (dispatcher path), the approval
+    links to it and its ``slug`` becomes the source (backwards-compatible — the
+    legacy file-intake path passes no provider and keeps ``source=SOURCE``).
     """
+    if provider is not None:
+        source = provider.slug
     mid = parsed.message_id or f"{parsed.market}-{parsed.direction}-{parsed.entry}"
 
     existing = PendingSignalApproval.objects.filter(source=source, message_id=mid).first()
@@ -54,7 +60,7 @@ def intake_parsed(parsed, *, actor=None, source=SOURCE) -> PendingSignalApproval
         correlation_id = new_correlation_id()
         log_stage("signal_received", correlation_id, source=str(source), message_id=mid)
         approval = PendingSignalApproval.objects.create(
-            source=source, message_id=mid,
+            source=source, message_id=mid, provider=provider,
             symbol=parsed.market, direction=parsed.direction,
             entry=parsed.entry, stop_loss=parsed.stop_loss,
             take_profit=(parsed.take_profits[0] if parsed.take_profits else ""),
