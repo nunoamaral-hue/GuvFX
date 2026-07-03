@@ -9,7 +9,7 @@ so it can serve as a regression gate. No Telegram, no DB writes, no order.
     python manage.py certify_wayond --corpus /path/to/other_corpus.json
 """
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from signal_intake.certification import build_report, load_corpus
 
@@ -22,7 +22,12 @@ class Command(BaseCommand):
                             help="Path to a corpus JSON (defaults to wayond_corpus.json).")
 
     def handle(self, *args, **o):
-        entries = load_corpus(o["corpus"])
+        try:
+            entries = load_corpus(o["corpus"])
+        except OSError as exc:
+            raise CommandError(f"Cannot read corpus {o['corpus']!r}: {type(exc).__name__}")
+        except ValueError as exc:
+            raise CommandError(f"Invalid corpus: {exc}")
         report = build_report(entries)
         s = report["summary"]
 

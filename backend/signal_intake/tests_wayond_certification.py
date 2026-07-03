@@ -91,7 +91,12 @@ class FrameworkSelfTests(SimpleTestCase):
 
 
 class DispatcherAgreementTests(TestCase):
-    """The pure classifier must agree with the REAL dispatcher on the safety group."""
+    """The pure classifier must agree with the REAL dispatcher on the safety group for
+    an ARMED, registered provider, across content + freshness: fresh / edited / media /
+    empty / stale / indeterminate-date. The provider-arming gate (DROPPED_NOT_ARMED)
+    and the unknown-parser-profile gate (QUARANTINED) are orthogonal, fail-closed
+    dispatcher gates covered by tests_acquisition — classify() intentionally does not
+    model them (it certifies the parser given a live provider)."""
 
     def setUp(self):
         self.profile = ParserProfile.objects.create(slug="wayond_v1")
@@ -121,6 +126,7 @@ class DispatcherAgreementTests(TestCase):
             (SIGNAL_SHAPE, {"media": True}, {"media": True}),
             ("   ", {}, {}),                                         # empty
             (SIGNAL_SHAPE, {"stale": True}, {"age_s": 5000}),        # stale over a signal
+            (SIGNAL_SHAPE, {"stale": True}, {"date": None}),         # indeterminate date -> STALE
         ]
         for text, ckw, dkw in cases:
             pure = _group(cert.classify(text, **ckw))

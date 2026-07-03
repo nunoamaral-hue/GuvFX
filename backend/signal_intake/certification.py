@@ -43,17 +43,23 @@ _TRADEABLE = "ENTRY_SIGNAL"
 
 
 def classify(text, *, is_edit=False, media=False, stale=False):
-    """Classify one message to a taxonomy label, mirroring the dispatcher's content
-    precedence (signal_intake.acquisition._classify) exactly. Pure — no DB.
+    """Classify one message to a taxonomy label, mirroring the dispatcher's content +
+    freshness precedence for an ARMED, registered provider. Pure — no DB.
 
-    Precedence: stale > media > edited > empty > parser(SIGNAL/UPDATE/UNKNOWN). A
-    drift test asserts this stays in lock-step with the real dispatcher.
+    Precedence (matches signal_intake.acquisition._classify): stale > edited > media >
+    empty > parser(SIGNAL/UPDATE/UNKNOWN). ``stale`` faithfully abstracts BOTH
+    dispatcher STALE paths (age>window AND indeterminate/None date). The provider-
+    arming gate (non-armed → DROPPED_NOT_ARMED) and the unknown-parser-profile gate
+    (unregistered slug → QUARANTINED) are ORTHOGONAL, fail-closed dispatcher gates,
+    intentionally not modelled here — this certifies the PARSER given a live provider,
+    and those gates are covered by signal_intake.tests_acquisition. A drift test
+    asserts this content + freshness precedence stays in lock-step with the dispatcher.
     """
     if stale:
         return "STALE"
-    if media:
-        return "QUARANTINED"
     if is_edit:
+        return "QUARANTINED"
+    if media:
         return "QUARANTINED"
     if not (text or "").strip():
         return "QUARANTINED"
