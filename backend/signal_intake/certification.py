@@ -160,8 +160,11 @@ def certification_confidence(report):
                              + ", ".join(crit_missing) + " — parser unproven for signals")
     elif missing:
         level, why = "MEDIUM", "safety-critical types certified; still missing " + ", ".join(missing)
+    elif s["verdicts"].get("DEGRADED"):
+        level, why = "MEDIUM", (f"all target types covered but {s['verdicts']['DEGRADED']} "
+                                "degraded (parser misclassifies some real messages)")
     else:
-        level, why = "HIGH", "all target types certified, 0 unsafe, 0 fail"
+        level, why = "HIGH", "all target types certified, 0 unsafe, 0 fail, 0 degraded"
     return {"level": level, "rationale": why, "covered": covered,
             "missing": missing, "safety_critical_missing": crit_missing}
 

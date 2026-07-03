@@ -30,26 +30,37 @@ from .certification import CORPUS_PATH, TAXONOMY, _verdict, classify
 
 _DELIM_RE = re.compile(r"^\s*---+\s*$", re.M)
 _SIGNAL_HINT = re.compile(r"\b(BUY|SELL)\b|Stop\s*Loss|\bTP\s*\d", re.I)
-_DIRECTIVE_RE = re.compile(r"^@(\w+)\s*:?\s*(.*)$")
 _FLAGS = {"edit": "is_edit", "media": "media", "reply": "is_reply", "stale": "stale"}
+# Strict, KNOWN-key-only directive lines (one per line). ANY other line — including a
+# real "@mention", a bare "@foo", or two directives on one line — is treated as message
+# BODY and never consumed, so real content is never silently eaten.
+_TYPE_RE = re.compile(r"^@type\s*:\s*(\S.*?)\s*$", re.I)
+_ID_RE = re.compile(r"^@id\s*:\s*(\S.*?)\s*$", re.I)
+_FLAG_RE = re.compile(r"^@(edit|media|reply|stale)\s*$", re.I)
 
 
 def _extract_directives(block):
-    """Split a block's leading @directive lines from its message body."""
+    """Split a block's leading @directive lines from its body. Directives must be
+    KNOWN keys, one per line; leading blank lines are skipped; the first line that is
+    not a recognised directive begins the body (so an @mention, a bare @word, or a
+    '@edit @type: X' mix stays verbatim in the body rather than being consumed)."""
     meta, declared, cid = {}, None, None
     lines = block.split("\n")
     i = 0
     while i < len(lines):
-        m = _DIRECTIVE_RE.match(lines[i].strip())
-        if not m:
-            break
-        key, val = m.group(1).lower(), m.group(2).strip()
-        if key == "type":
-            declared = val.upper()
-        elif key == "id":
-            cid = val
-        elif key in _FLAGS:
-            meta[_FLAGS[key]] = True
+        s = lines[i].strip()
+        if not s:
+            i += 1
+            continue  # skip blank lines among/before leading directives
+        mt, mi, mf = _TYPE_RE.match(s), _ID_RE.match(s), _FLAG_RE.match(s)
+        if mt:
+            declared = mt.group(1).strip().upper()
+        elif mi:
+            cid = mi.group(1).strip()
+        elif mf:
+            meta[_FLAGS[mf.group(1).lower()]] = True
+        else:
+            break  # first real body line — everything from here is verbatim body
         i += 1
     body = "\n".join(lines[i:]).strip()
     return declared, cid, meta, body
@@ -117,36 +128,52 @@ def _unique_id(base, taken):
 
 
 def promote(staged, corpus_path=None, *, source="pasted-by-nuno"):
-    """Append CONFIRMED staging entries to the permanent corpus. Skips unconfirmed
-    entries, duplicate text, and bad expected_types. Returns {added, skipped}."""
+    """Append CONFIRMED staging entries to the permanent corpus. Skips (with a reason)
+    entries that are unconfirmed, missing text, a bad expected_type, or a duplicate.
+    Returns {added, skipped, unsafe} — ``unsafe`` lists added entries whose certified
+    type the parser does NOT currently produce (a real parser gap; the entry is still
+    added because it is a real message, and certification will now fail until fixed).
+    Raises ValueError on a malformed corpus (never partially writes)."""
     corpus_path = Path(corpus_path or CORPUS_PATH)
     data = json.loads(corpus_path.read_text())
+    if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
+        raise ValueError("corpus must be a JSON object with a 'messages' list")
     messages = data["messages"]
-    texts = {m["text"] for m in messages}
-    ids = {m["id"] for m in messages}
-    added, skipped = [], []
+    texts = {m.get("text") for m in messages}
+    ids = {m.get("id") for m in messages}
+    added, skipped, unsafe = [], [], []
     for e in staged:
+        text = e.get("text")
+        if not text or not str(text).strip():
+            skipped.append({"id": e.get("id"), "reason": "missing_text"})
+            continue
         if not e.get("confirmed"):
             skipped.append({"id": e.get("id"), "reason": "unconfirmed"})
             continue
-        if e.get("expected_type") not in TAXONOMY:
+        expected = e.get("expected_type")
+        if expected not in TAXONOMY:
             skipped.append({"id": e.get("id"), "reason": "bad_expected_type"})
             continue
-        if e["text"] in texts:
+        if text in texts:
             skipped.append({"id": e.get("id"), "reason": "duplicate_text"})
             continue
-        eid = _unique_id(e.get("id") or f"pasted-{_slug(e['text'])}", ids)
+        meta = e.get("meta") or {}
+        eid = _unique_id(e.get("id") or f"pasted-{_slug(text)}", ids)
         messages.append({
             "id": eid,
             "source": e.get("source", source),
-            "text": e["text"],
-            "expected_type": e["expected_type"],
-            "meta": {k: bool(e.get("meta", {}).get(k)) for k in
-                     ("is_edit", "media", "is_reply", "stale")},
+            "text": text,
+            "expected_type": expected,
+            "meta": {k: bool(meta.get(k)) for k in ("is_edit", "media", "is_reply", "stale")},
             "notes": e.get("notes", ""),
         })
         ids.add(eid)
-        texts.add(e["text"])
+        texts.add(text)
         added.append(eid)
+        # Recompute the real verdict; surface (but still add) a parser gap.
+        observed = classify(text, is_edit=meta.get("is_edit", False),
+                            media=meta.get("media", False), stale=meta.get("stale", False))
+        if _verdict(expected, observed)[1] == "UNSAFE":
+            unsafe.append({"id": eid, "expected": expected, "observed": observed})
     corpus_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-    return {"added": added, "skipped": skipped}
+    return {"added": added, "skipped": skipped, "unsafe": unsafe}

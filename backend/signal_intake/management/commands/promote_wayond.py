@@ -33,7 +33,10 @@ class Command(BaseCommand):
             raise CommandError(f"Invalid staging JSON: {exc}")
 
         staged = data.get("staged", data) if isinstance(data, dict) else data
-        result = promote(staged, o["corpus"])
+        try:
+            result = promote(staged, o["corpus"])
+        except (OSError, ValueError) as exc:
+            raise CommandError(f"Cannot promote into corpus: {exc}")
 
         self.stdout.write(self.style.SUCCESS(
             f"Promoted {len(result['added'])} confirmed message(s): "
@@ -42,4 +45,11 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("Skipped:"))
             for sk in result["skipped"]:
                 self.stdout.write(f"  - {sk['id']}: {sk['reason']}")
+        if result.get("unsafe"):
+            self.stdout.write(self.style.ERROR(
+                "PARSER GAP — added, but the parser does NOT yet produce these certified "
+                "types (certification will FAIL until the parser is fixed):"))
+            for u in result["unsafe"]:
+                self.stdout.write(
+                    f"  - {u['id']}: certified {u['expected']} but parser sees {u['observed']}")
         self.stdout.write("\nNow run: python manage.py certify_wayond")

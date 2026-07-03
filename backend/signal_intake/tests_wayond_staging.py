@@ -41,6 +41,27 @@ class PasteParsingTests(SimpleTestCase):
         # @type is not a LEADING line, so it stays body and nothing is declared.
         self.assertIsNone(e["declared_type"])
 
+    def test_directive_after_blank_line_is_parsed(self):
+        # Blank lines between the delimiter and the directive must not defeat parsing.
+        [e] = staging.parse_paste(f"\n\n@type: WARNING\n@edit\n{WARNING_SHAPE}")
+        self.assertEqual(e["declared_type"], "WARNING")
+        self.assertTrue(e["meta"]["is_edit"])
+        self.assertNotIn("@type", e["text"])          # directive not left in body
+
+    def test_leading_at_mention_is_preserved_in_body(self):
+        # A real @mention must NOT be eaten as a directive (critical data-loss guard).
+        [e] = staging.parse_paste("@trader_bob says BUY EURUSD 1.0850\nStop Loss 1.0820")
+        self.assertIsNone(e["declared_type"])
+        self.assertIn("@trader_bob says BUY EURUSD 1.0850", e["text"])
+
+    def test_two_directives_on_one_line_stay_in_body_not_silently_lost(self):
+        [e] = staging.parse_paste("@edit @type: WARNING\n" + WARNING_SHAPE)
+        # Not a clean single directive per line -> treated as body, visible for the
+        # user to fix (no silent loss); nothing declared, no flag set.
+        self.assertIsNone(e["declared_type"])
+        self.assertEqual(e["meta"], {})
+        self.assertIn("@edit @type: WARNING", e["text"])
+
 
 class StagingTests(SimpleTestCase):
     def test_undeclared_proposes_observed_and_needs_review(self):
@@ -104,6 +125,30 @@ class PromoteTests(SimpleTestCase):
         self.assertTrue(report["summary"]["certified"])
         self.assertEqual(report["summary"]["unsafe"], [])
 
+    def test_missing_text_entry_is_skipped_not_crash(self):
+        corpus = self._tmp_corpus()
+        result = staging.promote(
+            [{"id": "x", "confirmed": True, "expected_type": "WARNING"}], corpus)
+        self.assertEqual(result["added"], [])
+        self.assertTrue(any(s["reason"] == "missing_text" for s in result["skipped"]))
+
+    def test_malformed_corpus_raises_valueerror(self):
+        path = os.path.join(tempfile.mkdtemp(), "bad.json")
+        with open(path, "w") as fh:
+            fh.write("[]")   # not an object with a 'messages' list
+        with self.assertRaises(ValueError):
+            staging.promote([], path)
+
+    def test_parser_gap_is_added_but_flagged_unsafe(self):
+        # A real message CONFIRMED as ENTRY_SIGNAL that the parser misses -> added
+        # (it's real) but surfaced as a parser gap so certification will fail loudly.
+        corpus = self._tmp_corpus()
+        staged = [{"id": "missed-buy", "text": "buy eurusd soon maybe",
+                   "confirmed": True, "expected_type": "ENTRY_SIGNAL", "meta": {}}]
+        result = staging.promote(staged, corpus)
+        self.assertIn("missed-buy", result["added"])
+        self.assertTrue(any(u["id"] == "missed-buy" for u in result["unsafe"]))
+
 
 class ConfidenceTests(SimpleTestCase):
     def _report(self, pairs):
@@ -139,3 +184,18 @@ class ConfidenceTests(SimpleTestCase):
         # A real signal the parser MISSES: expected ENTRY_SIGNAL, observed UNKNOWN.
         conf = cert.certification_confidence(self._report([("ENTRY_SIGNAL", "buy soon?", {})]))
         self.assertEqual(conf["level"], "LOW")
+
+    def test_full_coverage_with_a_degraded_is_not_high(self):
+        # All target types covered, but one real UPDATE the parser misclassifies
+        # (DEGRADED) must hold confidence at MEDIUM, not HIGH.
+        conf = cert.certification_confidence(self._report([
+            ("ENTRY_SIGNAL", SIGNAL_SHAPE, {}),
+            ("UPDATE", UPDATE_SHAPE, {}),               # PASS
+            ("UPDATE", "not really an update", {}),     # DEGRADED (missed)
+            ("WARNING", WARNING_SHAPE, {}),
+            ("CHATTER", CHATTER_SHAPE, {}),
+            ("QUARANTINED", SIGNAL_SHAPE, {"media": True}),
+            ("UNKNOWN", "random text", {}),
+        ]))
+        self.assertEqual(conf["level"], "MEDIUM")
+        self.assertIn("degraded", conf["rationale"])
