@@ -20,12 +20,35 @@ cd backend
 pip install -r requirements-telegram.txt      # Telethon; kept out of the backend image
 ```
 
+## ⚠️ Age the account first (or the session gets killed)
+
+A **brand-new** Telegram account cannot hold an MTProto user session: Telegram's
+anti-abuse logs the account out everywhere and de-authorises the freshly-minted
+`StringSession` within minutes (observed, reproducible, and **2FA does not prevent
+it** — see [[project-telegram-session-deauth]] / `docs/STATUS.md`). Before running
+this:
+
+1. **Age GFX ~7–14 days** (3–4 days is the floor) with light *official-app* use —
+   profile photo + name, join 2–3 innocuous public channels, send a few messages.
+   This is the highest-leverage step and it is manual.
+2. Keep **2FA OFF until the minted session verifies**, then turn it on (2FA does not
+   invalidate an already-authorised session).
+3. Prefer a **consistent, non-datacenter egress IP** for both this run and the future
+   listener — a PH-registered account appearing from wildly different geos/IPs is a
+   mild flag.
+
 ## Run
 
 ```bash
 cd backend
 export TELEGRAM_API_ID=...        # from my.telegram.org  (not committed, not logged)
 export TELEGRAM_API_HASH=...
+# Stable device fingerprint — set these ONCE and FREEZE them; the listener must reuse
+# the SAME values. Defaults are applied if unset. (Telethon's own defaults advertise
+# an automated client and flag fresh accounts.)
+export TELEGRAM_DEVICE_MODEL="Desktop"
+export TELEGRAM_SYSTEM_VERSION="Windows 10"
+export TELEGRAM_APP_VERSION="4.16.8"      # keep this a currently-plausible value
 python manage.py provision_telegram_session \
     --session-out ~/.guvfx/telegram_gfx.session \
     --wayond-chat <@username | chat_id | t.me link for Wayond>
