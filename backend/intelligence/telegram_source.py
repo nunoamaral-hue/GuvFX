@@ -37,10 +37,14 @@ SOURCE = "WAYOND_TELEGRAM"
 _ORDER_RE = re.compile(
     r"\b([A-Z][A-Z0-9]{2,11})\s*\|\s*(BUY|SELL)\s+([0-9][0-9.,]*)", re.I
 )
-_SL_RE = re.compile(r"Stop\s*Loss\s+([0-9][0-9.,]*)", re.I)
-_TP_RE = re.compile(r"\bTP\s*\d+\s+([0-9][0-9.,]*)", re.I)
+# SL / TP allow an OPTIONAL colon after the label: real Wayond SELL messages use
+# "STOP LOSS: 4028" and "TP1: 4015" (colon), while BUY messages use "Stop Loss 3985"
+# and "TP1 3995" (no colon). Certified against real screenshots (corpus V1).
+_SL_RE = re.compile(r"Stop\s*Loss\s*:?\s*([0-9][0-9.,]*)", re.I)
+_TP_RE = re.compile(r"\bTP\s*\d+\s*:?\s*([0-9][0-9.,]*)", re.I)
 _INTENT_RE = re.compile(r"Potential\s+(upward|downward)\s+movement", re.I)
 _TP_HIT_RE = re.compile(r"\bTP\s*\d+\s*hit", re.I)
+_SL_HIT_RE = re.compile(r"\bSL\s+hit\b", re.I)
 _PIPS_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*pips", re.I)
 _MOVE_SL_RE = re.compile(r"Move\s+SL\s+to\s+([0-9][0-9.,]*)", re.I)
 
@@ -112,6 +116,12 @@ def parse_message(text: str, message_id: str = "") -> ParsedSignal:
         return ParsedSignal(
             kind=Kind.UPDATE, message_id=mid, raw_text=body,
             update_type="MOVE_SL", new_stop_loss=_norm_num(move.group(1)),
+        )
+    # Stop-loss-hit note (real Wayond update, e.g. "SL hit" / "SL hit, 4035 for
+    # re-entries!"). Any re-entry price is informational only — never auto-traded.
+    if _SL_HIT_RE.search(body):
+        return ParsedSignal(
+            kind=Kind.UPDATE, message_id=mid, raw_text=body, update_type="SL_HIT",
         )
 
     return ParsedSignal(

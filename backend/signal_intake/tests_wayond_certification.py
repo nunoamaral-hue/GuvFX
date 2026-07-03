@@ -72,6 +72,21 @@ class FrameworkSelfTests(SimpleTestCase):
     def test_warning_is_unknown_not_tradeable(self):
         self.assertEqual(cert.classify(WARNING_SHAPE), "UNKNOWN")
 
+    def test_real_sell_colon_format_is_entry_signal(self):
+        # Real Wayond SELL format uses "STOP LOSS:" / "TP1:" with colons (corpus V1).
+        sell = ("XAUUSD | Potential downward movement\nXAUUSD | SELL 4020\n"
+                "❌ STOP LOSS: 4028 (80 pips)\n✅TP1: 4015\n✅TP2: 4010\n✅TP3: 4000")
+        self.assertEqual(cert.classify(sell), "ENTRY_SIGNAL")
+        from intelligence.telegram_source import parse_message
+        p = parse_message(sell)
+        self.assertEqual((p.market, p.direction, p.entry, p.stop_loss),
+                         ("XAUUSD", "SELL", "4020", "4028"))
+        self.assertEqual(p.take_profits, ("4015", "4010", "4000"))  # colon TPs parsed
+
+    def test_real_sl_hit_is_an_update(self):
+        self.assertEqual(cert.classify("SL hit"), "UPDATE")
+        self.assertEqual(cert.classify("SL hit, 4035 for re-entries!"), "UPDATE")
+
     def test_edit_media_empty_stale_fail_closed_even_over_a_signal(self):
         # A signal-shaped body must NOT be tradeable when edited/media/empty/stale.
         self.assertEqual(cert.classify(SIGNAL_SHAPE, is_edit=True), "QUARANTINED")

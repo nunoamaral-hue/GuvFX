@@ -6,6 +6,22 @@
 
 ## Execution workstream log
 
+- **2026-07-03 — WAYOND-CORPUS-SEED-FROM-SCREENSHOTS: corpus V1 from real messages + parser fixes (repo-only, no order).**
+  Extracted **21 real Wayond messages** from Nuno's screenshots (24 Jun–02 Jul) into the
+  certified corpus (`wayond_corpus.json`) — 7 entries (6 BUY + 1 SELL), 9 updates (TP-hit /
+  move-SL / SL-hit), 2 edited (quarantined), 2 chatter, 1 NFP warning. Certification surfaced
+  **2 real parser gaps**: (1) SELL messages use `STOP LOSS:` / `TP1:` with COLONS (BUY do
+  not) → the `Stop Loss\s+<num>` regex MISSED the real SELL entry (UNSAFE/FAIL); (2) `SL hit`
+  updates were UNKNOWN (DEGRADED). Fixed with minimal, targeted parser changes
+  (`intelligence/telegram_source.py`): optional colon in `_SL_RE`/`_TP_RE`, new `_SL_HIT_RE`
+  → SL_HIT update. **Confidence LOW→MEDIUM** (0 unsafe, 0 fail, 0 degraded; only UNKNOWN
+  coverage missing — no malformed message was in the screenshots). Finding flagged: Wayond
+  EDITS some signals (EURGBP entry, AUDCAD update) → edit guard drops them; and many TP-hit
+  updates carry MT5 position screenshots (classified by text; media handling is a dispatcher
+  concern). Every extracted message is now a permanent regression case; +explicit parser tests
+  for the SELL colon format + SL-hit. 115 signal_intake+intelligence tests green, no
+  regressions. Repo-only. E3 unaffected (RED).
+
 - **2026-07-03 — WAYOND-CORPUS-SEED-READY: real-message intake workflow (repo-only, no order).**
   Removes friction from seeding the certification corpus. New `signal_intake/staging.py`
   — `parse_paste` (split on `---`, optional leading `@type/@edit/@media/@reply/@stale/@id`
