@@ -47,7 +47,11 @@ python manage.py provision_telegram_session \
 ## Where the session is stored
 
 A **600-mode** file at `--session-out` (default `~/.guvfx/telegram_gfx.session`).
-Treat it as a full credential:
+The file is created **atomically at 0600** (no world-readable window) and with
+`O_NOFOLLOW` (it refuses to write the credential *through* a symlink planted at the
+destination — you'll get a clear error instead). Residual: the parent directory is
+best-effort `0700`; run this on your own machine/account (the intended threat model),
+not a shared host. Treat the file as a full credential:
 
 - **Do NOT** commit it, paste it into chat/logs, or print it.
 - Move it into the deploy secret store as `TELEGRAM_STRING_SESSION` in the

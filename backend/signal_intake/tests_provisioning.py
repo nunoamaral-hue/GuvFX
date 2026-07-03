@@ -8,6 +8,9 @@ and the command guards on missing API creds / missing Telethon.
 
 import os
 import stat
+import sys
+import tempfile
+import types
 from io import StringIO
 from unittest import mock
 
@@ -22,6 +25,7 @@ from signal_intake.management.commands.provision_telegram_session import (
 )
 
 SESSION = "1BVtsOI4-FAKE-STRINGSESSION-should-never-be-logged"
+PHONE = "+639999999999"  # the GFX account phone — must NEVER appear in output
 
 
 class _Me:
@@ -29,13 +33,60 @@ class _Me:
     first_name = "GFX"
     last_name = ""
     username = "gfx_guvfx"
-    phone = "+639999999999"  # must NEVER appear in output
+    phone = PHONE  # must NEVER appear in output
 
 
 class _Chat:
     id = 42
     title = "Wayond | FX Signals"
     username = "wayond"
+
+
+def _fake_telethon(me, *, chat=None, msgs=None, session=SESSION, start_exc=None):
+    """A stand-in telethon package injected into sys.modules so the command's lazy
+    import resolves without the real library or any network/login."""
+    telethon = types.ModuleType("telethon")
+    sync = types.ModuleType("telethon.sync")
+    sessions = types.ModuleType("telethon.sessions")
+
+    class FakeSession:
+        def save(self):
+            return session
+
+    class FakeStringSession:
+        def __init__(self, *a, **k):
+            pass
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            self.session = FakeSession()
+            self.disconnected = False
+
+        def start(self, phone=None, code_callback=None):
+            if phone:
+                phone()               # exercise the closures like Telethon would
+            if code_callback:
+                code_callback()
+            if start_exc:
+                raise start_exc
+
+        def get_me(self):
+            return me
+
+        def get_entity(self, _):
+            return chat
+
+        def get_messages(self, _entity, limit=1):
+            return msgs or []
+
+        def disconnect(self):
+            self.disconnected = True
+
+    sync.TelegramClient = FakeClient
+    sessions.StringSession = FakeStringSession
+    telethon.sync = sync
+    telethon.sessions = sessions
+    return {"telethon": telethon, "telethon.sync": sync, "telethon.sessions": sessions}
 
 
 class ProvisioningHelperTests(SimpleTestCase):
@@ -45,6 +96,27 @@ class ProvisioningHelperTests(SimpleTestCase):
 
     def test_write_session_file_is_600(self):
         path = write_session_file(SESSION, self._tmp())
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        with open(path) as fh:
+            self.assertEqual(fh.read(), SESSION)
+
+    def test_write_refuses_symlink_at_destination(self):
+        d = tempfile.mkdtemp()
+        loot = os.path.join(d, "attacker_loot.txt")
+        link = os.path.join(d, "telegram_gfx.session")
+        os.symlink(loot, link)  # attacker plants a symlink at the destination
+        with self.assertRaises(CommandError):
+            write_session_file(SESSION, link)
+        # The credential was NOT written through the link.
+        self.assertFalse(os.path.exists(loot))
+
+    def test_write_tightens_pre_existing_loose_file(self):
+        path = self._tmp()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("stale")
+        os.chmod(path, 0o644)  # pre-existing world-readable file
+        write_session_file(SESSION, path)
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
         with open(path) as fh:
             self.assertEqual(fh.read(), SESSION)
@@ -93,3 +165,56 @@ class ProvisioningCommandGuardTests(SimpleTestCase):
             with self.assertRaises(CommandError) as cm:
                 call_command("provision_telegram_session", stdout=StringIO())
         self.assertIn("Telethon", str(cm.exception))
+
+
+class ProvisioningHandleIntegrationTests(SimpleTestCase):
+    """Exercise the full command.handle() flow against a fake Telethon (no login),
+    proving the phone and session never reach stdout and errors stay sanitised."""
+
+    def _out_path(self):
+        return os.path.join(tempfile.mkdtemp(), "telegram_gfx.session")
+
+    def _run(self, fake, extra=None, api_id="12345"):
+        out = StringIO()
+        env = {"TELEGRAM_API_ID": api_id, "TELEGRAM_API_HASH": "hash",
+               "TELEGRAM_PHONE": PHONE}
+        path = self._out_path()
+        args = ["provision_telegram_session", "--session-out", path] + (extra or [])
+        with mock.patch.dict(sys.modules, fake), \
+                mock.patch.dict(os.environ, env), \
+                mock.patch("builtins.input", return_value="00000"):
+            call_command(*args, stdout=out)
+        return out.getvalue(), path
+
+    def test_happy_path_prints_metadata_not_phone_or_session(self):
+        fake = _fake_telethon(_Me(), chat=_Chat(),
+                              msgs=[types.SimpleNamespace(id=99)])
+        text, path = self._run(fake, extra=["--wayond-chat", "wayond"])
+        self.assertIn("777", text)                       # metadata IS shown
+        self.assertIn("Wayond | FX Signals", text)
+        self.assertIn("99", text)                        # latest message id
+        self.assertNotIn(PHONE, text)                    # phone NEVER printed
+        self.assertNotIn(SESSION, text)                  # session NEVER printed
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
+    def test_print_secret_flag_shows_session_in_full_flow(self):
+        fake = _fake_telethon(_Me())
+        text, _ = self._run(fake, extra=["--print-secret"])
+        self.assertIn(SESSION, text)                     # explicitly requested
+        self.assertIn("SECURITY WARNING", text)
+        self.assertNotIn(PHONE, text)                    # phone still never printed
+
+    def test_login_failure_is_sanitised_no_phone_leak(self):
+        # Telethon raises with the phone embedded in the message — must not leak.
+        fake = _fake_telethon(_Me(), start_exc=RuntimeError(f"{PHONE} is banned"))
+        with self.assertRaises(CommandError) as cm:
+            self._run(fake)
+        self.assertNotIn(PHONE, str(cm.exception))
+        self.assertIn("Telegram login failed", str(cm.exception))
+
+    def test_bad_api_id_is_sanitised_no_value_leak(self):
+        fake = _fake_telethon(_Me())
+        with self.assertRaises(CommandError) as cm:
+            self._run(fake, api_id="not-an-int")
+        self.assertNotIn("not-an-int", str(cm.exception))
+        self.assertIn("TELEGRAM_API_ID", str(cm.exception))

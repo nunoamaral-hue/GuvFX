@@ -34,17 +34,36 @@ PRINT_SECRET_WARNING = (
 
 
 def write_session_file(session_str: str, out_path: str) -> str:
-    """Write the session to a 600-mode file (parent dirs 700). Returns the path.
-    The session string is never returned to the caller for logging."""
+    """Write the session to a 0600 file (parent dir 0700). Returns the path.
+
+    The file is created atomically at mode 0600 (no world-readable window) with
+    O_NOFOLLOW (never write the credential *through* a symlink an attacker planted
+    at the destination) and its mode is re-asserted with fchmod so a pre-existing
+    looser-permission file is tightened before the secret is written. The session
+    string is never returned to the caller for logging.
+    """
     path = Path(out_path).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=stat.S_IRWXU, parents=True, exist_ok=True)
     try:
-        os.chmod(path.parent, stat.S_IRWXU)  # 700 (best-effort)
+        os.chmod(path.parent, stat.S_IRWXU)  # 0700 (best-effort; own dirs only)
     except OSError:
         pass
-    with open(path, "w") as fh:
-        fh.write(session_str)
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 600
+    # 0600 on O_CREAT => the file is never briefly world-readable. O_NOFOLLOW =>
+    # fail closed rather than follow a symlink at the final path component.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError as exc:
+        raise CommandError(
+            f"Refusing to write the session file at {path} ({type(exc).__name__}). "
+            "It may be a symlink, or the directory may not be writable — remove any "
+            "existing link and retry."
+        )
+    try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)  # enforce 0600 on a reused file
+        os.write(fd, session_str.encode("utf-8"))
+    finally:
+        os.close(fd)
     return str(path)
 
 
@@ -108,41 +127,67 @@ class Command(BaseCommand):
                 "install it: pip install -r backend/requirements-telegram.txt"
             )
 
+        try:
+            api_id_int = int(api_id)
+        except (TypeError, ValueError):
+            # Never echo the malformed value — API_ID is a credential.
+            raise CommandError(
+                "TELEGRAM_API_ID must be an integer (from https://my.telegram.org). "
+                "Its value is not shown here for safety."
+            )
+
         phone = os.environ.get("TELEGRAM_PHONE") or input(
             "Enter the GFX account phone number (PH number, e.g. +63...): "
         ).strip()
 
         self.stdout.write("Starting Telegram login for the DEDICATED GuvFX account…")
         self.stdout.write("Telegram will send a login code to that account — type it below.")
-        client = TelegramClient(StringSession(), int(api_id), api_hash)
-        # No 2FA yet (deferred): start() prompts for the code only. If a 2FA
-        # password is ever set, Telethon will additionally prompt for it.
-        client.start(
-            phone=lambda: phone,
-            code_callback=lambda: input("Enter the login code Telegram sent to GFX: ").strip(),
-        )
-
-        me = client.get_me()
-        chat = None
-        latest_id = None
-        if o["wayond_chat"]:
+        client = TelegramClient(StringSession(), api_id_int, api_hash)
+        try:
+            # No 2FA yet (deferred): start() prompts for the code only. If a 2FA
+            # password is ever set, Telethon will additionally prompt for it.
             try:
-                chat = client.get_entity(o["wayond_chat"])
-                msgs = client.get_messages(chat, limit=1)
-                latest_id = msgs[0].id if msgs else None
-            except Exception as exc:  # verification failure must be visible, not fatal
-                self.stdout.write(self.style.WARNING(
-                    f"Could not verify Wayond access for {o['wayond_chat']!r}: "
-                    f"{type(exc).__name__}"
-                ))
+                client.start(
+                    phone=lambda: phone,
+                    code_callback=lambda: input(
+                        "Enter the login code Telegram sent to GFX: "
+                    ).strip(),
+                )
+            except Exception as exc:
+                # The raw exception text can embed the phone number — surface the
+                # exception *type* only, never its message.
+                raise CommandError(
+                    f"Telegram login failed: {type(exc).__name__}. Check the phone "
+                    "number and login code and retry. (Details omitted for safety.)"
+                )
 
-        self.stdout.write(self.style.SUCCESS("Login OK. Safe metadata:"))
-        for k, v in format_metadata(me, chat, latest_id).items():
-            self.stdout.write(f"  {k}: {v}")
+            me = client.get_me()
+            chat = None
+            latest_id = None
+            if o["wayond_chat"]:
+                try:
+                    chat = client.get_entity(o["wayond_chat"])
+                    msgs = client.get_messages(chat, limit=1)
+                    latest_id = msgs[0].id if msgs else None
+                except Exception as exc:  # verification failure must be visible, not fatal
+                    self.stdout.write(self.style.WARNING(
+                        f"Could not verify Wayond access for {o['wayond_chat']!r}: "
+                        f"{type(exc).__name__}"
+                    ))
 
-        session_str = client.session.save()
-        emit_session(session_str, o["session_out"], print_secret=o["print_secret"], stdout=self.stdout)
-        client.disconnect()
+            self.stdout.write(self.style.SUCCESS("Login OK. Safe metadata:"))
+            for k, v in format_metadata(me, chat, latest_id).items():
+                self.stdout.write(f"  {k}: {v}")
+
+            session_str = client.session.save()
+            emit_session(session_str, o["session_out"],
+                         print_secret=o["print_secret"], stdout=self.stdout)
+        finally:
+            # Always release the Telegram connection, even on a mid-flow error.
+            try:
+                client.disconnect()
+            except Exception:
+                pass
 
         self.stdout.write(self.style.SUCCESS(
             "\nDone. Next: hand the session file to the deploy secret store (env, 600). "
