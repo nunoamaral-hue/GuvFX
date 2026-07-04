@@ -6,6 +6,24 @@
 
 ## Execution workstream log
 
+- **2026-07-04 — SIGNAL-ACQUISITION-LISTENER-BUILD: read-only Telegram listener (repo-only, NOT connected).**
+  Builds the listener adapter in-repo so deployment is fast once the aged GFX session is
+  ready — NO real Telegram login/session/API call, fake-Telethon tests only. New
+  `signal_intake/listener/` package (Telethon-FREE, pure): `normalize.py` maps a Telethon
+  message OR a fixture dict to the dispatcher dict `{message_id, chat_id, text, date,
+  reply_to_message_id, edit_date, media}` (media = a small REFERENCE, never bytes);
+  `adapter.py` `WayondListener` — provider lookup by chat_id, `acquire_raw` (feeds ONLY
+  `acquire_message`; dry-run previews via `classify` without writing), watermark
+  `catch_up` (iter_messages min_id), flood-wait handling (sleeps requested seconds,
+  detected by class name — no Telethon import), heartbeat logging, and `run(client,
+  events)` wiring read-only NewMessage + MessageEdited handlers (client/events injected;
+  the single lazy Telethon import lives in the command). New `run_wayond_listener` command
+  (default fixture/dry-run; `--live` guarded, needs env session + creds, never exercised by
+  tests). Deploy skeleton `deploy/wayond-listener/` (compose service + runbook) — NOT
+  deployed; gated on an aged authorised session. 18 fake-Telethon tests incl. a boundary
+  proof (no execution import, no send/download call, sink = acquire_message only). 348
+  backend tests green. No listener run, no deploy, no arming, no order. E3 unaffected (RED).
+
 - **2026-07-03 — WAYOND-EDIT-DIFF: immutable edit-diff handling (repo-only, no order).**
   Closes the last edit blind spot before the listener. New `MessageAmendment` model
   (migration 0006) — an **immutable linked ledger** of an edit to an already-acquired
