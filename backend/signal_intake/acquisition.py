@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Whitelisted, scalar media-reference fields the listener may supply — everything
 # else is dropped so raw image BYTES / large blobs never reach the DB (data.md).
-_MEDIA_REF_FIELDS = ("file_id", "file_unique_id", "type", "mime_type",
+_MEDIA_REF_FIELDS = ("file_id", "file_unique_id", "id", "type", "mime_type",
                      "width", "height", "duration", "size")
 
 
@@ -261,7 +261,10 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
         return AcquiredMessage.objects.get(provider=provider, message_id=mid)
 
     # Bookkeeping: advance watermark + provider health, except for a non-armed drop
-    # (a paused/retired provider isn't a live signal source).
+    # (a paused/retired provider isn't a live signal source). The watermark advances
+    # for STALE too — a stale message HAS been seen + recorded, so catch-up must not
+    # re-fetch it (re-fetching would only re-dismiss it STALE; it is never a missed
+    # signal). Only a non-armed drop leaves the watermark untouched.
     if outcome != AcquiredMessage.Outcome.DROPPED_NOT_ARMED:
         provider.watermark_last_message_id = mid
         provider.last_signal_at = now
