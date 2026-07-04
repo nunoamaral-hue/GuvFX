@@ -43,7 +43,8 @@ def _media_ref(raw):
         obj = getattr(media, holder, None)
         obj_id = getattr(obj, "id", None) if obj is not None else None
         if obj_id is not None:
-            ref["id"] = obj_id
+            # Bound at this layer too: keep an int as-is, cap any string reference.
+            ref["id"] = obj_id if isinstance(obj_id, int) else str(obj_id)[:128]
             break
     return ref
 

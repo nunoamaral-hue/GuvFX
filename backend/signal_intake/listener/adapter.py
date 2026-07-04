@@ -108,7 +108,11 @@ class WayondListener:
             except Exception as exc:  # noqa: BLE001
                 if type(exc).__name__ != "FloodWaitError":
                     raise
-                secs = int(getattr(exc, "seconds", 0) or 0)
+                try:
+                    secs = int(getattr(exc, "seconds", 0) or 0)
+                except (TypeError, ValueError):
+                    secs = 60  # malformed seconds → a safe default, never crash
+                secs = max(secs, 0)
                 logger.warning("wayond listener flood-wait: sleeping %ss", secs)
                 time.sleep(secs)
 

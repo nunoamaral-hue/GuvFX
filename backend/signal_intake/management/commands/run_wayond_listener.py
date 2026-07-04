@@ -38,7 +38,8 @@ class Command(BaseCommand):
 
         if o["fixture"]:
             try:
-                data = json.load(open(o["fixture"], encoding="utf-8"))
+                with open(o["fixture"], encoding="utf-8") as fh:
+                    data = json.load(fh)
             except OSError as exc:
                 raise CommandError(f"Cannot read fixture {o['fixture']!r}: {type(exc).__name__}")
             except ValueError as exc:

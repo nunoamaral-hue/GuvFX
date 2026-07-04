@@ -59,6 +59,12 @@ class FakeMediaPhoto:
         self.photo = _Photo(id)
 
 
+class _MediaWithId:
+    """A media object whose reference id may be hostile/large (bounds test)."""
+    def __init__(self, id):
+        self.photo = _Photo(id)
+
+
 class FloodWaitError(Exception):
     """Named exactly like Telethon's so the adapter detects it by class name."""
     def __init__(self, seconds):
@@ -151,6 +157,15 @@ class ListenerCoreTests(TestCase):
         self.assertIsNone(out)
         self.assertEqual(AcquiredMessage.objects.count(), 0)
 
+    def test_media_bounded_end_to_end_no_blob_stored(self):
+        # A hostile/large media id must land only as a bounded reference in the DB.
+        raw = self._msg(4, text=SIGNAL_MSG)
+        raw.media = _MediaWithId("X" * 100000)                   # 100 KB string id
+        acq = WayondListener().acquire_raw(raw)
+        ev = acq.raw_payload.get("media_evidence")
+        self.assertEqual(ev["type"], "_MediaWithId")
+        self.assertLessEqual(len(str(ev.get("id", ""))), 256)    # bounded, not a blob
+
     def test_catch_up_respects_watermark(self):
         self.provider.watermark_last_message_id = "2"
         self.provider.save(update_fields=["watermark_last_message_id"])
@@ -236,7 +251,11 @@ class CommandTests(TestCase):
 
 
 class BoundaryTests(SimpleTestCase):
-    CALL = re.compile(r"\.(send_message|send_file|send|download_media|download)\s*\(")
+    # Any message-mutating / sending / downloading Telethon method is forbidden.
+    CALL = re.compile(
+        r"\.(send_message|send_file|send|reply|respond|forward|forward_to|"
+        r"forward_messages|edit|edit_message|delete|delete_messages|pin|unpin|"
+        r"mark_read|download_media|download)\s*\(")
 
     def _sources(self):
         pkg = pathlib.Path(__file__).with_name("listener")
