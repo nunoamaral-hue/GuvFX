@@ -6,6 +6,28 @@
 
 ## Execution workstream log
 
+- **2026-07-05 — WAYOND-LISTENER-GO-LIVE-TEMP-PERSONAL: listener DEPLOYED to production (isolated, acquisition-only). ✅**
+  The read-only Wayond listener is **LIVE in prod** under the authorised temporary exception
+  (personal-account session; target stays GFX). Nuno executed on the VPS with Claude guiding
+  each step. **Fully isolated deploy** — the shared trading image `guvfx-prod-guvfx-backend`
+  (used by `guvfx-backend` + trade-ingest + shadow workers) was **never rebuilt/restarted**:
+  the listener image (`guvfx-wayond-listener:latest`) was built from a separate source dir
+  (`/home/ubuntu/guvfx-listener-src`) + separate tag. Additive `signal_intake` migrations
+  **0003–0006** applied to the prod DB (adversarially verified GO via a 3-lens Workflow: only
+  those 4, no cross-app pull-in, running old-image backend unaffected; live `--plan` confirmed).
+  Preconditions met: personal account **2FA on** (session mint prompted for password), fresh
+  session **persisted** (`authorised=True` on reuse), stored only in the prod secret store
+  (`/home/ubuntu/guvfx-prod/wayond-listener.env`, 600), never printed/committed. Container
+  **`Up (healthy)`**; logs `connected (read-only)` → `catch-up processed=117` → `state=listening`.
+  **Execution boundary proven:** provider `wayond` = **ONBOARDING (un-armed)**; all **117**
+  messages `DROPPED_NOT_ARMED` (seen, zero intaken); **0 PendingSignalApproval**; ExecutionJob
+  = 48 pre-existing (listener has no `execution` path → **0 created**). Env gotcha found+fixed:
+  `docker run --env-file` mangles the quoted prod `.env` (and appuser can't read the 600 file) →
+  captured the **resolved** creds from the running backend instead (documented in
+  `DEPLOY_ISOLATED.md`). Rollback = single `docker rm -f guvfx-wayond-listener` (isolated).
+  No order_send, no E3, no arming, no auto-approval, no trading-service change. **E3 RED.**
+  NEXT: migrate to an aged **GFX** session (session swap + container recreate, no code change).
+
 - **2026-07-05 — TEMPORARY-PRODUCTION-ACCOUNT-DEPLOYMENT: listener deploy artefacts finalised (repo-only; deploy is operational).**
   Prepared the read-only listener for a PRODUCTION deploy under the authorised temporary
   operational exception (personal-account session while GFX ages; target stays GFX). Repo work
