@@ -6,6 +6,20 @@
 
 ## Execution workstream log
 
+- **2026-07-05 — LIVE-VALIDATION-CLEANUP-AND-READINESS: acquisition track LIVE-VALIDATED + cleaned.**
+  Consolidation. Live validation succeeded on REAL Wayond via Nuno's aged personal account as a
+  TEMPORARY engineering account: listener connected read-only, caught up **117 live messages**,
+  classified each (ENTRY_SIGNAL/UPDATE/UNKNOWN/QUARANTINED), heartbeat=listening, dry-run wrote
+  NOTHING, no provider armed. Cleanup VERIFIED (all read-only checks): `~/.guvfx/` empty (all
+  session files deleted); no `.session` credential tracked in git; no StringSession VALUE
+  committed (only env-var refs); dev DB fully clean (0 providers, 0 ARMED, pers-val gone, 0 rows
+  in AcquiredMessage/PendingApproval/SignalUpdate/MessageAmendment); `main` clean at 9743e43.
+  Personal validation session revoked by Nuno. **Acquisition track is feature-complete, hardened,
+  fixture- AND live-validated.** The ONE remaining gate to a production listener: an AGED GFX
+  session that survives reuse (age 7–14 days clean, then one hardened attempt — Phase 2 proved
+  the code holds a session on a trusted account). No repo behaviour change, no deploy, no arming,
+  no order. E3 unaffected (RED).
+
 - **2026-07-05 — TELEGRAM-SESSION-VALIDATION-STRATEGY: Phase 2 first (engineering validation account).**
   GFX has aged only ~2 days since the 2026-07-03 kills (below the 3–4 day floor) and the packet
   allows ONE login attempt — so Nuno chose to NOT spend the GFX shot now: validate the LIVE
