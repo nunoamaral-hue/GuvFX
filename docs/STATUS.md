@@ -6,6 +6,19 @@
 
 ## Execution workstream log
 
+- **2026-07-05 — TELEGRAM-SESSION-VALIDATION-STRATEGY: Phase 2 first (engineering validation account).**
+  GFX has aged only ~2 days since the 2026-07-03 kills (below the 3–4 day floor) and the packet
+  allows ONE login attempt — so Nuno chose to NOT spend the GFX shot now: validate the LIVE
+  pipeline via a TEMPORARY engineering validation account now, and retry GFX properly-aged later.
+  New governance doc `docs/ENGINEERING_VALIDATION_ACCOUNT.md` (temporary/non-production/no-secrets/
+  no-arming/read-only/revoke-after). Phase-2 validation is operational (Nuno runs the live login —
+  RED credential, interactive): provision the engineering account (separate 0600 session file,
+  frozen device fingerprint matching the listener), verify persistence (get_me + reload + survives
+  reuse via the scratch diag/verify scripts, now SESSION_PATH-configurable), then
+  `run_wayond_listener --live --dry-run` (preview only, no writes, no arming). GFX Phase-1 attempt
+  DEFERRED (ages for a proper single shot in ~1–2 weeks). No repo behaviour change, no deploy, no
+  arming, no order. E3 unaffected (RED).
+
 - **2026-07-04 — SIGNAL-ACQUISITION-LISTENER-DRYRUN-VALIDATE: end-to-end fixture validation (repo-only, no Telegram).**
   Proves the repo-built listener end-to-end against the CERTIFIED corpus as fixtures (no
   Telegram, no connect). New `listener/fixtures.py` `corpus_to_fixtures` (derives listener
