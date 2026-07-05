@@ -91,7 +91,8 @@ class Command(BaseCommand):
 
             async def _health_loop():
                 while True:
-                    listener.write_health(o["health_file"])
+                    # Offload the blocking file write so it never stalls the event loop.
+                    await asyncio.to_thread(listener.write_health, o["health_file"])
                     await asyncio.sleep(30)
 
             client.loop.create_task(_health_loop())

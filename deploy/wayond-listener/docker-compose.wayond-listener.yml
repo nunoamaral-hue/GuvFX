@@ -40,9 +40,11 @@ services:
       TELEGRAM_APP_VERSION: ${TELEGRAM_APP_VERSION:-4.16.8}
     healthcheck:
       # UNHEALTHY if the liveness heartbeat file goes stale (loop hung/dead).
+      # heartbeat writes every 30s → max-age 90s tolerates one missed write; interval
+      # 30s + 3 retries detects a silent hang in ~2 min (not ~5).
       test: ["CMD", "python", "manage.py", "check_wayond_listener",
-             "--health-file", "/tmp/wayond_health", "--max-age", "120"]
-      interval: 60s
+             "--health-file", "/tmp/wayond_health", "--max-age", "90"]
+      interval: 30s
       timeout: 15s
       retries: 3
       start_period: 120s

@@ -43,7 +43,8 @@ for new + edited messages (flood-waits honoured). `restart: unless-stopped`.
 
 ## Health & observability
 - **Healthcheck:** the listener writes `/tmp/wayond_health` every 30s; the container
-  healthcheck (`check_wayond_listener`) marks it **unhealthy** if that goes stale >120s.
+  healthcheck (`check_wayond_listener`, run every 30s) marks it **unhealthy** if that
+  goes stale >90s (a silent hang shows unhealthy in ~2 min).
   `docker ps` shows health; a crash exits the container → `unless-stopped` restarts it.
   (An *unhealthy-but-running* container needs an external watcher/orchestrator to restart —
   monitor `docker ps` health / add autoheal.)
