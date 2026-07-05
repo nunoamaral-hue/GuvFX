@@ -32,6 +32,8 @@ class Command(BaseCommand):
                             help="Preview outcomes only — do not write to the DB.")
         parser.add_argument("--live", action="store_true",
                             help="DANGER: connect Telegram with an aged authorised session.")
+        parser.add_argument("--health-file", default=None,
+                            help="Write a periodic liveness timestamp here (container healthcheck).")
 
     def handle(self, *args, **o):
         listener = WayondListener(dry_run=o["dry_run"])
@@ -81,6 +83,20 @@ class Command(BaseCommand):
         client = TelegramClient(StringSession(session), int(api_id), api_hash, **device)
         client.connect()  # uses the existing session; never logs in
         self.stdout.write("Wayond listener: connected (read-only). Catching up + listening…")
+
+        if o["health_file"]:
+            # Periodic liveness heartbeat on the client's event loop (runs while the
+            # listener is connected); the container healthcheck reads the file's age.
+            import asyncio
+
+            async def _health_loop():
+                while True:
+                    # Offload the blocking file write so it never stalls the event loop.
+                    await asyncio.to_thread(listener.write_health, o["health_file"])
+                    await asyncio.sleep(30)
+
+            client.loop.create_task(_health_loop())
+
         try:
             listener.run(client, events)
         finally:

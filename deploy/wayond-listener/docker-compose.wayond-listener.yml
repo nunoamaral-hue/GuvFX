@@ -1,20 +1,26 @@
-# GFX Wayond read-only listener — deploy SKELETON (NOT deployed in this packet).
+# GFX Wayond read-only listener — production service.
 #
-# Managed service that runs `manage.py run_wayond_listener --live`. It requires an
-# AGED, authorised GFX StringSession (see project-telegram-session-deauth) — do NOT
-# start it until the session survives reuse. Read-only: it never sends Telegram
-# messages, never downloads media bytes, and feeds only signal_intake.acquire_message.
+# Read-only acquisition ONLY: it reads the Wayond channel into signal_intake's shadow
+# ledger. It NEVER sends a Telegram message, never downloads media bytes, and the
+# provider it feeds MUST stay UN-ARMED (acquire_message drops non-armed → no intake,
+# no order, no execution). E3 stays RED.
 #
-# Secrets (TELEGRAM_*) MUST come from the deploy env / secret store, never committed.
+# Secrets (TELEGRAM_*) come from the deploy secret store / env, never committed.
 # Overlay onto the prod stack:
-#   docker compose -f docker-compose.yml -f deploy/wayond-listener/docker-compose.wayond-listener.yml up -d guvfx-wayond-listener
+#   docker compose -f docker-compose.yml \
+#     -f deploy/wayond-listener/docker-compose.wayond-listener.yml up -d --build guvfx-wayond-listener
 
 services:
   guvfx-wayond-listener:
-    image: ${BACKEND_IMAGE:-guvfx-backend:latest}
+    build:
+      context: ../..
+      dockerfile: deploy/wayond-listener/Dockerfile
+      args:
+        BACKEND_IMAGE: ${BACKEND_IMAGE:-guvfx-backend:latest}
+    image: guvfx-wayond-listener:latest
     container_name: guvfx-wayond-listener
     command: >-
-      python manage.py run_wayond_listener --live
+      python manage.py run_wayond_listener --live --health-file /tmp/wayond_health
     restart: unless-stopped
     environment:
       # DB (same as backend)
@@ -24,17 +30,29 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
-      # Telegram — aged authorised session + its FROZEN device fingerprint. From the
-      # secret store only; never on the CLI, never committed.
+      # Telegram — the CURRENT operational session (temporary: personal account;
+      # target: aged GFX) + its FROZEN device fingerprint. From the secret store only.
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
       TELEGRAM_STRING_SESSION: ${TELEGRAM_STRING_SESSION}
       TELEGRAM_DEVICE_MODEL: ${TELEGRAM_DEVICE_MODEL:-Desktop}
       TELEGRAM_SYSTEM_VERSION: ${TELEGRAM_SYSTEM_VERSION:-Windows 10}
       TELEGRAM_APP_VERSION: ${TELEGRAM_APP_VERSION:-4.16.8}
-    # Telethon is NOT in the base image — install it in the listener image build, or:
-    #   pip install -r backend/requirements-telegram.txt
-    # No ports exposed. No volumes. Egress should be a consistent, non-datacenter IP
-    # where feasible (project-telegram-session-deauth).
+    healthcheck:
+      # UNHEALTHY if the liveness heartbeat file goes stale (loop hung/dead).
+      # heartbeat writes every 30s → max-age 90s tolerates one missed write; interval
+      # 30s + 3 retries detects a silent hang in ~2 min (not ~5).
+      test: ["CMD", "python", "manage.py", "check_wayond_listener",
+             "--health-file", "/tmp/wayond_health", "--max-age", "90"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # No ports exposed, no volumes. Prefer a consistent, non-datacenter egress IP.
     depends_on:
       - db
