@@ -28,13 +28,16 @@ channel), so no provider change is needed either.
    python manage.py provision_telegram_session --session-out ~/.guvfx/gfx_prod.session --wayond-chat <wayond>
    ```
    Verify persistence (reuse + ~15 min).
-2. **Replace the secret**: set `TELEGRAM_STRING_SESSION` in the production secret store to
-   the GFX session (and `TELEGRAM_API_ID/HASH` to the GFX app's, keeping the **same**
-   device fingerprint values). Personal-account values are removed.
-3. **Restart the service** (picks up the new secret; no rebuild needed):
+2. **Replace the secret** in the listener env file (the as-deployed secret store is
+   `/home/ubuntu/guvfx-prod/wayond-listener.env`, 600): swap `TELEGRAM_STRING_SESSION`
+   (via scp, as in `deploy/wayond-listener/DEPLOY_ISOLATED.md` Phase 3) and
+   `TELEGRAM_API_ID/HASH` to the GFX app's, keeping the **same** device fingerprint values.
+   Personal-account values are removed.
+3. **Recreate the container** (env changes require a recreate, not a `restart`, which
+   reuses the old env — no rebuild needed):
    ```bash
-   docker compose -f docker-compose.yml \
-     -f deploy/wayond-listener/docker-compose.wayond-listener.yml up -d guvfx-wayond-listener
+   docker rm -f guvfx-wayond-listener
+   # then re-run the Phase 4 `docker run …` block from DEPLOY_ISOLATED.md
    ```
 4. **Verify**: `docker logs -f guvfx-wayond-listener` → `connected` → catch-up →
    `heartbeat: state=listening`; container health goes healthy within `start_period`.
@@ -44,8 +47,9 @@ channel), so no provider change is needed either.
 
 ## Rollback of the migration
 If the GFX session fails to persist after cut-over: revert `TELEGRAM_STRING_SESSION`
-(and api id/hash) in the secret store to the personal-account values and restart. No code
-change either way. Keep the personal session only until GFX is proven, then remove it.
+(and api id/hash) in `wayond-listener.env` to the personal-account values and recreate the
+container. No code change either way. Keep the personal session only until GFX is proven,
+then remove it.
 
 ## Invariant
 Across the exception and the migration, the listener stays **read-only** and the provider
