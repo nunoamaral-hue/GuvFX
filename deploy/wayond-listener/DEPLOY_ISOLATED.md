@@ -29,6 +29,7 @@ On your **Mac** (does NOT touch the trading source dir):
 ```bash
 cd ~/Documents/Programming/Python/trading/guvfx
 rsync -av --exclude '.venv' --exclude '__pycache__' --exclude '*.pyc' \
+  --exclude '.env' --exclude '*.sqlite3' \
   backend/ ubuntu@100.119.23.29:/home/ubuntu/guvfx-listener-src/backend/
 rsync -av deploy/wayond-listener/ \
   ubuntu@100.119.23.29:/home/ubuntu/guvfx-listener-src/deploy/wayond-listener/
