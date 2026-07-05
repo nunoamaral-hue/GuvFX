@@ -11,6 +11,7 @@ command and passed into ``run`` — this module stays pure for fake-client testi
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 from ..acquisition import acquire_message
@@ -120,6 +121,17 @@ class WayondListener:
     def _heartbeat(self, state, **kw):
         logger.info("wayond listener heartbeat: state=%s %s", state,
                     " ".join(f"{k}={v}" for k, v in kw.items()))
+
+    def write_health(self, path):
+        """Write a liveness timestamp to ``path`` (atomic) for the container
+        healthcheck. Local file only — never Telegram, never a download."""
+        try:
+            tmp = f"{path}.tmp"
+            with open(tmp, "w") as fh:
+                fh.write(str(time.time()))
+            os.replace(tmp, path)
+        except OSError as exc:  # never crash the listener over a health write
+            logger.warning("wayond listener: health write failed (%s): %s", path, exc)
 
     # --- fixture / dry replay ---------------------------------------------
     def replay(self, messages):

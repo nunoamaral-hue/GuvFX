@@ -6,6 +6,20 @@
 
 ## Execution workstream log
 
+- **2026-07-05 — TEMPORARY-PRODUCTION-ACCOUNT-DEPLOYMENT: listener deploy artefacts finalised (repo-only; deploy is operational).**
+  Prepared the read-only listener for a PRODUCTION deploy under the authorised temporary
+  operational exception (personal-account session while GFX ages; target stays GFX). Repo work
+  (Claude): `deploy/wayond-listener/Dockerfile` (backend image + Telethon); finalised
+  `docker-compose.wayond-listener.yml` (build, `--live --health-file`, healthcheck via new
+  `check_wayond_listener` command, json-file log rotation, `restart: unless-stopped`, no ports);
+  listener liveness heartbeat (`write_health` + periodic loop on the client loop, `--health-file`);
+  production `RUNBOOK.md` (2FA prereq → fresh session → secret store → deploy → health/observability
+  → un-armed provider → rollback); `docs/WAYOND_LISTENER_MIGRATION.md` (Personal→GFX = new session
+  + secret swap + restart, NO code changes). +4 tests (write_health atomic/no-raise, healthcheck
+  fresh/stale/missing). **The actual deploy is operational — requires Nuno (prod access + a fresh
+  2FA session mint); Claude cannot deploy or log into Telegram.** Listener stays acquisition-only,
+  provider UN-ARMED, no execution, no order, no auto-approval. 360 backend tests green. E3 RED.
+
 - **2026-07-05 — LIVE-VALIDATION-CLEANUP-AND-READINESS: acquisition track LIVE-VALIDATED + cleaned.**
   Consolidation. Live validation succeeded on REAL Wayond via Nuno's aged personal account as a
   TEMPORARY engineering account: listener connected read-only, caught up **117 live messages**,

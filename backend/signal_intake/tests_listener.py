@@ -195,6 +195,30 @@ class ListenerCoreTests(TestCase):
         self.assertEqual(WayondListener().subscribed_chat_ids(), ["1001"])
 
 
+class HealthTests(SimpleTestCase):
+    def test_write_health_writes_a_parseable_timestamp(self):
+        path = os.path.join(tempfile.mkdtemp(), "health")
+        WayondListener().write_health(path)
+        self.assertTrue(os.path.exists(path))
+        float(open(path).read())          # a parseable epoch timestamp
+        self.assertFalse(os.path.exists(path + ".tmp"))   # atomic replace, no temp left
+
+    def test_write_health_never_raises_on_bad_path(self):
+        WayondListener().write_health("/nonexistent-dir/health")   # must not raise
+
+    def test_healthcheck_command_fresh_ok_stale_and_missing_fail(self):
+        import time
+        p = os.path.join(tempfile.mkdtemp(), "health")
+        WayondListener().write_health(p)
+        call_command("check_wayond_listener", "--health-file", p)   # fresh → exit 0 (no raise)
+        with open(p, "w") as fh:                                     # stale
+            fh.write(str(time.time() - 9999))
+        with self.assertRaises(SystemExit):
+            call_command("check_wayond_listener", "--health-file", p)
+        with self.assertRaises(SystemExit):                         # missing
+            call_command("check_wayond_listener", "--health-file", "/no/such/file")
+
+
 class FloodWaitTests(SimpleTestCase):
     def test_floodwait_sleeps_requested_seconds_then_succeeds(self):
         calls = {"n": 0}
