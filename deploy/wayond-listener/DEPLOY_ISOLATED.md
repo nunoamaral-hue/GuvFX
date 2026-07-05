@@ -28,6 +28,7 @@ docker exec <BACKEND> python manage.py showmigrations signal_intake   # current 
 On your **Mac** (does NOT touch the trading source dir):
 ```bash
 cd ~/Documents/Programming/Python/trading/guvfx
+ssh ubuntu@100.119.23.29 'mkdir -p /home/ubuntu/guvfx-listener-src/backend /home/ubuntu/guvfx-listener-src/deploy/wayond-listener'
 rsync -av --exclude '.venv' --exclude '__pycache__' --exclude '*.pyc' \
   --exclude '.env' --exclude '*.sqlite3' \
   backend/ ubuntu@100.119.23.29:/home/ubuntu/guvfx-listener-src/backend/
