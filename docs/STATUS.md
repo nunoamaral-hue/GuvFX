@@ -6,6 +6,19 @@
 
 ## Execution workstream log
 
+- **2026-07-04 — SIGNAL-ACQUISITION-LISTENER-DRYRUN-VALIDATE: end-to-end fixture validation (repo-only, no Telegram).**
+  Proves the repo-built listener end-to-end against the CERTIFIED corpus as fixtures (no
+  Telegram, no connect). New `listener/fixtures.py` `corpus_to_fixtures` (derives listener
+  message dicts from the 21 certified real messages — real text + demo transport metadata,
+  nothing fabricated) + `dump_wayond_fixture` command (writes a fixture JSON for
+  `run_wayond_listener --fixture`). New `tests_listener_validate.py` (5 tests): dry-run
+  writes NOTHING (21 previews: 8 ENTRY_SIGNAL / 10 UPDATE / 3 UNKNOWN); replay → 21
+  AcquiredMessages (8 INTAKEN, 10 UPDATE, 3 QUARANTINED), watermark advances to the last id,
+  edited entry surfaced flagged + PENDING (never auto-traded); second replay idempotent
+  (deduped); certification stays CERTIFIED; replay creates **no ExecutionJob**. 361 backend
+  tests green. Fixture-mode only — no login/session/API call, no deploy, no arming, no order.
+  E3 unaffected (RED).
+
 - **2026-07-04 — SIGNAL-ACQUISITION-LISTENER-BUILD: read-only Telegram listener (repo-only, NOT connected).**
   Builds the listener adapter in-repo so deployment is fast once the aged GFX session is
   ready — NO real Telegram login/session/API call, fake-Telethon tests only. New
