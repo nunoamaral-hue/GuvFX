@@ -278,6 +278,23 @@ class StrategyAssignment(models.Model):
         default=STAGE_TEST,
         help_text="TEST = dry-run/testing (excluded from auto scheduler), LIVE = real auto-evaluation.",
     )
+
+    # AUTO-SHADOW FOUNDATION — per-strategy auto-execution intent, kept SEPARATE from
+    # `stage` (a scheduler concern). Default MANUAL (per-signal human approval). Only
+    # AUTO_SHADOW is implemented today; AUTO_DEMO/AUTO_LIVE are reserved for future,
+    # separately-gated packets and are treated as MANUAL by the auto-router until then.
+    class ExecutionMode(models.TextChoices):
+        MANUAL = "MANUAL", "Manual (per-signal human approval)"
+        AUTO_SHADOW = "AUTO_SHADOW", "Auto — shadow (dry-run, no order)"
+        AUTO_DEMO = "AUTO_DEMO", "Auto — demo (future, gated)"
+        AUTO_LIVE = "AUTO_LIVE", "Auto — live (future, gated)"
+
+    execution_mode = models.CharField(
+        max_length=16,
+        choices=ExecutionMode.choices,
+        default=ExecutionMode.MANUAL,
+        help_text="MANUAL (default) = per-signal approval; AUTO_SHADOW = config-armed dry-run.",
+    )
     risk_per_trade_override_pct = models.DecimalField(
         max_digits=5,
         decimal_places=2,

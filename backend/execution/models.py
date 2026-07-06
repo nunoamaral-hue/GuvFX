@@ -422,6 +422,14 @@ class ExecutionControl(models.Model):
         default=SignalExecutionMode.SHADOW,
         help_text="E2a global gate: promotion only proceeds in SHADOW mode.",
     )
+    # AUTO-SHADOW FOUNDATION — auto-only soft enable. Independent of the kill switch:
+    # kill_switch_engaged blocks ALL order creation (manual + auto); this pauses the
+    # AUTO path only, leaving manual per-signal approval fully working. Default OFF so
+    # the auto-router is a no-op until deliberately armed.
+    auto_execution_enabled = models.BooleanField(
+        default=False,
+        help_text="Auto-only enable for the auto-router. OFF by default; manual path unaffected.",
+    )
     reason = models.TextField(blank=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

@@ -141,6 +141,22 @@ class ParserProfile(models.Model):
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # AUTO-SHADOW FOUNDATION — parse-confidence read path. Stores the parser's
+    # certification level (from signal_intake.certification.certification_confidence).
+    # Default LOW so the auto-router fails closed: a signal never auto-executes until
+    # the parser is certified >= MEDIUM (set by certification / at arming time).
+    class CertificationLevel(models.TextChoices):
+        LOW = "LOW", "Low (not certified for auto)"
+        MEDIUM = "MEDIUM", "Medium"
+        HIGH = "HIGH", "High"
+
+    certification_level = models.CharField(
+        max_length=8,
+        choices=CertificationLevel.choices,
+        default=CertificationLevel.LOW,
+        help_text="Parser certification level; auto-execution requires >= MEDIUM (fail-closed).",
+    )
+
     def __str__(self) -> str:
         return f"{self.slug} ({self.version})"
 
