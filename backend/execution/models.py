@@ -879,3 +879,51 @@ class PromotionAuditEvent(models.Model):
 
     def __str__(self) -> str:
         return f"{self.event} @ {self.created_at:%Y-%m-%d %H:%M:%S}"
+
+
+class TradeOutcomeRecord(models.Model):
+    """AUTO-SHADOW-CLOSE-MONITOR — the derived, idempotent outcome of a CLOSED trade.
+
+    Created by ``execution.close_monitor`` for each closed, not-yet-processed trade. It is
+    an INTERNAL record only — it never places an order, sends Telegram, or publishes to
+    WIMS. A ``WIN`` becomes an internal *delivery candidate* (``is_delivery_candidate``)
+    that a FUTURE, separately-gated notification packet may consume; ``LOSS``/``BREAKEVEN``
+    are recorded internally and are never delivery candidates. One record per trade (the
+    OneToOne is the idempotency guarantee).
+    """
+
+    class Outcome(models.TextChoices):
+        WIN = "WIN", "Win (net pnl > 0)"
+        LOSS = "LOSS", "Loss (net pnl < 0)"
+        BREAKEVEN = "BREAKEVEN", "Breakeven (net pnl == 0)"
+
+    trade = models.OneToOneField(
+        "trading.Trade", on_delete=models.CASCADE, related_name="outcome_record",
+    )
+    outcome = models.CharField(max_length=10, choices=Outcome.choices)
+    net_pnl = models.DecimalField(max_digits=20, decimal_places=2)
+
+    # WIN only → an internal candidate for the future notification/WIMS path.
+    is_delivery_candidate = models.BooleanField(default=False)
+    # Future notification idempotency — never set here (no notification in this packet).
+    delivered = models.BooleanField(default=False)
+
+    # Signal/job linkage, preserved where available (blank/null otherwise).
+    correlation_id = models.CharField(max_length=64, blank=True, default="")
+    signal_source = models.CharField(max_length=64, blank=True, default="")
+    execution_job = models.ForeignKey(
+        "execution.ExecutionJob", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="trade_outcomes",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "id"]
+        indexes = [
+            models.Index(fields=["outcome"]),
+            models.Index(fields=["is_delivery_candidate", "delivered"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.outcome} {self.net_pnl} (trade {self.trade_id})"
