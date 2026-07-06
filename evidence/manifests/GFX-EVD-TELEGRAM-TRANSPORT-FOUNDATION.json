@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TELEGRAM-TRANSPORT-FOUNDATION",
+  "packet_id": "GFX-PKT-TELEGRAM-TRANSPORT-FOUNDATION",
+  "created_at_utc": "2026-07-06T08:16:19Z",
+  "branch": "feat/telegram-transport-foundation",
+  "base_commit": "b7479ef925c7e0405c53915f1354e2b80dc14805",
+  "head_commit": "97dce8cb96acffe577da2613c1adb2aba77d52e1",
+  "environment": {
+    "python_version": "3.11.9",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local test DB)",
+    "dependencies_changed": false,
+    "production_deploy": false,
+    "telegram_transmitted": false
+  },
+  "files_added": [
+    "backend/execution/notifications/__init__.py",
+    "backend/execution/notifications/contracts.py",
+    "backend/execution/notifications/transport.py",
+    "backend/execution/notifications/dispatcher.py",
+    "backend/execution/management/commands/dispatch_notifications.py",
+    "backend/execution/migrations/0012_alter_notificationcandidate_status_and_more.py",
+    "backend/execution/migrations/0013_notificationcandidate_updated_at.py",
+    "backend/execution/tests_notification_transport.py",
+    "evidence/manifests/GFX-EVD-TELEGRAM-TRANSPORT-FOUNDATION.json"
+  ],
+  "files_modified": [
+    "backend/execution/models.py"
+  ],
+  "commands": [
+    "backend: python manage.py test execution.tests_notification_transport",
+    "backend: python manage.py test  (full suite)",
+    "backend: python manage.py makemigrations execution trading --check --dry-run",
+    "make secret-scan governance-check",
+    "NOTIFICATION_DISPATCH_ENABLED=true python manage.py dispatch_notifications"
+  ],
+  "expected_results": [
+    "With the feature flag OFF (default) the dispatcher is a no-op: nothing claimed, candidate stays PENDING, no NotificationDelivery.",
+    "With the flag ON, a PENDING WIN candidate → SENT via the dry-run transport; NotificationDelivery result=SENT, transmitted=False, correlation preserved, rendered_message non-empty, attempt=1.",
+    "SUPPRESSED candidates are ignored (no delivery, stay SUPPRESSED); SENT candidates are never re-dispatched (idempotent).",
+    "A transport error → candidate FAILED (audit detail 'transport raised'); a FAILED candidate retries on a later run → SENT (attempt 2).",
+    "The dispatcher never creates/modifies a Trade or TradeOutcomeRecord and only updates NotificationCandidate.status.",
+    "The dry-run transport renders a TelegramMessageEnvelope with every contract field (title/summary/strategy/symbol/direction/reference_entry/actual_fill/stop_loss/take_profit/profit/pips/execution_timestamp/correlation_id/rendered_message) and returns transmitted=False.",
+    "No notifications module imports requests/urllib/http/socket/telegram/telethon/httpx; transport/dispatcher import no execution business logic; the dispatcher references no order_send/ExecutionJob/promote.",
+    "Migrations additive (status choices + NotificationDelivery); full backend suite green; secret-scan + governance pass."
+  ],
+  "actual_results": [
+    "execution.tests_notification_transport: Ran 16 tests OK (incl. PROCESSING reaper: orphaned→reclaimed→retried→SENT; recent PROCESSING not reaped).",
+    "FeatureFlagTests: flag OFF → no-op, candidate PENDING, 0 deliveries PASS.",
+    "LifecycleTests: dry-run SENT (transmitted False, correlation preserved, attempt 1) PASS; suppressed ignored PASS; idempotent (re-run keeps 1 delivery) PASS; transport error → FAILED (detail 'transport raised') PASS; ok=False → FAILED PASS; retry FAILED→SENT with attempts [(1,FAILED),(2,SENT)] PASS; no Trade/outcome mutation PASS.",
+    "RenderingTests: envelope has all 14 contract fields, symbol/direction/actual_fill/profit/correlation/strategy correct, rendered_message contains symbol + correlation PASS; deliver never transmits PASS.",
+    "CommandTests: dispatch_notifications (flag on) → candidate SENT PASS.",
+    "BoundaryTests: no requests/urllib/http/socket/telegram/telethon/httpx import in any package module; transport.py/dispatcher.py import no signal_planning/promotion/auto_router/close_monitor/outcome_router/signal_proposals; dispatcher references no order_send/order_check/agent_order/ExecutionJob/promote_plan_to_shadow_jobs/sendMessage PASS.",
+    "Full backend suite: Ran 435 tests OK (post-hardening).",
+    "makemigrations execution trading --check: No changes detected; make secret-scan OK; governance-check OK; EVIDENCE-LINT PASS.",
+    "Adversarial 3-lens transport-boundary review: GO, no must-fix, no boundary violation. Two liveness findings (orphaned PROCESSING) fail CLOSED; hardened here via updated_at + a timeout reaper + a guarded finalize (demote PROCESSING->FAILED on error) before the flag is ever enabled."
+  ],
+  "acceptance_criteria": {
+    "status_transitions": "PASS",
+    "idempotency": "PASS",
+    "correlation_preservation": "PASS",
+    "dry_run_rendering": "PASS",
+    "retry_handling": "PASS",
+    "suppressed_notifications": "PASS",
+    "ast_boundary_proof": "PASS",
+    "no_http_calls": "PASS",
+    "no_telegram_api_imports": "PASS",
+    "no_execution_imports": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo-only, DRY-RUN only — no Telegram message is transmitted, no bot token / chat id / credential is read, no HTTP request or network traffic occurs, no deploy, no WIMS, no order_send, no E3.",
+    "The dispatcher is behind the NOTIFICATION_DISPATCH_ENABLED feature flag (default OFF) and is not wired to any scheduler; even when ON, the only transport is dry-run.",
+    "A candidate that stalls in PROCESSING (a crash between the atomic claim and the final update) is reclaimed to FAILED by a timeout reaper (NOTIFICATION_PROCESSING_TIMEOUT_SECONDS, default 300) at the start of a dispatch run, and a DB error during finalize demotes it to FAILED — so it is retried, never orphaned. It fails closed regardless (nothing is ever transmitted).",
+    "Message wording is a DRAFT: this packet defines the envelope CONTRACT, not final copy. reference_entry/SL/TP are best-effort from the linked plan (blank where unavailable, as no real signal-originated trade exists yet)."
+  ],
+  "artefact_locations": [
+    "backend/execution/notifications/",
+    "backend/execution/management/commands/dispatch_notifications.py",
+    "backend/execution/models.py",
+    "backend/execution/tests_notification_transport.py",
+    "evidence/manifests/GFX-EVD-TELEGRAM-TRANSPORT-FOUNDATION.json"
+  ],
+  "checksums": {
+    "backend/execution/notifications/contracts.py": "sha256:783293a72e2c173243fe6f50f8bf7b10c4bac0de4f877d129de291b7b37f4649",
+    "backend/execution/notifications/transport.py": "sha256:2488647e2f86f3262e5bd5cacd450382f1552abce8b47e6735c909fad11a6a34",
+    "backend/execution/notifications/dispatcher.py": "sha256:f6dc0bf35df2b202563458e711a30af551a9b334f3f2270a88111dc3dc65576d",
+    "backend/execution/tests_notification_transport.py": "sha256:7b55cd7967bf118a4c766f629f9f0f64895be579c2da5ba50c7d65fd32a2ae51",
+    "backend/execution/migrations/0012_alter_notificationcandidate_status_and_more.py": "sha256:b548186060c938a93554e64b7fc7b2c922998b1a2ad3959cc5fc9b5a5f6ccfbd",
+    "backend/execution/migrations/0013_notificationcandidate_updated_at.py": "sha256:6da1c860aea5a1695837c4df6e78a2c01e127707045ea27155f7eb9794629547"
+  },
+  "reviewer": null
+}
