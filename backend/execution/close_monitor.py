@@ -21,6 +21,7 @@ reprocessed (the OneToOne on the record enforces it, even under a race).
 from __future__ import annotations
 
 import logging
+import re
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
@@ -35,14 +36,25 @@ logger = logging.getLogger("guvfx.execution.close_monitor")
 DEFAULT_LIMIT = 500
 
 
+_COMMENT_TAG_RE = re.compile(r"WAY(\d+)L\d+")
+
+
 def _resolve_linkage(trade):
-    """Best-effort signal linkage from the trade's correlation_id (blank/None where absent)."""
+    """Best-effort signal linkage (blank/None where absent). Primary: ``trade.correlation_id``
+    → plan by correlation. Fallback (E3 real orders): the broker order comment
+    ``WAY{plan.id}L{leg}`` (set by the promotion payload, short → no MT5 truncation) → plan by id,
+    which backfills the correlation id from the plan. Read-only; never mutates the trade."""
     cid = str(getattr(trade, "correlation_id", "") or "").strip()
-    if not cid:
-        return "", "", None
-    plan = SignalExecutionPlan.objects.filter(correlation_id=cid).first()
+    plan = None
+    if cid:
+        plan = SignalExecutionPlan.objects.filter(correlation_id=cid).first()
+    if plan is None:
+        m = _COMMENT_TAG_RE.match(str(getattr(trade, "comment", "") or "").strip())
+        if m:
+            plan = SignalExecutionPlan.objects.filter(id=int(m.group(1))).first()
     if plan is None:
         return cid, "", None
+    cid = cid or (plan.correlation_id or "")  # backfill correlation when comment-resolved
     leg = plan.legs.filter(execution_job__isnull=False).order_by("leg_index").first()
     return cid, plan.source, (leg.execution_job if leg else None)
 

@@ -59,8 +59,13 @@ def _audit(event, *, plan=None, leg=None, job=None, approval=None, actor=None, *
     )
 
 
-def _shadow_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg) -> dict:
-    """Build the suppressed shadow-job payload. Market-only, demo, SHADOW-flagged."""
+def _order_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg, *,
+                   execution_mode: str) -> dict:
+    """Build the per-leg order payload. Market-only, demo. ``execution_mode`` is 'SHADOW'
+    (suppressed dry-run — order_check only) or 'DEMO' (real order_send). Identical shape either
+    way — the worker's PLACE_ORDER path ignores execution_mode; only the shadow worker enforces
+    it. Carries the correlation id + signal timestamp so the worker can trace/re-check the signal.
+    """
     windows_username = None
     acct = plan.account
     if getattr(acct, "mt5_instance_id", None):
@@ -71,33 +76,48 @@ def _shadow_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg) -> dict:
         "lots": str(leg.lot_size),
         "sl_price": plan.stop_loss,
         "tp_price": leg.take_profit,
-        "entry_price": None,  # market order
+        "entry_price": None,  # market order (advisory signal entry is reference-only)
         "is_demo": plan.is_demo,
-        "execution_mode": "SHADOW",  # fail-closed suppression flag
-        "comment": f"WAY{plan.id}L{leg.leg_index}",  # correlation tag
+        "execution_mode": execution_mode,  # 'SHADOW' suppresses; 'DEMO' is a real order
+        "comment": f"WAY{plan.id}L{leg.leg_index}",  # correlation tag (short — no MT5 truncation)
         "plan_id": plan.id,
         "leg_index": leg.leg_index,
-        # OPS-OBSERVABILITY: propagate the correlation id into the job payload so
-        # the worker can log stages 5-9 under the same id.
+        # OPS-OBSERVABILITY: propagate the correlation id so the worker logs the same id, and
+        # so a resulting Trade can be traced back to this signal/plan.
         "correlation_id": plan.correlation_id,
-        # E3-RUNTIME-RISK-CONTROLS: carry the signal timestamp so the worker can
-        # re-check staleness before it validates (runtime staleness re-check).
+        # E3-RUNTIME-RISK-CONTROLS: carry the signal timestamp for a worker-side staleness re-check.
         "signal_timestamp": plan.signal_timestamp.isoformat() if plan.signal_timestamp else None,
         "windows_username": windows_username,
     }
 
 
-def _existing_shadow_jobs(plan: SignalExecutionPlan) -> list:
+def _shadow_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg) -> dict:
+    """Back-compat: the suppressed shadow-job payload (SHADOW-flagged)."""
+    return _order_payload(plan, leg, execution_mode="SHADOW")
+
+
+def _existing_jobs(plan: SignalExecutionPlan) -> list:
     return [leg.execution_job for leg in plan.legs.order_by("leg_index") if leg.execution_job_id]
 
 
-def _validate(plan: SignalExecutionPlan, *, now) -> None:
-    """Pure read-only re-validation at promotion time. Raises PromotionRejected."""
+# Back-compat alias (the shadow-specific name is used elsewhere).
+_existing_shadow_jobs = _existing_jobs
+
+
+def _validate(plan: SignalExecutionPlan, *, now,
+              expected_mode=ExecutionControl.SignalExecutionMode.SHADOW) -> None:
+    """Pure read-only re-validation at promotion time. Raises PromotionRejected.
+
+    ``expected_mode`` is the global ``signal_execution_mode`` this promotion path requires —
+    SHADOW for shadow jobs, DEMO for real demo orders. Every other gate is IDENTICAL, so the
+    demo path inherits the exact same demo-only / risk / cap / staleness protections.
+    """
     if plan.status != SignalExecutionPlan.Status.PLANNED:
         raise PromotionRejected("plan_not_planned", f"plan #{plan.id} is {plan.status}, not PLANNED")
 
-    if ExecutionControl.get_solo().signal_execution_mode != ExecutionControl.SignalExecutionMode.SHADOW:
-        raise PromotionRejected("execution_mode_not_shadow", "global signal_execution_mode is not SHADOW")
+    if ExecutionControl.get_solo().signal_execution_mode != expected_mode:
+        raise PromotionRejected("execution_mode_mismatch",
+                                f"global signal_execution_mode is not {expected_mode}")
 
     blocked = order_creation_kill_reason()
     if blocked:
@@ -147,22 +167,23 @@ def _validate(plan: SignalExecutionPlan, *, now) -> None:
         raise PromotionRejected(risk_reason, f"runtime risk control blocked promotion: {risk_reason}")
 
 
-def promote_plan_to_shadow_jobs(plan: SignalExecutionPlan, *, actor=None, now=None) -> list:
-    """Promote a PLANNED plan into one PLACE_ORDER_SHADOW job per leg.
+def _promote_plan(plan: SignalExecutionPlan, *, expected_mode, job_type, payload_mode,
+                  log_stage_name, actor, now) -> list:
+    """Shared promotion: a PLANNED plan → one ``job_type`` job per leg.
 
-    Creates suppressed, un-claimable shadow jobs ONLY — no order, no MT5, no
-    executable PLACE_ORDER. Idempotent: a PROMOTED plan returns its existing
-    shadow jobs and creates none. On any safety failure a PROMOTION_REJECTED
-    audit is written and PromotionRejected is raised.
+    Idempotent (a PROMOTED plan returns its existing jobs); validates against ``expected_mode``;
+    fail-closed (on any safety failure a PROMOTION_REJECTED audit is written and PromotionRejected
+    is raised). The SHADOW and DEMO paths differ ONLY in ``job_type`` + ``payload_mode`` — all
+    validation gates are identical.
     """
     now = now or timezone.now()
 
-    # 0. Idempotency — an already-promoted plan returns its existing shadow jobs.
+    # 0. Idempotency — an already-promoted plan returns its existing jobs.
     if plan.status == SignalExecutionPlan.Status.PROMOTED:
-        return _existing_shadow_jobs(plan)
+        return _existing_jobs(plan)
 
     try:
-        _validate(plan, now=now)
+        _validate(plan, now=now, expected_mode=expected_mode)
     except PromotionRejected as exc:
         _audit(PromotionAuditEvent.Event.PROMOTION_REJECTED, plan=plan,
                approval=plan.approval, actor=actor, code=exc.code, message=exc.message)
@@ -177,20 +198,20 @@ def promote_plan_to_shadow_jobs(plan: SignalExecutionPlan, *, actor=None, now=No
                     jobs.append(leg.execution_job)
                     continue
                 job = ExecutionJob.objects.create(
-                    job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW,
+                    job_type=job_type,
                     account=plan.account,
                     terminal_node_id=plan.account.terminal_node_id,
-                    status=ExecutionJob.Status.PENDING,  # un-claimable: distinct type + endpoint guard
+                    status=ExecutionJob.Status.PENDING,
                     created_by=actor,
-                    payload=_shadow_payload(plan, leg),
+                    payload=_order_payload(plan, leg, execution_mode=payload_mode),
                 )
                 leg.execution_job = job
                 leg.status = ProposedOrderLeg.Status.PROMOTED
                 leg.save(update_fields=["execution_job", "status"])
                 _audit(PromotionAuditEvent.Event.JOB_CREATED, plan=plan, leg=leg, job=job,
                        approval=plan.approval, actor=actor, leg_index=leg.leg_index,
-                       job_type=job.job_type, execution_mode="SHADOW")
-                log_stage("shadow_job_created", plan.correlation_id, plan_id=plan.id,
+                       job_type=job.job_type, execution_mode=payload_mode)
+                log_stage(log_stage_name, plan.correlation_id, plan_id=plan.id,
                           job_id=job.id, leg_index=leg.leg_index, job_type=job.job_type)
                 jobs.append(job)
 
@@ -201,7 +222,37 @@ def promote_plan_to_shadow_jobs(plan: SignalExecutionPlan, *, actor=None, now=No
     except IntegrityError:
         plan.refresh_from_db()
         if plan.status == SignalExecutionPlan.Status.PROMOTED:
-            return _existing_shadow_jobs(plan)
+            return _existing_jobs(plan)
         raise PromotionRejected("duplicate_promotion", f"plan #{plan.id} already promoted")
 
     return jobs
+
+
+def promote_plan_to_shadow_jobs(plan: SignalExecutionPlan, *, actor=None, now=None) -> list:
+    """Promote a PLANNED plan into one PLACE_ORDER_SHADOW job per leg — suppressed, un-claimable,
+    NO order, NO MT5. Requires global mode SHADOW. Idempotent; fail-closed. (Unchanged behaviour.)
+    """
+    return _promote_plan(
+        plan, expected_mode=ExecutionControl.SignalExecutionMode.SHADOW,
+        job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW, payload_mode="SHADOW",
+        log_stage_name="shadow_job_created", actor=actor, now=now,
+    )
+
+
+def promote_plan_to_demo_jobs(plan: SignalExecutionPlan, *, actor=None, now=None) -> list:
+    """E3-DEMO-PROMOTION — promote a PLANNED plan into one real ``PLACE_ORDER`` job per leg on a
+    DEMO account.
+
+    The ONLY difference from the shadow path is ``job_type=PLACE_ORDER`` (a real order the worker
+    will ``order_send``) instead of ``PLACE_ORDER_SHADOW``. It requires global mode **DEMO** — the
+    default is SHADOW, so this NEVER runs unless an operator has explicitly flipped
+    ``signal_execution_mode=DEMO`` (under Nuno's recorded sign-off) AND armed every other gate. It
+    inherits the identical demo-only + symbol + SL/TP + lot-cap + staleness + runtime-risk +
+    kill-switch validation, and the worker enforces a 0.02 lot cap and demo account. Idempotent;
+    fail-closed.
+    """
+    return _promote_plan(
+        plan, expected_mode=ExecutionControl.SignalExecutionMode.DEMO,
+        job_type=ExecutionJob.JobType.PLACE_ORDER, payload_mode="DEMO",
+        log_stage_name="demo_order_job_created", actor=actor, now=now,
+    )
