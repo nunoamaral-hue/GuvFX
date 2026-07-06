@@ -6,6 +6,18 @@
 
 ## Execution workstream log
 
+- **2026-07-06 — GFX-MIGRATION-READINESS: assessment + checklist; migration BLOCKED on GFX aging. 📋**
+  Readiness/prep only (no migration, no Telegram login, no secret handling). New
+  [docs/GFX_MIGRATION_READINESS.md](GFX_MIGRATION_READINESS.md): go/no-go assessment + gate
+  checklist + consolidated procedure (references WAYOND_LISTENER_MIGRATION.md + DEPLOY_ISOLATED.md).
+  **Verdict: NOT READY.** GFX (id 8661920471, @guvfx, DC5, real SIM, 2FA on, Wayond member) is only
+  **~1 day** into its clean-aging window (last API login 2026-07-05; every login resets the clock +
+  raises ban risk). Needs 7–14 clean days with NO API logins → earliest hardened attempt ~2026-07-12,
+  ideally ~2026-07-19. Gates met: 2FA, Wayond membership/visibility. Gates pending: aging, session
+  mint + persistence (reuse/15min/1h). Migration = secret swap + container recreate (no code change);
+  rollback = revert the 3 TELEGRAM_* lines to personal + recreate. Personal-account exception stays
+  live until GFX proven ≥1h post-cutover. Listener still read-only, provider un-armed. E3 RED.
+
 - **2026-07-06 — AUTO-SHADOW-FOUNDATION: config-armed auto-router shipped, DISABLED BY DEFAULT (repo-only). ✅**
   Implements steps 1-3 of the ratified auto-execution architecture (PR #82). Merged main `f2ed0fc`
   (PR #83). Additive schema, safe defaults: `ExecutionControl.auto_execution_enabled`=False,
