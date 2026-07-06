@@ -1,0 +1,88 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-E3-DEMO-PROMOTION",
+  "packet_id": "GFX-PKT-E3-DEMO-PROMOTION",
+  "created_at_utc": "2026-07-06T10:05:39Z",
+  "branch": "feat/e3-demo-promotion",
+  "base_commit": "f66ab95ef317c7aecd0e75db4c859198964fcc25",
+  "head_commit": "0d2029df0d85cdf89887d73bd021863e6bb82e31",
+  "environment": {
+    "python_version": "3.11.9",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local test DB)",
+    "dependencies_changed": false,
+    "production_deploy": false,
+    "armed": false,
+    "real_order_placed": false
+  },
+  "files_added": [
+    "backend/execution/migrations/0014_alter_executioncontrol_signal_execution_mode.py",
+    "backend/execution/tests_e3_demo_promotion.py",
+    "evidence/manifests/GFX-EVD-E3-DEMO-PROMOTION.json"
+  ],
+  "files_modified": [
+    "backend/execution/models.py",
+    "backend/execution/signal_promotion.py",
+    "backend/execution/auto_router.py",
+    "backend/execution/close_monitor.py",
+    "backend/execution/tests_e2a_promotion.py",
+    "backend/execution/tests_auto_router.py"
+  ],
+  "commands": [
+    "backend: python manage.py test execution.tests_e3_demo_promotion",
+    "backend: python manage.py test execution signal_intake  (refactor regression)",
+    "backend: python manage.py test  (full suite)",
+    "backend: python manage.py makemigrations --check --dry-run execution strategies trading signal_intake",
+    "make secret-scan governance-check"
+  ],
+  "expected_results": [
+    "At DEFAULT config (signal_execution_mode=SHADOW, auto_execution_enabled=False, assignment MANUAL) no PLACE_ORDER is ever created and the manual path is unchanged.",
+    "promote_plan_to_demo_jobs creates PLACE_ORDER jobs ONLY under global mode DEMO; under SHADOW it raises execution_mode_mismatch and creates nothing.",
+    "The shadow path still creates PLACE_ORDER_SHADOW only and refuses under DEMO mode; its payload/audit/idempotency are behaviourally unchanged (E2a/E2b tests green).",
+    "The DEMO payload is market-only with execution_mode=DEMO, correlation_id, short WAY{plan}L{leg} comment, and signal_timestamp; the demo path inherits every demo-only/symbol/SL-TP/lot-cap/staleness/risk/kill-switch gate.",
+    "The auto-router creates PLACE_ORDER ONLY when fully armed (mode DEMO + AUTO_DEMO assignment + all AND-of-gates); default (SHADOW) → PLACE_ORDER_SHADOW; DEMO+AUTO_SHADOW-assignment → MANUAL; defaults → no jobs.",
+    "A closed demo trade whose order comment carries WAY{plan}L{leg} links back to its plan (correlation_id/source/execution_job) via close_monitor's fallback even with a blank Trade.correlation_id.",
+    "No AUTO_LIVE path; no order_send called; no real order placed (the worker is not invoked). Migrations additive; full backend suite green; secret-scan + governance pass."
+  ],
+  "actual_results": [
+    "execution.tests_e3_demo_promotion: Ran 17 tests OK (9 core + 8 DEMO gate-inheritance).",
+    "PromotionTests: demo→PLACE_ORDER under DEMO (payload execution_mode DEMO, correlation, comment, market-only) PASS; demo refused under SHADOW (execution_mode_mismatch, 0 jobs) PASS; shadow still shadow-only + refused under DEMO PASS; demo inherits account_not_demo guard PASS.",
+    "RouterTests: default SHADOW → PLACE_ORDER_SHADOW only, 0 PLACE_ORDER PASS; armed AUTO_DEMO → PLACE_ORDER only (approval APPROVED, 0 shadow, 0 other executable) PASS; DEMO+AUTO_SHADOW-assignment → MANUAL (approval PENDING, 0 jobs) PASS; defaults → 0 jobs PASS.",
+    "DemoGateInheritanceTests (added after review): under mode DEMO, promote_plan_to_demo_jobs is refused with 0 jobs for kill_switch_engaged, source_not_enabled, stale_signal, missing_stop_loss, missing_take_profit, symbol_not_allowed, lot_out_of_range, total_lot_exceeds_cap — proving the demo path inherits the full E2a gate matrix, not just the demo-only guard.",
+    "LinkageTests: closed demo trade with WAY comment → outcome WIN, correlation backfilled from plan, signal_source=wayond, execution_job linked PASS.",
+    "Refactor regression: execution + signal_intake + E2a = Ran 58 tests OK (SHADOW promotion, auto_router, close_monitor preserved).",
+    "Full backend suite: Ran 456 tests OK (448 pre-review + 8 DEMO gate-inheritance tests).",
+    "makemigrations --check execution: No changes detected (only execution/0014 DEMO enum is mine; strategies index-rename output is pre-existing drift, untouched by this packet). make secret-scan OK; governance-check OK; EVIDENCE-LINT PASS.",
+    "Adversarial 4-lens real-order-boundary review (5 agents, ~429k tokens): decision GO, must_fix=[]. The one recurring finding (route reads global mode twice) was synthesized as a FALSE POSITIVE for safety (assignment_mode+promote_fn are a matched pair; _validate re-gates the mode atomically). Applied optional hardening: single-read dispatch via _tier_by_router_mode (removes the double-read); DEMO gate-matrix tests (above). Rejected the re.fullmatch nit on engineering grounds — MT5 brokers append [tp]/[sl] suffixes to comments on close, so anchored-start re.match is the robust choice for the winning-trade linkage path."
+  ],
+  "acceptance_criteria": {
+    "default_behaviour_unchanged": "PASS",
+    "auto_demo_path_fully_testable": "PASS",
+    "place_order_only_when_auto_demo": "PASS",
+    "full_regression": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo-only, DISABLED BY DEFAULT — no provider arming, no deployment, no E3 enablement, no auto-live, no order_send, no real trade, no production behaviour change. E3 remains RED.",
+    "No real order is placed anywhere: the demo promotion creates a PLACE_ORDER ExecutionJob row only; the MT5 trade-ingest worker (which would order_send) is never invoked in tests and this code is not deployed.",
+    "Correlation propagation is closed via close_monitor's comment-tag fallback (repo-only) — the live ingest worker (upsert_trades) was deliberately NOT changed to avoid destabilising the live trading path; a worker-side Trade.correlation_id population is an optional future robustness item.",
+    "Arming a real demo trade still requires the Nuno-only governance gates (Blueprint-06 ratification, recorded E3 sign-off, DEMO caps, node decision), the operator flips, and a deploy + preflight — all separate, future, gated packets."
+  ],
+  "artefact_locations": [
+    "backend/execution/models.py",
+    "backend/execution/signal_promotion.py",
+    "backend/execution/auto_router.py",
+    "backend/execution/close_monitor.py",
+    "backend/execution/tests_e3_demo_promotion.py",
+    "evidence/manifests/GFX-EVD-E3-DEMO-PROMOTION.json"
+  ],
+  "checksums": {
+    "backend/execution/signal_promotion.py": "sha256:344a4abb21dec37edd269c7b3a462100ff02a27189713498cbd2bd9a2c975198",
+    "backend/execution/auto_router.py": "sha256:078f6df2328783b959aac6ab586c1a9bd05b61b41a2034485e7f4b89a000b544",
+    "backend/execution/close_monitor.py": "sha256:0afdedb40f10b850021abdeef580fd6e13f2d60b04711f6c14439cc109a8e894",
+    "backend/execution/models.py": "sha256:3adb1ecee63e4856730cbc7132833490c881e170fc7a5dbb53d4cb3abf4a1f70",
+    "backend/execution/tests_e3_demo_promotion.py": "sha256:7c57ec343dab0ab54449416d15be5843e8dbda6d8f3e6b3fec7970d015acab35",
+    "backend/execution/migrations/0014_alter_executioncontrol_signal_execution_mode.py": "sha256:2a09314233faacca9521677399aeb3ac4414324e38897b5d386eefcd9a2fa55a"
+  },
+  "reviewer": null
+}
