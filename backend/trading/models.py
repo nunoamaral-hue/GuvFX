@@ -191,6 +191,11 @@ class Trade(models.Model):
         help_text="TEST, LIVE, or UNKNOWN — inferred from job comment tag during ingest.",
     )
 
+    # AUTO-SHADOW-CLOSE-MONITOR — linkage key back to the originating signal/execution.
+    # Blank today (no real signal-originated trade exists yet); populated by a future
+    # auto-demo order-ingest so the close-monitor can trace a closed trade to its signal.
+    correlation_id = models.CharField(max_length=64, blank=True, default="")
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
