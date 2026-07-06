@@ -131,6 +131,12 @@ class Command(BaseCommand):
         self.stdout.write(f"  payload={json.dumps(p.__dict__)}")
 
         self._section(3, "DELIVERY")
+        if contract is None:
+            self.stdout.write(
+                "  Non-winning trade (LOSS/BREAKEVEN): recorded internally only — NO WIMS "
+                "ConsumptionContract, no public story, no Telegram (LOSS-PATH-WIMS-REROUTE)."
+            )
+            return
         self.stdout.write("  Envelope delivered across GuvFX -> WIMS boundary (see audit).")
 
         self._section(4, "WIMS CONSUMPTION CONTRACT (first persisted WIMS object)")

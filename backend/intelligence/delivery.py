@@ -148,7 +148,11 @@ def ingest_trade_result(trade, actor=None):
         intelligence_id=envelope.intelligence_id, version=envelope.version,
         intelligence_type=envelope.intelligence_type,
     )
-    # 3 + 4 — deliver and consume
+    # 3 + 4 — deliver to WIMS ONLY for a winning trade. LOSS/BREAKEVEN are recorded
+    # internally (the envelope + the TRADE_DETECTED / ENVELOPE_CREATED audits above) but
+    # NEVER become a WIMS ConsumptionContract / public story (LOSS-PATH-WIMS-REROUTE).
+    if not is_winning_trade(trade):
+        return envelope, None
     contract = deliver_trade_result(envelope, actor=actor)
     return envelope, contract
 
@@ -156,8 +160,19 @@ def ingest_trade_result(trade, actor=None):
 @transaction.atomic
 def deliver_trade_result(envelope: TradeResultIntelligenceEnvelope,
                          actor=None, media=None) -> ConsumptionContract:
-    """Deliver a trade-result envelope to WIMS and consume it as a contract."""
+    """Deliver a trade-result envelope to WIMS and consume it as a contract.
+
+    WIN-ONLY: a trade-result ConsumptionContract is a public artefact. This refuses a
+    non-winning envelope (net pnl <= 0) even on a direct call, so losers/breakeven can never
+    become WIMS content (LOSS-PATH-WIMS-REROUTE). Callers guard upstream via ``is_winning_trade``.
+    """
     p = envelope.structured_payload
+
+    if _dec(p.pnl) <= 0:
+        raise ValueError(
+            "deliver_trade_result refuses a non-winning trade (pnl <= 0); losers and "
+            "breakeven are internal-only and never become WIMS content."
+        )
 
     # 3 — envelope delivered (handed across the GuvFX -> WIMS boundary)
     record_audit_ref(

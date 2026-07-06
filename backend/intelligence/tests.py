@@ -221,6 +221,37 @@ class TradeResultDeliveryTests(TestCase):
         ):
             self.assertIn(e, events)
 
+    # LOSS-PATH-WIMS-REROUTE — losers/breakeven never create WIMS public content.
+    def test_loss_creates_no_wims_contract_but_keeps_internal_audit(self):
+        envelope, contract = ingest_trade_result(LOSS_TRADE, actor=self.user)
+        self.assertIsNone(contract)
+        self.assertEqual(ConsumptionContract.objects.count(), 0)
+        events = set(AuditEvent.objects.values_list("event", flat=True))
+        # Internal analytics preserved (envelope detected + created)...
+        self.assertIn(AuditEvent.Event.TRADE_DETECTED, events)
+        self.assertIn(AuditEvent.Event.ENVELOPE_CREATED, events)
+        # ...but nothing delivered/consumed to WIMS.
+        self.assertNotIn(AuditEvent.Event.ENVELOPE_DELIVERED, events)
+        self.assertNotIn(AuditEvent.Event.ENVELOPE_CONSUMED, events)
+
+    def test_breakeven_creates_no_wims_contract(self):
+        _, contract = ingest_trade_result(ZERO_TRADE, actor=self.user)
+        self.assertIsNone(contract)
+        self.assertEqual(ConsumptionContract.objects.count(), 0)
+
+    def test_deliver_trade_result_refuses_losing_envelope(self):
+        from intelligence.delivery import deliver_trade_result
+        from intelligence.trade_result_producer import TradeResultProducer
+        env = TradeResultProducer().produce(LOSS_TRADE)
+        with self.assertRaises(ValueError):
+            deliver_trade_result(env, actor=self.user)
+        self.assertEqual(ConsumptionContract.objects.count(), 0)
+
+    def test_win_path_still_creates_contract(self):
+        _, contract = ingest_trade_result(CLOSED_TRADE, actor=self.user)
+        self.assertIsNotNone(contract)
+        self.assertEqual(contract.result_type, "WIN")
+
     def test_existing_pipeline_accepts_consumed_trade_result(self):
         _, contract = ingest_trade_result(CLOSED_TRADE, actor=self.user)
         ctx = services.create_context_from_contract(
