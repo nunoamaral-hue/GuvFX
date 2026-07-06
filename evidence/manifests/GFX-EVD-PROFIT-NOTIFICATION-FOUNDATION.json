@@ -1,0 +1,86 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-PROFIT-NOTIFICATION-FOUNDATION",
+  "packet_id": "GFX-PKT-PROFIT-NOTIFICATION-FOUNDATION",
+  "created_at_utc": "2026-07-06T07:56:08Z",
+  "branch": "feat/profit-notification-foundation",
+  "base_commit": "50f88e7702d38a53057c49dc4402dfe29522b074",
+  "head_commit": "5574938768a2e385558f36e127ee99a3275bc571",
+  "environment": {
+    "python_version": "3.11.9",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local test DB)",
+    "dependencies_changed": false,
+    "production_deploy": false,
+    "execution_behaviour_changed": false
+  },
+  "files_added": [
+    "backend/execution/outcome_router.py",
+    "backend/execution/management/commands/run_outcome_router.py",
+    "backend/execution/migrations/0011_tradeoutcomerecord_routed_notificationcandidate.py",
+    "backend/execution/tests_outcome_router.py",
+    "evidence/manifests/GFX-EVD-PROFIT-NOTIFICATION-FOUNDATION.json"
+  ],
+  "files_modified": [
+    "backend/execution/models.py"
+  ],
+  "commands": [
+    "backend: python manage.py test execution.tests_outcome_router",
+    "backend: python manage.py test  (full suite)",
+    "backend: python manage.py makemigrations execution trading --check --dry-run",
+    "make secret-scan governance-check",
+    "python manage.py run_outcome_router --limit N"
+  ],
+  "expected_results": [
+    "A WIN TradeOutcomeRecord routes to exactly one PENDING NotificationCandidate; the outcome record is marked routed=True.",
+    "A LOSS TradeOutcomeRecord routes to NO candidate (marked routed=True).",
+    "A BREAKEVEN TradeOutcomeRecord routes to NO candidate (marked routed=True).",
+    "A WIN whose is_delivery_candidate is False creates NO candidate (defensive edge).",
+    "correlation_id / signal_source / net_pnl are preserved from the outcome record onto the candidate.",
+    "Idempotent: re-runs create no duplicate candidate and do not re-route (a second run reports routed=0); a routed record is never reprocessed.",
+    "The outcome router references/imports no Telegram/WIMS/order path (no order_send/ConsumptionContract/deliver_trade_result/ExecutionJob; no wims/telegram/requests/urllib/intelligence import); NotificationCandidate.status is always PENDING here.",
+    "Migrations additive (TradeOutcomeRecord.routed; NotificationCandidate); full backend suite green; secret-scan + governance pass."
+  ],
+  "actual_results": [
+    "execution.tests_outcome_router: Ran 10 tests OK.",
+    "RoutingTests: WIN → PENDING candidate + routed, counts {routed:1,candidates:1,internal_only:0} PASS; LOSS → 0 candidates + routed PASS; BREAKEVEN → 0 candidates + routed PASS; WIN-without-flag → 0 candidates (internal_only) PASS; correlation preserved PASS; mixed batch counts {routed:4,candidates:2,internal_only:2} PASS.",
+    "IdempotencyTests: three runs → 1 candidate, second run routed=0 PASS; already-routed WIN → 0 candidates, routed=0 PASS.",
+    "BoundaryAndCommandTests: AST — none of order_send/order_check/agent_order/deliver_trade_result/ingest_winning_trade/ConsumptionContract/send_message/sendMessage/ExecutionJob present; imports exclude wims/telegram/intelligence/requests/urllib PASS; run_outcome_router creates a candidate for a WIN PASS.",
+    "Full backend suite: Ran 419 tests OK.",
+    "makemigrations execution trading --check: No changes detected; make secret-scan OK; governance-check OK; EVIDENCE-LINT PASS.",
+    "Adversarial 3-lens boundary review: recorded in the PR; see synthesis."
+  ],
+  "acceptance_criteria": {
+    "win_creates_candidate": "PASS",
+    "loss_no_candidate": "PASS",
+    "breakeven_no_candidate": "PASS",
+    "idempotent": "PASS",
+    "correlation_preserved": "PASS",
+    "no_telegram_api": "PASS",
+    "no_wims_calls": "PASS",
+    "no_order_send": "PASS",
+    "no_e3": "PASS",
+    "all_tests_green": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo-only — no Telegram transport, no WIMS publishing, no deploy, no execution change, no order_send, no E3.",
+    "The router only creates internal NotificationCandidate rows (status PENDING) and is not wired to any scheduler or live path (run manually via run_outcome_router).",
+    "NotificationCandidate has no transport/channel binding by design; a future, separately-gated notification packet chooses the transport and moves PENDING → SENT/SUPPRESSED.",
+    "No real WIN exists yet (no real trade is placed in shadow mode); the router is validated against constructed outcome records."
+  ],
+  "artefact_locations": [
+    "backend/execution/outcome_router.py",
+    "backend/execution/management/commands/run_outcome_router.py",
+    "backend/execution/models.py",
+    "backend/execution/tests_outcome_router.py",
+    "evidence/manifests/GFX-EVD-PROFIT-NOTIFICATION-FOUNDATION.json"
+  ],
+  "checksums": {
+    "backend/execution/outcome_router.py": "sha256:be2108082e71256a296fca829707561dcf98d60547bc05d6177e0c25ca993b7b",
+    "backend/execution/management/commands/run_outcome_router.py": "sha256:6dda8335287ce3a171b63820df371be352b424910d5c1a1f9bbcb1ef5a5d80cd",
+    "backend/execution/tests_outcome_router.py": "sha256:cf0d182dbd32bfb2273ad5ce4e879035712d84f78d9cca784be8ee33ab6b0584",
+    "backend/execution/migrations/0011_tradeoutcomerecord_routed_notificationcandidate.py": "sha256:505d8ad9994ef73ae1132f90d956e353df330146576eb1c3e50bfdf8950a302c"
+  },
+  "reviewer": null
+}

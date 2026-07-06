@@ -907,6 +907,9 @@ class TradeOutcomeRecord(models.Model):
     is_delivery_candidate = models.BooleanField(default=False)
     # Future notification idempotency — never set here (no notification in this packet).
     delivered = models.BooleanField(default=False)
+    # AUTO-SHADOW outcome-router marker: set once the outcome_router has made its
+    # WIN→candidate / LOSS→internal-only decision. Prevents re-routing (idempotency).
+    routed = models.BooleanField(default=False)
 
     # Signal/job linkage, preserved where available (blank/null otherwise).
     correlation_id = models.CharField(max_length=64, blank=True, default="")
@@ -927,3 +930,37 @@ class TradeOutcomeRecord(models.Model):
 
     def __str__(self) -> str:
         return f"{self.outcome} {self.net_pnl} (trade {self.trade_id})"
+
+
+class NotificationCandidate(models.Model):
+    """PROFIT-NOTIFICATION-FOUNDATION — an internal 'this WIN should be notified' candidate.
+
+    Produced by ``execution.outcome_router`` for a WIN ``TradeOutcomeRecord`` ONLY. It is an
+    INTERNAL abstraction — it holds NO transport and triggers NOTHING: no Telegram API call,
+    no WIMS publish, no order. A future, separately-gated notification packet consumes PENDING
+    candidates and sets ``status`` (SENT / SUPPRESSED). LOSS/BREAKEVEN never get a candidate.
+    One candidate per outcome record (the OneToOne is the idempotency guarantee).
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending (awaiting a future notification path)"
+        SENT = "SENT", "Sent"
+        SUPPRESSED = "SUPPRESSED", "Suppressed"
+
+    outcome_record = models.OneToOneField(
+        "execution.TradeOutcomeRecord", on_delete=models.CASCADE,
+        related_name="notification_candidate",
+    )
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    # Correlation preserved from the outcome record (durable for the future message).
+    correlation_id = models.CharField(max_length=64, blank=True, default="")
+    signal_source = models.CharField(max_length=64, blank=True, default="")
+    net_pnl = models.DecimalField(max_digits=20, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "id"]
+        indexes = [models.Index(fields=["status"])]
+
+    def __str__(self) -> str:
+        return f"NotificationCandidate({self.status}, {self.correlation_id or '-'})"
