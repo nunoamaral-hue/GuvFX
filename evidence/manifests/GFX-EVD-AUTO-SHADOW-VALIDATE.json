@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-AUTO-SHADOW-VALIDATE",
+  "packet_id": "GFX-PKT-AUTO-SHADOW-VALIDATE",
+  "created_at_utc": "2026-07-06T07:23:07Z",
+  "branch": "feat/auto-shadow-validate",
+  "base_commit": "45e0474b77413f31661aec19e4dca8c47cc69cef",
+  "head_commit": "e486cac81909e730eebca4230e56523f96e30b93",
+  "environment": {
+    "python_version": "3.11.9",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local test DB 'test_dev')",
+    "dependencies_changed": false,
+    "production_deploy": false,
+    "provider_armed_in_production": false
+  },
+  "files_added": [
+    "backend/execution/management/commands/provision_auto_shadow.py",
+    "backend/execution/tests_auto_shadow_validate.py",
+    "evidence/manifests/GFX-EVD-AUTO-SHADOW-VALIDATE.json"
+  ],
+  "files_modified": [],
+  "commands": [
+    "backend: python manage.py test execution.tests_auto_shadow_validate -v2",
+    "backend: python manage.py test execution.tests_auto_router execution.tests_auto_shadow_validate",
+    "backend: python manage.py test  (full suite)",
+    "make secret-scan governance-check",
+    "python manage.py provision_auto_shadow            (grant reviewer identity)",
+    "python manage.py provision_auto_shadow --revoke   (rollback)"
+  ],
+  "expected_results": [
+    "A real Wayond message fed through acquire_message with DEFAULT config stays MANUAL: INTAKEN approval PENDING_APPROVAL, 0 ExecutionJob, 0 SignalExecutionPlan.",
+    "The same message with a fully-armed TEST config auto-advances into PLACE_ORDER_SHADOW jobs ONLY: approval APPROVED, plan PROMOTED, every job job_type=PLACE_ORDER_SHADOW with payload execution_mode=SHADOW, 0 PLACE_ORDER/OPEN_TRADE/PLACE_TEST_ORDER jobs.",
+    "Missing stop-loss blocks (0 jobs); missing take-profit blocks (0 jobs); an edited signal blocks (0 jobs).",
+    "Runtime risk controls run on the auto path: with the open-positions cap forced to 0 an armed, valid signal yields 0 jobs; the control case (default caps) yields PLACE_ORDER_SHADOW jobs.",
+    "The auto_router source references no order_send/order_check/agent_order/PLACE_ORDER/OPEN_TRADE/PLACE_TEST_ORDER identifier; it reaches execution only via promote_plan_to_shadow_jobs.",
+    "provision_auto_shadow creates the guvfx-auto-system reviewer with review_signals, an unusable password (cannot log in), is_staff False; idempotent; --revoke removes the permission.",
+    "Full backend suite green; secret-scan + governance-check pass."
+  ],
+  "actual_results": [
+    "execution.tests_auto_shadow_validate: Ran 9 tests OK.",
+    "DefaultManualTests.test_default_signal_stays_manual_end_to_end: PASS (INTAKEN, PENDING_APPROVAL, 0 jobs, 0 plans).",
+    "AutoShadowE2ETests.test_fully_armed_creates_shadow_jobs_only_end_to_end: PASS (APPROVED, plan PROMOTED, all jobs PLACE_ORDER_SHADOW, payload execution_mode=SHADOW, 0 executable jobs).",
+    "BlockedCaseTests: missing SL / missing TP / edited each PASS (0 jobs).",
+    "RiskControlTests: cap-0 block PASS (0 jobs); within-caps control PASS (PLACE_ORDER_SHADOW created, 0 executable).",
+    "BoundaryAndCommandTests.test_no_order_send_in_router_code: PASS (AST: none of order_send/order_check/agent_order/PLACE_ORDER/OPEN_TRADE/PLACE_TEST_ORDER present; promote_plan_to_shadow_jobs present).",
+    "BoundaryAndCommandTests.test_provision_command_identity: PASS (review_signals granted, unusable password, not staff, idempotent, revoke removes perm).",
+    "auto_router + auto_shadow_validate targeted: Ran 30 tests OK.",
+    "Full backend suite: Ran 394 tests OK.",
+    "make secret-scan: OK (no findings); governance-check: OK; EVIDENCE-LINT PASS."
+  ],
+  "acceptance_criteria": {
+    "1_default_manual": "PASS",
+    "2_armed_shadow_only": "PASS",
+    "3_only_place_order_shadow": "PASS",
+    "4_no_place_order_jobs": "PASS",
+    "5_no_order_send_in_router": "PASS",
+    "6_missing_sl_blocks": "PASS",
+    "7_missing_tp_blocks": "PASS",
+    "8_edited_blocks": "PASS",
+    "9_risk_controls_run": "PASS",
+    "10_all_tests_green": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo/test only — no production deploy, no provider armed in production, no auto-demo, no auto-live, no E3, no order_send, no real trade, no Telegram notification, no close-monitor, no WIMS change.",
+    "The 'armed' config is created in-memory inside the test database only; provision_auto_shadow provisions ONLY the reviewer identity and never arms a provider or sets auto_execution_enabled.",
+    "Shadow-only is exercised through the reused promote_plan_to_shadow_jobs bridge; the deeper worker/bridge order_check dry-run path (E2b) is out of scope here and unchanged.",
+    "head_commit e486cac is the code+tests commit; this manifest is added in the following commit on the same branch and validated by the same PR CI."
+  ],
+  "artefact_locations": [
+    "backend/execution/auto_router.py",
+    "backend/execution/apps.py",
+    "backend/execution/management/commands/provision_auto_shadow.py",
+    "backend/execution/tests_auto_router.py",
+    "backend/execution/tests_auto_shadow_validate.py",
+    "evidence/manifests/GFX-EVD-AUTO-SHADOW-VALIDATE.json"
+  ],
+  "checksums": {
+    "backend/execution/auto_router.py": "sha256:5cdd4afa5ac94d3694f2011f42fb10294216c793269e212803d973fbdb02c1b5",
+    "backend/execution/apps.py": "sha256:a2488640f3a37402f968788b7809134a348164679e8e17b47e7102ef2adb0267",
+    "backend/execution/management/commands/provision_auto_shadow.py": "sha256:d6afa77e01113153d2d6d8a87572406df8d7c55f85598c289351247965c799ba",
+    "backend/execution/tests_auto_shadow_validate.py": "sha256:5535ca5cb6bd932d1a327888596ecfea4b11ea61e65f6d554f175eac76ad9316",
+    "backend/execution/tests_auto_router.py": "sha256:678c576fe6c947f1c5d43af407beddef6d9dd31261476e50673980c5ef902b22"
+  },
+  "reviewer": null
+}
