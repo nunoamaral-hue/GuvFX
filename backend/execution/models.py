@@ -943,9 +943,11 @@ class NotificationCandidate(models.Model):
     """
 
     class Status(models.TextChoices):
-        PENDING = "PENDING", "Pending (awaiting a future notification path)"
-        SENT = "SENT", "Sent"
-        SUPPRESSED = "SUPPRESSED", "Suppressed"
+        PENDING = "PENDING", "Pending (awaiting transport)"
+        PROCESSING = "PROCESSING", "Processing (claimed by a transport run)"
+        SENT = "SENT", "Sent (dry-run rendered; nothing transmitted)"
+        FAILED = "FAILED", "Failed (retryable)"
+        SUPPRESSED = "SUPPRESSED", "Suppressed (never to be sent)"
 
     outcome_record = models.OneToOneField(
         "execution.TradeOutcomeRecord", on_delete=models.CASCADE,
@@ -964,3 +966,38 @@ class NotificationCandidate(models.Model):
 
     def __str__(self) -> str:
         return f"NotificationCandidate({self.status}, {self.correlation_id or '-'})"
+
+
+class NotificationDelivery(models.Model):
+    """TELEGRAM-TRANSPORT-FOUNDATION — append-only audit of one transport attempt.
+
+    Written by the notification dispatcher for each delivery attempt (retries append new
+    rows). It records the transport name, the attempt result, whether anything was actually
+    transmitted (ALWAYS False — dry-run only), the rendered message, and the preserved
+    correlation id. It never transmits anything and never mutates a trade/outcome record.
+    """
+
+    class Result(models.TextChoices):
+        SENT = "SENT", "Sent (dry-run rendered)"
+        FAILED = "FAILED", "Failed"
+
+    candidate = models.ForeignKey(
+        "execution.NotificationCandidate", on_delete=models.CASCADE, related_name="deliveries",
+    )
+    transport = models.CharField(max_length=40)
+    result = models.CharField(max_length=8, choices=Result.choices)
+    transmitted = models.BooleanField(
+        default=False, help_text="Always False in this foundation — dry-run only, never sent.",
+    )
+    attempt = models.PositiveIntegerField(default=1)
+    correlation_id = models.CharField(max_length=64, blank=True, default="")
+    rendered_message = models.TextField(blank=True, default="")
+    detail = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "id"]
+        indexes = [models.Index(fields=["result"])]
+
+    def __str__(self) -> str:
+        return f"{self.transport} {self.result} attempt={self.attempt} (cand {self.candidate_id})"
