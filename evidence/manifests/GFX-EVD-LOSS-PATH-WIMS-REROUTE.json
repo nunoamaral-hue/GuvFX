@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-LOSS-PATH-WIMS-REROUTE",
+  "packet_id": "GFX-PKT-LOSS-PATH-WIMS-REROUTE",
+  "created_at_utc": "2026-07-06T08:40:42Z",
+  "branch": "fix/loss-path-wims-reroute",
+  "base_commit": "9e76902a989b49f3446ee08180917d99e04520b1",
+  "head_commit": "f4d0e0f464205b5c4a2f860357ec1a8d632cfb7c",
+  "environment": {
+    "python_version": "3.11.9",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local test DB)",
+    "dependencies_changed": false,
+    "production_deploy": false,
+    "execution_behaviour_changed": false
+  },
+  "files_added": [
+    "evidence/manifests/GFX-EVD-LOSS-PATH-WIMS-REROUTE.json"
+  ],
+  "files_modified": [
+    "backend/intelligence/delivery.py",
+    "backend/intelligence/management/commands/produce_trade_result.py",
+    "backend/intelligence/tests.py"
+  ],
+  "commands": [
+    "backend: python manage.py test intelligence",
+    "backend: python manage.py test  (full suite)",
+    "make secret-scan governance-check",
+    "grep -rn 'SourceType.TRADE_RESULT|create_contract(' (completeness scan for contract creators)"
+  ],
+  "expected_results": [
+    "A LOSS trade through the generic path (ingest_trade_result) creates NO WIMS ConsumptionContract and returns (envelope, None); its internal audit (TRADE_DETECTED, ENVELOPE_CREATED) is preserved and ENVELOPE_DELIVERED/CONSUMED are NOT recorded.",
+    "A BREAKEVEN (net-zero) trade creates NO WIMS ConsumptionContract.",
+    "deliver_trade_result refuses a non-winning envelope (net pnl <= 0) with ValueError even on a direct call.",
+    "The WIN path is intact: a winning trade still creates a TRADE_RESULT ConsumptionContract with result_type=WIN and its full audit trail.",
+    "No execution/order/trading behaviour changes; the diff touches only the intelligence content path.",
+    "deliver_trade_result is the sole in-scope creator of a TRADE_RESULT contract in the automatic trade-result path (verified by grep).",
+    "Full backend suite green; secret-scan + governance pass."
+  ],
+  "actual_results": [
+    "intelligence tests: Ran 33 tests OK (incl. 4 new).",
+    "test_loss_creates_no_wims_contract_but_keeps_internal_audit: PASS (contract None, 0 ConsumptionContract, TRADE_DETECTED + ENVELOPE_CREATED present, ENVELOPE_DELIVERED + ENVELOPE_CONSUMED absent).",
+    "test_breakeven_creates_no_wims_contract: PASS (contract None, 0 contracts).",
+    "test_deliver_trade_result_refuses_losing_envelope: PASS (ValueError; 0 contracts).",
+    "test_win_path_still_creates_contract: PASS (contract present, result_type WIN); existing test_ingest_creates_trade_result_contract_and_audits still PASS (CLOSED_TRADE is a WIN).",
+    "Full backend suite: Ran 439 tests OK.",
+    "Completeness scan: intelligence/delivery.py:185 (deliver_trade_result) is the only TRADE_RESULT contract creator in the automatic path; wp2_demo/wp3_demo are WIMS demonstration commands (fixture payloads), out of scope.",
+    "make secret-scan OK; governance-check OK; EVIDENCE-LINT PASS.",
+    "Boundary: diff touches only backend/intelligence/{delivery.py, management/commands/produce_trade_result.py, tests.py} — no execution/, no order path, no trading behaviour change."
+  ],
+  "acceptance_criteria": {
+    "1_win_creates_future_delivery_candidate": "PASS",
+    "2_loss_no_wims_contract": "PASS",
+    "3_breakeven_no_wims_contract": "PASS",
+    "4_internal_outcome_records_preserved": "PASS",
+    "5_existing_win_path_intact": "PASS",
+    "6_tests_cover_win_loss_breakeven": "PASS",
+    "7_boundary_no_execution_change": "PASS",
+    "8_full_tests_green": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo-only — no Telegram send, no WIMS publish execution, no deploy, no provider arming, no auto-demo/live, no E3, no order_send, no real trade.",
+    "Internal analytics for losers/breakeven are preserved (the immutable envelope + TRADE_DETECTED/ENVELOPE_CREATED audit); only the WIMS ConsumptionContract / public-story delivery is withheld.",
+    "Scope is the automatic intelligence trade-result path (ingest_trade_result → deliver_trade_result). The wp2_demo/wp3_demo WIMS demonstration commands create TRADE_RESULT contracts from fixed fixture payloads via services.create_contract directly and are operator-run demo tooling — not the generic delivery path — so they are intentionally out of scope.",
+    "The NotificationCandidate / outcome_router chain (execution app) already routes WIN-only; this packet only closes the older intelligence-side gap."
+  ],
+  "artefact_locations": [
+    "backend/intelligence/delivery.py",
+    "backend/intelligence/management/commands/produce_trade_result.py",
+    "backend/intelligence/tests.py",
+    "evidence/manifests/GFX-EVD-LOSS-PATH-WIMS-REROUTE.json"
+  ],
+  "checksums": {
+    "backend/intelligence/delivery.py": "sha256:180287a34a321e4ef235107a77c67861c7aa610e7ffea16e6be0a05afaa6276a",
+    "backend/intelligence/management/commands/produce_trade_result.py": "sha256:0205ec835e63b9d789b9b540c904d97b91e010d4856a8fb91f58b978536a44df",
+    "backend/intelligence/tests.py": "sha256:d953115a2aeb54792326482944b552845486d66ac47551c405ebdbfebee7690b"
+  },
+  "reviewer": null
+}
