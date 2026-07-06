@@ -270,4 +270,14 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
         provider.last_signal_at = now
         provider.save(update_fields=["watermark_last_message_id", "last_signal_at", "updated_at"])
 
+    # AUTO-SHADOW FOUNDATION: notify downstream (execution.auto_router) that a message was
+    # NEWLY acquired (this path is not reached for dedup/catch-up replays). send_robust →
+    # a receiver error NEVER breaks acquisition. The receiver is fail-closed and, with
+    # default config, a pure no-op — behaviour is unchanged unless auto mode is armed.
+    from .signals import signal_acquired
+    signal_acquired.send_robust(
+        sender="acquire_message", provider=provider, acquired=acq,
+        approval=approval, outcome=outcome,
+    )
+
     return acq
