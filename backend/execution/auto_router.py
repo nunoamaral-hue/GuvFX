@@ -89,7 +89,11 @@ def effective_mode(approval):
     Returns ``(MODE_MANUAL, reason)`` unless EVERY gate is explicitly satisfied. No
     single flag can enable auto; any unset/unknown value yields MANUAL.
     """
-    # Edited signals NEVER auto-execute (§13.5) — checked first and cheaply.
+    # Edited signals NEVER auto-execute (§13.5) — checked first. Defense-in-depth:
+    # re-read the edited flag from the DB so a concurrent edit that set source_edited
+    # cannot be missed through a stale in-memory copy (the edit path does not fire this
+    # signal today, but this closes the window unconditionally).
+    approval.refresh_from_db(fields=["source_edited"])
     if approval.source_edited:
         return MODE_MANUAL, "edited_signal"
 
@@ -141,7 +145,15 @@ def _auto_execute_shadow(approval, acquired) -> None:
         return
     signal_ts = getattr(acquired, "telegram_date", None)
     try:
-        intake_services.approve(approval, reviewer=actor, notes="auto-shadow (system)")
+        # Re-read live state before acting (idempotent + audit-preserving on a race/replay).
+        approval.refresh_from_db(fields=["status", "source_edited"])
+        if approval.source_edited:
+            return  # last-line defense: never auto-execute an edited signal
+        if approval.status == approval.Status.PENDING_APPROVAL:
+            intake_services.approve(approval, reviewer=actor, notes="auto-shadow (system)")
+        elif approval.status != approval.Status.APPROVED:
+            return  # rejected / expired / quarantined — never act; don't overwrite a decision
+        # else: already APPROVED (e.g. by a human) — keep their metadata; just plan/promote.
         plan = plan_demo_execution(
             approval, account=target.account, actor=actor, signal_timestamp=signal_ts,
         )

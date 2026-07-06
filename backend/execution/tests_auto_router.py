@@ -207,6 +207,56 @@ class RouteAndExceptionTests(_ArmedBase):
         self.assertTrue(reason.startswith("error:"))
 
 
+class HardeningTests(_ArmedBase):
+    """Defensive hardening from the adversarial review (idempotency / audit integrity)."""
+
+    def test_route_receiver_noop_when_one_gate_off(self):
+        # Full receiver path (not just effective_mode) with a single gate knocked out.
+        ctrl = ExecutionControl.get_solo()
+        ctrl.auto_execution_enabled = False
+        ctrl.save()
+        approval = _pending_approval(self.provider)
+        auto_router.route_acquired_signal(
+            provider=self.provider, acquired=self._acq(approval),
+            approval=approval, outcome=O.INTAKEN,
+        )
+        approval.refresh_from_db()
+        self.assertEqual(approval.status, PendingSignalApproval.Status.PENDING_APPROVAL)
+        self.assertEqual(ExecutionJob.objects.count(), 0)
+
+    def test_double_route_is_idempotent(self):
+        approval = _pending_approval(self.provider)
+        acq = self._acq(approval)
+        auto_router.route_acquired_signal(
+            provider=self.provider, acquired=acq, approval=approval, outcome=O.INTAKEN)
+        n_jobs = ExecutionJob.objects.count()
+        n_plans = SignalExecutionPlan.objects.count()
+        self.assertGreater(n_jobs, 0)
+        # Re-fire the same signal (e.g. a replay) — must not duplicate jobs/plans.
+        auto_router.route_acquired_signal(
+            provider=self.provider, acquired=acq, approval=approval, outcome=O.INTAKEN)
+        self.assertEqual(ExecutionJob.objects.count(), n_jobs)
+        self.assertEqual(SignalExecutionPlan.objects.count(), n_plans)
+
+    def test_human_approval_metadata_preserved(self):
+        # A human approved first; the armed auto path must NOT overwrite their metadata.
+        approval = _pending_approval(self.provider)
+        approval.status = PendingSignalApproval.Status.APPROVED
+        approval.reviewer = self.op
+        approval.save(update_fields=["status", "reviewer"])
+        auto_router.route_acquired_signal(
+            provider=self.provider, acquired=self._acq(approval),
+            approval=approval, outcome=O.INTAKEN,
+        )
+        approval.refresh_from_db()
+        self.assertEqual(approval.reviewer_id, self.op.id)  # not the system actor
+        # ...and shadow jobs were still created (all shadow, no PLACE_ORDER).
+        self.assertTrue(ExecutionJob.objects.exists())
+        self.assertFalse(
+            ExecutionJob.objects.filter(job_type__in=EXECUTABLE_JOB_TYPES).exists()
+        )
+
+
 class DefaultBehaviourTests(TestCase):
     """ACCEPTANCE 1/2/10 — defaults leave behaviour exactly manual."""
 
