@@ -144,6 +144,31 @@ class LifecycleTests(TransportBase):
             (2, NotificationDelivery.Result.SENT),
         ])
 
+    def test_orphaned_processing_is_reaped_then_retried(self):
+        # A candidate stuck in PROCESSING (crash/DB-error orphan) beyond the timeout is
+        # reclaimed to FAILED by the reaper, then delivered on the same run.
+        cand = self._candidate()
+        old = timezone.now() - timezone.timedelta(seconds=10_000)
+        NotificationCandidate.objects.filter(id=cand.id).update(
+            status=Status.PROCESSING, updated_at=old,
+        )
+        dispatcher.dispatch_pending()
+        cand.refresh_from_db()
+        self.assertEqual(cand.status, Status.SENT)  # reaped → FAILED → retried → SENT
+        self.assertTrue(NotificationDelivery.objects.filter(
+            candidate=cand, result=NotificationDelivery.Result.SENT).exists())
+
+    def test_recent_processing_not_reaped(self):
+        # A freshly-claimed PROCESSING row (within the timeout) is NOT reclaimed.
+        cand = self._candidate()
+        NotificationCandidate.objects.filter(id=cand.id).update(
+            status=Status.PROCESSING, updated_at=timezone.now(),
+        )
+        counts = dispatcher.dispatch_pending()
+        self.assertEqual(counts["reaped"], 0)
+        cand.refresh_from_db()
+        self.assertEqual(cand.status, Status.PROCESSING)  # left in flight
+
     def test_does_not_modify_trade_or_outcome(self):
         cand = self._candidate(net_pnl="15")
         trade_id, rec_id = cand.outcome_record.trade_id, cand.outcome_record_id

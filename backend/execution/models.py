@@ -959,6 +959,10 @@ class NotificationCandidate(models.Model):
     signal_source = models.CharField(max_length=64, blank=True, default="")
     net_pnl = models.DecimalField(max_digits=20, decimal_places=2)
     created_at = models.DateTimeField(auto_now_add=True)
+    # Set explicitly on every status transition so the dispatcher can reclaim a PROCESSING
+    # row that was orphaned by a crash/DB error (timeout reaper). NOT auto_now — .update()
+    # (used for the atomic claim) bypasses auto_now, so the dispatcher passes it by hand.
+    updated_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         ordering = ["-created_at", "id"]
