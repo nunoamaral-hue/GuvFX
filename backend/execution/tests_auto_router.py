@@ -163,7 +163,7 @@ class GateFailClosedTests(_ArmedBase):
     def test_no_auto_assignment_is_manual(self):
         self.assignment.execution_mode = StrategyAssignment.ExecutionMode.MANUAL
         self.assignment.save()
-        self._assert_manual(_pending_approval(self.provider), "no_unique_auto_shadow_assignment")
+        self._assert_manual(_pending_approval(self.provider), "no_unique_auto_assignment")
 
     def test_ambiguous_assignment_is_manual(self):
         acct2 = TradingAccount.objects.create(
@@ -174,7 +174,7 @@ class GateFailClosedTests(_ArmedBase):
             account=acct2, is_active=True, stage=StrategyAssignment.STAGE_LIVE,
             execution_mode=StrategyAssignment.ExecutionMode.AUTO_SHADOW,
         )
-        self._assert_manual(_pending_approval(self.provider), "no_unique_auto_shadow_assignment")
+        self._assert_manual(_pending_approval(self.provider), "no_unique_auto_assignment")
 
     def test_none_provider_is_manual(self):
         approval = _pending_approval(self.provider)

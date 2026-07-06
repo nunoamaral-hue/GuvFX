@@ -34,15 +34,37 @@ from execution.models import (
     order_creation_kill_reason,
 )
 from execution.signal_planning import PlanRejected, plan_demo_execution
-from execution.signal_promotion import PromotionRejected, promote_plan_to_shadow_jobs
+from execution.signal_promotion import (
+    PromotionRejected,
+    promote_plan_to_demo_jobs,
+    promote_plan_to_shadow_jobs,
+)
 
 logger = logging.getLogger("guvfx.execution.auto_router")
 
 MODE_MANUAL = "MANUAL"
 MODE_AUTO_SHADOW = "AUTO_SHADOW"
+MODE_AUTO_DEMO = "AUTO_DEMO"
 
 # Decision §13.4 — minimum parser certification to permit auto is MEDIUM.
 _CONFIDENCE_OK = {"MEDIUM", "HIGH"}
+
+
+def _tier_for(global_mode):
+    """Map the global ``signal_execution_mode`` to (router mode, assignment mode, promote fn).
+
+    SHADOW (default, safe) → shadow jobs; DEMO → real ``PLACE_ORDER`` jobs. Any other/unknown
+    mode → ``None`` (→ MANUAL, fail-closed). DEMO auto-fires ONLY when the operator has
+    deliberately set the global mode to DEMO **and** armed an AUTO_DEMO assignment — the default
+    (SHADOW) can never place a real order.
+    """
+    SM = ExecutionControl.SignalExecutionMode
+    AM = StrategyAssignment.ExecutionMode
+    if global_mode == SM.SHADOW:
+        return MODE_AUTO_SHADOW, AM.AUTO_SHADOW, promote_plan_to_shadow_jobs
+    if global_mode == SM.DEMO:
+        return MODE_AUTO_DEMO, AM.AUTO_DEMO, promote_plan_to_demo_jobs
+    return None
 
 
 def _confidence_ok(provider) -> bool:
@@ -53,21 +75,24 @@ def _confidence_ok(provider) -> bool:
         return False
 
 
-def resolve_auto_shadow_target():
-    """The UNIQUE active AUTO_SHADOW assignment (stage LIVE, demo account), or None.
-
-    Fail-closed on 0 or >1 matches: an ambiguous config never auto-executes — the
-    operator must make the target unambiguous.
+def _resolve_target(assignment_mode):
+    """The UNIQUE active assignment with ``execution_mode==assignment_mode`` (stage LIVE, demo
+    account), or None. Fail-closed on 0 or >1 matches — an ambiguous config never auto-executes.
     """
     hits = list(
         StrategyAssignment.objects.filter(
-            execution_mode=StrategyAssignment.ExecutionMode.AUTO_SHADOW,
+            execution_mode=assignment_mode,
             is_active=True,
             stage=StrategyAssignment.STAGE_LIVE,
             account__is_demo=True,
         ).select_related("account")[:2]
     )
     return hits[0] if len(hits) == 1 else None
+
+
+def resolve_auto_shadow_target():
+    """Back-compat: the unique active AUTO_SHADOW target (or None)."""
+    return _resolve_target(StrategyAssignment.ExecutionMode.AUTO_SHADOW)
 
 
 def _system_actor():
@@ -100,10 +125,14 @@ def effective_mode(approval):
     ctrl = ExecutionControl.get_solo()
     if not ctrl.auto_execution_enabled:
         return MODE_MANUAL, "auto_execution_disabled"
-    if ctrl.signal_execution_mode != ExecutionControl.SignalExecutionMode.SHADOW:
-        return MODE_MANUAL, "execution_mode_not_shadow"
     if order_creation_kill_reason():
         return MODE_MANUAL, "kill_switch"
+
+    # Tier from the global mode: SHADOW (default) → AUTO_SHADOW; DEMO → AUTO_DEMO; else MANUAL.
+    tier = _tier_for(ctrl.signal_execution_mode)
+    if tier is None:
+        return MODE_MANUAL, "execution_mode_unsupported"
+    tier_mode, assignment_mode, _promote = tier
 
     provider = approval.provider
     if provider is None or not provider.is_armed():
@@ -116,30 +145,31 @@ def effective_mode(approval):
     if not _confidence_ok(provider):
         return MODE_MANUAL, "parser_confidence_below_medium"
 
-    if resolve_auto_shadow_target() is None:
-        return MODE_MANUAL, "no_unique_auto_shadow_assignment"
+    if _resolve_target(assignment_mode) is None:
+        return MODE_MANUAL, "no_unique_auto_assignment"
 
-    return MODE_AUTO_SHADOW, "armed"
+    return tier_mode, "armed"
 
 
 def should_auto_execute(approval):
-    """``(bool, reason)``. Fail-closed: any exception → ``(False, error)``."""
+    """``(bool, reason)``. True for any armed auto tier. Fail-closed: exception → ``(False, error)``."""
     try:
         mode, reason = effective_mode(approval)
-        return (mode == MODE_AUTO_SHADOW), reason
+        return (mode in (MODE_AUTO_SHADOW, MODE_AUTO_DEMO)), reason
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("auto_router: effective_mode failed (%s) -> MANUAL", exc)
         return False, f"error:{type(exc).__name__}"
 
 
-def _auto_execute_shadow(approval, acquired) -> None:
-    """Run the shadow-only path: approve → plan → promote-to-shadow.
+def _auto_execute(approval, acquired, *, assignment_mode, promote_fn, label) -> None:
+    """Run the armed auto path: approve → plan → promote (via ``promote_fn``).
 
-    Output is ``PLACE_ORDER_SHADOW`` jobs ONLY. Any rejection/exception is swallowed —
-    no order is ever placed and acquisition is never disrupted.
+    ``promote_fn`` is the mode's promotion (shadow → PLACE_ORDER_SHADOW; demo → PLACE_ORDER),
+    which re-validates its own gates (incl. that the global mode matches). Any rejection/exception
+    is swallowed — acquisition is never disrupted; edited/non-pending approvals never act.
     """
     actor = _system_actor()
-    target = resolve_auto_shadow_target()
+    target = _resolve_target(assignment_mode)
     if actor is None or target is None:
         logger.info("auto_router: unresolved actor/target -> manual")
         return
@@ -150,7 +180,7 @@ def _auto_execute_shadow(approval, acquired) -> None:
         if approval.source_edited:
             return  # last-line defense: never auto-execute an edited signal
         if approval.status == approval.Status.PENDING_APPROVAL:
-            intake_services.approve(approval, reviewer=actor, notes="auto-shadow (system)")
+            intake_services.approve(approval, reviewer=actor, notes=f"{label} (system)")
         elif approval.status != approval.Status.APPROVED:
             return  # rejected / expired / quarantined — never act; don't overwrite a decision
         # else: already APPROVED (e.g. by a human) — keep their metadata; just plan/promote.
@@ -159,11 +189,11 @@ def _auto_execute_shadow(approval, acquired) -> None:
         )
         if plan.status != SignalExecutionPlan.Status.PLANNED:
             return  # HELD/VOIDED (data/staleness) → no promotion, no job
-        promote_plan_to_shadow_jobs(plan, actor=actor)  # PLACE_ORDER_SHADOW only
+        promote_fn(plan, actor=actor)  # shadow → PLACE_ORDER_SHADOW; demo → PLACE_ORDER
     except (PlanRejected, PromotionRejected) as exc:
-        logger.info("auto_router: shadow path rejected (%s)", getattr(exc, "code", exc))
+        logger.info("auto_router: %s path rejected (%s)", label, getattr(exc, "code", exc))
     except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("auto_router: shadow path error (%s)", exc)
+        logger.warning("auto_router: %s path error (%s)", label, exc)
 
 
 def route_acquired_signal(sender=None, *, provider=None, acquired=None,
@@ -176,9 +206,21 @@ def route_acquired_signal(sender=None, *, provider=None, acquired=None,
     try:
         if outcome != AcquiredMessage.Outcome.INTAKEN or approval is None:
             return
-        go, reason = should_auto_execute(approval)
-        if not go:
+        try:
+            mode, reason = effective_mode(approval)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("auto_router: effective_mode failed (%s) -> manual", exc)
+            return
+        if mode == MODE_MANUAL:
             return  # MANUAL — the approval stays PENDING exactly as today
-        _auto_execute_shadow(approval, acquired)
+        # Dispatch to the armed tier's promotion (shadow → dry-run; demo → real order).
+        tier = _tier_for(ExecutionControl.get_solo().signal_execution_mode)
+        if tier is None:  # pragma: no cover - effective_mode already excluded this
+            return
+        _tier_mode, assignment_mode, promote_fn = tier
+        _auto_execute(
+            approval, acquired, assignment_mode=assignment_mode, promote_fn=promote_fn,
+            label=("auto-shadow" if mode == MODE_AUTO_SHADOW else "auto-demo"),
+        )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("auto_router: route failed (%s) -> left manual", exc)

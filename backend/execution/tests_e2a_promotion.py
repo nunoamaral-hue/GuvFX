@@ -293,12 +293,13 @@ class CommandAndGuardTests(TestCase):
                           "create_open_trade_job", "agent_order"):
             self.assertNotIn(forbidden, names, f"promotion references {forbidden}")
 
-    def test_promotion_creates_only_shadow_job_type(self):
-        # Static: the module references no executable order job type — only the
-        # shadow type. (Strip the SHADOW token so "JobType.PLACE_ORDER" can't
-        # match the substring inside "PLACE_ORDER_SHADOW".)
+    def test_promotion_creates_no_open_trade_or_test_order(self):
+        # Static: the module never references OPEN_TRADE / PLACE_TEST_ORDER. (E3 adds a
+        # DEMO-gated PLACE_ORDER path — promote_plan_to_demo_jobs — whose shadow-only-under-
+        # SHADOW-mode + PLACE_ORDER-only-under-DEMO-mode safety is proven behaviourally in
+        # execution.tests_e3_demo_promotion; a static scan can't distinguish the gated path.)
         src = pathlib.Path(importlib.import_module("execution.signal_promotion").__file__).read_text()
         self.assertIn("PLACE_ORDER_SHADOW", src)
         stripped = src.replace("PLACE_ORDER_SHADOW", "")
-        for jt in ("JobType.PLACE_ORDER", "JobType.OPEN_TRADE", "JobType.PLACE_TEST_ORDER"):
+        for jt in ("JobType.OPEN_TRADE", "JobType.PLACE_TEST_ORDER"):
             self.assertNotIn(jt, stripped, f"promotion references executable {jt}")

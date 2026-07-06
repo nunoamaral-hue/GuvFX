@@ -403,10 +403,13 @@ class ExecutionControl(models.Model):
     SINGLETON_ID = 1
 
     class SignalExecutionMode(models.TextChoices):
-        # EXEC-E2a — the ONLY valid value today. Promotion refuses anything else.
-        # LIVE is intentionally NOT defined; enabling real placement is a separate,
-        # far-future, separately-gated packet (E3+).
+        # Default + safest: shadow promotion only (order_check dry-run, no order placed).
         SHADOW = "SHADOW", "Shadow (suppressed — no order placed)"
+        # E3-DEMO-PROMOTION: real order_send on a DEMO account. NOT a default; the master
+        # lever an operator flips (under Nuno's recorded sign-off) to arm auto-demo. Nothing
+        # auto-fires without ALSO arming auto_execution_enabled + an AUTO_DEMO assignment +
+        # source + provider. LIVE is intentionally NOT defined (a separate, far-future packet).
+        DEMO = "DEMO", "Demo (real order_send on a DEMO account — E3, gated OFF by default)"
 
     kill_switch_engaged = models.BooleanField(
         default=False,
