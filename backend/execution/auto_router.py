@@ -67,6 +67,24 @@ def _tier_for(global_mode):
     return None
 
 
+def _tier_by_router_mode(router_mode):
+    """Reverse of ``_tier_for``, keyed on a resolved router mode. Returns the matched
+    ``(assignment_mode, promote_fn)`` pair, or ``None`` for MANUAL/unknown.
+
+    The router dispatches on the same ``mode`` value ``effective_mode`` already validated,
+    so it never re-reads the global ``signal_execution_mode`` — the assignment mode and its
+    promotion function are always the pair belonging to the tier that passed the gates, and an
+    operator flipping the mode mid-route cannot pair a demo assignment with the shadow function
+    (or vice-versa). (Order creation is re-gated atomically in ``_validate`` regardless.)
+    """
+    AM = StrategyAssignment.ExecutionMode
+    if router_mode == MODE_AUTO_SHADOW:
+        return AM.AUTO_SHADOW, promote_plan_to_shadow_jobs
+    if router_mode == MODE_AUTO_DEMO:
+        return AM.AUTO_DEMO, promote_plan_to_demo_jobs
+    return None
+
+
 def _confidence_ok(provider) -> bool:
     """Parse-confidence read path. Fail-closed: unknown/LOW → False."""
     try:
@@ -213,11 +231,12 @@ def route_acquired_signal(sender=None, *, provider=None, acquired=None,
             return
         if mode == MODE_MANUAL:
             return  # MANUAL — the approval stays PENDING exactly as today
-        # Dispatch to the armed tier's promotion (shadow → dry-run; demo → real order).
-        tier = _tier_for(ExecutionControl.get_solo().signal_execution_mode)
-        if tier is None:  # pragma: no cover - effective_mode already excluded this
+        # Dispatch on the SAME tier ``effective_mode`` validated (single mode read — no second
+        # ``get_solo()``), so shadow → dry-run job and demo → real order can never be crossed.
+        tier = _tier_by_router_mode(mode)
+        if tier is None:  # pragma: no cover - effective_mode only returns MANUAL/shadow/demo
             return
-        _tier_mode, assignment_mode, promote_fn = tier
+        assignment_mode, promote_fn = tier
         _auto_execute(
             approval, acquired, assignment_mode=assignment_mode, promote_fn=promote_fn,
             label=("auto-shadow" if mode == MODE_AUTO_SHADOW else "auto-demo"),

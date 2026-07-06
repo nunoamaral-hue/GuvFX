@@ -6,6 +6,7 @@ SHADOW); the shadow path refuses under DEMO; the auto-router routes to the demo 
 AUTO_DEMO is fully armed and is a no-op at defaults; and a closed demo trade links back to its
 signal via the correlation comment tag. No real order is placed (the worker is never invoked).
 """
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -17,6 +18,7 @@ from execution import auto_router, close_monitor
 from execution.models import (
     ExecutionControl,
     ExecutionJob,
+    ProposedOrderLeg,
     SignalExecutionPlan,
     SignalSourceConfig,
     TradeOutcomeRecord,
@@ -201,6 +203,87 @@ class LinkageTests(E3Base):
         self.assertEqual(rec.correlation_id, plan.correlation_id)   # backfilled from the plan
         self.assertEqual(rec.signal_source, "wayond")
         self.assertIsNotNone(rec.execution_job)                     # linked to the demo order job
+
+
+class DemoGateInheritanceTests(E3Base):
+    """The DEMO promotion path inherits the FULL E2a gate matrix — not just the demo-only guard.
+
+    Both paths share ``signal_promotion._validate``, so every gate that blocks a suppressed shadow
+    job must equally block a real demo order. Under global mode DEMO, each rejection here proves a
+    would-be real ``PLACE_ORDER`` is refused and creates zero jobs. This locks the safety property
+    against a future edit that special-cased DEMO (e.g. an ``if mode==DEMO`` early return) skipping
+    a gate — the shadow path already asserts these (tests_e2a_promotion); this is the DEMO mirror.
+    """
+
+    SRC = "wayond"
+
+    def setUp(self):
+        super().setUp()
+        self._set_mode(Mode.DEMO)
+
+    def _direct_plan(self, *, mid="g1", tps=("1.0900", "1.0950", "1.1000"),
+                     lots=("0.01", "0.01", "0.01"), sl="1.0800", symbol="EURUSD",
+                     signal_ts=None):
+        """A PLANNED plan built directly on the demo account (bypassing plan_demo_execution so a
+        bad-data state can be injected), matching E3Base's source so ``_validate`` reaches its gates.
+        """
+        approval = PendingSignalApproval.objects.create(
+            source=self.SRC, message_id=mid, symbol=symbol, direction="BUY",
+            stop_loss=sl, take_profits=list(tps), status=PendingSignalApproval.Status.APPROVED,
+        )
+        plan = SignalExecutionPlan.objects.create(
+            approval=approval, account=self.demo, source=self.SRC, message_id=mid,
+            symbol=symbol, direction="BUY", stop_loss=sl, is_demo=self.demo.is_demo,
+            signal_timestamp=signal_ts or timezone.now(),
+            status=SignalExecutionPlan.Status.PLANNED,
+        )
+        for i, (tp, lot) in enumerate(zip(tps, lots), start=1):
+            ProposedOrderLeg.objects.create(
+                plan=plan, leg_index=i, take_profit=tp, stop_loss=sl,
+                lot_size=Decimal(lot), status=ProposedOrderLeg.Status.PLANNED,
+            )
+        return plan
+
+    def _assert_demo_rejected(self, plan, code):
+        with self.assertRaises(PromotionRejected) as cm:
+            promote_plan_to_demo_jobs(plan, actor=self.op)
+        self.assertEqual(cm.exception.code, code)
+        self.assertEqual(ExecutionJob.objects.count(), 0)  # no real order job created
+
+    def test_demo_kill_switch_blocks(self):
+        from execution import signal_proposals as bridge
+        bridge.engage_kill_switch(actor=self.op)
+        self._assert_demo_rejected(self._direct_plan(mid="k1"), "kill_switch_engaged")
+
+    def test_demo_disabled_source_blocks(self):
+        SignalSourceConfig.objects.filter(source=self.SRC).update(auto_demo_execution_enabled=False)
+        self._assert_demo_rejected(self._direct_plan(mid="k2"), "source_not_enabled")
+
+    def test_demo_stale_signal_blocks(self):
+        plan = self._direct_plan(mid="k3", signal_ts=timezone.now() - timedelta(seconds=600))
+        self._assert_demo_rejected(plan, "stale_signal")
+
+    def test_demo_missing_stop_loss_blocks(self):
+        self._assert_demo_rejected(self._direct_plan(mid="k4", sl=""), "missing_stop_loss")
+
+    def test_demo_missing_take_profit_blocks(self):
+        self._assert_demo_rejected(
+            self._direct_plan(mid="k5", tps=("",), lots=("0.01",)), "missing_take_profit")
+
+    def test_demo_symbol_not_allowed_blocks(self):
+        self._assert_demo_rejected(self._direct_plan(mid="k6", symbol="GBPJPY"), "symbol_not_allowed")
+
+    def test_demo_lot_over_cap_blocks(self):
+        self._assert_demo_rejected(
+            self._direct_plan(mid="k7", tps=("1.0900",), lots=("0.05",)), "lot_out_of_range")
+
+    def test_demo_total_lot_over_cap_blocks(self):
+        # Each leg is within the 0.02 per-leg cap, but the four-leg sum (0.08) exceeds the 0.06 total.
+        self._assert_demo_rejected(
+            self._direct_plan(
+                mid="k8", tps=("1.0900", "1.0950", "1.1000", "1.1050"),
+                lots=("0.02", "0.02", "0.02", "0.02")),
+            "total_lot_exceeds_cap")
 
 
 def acquisition_acquire(provider, mid):
