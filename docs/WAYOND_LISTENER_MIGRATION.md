@@ -19,15 +19,21 @@ channel), so no provider change is needed either.
   on reload and still True after ~15 min) — the same persistence bar the personal account
   passed. Do NOT migrate until GFX holds a session.
 
+> **Go/no-go first:** check [GFX_MIGRATION_READINESS.md](GFX_MIGRATION_READINESS.md) — do NOT
+> start these steps until every readiness gate there passes. It also carries the exact,
+> secret-free command blocks (with the absolute venv Python path — `python` is pyenv-shimmed).
+
 ## Migration steps (operator — Nuno)
-1. **Mint the GFX production session** (2FA on, frozen fingerprint):
+1. **Mint the GFX production session** (2FA on, frozen fingerprint). Use the absolute venv
+   Python, not `python` (pyenv shim). Exact commands: GFX_MIGRATION_READINESS.md §4.
    ```bash
-   cd backend
+   cd ~/Documents/Programming/Python/trading/guvfx/backend
    export TELEGRAM_API_ID=<GFX app id> TELEGRAM_API_HASH=<GFX app hash>
    export TELEGRAM_DEVICE_MODEL="Desktop" TELEGRAM_SYSTEM_VERSION="Windows 10" TELEGRAM_APP_VERSION="4.16.8"
-   python manage.py provision_telegram_session --session-out ~/.guvfx/gfx_prod.session --wayond-chat <wayond>
+   /Users/nunoamaral/Documents/Programming/Python/trading/guvfx/.venv/bin/python \
+     manage.py provision_telegram_session --session-out ~/.guvfx/gfx_prod.session --wayond-chat -1003842321905
    ```
-   Verify persistence (reuse + ~15 min).
+   Verify persistence (reuse + ~15 min, ideally ~1 hour).
 2. **Replace the secret** in the listener env file (the as-deployed secret store is
    `/home/ubuntu/guvfx-prod/wayond-listener.env`, 600): swap `TELEGRAM_STRING_SESSION`
    (via scp, as in `deploy/wayond-listener/DEPLOY_ISOLATED.md` Phase 3) and
