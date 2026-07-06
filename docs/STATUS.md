@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-07-06 — E3-DEMO-EXECUTION-PROGRAMME: E3 roadmap (planning only); ~62% complete. 🗺️**
+  Planning/architecture review only (no code, no deploy, no arming). New
+  [docs/E3_ROADMAP.md](E3_ROADMAP.md) from a 6-agent read-only sweep of the current code + prod state.
+  **Key finding: E3 needs no new execution engine** — the real order_send path already runs in prod
+  for the strategy schedulers (`ExecutionJob PLACE_ORDER → trade-ingest worker → bridge /mt5/order →
+  order_send → real demo ticket`), SYNC_POSITIONS auto-enqueue is DONE (views.py:390), and the whole
+  close→outcome→candidate chain + monitors exist. **~62% complete.** Remaining engineering (~5 small/
+  medium, repo-only, fail-closed): `SignalExecutionMode.DEMO` enum, `promote_plan_to_demo_jobs`, DEMO
+  real-order payload, **populate `Trade.correlation_id` in upsert_trades (CRITICAL linkage)**, auto_router
+  AUTO_DEMO wiring. Hard blockers are Nuno-only governance: Blueprint-06 ratification + recorded E3
+  sign-off + risk-cap/node decisions. Ops: 3 monitor crons + deploy-to-shared-image (kill-switch window)
+  + worker/node/bridge preflight; DB-backup + bridge-SPOF risk-accept for a supervised pilot. Real
+  Telegram transport NOT on the critical path (dry-run suffices). 7-packet sequence to the first demo
+  trade. **E3 RED.**
+
 - **2026-07-06 — GFX-MIGRATION-READINESS: assessment + checklist; migration BLOCKED on GFX aging. 📋**
   Readiness/prep only (no migration, no Telegram login, no secret handling). New
   [docs/GFX_MIGRATION_READINESS.md](GFX_MIGRATION_READINESS.md): go/no-go assessment + gate
