@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-AUTO-SHADOW-CLOSE-MONITOR",
+  "packet_id": "GFX-PKT-AUTO-SHADOW-CLOSE-MONITOR",
+  "created_at_utc": "2026-07-06T07:46:12Z",
+  "branch": "feat/auto-shadow-close-monitor",
+  "base_commit": "18addce719d764e5aaf42d503497920602a35d59",
+  "head_commit": "8f827423604f946dedd3eeafa5eb0c0f6f6f90dc",
+  "environment": {
+    "python_version": "3.11.9",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local test DB)",
+    "dependencies_changed": false,
+    "production_deploy": false,
+    "execution_behaviour_changed": false
+  },
+  "files_added": [
+    "backend/execution/close_monitor.py",
+    "backend/execution/management/commands/run_close_monitor.py",
+    "backend/execution/migrations/0010_tradeoutcomerecord.py",
+    "backend/trading/migrations/0008_trade_correlation_id.py",
+    "backend/execution/tests_close_monitor.py",
+    "evidence/manifests/GFX-EVD-AUTO-SHADOW-CLOSE-MONITOR.json"
+  ],
+  "files_modified": [
+    "backend/execution/models.py",
+    "backend/trading/models.py"
+  ],
+  "commands": [
+    "backend: python manage.py test execution.tests_close_monitor",
+    "backend: python manage.py test  (full suite)",
+    "backend: python manage.py makemigrations trading execution --check",
+    "make secret-scan governance-check",
+    "python manage.py run_close_monitor --limit N"
+  ],
+  "expected_results": [
+    "Open trades (close_time null) are ignored — no TradeOutcomeRecord.",
+    "A closed trade with net pnl>0 is classified WIN; net<0 LOSS; net==0 BREAKEVEN; net = profit+commission+swap.",
+    "WIN creates an internal delivery candidate ONLY (is_delivery_candidate=True, delivered=False); no WIMS ConsumptionContract is created.",
+    "LOSS/BREAKEVEN are recorded internally only (never delivery candidates); no WIMS.",
+    "A trade already recorded is never reprocessed (re-run keeps a single record) — OneToOne + IntegrityError guard.",
+    "A trade with close_time set but close_price missing fails closed (skipped, no record); one flaky trade never aborts the batch.",
+    "Signal linkage (correlation_id / signal_source / execution_job) is preserved when a matching plan exists; blank/null otherwise; the trade is still recorded.",
+    "The close-monitor references no order_send/order_check/agent_order/deliver_trade_result/ingest_winning_trade/ConsumptionContract/Telegram send; it only writes TradeOutcomeRecord.",
+    "Migrations are additive (Trade.correlation_id; TradeOutcomeRecord) with safe defaults; full backend suite green; secret-scan + governance pass."
+  ],
+  "actual_results": [
+    "execution.tests_close_monitor: Ran 15 tests OK.",
+    "ClassificationTests: open ignored PASS; WIN PASS; LOSS PASS; BREAKEVEN PASS; net_pnl includes commission+swap (profit 10, commission -12 → net -2 → LOSS) PASS.",
+    "RoutingTests: WIN is internal delivery candidate only, ConsumptionContract.count()==0 PASS; LOSS/BREAKEVEN internal only, 0 candidates, 0 WIMS PASS.",
+    "IdempotencyTests: three runs → exactly 1 record PASS.",
+    "FailClosedTests: incomplete close (close_price null) skipped, 0 records PASS; flaky-linkage trade skipped, other 2 trades recorded (processed=2, skipped=1) PASS.",
+    "LinkageTests: matching plan → correlation_id+signal_source+execution_job preserved PASS; correlation_id without plan preserved (source/job blank) PASS; unlinked trade still recorded PASS.",
+    "BoundaryAndCommandTests: AST — none of order_send/order_check/agent_order/deliver_trade_result/ingest_winning_trade/ConsumptionContract/send_message/sendMessage present; no wims import; run_close_monitor command records a WIN PASS.",
+    "Full backend suite: Ran 408 tests OK (pre-hardening); close-monitor 15 OK post-hardening.",
+    "makemigrations trading execution --check: only the two additive migrations; make secret-scan OK; governance-check OK; EVIDENCE-LINT PASS.",
+    "Adversarial 3-lens boundary review: GO, no must-fix, no boundary violation; the one robustness nit (linkage outside the try) was hardened."
+  ],
+  "acceptance_criteria": {
+    "1_open_trades_ignored": "PASS",
+    "2_win_classified": "PASS",
+    "3_loss_classified": "PASS",
+    "4_breakeven_classified": "PASS",
+    "5_win_internal_candidate_only": "PASS",
+    "6_loss_be_internal_only": "PASS",
+    "7_no_duplicate_delivery": "PASS",
+    "8_corrupt_fails_closed": "PASS",
+    "9_signal_linkage_preserved": "PASS",
+    "10_all_tests_green": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo-only — no production deploy, no provider arming, no auto-demo/live, no E3, no order_send, no Telegram notification, no WIMS publishing change, no real trade, no execution behaviour change.",
+    "No trade is created by this packet; the monitor is validated against constructed/fixture trades. It is not wired into any scheduler or live path (run manually via run_close_monitor).",
+    "Trade.correlation_id is blank today (no signal-originated real trade exists yet); a future auto-demo order-ingest is what will populate it. Linkage is therefore best-effort 'where available'.",
+    "The monitor writes only internal TradeOutcomeRecord rows; the future profit-only Telegram notification + the loss-path WIMS re-route are explicitly out of scope and unbuilt."
+  ],
+  "artefact_locations": [
+    "backend/execution/close_monitor.py",
+    "backend/execution/management/commands/run_close_monitor.py",
+    "backend/execution/models.py",
+    "backend/trading/models.py",
+    "backend/execution/tests_close_monitor.py",
+    "evidence/manifests/GFX-EVD-AUTO-SHADOW-CLOSE-MONITOR.json"
+  ],
+  "checksums": {
+    "backend/execution/close_monitor.py": "sha256:43c9b3c807e8a1af0f620096f775a46e33b7064ce448e6e54ee3c168fb9bb879",
+    "backend/execution/management/commands/run_close_monitor.py": "sha256:d0222567df3bfaf99fec6ed536a052667a310d5abbdd58e39d5842782f16da84",
+    "backend/execution/tests_close_monitor.py": "sha256:5596e57d18774309377cbad66de875316b7b388df905e324eee66d82fbae7017",
+    "backend/execution/migrations/0010_tradeoutcomerecord.py": "sha256:f173245f2672b0427568b8fa2c272971e76e5fcad2e193d093591e29872d4813",
+    "backend/trading/migrations/0008_trade_correlation_id.py": "sha256:87e933ec1aa89ba1f96572b76ddaa4e31aaeee54423a5af7e58c7d63909a02cb"
+  },
+  "reviewer": null
+}
