@@ -1,0 +1,108 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-E3-DEPLOY-AND-PREFLIGHT",
+  "packet_id": "GFX-PKT-E3-DEPLOY-AND-PREFLIGHT",
+  "created_at_utc": "2026-07-06T22:08:27Z",
+  "branch": "docs/e3-deploy-preflight-evidence",
+  "base_commit": "e69c1446e594ba49056c325df3a8e0dae4a3e7fb",
+  "head_commit": "e69c1446e594ba49056c325df3a8e0dae4a3e7fb",
+  "environment": {
+    "target": "production (OVH VPS guvfx-ubuntu 100.119.23.29)",
+    "deployed_commit": "e69c1446e594ba49056c325df3a8e0dae4a3e7fb",
+    "previous_deployed_commit": "cb2108c (PR #56, OPS-OBSERVABILITY)",
+    "commits_deployed": 36,
+    "new_backend_image_id": "8a55b0cacf45",
+    "rollback_backend_image": "guvfx-prod-guvfx-backend:rollback-preE3 (0449ad718a45)",
+    "db_backup": "/home/ubuntu/guvfx-backups/preE3_20260706T215639Z.sql.gz",
+    "db_backup_sha256": "e4d25276f03fe4417b22b36f7912f356e95f2168b85cef2e22f6cb0f08e34d88",
+    "code_change": false,
+    "armed": false,
+    "e3_enabled": false,
+    "order_placed": false,
+    "notification_transmitted": false
+  },
+  "files_added": [
+    "evidence/manifests/GFX-EVD-E3-DEPLOY-AND-PREFLIGHT.json"
+  ],
+  "files_modified": [
+    "docs/STATUS.md",
+    "docs/E3_ROADMAP.md"
+  ],
+  "commands": [
+    "prod: docker tag guvfx-prod-guvfx-backend:latest guvfx-prod-guvfx-backend:rollback-preE3",
+    "prod: docker exec guvfx-postgres pg_dump | gzip > preE3_<ts>.sql.gz  (1.28 MB, gzip-verified)",
+    "prod: cd ~/guvfx-app && git checkout e69c144 ; rsync -a --delete --exclude .env backend/ ~/guvfx-prod/backend/",
+    "prod: docker build -t guvfx-prod-guvfx-backend:latest ~/guvfx-prod/backend",
+    "prod: docker compose run --rm guvfx-backend python manage.py migrate --plan  (additive-only safety gate)",
+    "prod: kill switch engaged + scheduler crons paused (window)",
+    "prod: docker compose run --rm guvfx-backend python manage.py migrate --no-input",
+    "prod: docker compose up -d --force-recreate --no-deps guvfx-backend guvfx-mt5-trade-ingest-worker",
+    "prod: docker compose -f docker-compose.yml -f deploy/shadow-worker/docker-compose.shadow-worker.yml up -d --force-recreate --no-deps guvfx-mt5-shadow-worker",
+    "prod: crontab restored + kill switch released (window closed)",
+    "prod: deploy/monitor-scheduler/install_monitor_cron.sh  (idempotent)",
+    "prod: deploy/shadow-worker/verify_shadow_dryrun.sh",
+    "prod: manage.py run_monitor_chain --limit 0 ; manage.py run_monitor_chain"
+  ],
+  "expected_results": [
+    "Production backend brought from cb2108c (#56) to current main e69c144 (#93) with all defaults left safe and E3 NOT enabled/armed.",
+    "9 additive migrations applied (trading 0008; execution 0009-0014; signal_intake 0007; strategies 0011); signal_intake 0003-0006 already applied by the listener are skipped; no destructive/data operation.",
+    "Backend + trade-ingest worker + shadow worker recreated on the new shared image; frontend/validate-worker (different images) and the wayond listener (separate image) untouched.",
+    "The live-trading path is protected during the rebuild by a kill-switch window (order creation blocked + scheduler crons paused + in-flight settled), restored afterwards.",
+    "Monitor-chain cron installed (proven safe at defaults). Existing shadow dry-run still passes on the new image. No Wayond ExecutionJob, no order_send, no notification transmitted.",
+    "Rollback path captured: prior image tagged rollback-preE3 + a verified pre-migration pg_dump.",
+    "All 14 VERIFY points satisfied."
+  ],
+  "actual_results": [
+    "VERIFY 1 Backend healthy: guvfx-backend Up (recreated, new image 8a55b0cacf45); manage.py check = 0 issues; https://api.guvfx.com/api/auth/cookie/csrf/ = 200.",
+    "VERIFY 2 Workers healthy: guvfx-mt5-trade-ingest-worker (mt5-trade-ingest-1) + guvfx-mt5-shadow-worker (mt5-shadow-worker-1, MT5_SHADOW_WORKER=1) Up on new image; both connected to bridge http://100.79.101.19:8788; validate-worker (separate image) untouched.",
+    "VERIFY 3 Wayond listener healthy: guvfx-wayond-listener Up 33h (healthy); separate image, not rebuilt/restarted.",
+    "VERIFY 4 Monitor cron installed: '* * * * * ... run_monitor_chain >> /var/log/guvfx/monitor_chain.log # guvfx-monitor-chain'; smoke (--limit 0) = all zeros; real pass = close[processed=0 skipped=3] outcome[0] dispatch[enabled=False] failures=none.",
+    "VERIFY 5 Migrations applied: all 9 applied OK; showmigrations --plan unapplied count = 0.",
+    "VERIFY 6 Provider un-armed: wayond status=ONBOARDING; ARMED providers=[].",
+    "VERIFY 7 auto_execution_enabled = False.",
+    "VERIFY 8 signal_execution_mode = SHADOW (non-DEMO).",
+    "VERIFY 9 No AUTO_DEMO assignment active: count=0; auto_demo SignalSourceConfig rows=0.",
+    "VERIFY 10 Notification dispatch disabled: NOTIFICATION_DISPATCH_ENABLED unset -> OFF.",
+    "VERIFY 11 No new Wayond ExecutionJobs: total 50 (unchanged baseline); payload comment startswith 'WAY' count=0; TradeOutcomeRecords=0.",
+    "VERIFY 12 No order_send: 0 Wayond jobs; shadow dry-run reported order_send_called=false; kill switch was engaged during the window.",
+    "VERIFY 13 Shadow dry-run PASS: job #68 claimed by mt5-shadow-worker-1 -> bridge order_check retcode 0, order_send_called false, has_order_ids false; cleaned up; == VERIFICATION PASSED ==.",
+    "VERIFY 14 Rollback confirmed: guvfx-prod-guvfx-backend:rollback-preE3 (0449ad718a45) preserved; pg_dump preE3_20260706T215639Z.sql.gz (1.28 MB) gzip-verified, sha256 e4d25276...; crontab backup crontab.preE3_20260706T220151Z.bak.",
+    "Window closed cleanly: kill_switch_engaged=False (order_creation_kill_reason=None), 0 paused cron lines, 7 active manage.py crons (6 original + monitor), normal strategy trading resumed."
+  ],
+  "acceptance_criteria": {
+    "backend_healthy": "PASS",
+    "workers_healthy": "PASS",
+    "listener_healthy": "PASS",
+    "monitor_cron_installed": "PASS",
+    "migrations_applied": "PASS",
+    "provider_un_armed": "PASS",
+    "auto_execution_disabled": "PASS",
+    "execution_mode_non_demo": "PASS",
+    "no_auto_demo_assignment": "PASS",
+    "notification_dispatch_disabled": "PASS",
+    "no_new_wayond_jobs": "PASS",
+    "no_order_send": "PASS",
+    "shadow_dryrun_passes": "PASS",
+    "rollback_confirmed": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Production deploy — this is the only packet in the E3 arc that changes prod. It rebuilt the SHARED backend image and applied migrations to the LIVE DB; a kill-switch window (order-creation block + paused scheduler crons + in-flight settled) protected live strategy trading during the ~5-minute recreate, then normal trading was restored.",
+    "Nothing was armed or enabled: provider stays ONBOARDING, auto_execution_enabled False, signal_execution_mode SHADOW, no AUTO_DEMO assignment, dispatch OFF, transport dry-run. E3 remains RED behind Blueprint-06 ratification + recorded E3 sign-off + caps/node decision + arming (all Nuno-only, out of scope here).",
+    "Risk caps were NOT changed (per strict exclusion). The known ops gaps remain (single-VPS SPOFs, bridge SPOF, no automated recurring DB backup) — a one-off pre-migration pg_dump was taken for this deploy but recurring backup is a separate item.",
+    "The monitor chain's real pass skipped 3 pre-existing closed trades (fail-closed on open/incomplete data) and created zero outcome records — expected; no notification path is active.",
+    "The deployed worker script is bind-mounted from /srv/guvfx/worker_scripts and was already current (E2b shadow-only) — unchanged by this deploy; E3 did not modify the worker."
+  ],
+  "artefact_locations": [
+    "prod image guvfx-prod-guvfx-backend:latest (8a55b0cacf45) @ e69c144",
+    "prod rollback image guvfx-prod-guvfx-backend:rollback-preE3 (0449ad718a45)",
+    "prod /home/ubuntu/guvfx-backups/preE3_20260706T215639Z.sql.gz",
+    "prod /home/ubuntu/guvfx-backups/crontab.preE3_20260706T220151Z.bak",
+    "prod ~/guvfx-prod/deploy/monitor-scheduler/ (synced)",
+    "evidence/manifests/GFX-EVD-E3-DEPLOY-AND-PREFLIGHT.json"
+  ],
+  "checksums": {
+    "db_backup_preE3.sql.gz": "sha256:e4d25276f03fe4417b22b36f7912f356e95f2168b85cef2e22f6cb0f08e34d88"
+  },
+  "reviewer": null
+}

@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-07-06 — E3-DEPLOY-AND-PREFLIGHT: production brought up to current main (`e69c144`) WITHOUT enabling E3. 🚀**
+  Deployed the full undeployed stack (prod backend was 36 commits behind at `cb2108c`/#56 → now `e69c144`/#93:
+  auto-shadow, close-monitor, outcome-router, notification dispatcher, dry-run transport, E3 demo-promotion,
+  AUTO_DEMO router, monitor-chain). **Kill-switch window** protected live strategy trading: tagged rollback
+  image `:rollback-preE3`, took a verified pre-migration `pg_dump` (1.28 MB), engaged kill switch + paused
+  scheduler crons + waited for in-flight to settle, applied **9 additive migrations** (trading 0008; execution
+  0009–0014; signal_intake 0007; strategies 0011 — `migrate --plan` confirmed additive-only, no destructive
+  op), rebuilt + force-recreated `guvfx-backend` + `guvfx-mt5-trade-ingest-worker` + `guvfx-mt5-shadow-worker`
+  on the new shared image (`8a55b0cacf45`), restored crons, released kill switch. Installed the monitor-chain
+  cron. **All 14 VERIFY points PASS; every default stayed safe:** provider `wayond` ONBOARDING/un-armed,
+  `auto_execution_enabled=False`, `signal_execution_mode=SHADOW`, 0 active AUTO_DEMO assignments, dispatch
+  OFF, 0 Wayond ExecutionJobs, 0 `order_send`; existing shadow dry-run still PASS (job #68, no order); listener
+  (separate image) + frontend + validate-worker untouched; API 200. **Nothing armed/enabled — E3 remains RED.**
+  Rollback = retag `:rollback-preE3`→`:latest` + recreate (+ restore `pg_dump` if a migration must be undone).
+  Evidence `GFX-EVD-E3-DEPLOY-AND-PREFLIGHT.json` (PASS 14/14).
 - **2026-07-06 — E3-MONITOR-SCHEDULING: post-trade monitor chain scheduling prepared (repo-only, dry-run). ⏱️**
   New `execution.run_monitor_chain` management command runs the three shipped monitors in dependency
   order in one idempotent pass (`process_closed_trades` → `route_outcomes` → `dispatch_pending`) — it
