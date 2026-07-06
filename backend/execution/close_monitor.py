@@ -37,7 +37,7 @@ DEFAULT_LIMIT = 500
 
 def _resolve_linkage(trade):
     """Best-effort signal linkage from the trade's correlation_id (blank/None where absent)."""
-    cid = (getattr(trade, "correlation_id", "") or "").strip()
+    cid = str(getattr(trade, "correlation_id", "") or "").strip()
     if not cid:
         return "", "", None
     plan = SignalExecutionPlan.objects.filter(correlation_id=cid).first()
@@ -64,12 +64,14 @@ def process_closed_trades(*, limit: int = DEFAULT_LIMIT) -> dict:
             payload = producer.produce(trade).structured_payload  # ValueError if open/corrupt
             outcome = payload.outcome
             net_pnl = Decimal(str(payload.pnl))
-        except Exception as exc:  # open / incomplete / corrupt → fail-closed, leave it
+            # Read-only linkage is part of the same fail-closed unit: a flaky-linkage
+            # trade is skipped, never aborting the whole batch.
+            cid, source, job = _resolve_linkage(trade)
+        except Exception as exc:  # open / incomplete / corrupt / linkage error → skip, leave it
             logger.info("close_monitor: skipped trade %s (%s)", getattr(trade, "id", "?"), exc)
             counts["skipped"] += 1
             continue
 
-        cid, source, job = _resolve_linkage(trade)
         try:
             with transaction.atomic():
                 TradeOutcomeRecord.objects.create(

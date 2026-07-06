@@ -8,6 +8,7 @@ WIMS side effect.
 import ast
 import pathlib
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -121,6 +122,24 @@ class FailClosedTests(CloseMonitorBase):
         _trade(self.account, ticket="c1", profit="10", close_price=None)
         counts = close_monitor.process_closed_trades()
         self.assertEqual(TradeOutcomeRecord.objects.count(), 0)
+        self.assertEqual(counts["skipped"], 1)
+
+    def test_linkage_error_skips_one_trade_not_batch(self):
+        # A flaky linkage lookup must skip that one trade, not abort the whole run.
+        _trade(self.account, ticket="ok1", profit="5")
+        _trade(self.account, ticket="bad", profit="5", cid="boom")
+        _trade(self.account, ticket="ok2", profit="5")
+        orig = close_monitor._resolve_linkage
+
+        def flaky(trade):
+            if getattr(trade, "correlation_id", "") == "boom":
+                raise RuntimeError("simulated db blip")
+            return orig(trade)
+
+        with mock.patch.object(close_monitor, "_resolve_linkage", side_effect=flaky):
+            counts = close_monitor.process_closed_trades()
+        self.assertEqual(TradeOutcomeRecord.objects.count(), 2)  # both good trades recorded
+        self.assertEqual(counts["processed"], 2)
         self.assertEqual(counts["skipped"], 1)
 
 
