@@ -15,6 +15,10 @@
 set -euo pipefail
 
 MARKER="# guvfx-monitor-chain"
+# End-anchored ERE for matching our managed line ONLY — so a future sibling whose comment merely
+# CONTAINS the marker as a prefix (e.g. "# guvfx-monitor-chain-v2") is never matched or collaterally
+# removed. The managed cron line always ends with exactly MARKER.
+MARKER_RE="# guvfx-monitor-chain$"
 COMPOSE_DIR="${COMPOSE_DIR:-/home/ubuntu/guvfx-prod}"
 LOG_DIR="${LOG_DIR:-/var/log/guvfx}"
 BACKEND_SERVICE="${BACKEND_SERVICE:-guvfx-backend}"
@@ -25,8 +29,8 @@ CRON_LINE="${SCHEDULE} cd ${COMPOSE_DIR} && docker compose exec -T ${BACKEND_SER
 current_crontab() { crontab -l 2>/dev/null || true; }
 
 if [ "${1:-}" = "--remove" ]; then
-  if current_crontab | grep -qF "$MARKER"; then
-    current_crontab | grep -vF "$MARKER" | crontab -
+  if current_crontab | grep -qE "$MARKER_RE"; then
+    current_crontab | grep -vE "$MARKER_RE" | crontab -
     echo "removed: monitor-chain cron line"
   else
     echo "noop: no monitor-chain cron line present"
@@ -37,13 +41,13 @@ fi
 # Install path.
 mkdir -p "$LOG_DIR"
 
-if current_crontab | grep -qF "$MARKER"; then
+if current_crontab | grep -qE "$MARKER_RE"; then
   echo "noop: monitor-chain cron already installed"
-  current_crontab | grep -F "$MARKER"
+  current_crontab | grep -E "$MARKER_RE"
   exit 0
 fi
 
 { current_crontab; echo "$CRON_LINE"; } | crontab -
 echo "installed: monitor-chain cron (every: '${SCHEDULE}')"
 echo "  -> log: ${LOG_DIR}/monitor_chain.log"
-crontab -l | grep -F "$MARKER"
+crontab -l | grep -E "$MARKER_RE"

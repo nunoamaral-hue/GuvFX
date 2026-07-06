@@ -33,10 +33,12 @@ read -r JOBS_B CONTRACTS_B TX_B <<<"$(snapshot)"
 [ -n "${JOBS_B:-}" ] || fail "could not read pre-run snapshot"
 echo "ok: pre-run  jobs=$JOBS_B wims_contracts=$CONTRACTS_B transmitted=$TX_B"
 
-# 1. Structural smoke run — --limit 0 exercises the full wiring while touching zero rows.
+# 1. Structural smoke run — --limit 0 exercises the full wiring while touching zero rows by design
+#    (each step slices its queryset [:0] -> empty). The before/after boundary snapshot below is the
+#    authority on "nothing created"; this step only proves the command wires end to end.
 docker exec "$BACKEND_CONTAINER" python manage.py run_monitor_chain --limit 0 \
   | grep -q "monitor-chain:" || fail "structural (--limit 0) run produced no summary line"
-echo "ok: structural --limit 0 run wired end-to-end (zero rows touched)"
+echo "ok: structural --limit 0 run wired end-to-end (zero rows by design)"
 
 # 2. Real bounded run — processes any pre-existing closed trades (internal records only).
 OUT="$(docker exec "$BACKEND_CONTAINER" python manage.py run_monitor_chain 2>&1)"
@@ -48,7 +50,10 @@ echo "chain output: $OUT"
 read -r JOBS_A CONTRACTS_A TX_A <<<"$(snapshot)"
 echo "ok: post-run jobs=$JOBS_A wims_contracts=$CONTRACTS_A transmitted=$TX_A"
 
-# Boundary assertions — these three must be UNCHANGED by a chain run.
+# Boundary assertions — these three must be UNCHANGED by a chain run. The transmitted check is a
+# NEGATIVE assertion valid for the only transport that exists today (TelegramDryRunTransport always
+# records transmitted=False and opens no socket). If a REAL transport is ever added, re-verify this
+# script asserts against that transport's own audit trail before trusting it.
 [ "$JOBS_A" = "$JOBS_B" ] || fail "chain created $((JOBS_A - JOBS_B)) ExecutionJob(s) — must create none"
 [ "$CONTRACTS_A" = "$CONTRACTS_B" ] || fail "chain created a WIMS ConsumptionContract — must create none"
 [ "$TX_A" = "$TX_B" ] || fail "chain transmitted a notification — must transmit none (dry-run)"
