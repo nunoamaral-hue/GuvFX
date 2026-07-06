@@ -1,0 +1,23 @@
+# E3-MONITOR-SCHEDULING — post-trade monitor chain cron snippet.
+#
+# Schedules the post-trade lifecycle (close-monitor -> outcome-router -> dispatch) to run
+# every minute, matching the existing h1/m5/h4 strategy schedulers. SAFE AT CURRENT DEFAULTS:
+# the chain creates internal records only, places no order, and the dispatch step is a no-op
+# unless NOTIFICATION_DISPATCH_ENABLED is set (default OFF) — and even then the only transport
+# is dry-run (nothing is transmitted). It processes only pre-existing closed trades / outcome
+# records / candidates, and every step is idempotent, so re-running each minute is harmless.
+#
+# Managed by deploy/monitor-scheduler/install_monitor_cron.sh (identified by the marker below).
+# Install:  deploy/monitor-scheduler/install_monitor_cron.sh
+# Remove:   deploy/monitor-scheduler/install_monitor_cron.sh --remove
+# Verify:   deploy/monitor-scheduler/verify_monitor_chain.sh
+#
+# RECOMMENDED — one ordered pass per minute (close->outcome->dispatch in a single invocation):
+* * * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py run_monitor_chain >> /var/log/guvfx/monitor_chain.log 2>&1 # guvfx-monitor-chain
+#
+# ALTERNATIVE — three independent crons (only if you deliberately want them decoupled). Each is
+# idempotent and safe on its own, but they do NOT guarantee a newly-closed trade flows through the
+# whole chain in the same minute. Leave commented unless you have a reason to split them:
+# * * * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py run_close_monitor  >> /var/log/guvfx/close_monitor.log  2>&1 # guvfx-monitor-close
+# * * * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py run_outcome_router >> /var/log/guvfx/outcome_router.log 2>&1 # guvfx-monitor-outcome
+# * * * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py dispatch_notifications >> /var/log/guvfx/dispatch.log 2>&1 # guvfx-monitor-dispatch
