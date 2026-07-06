@@ -5,7 +5,7 @@
   "created_at_utc": "2026-07-06T08:16:19Z",
   "branch": "feat/telegram-transport-foundation",
   "base_commit": "b7479ef925c7e0405c53915f1354e2b80dc14805",
-  "head_commit": "e4f9da38bf65b6e9997085cbcf75cd1875d5edd3",
+  "head_commit": "97dce8cb96acffe577da2613c1adb2aba77d52e1",
   "environment": {
     "python_version": "3.11.9",
     "django_version": "5.1.2",
@@ -21,6 +21,7 @@
     "backend/execution/notifications/dispatcher.py",
     "backend/execution/management/commands/dispatch_notifications.py",
     "backend/execution/migrations/0012_alter_notificationcandidate_status_and_more.py",
+    "backend/execution/migrations/0013_notificationcandidate_updated_at.py",
     "backend/execution/tests_notification_transport.py",
     "evidence/manifests/GFX-EVD-TELEGRAM-TRANSPORT-FOUNDATION.json"
   ],
@@ -45,15 +46,15 @@
     "Migrations additive (status choices + NotificationDelivery); full backend suite green; secret-scan + governance pass."
   ],
   "actual_results": [
-    "execution.tests_notification_transport: Ran 14 tests OK.",
+    "execution.tests_notification_transport: Ran 16 tests OK (incl. PROCESSING reaper: orphaned→reclaimed→retried→SENT; recent PROCESSING not reaped).",
     "FeatureFlagTests: flag OFF → no-op, candidate PENDING, 0 deliveries PASS.",
     "LifecycleTests: dry-run SENT (transmitted False, correlation preserved, attempt 1) PASS; suppressed ignored PASS; idempotent (re-run keeps 1 delivery) PASS; transport error → FAILED (detail 'transport raised') PASS; ok=False → FAILED PASS; retry FAILED→SENT with attempts [(1,FAILED),(2,SENT)] PASS; no Trade/outcome mutation PASS.",
     "RenderingTests: envelope has all 14 contract fields, symbol/direction/actual_fill/profit/correlation/strategy correct, rendered_message contains symbol + correlation PASS; deliver never transmits PASS.",
     "CommandTests: dispatch_notifications (flag on) → candidate SENT PASS.",
     "BoundaryTests: no requests/urllib/http/socket/telegram/telethon/httpx import in any package module; transport.py/dispatcher.py import no signal_planning/promotion/auto_router/close_monitor/outcome_router/signal_proposals; dispatcher references no order_send/order_check/agent_order/ExecutionJob/promote_plan_to_shadow_jobs/sendMessage PASS.",
-    "Full backend suite: Ran 433 tests OK.",
+    "Full backend suite: Ran 435 tests OK (post-hardening).",
     "makemigrations execution trading --check: No changes detected; make secret-scan OK; governance-check OK; EVIDENCE-LINT PASS.",
-    "Adversarial 3-lens transport-boundary review: recorded in the PR; see synthesis."
+    "Adversarial 3-lens transport-boundary review: GO, no must-fix, no boundary violation. Two liveness findings (orphaned PROCESSING) fail CLOSED; hardened here via updated_at + a timeout reaper + a guarded finalize (demote PROCESSING->FAILED on error) before the flag is ever enabled."
   ],
   "acceptance_criteria": {
     "status_transitions": "PASS",
@@ -71,7 +72,7 @@
   "limitations": [
     "Repo-only, DRY-RUN only — no Telegram message is transmitted, no bot token / chat id / credential is read, no HTTP request or network traffic occurs, no deploy, no WIMS, no order_send, no E3.",
     "The dispatcher is behind the NOTIFICATION_DISPATCH_ENABLED feature flag (default OFF) and is not wired to any scheduler; even when ON, the only transport is dry-run.",
-    "A candidate that stalls in PROCESSING (a crash between the atomic claim and the final update) is not auto-reclaimed here — a stuck-PROCESSING reconciler/timeout is future work (harmless under dry-run: nothing is ever transmitted).",
+    "A candidate that stalls in PROCESSING (a crash between the atomic claim and the final update) is reclaimed to FAILED by a timeout reaper (NOTIFICATION_PROCESSING_TIMEOUT_SECONDS, default 300) at the start of a dispatch run, and a DB error during finalize demotes it to FAILED — so it is retried, never orphaned. It fails closed regardless (nothing is ever transmitted).",
     "Message wording is a DRAFT: this packet defines the envelope CONTRACT, not final copy. reference_entry/SL/TP are best-effort from the linked plan (blank where unavailable, as no real signal-originated trade exists yet)."
   ],
   "artefact_locations": [
@@ -84,9 +85,10 @@
   "checksums": {
     "backend/execution/notifications/contracts.py": "sha256:783293a72e2c173243fe6f50f8bf7b10c4bac0de4f877d129de291b7b37f4649",
     "backend/execution/notifications/transport.py": "sha256:2488647e2f86f3262e5bd5cacd450382f1552abce8b47e6735c909fad11a6a34",
-    "backend/execution/notifications/dispatcher.py": "sha256:005018b04af6519747af4551bdc43d98bf8a8d97d05a1a302fd2626ca27d3ed6",
-    "backend/execution/tests_notification_transport.py": "sha256:e55e285ab8d978ec684b54bb4946f16cae9e7c918cb87b741bd6c3ea010be970",
-    "backend/execution/migrations/0012_alter_notificationcandidate_status_and_more.py": "sha256:b548186060c938a93554e64b7fc7b2c922998b1a2ad3959cc5fc9b5a5f6ccfbd"
+    "backend/execution/notifications/dispatcher.py": "sha256:f6dc0bf35df2b202563458e711a30af551a9b334f3f2270a88111dc3dc65576d",
+    "backend/execution/tests_notification_transport.py": "sha256:7b55cd7967bf118a4c766f629f9f0f64895be579c2da5ba50c7d65fd32a2ae51",
+    "backend/execution/migrations/0012_alter_notificationcandidate_status_and_more.py": "sha256:b548186060c938a93554e64b7fc7b2c922998b1a2ad3959cc5fc9b5a5f6ccfbd",
+    "backend/execution/migrations/0013_notificationcandidate_updated_at.py": "sha256:6da1c860aea5a1695837c4df6e78a2c01e127707045ea27155f7eb9794629547"
   },
   "reviewer": null
 }
