@@ -50,7 +50,7 @@ loss rework.
 ## Remaining operational
 | # | Item | Blocking |
 |---|---|---|
-| O1 | Schedule the 3 monitor crons: `run_close_monitor`, `run_outcome_router`, `dispatch_notifications` (dry-run) — commands exist, only the schedule is missing | ✅ |
+| O1 | Schedule the monitor chain (`run_close_monitor` → `run_outcome_router` → `dispatch_notifications`, dry-run). **PREPARED (repo-only):** `run_monitor_chain` ordered command + host-crontab overlay `deploy/monitor-scheduler/` (install/verify/runbook). Install is a one-liner on the prod host; not deployed by merging. | ✅ |
 | O2 | Deploy E3 code to the **shared** `guvfx-prod-guvfx-backend` image (rebuilds the live trading image) — needs a kill-switch window: engage kill switch + pause strategy crons → rsync+rebuild → additive migration → force-recreate → un-pause | ✅ |
 | O3 | Confirm the normal ingest worker healthy + that a Wayond `PLACE_ORDER` is claimed by it (shadow worker only claims `_SHADOW`); confirm the demo account's `windows_username`/node | ✅ |
 | O4 | Confirm the target demo account has an ACTIVE `TerminalNode` (`audit_node_assignments --strict` = 0 FAIL) if `RISK_REQUIRE_TERMINAL_NODE` is on | ✅ |
@@ -98,7 +98,7 @@ ALL of the above + provider ARMED + 5 flags ─► one INTAKEN Wayond signal aut
 2. **GFX-PKT-E3-DEMO-PROMOTION** *(eng, repo-only; AMBER to merge)* — `SignalExecutionMode.DEMO` + `promote_plan_to_demo_jobs` + DEMO payload; tests prove `PLACE_ORDER`-only-under-DEMO, fail-closed at defaults.
 3. **GFX-PKT-E3-TRADE-LINKAGE** *(eng, repo-only; GREEN)* — populate `Trade.correlation_id`; tests prove a linked, non-orphaned candidate. *(Closes the critical gap.)*
 4. **GFX-PKT-E3-AUTO-DEMO-ROUTER** *(eng, repo-only; AMBER)* — wire AUTO_DEMO through `auto_router`; disabled by default.
-5. **GFX-PKT-E3-MONITOR-SCHEDULING** *(ops; GREEN)* — cron the 3 dry-run monitors.
+5. **GFX-PKT-E3-MONITOR-SCHEDULING** *(ops; GREEN)* — cron the dry-run monitors. **SHIPPED (repo-only):** `run_monitor_chain` + `deploy/monitor-scheduler/`; install on the prod host when ready.
 6. **GFX-PKT-E3-DEPLOY-AND-PREFLIGHT** *(ops; AMBER)* — deploy to the shared image in a kill-switch window; confirm worker/node/bridge; document DB-backup + bridge-SPOF risk acceptance.
 7. **GFX-PKT-E3-FIRST-DEMO-TRADE** *(ops, Nuno-supervised; RED)* — arm the 5 gates, observe exactly one trade end-to-end, disarm, capture the E3 evidence + handoff.
 

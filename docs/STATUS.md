@@ -6,6 +6,17 @@
 
 ## Execution workstream log
 
+- **2026-07-06 — E3-MONITOR-SCHEDULING: post-trade monitor chain scheduling prepared (repo-only, dry-run). ⏱️**
+  New `execution.run_monitor_chain` management command runs the three shipped monitors in dependency
+  order in one idempotent pass (`process_closed_trades` → `route_outcomes` → `dispatch_pending`) — it
+  adds no execution logic, only wiring. Host-crontab overlay `deploy/monitor-scheduler/`
+  (`crontab.monitor`, idempotent `install_monitor_cron.sh`, `verify_monitor_chain.sh`, runbook) matches
+  the existing h1/m5/h4 scheduler pattern. **Safe at defaults:** internal records only; no order, no
+  Telegram send (dispatch behind `NOTIFICATION_DISPATCH_ENABLED`, default OFF; transport dry-run —
+  nothing transmitted), no WIMS. **Not deployed by merging** (install is a one-liner on the prod host).
+  10 chain tests (empty-safe, in-order pipeline, idempotent, resilient, no-order/WIMS/transmit boundary,
+  static AST); full backend suite 466 green; no migration. Follows E3-DEMO-PROMOTION (PR #92, `0fd36b1`).
+  E3 remains RED.
 - **2026-07-06 — E3-DEMO-EXECUTION-PROGRAMME: E3 roadmap (planning only); ~62% complete. 🗺️**
   Planning/architecture review only (no code, no deploy, no arming). New
   [docs/E3_ROADMAP.md](E3_ROADMAP.md) from a 6-agent read-only sweep of the current code + prod state.

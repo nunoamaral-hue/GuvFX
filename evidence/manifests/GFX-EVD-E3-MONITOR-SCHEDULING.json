@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-E3-MONITOR-SCHEDULING",
+  "packet_id": "GFX-PKT-E3-MONITOR-SCHEDULING",
+  "created_at_utc": "2026-07-06T12:53:54Z",
+  "branch": "feat/e3-monitor-scheduling",
+  "base_commit": "0fd36b1de1023e6696734f8bdb024e5b04ec9f7f",
+  "head_commit": "7da5ecb79a7e1ab377781fc74f839c05b2140fd1",
+  "environment": {
+    "python_version": "3.11.9",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local test DB)",
+    "dependencies_changed": false,
+    "model_or_migration_change": false,
+    "production_deploy": false,
+    "cron_installed": false,
+    "armed": false,
+    "real_order_placed": false,
+    "notification_transmitted": false
+  },
+  "files_added": [
+    "backend/execution/management/commands/run_monitor_chain.py",
+    "backend/execution/tests_monitor_chain.py",
+    "deploy/monitor-scheduler/crontab.monitor",
+    "deploy/monitor-scheduler/install_monitor_cron.sh",
+    "deploy/monitor-scheduler/verify_monitor_chain.sh",
+    "deploy/monitor-scheduler/README.md",
+    "evidence/manifests/GFX-EVD-E3-MONITOR-SCHEDULING.json"
+  ],
+  "files_modified": [
+    "docs/E3_ROADMAP.md",
+    "docs/STATUS.md"
+  ],
+  "commands": [
+    "backend: python manage.py test execution.tests_monitor_chain",
+    "backend: python manage.py test  (full suite)",
+    "backend: python manage.py makemigrations --check --dry-run execution",
+    "backend: python manage.py run_monitor_chain --limit 0  (structural no-op)",
+    "bash -n deploy/monitor-scheduler/install_monitor_cron.sh deploy/monitor-scheduler/verify_monitor_chain.sh",
+    "make governance-check  (incl. secret-scan)"
+  ],
+  "expected_results": [
+    "The three monitor commands exist (run_close_monitor, run_outcome_router, dispatch_notifications) and the new run_monitor_chain orchestrates them in dependency order without adding execution logic.",
+    "The scheduled chain is idempotent: repeated per-minute runs create no duplicate TradeOutcomeRecord / NotificationCandidate rows.",
+    "The chain is safe when there is no work: on an empty DB it runs cleanly, reports all-zero counts, and exits 0.",
+    "The chain cannot create an order: a full pass over a closed WIN trade creates zero ExecutionJob rows (no order_send / order_check / bridge call anywhere reachable).",
+    "The chain cannot send a Telegram message: dispatch is a no-op when NOTIFICATION_DISPATCH_ENABLED is off (default), and even when enabled the only transport is dry-run (NotificationDelivery.transmitted always False).",
+    "The chain cannot publish to WIMS: no ConsumptionContract is created; the command imports no wims surface (static AST).",
+    "The chain only processes pre-existing closed trades / outcome records / candidates and creates internal records only.",
+    "Logs are visible: one grep-friendly summary line per run to /var/log/guvfx/monitor_chain.log, echoing the dispatch posture.",
+    "Rollback is simple: install_monitor_cron.sh --remove deletes only the marked cron line; the existing scheduler crons and all containers are untouched; nothing is deployed by merging.",
+    "No model/migration change; full backend suite green; make governance-check + secret-scan pass."
+  ],
+  "actual_results": [
+    "execution.tests_monitor_chain: Ran 10 tests OK.",
+    "MonitorChainSafetyTests: empty-DB no-op (zeros, exit 0) PASS; a WIN-trade pass creates 0 ExecutionJob + 0 ConsumptionContract + 0 NotificationDelivery PASS; dispatch no-op when flag OFF (candidate stays PENDING, 0 deliveries) PASS; dispatch transmits nothing even when NOTIFICATION_DISPATCH_ENABLED=true (candidate SENT but NotificationDelivery.transmitted=False) PASS.",
+    "MonitorChainPipelineTests: single pass flows close->outcome in order (candidate exists => outcome existed => close ran first) PASS; LOSS makes an outcome but no candidate PASS; chain idempotent across two passes (1 record, 1 candidate) PASS.",
+    "MonitorChainResilienceTests: a raising close_monitor step is logged (STEP FAILED) and the outcome-router + dispatch still run (failures=close_monitor in summary) PASS; --fail-fast re-raises as CommandError PASS.",
+    "MonitorChainStaticBoundaryTests: the command module references none of order_send/order_check/MetaTrader5/mt5/requests/httpx/urllib/create_place_order_job/create_open_trade_job/agent_order/ConsumptionContract/wims/deliver_trade_result PASS.",
+    "run_monitor_chain --limit 0: structural no-op confirmed (slice [:0]) — full wiring runs, zero rows touched, clean summary line, dispatch enabled=False.",
+    "Full backend suite: Ran 466 tests OK (456 pre-packet + 10 monitor-chain).",
+    "makemigrations --check execution: No changes detected (no model change). bash -n on both shell scripts OK. make governance-check OK; secret-scan OK; EVIDENCE-LINT PASS.",
+    "Adversarial 4-lens scheduling-boundary review (order-boundary / transmit-wims-boundary / idempotency-safety / ops-correctness, 5 agents, ~264k tokens) + opus synthesis: decision GO, must_fix=[]. Three of four lenses clean; ops-correctness raised 3 items all demoted to optional nits. Applied hardening: end-anchored the install-cron marker (grep -E \"# guvfx-monitor-chain$\") so a future sibling line (e.g. -v2) can never be collaterally removed by --remove (verified: only the exact managed line matches); clarified the verify-script --limit 0 and transmitted-assertion comments. --limit-0-comment nit was dropped by synthesis as accurate."
+  ],
+  "acceptance_criteria": {
+    "commands_exist": "PASS",
+    "commands_idempotent": "PASS",
+    "safe_when_no_work": "PASS",
+    "scheduling_cannot_create_orders": "PASS",
+    "scheduling_cannot_send_telegram": "PASS",
+    "scheduling_cannot_publish_wims": "PASS",
+    "only_processes_existing_rows": "PASS",
+    "logs_visible": "PASS",
+    "rollback_simple": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo-only. Merging deploys NOTHING — the cron is installed by running deploy/monitor-scheduler/install_monitor_cron.sh on the prod host, a separate operator action. No E3 enablement, no provider arming, no order placement, no notification transmission, no auto-live. E3 remains RED.",
+    "The verify_monitor_chain.sh boundary assertions and install idempotency were validated by design + local test-DB exercise + bash -n; they were NOT run against the live prod estate in this packet (no deployment).",
+    "run_monitor_chain adds no execution logic — its safety is inherited from the three already-shipped, separately-tested functions (close_monitor / outcome_router / dispatcher); this packet re-verifies the composed chain, not the individual functions' internals.",
+    "With no active demo outcomes today the scheduled chain is effectively a no-op; once E3 is later enabled it begins classifying real closed demo trades (still internal + dry-run only until the notification transport is separately, explicitly enabled under its own gated packet).",
+    "verify_monitor_chain.sh's transmitted-count check is a NEGATIVE assertion valid for the only transport that exists (TelegramDryRunTransport always records transmitted=False and opens no socket). If a real Telegram transport is ever added, this script must be re-verified to assert against that transport's own audit trail before being trusted (noted in-script; flagged by the review)."
+  ],
+  "artefact_locations": [
+    "backend/execution/management/commands/run_monitor_chain.py",
+    "backend/execution/tests_monitor_chain.py",
+    "deploy/monitor-scheduler/crontab.monitor",
+    "deploy/monitor-scheduler/install_monitor_cron.sh",
+    "deploy/monitor-scheduler/verify_monitor_chain.sh",
+    "deploy/monitor-scheduler/README.md",
+    "evidence/manifests/GFX-EVD-E3-MONITOR-SCHEDULING.json"
+  ],
+  "checksums": {
+    "backend/execution/management/commands/run_monitor_chain.py": "sha256:8486a5fa27d2fc80c5a01ddd4d5fa33cf5594a903a279d6f0a33e7a208351e80",
+    "backend/execution/tests_monitor_chain.py": "sha256:10d4f51e580ba5eac6d280425fa97a2ac4d032c57661bf35db76875d96312d2a",
+    "deploy/monitor-scheduler/crontab.monitor": "sha256:455cd50e4719dc287c14fdcb0c2a30100b945bd2a7dfd70d8ee2527ba073a500",
+    "deploy/monitor-scheduler/install_monitor_cron.sh": "sha256:8e15541d22bf02d94d4d76b261cd450fa826c53fdc773b87eec9d644f0d76d6c",
+    "deploy/monitor-scheduler/verify_monitor_chain.sh": "sha256:4321757d9db6b75b20faac7c138d606bee5b71558c348521799692c217b8da72",
+    "deploy/monitor-scheduler/README.md": "sha256:287400bafc91e0215a6c074b7309ac306ad4366526519f2d9770f5b2bd2ca041"
+  },
+  "reviewer": null
+}
