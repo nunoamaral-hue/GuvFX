@@ -110,13 +110,64 @@ Reuses the existing fail-closed chain; only **gate 0 is new**:
 4. Global **execution mode** matches tier (`signal_execution_mode==SHADOW` for auto-shadow).
 5. Per-source **armed** (`SignalSourceConfig.auto_demo_execution_enabled`).
 6. **Demo-only** account (`is_demo` + `environment != live`) — live structurally rejected pre-E3.
-7. **Symbol allowlist** + stop-loss present + ≥1 TP + valid direction.
+7. **Symbol allowlist** + stop-loss present + ≥1 TP + valid direction + **SL/TP on the correct
+   side of the current market** (see §6A — a consequence of market entry; new gate).
 8. **Staleness** re-check (plan, promote, and worker via payload timestamp).
 9. **Volume/lot caps** (`SIGNAL_MAX_LOT_SIZE`, `MAX_TOTAL_LOT_PER_SIGNAL`).
 10. **Runtime risk controls** (`evaluate_promotion_risk`): account/symbol exposure, max-open,
     daily drawdown, concurrent groups, node assignment — any exception → blocks.
 11. **Structural un-claimability** (not bypassable): `next_job` shadow-permission guard + worker
     `execution_mode != SHADOW` refusal + `order_check`-only. Guarantees no order in auto-shadow.
+
+## 6A. Entry price policy (ADDENDUM — market execution, advisory entry)
+
+*Per the ratified addendum: the signal entry price is **advisory/reference only** and must never
+be treated as a hard execution price. This largely confirms the existing design and adds a
+market-side gate, slippage logging, and dual-price reporting.*
+
+**Provider entry = reference evidence only.** The signal's entry price is stored, never used as an
+execution price: `PendingSignalApproval.entry` ([signal_intake/models.py:45](../backend/signal_intake/models.py:45)),
+`ProposedSignalOrder.entry`, and `SignalExecutionPlan.entry` (already commented *"informational;
+market order"*, [execution/models.py:682](../backend/execution/models.py:682)). Kept as evidence
+(parser output + slippage baseline) and shown in reports — nothing more.
+
+**Actual fill = market price at placement.** Execution is **market-only**: `order_type="MARKET"` on
+the plan and every leg ([signal_planning.py:276](../backend/execution/signal_planning.py:276);
+default at [models.py:684/759](../backend/execution/models.py:684)). The system does **not** wait
+for the signal entry and does **not** place a limit/stop order unless a future strategy explicitly
+requires it (a deliberate new `order_type` design change). The real fill lands in `Trade.open_price`
+([trading/models.py:161](../backend/trading/models.py:161)) via `upsert_trades()` from the broker
+deal — this, not the signal entry, is the truth for P&L and win/loss (already computed from
+`Trade.profit`, so classification is unaffected).
+
+**Mandatory SL/TP validation (no trade if missing) — already fail-closed:** no SL →
+`_hold("missing_stop_loss")` ([signal_planning.py:253](../backend/execution/signal_planning.py:253))
+/ `PromotionRejected("missing_stop_loss")` ([signal_promotion.py:120](../backend/execution/signal_promotion.py:120));
+no TP → `_hold("missing_take_profit")` ([signal_planning.py:255](../backend/execution/signal_planning.py:255))
+/ per-leg `PromotionRejected("missing_take_profit")` ([signal_promotion.py:134](../backend/execution/signal_promotion.py:134)).
+Held/rejected → no executable job → **no trade.** Satisfies addendum items 7–9 as-is; auto mode
+inherits it unchanged.
+
+**NEW — SL/TP-side-of-market sanity gate (a real consequence of market entry).** Because entry is
+the *current market* not the signal price, the signal's **absolute** SL/TP levels must be validated
+against the market **at execution time**: for a BUY, SL below and TP above the current ask (inverse
+for SELL). A signal whose price has already moved past its own SL or TP would open an
+immediately-losing/invalid order. **Design: add an execution-time gate** (fail-closed → reject/hold
+`sl_tp_wrong_side_of_market` if violated or the market is indeterminate), placed in the order build
+where the bridge `order_check` already returns market context. Does not exist yet.
+
+**NEW — slippage / fill-deviation logging (fail-open).** On fill, record
+`fill_deviation = open_price − provider_entry` (signed, in price + pips, plus % of the SL distance
+for normalisation) on the trade (new `Trade.reference_entry` + `Trade.fill_slippage`, or a
+`TradeExecutionLog`) **and** emit a `core.observability` metric so parser/broker quality is
+trackable across the soak. **Fail-open** — a missing provider entry or compute error records `null`
+and never blocks/reverses the trade.
+
+**NEW — story/report shows BOTH prices.** The win-story envelope + results card must carry and
+display **both** the *provider reference entry* and the *actual fill price* (+ deviation), so a
+story reads "signal @ `<reference>`, filled @ `<actual>` (`<±pips>`)". Threads `reference_entry` +
+`open_price` through `TradeResultProducer` → `results_card.render_card` / `caption.build_caption`
+(no card shows both today). Design addition.
 
 ## 7. Trade close handling + win/loss
 
@@ -200,6 +251,9 @@ decision. So: Nuno's private DM (§8) can fire on every win; **public** WIMS pub
 9. **Timezone unverified** — auto-demo/live must wait on broker-tz verification (staleness + timing).
 10. **Governance** — auto-demo/live are RED; the human-gated config path is the control; the
     router/model must never self-arm (no unrestricted LLM live-trading authority).
+11. **Market moved past SL/TP** — with market entry, a signal delivered late (or after a fast move)
+    can have its absolute SL/TP already on the wrong side of the market → an immediately-losing or
+    broker-rejected order. The new §6A side-of-market gate + staleness must both hold; fail-closed.
 
 ## 13. Nuno decisions required
 
@@ -218,6 +272,10 @@ decision. So: Nuno's private DM (§8) can fire on every win; **public** WIMS pub
    `AWAITING_REVIEW` for public wins (recommended); confirm the win-story content format.
 9. Approve the **loss-path behaviour change** (losers → internal-only, no WIMS) — AMBER.
 10. Confirm **risk caps** per ramp step + whether `RISK_REQUIRE_TERMINAL_NODE` must be ON before auto-demo.
+11. **Entry price policy (addendum):** confirm **market-only** execution with the provider entry as
+    reference (no limit orders unless a future strategy asks); approve the new **SL/TP-side-of-market
+    gate** (§6A), the new **slippage fields/log** (`Trade.reference_entry` + `Trade.fill_slippage`),
+    and showing **both** provider-reference and actual-fill prices in the win story/report.
 
 ## 14. Safety invariants (hold across all modes)
 
