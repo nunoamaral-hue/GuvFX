@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-07-06 — AUTO-SHADOW-FOUNDATION: config-armed auto-router shipped, DISABLED BY DEFAULT (repo-only). ✅**
+  Implements steps 1-3 of the ratified auto-execution architecture (PR #82). Merged main `f2ed0fc`
+  (PR #83). Additive schema, safe defaults: `ExecutionControl.auto_execution_enabled`=False,
+  `StrategyAssignment.execution_mode`=MANUAL, `ParserProfile.certification_level`=LOW. Fork =
+  `signal_intake.signals.signal_acquired` (send_robust, new messages only) at the end of
+  `acquire_message`; `signal_intake` never imports `execution` (one-way preserved); `execution.apps`
+  connects the receiver. `execution/auto_router.py`: `effective_mode()` = AND of config gates (auto
+  flag + SHADOW mode + kill-off + provider ARMED + source armed + certification≥MEDIUM + unique
+  AUTO_SHADOW assignment); **edited signals hard-excluded**; fail-closed on any exception. Armed path
+  reuses `approve → plan_demo_execution → promote_plan_to_shadow_jobs` → **PLACE_ORDER_SHADOW only**
+  (no `order_send`, no executable job type). 21 tests; **full backend 382 green**; secret-scan +
+  governance pass. Adversarial 4-lens boundary review = **GO** (no must-fix); hardened per its nits.
+  Not deployed, not armed, no production behaviour change. **E3 RED.** NEXT auto milestones =
+  close-monitor + profit-only Telegram, then auto-demo (real order_send — RED, own gated packet).
+
 - **2026-07-05 — OPERATIONS-MODE: programme shifted to Operations Mode; Operations Dashboard created. 📋**
   Priority order is now stability → monitoring → observability → reliability → recovery → security →
   features. Created [docs/OPERATIONS_DASHBOARD.md](OPERATIONS_DASHBOARD.md) as the operational source
