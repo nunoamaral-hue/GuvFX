@@ -6,6 +6,19 @@
 
 ## Execution workstream log
 
+- **2026-07-05 — OPERATIONS-MODE: programme shifted to Operations Mode; Operations Dashboard created. 📋**
+  Priority order is now stability → monitoring → observability → reliability → recovery → security →
+  features. Created [docs/OPERATIONS_DASHBOARD.md](OPERATIONS_DASHBOARD.md) as the operational source
+  of truth (all 11 prod containers + Windows MT5 box, deploy model, secrets map, monitoring state,
+  backup/recovery, risk register, maturity). Read-only estate review (host snapshot + 7-agent repo
+  analysis). Verdict: **"functional but pre-operational."** Top RED findings, each evidence-based:
+  **(1) NO automated DB backup** (verified: no cron ubuntu/root, nothing in /var/backups, newest dump
+  2026-02-19 ~4.5mo stale, no off-host) — total data-loss SPOF; (2) whole estate on one VPS (single
+  Postgres/Traefik/Tailscale/Windows-bridge, no redundancy); (3) 9/11 containers have no healthcheck +
+  trivial /health; (4) no confirmed alert delivery (RX-2 `reliability_tick` runs every min but sink
+  unconfirmed); (5) exposed secrets un-rotated + password reuse (Nuno-held); (6) MT5 bridge SPOF
+  (manual/autologon). Recommended next packet: **BACKUP-RECOVERY-BASELINE**. No production change; E3 RED.
+
 - **2026-07-05 — WAYOND-LISTENER-GO-LIVE-TEMP-PERSONAL: listener DEPLOYED to production (isolated, acquisition-only). ✅**
   The read-only Wayond listener is **LIVE in prod** under the authorised temporary exception
   (personal-account session; target stays GFX). Nuno executed on the VPS with Claude guiding
