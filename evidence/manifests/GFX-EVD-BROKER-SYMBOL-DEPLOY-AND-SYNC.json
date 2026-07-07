@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-BROKER-SYMBOL-DEPLOY-AND-SYNC",
+  "packet_id": "GFX-PKT-BROKER-SYMBOL-DEPLOY-AND-SYNC",
+  "created_at_utc": "2026-07-07T13:25:00Z",
+  "branch": "feat/broker-symbol-deploy-evidence",
+  "base_commit": "6000bce",
+  "head_commit": "17d79baabaad12a2c988d4489d22d766186affa3",
+  "environment": {
+    "deployed_backend_commit": "6000bce",
+    "backend_image_before": "342d198f9008",
+    "backend_image_after": "4da843172065",
+    "migration_applied": "execution.0015_brokerinstrument (additive CreateModel)",
+    "windows_bridge_file": "C:\\GuvFX\\mt5_signal_bridge.py",
+    "windows_bridge_sha256": "c355d688a82fd5ae493201ec3862329645e36da6464120cc08e4a72b77128055",
+    "production_deploy": true,
+    "windows_deploy": true,
+    "order_send_called": false,
+    "telegram_sent": false,
+    "armed_change": false
+  },
+  "deployment_summary": [
+    "Coordinated kill-switch window (Nuno present + authorised Option 1). Pre-flight: tagged rollback image guvfx-prod-guvfx-backend:rollback-preBrokerSymbol (342d198f9008); pg_dump preBrokerSymbol_20260707T130849Z.sql.gz (1.3MB, gzip OK); backed up host worker script + the box bridge (mt5_signal_bridge.py.bak.preBrokerSymbol).",
+    "Kill-switch ENGAGED (kill_reason=kill_switch_engaged) + 31-line crontab backed up and backend-exec crons paused for the window.",
+    "Windows bridge: staged the new symbol-agnostic bridge to C:\\GuvFX\\mt5_signal_bridge.py via SSH (sha256 c355d688 verified byte-identical on the box); Nuno restarted it via RDP (start_signal_bridge.bat) — PREFLIGHT PASSED, startup log now 'Symbol validation: MT5-native (symbol_info/symbol_select; no static allowlist)'; /health {ok:true}.",
+    "Backend: ~/guvfx-app checked out 6000bce; rsync backend/ -> ~/guvfx-prod/backend (scoped); docker build -> image 4da843172065; migrate execution.0015_brokerinstrument applied; recreated guvfx-backend + guvfx-mt5-trade-ingest-worker + guvfx-mt5-shadow-worker on the new image; updated the bind-mounted worker script /srv/guvfx/worker_scripts/mt5_trade_ingest_worker.py (28960->31103 B, provider_symbol forwarding).",
+    "Broker sync: manage.py sync_broker_instruments --account 1 -> seen=84 created=84 updated=0 disabled=0 (no order).",
+    "Nightly sync cron installed (deploy/broker-symbol-sync/install_broker_sync_cron.sh, '17 2 * * *' acct 1) + crontab restored (6 backend-exec lines) + kill-switch released -> exact prior armed state.",
+    "ROLLBACK LEFT IN PLACE: docker tag guvfx-prod-guvfx-backend:rollback-preBrokerSymbol :latest + recreate; box bridge mt5_signal_bridge.py.bak.preBrokerSymbol; host worker .bak.preBrokerSymbol; crontab.bak.preBrokerSymbol; pg_dump."
+  ],
+  "btcusd_pip_fix": "intelligence/trade_result_producer.py::_pip_size gained a crypto branch (BTC/ETH/... -> Decimal('1')). Verified LIVE in the deployed backend: _pip_size(BTCUSD)=1, XAUUSD=0.1, NZDJPY=0.01, EURUSD=0.0001. A BTCUSD 63200->63450 move now renders ~+250 pips (was ~+2,500,000). Display-only; P&L is broker-sourced.",
+  "instrument_readiness": [
+    "EURUSD  registry=exact bridge=ok symbol_info=Y symbol_select=n/a order_check=ok(retcode0) order_send=NOT_CALLED price=1.14354 -> READY",
+    "GBPUSD  registry=exact bridge=ok order_check=ok(retcode0) order_send=NOT_CALLED price=1.3382 -> READY",
+    "EURGBP  registry=exact bridge=ok order_check=ok(retcode0) order_send=NOT_CALLED price=0.85456 -> READY",
+    "AUDUSD  registry=exact bridge=ok order_check=ok(retcode0) order_send=NOT_CALLED price=0.69483 -> READY",
+    "AUDCAD  registry=exact bridge=ok order_check=ok(retcode0) order_send=NOT_CALLED price=0.98795 -> READY",
+    "NZDJPY  registry=exact bridge=ok order_check=ok(retcode0) order_send=NOT_CALLED price=92.128 pip=0.01 -> READY",
+    "XAUUSD  registry=exact bridge=ok order_check=ok(retcode0) order_send=NOT_CALLED price=4129.14 pip=0.1 -> READY",
+    "BTCUSD  registry=exact bridge=ok order_check=ok(retcode0) order_send=NOT_CALLED price=63267.65 provider_symbol=BTCUSD margin=63.27 pip=1 -> READY",
+    "EURAUD  registry=exact bridge=ok order_check=ok(retcode0) order_send=NOT_CALLED price=1.64588 -> READY (discovered, PM scope pending)",
+    "USDCHF  registry=exact bridge=ok order_check=ok(retcode0) order_send=NOT_CALLED price=0.8062 -> READY (discovered, PM scope pending)"
+  ],
+  "expected_results": [
+    "The registry + MT5-native bridge + provider_symbol-forwarding worker are deployed to prod so every broker-supported Wayond symbol (not just the baseline three) is eligible for autonomous demo execution, subject to the unchanged risk gates.",
+    "A broker sync populates the BrokerInstrument cache; all 10 historical Wayond symbols resolve to an exact broker symbol.",
+    "Each symbol validates end-to-end via order_check DRY-RUN only (order_send NOT called); BTCUSD specifically proven (provider_symbol=BTCUSD, broker_symbol resolved, order_check ok, no order_send, pips display sane).",
+    "A nightly sync cron + staleness visibility are installed. No order placed, no Telegram sent, and the prior armed state is restored exactly."
+  ],
+  "commands": [
+    "prod: docker compose run --rm guvfx-backend python manage.py migrate --plan  (only 0015, additive)",
+    "prod: docker compose run --rm guvfx-backend python manage.py migrate execution",
+    "prod: docker compose up -d --force-recreate --no-deps guvfx-backend guvfx-mt5-trade-ingest-worker",
+    "prod: docker compose exec -T guvfx-backend python manage.py sync_broker_instruments --account 1",
+    "prod: docker compose exec -T guvfx-backend python manage.py broker_instrument_status --account 1",
+    "prod: POST /mt5/order_check (X-GuvFX-Agent-Token) for all 10 symbols — order_send NOT called",
+    "windows: taskkill /F /IM python.exe ; start_signal_bridge.bat (Nuno, RDP)"
+  ],
+  "actual_results": [
+    "Registry resolution (post-sync): all 10 Wayond symbols accepted=True reason=broker_symbol_exact, broker_symbol==provider_symbol.",
+    "order_check dry-run: all 10 ok=True retcode=0 order_send_called=False (live market prices captured).",
+    "BrokerInstrument acct#1: 84 rows, 84 enabled, 0 disabled; staleness age=0.0h OK.",
+    "ExecutionJob total = 50 before and after (NO order created); no Telegram sent; provider wayond ARMED unchanged.",
+    "Deployed backend image 4da843172065; bridge /health {ok:true}; _pip_size crypto branch live.",
+    "Armed state restored EXACTLY: auto=True mode=DEMO kill=False provider=ARMED (== pre-window reference)."
+  ],
+  "acceptance_criteria": {
+    "backend_registry_deployed": "PASS",
+    "worker_forwards_provider_symbol": "PASS",
+    "windows_bridge_mt5_native_deployed": "PASS",
+    "broker_sync_ran": "PASS",
+    "all_10_registry_resolved_exact": "PASS",
+    "all_10_order_check_ok_no_order_send": "PASS",
+    "btcusd_order_check_ok_order_send_not_called": "PASS",
+    "btcusd_pip_display_sane": "PASS",
+    "nightly_sync_cron_installed": "PASS",
+    "staleness_visibility": "PASS",
+    "no_order_placed": "PASS",
+    "no_telegram": "PASS",
+    "armed_state_restored_exactly": "PASS"
+  },
+  "status": "PASS",
+  "artefact_locations": [
+    "scripts/mt5_signal_bridge.py (deployed to C:\\GuvFX\\mt5_signal_bridge.py on 100.79.101.19)",
+    "backend/mt5_trade_ingest_worker.py (deployed to /srv/guvfx/worker_scripts/ on the prod host)",
+    "backend/intelligence/trade_result_producer.py (BTCUSD pip fix)",
+    "backend/execution/broker_symbols.py + execution/models.py BrokerInstrument (registry)",
+    "backend/execution/management/commands/sync_broker_instruments.py + broker_instrument_status.py",
+    "deploy/broker-symbol-sync/ (nightly cron overlay, installed on prod host)",
+    "evidence/manifests/GFX-EVD-BROKER-SYMBOL-DEPLOY-AND-SYNC.json"
+  ],
+  "checksums": {
+    "scripts/mt5_signal_bridge.py": "sha256:c355d688a82fd5ae493201ec3862329645e36da6464120cc08e4a72b77128055",
+    "backend/mt5_trade_ingest_worker.py": "sha256:74beb282bd14d7282a6dfd8460aaa53bb12fea08092300ab55ea3af9d6025fc8",
+    "backend/intelligence/trade_result_producer.py": "sha256:c59a875dfa0566bf28c562c8bee154799de595cb5c294ba6be9c4e6e49c2f4e6",
+    "backend/execution/management/commands/sync_broker_instruments.py": "sha256:771cccc0cf897b9f23614d4a63e7a13fd2166d4c6b629f6ab450a9ee921a626f",
+    "backend/execution/management/commands/broker_instrument_status.py": "sha256:f920bbaa12222978402fdd4069d5bb663e0d677f94d92f8ddf6e63fa4a904cff"
+  },
+  "limitations": [
+    "Now that the system is armed + BTCUSD-eligible with the new bridge, the NEXT genuine tradeable Wayond signal (incl. frequent BTCUSD) will autonomously fire the first REAL demo order_send (Nuno's accepted Option-1 consequence). The guarded watcher detects the first WAY PLACE_ORDER, disarms the decisive gate, and hands off for the supervised verify/notify/evidence/disarm sequence. This packet itself placed NO order.",
+    "EURAUD/USDCHF are technically READY (broker-supported exact, order_check ok) but were DISCOVERED in prod and remain a PM scope decision.",
+    "The Windows bridge is manually managed (not git); rollback is the .bak.preBrokerSymbol file + restart. The bridge source-of-truth remains outside this repo.",
+    "order_check is a broker-side dry-run validation (no order_send); it does not guarantee a subsequent real order_send would fill identically (market/margin can move)."
+  ],
+  "reviewer": null
+}
