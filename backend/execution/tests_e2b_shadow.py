@@ -102,10 +102,15 @@ class ShadowOrderCheckBridgeTests(SimpleTestCase):
         self.mt5.order_check.assert_not_called()
         self.mt5.order_send.assert_not_called()
 
-    def test_invalid_symbol_fails_before_mt5(self):
+    def test_unsupported_symbol_rejected_by_mt5_no_order(self):
+        # GFX-PKT-BROKER-SYMBOL-BRIDGE-ALIGNMENT: the static allowlist is gone; a symbol
+        # is now validated against the terminal. One MT5 does not offer is rejected
+        # fail-closed with SYMBOL_NOT_AVAILABLE_ON_MT5 — no order_check, no order_send.
+        self.mt5.symbol_info.return_value = None
         res = self.bridge.shadow_order_check({**ORDER, "symbol": "BTCUSD"})
         self.assertFalse(res["ok"])
-        self.assertEqual(res["error"], "symbol_not_allowed")
+        self.assertEqual(res["error"], "SYMBOL_NOT_AVAILABLE_ON_MT5")
+        self.mt5.order_check.assert_not_called()
         self.mt5.order_send.assert_not_called()
 
     def test_lots_over_cap_fails(self):
