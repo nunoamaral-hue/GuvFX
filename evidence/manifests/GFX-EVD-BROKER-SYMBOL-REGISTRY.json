@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-BROKER-SYMBOL-REGISTRY",
+  "packet_id": "GFX-PKT-BROKER-SYMBOL-REGISTRY",
+  "created_at_utc": "2026-07-07T10:38:23Z",
+  "branch": "feat/broker-symbol-registry",
+  "base_commit": "6a1e5c9d6bda8c00bcb538148e6f77d159da13e0",
+  "head_commit": "09febb207c83976b21f9b6cd941ab1ac0cdb4399",
+  "environment": {
+    "python_version": "3.11.9",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local test DB)",
+    "migration_added": "execution/0015_brokerinstrument (additive)",
+    "production_deploy": false,
+    "order_placed": false,
+    "armed_change": false
+  },
+  "files_added": [
+    "backend/execution/broker_symbols.py",
+    "backend/execution/management/commands/sync_broker_instruments.py",
+    "backend/execution/migrations/0015_brokerinstrument.py",
+    "backend/execution/tests_broker_symbols.py",
+    "evidence/manifests/GFX-EVD-BROKER-SYMBOL-REGISTRY.json"
+  ],
+  "files_modified": [
+    "backend/execution/models.py",
+    "backend/execution/signal_promotion.py",
+    "backend/execution/signal_planning.py",
+    "backend/execution/signal_proposals.py",
+    "backend/execution/tests_e1a_proposals.py",
+    "backend/execution/tests_e1b_planning.py",
+    "backend/execution/tests_e3_demo_promotion.py"
+  ],
+  "commands": [
+    "backend: python manage.py test execution.tests_broker_symbols",
+    "backend: python manage.py test execution.tests_e1a_proposals execution.tests_e1b_planning execution.tests_e2a_promotion execution.tests_e3_demo_promotion",
+    "backend: python manage.py test  (full suite)",
+    "backend: python manage.py makemigrations --check --dry-run execution",
+    "make governance-check"
+  ],
+  "current_hardcoded_symbol_locations": [
+    "backend/execution/models.py:111 SIGNAL_ALLOWED_SYMBOLS (kept: now the registry DEFAULT baseline + still used by the separate strategy path strategies/signal_engine.py:297)",
+    "backend/execution/models.py:102 DEMO_ALLOWED_SYMBOLS (unchanged; used only in views.py safety_rails display)",
+    "REPLACED by the registry: signal_proposals.py:186 (E1a), signal_planning.py:229 (E1b), signal_promotion.py:137 (E2a/E3)",
+    "NOT CHANGED (Windows bridge, separate deploy — follow-up): scripts/mt5_signal_bridge.py:79/84/298/792/926 ALLOWED_SYMBOLS/DEMO_ORDER_ALLOWED_SYMBOLS; scripts/mt5_demo_bridge.py:73/312",
+    "strategy path (out of scope): strategies/signal_engine.py:293/297 (config.pairs_enabled + SIGNAL_ALLOWED_SYMBOLS)"
+  ],
+  "expected_results": [
+    "A BrokerInstrument-backed registry replaces the hardcoded allowlist at the 3 Wayond gates; a symbol is accepted iff resolvable to a broker symbol on the account, else fail-closed with SYMBOL_NOT_AVAILABLE_ON_BROKER / SYMBOL_MAPPING_AMBIGUOUS / SYMBOL_REGISTRY_UNAVAILABLE.",
+    "EURUSD/GBPUSD/XAUUSD still accepted (default baseline for accounts with no synced cache) — existing E2a/E3/auto-shadow tests unchanged.",
+    "BTCUSD accepted when the broker registry supports it (exact) or maps unambiguously (suffix); rejected fail-closed otherwise; ambiguous suffix mapping fails closed; registry unavailable (strict + no cache) fails closed.",
+    "The provider (Wayond) symbol is preserved (payload['provider_symbol']) and the resolved BROKER symbol is used for the order (payload['symbol']).",
+    "The registry is read-only (no order_send, no network); the network fetch is isolated to the sync command; migration additive; full suite green."
+  ],
+  "actual_results": [
+    "execution.tests_broker_symbols: Ran 16 tests OK — (1) EURUSD baseline accepted; (2) XAUUSD baseline accepted; (3) BTCUSD accepted (exact) when broker cache has it (+ metadata); (4) BTCUSD rejected SYMBOL_NOT_AVAILABLE_ON_BROKER when cache lacks it (cache authoritative, EURUSD still accepted from cache); (5) suffix BTCUSD. mapped unambiguously; (6) BTCUSD.+BTCUSD+ -> SYMBOL_MAPPING_AMBIGUOUS; (7) strict + no cache -> SYMBOL_REGISTRY_UNAVAILABLE; (8) provider preserved + exact wins over suffix (not ambiguous); disabled instrument ignored; blank -> invalid_symbol; (9) demo promotion payload symbol=BTCUSD. + provider_symbol=BTCUSD; (11) EURUSD demo + (11b) EURUSD shadow unchanged; (12) BTCUSD trades when broker supports it; (10) AST boundary: broker_symbols references no order_send/order_check/mt5/requests/urllib/socket; sync upsert enables/disables (stale->disabled, not deleted).",
+    "E1a/E1b/E2a/E3 (updated reject codes): Ran 102 tests OK (BTCUSD/GBPJPY now reject SYMBOL_NOT_AVAILABLE_ON_BROKER via the default baseline).",
+    "Full backend suite: Ran 509 tests OK.",
+    "makemigrations --check execution: No changes detected (0015 captures the model). make governance-check OK; secret-scan OK; EVIDENCE-LINT PASS.",
+    "Adversarial 4-lens review (fail-closed / broker-symbol-and-audit / backward-compat / boundary-and-sync) + opus synthesis: see reviewer / PR."
+  ],
+  "acceptance_criteria": {
+    "eurusd_still_accepted": "PASS",
+    "xauusd_still_accepted": "PASS",
+    "btcusd_accepted_when_broker_supported": "PASS",
+    "btcusd_rejected_when_unsupported": "PASS",
+    "suffix_mapping_unambiguous": "PASS",
+    "ambiguous_mapping_fails_closed": "PASS",
+    "registry_unavailable_fails_closed": "PASS",
+    "provider_symbol_preserved": "PASS",
+    "broker_symbol_used_for_payload": "PASS",
+    "no_order_send_in_tests": "PASS",
+    "existing_manual_shadow_default_unchanged": "PASS",
+    "btcusd_no_longer_fails_on_python_allowlist": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo-only. NOT deployed. No order_send, no arming, no risk-cap change. The currently-armed demo runs on the deployed (baseline) code and is unaffected by this branch. E3 remains RED.",
+    "The Windows MT5 bridge (scripts/mt5_signal_bridge.py) still enforces its own hardcoded ALLOWED_SYMBOLS/DEMO_ORDER_ALLOWED_SYMBOLS. A non-baseline symbol (e.g. BTCUSD) would still be rejected AT THE BRIDGE until that is replaced with mt5.symbol_info validation + acceptance of the backend-resolved broker_symbol — a separate Windows-deploy packet. So this packet makes the BACKEND broker-aware; end-to-end BTCUSD execution also needs the bridge change + a broker-symbol sync.",
+    "The BrokerInstrument cache is empty until populated by `sync_broker_instruments` (which fetches the bridge GET /mt5/symbols). Until then every account uses the DEFAULT baseline (EURUSD/GBPUSD/XAUUSD) — i.e. no behavioural change without a sync + deploy. Populating prod is a deploy/preflight step, out of scope here.",
+    "The strategy path (strategies/signal_engine.py) and the DEMO_ALLOWED_SYMBOLS display constant were intentionally left unchanged (separate concerns from the Wayond signal path)."
+  ],
+  "artefact_locations": [
+    "backend/execution/broker_symbols.py",
+    "backend/execution/models.py (BrokerInstrument)",
+    "backend/execution/signal_promotion.py",
+    "backend/execution/signal_planning.py",
+    "backend/execution/signal_proposals.py",
+    "backend/execution/management/commands/sync_broker_instruments.py",
+    "backend/execution/tests_broker_symbols.py",
+    "evidence/manifests/GFX-EVD-BROKER-SYMBOL-REGISTRY.json"
+  ],
+  "checksums": {
+    "backend/execution/broker_symbols.py": "sha256:6250bb65267642b388f96d0dfdece37950394c3f7557e7caeacf4ef735c3436e",
+    "backend/execution/management/commands/sync_broker_instruments.py": "sha256:9b8aa6158fa7e3bc884f9b2aa39c5b950730cf0443264d74ce974f97cc3e812e",
+    "backend/execution/migrations/0015_brokerinstrument.py": "sha256:cad38e9a054ff3fb656a31711e4e3975c714b9fa137cf179d9856e31e2ec2aa8",
+    "backend/execution/signal_promotion.py": "sha256:8be4015fc4b94445c51ab9c78289d0f53681a1215fe0810f0c2cba89326223e1",
+    "backend/execution/models.py": "sha256:ac3ef062870f437362776d8bff061b85c0111893155708e90638a1b850a0c15b",
+    "backend/execution/signal_planning.py": "sha256:bfd9875a66da8d4f49ae817751194f52743a339b63d0a13023f60d526f0a9766",
+    "backend/execution/signal_proposals.py": "sha256:74fc39e9d7f7d22fb873328ad93b28d68bacdfea9881d81eb4d0250e5a42395f",
+    "backend/execution/tests_broker_symbols.py": "sha256:3ba41f5172ba4801c7e5d54f67580df4d217680307e4d3b9a35a3b27175daa8b"
+  },
+  "reviewer": "Adversarial 4-lens Workflow (fail-closed / broker-symbol-and-audit / backward-compat / boundary-and-sync) + opus synthesis: decision GO, zero must-fix. Traced every hard requirement to file:line and confirmed: no symbol trades unverified against the account's broker; provider symbol preserved (payload.provider_symbol) while the resolved broker_symbol is placed (payload.symbol); baseline EURUSD/GBPUSD/XAUUSD unchanged for un-synced accounts; suffix mapping only when unambiguous; read path imports no order_send/mt5/network (AST test_10). Non-blocking nits (all left as-is): per-call os.getenv for BROKER_SYMBOL_REGISTRY_STRICT; the separate strategies/signal_engine.py STRATEGY path still uses hardcoded SIGNAL_ALLOWED_SYMBOLS (out of scope); the broad except Exception on the ORM query fails closed to SYMBOL_REGISTRY_UNAVAILABLE by design."
+}
