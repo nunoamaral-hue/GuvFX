@@ -152,7 +152,7 @@ class TelegramRenderer(CanonicalRenderer):
             f"Direction: {r.direction}",
             status_line,
             "",
-            f"💰 {net_label}: {_money(total_closed, cur)}  ({r.pips} pips)",
+            f"💰 {net_label}: {_money(total_closed, cur)}  ({r.pips} pips, this leg)",
             "",
         ]
         # Section 2 — trade evidence
