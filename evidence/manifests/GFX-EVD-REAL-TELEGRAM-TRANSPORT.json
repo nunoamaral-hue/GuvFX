@@ -1,0 +1,86 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-REAL-TELEGRAM-TRANSPORT",
+  "packet_id": "GFX-PKT-REAL-TELEGRAM-TRANSPORT",
+  "created_at_utc": "2026-07-07T07:22:01Z",
+  "branch": "feat/real-telegram-transport",
+  "base_commit": "a37911bdf0ae3d4eef1c50ba63bba3e931e0ee65",
+  "head_commit": "5633cb5ed8051e01303a97eb3bdada4099063405",
+  "environment": {
+    "python_version": "3.11.9",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local test DB)",
+    "model_or_migration_change": false,
+    "production_deploy": false,
+    "dispatch_enabled": false,
+    "transport_default": "dry-run",
+    "real_message_sent": false,
+    "token_committed": false
+  },
+  "files_added": [
+    "backend/execution/notifications/real_transport.py",
+    "backend/execution/tests_real_telegram_transport.py",
+    "evidence/manifests/GFX-EVD-REAL-TELEGRAM-TRANSPORT.json"
+  ],
+  "files_modified": [
+    "backend/execution/notifications/dispatcher.py",
+    "backend/execution/notifications/__init__.py",
+    "backend/execution/tests_notification_transport.py",
+    "backend/execution/management/commands/dispatch_notifications.py",
+    "backend/execution/management/commands/run_monitor_chain.py"
+  ],
+  "commands": [
+    "backend: python manage.py test execution.tests_real_telegram_transport execution.tests_notification_transport",
+    "backend: python manage.py test  (full suite)",
+    "backend: python manage.py makemigrations --check --dry-run execution",
+    "make governance-check  (incl. secret-scan)"
+  ],
+  "expected_results": [
+    "The DEFAULT dispatch transport stays dry-run; the real transport is used ONLY when NOTIFICATION_DISPATCH_TRANSPORT is explicitly real/telegram-real/telegram.",
+    "Dispatch remains a no-op by default (NOTIFICATION_DISPATCH_ENABLED default OFF) — nothing sends unless dispatch is enabled AND the real transport is selected AND token+chat id are present.",
+    "The real transport fails closed (no network call) on a missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID; refuses non-WIN outcomes.",
+    "API ok=true marks SENT (transmitted=True); an HTTP/network error or ok=false marks FAILED (transmitted=False); the transport never raises.",
+    "Idempotent: an already-transmitted candidate is skipped (no re-send); the dispatcher's atomic claim + SENT terminal state prevent concurrent/repeat sends.",
+    "The bot token is never logged, returned in a DeliveryResult/detail, raised, or committed.",
+    "real_transport.py is the ONLY network-capable file in the notifications package; it references no order_send/order_check/ExecutionJob/create_contract/deliver_trade_result/wims.",
+    "No model/migration change; full backend suite green; governance + secret-scan pass."
+  ],
+  "actual_results": [
+    "execution.tests_real_telegram_transport: 16 tests OK — selector defaults to dry-run; real only when explicitly selected (real/telegram-real/telegram; dryrun/empty/nonsense -> dry-run); missing token/chat id fail closed with urlopen NOT called; non-WIN refused (no network); API success -> ok/SENT/transmitted + urlopen called once with a Request to api.telegram.org carrying chat_id + text; HTTPError 401 -> FAILED (detail '401', no token); ok:false -> FAILED; idempotent skip when a prior transmitted delivery exists (no urlopen); dispatch disabled-by-default sends nothing (enabled False, 0 claimed, urlopen not called, 0 deliveries); enabled+real dispatch sends once + marks SENT + a second run does NOT re-send; dry-run dispatch makes no network call (transmitted False); token never appears in result.detail/repr/rendered_message or logs.",
+    "execution.tests_notification_transport BoundaryTests: the no-network guard now allows ONLY real_transport.py; real_transport IS network-capable (urllib.request) and no other notifications file is; real_transport references no order/WIMS surface.",
+    "Adversarial 4-lens review (default-off-gating / token-secrecy / idempotency-failure-marking / boundary-and-winonly, 5 agents) + opus synthesis: decision FIX with 1 HIGH must-fix. Default-off holds, token never leaks, WIN-only, fail-closed, no order/WIMS. Must-fix APPLIED: a duplicate-send window — the dispatcher recorded the transmitted=True delivery in the SAME atomic block as the SENT status update, so a finalize rollback erased the record, demoted the candidate to FAILED, and the belt (keyed off that row) re-sent. Fixed via _persist_transmission() writing the transmitted row in its OWN committed transaction before the finalize; on finalize failure a transmitted candidate is forced SENT (leaves the retry set). +2 tests (durable-across-finalize-failure; belt-skips-resend). 4 stale-docstring nits also fixed (dispatcher/__init__/dispatch_notifications/run_monitor_chain).",
+    "Full backend suite (post-fix): Ran 493 tests OK.",
+    "makemigrations --check execution: No changes detected. make governance-check OK; secret-scan OK; EVIDENCE-LINT PASS."
+  ],
+  "acceptance_criteria": {
+    "real_transport_implemented": "PASS",
+    "transport_selector_dry_run_default": "PASS",
+    "env_vars_token_and_chat": "PASS",
+    "safe_send_bot_api": "PASS",
+    "idempotent_delivery": "PASS",
+    "failure_handling": "PASS",
+    "boundary_tests": "PASS",
+    "dry_run_remains_default": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo-only. NOT deployed. NOTIFICATION_DISPATCH_ENABLED stays OFF, the default transport is dry-run, and no TELEGRAM_BOT_TOKEN/CHAT_ID are set in any tracked file — so NO real message is or can be sent by merging this. A real send requires a separate, Nuno-authorised arm step (store the token in the prod secret store + set the chat id + select the real transport + enable dispatch + deploy).",
+    "Idempotency: a real transmission is recorded durably in its own committed transaction (_persist_transmission) BEFORE the candidate can be demoted/re-claimed, and the transport's belt skips any already-transmitted candidate — so the finalize-rollback duplicate-send window the review found is CLOSED. The only residual is the irreducible dual-write case (the DB is unavailable for the single-row delivery insert immediately after a successful send); Telegram sendMessage has no idempotency key, so this narrow at-least-once tail is inherent and acceptable for the supervised demo.",
+    "The token is verified only by presence/length in the secret store (never printed); no getChat/API call is made with it in this packet.",
+    "TELEGRAM_CHAT_ID = @wims07072026 (the public channel username) is accepted directly by the Bot API — no numeric chat-id resolution or test send was performed (and none is performed without Nuno's explicit authorisation)."
+  ],
+  "artefact_locations": [
+    "backend/execution/notifications/real_transport.py",
+    "backend/execution/notifications/dispatcher.py",
+    "backend/execution/tests_real_telegram_transport.py",
+    "backend/execution/tests_notification_transport.py",
+    "evidence/manifests/GFX-EVD-REAL-TELEGRAM-TRANSPORT.json"
+  ],
+  "checksums": {
+    "backend/execution/notifications/real_transport.py": "sha256:a2cc4bb11c4820b31f5c58beee56601b446d2c5e5b13b8a2d42cbfa6cab6b5dd",
+    "backend/execution/notifications/dispatcher.py": "sha256:f5098c538d2c9b37a0b8d33885f74a7c28c70cfda8ea9fe335bdd497d8a86d91",
+    "backend/execution/tests_notification_transport.py": "sha256:2b02023d1ccc0deeef237bbc3d1959fdfb42fbe922ca20517f96372f9b9658e2",
+    "backend/execution/tests_real_telegram_transport.py": "sha256:2ea6e68828ff66cfcb0f60cea93938696df621e8c7f58af8eb40e321b266df42"
+  },
+  "reviewer": null
+}

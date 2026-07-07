@@ -231,13 +231,44 @@ class BoundaryTests(TransportBase):
                     mods.add(a.name)
         return mods
 
-    def test_no_network_or_telegram_imports_anywhere(self):
+    #: The SINGLE network-capable file (GFX-PKT-REAL-TELEGRAM-TRANSPORT). Every other file in the
+    #: package stays network-free; the real transport is disabled by default (dispatch flag OFF +
+    #: dry-run default). Isolating the send surface to one audited file keeps the guard meaningful.
+    _NETWORK_ALLOWED = {"real_transport.py"}
+
+    def test_no_network_or_telegram_imports_anywhere_except_real_transport(self):
         forbidden = ("requests", "urllib", "http", "socket", "telegram", "telethon", "httpx")
         for pyfile in self.PACKAGE_DIR.glob("*.py"):
+            if pyfile.name in self._NETWORK_ALLOWED:
+                continue
             mods = self._imports(pyfile)
             tops = {m.split(".")[0] for m in mods}
             for f in forbidden:
                 self.assertNotIn(f, tops, f"{pyfile.name} must not import {f!r}")
+
+    def test_only_real_transport_is_network_capable(self):
+        # Positive: the real transport DOES use urllib (it is the send surface); nothing else does.
+        real = self._imports(self.PACKAGE_DIR / "real_transport.py")
+        self.assertIn("urllib.request", real)
+        for pyfile in self.PACKAGE_DIR.glob("*.py"):
+            if pyfile.name in self._NETWORK_ALLOWED:
+                continue
+            tops = {m.split(".")[0] for m in self._imports(pyfile)}
+            self.assertNotIn("urllib", tops, f"{pyfile.name} unexpectedly imports urllib")
+
+    def test_real_transport_makes_no_order_or_wims_reference(self):
+        src = pathlib.Path((self.PACKAGE_DIR / "real_transport.py")).read_text()
+        names = set()
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.add(node.attr)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names.add(node.module.split(".")[0])
+        for token in ("order_send", "order_check", "agent_order", "ExecutionJob",
+                      "create_contract", "deliver_trade_result", "ConsumptionContract", "wims"):
+            self.assertNotIn(token, names, f"real_transport must not reference {token!r}")
 
     def test_transport_and_dispatcher_import_no_execution_logic(self):
         # The transport/dispatcher must not pull in execution business logic (orders/planning).
