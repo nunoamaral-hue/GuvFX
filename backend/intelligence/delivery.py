@@ -276,8 +276,8 @@ def ingest_winning_trade(trade, actor=None, account_label="GuvFX", currency="$")
     social caption as content-side ``media`` and rides WP-3 -> Context -> Content
     -> human Review -> Publish. Returns ``(envelope, contract)``.
     """
-    from .caption import build_caption          # local imports: avoid cycles
-    from .results_card import render_card, row_from_trade
+    from .canonical import build_canonical_trade_result  # local import: avoid cycles
+    from .renderers import WIMSRenderer
 
     trades = list(trade) if isinstance(trade, (list, tuple)) else [trade]
     total_net = sum((_net_pnl(t) for t in trades), Decimal("0"))
@@ -286,7 +286,6 @@ def ingest_winning_trade(trade, actor=None, account_label="GuvFX", currency="$")
             "Not a net-winning trade (total pnl <= 0); losers and breakeven are not published."
         )
 
-    rows = [row_from_trade(t) for t in trades]
     envelope = TradeResultProducer().produce(_aggregate_trade(trades, total_net))
 
     record_audit_ref(
@@ -302,13 +301,12 @@ def ingest_winning_trade(trade, actor=None, account_label="GuvFX", currency="$")
         intelligence_type=envelope.intelligence_type,
     )
 
-    card = render_card(
-        rows,
-        title=f"{rows[0].symbol} {rows[0].direction} winning trade",
-        total_profit=str(total_net),
+    # The result card + caption are produced from the ONE canonical trade result via the WIMS
+    # renderer — the same shared results_card/caption factories, no duplicated formatting.
+    canonical = build_canonical_trade_result(
+        trades, account_label=account_label, currency=currency, with_media=True,
     )
-    caption = build_caption(rows, net_profit=total_net, currency=currency)
-    media = {"results_card": card, "caption": caption}
+    media = WIMSRenderer().render(canonical).media
 
     contract = deliver_trade_result(envelope, actor=actor, media=media)
     return envelope, contract
