@@ -133,6 +133,18 @@ class BuildCanonicalTests(CanonicalBase):
         self.assertEqual(r.statistics["outcome"], "WIN")
         self.assertEqual(r.statistics["pips"], "50.0")
 
+    def test_strategy_field_has_no_provider_fallback(self):
+        # Behaviour-preserving: strategy = signal_source OR plan source ONLY. Even when the
+        # provider slug is set, an empty signal_source + empty plan source => strategy "" (n/a),
+        # exactly as the deployed envelope rendered (the provider slug lives on `provider`).
+        r = build_canonical_trade_result(
+            self.trade, correlation_id=self.CID, signal_source="",
+            linkage={"provider": "wayond", "source": ""},
+        )
+        self.assertEqual(r.strategy, "")          # no provider fallback
+        self.assertEqual(r.provider, "wayond")    # provider still carries the slug
+        self.assertIn("Strategy: n/a", TelegramRenderer().render(r).text)
+
     def test_light_build_renders_no_media(self):
         # The execution/Telegram path builds without media (stays free of Pillow / heavy work).
         r = build_canonical_trade_result(self.trade, correlation_id=self.CID)

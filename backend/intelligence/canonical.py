@@ -137,7 +137,9 @@ def build_canonical_trade_result(
     acct = _get(trades[0], "account", None)
     is_demo = bool(getattr(acct, "is_demo", False))
     label = getattr(acct, "name", None) or account_label
-    strategy = signal_source or link.get("source", "") or link.get("provider", "")
+    # ``strategy`` matches the deployed envelope EXACTLY: signal source, else the plan source
+    # (NO provider fallback — behaviour-preserving). The provider slug lives on ``provider``.
+    strategy = signal_source or link.get("source", "")
     provider = link.get("provider", "") or signal_source or link.get("source", "")
 
     gross = _gross_pnl(trades)
