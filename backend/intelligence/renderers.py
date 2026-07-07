@@ -173,6 +173,8 @@ class TelegramRenderer(CanonicalRenderer):
         if total:
             status_line += f" · {'all ' if final else ''}{closed} of {total} legs closed"
         net_label = "Total net profit" if final else "Net profit so far"
+        total_pips = self._total_pips(r)
+        pip_suffix = f"  ·  {self._pip_str(total_pips)}" if total_pips else ""
 
         parts = [f"🏆 {title}", ""]
         # Section 1 — executive summary
@@ -183,8 +185,7 @@ class TelegramRenderer(CanonicalRenderer):
             f"Direction: {r.direction}",
             status_line,
             "",
-            f"💰 {net_label}: {_money(total_closed, cur)}"
-            + (f"  ·  {self._pip_str(self._total_pips(r))}" if self._total_pips(r) else ""),
+            f"💰 {net_label}: {_money(total_closed, cur)}{pip_suffix}",
             "",
         ]
         # Section 2 — trade evidence
