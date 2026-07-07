@@ -163,12 +163,14 @@ class ProposalBridgeTests(TestCase):
     # ----- allowlist / caps ----------------------------------------------
 
     def test_symbol_not_in_allowlist_rejected(self):
+        # Demo account has no synced broker instruments -> default baseline; BTCUSD is not in it,
+        # so the broker-symbol registry rejects it fail-closed (no longer a hardcoded allowlist).
         self.assertNotIn("BTCUSD", SIGNAL_ALLOWED_SYMBOLS)
         with self.assertRaises(bridge.ProposalRejected) as ctx:
             bridge.propose_order_from_approval(
                 _approval("m10", symbol="BTCUSD"), account=self.demo
             )
-        self.assertEqual(ctx.exception.code, "symbol_not_allowed")
+        self.assertEqual(ctx.exception.code, "SYMBOL_NOT_AVAILABLE_ON_BROKER")
 
     def test_lot_above_cap_rejected(self):
         over = Decimal(str(SIGNAL_MAX_LOT_SIZE)) + Decimal("0.01")

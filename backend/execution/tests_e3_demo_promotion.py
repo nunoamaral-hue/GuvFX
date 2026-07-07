@@ -271,7 +271,9 @@ class DemoGateInheritanceTests(E3Base):
             self._direct_plan(mid="k5", tps=("",), lots=("0.01",)), "missing_take_profit")
 
     def test_demo_symbol_not_allowed_blocks(self):
-        self._assert_demo_rejected(self._direct_plan(mid="k6", symbol="GBPJPY"), "symbol_not_allowed")
+        # GBPJPY is not in the account's broker registry (default baseline) -> fail-closed.
+        self._assert_demo_rejected(
+            self._direct_plan(mid="k6", symbol="GBPJPY"), "SYMBOL_NOT_AVAILABLE_ON_BROKER")
 
     def test_demo_lot_over_cap_blocks(self):
         self._assert_demo_rejected(

@@ -1008,3 +1008,39 @@ class NotificationDelivery(models.Model):
 
     def __str__(self) -> str:
         return f"{self.transport} {self.result} attempt={self.attempt} (cand {self.candidate_id})"
+
+
+class BrokerInstrument(models.Model):
+    """A tradeable instrument on a specific account's broker — a cache of the broker's MT5 symbols.
+
+    Populated from the broker (``mt5.symbols_get`` via the bridge ``GET /mt5/symbols``) by
+    ``manage.py sync_broker_instruments``. The symbol registry (``execution.broker_symbols``)
+    resolves a provider (Wayond) symbol to the account's ``broker_symbol``; a provider symbol with
+    no resolvable broker instrument is rejected FAIL-CLOSED. Storing the broker's real symbols
+    (instead of a hardcoded allowlist) is what lets any broker-supported symbol trade, while an
+    account with no synced rows falls back to the legacy baseline (see broker_symbols).
+    """
+
+    account = models.ForeignKey(
+        TradingAccount, on_delete=models.CASCADE, related_name="broker_instruments",
+    )
+    broker_symbol = models.CharField(max_length=64)  # exact MT5 name (e.g. BTCUSD, XAUUSD+, BTCUSD.)
+    base_symbol = models.CharField(max_length=64)    # normalised base for provider matching
+    enabled = models.BooleanField(
+        default=True, help_text="Trade-enabled / visible on the account (from MT5 symbol_info).",
+    )
+    metadata = models.JSONField(
+        default=dict, blank=True, help_text="digits / trade_mode / contract_size / tick_size, etc.",
+    )
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account", "broker_symbol"], name="uniq_account_broker_symbol",
+            ),
+        ]
+        indexes = [models.Index(fields=["account", "base_symbol"])]
+
+    def __str__(self) -> str:
+        return f"{self.broker_symbol} (base={self.base_symbol}) @ acct#{self.account_id}"

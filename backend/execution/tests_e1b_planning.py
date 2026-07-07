@@ -170,11 +170,13 @@ class PlanBuilderTests(TestCase):
         self.assertEqual(SignalExecutionPlan.objects.count(), 0)
 
     def test_unknown_symbol_blocks_planning(self):
+        # Demo account has no synced broker instruments -> default baseline; BTCUSD is not in it,
+        # so the broker-symbol registry rejects it fail-closed.
         with self.assertRaises(planning.PlanRejected) as ctx:
             planning.plan_demo_execution(
                 _approved("r2", symbol="BTCUSD"), account=self.demo
             )
-        self.assertEqual(ctx.exception.code, "symbol_not_allowed")
+        self.assertEqual(ctx.exception.code, "SYMBOL_NOT_AVAILABLE_ON_BROKER")
 
     def test_live_account_blocked(self):
         live = TradingAccount.objects.create(
