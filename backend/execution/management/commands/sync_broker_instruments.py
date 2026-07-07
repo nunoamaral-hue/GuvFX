@@ -88,8 +88,20 @@ def _fetch_symbols(account) -> list:
     req = urllib.request.Request(f"{base_url}/mt5/symbols", method="GET", headers={
         "X-GuvFX-Agent-Token": token, **({"X-Windows-Username": windows_username} if windows_username else {}),
     })
-    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-        payload = json.loads((resp.read() or b"{}").decode() or "{}")
+    # Fail-closed on any bridge error: raise a clean CommandError (not a raw traceback in the
+    # nightly cron log) and leave the existing cache untouched — a failed sync never opens a symbol.
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            payload = json.loads((resp.read() or b"{}").decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        raise CommandError(
+            f"bridge GET /mt5/symbols failed: HTTP {exc.code} — check the bridge is up and "
+            f"GUVFX_WINDOWS_AGENT_TOKEN matches (auth header X-GuvFX-Agent-Token). Cache left unchanged."
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise CommandError(
+            f"bridge GET /mt5/symbols unreachable: {exc.reason}. Cache left unchanged."
+        ) from exc
     return payload.get("symbols", payload if isinstance(payload, list) else [])
 
 
