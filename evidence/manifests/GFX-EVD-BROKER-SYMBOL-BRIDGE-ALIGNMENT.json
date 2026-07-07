@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-BROKER-SYMBOL-BRIDGE-ALIGNMENT",
+  "packet_id": "GFX-PKT-BROKER-SYMBOL-BRIDGE-ALIGNMENT",
+  "created_at_utc": "2026-07-07T12:10:00Z",
+  "branch": "feat/broker-symbol-bridge-alignment",
+  "base_commit": "63cd75ed6ba10d8050c33ac0575cf3d3b7d83832",
+  "head_commit": "f7d102f0bfeb5bf8d1c3f6cedf10de1207049251",
+  "environment": {
+    "python_version": "3.11.x",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local dev DB; bridge tests are SimpleTestCase, no DB)",
+    "migration_added": "none (no model change)",
+    "production_deploy": false,
+    "windows_deploy": false,
+    "order_placed": false,
+    "armed_change": false
+  },
+  "files_added": [
+    "backend/execution/tests_bridge_symbols.py",
+    "evidence/manifests/GFX-EVD-BROKER-SYMBOL-BRIDGE-ALIGNMENT.json"
+  ],
+  "files_modified": [
+    "scripts/mt5_signal_bridge.py",
+    "backend/mt5_trade_ingest_worker.py",
+    "backend/execution/tests_e2b_shadow.py"
+  ],
+  "commands": [
+    "backend: python manage.py test execution.tests_bridge_symbols execution.tests_e2b_shadow",
+    "backend: python manage.py test  (full suite)",
+    "backend: python manage.py makemigrations --check --dry-run",
+    "python3 -m py_compile scripts/mt5_signal_bridge.py backend/mt5_trade_ingest_worker.py",
+    "make governance-check"
+  ],
+  "current_bridge_symbol_gate": [
+    "REPLACED: scripts/mt5_signal_bridge.py ALLOWED_SYMBOLS (was line 79) — static allowlist used by validate_job_safety (strategy PLACE_ORDER pre-check).",
+    "REPLACED: scripts/mt5_signal_bridge.py DEMO_ORDER_ALLOWED_SYMBOLS (was line 84) — static allowlist used by execute_demo_order (POST /mt5/order, the Wayond demo path) AND shadow_order_check (POST /mt5/order_check).",
+    "NOW MT5-native: validate_broker_symbol(mt5, symbol) — symbol_info() then symbol_select() if not visible; fail-closed SYMBOL_NOT_AVAILABLE_ON_MT5 / SYMBOL_NOT_SELECTABLE_ON_MT5.",
+    "PRESERVED (unchanged rails): MAX_LOT_SIZE/DEMO_ORDER_MAX_LOT_SIZE (lot cap), ALLOWED_SIDES/DEMO_ORDER_ALLOWED_SIDES (side), SL/TP mandatory in validate_job_safety, demo-only (account trade_mode==0), order_check (shadow path).",
+    "OUT OF SCOPE (separate/legacy bridge, not in the Wayond execution path): scripts/mt5_demo_bridge.py — its own DEMO_ORDER constants left unchanged."
+  ],
+  "expected_results": [
+    "The bridge's hardcoded symbol allowlist is replaced by MT5-native validation at all three symbol gates (validate_job_safety/execute_mt5_trade strategy path, execute_demo_order live demo path, shadow_order_check dry-run path).",
+    "payload['symbol'] (the broker symbol resolved by the backend registry) is validated with mt5.symbol_info; if missing -> SYMBOL_NOT_AVAILABLE_ON_MT5; if present-but-not-visible -> mt5.symbol_select, and if that fails -> SYMBOL_NOT_SELECTABLE_ON_MT5; else proceed to the existing order_check/order_send logic.",
+    "EURUSD/XAUUSD still trade; BTCUSD (and any broker-supported/suffixed symbol) trades iff mt5.symbol_info offers it; unsupported/non-selectable symbols fail closed with NO order and NO order_check.",
+    "The broker symbol is what is placed (request['symbol']); provider_symbol (Wayond symbol) is preserved in logs/result if present and is NOT added to the MT5 request. The worker now forwards provider_symbol to the bridge if present.",
+    "Lot cap, side, SL/TP mandatory, demo-only and order_check rails are unchanged; full backend suite green; no migration."
+  ],
+  "actual_results": [
+    "execution.tests_bridge_symbols + execution.tests_e2b_shadow: Ran 52 tests OK. New tests cover: validate_broker_symbol (available / exact-suffix / not-available / non-visible-selectable / non-visible-non-selectable); execute_demo_order (1 EURUSD, 2 XAUUSD accepted; 3 BTCUSD accepted when available; 4 broker suffix placed under broker symbol + provider preserved + not in MT5 request; 5+11 unsupported rejected no order_send; 6 non-visible selectable accepted; 7 non-visible non-selectable rejected; 9 lot cap; side gate; 12 provider preserved on reject; non-demo refused); shadow_order_check (10 order_check still required; BTCUSD shadow accepted; unsupported -> no order_check; provider preserved + request identical to live); strategy path (8 SL/TP mandatory; non-baseline no longer blocked at pre-check; blank rejected; lot cap; execute_mt5_trade rejects unavailable no order_send); boundary (no ALLOWED_SYMBOLS/DEMO_ORDER_ALLOWED_SYMBOLS constants or source references remain).",
+    "Updated the one backend test that asserted the OLD allowlist: tests_e2b_shadow.test_invalid_symbol_fails_before_mt5 -> test_unsupported_symbol_rejected_by_mt5_no_order (BTCUSD now MT5-validated: symbol_info None -> SYMBOL_NOT_AVAILABLE_ON_MT5, no order_check/order_send).",
+    "Full backend suite: Ran 536 tests OK (was 509; +27 new/updated; no regressions).",
+    "py_compile: bridge + worker compile clean. makemigrations --check: no change from this packet (the only drift reported is a pre-existing strategies index-rename, unrelated — this packet touches no models).",
+    "make governance-check: EVIDENCE-LINT PASS; secret-scan clean.",
+    "Adversarial multi-lens review + synthesis: see reviewer field / PR."
+  ],
+  "acceptance_criteria": {
+    "eurusd_still_accepted": "PASS",
+    "xauusd_still_accepted": "PASS",
+    "btcusd_accepted_when_mt5_available": "PASS",
+    "broker_suffix_accepted_when_exact": "PASS",
+    "unsupported_symbol_rejected": "PASS",
+    "non_visible_selectable_accepted": "PASS",
+    "non_visible_non_selectable_rejected": "PASS",
+    "sltp_still_mandatory": "PASS",
+    "lot_cap_still_enforced": "PASS",
+    "order_check_still_required": "PASS",
+    "order_send_not_called_when_symbol_invalid": "PASS",
+    "provider_symbol_preserved_if_present": "PASS",
+    "broker_symbol_used_for_order": "PASS",
+    "no_static_allowlist_remains": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo-only. NOT deployed to Windows/prod. No order_send, no arming, no risk-cap change. The currently-armed demo runs on the DEPLOYED (previous) bridge and is unaffected by this branch.",
+    "The bridge (scripts/mt5_signal_bridge.py) and worker (backend/mt5_trade_ingest_worker.py) are deployed MANUALLY to the Windows MT5 box / prod host (the worker script is volume-mounted; the bridge runs on Windows). Merging changes neither running process. End-to-end non-baseline (e.g. BTCUSD) execution needs: (a) this bridge deployed to the Windows box, (b) the worker script updated on the host, and (c) a backend BrokerInstrument sync + the backend registry code deployed (GFX-PKT-BROKER-SYMBOL-REGISTRY, also repo-only).",
+    "The bridge validates the EXACT symbol it receives; symbol RESOLUTION (provider->broker, suffix mapping, ambiguity) is owned by the backend registry. The bridge does not itself enumerate broker symbols or resolve suffixes.",
+    "execute_demo_order treats SL/TP as OPTIONAL (unchanged behaviour — SL/TP mandatoriness is enforced upstream by the backend plan/_validate and, for the strategy path, by validate_job_safety). This packet did not add SL/TP enforcement to the demo endpoint; it preserved existing behaviour.",
+    "Bridge tests run as Django SimpleTestCase that load the standalone script via importlib and fake MetaTrader5 via sys.modules; they do not exercise a real MT5 terminal."
+  ],
+  "artefact_locations": [
+    "scripts/mt5_signal_bridge.py (validate_broker_symbol + 3 gates + startup log + docstring)",
+    "backend/mt5_trade_ingest_worker.py (provider_symbol forwarding in check_payload + agent_payload)",
+    "backend/execution/tests_bridge_symbols.py",
+    "backend/execution/tests_e2b_shadow.py (updated allowlist assertion)",
+    "evidence/manifests/GFX-EVD-BROKER-SYMBOL-BRIDGE-ALIGNMENT.json"
+  ],
+  "checksums": {
+    "scripts/mt5_signal_bridge.py": "sha256:94af84b35cedb127a83878b26af94cc91c817fad109b9914d790bed63752b3e2",
+    "backend/mt5_trade_ingest_worker.py": "sha256:74beb282bd14d7282a6dfd8460aaa53bb12fea08092300ab55ea3af9d6025fc8",
+    "backend/execution/tests_bridge_symbols.py": "sha256:4279e64bd68d809a620cfd42e8675324131843cd4bb133ee83fe2baa72428772",
+    "backend/execution/tests_e2b_shadow.py": "sha256:fc44073556d8cc9fbdaf4f58aa4832b3cf803c2074c9390ff810186ec62e154f"
+  },
+  "reviewer": null
+}
