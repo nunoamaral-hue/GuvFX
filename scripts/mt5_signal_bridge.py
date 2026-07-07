@@ -21,7 +21,8 @@ HTTP SERVER MODE (for OHLC data and demo order execution):
 
 SAFETY RAILS (hard-coded, cannot be bypassed):
 - Demo accounts only (is_demo=True in payload)
-- EURUSD and GBPUSD only
+- MT5-native symbol validation: the exact broker symbol resolved by the backend
+  registry must exist and be selectable on the terminal (no static allowlist)
 - Max 0.02 lot (hard cap)
 - SL/TP required for all orders
 
@@ -76,14 +77,49 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # HARD-CODED SAFETY RAILS (DO NOT MODIFY)
 # =============================================================================
-ALLOWED_SYMBOLS = ["EURUSD", "GBPUSD", "XAUUSD"]
+# Symbol validation is MT5-native (see validate_broker_symbol): the EXACT broker
+# symbol resolved by the backend registry (payload["symbol"]) must exist on the
+# running terminal and be selectable — fail-closed otherwise. There is deliberately
+# NO static symbol allowlist here; symbol availability is broker/account-aware and
+# is owned by the backend registry (execution.broker_symbols). The lot-cap, side,
+# SL/TP, demo-only and order_check rails below are unchanged.
 MAX_LOT_SIZE = 0.02
 ALLOWED_SIDES = ["BUY", "SELL"]
 
 # Demo order endpoint safety rails (POST /mt5/order)
-DEMO_ORDER_ALLOWED_SYMBOLS = ["EURUSD", "GBPUSD", "XAUUSD"]
 DEMO_ORDER_MAX_LOT_SIZE = 0.02
 DEMO_ORDER_ALLOWED_SIDES = ["BUY", "SELL"]
+
+# Fail-closed reasons returned when the terminal cannot trade the requested symbol.
+SYMBOL_NOT_AVAILABLE_ON_MT5 = "SYMBOL_NOT_AVAILABLE_ON_MT5"
+SYMBOL_NOT_SELECTABLE_ON_MT5 = "SYMBOL_NOT_SELECTABLE_ON_MT5"
+
+
+def validate_broker_symbol(mt5, symbol: str):
+    """MT5-native validation of an EXACT broker symbol — replaces the old static allowlist.
+
+    The backend symbol registry (execution.broker_symbols) has already resolved the
+    provider symbol to this broker symbol; the bridge's only job is to confirm the
+    running MT5 terminal actually offers it and can select it, then hand back the
+    ``symbol_info`` the existing order logic already relied on. Fail-closed on anything
+    else. This places / checks NO order — it is pure symbol validation.
+
+    Returns ``(ok, symbol_info_or_None, error_or_None)`` where ``error`` is one of
+    ``SYMBOL_NOT_AVAILABLE_ON_MT5`` (terminal has no such symbol) or
+    ``SYMBOL_NOT_SELECTABLE_ON_MT5`` (present but cannot be made visible/selected).
+
+    Behaviour is byte-identical to the previous inline symbol_info/symbol_select block:
+    on a non-visible symbol it attempts ``symbol_select`` and, on success, proceeds with
+    the original ``symbol_info`` object (its point/digits are unaffected by selection).
+    """
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        return False, None, SYMBOL_NOT_AVAILABLE_ON_MT5
+    if not info.visible:
+        if not mt5.symbol_select(symbol, True):
+            return False, None, SYMBOL_NOT_SELECTABLE_ON_MT5
+    return True, info, None
+
 
 # =============================================================================
 # Polling/Retry Configuration
@@ -293,10 +329,13 @@ def validate_job_safety(job: Dict) -> tuple[bool, str]:
     if not payload.get("is_demo", False):
         return False, "Job not marked as demo. Refusing to execute."
 
-    # Check symbol
+    # Check symbol is present. MT5-native availability (symbol_info/symbol_select) is
+    # validated in execute_mt5_trade, where the terminal is initialised — see
+    # validate_broker_symbol. No static allowlist: the backend registry owns which
+    # symbols are tradable per broker/account.
     symbol = payload.get("symbol", "").upper()
-    if symbol not in ALLOWED_SYMBOLS:
-        return False, f"Symbol {symbol} not allowed. Only {ALLOWED_SYMBOLS} permitted."
+    if not symbol:
+        return False, "Symbol is required."
 
     # Check lot size
     lots = payload.get("lots", 0)
@@ -351,20 +390,25 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
 
     job_id = job.get("id")
     payload = job.get("payload", {})
-    symbol = payload.get("symbol", "EURUSD").upper()
+    # No implicit default symbol: a blank symbol fails closed in validate_broker_symbol
+    # (SYMBOL_NOT_AVAILABLE_ON_MT5) rather than silently defaulting to a EURUSD order.
+    symbol = payload.get("symbol", "").upper()
     lots = min(float(payload.get("lots", 0.01)), MAX_LOT_SIZE)
     side = payload.get("side", "BUY").upper()
     magic = payload.get("magic", 0)
     sl_price = float(payload.get("sl_price", 0))
     tp_price = float(payload.get("tp_price", 0))
     entry_price = payload.get("entry_price")  # Optional: None = market order
+    # Provider (source) symbol — audit-only; preserved through logs/results if present.
+    provider_symbol = payload.get("provider_symbol")
 
     # Use comment from payload or generate one
     comment = payload.get("comment", f"GS{job_id:04d}")
     # Truncate to MT5 limit
     comment = comment[:31]
 
-    logger.info(f"Job {job_id}: {symbol} {side} {lots} lots, SL={sl_price}, TP={tp_price}, comment='{comment}'")
+    prov_str = f" provider_symbol={provider_symbol}" if provider_symbol else ""
+    logger.info(f"Job {job_id}: {symbol} {side} {lots} lots, SL={sl_price}, TP={tp_price}, comment='{comment}'{prov_str}")
 
     # Initialize MT5
     init_kwargs = {}
@@ -376,14 +420,14 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
         return False, {}, f"MT5 initialization failed: {error}"
 
     try:
-        # Get symbol info
-        symbol_info = mt5.symbol_info(symbol)
-        if symbol_info is None:
-            return False, {}, f"Symbol {symbol} not found in MT5"
-
-        if not symbol_info.visible:
-            if not mt5.symbol_select(symbol, True):
-                return False, {}, f"Failed to select symbol {symbol}"
+        # MT5-native symbol validation (replaces the old static allowlist). The exact
+        # broker symbol resolved by the backend registry must exist and be selectable.
+        ok, symbol_info, sym_err = validate_broker_symbol(mt5, symbol)
+        if not ok:
+            detail = {"error": sym_err}
+            if provider_symbol:
+                detail["provider_symbol"] = provider_symbol
+            return False, detail, f"{symbol}: {sym_err}"
 
         # Get current price
         tick = mt5.symbol_info_tick(symbol)
@@ -787,10 +831,12 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
     lots = float(params.get("lots", 0))
     magic = int(params.get("magic", 0))
     comment = str(params.get("comment", ""))
+    # Provider (source) symbol — audit-only; preserved in logs/result if present.
+    provider_symbol = params.get("provider_symbol")
 
-    # --- Safety validation ---
-    if symbol not in DEMO_ORDER_ALLOWED_SYMBOLS:
-        return {"ok": False, "error": f"symbol_not_allowed", "detail": f"{symbol} not in {DEMO_ORDER_ALLOWED_SYMBOLS}"}
+    # --- Safety validation (MT5-native symbol availability is checked after init) ---
+    if not symbol:
+        return {"ok": False, "error": "symbol_required"}
 
     if side not in DEMO_ORDER_ALLOWED_SIDES:
         return {"ok": False, "error": "side_not_allowed", "detail": f"{side} not in {DEMO_ORDER_ALLOWED_SIDES}"}
@@ -824,14 +870,14 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
         if account_info.trade_mode != 0:
             return {"ok": False, "error": "account_not_demo", "detail": f"trade_mode={account_info.trade_mode}"}
 
-        # Verify symbol
-        symbol_info = mt5.symbol_info(symbol)
-        if symbol_info is None:
-            return {"ok": False, "error": "symbol_not_found"}
-
-        if not symbol_info.visible:
-            if not mt5.symbol_select(symbol, True):
-                return {"ok": False, "error": "symbol_select_failed"}
+        # MT5-native symbol validation (replaces the old static allowlist). The exact
+        # broker symbol resolved by the backend registry must exist and be selectable.
+        ok, symbol_info, sym_err = validate_broker_symbol(mt5, symbol)
+        if not ok:
+            res = {"ok": False, "error": sym_err, "detail": f"{symbol} not tradable on MT5"}
+            if provider_symbol:
+                res["provider_symbol"] = provider_symbol
+            return res
 
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
@@ -863,7 +909,8 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
 
         sl_str = f" sl={sl}" if sl else ""
         tp_str = f" tp={tp}" if tp else ""
-        logger.info(f"[/mt5/order] Sending: {symbol} {side} {lots} @ {price}{sl_str}{tp_str} comment='{comment[:31]}'")
+        prov_str = f" provider_symbol={provider_symbol}" if provider_symbol else ""
+        logger.info(f"[/mt5/order] Sending: {symbol} {side} {lots} @ {price}{sl_str}{tp_str}{prov_str} comment='{comment[:31]}'")
         result = mt5.order_send(request)
 
         if result is None:
@@ -879,7 +926,7 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         logger.info(f"[/mt5/order] Success: ticket={result.order}, price={result.price}")
-        return {
+        success = {
             "ok": True,
             "retcode": result.retcode,
             "order": result.order,
@@ -888,6 +935,9 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
             "volume": result.volume,
             "comment": comment[:31],
         }
+        if provider_symbol:
+            success["provider_symbol"] = provider_symbol
+        return success
 
     except Exception as e:
         logger.exception(f"[/mt5/order] Exception: {e}")
@@ -921,10 +971,12 @@ def shadow_order_check(params: Dict[str, Any]) -> Dict[str, Any]:
     lots = float(params.get("lots", 0))
     magic = int(params.get("magic", 0))
     comment = str(params.get("comment", ""))
+    # Provider (source) symbol — audit-only; preserved in logs/result if present.
+    provider_symbol = params.get("provider_symbol")
 
     # --- Safety validation (identical to execute_demo_order — nothing bypassed) ---
-    if symbol not in DEMO_ORDER_ALLOWED_SYMBOLS:
-        return {"ok": False, "shadow": True, "error": "symbol_not_allowed", "detail": f"{symbol} not in {DEMO_ORDER_ALLOWED_SYMBOLS}"}
+    if not symbol:
+        return {"ok": False, "shadow": True, "error": "symbol_required"}
     if side not in DEMO_ORDER_ALLOWED_SIDES:
         return {"ok": False, "shadow": True, "error": "side_not_allowed", "detail": f"{side} not in {DEMO_ORDER_ALLOWED_SIDES}"}
     if lots <= 0 or lots > DEMO_ORDER_MAX_LOT_SIZE:
@@ -952,12 +1004,14 @@ def shadow_order_check(params: Dict[str, Any]) -> Dict[str, Any]:
         if account_info.trade_mode != 0:  # 0=DEMO, 1=CONTEST, 2=REAL
             return {"ok": False, "shadow": True, "error": "account_not_demo", "detail": f"trade_mode={account_info.trade_mode}"}
 
-        symbol_info = mt5.symbol_info(symbol)
-        if symbol_info is None:
-            return {"ok": False, "shadow": True, "error": "symbol_not_found"}
-        if not symbol_info.visible:
-            if not mt5.symbol_select(symbol, True):
-                return {"ok": False, "shadow": True, "error": "symbol_select_failed"}
+        # MT5-native symbol validation (replaces the old static allowlist) — same as
+        # the live path, so the request built below stays byte-identical.
+        ok, symbol_info, sym_err = validate_broker_symbol(mt5, symbol)
+        if not ok:
+            res = {"ok": False, "shadow": True, "error": sym_err, "detail": f"{symbol} not tradable on MT5"}
+            if provider_symbol:
+                res["provider_symbol"] = provider_symbol
+            return res
 
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
@@ -986,8 +1040,9 @@ def shadow_order_check(params: Dict[str, Any]) -> Dict[str, Any]:
         if tp is not None:
             request["tp"] = float(tp)
 
+        prov_str = f" provider_symbol={provider_symbol}" if provider_symbol else ""
         logger.info(
-            f"[/mt5/order_check] SHADOW validating (NO order): {symbol} {side} {lots} @ {price} "
+            f"[/mt5/order_check] SHADOW validating (NO order): {symbol} {side} {lots} @ {price}{prov_str} "
             f"comment='{comment[:31]}'"
         )
         # DRY RUN — validation only. There is deliberately NO mt5.order_send here.
@@ -997,7 +1052,7 @@ def shadow_order_check(params: Dict[str, Any]) -> Dict[str, Any]:
                     "detail": str(mt5.last_error()), "request": request}
 
         # order_check retcode 0 == request is valid (would be accepted).
-        return {
+        result = {
             "ok": bool(check.retcode == 0),
             "shadow": True,
             "suppressed": True,
@@ -1009,6 +1064,9 @@ def shadow_order_check(params: Dict[str, Any]) -> Dict[str, Any]:
             "balance": getattr(check, "balance", None),
             "request": request,
         }
+        if provider_symbol:
+            result["provider_symbol"] = provider_symbol
+        return result
 
     except Exception as e:
         logger.exception(f"[/mt5/order_check] Exception: {e}")
@@ -1571,7 +1629,7 @@ def main_loop() -> None:
     logger.info("GuvFX MT5 Signal Execution Bridge Starting")
     logger.info("=" * 60)
     logger.info(f"Safety rails active:")
-    logger.info(f"  - Allowed symbols: {ALLOWED_SYMBOLS}")
+    logger.info(f"  - Symbol validation: MT5-native (symbol_info/symbol_select; no static allowlist)")
     logger.info(f"  - Max lot size: {MAX_LOT_SIZE}")
     logger.info(f"  - Allowed sides: {ALLOWED_SIDES}")
     logger.info(f"  - Poll interval: {POLL_INTERVAL}s")

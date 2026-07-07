@@ -237,6 +237,10 @@ def handle_shadow_job(job: dict) -> dict:
         check_payload["sl"] = float(payload["sl_price"])
     if payload.get("tp_price") is not None:
         check_payload["tp"] = float(payload["tp_price"])
+    # Preserve the provider (source) symbol for bridge-side audit if present (broker
+    # symbol goes in "symbol"; provider symbol is carried alongside, never traded on).
+    if payload.get("provider_symbol"):
+        check_payload["provider_symbol"] = payload["provider_symbol"]
 
     print(f"[SHADOW] Validating (NO order) job_id={job_id}: {symbol} {side} {lots}")
     log_stage("order_check_request", correlation_id, job_id=job_id,
@@ -606,6 +610,10 @@ def main():
                     agent_payload["sl"] = float(sl)
                 if tp is not None:
                     agent_payload["tp"] = float(tp)
+                # Preserve the provider (source) symbol for bridge-side audit if present
+                # (broker symbol is in "symbol"; provider symbol rides alongside).
+                if payload.get("provider_symbol"):
+                    agent_payload["provider_symbol"] = payload["provider_symbol"]
 
                 order_result = agent_order(agent_payload)
 
