@@ -167,7 +167,7 @@ class RendererTests(CanonicalBase):
         self.assertIn("Instrument: EURUSD", content.text)
         self.assertIn("Direction: BUY", content.text)
         self.assertIn("Net profit so far: +$21.00", content.text)
-        self.assertIn("(50.0 pips)", content.text)
+        self.assertIn("(50.0 pips, this leg)", content.text)
         # Section 2 — trade evidence
         self.assertIn("📊 TRADE EVIDENCE", content.text)
         self.assertIn("1.0850 → 1.0900", content.text)
