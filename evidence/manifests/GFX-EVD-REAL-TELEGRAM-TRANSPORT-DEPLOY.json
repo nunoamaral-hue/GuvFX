@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-REAL-TELEGRAM-TRANSPORT-DEPLOY",
+  "packet_id": "GFX-PKT-REAL-TELEGRAM-TRANSPORT-DEPLOY",
+  "created_at_utc": "2026-07-07T08:13:02Z",
+  "branch": "docs/real-telegram-transport-deploy-evidence",
+  "base_commit": "e0ae4ee284d363e8aea8d48f62ac1b881022e804",
+  "head_commit": "e0ae4ee284d363e8aea8d48f62ac1b881022e804",
+  "environment": {
+    "target": "production (OVH VPS guvfx-ubuntu 100.119.23.29)",
+    "deployed_commit": "e0ae4ee284d363e8aea8d48f62ac1b881022e804",
+    "previous_deployed_commit": "e69c144 (#93)",
+    "new_backend_image_id": "342d198f9008",
+    "rollback_backend_image": "guvfx-prod-guvfx-backend:rollback-preTelegram (8a55b0cacf45)",
+    "migrations_applied": 0,
+    "code_change": false,
+    "dispatch_enabled": false,
+    "transport_selected": "telegram-real (selectable, dispatch OFF)",
+    "real_message_sent": false,
+    "armed": false
+  },
+  "files_added": [
+    "evidence/manifests/GFX-EVD-REAL-TELEGRAM-TRANSPORT-DEPLOY.json"
+  ],
+  "files_modified": [],
+  "commands": [
+    "prod: docker tag guvfx-prod-guvfx-backend:latest guvfx-prod-guvfx-backend:rollback-preTelegram",
+    "prod: grep -E TELEGRAM/DISPATCH .env > telegram.env (600); add env_file: ./telegram.env to guvfx-backend; docker compose config -q (VALID)",
+    "prod: git checkout e0ae4ee; rsync backend/; docker build -t guvfx-prod-guvfx-backend:latest",
+    "prod: migrate --plan (no planned operations)",
+    "prod: kill switch engaged + scheduler crons paused (window); docker compose up -d --force-recreate --no-deps guvfx-backend guvfx-mt5-trade-ingest-worker (+ shadow overlay); crons restored + kill switch released",
+    "prod: verify backend container env (token presence/length), select_transport(), dispatch_enabled(), safety defaults, monitor smoke"
+  ],
+  "expected_results": [
+    "Production backend brought from e69c144 (#93) to current main e0ae4ee (#97) — landing the dormant CanonicalTradeResult (#95) + real Telegram transport (#96) code. No migration.",
+    "The backend container is given TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID / NOTIFICATION_DISPATCH_TRANSPORT via a dedicated 600 env_file (telegram.env) — NOT the inline compose environment, so the token is not added to docker compose config.",
+    "The real transport is SELECTABLE (select_transport() -> telegram-real) but DISABLED (NOTIFICATION_DISPATCH_ENABLED absent -> dispatch_enabled() False -> dispatch is a no-op, nothing sent).",
+    "All safety defaults preserved (provider ONBOARDING, auto_execution_enabled False, mode SHADOW); no NotificationDelivery transmitted; no new Wayond ExecutionJobs; listener + monitor chain healthy; rollback captured.",
+    "All 14 VERIFY points satisfied."
+  ],
+  "actual_results": [
+    "VERIFY 1 Backend deployed: guvfx-backend + guvfx-mt5-trade-ingest-worker + guvfx-mt5-shadow-worker all running on new image 342d198f9008; manage.py check = 0 issues; API 200/200.",
+    "VERIFY 2 Migrations: migrate --plan = 'No planned migration operations' (none).",
+    "VERIFY 3 Backend container TELEGRAM_BOT_TOKEN: present=True length=46 (presence/length only; value never printed).",
+    "VERIFY 4 TELEGRAM_CHAT_ID=@wims07072026.",
+    "VERIFY 5 NOTIFICATION_DISPATCH_TRANSPORT=real; select_transport() -> telegram-real (is_real True).",
+    "VERIFY 6 NOTIFICATION_DISPATCH_ENABLED not set; dispatch_enabled()=False. docker compose config -q VALID and does not expose the token (env_file).",
+    "VERIFY 7 NotificationDelivery transmitted=True count = 0.",
+    "VERIFY 8 NotificationCandidate SENT = 0; no Telegram message sent.",
+    "VERIFY 9 provider wayond = ONBOARDING.",
+    "VERIFY 10 auto_execution_enabled = False.",
+    "VERIFY 11 signal_execution_mode = SHADOW.",
+    "VERIFY 12 ExecutionJob total = 50 (unchanged baseline); Wayond-tagged = 0.",
+    "VERIFY 13 Monitor chain smoke: dispatch[enabled=False claimed=0 sent=0] — safe no-op.",
+    "VERIFY 14 Rollback: image guvfx-prod-guvfx-backend:rollback-preTelegram (8a55b0cacf45); docker-compose.yml.bak.preTelegram; telegram.env (600); crontab backup crontab.preTelegram_<ts>.bak.",
+    "Window closed cleanly: kill_switch released (order_creation_kill_reason=None), 7 active crons, 0 paused; trade-ingest worker was idle during the window (demo strategies deactivated)."
+  ],
+  "acceptance_criteria": {
+    "backend_deployed_current_main": "PASS",
+    "migrations_applied_if_any": "PASS",
+    "backend_sees_token_presence_length": "PASS",
+    "backend_sees_chat_id": "PASS",
+    "backend_sees_transport_real": "PASS",
+    "dispatch_enabled_remains_off": "PASS",
+    "no_notificationdelivery_transmitted": "PASS",
+    "no_telegram_sent": "PASS",
+    "provider_still_onboarding": "PASS",
+    "auto_execution_still_false": "PASS",
+    "mode_still_shadow": "PASS",
+    "no_new_wayond_jobs": "PASS",
+    "monitor_chain_safe": "PASS",
+    "rollback_confirmed": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Production deploy. Real transport code is now LIVE but DISABLED at two gates: NOTIFICATION_DISPATCH_ENABLED is absent (dispatch no-op) AND, were it enabled, only the WIN candidate path would render — there are zero PENDING candidates and Wayond is un-armed. A real send requires the separate Nuno-supervised arm-and-run step (enable dispatch + arm the AUTO_DEMO gates).",
+    "Nothing armed: provider ONBOARDING, auto_execution_enabled False, signal_execution_mode SHADOW. Lot size and risk caps unchanged. E3 remains RED.",
+    "SECURITY (self-reported, redacted by category): during read-only recon a redaction error printed the prod INLINE-COMPOSE secret VALUES to the operator session (categories: DB password, Django secret key, MT5/agent tokens, Fernet keys, Guacamole admin/DB/MT5 passwords, JSON secret). These are the KNOWN pre-existing inline-compose exposure already flagged for rotation in docs; no NEW external leak and nothing committed. The NEW Telegram bot token was NOT among the printed values and was wired via a dedicated 600 env_file, so it is NOT present in docker compose config. RECOMMENDATION: a dedicated secrets-rotation packet (rotate the inline-compose secrets + migrate them to env_file). Nuno authorised proceeding with this deploy and deferring rotation.",
+    "The backend env is wired via env_file (telegram.env, rsync-excluded, 600). CAVEAT: telegram.env lives at the guvfx-prod root; a future rsync --delete or full compose recreate must preserve it and the env_file directive; a token rotation requires updating telegram.env + recreating guvfx-backend."
+  ],
+  "artefact_locations": [
+    "prod image guvfx-prod-guvfx-backend:latest (342d198f9008) @ e0ae4ee",
+    "prod rollback image guvfx-prod-guvfx-backend:rollback-preTelegram (8a55b0cacf45)",
+    "prod /home/ubuntu/guvfx-prod/telegram.env (600, 3 vars)",
+    "prod /home/ubuntu/guvfx-prod/docker-compose.yml (env_file: ./telegram.env added to guvfx-backend) + docker-compose.yml.bak.preTelegram",
+    "evidence/manifests/GFX-EVD-REAL-TELEGRAM-TRANSPORT-DEPLOY.json"
+  ],
+  "checksums": {},
+  "reviewer": null
+}
