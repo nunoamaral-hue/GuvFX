@@ -42,6 +42,7 @@ class LegResult:
     profit: str            # net profit for this leg — "" while not closed
     status: str            # CLOSED / OPEN / PENDING
     close_time: str        # ISO close time — "" while not closed
+    pips: str = ""         # this leg's pip result (closed legs only; symbol-aware)
 
 
 @dataclass(frozen=True)
@@ -136,6 +137,21 @@ def _aggregate(trades, total_net: Decimal) -> dict:
     }
 
 
+def _leg_with_pips(leg: dict, symbol: str) -> LegResult:
+    """Build a LegResult from a resolver leg dict, computing this leg's pips for a CLOSED leg.
+
+    Reuses the symbol-aware pip calc (``caption._pips_for`` -> ``_pip_size``) so gold/crypto/JPY
+    render correct per-TP pips. Open/pending legs carry no pips (not realised)."""
+    from .caption import _pips_for  # local: symbol-aware pip calc, no Pillow
+
+    d = dict(leg)
+    d.setdefault("pips", "")
+    if d.get("status") == "CLOSED" and d.get("exit") and d.get("entry"):
+        p = _pips_for(symbol, d.get("entry"), d.get("exit"), d.get("direction"))
+        d["pips"] = "" if p is None else f"{p:.1f}"
+    return LegResult(**d)
+
+
 def build_canonical_trade_result(
     trade, *, correlation_id: str = "", signal_source: str = "",
     account_label: str = "GuvFX", currency: str = "$", with_media: bool = False,
@@ -183,7 +199,7 @@ def build_canonical_trade_result(
     # intelligence out of the plan). Absent for single-leg / non-plan trades -> empty, renderers
     # fall back to the top-level facts.
     ev = leg_evidence or {}
-    legs = tuple(LegResult(**leg) for leg in ev.get("legs", ()))
+    legs = tuple(_leg_with_pips(leg, payload.market) for leg in ev.get("legs", ()))
     take_profits = tuple(ev.get("take_profits", ()) or ())
     progress = dict(ev.get("progress", {}) or {})
     strategy_display_name = str(ev.get("strategy_display_name", "") or "")
@@ -192,6 +208,9 @@ def build_canonical_trade_result(
     result_card = None
     caption = None
     if with_media:
+        # WIMS/social path: the partial-close rows card. The redesigned stakeholder card
+        # (per-TP legs) is a separate render — ``results_card.render_result_card`` — driven by
+        # the Telegram stakeholder path, so this WIMS behaviour is unchanged.
         from .results_card import render_card, row_from_trade  # local: pulls Pillow only here
         from .caption import build_caption
         rows = [row_from_trade(t) for t in trades]

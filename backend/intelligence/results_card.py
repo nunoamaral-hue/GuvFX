@@ -202,8 +202,9 @@ def to_svg(model) -> str:
            f'viewBox="0 0 {width} {height}" font-family="Helvetica,Arial,sans-serif">']
     for o in ops:
         if o["op"] == "rect":
+            rx = f' rx="{o["rx"]}"' if o.get("rx") else ""
             out.append(f'<rect x="{o["x"]}" y="{o["y"]}" width="{o["w"]}" '
-                       f'height="{o["h"]}" fill="{o["fill"]}"/>')
+                       f'height="{o["h"]}" fill="{o["fill"]}"{rx}/>')
         elif o["op"] == "line":
             out.append(f'<line x1="{o["x1"]}" y1="{o["y1"]}" x2="{o["x2"]}" '
                        f'y2="{o["y2"]}" stroke="{o["stroke"]}" stroke-width="2"/>')
@@ -231,7 +232,11 @@ def to_png_bytes(model) -> bytes:
     d = ImageDraw.Draw(img)
     for o in ops:
         if o["op"] == "rect":
-            d.rectangle([o["x"], o["y"], o["x"] + o["w"], o["y"] + o["h"]], fill=o["fill"])
+            box = [o["x"], o["y"], o["x"] + o["w"], o["y"] + o["h"]]
+            if o.get("rx"):
+                d.rounded_rectangle(box, radius=o["rx"], fill=o["fill"])
+            else:
+                d.rectangle(box, fill=o["fill"])
         elif o["op"] == "line":
             d.line([o["x1"], o["y1"], o["x2"], o["y2"]], fill=o["stroke"], width=2)
         elif o["op"] == "arrow":
@@ -246,6 +251,190 @@ def to_png_bytes(model) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# GFX-PKT-STAKEHOLDER-OUTPUT-VISUAL-UPGRADE — the polished result card.
+# Consumes the CanonicalTradeResult (with per-TP legs). Emoji-free (Pillow's raster
+# font has no emoji) — status is carried by COLOUR + shape: green win/profit/TP,
+# red SL, blue side/symbol, neutral everything else. No chart. Shows each TP as its
+# own trade result; pending TPs are shown greyed (never implied as guaranteed wins).
+# NEVER renders execution mode or correlation id (internal-only, per the packet).
+# ---------------------------------------------------------------------------
+BAND = "#0f172a"       # dark header band
+GREEN = ACCENT         # win / profit / TP
+RED = "#dc2626"        # stop loss
+BLUE = BUY             # side / symbol
+GREEN_BG = "#f0fdf4"   # tinted profit block
+FAINT = "#9aa3af"
+
+
+def _dec(v, default="0"):
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return Decimal(default)
+
+
+def _signed_money(v) -> str:
+    d = _dec(v)
+    return f"{'+' if d > 0 else ('-' if d < 0 else '')}${abs(d):,.2f}"
+
+
+def _signed_pips(v) -> str:
+    if v in (None, ""):
+        return ""
+    d = _dec(v)
+    return f"{'+' if d >= 0 else ''}{d} pips"
+
+
+def build_result_card_model(r):
+    """Build the (width, height, ops) model for the redesigned stakeholder card from a
+    CanonicalTradeResult. Read-only; renders nothing itself."""
+    legs = list(getattr(r, "legs", ()) or ())
+    closed = [lg for lg in legs if lg.status == "CLOSED"]
+    total_profit = sum((_dec(lg.profit) for lg in closed), Decimal("0")) if closed else _dec(r.net_pnl)
+    total_pips = sum((_dec(lg.pips) for lg in closed if lg.pips not in (None, "")), Decimal("0")) if closed else _dec(r.pips)
+    tps = list(getattr(r, "take_profits", ()) or ())
+    final = bool((getattr(r, "progress", {}) or {}).get("final"))
+    n_total = (r.progress or {}).get("total") or len(legs) or 1
+    n_closed = (r.progress or {}).get("closed") or len(closed)
+
+    # analysis rows (label, value, value_colour) — NO exec mode / correlation id
+    analysis = [
+        ("Reference entry", r.reference_entry or "n/a", INK),
+        ("Actual fill", r.actual_fill or "n/a", INK),
+        ("Stop loss", r.stop_loss or "n/a", RED),
+    ]
+    for i, tp in enumerate(tps or ([r.take_profit] if r.take_profit else [])):
+        analysis.append((f"TP{i + 1}", tp or "n/a", GREEN))
+    analysis += [
+        ("Exit price", r.exit or "n/a", INK),
+        ("Gross PNL", _signed_money(r.gross_pnl), INK),
+        ("Net profit", _signed_money(total_profit), GREEN),
+        ("Closed", _fmt_time(r.execution_timestamp), MUTED),
+    ]
+
+    row_h, an_h = 128, 56
+    y = 0
+    ops = []
+    H_HEADER, H_SUMMARY, H_METRIC, H_SECHDR, H_FOOT = 150, 128, 214, 64, 150
+    height = (H_HEADER + H_SUMMARY + H_METRIC + H_SECHDR + row_h * max(len(legs), 1)
+              + H_SECHDR + an_h * len(analysis) + H_FOOT)
+    ops.append({"op": "rect", "x": 0, "y": 0, "w": W, "h": height, "fill": WHITE})
+
+    # --- header band ---
+    ops.append({"op": "rect", "x": 0, "y": 0, "w": W, "h": H_HEADER, "fill": BAND})
+    ops.append({"op": "text", "x": MARGIN, "y": 68, "t": f"{(r.provider or 'GUVFX').upper()} TRADE RESULT",
+                "size": 46, "fill": WHITE, "anchor": "start", "bold": True})
+    ops.append({"op": "text", "x": MARGIN, "y": 112, "t": r.strategy_display_name or r.strategy or "Automated strategy",
+                "size": 27, "fill": "#94a3b8", "anchor": "start", "bold": False})
+    # outcome badge (green WIN)
+    badge = (r.outcome or "WIN").upper()
+    bw = _measure(badge, 34) + 56
+    ops.append({"op": "rect", "x": W - MARGIN - bw, "y": 46, "w": bw, "h": 58, "fill": GREEN, "rx": 29})
+    ops.append({"op": "text", "x": W - MARGIN - bw / 2, "y": 86, "t": badge, "size": 34,
+                "fill": WHITE, "anchor": "middle", "bold": True})
+    y = H_HEADER
+
+    # --- summary strip ---
+    ops.append({"op": "text", "x": MARGIN, "y": y + 74, "t": r.symbol, "size": 60, "fill": BLUE,
+                "anchor": "start", "bold": True})
+    sx = MARGIN + _measure(r.symbol + "  ", 60)
+    ops.append({"op": "text", "x": sx, "y": y + 74, "t": r.direction, "size": 40, "fill": BLUE,
+                "anchor": "start", "bold": True})
+    ops.append({"op": "text", "x": W - MARGIN, "y": y + 52, "t": "ACCOUNT", "size": 22, "fill": FAINT,
+                "anchor": "end", "bold": False})
+    ops.append({"op": "text", "x": W - MARGIN, "y": y + 88, "t": r.account_label or "n/a", "size": 32,
+                "fill": INK, "anchor": "end", "bold": False})
+    ops.append({"op": "line", "x1": MARGIN, "y1": y + H_SUMMARY - 1, "x2": W - MARGIN,
+                "y2": y + H_SUMMARY - 1, "stroke": DIVIDER})
+    y += H_SUMMARY
+
+    # --- main metric (tinted) ---
+    ops.append({"op": "rect", "x": 0, "y": y, "w": W, "h": H_METRIC, "fill": GREEN_BG})
+    ops.append({"op": "text", "x": MARGIN, "y": y + 50, "t": ("TOTAL PROFIT" if final else "PROFIT SO FAR"),
+                "size": 26, "fill": "#15803d", "anchor": "start", "bold": True})
+    ops.append({"op": "text", "x": MARGIN, "y": y + 140, "t": _signed_money(total_profit), "size": 92,
+                "fill": GREEN, "anchor": "start", "bold": True})
+    pip_txt = _signed_pips(total_pips)
+    if pip_txt:
+        ops.append({"op": "text", "x": W - MARGIN, "y": y + 92, "t": pip_txt, "size": 44, "fill": GREEN,
+                    "anchor": "end", "bold": True})
+    ops.append({"op": "text", "x": W - MARGIN, "y": y + 140, "t": f"{n_closed} of {n_total} take-profits closed",
+                "size": 28, "fill": MUTED, "anchor": "end", "bold": False})
+    y += H_METRIC
+
+    # --- TP results ---
+    ops.append({"op": "text", "x": MARGIN, "y": y + 42, "t": "TAKE-PROFIT RESULTS", "size": 26,
+                "fill": MUTED, "anchor": "start", "bold": True})
+    y += H_SECHDR
+    if not legs:  # fallback single-row
+        legs = [type("L", (), dict(tp_label="TP1", direction=r.direction, volume="",
+                entry=r.actual_fill, exit=r.exit, target=r.take_profit, profit=r.net_pnl,
+                status="CLOSED", pips=r.pips))()]
+    for lg in legs:
+        is_closed = lg.status == "CLOSED"
+        bar = GREEN if is_closed else "#cbd5e1"
+        ops.append({"op": "rect", "x": 0, "y": y + 18, "w": 12, "h": row_h - 36, "fill": bar})
+        b1 = y + 62
+        ops.append({"op": "text", "x": MARGIN, "y": b1, "t": lg.tp_label, "size": 46,
+                    "fill": (GREEN if is_closed else MUTED), "anchor": "start", "bold": True})
+        dv = f"{lg.direction} {lg.volume}".strip()
+        ops.append({"op": "text", "x": MARGIN + _measure(lg.tp_label + "  ", 46), "y": b1, "t": dv,
+                    "size": 34, "fill": (BLUE if is_closed else FAINT), "anchor": "start", "bold": True})
+        if is_closed:
+            ops.append({"op": "text", "x": W - MARGIN, "y": b1, "t": _signed_money(lg.profit), "size": 46,
+                        "fill": GREEN, "anchor": "end", "bold": True})
+            pp = _signed_pips(lg.pips)
+            if pp:
+                ops.append({"op": "text", "x": W - MARGIN, "y": y + 104, "t": pp, "size": 30,
+                            "fill": GREEN, "anchor": "end", "bold": False})
+        else:
+            ops.append({"op": "text", "x": W - MARGIN, "y": b1, "t": "PENDING", "size": 30,
+                        "fill": FAINT, "anchor": "end", "bold": True})
+        # line 2: entry -> exit / target
+        b2 = y + 104
+        left = str(lg.entry or "")
+        ops.append({"op": "text", "x": MARGIN, "y": b2, "t": left, "size": 32, "fill": MUTED,
+                    "anchor": "start", "bold": False})
+        ax = MARGIN + _measure(left, 32) + 16
+        ops.append({"op": "arrow", "x": ax, "y": b2 - 11, "len": 34, "stroke": (MUTED if is_closed else FAINT)})
+        right = str(lg.exit if is_closed else f"target {lg.target}")
+        ops.append({"op": "text", "x": ax + 34 + 16, "y": b2, "t": right, "size": 32,
+                    "fill": (INK if is_closed else FAINT), "anchor": "start", "bold": False})
+        ops.append({"op": "line", "x1": MARGIN, "y1": y + row_h - 1, "x2": W - MARGIN,
+                    "y2": y + row_h - 1, "stroke": DIVIDER})
+        y += row_h
+
+    # --- trade analysis ---
+    ops.append({"op": "text", "x": MARGIN, "y": y + 42, "t": "TRADE ANALYSIS", "size": 26,
+                "fill": MUTED, "anchor": "start", "bold": True})
+    y += H_SECHDR
+    for label, value, col in analysis:
+        ops.append({"op": "text", "x": MARGIN, "y": y + 36, "t": label, "size": 30, "fill": MUTED,
+                    "anchor": "start", "bold": False})
+        ops.append({"op": "text", "x": W - MARGIN, "y": y + 36, "t": str(value), "size": 30, "fill": col,
+                    "anchor": "end", "bold": (col == GREEN)})
+        ops.append({"op": "line", "x1": MARGIN, "y1": y + an_h - 1, "x2": W - MARGIN,
+                    "y2": y + an_h - 1, "stroke": "#f4f6f8"})
+        y += an_h
+
+    # --- footer ---
+    ops.append({"op": "text", "x": MARGIN, "y": y + 58, "t": "Trade completed automatically · No manual intervention",
+                "size": 28, "fill": MUTED, "anchor": "start", "bold": False})
+    ops.append({"op": "text", "x": MARGIN, "y": y + 100, "t": "Generated from GuvFX execution data — not a broker screenshot.",
+                "size": 24, "fill": FAINT, "anchor": "start", "bold": False})
+    return W, height, ops
+
+
+def render_result_card(r) -> dict:
+    """Render the redesigned stakeholder card (PNG deliverable + SVG preview) from a canonical."""
+    model = build_result_card_model(r)
+    png = to_png_bytes(model)
+    b64 = base64.b64encode(png).decode("ascii")
+    return {"format": "png", "kind": "stakeholder_result_card", "png_base64": b64,
+            "data_uri": f"data:image/png;base64,{b64}", "svg": to_svg(model)}
 
 
 def render_card(rows, *, title="Trade result", total_profit=None) -> dict:
