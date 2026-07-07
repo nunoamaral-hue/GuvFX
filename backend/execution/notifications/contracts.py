@@ -12,7 +12,9 @@ Telegram / WIMS / future social channels all format from the same source.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 
 from execution.models import SignalExecutionPlan
 
@@ -79,6 +81,115 @@ def resolve_signal_linkage(correlation_id: str) -> dict:
     }
 
 
+def _leg_net(trade) -> str:
+    """Net profit for one trade = profit + commission + swap, formatted; '' if unknown."""
+    try:
+        total = (Decimal(str(getattr(trade, "profit", 0) or 0))
+                 + Decimal(str(getattr(trade, "commission", 0) or 0))
+                 + Decimal(str(getattr(trade, "swap", 0) or 0)))
+        return str(total)
+    except (InvalidOperation, TypeError):
+        return ""
+
+
+def _resolve_strategy_display_name(plan) -> str:
+    """Best-effort human strategy name for the plan's account (e.g. 'Wayond Auto Demo').
+
+    Prefers the account's active AUTO_DEMO assignment; falls back to a title-cased source. Purely
+    read-only and defensive — a lookup failure never blocks a notification."""
+    try:
+        from strategies.models import StrategyAssignment
+
+        a = (
+            StrategyAssignment.objects.filter(
+                account=plan.account, is_active=True,
+                execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+            )
+            .select_related("strategy")
+            .order_by("-id")
+            .first()
+        )
+        if a is not None and a.strategy_id:
+            return a.strategy.name
+    except Exception:  # pragma: no cover - defensive; never block a notification on this
+        pass
+    return (getattr(plan, "source", "") or "").replace("_", " ").title()
+
+
+def resolve_leg_evidence(correlation_id: str, current_trade=None) -> dict:
+    """Gather a plan's per-leg evidence (closed + open + pending) for progressive rendering.
+
+    READ-ONLY. Lives on the execution side (owns SignalExecutionPlan + Trade) and hands intelligence
+    a plain dict (ADR-009). For each leg of the plan it reports the leg's TP target and — via the
+    leg's order comment ``WAY{plan}L{leg}`` — whether its trade is CLOSED (hit TP: exit + profit),
+    OPEN (filled, running) or PENDING (not yet filled). ``current_trade`` (the trade whose close
+    triggered this notification) sets the progress label ("TP{n}"). Returns {} when there is no
+    resolvable plan (e.g. a non-Wayond / strategy-path trade) so the renderer degrades gracefully.
+    """
+    if not correlation_id:
+        return {}
+    plan = (
+        SignalExecutionPlan.objects.filter(correlation_id=correlation_id)
+        .select_related("account")
+        .first()
+    )
+    if plan is None:
+        return {}
+    from trading.models import Trade
+
+    leg_dicts = []
+    take_profits = []
+    closed = 0
+    for leg in plan.legs.order_by("leg_index"):
+        tp = str(leg.take_profit or "")
+        take_profits.append(tp)
+        comment = f"WAY{plan.id}L{leg.leg_index}"
+        trade = (
+            Trade.objects.filter(account=plan.account, comment=comment)
+            .order_by("-open_time")
+            .first()
+        )
+        vol = f"{leg.lot_size:.2f}" if leg.lot_size is not None else ""
+        if trade is not None and trade.close_time is not None:
+            closed += 1
+            status, exit_, profit = "CLOSED", str(trade.close_price or ""), _leg_net(trade)
+            entry = str(trade.open_price or plan.entry or "")
+            direction = str(trade.side or plan.direction)
+            close_time = trade.close_time.isoformat()
+            if trade.volume is not None:
+                vol = f"{trade.volume:.2f}"
+        elif trade is not None:
+            status, exit_, profit, close_time = "OPEN", "", "", ""
+            entry = str(trade.open_price or plan.entry or "")
+            direction = str(trade.side or plan.direction)
+            if trade.volume is not None:
+                vol = f"{trade.volume:.2f}"
+        else:
+            status, exit_, profit, close_time = "PENDING", "", "", ""
+            entry = str(plan.entry or "")
+            direction = str(plan.direction)
+        leg_dicts.append({
+            "index": leg.leg_index, "tp_label": f"TP{leg.leg_index}", "direction": direction,
+            "volume": vol, "entry": entry, "target": tp, "exit": exit_, "profit": profit,
+            "status": status, "close_time": close_time,
+        })
+
+    total = len(leg_dicts)
+    current_idx = None
+    cc = str(getattr(current_trade, "comment", "") or "")
+    m = re.search(r"L(\d+)$", cc)
+    if m:
+        current_idx = int(m.group(1))
+    label = f"TP{current_idx}" if current_idx else (f"TP{closed}" if closed else "")
+    return {
+        "legs": leg_dicts,
+        "take_profits": take_profits,
+        "strategy_display_name": _resolve_strategy_display_name(plan),
+        "progress": {"closed": closed, "total": total, "label": label,
+                     "final": bool(total and closed >= total)},
+    }
+
+
 def build_telegram_envelope(candidate) -> TelegramMessageEnvelope:
     """Build the (draft-rendered) Telegram envelope from a NotificationCandidate (read-only).
 
@@ -89,11 +200,13 @@ def build_telegram_envelope(candidate) -> TelegramMessageEnvelope:
     from intelligence.renderers import TelegramRenderer
 
     trade = candidate.outcome_record.trade
+    cid = candidate.correlation_id or ""
     result = build_canonical_trade_result(
         trade,
-        correlation_id=candidate.correlation_id or "",
+        correlation_id=cid,
         signal_source=candidate.signal_source or "",
-        linkage=resolve_signal_linkage(candidate.correlation_id or ""),
+        linkage=resolve_signal_linkage(cid),
+        leg_evidence=resolve_leg_evidence(cid, trade),
     )
     content = TelegramRenderer().render(result)
     return TelegramMessageEnvelope(

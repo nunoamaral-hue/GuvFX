@@ -155,18 +155,33 @@ class BuildCanonicalTests(CanonicalBase):
 
 class RendererTests(CanonicalBase):
     def test_telegram_renderer_formats_from_canonical(self):
+        # Redesigned 3-section report (single-leg fallback: no leg_evidence supplied here).
         r = build_canonical_trade_result(
             self.trade, correlation_id=self.CID, signal_source="wayond",
             linkage=resolve_signal_linkage(self.CID),
         )
         content = TelegramRenderer().render(r)
         self.assertEqual(content.renderer, "telegram")
-        self.assertEqual(content.title, "GuvFX — winning trade: EURUSD BUY")
-        self.assertIn("EURUSD BUY", content.text)
-        self.assertIn("Signal entry (ref): 1.0850  |  Filled: 1.0850", content.text)
-        self.assertIn("SL: 1.0800  |  TP: 1.0900", content.text)
-        self.assertIn("Profit: 21  (50.0 pips)", content.text)
-        self.assertIn(f"ref: {self.CID}", content.text)
+        self.assertEqual(content.title, "WAYOND TRADE RESULT — WIN")
+        # Section 1 — executive summary
+        self.assertIn("Instrument: EURUSD", content.text)
+        self.assertIn("Direction: BUY", content.text)
+        self.assertIn("Net profit so far: +$21.00", content.text)
+        self.assertIn("(50.0 pips)", content.text)
+        # Section 2 — trade evidence
+        self.assertIn("📊 TRADE EVIDENCE", content.text)
+        self.assertIn("1.0850 → 1.0900", content.text)
+        # Section 3 — execution analysis (factual)
+        self.assertIn("🔎 EXECUTION ANALYSIS", content.text)
+        self.assertIn("Reference entry: 1.0850", content.text)
+        self.assertIn("Actual fill: 1.0850", content.text)
+        self.assertIn("Stop loss: 1.0800", content.text)
+        self.assertIn("Take profits: TP1 1.0900", content.text)
+        self.assertIn(f"Correlation id: {self.CID}", content.text)
+        self.assertIn("No manual intervention occurred.", content.text)
+        # no marketing language
+        for banned in ("Excellent", "perfectly", "delivered"):
+            self.assertNotIn(banned, content.text)
         self.assertIsNone(content.media)
 
     def test_wims_renderer_produces_card_and_caption(self):
@@ -199,13 +214,119 @@ class TelegramEnvelopeRegressionTests(CanonicalBase):
         self.assertEqual(Decimal(env.profit), Decimal("21"))
         self.assertEqual(env.correlation_id, self.CID)
         self.assertEqual(env.strategy, "wayond")
-        self.assertEqual(env.title, "GuvFX — winning trade: EURUSD BUY")
+        # The envelope CONTRACT fields are unchanged; the rendered_message is the redesign.
+        # One leg, closed -> a FINAL card via the leg resolver.
+        self.assertEqual(env.title, "WAYOND TRADE RESULT — FINAL WIN")
         self.assertIn("EURUSD", env.rendered_message)
+        self.assertIn("EXECUTION ANALYSIS", env.rendered_message)
         self.assertIn(self.CID, env.rendered_message)
         for field in ("title", "summary", "strategy", "symbol", "direction", "reference_entry",
                       "actual_fill", "stop_loss", "take_profit", "profit", "pips",
                       "execution_timestamp", "correlation_id", "rendered_message"):
             self.assertIn(field, env.as_dict())
+
+
+class ProgressiveLegEvidenceTests(CanonicalBase):
+    """GFX-PKT-CANONICAL-LEG-EVIDENCE — a card per profitable leg close, showing closed + pending."""
+
+    def _legev(self, closed):
+        tps = ["2367.50", "2371.50", "2375.50"]
+        profs = ["42.88", "43.11", "42.65"]
+        legs = []
+        for i in range(3):
+            if i < closed:
+                legs.append(dict(index=i + 1, tp_label=f"TP{i + 1}", direction="BUY", volume="0.02",
+                                 entry="2362.45", target=tps[i], exit=tps[i], profit=profs[i],
+                                 status="CLOSED", close_time="2026-07-07T13:00:00+00:00"))
+            else:
+                legs.append(dict(index=i + 1, tp_label=f"TP{i + 1}", direction="BUY", volume="0.02",
+                                 entry="2362.45", target=tps[i], exit="", profit="", status="PENDING",
+                                 close_time=""))
+        return dict(legs=legs, take_profits=tps, strategy_display_name="Wayond Auto Demo",
+                    progress=dict(closed=closed, total=3, label=f"TP{closed}", final=(closed >= 3)))
+
+    def _render(self, closed):
+        r = build_canonical_trade_result(
+            self.trade, correlation_id=self.CID, signal_source="wayond",
+            linkage=resolve_signal_linkage(self.CID), leg_evidence=self._legev(closed),
+        )
+        return r, TelegramRenderer().render(r).text
+
+    def test_tp1_card_shows_one_closed_two_pending(self):
+        r, t = self._render(1)
+        self.assertEqual(len(r.legs), 3)
+        self.assertIn("TRADE RESULT — TP1 WIN", t)
+        self.assertIn("1 of 3 legs closed", t)
+        self.assertIn("✅ Leg 1", t)
+        self.assertIn("2362.45 → 2367.50", t)
+        self.assertIn("⏳ Leg 2", t)
+        self.assertIn("pending", t)
+        self.assertIn("Total closed: +$42.88 (1 of 3 legs)", t)
+
+    def test_tp2_card_running_total(self):
+        _, t = self._render(2)
+        self.assertIn("TRADE RESULT — TP2 WIN", t)
+        self.assertIn("2 of 3 legs closed", t)
+        self.assertIn("Total closed: +$85.99 (2 of 3 legs)", t)
+
+    def test_final_card_shows_all_closed_and_total(self):
+        r, t = self._render(3)
+        self.assertIn("TRADE RESULT — FINAL WIN", t)
+        self.assertIn("all 3 of 3 legs closed", t)
+        self.assertIn("✅ Leg 3", t)
+        self.assertNotIn("pending", t)
+        self.assertIn("Total net profit: +$128.64", t)
+        self.assertIn("Total closed: +$128.64 (3 of 3 legs)", t)
+        self.assertIn("All 3 take-profit legs were executed", t)
+
+    def test_canonical_leg_fields_populated(self):
+        r = build_canonical_trade_result(self.trade, correlation_id=self.CID, leg_evidence=self._legev(2))
+        self.assertEqual([lg.status for lg in r.legs], ["CLOSED", "CLOSED", "PENDING"])
+        self.assertEqual(r.take_profits, ("2367.50", "2371.50", "2375.50"))
+        self.assertEqual(r.strategy_display_name, "Wayond Auto Demo")
+        self.assertEqual(r.progress["closed"], 2)
+
+
+class ResolveLegEvidenceTests(CanonicalBase):
+    """The execution-side resolver gathers a plan's per-leg evidence (closed + open + pending)."""
+
+    def setUp(self):
+        super().setUp()
+        # leg 1 is already closed (trade T1). Add leg 2 (closed) + leg 3 (no trade -> pending).
+        job2 = ExecutionJob.objects.create(
+            job_type=ExecutionJob.JobType.PLACE_ORDER, account=self.acct,
+            status=ExecutionJob.Status.PENDING,
+            payload={"execution_mode": "DEMO", "comment": f"WAY{self.plan.id}L2"},
+        )
+        ProposedOrderLeg.objects.create(
+            plan=self.plan, leg_index=2, take_profit="1.0950", stop_loss="1.0800",
+            lot_size=Decimal("0.01"), status=ProposedOrderLeg.Status.PROMOTED, execution_job=job2,
+        )
+        self.trade2 = Trade.objects.create(
+            account=self.acct, ticket="T2", symbol="EURUSD", side="BUY", volume=Decimal("0.01"),
+            open_time=timezone.now(), open_price=Decimal("1.0850"), close_time=timezone.now(),
+            close_price=Decimal("1.0950"), profit=Decimal("42"), comment=f"WAY{self.plan.id}L2",
+            correlation_id=self.CID,
+        )
+        ProposedOrderLeg.objects.create(
+            plan=self.plan, leg_index=3, take_profit="1.1000", stop_loss="1.0800",
+            lot_size=Decimal("0.01"), status=ProposedOrderLeg.Status.PLANNED,  # no job/trade -> pending
+        )
+
+    def test_resolver_reports_closed_and_pending(self):
+        from execution.notifications.contracts import resolve_leg_evidence
+        ev = resolve_leg_evidence(self.CID, self.trade2)  # triggered by leg 2's close
+        self.assertEqual([lg["status"] for lg in ev["legs"]], ["CLOSED", "CLOSED", "PENDING"])
+        self.assertEqual(ev["take_profits"], ["1.0900", "1.0950", "1.1000"])
+        self.assertEqual(ev["progress"], {"closed": 2, "total": 3, "label": "TP2", "final": False})
+        self.assertEqual(ev["legs"][1]["profit"], "42.00")
+        self.assertEqual(ev["legs"][2]["target"], "1.1000")
+        self.assertEqual(ev["legs"][2]["exit"], "")
+
+    def test_resolver_blank_when_no_plan(self):
+        from execution.notifications.contracts import resolve_leg_evidence
+        self.assertEqual(resolve_leg_evidence("no-such-corr", None), {})
+        self.assertEqual(resolve_leg_evidence("", None), {})
 
 
 class CanonicalBoundaryTests(TestCase):
