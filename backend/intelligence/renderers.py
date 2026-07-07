@@ -111,8 +111,9 @@ class TelegramRenderer(CanonicalRenderer):
         if lg.status == "CLOSED":
             return f"✅ Leg {lg.index} · {dir_vol} · {lg.entry} → {lg.exit} · {_money(lg.profit, currency)}"
         if lg.status == "OPEN":
-            return f"⏳ Leg {lg.index} · {dir_vol} · {lg.entry} → TP {lg.target} · open"
-        return f"⏳ Leg {lg.index} · {dir_vol} · TP {lg.target} · pending"
+            # Filled, still running — show the TP target it is working toward (not a realized exit).
+            return f"⏳ Leg {lg.index} · {dir_vol} · {lg.entry} → target {lg.target} · open"
+        return f"⏳ Leg {lg.index} · {dir_vol} · target {lg.target} · pending"
 
     def _evidence_lines(self, r: CanonicalTradeResult, currency: str):
         if r.legs:
