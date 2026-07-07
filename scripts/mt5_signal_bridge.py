@@ -390,7 +390,9 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
 
     job_id = job.get("id")
     payload = job.get("payload", {})
-    symbol = payload.get("symbol", "EURUSD").upper()
+    # No implicit default symbol: a blank symbol fails closed in validate_broker_symbol
+    # (SYMBOL_NOT_AVAILABLE_ON_MT5) rather than silently defaulting to a EURUSD order.
+    symbol = payload.get("symbol", "").upper()
     lots = min(float(payload.get("lots", 0.01)), MAX_LOT_SIZE)
     side = payload.get("side", "BUY").upper()
     magic = payload.get("magic", 0)
