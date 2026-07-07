@@ -22,7 +22,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from execution.models import NotificationCandidate, NotificationDelivery
-from execution.notifications.transport import NotificationTransport, TelegramDryRunTransport
+from execution.notifications.real_transport import select_transport
+from execution.notifications.transport import NotificationTransport
 
 logger = logging.getLogger("guvfx.execution.notifications")
 
@@ -62,7 +63,9 @@ def dispatch_pending(*, transport: NotificationTransport = None, limit: int = DE
               "skipped": 0, "reaped": 0}
     if not counts["enabled"]:
         return counts
-    transport = transport or TelegramDryRunTransport()
+    # DEFAULT = dry-run (select_transport only returns the real transport when explicitly selected
+    # via NOTIFICATION_DISPATCH_TRANSPORT). An explicit transport arg still overrides both.
+    transport = transport or select_transport()
 
     counts["reaped"] = _reap_stuck_processing(timezone.now())
 
