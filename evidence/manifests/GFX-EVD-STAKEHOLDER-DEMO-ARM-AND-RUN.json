@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-STAKEHOLDER-DEMO-ARM-AND-RUN",
+  "packet_id": "GFX-PKT-STAKEHOLDER-DEMO-ARM-AND-RUN",
+  "created_at_utc": "2026-07-07T08:29:21Z",
+  "branch": "docs/demo-arm-run-aborted-evidence",
+  "base_commit": "818a53db3099abe18e71625eb12f3083a381687c",
+  "head_commit": "818a53db3099abe18e71625eb12f3083a381687c",
+  "environment": {
+    "target": "production (OVH VPS guvfx-ubuntu 100.119.23.29)",
+    "outcome": "ABORTED at pre-flight — NOT armed, NOT run",
+    "armed": false,
+    "order_placed": false,
+    "trade_opened": false,
+    "telegram_sent": false,
+    "code_change": false,
+    "deploy": false
+  },
+  "files_added": [
+    "evidence/manifests/GFX-EVD-STAKEHOLDER-DEMO-ARM-AND-RUN.json"
+  ],
+  "files_modified": [],
+  "commands": [
+    "prod: read-only pre-flight (listener/provider/assignment/parser/transport/flags/account/bridge/worker/monitor)",
+    "prod: docker exec guvfx-wayond-listener python -c 'import execution.auto_router / signal_intake.signals / intelligence.canonical' (blocker check)",
+    "prod: reconfirm ExecutionControl + provider disarmed (read-only)"
+  ],
+  "expected_results": [
+    "Pre-flight verifies the system is ready to arm and autonomously run one Wayond signal end-to-end (acquire -> parse -> route -> demo order -> manage -> close -> outcome -> candidate -> canonical -> real Telegram)."
+  ],
+  "actual_results": [
+    "Pre-flight (13 surface checks) PASS: listener Up 43h healthy; provider wayond exists + ONBOARDING; unique AUTO_DEMO assignment #7 on demo acct#1; parser cert MEDIUM; transport selectable (telegram-real) + dispatch OFF; auto_execution_enabled False; mode SHADOW; demo acct#1 is_demo+node=1+mt5_instance=1; workers Up; bridge :8788 reachable (/health 401 = alive, auth-gated); monitor cron installed + smoke enabled=False.",
+    "BLOCKER (extended pre-flight): the guvfx-wayond-listener image is 2026-07-05 (pre-auto-execution). Inside the listener container: `import execution.auto_router` -> ModuleNotFoundError; `signal_intake.signals` -> ModuleNotFoundError (no signal_acquired); `intelligence.canonical` -> ModuleNotFoundError; promote_plan_to_demo_jobs absent.",
+    "IMPACT: the signal_acquired -> auto_router -> plan_demo_execution -> promote_plan_to_demo_jobs chain runs IN the listener process. With this stale image a real Wayond signal would create only a PendingSignalApproval and stop — no autonomous PLACE_ORDER, no trade, no notification. The backend (current code) does not poll approvals, so nothing downstream would fire.",
+    "DECISION: ABORTED before the arming sequence (per PRE-FLIGHT 'abort immediately if any fail' + FAILURE POLICY). No flag was flipped.",
+    "POST-STATE (reconfirmed read-only): auto_execution_enabled=False, signal_execution_mode=SHADOW, provider wayond=ONBOARDING, NOTIFICATION_DISPATCH_ENABLED absent. Nothing armed; no order; no Telegram sent; ExecutionJob total unchanged (50)."
+  ],
+  "acceptance_criteria": {
+    "pre_flight_surface_checks": "PASS",
+    "listener_runs_autonomous_execution_code": "FAIL",
+    "armed": "NOT_DONE (aborted)",
+    "demo_trade_executed": "NOT_DONE (aborted)",
+    "telegram_delivered": "NOT_DONE (aborted)"
+  },
+  "status": "FAIL",
+  "limitations": [
+    "The demonstration did NOT run: aborted at pre-flight because the Wayond listener image predates the auto-execution/E3/canonical/real-transport code, so the acquisition->routing hop cannot fire an autonomous demo order.",
+    "Nothing was armed or changed: provider ONBOARDING, auto_execution_enabled False, mode SHADOW, dispatch OFF — all unchanged. No order, no trade, no Telegram send. E3 remains RED.",
+    "FIX REQUIRED (separate packet): redeploy the guvfx-wayond-listener image from current main src (which contains signal_intake.signals.signal_acquired + execution.auto_router with the AUTO_DEMO tier + execution.signal_promotion.promote_plan_to_demo_jobs + intelligence.canonical + renderers). The listener holds the live Telethon session (temp personal account), so the rebuild must preserve/re-auth the session carefully (session de-auth risk).",
+    "Only the LISTENER is stale — the trade-ingest worker, shadow worker, and backend are on current code (342d198f9008); the monitor cron + real transport are wired and disabled-by-default. Once the listener is current, the pre-flight can be re-run and the arm-and-run retried."
+  ],
+  "artefact_locations": [
+    "prod listener image guvfx-wayond-listener:latest (154806e94bc3, created 2026-07-05) — STALE",
+    "prod backend image 342d198f9008 (current, e0ae4ee)",
+    "evidence/manifests/GFX-EVD-STAKEHOLDER-DEMO-ARM-AND-RUN.json"
+  ],
+  "checksums": {},
+  "reviewer": null
+}
