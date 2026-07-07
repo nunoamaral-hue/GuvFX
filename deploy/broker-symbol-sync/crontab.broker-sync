@@ -1,0 +1,17 @@
+# GFX-PKT-BROKER-SYMBOL-DEPLOY-AND-SYNC — nightly broker-instrument cache refresh.
+#
+# Refreshes the execution.BrokerInstrument cache from the broker (bridge GET /mt5/symbols)
+# once a night, so a delisted/renamed/new broker symbol becomes visible to the registry within
+# ~24h. SAFE: sync_broker_instruments places NO order — it only upserts the symbol cache
+# (stale symbols are marked enabled=False, never deleted). Matches the existing h1/m5/h4 and
+# monitor-chain host-cron pattern (no new scheduler service — per the architecture rule).
+#
+# Managed by deploy/broker-symbol-sync/install_broker_sync_cron.sh (identified by the marker below).
+# Install:  ACCOUNTS="1" deploy/broker-symbol-sync/install_broker_sync_cron.sh
+# Remove:   deploy/broker-symbol-sync/install_broker_sync_cron.sh --remove
+#
+# Nightly sync for the demo account (02:17). Add one line per account you run.
+17 2 * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py sync_broker_instruments --account 1 >> /var/log/guvfx/broker_sync.log 2>&1 # guvfx-broker-sync
+#
+# Optional: a morning staleness report (read-only) so an operator sees a stale/missing cache.
+# 5 7 * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py broker_instrument_status >> /var/log/guvfx/broker_sync.log 2>&1 # guvfx-broker-status

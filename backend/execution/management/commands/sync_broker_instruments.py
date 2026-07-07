@@ -67,16 +67,26 @@ def upsert_broker_instruments(account, raw_symbols) -> dict:
 
 
 def _fetch_symbols(account) -> list:
-    """Fetch the broker symbol list from the bridge ``GET /mt5/symbols`` (the only network call)."""
+    """Fetch the broker symbol list from the bridge ``GET /mt5/symbols`` (the only network call).
+
+    The bridge's GET endpoints authenticate via the ``X-GuvFX-Agent-Token`` header
+    (validated against the bridge's agent token, falling back to the worker token) — NOT
+    the ``X-Worker-Token`` used by the POST order endpoints. Sending the wrong header 401s.
+    """
     base_url = (os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL") or "").rstrip("/")
-    token = os.getenv("GUVFX_WINDOWS_AGENT_TOKEN") or os.getenv("MT5_WORKER_TOKEN") or ""
+    token = (
+        os.getenv("GUVFX_WINDOWS_AGENT_TOKEN")
+        or os.getenv("MT5_WORKER_TOKEN")
+        or os.getenv("GUVFX_AGENT_TOKEN")
+        or ""
+    )
     if not base_url:
         raise CommandError("GUVFX_WINDOWS_AGENT_BASE_URL is not set")
     windows_username = None
     if getattr(account, "mt5_instance_id", None):
         windows_username = getattr(account.mt5_instance, "windows_username", None)
     req = urllib.request.Request(f"{base_url}/mt5/symbols", method="GET", headers={
-        "X-Worker-Token": token, **({"X-Windows-Username": windows_username} if windows_username else {}),
+        "X-GuvFX-Agent-Token": token, **({"X-Windows-Username": windows_username} if windows_username else {}),
     })
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
         payload = json.loads((resp.read() or b"{}").decode() or "{}")

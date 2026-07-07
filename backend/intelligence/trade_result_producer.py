@@ -42,6 +42,11 @@ def _iso(value) -> str:
     return str(value)
 
 
+# Crypto bases whose "pip" (per Wayond's convention) is one whole price unit — a
+# BTCUSD move 63200 -> 63450 is +250 pips, NOT +2,500,000 (the FX 0.0001 default).
+_CRYPTO_BASES = ("BTC", "ETH", "LTC", "XRP", "BCH", "SOL", "ADA", "DOGE", "DOT", "BNB", "AVAX", "LINK")
+
+
 def _pip_size(symbol: str) -> Decimal:
     """Best-effort pip size by instrument (documented heuristic, not exact)."""
     s = (symbol or "").upper()
@@ -52,6 +57,9 @@ def _pip_size(symbol: str) -> Decimal:
     if "XAG" in s or "SILVER" in s:
         return Decimal("0.01")
     if any(idx in s for idx in ("US30", "NAS", "NDX", "SPX", "US500", "GER", "UK100", "DOW")):
+        return Decimal("1")
+    # Crypto (BTCUSD, ETHUSD, …): one whole unit per pip, matching Wayond's captions.
+    if any(s.startswith(cb) for cb in _CRYPTO_BASES):
         return Decimal("1")
     return Decimal("0.0001")
 
