@@ -7,14 +7,15 @@ all the way through in a single pass::
 
     process_closed_trades()  # closed Trade  -> internal TradeOutcomeRecord (WIN/LOSS/BE)
     route_outcomes()         # WIN record    -> internal PENDING NotificationCandidate
-    dispatch_pending()       # PENDING cand. -> DRY-RUN transport (no-op unless flag ON; never sends)
+    dispatch_pending()       # PENDING cand. -> transport (no-op unless flag ON; dry-run by default)
 
 HARD BOUNDARY — inherited from the three functions it calls, none of which this command widens:
-it creates NO order (no order_send / order_check / ExecutionJob), sends NO Telegram message
-(dispatch is behind ``NOTIFICATION_DISPATCH_ENABLED``, default OFF, and even ON the only transport
-is dry-run — nothing is transmitted), and publishes NOTHING to WIMS (no ConsumptionContract). It
-only processes rows that already exist (closed trades / outcome records / candidates) and creates
-internal records. Every step is idempotent, so the chain is safe to run every minute.
+it creates NO order (no order_send / order_check / ExecutionJob) and publishes NOTHING to WIMS (no
+ConsumptionContract). It sends NO Telegram message by default: dispatch is behind
+``NOTIFICATION_DISPATCH_ENABLED`` (default OFF) and the transport defaults to dry-run — a real send
+happens only if an operator ALSO selects the real transport (``NOTIFICATION_DISPATCH_TRANSPORT``).
+It only processes rows that already exist (closed trades / outcome records / candidates) and
+creates internal records. Every step is idempotent, so the chain is safe to run every minute.
 
 Resilient by default: a step that raises is logged and the chain continues to the next step (each
 step is independent + idempotent, so a transient failure in one must not block the others). Pass
@@ -84,7 +85,7 @@ class Command(BaseCommand):
             "outcome[routed={orr} candidates={oc} internal_only={oi}] "
             "dispatch[enabled={de} claimed={dcl} sent={dsent} failed={df} skipped={dsk}] "
             "failures={failed} "
-            "(internal records only; no order/Telegram-send/WIMS; dispatch dry-run)".format(
+            "(internal records + no order/WIMS; dispatch OFF/dry-run by default)".format(
                 cp=cm.get("processed", 0), cw=cm.get("win", 0), cl=cm.get("loss", 0),
                 cb=cm.get("breakeven", 0), cs=cm.get("skipped", 0),
                 orr=outr.get("routed", 0), oc=outr.get("candidates", 0),

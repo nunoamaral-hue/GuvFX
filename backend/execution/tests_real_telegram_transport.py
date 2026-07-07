@@ -175,6 +175,38 @@ class DispatchIntegrationTests(RealTransportBase):
         d = NotificationDelivery.objects.get()
         self.assertTrue(d.transmitted)
 
+    def test_transmission_durable_across_finalize_failure_no_resend(self):
+        # THE idempotency fix: if the DB finalize fails AFTER a successful send, the transmission
+        # is still recorded durably (its own committed txn) and the candidate is not re-sent.
+        from execution.notifications import dispatcher as disp
+        with self._env():
+            with mock.patch(_URLOPEN, return_value=_ok_urlopen()) as up:
+                with mock.patch.object(disp, "_finalize_result",
+                                       side_effect=RuntimeError("db down")):
+                    disp.dispatch_pending()
+                # the finalize blew up, but a second run must NOT re-send.
+                disp.dispatch_pending()
+        up.assert_called_once()                                   # sent exactly once
+        self.assertEqual(NotificationDelivery.objects.filter(transmitted=True).count(), 1)
+        self.candidate.refresh_from_db()
+        self.assertEqual(self.candidate.status, NotificationCandidate.Status.SENT)
+
+    def test_belt_skips_resend_when_a_transmitted_delivery_exists(self):
+        # Even if a candidate is somehow retryable (FAILED) with a transmitted delivery, the
+        # transport's belt refuses to re-send.
+        NotificationDelivery.objects.create(
+            candidate=self.candidate, transport="telegram-real",
+            result=NotificationDelivery.Result.SENT, transmitted=True, attempt=1,
+            correlation_id="c-1", rendered_message="x", detail="x")
+        NotificationCandidate.objects.filter(pk=self.candidate.pk).update(
+            status=NotificationCandidate.Status.FAILED)
+        with self._env():
+            with mock.patch(_URLOPEN) as up:
+                dispatch_pending()
+        up.assert_not_called()
+        self.candidate.refresh_from_db()
+        self.assertEqual(self.candidate.status, NotificationCandidate.Status.SENT)
+
     def test_dry_run_dispatch_makes_no_network_call(self):
         with mock.patch.dict(os.environ, {"NOTIFICATION_DISPATCH_ENABLED": "true"}):
             with mock.patch(_URLOPEN) as up:
