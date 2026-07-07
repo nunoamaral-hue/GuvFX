@@ -5,7 +5,7 @@
   "created_at_utc": "2026-07-07T12:10:00Z",
   "branch": "feat/broker-symbol-bridge-alignment",
   "base_commit": "63cd75ed6ba10d8050c33ac0575cf3d3b7d83832",
-  "head_commit": "f7d102f0bfeb5bf8d1c3f6cedf10de1207049251",
+  "head_commit": "7a3ebec484f772fe93d9b3a666e4a213c413fc72",
   "environment": {
     "python_version": "3.11.x",
     "django_version": "5.1.2",
@@ -86,10 +86,10 @@
     "evidence/manifests/GFX-EVD-BROKER-SYMBOL-BRIDGE-ALIGNMENT.json"
   ],
   "checksums": {
-    "scripts/mt5_signal_bridge.py": "sha256:94af84b35cedb127a83878b26af94cc91c817fad109b9914d790bed63752b3e2",
+    "scripts/mt5_signal_bridge.py": "sha256:c355d688a82fd5ae493201ec3862329645e36da6464120cc08e4a72b77128055",
     "backend/mt5_trade_ingest_worker.py": "sha256:74beb282bd14d7282a6dfd8460aaa53bb12fea08092300ab55ea3af9d6025fc8",
     "backend/execution/tests_bridge_symbols.py": "sha256:4279e64bd68d809a620cfd42e8675324131843cd4bb133ee83fe2baa72428772",
     "backend/execution/tests_e2b_shadow.py": "sha256:fc44073556d8cc9fbdaf4f58aa4832b3cf803c2074c9390ff810186ec62e154f"
   },
-  "reviewer": null
+  "reviewer": "Adversarial 4-lens Workflow (fail-closed / rails-preserved / broker-symbol-and-request / backward-compat-and-tests) + opus synthesis on the committed diff: decision GO, zero must-fix. Confirmed every hard requirement to file:line — validate_broker_symbol fail-closed at all three gates; broker symbol placed (request['symbol']); provider_symbol preserved in result/logs only, never in the MT5 request; worker forwards provider_symbol as a sibling key; lot/side/SL-TP/demo/order_check rails unchanged; no hidden consumer of the removed constants/error codes. Applied optional nit: dropped the misleading `payload.get('symbol','EURUSD')` default in execute_mt5_trade so a blank symbol fails closed (SYMBOL_NOT_AVAILABLE_ON_MT5) rather than silently defaulting to EURUSD (commit 7a3ebec). Deferred nit: scripts/mt5_demo_bridge.py's own static allowlist (separate/legacy bridge, out of scope)."
 }
