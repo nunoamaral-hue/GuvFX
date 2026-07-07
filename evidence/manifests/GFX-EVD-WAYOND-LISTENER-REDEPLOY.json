@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-WAYOND-LISTENER-REDEPLOY",
+  "packet_id": "GFX-PKT-WAYOND-LISTENER-REDEPLOY",
+  "created_at_utc": "2026-07-07T08:41:21Z",
+  "branch": "docs/wayond-listener-redeploy-evidence",
+  "base_commit": "f5506a468f6d82dd8201e0e84e9ff6a00c0bb775",
+  "head_commit": "f5506a468f6d82dd8201e0e84e9ff6a00c0bb775",
+  "environment": {
+    "target": "production (OVH VPS guvfx-ubuntu 100.119.23.29)",
+    "scope": "Wayond listener image only",
+    "listener_code_now_at": "e0ae4ee (= trading image 342d198f9008)",
+    "new_listener_image_id": "36003dc9d849",
+    "rollback_listener_image": "guvfx-wayond-listener:rollback-preRedeploy (154806e94bc3, 2026-07-05 stale)",
+    "trading_image_untouched": "342d198f9008",
+    "migrations_applied": 0,
+    "session_reauthenticated": false,
+    "armed": false,
+    "order_placed": false,
+    "telegram_sent": false
+  },
+  "files_added": [
+    "evidence/manifests/GFX-EVD-WAYOND-LISTENER-REDEPLOY.json"
+  ],
+  "files_modified": [],
+  "commands": [
+    "prod: docker tag guvfx-wayond-listener:latest guvfx-wayond-listener:rollback-preRedeploy",
+    "prod: docker build -f ~/guvfx-app/deploy/wayond-listener/Dockerfile --build-arg BACKEND_IMAGE=guvfx-prod-guvfx-backend:latest -t guvfx-wayond-listener:latest (listener = current trading image + telethon)",
+    "prod: throwaway run — verify code present + migrate --plan (no operations)",
+    "prod: docker rm -f guvfx-wayond-listener; docker run -d ... --env-file wayond-listener.env ... run_wayond_listener --live (same session)",
+    "prod: verify code in running container, session reconnect, execution boundary, no dispatch capability"
+  ],
+  "expected_results": [
+    "The listener image is rebuilt from current main code (via the current trading image) so it contains signal_intake.signals, execution.auto_router (AUTO_DEMO tier), promote_plan_to_demo_jobs, CanonicalTradeResult, TelegramRenderer, the current parser, and the current notification chain.",
+    "The listener stays healthy; the Telethon session is preserved (reused wayond-listener.env, no re-auth); the Wayond subscription is intact.",
+    "No functional/armed change: provider ONBOARDING, auto_execution_enabled False, mode SHADOW, dispatch OFF; no ExecutionJob created; no NotificationDelivery sent.",
+    "The trading image and other services are untouched."
+  ],
+  "actual_results": [
+    "Listener rebuilt: new image 36003dc9d849 (from BACKEND_IMAGE=guvfx-prod-guvfx-backend:latest 342d198f9008 + telethon 1.44.0); trading image 342d198f9008 unchanged; stale image tagged guvfx-wayond-listener:rollback-preRedeploy (154806e94bc3).",
+    "Running-container code VERIFIED present: signal_intake.signals.signal_acquired=True; execution.auto_router.MODE_AUTO_DEMO=True; promote_plan_to_demo_jobs=True; CanonicalTradeResult=True; TelegramRenderer=True; RealTelegramTransport(notification chain)=True; current parser registry importable.",
+    "migrate --plan: 'No planned migration operations' (shared DB already current). No migration applied.",
+    "Listener healthy: 'Up (healthy)'; logs show reconnect -> catch-up processed=120 -> heartbeat state=listening chats=1. Telethon SESSION VALID (not de-authed); wayond subscription intact.",
+    "Execution boundary CLEAN: ExecutionJob total = 50 (unchanged baseline); Wayond-tagged jobs (WAY comment) = 0; NotificationDelivery total = 0 (transmitted 0); NotificationCandidate = 0.",
+    "Acquisition on catch-up: AcquiredMessage outcome = {DROPPED_NOT_ARMED: 120} (un-armed provider drops all); the current code minted 6 PENDING_APPROVAL audit-anchor approvals for parsed signals (the old stale listener minted 0) — none executed; boundary-safe.",
+    "Safety defaults unchanged: provider wayond=ONBOARDING; auto_execution_enabled=False; signal_execution_mode=SHADOW. Listener env has NO TELEGRAM_BOT_TOKEN / NOTIFICATION_DISPATCH_ENABLED / NOTIFICATION_DISPATCH_TRANSPORT -> the listener cannot dispatch/send."
+  ],
+  "acceptance_criteria": {
+    "listener_contains_current_code": "PASS",
+    "listener_healthy": "PASS",
+    "telegram_session_valid": "PASS",
+    "wayond_subscription_intact": "PASS",
+    "provider_still_onboarding": "PASS",
+    "auto_execution_off": "PASS",
+    "dispatch_off": "PASS",
+    "no_execution_jobs_created": "PASS",
+    "no_notificationdelivery_sent": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Production deploy scoped to the listener image only. Nothing armed: provider ONBOARDING, auto off, mode SHADOW, dispatch OFF. No order, no trade, no Telegram send. E3 remains RED.",
+    "The Telethon session was PRESERVED (reused the unchanged wayond-listener.env; no re-auth attempted) — the de-auth risk was avoided, and the session reconnected healthily. The session remains a live temp-personal-account credential.",
+    "BEHAVIOURAL NOTE: the current acquisition code mints a PENDING audit-anchor PendingSignalApproval for each parsed Wayond signal even when un-armed (the old stale listener minted none). These sit PENDING_APPROVAL, execute nothing, and are inert (the auto-router is event-driven and never re-processes existing approvals). They will accumulate while the provider is un-armed; a later armed demo executes only the NEW signal at that moment, unaffected by them. Optional future cleanup, not required.",
+    "wayond-listener.env holds a snapshot of the prod DB creds (unchanged since capture) + the Telethon session; a DB-cred rotation (recommended after the earlier inline-compose exposure) would require re-capturing it and restarting the listener."
+  ],
+  "artefact_locations": [
+    "prod listener image guvfx-wayond-listener:latest (36003dc9d849, current) — running",
+    "prod rollback image guvfx-wayond-listener:rollback-preRedeploy (154806e94bc3, stale 2026-07-05)",
+    "prod /home/ubuntu/guvfx-prod/wayond-listener.env (600, unchanged — session preserved)",
+    "evidence/manifests/GFX-EVD-WAYOND-LISTENER-REDEPLOY.json"
+  ],
+  "checksums": {},
+  "reviewer": null
+}
