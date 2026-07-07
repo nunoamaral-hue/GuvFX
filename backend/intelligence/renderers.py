@@ -106,22 +106,53 @@ class TelegramRenderer(CanonicalRenderer):
         except (InvalidOperation, TypeError, ValueError):
             return Decimal("0")
 
+    @staticmethod
+    def _pip_str(pips) -> str:
+        """'+5.0 pips' / '-3.0 pips' / '' when unknown."""
+        if pips in (None, ""):
+            return ""
+        try:
+            d = Decimal(str(pips))
+        except (InvalidOperation, TypeError, ValueError):
+            return ""
+        return f"{'+' if d >= 0 else ''}{d} pips"
+
+    def _total_pips(self, r: CanonicalTradeResult) -> str:
+        """Sum of CLOSED legs' pips (falls back to the single-trade pips when there are no legs)."""
+        closed = self._closed_legs(r)
+        if closed:
+            tot = Decimal("0")
+            any_p = False
+            for lg in closed:
+                if lg.pips not in (None, ""):
+                    try:
+                        tot += Decimal(str(lg.pips)); any_p = True
+                    except (InvalidOperation, TypeError, ValueError):
+                        pass
+            return str(tot) if any_p else ""
+        return str(r.pips) if r.pips not in (None, "") else ""
+
     def _leg_line(self, lg: LegResult, currency: str) -> str:
+        # Each TP is its OWN trade result (not a guaranteed leg of one trade).
         dir_vol = f"{lg.direction} {lg.volume}".strip()
         if lg.status == "CLOSED":
-            return f"✅ Leg {lg.index} · {dir_vol} · {lg.entry} → {lg.exit} · {_money(lg.profit, currency)}"
+            pip = self._pip_str(lg.pips)
+            tail = f" · {pip}" if pip else ""
+            return f"✅ {lg.tp_label} · {dir_vol} · {lg.entry} → {lg.exit} · {_money(lg.profit, currency)}{tail}"
         if lg.status == "OPEN":
             # Filled, still running — show the TP target it is working toward (not a realized exit).
-            return f"⏳ Leg {lg.index} · {dir_vol} · {lg.entry} → target {lg.target} · open"
-        return f"⏳ Leg {lg.index} · {dir_vol} · target {lg.target} · pending"
+            return f"⏳ {lg.tp_label} · {dir_vol} · {lg.entry} → target {lg.target} · open"
+        return f"⏳ {lg.tp_label} · {dir_vol} · target {lg.target} · pending"
 
     def _evidence_lines(self, r: CanonicalTradeResult, currency: str):
         if r.legs:
             lines = [self._leg_line(lg, currency) for lg in r.legs]
         else:
             # Fallback (single-leg / non-plan trade): one synthesised closed row from the facts.
-            dv = f"{r.direction}".strip()
-            lines = [f"✅ {dv} · {r.actual_fill} → {r.exit or 'n/a'} · {_money(r.net_pnl, currency)}"]
+            pip = self._pip_str(r.pips)
+            tail = f" · {pip}" if pip else ""
+            lines = [f"✅ TP1 · {r.direction} · {r.actual_fill} → {r.exit or 'n/a'} · "
+                     f"{_money(r.net_pnl, currency)}{tail}"]
         return lines
 
     def _take_profit_line(self, r: CanonicalTradeResult) -> str:
@@ -142,6 +173,8 @@ class TelegramRenderer(CanonicalRenderer):
         if total:
             status_line += f" · {'all ' if final else ''}{closed} of {total} legs closed"
         net_label = "Total net profit" if final else "Net profit so far"
+        total_pips = self._total_pips(r)
+        pip_suffix = f"  ·  {self._pip_str(total_pips)}" if total_pips else ""
 
         parts = [f"🏆 {title}", ""]
         # Section 1 — executive summary
@@ -152,7 +185,7 @@ class TelegramRenderer(CanonicalRenderer):
             f"Direction: {r.direction}",
             status_line,
             "",
-            f"💰 {net_label}: {_money(total_closed, cur)}  ({r.pips} pips, this leg)",
+            f"💰 {net_label}: {_money(total_closed, cur)}{pip_suffix}",
             "",
         ]
         # Section 2 — trade evidence
@@ -165,9 +198,9 @@ class TelegramRenderer(CanonicalRenderer):
             parts.append(f"Total closed: {_money(total_closed, cur)}"
                          + (f" ({closed} of {total} legs)" if total else ""))
         parts.append("")
-        # Section 3 — execution analysis
+        # Section 3 — trade analysis (factual; stakeholder-facing — no execution mode / correlation id)
         parts += [
-            "🔎 EXECUTION ANALYSIS",
+            "🔎 TRADE ANALYSIS",
             f"Reference entry: {r.reference_entry or 'n/a'}",
             f"Actual fill: {r.actual_fill or 'n/a'}",
             f"Stop loss: {r.stop_loss or 'n/a'}",
@@ -175,9 +208,7 @@ class TelegramRenderer(CanonicalRenderer):
             f"Exit (this leg): {r.exit or 'n/a'}",
             f"This leg — gross / net: {_money(r.gross_pnl, cur)} / {_money(r.net_pnl, cur)}",
             f"Net profit (closed so far): {_money(total_closed, cur)}",
-            f"Execution mode: {r.execution_mode or 'n/a'}",
             f"Closed: {_fmt_ts(r.execution_timestamp)}",
-            f"Correlation id: {r.correlation_id or 'n/a'}",
             "",
         ]
         # Factual system note

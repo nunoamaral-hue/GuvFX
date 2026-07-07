@@ -191,10 +191,11 @@ class RenderingTests(TransportBase):
         self.assertEqual(envelope.direction, "BUY")
         self.assertEqual(Decimal(envelope.actual_fill), Decimal("1.0850"))  # the real fill
         self.assertEqual(Decimal(envelope.profit), Decimal("21"))
-        self.assertEqual(envelope.correlation_id, "c-render")
+        self.assertEqual(envelope.correlation_id, "c-render")   # kept on the envelope field (internal)
         self.assertEqual(envelope.strategy, "wayond")
         self.assertIn("EURUSD", envelope.rendered_message)
-        self.assertIn("c-render", envelope.rendered_message)
+        # requirement 6: the correlation id is HIDDEN from the stakeholder message text.
+        self.assertNotIn("c-render", envelope.rendered_message)
         # The contract has every required field.
         for field in ("title", "summary", "strategy", "symbol", "direction", "reference_entry",
                       "actual_fill", "stop_loss", "take_profit", "profit", "pips",

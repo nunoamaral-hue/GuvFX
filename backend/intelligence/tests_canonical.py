@@ -7,12 +7,16 @@ sourcing from the canonical object; and the canonical/renderer code transmits/or
 NOTHING.
 """
 import ast
+import base64
 import importlib
 import pathlib
+import types
+from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from execution.models import (
@@ -167,18 +171,27 @@ class RendererTests(CanonicalBase):
         self.assertIn("Instrument: EURUSD", content.text)
         self.assertIn("Direction: BUY", content.text)
         self.assertIn("Net profit so far: +$21.00", content.text)
-        self.assertIn("(50.0 pips, this leg)", content.text)
-        # Section 2 — trade evidence
+        self.assertIn("+50.0 pips", content.text)
+        # Section 2 — trade evidence (TP labels, not "Leg"; per-TP pips)
         self.assertIn("📊 TRADE EVIDENCE", content.text)
+        self.assertIn("✅ TP1", content.text)
+        self.assertNotIn("Leg 1", content.text)
         self.assertIn("1.0850 → 1.0900", content.text)
-        # Section 3 — execution analysis (factual)
-        self.assertIn("🔎 EXECUTION ANALYSIS", content.text)
+        # Section 3 — TRADE ANALYSIS (renamed from Execution Analysis)
+        self.assertIn("🔎 TRADE ANALYSIS", content.text)
+        self.assertNotIn("EXECUTION ANALYSIS", content.text)
         self.assertIn("Reference entry: 1.0850", content.text)
         self.assertIn("Actual fill: 1.0850", content.text)
         self.assertIn("Stop loss: 1.0800", content.text)
         self.assertIn("Take profits: TP1 1.0900", content.text)
-        self.assertIn(f"Correlation id: {self.CID}", content.text)
+        # requirement 6: execution mode + correlation id are HIDDEN from stakeholder output...
+        self.assertNotIn("Correlation id", content.text)
+        self.assertNotIn(self.CID, content.text)
+        self.assertNotIn("Execution mode", content.text)
         self.assertIn("No manual intervention occurred.", content.text)
+        # ...but requirement 10: they REMAIN on the canonical for internal audit
+        self.assertEqual(r.correlation_id, self.CID)
+        self.assertEqual(r.execution_mode, "DEMO")
         # no marketing language
         for banned in ("Excellent", "perfectly", "delivered"):
             self.assertNotIn(banned, content.text)
@@ -218,8 +231,10 @@ class TelegramEnvelopeRegressionTests(CanonicalBase):
         # One leg, closed -> a FINAL card via the leg resolver.
         self.assertEqual(env.title, "WAYOND TRADE RESULT — FINAL WIN")
         self.assertIn("EURUSD", env.rendered_message)
-        self.assertIn("EXECUTION ANALYSIS", env.rendered_message)
-        self.assertIn(self.CID, env.rendered_message)
+        self.assertIn("TRADE ANALYSIS", env.rendered_message)
+        # correlation id stays on the envelope FIELD (internal audit) but is hidden from the message
+        self.assertEqual(env.correlation_id, self.CID)
+        self.assertNotIn(self.CID, env.rendered_message)
         for field in ("title", "summary", "strategy", "symbol", "direction", "reference_entry",
                       "actual_fill", "stop_loss", "take_profit", "profit", "pips",
                       "execution_timestamp", "correlation_id", "rendered_message"):
@@ -257,9 +272,9 @@ class ProgressiveLegEvidenceTests(CanonicalBase):
         self.assertEqual(len(r.legs), 3)
         self.assertIn("TRADE RESULT — TP1 WIN", t)
         self.assertIn("1 of 3 legs closed", t)
-        self.assertIn("✅ Leg 1", t)
+        self.assertIn("✅ TP1", t)
         self.assertIn("2362.45 → 2367.50", t)
-        self.assertIn("⏳ Leg 2", t)
+        self.assertIn("⏳ TP2", t)
         self.assertIn("pending", t)
         self.assertIn("Total closed: +$42.88 (1 of 3 legs)", t)
 
@@ -273,7 +288,7 @@ class ProgressiveLegEvidenceTests(CanonicalBase):
         r, t = self._render(3)
         self.assertIn("TRADE RESULT — FINAL WIN", t)
         self.assertIn("all 3 of 3 legs closed", t)
-        self.assertIn("✅ Leg 3", t)
+        self.assertIn("✅ TP3", t)
         self.assertNotIn("pending", t)
         self.assertIn("Total net profit: +$128.64", t)
         self.assertIn("Total closed: +$128.64 (3 of 3 legs)", t)
@@ -327,6 +342,134 @@ class ResolveLegEvidenceTests(CanonicalBase):
         from execution.notifications.contracts import resolve_leg_evidence
         self.assertEqual(resolve_leg_evidence("no-such-corr", None), {})
         self.assertEqual(resolve_leg_evidence("", None), {})
+
+
+class StakeholderCardTests(TestCase):
+    """GFX-PKT-STAKEHOLDER-OUTPUT-VISUAL-UPGRADE — the redesigned result card + short caption."""
+
+    def _canonical(self, closed=3):
+        acct = types.SimpleNamespace(is_demo=True, name="TradersWay Demo")
+        trade = {"ticket": "S", "symbol": "XAUUSD", "side": "BUY", "volume": 0.02,
+                 "open_time": timezone.now() - timedelta(hours=2),
+                 "close_time": timezone.now() - timedelta(minutes=18),
+                 "open_price": 2362.45, "close_price": 2375.50, "profit": 42.65,
+                 "commission": 0.0, "swap": 0.0, "account": acct}
+        tps = ["2367.50", "2371.50", "2375.50"]
+        profs = ["42.88", "43.11", "42.65"]
+        legs = [dict(index=i + 1, tp_label=f"TP{i + 1}", direction="BUY", volume="0.02",
+                     entry="2362.45", target=tps[i], exit=(tps[i] if i < closed else ""),
+                     profit=(profs[i] if i < closed else ""),
+                     status=("CLOSED" if i < closed else "PENDING"),
+                     close_time=(timezone.now().isoformat() if i < closed else "")) for i in range(3)]
+        ev = dict(legs=legs, take_profits=tps, strategy_display_name="Wayond Auto Demo",
+                  progress=dict(closed=closed, total=3, label=f"TP{closed}", final=(closed >= 3)))
+        link = dict(reference_entry="2362.45", stop_loss="2358.00", take_profit="2367.50",
+                    source="wayond", provider="wayond", execution_mode="DEMO", signal_id="m")
+        return build_canonical_trade_result(trade, correlation_id="corr-abc-123",
+                                            signal_source="wayond", linkage=link, leg_evidence=ev)
+
+    def _svg(self, closed=3):
+        from intelligence.results_card import render_result_card
+        return render_result_card(self._canonical(closed))["svg"]
+
+    def test_1_and_2_tp_labels_replace_leg(self):
+        svg = self._svg(3)
+        for tp in ("TP1", "TP2", "TP3"):
+            self.assertIn(tp, svg)
+        self.assertNotIn("Leg", svg)
+
+    def test_3_each_tp_row_shows_pips(self):
+        svg = self._svg(3)
+        self.assertIn("pips", svg)
+        self.assertIn("+50.5 pips", svg)   # XAUUSD TP1: (2367.50-2362.45)/0.1
+        self.assertIn("+130.5 pips", svg)  # TP3
+
+    def test_4_trade_analysis_replaces_execution_analysis(self):
+        svg = self._svg(3)
+        self.assertIn("TRADE ANALYSIS", svg)
+        self.assertNotIn("EXECUTION ANALYSIS", svg)
+
+    def test_5_and_6_execution_mode_and_correlation_id_hidden(self):
+        svg = self._svg(3)
+        self.assertNotIn("DEMO", svg)          # execution mode hidden
+        self.assertNotIn("corr-abc-123", svg)  # correlation id hidden
+        self.assertNotIn("Correlation", svg)
+        self.assertNotIn("Execution mode", svg)
+
+    def test_7_pending_tps_not_implied_as_wins(self):
+        svg = self._svg(1)  # only TP1 closed
+        self.assertIn("PENDING", svg)
+        self.assertIn("PROFIT SO FAR", svg)   # not TOTAL PROFIT
+        self.assertIn("1 of 3 take-profits closed", svg)
+        self.assertIn("target 2371.50", svg)  # TP2 shown as a target, not a realised win
+
+    def test_8_final_card_shows_all_closed(self):
+        svg = self._svg(3)
+        self.assertNotIn("PENDING", svg)
+        self.assertIn("TOTAL PROFIT", svg)
+        self.assertIn("3 of 3 take-profits closed", svg)
+
+    def test_card_png_renders(self):
+        card = __import__("intelligence.results_card", fromlist=["render_result_card"]).render_result_card(
+            self._canonical(3))
+        self.assertTrue(base64.b64decode(card["png_base64"]).startswith(b"\x89PNG"))
+
+    def test_9_short_caption_is_stakeholder_friendly(self):
+        from intelligence.caption import build_short_caption
+        cap = build_short_caption(self._canonical(3))
+        self.assertIn("closed a winning XAUUSD BUY trade", cap)
+        self.assertIn("Total Profit: +$128.64", cap)
+        self.assertIn("Result: WIN", cap)
+        self.assertIn("Full trade card attached", cap)
+        self.assertLessEqual(len(cap.splitlines()), 8)
+        self.assertNotIn("DEMO", cap)
+        self.assertNotIn("corr", cap.lower())
+
+    def test_10_internal_audit_fields_remain_on_canonical(self):
+        r = self._canonical(3)
+        self.assertEqual(r.correlation_id, "corr-abc-123")
+        self.assertEqual(r.execution_mode, "DEMO")
+        self.assertEqual([lg.pips for lg in r.legs], ["50.5", "90.5", "130.5"])
+
+
+class SendPhotoTransportTests(SimpleTestCase):
+    """The image primitive (sendPhoto) exists, posts multipart, and is NOT wired into deliver()."""
+
+    def test_send_photo_posts_multipart_to_sendphoto(self):
+        from execution.notifications import real_transport as rt
+        captured = {}
+
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"ok": true, "result": {"message_id": 7}}'
+
+        def fake_urlopen(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["ct"] = req.headers.get("Content-type")
+            captured["body"] = req.data
+            return _Resp()
+
+        t = rt.RealTelegramTransport(token="SECRET-TOK", chat_id="@wims07072026")
+        with mock.patch.object(rt.urllib.request, "urlopen", fake_urlopen):
+            resp = t._send_photo(b"\x89PNG\r\nFAKE", caption="Full trade card attached.")
+
+        self.assertTrue(captured["url"].endswith("/sendPhoto"))
+        self.assertIn("multipart/form-data", captured["ct"])
+        self.assertIn(b"\x89PNG\r\nFAKE", captured["body"])
+        self.assertIn(b'name="caption"', captured["body"])
+        self.assertIn(b'name="photo"', captured["body"])
+        self.assertEqual(resp["result"]["message_id"], 7)
+        self.assertNotIn("SECRET-TOK", str(resp))  # token never surfaces in the result
+
+    def test_11_send_photo_not_wired_into_candidate_flow(self):
+        # deliver() (the candidate/dispatch path) stays TEXT — it must not call the photo primitive.
+        import inspect
+
+        from execution.notifications.real_transport import RealTelegramTransport
+        src = inspect.getsource(RealTelegramTransport.deliver)
+        self.assertNotIn("_send_photo", src)
+        self.assertIn("_send(", src)  # deliver still uses the text primitive
 
 
 class CanonicalBoundaryTests(TestCase):

@@ -102,6 +102,33 @@ class RealTelegramTransport(NotificationTransport):
         with urllib.request.urlopen(req, timeout=self._timeout) as resp:
             return json.loads((resp.read() or b"{}").decode("utf-8") or "{}")
 
+    def _send_photo(self, png_bytes: bytes, caption: str = "") -> dict:
+        """Send the result CARD (a PNG) with a short caption via Telegram ``sendPhoto`` (multipart).
+
+        This is the IMAGE primitive — the polished stakeholder card is the photo, the short caption
+        rides alongside. It is NOT wired into ``deliver()`` / the candidate flow (which stays text);
+        it is used only by a controlled, human-approved card send. The token lives ONLY in the URL
+        and is never logged/returned/raised."""
+        url = f"{_TELEGRAM_API}/bot{self._token}/sendPhoto"
+        boundary = "----GuvFXCardBoundaryZ7Xq2fVn"
+
+        def _field(name: str, value: str) -> bytes:
+            return (f"--{boundary}\r\nContent-Disposition: form-data; "
+                    f'name="{name}"\r\n\r\n{value}\r\n').encode("utf-8")
+
+        body = _field("chat_id", str(self._chat_id))
+        if caption:
+            body += _field("caption", caption)
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; "
+                 f"filename=\"trade_card.png\"\r\nContent-Type: image/png\r\n\r\n").encode("utf-8")
+        body += png_bytes + b"\r\n" + f"--{boundary}--\r\n".encode("utf-8")
+        req = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            return json.loads((resp.read() or b"{}").decode("utf-8") or "{}")
+
     @staticmethod
     def _failed(text: str, detail: str) -> DeliveryResult:
         return DeliveryResult(
