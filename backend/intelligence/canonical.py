@@ -24,6 +24,27 @@ from .trade_result_producer import TradeResultProducer, _get, _to_decimal
 
 
 @dataclass(frozen=True)
+class LegResult:
+    """One take-profit leg of a multi-leg signal, for the progressive trade-evidence section.
+
+    A Wayond signal splits into up to N legs (one per TP). Each leg closes independently, so a
+    result is emitted per leg close — this carries that leg's facts and whether it is CLOSED (hit
+    its TP), OPEN (filled, still running) or PENDING (not yet filled). Pure data; frozen.
+    """
+
+    index: int             # 1-based leg index
+    tp_label: str          # "TP1" / "TP2" / "TP3"
+    direction: str         # BUY / SELL
+    volume: str            # lot size, formatted (e.g. "0.02")
+    entry: str             # actual fill (or the plan reference entry if not yet filled)
+    target: str            # this leg's TP target price
+    exit: str              # close price — "" while not closed
+    profit: str            # net profit for this leg — "" while not closed
+    status: str            # CLOSED / OPEN / PENDING
+    close_time: str        # ISO close time — "" while not closed
+
+
+@dataclass(frozen=True)
 class CanonicalTradeResult:
     """Immutable, transport-agnostic representation of one completed trade result.
 
@@ -68,6 +89,14 @@ class CanonicalTradeResult:
     caption: Optional[str] = None                       # rendered social caption
     currency: str = "$"
 
+    # --- progressive multi-leg evidence (GFX-PKT-CANONICAL-LEG-EVIDENCE) ---
+    # Populated from the execution-side leg resolver (ADR-009: intelligence never queries the
+    # plan itself). Empty for single-leg / non-plan trades; renderers degrade gracefully.
+    strategy_display_name: str = ""                    # human strategy name (e.g. "Wayond Auto Demo")
+    legs: tuple = ()                                   # tuple[LegResult] — all legs (closed + open)
+    take_profits: tuple = ()                           # ("2367.50","2371.50","2375.50")
+    progress: dict = field(default_factory=dict)       # {"closed":1,"total":3,"label":"TP1","final":False}
+
     def as_dict(self) -> dict:
         from dataclasses import asdict
         return asdict(self)
@@ -110,7 +139,7 @@ def _aggregate(trades, total_net: Decimal) -> dict:
 def build_canonical_trade_result(
     trade, *, correlation_id: str = "", signal_source: str = "",
     account_label: str = "GuvFX", currency: str = "$", with_media: bool = False,
-    linkage: Optional[dict] = None,
+    linkage: Optional[dict] = None, leg_evidence: Optional[dict] = None,
 ) -> CanonicalTradeResult:
     """Build the ONE canonical result for a closed trade (or partial-close sequence).
 
@@ -150,6 +179,15 @@ def build_canonical_trade_result(
         "duration": payload.duration, "currency": currency,
     }
 
+    # Progressive multi-leg evidence (supplied by the execution-side resolver; ADR-009 keeps
+    # intelligence out of the plan). Absent for single-leg / non-plan trades -> empty, renderers
+    # fall back to the top-level facts.
+    ev = leg_evidence or {}
+    legs = tuple(LegResult(**leg) for leg in ev.get("legs", ()))
+    take_profits = tuple(ev.get("take_profits", ()) or ())
+    progress = dict(ev.get("progress", {}) or {})
+    strategy_display_name = str(ev.get("strategy_display_name", "") or "")
+
     card_rows: tuple = ()
     result_card = None
     caption = None
@@ -178,4 +216,6 @@ def build_canonical_trade_result(
         execution_timestamp=payload.close_time, summary=payload.summary,
         statistics=statistics, card_rows=card_rows, result_card=result_card, caption=caption,
         currency=currency,
+        strategy_display_name=strategy_display_name, legs=legs, take_profits=take_profits,
+        progress=progress,
     )
