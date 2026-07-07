@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-CANONICAL-TRADE-RESULT",
+  "packet_id": "GFX-PKT-CANONICAL-TRADE-RESULT",
+  "created_at_utc": "2026-07-07T06:55:38Z",
+  "branch": "feat/canonical-trade-result",
+  "base_commit": "03f2c8f5c531dbf8e895cc337a84456355241da3",
+  "head_commit": "19de0c86680ed8d687e4c8e52aae5d14cedff906",
+  "environment": {
+    "python_version": "3.11.9",
+    "django_version": "5.1.2",
+    "database": "PostgreSQL (local test DB)",
+    "model_or_migration_change": false,
+    "production_deploy": false,
+    "transport_changed": false,
+    "real_send": false,
+    "wims_publish_added": false,
+    "order_placed": false
+  },
+  "files_added": [
+    "backend/intelligence/canonical.py",
+    "backend/intelligence/renderers.py",
+    "backend/intelligence/tests_canonical.py",
+    "evidence/manifests/GFX-EVD-CANONICAL-TRADE-RESULT.json"
+  ],
+  "files_modified": [
+    "backend/execution/notifications/contracts.py",
+    "backend/intelligence/delivery.py"
+  ],
+  "commands": [
+    "backend: python manage.py test intelligence.tests_canonical",
+    "backend: python manage.py test signal_intake.tests.Adr009BoundaryGuardTests intelligence execution.tests_notification_transport wims",
+    "backend: python manage.py test  (full suite)",
+    "backend: python manage.py makemigrations --check --dry-run execution intelligence",
+    "make governance-check  (incl. secret-scan)"
+  ],
+  "expected_results": [
+    "A single CanonicalTradeResult carries all required fields (facts + signal/parser provenance + execution context + statistics + result-card/caption references).",
+    "Two renderers (Telegram text, WIMS card+caption) format FROM the canonical object; there is exactly one result-card/caption implementation (no duplicated formatting).",
+    "The deployed Telegram dry-run envelope is byte-for-byte preserved now that it is sourced from the canonical object.",
+    "ingest_winning_trade builds its media via the canonical object + WIMSRenderer with no change to the WIMS media output.",
+    "ADR-009 preserved: intelligence imports NO execution app (linkage flows execution -> intelligence as a plain dict via resolve_signal_linkage on the execution side).",
+    "canonical.py + renderers.py transmit nothing, order nothing, publish nothing; the dispatcher/transport are unchanged (still dry-run, transmitted=False); no notification routing change; no E3.",
+    "No model/migration change; full backend suite green; governance + secret-scan pass."
+  ],
+  "actual_results": [
+    "intelligence.tests_canonical: Ran 8 tests OK — canonical field mapping (symbol/direction/fills/exit/pips/gross+net pnl/outcome/reference_entry/SL/TP/provider/parser/confidence/execution_mode/signal_id/is_demo/account_label/statistics); execution-side resolver reads the plan; TelegramRenderer wording; WIMSRenderer card+caption; WIMSRenderer requires with_media; Telegram envelope regression (byte-for-byte); light build renders no media; ADR-009 + no-transmit/order/publish AST boundary.",
+    "signal_intake.tests.Adr009BoundaryGuardTests + intelligence + execution.tests_notification_transport + wims: Ran 72 tests OK (ADR-009 guard passes; Telegram + WIMS behaviour preserved).",
+    "Full backend suite: Ran 475 tests OK (474 + 1 post-review regression test).",
+    "makemigrations --check execution intelligence: No changes detected. make governance-check OK; secret-scan OK; EVIDENCE-LINT PASS.",
+    "Adversarial 4-lens review (behaviour-preservation / adr009-boundary / single-source-correctness / transmit-order-publish-boundary, 5 agents) + opus synthesis: decision FIX with 1 must-fix. ADR-009 clean, no transmit/order/publish, transport still dry-run, WIMS media preserved. Must-fix APPLIED: the strategy field had gained a provider-slug fallback the deployed envelope never had (reachable when plan.source empty + provider slug set) — dropped it so strategy = signal_source OR plan.source exactly, + regression test. Two nits accepted-not-changed (caption pip calc + delivery guard _net_pnl are pre-existing; changing them would risk the WIMS output or render a loser's card before the reject-guard)."
+  ],
+  "acceptance_criteria": {
+    "canonical_object_created": "PASS",
+    "render_interfaces": "PASS",
+    "current_consumers_wired": "PASS",
+    "behaviour_preserved": "PASS",
+    "adr009_clean": "PASS",
+    "no_transport_send_publish_routing_order": "PASS",
+    "tests": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Repo-only. No deployment, no transport change, no real Telegram send, no WIMS publish added, no notification routing change, no E3, no order. The Telegram transport remains DRY-RUN.",
+    "This packet unifies the DATA/format source; a REAL transport (RealTelegramTransport + selector + secrets) and the social renderers are separate future packets. The canonical object is ready for them (only a renderer + transport is added).",
+    "For the DEMO the message wording is still DRAFT (contract, not final copy). The result card is attached only on the WIMS/with_media path; wiring the card into a future real Telegram message is a transport-packet concern.",
+    "A minor, pre-existing data-prep duplication remains (_aggregate in canonical vs _aggregate_trade in delivery) — this is aggregation, not formatting; the packet's 'no duplicate formatting logic' (card/caption/text) is met."
+  ],
+  "artefact_locations": [
+    "backend/intelligence/canonical.py",
+    "backend/intelligence/renderers.py",
+    "backend/execution/notifications/contracts.py",
+    "backend/intelligence/delivery.py",
+    "backend/intelligence/tests_canonical.py",
+    "evidence/manifests/GFX-EVD-CANONICAL-TRADE-RESULT.json"
+  ],
+  "checksums": {
+    "backend/intelligence/canonical.py": "sha256:21271f0ffff703facad92d6d1affea61cff337465773ab3f2e92eaa9aadda1dc",
+    "backend/intelligence/renderers.py": "sha256:be13f04ebbbe848ccd3151f606e5d036fd4208ba267aee6700b27051ef38f7b2",
+    "backend/intelligence/tests_canonical.py": "sha256:03f2486b624b355e971aba81285356bcb87b6bf61d9fd9932068cf96629638bd",
+    "backend/execution/notifications/contracts.py": "sha256:66c7112cfd9d5d143e775b79efbe38d50e1e369c06c3853938eab67a9b5705fd",
+    "backend/intelligence/delivery.py": "sha256:85285c253f92bc275e046b916c93dd32ba806d4848d0f96df98323b78a023aac"
+  },
+  "reviewer": null
+}
