@@ -26,13 +26,13 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from execution.broker_symbols import can_account_trade_symbol
 from execution.models import (
     LOT_STEP,
     MAX_PLAN_LEGS,
     MAX_TOTAL_LOT_PER_SIGNAL,
     PLAN_MAX_CONCURRENT_GROUPS,
     PLAN_MAX_GROUPS_PER_DAY,
-    SIGNAL_ALLOWED_SYMBOLS,
     SIGNAL_MAX_AGE_SECONDS,
     SIGNAL_MAX_LOT_SIZE,
     PlanAuditEvent,
@@ -226,8 +226,10 @@ def plan_demo_execution(
         SignalExecutionPlan.Direction.BUY, SignalExecutionPlan.Direction.SELL
     ):
         _reject("not_tradeable", "approval lacks a usable symbol/direction")
-    if symbol not in SIGNAL_ALLOWED_SYMBOLS:
-        _reject("symbol_not_allowed", f"{symbol} not in {SIGNAL_ALLOWED_SYMBOLS}")
+    # Broker/account-aware symbol gate (fail-closed; provider symbol preserved on the plan).
+    _sym_res = can_account_trade_symbol(account, symbol)
+    if not _sym_res.accepted:
+        _reject(_sym_res.reason, f"{symbol}: {_sym_res.reason}")
 
     # 6. Per-signal-group caps (count GROUPS/plans, not legs).
     if SignalExecutionPlan.count_today(account.id, symbol) >= PLAN_MAX_GROUPS_PER_DAY:

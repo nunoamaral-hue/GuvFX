@@ -28,9 +28,9 @@ from django.utils import timezone
 
 from core.observability import log_stage
 from execution.risk_controls import evaluate_promotion_risk
+from execution.broker_symbols import can_account_trade_symbol
 from execution.models import (
     MAX_TOTAL_LOT_PER_SIGNAL,
-    SIGNAL_ALLOWED_SYMBOLS,
     SIGNAL_MAX_AGE_SECONDS,
     SIGNAL_MAX_LOT_SIZE,
     ExecutionControl,
@@ -60,18 +60,22 @@ def _audit(event, *, plan=None, leg=None, job=None, approval=None, actor=None, *
 
 
 def _order_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg, *,
-                   execution_mode: str) -> dict:
+                   execution_mode: str, broker_symbol: str = None) -> dict:
     """Build the per-leg order payload. Market-only, demo. ``execution_mode`` is 'SHADOW'
     (suppressed dry-run — order_check only) or 'DEMO' (real order_send). Identical shape either
     way — the worker's PLACE_ORDER path ignores execution_mode; only the shadow worker enforces
     it. Carries the correlation id + signal timestamp so the worker can trace/re-check the signal.
+
+    ``broker_symbol`` (resolved by the broker-symbol registry) is what the order is placed under;
+    the original provider (Wayond) symbol is preserved separately for audit/reporting.
     """
     windows_username = None
     acct = plan.account
     if getattr(acct, "mt5_instance_id", None):
         windows_username = getattr(acct.mt5_instance, "windows_username", None)
     return {
-        "symbol": plan.symbol,
+        "symbol": broker_symbol or plan.symbol,   # the BROKER symbol used for order placement
+        "provider_symbol": plan.symbol,           # the Wayond signal symbol (audit/reporting)
         "side": plan.direction,
         "lots": str(leg.lot_size),
         "sl_price": plan.stop_loss,
@@ -105,7 +109,8 @@ _existing_shadow_jobs = _existing_jobs
 
 
 def _validate(plan: SignalExecutionPlan, *, now,
-              expected_mode=ExecutionControl.SignalExecutionMode.SHADOW) -> None:
+              expected_mode=ExecutionControl.SignalExecutionMode.SHADOW,
+              symbol_resolution=None) -> None:
     """Pure read-only re-validation at promotion time. Raises PromotionRejected.
 
     ``expected_mode`` is the global ``signal_execution_mode`` this promotion path requires —
@@ -134,8 +139,12 @@ def _validate(plan: SignalExecutionPlan, *, now,
         if env.lower() == "live":
             raise PromotionRejected("account_live", "live accounts are not permitted")
 
-    if plan.symbol not in SIGNAL_ALLOWED_SYMBOLS:
-        raise PromotionRejected("symbol_not_allowed", f"{plan.symbol} not in {SIGNAL_ALLOWED_SYMBOLS}")
+    # Broker/account-aware symbol gate — the symbol must resolve to one the account's broker
+    # offers (fail-closed with a specific reason). Provider symbol preserved; broker symbol used
+    # for the order (in _order_payload).
+    res = symbol_resolution or can_account_trade_symbol(plan.account, plan.symbol)
+    if not res.accepted:
+        raise PromotionRejected(res.reason, f"{plan.symbol}: {res.reason}")
 
     if not plan.stop_loss:
         raise PromotionRejected("missing_stop_loss", "plan has no stop loss")
@@ -182,8 +191,10 @@ def _promote_plan(plan: SignalExecutionPlan, *, expected_mode, job_type, payload
     if plan.status == SignalExecutionPlan.Status.PROMOTED:
         return _existing_jobs(plan)
 
+    # Resolve the broker symbol ONCE — reused by the gate (_validate) and the order payload.
+    symbol_res = can_account_trade_symbol(plan.account, plan.symbol)
     try:
-        _validate(plan, now=now, expected_mode=expected_mode)
+        _validate(plan, now=now, expected_mode=expected_mode, symbol_resolution=symbol_res)
     except PromotionRejected as exc:
         _audit(PromotionAuditEvent.Event.PROMOTION_REJECTED, plan=plan,
                approval=plan.approval, actor=actor, code=exc.code, message=exc.message)
@@ -203,7 +214,8 @@ def _promote_plan(plan: SignalExecutionPlan, *, expected_mode, job_type, payload
                     terminal_node_id=plan.account.terminal_node_id,
                     status=ExecutionJob.Status.PENDING,
                     created_by=actor,
-                    payload=_order_payload(plan, leg, execution_mode=payload_mode),
+                    payload=_order_payload(plan, leg, execution_mode=payload_mode,
+                                           broker_symbol=symbol_res.broker_symbol),
                 )
                 leg.execution_job = job
                 leg.status = ProposedOrderLeg.Status.PROMOTED

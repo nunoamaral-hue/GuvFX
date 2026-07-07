@@ -26,9 +26,9 @@ from typing import Optional
 
 from django.db import IntegrityError, transaction
 
+from execution.broker_symbols import can_account_trade_symbol
 from execution.models import (
     DEMO_FIXED_LOT_SIZE,
-    SIGNAL_ALLOWED_SYMBOLS,
     SIGNAL_MAX_CONCURRENT_POSITIONS,
     SIGNAL_MAX_LOT_SIZE,
     SIGNAL_MAX_TRADES_PER_DAY,
@@ -183,11 +183,10 @@ def _validate(approval: PendingSignalApproval, account, lot: Decimal) -> dict:
             "not_tradeable", "approval lacks a usable symbol/direction"
         )
 
-    if symbol not in SIGNAL_ALLOWED_SYMBOLS:
-        raise ProposalRejected(
-            "symbol_not_allowed",
-            f"{symbol} is not in the signal symbol allowlist {SIGNAL_ALLOWED_SYMBOLS}",
-        )
+    # Broker/account-aware symbol gate (fail-closed with a specific reason).
+    _sym_res = can_account_trade_symbol(account, symbol)
+    if not _sym_res.accepted:
+        raise ProposalRejected(_sym_res.reason, f"{symbol}: {_sym_res.reason}")
 
     if lot <= 0:
         raise ProposalRejected("invalid_lot", f"lot {lot} must be positive")
