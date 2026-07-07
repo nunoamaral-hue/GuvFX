@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-DEMO-ACCOUNT-RESET-AND-WAYOND-CONFIG",
+  "packet_id": "GFX-PKT-DEMO-ACCOUNT-RESET-AND-WAYOND-CONFIG",
+  "created_at_utc": "2026-07-07T07:56:21Z",
+  "branch": "docs/demo-account-reset-evidence",
+  "base_commit": "c07af06a22abb4acf3be86679930b6c15714cb1c",
+  "head_commit": "c07af06a22abb4acf3be86679930b6c15714cb1c",
+  "environment": {
+    "target": "production DB (OVH VPS guvfx-ubuntu 100.119.23.29, guvfx-backend container)",
+    "change_type": "config-only (DB rows) — no code, no deploy, no migration",
+    "code_change": false,
+    "deploy": false,
+    "armed": false,
+    "order_placed": false,
+    "telegram_sent": false
+  },
+  "files_added": [
+    "evidence/manifests/GFX-EVD-DEMO-ACCOUNT-RESET-AND-WAYOND-CONFIG.json"
+  ],
+  "files_modified": [],
+  "commands": [
+    "prod: docker compose exec -T guvfx-backend python manage.py shell  (read baseline)",
+    "prod: docker compose exec -T guvfx-backend python manage.py shell  (atomic config writes)",
+    "prod: docker compose exec -T guvfx-backend python manage.py shell  (read-only verification)"
+  ],
+  "expected_results": [
+    "Target = user nuno.amaral@live.com (id 2), TradingAccount #1 'TradersWay Demo (1121106)' (is_demo, is_active).",
+    "The 3 existing MANUAL assignments on account #1 (WIMS Demo Strategy, Structural Continuation Engine, TBP V3 Hybrid Sleeve v1) are deactivated (is_active=False), NOT deleted.",
+    "Exactly one Strategy 'Wayond Auto Demo' and one StrategyAssignment (account #1, execution_mode=AUTO_DEMO, stage=LIVE, is_active=True) — the unique active AUTO_DEMO target.",
+    "SignalSourceConfig(source=wayond, auto_demo_execution_enabled=True, total_lot_target=0.06 = the current MAX_TOTAL_LOT_PER_SIGNAL cap; NOT 0.40).",
+    "ParserProfile wayond_v1 certification_level=MEDIUM.",
+    "Safety defaults unchanged: ExecutionControl.auto_execution_enabled=False, signal_execution_mode=SHADOW, provider wayond=ONBOARDING (un-armed), NOTIFICATION_DISPATCH_ENABLED off.",
+    "No new ExecutionJobs, no orders placed, no Telegram sent."
+  ],
+  "actual_results": [
+    "Account #1: user 2, is_demo=True, is_active=True — confirmed.",
+    "BEFORE: asg#1 (WIMS Demo, MANUAL, active), asg#5 (Structural Continuation, MANUAL, active), asg#6 (TBP V3, MANUAL, active). No AUTO_DEMO assignment, no Wayond strategy/source-config, parser cert LOW.",
+    "WRITES (one atomic transaction): deactivated 3 assignments; created Strategy #7 'Wayond Auto Demo'; created StrategyAssignment #7 (AUTO_DEMO, LIVE, active); created SignalSourceConfig(wayond, auto_demo=True, total_lot_target=0.06); set parser wayond_v1 cert MEDIUM.",
+    "AFTER: acct#1 assignments = asg#1/#5/#6 is_active=False (preserved, ids intact) + asg#7 Wayond AUTO_DEMO active. ACTIVE on acct#1 = [('Wayond Auto Demo','AUTO_DEMO')] only.",
+    "Unique active AUTO_DEMO (demo/LIVE) globally = 1 (satisfies the auto-router uniqueness requirement).",
+    "wayond SignalSourceConfig: auto_demo_execution_enabled=True, total_lot_target=0.06. parser wayond_v1 cert=MEDIUM.",
+    "Safety: auto_execution_enabled=False; signal_execution_mode=SHADOW; provider wayond=ONBOARDING; NOTIFICATION_DISPATCH_ENABLED absent (OFF).",
+    "ExecutionJob total = 50 (unchanged from baseline); Wayond-tagged jobs = 0. No order, no Telegram send."
+  ],
+  "acceptance_criteria": {
+    "only_wayond_active_on_demo_account": "PASS",
+    "old_assignments_inactive_not_deleted": "PASS",
+    "wayond_source_config_exists": "PASS",
+    "parser_certification_medium": "PASS",
+    "provider_still_un_armed": "PASS",
+    "auto_execution_still_disabled": "PASS",
+    "global_mode_still_shadow": "PASS",
+    "no_new_execution_jobs": "PASS",
+    "no_orders_placed": "PASS",
+    "no_telegram_sent": "PASS"
+  },
+  "status": "PASS",
+  "limitations": [
+    "Config-only production DB change (reversible). No code, no deploy, no migration. Nothing armed: provider ONBOARDING, auto_execution_enabled False, signal_execution_mode SHADOW, dispatch OFF, transport not deployed. E3 remains RED.",
+    "total_lot_target is set to 0.06 (the current MAX_TOTAL_LOT_PER_SIGNAL) — split_volume(0.06, 3) yields 0.02/0.02/0.02 for a 3-TP Wayond signal, within all current caps. The 0.40 target is deferred to a post-demo lot-cap packet.",
+    "Arm-time considerations for the eventual demo (NOT this packet): at 0.06 the symbol-exposure runtime cap (MAX_SYMBOL_EXPOSURE_LOT default 0.06) is at its boundary, and a 3-leg signal approaches MAX_OPEN_POSITIONS_PER_ACCOUNT (default 3) — the arm/preflight packet should confirm/tune these env caps.",
+    "The 'Wayond Auto Demo' Strategy carries no scheduler trading logic (no entry/indicator rules), so the h1/m5/h4 strategy schedulers produce no orders from it; the deactivated strategies produce none either — the demo account is quiet until the signal path is armed."
+  ],
+  "artefact_locations": [
+    "prod DB: strategies_strategy #7 'Wayond Auto Demo'; strategies_strategyassignment #7 (AUTO_DEMO); execution_signalsourceconfig source=wayond; signal_intake_parserprofile wayond_v1",
+    "evidence/manifests/GFX-EVD-DEMO-ACCOUNT-RESET-AND-WAYOND-CONFIG.json"
+  ],
+  "checksums": {},
+  "reviewer": null
+}
