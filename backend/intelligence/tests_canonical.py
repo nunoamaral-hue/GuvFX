@@ -433,7 +433,7 @@ class StakeholderCardTests(TestCase):
 
 
 class SendPhotoTransportTests(SimpleTestCase):
-    """The image primitive (sendPhoto) exists, posts multipart, and is NOT wired into deliver()."""
+    """The image primitive (sendPhoto) posts multipart; deliver() sends the card (text fallback)."""
 
     def test_send_photo_posts_multipart_to_sendphoto(self):
         from execution.notifications import real_transport as rt

@@ -7,8 +7,9 @@ else (dispatcher, dry-run transport, contracts) stays network-free — the bound
 that split. Even so, this transport does NOTHING by default: the dispatcher is gated by
 ``NOTIFICATION_DISPATCH_ENABLED`` (default OFF) AND the selector defaults to the dry-run transport,
 so a real message is sent only when an operator BOTH enables dispatch AND selects the real
-transport AND supplies a token + chat id. It renders the SAME ``CanonicalTradeResult`` /
-``TelegramRenderer`` output as the dry-run transport (via ``build_telegram_envelope``).
+transport AND supplies a token + chat id. Its PRIMARY output is the visual result CARD
+(``build_stakeholder_card`` -> ``sendPhoto``); the ``TelegramRenderer`` text
+(``build_telegram_envelope``) is the fallback + the audit record.
 
 Security: the bot token appears only in the Telegram API URL and is NEVER logged, never put in a
 ``DeliveryResult``/detail, and never raised. Failures carry only the HTTP status code or the
@@ -120,9 +121,9 @@ class RealTelegramTransport(NotificationTransport):
         """Send the result CARD (a PNG) with a short caption via Telegram ``sendPhoto`` (multipart).
 
         This is the IMAGE primitive — the polished stakeholder card is the photo, the short caption
-        rides alongside. It is NOT wired into ``deliver()`` / the candidate flow (which stays text);
-        it is used only by a controlled, human-approved card send. The token lives ONLY in the URL
-        and is never logged/returned/raised."""
+        rides alongside. It is the PRIMARY output of ``deliver()`` (WIN notifications send the card;
+        ``_send`` text is the fallback), invoked only AFTER deliver()'s WIN-only / credential /
+        idempotency gates. The token lives ONLY in the URL and is never logged/returned/raised."""
         url = f"{_TELEGRAM_API}/bot{self._token}/sendPhoto"
         boundary = "----GuvFXCardBoundaryZ7Xq2fVn"
 
