@@ -102,7 +102,8 @@ class FailClosedTests(RealTransportBase):
 
 
 class SendTests(RealTransportBase):
-    def test_api_success_marks_sent_transmitted(self):
+    def test_api_success_sends_card_and_marks_sent(self):
+        # The primary stakeholder output is the visual CARD (sendPhoto), not text.
         with mock.patch(_URLOPEN, return_value=_ok_urlopen()) as up:
             r = self._real().deliver(self.candidate)
         self.assertTrue(r.ok)
@@ -110,10 +111,25 @@ class SendTests(RealTransportBase):
         self.assertTrue(r.transmitted)
         up.assert_called_once()
         req = up.call_args.args[0]
-        self.assertIn("api.telegram.org", req.full_url)
-        body = json.loads(req.data.decode())
-        self.assertEqual(body["chat_id"], CHAT)
-        self.assertIn("EURUSD", body["text"])
+        self.assertTrue(req.full_url.endswith("/sendPhoto"))                    # image, not text
+        self.assertIn("multipart/form-data", req.headers.get("Content-type", ""))
+        self.assertIn(b"image/png", req.data)                                   # the card photo part
+        self.assertIn(b"EURUSD", req.data)                                      # caption carries the symbol
+        self.assertIn(CHAT.encode(), req.data)
+        self.assertIn("card", r.detail)
+
+    def test_card_render_failure_falls_back_to_text(self):
+        # If the card can't render, a WIN still notifies via the text message.
+        from execution.notifications import contracts
+        with mock.patch.object(contracts, "build_stakeholder_card", side_effect=RuntimeError("no card")):
+            with mock.patch(_URLOPEN, return_value=_ok_urlopen()) as up:
+                r = self._real().deliver(self.candidate)
+        self.assertTrue(r.ok)
+        self.assertTrue(r.transmitted)
+        req = up.call_args.args[0]
+        self.assertTrue(req.full_url.endswith("/sendMessage"))                  # text fallback
+        self.assertIn("text-fallback", r.detail)
+        self.assertIn("EURUSD", json.loads(req.data.decode())["text"])
 
     def test_api_http_error_marks_failed(self):
         err = urllib.error.HTTPError("https://api.telegram.org/botX/sendMessage", 401, "no", {}, None)
