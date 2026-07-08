@@ -462,14 +462,15 @@ class SendPhotoTransportTests(SimpleTestCase):
         self.assertEqual(resp["result"]["message_id"], 7)
         self.assertNotIn("SECRET-TOK", str(resp))  # token never surfaces in the result
 
-    def test_11_send_photo_not_wired_into_candidate_flow(self):
-        # deliver() (the candidate/dispatch path) stays TEXT — it must not call the photo primitive.
+    def test_11_win_notifications_use_the_card(self):
+        # The candidate/dispatch path now sends the visual CARD (sendPhoto), with a text fallback.
         import inspect
 
         from execution.notifications.real_transport import RealTelegramTransport
         src = inspect.getsource(RealTelegramTransport.deliver)
-        self.assertNotIn("_send_photo", src)
-        self.assertIn("_send(", src)  # deliver still uses the text primitive
+        self.assertIn("_send_photo", src)              # card image is the primary output
+        self.assertIn("build_stakeholder_card", src)
+        self.assertIn("_send(text)", src)              # text fallback retained
 
 
 class CanonicalBoundaryTests(TestCase):

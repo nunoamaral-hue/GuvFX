@@ -74,8 +74,22 @@ class RealTelegramTransport(NotificationTransport):
         except Exception:  # pragma: no cover - defensive (never block on the dedup read)
             pass
 
+        # The primary stakeholder output is the visual CARD (sendPhoto). If the card cannot be
+        # rendered for any reason, fall back to the text message so a WIN always notifies.
+        card = None
         try:
-            payload = self._send(text)
+            from execution.notifications.contracts import build_stakeholder_card
+            card = build_stakeholder_card(candidate)   # (png_bytes, caption)
+        except Exception:  # pragma: no cover - defensive; card render must never block a WIN
+            card = None
+
+        try:
+            if card is not None:
+                payload = self._send_photo(card[0], card[1])
+                mode = "card"
+            else:
+                payload = self._send(text)
+                mode = "text-fallback"
         except urllib.error.HTTPError as exc:            # status code only — NEVER the token/URL
             return self._failed(text, f"telegram HTTP {exc.code}")
         except urllib.error.URLError as exc:
@@ -87,7 +101,7 @@ class RealTelegramTransport(NotificationTransport):
             return self._failed(text, f"telegram api error_code={payload.get('error_code')}")
         return DeliveryResult(
             ok=True, status="SENT", transmitted=True, rendered_message=text,
-            detail="sent to stakeholder review channel",
+            detail=f"sent {mode} to stakeholder review channel",
         )
 
     def _send(self, text: str) -> dict:

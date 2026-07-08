@@ -190,25 +190,50 @@ def resolve_leg_evidence(correlation_id: str, current_trade=None) -> dict:
     }
 
 
-def build_telegram_envelope(candidate) -> TelegramMessageEnvelope:
-    """Build the (draft-rendered) Telegram envelope from a NotificationCandidate (read-only).
-
-    Sources every field from the canonical trade result + the Telegram renderer — behaviour is
-    identical to the previous bespoke assembly, now single-sourced.
-    """
+def _canonical_for(candidate):
+    """Build the CanonicalTradeResult for a candidate (read-only; execution resolves the linkage +
+    per-TP leg evidence and hands intelligence plain dicts — ADR-009)."""
     from intelligence.canonical import build_canonical_trade_result
-    from intelligence.renderers import TelegramRenderer
 
     trade = candidate.outcome_record.trade
     cid = candidate.correlation_id or ""
-    result = build_canonical_trade_result(
+    return build_canonical_trade_result(
         trade,
         correlation_id=cid,
         signal_source=candidate.signal_source or "",
         linkage=resolve_signal_linkage(cid),
         leg_evidence=resolve_leg_evidence(cid, trade),
     )
+
+
+def build_telegram_envelope(candidate) -> TelegramMessageEnvelope:
+    """Build the (draft-rendered) Telegram TEXT envelope from a NotificationCandidate (read-only).
+
+    Sources every field from the canonical trade result + the Telegram renderer. This is the text
+    projection (audit + text fallback); the primary stakeholder output is the card image."""
+    from intelligence.renderers import TelegramRenderer
+
+    result = _canonical_for(candidate)
     content = TelegramRenderer().render(result)
+    return _envelope_from(content, result)
+
+
+def build_stakeholder_card(candidate):
+    """Render the stakeholder result CARD (PNG bytes) + short caption for a WIN candidate.
+
+    Read-only — builds the same canonical the text envelope uses, then the visual card + caption.
+    Pulls Pillow (only invoked from the real transport's card send). Returns ``(png_bytes, caption)``."""
+    import base64
+
+    from intelligence.caption import build_short_caption
+    from intelligence.results_card import render_result_card
+
+    result = _canonical_for(candidate)
+    card = render_result_card(result)
+    return base64.b64decode(card["png_base64"]), build_short_caption(result)
+
+
+def _envelope_from(content, result) -> TelegramMessageEnvelope:
     return TelegramMessageEnvelope(
         title=content.title,
         summary=result.summary,
