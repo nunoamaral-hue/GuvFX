@@ -95,20 +95,22 @@ def _leg_net(trade) -> str:
 def _resolve_strategy_display_name(plan) -> str:
     """Best-effort human strategy name for the plan's account (e.g. 'Wayond Auto Demo').
 
-    Prefers the account's active AUTO_DEMO assignment; falls back to a title-cased source. Purely
-    read-only and defensive — a lookup failure never blocks a notification."""
+    Resolves the account's active AUTO_DEMO assignment SOURCE-AWARE: when more than one auto-copy
+    strategy shares an account (e.g. Wayond + Wayond WIM on the demo account), the card must be
+    labelled with the strategy bound to THIS plan's source. Falls back to any AUTO_DEMO assignment
+    (single-assignment/unbound account) and then a title-cased source. Read-only and defensive — a
+    lookup failure never blocks a notification."""
     try:
         from strategies.models import StrategyAssignment
 
-        a = (
-            StrategyAssignment.objects.filter(
-                account=plan.account, is_active=True,
-                execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
-            )
-            .select_related("strategy")
-            .order_by("-id")
-            .first()
-        )
+        base = StrategyAssignment.objects.filter(
+            account=plan.account, is_active=True,
+            execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+        ).select_related("strategy")
+        src = getattr(plan, "source", "") or ""
+        a = base.filter(signal_source=src).order_by("-id").first() if src else None
+        if a is None:  # back-compat: unbound / single-assignment account
+            a = base.order_by("-id").first()
         if a is not None and a.strategy_id:
             return a.strategy.name
     except Exception:  # pragma: no cover - defensive; never block a notification on this
