@@ -15,7 +15,7 @@ from intelligence.telegram_source import Kind, parse_message as wayond_parse
 from intelligence.ti_signals_source import parse_ti_signals
 from signal_intake.acquisition import acquire_message
 from signal_intake.models import (
-    AcquiredMessage, ParserProfile, PendingSignalApproval, SignalProvider,
+    AcquiredMessage, MessageAmendment, ParserProfile, PendingSignalApproval, SignalProvider,
 )
 from signal_intake.parsers import get_parser, registered_profiles
 
@@ -177,4 +177,26 @@ class TiSignalsExpiryAcquisitionTests(TestCase):
         now = timezone.now()
         acq = acquire_message(self.provider, self._msg("v1", now + timedelta(hours=1), now), now=now)
         self.assertEqual(acq.outcome, AcquiredMessage.Outcome.INTAKEN)
+        self.assertEqual(PendingSignalApproval.objects.count(), 1)
+
+    def test_edit_into_expired_signal_creates_no_approval(self):
+        # An original non-signal edited into an already-expired TI signal records the amendment
+        # but creates NO tradeable approval (same fail-closed rule as the fresh path).
+        now = timezone.now()
+        acquire_message(self.provider,
+                        {"message_id": "a1", "chat_id": "-100777", "text": "morning all", "date": now}, now=now)
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)
+        edited = self._msg("a1", now - timedelta(minutes=1), now)
+        edited["edit_date"] = now
+        acquire_message(self.provider, edited, now=now)
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)
+        self.assertEqual(MessageAmendment.objects.count(), 1)  # audit record still written
+
+    def test_edit_into_valid_signal_creates_flagged_approval(self):
+        now = timezone.now()
+        acquire_message(self.provider,
+                        {"message_id": "a2", "chat_id": "-100777", "text": "morning all", "date": now}, now=now)
+        edited = self._msg("a2", now + timedelta(hours=1), now)
+        edited["edit_date"] = now
+        acquire_message(self.provider, edited, now=now)
         self.assertEqual(PendingSignalApproval.objects.count(), 1)
