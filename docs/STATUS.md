@@ -6,6 +6,18 @@
 
 ## Execution workstream log
 
+- **2026-07-14 — WAYOND-WIM-STRATEGY: MERGED + DEPLOYED + CONTINUOUS AUTO_DEMO ARMED (Nuno-authorised). 🟢**
+  PRs #109 (feature) + #110 (source-aware card name) merged → main `d5ae9b9`; deployed backend `78c9fe8ab61f`
+  + listener `f417fd68` + frontend rebuilt (mp-010 card live). Migration strategies/0012 applied in a kill-switch
+  window (released after verify). **"Wayond WIM Strategy"** now runs continuously in DEMO alongside Wayond Auto
+  Demo (both live). TI Signals chat `-1004480146594` (listener account NunoRAmaral already a member; parser 6/6);
+  Wayond asn#7 bound `wayond`, WIM Strategy#8/asn#8 bound `ti_signals` on demo acct#1 (SignalSourceConfig 0.06,
+  cert MEDIUM); watermark=14 → catch-up processed=0 (no replay); 有効期限 expiry enforced fail-closed; source
+  routing verified independent (`effective_mode → AUTO_DEMO armed`: wayond→#7, ti→#8); order_check dry-run retcode
+  0 / no order_send; 3 legs shared-SL/unique-TP proven. Global auto=True mode=DEMO kill=False; VPS-side, no
+  Claude/laptop dependency. Rollback: `:rollback-preWIM` images + `~/backups/preWIM-*.sql.gz`; TI-only disarm =
+  pause asn#8. Notion evidence: GFX-EVD-WAYOND-WIM-STRATEGY-DEPLOY-ARM. E3 live (real-money) still RED.
+  _(Prior Phase-A code-only entry superseded by this deployment.)_
 - **2026-07-14 — WAYOND-WIM-STRATEGY (Phase A): a second Telegram signal-copy strategy — CODE ONLY, repo branch, NOT deployed/armed. 🧩**
   New "Wayond WIM Strategy" sourced from the **TI Signals** Telegram channel (provider slug `ti_signals`),
   mirroring the Wayond auto-demo, with a marketplace card + a manual enable/disable. Additive backend +
