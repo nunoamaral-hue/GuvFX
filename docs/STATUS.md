@@ -6,6 +6,27 @@
 
 ## Execution workstream log
 
+- **2026-07-14 — WAYOND-WIM-STRATEGY (Phase A): a second Telegram signal-copy strategy — CODE ONLY, repo branch, NOT deployed/armed. 🧩**
+  New "Wayond WIM Strategy" sourced from the **TI Signals** Telegram channel (provider slug `ti_signals`),
+  mirroring the Wayond auto-demo, with a marketplace card + a manual enable/disable. Additive backend +
+  frontend on branch `feat/wayond-wim-strategy`. **(1)** New `ti_signals_v1` parser
+  (`intelligence/ti_signals_source.py`, registered in `signal_intake/parsers.py`) for the
+  `🔔 XAUUSD BUY (M15) / Entry: a-b (mid m) / SL: / TP1..3` format — line-anchored, real-timeframe-gated,
+  quarantines ambiguous entries, update-markers-first. **(2)** Source-scoped auto-routing
+  (**ADR-0011**, Amber): new `StrategyAssignment.signal_source` (migration `0012`, additive) + a fail-closed,
+  back-compatible `_resolve_target(mode, source)` so Wayond→Wayond and TI→WIM route independently; the live
+  single-Wayond path is unchanged while `signal_source` is unset. Claim-detection is unscoped (disabling by
+  is_active/stage/mode/account never re-routes), and routing now also requires `account__is_active`.
+  **(3)** Marketplace card `mp-010` (frontend `MARKETPLACE_SEED` + backend `MARKETPLACE_STRATEGIES`) with a
+  dedicated `signal-copy/status` + `signal-copy/toggle` that PAUSE/RESUME an already-armed AUTO_DEMO
+  assignment (never arm; disable is a reliable kill; owner+account authz; generic Assign rejects signal-copy
+  templates). **Adversarially reviewed** (20-agent sweep → 11 confirmed defects, all fixed + regression
+  tested; focused re-verify → 2 residual unbound-fallback holes, closed by a multi-source fail-closed
+  guard + a Phase-B "bind Wayond first" requirement). Tests: `501` green (execution+strategies+signal_intake);
+  frontend lint 0 errors + build OK. **Phase B (RED, Nuno's gate, NOT done):** bind Wayond assignment to
+  signal_source="wayond" FIRST; TI channel numeric chat-id + listener join;
+  create prod provider/source-config/AUTO_DEMO-assignment rows; deploy the router change in a kill-switch
+  window; arm + verify. E3 real-order posture unchanged (still RED).
 - **2026-07-06 — E3-DEPLOY-AND-PREFLIGHT: production brought up to current main (`e69c144`) WITHOUT enabling E3. 🚀**
   Deployed the full undeployed stack (prod backend was 36 commits behind at `cb2108c`/#56 → now `e69c144`/#93:
   auto-shadow, close-monitor, outcome-router, notification dispatcher, dry-run transport, E3 demo-promotion,

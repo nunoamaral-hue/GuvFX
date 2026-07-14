@@ -93,19 +93,51 @@ def _confidence_ok(provider) -> bool:
         return False
 
 
-def _resolve_target(assignment_mode):
-    """The UNIQUE active assignment with ``execution_mode==assignment_mode`` (stage LIVE, demo
-    account), or None. Fail-closed on 0 or >1 matches — an ambiguous config never auto-executes.
+def _resolve_target(assignment_mode, source=""):
+    """The active assignment (stage LIVE, demo account) to auto-execute for this signal's
+    ``source`` (the provider slug), or None. Fail-closed: an ambiguous/paused config never fires.
+
+    Source-scoped so more than one auto-copy strategy can coexist:
+
+    1. If this ``source`` is CLAIMED — ANY assignment is bound to it via
+       ``signal_source == source`` — resolution stays within that claim: return the UNIQUE
+       assignment that is routable (active, stage LIVE, demo, live account), else None.
+       Claim detection is deliberately UNSCOPED (no mode/stage/account filter): disabling a
+       signal-copy strategy by ANY axis — pausing (is_active), stage LIVE→TEST, execution_mode
+       AUTO_DEMO→MANUAL, or moving to a non-demo/inactive account — keeps the source claimed and
+       yields None (auto-copy off). It NEVER falls through to another strategy, so disabling one
+       signal-copy strategy stops it — it does not re-route its signals elsewhere.
+    2. If the source is unclaimed (no assignment bound to it at all), fall back to the legacy
+       behaviour: the globally-UNIQUE routable assignment that is itself UNBOUND
+       (``signal_source == ""``). This preserves today's single-Wayond routing exactly while
+       ``signal_source`` is unset everywhere.
     """
-    hits = list(
-        StrategyAssignment.objects.filter(
-            execution_mode=assignment_mode,
-            is_active=True,
-            stage=StrategyAssignment.STAGE_LIVE,
-            account__is_demo=True,
-        ).select_related("account")[:2]
+    # Routable set — the only assignments that may ever receive an auto order. account__is_active
+    # is required so deactivating an account is a reliable stop regardless of the assignment flag.
+    base = StrategyAssignment.objects.filter(
+        execution_mode=assignment_mode,
+        stage=StrategyAssignment.STAGE_LIVE,
+        account__is_demo=True,
+        account__is_active=True,
     )
-    return hits[0] if len(hits) == 1 else None
+    if source and StrategyAssignment.objects.filter(signal_source=source).exists():
+        active = list(
+            base.filter(signal_source=source, is_active=True).select_related("account")[:2]
+        )
+        return active[0] if len(active) == 1 else None
+    # Unbound legacy fallback. An unbound assignment can represent AT MOST ONE source
+    # unambiguously, so once MORE THAN ONE auto-source is enabled it must not serve any of them
+    # — otherwise a second, enabled-but-not-yet-bound source (e.g. ti_signals during a partial
+    # roll-out) would be misrouted onto the legacy Wayond assignment. Fail closed instead; bind
+    # each live source to its own assignment (signal_source) to run more than one.
+    if source and SignalSourceConfig.objects.filter(
+        auto_demo_execution_enabled=True
+    ).count() > 1:
+        return None
+    unbound = list(
+        base.filter(signal_source="", is_active=True).select_related("account")[:2]
+    )
+    return unbound[0] if len(unbound) == 1 else None
 
 
 def resolve_auto_shadow_target():
@@ -163,7 +195,7 @@ def effective_mode(approval):
     if not _confidence_ok(provider):
         return MODE_MANUAL, "parser_confidence_below_medium"
 
-    if _resolve_target(assignment_mode) is None:
+    if _resolve_target(assignment_mode, approval.source) is None:
         return MODE_MANUAL, "no_unique_auto_assignment"
 
     return tier_mode, "armed"
@@ -187,7 +219,7 @@ def _auto_execute(approval, acquired, *, assignment_mode, promote_fn, label) -> 
     is swallowed — acquisition is never disrupted; edited/non-pending approvals never act.
     """
     actor = _system_actor()
-    target = _resolve_target(assignment_mode)
+    target = _resolve_target(assignment_mode, approval.source)
     if actor is None or target is None:
         logger.info("auto_router: unresolved actor/target -> manual")
         return

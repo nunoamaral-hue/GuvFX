@@ -903,6 +903,58 @@ const dictionary: Dictionary = {
     en: "Preview",
     ja: "プレビュー",
   },
+  "marketplace.copyStatusLabel": {
+    en: "Status",
+    ja: "状態",
+  },
+  "marketplace.copyOn": {
+    en: "Enabled",
+    ja: "有効",
+  },
+  "marketplace.copyOff": {
+    en: "Disabled",
+    ja: "無効",
+  },
+  "marketplace.copyNotArmedShort": {
+    en: "Not armed",
+    ja: "未アーム",
+  },
+  "marketplace.copyEnable": {
+    en: "Enable",
+    ja: "有効化",
+  },
+  "marketplace.copyDisable": {
+    en: "Disable",
+    ja: "無効化",
+  },
+  "marketplace.copyWorking": {
+    en: "Working…",
+    ja: "処理中…",
+  },
+  "marketplace.copyEnabled": {
+    en: "Strategy enabled.",
+    ja: "戦略を有効化しました。",
+  },
+  "marketplace.copyDisabled": {
+    en: "Strategy disabled.",
+    ja: "戦略を無効化しました。",
+  },
+  "marketplace.copyNotArmed": {
+    en: "This strategy isn't armed for auto-demo yet — arming is a separate, gated step.",
+    ja: "この戦略はまだ自動デモ用にアームされていません（アームは別途承認が必要な手順です）。",
+  },
+  "marketplace.copyAmbiguous": {
+    en: "Auto-copy config needs attention: more than one armed assignment is bound to this source.",
+    ja: "自動コピー設定に注意が必要です。このソースに複数のアーム済み割り当てが紐付いています。",
+  },
+  "marketplace.copyNotArmedHint": {
+    en: "Arming (auto-demo) is a separate, gated step.",
+    ja: "アーム（自動デモ）は別途承認が必要な手順です。",
+  },
+  "marketplace.copyToggleFailed": {
+    en: "Could not change the strategy state. Please try again.",
+    ja: "戦略の状態を変更できませんでした。もう一度お試しください。",
+  },
   "marketplace.unauthMessage": {
     en: "You are not authenticated. Please log in again to assign marketplace templates.",
     ja: "認証されていません。マーケットプレイスのテンプレートを割り当てるには再ログインしてください。",

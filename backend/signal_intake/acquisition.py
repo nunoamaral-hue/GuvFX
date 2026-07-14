@@ -76,6 +76,27 @@ def _to_aware(value):
         return None
 
 
+def _parse_iso_utc(value):
+    """Parse an ISO-8601 string (as produced by the parser's expiry field) into an aware
+    datetime, or None if blank/unparseable. Fail-soft: a bad value → None (no expiry gate)."""
+    if not value:
+        return None
+    try:
+        dt = _dt.datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt, _dt.timezone.utc)
+    return dt
+
+
+def _signal_expired(parsed, now) -> bool:
+    """True when a parsed signal carries an expiry (e.g. TI ``有効期限``) already past ``now``.
+    Blank/unparseable expiry → False (the staleness window remains the backstop)."""
+    exp = _parse_iso_utc(getattr(parsed, "expiry", "") or "")
+    return exp is not None and now >= exp
+
+
 def _record_update(provider, message, parsed, mid, chat_id, *, edited=False):
     kind_map = {"TP_HIT": SignalUpdate.Kind.TP_HIT, "MOVE_SL": SignalUpdate.Kind.MOVE_SL}
     reply_to = str(message.get("reply_to_message_id") or "")
@@ -128,7 +149,10 @@ def _record_amendment(provider, original, message, mid, tg_date, now):
                                  ("take_profit", approval.take_profit, new_tp)):
             if str(old or "") != str(new or ""):
                 changed_fields[field] = [old, new]
-    new_approval = is_signal and approval is None  # edit produced a signal where none was
+    # An edit that produces a signal where none existed → new approval, UNLESS it is already
+    # past its own expiry (same fail-closed rule as the fresh path — no approval for an expired
+    # signal). The amendment itself is still recorded as the immutable audit trail.
+    new_approval = is_signal and approval is None and not _signal_expired(parsed, now)
 
     logger.warning("wayond edit-after-acquisition amendment: provider=%s message_id=%s "
                    "changed=%s new_approval=%s", getattr(provider, "slug", "?"), mid,
@@ -198,6 +222,11 @@ def _classify(provider, message, mid, chat_id, tg_date, now):
 
         parsed = get_parser(provider.parser_profile.slug)(text, mid)  # never raises here
         if parsed.kind == Kind.SIGNAL and parsed.is_tradeable_shape():
+            # Signal-validity deadline (e.g. TI Signals' 有効期限). FAIL-CLOSED: a signal
+            # already past its own stated expiry is never intaken as tradeable — no approval,
+            # no order (an unparseable/absent expiry falls back to the staleness window above).
+            if _signal_expired(parsed, now):
+                return O.STALE, "signal_expired", None
             # Human-gated intake either way; an edited entry is FLAGGED so the reviewer
             # verifies entry/SL/TP (never auto-applied — approval still required).
             approval = services.intake_parsed(parsed, provider=provider, edited=edited)

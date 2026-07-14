@@ -73,6 +73,9 @@ class ParsedSignal:
     new_stop_loss: str = ""
     # quarantine reason
     reason: str = ""
+    # Optional signal validity deadline as an ISO-8601 UTC string (e.g. TI Signals'
+    # ``有効期限``). Blank when the source carries none (e.g. Wayond). Enforced at intake.
+    expiry: str = ""
 
     def is_tradeable_shape(self) -> bool:
         return self.kind == Kind.SIGNAL and bool(

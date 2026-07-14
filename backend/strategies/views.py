@@ -266,6 +266,35 @@ MARKETPLACE_STRATEGIES = {
             "exit_logic": "CORE: Fixed 2R target from entry. SLEEVE: SL = 1.2 × ATR14, TP = 1.5R. Selection: CORE_PRIORITY (TBP first, TC1 fallback).",
         },
     },
+    # Signal-copy strategy: mirrors "Wayond Auto Demo" but sourced from the TI Signals
+    # Telegram channel (provider slug "ti_signals", parser ti_signals_v1). The Strategy row is
+    # cosmetic (the notification card reads its name); execution runs through the signal-copy
+    # auto-router, gated by an AUTO_DEMO assignment bound to signal_source="ti_signals" and armed
+    # only by the separate human-gated process — never by Assign (which creates MANUAL/TEST).
+    "mp-010": {
+        "name": "Wayond WIM Strategy",
+        "description": "Auto-copies TI Signals (Telegram) into demo trades: parse → broker-symbol check → per-TP legs. Human-gated arming; demo only.",
+        "category": "System-grade",
+        "template_slug": "wayond-wim",
+        "marketplace_listed": True,
+        "automation_ready": False,
+        "defaults": {
+            "timeframe": "M15",
+            "symbol_universe": "XAUUSD",
+            "edge_type": "BREAKOUT",
+            "risk_per_trade_pct": 0.1,
+            "auto_optimize_by_ai": False,
+            "filters": {
+                "template_slug": "wayond-wim",
+                "enabled": True,
+                "signal_source": "ti_signals",
+                "parser_profile": "ti_signals_v1",
+                "pairs_enabled": ["XAUUSD"],
+            },
+            "entry_logic": "Entry taken from each TI Signals entry message (symbol/direction/mid entry); broker-symbol validated on MT5 before any order.",
+            "exit_logic": "Per-TP legs (TP1/TP2/TP3) with the signal's stop-loss; demo execution only, gated behind the signal-copy auto-router.",
+        },
+    },
 }
 
 
@@ -769,6 +798,15 @@ class StrategyViewSet(viewsets.ModelViewSet):
         if not tpl:
             return Response({"detail": "Unknown marketplace_strategy_id"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Signal-copy strategies are armed by the separate gated process and controlled by the
+        # dedicated signal-copy enable/disable — never by generic Assign (which would reactivate
+        # and stage-downgrade a gated AUTO_DEMO assignment). Reject them here, fail-closed.
+        if ((tpl.get("defaults") or {}).get("filters") or {}).get("signal_source"):
+            return Response(
+                {"detail": "This is a signal-copy strategy; use its enable/disable control, not Assign."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if not account_id:
             return Response({"detail": "account_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -886,6 +924,114 @@ class StrategyViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_201_CREATED,
         )
+
+    # ── Signal-copy enable/disable ──────────────────────────────────────────────
+    # A signal-copy marketplace template (e.g. "Wayond WIM Strategy") auto-executes through
+    # the signal-copy auto-router, gated by an AUTO_DEMO StrategyAssignment bound to a signal
+    # source (``signal_source``, e.g. "ti_signals"). These actions let an owner PAUSE/RESUME
+    # that already-armed assignment from the marketplace card. They deliberately CANNOT arm:
+    # they only flip ``is_active`` on an assignment already set to AUTO_DEMO by the separate,
+    # human-gated arming process — they never create an assignment and never touch
+    # ``execution_mode``/``stage`` (so "enable" can never grant new trading authority).
+
+    def _signal_copy_source(self, marketplace_strategy_id):
+        """Return the template's bound signal source, or None if it is not a signal-copy
+        template (i.e. its defaults.filters carry no ``signal_source``)."""
+        tpl = MARKETPLACE_STRATEGIES.get(marketplace_strategy_id) or {}
+        filters = (tpl.get("defaults") or {}).get("filters") or {}
+        src = filters.get("signal_source") or ""
+        return (tpl, src) if src else (tpl, None)
+
+    def _armed_assignments(self, request, source):
+        """The ROUTABLE arm set bound to ``source`` that this user may control: AUTO_DEMO, stage
+        LIVE, demo + active account — mirroring exactly what the auto-router can route to (so the
+        status/toggle surface never diverges from execution). Any is_active state (paused arms are
+        included so they can be resumed). Authorised to staff, or a caller who owns BOTH the
+        strategy and the account (the account is what the toggle actually affects)."""
+        qs = StrategyAssignment.objects.select_related("strategy", "account").filter(
+            execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+            signal_source=source,
+            stage=StrategyAssignment.STAGE_LIVE,
+            account__is_demo=True,
+            account__is_active=True,
+        )
+        if not request.user.is_staff:
+            qs = qs.filter(strategy__owner=request.user, account__user=request.user)
+        return list(qs.order_by("-id"))
+
+    @action(detail=False, methods=["get"], url_path="signal-copy/status")
+    def signal_copy_status(self, request):
+        marketplace_strategy_id = request.query_params.get("marketplace_strategy_id")
+        tpl, source = self._signal_copy_source(marketplace_strategy_id)
+        if not tpl:
+            return Response({"detail": "Unknown marketplace_strategy_id"}, status=status.HTTP_400_BAD_REQUEST)
+        if not source:
+            return Response({"detail": "not a signal-copy strategy"}, status=status.HTTP_400_BAD_REQUEST)
+        hits = self._armed_assignments(request, source)
+        active = [a for a in hits if a.is_active]
+        return Response({
+            "marketplace_strategy_id": marketplace_strategy_id,
+            "signal_source": source,
+            "armed": bool(hits),                 # an AUTO_DEMO assignment exists (may be paused)
+            "enabled": bool(active),             # armed AND currently active (auto-copy running)
+            "assignment_id": (hits[0].id if len(hits) == 1 else None),
+            "ambiguous": len(hits) > 1,          # >1 armed assignment → config error, fail-closed
+        })
+
+    @action(detail=False, methods=["post"], url_path="signal-copy/toggle")
+    def signal_copy_toggle(self, request):
+        marketplace_strategy_id = request.data.get("marketplace_strategy_id")
+        enabled = request.data.get("enabled")
+        if not isinstance(enabled, bool):
+            return Response({"detail": "enabled (boolean) is required"}, status=status.HTTP_400_BAD_REQUEST)
+        tpl, source = self._signal_copy_source(marketplace_strategy_id)
+        if not tpl:
+            return Response({"detail": "Unknown marketplace_strategy_id"}, status=status.HTTP_400_BAD_REQUEST)
+        if not source:
+            return Response({"detail": "not a signal-copy strategy"}, status=status.HTTP_400_BAD_REQUEST)
+
+        hits = self._armed_assignments(request, source)
+        if not hits:
+            # Never arm from here — arming (creating the AUTO_DEMO assignment) is the separate,
+            # human-gated step. Report clearly instead of silently creating trading authority.
+            return Response(
+                {"status": "not_armed", "signal_source": source,
+                 "detail": "This strategy is not armed for auto-demo yet; arming is a separate gated step."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if not enabled:
+            # DISABLE is a safety stop and must never be jammed: pause EVERY active arm bound to
+            # this source (even if a mis-config left more than one), so the running copy always
+            # stops. Idempotent when nothing is active.
+            paused = 0
+            for a in hits:
+                if a.is_active:
+                    a.is_active = False
+                    a.save(update_fields=["is_active", "updated_at"])
+                    paused += 1
+            return Response({
+                "status": "disabled", "marketplace_strategy_id": marketplace_strategy_id,
+                "signal_source": source, "paused_count": paused, "enabled": False,
+            })
+
+        # ENABLE (resume) is conservative — refuse to arm into an ambiguous config the router
+        # would itself fail closed on, and never activate onto an inactive account.
+        if len(hits) > 1:
+            return Response(
+                {"status": "ambiguous", "signal_source": source,
+                 "detail": "More than one armed assignment bound to this source; resolve before enabling."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        assignment = hits[0]
+        if not assignment.is_active:
+            assignment.is_active = True
+            assignment.save(update_fields=["is_active", "updated_at"])
+        return Response({
+            "status": "enabled", "marketplace_strategy_id": marketplace_strategy_id,
+            "signal_source": source, "assignment_id": assignment.id, "enabled": True,
+        })
+
 
 class StrategyAssignmentViewSet(viewsets.ModelViewSet):
     queryset = StrategyAssignment.objects.select_related("strategy", "account")
