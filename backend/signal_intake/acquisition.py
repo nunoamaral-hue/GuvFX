@@ -76,6 +76,20 @@ def _to_aware(value):
         return None
 
 
+def _parse_iso_utc(value):
+    """Parse an ISO-8601 string (as produced by the parser's expiry field) into an aware
+    datetime, or None if blank/unparseable. Fail-soft: a bad value → None (no expiry gate)."""
+    if not value:
+        return None
+    try:
+        dt = _dt.datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt, _dt.timezone.utc)
+    return dt
+
+
 def _record_update(provider, message, parsed, mid, chat_id, *, edited=False):
     kind_map = {"TP_HIT": SignalUpdate.Kind.TP_HIT, "MOVE_SL": SignalUpdate.Kind.MOVE_SL}
     reply_to = str(message.get("reply_to_message_id") or "")
@@ -198,6 +212,12 @@ def _classify(provider, message, mid, chat_id, tg_date, now):
 
         parsed = get_parser(provider.parser_profile.slug)(text, mid)  # never raises here
         if parsed.kind == Kind.SIGNAL and parsed.is_tradeable_shape():
+            # Signal-validity deadline (e.g. TI Signals' 有効期限). FAIL-CLOSED: a signal
+            # already past its own stated expiry is never intaken as tradeable — no approval,
+            # no order (an unparseable/absent expiry falls back to the staleness window above).
+            exp = _parse_iso_utc(getattr(parsed, "expiry", "") or "")
+            if exp is not None and now >= exp:
+                return O.STALE, "signal_expired", None
             # Human-gated intake either way; an edited entry is FLAGGED so the reviewer
             # verifies entry/SL/TP (never auto-applied — approval still required).
             approval = services.intake_parsed(parsed, provider=provider, edited=edited)

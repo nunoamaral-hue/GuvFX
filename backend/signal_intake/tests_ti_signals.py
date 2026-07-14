@@ -6,10 +6,17 @@ range-less entry fallback; quarantine (UNKNOWN) on a header without a timeframe 
 stop-loss; update messages (TP hit / move SL / SL hit); never-raises on garbage; and that the
 TI and Wayond parsers are mutually exclusive on each other's format.
 """
-from django.test import SimpleTestCase
+from datetime import timedelta
+
+from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 
 from intelligence.telegram_source import Kind, parse_message as wayond_parse
 from intelligence.ti_signals_source import parse_ti_signals
+from signal_intake.acquisition import acquire_message
+from signal_intake.models import (
+    AcquiredMessage, ParserProfile, PendingSignalApproval, SignalProvider,
+)
 from signal_intake.parsers import get_parser, registered_profiles
 
 TI_BUY = (
@@ -38,6 +45,7 @@ class TiSignalsParserTests(SimpleTestCase):
         self.assertEqual(p.entry, "4020.03")          # the mid, not the range bounds
         self.assertEqual(p.stop_loss, "4017.61")
         self.assertEqual(p.take_profits, ("4023.67", "4025.28", "4027.43"))
+        self.assertEqual(p.expiry, "2026-07-14T05:17:00+00:00")   # 有効期限 → ISO UTC
         self.assertEqual(p.message_id, "10")
 
     def test_sell_entry_parses(self):
@@ -119,6 +127,13 @@ class TiSignalsParserTests(SimpleTestCase):
         self.assertEqual(wayond_parse(TI_BUY).kind, Kind.UNKNOWN)
 
 
+    def test_expiry_delimiter_and_english_variants(self):
+        base = "🔔 XAUUSD BUY (M15)\nEntry: 4019.25-4020.82 (mid 4020.03)\nSL: 4017.61\nTP1: 4023.67\n"
+        for line in ["有効期限: 2026-07-14 05:17 UTC", "Valid until 2026-07-14 05:17 UTC",
+                     "Expiry: 2026-07-14 05:17"]:
+            self.assertEqual(parse_ti_signals(base + line).expiry, "2026-07-14T05:17:00+00:00", line)
+
+
 class TiSignalsRegistryTests(SimpleTestCase):
     def test_profile_registered(self):
         self.assertIn("ti_signals_v1", registered_profiles())
@@ -128,3 +143,38 @@ class TiSignalsRegistryTests(SimpleTestCase):
         p = parser(TI_BUY, "20")
         self.assertEqual(p.kind, Kind.SIGNAL)
         self.assertEqual(p.market, "XAUUSD")
+
+
+class TiSignalsExpiryAcquisitionTests(TestCase):
+    """The expiry gate is enforced at intake: an expired TI signal is quarantined (no approval,
+    no order); a still-valid one is intaken as before."""
+
+    def setUp(self):
+        self.parser = ParserProfile.objects.create(
+            slug="ti_signals_v1", certification_level=ParserProfile.CertificationLevel.MEDIUM,
+        )
+        self.provider = SignalProvider.objects.create(
+            slug="ti_signals", name="TI Signals", telegram_chat_id="-100777",
+            parser_profile=self.parser, status=SignalProvider.Status.ARMED,
+        )
+
+    def _msg(self, mid, expiry_dt, now):
+        text = (
+            "🔔 XAUUSD BUY (M15)\nEntry: 4019.25-4020.82 (mid 4020.03)\n"
+            "TP1: 4023.67\nTP2: 4025.28\nTP3: 4027.43\nSL: 4017.61\n"
+            f"有効期限: {expiry_dt:%Y-%m-%d %H:%M} UTC"
+        )
+        return {"message_id": mid, "chat_id": "-100777", "text": text, "date": now}
+
+    def test_expired_signal_is_quarantined_not_intaken(self):
+        now = timezone.now()
+        acq = acquire_message(self.provider, self._msg("e1", now - timedelta(minutes=1), now), now=now)
+        self.assertEqual(acq.outcome, AcquiredMessage.Outcome.STALE)
+        self.assertEqual(acq.reason, "signal_expired")
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)
+
+    def test_valid_signal_is_intaken(self):
+        now = timezone.now()
+        acq = acquire_message(self.provider, self._msg("v1", now + timedelta(hours=1), now), now=now)
+        self.assertEqual(acq.outcome, AcquiredMessage.Outcome.INTAKEN)
+        self.assertEqual(PendingSignalApproval.objects.count(), 1)

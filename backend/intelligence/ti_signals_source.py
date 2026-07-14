@@ -35,6 +35,7 @@ and preserved only in ``raw_text``.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 from intelligence.telegram_source import Kind, ParsedSignal, _norm_num
 
@@ -67,6 +68,27 @@ _ENTRY_SINGLE_RE = re.compile(r"Entry\s*:?\s*([0-9][0-9.,]*)", re.I)
 _SL_RE = re.compile(r"(?:^|\n)\s*(?:SL|Stop\s*Loss)\s*:?\s*([0-9][0-9.,]*)", re.I)
 # Take-profits: "TP1: 4023.67" / "TP2 4025.28" — same shape as Wayond's TP line.
 _TP_RE = re.compile(r"\bTP\s*\d+\s*:?\s*([0-9][0-9.,]*)", re.I)
+# Signal validity deadline: "有效期限: 2026-07-14 05:17 UTC" (or English "Valid until" / "Expiry").
+# The 2nd CJK glyph appears as both 效 (U+6548, Chinese) and 効 (U+52B9, Japanese) across
+# renderings, so match either. Times in these messages are UTC; captured as (date, HH:MM) and
+# normalised to an ISO UTC string.
+_EXPIRY_RE = re.compile(
+    r"(?:有[効效]期限|Valid\s*until|Expir(?:y|es))\s*[:：]?\s*"
+    r"(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s*(?:UTC)?",
+    re.I,
+)
+
+
+def _parse_expiry_to_iso(body: str) -> str:
+    """Return the message's expiry as an ISO-8601 UTC string, or "" if absent/unparseable."""
+    m = _EXPIRY_RE.search(body)
+    if not m:
+        return ""
+    try:
+        dt = datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        return ""
+    return dt.replace(tzinfo=timezone.utc).isoformat()
 
 # Follow-up updates (generic English — reused verbatim from the Wayond source semantics).
 _TP_HIT_RE = re.compile(r"\bTP\s*\d+\s*hit", re.I)
@@ -123,6 +145,7 @@ def parse_ti_signals(text: str, message_id: str = "") -> ParsedSignal:
             entry=_norm_num(entry),
             stop_loss=_norm_num(sl.group(1)),
             take_profits=tps,
+            expiry=_parse_expiry_to_iso(body),
         )
         # Only a fully-formed entry (symbol+direction+entry+SL) is tradeable; a header with
         # no resolvable entry falls through to quarantine rather than guessing a price.
