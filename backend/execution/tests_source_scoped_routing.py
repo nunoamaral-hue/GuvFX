@@ -151,6 +151,33 @@ class ResolveTargetSourceScopingTests(TestCase):
         self.assertIsNone(_resolve_target(DEMO, "wayond"))
 
 
+class StrategyDisplayNameSourceAwareTests(TestCase):
+    """The notification card's strategy name must be resolved by the plan's SOURCE when an account
+    hosts more than one AUTO_DEMO strategy (Wayond + WIM), else both would mislabel."""
+
+    def setUp(self):
+        self.op = User.objects.create_user(username="dn", email="dn@x.invalid", password="x")
+        self.demo = TradingAccount.objects.create(
+            user=self.op, name="Demo", account_number="DN1", is_demo=True,
+        )
+        way = Strategy.objects.create(owner=self.op, name="Wayond Auto Demo")
+        wim = Strategy.objects.create(owner=self.op, name="Wayond WIM Strategy")
+        for strat, src in ((way, "wayond"), (wim, "ti_signals")):
+            StrategyAssignment.objects.create(
+                strategy=strat, account=self.demo, execution_mode=DEMO,
+                signal_source=src, is_active=True, stage=StrategyAssignment.STAGE_LIVE,
+            )
+
+    def _plan(self, source):
+        from types import SimpleNamespace
+        return SimpleNamespace(account=self.demo, source=source)
+
+    def test_card_labels_by_source(self):
+        from execution.notifications.contracts import _resolve_strategy_display_name
+        self.assertEqual(_resolve_strategy_display_name(self._plan("wayond")), "Wayond Auto Demo")
+        self.assertEqual(_resolve_strategy_display_name(self._plan("ti_signals")), "Wayond WIM Strategy")
+
+
 class EffectiveModeBackCompatTests(TestCase):
     """The fully-armed single-Wayond config (unbound assignment) still auto-demos."""
 
