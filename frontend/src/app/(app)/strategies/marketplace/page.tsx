@@ -25,6 +25,16 @@ type MarketplaceStrategy = {
   timeframes: string[];
   pairs: string[];
   tags?: string[];
+  // Signal-copy strategy (e.g. Wayond WIM): shows an enable/disable toggle that pauses/resumes
+  // its already-armed auto-demo assignment instead of the generic Assign flow.
+  signalCopy?: boolean;
+};
+
+type SignalCopyStatus = {
+  armed: boolean;
+  enabled: boolean;
+  ambiguous?: boolean;
+  loading?: boolean;
 };
 
 type TradingAccount = {
@@ -186,6 +196,19 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     pairs: ["EURUSD", "GBPUSD"],
     tags: ["Automation-ready", "Hybrid"],
   },
+  {
+    id: "mp-010",
+    name: "Wayond WIM Strategy",
+    category: "System-grade",
+    accent: "green",
+    style: "Telegram signal copy",
+    execution: "Auto — demo (gated)",
+    summary: "Auto-copies TI Signals (Telegram) into demo trades: parse → broker-symbol check → per-TP legs. Human-gated arming; demo only.",
+    timeframes: ["M15"],
+    pairs: ["XAUUSD"],
+    tags: ["Signal copy", "Demo"],
+    signalCopy: true,
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────
@@ -203,6 +226,9 @@ export default function StrategyMarketplacePage() {
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [assigning, setAssigning] = useState<Record<string, boolean>>({});
   const [selectedAccount, setSelectedAccount] = useState<Record<string, number | "">>({});
+  // Per-card enable/disable state for signal-copy strategies (e.g. Wayond WIM).
+  const [copyState, setCopyState] = useState<Record<string, SignalCopyStatus>>({});
+  const [copyBusy, setCopyBusy] = useState<Record<string, boolean>>({});
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [defaultAccountId, setDefaultAccountId] = useState<number | null>(null);
   const [alert, setAlert] = useState<string | null>(null);
@@ -257,6 +283,26 @@ export default function StrategyMarketplacePage() {
       }
     };
     fetchAccounts();
+  }, [authChecked, isAuthed]);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Fetch enable/disable status for signal-copy strategies (e.g. Wayond WIM)
+  // ─────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!authChecked || !isAuthed) return;
+    const copyCards = MARKETPLACE_SEED.filter((s) => s.signalCopy);
+    if (copyCards.length === 0) return;
+    copyCards.forEach(async (card) => {
+      try {
+        const st = await apiFetch<SignalCopyStatus>(
+          `/api/strategies/strategies/signal-copy/status/?marketplace_strategy_id=${encodeURIComponent(card.id)}`
+        );
+        setCopyState((prev) => ({ ...prev, [card.id]: { ...st, loading: false } }));
+      } catch {
+        // Leave undefined → the card shows an unavailable state without breaking the grid.
+        setCopyState((prev) => ({ ...prev, [card.id]: { armed: false, enabled: false, loading: false } }));
+      }
+    });
   }, [authChecked, isAuthed]);
 
   // Load saved default account for marketplace dropdowns
@@ -368,6 +414,59 @@ export default function StrategyMarketplacePage() {
       setAlertType("error");
     } finally {
       setAssigning({ ...assigning, [strategyId]: false });
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Signal-copy enable/disable — pauses/resumes an already-armed auto-demo assignment.
+  // Never arms (arming is a separate, gated step); a 409 means "not armed yet".
+  // ─────────────────────────────────────────────────────────────────────
+  const refreshCopyStatus = async (strategyId: string): Promise<SignalCopyStatus | null> => {
+    try {
+      const st = await apiFetch<SignalCopyStatus>(
+        `/api/strategies/strategies/signal-copy/status/?marketplace_strategy_id=${encodeURIComponent(strategyId)}`
+      );
+      setCopyState((prev) => ({ ...prev, [strategyId]: { ...st, loading: false } }));
+      return st;
+    } catch {
+      return null;
+    }
+  };
+
+  const handleSignalCopyToggle = async (strategyId: string, nextEnabled: boolean) => {
+    setCopyBusy((b) => ({ ...b, [strategyId]: true }));
+    try {
+      const res = await apiFetch<{ status: string; enabled: boolean }>(
+        "/api/strategies/strategies/signal-copy/toggle/",
+        { method: "POST", body: JSON.stringify({ marketplace_strategy_id: strategyId, enabled: nextEnabled }) }
+      );
+      setCopyState((prev) => ({
+        ...prev,
+        [strategyId]: { armed: true, enabled: res.enabled, loading: false },
+      }));
+      setAlert(nextEnabled ? t(lang, "marketplace.copyEnabled") : t(lang, "marketplace.copyDisabled"));
+      setAlertType("success");
+    } catch (err) {
+      const msg = ((err as { message?: string })?.message || "").toLowerCase();
+      if (msg.includes("unauthorized")) {
+        setAlert(t(lang, "marketplace.alertSessionExpired"));
+        setAlertType("error");
+        setIsAuthed(false);
+        return;
+      }
+      // Refetch the authoritative status so the card reflects reality (armed / ambiguous /
+      // not-armed) instead of guessing from an opaque error.
+      const st = await refreshCopyStatus(strategyId);
+      setAlert(
+        st?.ambiguous
+          ? t(lang, "marketplace.copyAmbiguous")
+          : st && !st.armed
+            ? t(lang, "marketplace.copyNotArmed")
+            : t(lang, "marketplace.copyToggleFailed")
+      );
+      setAlertType("error");
+    } finally {
+      setCopyBusy((b) => ({ ...b, [strategyId]: false }));
     }
   };
 
@@ -664,6 +763,64 @@ export default function StrategyMarketplacePage() {
                   </div>
                 </div>
 
+                {/* Signal-copy strategies: enable/disable toggle instead of the Assign flow */}
+                {strategy.signalCopy ? (
+                  (() => {
+                    const st = copyState[strategy.id];
+                    const armed = !!st?.armed;
+                    const enabled = !!st?.enabled;
+                    const busy = !!copyBusy[strategy.id];
+                    const statusLabel = !armed
+                      ? t(lang, "marketplace.copyNotArmedShort")
+                      : enabled
+                        ? t(lang, "marketplace.copyOn")
+                        : t(lang, "marketplace.copyOff");
+                    const statusColor = !armed ? "#f59e0b" : enabled ? "#22c55e" : "#94a3b8";
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            padding: "0.5rem 0.75rem",
+                            borderRadius: 8,
+                            background: "rgba(0,0,0,0.25)",
+                          }}
+                        >
+                          <span style={{ fontSize: "0.7rem", color: "#64748b" }}>
+                            {t(lang, "marketplace.copyStatusLabel")}
+                          </span>
+                          <span style={{ fontSize: "0.8rem", fontWeight: 700, color: statusColor }}>
+                            {statusLabel}
+                          </span>
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+                          <Button
+                            variant={enabled ? "secondary" : "primary"}
+                            onClick={() => handleSignalCopyToggle(strategy.id, !enabled)}
+                            disabled={!isAuthed || !armed || busy}
+                          >
+                            {busy
+                              ? t(lang, "marketplace.copyWorking")
+                              : enabled
+                                ? t(lang, "marketplace.copyDisable")
+                                : t(lang, "marketplace.copyEnable")}
+                          </Button>
+                          <Button variant="secondary" onClick={handlePreview}>
+                            {t(lang, "marketplace.preview")}
+                          </Button>
+                        </div>
+                        {!armed && (
+                          <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
+                            {t(lang, "marketplace.copyNotArmedHint")}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()
+                ) : (
+                <>
                 {/* CTA — two-line: dropdown full-width, then buttons */}
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                   <select
@@ -716,6 +873,8 @@ export default function StrategyMarketplacePage() {
                     </Button>
                   </div>
                 </div>
+                </>
+                )}
               </div>
             </div>
           ))}

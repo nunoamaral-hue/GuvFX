@@ -10,10 +10,12 @@ Wayond parser (``intelligence.telegram_source.parse_message``).
 from __future__ import annotations
 
 from intelligence.telegram_source import parse_message as _wayond_parse
+from intelligence.ti_signals_source import parse_ti_signals as _ti_signals_parse
 
 # slug -> callable(text, message_id) -> ParsedSignal (never raises)
 _REGISTRY = {
     "wayond_v1": _wayond_parse,
+    "ti_signals_v1": _ti_signals_parse,
 }
 
 

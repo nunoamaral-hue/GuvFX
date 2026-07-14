@@ -295,6 +295,18 @@ class StrategyAssignment(models.Model):
         default=ExecutionMode.MANUAL,
         help_text="MANUAL (default) = per-signal approval; AUTO_SHADOW = config-armed dry-run.",
     )
+    # SIGNAL-SOURCE-SCOPED AUTO-ROUTING — binds an AUTO_* assignment to ONE signal source
+    # (the provider slug, == PendingSignalApproval.source, e.g. "wayond" / "ti_signals"). Lets
+    # more than one auto-copy strategy coexist: the auto-router resolves the target for a signal
+    # by matching this field to the signal's source. Blank (default) = unbound; the router keeps
+    # its legacy global-unique behaviour for unbound assignments (back-compatible, fail-closed).
+    signal_source = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Provider slug this auto-assignment is bound to (blank = unbound/legacy).",
+    )
     risk_per_trade_override_pct = models.DecimalField(
         max_digits=5,
         decimal_places=2,
