@@ -246,3 +246,21 @@ class CircuitBreakerState(models.Model):
 
     def __str__(self):
         return f"circuit[{self.key}]={self.state} count={self.action_count}/{self.threshold}"
+
+
+class SoakSnapshot(models.Model):
+    """WS-G — a durable, periodic soak-test evidence snapshot (VPS-side, cron-driven, not
+    Claude-dependent). Each row captures the by-source production metrics over a window so
+    reliability under real broker conditions can be evidenced over time without a live process.
+    Append-only; the ``data`` JSON holds the full structured snapshot."""
+
+    generated_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    window_hours = models.PositiveIntegerField(default=24)
+    data = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-generated_at", "-id"]
+        indexes = [models.Index(fields=["-generated_at"])]
+
+    def __str__(self):
+        return f"SoakSnapshot({self.generated_at:%Y-%m-%d %H:%M} w={self.window_hours}h)"
