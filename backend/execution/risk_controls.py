@@ -168,7 +168,8 @@ def _margin_guard_reason(plan, legs, new_total) -> str | None:
     size — a lot cap cannot model price/leverage. So if the projected margin CANNOT be verified for
     such an order (bridge unreachable / token wrong / missing response fields / timeout), the
     promotion is BLOCKED (``margin_unverifiable``): a 20× order is never placed unverified. Every
-    decision (skip / OK / block) is logged so an inert or blocking guard is observable. Returns a
+    material decision (verified-OK / block / fail-closed) is logged so an inert or blocking guard is
+    observable (the pre-network skips — guard disabled, small order — return quietly). Returns a
     block reason or ``None``."""
     if not MARGIN_GUARD_ENABLED:
         return None
