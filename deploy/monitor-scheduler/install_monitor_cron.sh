@@ -39,7 +39,37 @@ if [ "${1:-}" = "--remove" ]; then
 fi
 
 # Install path.
-mkdir -p "$LOG_DIR"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+# Ensure the cron log target EXISTS and is WRITABLE by this user. The cron redirect
+# (">> monitor_chain.log") fails silently with "Permission denied" — and run_monitor_chain
+# never executes — if LOG_DIR is root-owned and the log was never pre-created as this user.
+# That exact gap left the monitor chain dead for weeks. Provision it idempotently so a host
+# rebuild cannot reintroduce the outage.
+LOG_FILE="${LOG_DIR}/monitor_chain.log"
+if [ ! -w "$LOG_FILE" ]; then
+  if [ -w "$LOG_DIR" ]; then
+    touch "$LOG_FILE"
+  else
+    sudo mkdir -p "$LOG_DIR"
+    sudo touch "$LOG_FILE"
+    sudo chown "$(id -un):$(id -gn)" "$LOG_FILE"
+  fi
+  echo "provisioned writable log: $LOG_FILE (owner $(id -un))"
+fi
+# Size-based rotation so the per-minute log can't grow unbounded.
+if command -v sudo >/dev/null 2>&1 && [ ! -f /etc/logrotate.d/guvfx-monitor-chain ]; then
+  sudo tee /etc/logrotate.d/guvfx-monitor-chain >/dev/null <<ROT || true
+${LOG_DIR}/monitor_chain.log {
+    size 20M
+    rotate 5
+    missingok
+    notifempty
+    copytruncate
+}
+ROT
+  echo "provisioned logrotate: /etc/logrotate.d/guvfx-monitor-chain"
+fi
 
 if current_crontab | grep -qE "$MARKER_RE"; then
   echo "noop: monitor-chain cron already installed"

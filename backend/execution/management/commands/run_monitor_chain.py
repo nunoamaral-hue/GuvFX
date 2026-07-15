@@ -99,3 +99,15 @@ class Command(BaseCommand):
                 failed=(",".join(failures) if failures else "none"),
             )
         )
+
+        # Freshness heartbeat so the reliability system can ALERT if the chain stops running — the
+        # cron silently failed for weeks on a log-permission error with no signal. Fail-open: a
+        # heartbeat failure must never break the run. Evaluated by ``reliability_tick``.
+        try:
+            from reliability.services.heartbeat import record_beat
+            record_beat("monitor_chain", interval_s=90, detail={
+                "resolved": rp.get("closed", 0), "processed": cm.get("processed", 0),
+                "candidates": outr.get("candidates", 0), "failures": failures,
+            })
+        except Exception:  # pragma: no cover - defensive; heartbeat is best-effort
+            pass
