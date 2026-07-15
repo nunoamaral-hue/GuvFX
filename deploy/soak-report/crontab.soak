@@ -1,0 +1,3 @@
+# WS-G soak-test evidence collection (durable, VPS-side, not Claude-dependent).
+# Captures one SoakSnapshot per hour + a grep-friendly summary line in the log.
+0 * * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py soak_report >> /var/log/guvfx/soak_report.log 2>&1 # guvfx-soak-report
