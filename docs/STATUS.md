@@ -6,6 +6,36 @@
 
 ## Execution workstream log
 
+- **2026-07-15 — GFX-PKT-PRODUCTION-HARDENING-PHASE-2-AND-FULL-SIGNAL-COPY: 8 workstreams shipped (7 deployed, 1 deploy-dark). 🟢**
+  Investigation ran as a 4-agent parallel workflow; the provider-command engine passed 2 rounds of
+  6-lens adversarial review (3+1 MUST-FIX all fixed + re-verified). PRs #124–#129 (+#128).
+  **H — card branding/privacy (#124, deployed):** WIN-only fail-closed renderer + `_safe_account_label`
+  (redact account number) + no-raw-slug subtitle; regression suite locks branding/precision/no-leak.
+  **C — hidden-limit audit + durable rejections (#125, deployed):** full 60+ gate table (evidence);
+  fixed 4 silent paths — auto-router MANUAL reason now persisted (`AUTO_ROUTE_DEFERRED`, mig 0008);
+  NEW always-on `execution_health` monitor step (reclaims orphaned SYNC + alerts on order-opening jobs
+  stuck PENDING = the R1 "promoted but never placed" defect); shared-budget attribution. TI cap=0
+  (explicit unlimited) confirmed.
+  **B4/B2 — notification health + msg-id (#126, deployed):** always-on `notify_health` rollup alert
+  (auto-resolving) + undelivered-WIN auto-resolve + Telegram `provider_message_id` capture (mig 0020).
+  **D — /operations completion (#127, deployed):** per-source D1 rows (provider vs assignment split,
+  caps, promoted/closed/delivered, rejection reasons), D2 infra block (honest UNKNOWN + core flag),
+  D3 incident ids, D4 staff actions (admin-only ack + narrow source-bound assignment pause/enable).
+  **G — soak instrumentation (#129, deployed):** `soak_report` command + durable `SoakSnapshot`
+  (mig 0003) + hourly VPS cron. Baseline captured (TI 24h: 13 signals / 14 fills / 27 closes /
+  12W·15L / +94.68 PnL / 12 cards). Meaningful full-soak = ≥24–72h continuous armed operation.
+  **E — TI provider trade-management commands (#128, DEPLOYED-DARK, arm=Nuno/Red):** classify TI
+  follow-ups (move-SL / close / cancel) → gated, enqueue-only, source-isolated engine (reply-only
+  correlation, 4-layer TI↔Wayond isolation, defer-on-unresolved-fill, freshness bound). Recording is
+  always-on; acting is OFF (`PROVIDER_COMMANDS_ENABLED` + per-source `command_engine_enabled`, both
+  false). Bridge `/mt5/close-position` reused (no Windows change). See [[project_ti_provider_commands]].
+  **F — restart/autonomy:** F1 controlled backend restart verified (control unchanged, no replay/dup,
+  armed, chain resumed); worker/listener/frontend/bridge restart evidence from this session's deploys;
+  all containers `restart=unless-stopped`, cron VPS-side → no Claude/laptop dependency.
+  **Breakeven broker proof (A1):** still awaiting a natural TP1 close (0 breakeven fires; instrumentation
+  armed). **Both strategies armed throughout** (auto=True DEMO kill=False, breakeven=True, asn#7 wayond +
+  asn#8 ti_signals LIVE). Safety: pg_dump `~/backups/pre*-*`, image `:rollback-*` tags, batched deploys.
+
 - **2026-07-15 — GFX-PKT-PRODUCTION-STABILISATION-AND-RELIABILITY: exposure fix + auto-breakeven + notification exactly-once DEPLOYED. 🟢**
   **A — trade-execution reliability (PR #120, `main` 7840ee4; DEPLOYED + verified).** Root-caused why the latest TI
   signal never executed: the exposure gate **double-counted** a PROMOTED-and-filled plan (its legs counted as BOTH open
