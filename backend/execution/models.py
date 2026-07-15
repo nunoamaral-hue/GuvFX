@@ -663,6 +663,10 @@ class SignalSourceConfig(models.Model):
         default=PLAN_MAX_GROUPS_PER_DAY,
         help_text="Max signal groups/day for this source; 0 = unlimited.",
     )
+    # WS-E: per-source opt-in for the provider trade-management command engine (move-SL / close /
+    # cancel follow-ups). Belt-and-braces beyond the global PROVIDER_COMMANDS_ENABLED env gate — a
+    # source acts on follow-up commands ONLY when BOTH are on. Default OFF (deploy-dark).
+    command_engine_enabled = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,

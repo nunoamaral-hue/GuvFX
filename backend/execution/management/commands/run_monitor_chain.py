@@ -35,6 +35,7 @@ from django.core.management.base import BaseCommand, CommandError
 from execution.breakeven import sweep_breakeven
 from execution.close_monitor import DEFAULT_LIMIT, process_closed_trades, resolve_completed_plans
 from execution.execution_health import sweep_execution_health
+from execution.provider_commands_engine import apply_provider_commands
 from execution.notifications.dispatcher import dispatch_enabled, dispatch_pending
 from execution.notifications.reconcile import check_notification_health, reconcile_notifications
 from execution.outcome_router import route_outcomes
@@ -71,6 +72,9 @@ class Command(BaseCommand):
             # WS-B AUTO-BREAKEVEN — after TP1 closes, move remaining legs' SL to entry. Inert
             # unless BREAKEVEN_ENABLED. Enqueue-only + idempotent, so safe to run every minute.
             ("breakeven", sweep_breakeven),
+            # WS-E: apply recorded provider trade-management commands (move-SL/close/cancel). Inert
+            # unless PROVIDER_COMMANDS_ENABLED + the source opts in. Enqueue-only, source-isolated.
+            ("provider_commands", apply_provider_commands),
             ("close_monitor", process_closed_trades),
             ("outcome_router", route_outcomes),
             # WS-C exactly-once safety net: backfill missing candidates, revive SENT-but-never-
@@ -94,6 +98,7 @@ class Command(BaseCommand):
         eh = results.get("execution_health", {})
         rp = results.get("resolve_plans", {})
         be = results.get("breakeven", {})
+        pc = results.get("provider_commands", {})
         cm = results.get("close_monitor", {})
         outr = results.get("outcome_router", {})
         rec = results.get("reconcile", {})
@@ -106,6 +111,7 @@ class Command(BaseCommand):
             "exec_health[reclaimed={ehr} stuck_alerted={ehs}] "
             "resolve[scanned={rs} closed={rc} still_open={ro}] "
             "breakeven[enabled={ben} synced={bsy} enqueued={beq} applied={bap} inflight={binf} skipped={bsk} alerted={bal}] "
+            "provider_cmds[enabled={pce} applied={pca} rejected={pcr} ambiguous={pcm}] "
             "close[processed={cp} win={cw} loss={cl} be={cb} skipped={cs}] "
             "outcome[routed={orr} candidates={oc} internal_only={oi}] "
             "reconcile[delivered={rmd} backfilled={rbf} revived={rrv} alerted={ral}] "
@@ -118,6 +124,8 @@ class Command(BaseCommand):
                 ben=be.get("enabled", False), bsy=be.get("synced", 0), beq=be.get("enqueued", 0),
                 bap=be.get("applied", 0), binf=be.get("inflight", 0), bsk=be.get("skipped", 0),
                 bal=be.get("alerted", 0),
+                pce=pc.get("enabled", False), pca=pc.get("applied", 0), pcr=pc.get("rejected", 0),
+                pcm=pc.get("ambiguous", 0),
                 cp=cm.get("processed", 0), cw=cm.get("win", 0), cl=cm.get("loss", 0),
                 cb=cm.get("breakeven", 0), cs=cm.get("skipped", 0),
                 orr=outr.get("routed", 0), oc=outr.get("candidates", 0),

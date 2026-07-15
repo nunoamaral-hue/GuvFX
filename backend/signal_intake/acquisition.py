@@ -27,11 +27,32 @@ from django.utils import timezone
 
 from intelligence.telegram_source import Kind
 
-from .models import AcquiredMessage, MessageAmendment, SignalProvider, SignalUpdate
+from .models import AcquiredMessage, MessageAmendment, ProviderCommand, SignalProvider, SignalUpdate
 from .parsers import get_parser
 from . import services
 
 logger = logging.getLogger(__name__)
+
+_ACTIONABLE_COMMANDS = {"MOVE_SL_BE", "MOVE_SL_PRICE", "CLOSE_ALL", "CLOSE_LEG", "CANCEL"}
+
+
+def _maybe_record_command(provider, message, mid, chat_id, text) -> None:
+    """WS-E: classify a follow-up message; if it is an ACTIONABLE trade-management command, record a
+    PENDING ``ProviderCommand`` (idempotent by provider+message_id). RECORD-ONLY — the separately
+    gated engine acts on it later. Fail-OPEN: a recording failure must never break ingest."""
+    try:
+        from signal_intake.provider_commands import classify_command
+        cmd = classify_command(text or "")
+        if cmd.command_type not in _ACTIONABLE_COMMANDS:
+            return  # NON_ACTIONABLE / UNKNOWN status updates are not commands — nothing to act on
+        ProviderCommand.objects.get_or_create(
+            provider=provider, message_id=mid,
+            defaults={"chat_id": chat_id, "reply_to_message_id": str(message.get("reply_to_message_id") or ""),
+                      "command_type": cmd.command_type, "args": cmd.args,
+                      "raw_text": (text or "")[:2000], "status": ProviderCommand.Status.PENDING},
+        )
+    except Exception:  # pragma: no cover - record-only; ingest must never break on this
+        logger.exception("provider command record failed msg=%s", mid)
 
 # Whitelisted, scalar media-reference fields the listener may supply — everything
 # else is dropped so raw image BYTES / large blobs never reach the DB (data.md).
@@ -233,8 +254,12 @@ def _classify(provider, message, mid, chat_id, tg_date, now):
             return O.INTAKEN, ("edited_review" if edited else ""), approval
         if parsed.kind == Kind.UPDATE:
             _record_update(provider, message, parsed, mid, chat_id, edited=edited)
+            _maybe_record_command(provider, message, mid, chat_id, text)  # WS-E (e.g. MOVE_SL numeric)
             base = getattr(parsed, "update_type", "") or "update"
             return O.UPDATE, (base + "_edited" if edited else base), None
+        # WS-E: a follow-up command ("Move SL to BE", "Close all", "Cancel") the entry parser does
+        # not recognise still quarantines as a non-signal here — but is recorded as a ProviderCommand.
+        _maybe_record_command(provider, message, mid, chat_id, text)
         return O.QUARANTINED, getattr(parsed, "reason", "") or "not_tradeable", None
     except Exception as exc:  # unknown parser / malformed → fail closed
         return O.QUARANTINED, f"dispatch_error:{type(exc).__name__}", None
