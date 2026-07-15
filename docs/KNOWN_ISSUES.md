@@ -2,6 +2,31 @@
 
 List active problems with reproduction steps and workarounds.
 
+## Deploy parity: rebuild the wayond-listener on planning/model/migration changes (2026-07-15)
+
+- The **`guvfx-wayond-listener`** is a SEPARATE container/image (backend image **+ telethon**, built via
+  `deploy/wayond-listener/Dockerfile --build-arg BACKEND_IMAGE=<backend image>`). It runs the
+  **synchronous auto-routing + planning + leg-creation** on signal acquisition — so it executes
+  `auto_router` + `signal_planning` + the `execution.models` ORM.
+- **A migration that adds a NOT-NULL column WITHOUT a DB-level default breaks it** if the backend
+  migrates before the listener image is rebuilt: Django drops the DB default after back-fill, so a
+  listener running a model that predates the column INSERTs without it → NOT-NULL violation. This
+  caused the TI non-execution incident. **Always** (a) give new NOT-NULL columns a DB-level default,
+  AND (b) rebuild the listener whenever backend planning/routing/models change.
+- **Gotcha:** tagging the plain backend image as `guvfx-wayond-listener:latest` CRASHES the listener
+  (`CommandError: Telethon not installed`) — it needs the telethon layer. Build it via the listener
+  Dockerfile. Recreate: `docker run -d --name guvfx-wayond-listener --network guvfx-prod_default
+  --restart unless-stopped --env-file /home/ubuntu/guvfx-prod/wayond-listener.env
+  guvfx-wayond-listener:latest python manage.py run_wayond_listener --live --health-file /tmp/wayond_health`.
+
+## Two pre-existing CRITICAL alerts remain OPEN (reliability core dormant) (2026-07-15)
+
+- `RECOVERY_CIRCUIT:global` (stale, first seen **2026-07-07**) and `EXECUTION_PIPELINE:0:0`
+  (first seen **2026-07-15 14:29**, before the TI-non-execution deploy). Neither is caused by that
+  deploy. They stay OPEN because the reliability-core supervisor is dormant
+  (`RELIABILITY_CORE_ENABLED=false`) so nothing auto-resolves them. Operator (PM) action to
+  ack/clear + decide on enabling the core.
+
 ## Provider trade-management commands — deployed DARK, arming is Nuno-gated (2026-07-15)
 
 - WS-E (PR #128) is **deployed but inert**. Follow-up commands are RECORDED (`ProviderCommand` rows,
