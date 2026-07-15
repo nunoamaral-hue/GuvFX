@@ -20,7 +20,10 @@
 - [ ] **Nuno decision (Red): arm the provider-command engine** — `PROVIDER_COMMANDS_ENABLED=1` +
   ti_signals `command_engine_enabled=True`, in a controlled window (see KNOWN_ISSUES). Until then it
   records commands but takes no action.
-- [ ] **Capture the first natural auto-breakeven broker proof** (the one pending WS-A/B2 evidence).
+- [ ] **Capture the first natural incremental-TP-protection broker proof** — on the first eligible
+  ti_signals plan, confirm a `MODIFY_POSITION` `result.verified_sl` for BOTH stages: TP1→remaining
+  legs' SL at entry (BREAKEVEN) and TP2→TP3 SL at the TP2 price (TP2_LOCKED). Auto-captured, not
+  forced. Until then the two headline claims read EVIDENCE-PENDING (see KNOWN_ISSUES).
 - [ ] **Soak result becomes meaningful after ≥24–72h** continuous armed operation — read
   `SoakSnapshot` trends (hourly cron installed).
 - [ ] **Operator (PM): reliability core + circuit breaker** — enabling `RELIABILITY_CORE_ENABLED` and

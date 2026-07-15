@@ -16,11 +16,34 @@ List active problems with reproduction steps and workarounds.
 - Deliberate safe-direction loss: "cancel it" / "ignore it" no longer classify as CANCEL ("ignore" is
   bidirectional). Unambiguous "cancel/void/disregard <noun>" still cancels.
 
-## Auto-breakeven broker proof still pending a natural TP1 close (2026-07-15)
+## Incremental TP-protection ladder — armed, natural broker evidence pending (2026-07-15)
 
-- Breakeven is ARMED (`BREAKEVEN_ENABLED=1`) but has not fired yet (0 MODIFY_POSITION jobs, 0 legs
-  with `breakeven_applied_at`). Evidence is captured automatically on the first natural TP1 close
-  (`MODIFY_POSITION` job `result.verified_sl` + `breakeven[…]` monitor-chain counters). Not forced.
+- The auto-breakeven step is now the full **incremental TP-protection ladder**
+  (`INITIAL → BREAKEVEN → TP2_LOCKED`, monotonic, per-source). It is ARMED
+  (`BREAKEVEN_ENABLED=1`) and TP2-lock is enabled for `ti_signals` only
+  (`SignalSourceConfig.incremental_protection_enabled=True`); **Wayond stays at state-1 breakeven**
+  (flag OFF, behaviour unchanged). Broker evidence (a `MODIFY_POSITION` `result.verified_sl` for each
+  of the BREAKEVEN and TP2_LOCKED stages) is captured automatically on the first natural eligible
+  plan — NOT forced. Until a natural TP1/TP2 close occurs the two headline claims read
+  EVIDENCE-PENDING.
+- **Broker stops/freeze-band deferral is expected, not a failure.** A TP2-lock SL equals the TP2
+  price, which sits at live market right after TP2 closes; the bridge returns a `retryable`
+  `sl_within_stops_level` and the sweep DEFERS (re-enqueues, no page) until price moves toward TP3.
+  These show as `deferred_today` (not `failed_today`) on `/operations`; `breakeven[deferred=…]` in the
+  monitor-chain log.
+
+## Accepted risk — protection in-flight guard is not atomic (F4, 2026-07-15)
+
+- `breakeven._protection_inflight` is a check-then-create, and `idempotency_key` is not a DB
+  constraint. Two *concurrent* sweeps could both enqueue a MODIFY for the same (ticket, stage).
+  **Why it is accepted:** the monitor chain is single-flight (one cron, sequential steps, ~sub-second
+  sweep), and the bridge is idempotent — a duplicate modify hits the eps "unchanged" no-op or the
+  `would_increase_risk` refusal, so no double risk reaches the broker. If the chain is ever run
+  concurrently, add a `unique` constraint or `select_for_update`.
+- **Latent twin (not fixed — out of scope):** the CLOSE_TRADE benign-no-op completion in
+  `mt5_trade_ingest_worker.py` uses the same `{"ok": True, …, **result}` spread order that clobbers
+  `ok` (fixed for MODIFY in this packet). CLOSE_TRADE is the disabled provider-command path; the
+  self-contradictory stored result is cosmetic there. Fix alongside the next provider-command change.
 
 ## Reliability core dormant + stale circuit breaker (2026-07-15)
 

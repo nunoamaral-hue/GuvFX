@@ -6,6 +6,23 @@
 
 ## Execution workstream log
 
+- **2026-07-15 — GFX-PKT-INCREMENTAL-TP-PROTECTION-AND-BREAKEVEN-REPAIR (PR #131). 🟢**
+  Root cause of the XAUUSD SELL "late breakeven" incident: NOT a detection delay — TP1 and TP2 closed
+  14s apart inside one 60s monitor cycle, so the old sweep only ever applied state-1 (breakeven→entry);
+  the real defects were (1) no state-2, so TP3 was left at breakeven instead of the TP2 price, and (2)
+  a fill→ingest lag wasted a MODIFY on an already-closed leg. Repaired by generalising auto-breakeven
+  into a **monotonic per-source incremental TP-protection ladder** (`INITIAL → BREAKEVEN →
+  TP2_LOCKED`): TP1 profit-close → each open leg's SL → its OWN filled entry; TP2 profit-close → TP3's
+  SL → the planned TP2 price; TP1+TP2 in one cycle → TP3 goes DIRECTLY to TP2 (skips breakeven). State
+  persisted per leg (`protection_stage`, migs 0022/0023), profit-gated, risk-reducing only, preserves
+  a more-protective manual stop (bridge `would_increase_risk`). **Per-source: ON for `ti_signals`,
+  OFF for Wayond (unchanged).** Adversarial multi-lens review (7 lenses → verify pass, 0 MUST-FIX)
+  drove 7 hardening fixes: broker stops/freeze-band deferral (retryable, no false CRITICAL),
+  position_not_found no-op no longer marks an open leg protected, orphaned-MODIFY reclaim in
+  execution_health (worker-recycle self-heal), overdue-WARN gating, stage-aware provider baseline,
+  close-during-modify downgrade, result self-consistency. Ops: `/operations` protection block +
+  monitor-chain counters (`tp2_locked/deferred/noop_closed/overdue/reclaimed_modify`).
+
 - **2026-07-15 — GFX-PKT-PRODUCTION-HARDENING-PHASE-2-AND-FULL-SIGNAL-COPY: 8 workstreams shipped (7 deployed, 1 deploy-dark). 🟢**
   Investigation ran as a 4-agent parallel workflow; the provider-command engine passed 2 rounds of
   6-lens adversarial review (3+1 MUST-FIX all fixed + re-verified). PRs #124–#129 (+#128).
