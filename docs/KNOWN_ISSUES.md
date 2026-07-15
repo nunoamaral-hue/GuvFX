@@ -2,6 +2,37 @@
 
 List active problems with reproduction steps and workarounds.
 
+## Reliability core dormant + stale circuit breaker (2026-07-15)
+
+- **`RELIABILITY_CORE_ENABLED=false` on prod** — the `reliability_tick` supervisor (continuous
+  component-health evaluation, alert delivery, auto-recovery) is DORMANT. `ComponentHealth` /
+  `operations-summary` are still aggregated on demand, and app code paths still create `AlertEvent`s
+  directly (e.g. auto-breakeven failure, undelivered-WIN), but there is **no continuous health/alert
+  tick**. Enabling it turns on automated recovery actions — a deliberate Amber/Red decision (Nuno/PM),
+  not flipped in this packet.
+- **Stale `Recovery circuit breaker tripped` alert (CRITICAL, dedup `RECOVERY_CIRCUIT:global`)** —
+  open since ~2026-07-07 ("5 recovery actions in 900s exceeded threshold; auto-recovery suppressed
+  pending manual reset"). While the reliability core is dormant this is functionally inert, but it is
+  why orphaned jobs were never auto-reclaimed. Needs a deliberate operator **manual reset** (not done
+  here — PM owns lifecycle).
+- **Orphaned RUNNING SYNC on worker recreate** — `docker compose up --force-recreate` on the ingest
+  worker orphans any in-flight `SYNC_POSITIONS` job (RUNNING, lease expires, never completes); with
+  auto-recovery suppressed these accumulate and read as `EXECUTION_PIPELINE DEGRADED`. Harmless to
+  function (SYNC is idempotent; new SYNCs run), but should be cleaned. **Workaround:** force-fail
+  lease-expired RUNNING SYNC jobs (`status=FAILED`). Cleared 6 such orphans on 2026-07-15.
+- **Broker health `MT5_BROKER`/`MT5_TERMINAL` = UNKNOWN** and `latest_trade_age_s` negative — the
+  UNKNOWN follows from the dormant core (no terminal probe); the negative age is the known broker-
+  server-timezone offset (bar/deal times are broker-server time, ~2h ahead — see data-acquisition tz).
+
+## Auto-breakeven — broker evidence pending first TP1 close (2026-07-15)
+
+- Auto-breakeven (WS-B) is DEPLOYED + ARMED (`BREAKEVEN_ENABLED=1`). The pipeline is verified at the
+  endpoint level (`/mt5/modify-position` returns `missing_fields` for a token'd probe → endpoint live)
+  and by unit tests, but the **broker-side SL-move evidence** (`MODIFY_POSITION` job `result.verified_sl`)
+  is captured only on the FIRST natural TP1 close — not force-tested (no stray demo orders, no premature
+  live-position SL change). To watch: `MODIFY_POSITION` jobs + legs with `breakeven_applied_at` set, and
+  the `breakeven[…]` counters in the monitor-chain log.
+
 ## Execution worker — shadow polling throttle (2026-07-01)
 
 - **Fixed (EXEC-E2b-R1): unconditional shadow poll tripped the request throttle.**

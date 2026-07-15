@@ -6,6 +6,36 @@
 
 ## Execution workstream log
 
+- **2026-07-15 — GFX-PKT-PRODUCTION-STABILISATION-AND-RELIABILITY: exposure fix + auto-breakeven + notification exactly-once DEPLOYED. 🟢**
+  **A — trade-execution reliability (PR #120, `main` 7840ee4; DEPLOYED + verified).** Root-caused why the latest TI
+  signal never executed: the exposure gate **double-counted** a PROMOTED-and-filled plan (its legs counted as BOTH open
+  positions AND in-flight signal lots → 2.40 vs the 2.40 cap → `account_exposure_exceeded`). `_active_signal_lots` now
+  dedups legs already reflected as an open Trade (via the `WAY{plan}L{leg}` comment). The **TI daily cap was proven NOT
+  the blocker** (count_today 6/24) but removed per directive: per-SOURCE `SignalSourceConfig.daily_group_cap` (mig 0018),
+  `ti_signals=0` (unlimited); Wayond keeps 24. All other gates (duplicate/expiry/concurrency/exposure/broker/margin) intact.
+  Verified on prod: the stuck plan#19 exposure eval now returns `None` (margin-guard 10320% ≥ 300%). 
+  **B — automatic breakeven (PR #121, `main` e955755; DEPLOYED + ARMED).** When a plan's TP1 leg closes, each remaining
+  OPEN leg's SL is moved to its entry (breakeven). Enqueue-only `sweep_breakeven` monitor-chain step (backend holds no
+  bridge creds) → worker claims `MODIFY_POSITION` → bridge `POST /mt5/modify-position` (`TRADE_ACTION_SLTP`, re-reads to
+  VERIFY, refuses any risk-increasing move). Idempotent (`ProposedOrderLeg.breakeven_applied_at`, mig 0019), retry to
+  3 then one deduped CRITICAL alert, fail-safe (only when risk-reducing vs the plan SL). Also enqueues a periodic
+  SYNC so closes ingest promptly (no periodic SYNC existed before). Bridge deployed to Windows (`GuvFX_SignalBridge`
+  task recycled). Armed via `BREAKEVEN_ENABLED=1`; monitor log `breakeven[enabled=True …]`. Broker evidence auto-captured
+  on the first natural TP1 close (`result.verified_sl`). See [[project_auto_breakeven]].
+  **C — notification exactly-once (PR #122, `main` 87b5dfc; DEPLOYED + verified).** Investigation confirmed the pipeline
+  is already exactly-once in prod (7 WINs → 7 transmitted, 0 gaps). Added the missing reconciler `reconcile_notifications`
+  (monitor-chain step): mark-delivered (revives the dead `TradeOutcomeRecord.delivered` flag), backfill a missing
+  candidate, revive a dry-run-"SENT"-trapped candidate (real transport only, dup-safe by construction), and a deduped
+  WARN for any WIN undelivered > 20 min. Verified: all 7 WINs stamped `delivered=True`.
+  **D — IS6FX branding:** verified live (acct#1 `public_label`="IS6FX", source labels "TI Signals"/"Wayond").
+  **E — operations dashboard:** backend `GET /api/reliability/operations-summary/` live; `/operations` frontend page
+  DEPLOYED to the (diverged) prod frontend (build-gated, HTTP 200; no nav link yet — reachable by URL, staff-only).
+  **F — autonomous:** all containers `restart=unless-stopped`, monitor-chain cron VPS-side → zero laptop dependency;
+  both strategies armed throughout (auto=True DEMO kill=False, asn#7 wayond + asn#8 ti_signals LIVE).
+  **G — safety:** pg_dump `~/backups/preBreakeven-*` , image `:rollback-preBreakeven`/`:rollback-preReconcile`/`:rollback-preOps`,
+  bridge `.bak-*`, kill-switch windowed deploys, armed-state capture/restore. Cleared 6 orphaned RUNNING SYNC jobs →
+  EXECUTION_PIPELINE now OK. Real live orders (E3) still RED (timezone + Blueprint-06 + Nuno sign-off).
+
 - **2026-07-15 — Stakeholder card branding (IS6FX) DEPLOYED + operational observability (health API + /operations page). 🟢**
   **Workstream A — DONE + deployed + verified (PR #117, main `8d0516c`).** Presentation-only (no trading/routing/auth
   change). `TradingAccount.public_display_name` + `public_show_account_number` (migration 0009); account #1 → **IS6FX**
