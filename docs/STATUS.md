@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-07-15 — CLOSE-PRICE → OUTCOME → TELEGRAM CARD pipeline REPAIRED + overlap fixes productionised (PR #112). 🟢**
+  The ingest worker built one Trade per raw MT5 *deal*, reading `open_price`/`close_price` (fields a deal lacks) →
+  every Trade had `open_price=0, close_price=None` → `TradeResultProducer` skipped them → zero outcomes / candidates
+  / Telegram cards. **Fixed:** `mt5_trade_ingest_worker.build_positions_from_deals()` groups deals by `position_id`
+  (open = entry `DEAL_ENTRY_IN` deal, close = exit `OUT`/`OUT_BY` deals — authoritative, never inferred; fail-closed
+  on partials), one Trade per position, idempotent; the bridge deals snapshot now returns the deal `entry` type.
+  Also landed the overlap fixes (`resolve_completed_plans` PROMOTED→`CLOSED` frees the concurrency slot; caps raised
+  to 20 open / 0.50 lot / 10 groups) and repaired the **monitor-chain cron** (had never run — log `Permission
+  denied`; now provisioned + reliability heartbeat + logrotate). **Deployed + PROVEN:** WAY8 3-leg SELL re-synced to
+  real open/close/profit → 3 LOSS outcomes (internal-only); a controlled WIN (rolled back, no order/send) flowed
+  trade → WIN outcome (`+$16.10`) → NotificationCandidate → **rendered card** "🏆 Wayond WIM Strategy +$16.10 WIN".
+  10 new ingestion tests + 6 re-pinned risk/concurrency tests pass; 7-lens adversarial review = 0 defects; the 58
+  pre-existing env-dependent suite failures are unchanged (delta 0). Both strategies stay continuously armed
+  AUTO_DEMO. Branch `fix/continuous-plan-resolution-and-trade-outcomes`; rollback `:rollback-preCloseFix` images +
+  pg_dump `~/backups/postCloseFix-*.sql.gz`. **PR #112 open for Nuno to merge** (PM owns lifecycle). E3 live still RED.
 - **2026-07-14 — WAYOND-WIM-STRATEGY: MERGED + DEPLOYED + CONTINUOUS AUTO_DEMO ARMED (Nuno-authorised). 🟢**
   PRs #109 (feature) + #110 (source-aware card name) merged → main `d5ae9b9`; deployed backend `78c9fe8ab61f`
   + listener `f417fd68` + frontend rebuilt (mp-010 card live). Migration strategies/0012 applied in a kill-switch
