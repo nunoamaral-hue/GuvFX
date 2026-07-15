@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
@@ -35,6 +36,9 @@ from execution.models import ExecutionJob, SignalExecutionPlan, SignalSourceConf
 logger = logging.getLogger("guvfx.execution.provider_commands")
 
 DEFAULT_LIMIT = 200
+# A follow-up command older than this is expired (never acted on): bounds the initial-arm backlog
+# drain AND the defer-retry window, so we never act on a command whose situation has since changed.
+PROVIDER_COMMAND_MAX_AGE_SECONDS = int(os.getenv("PROVIDER_COMMAND_MAX_AGE_SECONDS", "900") or 900)
 _ACTIVE = (SignalExecutionPlan.Status.PLANNED, SignalExecutionPlan.Status.PROMOTED)
 _ORDER_TYPES = (ExecutionJob.JobType.PLACE_ORDER, ExecutionJob.JobType.PLACE_TEST_ORDER)
 
@@ -47,12 +51,16 @@ def provider_commands_enabled() -> bool:
 # ---------------------------------------------------------------- correlation
 def resolve_target_plan(command):
     """Return ``(plan_or_None, reason)``. Reply linkage only (deterministic, source-scoped).
-    Exactly-one active plan → act; zero → ``no_reply_match``; >1 → ``ambiguous_reply`` (fail-closed)."""
+    Matches the plan's FULL unique identity (source + chat_id + message_id) so a reply can never bind
+    to a same-message-id plan in a different chat. Exactly-one active plan → act; zero →
+    ``no_reply_match``; >1 → ``ambiguous_reply`` (fail-closed)."""
     slug = command.provider.slug
     if not command.reply_to_message_id:
         return None, "no_reply_metadata"
     qs = SignalExecutionPlan.objects.filter(
         source=slug, message_id=command.reply_to_message_id, status__in=_ACTIVE)
+    if command.chat_id:
+        qs = qs.filter(chat_id=command.chat_id)
     n = qs.count()
     if n == 1:
         return qs.first(), "reply"
@@ -70,6 +78,34 @@ def _open_legs(plan):
         if t is not None and t.close_time is None:
             out.append((leg, t))
     return out
+
+
+def _has_unresolved_fills(plan) -> bool:
+    """True if any leg's order was PLACED (job RUNNING, or SUCCESS) but its fill is NOT YET ingested
+    as a Trade. Acting on such a plan would SILENTLY MISS a live position — e.g. a CANCEL/CLOSE that
+    lands in the fill→SYNC-ingest lag would enqueue no close for a position that is actually open.
+    We defer the whole command until the fill picture is complete (a later tick then acts fully)."""
+    from trading.models import Trade
+    for leg in plan.legs.select_related("execution_job").order_by("leg_index"):
+        job = leg.execution_job
+        if job is None:
+            continue
+        if job.status == ExecutionJob.Status.RUNNING:
+            return True  # order in flight
+        if job.status == ExecutionJob.Status.SUCCESS:
+            comment = f"WAY{plan.id}L{leg.leg_index}"
+            if not Trade.objects.filter(account_id=plan.account_id, comment=comment).exists():
+                return True  # placed + filled but not yet ingested
+    return False
+
+
+def _leg_being_closed(trade) -> bool:
+    """A non-terminal CLOSE_TRADE job already targets this position → avoid enqueuing a duplicate."""
+    return ExecutionJob.objects.filter(
+        job_type=ExecutionJob.JobType.CLOSE_TRADE,
+        status__in=(ExecutionJob.Status.PENDING, ExecutionJob.Status.RUNNING),
+        payload__ticket=trade.ticket,
+    ).exists()
 
 
 def _enqueue_modify(plan, leg, trade, sl, reason):
@@ -91,6 +127,8 @@ def _enqueue_close(plan, leg, trade):
     username = _windows_username(plan.account)
     if not username or not trade.ticket:
         return None
+    if _leg_being_closed(trade):
+        return None  # already being closed → don't duplicate (idempotent)
     return ExecutionJob.objects.create(
         job_type=ExecutionJob.JobType.CLOSE_TRADE, account_id=plan.account_id,
         terminal_node_id=plan.account.terminal_node_id, status=ExecutionJob.Status.PENDING,
@@ -117,10 +155,34 @@ def _cancel_pending_order_jobs(plan):
     return cancelled
 
 
+def _risk_baseline_sl(plan, leg, trade):
+    """The SL to judge a Move-SL against: the RISK-TIGHTER of the plan's original SL and, if this leg
+    has already been moved to breakeven, its entry. Prevents a Move-SL-to-price from being accepted
+    against a stale plan.stop_loss when the live SL is already tighter (the bridge also backstops)."""
+    old = _to_decimal(plan.stop_loss)
+    if getattr(leg, "breakeven_applied_at", None):
+        entry = _to_decimal(trade.open_price)
+        if entry is not None:
+            d = (plan.direction or "").upper()
+            if old is None:
+                old = entry
+            elif d == "BUY":
+                old = max(old, entry)   # higher SL = tighter for a BUY
+            elif d == "SELL":
+                old = min(old, entry)   # lower SL = tighter for a SELL
+    return old
+
+
 def _apply_command(command, plan):
-    """Enqueue the jobs for one command against its (already source-asserted) plan. Returns a
-    result dict; a ``rejected`` key means nothing was enqueued."""
+    """Enqueue the jobs for one command against its (already source-asserted) plan. Returns a result
+    dict; a ``rejected`` key = nothing enqueued (terminal); a ``defer`` key = leave re-processable."""
     ct = command.command_type
+
+    # DEFER if any order was placed but its fill is not yet ingested — acting now would silently miss
+    # a live position (the MUST-FIX: a CANCEL/CLOSE landing in the fill→ingest lag). Retry next tick.
+    if _has_unresolved_fills(plan):
+        return {"defer": "awaiting_fill_ingest"}
+
     res = {"plan_id": plan.id, "jobs": [], "skipped": [], "cancelled_jobs": []}
 
     if ct in ("MOVE_SL_BE", "MOVE_SL_PRICE"):
@@ -128,11 +190,11 @@ def _apply_command(command, plan):
             price = _to_decimal((command.args or {}).get("price"))
             if price is None or price <= 0:
                 return {"rejected": "invalid_price"}
-        old_sl = _to_decimal(plan.stop_loss)
         for leg, trade in _open_legs(plan):
             new_sl = (_to_decimal(trade.open_price) if ct == "MOVE_SL_BE"
                       else _to_decimal((command.args or {}).get("price")))
-            if new_sl is None or not _is_risk_reducing(plan.direction, new_sl, old_sl):
+            baseline = _risk_baseline_sl(plan, leg, trade)
+            if new_sl is None or not _is_risk_reducing(plan.direction, new_sl, baseline):
                 res["skipped"].append(leg.leg_index)  # never widen (default posture)
                 continue
             j = _enqueue_modify(plan, leg, trade, new_sl,
@@ -161,13 +223,15 @@ def _apply_command(command, plan):
         return res
 
     if ct == "CANCEL":
-        if plan.status == SignalExecutionPlan.Status.PLANNED:
-            updated = SignalExecutionPlan.objects.filter(
-                id=plan.id, status=SignalExecutionPlan.Status.PLANNED
-            ).update(status=SignalExecutionPlan.Status.VOIDED)
-            res["voided_plan"] = bool(updated)
+        # Try the PLANNED (not-yet-promoted) fast path. If it affects 0 rows the plan has PROMOTED
+        # concurrently (resolve→apply race) — fall through to the PROMOTED close/cancel handling.
+        updated = SignalExecutionPlan.objects.filter(
+            id=plan.id, status=SignalExecutionPlan.Status.PLANNED
+        ).update(status=SignalExecutionPlan.Status.VOIDED)
+        if updated:
+            res["voided_plan"] = True
             return res
-        # PROMOTED: this is MARKET execution — cancel any still-unclaimed jobs and CLOSE filled legs.
+        # PROMOTED (market execution): cancel any still-unclaimed order jobs and CLOSE filled legs.
         res["cancelled_jobs"] = _cancel_pending_order_jobs(plan)
         for leg, trade in _open_legs(plan):
             j = _enqueue_close(plan, leg, trade)
@@ -209,44 +273,67 @@ def apply_provider_commands(*, limit: int = DEFAULT_LIMIT) -> dict:
     if not provider_commands_enabled():
         return {"enabled": False}
     from signal_intake.models import ProviderCommand
-    counts = {"enabled": True, "applied": 0, "rejected": 0, "ambiguous": 0, "skipped_source": 0}
+    counts = {"enabled": True, "applied": 0, "rejected": 0, "ambiguous": 0,
+              "deferred": 0, "expired": 0, "skipped_source": 0}
+    now = timezone.now()
+    cutoff = now - timedelta(seconds=PROVIDER_COMMAND_MAX_AGE_SECONDS)
+
+    # Expire stale PENDING commands (initial-arm historical backlog + defer that never resolved) so
+    # an old command whose situation has changed is never acted on.
+    counts["expired"] = ProviderCommand.objects.filter(
+        status=ProviderCommand.Status.PENDING, processed=False, created_at__lt=cutoff
+    ).update(status=ProviderCommand.Status.SKIPPED, processed=True, processed_at=now,
+             result={"reason": "expired"})
 
     enabled_sources = set(
         SignalSourceConfig.objects.filter(command_engine_enabled=True).values_list("source", flat=True))
-    pending = (ProviderCommand.objects.filter(status=ProviderCommand.Status.PENDING, processed=False)
-               .select_related("provider").order_by("id")[:limit])
-    for cmd in pending:
-        slug = cmd.provider.slug
-        if slug not in enabled_sources:
-            counts["skipped_source"] += 1
-            continue  # source not opted-in → leave PENDING (a later arm will pick it up)
-        plan, reason = resolve_target_plan(cmd)
-        if plan is None:
-            ambiguous = reason == "ambiguous_reply"
-            _finalize(cmd, ProviderCommand.Status.AMBIGUOUS if ambiguous else ProviderCommand.Status.REJECTED,
-                      {"reason": reason})
-            _alert(cmd, reason)
-            counts["ambiguous" if ambiguous else "rejected"] += 1
-            continue
-        # Layer-2 source-isolation assertion (belt-and-braces beyond the query filter).
-        if plan.source != slug:
-            _finalize(cmd, ProviderCommand.Status.REJECTED,
-                      {"reason": "source_mismatch", "plan_source": plan.source})
-            counts["rejected"] += 1
-            continue
-        try:
-            result = _apply_command(cmd, plan)
-        except Exception as exc:
-            logger.exception("provider_commands: apply failed cmd=%s", cmd.id)
-            _finalize(cmd, ProviderCommand.Status.HELD, {"error": type(exc).__name__})
-            counts["rejected"] += 1
-            continue
-        if result.get("rejected"):
-            _finalize(cmd, ProviderCommand.Status.REJECTED, result)
-            counts["rejected"] += 1
-        else:
-            _finalize(cmd, ProviderCommand.Status.APPLIED, result)
-            counts["applied"] += 1
-            logger.info("provider_commands: APPLIED %s cmd=%s plan=%s -> %s",
-                        cmd.command_type, cmd.id, plan.id, result)
+    ids = list(ProviderCommand.objects.filter(
+        status=ProviderCommand.Status.PENDING, processed=False, created_at__gte=cutoff
+    ).order_by("id").values_list("id", flat=True)[:limit])
+
+    for cid in ids:
+        # One atomic, row-locked unit per command: resolve + apply + finalize can't interleave with a
+        # concurrent run (no duplicate jobs). skip_locked → a row another run holds is skipped.
+        with transaction.atomic():
+            cmd = (ProviderCommand.objects.select_for_update(skip_locked=True).select_related("provider")
+                   .filter(id=cid, status=ProviderCommand.Status.PENDING, processed=False).first())
+            if cmd is None:
+                continue
+            slug = cmd.provider.slug
+            if slug not in enabled_sources:
+                counts["skipped_source"] += 1
+                continue  # source not opted-in → leave PENDING (a later arm will pick it up)
+            plan, reason = resolve_target_plan(cmd)
+            if plan is None:
+                ambiguous = reason == "ambiguous_reply"
+                _finalize(cmd, ProviderCommand.Status.AMBIGUOUS if ambiguous else ProviderCommand.Status.REJECTED,
+                          {"reason": reason})
+                _alert(cmd, reason)
+                counts["ambiguous" if ambiguous else "rejected"] += 1
+                continue
+            # Layer-2 source-isolation assertion (belt-and-braces beyond the query filter).
+            if plan.source != slug:
+                _finalize(cmd, ProviderCommand.Status.REJECTED,
+                          {"reason": "source_mismatch", "plan_source": plan.source})
+                counts["rejected"] += 1
+                continue
+            try:
+                result = _apply_command(cmd, plan)
+            except Exception as exc:
+                logger.exception("provider_commands: apply failed cmd=%s", cmd.id)
+                _finalize(cmd, ProviderCommand.Status.HELD, {"error": type(exc).__name__})
+                counts["rejected"] += 1
+                continue
+            if result.get("defer"):
+                # Fills not yet ingested — leave the command PENDING (re-processable next tick).
+                counts["deferred"] += 1
+                continue
+            if result.get("rejected"):
+                _finalize(cmd, ProviderCommand.Status.REJECTED, result)
+                counts["rejected"] += 1
+            else:
+                _finalize(cmd, ProviderCommand.Status.APPLIED, result)
+                counts["applied"] += 1
+                logger.info("provider_commands: APPLIED %s cmd=%s plan=%s -> %s",
+                            cmd.command_type, cmd.id, plan.id, result)
     return counts

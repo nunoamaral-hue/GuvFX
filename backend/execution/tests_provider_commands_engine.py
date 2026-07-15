@@ -1,5 +1,6 @@
 """WS-E — provider command ENGINE tests: gating, reply correlation, source isolation (TI never
 touches Wayond), the executors (move-SL/close/cancel), and idempotency."""
+from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
 
@@ -184,3 +185,31 @@ class ExecutorTests(EngineBase):
             engine.apply_provider_commands()   # second pass: command is processed → no new jobs
             n2 = ExecutionJob.objects.filter(job_type="MODIFY_POSITION").count()
         self.assertEqual(n1, n2)
+
+    def test_close_all_defers_on_unresolved_fill(self):
+        # A leg whose order is placed but the fill isn't yet ingested → DEFER (enqueue nothing,
+        # leave the command re-processable) so the in-flight position is not silently missed.
+        p = self._plan()
+        leg2 = p.legs.get(leg_index=2)
+        leg2.execution_job.status = "RUNNING"
+        leg2.execution_job.save(update_fields=["status"])
+        Trade.objects.filter(account=self.acct, comment=f"WAY{p.id}L2").delete()  # not yet ingested
+        cmd = self._cmd(self.ti, "CLOSE_ALL", p.message_id)
+        with _enabled():
+            res = engine.apply_provider_commands()
+        self.assertEqual(res["deferred"], 1)
+        cmd.refresh_from_db()
+        self.assertEqual(cmd.status, ProviderCommand.Status.PENDING)   # re-processable
+        self.assertFalse(ExecutionJob.objects.filter(job_type="CLOSE_TRADE").exists())
+
+    def test_stale_command_expired_not_acted(self):
+        p = self._plan()
+        cmd = self._cmd(self.ti, "CLOSE_ALL", p.message_id)
+        old = timezone.now() - timedelta(seconds=engine.PROVIDER_COMMAND_MAX_AGE_SECONDS + 60)
+        ProviderCommand.objects.filter(id=cmd.id).update(created_at=old)
+        with _enabled():
+            res = engine.apply_provider_commands()
+        self.assertEqual(res["expired"], 1)
+        cmd.refresh_from_db()
+        self.assertEqual(cmd.status, ProviderCommand.Status.SKIPPED)
+        self.assertFalse(ExecutionJob.objects.filter(job_type="CLOSE_TRADE").exists())

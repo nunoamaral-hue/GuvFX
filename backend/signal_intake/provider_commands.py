@@ -43,16 +43,25 @@ _BE_RE2 = re.compile(rf"\b{_MOVE}\b[^0-9]{{0,20}}\b{_SL_WORD}\b[^A-Za-z0-9]{{0,1
 # "move SL to 4010" / "SL to 4010.5" / "stop to 1,234.5"  (an SL keyword + a number)
 _SL_PRICE_RE = re.compile(rf"\b{_SL_WORD}\b[^A-Za-z0-9]{{0,8}}(?:to|at|@|=|:)\s*([0-9][0-9.,]*[0-9]|[0-9])", re.I)
 
-# "close TP2" / "close tp 3" / "close take profit 2"
-_CLOSE_LEG_RE = re.compile(r"\bclose\b[^0-9]{0,20}\b(?:tp|take[\s-]?profit)\s*([123])\b", re.I)
-# "close all" / "close remaining" / "close everything" / "close the trade(s)" / "close now" / "close position(s)"
-_CLOSE_ALL_RE = re.compile(r"\bclose\b[^\n]{0,20}\b(all|remaining|everything|the\s+trade|trades?|position|positions|now)\b", re.I)
-# "cancel signal" / "cancel this setup" / "ignore this setup" / "void" / "disregard" / "cancel pending"
-_CANCEL_RE = re.compile(r"\b(cancel|cancelled|canceled|void|voided|disregard|ignore)\b[^\n]{0,20}\b(signal|setup|trade|order|pending|this|it|entry)\b", re.I)
-_CANCEL_RE2 = re.compile(r"\b(cancel(?:led|ed)?|voided?|disregard)\b\s*$", re.I | re.M)
+# "close TP2" / "close tp 3" / "close take profit 2". The (?!\s+to\b) negative lookahead rejects the
+# PROXIMITY IDIOM "close to TP2" (commentary, e.g. "price is close to TP2") — only the imperative
+# "close TP2" is a command. A false close is the worst case, so we exclude "close to …".
+_CLOSE_LEG_RE = re.compile(r"\bclose\b(?!\s+to\b)[^0-9]{0,20}\b(?:tp|take[\s-]?profit)\s*([123])\b", re.I)
+# "close all" / "close remaining" / "close everything" / "close the trade(s)" / "close now" / "close position(s)".
+# Same (?!\s+to\b) guard: "close to all-time high" / "close to breakeven" are commentary, NOT CLOSE_ALL.
+_CLOSE_ALL_RE = re.compile(r"\bclose\b(?!\s+to\b)[^\n]{0,20}\b(all|remaining|everything|the\s+trade|trades?|position|positions|now)\b", re.I)
+# "cancel signal" / "void the order" / "ignore this setup" / "disregard this trade" / "cancel it".
+# Requires an explicit cancel/void/disregard/ignore verb AND a trade-object NOUN — the noun is what
+# keeps commentary out ("ignore the noise, we're up" has no trade noun → not a cancel). Bare "this"
+# is intentionally NOT a noun.
+_CANCEL_RE = re.compile(r"\b(cancel|cancelled|canceled|void|voided|disregard|ignore)\b[^\n]{0,24}\b(signal|setup|trade|order|pending|position|entry|it)\b", re.I)
+_CANCEL_RE2 = re.compile(r"\b(cancel(?:led|ed)?|void(?:ed)?|disregard)\b\s*$", re.I | re.M)
+
+# A price report of an SL/TP that was HIT is a status update, not a move-SL command.
+_SL_HIT_RE = re.compile(r"\b(?:hit|stopped?\s*out|taken\s+out|got\s+stopped|was\s+hit|triggered)\b", re.I)
 
 # status-update markers → NON_ACTIONABLE (recorded, never acted)
-_STATUS_RE = re.compile(r"\b(tp\s*[123]|take[\s-]?profit|hit|reached|running|in\s+profit|pips?|secured?|closed\s+in\s+profit|sl\s+hit|stopped\s+out|breakeven\s+secured)\b", re.I)
+_STATUS_RE = re.compile(r"\b(tp\s*[123]|take[\s-]?profit|hit|reached|running|in\s+profit|pips?|secured?|closed\s+in\s+profit|sl\s+hit|stopped\s+out|break[\s-]?even|profit|target)\b", re.I)
 
 
 def classify_command(text: str) -> Command:
@@ -75,9 +84,10 @@ def classify_command(text: str) -> Command:
     if _CLOSE_ALL_RE.search(t):
         return Command(CLOSE_ALL, confidence="high", reason="close_all")
 
-    # 4) Move SL to a specific price
+    # 4) Move SL to a specific price — but a REPORT that the SL was hit ("SL @ 4010 was hit",
+    #    "stopped out at 4010") is a status update, not a move command. Veto it.
     m = _SL_PRICE_RE.search(t)
-    if m:
+    if m and not _SL_HIT_RE.search(t):
         raw = m.group(1).replace(",", "")
         try:
             price = float(raw)

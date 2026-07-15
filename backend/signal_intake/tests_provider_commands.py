@@ -60,3 +60,23 @@ class ClassifyCommandTests(SimpleTestCase):
     def test_status_word_without_verb_is_not_close(self):
         # "TP2 hit" (no imperative "close") must stay a status update, not CLOSE_LEG.
         self._t("TP2 hit", NON_ACTIONABLE)
+
+    # --- adversarial-review regressions (proximity idioms + status reports) ---
+    def test_close_to_idiom_is_not_a_close(self):
+        # "close to X" is commentary, NOT an imperative close (the worst-case false positive).
+        for t in ("EURUSD close to all-time high, keep holding",
+                  "getting close to all our targets", "close to breakeven now",
+                  "price is close to TP2"):
+            c = classify_command(t)
+            self.assertNotIn(c.command_type, (CLOSE_ALL, CLOSE_LEG), f"{t!r} → {c.command_type}")
+
+    def test_sl_hit_report_is_not_move_sl(self):
+        # A report that the SL was hit at a price must NOT be read as "move SL to price".
+        for t in ("SL @ 4010 was hit", "stopped out at 4010", "SL 4010 hit"):
+            c = classify_command(t)
+            self.assertNotEqual(c.command_type, MOVE_SL_PRICE, f"{t!r} → {c.command_type}")
+
+    def test_ignore_commentary_is_not_cancel(self):
+        # "ignore the noise" (no trade noun) must not cancel; "ignore this setup" (noun) still does.
+        self.assertNotEqual(classify_command("ignore the noise, we're up 40 pips").command_type, CANCEL)
+        self._t("ignore this setup", CANCEL)
