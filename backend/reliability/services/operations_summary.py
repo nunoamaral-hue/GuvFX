@@ -77,49 +77,119 @@ def _broker_metrics(account):
 
 
 def _strategy_metrics(now):
-    """Source-aware activity metrics (today) for each armed/known source. Never combined."""
+    """Source-aware activity metrics (today) for each armed/known source. Never combined (D1)."""
+    from django.db.models import Count
     from execution.models import (
-        SignalExecutionPlan, TradeOutcomeRecord, NotificationCandidate, SignalSourceConfig,
+        SignalExecutionPlan, TradeOutcomeRecord, NotificationCandidate, NotificationDelivery,
+        SignalSourceConfig,
     )
     from strategies.models import StrategyAssignment
-    from trading.models import Trade
 
     tstart = _today_start(now)
-    armed = {a.signal_source: a for a in StrategyAssignment.objects.filter(is_active=True)
-             if a.signal_source}
+    armed = {a.signal_source: a for a in StrategyAssignment.objects.select_related("strategy")
+             .filter(is_active=True) if a.signal_source}
     cfgs = {c.source: c for c in SignalSourceConfig.objects.all()}
     sources = sorted(set(armed) | set(cfgs) | {"wayond", "ti_signals"})
     out = []
     for src in sources:
+        asn = armed.get(src)
+        cfg = cfgs.get(src)
         plans_today = SignalExecutionPlan.objects.filter(source=src, created_at__gte=tstart)
-        rejected = plans_today.filter(status__in=("VOIDED", "HELD")).count()
-        accepted = plans_today.filter(
-            status__in=("PLANNED", "PROMOTED", "CLOSED")).count()
+        rejected_qs = plans_today.filter(status__in=("VOIDED", "HELD"))
+        accepted = plans_today.filter(status__in=("PLANNED", "PROMOTED", "CLOSED")).count()
+        promoted_today = plans_today.filter(status__in=("PROMOTED", "CLOSED")).count()
         outcomes = TradeOutcomeRecord.objects.filter(signal_source=src, created_at__gte=tstart)
         pnl = sum((o.net_pnl for o in outcomes), Decimal("0"))
-        wins = outcomes.filter(outcome="WIN").count()
-        losses = outcomes.filter(outcome="LOSS").count()
-        bes = outcomes.filter(outcome="BREAKEVEN").count()
-        cards = NotificationCandidate.objects.filter(
-            signal_source=src, status="SENT", created_at__gte=tstart).count()
+        # rejection reasons breakdown (D1 + WS-C visibility)
+        reasons = dict(rejected_qs.exclude(hold_reason="").values_list("hold_reason")
+                       .annotate(n=Count("id")).values_list("hold_reason", "n"))
         last_plan = SignalExecutionPlan.objects.filter(source=src).order_by("-created_at").first()
-        cfg = cfgs.get(src)
+        last_promoted = (SignalExecutionPlan.objects.filter(source=src, status__in=("PROMOTED", "CLOSED"))
+                         .order_by("-signal_timestamp").first())
+        last_delivery = (NotificationDelivery.objects.filter(candidate__signal_source=src, transmitted=True)
+                         .order_by("-created_at").first())
+        cards_delivered = NotificationDelivery.objects.filter(
+            candidate__signal_source=src, transmitted=True, created_at__gte=tstart).count()
+        daily_cap = None if (cfg is None or cfg.daily_group_cap == 0) else cfg.daily_group_cap
         out.append({
             "key": src,
             "source_label": source_display_label(src),
-            "strategy": (getattr(armed.get(src), "strategy", None).name
-                         if armed.get(src) and armed[src].strategy_id else source_display_label(src)),
-            "armed": bool(armed.get(src)) and bool(cfg and cfg.auto_demo_execution_enabled),
+            "strategy": (asn.strategy.name if asn and asn.strategy_id else source_display_label(src)),
+            # split the old conflated `armed` into the two independent gates (D1):
+            "provider_enabled": bool(cfg and cfg.auto_demo_execution_enabled),
+            "assignment_active": bool(asn),
+            "assignment_id": asn.id if asn else None,
+            "mode": (asn.execution_mode if asn else None),
+            "armed": bool(asn) and bool(cfg and cfg.auto_demo_execution_enabled),  # kept for back-compat
+            "per_leg_lot": str(cfg.max_lot_per_leg) if cfg else None,
+            "total_lot": str(cfg.max_total_lot) if cfg else None,
+            "daily_cap": "unlimited" if daily_cap is None else daily_cap,
             "signals_today": plans_today.count(),
             "accepted": accepted,
-            "rejected": rejected,
-            "wins": wins, "losses": losses, "breakevens": bes,
+            "rejected": rejected_qs.count(),
+            "plans_promoted": promoted_today,
+            "trades_closed": outcomes.count(),
+            "wins": outcomes.filter(outcome="WIN").count(),
+            "losses": outcomes.filter(outcome="LOSS").count(),
+            "breakevens": outcomes.filter(outcome="BREAKEVEN").count(),
             "realised_pnl": str(pnl),
-            "cards_sent": cards,
+            "cards_delivered": cards_delivered,
+            "cards_sent": NotificationCandidate.objects.filter(
+                signal_source=src, status="SENT", created_at__gte=tstart).count(),
+            "rejection_reasons": reasons,
             "last_signal_at": last_plan.created_at.isoformat() if last_plan else None,
-            "per_leg_lot": str(cfg.max_lot_per_leg) if cfg else None,
+            "last_execution_at": (last_promoted.signal_timestamp.isoformat()
+                                  if last_promoted and last_promoted.signal_timestamp else None),
+            "last_notification_at": last_delivery.created_at.isoformat() if last_delivery else None,
         })
     return out
+
+
+def _infra_block(now, broker, dispatch, heartbeats):
+    """D2 — derived infrastructure liveness map. Producers that emit heartbeats are surfaced as-is
+    elsewhere; here we DERIVE the rest, marking anything with no producer UNKNOWN (no-assumption
+    rule) rather than fabricating HEALTHY. ``reliability_core_enabled`` lets the UI explain why so
+    much may read UNKNOWN in prod (the supervisor is dormant by default)."""
+    from reliability.constants import RELIABILITY_CORE_ENABLED
+    hb = {h["source"]: h for h in heartbeats}
+
+    def hb_state(source):
+        return hb.get(source, {}).get("state", "UNKNOWN")
+
+    # broker-registry freshness
+    registry = {"status": "UNKNOWN", "reason": "no_rows"}
+    try:
+        from execution.models import BrokerInstrument
+        latest = BrokerInstrument.objects.order_by("-synced_at").values_list("synced_at", flat=True).first()
+        if latest:
+            age = _age_s(latest, now)
+            registry = {"status": "HEALTHY" if age < 48 * 3600 else "WARNING",
+                        "age_s": round(age), "synced_at": latest.isoformat()}
+    except Exception:
+        registry = {"status": "UNKNOWN", "reason": "unavailable"}
+
+    # redis (configured only if REDIS_URL set)
+    redis = {"status": "UNKNOWN", "configured": bool(os.getenv("REDIS_URL"))}
+
+    last_deliv = dispatch.get("last_delivery_at")
+    return {
+        "reliability_core_enabled": bool(RELIABILITY_CORE_ENABLED),
+        "postgres": {"status": "HEALTHY"},  # implicit: this summary query succeeded
+        "backend": {"status": "HEALTHY"},
+        "ingest_worker": {"status": hb_state("ingest_worker")},
+        "monitor_chain": {"status": hb_state("monitor_chain")},
+        "bridge": {"status": "HEALTHY" if broker.get("reachable") else "WARNING",
+                   "reachable": bool(broker.get("reachable"))},
+        "broker_registry": registry,
+        "telegram_transport": {"status": "HEALTHY" if last_deliv else "UNKNOWN",
+                               "enabled": dispatch.get("enabled"),
+                               "transport": dispatch.get("transport"),
+                               "last_delivery_at": last_deliv},
+        "redis": redis,
+        # No heartbeat producers today → honest UNKNOWN, not fabricated HEALTHY.
+        "listener": {"status": "UNKNOWN", "reason": "no_heartbeat_producer"},
+        "shadow_worker": {"status": "UNKNOWN", "reason": "no_heartbeat_producer"},
+    }
 
 
 def build_operations_summary() -> dict:
@@ -193,16 +263,25 @@ def build_operations_summary() -> dict:
         states.append("WARNING")
 
     alerts = []
-    for a in AlertEvent.objects.filter(status=AlertEvent.Status.OPEN).order_by("-created_at")[:25]:
+    for a in (AlertEvent.objects.filter(status=AlertEvent.Status.OPEN)
+              .select_related("acknowledged_by").order_by("-created_at")[:25]):
         sev = a.severity
         alerts.append({
+            "id": a.id,                                # D3/D4: required to acknowledge from the page
             "severity": sev, "component": a.component,
-            "detail": (a.title or a.body or "")[:200],
+            "status": a.status,
+            "title": (a.title or "")[:200],
+            "detail": (a.title or a.body or "")[:200],  # kept for back-compat
             "first_seen": a.created_at.isoformat() if a.created_at else None,
             "acknowledged": a.acknowledged_at is not None,
+            "acknowledged_by_username": (a.acknowledged_by.get_username()
+                                         if a.acknowledged_by_id else None),
+            "resolved_at": a.resolved_at.isoformat() if a.resolved_at else None,
             "dedup_key": a.dedup_key,
         })
         states.append("CRITICAL" if sev == AlertEvent.Severity.CRITICAL else "WARNING")
+
+    infra = _infra_block(now, broker, dispatch, heartbeats)
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -211,6 +290,7 @@ def build_operations_summary() -> dict:
         "control": control,
         "components": components,
         "heartbeats": heartbeats,
+        "infra": infra,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},
