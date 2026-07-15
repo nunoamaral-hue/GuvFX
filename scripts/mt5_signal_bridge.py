@@ -1316,6 +1316,106 @@ def close_position(ticket: int) -> Dict[str, Any]:
         mt5.shutdown()
 
 
+def modify_position(ticket: int, sl: float, tp: float = None) -> Dict[str, Any]:
+    """WS-B AUTO-BREAKEVEN — move an OPEN position's stop-loss (and optionally keep its
+    take-profit) via ``TRADE_ACTION_SLTP``. Demo accounts only. Never opens/closes a position:
+    ``TRADE_ACTION_SLTP`` only edits SL/TP on an existing position.
+
+    Fail-closed and idempotent-friendly: the caller (backend breakeven sweep) has already
+    verified the move is risk-reducing; here we additionally RE-READ the position after the
+    modify and return the broker's post-modify ``sl`` (``verified_sl``) so the caller can
+    prove the modification actually landed. If the position's SL already equals the requested
+    value (a retry after a successful-but-unconfirmed send), we report success without resending.
+    """
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return {"ok": False, "error": "mt5_not_installed"}
+
+    init_kwargs = {}
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+
+    if not mt5.initialize(**init_kwargs):
+        return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
+
+    try:
+        account_info = mt5.account_info()
+        if account_info is None:
+            return {"ok": False, "error": "account_info_failed"}
+        if account_info.trade_mode != 0:  # 0 == demo; refuse on real accounts
+            return {"ok": False, "error": "account_not_demo"}
+
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            return {"ok": False, "error": "position_not_found", "detail": f"ticket={ticket}"}
+        pos = positions[0]
+
+        # Keep the existing TP unless the caller supplied one explicitly.
+        target_tp = pos.tp if tp is None else tp
+
+        # Precision: round SL/TP to the symbol's digits so order_send doesn't reject on noise.
+        info = mt5.symbol_info(pos.symbol)
+        digits = getattr(info, "digits", 5) if info else 5
+        req_sl = round(float(sl), digits)
+        req_tp = round(float(target_tp), digits)
+        eps = (10 ** -digits) / 2
+
+        # Idempotency: if the SL is already at (or past) the requested breakeven, do not resend.
+        cur_sl = float(pos.sl)
+        if abs(cur_sl - req_sl) < eps:
+            return {"ok": True, "ticket": ticket, "requested_sl": req_sl,
+                    "verified_sl": cur_sl, "unchanged": True}
+
+        # Defense-in-depth FAIL-SAFE — refuse any move that would INCREASE risk. A BUY's SL may
+        # only move up (toward/above entry); a SELL's SL may only move down. A position with no SL
+        # (cur_sl == 0) may always receive one (strictly safer than unbounded). This is a hard
+        # broker-side backstop under the backend sweep's own risk-reducing guard.
+        is_buy = pos.type == mt5.POSITION_TYPE_BUY
+        if cur_sl != 0.0:
+            if is_buy and req_sl < cur_sl - eps:
+                return {"ok": False, "error": "would_increase_risk",
+                        "current_sl": cur_sl, "requested_sl": req_sl}
+            if (not is_buy) and req_sl > cur_sl + eps:
+                return {"ok": False, "error": "would_increase_risk",
+                        "current_sl": cur_sl, "requested_sl": req_sl}
+
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": pos.symbol,
+            "position": ticket,
+            "sl": req_sl,
+            "tp": req_tp,
+            "magic": pos.magic,
+        }
+
+        result = mt5.order_send(request)
+        if result is None:
+            return {"ok": False, "error": "order_send_none", "detail": str(mt5.last_error())}
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            return {"ok": False, "error": "modify_rejected", "retcode": result.retcode,
+                    "comment": result.comment}
+
+        # Broker-side VERIFICATION: re-read the position and confirm the SL actually moved.
+        after = mt5.positions_get(ticket=ticket)
+        verified_sl = float(after[0].sl) if after else None
+        verified = verified_sl is not None and abs(verified_sl - req_sl) < (10 ** -digits) / 2
+        logger.info(f"[modify] ticket={ticket} sl->{req_sl} retcode={result.retcode} verified={verified}")
+        return {
+            "ok": bool(verified),
+            "ticket": ticket,
+            "requested_sl": req_sl,
+            "verified_sl": verified_sl,
+            "retcode": result.retcode,
+            "error": None if verified else "sl_not_verified",
+        }
+
+    except Exception as e:
+        return {"ok": False, "error": "exception", "detail": str(e)}
+    finally:
+        mt5.shutdown()
+
+
 # =============================================================================
 # Login-and-Validate (POST /mt5/login-and-validate)
 # =============================================================================
@@ -1480,6 +1580,8 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
                 self._handle_order_check_request()
             elif path == "/mt5/close-position":
                 self._handle_close_position_request()
+            elif path == "/mt5/modify-position":
+                self._handle_modify_position_request()
             elif path == "/mt5/login-and-validate":
                 self._handle_login_validate_request()
             else:
@@ -1557,6 +1659,31 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
             return
 
         result = close_position(int(ticket))
+        status_code = 200 if result.get("ok") else 400
+        self._send_json_response(result, status_code)
+
+    def _handle_modify_position_request(self):
+        """Handle POST /mt5/modify-position — move an OPEN position's SL (breakeven). Demo only."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            self._send_json_response({"ok": False, "error": "empty_body"}, 400)
+            return
+
+        raw = self.rfile.read(content_length)
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json_response({"ok": False, "error": "invalid_json"}, 400)
+            return
+
+        ticket = body.get("ticket")
+        sl = body.get("sl")
+        if ticket is None or sl is None:
+            self._send_json_response({"ok": False, "error": "missing_fields", "detail": ["ticket", "sl"]}, 400)
+            return
+
+        tp = body.get("tp")
+        result = modify_position(int(ticket), float(sl), None if tp is None else float(tp))
         status_code = 200 if result.get("ok") else 400
         self._send_json_response(result, status_code)
 

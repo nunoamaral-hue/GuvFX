@@ -32,6 +32,7 @@ import logging
 
 from django.core.management.base import BaseCommand, CommandError
 
+from execution.breakeven import sweep_breakeven
 from execution.close_monitor import DEFAULT_LIMIT, process_closed_trades, resolve_completed_plans
 from execution.notifications.dispatcher import dispatch_enabled, dispatch_pending
 from execution.outcome_router import route_outcomes
@@ -61,6 +62,9 @@ class Command(BaseCommand):
         # dispatcher. Resolved here (not at import) so each name is looked up at call time.
         steps = (
             ("resolve_plans", resolve_completed_plans),
+            # WS-B AUTO-BREAKEVEN — after TP1 closes, move remaining legs' SL to entry. Inert
+            # unless BREAKEVEN_ENABLED. Enqueue-only + idempotent, so safe to run every minute.
+            ("breakeven", sweep_breakeven),
             ("close_monitor", process_closed_trades),
             ("outcome_router", route_outcomes),
             ("dispatch", dispatch_pending),
@@ -76,6 +80,7 @@ class Command(BaseCommand):
                 failures.append(name)
 
         rp = results.get("resolve_plans", {})
+        be = results.get("breakeven", {})
         cm = results.get("close_monitor", {})
         outr = results.get("outcome_router", {})
         disp = results.get("dispatch", {})
@@ -84,12 +89,16 @@ class Command(BaseCommand):
         self.stdout.write(
             "monitor-chain: "
             "resolve[scanned={rs} closed={rc} still_open={ro}] "
+            "breakeven[enabled={ben} synced={bsy} enqueued={beq} applied={bap} inflight={binf} skipped={bsk} alerted={bal}] "
             "close[processed={cp} win={cw} loss={cl} be={cb} skipped={cs}] "
             "outcome[routed={orr} candidates={oc} internal_only={oi}] "
             "dispatch[enabled={de} claimed={dcl} sent={dsent} failed={df} skipped={dsk}] "
             "failures={failed} "
             "(internal records + no order/WIMS; dispatch OFF/dry-run by default)".format(
                 rs=rp.get("scanned", 0), rc=rp.get("closed", 0), ro=rp.get("still_open", 0),
+                ben=be.get("enabled", False), bsy=be.get("synced", 0), beq=be.get("enqueued", 0),
+                bap=be.get("applied", 0), binf=be.get("inflight", 0), bsk=be.get("skipped", 0),
+                bal=be.get("alerted", 0),
                 cp=cm.get("processed", 0), cw=cm.get("win", 0), cl=cm.get("loss", 0),
                 cb=cm.get("breakeven", 0), cs=cm.get("skipped", 0),
                 orr=outr.get("routed", 0), oc=outr.get("candidates", 0),
@@ -107,7 +116,9 @@ class Command(BaseCommand):
             from reliability.services.heartbeat import record_beat
             record_beat("monitor_chain", interval_s=90, detail={
                 "resolved": rp.get("closed", 0), "processed": cm.get("processed", 0),
-                "candidates": outr.get("candidates", 0), "failures": failures,
+                "candidates": outr.get("candidates", 0),
+                "breakeven_enqueued": be.get("enqueued", 0), "breakeven_applied": be.get("applied", 0),
+                "failures": failures,
             })
         except Exception:  # pragma: no cover - defensive; heartbeat is best-effort
             pass

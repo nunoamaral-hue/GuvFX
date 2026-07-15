@@ -170,6 +170,29 @@ def agent_order_check(payload: dict) -> dict:
         return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
 
 
+def agent_modify(payload: dict) -> dict:
+    """WS-B AUTO-BREAKEVEN: POST /mt5/modify-position on the bridge — move an OPEN position's
+    SL to breakeven. Risk-reducing SL/TP edit only (TRADE_ACTION_SLTP); never opens/closes."""
+    url = f"{AGENT_ORDER_BASE}/mt5/modify-position"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"X-GuvFX-Agent-Token": AGENT_TOKEN, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read().decode("utf-8", "ignore")
+            return json.loads(raw) if raw else {"ok": False, "error": "empty_response"}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")[:500]
+        try:
+            return json.loads(body)
+        except Exception:
+            return {"ok": False, "error": f"http_{e.code}", "detail": body}
+    except Exception as e:
+        return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
+
+
 def handle_shadow_job(job: dict) -> dict:
     """EXEC-E2b: process a PLACE_ORDER_SHADOW job — validate only, place no order.
 
@@ -621,6 +644,9 @@ def claim_worker_job():
     return (
         claim_next_job("PLACE_TEST_ORDER")
         or claim_next_job("PLACE_ORDER")
+        # WS-B AUTO-BREAKEVEN — risk-reducing SL moves rank ahead of the default SYNC so a
+        # remaining leg is protected promptly once TP1 closes; still below new order placement.
+        or claim_next_job("MODIFY_POSITION")
         or claim_next_job()
     )
 
@@ -735,9 +761,38 @@ def main():
                     complete_job(job_id, "FAILED", order_result, f"Agent order failed: {error_msg}")
                 continue
 
+            if jt == "MODIFY_POSITION":
+                # WS-B AUTO-BREAKEVEN: move an OPEN position's SL to breakeven. The backend
+                # sweep has already applied the fail-safe (risk-reducing) guard; the bridge
+                # re-reads the position and confirms the SL landed (verified_sl).
+                windows_username = payload.get("windows_username")
+                ticket = payload.get("ticket")
+                sl = payload.get("sl")
+                if not all([windows_username, ticket]) or sl is None:
+                    complete_job(job_id, "FAILED", {"ok": False, "reason": "missing_payload_fields"},
+                                 "MODIFY_POSITION requires windows_username, ticket, sl")
+                    continue
+                modify_payload = {
+                    "username": windows_username,
+                    "ticket": ticket,
+                    "sl": float(sl),
+                }
+                if payload.get("tp") is not None:
+                    modify_payload["tp"] = float(payload["tp"])
+                print(f"[BREAKEVEN] MODIFY_POSITION job_id={job_id}: ticket={ticket} sl={sl}")
+                modify_result = agent_modify(modify_payload)
+                if modify_result.get("ok"):
+                    print(f"[BREAKEVEN] SUCCESS job_id={job_id}: ticket={ticket} verified_sl={modify_result.get('verified_sl')}")
+                    complete_job(job_id, "SUCCESS", modify_result, "")
+                else:
+                    err = modify_result.get("error", "unknown_error")
+                    print(f"[BREAKEVEN] FAILED job_id={job_id}: {err} {modify_result.get('detail', '')}")
+                    complete_job(job_id, "FAILED", modify_result, f"Modify failed: {err}")
+                continue
+
             if jt != "SYNC_POSITIONS":
                 complete_job(job_id, "FAILED", {"ok": False, "reason": "unsupported_job_type", "job_type": jt},
-                             "Worker supports SYNC_POSITIONS, PLACE_TEST_ORDER, and PLACE_ORDER")
+                             "Worker supports SYNC_POSITIONS, PLACE_TEST_ORDER, PLACE_ORDER, and MODIFY_POSITION")
                 continue
 
             # MVP: require windows_username in payload. (We can later fetch from MT5 instance.)
