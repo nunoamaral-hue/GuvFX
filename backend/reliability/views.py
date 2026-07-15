@@ -1,7 +1,7 @@
 """RX-2 Reliability Core — read + lifecycle APIs. Read-only except alert ack."""
 from django.utils import timezone
 from rest_framework import status as http
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -178,3 +178,15 @@ class HeartbeatIngestView(APIView):
         from .services.heartbeat import record_beat
         record_beat(source, interval_s=interval, detail={"via": "http"})
         return Response({"ok": True, "source": source, "expected_interval_s": interval})
+
+
+class OperationsSummaryView(APIView):
+    """GET /api/reliability/operations-summary/ — the single read-only operational status summary
+    for the internal /operations page (health + source-aware strategy metrics + broker metrics +
+    open positions/plans/candidates + dispatch + open alerts). Staff-only. Places NO order and
+    mutates NOTHING (a best-effort bridge order_check for margin metrics never sends an order)."""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        from .services.operations_summary import build_operations_summary
+        return Response(build_operations_summary())
