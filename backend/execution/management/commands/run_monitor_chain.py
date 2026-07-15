@@ -108,7 +108,7 @@ class Command(BaseCommand):
         # log itself proves the dry-run posture; ``transmitted`` is never anything but zero here.
         self.stdout.write(
             "monitor-chain: "
-            "exec_health[reclaimed={ehr} reclaimed_modify={ehrm} stuck_alerted={ehs} unplanned={ehu} unplanned_resolved={ehur}] "
+            "exec_health[reclaimed={ehr} reclaimed_modify={ehrm} po_reconciled={ehpr} po_orphan_alerted={ehpa} stuck_alerted={ehs} unplanned={ehu} unplanned_resolved={ehur}] "
             "resolve[scanned={rs} closed={rc} still_open={ro}] "
             "breakeven[enabled={ben} synced={bsy} enqueued={beq} applied={bap} tp2_locked={btl} inflight={binf} skipped={bsk} deferred={bdf} noop_closed={bnc} alerted={bal} overdue={bov}] "
             "provider_cmds[enabled={pce} applied={pca} rejected={pcr} ambiguous={pcm}] "
@@ -120,6 +120,7 @@ class Command(BaseCommand):
             "failures={failed} "
             "(internal records + no order/WIMS; dispatch OFF/dry-run by default)".format(
                 ehr=eh.get("reclaimed", 0), ehrm=eh.get("reclaimed_modify", 0),
+                ehpr=eh.get("place_order_reconciled", 0), ehpa=eh.get("place_order_orphan_alerted", 0),
                 ehs=eh.get("stuck_alerted", 0), ehu=eh.get("unplanned_alerted", 0),
                 ehur=eh.get("unplanned_resolved", 0),
                 rs=rp.get("scanned", 0), rc=rp.get("closed", 0), ro=rp.get("still_open", 0),

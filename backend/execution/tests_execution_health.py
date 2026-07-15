@@ -194,3 +194,118 @@ class UnplannedSignalAlertTests(TestCase):
             created_at=timezone.now() - timedelta(seconds=execution_health.UNPLANNED_SIGNAL_ALERT_SECONDS + 60))
         res = execution_health.sweep_execution_health()
         self.assertEqual(res["unplanned_alerted"], 0)
+
+
+class OrphanedPlaceOrderReconcileTests(TestCase):
+    """GFX-PKT-POST-INCIDENT — a lease-expired RUNNING PLACE_ORDER is NEVER re-run (would duplicate);
+    it is reconciled against the broker: trade exists → SUCCESS; no trade → alert only."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="po", email="po@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="PO1", is_demo=True)
+
+    def _po_job(self, plan_id, leg_index, *, lease_delta_s):
+        j = ExecutionJob.objects.create(
+            job_type="PLACE_ORDER", account=self.acct, status="RUNNING",
+            payload={"plan_id": plan_id, "leg_index": leg_index, "signal_source": TI, "symbol": "XAUUSD"})
+        ExecutionJob.objects.filter(id=j.id).update(
+            started_at=timezone.now(), lease_expires_at=timezone.now() + timedelta(seconds=lease_delta_s))
+        return ExecutionJob.objects.get(id=j.id)
+
+    def _trade(self, plan_id, leg_index, ticket):
+        return Trade.objects.create(
+            account=self.acct, symbol="XAUUSD", side="BUY", volume=Decimal("0.40"),
+            ticket=str(ticket), open_time=timezone.now(), open_price=Decimal("4059.21"),
+            comment="WAY%sL%s" % (plan_id, leg_index))
+
+    def test_orphan_with_trade_reconciled_to_success(self):
+        job = self._po_job(22, 3, lease_delta_s=-120)     # lease expired
+        self._trade(22, 3, 224368)                        # the order actually landed
+        res = execution_health.sweep_execution_health()
+        job.refresh_from_db()
+        self.assertEqual(res["place_order_reconciled"], 1)
+        self.assertEqual(res["place_order_orphan_alerted"], 0)
+        self.assertEqual(job.status, "SUCCESS")           # never re-run; bookkeeping caught up
+        self.assertTrue(job.recovered)
+        self.assertEqual((job.result or {}).get("ticket"), "224368")
+
+    def test_orphan_without_trade_alerts_and_does_not_rerun(self):
+        from reliability.models import AlertEvent
+        job = self._po_job(23, 1, lease_delta_s=-120)     # lease expired, NO trade
+        res = execution_health.sweep_execution_health()
+        job.refresh_from_db()
+        self.assertEqual(res["place_order_orphan_alerted"], 1)
+        self.assertEqual(res["place_order_reconciled"], 0)
+        self.assertEqual(job.status, "RUNNING")           # NOT re-run, NOT marked success (fail-safe)
+        self.assertTrue(AlertEvent.objects.filter(
+            dedup_key=f"orphaned_place_order:job:{job.id}", status="OPEN").exists())
+
+    def test_live_lease_not_touched(self):
+        job = self._po_job(24, 1, lease_delta_s=+300)     # lease still valid
+        res = execution_health.sweep_execution_health()
+        job.refresh_from_db()
+        self.assertEqual(res["place_order_reconciled"], 0)
+        self.assertEqual(res["place_order_orphan_alerted"], 0)
+        self.assertEqual(job.status, "RUNNING")
+
+    def test_alert_auto_resolves_when_trade_appears(self):
+        from reliability.models import AlertEvent
+        job = self._po_job(25, 2, lease_delta_s=-120)
+        execution_health.sweep_execution_health()          # alerts (no trade yet)
+        self.assertTrue(AlertEvent.objects.filter(
+            dedup_key=f"orphaned_place_order:job:{job.id}", status="OPEN").exists())
+        self._trade(25, 2, 224400)                         # the trade is ingested late
+        res = execution_health.sweep_execution_health()
+        job.refresh_from_db()
+        self.assertEqual(res["place_order_reconciled"], 1)
+        self.assertEqual(job.status, "SUCCESS")
+        self.assertFalse(AlertEvent.objects.filter(
+            dedup_key=f"orphaned_place_order:job:{job.id}", status="OPEN").exists())
+
+
+class OrphanedPlaceOrderResolveTests(TestCase):
+    """GFX-PKT-POST-INCIDENT (adversarial-review fix) — the orphan alert resolves on the BROKER
+    signal (leg trade present), NOT on job status, so a merely-slow worker completing its own job
+    doesn't strand a lingering alert, and a genuinely FAILED/missing order keeps the alert open."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="pr", email="pr@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="PR1", is_demo=True)
+
+    def _po(self, plan_id, leg_index):
+        j = ExecutionJob.objects.create(
+            job_type="PLACE_ORDER", account=self.acct, status="RUNNING",
+            payload={"plan_id": plan_id, "leg_index": leg_index, "signal_source": TI, "symbol": "XAUUSD"})
+        ExecutionJob.objects.filter(id=j.id).update(
+            lease_expires_at=timezone.now() - timedelta(seconds=120))
+        return ExecutionJob.objects.get(id=j.id)
+
+    def _trade(self, plan_id, leg_index, ticket):
+        Trade.objects.create(account=self.acct, symbol="XAUUSD", side="BUY", volume=Decimal("0.40"),
+                             ticket=str(ticket), open_time=timezone.now(), open_price=Decimal("4059"),
+                             comment="WAY%sL%s" % (plan_id, leg_index))
+
+    def test_alert_resolves_after_slow_worker_completes_and_trade_ingested(self):
+        from reliability.models import AlertEvent
+        job = self._po(26, 1)
+        execution_health.sweep_execution_health()          # alerts (no trade, job RUNNING)
+        key = f"orphaned_place_order:job:{job.id}"
+        self.assertTrue(AlertEvent.objects.filter(dedup_key=key, status="OPEN").exists())
+        # The worker was only slow: it completes its OWN job (leaves RUNNING) and the trade ingests.
+        ExecutionJob.objects.filter(id=job.id).update(status="SUCCESS")
+        self._trade(26, 1, 224500)
+        res = execution_health.sweep_execution_health()
+        self.assertGreaterEqual(res["place_order_orphan_resolved"], 1)
+        self.assertFalse(AlertEvent.objects.filter(dedup_key=key, status="OPEN").exists())
+
+    def test_alert_stays_open_when_job_failed_without_trade(self):
+        from reliability.models import AlertEvent
+        job = self._po(27, 1)
+        execution_health.sweep_execution_health()          # alerts
+        ExecutionJob.objects.filter(id=job.id).update(status="FAILED")  # order failed → NO trade
+        execution_health.sweep_execution_health()
+        # A genuinely missing order must NOT be silently resolved just because the job left RUNNING.
+        self.assertTrue(AlertEvent.objects.filter(
+            dedup_key=f"orphaned_place_order:job:{job.id}", status="OPEN").exists())
