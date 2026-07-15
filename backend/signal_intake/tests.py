@@ -185,11 +185,13 @@ class Adr009BoundaryGuardTests(TestCase):
                        "ProposedOrderLeg"):
             self.assertNotIn(banned, names)
         # Allowlist: intake + SIGNAL-ACQUISITION-MVP provider-platform models only.
+        # ProviderCommand RECORDS provider follow-up commands (data); it places no order — the
+        # gated engine that acts lives in the execution app, so the ADR-009 boundary holds.
         self.assertEqual(
             sorted(names),
             sorted([
                 "PendingSignalApproval", "SignalAuditEvent",
                 "SignalProvider", "ParserProfile", "AcquiredMessage", "SignalUpdate",
-                "MessageAmendment",
+                "MessageAmendment", "ProviderCommand",
             ]),
         )
