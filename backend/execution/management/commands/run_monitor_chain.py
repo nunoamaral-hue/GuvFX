@@ -108,9 +108,9 @@ class Command(BaseCommand):
         # log itself proves the dry-run posture; ``transmitted`` is never anything but zero here.
         self.stdout.write(
             "monitor-chain: "
-            "exec_health[reclaimed={ehr} stuck_alerted={ehs}] "
+            "exec_health[reclaimed={ehr} reclaimed_modify={ehrm} stuck_alerted={ehs}] "
             "resolve[scanned={rs} closed={rc} still_open={ro}] "
-            "breakeven[enabled={ben} synced={bsy} enqueued={beq} applied={bap} inflight={binf} skipped={bsk} alerted={bal}] "
+            "breakeven[enabled={ben} synced={bsy} enqueued={beq} applied={bap} tp2_locked={btl} inflight={binf} skipped={bsk} deferred={bdf} noop_closed={bnc} alerted={bal} overdue={bov}] "
             "provider_cmds[enabled={pce} applied={pca} rejected={pcr} ambiguous={pcm}] "
             "close[processed={cp} win={cw} loss={cl} be={cb} skipped={cs}] "
             "outcome[routed={orr} candidates={oc} internal_only={oi}] "
@@ -119,11 +119,13 @@ class Command(BaseCommand):
             "notify_health[issues={nhi} alerted={nha} resolved={nhr}] "
             "failures={failed} "
             "(internal records + no order/WIMS; dispatch OFF/dry-run by default)".format(
-                ehr=eh.get("reclaimed", 0), ehs=eh.get("stuck_alerted", 0),
+                ehr=eh.get("reclaimed", 0), ehrm=eh.get("reclaimed_modify", 0),
+                ehs=eh.get("stuck_alerted", 0),
                 rs=rp.get("scanned", 0), rc=rp.get("closed", 0), ro=rp.get("still_open", 0),
                 ben=be.get("enabled", False), bsy=be.get("synced", 0), beq=be.get("enqueued", 0),
                 bap=be.get("applied", 0), binf=be.get("inflight", 0), bsk=be.get("skipped", 0),
-                bal=be.get("alerted", 0),
+                bal=be.get("alerted", 0), btl=be.get("tp2_locked", 0), bov=be.get("overdue", 0),
+                bdf=be.get("deferred", 0), bnc=be.get("noop_closed", 0),
                 pce=pc.get("enabled", False), pca=pc.get("applied", 0), pcr=pc.get("rejected", 0),
                 pcm=pc.get("ambiguous", 0),
                 cp=cm.get("processed", 0), cw=cm.get("win", 0), cl=cm.get("loss", 0),

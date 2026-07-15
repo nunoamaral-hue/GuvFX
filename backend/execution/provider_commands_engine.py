@@ -159,20 +159,32 @@ def _cancel_pending_order_jobs(plan):
 
 
 def _risk_baseline_sl(plan, leg, trade):
-    """The SL to judge a Move-SL against: the RISK-TIGHTER of the plan's original SL and, if this leg
-    has already been moved to breakeven, its entry. Prevents a Move-SL-to-price from being accepted
-    against a stale plan.stop_loss when the live SL is already tighter (the bridge also backstops)."""
+    """The SL to judge a Move-SL against: the RISK-TIGHTER of the plan's original SL and whatever the
+    leg's incremental-protection stage has already locked in — its entry (BREAKEVEN) or the planned
+    TP2 price (TP2_LOCKED). Prevents a Move-SL-to-price from being accepted against a stale
+    plan.stop_loss when the live SL is already tighter (the bridge also hard-backstops any widen)."""
+    from execution.breakeven import STAGE_BREAKEVEN, STAGE_TP2_LOCKED
+
     old = _to_decimal(plan.stop_loss)
-    if getattr(leg, "breakeven_applied_at", None):
-        entry = _to_decimal(trade.open_price)
-        if entry is not None:
-            d = (plan.direction or "").upper()
-            if old is None:
-                old = entry
-            elif d == "BUY":
-                old = max(old, entry)   # higher SL = tighter for a BUY
-            elif d == "SELL":
-                old = min(old, entry)   # lower SL = tighter for a SELL
+    stage = getattr(leg, "protection_stage", None) or (
+        STAGE_BREAKEVEN if getattr(leg, "breakeven_applied_at", None) else None)
+
+    tighter = None
+    if stage == STAGE_TP2_LOCKED:
+        # TP2-locked → the live SL sits at the planned TP2 price (tighter than entry).
+        l2 = plan.legs.filter(leg_index=2).first()
+        tighter = _to_decimal(l2.take_profit) if l2 else _to_decimal(trade.open_price)
+    elif stage == STAGE_BREAKEVEN:
+        tighter = _to_decimal(trade.open_price)
+
+    if tighter is not None:
+        d = (plan.direction or "").upper()
+        if old is None:
+            old = tighter
+        elif d == "BUY":
+            old = max(old, tighter)   # higher SL = tighter for a BUY
+        elif d == "SELL":
+            old = min(old, tighter)   # lower SL = tighter for a SELL
     return old
 
 

@@ -1364,7 +1364,7 @@ def modify_position(ticket: int, sl: float, tp: float = None) -> Dict[str, Any]:
         # Idempotency: if the SL is already at (or past) the requested breakeven, do not resend.
         cur_sl = float(pos.sl)
         if abs(cur_sl - req_sl) < eps:
-            return {"ok": True, "ticket": ticket, "requested_sl": req_sl,
+            return {"ok": True, "ticket": ticket, "prior_sl": cur_sl, "requested_sl": req_sl,
                     "verified_sl": cur_sl, "unchanged": True}
 
         # Defense-in-depth FAIL-SAFE — refuse any move that would INCREASE risk. A BUY's SL may
@@ -1380,6 +1380,31 @@ def modify_position(ticket: int, sl: float, tp: float = None) -> Dict[str, Any]:
                 return {"ok": False, "error": "would_increase_risk",
                         "current_sl": cur_sl, "requested_sl": req_sl}
 
+        # Broker stops/freeze band — a TP2-lock SL can sit near live market when TP2 has just closed
+        # (the SL == the TP2 price, which is right where price is). order_send would reject it with
+        # INVALID_STOPS. Rather than let that surface as a generic hard failure (which the backend
+        # sweep escalates to a CRITICAL page), detect it here and return a DISTINCT, RETRYABLE reason.
+        # The remaining position is heading toward TP3 — away from this SL — so the band clears within
+        # a tick or two and the lock lands on a later sweep. FAIL-CLOSED: on any missing tick/point we
+        # proceed to order_send (the broker stays the final authority; it just rejects if invalid).
+        point = getattr(info, "point", 0.0) if info else 0.0
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if tick is not None and point and point > 0:
+            stops_level = max(int(getattr(info, "trade_stops_level", 0) or 0), 0)
+            freeze_level = max(int(getattr(info, "trade_freeze_level", 0) or 0), 0)
+            spread_points = int(round((tick.ask - tick.bid) / point))
+            min_points = max(stops_level, freeze_level, spread_points, 0)
+            min_dist = min_points * point
+            # BUY closes at Bid (SL below Bid); SELL closes at Ask (SL above Ask). Distance must clear
+            # the band; a negative distance means the SL is already on/through market → also too close.
+            dist = (tick.bid - req_sl) if is_buy else (req_sl - tick.ask)
+            if dist < min_dist - eps:
+                return {"ok": False, "error": "sl_within_stops_level", "retryable": True,
+                        "ticket": ticket, "requested_sl": req_sl, "prior_sl": cur_sl,
+                        "bid": tick.bid, "ask": tick.ask, "min_points": min_points,
+                        "dist_points": (dist / point) if point else None,
+                        "stops_level": stops_level, "freeze_level": freeze_level}
+
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
             "symbol": pos.symbol,
@@ -1393,6 +1418,14 @@ def modify_position(ticket: int, sl: float, tp: float = None) -> Dict[str, Any]:
         if result is None:
             return {"ok": False, "error": "order_send_none", "detail": str(mt5.last_error())}
         if result.retcode != mt5.TRADE_RETCODE_DONE:
+            # A position can close in the window between the pre-check and order_send (e.g. TP3 fills
+            # while we modify it) → the broker rejects with a generic retcode. Re-read: if the
+            # position is genuinely gone, this is the same benign no-op as position_not_found (there
+            # is nothing left to protect), not a hard failure worth retrying/paging.
+            still_open = mt5.positions_get(ticket=ticket)
+            if not still_open:
+                return {"ok": False, "error": "position_not_found",
+                        "detail": f"closed during modify; retcode={result.retcode}", "ticket": ticket}
             return {"ok": False, "error": "modify_rejected", "retcode": result.retcode,
                     "comment": result.comment}
 
@@ -1404,9 +1437,11 @@ def modify_position(ticket: int, sl: float, tp: float = None) -> Dict[str, Any]:
         return {
             "ok": bool(verified),
             "ticket": ticket,
+            "prior_sl": cur_sl,          # broker SL before this modify (protection-evidence)
             "requested_sl": req_sl,
             "verified_sl": verified_sl,
             "retcode": result.retcode,
+            "comment": getattr(result, "comment", ""),
             "error": None if verified else "sl_not_verified",
         }
 
