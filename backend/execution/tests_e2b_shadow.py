@@ -231,9 +231,9 @@ class ShadowPollGateTests(SimpleTestCase):
     That is structural: a shadow worker can never win a real order and route it
     to the live order_send path, and its poll rate is one claim/loop (well under
     the throttle). The normal worker (flag OFF, default) claims its executable
-    sequence (PLACE_TEST_ORDER → PLACE_ORDER → MODIFY_POSITION → default SYNC;
-    MODIFY_POSITION added by WS-B auto-breakeven, a risk-reducing SL move ranked
-    ahead of the default SYNC) and never claims a shadow job.
+    sequence (PLACE_TEST_ORDER → PLACE_ORDER → MODIFY_POSITION → CLOSE_TRADE →
+    default SYNC; the risk-reducing MODIFY_POSITION (WS-B breakeven) and CLOSE_TRADE
+    (WS-E provider commands) rank ahead of the default SYNC) and never claims a shadow job.
     """
 
     def setUp(self):
@@ -262,7 +262,7 @@ class ShadowPollGateTests(SimpleTestCase):
         # no shadow claim.
         job, calls = self._run_claim(shadow_enabled=False)
         self.assertIsNone(job)
-        self.assertEqual(calls, ["PLACE_TEST_ORDER", "PLACE_ORDER", "MODIFY_POSITION", None])
+        self.assertEqual(calls, ["PLACE_TEST_ORDER", "PLACE_ORDER", "MODIFY_POSITION", "CLOSE_TRADE", None])
         self.assertNotIn("PLACE_ORDER_SHADOW", calls)
 
     def test_normal_mode_short_circuits(self):

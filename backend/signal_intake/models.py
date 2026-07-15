@@ -281,6 +281,56 @@ class SignalUpdate(models.Model):
         return f"{self.kind} {self.provider_id}:{self.message_id}"
 
 
+class ProviderCommand(models.Model):
+    """WS-E: a recorded provider FOLLOW-UP trade-management command (move-SL / close / cancel),
+    classified from a reply/update message. RECORDING is always-on and side-effect-free; ACTING on
+    it is gated (PROVIDER_COMMANDS_ENABLED + the source's ``command_engine_enabled``) and performed
+    by a separate backend sweep. Idempotent by ``(provider, message_id)``. The row + its ``result``
+    JSON ARE the durable audit (raw text, parsed command, matched plan, legs, jobs, broker result,
+    final status, rejection) required by E8."""
+
+    class Type(models.TextChoices):
+        MOVE_SL_BE = "MOVE_SL_BE", "Move SL to breakeven"
+        MOVE_SL_PRICE = "MOVE_SL_PRICE", "Move SL to price"
+        CLOSE_ALL = "CLOSE_ALL", "Close all remaining"
+        CLOSE_LEG = "CLOSE_LEG", "Close one leg"
+        CANCEL = "CANCEL", "Cancel pending signal"
+        NON_ACTIONABLE = "NON_ACTIONABLE", "Non-actionable update"
+        AMBIGUOUS = "AMBIGUOUS", "Ambiguous"
+        UNKNOWN = "UNKNOWN", "Unknown / unclassified"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending (awaiting the gated engine)"
+        APPLIED = "APPLIED", "Applied"
+        REJECTED = "REJECTED", "Rejected"
+        AMBIGUOUS = "AMBIGUOUS", "Ambiguous (no unique target plan)"
+        HELD = "HELD", "Held"
+        SKIPPED = "SKIPPED", "Skipped (non-actionable / unknown)"
+
+    provider = models.ForeignKey(SignalProvider, on_delete=models.PROTECT, related_name="commands")
+    chat_id = models.CharField(max_length=64, blank=True)
+    message_id = models.CharField(max_length=64)
+    reply_to_message_id = models.CharField(max_length=64, blank=True)
+    command_type = models.CharField(max_length=20, choices=Type.choices, default=Type.UNKNOWN)
+    args = models.JSONField(default=dict, blank=True)
+    raw_text = models.TextField(blank=True)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    processed = models.BooleanField(default=False)
+    result = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-created_at", "id")
+        constraints = [
+            models.UniqueConstraint(fields=["provider", "message_id"], name="uniq_provider_command"),
+        ]
+        indexes = [models.Index(fields=["status", "processed"])]
+
+    def __str__(self) -> str:
+        return f"ProviderCommand({self.command_type} {self.status} msg={self.message_id})"
+
+
 class MessageAmendment(models.Model):
     """WAYOND-EDIT-DIFF: an immutable ledger of an EDIT to an already-acquired message.
 

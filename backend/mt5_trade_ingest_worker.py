@@ -193,6 +193,29 @@ def agent_modify(payload: dict) -> dict:
         return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
 
 
+def agent_close(payload: dict) -> dict:
+    """WS-E: POST /mt5/close-position on the bridge — close an OPEN position by ticket. Risk-reducing
+    (flattens a position); demo-only enforced bridge-side."""
+    url = f"{AGENT_ORDER_BASE}/mt5/close-position"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"X-GuvFX-Agent-Token": AGENT_TOKEN, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read().decode("utf-8", "ignore")
+            return json.loads(raw) if raw else {"ok": False, "error": "empty_response"}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")[:500]
+        try:
+            return json.loads(body)
+        except Exception:
+            return {"ok": False, "error": f"http_{e.code}", "detail": body}
+    except Exception as e:
+        return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
+
+
 def handle_shadow_job(job: dict) -> dict:
     """EXEC-E2b: process a PLACE_ORDER_SHADOW job — validate only, place no order.
 
@@ -647,6 +670,8 @@ def claim_worker_job():
         # WS-B AUTO-BREAKEVEN — risk-reducing SL moves rank ahead of the default SYNC so a
         # remaining leg is protected promptly once TP1 closes; still below new order placement.
         or claim_next_job("MODIFY_POSITION")
+        # WS-E: provider close commands — risk-reducing (flattens), ranked with the SL move.
+        or claim_next_job("CLOSE_TRADE")
         or claim_next_job()
     )
 
@@ -790,9 +815,34 @@ def main():
                     complete_job(job_id, "FAILED", modify_result, f"Modify failed: {err}")
                 continue
 
+            if jt == "CLOSE_TRADE":
+                # WS-E: close an OPEN position by ticket (provider close/cancel command). Risk-reducing
+                # (flattens exposure); demo-only enforced bridge-side. Idempotent: closing an already-
+                # closed position returns position_not_found, which we treat as done (no-op).
+                windows_username = payload.get("windows_username")
+                ticket = payload.get("ticket")
+                if not all([windows_username, ticket]):
+                    complete_job(job_id, "FAILED", {"ok": False, "reason": "missing_payload_fields"},
+                                 "CLOSE_TRADE requires windows_username, ticket")
+                    continue
+                print(f"[CLOSE] CLOSE_TRADE job_id={job_id}: ticket={ticket}")
+                close_result = agent_close({"username": windows_username, "ticket": ticket})
+                if close_result.get("ok"):
+                    print(f"[CLOSE] SUCCESS job_id={job_id}: ticket={ticket} close_price={close_result.get('close_price')}")
+                    complete_job(job_id, "SUCCESS", close_result, "")
+                elif close_result.get("error") == "position_not_found":
+                    # Already closed (e.g. TP/SL hit first, or a duplicate command) → idempotent success.
+                    print(f"[CLOSE] job_id={job_id}: ticket={ticket} already closed (idempotent)")
+                    complete_job(job_id, "SUCCESS", {"ok": True, "already_closed": True, **close_result}, "")
+                else:
+                    err = close_result.get("error", "unknown_error")
+                    print(f"[CLOSE] FAILED job_id={job_id}: {err} {close_result.get('detail', '')}")
+                    complete_job(job_id, "FAILED", close_result, f"Close failed: {err}")
+                continue
+
             if jt != "SYNC_POSITIONS":
                 complete_job(job_id, "FAILED", {"ok": False, "reason": "unsupported_job_type", "job_type": jt},
-                             "Worker supports SYNC_POSITIONS, PLACE_TEST_ORDER, PLACE_ORDER, and MODIFY_POSITION")
+                             "Worker supports SYNC_POSITIONS, PLACE_TEST_ORDER, PLACE_ORDER, MODIFY_POSITION, and CLOSE_TRADE")
                 continue
 
             # MVP: require windows_username in payload. (We can later fetch from MT5 instance.)
