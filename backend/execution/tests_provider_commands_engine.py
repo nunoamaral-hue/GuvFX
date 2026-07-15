@@ -202,6 +202,36 @@ class ExecutorTests(EngineBase):
         self.assertEqual(cmd.status, ProviderCommand.Status.PENDING)   # re-processable
         self.assertFalse(ExecutionJob.objects.filter(job_type="CLOSE_TRADE").exists())
 
+    def test_close_all_defers_on_raced_worker_claim(self):
+        # All fills resolved at the top check, but a PENDING order is claimed (→RUNNING) DURING
+        # processing → the post-enqueue re-check must DEFER so the raced position isn't left open.
+        p = self._plan()
+        leg2 = p.legs.get(leg_index=2)
+
+        def race(_plan):
+            leg2.execution_job.status = "RUNNING"
+            leg2.execution_job.save(update_fields=["status"])
+            Trade.objects.filter(account=self.acct, comment=f"WAY{p.id}L2").delete()  # not yet ingested
+            return []
+        self._cmd(self.ti, "CLOSE_ALL", p.message_id)
+        with _enabled(), mock.patch.object(engine, "_cancel_pending_order_jobs", side_effect=race):
+            res = engine.apply_provider_commands()
+        self.assertEqual(res["deferred"], 1)
+
+    def test_close_dedup_is_account_scoped(self):
+        # A CLOSE for the SAME ticket on a DIFFERENT account must not suppress this account's close.
+        p = self._plan()
+        other = TradingAccount.objects.create(
+            user=self.user, name="Other", account_number="PE2", is_demo=True)
+        t1 = Trade.objects.get(account=self.acct, comment=f"WAY{p.id}L1")
+        ExecutionJob.objects.create(job_type="CLOSE_TRADE", account=other, status="PENDING",
+                                    payload={"ticket": t1.ticket})  # same ticket, other account
+        self._cmd(self.ti, "CLOSE_LEG", p.message_id, args={"leg_index": 1})
+        with _enabled():
+            engine.apply_provider_commands()
+        self.assertTrue(ExecutionJob.objects.filter(
+            job_type="CLOSE_TRADE", account=self.acct, payload__ticket=t1.ticket).exists())
+
     def test_stale_command_expired_not_acted(self):
         p = self._plan()
         cmd = self._cmd(self.ti, "CLOSE_ALL", p.message_id)
