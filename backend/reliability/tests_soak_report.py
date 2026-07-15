@@ -45,7 +45,7 @@ class SoakReportTests(TestCase):
         self.assertEqual(ti["signals_received"], 1)
         self.assertEqual(ti["plans_promoted"], 1)   # CLOSED counts as promoted-through
         self.assertEqual(ti["wins"], 1)
-        self.assertEqual(ti["realised_pnl"], "20")
+        self.assertEqual(Decimal(ti["realised_pnl"]), Decimal("20"))
         # each source has its own row — never one combined total
         for r in snap["by_source"]:
             for f in ("wins", "losses", "realised_pnl", "breakeven_modifications", "provider_commands"):
