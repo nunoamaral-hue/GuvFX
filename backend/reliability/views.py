@@ -82,8 +82,8 @@ class AlertListView(APIView):
 
 
 class AlertAcknowledgeView(APIView):
-    """POST /api/reliability/alerts/<id>/acknowledge/"""
-    permission_classes = [IsAuthenticated]
+    """POST /api/reliability/alerts/<id>/acknowledge/ — staff-only (D5 hardening)."""
+    permission_classes = [IsAdminUser]
 
     def post(self, request, pk):
         try:
@@ -97,6 +97,48 @@ class AlertAcknowledgeView(APIView):
         alert.acknowledged_by = request.user if request.user.is_authenticated else None
         alert.save(update_fields=["status", "acknowledged_at", "acknowledged_by"])
         return Response(AlertEventSerializer(alert).data)
+
+
+class AssignmentSetActiveView(APIView):
+    """D4 — the ONLY execution-adjacent staff action on the ops page: pause / re-enable an
+    already-armed SOURCE-BOUND strategy assignment. POST body ``{"active": bool}``.
+
+    Deliberately narrow + safe by construction: it flips ONLY ``StrategyAssignment.is_active`` and
+    NOTHING else — never ``execution_mode``, never ``SignalSourceConfig`` lots, never
+    ``ExecutionControl.auto_execution_enabled`` / ``signal_execution_mode`` / the kill switch. It
+    therefore cannot place an order, resize, or change the global arming — pausing a source just
+    removes it from routing (matches "disarm = pause the assignment"). Only assignments with a
+    non-empty ``signal_source`` are togglable (so you cannot touch a non-source strategy). Audited.
+    Enabling (active=True) is the Amber direction — it re-includes a source in routing."""
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, pk):
+        from strategies.models import StrategyAssignment
+        active = request.data.get("active")
+        if not isinstance(active, bool):
+            return Response({"detail": "body must include boolean 'active'"},
+                            status=http.HTTP_400_BAD_REQUEST)
+        try:
+            asn = StrategyAssignment.objects.select_related("account").get(pk=pk)
+        except StrategyAssignment.DoesNotExist:
+            return Response({"detail": "not_found"}, status=http.HTTP_404_NOT_FOUND)
+        if not getattr(asn, "signal_source", ""):
+            return Response({"detail": "not a source-bound assignment"},
+                            status=http.HTTP_400_BAD_REQUEST)
+        # Mirror model.clean(): never activate an assignment on an inactive account.
+        if active and asn.account and not getattr(asn.account, "is_active", True):
+            return Response({"detail": "cannot enable on an inactive account"},
+                            status=http.HTTP_409_CONFLICT)
+        asn.is_active = active
+        asn.save(update_fields=["is_active"])
+        try:
+            from core.audit import log_event
+            log_event(request=request, event_type="ASSIGNMENT_SET_ACTIVE", severity="INFO",
+                      entity_type="strategy_assignment", entity_id=str(asn.id),
+                      metadata={"active": active, "signal_source": asn.signal_source})
+        except Exception:
+            pass
+        return Response({"id": asn.id, "signal_source": asn.signal_source, "is_active": asn.is_active})
 
 
 class RecommendationListView(APIView):
