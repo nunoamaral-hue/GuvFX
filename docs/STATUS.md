@@ -6,6 +6,28 @@
 
 ## Execution workstream log
 
+- **2026-07-16 — GFX-PKT-POST-INCIDENT-EXECUTION-AND-NOTIFICATION-STABILISATION: DONE + DEPLOYED (PR #136). 🟢**
+  Fresh evidence-led investigation of TI non-executions AFTER the listener-parity fix (packet warned
+  not to assume that incident explained any later failure). **Findings (both pre-migration, unrelated
+  to protection_stage):** plan 19 (msg 29) = a **legitimate** `account_exposure_exceeded` promotion
+  rejection, durably recorded (exposure calc verified correct — excludes closed trades, a new signal
+  is allowed); plan 22 leg 3 (msg 32) = PLACE_ORDER job #118 stuck `RUNNING` ~8h while **all three
+  orders had actually landed** (tickets 224366/367/368) — a bookkeeping orphan that `execution_health`
+  neither reclaimed nor alerted (it handled only SYNC/MODIFY, and alerted only PENDING). **Fix:**
+  `reconcile_orphaned_place_orders` — a place-order is NOT idempotent (re-run = duplicate), so it is
+  **never re-enqueued**; a lease-expired RUNNING place-order is reconciled against the broker (leg
+  Trade exists → mark SUCCESS with the ticket; else deduped WARN, operator-only), with an independent
+  resolve pass keyed on the **broker trade** (a FAILED/missing order keeps the alert open).
+  operations_summary gains an `execution_jobs.place_order` block + folds `PROMOTION_REJECTED` reasons
+  into per-source rejection_reasons. **Verified in prod:** job #118 auto-reconciled to SUCCESS/ticket
+  224368 (`po_reconciled=1`); `silent_loss_total=0`; armed state intact (AUTO/DEMO/kill=False, ti
+  0.40×3 cap0 incremental=True, **Wayond unchanged**, BREAKEVEN=1, provider engine disabled);
+  notifications exactly-once (14 WIN=14 SENT=14 transmitted, real transport); IS6FX label correct;
+  all containers restart=unless-stopped; **no signal replay**. Also fixed the hourly **soak cron**
+  (its log dir was root-owned so the ubuntu cron's redirect failed → no snapshots); 24h soak: TI 12
+  signals/1 exposure-rejected/10 promoted/W-L-BE 14-15-1/PnL +313.48/14 cards.
+
+
 - **2026-07-15 — GFX-PKT-TI-SIGNALS-NON-EXECUTION-INCIDENT: root-caused, fixed, DEPLOYED. 🟢**
   Two valid XAUUSD BUY TI signals (approval #45 msg 35 @19:03, #46 msg 36 @20:03 UTC) were acquired,
   parsed, and APPROVED but created **no plan/job/order** — lost silently. **Root cause = deployment/

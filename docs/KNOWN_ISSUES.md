@@ -2,6 +2,32 @@
 
 List active problems with reproduction steps and workarounds.
 
+## TP incremental protection — armed but broker evidence still EVIDENCE-PENDING (2026-07-16)
+
+- The ladder (`INITIAL→BREAKEVEN→TP2_LOCKED`) is DEPLOYED + ARMED for ti_signals (BREAKEVEN_ENABLED=1,
+  incremental_protection_enabled=True), Wayond unchanged. Only the 2 old MODIFY jobs exist (179/180
+  from plan #24); **no new eligible plan has closed TP1 since deploy**, so the two headline broker
+  proofs (TP1→remaining SL at entry; TP2→TP3 SL at the TP2 price) remain **EVIDENCE-PENDING**. Not
+  forced. Auto-captured on the first natural eligible close.
+
+## Orphaned RUNNING PLACE_ORDER is reconciled, not re-run (2026-07-16)
+
+- A worker recycle can strand a `PLACE_ORDER` job `RUNNING` with an expired lease. It is **never
+  re-enqueued** (a place-order is not idempotent — re-running risks a duplicate broker order).
+  `execution_health.reconcile_orphaned_place_orders` reconciles it against the broker: leg Trade
+  exists → mark the job SUCCESS with the ticket; no trade → a deduped WARN `orphaned_place_order:job:{id}`
+  for an operator (verify on the broker and place manually if genuinely absent). Surfaced on
+  `/operations` as `execution_jobs.place_order.orphaned_running`.
+
+## Soak-cron log directory is root-owned (2026-07-16, worked around)
+
+- `/var/log/guvfx` is `root:root 755`, so the ubuntu-user hourly crons can only append to
+  **pre-created** ubuntu-owned log files, not create new ones. The soak cron silently produced no
+  snapshots for hours because `soak_report.log` did not exist (its `>>` redirect failed before the
+  command ran). Worked around by pre-creating the file (`sudo touch + chown ubuntu:ubuntu`). Any NEW
+  cron that writes a new log file under `/var/log/guvfx` must have its log pre-created the same way
+  (or the dir made group-writable).
+
 ## Deploy parity: rebuild the wayond-listener on planning/model/migration changes (2026-07-15)
 
 - The **`guvfx-wayond-listener`** is a SEPARATE container/image (backend image **+ telethon**, built via
