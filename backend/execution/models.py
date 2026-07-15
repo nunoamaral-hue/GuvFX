@@ -124,7 +124,7 @@ LOT_STEP = "0.01"  # Broker minimum lot increment used by the volume split.
 MAX_TOTAL_LOT_PER_SIGNAL = "0.06"  # Hard cap on the summed lot across a plan's legs.
 DEMO_SOURCE_TOTAL_LOT_DEFAULT = "0.03"  # Default per-source total lot target.
 SIGNAL_MAX_AGE_SECONDS = 120  # A signal older than this is voided (stale).
-PLAN_MAX_GROUPS_PER_DAY = 10  # Max signal-GROUPS (plans) per account+symbol per day.
+PLAN_MAX_GROUPS_PER_DAY = int(os.getenv("PLAN_MAX_GROUPS_PER_DAY", "24"))  # Max signal-GROUPS (plans) per account+symbol+SOURCE per calendar day (env-tunable). Per-SOURCE: each provider (e.g. wayond, ti_signals) has its own independent daily budget — one source can never consume another's allowance. Counts acted-on groups (PLANNED/PROMOTED/CLOSED), not just the momentary PLANNED backlog — see count_today.
 PLAN_MAX_CONCURRENT_GROUPS = int(os.getenv("PLAN_MAX_CONCURRENT_GROUPS", "10"))  # Max concurrent ACTIVE groups (PLANNED/PROMOTED) per account+symbol (env-tunable). A plan leaves the active set when CLOSED (all its positions resolved) — see resolve_completed_plans.
 
 
@@ -733,11 +733,22 @@ class SignalExecutionPlan(models.Model):
         )
 
     @classmethod
-    def count_today(cls, account_id: int, symbol: str) -> int:
-        """PLANNED groups created today for account+symbol (per-group daily cap)."""
+    def count_today(cls, account_id: int, symbol: str, source: str) -> int:
+        """Groups ACTED ON today for account+symbol+SOURCE (per-source daily cap).
+
+        Counts every plan created today (this account+symbol) for ``source`` that
+        consumed an execution slot — ``PLANNED`` (in flight), ``PROMOTED`` (executing)
+        and ``CLOSED`` (resolved) — so the cap bounds true daily volume, not just the
+        momentary PLANNED backlog (which quickly promotes/closes and would otherwise
+        make the cap a no-op). ``VOIDED``/``HELD``/``SUPERSEDED`` plans (rejected, held,
+        or replaced — no order acted on) do NOT count. Scoped by ``source`` so each
+        provider has an independent budget: reaching one source's daily cap never blocks
+        another source (per-source isolation).
+        """
         today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         return cls.objects.filter(
-            account_id=account_id, symbol=symbol, status=cls.Status.PLANNED,
+            account_id=account_id, symbol=symbol, source=source,
+            status__in=(cls.Status.PLANNED, cls.Status.PROMOTED, cls.Status.CLOSED),
             created_at__gte=today_start,
         ).count()
 

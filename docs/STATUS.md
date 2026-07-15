@@ -6,6 +6,27 @@
 
 ## Execution workstream log
 
+- **2026-07-15 — CI reconciled truthful-green + DAILY GROUP CAP now PER-SOURCE (24/day). 🟢**
+  **CI finding (evidence-first):** the packet's premise of "58 red backend CI failures" did **not** reproduce — CI
+  runs the full suite (`python manage.py test`) and it is **green** on PR #112's HEAD (`Ran 626 tests … OK`,
+  run 29399551558). The 58 failures I had measured were an **environment artifact** of running the suite inside the
+  **prod backend container**: prod sets `SECURE_SSL_REDIRECT=True` (301s every Django test-client request → all
+  view/API tests fail assertions — the exact reason `ci.yml` sets `DJANGO_SSL_REDIRECT=False`) and carries live
+  bridge/agent env vars (symbol/order tests reach real services → ERROR). **Classification: 0 genuinely broken,
+  0 obsolete** — every one is env-induced and passes clean in CI. **No CI restructuring performed** (adding
+  integration markers / moving tests would be an unrequested refactor of an already-green suite). **PR #112 merged**
+  → main `d570d40`; prod==git verified (5 runtime files + running container sha256-match PR HEAD; Windows bridge
+  functionally identical — only comment-encoding cosmetic drift).
+  **Daily-cap change (this PR):** `PLAN_MAX_GROUPS_PER_DAY` was `10` and account+symbol-wide **and** counted only
+  currently-`PLANNED` plans (which promote/close within seconds → the cap was effectively a no-op and both providers
+  shared one budget). Now **env-tunable default 24, per-account+symbol+SOURCE**, counting **acted-on** groups
+  (PLANNED/PROMOTED/CLOSED; VOIDED/HELD/SUPERSEDED excluded) across the calendar day. Each provider (`wayond`,
+  `ti_signals`) gets an independent 24/day budget — one source can never consume another's. **Unchanged:**
+  concurrency cap 10 groups (per account+symbol, across sources), 20 open positions, 20 positions/symbol, 0.50 lot
+  exposure, lot sizing, mandatory SL/TP, expiry/duplicate/broker-symbol gates. **+7 tests** (per-source isolation,
+  acceptance up to cap, fail-closed past cap counting acted-on groups, concurrency enforced independently, other
+  risk caps unchanged, calendar-rollover reset, both sources live + no open position altered). No migration (pure
+  constant + classmethod). Branch `fix/daily-cap-per-source`. E3 live (real-money) still RED.
 - **2026-07-15 — CLOSE-PRICE → OUTCOME → TELEGRAM CARD pipeline REPAIRED + overlap fixes productionised (PR #112). 🟢**
   The ingest worker built one Trade per raw MT5 *deal*, reading `open_price`/`close_price` (fields a deal lacks) →
   every Trade had `open_price=0, close_price=None` → `TradeResultProducer` skipped them → zero outcomes / candidates

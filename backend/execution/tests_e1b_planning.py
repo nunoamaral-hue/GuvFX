@@ -36,6 +36,9 @@ from trading.models import TradingAccount
 
 User = get_user_model()
 SRC = PendingSignalApproval.Source.WAYOND_TELEGRAM
+# A second, distinct provider-slug source (mirrors prod's "wayond" vs "ti_signals")
+# used by the per-source daily-cap isolation tests.
+SRC_B = "ti_signals"
 
 
 def _approved(message_id, *, tps=("1.0900", "1.0950", "1.1000"), sl="1.0800",
@@ -222,15 +225,17 @@ class PlanBuilderTests(TestCase):
         self.assertEqual(ctx.exception.code, "concurrent_limit_exceeded")
 
     def test_daily_group_cap_blocks(self):
-        # Pre-seed the daily PLANNED-group budget for EURUSD via ORM.
-        for i in range(PLAN_MAX_GROUPS_PER_DAY):
+        # Deployed default raised to 24/source; pin to 3 to verify the gate cheaply.
+        # Pre-seed the daily group budget for EURUSD (same source) via ORM.
+        for i in range(3):
             SignalExecutionPlan.objects.create(
                 approval=_approved(f"d{i}"), account=self.demo, source=SRC,
                 message_id=f"d{i}", symbol="EURUSD", direction="BUY", is_demo=True,
                 status=SignalExecutionPlan.Status.PLANNED,
             )
-        with self.assertRaises(planning.PlanRejected) as ctx:
-            planning.plan_demo_execution(_approved("dN"), account=self.demo)
+        with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 3):
+            with self.assertRaises(planning.PlanRejected) as ctx:
+                planning.plan_demo_execution(_approved("dN"), account=self.demo)
         self.assertEqual(ctx.exception.code, "daily_limit_exceeded")
 
     # ----- audit ----------------------------------------------------------
@@ -248,6 +253,138 @@ class PlanBuilderTests(TestCase):
         with self.assertRaises(planning.PlanRejected):
             planning.plan_demo_execution(_approved("au2", symbol="BTCUSD"), account=self.demo)
         self.assertGreater(PlanAuditEvent.objects.count(), before)
+
+
+class DailyCapPerSourceTests(TestCase):
+    """The daily group cap (``PLAN_MAX_GROUPS_PER_DAY``) is per-SOURCE.
+
+    Each provider (e.g. wayond, ti_signals) gets an independent daily budget; the
+    counter counts acted-on groups (PLANNED/PROMOTED/CLOSED) across the whole day —
+    not just the momentary PLANNED backlog — resets at the calendar rollover, and
+    never disturbs the concurrency/exposure caps or any open position. No order is
+    ever placed by planning.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="dc", email="dc@example.invalid", password="x"
+        )
+        self.demo = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="DC1", is_demo=True
+        )
+        for src in (SRC, SRC_B):
+            SignalSourceConfig.objects.create(
+                source=src, auto_demo_execution_enabled=True,
+                total_lot_target=Decimal("0.03"),
+            )
+
+    def _approval(self, mid, *, source, symbol="EURUSD"):
+        return PendingSignalApproval.objects.create(
+            source=source, message_id=mid, symbol=symbol, direction="BUY",
+            entry="1.0850", stop_loss="1.0800", take_profit="1.0900",
+            take_profits=["1.0900", "1.0950", "1.1000"],
+            status=PendingSignalApproval.Status.APPROVED,
+        )
+
+    def _seed(self, n, *, source, symbol="EURUSD",
+              status=SignalExecutionPlan.Status.PLANNED, days_ago=0):
+        """Create n plans (each with its own approval) for (source, symbol) in
+        ``status``, optionally backdated ``days_ago`` calendar days."""
+        for i in range(n):
+            mid = f"{source}-{status}-{i}-{days_ago}"
+            plan = SignalExecutionPlan.objects.create(
+                approval=self._approval(mid, source=source, symbol=symbol),
+                account=self.demo, source=source, message_id=mid,
+                symbol=symbol, direction="BUY", is_demo=True, status=status,
+            )
+            if days_ago:
+                SignalExecutionPlan.objects.filter(pk=plan.pk).update(
+                    created_at=timezone.now() - timedelta(days=days_ago)
+                )
+
+    # 1 — per-source isolation: one source at its cap never blocks another.
+    def test_daily_cap_is_per_source_isolated(self):
+        with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 3):
+            self._seed(3, source=SRC)  # source A at its cap
+            with self.assertRaises(planning.PlanRejected) as ctx:
+                planning.plan_demo_execution(
+                    self._approval("a-over", source=SRC), account=self.demo)
+            self.assertEqual(ctx.exception.code, "daily_limit_exceeded")
+            # Source B is untouched by A's exhausted budget → still plans.
+            plan_b = planning.plan_demo_execution(
+                self._approval("b-ok", source=SRC_B), account=self.demo)
+            self.assertEqual(plan_b.status, SignalExecutionPlan.Status.PLANNED)
+            self.assertEqual(plan_b.source, SRC_B)
+
+    # 2 — acceptance up to the limit: the cap-th group of the day still plans.
+    def test_daily_cap_accepts_up_to_limit(self):
+        with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 4):
+            self._seed(3, source=SRC)  # 3 of 4 used
+            plan = planning.plan_demo_execution(
+                self._approval("fourth", source=SRC), account=self.demo)
+            self.assertEqual(plan.status, SignalExecutionPlan.Status.PLANNED)
+
+    # 3 — fail-closed past the cap, counting ACTED-ON groups (PROMOTED/CLOSED),
+    #     and excluding non-acted plans (VOIDED/HELD).
+    def test_daily_cap_rejects_past_limit_counting_acted_on_groups(self):
+        with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 3):
+            # Budget consumed by groups that already promoted/closed today (NOT
+            # currently PLANNED). The old PLANNED-only counter would see 0 and wrongly
+            # admit; the per-source acted-on counter blocks.
+            self._seed(2, source=SRC, status=SignalExecutionPlan.Status.PROMOTED)
+            self._seed(1, source=SRC, status=SignalExecutionPlan.Status.CLOSED)
+            # VOIDED/HELD do NOT consume budget (no order was acted on).
+            self._seed(3, source=SRC, status=SignalExecutionPlan.Status.VOIDED)
+            self._seed(3, source=SRC, status=SignalExecutionPlan.Status.HELD)
+            with self.assertRaises(planning.PlanRejected) as ctx:
+                planning.plan_demo_execution(
+                    self._approval("over", source=SRC), account=self.demo)
+            self.assertEqual(ctx.exception.code, "daily_limit_exceeded")
+
+    # 4 — the concurrency cap is still enforced independently of the daily cap.
+    def test_concurrent_group_cap_enforced_independently(self):
+        planning.plan_demo_execution(
+            self._approval("cc1", source=SRC), account=self.demo)  # 1 PLANNED
+        with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 10_000), \
+                mock.patch.object(planning, "PLAN_MAX_CONCURRENT_GROUPS", 1):
+            with self.assertRaises(planning.PlanRejected) as ctx:
+                planning.plan_demo_execution(
+                    self._approval("cc2", source=SRC), account=self.demo)
+        self.assertEqual(ctx.exception.code, "concurrent_limit_exceeded")
+
+    # 5 — the exposure / open-position / concurrency caps are unchanged by this
+    #     change (deployed overlap posture preserved).
+    def test_other_risk_caps_unchanged(self):
+        from execution import risk_controls
+        from execution import models as ex_models
+        self.assertEqual(risk_controls.MAX_ACCOUNT_EXPOSURE_LOT, Decimal("0.50"))
+        self.assertEqual(risk_controls.MAX_SYMBOL_EXPOSURE_LOT, Decimal("0.50"))
+        self.assertEqual(risk_controls.MAX_OPEN_POSITIONS_PER_ACCOUNT, 20)
+        self.assertEqual(ex_models.PLAN_MAX_CONCURRENT_GROUPS, 10)
+        self.assertEqual(ex_models.SIGNAL_MAX_CONCURRENT_POSITIONS, 20)
+
+    # 6 — the daily budget resets at the calendar rollover.
+    def test_daily_cap_resets_on_calendar_rollover(self):
+        with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 3):
+            self._seed(3, source=SRC, days_ago=1)  # yesterday's budget (backdated)
+            plan = planning.plan_demo_execution(
+                self._approval("today", source=SRC), account=self.demo)
+            self.assertEqual(plan.status, SignalExecutionPlan.Status.PLANNED)
+
+    # 7 — both sources stay live (each reaches its own cap), and planning never
+    #     creates or alters an open position (no Trade touched).
+    def test_both_sources_live_and_no_open_position_altered(self):
+        from trading.models import Trade
+        before = Trade.objects.count()
+        with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 2):
+            for src in (SRC, SRC_B):
+                self._seed(2, source=src)  # each source at its own cap
+                with self.assertRaises(planning.PlanRejected) as ctx:
+                    planning.plan_demo_execution(
+                        self._approval(f"{src}-over", source=src), account=self.demo)
+                self.assertEqual(ctx.exception.code, "daily_limit_exceeded")
+        # Planning (and its rejections) created/mutated NO Trade — open positions untouched.
+        self.assertEqual(Trade.objects.count(), before)
 
 
 class ManagementCommandTests(TestCase):
