@@ -516,12 +516,16 @@ class IntegrityMisclassificationTests(TestCase):
         plan = SignalExecutionPlan.objects.create(
             approval=a, account=self.demo, source=SRC, message_id="nx3", symbol="EURUSD",
             direction="BUY", is_demo=True, status=SignalExecutionPlan.Status.PLANNED)
+        # Supply every NOT-NULL column the un-rebuilt listener's model DID know about (it had
+        # breakeven_attempts/hold_reason from earlier migrations) but OMIT protection_stage — the one
+        # column its pre-0022 model lacked. Pre-0024 this raised NOT-NULL; post-0024 the DB default fills it.
         with connection.cursor() as c:
-            cols = "plan_id, leg_index, take_profit, stop_loss, lot_size, order_type, status, created_at"
+            cols = ("plan_id, leg_index, take_profit, stop_loss, lot_size, order_type, status, "
+                    "hold_reason, breakeven_attempts, created_at")
             c.execute(
                 f"INSERT INTO execution_proposedorderleg ({cols}) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
                 [plan.id, 1, "1.0900", "1.0800", "0.01", "MARKET",
-                 ProposedOrderLeg.Status.PROPOSED])
+                 ProposedOrderLeg.Status.PLANNED, "", 0])
         leg = ProposedOrderLeg.objects.get(plan=plan, leg_index=1)
         self.assertEqual(leg.protection_stage, "INITIAL")
