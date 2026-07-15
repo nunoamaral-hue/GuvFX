@@ -183,32 +183,47 @@ def detect_unplanned_tradeable_signals(now) -> dict:
     from signal_intake.models import PendingSignalApproval, SignalAuditEvent
     from execution.models import SignalExecutionPlan, SignalSourceConfig
     from reliability.models import AlertEvent
+    _DEFERRED = SignalAuditEvent.Event.AUTO_ROUTE_DEFERRED
     tradeable = set(SignalSourceConfig.objects.filter(auto_demo_execution_enabled=True)
                     .values_list("source", flat=True))
     if not tradeable:
         return {"unplanned_alerted": 0, "unplanned_resolved": 0}
     lookback = now - timedelta(seconds=UNPLANNED_SIGNAL_LOOKBACK_SECONDS)
     cutoff = now - timedelta(seconds=UNPLANNED_SIGNAL_ALERT_SECONDS)
-    # ``execution_plan`` is the OneToOne reverse relation (SignalExecutionPlan.approval).
-    cands = list(PendingSignalApproval.objects.filter(
+    # (a) ALERT — scan ONLY the tradeable APPROVED signals that have NO plan (``execution_plan`` is the
+    # OneToOne reverse relation), so a healthy backlog of planned signals never dilutes the cap and the
+    # OLDEST (most-overdue) unplanned signal is never dropped by it. This set is normally ~empty.
+    unplanned = PendingSignalApproval.objects.filter(
         source__in=tradeable, status=PendingSignalApproval.Status.APPROVED,
-        created_at__gte=lookback, created_at__lt=cutoff,
-    ).order_by("-id")[:500])
-    alerted = resolved = 0
-    for a in cands:
-        has_plan = SignalExecutionPlan.objects.filter(approval=a).exists()
-        has_reason = SignalAuditEvent.objects.filter(
-            approval=a, event=SignalAuditEvent.Event.AUTO_ROUTE_DEFERRED).exists()
+        created_at__gte=lookback, created_at__lt=cutoff, execution_plan__isnull=True,
+    ).order_by("id")[:500]
+    alerted = 0
+    for a in unplanned:
+        if SignalAuditEvent.objects.filter(approval=a, event=_DEFERRED).exists():
+            continue  # durably deferred → a real disposition exists, not a silent loss
         dedup_key = f"unplanned_tradeable_signal:approval:{a.id}"
-        if has_plan or has_reason:
-            resolved += AlertEvent.objects.filter(
-                dedup_key=dedup_key, status=AlertEvent.Status.OPEN).update(
-                status=AlertEvent.Status.RESOLVED, resolved_at=now)
+        if AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).exists():
             continue
-        existed = AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).exists()
         _alert_unplanned_signal(a, now)
-        if not existed:  # count only genuinely-new alerts
-            alerted += 1
+        alerted += 1
+    # (b) RESOLVE — auto-close any OPEN alert whose approval has since gained a plan or a durable
+    # reason. Bounded by the (tiny) number of open alerts, independent of the healthy-signal volume.
+    resolved = 0
+    for al in AlertEvent.objects.filter(
+            dedup_key__startswith="unplanned_tradeable_signal:approval:",
+            status=AlertEvent.Status.OPEN):
+        aid = (al.detail or {}).get("approval_id")
+        if aid is None:
+            continue
+        a = PendingSignalApproval.objects.filter(id=aid).first()
+        if a is None:
+            continue
+        if (SignalExecutionPlan.objects.filter(approval=a).exists()
+                or SignalAuditEvent.objects.filter(approval=a, event=_DEFERRED).exists()):
+            al.status = AlertEvent.Status.RESOLVED
+            al.resolved_at = now
+            al.save(update_fields=["status", "resolved_at"])
+            resolved += 1
     return {"unplanned_alerted": alerted, "unplanned_resolved": resolved}
 
 
@@ -218,11 +233,19 @@ def sweep_execution_health(*, limit: int = 500) -> dict:
     if not execution_health_enabled():
         return {"enabled": False}
     now = timezone.now()
-    unplanned = detect_unplanned_tradeable_signals(now)
-    return {
+    # Job reclamation first — it unsticks the pipeline and must never be blocked by a downstream
+    # alert-only check. The unplanned-signal detector runs LAST and fail-open (its failure degrades to
+    # zero counts, never to a skipped reclaim).
+    result = {
         "enabled": True,
         "reclaimed": reclaim_orphaned_sync_jobs(now),
         "reclaimed_modify": reclaim_orphaned_modify_jobs(now),
         "stuck_alerted": detect_stuck_pending_orders(now),
-        **unplanned,
+        "unplanned_alerted": 0,
+        "unplanned_resolved": 0,
     }
+    try:
+        result.update(detect_unplanned_tradeable_signals(now))
+    except Exception:  # pragma: no cover - defensive; alert-only must not break the sweep
+        logger.exception("execution_health: unplanned-signal detector failed")
+    return result

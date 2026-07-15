@@ -248,14 +248,16 @@ def _signal_disposition_block(now):
     by_source = {}
     silent_total = 0
     for src in tradeable:
-        appr = list(PendingSignalApproval.objects.filter(
-            source=src, status=PendingSignalApproval.Status.APPROVED, created_at__gte=since))
-        planned = deferred = silent = 0
+        base = PendingSignalApproval.objects.filter(
+            source=src, status=PendingSignalApproval.Status.APPROVED, created_at__gte=since)
+        total = base.count()
+        # ``execution_plan`` is the OneToOne reverse relation → count planned in ONE query, then only
+        # loop over the (normally ~empty) UNPLANNED set to classify deferred vs silent. No N+1 over
+        # the healthy backlog.
+        planned = base.filter(execution_plan__isnull=False).count()
+        deferred = silent = 0
         reasons = Counter()
-        for a in appr:
-            if SignalExecutionPlan.objects.filter(approval=a).exists():
-                planned += 1
-                continue
+        for a in base.filter(execution_plan__isnull=True):
             rev = (SignalAuditEvent.objects.filter(
                 approval=a, event=SignalAuditEvent.Event.AUTO_ROUTE_DEFERRED)
                 .order_by("-id").first())
@@ -265,7 +267,7 @@ def _signal_disposition_block(now):
             else:
                 silent += 1
         silent_total += silent
-        by_source[src] = {"approved_24h": len(appr), "planned": planned,
+        by_source[src] = {"approved_24h": total, "planned": planned,
                           "deferred": deferred, "unplanned_no_reason": silent,
                           "deferral_reasons": dict(reasons)}
     return {"window_hours": 24, "by_source": by_source, "silent_loss_total": silent_total}
