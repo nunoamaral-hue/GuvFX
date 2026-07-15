@@ -23,11 +23,14 @@ propagated into the shadow payload for it.)
 
 from __future__ import annotations
 
+import logging
 import os
 from decimal import Decimal
 
 from django.db.models import Sum
 from django.utils import timezone
+
+logger = logging.getLogger("guvfx.execution.risk_controls")
 
 from execution.models import (
     MAX_TOTAL_LOT_PER_SIGNAL,
@@ -53,15 +56,27 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-# Caps (env-overridable). Sized for the overlapping-signal posture: up to ~20 concurrent open
-# positions (RISK_MAX_OPEN_POSITIONS), i.e. ~7 three-leg signal groups, at 0.02 lot/leg = ~0.40
-# lot — so the exposure caps sit at 0.50 lot with headroom. Safe now that a plan's slot is freed
-# when its positions close (see close_monitor.resolve_completed_plans); exposure reflects only
-# genuinely-open positions + in-flight orders, no longer leaking closed plans.
-MAX_ACCOUNT_EXPOSURE_LOT = _dec_env("RISK_MAX_ACCOUNT_EXPOSURE_LOT", "0.50")
-MAX_SYMBOL_EXPOSURE_LOT = _dec_env("RISK_MAX_SYMBOL_EXPOSURE_LOT", "0.50")
+# Caps (env-overridable). Sized to admit ONE 1.20-lot ti_signals signal (3 × 0.40) plus one
+# concurrent overlap = 2.40 lot, bounded (NOT unlimited, NOT a blind 20×). These are the shared
+# account/symbol AGGREGATE ceilings; per-SOURCE SIZING is enforced upstream (SignalSourceConfig
+# caps → split/promotion/worker/bridge), so raising these to 2.40 does NOT enlarge wayond — its
+# per-leg cap stays 0.02, holding it to ~0.40 aggregate. The real margin protection at this size
+# is the FREE-MARGIN GUARD below (a lot cap cannot model price/leverage). Env-tunable.
+MAX_ACCOUNT_EXPOSURE_LOT = _dec_env("RISK_MAX_ACCOUNT_EXPOSURE_LOT", "2.40")
+MAX_SYMBOL_EXPOSURE_LOT = _dec_env("RISK_MAX_SYMBOL_EXPOSURE_LOT", "2.40")
 MAX_OPEN_POSITIONS_PER_ACCOUNT = _int_env("RISK_MAX_OPEN_POSITIONS", 20)
 MAX_DAILY_DRAWDOWN_ABS = _dec_env("RISK_MAX_DAILY_DRAWDOWN_ABS", "100.00")
+
+# Free-margin guard (env-tunable). Reject a promotion whose projected fill would push the account's
+# margin level below this floor. At 20× lot size margin burns 20× faster and a lot cap cannot model
+# price/leverage, so this live-account gate is the real safety net — and it is FAIL-CLOSED: for a
+# larger-than-default order it BLOCKS (margin_unverifiable) when margin cannot be verified, so a 20×
+# order is never placed unverified. It requires the promotion process (the listener) to reach the
+# bridge; deploy verifies that path. Runs only for orders above the 0.06 default total.
+MARGIN_LEVEL_FLOOR_PCT = _dec_env("RISK_MARGIN_LEVEL_FLOOR_PCT", "300")
+MARGIN_GUARD_ENABLED = os.getenv("RISK_MARGIN_GUARD_ENABLED", "true").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
 
 def _require_terminal_node() -> bool:
@@ -140,6 +155,92 @@ def _today_realized_pnl(account_id) -> Decimal:
 
 # --- control evaluators (return a block reason code, or None) ----------------
 
+def _margin_guard_reason(plan, legs, new_total) -> str | None:
+    """Free-margin guard: reject a promotion whose PROJECTED post-trade margin level would fall
+    below ``MARGIN_LEVEL_FLOOR_PCT``.
+
+    Uses the bridge ``order_check`` (which places NO order) for a single representative leg to read
+    live equity + per-leg margin, then extrapolates the projected margin level for the full plan's
+    volume — margin scales linearly with lots. Only runs for orders LARGER than the conservative
+    global default (a within-default 0.06 order never stresses a 50k demo — skipped, no network).
+
+    FAIL-CLOSED. For a larger (source-scoped) order this guard is the real safety net at 20× lot
+    size — a lot cap cannot model price/leverage. So if the projected margin CANNOT be verified for
+    such an order (bridge unreachable / token wrong / missing response fields / timeout), the
+    promotion is BLOCKED (``margin_unverifiable``): a 20× order is never placed unverified. Every
+    material decision (verified-OK / block / fail-closed) is logged so an inert or blocking guard is
+    observable (the pre-network skips — guard disabled, small order — return quietly). Returns a
+    block reason or ``None``."""
+    if not MARGIN_GUARD_ENABLED:
+        return None
+    # Small orders (<= the global default total) never threaten margin — skip the network call.
+    if new_total <= Decimal(str(MAX_TOTAL_LOT_PER_SIGNAL)):
+        return None
+    try:
+        import json as _json
+        import urllib.request as _rq
+
+        base = (os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL") or os.getenv("GUVFX_AGENT_URL")
+                or os.getenv("WINDOWS_AGENT_BASE") or "").rstrip("/")
+        token = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_WINDOWS_AGENT_TOKEN")
+                 or os.getenv("GUVFX_AGENT_TOKEN") or "").strip().strip('"')
+        if not base or not legs:
+            logger.warning("margin_guard: cannot verify (no bridge base / no legs) plan=%s total=%s"
+                           " -> FAIL-CLOSED", getattr(plan, "id", "?"), new_total)
+            return "margin_unverifiable"
+        acct = plan.account
+        uname = None
+        if getattr(acct, "mt5_instance_id", None):
+            uname = getattr(acct.mt5_instance, "windows_username", None)
+        leg_lot = float(legs[0].lot_size)
+        if leg_lot <= 0:
+            logger.warning("margin_guard: non-positive leg lot plan=%s -> FAIL-CLOSED",
+                           getattr(plan, "id", "?"))
+            return "margin_unverifiable"
+        body = {
+            "username": uname, "symbol": plan.symbol, "side": plan.direction,
+            "lots": leg_lot, "sl_price": plan.stop_loss, "tp_price": legs[0].take_profit,
+            "max_lot": leg_lot, "signal_source": plan.source,
+            "execution_mode": "SHADOW", "comment": f"WAY{plan.id}MG",
+        }
+        req = _rq.Request(
+            f"{base}/mt5/order_check", data=_json.dumps(body).encode("utf-8"), method="POST",
+            headers={"X-GuvFX-Agent-Token": token, "Content-Type": "application/json"},
+        )
+        # 30s to match the worker's order_check timeout — a cold MT5 init can exceed a short one.
+        with _rq.urlopen(req, timeout=30) as r:
+            resp = _json.loads((r.read() or b"{}").decode("utf-8") or "{}")
+        equity = resp.get("equity")
+        free_after = resp.get("free_margin")   # free margin AFTER the 1-leg check order
+        leg_margin = resp.get("margin")        # margin required for the 1-leg check order
+        if not equity or leg_margin is None or free_after is None or float(leg_margin) <= 0:
+            logger.warning("margin_guard: incomplete order_check response plan=%s resp_keys=%s"
+                           " -> FAIL-CLOSED", getattr(plan, "id", "?"), sorted(resp.keys()))
+            return "margin_unverifiable"
+        equity = float(equity)
+        margin_used_before = equity - float(free_after) - float(leg_margin)   # before the check leg
+        margin_per_lot = float(leg_margin) / leg_lot
+        projected_margin_used = margin_used_before + float(new_total) * margin_per_lot
+        if projected_margin_used <= 0:
+            logger.info("margin_guard: projected margin ~0 (no exposure) plan=%s -> OK",
+                        getattr(plan, "id", "?"))
+            return None
+        projected_level = equity / projected_margin_used * 100
+        if projected_level < float(MARGIN_LEVEL_FLOOR_PCT):
+            logger.warning("margin_guard: projected margin_level %.0f%% < floor %s%% plan=%s total=%s"
+                           " -> BLOCK", projected_level, MARGIN_LEVEL_FLOOR_PCT,
+                           getattr(plan, "id", "?"), new_total)
+            return "margin_level_too_low"
+        logger.info("margin_guard: projected margin_level %.0f%% >= floor plan=%s total=%s -> OK",
+                    projected_level, getattr(plan, "id", "?"), new_total)
+        return None
+    except Exception as exc:
+        # FAIL-CLOSED: a 20× order must never be placed when margin cannot be verified.
+        logger.warning("margin_guard: order_check failed (%s: %s) plan=%s -> FAIL-CLOSED",
+                       type(exc).__name__, str(exc)[:120], getattr(plan, "id", "?"))
+        return "margin_unverifiable"
+
+
 def evaluate_promotion_risk(plan, legs) -> str | None:
     """Run all promotion-time risk controls. Returns the first block reason code
     (a stable string) or ``None`` if all pass. FAIL-CLOSED: any error blocks."""
@@ -173,6 +274,13 @@ def evaluate_promotion_risk(plan, legs) -> str | None:
         # 4: daily drawdown guard
         if _today_realized_pnl(account_id) <= -MAX_DAILY_DRAWDOWN_ABS:
             return "daily_drawdown_hit"
+
+        # 5: free-margin guard (live projected margin level via bridge order_check; fail-open on
+        #    read error). The real margin safety net for larger source-scoped orders — a lot cap
+        #    cannot model price/leverage.
+        margin_reason = _margin_guard_reason(plan, legs, new_total)
+        if margin_reason:
+            return margin_reason
 
         # 6: concurrent-position enforcement (other active plans, same account+symbol)
         other_active = (

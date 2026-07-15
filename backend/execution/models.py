@@ -640,6 +640,16 @@ class SignalSourceConfig(models.Model):
     total_lot_target = models.DecimalField(
         max_digits=6, decimal_places=2, default=Decimal(DEMO_SOURCE_TOTAL_LOT_DEFAULT)
     )
+    # Per-SOURCE sizing ceilings. Defaults equal the global constants, so every existing
+    # source (e.g. wayond) is behaviour-preserving; only a source explicitly raised (e.g.
+    # ti_signals → 0.40/1.20) sizes larger. The planning split, promotion re-validation,
+    # worker and bridge all read these — a source can never exceed its own row, fail-closed.
+    max_lot_per_leg = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal(str(SIGNAL_MAX_LOT_SIZE))
+    )
+    max_total_lot = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal(MAX_TOTAL_LOT_PER_SIGNAL)
+    )
     notes = models.TextField(blank=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
@@ -654,6 +664,17 @@ class SignalSourceConfig(models.Model):
     def __str__(self) -> str:
         state = "ENABLED" if self.auto_demo_execution_enabled else "disabled"
         return f"SignalSourceConfig({self.source}: {state})"
+
+    @classmethod
+    def sizing_caps(cls, source: str):
+        """Return ``(max_lot_per_leg, max_total_lot)`` for ``source`` — its own config row,
+        else the global constants (FAIL-CLOSED: an unknown/unconfigured source gets the
+        conservative 0.02/0.06 defaults, never a larger size). Single source of truth for the
+        planning split and the promotion-time re-validation."""
+        cfg = cls.objects.filter(source=source).first()
+        if cfg is None:
+            return Decimal(str(SIGNAL_MAX_LOT_SIZE)), Decimal(MAX_TOTAL_LOT_PER_SIGNAL)
+        return cfg.max_lot_per_leg, cfg.max_total_lot
 
 
 class SignalExecutionPlan(models.Model):

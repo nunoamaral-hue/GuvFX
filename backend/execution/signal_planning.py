@@ -265,11 +265,16 @@ def plan_demo_execution(
         return _void(common, actor, "stale_signal", age_seconds=age)
 
     # 9. Deterministic split + volume allocation. Pass the raw total to
-    # split_volume, which normalises/validates it (invalid → clean HELD).
+    # split_volume, which normalises/validates it (invalid → clean HELD). The per-leg /
+    # per-signal ceilings are PER-SOURCE (cfg), so ti_signals can size 0.40/leg while
+    # wayond keeps the global 0.02/0.06 defaults — no global constant is touched.
     n = min(len(tps), MAX_PLAN_LEGS)
     configured_total = total_lot if total_lot is not None else cfg.total_lot_target
     try:
-        leg_lots, split_meta = split_volume(configured_total, n)
+        leg_lots, split_meta = split_volume(
+            configured_total, n,
+            max_per_leg=cfg.max_lot_per_leg, max_total=cfg.max_total_lot,
+        )
     except VolumeSplitError as exc:
         return _hold(common, actor, "volume_split_invalid", detail=exc.message)
 
