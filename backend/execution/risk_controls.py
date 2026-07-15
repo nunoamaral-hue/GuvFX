@@ -122,15 +122,29 @@ def _open_position_lots(account_id, symbol=None) -> Decimal:
 
 
 def _active_signal_lots(account_id, symbol=None, exclude_plan_id=None) -> Decimal:
-    """Sum of leg lots of in-flight signal exposure (legs of PROMOTED plans)."""
-    qs = ProposedOrderLeg.objects.filter(
+    """IN-FLIGHT signal exposure: leg lots of PROMOTED plans whose order is NOT YET reflected as an
+    open ``Trade``. A leg whose order has filled is already an open position counted by
+    ``_open_position_lots`` — counting it here too would DOUBLE-COUNT the same lots and falsely trip
+    the exposure gate the moment a second signal overlaps an open one (the first overlap blocked
+    every subsequent signal). We dedup by the leg's order comment ``WAY{plan}L{leg}``: a leg whose
+    comment matches an open trade is skipped (already counted as a position); only genuinely
+    in-flight legs (promoted, order placed, not yet ingested) are added here."""
+    legs = ProposedOrderLeg.objects.filter(
         plan__account_id=account_id, plan__status=SignalExecutionPlan.Status.PROMOTED
-    )
+    ).select_related("plan")
     if symbol:
-        qs = qs.filter(plan__symbol=symbol)
+        legs = legs.filter(plan__symbol=symbol)
     if exclude_plan_id is not None:
-        qs = qs.exclude(plan_id=exclude_plan_id)
-    return qs.aggregate(s=Sum("lot_size"))["s"] or Decimal("0")
+        legs = legs.exclude(plan_id=exclude_plan_id)
+    open_qs = Trade.objects.filter(account_id=account_id, close_time__isnull=True).exclude(comment="")
+    if symbol:
+        open_qs = open_qs.filter(symbol=symbol)
+    open_comments = set(open_qs.values_list("comment", flat=True))
+    total = Decimal("0")
+    for leg in legs:
+        if f"WAY{leg.plan_id}L{leg.leg_index}" not in open_comments:  # not yet an open trade
+            total += leg.lot_size or Decimal("0")
+    return total
 
 
 def _open_positions_count(account_id) -> int:
