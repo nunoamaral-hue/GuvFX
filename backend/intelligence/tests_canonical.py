@@ -344,6 +344,61 @@ class ResolveLegEvidenceTests(CanonicalBase):
         self.assertEqual(resolve_leg_evidence("", None), {})
 
 
+class LegEvidenceCollisionAndProgressiveTests(CanonicalBase):
+    """A stale price-less deal row must not shadow the authoritative position row, and a card
+    shows only the legs closed at/before its OWN trade's close (honest progressive state, so a
+    retroactively-rendered recovered result never over-reports)."""
+
+    def _add_closed_leg(self, idx, tp, *, closed_at, close_price, profit, ticket):
+        job = ExecutionJob.objects.create(
+            job_type=ExecutionJob.JobType.PLACE_ORDER, account=self.acct,
+            status=ExecutionJob.Status.PENDING,
+            payload={"execution_mode": "DEMO", "comment": f"WAY{self.plan.id}L{idx}"},
+        )
+        ProposedOrderLeg.objects.create(
+            plan=self.plan, leg_index=idx, take_profit=tp, stop_loss="1.0800",
+            lot_size=Decimal("0.01"), status=ProposedOrderLeg.Status.PROMOTED, execution_job=job,
+        )
+        return Trade.objects.create(
+            account=self.acct, ticket=ticket, symbol="EURUSD", side="BUY", volume=Decimal("0.01"),
+            open_time=self.trade.open_time, open_price=Decimal("1.0850"),
+            close_time=closed_at, close_price=Decimal(close_price), profit=Decimal(profit),
+            comment=f"WAY{self.plan.id}L{idx}", correlation_id=self.CID,
+        )
+
+    def test_authoritative_row_wins_over_stale_priceless_duplicate(self):
+        from execution.notifications.contracts import resolve_leg_evidence
+        # Stale deal-keyed duplicate for leg 1: same comment, close_time set but NO close_price,
+        # profit 0 (exactly what the old deal-per-row worker produced).
+        Trade.objects.create(
+            account=self.acct, ticket="STALE1", symbol="EURUSD", side="BUY", volume=Decimal("0.01"),
+            open_time=self.trade.open_time, open_price=Decimal("0"),
+            close_time=self.trade.close_time, close_price=None, profit=Decimal("0"),
+            comment=f"WAY{self.plan.id}L1", correlation_id="",
+        )
+        leg1 = resolve_leg_evidence(self.CID, self.trade)["legs"][0]
+        self.assertEqual(leg1["status"], "CLOSED")
+        # Picks the authoritative position row (T1, exit 1.0900, +21) — NOT the price-less 0-profit row.
+        self.assertEqual(leg1["exit"], "1.0900")
+        self.assertEqual(leg1["profit"], "21.00")
+
+    def test_card_shows_only_legs_closed_by_its_own_close_time(self):
+        from execution.notifications.contracts import resolve_leg_evidence
+        later = self.trade.close_time + timedelta(minutes=5)
+        t2 = self._add_closed_leg(2, "1.0950", closed_at=later, close_price="1.0950",
+                                  profit="42", ticket="P2")
+        # A card triggered by leg 1 (closed earlier) must NOT yet count leg 2 as closed.
+        ev1 = resolve_leg_evidence(self.CID, self.trade)
+        self.assertEqual([lg["status"] for lg in ev1["legs"]], ["CLOSED", "OPEN"])
+        self.assertEqual(ev1["progress"]["closed"], 1)
+        self.assertFalse(ev1["progress"]["final"])
+        # The later card (triggered by leg 2) DOES show both closed (final).
+        ev2 = resolve_leg_evidence(self.CID, t2)
+        self.assertEqual([lg["status"] for lg in ev2["legs"]], ["CLOSED", "CLOSED"])
+        self.assertEqual(ev2["progress"]["closed"], 2)
+        self.assertTrue(ev2["progress"]["final"])
+
+
 class StakeholderCardTests(TestCase):
     """GFX-PKT-STAKEHOLDER-OUTPUT-VISUAL-UPGRADE — the redesigned result card + short caption."""
 

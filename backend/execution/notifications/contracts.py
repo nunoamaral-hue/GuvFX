@@ -146,13 +146,23 @@ def resolve_leg_evidence(correlation_id: str, current_trade=None) -> dict:
         tp = str(leg.take_profit or "")
         take_profits.append(tp)
         comment = f"WAY{plan.id}L{leg.leg_index}"
+        # Prefer the AUTHORITATIVE position row (one with a real close_price) over any
+        # stale deal-keyed row that shares this comment (a historical mis-ingested
+        # duplicate has close_price=None) — else the latest open row. Without this, a
+        # price-less duplicate can shadow the real fill and zero out the card's profit.
+        _legq = Trade.objects.filter(account=plan.account, comment=comment)
         trade = (
-            Trade.objects.filter(account=plan.account, comment=comment)
-            .order_by("-open_time")
-            .first()
+            _legq.filter(close_price__isnull=False).order_by("-close_time", "-open_time").first()
+            or _legq.order_by("-open_time").first()
         )
         vol = f"{leg.lot_size:.2f}" if leg.lot_size is not None else ""
-        if trade is not None and trade.close_time is not None:
+        # A leg counts CLOSED *for this card* only if it closed at/before the card's own
+        # trade closed. Live, later legs are not yet closed so this is a no-op; when a card
+        # is rendered retroactively (e.g. a recovered result) after later legs also closed,
+        # it still shows the honest progressive state at this leg's moment.
+        _cur_close = getattr(current_trade, "close_time", None)
+        if (trade is not None and trade.close_time is not None
+                and (_cur_close is None or trade.close_time <= _cur_close)):
             closed += 1
             status, exit_, profit = "CLOSED", str(trade.close_price or ""), _leg_net(trade)
             entry = str(trade.open_price or plan.entry or "")
