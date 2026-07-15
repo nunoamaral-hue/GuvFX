@@ -419,64 +419,120 @@ def _deal_time_to_utc(d: dict):
     return None
 
 
+# MT5 deal entry types (DEAL_ENTRY_*): IN opens a position, OUT/OUT_BY close it.
+_DEAL_ENTRY_IN, _DEAL_ENTRY_OUT, _DEAL_ENTRY_INOUT, _DEAL_ENTRY_OUT_BY = 0, 1, 2, 3
+
+
+def _deal_entry_type(d):
+    """Deal entry type as int (0=IN/open, 1=OUT/close, 2=INOUT, 3=OUT_BY), or None if absent."""
+    e = d.get("entry")
+    try:
+        return int(e) if e is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _fnum(x):
+    try:
+        return float(x) if x is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def build_positions_from_deals(deals: list[dict]) -> list[dict]:
+    """Group raw MT5 deals by ``position_id`` into one position record each, with AUTHORITATIVE
+    open/close prices taken from the entry (DEAL_ENTRY_IN) and exit (DEAL_ENTRY_OUT/OUT_BY)
+    deals — NEVER inferred from profit, target or market price.
+
+    A position is reported CLOSED only when its total OUT volume >= its total IN volume;
+    otherwise it is FAIL-CLOSED to OPEN (``close_time``/``close_price`` = None) so a partial or
+    one-sided fill never produces a premature outcome. Deals with no ``position_id`` (or a
+    position with no IN deal — e.g. a balance/credit record) cannot form a trade and are skipped.
+    One malformed position is skipped, never aborting the batch. Prices are volume-weighted across
+    multiple deals on the same side; commission/swap sum across all the position's deals."""
+    by_pos: dict[str, list] = {}
+    for d in deals:
+        pid = str(d.get("position_id") or "").strip()
+        if pid and pid != "0":
+            by_pos.setdefault(pid, []).append(d)
+    positions = []
+    for pid, dl in by_pos.items():
+        try:
+            ins = [d for d in dl if _deal_entry_type(d) == _DEAL_ENTRY_IN]
+            outs = [d for d in dl if _deal_entry_type(d) in (_DEAL_ENTRY_OUT, _DEAL_ENTRY_OUT_BY)]
+            if not ins:
+                continue  # no opening leg → not a tradeable position
+            in_vol = sum(_fnum(d.get("volume")) for d in ins) or _fnum(ins[0].get("volume"))
+            open_price = (sum(_fnum(d.get("price")) * _fnum(d.get("volume")) for d in ins) / in_vol) \
+                if in_vol else _fnum(ins[0].get("price"))
+            open_time = min((_deal_time_to_utc(d) for d in ins if _deal_time_to_utc(d)), default=None)
+            first_in = ins[0]
+            symbol = (first_in.get("symbol") or "").strip()
+            side = "BUY" if str(first_in.get("type")) == "0" else "SELL"
+            comment = str(first_in.get("comment") or "").strip()
+            m = first_in.get("magic") if first_in.get("magic") is not None else first_in.get("magic_number")
+            try:
+                magic = int(m) if m is not None else None
+            except (TypeError, ValueError):
+                magic = None
+            out_vol = sum(_fnum(d.get("volume")) for d in outs)
+            commission = to_dec(sum(_fnum(d.get("commission")) for d in dl))
+            swap = to_dec(sum(_fnum(d.get("swap")) for d in dl))
+            is_closed = bool(outs) and out_vol + 1e-9 >= in_vol  # fail-closed: partial => still open
+            if is_closed:
+                close_price = (sum(_fnum(d.get("price")) * _fnum(d.get("volume")) for d in outs) / out_vol) \
+                    if out_vol else _fnum(outs[-1].get("price"))
+                close_time = max((_deal_time_to_utc(d) for d in outs if _deal_time_to_utc(d)), default=None)
+                profit = to_dec(sum(_fnum(d.get("profit")) for d in outs))
+            else:
+                close_price, close_time = None, None
+                profit = to_dec(sum(_fnum(d.get("profit")) for d in dl))
+            positions.append({
+                "position_id": pid, "symbol": symbol, "side": side, "volume": to_dec(in_vol),
+                "open_time": open_time, "open_price": to_dec(round(open_price, 5)),
+                "close_time": close_time,
+                "close_price": (to_dec(round(close_price, 5)) if close_price is not None else None),
+                "profit": profit, "commission": commission, "swap": swap,
+                "comment": comment, "magic": magic,
+            })
+        except Exception as exc:  # one malformed position must not abort the batch
+            print(f"[SYNC] skipped malformed position_id={pid}: {exc!r}")
+            continue
+    return positions
+
+
 def upsert_trades(account: TradingAccount, deals: list[dict]):
+    """Build POSITIONS from raw deals (matched by position_id) and upsert one Trade per position,
+    keyed by the stable MT5 ``position_id``. Authoritative open/close price, profit, commission
+    and swap come from the position's own entry/exit deals. Idempotent + replay-safe: re-running
+    a sync fills close data once the exit deal appears and never overwrites a real close with None."""
     inserted = 0
     updated = 0
     skipped = 0
-
     cutover = account.ingest_cutover_time
 
-    for d in deals:
-        ticket = str(d.get("ticket") or d.get("position_ticket") or d.get("deal_id") or "").strip()
-        if not ticket:
-            continue
-
-        # Cutover check (deal.time is unix seconds)
-        deal_time_utc = _deal_time_to_utc(d)
-        if cutover and deal_time_utc and deal_time_utc < cutover:
+    for p in build_positions_from_deals(deals):
+        ot = p["open_time"] or p["close_time"]
+        if cutover and ot and ot < cutover:
             skipped += 1
             continue
-
-        symbol = (d.get("symbol") or "").strip()
-        side = (d.get("side") or d.get("type") or "").strip().upper() or "BUY"
-        vol = to_dec(d.get("volume") or d.get("lots") or "0")
-
-        open_time = to_dt(d.get("open_time_utc") or d.get("open_time") or d.get("t_open_utc"))
-        close_time = to_dt(d.get("close_time_utc") or d.get("close_time") or d.get("t_close_utc") or d.get("time_utc"))
-
-        open_price = to_dec(d.get("open_price") or "0")
-        close_price = d.get("close_price")
-        close_price = to_dec(close_price, "0") if close_price is not None else None
-
-        profit = to_dec(d.get("profit") or d.get("pnl") or "0")
-        commission = to_dec(d.get("commission") or "0")
-        swap = to_dec(d.get("swap") or "0")
-
-        magic = d.get("magic") if d.get("magic") is not None else d.get("magic_number")
-        try:
-            magic = int(magic) if magic is not None else None
-        except Exception:
-            magic = None
-
-        comment = str(d.get("comment") or "").strip()
-        source_stage = _worker_infer_source_stage(comment)
-
+        source_stage = _worker_infer_source_stage(p["comment"])
         obj, created = Trade.objects.get_or_create(
             account=account,
-            ticket=ticket,
+            ticket=p["position_id"],
             defaults={
-                "symbol": symbol,
-                "side": side if side in ("BUY","SELL") else "BUY",
-                "volume": vol,
-                "open_time": open_time or close_time,
-                "close_time": close_time,
-                "open_price": open_price,
-                "close_price": close_price,
-                "profit": profit,
-                "commission": commission,
-                "swap": swap,
-                "magic_number": magic,
-                "comment": comment,
+                "symbol": p["symbol"],
+                "side": p["side"] if p["side"] in ("BUY", "SELL") else "BUY",
+                "volume": p["volume"],
+                "open_time": p["open_time"] or p["close_time"],
+                "close_time": p["close_time"],
+                "open_price": p["open_price"],
+                "close_price": p["close_price"],
+                "profit": p["profit"],
+                "commission": p["commission"],
+                "swap": p["swap"],
+                "magic_number": p["magic"],
+                "comment": p["comment"],
                 "opened_by": "EA",
                 "source_stage": source_stage,
             },
@@ -485,26 +541,26 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
             inserted += 1
             continue
 
-        # Update mutable fields (idempotent)
+        # Idempotent update — fill/refresh mutable fields; never overwrite a value with None
+        # (so a re-sync that no longer sees the exit deal can't blank a real close).
         changed = False
         for field, val in [
-            ("close_time", close_time),
-            ("close_price", close_price),
-            ("profit", profit),
-            ("commission", commission),
-            ("swap", swap),
-            ("magic_number", magic),
-            ("comment", comment),
+            ("open_time", p["open_time"]),
+            ("open_price", p["open_price"]),
+            ("close_time", p["close_time"]),
+            ("close_price", p["close_price"]),
+            ("profit", p["profit"]),
+            ("commission", p["commission"]),
+            ("swap", p["swap"]),
+            ("magic_number", p["magic"]),
+            ("comment", p["comment"]),
         ]:
             if val is not None and getattr(obj, field) != val:
                 setattr(obj, field, val)
                 changed = True
-
-        # Update source_stage if UNKNOWN and we now have a valid one
         if obj.source_stage == "UNKNOWN" and source_stage != "UNKNOWN":
             obj.source_stage = source_stage
             changed = True
-
         if changed:
             obj.save()
             updated += 1
