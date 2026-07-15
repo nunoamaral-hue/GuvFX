@@ -6,7 +6,17 @@
 
 ## Execution workstream log
 
-- **2026-07-15 — GFX-PKT-INCREMENTAL-TP-PROTECTION-AND-BREAKEVEN-REPAIR (PR #131). 🟢**
+- **2026-07-15 — GFX-PKT-INCREMENTAL-TP-PROTECTION-AND-BREAKEVEN-REPAIR: DEPLOYED + ARMED (PR #131). 🟢**
+  **Deploy (WS-I):** backend image rebuilt (rollback tag `rollback-preIncrementalTP`), migs 0022/0023
+  applied, backend + trade-ingest-worker recreated, Windows bridge swapped + restarted (backup
+  `mt5_signal_bridge.preIncrementalTP.py`; new PID; dry-validated bogus-ticket
+  `/mt5/modify-position` → `position_not_found`). `incremental_protection_enabled=True` for
+  ti_signals, **Wayond unchanged (False)**. Post-deploy armed: AUTO=True, KILL=False,
+  BREAKEVEN_ENABLED=1; every-minute `run_monitor_chain` cron intact; steady-state `failures=none`.
+  **Incident confirmed from prod (WS-A):** plan #24 (ti_signals) jobs 179 (FAILED `position_not_found`
+  — the wasted MODIFY on the already-closed TP2 leg) + 180 (SUCCESS `verified_sl=4038.01` — TP3 SL at
+  entry/breakeven, with NO state-2 job) — exactly the missing TP2-lock the ladder now adds.
+  **WS-J evidence:** DEPLOYED AND ARMED — natural two-stage broker evidence PENDING (no forced trade).
   Root cause of the XAUUSD SELL "late breakeven" incident: NOT a detection delay — TP1 and TP2 closed
   14s apart inside one 60s monitor cycle, so the old sweep only ever applied state-1 (breakeven→entry);
   the real defects were (1) no state-2, so TP3 was left at breakeven instead of the TP2 price, and (2)
