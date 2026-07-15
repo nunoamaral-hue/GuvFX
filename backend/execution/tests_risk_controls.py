@@ -88,18 +88,25 @@ class PromotionRiskControlTests(TestCase):
         self.assertEqual(len(jobs), 2)
         self.assertTrue(all(j.job_type == ExecutionJob.JobType.PLACE_ORDER_SHADOW for j in jobs))
 
+    # The overlapping-signal posture raised the deployed caps (exposure 0.50 lot, 20 open
+    # positions, 10 concurrent groups). Each test below pins its cap to the original value so it
+    # still verifies the GATE LOGIC (that the control blocks at its cap), independent of the
+    # deployed default.
     def test_account_exposure_blocks(self):
         self._open_trade(symbol="GBPUSD", volume="0.10")  # account exposure at cap
-        self.assertEqual(self._reject_code(self._plan()), "account_exposure_exceeded")
+        with mock.patch.object(risk_controls, "MAX_ACCOUNT_EXPOSURE_LOT", Decimal("0.10")):
+            self.assertEqual(self._reject_code(self._plan()), "account_exposure_exceeded")
 
     def test_symbol_exposure_blocks(self):
         self._open_trade(symbol="EURUSD", volume="0.05")  # acct 0.05 ok, symbol 0.05+0.02>0.06
-        self.assertEqual(self._reject_code(self._plan()), "symbol_exposure_exceeded")
+        with mock.patch.object(risk_controls, "MAX_SYMBOL_EXPOSURE_LOT", Decimal("0.06")):
+            self.assertEqual(self._reject_code(self._plan()), "symbol_exposure_exceeded")
 
     def test_max_open_positions_blocks(self):
         for _ in range(3):
             self._open_trade(symbol="GBPUSD", volume="0.01")  # 3 open, low exposure
-        self.assertEqual(self._reject_code(self._plan()), "max_open_positions_reached")
+        with mock.patch.object(risk_controls, "MAX_OPEN_POSITIONS_PER_ACCOUNT", 3):
+            self.assertEqual(self._reject_code(self._plan()), "max_open_positions_reached")
 
     def test_daily_drawdown_blocks(self):
         self._open_trade(symbol="GBPUSD", volume="0.01", closed=True, profit="-150")
@@ -107,7 +114,8 @@ class PromotionRiskControlTests(TestCase):
 
     def test_concurrent_position_blocks(self):
         self._plan(status=SignalExecutionPlan.Status.PROMOTED, mid="other", lots=("0.01",))
-        self.assertEqual(self._reject_code(self._plan(mid="p2")), "concurrent_position_limit")
+        with mock.patch.object(risk_controls, "PLAN_MAX_CONCURRENT_GROUPS", 1):
+            self.assertEqual(self._reject_code(self._plan(mid="p2")), "concurrent_position_limit")
 
     def test_fail_closed_on_indeterminate_state(self):
         plan = self._plan()
