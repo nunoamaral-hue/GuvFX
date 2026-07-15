@@ -342,3 +342,27 @@ class BoundarySourceTests(TestCase):
             self.assertNotIn(token, names, f"auto_router must not reference {token!r} in code")
         # It reaches execution ONLY through the shadow-only promotion bridge.
         self.assertIn("promote_plan_to_shadow_jobs", names)
+
+
+class DurableRejectionTests(_ArmedBase):
+    """GFX-PKT-TI-SIGNALS-NON-EXECUTION-INCIDENT — a PlanRejected/PromotionRejected during routing
+    must ALWAYS leave a durable AUTO_ROUTE_DEFERRED reason. The incident lost two valid TI signals
+    because a plan_integrity_error (mis-labelled duplicate_plan) was only logged to stdout."""
+
+    def test_plan_rejection_records_durable_deferral(self):
+        from unittest import mock
+        from signal_intake.models import SignalAuditEvent
+        from execution.signal_planning import PlanRejected
+        approval = _pending_approval(self.provider, message_id="rej1")
+        acq = self._acq(approval)
+        with mock.patch("execution.auto_router.plan_demo_execution",
+                        side_effect=PlanRejected("plan_integrity_error", "not a duplicate")):
+            auto_router.route_acquired_signal(
+                provider=self.provider, acquired=acq, approval=approval, outcome=O.INTAKEN)
+        ev = SignalAuditEvent.objects.filter(
+            approval=approval, event=SignalAuditEvent.Event.AUTO_ROUTE_DEFERRED).first()
+        self.assertIsNotNone(ev, "a durable AUTO_ROUTE_DEFERRED must be written on rejection")
+        self.assertIn("plan_integrity_error", str(ev.detail))
+        # Fail-closed: no plan, no job resulted.
+        self.assertFalse(SignalExecutionPlan.objects.filter(approval=approval).exists())
+        self.assertEqual(ExecutionJob.objects.count(), 0)

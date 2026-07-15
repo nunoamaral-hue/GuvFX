@@ -17,6 +17,7 @@ from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import CommandError, call_command
+from django.db import IntegrityError, connection
 from django.test import TestCase
 from django.utils import timezone
 
@@ -460,3 +461,71 @@ class NoOrderStaticGuardTests(TestCase):
         # The plan/leg models are distinct from ExecutionJob.
         self.assertFalse(issubclass(SignalExecutionPlan, ExecutionJob))
         self.assertFalse(issubclass(ProposedOrderLeg, ExecutionJob))
+
+
+class IntegrityMisclassificationTests(TestCase):
+    """GFX-PKT-TI-SIGNALS-NON-EXECUTION-INCIDENT — a leg-INSERT integrity error (e.g. a NOT-NULL
+    column a legacy/parallel writer omits) must NEVER be reported as ``duplicate_plan`` and must
+    leave no plan behind. This reproduces the exact incident: two valid TI signals were lost because
+    a ``protection_stage`` NOT-NULL violation from an un-rebuilt listener was mis-labelled a duplicate.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="nx", email="nx@x.invalid", password="x")
+        self.demo = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="NX1", is_demo=True)
+        SignalSourceConfig.objects.create(
+            source=SRC, auto_demo_execution_enabled=True, total_lot_target=Decimal("0.03"))
+
+    def test_leg_integrity_error_is_plan_integrity_error_not_duplicate(self):
+        a = _approved("nx1")
+        with mock.patch("execution.signal_planning.ProposedOrderLeg.objects.create",
+                        side_effect=IntegrityError('null value in column "protection_stage"')):
+            with self.assertRaises(planning.PlanRejected) as ctx:
+                planning.plan_demo_execution(a, account=self.demo, actor=self.user)
+        self.assertEqual(ctx.exception.code, "plan_integrity_error")
+        self.assertNotEqual(ctx.exception.code, "duplicate_plan")
+        # The whole plan+legs transaction rolled back → fail-closed, no plan persisted.
+        self.assertFalse(SignalExecutionPlan.objects.filter(approval=a).exists())
+
+    def test_genuine_duplicate_race_still_returns_existing_plan(self):
+        # A real OneToOne(approval) race must STILL be idempotent (return the existing plan), never
+        # be reclassified as an error — the misclassification fix must not break benign dedup.
+        a = _approved("nx2")
+        first = planning.plan_demo_execution(a, account=self.demo, actor=self.user)
+        second = planning.plan_demo_execution(a, account=self.demo, actor=self.user)
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(SignalExecutionPlan.objects.filter(approval=a).count(), 1)
+
+    def test_migration_0024_sets_db_default_on_protection_stage(self):
+        # The resilient root-cause fix: a DB-level default so a writer that omits the column inserts
+        # safely instead of raising NOT-NULL (the exact failure that started the incident).
+        with connection.cursor() as c:
+            c.execute(
+                "SELECT column_default FROM information_schema.columns "
+                "WHERE table_name=%s AND column_name=%s",
+                ["execution_proposedorderleg", "protection_stage"])
+            default = c.fetchone()[0]
+        self.assertIsNotNone(default, "protection_stage must carry a DB-level default after 0024")
+        self.assertIn("INITIAL", default)
+
+    def test_legacy_insert_omitting_protection_stage_defaults_to_initial(self):
+        # Behavioural proof: an INSERT that omits protection_stage (as the un-rebuilt listener did)
+        # now succeeds and the column defaults to INITIAL, rather than raising IntegrityError.
+        a = _approved("nx3")
+        plan = SignalExecutionPlan.objects.create(
+            approval=a, account=self.demo, source=SRC, message_id="nx3", symbol="EURUSD",
+            direction="BUY", is_demo=True, status=SignalExecutionPlan.Status.PLANNED)
+        # Supply every NOT-NULL column the un-rebuilt listener's model DID know about (it had
+        # breakeven_attempts/hold_reason from earlier migrations) but OMIT protection_stage — the one
+        # column its pre-0022 model lacked. Pre-0024 this raised NOT-NULL; post-0024 the DB default fills it.
+        with connection.cursor() as c:
+            cols = ("plan_id, leg_index, take_profit, stop_loss, lot_size, order_type, status, "
+                    "hold_reason, breakeven_attempts, created_at")
+            c.execute(
+                f"INSERT INTO execution_proposedorderleg ({cols}) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+                [plan.id, 1, "1.0900", "1.0800", "0.01", "MARKET",
+                 ProposedOrderLeg.Status.PLANNED, "", 0])
+        leg = ProposedOrderLeg.objects.get(plan=plan, leg_index=1)
+        self.assertEqual(leg.protection_stage, "INITIAL")

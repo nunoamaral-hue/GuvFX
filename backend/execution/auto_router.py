@@ -241,8 +241,14 @@ def _auto_execute(approval, acquired, *, assignment_mode, promote_fn, label) -> 
             return  # HELD/VOIDED (data/staleness) → no promotion, no job
         promote_fn(plan, actor=actor)  # shadow → PLACE_ORDER_SHADOW; demo → PLACE_ORDER
     except (PlanRejected, PromotionRejected) as exc:
-        # These already write a durable PlanAuditEvent / PromotionAuditEvent before raising.
-        logger.info("auto_router: %s path rejected (%s)", label, getattr(exc, "code", exc))
+        # A rejection may or may not have a surviving durable audit: a policy HOLD/VOID writes a
+        # PlanAuditEvent that persists, but a plan+legs transaction that ROLLED BACK on an integrity
+        # error takes its in-txn PLAN_CREATED audit down with it — leaving no trace. So ALWAYS record
+        # a durable AUTO_ROUTE_DEFERRED here (idempotency/no silent swallow); the reason is the real
+        # rejection code (e.g. ``plan_integrity_error``), never a swallowed stdout line.
+        code = getattr(exc, "code", None) or type(exc).__name__
+        logger.info("auto_router: %s path rejected (%s)", label, code)
+        _record_deferral(approval, f"{label}_rejected:{code}")
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("auto_router: %s path error (%s)", label, exc)
         _record_deferral(approval, f"{label}_error:{type(exc).__name__}")  # WS-C: no silent swallow
