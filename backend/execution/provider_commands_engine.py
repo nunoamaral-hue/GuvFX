@@ -100,11 +100,14 @@ def _has_unresolved_fills(plan) -> bool:
 
 
 def _leg_being_closed(trade) -> bool:
-    """A non-terminal CLOSE_TRADE job already targets this position → avoid enqueuing a duplicate."""
+    """A non-terminal CLOSE_TRADE job already targets this position → avoid enqueuing a duplicate.
+    ACCOUNT-SCOPED: MT5 position ids (Trade.ticket) are unique per account, not globally, so the
+    dedup MUST filter by account or a same-ticket position on another account would suppress a real
+    close here."""
     return ExecutionJob.objects.filter(
         job_type=ExecutionJob.JobType.CLOSE_TRADE,
         status__in=(ExecutionJob.Status.PENDING, ExecutionJob.Status.RUNNING),
-        payload__ticket=trade.ticket,
+        account_id=trade.account_id, payload__ticket=trade.ticket,
     ).exists()
 
 
@@ -204,11 +207,16 @@ def _apply_command(command, plan):
         return res
 
     if ct == "CLOSE_ALL":
+        res["cancelled_jobs"] = _cancel_pending_order_jobs(plan)  # void unfilled legs first
         for leg, trade in _open_legs(plan):
             j = _enqueue_close(plan, leg, trade)
             if j:
                 res["jobs"].append(j.id)
-        res["cancelled_jobs"] = _cancel_pending_order_jobs(plan)  # void unfilled legs too
+        # A PENDING order can be claimed by the worker (PENDING→RUNNING) during our processing —
+        # skip_locked then leaves it un-cancelled. Re-check and DEFER so the raced fill is flattened
+        # next tick (idempotent: dedup + open-only avoid duplicating the closes already enqueued).
+        if _has_unresolved_fills(plan):
+            return {"defer": "raced_fill", **res}
         return res
 
     if ct == "CLOSE_LEG":
@@ -237,6 +245,8 @@ def _apply_command(command, plan):
             j = _enqueue_close(plan, leg, trade)
             if j:
                 res["jobs"].append(j.id)
+        if _has_unresolved_fills(plan):  # a raced worker-claim → retry so nothing is left open
+            return {"defer": "raced_fill", **res}
         return res
 
     return {"rejected": "non_actionable"}

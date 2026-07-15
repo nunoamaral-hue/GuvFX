@@ -36,8 +36,8 @@ class ClassifyCommandTests(SimpleTestCase):
             self._t(t, CLOSE_ALL)
 
     def test_cancel(self):
-        for t in ("Cancel signal", "cancel this setup", "Ignore this setup",
-                  "disregard this trade", "void the order"):
+        for t in ("Cancel signal", "cancel this setup", "disregard this trade", "void the order",
+                  "cancel the pending order"):
             self._t(t, CANCEL)
 
     def test_status_updates_are_non_actionable(self):
@@ -76,7 +76,19 @@ class ClassifyCommandTests(SimpleTestCase):
             c = classify_command(t)
             self.assertNotEqual(c.command_type, MOVE_SL_PRICE, f"{t!r} → {c.command_type}")
 
-    def test_ignore_commentary_is_not_cancel(self):
-        # "ignore the noise" (no trade noun) must not cancel; "ignore this setup" (noun) still does.
-        self.assertNotEqual(classify_command("ignore the noise, we're up 40 pips").command_type, CANCEL)
-        self._t("ignore this setup", CANCEL)
+    def test_ignore_is_never_cancel(self):
+        # "ignore" is bidirectional — "ignore it, still valid" tells followers to HOLD. It must
+        # NEVER be read as a destructive cancel (the MUST-FIX). Only cancel/void/disregard cancel.
+        for t in ("ignore the noise, we're up 40 pips", "SL wick, ignore it — position still valid",
+                  "ignore it, trade is running fine", "ignore this setup"):
+            self.assertNotEqual(classify_command(t).command_type, CANCEL, f"{t!r}")
+
+    def test_pip_count_not_read_as_sl_price(self):
+        # "SL at 20 pips" is a pip report, not "move SL to 20".
+        for t in ("SL at 20 pips", "secured 40 pips, SL to 30 pips"):
+            self.assertNotEqual(classify_command(t).command_type, MOVE_SL_PRICE, f"{t!r}")
+
+    def test_close_comma_tp_is_not_close_leg(self):
+        # "we're close, TP2 next" — adjective "close" + comma → not an imperative CLOSE_LEG.
+        for t in ("we're close, TP2 next", "so close, TP2 should hit soon"):
+            self.assertNotIn(classify_command(t).command_type, (CLOSE_LEG, CLOSE_ALL), f"{t!r}")

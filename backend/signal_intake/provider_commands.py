@@ -40,21 +40,24 @@ _MOVE = r"(?:move|moved|set|shift|trail|bring|adjust|put|change)"
 _BE_RE = re.compile(rf"\b{_SL_WORD}\b[^A-Za-z0-9]{{0,12}}(?:to|at|@|=|:)?\s*\b(?:b/?e|break[\s-]?even|entry|entries)\b", re.I)
 _BE_RE2 = re.compile(rf"\b{_MOVE}\b[^0-9]{{0,20}}\b{_SL_WORD}\b[^A-Za-z0-9]{{0,12}}\b(?:b/?e|break[\s-]?even|entry)\b", re.I)
 
-# "move SL to 4010" / "SL to 4010.5" / "stop to 1,234.5"  (an SL keyword + a number)
-_SL_PRICE_RE = re.compile(rf"\b{_SL_WORD}\b[^A-Za-z0-9]{{0,8}}(?:to|at|@|=|:)\s*([0-9][0-9.,]*[0-9]|[0-9])", re.I)
+# "move SL to 4010" / "SL to 4010.5" / "stop to 1,234.5" (an SL keyword + separator + a number).
+# The trailing \b anchors the FULL number (no backtrack to a short match); a pip count immediately
+# after ("SL at 20 pips") is vetoed in classify_command, not read as "move SL to 20".
+_SL_PRICE_RE = re.compile(rf"\b{_SL_WORD}\b[^A-Za-z0-9]{{0,8}}(?:to|at|@|=|:)\s*([0-9][0-9.,]*[0-9]|[0-9])\b", re.I)
 
-# "close TP2" / "close tp 3" / "close take profit 2". The (?!\s+to\b) negative lookahead rejects the
-# PROXIMITY IDIOM "close to TP2" (commentary, e.g. "price is close to TP2") — only the imperative
-# "close TP2" is a command. A false close is the worst case, so we exclude "close to …".
-_CLOSE_LEG_RE = re.compile(r"\bclose\b(?!\s+to\b)[^0-9]{0,20}\b(?:tp|take[\s-]?profit)\s*([123])\b", re.I)
-# "close all" / "close remaining" / "close everything" / "close the trade(s)" / "close now" / "close position(s)".
-# Same (?!\s+to\b) guard: "close to all-time high" / "close to breakeven" are commentary, NOT CLOSE_ALL.
-_CLOSE_ALL_RE = re.compile(r"\bclose\b(?!\s+to\b)[^\n]{0,20}\b(all|remaining|everything|the\s+trade|trades?|position|positions|now)\b", re.I)
-# "cancel signal" / "void the order" / "ignore this setup" / "disregard this trade" / "cancel it".
-# Requires an explicit cancel/void/disregard/ignore verb AND a trade-object NOUN — the noun is what
-# keeps commentary out ("ignore the noise, we're up" has no trade noun → not a cancel). Bare "this"
-# is intentionally NOT a noun.
-_CANCEL_RE = re.compile(r"\b(cancel|cancelled|canceled|void|voided|disregard|ignore)\b[^\n]{0,24}\b(signal|setup|trade|order|pending|position|entry|it)\b", re.I)
+# "close TP2" / "close out tp 3" / "close the take profit 2". Requires the IMPERATIVE form: "close"
+# directly governs the TP (whitespace + optional out/the). This rejects the proximity/adjective
+# idioms "price is close to TP2" and "we're close, TP2 next" (comma/"to" break the \s+ governance).
+_CLOSE_LEG_RE = re.compile(r"\bclose\b\s+(?:out\s+|the\s+)?(?:tp|take[\s-]?profit)\s*([123])\b", re.I)
+# "close all" / "close remaining" / "close everything" / "close the trade(s)" / "close now" /
+# "close position(s)" / "close out". Same imperative rule (close + whitespace + a close-object) so
+# "close to all-time high" / "getting close, all targets near" are NOT read as CLOSE_ALL.
+_CLOSE_ALL_RE = re.compile(r"\bclose\b\s+(?:out\b|the\s+trade|trades?|all|remaining|everything|position|positions|now)\b", re.I)
+# "cancel signal" / "void the order" / "disregard this trade" / "cancel this setup". Requires an
+# UNAMBIGUOUS cancel verb (cancel/void/disregard) AND a real trade NOUN. "ignore" is EXCLUDED — it
+# is bidirectional ("ignore it, position still valid" tells followers to HOLD, the opposite of a
+# cancel); bare "it" is EXCLUDED as a noun for the same reason.
+_CANCEL_RE = re.compile(r"\b(cancel|cancelled|canceled|void|voided|disregard)\b[^\n]{0,24}\b(signal|setup|trade|order|pending|position|entry)\b", re.I)
 _CANCEL_RE2 = re.compile(r"\b(cancel(?:led|ed)?|void(?:ed)?|disregard)\b\s*$", re.I | re.M)
 
 # A price report of an SL/TP that was HIT is a status update, not a move-SL command.
@@ -84,10 +87,11 @@ def classify_command(text: str) -> Command:
     if _CLOSE_ALL_RE.search(t):
         return Command(CLOSE_ALL, confidence="high", reason="close_all")
 
-    # 4) Move SL to a specific price — but a REPORT that the SL was hit ("SL @ 4010 was hit",
-    #    "stopped out at 4010") is a status update, not a move command. Veto it.
+    # 4) Move SL to a specific price — but veto (a) a REPORT that the SL was hit ("SL @ 4010 was
+    #    hit" / "stopped out at 4010") and (b) a PIP count immediately after the number ("SL at 20
+    #    pips") — both are status updates, not move commands.
     m = _SL_PRICE_RE.search(t)
-    if m and not _SL_HIT_RE.search(t):
+    if m and not _SL_HIT_RE.search(t) and not t[m.end():].lstrip().lower().startswith("pip"):
         raw = m.group(1).replace(",", "")
         try:
             price = float(raw)
