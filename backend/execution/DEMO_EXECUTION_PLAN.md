@@ -58,7 +58,10 @@ Rejection audits persist even though no plan is created.
   fail closed (shared `order_creation_kill_reason`).
 - **Symbol allowlist** — `SIGNAL_ALLOWED_SYMBOLS` (EURUSD/GBPUSD/XAUUSD).
 - **Per-signal-group caps** — `PLAN_MAX_GROUPS_PER_DAY` / `PLAN_MAX_CONCURRENT_GROUPS`
-  count **plans (groups)**, not legs.
+  count **plans (groups)**, not legs. The daily cap (default **24**, env-tunable) is
+  **per-SOURCE**: each provider (e.g. `wayond`, `ti_signals`) has an independent daily
+  budget over acted-on groups (PLANNED/PROMOTED/CLOSED), so one source can never consume
+  another's allowance. The concurrency cap stays per account+symbol across sources.
 - **Idempotency** — one plan per approval (`OneToOne`) and per
   `(source, chat_id, message_id)`; a duplicate returns the existing plan.
 
