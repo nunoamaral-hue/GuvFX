@@ -17,6 +17,7 @@ when there is more than one row.
 from __future__ import annotations
 
 import base64
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -101,6 +102,23 @@ def _price(value, symbol="") -> str:
     else:
         dp = 5
     return f"{d:.{dp}f}"
+
+
+_ACCT_NUM_RE = re.compile(r"\(?\b\d{5,}\b\)?")
+
+
+def _safe_account_label(label) -> str:
+    """Render-layer privacy backstop (H): a public card must NEVER print a raw broker account
+    NUMBER. ``TradingAccount.public_label()`` already hides the number when a public name is set,
+    but if it falls back to the internal name (e.g. ``"IS6 Demo (1302561)"``) the number would
+    leak onto the card. Strip any 5+ digit run (optionally parenthesised); if nothing meaningful
+    remains, use a neutral label. Fail-closed: on any doubt, prefer redaction."""
+    s = str(label or "").strip()
+    if not s:
+        return "Managed account"
+    stripped = _ACCT_NUM_RE.sub("", s)
+    stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ()-·|")
+    return stripped or "Managed account"
 
 
 def _fmt_time(value) -> str:
@@ -307,7 +325,15 @@ def _signed_pips(v) -> str:
 
 def build_result_card_model(r):
     """Build the (width, height, ops) model for the redesigned stakeholder card from a
-    CanonicalTradeResult. Read-only; renders nothing itself."""
+    CanonicalTradeResult. Read-only; renders nothing itself.
+
+    FAIL-CLOSED (H): this is a WIN-only card. It refuses to build for a non-WIN outcome so a
+    future direct caller can never produce a green "profit" card for a loss/breakeven. The public
+    WIN-only policy is enforced upstream too (outcome_router + real_transport refuse non-WIN); this
+    is defence in depth at the render boundary."""
+    outcome = (getattr(r, "outcome", None) or "WIN").upper()
+    if outcome != "WIN":
+        raise ValueError(f"build_result_card_model is WIN-only; refusing outcome={outcome!r}")
     legs = list(getattr(r, "legs", ()) or ())
     closed = [lg for lg in legs if lg.status == "CLOSED"]
     total_profit = sum((_dec(lg.profit) for lg in closed), Decimal("0")) if closed else _dec(r.net_pnl)
@@ -349,7 +375,9 @@ def build_result_card_model(r):
     ops.append({"op": "rect", "x": 0, "y": 0, "w": W, "h": H_HEADER, "fill": BAND})
     ops.append({"op": "text", "x": MARGIN, "y": 68, "t": f"{source_display_label(r.provider)} Trade Result",
                 "size": 46, "fill": WHITE, "anchor": "start", "bold": True})
-    ops.append({"op": "text", "x": MARGIN, "y": 112, "t": r.strategy_display_name or r.strategy or "Automated strategy",
+    # Subtitle = the human strategy name. NEVER fall back to the raw ``r.strategy`` slug
+    # (e.g. "ti_signals") — that would leak an internal identifier onto the public card (H Fix 1).
+    ops.append({"op": "text", "x": MARGIN, "y": 112, "t": r.strategy_display_name or "Automated strategy",
                 "size": 27, "fill": "#94a3b8", "anchor": "start", "bold": False})
     # outcome badge (green WIN)
     badge = (r.outcome or "WIN").upper()
@@ -367,7 +395,7 @@ def build_result_card_model(r):
                 "anchor": "start", "bold": True})
     ops.append({"op": "text", "x": W - MARGIN, "y": y + 52, "t": "ACCOUNT", "size": 22, "fill": FAINT,
                 "anchor": "end", "bold": False})
-    ops.append({"op": "text", "x": W - MARGIN, "y": y + 88, "t": r.account_label or "n/a", "size": 32,
+    ops.append({"op": "text", "x": W - MARGIN, "y": y + 88, "t": _safe_account_label(r.account_label), "size": 32,
                 "fill": INK, "anchor": "end", "bold": False})
     ops.append({"op": "line", "x1": MARGIN, "y1": y + H_SUMMARY - 1, "x2": W - MARGIN,
                 "y2": y + H_SUMMARY - 1, "stroke": DIVIDER})
