@@ -232,10 +232,11 @@ def plan_demo_execution(
         _reject(_sym_res.reason, f"{symbol}: {_sym_res.reason}")
 
     # 6. Per-signal-group caps (count GROUPS/plans, not legs).
-    # Daily cap is per-SOURCE (each provider has an independent budget); concurrency cap
-    # remains per account+symbol across sources.
-    if SignalExecutionPlan.count_today(account.id, symbol, source) >= PLAN_MAX_GROUPS_PER_DAY:
-        _reject("daily_limit_exceeded", f"daily group limit reached ({PLAN_MAX_GROUPS_PER_DAY})")
+    # Daily cap is per-SOURCE (from the source's config; 0 = UNLIMITED so a source can process
+    # signals indefinitely). Concurrency + exposure caps still apply across/within sources.
+    _daily_cap = cfg.daily_group_cap
+    if _daily_cap and SignalExecutionPlan.count_today(account.id, symbol, source) >= _daily_cap:
+        _reject("daily_limit_exceeded", f"daily group limit reached ({_daily_cap})")
     if SignalExecutionPlan.count_active(account.id, symbol) >= PLAN_MAX_CONCURRENT_GROUPS:
         _reject("concurrent_limit_exceeded",
                 f"concurrent group limit reached ({PLAN_MAX_CONCURRENT_GROUPS})")

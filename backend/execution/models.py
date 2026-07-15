@@ -650,6 +650,13 @@ class SignalSourceConfig(models.Model):
     max_total_lot = models.DecimalField(
         max_digits=6, decimal_places=2, default=Decimal(MAX_TOTAL_LOT_PER_SIGNAL)
     )
+    # Per-SOURCE daily signal-group cap. 0 = UNLIMITED (no daily cap — the source processes
+    # signals indefinitely, still bounded by duplicate/expiry/concurrency/exposure/broker/margin
+    # gates). Default = the global PLAN_MAX_GROUPS_PER_DAY so existing sources are unchanged.
+    daily_group_cap = models.PositiveIntegerField(
+        default=PLAN_MAX_GROUPS_PER_DAY,
+        help_text="Max signal groups/day for this source; 0 = unlimited.",
+    )
     notes = models.TextField(blank=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,

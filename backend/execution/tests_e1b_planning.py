@@ -233,6 +233,7 @@ class PlanBuilderTests(TestCase):
                 message_id=f"d{i}", symbol="EURUSD", direction="BUY", is_demo=True,
                 status=SignalExecutionPlan.Status.PLANNED,
             )
+        SignalSourceConfig.objects.update(daily_group_cap=3)
         with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 3):
             with self.assertRaises(planning.PlanRejected) as ctx:
                 planning.plan_demo_execution(_approved("dN"), account=self.demo)
@@ -304,6 +305,7 @@ class DailyCapPerSourceTests(TestCase):
 
     # 1 — per-source isolation: one source at its cap never blocks another.
     def test_daily_cap_is_per_source_isolated(self):
+        SignalSourceConfig.objects.update(daily_group_cap=3)
         with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 3):
             self._seed(3, source=SRC)  # source A at its cap
             with self.assertRaises(planning.PlanRejected) as ctx:
@@ -318,6 +320,7 @@ class DailyCapPerSourceTests(TestCase):
 
     # 2 — acceptance up to the limit: the cap-th group of the day still plans.
     def test_daily_cap_accepts_up_to_limit(self):
+        SignalSourceConfig.objects.update(daily_group_cap=4)
         with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 4):
             self._seed(3, source=SRC)  # 3 of 4 used
             plan = planning.plan_demo_execution(
@@ -327,6 +330,7 @@ class DailyCapPerSourceTests(TestCase):
     # 3 — fail-closed past the cap, counting ACTED-ON groups (PROMOTED/CLOSED),
     #     and excluding non-acted plans (VOIDED/HELD).
     def test_daily_cap_rejects_past_limit_counting_acted_on_groups(self):
+        SignalSourceConfig.objects.update(daily_group_cap=3)
         with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 3):
             # Budget consumed by groups that already promoted/closed today (NOT
             # currently PLANNED). The old PLANNED-only counter would see 0 and wrongly
@@ -345,6 +349,7 @@ class DailyCapPerSourceTests(TestCase):
     def test_concurrent_group_cap_enforced_independently(self):
         planning.plan_demo_execution(
             self._approval("cc1", source=SRC), account=self.demo)  # 1 PLANNED
+        SignalSourceConfig.objects.update(daily_group_cap=10000)
         with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 10_000), \
                 mock.patch.object(planning, "PLAN_MAX_CONCURRENT_GROUPS", 1):
             with self.assertRaises(planning.PlanRejected) as ctx:
@@ -366,6 +371,7 @@ class DailyCapPerSourceTests(TestCase):
 
     # 6 — the daily budget resets at the calendar rollover.
     def test_daily_cap_resets_on_calendar_rollover(self):
+        SignalSourceConfig.objects.update(daily_group_cap=3)
         with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 3):
             self._seed(3, source=SRC, days_ago=1)  # yesterday's budget (backdated)
             plan = planning.plan_demo_execution(
@@ -377,6 +383,7 @@ class DailyCapPerSourceTests(TestCase):
     def test_both_sources_live_and_no_open_position_altered(self):
         from trading.models import Trade
         before = Trade.objects.count()
+        SignalSourceConfig.objects.update(daily_group_cap=2)
         with mock.patch.object(planning, "PLAN_MAX_GROUPS_PER_DAY", 2):
             for src in (SRC, SRC_B):
                 self._seed(2, source=src)  # each source at its own cap
