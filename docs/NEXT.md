@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## Post-incident stabilisation follow-ups (2026-07-16 packet)
+- [ ] **Capture the first natural incremental-TP-protection broker proof** on the next eligible
+  ti_signals plan (TP1→remaining SL at entry; TP2→TP3 SL at the TP2 price). Auto-captured; still
+  EVIDENCE-PENDING. Do not force a trade.
+- [ ] **Operator (PM): the 2 stale OPEN CRITICAL alerts** — `RECOVERY_CIRCUIT:global` (2026-07-07)
+  and `EXECUTION_PIPELINE:0:0` (2026-07-15 14:29, pre-dates the packet). Ack/clear; decide on
+  enabling the dormant reliability core.
+- [ ] **Confirm the soak cron now accumulates** hourly snapshots (log-perm fixed 2026-07-16); read
+  48–72h trends once available.
+
 ## Current next action (single)
 - [ ] **Broker-server timezone determination probe (Red, needs Nuno's approval):**
   verify the TradersWay-Demo server timezone before any normalisation or broad
