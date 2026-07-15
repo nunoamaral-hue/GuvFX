@@ -6,6 +6,29 @@
 
 ## Execution workstream log
 
+- **2026-07-15 — GFX-PKT-TI-SIGNALS-NON-EXECUTION-INCIDENT: root-caused, fixed, DEPLOYED. 🟢**
+  Two valid XAUUSD BUY TI signals (approval #45 msg 35 @19:03, #46 msg 36 @20:03 UTC) were acquired,
+  parsed, and APPROVED but created **no plan/job/order** — lost silently. **Root cause = deployment/
+  runtime parity:** the incremental-TP deploy applied migration 0022 at 18:29 UTC (protection_stage
+  NOT NULL; Django drops the DB default after back-fill), but the **guvfx-wayond-listener** — which
+  does synchronous auto-routing/planning/leg-creation — was NOT rebuilt, so its pre-0022 model
+  omitted the column → leg INSERT NOT-NULL IntegrityError → the plan+legs transaction rolled back →
+  the `except IntegrityError` handler mislabelled it **`duplicate_plan`** (it assumed a unique(approval)
+  race) → auto_router only logged it. **Fixes (PR #133 `0b9d79e` + #134 `9abf7ca`, deployed):**
+  migration **0024** restores DB-level defaults on protection_stage/incremental_protection_enabled
+  (schema tolerant of migrate-before-rebuild); `signal_planning` raises a distinct **`plan_integrity_error`**
+  (never masquerades as duplicate); `auto_router` records a durable **AUTO_ROUTE_DEFERRED** on every
+  rejection; `execution_health` adds a deduped auto-resolving **unplanned-tradeable-signal** alert;
+  `operations_summary` gains a **signal_dispositions** block (planned/deferred/in_flight/
+  unplanned_no_reason/silent_loss_total). **Deploy:** backend+worker recreated; mig 0024 applied
+  (protection_stage default now `'INITIAL'` — proven); **listener rebuilt** (deploy/wayond-listener/
+  Dockerfile → telethon + new code) + recreated. Both expired signals **NOT replayed** (watermark past
+  msg 36); durable dispositions backfilled for #45/#46 + 3 pre-incident historical losses (#23/#28/#29)
+  → **silent_loss_total = 0**. Armed state restored: AUTO=True/DEMO/kill=False, ti 0.40×3 cap0
+  incremental=True, **Wayond unchanged**, BREAKEVEN_ENABLED=1; all gates green (symbol accepted,
+  concurrent 1/10, daily unlimited) → future signals execute.
+
+
 - **2026-07-15 — GFX-PKT-INCREMENTAL-TP-PROTECTION-AND-BREAKEVEN-REPAIR: DEPLOYED + ARMED (PR #131). 🟢**
   **Deploy (WS-I):** backend image rebuilt (rollback tag `rollback-preIncrementalTP`), migs 0022/0023
   applied, backend + trade-ingest-worker recreated, Windows bridge swapped + restarted (backup
