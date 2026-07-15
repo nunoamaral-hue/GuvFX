@@ -26,6 +26,20 @@ AGENT_TOKEN = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_WINDOWS_AGEN
 
 SLEEP_SEC = float(os.getenv("MT5_WORKER_SLEEP", "2.0"))
 
+# Hard technical upper bound for any single order (defence-in-depth); actual permitted size is
+# SOURCE-SCOPED via the promotion payload's ``max_lot``, fail-closed to the conservative default.
+WORKER_HARD_MAX_LOT = float(os.getenv("MT5_WORKER_HARD_MAX_LOT", "1.0"))
+
+
+def worker_max_lot(payload) -> float:
+    """The per-order lot ceiling: the source-scoped ``max_lot`` from the promotion payload,
+    fail-closed to the conservative 0.02 default and bounded by ``WORKER_HARD_MAX_LOT``."""
+    try:
+        cap = float((payload or {}).get("max_lot") or 0.02)
+    except (TypeError, ValueError):
+        cap = 0.02
+    return min(max(cap, 0.0), WORKER_HARD_MAX_LOT)
+
 # Retry settings for auto-sync when expected deal not found
 AUTO_SYNC_MAX_RETRIES = int(os.getenv("AUTO_SYNC_MAX_RETRIES", "5"))
 AUTO_SYNC_RETRY_DELAY = float(os.getenv("AUTO_SYNC_RETRY_DELAY", "2.0"))
@@ -640,8 +654,9 @@ def main():
                                  f"{jt} requires windows_username, symbol, side, lots, comment")
                     continue
 
-                # Safety: enforce lot cap
-                max_lots = 0.02
+                # Safety: enforce the SOURCE-SCOPED lot cap carried in the promotion payload
+                # (fail-closed to the conservative default; bounded by the hard technical ceiling).
+                max_lots = worker_max_lot(payload)
                 if float(lots) > max_lots:
                     complete_job(job_id, "FAILED", {"ok": False, "reason": "lots_exceeded",
                                  "lots": lots, "max": max_lots}, f"Lot size {lots} exceeds max {max_lots}")
@@ -670,6 +685,16 @@ def main():
                 # (broker symbol is in "symbol"; provider symbol rides alongside).
                 if payload.get("provider_symbol"):
                     agent_payload["provider_symbol"] = payload["provider_symbol"]
+                # Forward the SOURCE-SCOPED per-leg cap + provider identity so the bridge (which
+                # has no DB access) admits this order only up to its source's configured size,
+                # fail-closed to the bridge's own conservative default if absent.
+                if payload.get("max_lot") is not None:
+                    try:
+                        agent_payload["max_lot"] = float(payload["max_lot"])
+                    except (TypeError, ValueError):
+                        pass
+                if payload.get("signal_source"):
+                    agent_payload["signal_source"] = payload["signal_source"]
 
                 order_result = agent_order(agent_payload)
 

@@ -86,6 +86,12 @@ def _order_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg, *,
         "comment": f"WAY{plan.id}L{leg.leg_index}",  # correlation tag (short — no MT5 truncation)
         "plan_id": plan.id,
         "leg_index": leg.leg_index,
+        # SOURCE-SCOPED SIZING — the provider identity + the per-source per-leg lot ceiling.
+        # The worker + bridge (which cannot read the DB) admit this leg only up to ``max_lot``
+        # (fail-closed to the conservative default for an unknown source), so a source can never
+        # exceed its own configured size even at the outermost order gate.
+        "signal_source": plan.source,
+        "max_lot": str(SignalSourceConfig.sizing_caps(plan.source)[0]),
         # OPS-OBSERVABILITY: propagate the correlation id so the worker logs the same id, and
         # so a resulting Trade can be traced back to this signal/plan.
         "correlation_id": plan.correlation_id,
@@ -157,7 +163,10 @@ def _validate(plan: SignalExecutionPlan, *, now,
     if (now - plan.signal_timestamp).total_seconds() > SIGNAL_MAX_AGE_SECONDS:
         raise PromotionRejected("stale_signal", "signal aged out since planning")
 
-    cap = Decimal(str(SIGNAL_MAX_LOT_SIZE))
+    # Per-SOURCE sizing ceilings (fail-closed to the global 0.02/0.06 for an unknown source) —
+    # re-validated at promotion, independent of the planning split, so a leg can never promote
+    # above its source's configured size.
+    cap, total_cap = SignalSourceConfig.sizing_caps(plan.source)
     total = Decimal("0")
     for leg in legs:
         if not leg.take_profit:
@@ -165,8 +174,8 @@ def _validate(plan: SignalExecutionPlan, *, now,
         if leg.lot_size <= 0 or leg.lot_size > cap:
             raise PromotionRejected("lot_out_of_range", f"leg {leg.leg_index} lot {leg.lot_size} > {cap}")
         total += leg.lot_size
-    if total > Decimal(MAX_TOTAL_LOT_PER_SIGNAL):
-        raise PromotionRejected("total_lot_exceeds_cap", f"total {total} > {MAX_TOTAL_LOT_PER_SIGNAL}")
+    if total > total_cap:
+        raise PromotionRejected("total_lot_exceeds_cap", f"total {total} > {total_cap}")
 
     # E3-RUNTIME-RISK-CONTROLS — pre-E3 runtime risk gates (exposure, max-open,
     # drawdown, concurrent). Fail-closed. Raises PromotionRejected (→ a persisted

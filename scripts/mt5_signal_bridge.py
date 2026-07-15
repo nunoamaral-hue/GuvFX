@@ -87,8 +87,25 @@ MAX_LOT_SIZE = 0.02
 ALLOWED_SIDES = ["BUY", "SELL"]
 
 # Demo order endpoint safety rails (POST /mt5/order)
-DEMO_ORDER_MAX_LOT_SIZE = 0.02
+DEMO_ORDER_MAX_LOT_SIZE = 0.02  # conservative fail-closed DEFAULT (an order with no source cap)
 DEMO_ORDER_ALLOWED_SIDES = ["BUY", "SELL"]
+
+# Hard technical upper bound — no order may exceed this regardless of source. The actual permitted
+# size is SOURCE-SCOPED: the promotion payload carries ``max_lot`` (the leg's per-source cap); the
+# bridge has no DB, so it trusts that internal value up to this bound and fail-closes to the
+# conservative default when it is absent/invalid. This raises the ceiling ONLY as an upper bound;
+# it never lifts a source's own cap.
+BRIDGE_HARD_MAX_LOT = 1.0
+
+
+def _effective_max_lot(container) -> float:
+    """The per-order lot ceiling: the source-scoped ``max_lot`` from the (internal) promotion
+    payload, fail-closed to ``DEMO_ORDER_MAX_LOT_SIZE`` and bounded by ``BRIDGE_HARD_MAX_LOT``."""
+    try:
+        cap = float((container or {}).get("max_lot") or DEMO_ORDER_MAX_LOT_SIZE)
+    except (TypeError, ValueError):
+        cap = DEMO_ORDER_MAX_LOT_SIZE
+    return min(max(cap, 0.0), BRIDGE_HARD_MAX_LOT)
 
 # Fail-closed reasons returned when the terminal cannot trade the requested symbol.
 SYMBOL_NOT_AVAILABLE_ON_MT5 = "SYMBOL_NOT_AVAILABLE_ON_MT5"
@@ -357,8 +374,9 @@ def validate_job_safety(job: Dict) -> tuple[bool, str]:
     lots = payload.get("lots", 0)
     if lots <= 0:
         return False, f"Invalid lot size: {lots}"
-    if lots > MAX_LOT_SIZE:
-        return False, f"Lot size {lots} exceeds max {MAX_LOT_SIZE}."
+    _mx = _effective_max_lot(payload)
+    if lots > _mx:
+        return False, f"Lot size {lots} exceeds max {_mx}."
 
     # Check side
     side = payload.get("side", "").upper()
@@ -409,7 +427,7 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
     # No implicit default symbol: a blank symbol fails closed in validate_broker_symbol
     # (SYMBOL_NOT_AVAILABLE_ON_MT5) rather than silently defaulting to a EURUSD order.
     symbol = payload.get("symbol", "").upper()
-    lots = min(float(payload.get("lots", 0.01)), MAX_LOT_SIZE)
+    lots = min(float(payload.get("lots", 0.01)), _effective_max_lot(payload))
     side = payload.get("side", "BUY").upper()
     magic = payload.get("magic", 0)
     sl_price = float(payload.get("sl_price", 0))
@@ -857,8 +875,9 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
     if side not in DEMO_ORDER_ALLOWED_SIDES:
         return {"ok": False, "error": "side_not_allowed", "detail": f"{side} not in {DEMO_ORDER_ALLOWED_SIDES}"}
 
-    if lots <= 0 or lots > DEMO_ORDER_MAX_LOT_SIZE:
-        return {"ok": False, "error": "lots_out_of_range", "detail": f"lots={lots}, max={DEMO_ORDER_MAX_LOT_SIZE}"}
+    _mx = _effective_max_lot(params)
+    if lots <= 0 or lots > _mx:
+        return {"ok": False, "error": "lots_out_of_range", "detail": f"lots={lots}, max={_mx}"}
 
     if not comment:
         return {"ok": False, "error": "comment_required"}
@@ -995,8 +1014,9 @@ def shadow_order_check(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "shadow": True, "error": "symbol_required"}
     if side not in DEMO_ORDER_ALLOWED_SIDES:
         return {"ok": False, "shadow": True, "error": "side_not_allowed", "detail": f"{side} not in {DEMO_ORDER_ALLOWED_SIDES}"}
-    if lots <= 0 or lots > DEMO_ORDER_MAX_LOT_SIZE:
-        return {"ok": False, "shadow": True, "error": "lots_out_of_range", "detail": f"lots={lots}, max={DEMO_ORDER_MAX_LOT_SIZE}"}
+    _mx = _effective_max_lot(params)
+    if lots <= 0 or lots > _mx:
+        return {"ok": False, "shadow": True, "error": "lots_out_of_range", "detail": f"lots={lots}, max={_mx}"}
     if not comment:
         return {"ok": False, "shadow": True, "error": "comment_required"}
 
@@ -1078,6 +1098,10 @@ def shadow_order_check(params: Dict[str, Any]) -> Dict[str, Any]:
             "margin": getattr(check, "margin", None),
             "free_margin": getattr(check, "margin_free", None),
             "balance": getattr(check, "balance", None),
+            # Projected POST-trade account state (from order_check) — the free-margin guard
+            # rejects a promotion whose projected margin_level would fall below the floor.
+            "equity": getattr(check, "equity", None),
+            "margin_level": getattr(check, "margin_level", None),
             "request": request,
         }
         if provider_symbol:
