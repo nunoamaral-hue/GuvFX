@@ -149,7 +149,30 @@ def reconcile_orphaned_place_orders(now) -> dict:
         else:
             _alert_orphaned_place_order(job, now)
             alerted += 1
-    return {"place_order_reconciled": reconciled, "place_order_orphan_alerted": alerted}
+    # Independent resolve pass: the orphan query only ever returns RUNNING jobs, but a merely-slow
+    # worker (not dead) can complete AFTER its lease expired and mark its own job SUCCESS — the
+    # reconcile loop then never revisits it. Resolve the alert on the BROKER-side signal (the leg's
+    # Trade now exists), NOT on job status: a job flipping to SUCCESS without a trade, or to FAILED,
+    # must KEEP the alert open (the order really is missing). This mirrors the unplanned-signal
+    # resolver so a transient orphan alert never lingers.
+    resolved = 0
+    for al in AlertEvent.objects.filter(
+            dedup_key__startswith="orphaned_place_order:job:", status=AlertEvent.Status.OPEN):
+        d = al.detail or {}
+        pid, leg = d.get("plan_id"), d.get("leg_index")
+        if pid is None or leg is None:
+            continue
+        acct_id = ExecutionJob.objects.filter(id=d.get("job_id")).values_list(
+            "account_id", flat=True).first()
+        if acct_id is None:
+            continue
+        if Trade.objects.filter(account_id=acct_id, comment=_leg_comment(pid, leg)).exists():
+            al.status = AlertEvent.Status.RESOLVED
+            al.resolved_at = now
+            al.save(update_fields=["status", "resolved_at"])
+            resolved += 1
+    return {"place_order_reconciled": reconciled, "place_order_orphan_alerted": alerted,
+            "place_order_orphan_resolved": resolved}
 
 
 def _alert_orphaned_place_order(job, now) -> None:
