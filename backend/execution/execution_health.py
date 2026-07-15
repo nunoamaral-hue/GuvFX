@@ -99,6 +99,89 @@ def reclaim_orphaned_modify_jobs(now) -> int:
     return n
 
 
+def _leg_comment(plan_id, leg_index):
+    """The broker order comment that correlates a placed order to its leg (see signal_promotion)."""
+    return "WAY%sL%s" % (plan_id, leg_index)
+
+
+def reconcile_orphaned_place_orders(now) -> dict:
+    """A worker recycle can strand a ``PLACE_ORDER`` job RUNNING with an EXPIRED lease. Unlike SYNC /
+    MODIFY, a place-order is **NOT idempotent** — re-running it could place a DUPLICATE broker order —
+    so it must NEVER be re-enqueued. Instead RECONCILE against the broker's own record:
+
+      * if the leg's order actually LANDED (a ``Trade`` with the leg's ``WAY{plan}L{leg}`` correlation
+        comment exists on the account) → the worker died AFTER order_send but before recording
+        completion → mark the job SUCCESS (bookkeeping catches up; auto-resolves any prior alert);
+      * if NO trade landed → the order may be genuinely MISSING (a partially-executed signal) → raise
+        ONE deduped WARN for an operator. Do NOT auto-retry (a live re-run risks a duplicate order).
+
+    Only touches lease-EXPIRED rows, so it can never race a live worker claim. Returns counts."""
+    from trading.models import Trade
+    from reliability.models import AlertEvent
+    orphans = list(ExecutionJob.objects.filter(
+        status=ExecutionJob.Status.RUNNING,
+        job_type=ExecutionJob.JobType.PLACE_ORDER,
+        lease_expires_at__lt=now,
+    ).order_by("id")[:200])
+    reconciled = alerted = 0
+    for job in orphans:
+        payload = job.payload or {}
+        plan_id, leg_index = payload.get("plan_id"), payload.get("leg_index")
+        trade = None
+        if plan_id is not None and leg_index is not None:
+            trade = (Trade.objects.filter(
+                account_id=job.account_id, comment=_leg_comment(plan_id, leg_index))
+                .order_by("-open_time").first())
+        dedup_key = f"orphaned_place_order:job:{job.id}"
+        if trade is not None:
+            n = ExecutionJob.objects.filter(id=job.id, status=ExecutionJob.Status.RUNNING).update(
+                status=ExecutionJob.Status.SUCCESS, finished_at=now, recovered=True,
+                recovery_reason=(f"orphaned PLACE_ORDER reconciled to broker ticket {trade.ticket} "
+                                 f"(order landed; worker recycled before completion)"),
+                result={"ok": True, "reconciled": True, "ticket": trade.ticket})
+            if n:
+                reconciled += 1
+                # The order was fine all along → auto-resolve any earlier "possible missing order" alert.
+                AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).update(
+                    status=AlertEvent.Status.RESOLVED, resolved_at=now)
+                logger.info("execution_health: reconciled orphaned PLACE_ORDER job %s -> ticket %s",
+                            job.id, trade.ticket)
+        else:
+            _alert_orphaned_place_order(job, now)
+            alerted += 1
+    return {"place_order_reconciled": reconciled, "place_order_orphan_alerted": alerted}
+
+
+def _alert_orphaned_place_order(job, now) -> None:
+    """One deduped WARN for a lease-expired RUNNING PLACE_ORDER with NO matching broker trade — the
+    order may be missing (partial signal execution). ALERT-ONLY: never re-run (avoid a duplicate)."""
+    try:
+        from reliability.constants import Component
+        from reliability.models import AlertEvent
+        dedup_key = f"orphaned_place_order:job:{job.id}"
+        if AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).exists():
+            return
+        payload = job.payload or {}
+        AlertEvent.objects.create(
+            severity=AlertEvent.Severity.WARN, component=Component.EXECUTION_PIPELINE,
+            trading_account_id=job.account_id,
+            title=f"Possible missing order — PLACE_ORDER job #{job.id} orphaned, no broker trade",
+            body=(f"PLACE_ORDER job #{job.id} (plan {payload.get('plan_id')} leg "
+                  f"{payload.get('leg_index')}, {payload.get('signal_source', '?')} "
+                  f"{payload.get('symbol', '?')}) has been RUNNING with an EXPIRED lease and NO Trade "
+                  f"with comment {_leg_comment(payload.get('plan_id'), payload.get('leg_index'))} was "
+                  f"ingested — the order may be missing. NOT auto-retried (would risk a duplicate); "
+                  f"verify on the broker and place manually if genuinely absent."),
+            dedup_key=dedup_key, status=AlertEvent.Status.OPEN,
+            detail={"job_id": job.id, "plan_id": payload.get("plan_id"),
+                    "leg_index": payload.get("leg_index"), "signal_source": payload.get("signal_source")})
+        logger.error("execution_health: ORPHANED-PLACE_ORDER alert job=%s plan=%s leg=%s",
+                     job.id, payload.get("plan_id"), payload.get("leg_index"))
+    except Exception:  # pragma: no cover - alerting is best-effort
+        logger.exception("execution_health: failed to alert orphaned place order job=%s",
+                         getattr(job, "id", "?"))
+
+
 def _alert_stuck_order(job) -> None:
     """One deduped WARN per stuck-PENDING order-opening job. Best-effort."""
     try:
@@ -241,9 +324,17 @@ def sweep_execution_health(*, limit: int = 500) -> dict:
         "reclaimed": reclaim_orphaned_sync_jobs(now),
         "reclaimed_modify": reclaim_orphaned_modify_jobs(now),
         "stuck_alerted": detect_stuck_pending_orders(now),
+        "place_order_reconciled": 0,
+        "place_order_orphan_alerted": 0,
         "unplanned_alerted": 0,
         "unplanned_resolved": 0,
     }
+    # Reconcile orphaned RUNNING place-orders against the broker (safe: never re-runs an order). Its
+    # own try/except keeps a failure here from blocking the alert-only detector below.
+    try:
+        result.update(reconcile_orphaned_place_orders(now))
+    except Exception:  # pragma: no cover - defensive
+        logger.exception("execution_health: place-order reconcile failed")
     try:
         result.update(detect_unplanned_tradeable_signals(now))
     except Exception:  # pragma: no cover - defensive; alert-only must not break the sweep

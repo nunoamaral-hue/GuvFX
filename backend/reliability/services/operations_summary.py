@@ -81,7 +81,7 @@ def _strategy_metrics(now):
     from django.db.models import Count
     from execution.models import (
         SignalExecutionPlan, TradeOutcomeRecord, NotificationCandidate, NotificationDelivery,
-        SignalSourceConfig,
+        SignalSourceConfig, PromotionAuditEvent,
     )
     from strategies.models import StrategyAssignment
 
@@ -100,9 +100,16 @@ def _strategy_metrics(now):
         promoted_today = plans_today.filter(status__in=("PROMOTED", "CLOSED")).count()
         outcomes = TradeOutcomeRecord.objects.filter(signal_source=src, created_at__gte=tstart)
         pnl = sum((o.net_pnl for o in outcomes), Decimal("0"))
-        # rejection reasons breakdown (D1 + WS-C visibility)
+        # rejection reasons breakdown (D1 + WS-C visibility). Includes plan-stage HELD/VOIDED
+        # hold_reasons AND promotion-stage rejections (e.g. account_exposure_exceeded) which leave the
+        # plan PLANNED with no hold_reason — their durable reason lives in a PromotionAuditEvent.
         reasons = dict(rejected_qs.exclude(hold_reason="").values_list("hold_reason")
                        .annotate(n=Count("id")).values_list("hold_reason", "n"))
+        for d in PromotionAuditEvent.objects.filter(
+                plan__source=src, plan__created_at__gte=tstart,
+                event="PROMOTION_REJECTED").values_list("detail", flat=True):
+            code = (d or {}).get("code", "promotion_rejected")
+            reasons[code] = reasons.get(code, 0) + 1
         last_plan = SignalExecutionPlan.objects.filter(source=src).order_by("-created_at").first()
         last_promoted = (SignalExecutionPlan.objects.filter(source=src, status__in=("PROMOTED", "CLOSED"))
                          .order_by("-signal_timestamp").first())
@@ -228,6 +235,23 @@ def _protection_block(now):
             "requested_sl": last_result.get("requested_sl"),
             "verified_sl": last_result.get("verified_sl"),
             "at": last.finished_at.isoformat() if last and last.finished_at else None,
+        },
+    }
+
+
+def _execution_jobs_block(now):
+    """Order-job health so a partial/stuck execution is visible on the dashboard. ``orphaned_running``
+    is a lease-expired RUNNING PLACE_ORDER (a worker recycled mid-place) — reconciled against the
+    broker by execution_health, never silently left. Read-only."""
+    from execution.models import ExecutionJob
+    po = ExecutionJob.objects.filter(job_type="PLACE_ORDER")
+    running = po.filter(status="RUNNING")
+    return {
+        "place_order": {
+            "pending": po.filter(status="PENDING").count(),
+            "running": running.count(),
+            "orphaned_running": running.filter(lease_expires_at__lt=now).count(),
+            "failed_today": po.filter(status="FAILED", created_at__gte=_today_start(now)).count(),
         },
     }
 
@@ -374,6 +398,7 @@ def build_operations_summary() -> dict:
     infra = _infra_block(now, broker, dispatch, heartbeats)
     protection = _protection_block(now)
     signal_dispositions = _signal_disposition_block(now)
+    execution_jobs = _execution_jobs_block(now)
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -385,6 +410,7 @@ def build_operations_summary() -> dict:
         "infra": infra,
         "protection": protection,
         "signal_dispositions": signal_dispositions,
+        "execution_jobs": execution_jobs,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},

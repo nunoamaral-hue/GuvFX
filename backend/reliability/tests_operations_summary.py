@@ -203,3 +203,24 @@ class SignalDispositionBlockTests(TestCase):
         self.assertEqual(block["by_source"]["ti_signals"]["deferred"], 1)
         self.assertEqual(block["by_source"]["ti_signals"]["deferral_reasons"]
                          ["auto-demo_rejected:plan_integrity_error"], 1)
+
+
+class ExecutionJobsBlockTests(TestCase):
+    """GFX-PKT-POST-INCIDENT — /operations surfaces orphaned/stuck place-order jobs."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        self.user = get_user_model().objects.create_user(username="ej", email="ej@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="EJ1", is_demo=True)
+
+    def test_orphaned_running_place_order_surfaced(self):
+        from execution.models import ExecutionJob
+        from datetime import timedelta
+        j = ExecutionJob.objects.create(job_type="PLACE_ORDER", account=self.acct, status="RUNNING",
+                                        payload={"plan_id": 1, "leg_index": 1})
+        ExecutionJob.objects.filter(id=j.id).update(
+            lease_expires_at=timezone.now() - timedelta(seconds=120))
+        block = ops._execution_jobs_block(timezone.now())["place_order"]
+        self.assertEqual(block["running"], 1)
+        self.assertEqual(block["orphaned_running"], 1)
