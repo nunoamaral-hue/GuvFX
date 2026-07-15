@@ -6,6 +6,26 @@
 
 ## Execution workstream log
 
+- **2026-07-15 — TI missing-WIN-cards REPAIRED + RECOVERED, and ti_signals now sizes 0.40/leg (1.20/signal) LIVE. 🟢**
+  **Workstream A (missing cards).** Genuine TI XAUUSD winners closed in MT5 but produced no cards in the WIMs
+  Stakeholder Review channel. Root cause: (1) the live ingest worker ran a **stale host-mounted copy**
+  (`/srv/guvfx/worker_scripts/…`, never updated by PR #112) → `close_price=None` → skipped; fixed by pointing the
+  worker command at the durable image copy `/app/mt5_trade_ingest_worker.py`. (2) `resolve_leg_evidence` picked a
+  stale price-less deal row over the authoritative position row → **"+$0.00"** cards (PR #114, +2 tests). **Recovered**
+  the 3 real winners (plan 15: 224287 +$4.10 / 224288 +$8.36 / 224289 +$13.74) → cards **msg 57/58/59**, progressive,
+  correct name, zero duplicates.
+  **Workstream B (0.40/leg, TI-only; ADR-0012, PR #115).** Every lot/exposure cap was global source-blind; now
+  source-scoped at every gate via `SignalSourceConfig.max_lot_per_leg`/`max_total_lot` (migration 0017, ti → 0.40/1.20;
+  wayond stays 0.02/0.06). Order payload carries `signal_source`+`max_lot`; worker + all 4 bridge sites admit up to the
+  payload cap, fail-closed to 0.02, bounded by an **independent per-source ceiling** (env `TI_SOURCE_MAX_LOT`). Exposure
+  0.50 → **2.40**. **NEW free-margin guard** (projected margin level via bridge `order_check`, floor 300%, **fail-CLOSED**,
+  logs) — the listener was given bridge access (`100.79.101.19:8788`) so it verifies (else it would block all TI orders).
+  Adversarial review NO-GO → 4 must-fixes fixed → re-verify GO, 0 regressions. **Deployed** in a kill-switch window;
+  **preflight** order_check XAUUSD 0.40 = retcode 0 (no order_send), projected 1.20-signal margin_level ~10,336% (floor
+  300%). Deployed split: TI [0.40,0.40,0.40], wayond [0.01,0.01,0.01]. Both strategies armed; monitor heartbeat fresh;
+  **prod == git** (main `04bb4e1`). Full backend suite green (649). Notion: GFX-EVD-TI-WINNER-RECOVERY-AND-0.40-SIZING.
+  Rollback: `:rollback-preTiSizing` images + `~/backups/preTiSizing-*.sql.gz` + bridge `.bak-preTiSizing`; ti caps
+  revertible in the DB; exposure/guard env-overridable. E3 live (real-money) still RED.
 - **2026-07-15 — CI reconciled truthful-green + DAILY GROUP CAP now PER-SOURCE (24/day). 🟢**
   **CI finding (evidence-first):** the packet's premise of "58 red backend CI failures" did **not** reproduce — CI
   runs the full suite (`python manage.py test`) and it is **green** on PR #112's HEAD (`Ran 626 tests … OK`,
