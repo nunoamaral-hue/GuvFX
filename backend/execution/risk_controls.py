@@ -53,11 +53,14 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-# Caps (env-overridable). Defaults sized so one within-spec signal (<= one
-# MAX_TOTAL_LOT_PER_SIGNAL) on a clean account passes; concurrent/large exposure trips.
-MAX_ACCOUNT_EXPOSURE_LOT = _dec_env("RISK_MAX_ACCOUNT_EXPOSURE_LOT", "0.10")
-MAX_SYMBOL_EXPOSURE_LOT = _dec_env("RISK_MAX_SYMBOL_EXPOSURE_LOT", MAX_TOTAL_LOT_PER_SIGNAL)
-MAX_OPEN_POSITIONS_PER_ACCOUNT = _int_env("RISK_MAX_OPEN_POSITIONS", 3)
+# Caps (env-overridable). Sized for the overlapping-signal posture: up to ~20 concurrent open
+# positions (RISK_MAX_OPEN_POSITIONS), i.e. ~7 three-leg signal groups, at 0.02 lot/leg = ~0.40
+# lot — so the exposure caps sit at 0.50 lot with headroom. Safe now that a plan's slot is freed
+# when its positions close (see close_monitor.resolve_completed_plans); exposure reflects only
+# genuinely-open positions + in-flight orders, no longer leaking closed plans.
+MAX_ACCOUNT_EXPOSURE_LOT = _dec_env("RISK_MAX_ACCOUNT_EXPOSURE_LOT", "0.50")
+MAX_SYMBOL_EXPOSURE_LOT = _dec_env("RISK_MAX_SYMBOL_EXPOSURE_LOT", "0.50")
+MAX_OPEN_POSITIONS_PER_ACCOUNT = _int_env("RISK_MAX_OPEN_POSITIONS", 20)
 MAX_DAILY_DRAWDOWN_ABS = _dec_env("RISK_MAX_DAILY_DRAWDOWN_ABS", "100.00")
 
 

@@ -111,7 +111,7 @@ DEMO_MAX_TRADES_PER_DAY = 3  # Maximum demo trades per account per day
 SIGNAL_ALLOWED_SYMBOLS = ["EURUSD", "GBPUSD", "XAUUSD"]  # Symbols allowed for signal execution
 SIGNAL_MAX_LOT_SIZE = 0.02  # Hard cap on lot size for strategy signals
 SIGNAL_MAX_TRADES_PER_DAY = 10  # Maximum signal trades per account+strategy+symbol per day (SUCCESS only)
-SIGNAL_MAX_CONCURRENT_POSITIONS = 1  # Max concurrent positions per account+strategy+symbol
+SIGNAL_MAX_CONCURRENT_POSITIONS = int(os.getenv("SIGNAL_MAX_CONCURRENT_POSITIONS", "20"))  # Max concurrent positions per account+strategy+symbol (env-tunable)
 
 # =============================================================================
 # EXEC-E1b — Multi-leg demo execution PLAN safety constants (NO order is placed)
@@ -125,7 +125,7 @@ MAX_TOTAL_LOT_PER_SIGNAL = "0.06"  # Hard cap on the summed lot across a plan's 
 DEMO_SOURCE_TOTAL_LOT_DEFAULT = "0.03"  # Default per-source total lot target.
 SIGNAL_MAX_AGE_SECONDS = 120  # A signal older than this is voided (stale).
 PLAN_MAX_GROUPS_PER_DAY = 10  # Max signal-GROUPS (plans) per account+symbol per day.
-PLAN_MAX_CONCURRENT_GROUPS = 1  # Max concurrent PLANNED groups per account+symbol.
+PLAN_MAX_CONCURRENT_GROUPS = int(os.getenv("PLAN_MAX_CONCURRENT_GROUPS", "10"))  # Max concurrent ACTIVE groups (PLANNED/PROMOTED) per account+symbol (env-tunable). A plan leaves the active set when CLOSED (all its positions resolved) — see resolve_completed_plans.
 
 
 class ExecutionJob(models.Model):
@@ -669,6 +669,7 @@ class SignalExecutionPlan(models.Model):
         VOIDED = "VOIDED", "Voided"
         SUPERSEDED = "SUPERSEDED", "Superseded"
         PROMOTED = "PROMOTED", "Promoted to shadow jobs (no order placed)"
+        CLOSED = "CLOSED", "Closed (all positions resolved)"
 
     class Direction(models.TextChoices):
         BUY = "BUY", "Buy"

@@ -13,6 +13,7 @@ import pathlib
 import re
 from decimal import Decimal
 from io import StringIO
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import CommandError, call_command
@@ -188,10 +189,11 @@ class ProposalBridgeTests(TestCase):
 
     def test_concurrent_cap_rejected(self):
         bridge.propose_order_from_approval(_approval("c1"), account=self.demo)
-        # one PROPOSED already; SIGNAL_MAX_CONCURRENT_POSITIONS == 1
-        self.assertEqual(SIGNAL_MAX_CONCURRENT_POSITIONS, 1)
-        with self.assertRaises(bridge.ProposalRejected) as ctx:
-            bridge.propose_order_from_approval(_approval("c2"), account=self.demo)
+        # one PROPOSED already; pin the concurrency cap to 1 to verify the gate blocks the next
+        # (the deployed default was raised to 20 for the overlapping-signal posture).
+        with mock.patch.object(bridge, "SIGNAL_MAX_CONCURRENT_POSITIONS", 1):
+            with self.assertRaises(bridge.ProposalRejected) as ctx:
+                bridge.propose_order_from_approval(_approval("c2"), account=self.demo)
         self.assertEqual(ctx.exception.code, "concurrent_limit_exceeded")
 
     def test_daily_cap_rejected(self):

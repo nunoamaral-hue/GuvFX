@@ -155,6 +155,22 @@ MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
 HTTP_SERVER_PORT = int(os.getenv("HTTP_SERVER_PORT", "8788"))
 
+
+def _filling_for(symbol):
+    """Order filling the SYMBOL/broker supports (IOC preferred, else FOK).
+    IS6 only allows FOK on metals; TradersWay allows IOC. Per-symbol keeps both working."""
+    import MetaTrader5 as mt5
+    try:
+        si = mt5.symbol_info(symbol)
+        if si is not None:
+            if si.filling_mode & 2:
+                return mt5.ORDER_FILLING_IOC
+            if si.filling_mode & 1:
+                return mt5.ORDER_FILLING_FOK
+    except Exception:
+        pass
+    return mt5.ORDER_FILLING_IOC
+
 # Timeframe mapping for MT5
 TIMEFRAME_MAP = {
     "M1": 1,      # TIMEFRAME_M1
@@ -567,7 +583,7 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
                 "magic": magic,
                 "comment": comment,
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "type_filling": _filling_for(symbol),
             }
 
             # Pre-flight check
@@ -896,7 +912,7 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
             "magic": magic,
             "comment": comment[:31],
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": _filling_for(symbol),
         }
 
         # Optional SL/TP (from PLACE_ORDER signal jobs)
@@ -1031,7 +1047,7 @@ def shadow_order_check(params: Dict[str, Any]) -> Dict[str, Any]:
             "magic": magic,
             "comment": comment[:31],
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": _filling_for(symbol),
         }
         sl = params.get("sl")
         tp = params.get("tp")
@@ -1126,6 +1142,7 @@ def fetch_deals_snapshot(username: str) -> Dict[str, Any]:
                 "magic": d.magic,
                 "comment": d.comment,
                 "position_id": d.position_id,
+                "entry": d.entry,  # DEAL_ENTRY_* (0=IN/open,1=OUT/close,2=INOUT,3=OUT_BY) — lets the ingest worker split open vs close deals per position
             })
 
         return {"ok": True, "deals": deal_list, "count": len(deal_list)}
@@ -1241,7 +1258,7 @@ def close_position(ticket: int) -> Dict[str, Any]:
             "magic": pos.magic,
             "comment": "GUVFX_CLOSE",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": _filling_for(pos.symbol),
         }
 
         result = mt5.order_send(request)

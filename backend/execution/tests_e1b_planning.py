@@ -13,6 +13,7 @@ import importlib
 import pathlib
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import CommandError, call_command
@@ -213,10 +214,11 @@ class PlanBuilderTests(TestCase):
         self.assertEqual(SignalExecutionPlan.objects.filter(approval=a).count(), 1)
 
     def test_concurrent_group_cap_blocks(self):
-        self.assertEqual(PLAN_MAX_CONCURRENT_GROUPS, 1)
+        # deployed default raised to 10 for overlapping signals; pin to 1 to verify the gate.
         planning.plan_demo_execution(_approved("c1"), account=self.demo)  # 1 PLANNED
-        with self.assertRaises(planning.PlanRejected) as ctx:
-            planning.plan_demo_execution(_approved("c2"), account=self.demo)
+        with mock.patch.object(planning, "PLAN_MAX_CONCURRENT_GROUPS", 1):
+            with self.assertRaises(planning.PlanRejected) as ctx:
+                planning.plan_demo_execution(_approved("c2"), account=self.demo)
         self.assertEqual(ctx.exception.code, "concurrent_limit_exceeded")
 
     def test_daily_group_cap_blocks(self):
