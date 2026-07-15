@@ -2,6 +2,26 @@
 
 List active problems with reproduction steps and workarounds.
 
+## Provider trade-management commands — deployed DARK, arming is Nuno-gated (2026-07-15)
+
+- WS-E (PR #128) is **deployed but inert**. Follow-up commands are RECORDED (`ProviderCommand` rows,
+  always-on, harmless) but NOT acted on. **Arming = Red**: set `PROVIDER_COMMANDS_ENABLED=1` AND
+  `SignalSourceConfig(source="ti_signals").command_engine_enabled=True`. It is a new execution path
+  that can close/cancel live (demo) positions from parsed Telegram; MODIFY/CLOSE are by design NOT
+  kill-switch-blocked (risk-reducing), so the ONLY stops are those two gates + the demo-only bridge.
+  Arm only in a controlled window under Nuno, with Wayond untouched (source-isolated).
+- Residual NIT (bridge-backstopped, not a live risk): a MOVE_SL_PRICE judged against `plan.stop_loss`
+  can enqueue a widen vs an already-engine-moved SL; the bridge `would_increase_risk` re-read refuses
+  it (job FAILs), so no risk reaches the broker — but the command may read APPLIED. Documented.
+- Deliberate safe-direction loss: "cancel it" / "ignore it" no longer classify as CANCEL ("ignore" is
+  bidirectional). Unambiguous "cancel/void/disregard <noun>" still cancels.
+
+## Auto-breakeven broker proof still pending a natural TP1 close (2026-07-15)
+
+- Breakeven is ARMED (`BREAKEVEN_ENABLED=1`) but has not fired yet (0 MODIFY_POSITION jobs, 0 legs
+  with `breakeven_applied_at`). Evidence is captured automatically on the first natural TP1 close
+  (`MODIFY_POSITION` job `result.verified_sl` + `breakeven[…]` monitor-chain counters). Not forced.
+
 ## Reliability core dormant + stale circuit breaker (2026-07-15)
 
 - **`RELIABILITY_CORE_ENABLED=false` on prod** — the `reliability_tick` supervisor (continuous

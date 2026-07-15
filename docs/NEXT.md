@@ -16,6 +16,16 @@
 > `guvfx-windows-history-agent` repo + governed VPS probes — see
 > `docs/PROGRAMME_STATE.md`. Notion (*Current State v0.52*) is authoritative.
 
+## Phase-2 hardening + signal-copy follow-ups (2026-07-15 packet — separate track)
+- [ ] **Nuno decision (Red): arm the provider-command engine** — `PROVIDER_COMMANDS_ENABLED=1` +
+  ti_signals `command_engine_enabled=True`, in a controlled window (see KNOWN_ISSUES). Until then it
+  records commands but takes no action.
+- [ ] **Capture the first natural auto-breakeven broker proof** (the one pending WS-A/B2 evidence).
+- [ ] **Soak result becomes meaningful after ≥24–72h** continuous armed operation — read
+  `SoakSnapshot` trends (hourly cron installed).
+- [ ] **Operator (PM): reliability core + circuit breaker** — enabling `RELIABILITY_CORE_ENABLED` and
+  resetting the stale `RECOVERY_CIRCUIT:global` breaker (carried over from the prior packet).
+
 ## Production-stabilisation follow-ups (2026-07-15 packet — separate track)
 - [ ] **Capture auto-breakeven broker evidence** on the first natural TP1 close (`MODIFY_POSITION`
   job `result.verified_sl` + leg `breakeven_applied_at`) — the one pending WS-B verification.
