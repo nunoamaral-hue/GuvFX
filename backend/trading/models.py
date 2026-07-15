@@ -60,6 +60,19 @@ class TradingAccount(models.Model):
 
     name = models.CharField(max_length=100)
 
+    # Presentation layer (stakeholder-facing). Internal identity (name / broker_name /
+    # account_number) is UNCHANGED and still used by execution, routing and broker auth. Cards
+    # show ``public_display_name`` when set; the account number appears publicly only when
+    # ``public_show_account_number`` is true.
+    public_display_name = models.CharField(
+        max_length=100, blank=True,
+        help_text="Stakeholder-facing account name (e.g. 'IS6FX'). Blank → fall back to name.",
+    )
+    public_show_account_number = models.BooleanField(
+        default=False,
+        help_text="Show the account number on public cards. Off → number is hidden publicly.",
+    )
+
     broker_server = models.ForeignKey(
         BrokerServer,
         on_delete=models.PROTECT,
@@ -125,6 +138,17 @@ class TradingAccount(models.Model):
             else (self.broker_name or "<unknown-server>")
         )
         return f"{self.user} | {server} | {self.account_number}"
+
+    def public_label(self) -> str:
+        """The stakeholder-facing account label. Uses ``public_display_name`` when set (optionally
+        with the account number when ``public_show_account_number``); otherwise falls back to the
+        internal ``name`` unchanged. Presentation-only — never used for execution/routing/auth."""
+        pub = (self.public_display_name or "").strip()
+        if not pub:
+            return self.name
+        if self.public_show_account_number and self.account_number:
+            return f"{pub} ({self.account_number})"
+        return pub
 
 
 class Trade(models.Model):

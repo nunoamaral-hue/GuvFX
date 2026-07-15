@@ -22,6 +22,8 @@ from decimal import Decimal
 
 from PIL import Image, ImageDraw, ImageFont
 
+from intelligence.display_labels import source_display_label
+
 # ---- palette (deliberately app-neutral; not a broker theme) ----------------
 WHITE = "#ffffff"
 INK = "#111827"
@@ -79,11 +81,26 @@ def _num(value, places) -> str:
         return str(value)
 
 
-def _price(value) -> str:
-    """Show a price at its natural precision (5dp FX, 2dp metals/indices)."""
+def _price(value, symbol="") -> str:
+    """Format a price at its instrument-natural precision (PRESENTATION ONLY — the stored broker
+    value is never mutated). Metals (XAU/XAG/XPT/XPD) 2dp; JPY pairs 3dp; BTC/crypto 2dp; standard
+    FX 5dp. A non-numeric value is returned unchanged; empty → ''."""
     if value in (None, ""):
         return ""
-    return str(value)
+    try:
+        d = Decimal(str(value))
+    except Exception:
+        return str(value)
+    s = (symbol or "").upper()
+    if any(m in s for m in ("XAU", "XAG", "XPT", "XPD")):
+        dp = 2
+    elif "JPY" in s:
+        dp = 3
+    elif any(c in s for c in ("BTC", "ETH", "USDT")):
+        dp = 2
+    else:
+        dp = 5
+    return f"{d:.{dp}f}"
 
 
 def _fmt_time(value) -> str:
@@ -109,8 +126,8 @@ def row_from_trade(trade) -> TradeRow:
         symbol=str(g("symbol", "")),
         direction=str(g("side", "")).upper(),
         volume=_num(g("volume", ""), 2),
-        entry=_price(g("open_price", "")),
-        close=_price(g("close_price", "")),
+        entry=_price(g("open_price", ""), g("symbol", "")),
+        close=_price(g("close_price", ""), g("symbol", "")),
         close_time=_fmt_time(g("close_time", "")),
         profit=_num(_net(trade), 2),
     )
@@ -266,7 +283,7 @@ GREEN = ACCENT         # win / profit / TP
 RED = "#dc2626"        # stop loss
 BLUE = BUY             # side / symbol
 GREEN_BG = "#f0fdf4"   # tinted profit block
-FAINT = "#9aa3af"
+FAINT = "#7c8698"      # secondary text — darkened for stakeholder-card contrast (A3)
 
 
 def _dec(v, default="0"):
@@ -300,16 +317,20 @@ def build_result_card_model(r):
     n_total = (r.progress or {}).get("total") or len(legs) or 1
     n_closed = (r.progress or {}).get("closed") or len(closed)
 
+    # Instrument-aware price formatter bound to this card's symbol (presentation only).
+    def p(v):
+        return _price(v, r.symbol)
+
     # analysis rows (label, value, value_colour) — NO exec mode / correlation id
     analysis = [
-        ("Reference entry", r.reference_entry or "n/a", INK),
-        ("Actual fill", r.actual_fill or "n/a", INK),
-        ("Stop loss", r.stop_loss or "n/a", RED),
+        ("Reference entry", p(r.reference_entry) or "n/a", INK),
+        ("Actual fill", p(r.actual_fill) or "n/a", INK),
+        ("Stop loss", p(r.stop_loss) or "n/a", RED),
     ]
     for i, tp in enumerate(tps or ([r.take_profit] if r.take_profit else [])):
-        analysis.append((f"TP{i + 1}", tp or "n/a", GREEN))
+        analysis.append((f"TP{i + 1}", p(tp) or "n/a", GREEN))
     analysis += [
-        ("Exit price", r.exit or "n/a", INK),
+        ("Exit price", p(r.exit) or "n/a", INK),
         ("Gross PNL", _signed_money(r.gross_pnl), INK),
         ("Net profit", _signed_money(total_profit), GREEN),
         ("Closed", _fmt_time(r.execution_timestamp), MUTED),
@@ -318,14 +339,15 @@ def build_result_card_model(r):
     row_h, an_h = 128, 56
     y = 0
     ops = []
-    H_HEADER, H_SUMMARY, H_METRIC, H_SECHDR, H_FOOT = 150, 128, 214, 64, 150
+    # Slightly taller profit banner + section headers for more breathing room (A3 polish).
+    H_HEADER, H_SUMMARY, H_METRIC, H_SECHDR, H_FOOT = 150, 132, 236, 72, 156
     height = (H_HEADER + H_SUMMARY + H_METRIC + H_SECHDR + row_h * max(len(legs), 1)
               + H_SECHDR + an_h * len(analysis) + H_FOOT)
     ops.append({"op": "rect", "x": 0, "y": 0, "w": W, "h": height, "fill": WHITE})
 
     # --- header band ---
     ops.append({"op": "rect", "x": 0, "y": 0, "w": W, "h": H_HEADER, "fill": BAND})
-    ops.append({"op": "text", "x": MARGIN, "y": 68, "t": f"{(r.provider or 'GUVFX').upper()} TRADE RESULT",
+    ops.append({"op": "text", "x": MARGIN, "y": 68, "t": f"{source_display_label(r.provider)} Trade Result",
                 "size": 46, "fill": WHITE, "anchor": "start", "bold": True})
     ops.append({"op": "text", "x": MARGIN, "y": 112, "t": r.strategy_display_name or r.strategy or "Automated strategy",
                 "size": 27, "fill": "#94a3b8", "anchor": "start", "bold": False})
@@ -393,14 +415,14 @@ def build_result_card_model(r):
         else:
             ops.append({"op": "text", "x": W - MARGIN, "y": b1, "t": "PENDING", "size": 30,
                         "fill": FAINT, "anchor": "end", "bold": True})
-        # line 2: entry -> exit / target
+        # line 2: entry -> exit / target (instrument-aware precision)
         b2 = y + 104
-        left = str(lg.entry or "")
+        left = p(lg.entry)
         ops.append({"op": "text", "x": MARGIN, "y": b2, "t": left, "size": 32, "fill": MUTED,
                     "anchor": "start", "bold": False})
         ax = MARGIN + _measure(left, 32) + 16
         ops.append({"op": "arrow", "x": ax, "y": b2 - 11, "len": 34, "stroke": (MUTED if is_closed else FAINT)})
-        right = str(lg.exit if is_closed else f"target {lg.target}")
+        right = p(lg.exit) if is_closed else f"target {p(lg.target)}"
         ops.append({"op": "text", "x": ax + 34 + 16, "y": b2, "t": right, "size": 32,
                     "fill": (INK if is_closed else FAINT), "anchor": "start", "bold": False})
         ops.append({"op": "line", "x1": MARGIN, "y1": y + row_h - 1, "x2": W - MARGIN,
