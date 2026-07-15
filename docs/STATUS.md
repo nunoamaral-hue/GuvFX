@@ -6,6 +6,26 @@
 
 ## Execution workstream log
 
+- **2026-07-15 — Stakeholder card branding (IS6FX) DEPLOYED + operational observability (health API + /operations page). 🟢**
+  **Workstream A — DONE + deployed + verified (PR #117, main `8d0516c`).** Presentation-only (no trading/routing/auth
+  change). `TradingAccount.public_display_name` + `public_show_account_number` (migration 0009); account #1 → **IS6FX**
+  (number hidden; falls back to internal name). Reusable `intelligence.display_labels.source_display_label`
+  (`ti_signals`→"TI Signals") — card header now "TI Signals Trade Result" (was "TI_SIGNALS TRADE RESULT"). `_price()`
+  is now genuinely instrument-aware (was a no-op → raw 5dp): XAUUSD 2dp, JPY 3dp, crypto 2dp, FX 5dp. Restrained polish
+  (taller banner, spacing, contrast). Card verified visually (IS6FX + 2dp + human labels); one clearly-labelled DEMO
+  preview sent (Telegram msg 61, real candidate, no fabrication, single send). Internal slugs/identity unchanged.
+  **Workstream B — health VISIBILITY delivered (PR #118, main `1273075`).** Read-only, extends the existing
+  `reliability` app (no parallel subsystem). New `operations_summary.build_operations_summary()` + `GET
+  /api/reliability/operations-summary/` (staff-only) aggregates: control (auto/mode/kill), component health + heartbeat
+  freshness, **source-aware** strategy metrics (signals/accepted/rejected/wins/losses/breakevens/realised-PnL/cards per
+  source, never combined), open positions/plans/candidates, dispatch, best-effort broker metrics (balance/equity/free-
+  margin/margin-level via a fail-safe order_check — **no order placed**), and open alerts. Verified on prod: ti_signals
+  per_leg=0.40 / wayond 0.02, account "IS6FX", broker reachable, all heartbeats HEALTHY, no secrets. Frontend
+  `/operations` page built + CI-validated (deploy gated by the prod-frontend divergence — see [[project_frontend_divergence]]).
+  **Partial/follow-up:** B3 alerting reuses the existing `reliability_tick` reconcile+Telegram+dedup+recovery (verified
+  producing 2 open alerts: a WARN for the 4 stuck SYNC jobs + a stale 07-07 circuit-breaker CRITICAL) — additional
+  conditions (listener/monitor/margin-guard) + the ops-route `RELIABILITY_TELEGRAM_*` config are a scoped next step; B7
+  reporting deferred. +20 tests (663→669 backend). Both strategies remain continuously armed; no execution change. E3 live still RED.
 - **2026-07-15 — TI missing-WIN-cards REPAIRED + RECOVERED, and ti_signals now sizes 0.40/leg (1.20/signal) LIVE. 🟢**
   **Workstream A (missing cards).** Genuine TI XAUUSD winners closed in MT5 but produced no cards in the WIMs
   Stakeholder Review channel. Root cause: (1) the live ingest worker ran a **stale host-mounted copy**
