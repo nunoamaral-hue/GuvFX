@@ -192,6 +192,41 @@ def _infra_block(now, broker, dispatch, heartbeats):
     }
 
 
+def _protection_block(now):
+    """WS-K — incremental TP-protection visibility: per-source enablement, live protection stages of
+    promoted plans, and MODIFY_POSITION job health. Read-only."""
+    from django.db.models import Count
+    from execution.models import ExecutionJob, ProposedOrderLeg, SignalSourceConfig
+    tstart = _today_start(now)
+    by_source = {c.source: bool(c.incremental_protection_enabled)
+                 for c in SignalSourceConfig.objects.all()}
+    mp = ExecutionJob.objects.filter(job_type="MODIFY_POSITION")
+    stages = dict(
+        ProposedOrderLeg.objects.filter(plan__status="PROMOTED")
+        .exclude(protection_stage="INITIAL").values_list("protection_stage")
+        .annotate(n=Count("id")).values_list("protection_stage", "n"))
+    last = mp.filter(status="SUCCESS").order_by("-finished_at").first()
+    last_result = (last.result or {}) if last else {}
+    return {
+        "incremental_by_source": by_source,
+        "modify_jobs": {
+            "pending": mp.filter(status="PENDING").count(),
+            "running": mp.filter(status="RUNNING").count(),
+            "success_today": mp.filter(status="SUCCESS", created_at__gte=tstart).count(),
+            "failed_today": mp.filter(status="FAILED", created_at__gte=tstart).count(),
+        },
+        "leg_stages_active": stages,
+        "last_protection": {
+            "plan_id": (last.payload or {}).get("plan_id") if last else None,
+            "stage": (last.payload or {}).get("protection_stage") if last else None,
+            "prior_sl": last_result.get("prior_sl"),
+            "requested_sl": last_result.get("requested_sl"),
+            "verified_sl": last_result.get("verified_sl"),
+            "at": last.finished_at.isoformat() if last and last.finished_at else None,
+        },
+    }
+
+
 def build_operations_summary() -> dict:
     """The full read-only operational summary for the status page (and alert enrichment)."""
     from reliability.models import ComponentHealth, Heartbeat, AlertEvent
@@ -282,6 +317,7 @@ def build_operations_summary() -> dict:
         states.append("CRITICAL" if sev == AlertEvent.Severity.CRITICAL else "WARNING")
 
     infra = _infra_block(now, broker, dispatch, heartbeats)
+    protection = _protection_block(now)
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -291,6 +327,7 @@ def build_operations_summary() -> dict:
         "components": components,
         "heartbeats": heartbeats,
         "infra": infra,
+        "protection": protection,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},

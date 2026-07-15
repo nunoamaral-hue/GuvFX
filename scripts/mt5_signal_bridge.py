@@ -1364,7 +1364,7 @@ def modify_position(ticket: int, sl: float, tp: float = None) -> Dict[str, Any]:
         # Idempotency: if the SL is already at (or past) the requested breakeven, do not resend.
         cur_sl = float(pos.sl)
         if abs(cur_sl - req_sl) < eps:
-            return {"ok": True, "ticket": ticket, "requested_sl": req_sl,
+            return {"ok": True, "ticket": ticket, "prior_sl": cur_sl, "requested_sl": req_sl,
                     "verified_sl": cur_sl, "unchanged": True}
 
         # Defense-in-depth FAIL-SAFE — refuse any move that would INCREASE risk. A BUY's SL may
@@ -1404,9 +1404,11 @@ def modify_position(ticket: int, sl: float, tp: float = None) -> Dict[str, Any]:
         return {
             "ok": bool(verified),
             "ticket": ticket,
+            "prior_sl": cur_sl,          # broker SL before this modify (protection-evidence)
             "requested_sl": req_sl,
             "verified_sl": verified_sl,
             "retcode": result.retcode,
+            "comment": getattr(result, "comment", ""),
             "error": None if verified else "sl_not_verified",
         }
 

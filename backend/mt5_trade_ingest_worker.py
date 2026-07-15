@@ -807,11 +807,16 @@ def main():
                 print(f"[BREAKEVEN] MODIFY_POSITION job_id={job_id}: ticket={ticket} sl={sl}")
                 modify_result = agent_modify(modify_payload)
                 if modify_result.get("ok"):
-                    print(f"[BREAKEVEN] SUCCESS job_id={job_id}: ticket={ticket} verified_sl={modify_result.get('verified_sl')}")
+                    print(f"[PROTECT] SUCCESS job_id={job_id}: ticket={ticket} verified_sl={modify_result.get('verified_sl')}")
                     complete_job(job_id, "SUCCESS", modify_result, "")
+                elif modify_result.get("error") == "position_not_found":
+                    # The position closed before this SL move landed (e.g. TP1 & TP2 closed seconds
+                    # apart) → benign: there is nothing left to protect. Not a failure.
+                    print(f"[PROTECT] job_id={job_id}: ticket={ticket} already closed (idempotent no-op)")
+                    complete_job(job_id, "SUCCESS", {"ok": True, "already_closed": True, **modify_result}, "")
                 else:
                     err = modify_result.get("error", "unknown_error")
-                    print(f"[BREAKEVEN] FAILED job_id={job_id}: {err} {modify_result.get('detail', '')}")
+                    print(f"[PROTECT] FAILED job_id={job_id}: {err} {modify_result.get('detail', '')}")
                     complete_job(job_id, "FAILED", modify_result, f"Modify failed: {err}")
                 continue
 

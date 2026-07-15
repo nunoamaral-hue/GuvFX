@@ -667,6 +667,10 @@ class SignalSourceConfig(models.Model):
     # cancel follow-ups). Belt-and-braces beyond the global PROVIDER_COMMANDS_ENABLED env gate — a
     # source acts on follow-up commands ONLY when BOTH are on. Default OFF (deploy-dark).
     command_engine_enabled = models.BooleanField(default=False)
+    # WS-INCREMENTAL-TP-PROTECTION: per-source opt-in for the NEW TP2-lock stage (when TP2 closes,
+    # move TP3's SL to the planned TP2 price). Default OFF so Wayond keeps its existing behaviour
+    # (state-1 breakeven only); enabled for ti_signals. State-1 breakeven is unchanged for all sources.
+    incremental_protection_enabled = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
@@ -839,6 +843,10 @@ class ProposedOrderLeg(models.Model):
     )
     breakeven_attempts = models.PositiveSmallIntegerField(default=0)
     breakeven_applied_at = models.DateTimeField(null=True, blank=True)
+    # WS-INCREMENTAL-TP-PROTECTION — the monotonic protection stage this leg's SL currently sits at.
+    # INITIAL (original SL) → BREAKEVEN (SL at this leg's own entry, after TP1 closed) → TP2_LOCKED
+    # (SL at the plan's TP2 price, after TP2 closed; TP3 only). Only ever advances (risk-reducing).
+    protection_stage = models.CharField(max_length=16, default="INITIAL")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
