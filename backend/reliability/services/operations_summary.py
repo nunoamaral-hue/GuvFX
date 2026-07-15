@@ -242,9 +242,15 @@ def _signal_disposition_block(now):
     from collections import Counter
     from signal_intake.models import PendingSignalApproval, SignalAuditEvent
     from execution.models import SignalExecutionPlan, SignalSourceConfig
+    from execution.execution_health import UNPLANNED_SIGNAL_ALERT_SECONDS
     tradeable = list(SignalSourceConfig.objects.filter(auto_demo_execution_enabled=True)
                      .values_list("source", flat=True))
     since = now - timedelta(hours=24)
+    # Planning commits in a SEPARATE transaction a moment AFTER the approval commits, so a
+    # just-approved signal legitimately has neither a plan nor a deferral for a brief window. Mirror
+    # the detector's grace (UNPLANNED_SIGNAL_ALERT_SECONDS) so an in-flight signal is counted as such,
+    # never as a silent loss — silent_loss_total must reflect only settled, genuinely-lost signals.
+    settle_cutoff = now - timedelta(seconds=UNPLANNED_SIGNAL_ALERT_SECONDS)
     by_source = {}
     silent_total = 0
     for src in tradeable:
@@ -255,9 +261,12 @@ def _signal_disposition_block(now):
         # loop over the (normally ~empty) UNPLANNED set to classify deferred vs silent. No N+1 over
         # the healthy backlog.
         planned = base.filter(execution_plan__isnull=False).count()
+        unplanned = base.filter(execution_plan__isnull=True)
+        # In-flight: approved within the planning-settle window and not yet planned — not a loss.
+        in_flight = unplanned.filter(created_at__gte=settle_cutoff).count()
         deferred = silent = 0
         reasons = Counter()
-        for a in base.filter(execution_plan__isnull=True):
+        for a in unplanned.filter(created_at__lt=settle_cutoff):
             rev = (SignalAuditEvent.objects.filter(
                 approval=a, event=SignalAuditEvent.Event.AUTO_ROUTE_DEFERRED)
                 .order_by("-id").first())
@@ -267,7 +276,7 @@ def _signal_disposition_block(now):
             else:
                 silent += 1
         silent_total += silent
-        by_source[src] = {"approved_24h": total, "planned": planned,
+        by_source[src] = {"approved_24h": total, "planned": planned, "in_flight": in_flight,
                           "deferred": deferred, "unplanned_no_reason": silent,
                           "deferral_reasons": dict(reasons)}
     return {"window_hours": 24, "by_source": by_source, "silent_loss_total": silent_total}

@@ -151,3 +151,55 @@ class OperationsD1toD4Tests(TestCase):
         force_authenticate(req, user=self.user)
         resp = AssignmentSetActiveView.as_view()(req, pk=asn.id)
         self.assertEqual(resp.status_code, 400)
+
+
+class SignalDispositionBlockTests(TestCase):
+    """GFX-PKT-TI-SIGNALS-NON-EXECUTION-INCIDENT — the disposition block must isolate GENUINE silent
+    losses: planned / durably-deferred / in-flight (within the settle window) never inflate it."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        self.user = get_user_model().objects.create_user(
+            username="d", email="d@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="D9", is_demo=True)
+        SignalSourceConfig.objects.create(source="ti_signals", auto_demo_execution_enabled=True)
+
+    def _appr(self, mid, *, age_s):
+        from signal_intake.models import PendingSignalApproval
+        from datetime import timedelta
+        a = PendingSignalApproval.objects.create(
+            source="ti_signals", message_id=mid, symbol="XAUUSD", direction="BUY",
+            stop_loss="4050", take_profits=["4060"], status=PendingSignalApproval.Status.APPROVED)
+        PendingSignalApproval.objects.filter(id=a.id).update(
+            created_at=timezone.now() - timedelta(seconds=age_s))
+        return PendingSignalApproval.objects.get(id=a.id)
+
+    def test_in_flight_signal_not_counted_as_silent_loss(self):
+        from execution.execution_health import UNPLANNED_SIGNAL_ALERT_SECONDS
+        # Just-approved (within the planning-settle window), no plan yet → in-flight, NOT a loss.
+        self._appr("f1", age_s=5)
+        block = ops._signal_disposition_block(timezone.now())
+        self.assertEqual(block["silent_loss_total"], 0)
+        self.assertEqual(block["by_source"]["ti_signals"]["in_flight"], 1)
+        self.assertEqual(block["by_source"]["ti_signals"]["unplanned_no_reason"], 0)
+
+    def test_settled_unplanned_no_reason_is_silent_loss(self):
+        from execution.execution_health import UNPLANNED_SIGNAL_ALERT_SECONDS
+        self._appr("f2", age_s=UNPLANNED_SIGNAL_ALERT_SECONDS + 60)  # settled, no plan, no reason
+        block = ops._signal_disposition_block(timezone.now())
+        self.assertEqual(block["silent_loss_total"], 1)
+        self.assertEqual(block["by_source"]["ti_signals"]["unplanned_no_reason"], 1)
+
+    def test_durably_deferred_is_not_silent_loss(self):
+        from execution.execution_health import UNPLANNED_SIGNAL_ALERT_SECONDS
+        from signal_intake.models import SignalAuditEvent
+        a = self._appr("f3", age_s=UNPLANNED_SIGNAL_ALERT_SECONDS + 60)
+        SignalAuditEvent.objects.create(
+            event=SignalAuditEvent.Event.AUTO_ROUTE_DEFERRED, approval=a,
+            detail={"reason": "auto-demo_rejected:plan_integrity_error"})
+        block = ops._signal_disposition_block(timezone.now())
+        self.assertEqual(block["silent_loss_total"], 0)
+        self.assertEqual(block["by_source"]["ti_signals"]["deferred"], 1)
+        self.assertEqual(block["by_source"]["ti_signals"]["deferral_reasons"]
+                         ["auto-demo_rejected:plan_integrity_error"], 1)
