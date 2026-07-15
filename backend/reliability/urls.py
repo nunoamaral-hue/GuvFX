@@ -4,11 +4,13 @@ from .views import (
     TradingHealthView, HealthMatrixView, AlertListView, AlertAcknowledgeView,
     RecommendationListView, HeartbeatIngestView,
     RecoveryAttemptListView, RecoveryStatusView, CircuitResetView,
+    OperationsSummaryView,
 )
 
 urlpatterns = [
     path("trading-health/", TradingHealthView.as_view(), name="reliability-trading-health"),
     path("health/", HealthMatrixView.as_view(), name="reliability-health"),
+    path("operations-summary/", OperationsSummaryView.as_view(), name="reliability-operations-summary"),
     path("alerts/", AlertListView.as_view(), name="reliability-alerts"),
     path("alerts/<int:pk>/acknowledge/", AlertAcknowledgeView.as_view(), name="reliability-alert-ack"),
     path("recommendations/", RecommendationListView.as_view(), name="reliability-recommendations"),
