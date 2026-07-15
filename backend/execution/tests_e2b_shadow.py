@@ -230,9 +230,10 @@ class ShadowPollGateTests(SimpleTestCase):
     the executable PLACE_TEST_ORDER/PLACE_ORDER types and never the default SYNC.
     That is structural: a shadow worker can never win a real order and route it
     to the live order_send path, and its poll rate is one claim/loop (well under
-    the throttle). The normal worker (flag OFF, default) keeps its exact pre-E2b
-    3-claim sequence (PLACE_TEST_ORDER → PLACE_ORDER → default SYNC) and never
-    claims a shadow job.
+    the throttle). The normal worker (flag OFF, default) claims its executable
+    sequence (PLACE_TEST_ORDER → PLACE_ORDER → MODIFY_POSITION → default SYNC;
+    MODIFY_POSITION added by WS-B auto-breakeven, a risk-reducing SL move ranked
+    ahead of the default SYNC) and never claims a shadow job.
     """
 
     def setUp(self):
@@ -257,10 +258,11 @@ class ShadowPollGateTests(SimpleTestCase):
 
     # --- normal mode (flag OFF, default) -----------------------------------
     def test_normal_mode_claim_sequence_unchanged(self):
-        # Req 1/6: exact pre-E2b 3-claim sequence, no shadow claim.
+        # Req 1/6: executable claim sequence (now incl. the risk-reducing MODIFY_POSITION),
+        # no shadow claim.
         job, calls = self._run_claim(shadow_enabled=False)
         self.assertIsNone(job)
-        self.assertEqual(calls, ["PLACE_TEST_ORDER", "PLACE_ORDER", None])
+        self.assertEqual(calls, ["PLACE_TEST_ORDER", "PLACE_ORDER", "MODIFY_POSITION", None])
         self.assertNotIn("PLACE_ORDER_SHADOW", calls)
 
     def test_normal_mode_short_circuits(self):

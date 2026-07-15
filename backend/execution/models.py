@@ -136,6 +136,12 @@ class ExecutionJob(models.Model):
         SYNC_POSITIONS = "SYNC_POSITIONS", "Sync positions"
         PLACE_TEST_ORDER = "PLACE_TEST_ORDER", "Place test order (demo)"
         PLACE_ORDER = "PLACE_ORDER", "Place order (strategy signal)"
+        # WS-B AUTO-BREAKEVEN — modify an OPEN position's stop-loss (and keep its
+        # take-profit). Risk-REDUCING only: used to move a remaining leg's SL to the
+        # entry price after TP1 closes. Not exposure-opening, so (like CLOSE_TRADE)
+        # it is deliberately NOT in KILL_SWITCH_BLOCKED_JOB_TYPES — a breakeven must
+        # still complete while the kill switch is engaged (closing risk is safe).
+        MODIFY_POSITION = "MODIFY_POSITION", "Modify position SL/TP (breakeven)"
         # EXEC-E2a — a SUPPRESSED, un-claimable shadow job promoted from a demo
         # plan. Distinct from PLACE_ORDER so no deployed worker claims it, and
         # served by next_job only to a shadow_worker (see views.next_job guard).
@@ -817,6 +823,18 @@ class ProposedOrderLeg(models.Model):
         null=True, blank=True, on_delete=models.SET_NULL,
         related_name="proposed_order_leg",
     )
+    # WS-B AUTO-BREAKEVEN — idempotency/audit markers for the automatic move-to-breakeven.
+    # When TP1 (leg_index==1) closes, each remaining OPEN leg's SL is moved to its entry via a
+    # MODIFY_POSITION job. ``breakeven_job`` links the (latest) modify job; ``breakeven_attempts``
+    # bounds retries; ``breakeven_applied_at`` is the terminal, broker-VERIFIED marker (set only
+    # after the modify job SUCCEEDs) so the per-minute sweep never re-issues a modify for a leg.
+    breakeven_job = models.ForeignKey(
+        "execution.ExecutionJob",
+        null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="breakeven_legs",
+    )
+    breakeven_attempts = models.PositiveSmallIntegerField(default=0)
+    breakeven_applied_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
