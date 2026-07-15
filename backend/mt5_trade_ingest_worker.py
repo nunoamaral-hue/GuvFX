@@ -811,9 +811,23 @@ def main():
                     complete_job(job_id, "SUCCESS", modify_result, "")
                 elif modify_result.get("error") == "position_not_found":
                     # The position closed before this SL move landed (e.g. TP1 & TP2 closed seconds
-                    # apart) → benign: there is nothing left to protect. Not a failure.
+                    # apart) → benign: there is nothing left to protect. Not a failure. Spread the
+                    # bridge result FIRST then force ok/already_closed so the stored SUCCESS result is
+                    # self-consistent (ok:True) while preserving error/detail for evidence. The
+                    # protection sweep keys off ``already_closed`` and will NOT mark the leg protected
+                    # (the SL was never moved) — it waits for close ingestion to confirm.
                     print(f"[PROTECT] job_id={job_id}: ticket={ticket} already closed (idempotent no-op)")
-                    complete_job(job_id, "SUCCESS", {"ok": True, "already_closed": True, **modify_result}, "")
+                    complete_job(job_id, "SUCCESS",
+                                 {**modify_result, "ok": True, "already_closed": True}, "")
+                elif modify_result.get("retryable"):
+                    # Soft, self-healing rejection — the SL is inside the broker stops/freeze band
+                    # (e.g. a TP2-lock right after TP2 closed, when the SL == the TP2 price sits at
+                    # live market). Complete FAILED so the sweep re-enqueues, but the ``retryable``
+                    # marker tells the sweep to treat it as a deferral (no page, no retry-cap march).
+                    err = modify_result.get("error", "retryable")
+                    print(f"[PROTECT] DEFERRED job_id={job_id}: ticket={ticket} {err} "
+                          f"dist_pts={modify_result.get('dist_points')}")
+                    complete_job(job_id, "FAILED", modify_result, f"deferred: {err}")
                 else:
                     err = modify_result.get("error", "unknown_error")
                     print(f"[PROTECT] FAILED job_id={job_id}: {err} {modify_result.get('detail', '')}")

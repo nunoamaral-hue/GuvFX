@@ -207,13 +207,18 @@ def _protection_block(now):
         .annotate(n=Count("id")).values_list("protection_stage", "n"))
     last = mp.filter(status="SUCCESS").order_by("-finished_at").first()
     last_result = (last.result or {}) if last else {}
+    failed_today = mp.filter(status="FAILED", created_at__gte=tstart)
+    # A retryable failure is a benign broker stops/freeze-band deferral (self-heals on a later sweep),
+    # NOT a real protection failure — surface it separately so it doesn't read as an incident.
+    deferred_today = failed_today.filter(result__retryable=True).count()
     return {
         "incremental_by_source": by_source,
         "modify_jobs": {
             "pending": mp.filter(status="PENDING").count(),
             "running": mp.filter(status="RUNNING").count(),
             "success_today": mp.filter(status="SUCCESS", created_at__gte=tstart).count(),
-            "failed_today": mp.filter(status="FAILED", created_at__gte=tstart).count(),
+            "failed_today": failed_today.count() - deferred_today,
+            "deferred_today": deferred_today,
         },
         "leg_stages_active": stages,
         "last_protection": {

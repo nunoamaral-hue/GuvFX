@@ -4,6 +4,7 @@ Covers the packet's required cases: BUY/SELL TP1→breakeven and TP2→TP2-lock;
 → TP3 direct to TP2; profit-gating (SL/loss closes never advance); monotonicity (no downgrade,
 idempotent no-op); retry+alert; worker-crash recovery; isolation; Wayond state-2 disabled.
 """
+from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
 
@@ -72,10 +73,17 @@ class Base(TestCase):
         qs = ExecutionJob.objects.filter(job_type="MODIFY_POSITION")
         return [j for j in qs if stage is None or (j.payload or {}).get("protection_stage") == stage]
 
-    def _mkjob(self, status, stage, payload_extra=None):
+    def _mkjob(self, status, stage, payload_extra=None, result=None, lease_expires_at=None):
         return ExecutionJob.objects.create(
             job_type="MODIFY_POSITION", account=self.acct, status=status,
-            payload={"protection_stage": stage, **(payload_extra or {})})
+            payload={"protection_stage": stage, **(payload_extra or {})},
+            result=result or {}, lease_expires_at=lease_expires_at)
+
+    def _age_close(self, plan, leg_index, seconds):
+        """Backdate a leg's Trade close_time so its trigger looks stale (overdue tests)."""
+        t = Trade.objects.get(account=self.acct, comment=f"WAY{plan.id}L{leg_index}")
+        t.close_time = timezone.now() - timedelta(seconds=seconds)
+        t.save(update_fields=["close_time"])
 
 
 class Stage1BreakevenTests(Base):
@@ -253,3 +261,87 @@ class DetectionTests(Base):
         self.assertEqual(r1["synced"], 1)
         self.assertEqual(r2["synced"], 0)
         self.assertEqual(ExecutionJob.objects.filter(job_type="SYNC_POSITIONS").count(), 1)
+
+
+class AlreadyClosedNoopTests(Base):
+    """Review F2 — a position_not_found no-op must NOT mark a still-open leg protected."""
+
+    def test_already_closed_success_does_not_advance_stage(self):
+        # leg3 closed (isolate leg2); leg2 still OPEN with a SUCCESS-but-already_closed modify job.
+        plan, legs = self._plan(direction="SELL", states=("tp", "open", "tp"))
+        j = self._mkjob("SUCCESS", "BREAKEVEN", result={"ok": True, "already_closed": True})
+        legs[1].breakeven_job = j
+        legs[1].save(update_fields=["breakeven_job"])
+        with _enable():
+            res = breakeven.sweep_breakeven()
+        legs[1].refresh_from_db()
+        self.assertEqual(res["noop_closed"], 1)
+        self.assertEqual(res["applied"], 0)
+        self.assertEqual(legs[1].protection_stage, "INITIAL")   # never falsely marked protected
+        self.assertEqual(res["enqueued"], 0)                    # and does not re-enqueue
+
+
+class SoftDeferTests(Base):
+    """Review F1 — a broker stops/freeze-band rejection is a retryable deferral, never a CRITICAL."""
+
+    def test_retryable_failure_defers_without_alert_or_attempt_bump(self):
+        from reliability.models import AlertEvent
+        plan, legs = self._plan(direction="SELL", states=("tp", "open", "tp"))  # isolate leg2
+        j = self._mkjob("FAILED", "BREAKEVEN",
+                        result={"ok": False, "error": "sl_within_stops_level", "retryable": True})
+        legs[1].breakeven_job = j
+        legs[1].breakeven_attempts = breakeven.MAX_BREAKEVEN_ATTEMPTS   # already at the cap
+        legs[1].save(update_fields=["breakeven_job", "breakeven_attempts"])
+        with _enable():
+            res = breakeven.sweep_breakeven()
+        legs[1].refresh_from_db()
+        self.assertEqual(res["deferred"], 1)
+        self.assertEqual(res["alerted"], 0)                     # NOT paged despite being at the cap
+        self.assertEqual(res["enqueued"], 1)                    # re-enqueued to try again
+        self.assertEqual(legs[1].breakeven_attempts,
+                         breakeven.MAX_BREAKEVEN_ATTEMPTS)       # attempts NOT marched forward
+        self.assertFalse(AlertEvent.objects.filter(
+            dedup_key=f"tp_protection_failed:plan:{plan.id}:leg:2:BREAKEVEN").exists())
+
+
+class OverdueGatingTests(Base):
+    """Review F3 — overdue WARN fires only for an ACTUAL stuck attempt, not a late-ingested close."""
+
+    def test_no_overdue_on_first_sight_of_late_close(self):
+        plan, legs = self._plan(direction="SELL", states=("tp", "open", "tp"))  # isolate leg2
+        self._age_close(plan, 1, breakeven.PROTECTION_OVERDUE_SECONDS + 60)     # TP1 closed long ago
+        with _enable():
+            res = breakeven.sweep_breakeven()                   # first ever sweep for this leg
+        self.assertEqual(res["overdue"], 0)                     # not "stuck" — just detected now
+        self.assertEqual(res["enqueued"], 1)                    # first modify enqueued healthily
+
+    def test_overdue_when_same_stage_attempt_is_stuck(self):
+        from reliability.models import AlertEvent
+        plan, legs = self._plan(direction="SELL", states=("tp", "open", "tp"))  # isolate leg2
+        self._age_close(plan, 1, breakeven.PROTECTION_OVERDUE_SECONDS + 60)
+        j = self._mkjob("RUNNING", "BREAKEVEN")                 # a real in-flight attempt, stuck
+        legs[1].breakeven_job = j
+        legs[1].breakeven_attempts = 1
+        legs[1].save(update_fields=["breakeven_job", "breakeven_attempts"])
+        with _enable():
+            res = breakeven.sweep_breakeven()
+        self.assertEqual(res["overdue"], 1)
+        self.assertEqual(res["inflight"], 1)                    # still counted in-flight (no re-enqueue)
+        self.assertTrue(AlertEvent.objects.filter(
+            dedup_key=f"tp_protection_overdue:plan:{plan.id}:leg:2:BREAKEVEN", status="OPEN").exists())
+
+
+class OrphanModifyReclaimTests(Base):
+    """Review F6 — a worker recycle mid-modify must not wedge the ladder; execution_health reclaims."""
+
+    def test_lease_expired_running_modify_is_reclaimed(self):
+        from execution import execution_health
+        stale = self._mkjob("RUNNING", "BREAKEVEN",
+                             lease_expires_at=timezone.now() - timedelta(seconds=120))
+        fresh = self._mkjob("RUNNING", "BREAKEVEN",
+                            lease_expires_at=timezone.now() + timedelta(seconds=120))
+        res = execution_health.sweep_execution_health()
+        stale.refresh_from_db(); fresh.refresh_from_db()
+        self.assertEqual(res["reclaimed_modify"], 1)
+        self.assertEqual(stale.status, "FAILED")               # dead orphan failed → sweep re-enqueues
+        self.assertEqual(fresh.status, "RUNNING")              # live lease untouched

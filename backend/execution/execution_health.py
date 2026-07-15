@@ -5,10 +5,12 @@ and, even when on, only inspects RUNNING jobs. Two silent execution defects ther
 and unrepaired. This sweep runs inside the per-minute monitor chain (always on, no reliability-core
 dependency) and closes both:
 
-  (1) RECLAIM orphaned SYNC — a worker recycle (deploy/restart) orphans any in-flight
-      ``SYNC_POSITIONS`` job (stuck RUNNING, lease expired, never completed). SYNC is idempotent and
-      auto-re-created, so a lease-EXPIRED orphan is dead weight that drags the pipeline to DEGRADED.
-      Fail it (safe; only SYNC, only lease-expired).
+  (1) RECLAIM orphaned SYNC + MODIFY — a worker recycle (deploy/restart) orphans any in-flight
+      ``SYNC_POSITIONS`` or ``MODIFY_POSITION`` job (stuck RUNNING, lease expired, never completed).
+      Both are idempotent (SYNC auto-re-creates; the MODIFY SLTP edit re-reads the live SL and
+      refuses any widen), so a lease-EXPIRED orphan is dead weight — SYNC drags the pipeline to
+      DEGRADED, a stranded MODIFY wedges the TP-protection ladder (the sweep counts it inflight
+      forever and never re-enqueues). Fail them (safe; only these two types, only lease-expired).
 
   (2) DETECT stuck PENDING order (the single most dangerous silent path, R1) — an order-opening job
       (``PLACE_ORDER``/``PLACE_TEST_ORDER``) that never gets claimed (e.g. node-routing mismatch)
@@ -59,6 +61,33 @@ def reclaim_orphaned_sync_jobs(now) -> int:
     )
     if n:
         logger.info("execution_health: reclaimed %s orphaned SYNC jobs %s", n, ids[:20])
+    return n
+
+
+def reclaim_orphaned_modify_jobs(now) -> int:
+    """Fail dead (lease-expired) RUNNING MODIFY_POSITION jobs so the protection sweep re-enqueues.
+
+    Without this a worker recycle mid-modify strands the job RUNNING forever: the worker only ever
+    claims PENDING rows, and the protection sweep counts a same-stage RUNNING job as permanently
+    ``inflight`` — so the leg never re-enqueues and the TP-protection ladder cannot self-heal. The
+    SLTP edit is idempotent (the bridge re-reads the live SL and hard-refuses any widen), so
+    re-running a modify after an orphan can never increase risk. Only touches lease-EXPIRED rows so
+    it can never race a live worker. Returns the count reclaimed."""
+    orphans = ExecutionJob.objects.filter(
+        status=ExecutionJob.Status.RUNNING,
+        job_type=ExecutionJob.JobType.MODIFY_POSITION,
+        lease_expires_at__lt=now,
+    )
+    ids = list(orphans.values_list("id", flat=True))
+    if not ids:
+        return 0
+    n = ExecutionJob.objects.filter(id__in=ids, status=ExecutionJob.Status.RUNNING).update(
+        status=ExecutionJob.Status.FAILED, finished_at=now, recovered=True,
+        recovery_reason="orphaned MODIFY_POSITION (lease expired, worker recycled) — monitor-chain reclaim",
+        error_message="orphaned: lease expired, worker gone",
+    )
+    if n:
+        logger.info("execution_health: reclaimed %s orphaned MODIFY jobs %s", n, ids[:20])
     return n
 
 
@@ -114,5 +143,6 @@ def sweep_execution_health(*, limit: int = 500) -> dict:
     return {
         "enabled": True,
         "reclaimed": reclaim_orphaned_sync_jobs(now),
+        "reclaimed_modify": reclaim_orphaned_modify_jobs(now),
         "stuck_alerted": detect_stuck_pending_orders(now),
     }

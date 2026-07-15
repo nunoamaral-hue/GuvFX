@@ -299,7 +299,8 @@ def sweep_breakeven(*, limit: int = DEFAULT_LIMIT) -> dict:
     """One idempotent pass of the protection ladder over every PROMOTED plan. Returns a counts dict.
     (Kept named ``sweep_breakeven`` for the monitor-chain wiring; it now drives the full ladder.)"""
     counts = {"enabled": True, "scanned": 0, "synced": 0, "enqueued": 0, "applied": 0,
-              "inflight": 0, "skipped": 0, "alerted": 0, "tp2_locked": 0, "overdue": 0}
+              "inflight": 0, "skipped": 0, "alerted": 0, "tp2_locked": 0, "overdue": 0,
+              "noop_closed": 0, "deferred": 0}
     if not breakeven_enabled():
         return {"enabled": False}
 
@@ -332,20 +333,36 @@ def sweep_breakeven(*, limit: int = DEFAULT_LIMIT) -> dict:
             if _STAGE_RANK[desired_stage] <= _STAGE_RANK.get(current, 0):
                 continue  # already protected at/beyond the desired stage (monotonic)
 
-            # WS-K: alert if this advance is overdue — its trigger TP closed long ago and it is still
-            # unverified (stuck/failing modify). The trigger is TP1 for breakeven, TP2 for the lock.
+            # Reconcile the last modify job before enqueuing another.
+            job = leg.breakeven_job
+            job_stage = (job.payload or {}).get("protection_stage") if job is not None else None
+            job_result = (job.result or {}) if job is not None else {}
+            attempted_this_stage = job is not None and job_stage == desired_stage
+
+            # WS-K: alert only when this stage has ACTUALLY been attempted and its modify is stuck —
+            # never on the first sighting of a TP-close that ingested late (that is a fresh detection,
+            # not a stuck modify). The trigger is TP1 for breakeven, TP2 for the lock.
             now = timezone.now()
             trig = trades_by_index.get(2 if desired_stage == STAGE_TP2_LOCKED else 1)
             trig_close = trig.close_time if trig else None
-            if trig_close and (now - trig_close).total_seconds() > PROTECTION_OVERDUE_SECONDS:
+            if (attempted_this_stage and job.status != ExecutionJob.Status.SUCCESS
+                    and trig_close and (now - trig_close).total_seconds() > PROTECTION_OVERDUE_SECONDS):
                 _alert_overdue_protection(plan, leg, desired_stage, trig_close, now)
                 counts["overdue"] += 1
 
-            # Reconcile the last modify job before enqueuing another.
-            job = leg.breakeven_job
-            if job is not None:
-                job_stage = (job.payload or {}).get("protection_stage")
-                if job.status == ExecutionJob.Status.SUCCESS and job_stage == desired_stage:
+            soft_defer = False
+            if attempted_this_stage:
+                if job.status == ExecutionJob.Status.SUCCESS:
+                    if job_result.get("already_closed"):
+                        # The bridge found no OPEN position to modify. If the leg truly closed, close
+                        # ingestion sets close_time and the leg is skipped next tick; until then DO
+                        # NOT mark it protected — the SL was never moved. Fail-closed: never claim a
+                        # protection we did not apply (a stale/mismatched ticket would otherwise mask
+                        # a still-open, unprotected leg). A persistently-open leg here surfaces via
+                        # the overdue WARN once its trigger close ages out.
+                        counts["noop_closed"] += 1
+                        continue
+                    # A broker-verified SL move → advance the persisted stage (idempotent, monotonic).
                     leg.protection_stage = desired_stage
                     if leg.breakeven_applied_at is None:
                         leg.breakeven_applied_at = timezone.now()
@@ -354,15 +371,23 @@ def sweep_breakeven(*, limit: int = DEFAULT_LIMIT) -> dict:
                     if desired_stage == STAGE_TP2_LOCKED:
                         counts["tp2_locked"] += 1
                     continue
-                if job.status in active and job_stage == desired_stage:
+                if job.status in active:
                     counts["inflight"] += 1
                     continue
-                if (job.status == ExecutionJob.Status.FAILED and job_stage == desired_stage
-                        and leg.breakeven_attempts >= MAX_BREAKEVEN_ATTEMPTS):
-                    _alert_protection_failure(plan, leg, desired_stage, job)
-                    counts["alerted"] += 1
-                    continue
-                # else (job for an older stage, or a retryable failure) → fall through and (re)enqueue
+                if job.status == ExecutionJob.Status.FAILED:
+                    if job_result.get("retryable"):
+                        # Soft, self-healing rejection (SL inside the broker stops/freeze band, e.g. the
+                        # TP2-lock right after TP2 closed). Re-enqueue WITHOUT paging or counting it
+                        # toward the retry cap — the position is moving toward TP3, away from this SL,
+                        # so a later sweep lands it once the band clears.
+                        soft_defer = True
+                        counts["deferred"] += 1
+                    elif leg.breakeven_attempts >= MAX_BREAKEVEN_ATTEMPTS:
+                        _alert_protection_failure(plan, leg, desired_stage, job)
+                        counts["alerted"] += 1
+                        continue
+                    # else: hard failure under the cap → fall through and retry
+            # else (no job, or a job for an older stage) → fall through and enqueue
 
             # Risk guard — advance the SL only if strictly risk-reducing vs the current-stage baseline.
             baseline = _baseline_sl(plan, leg, trade)
@@ -372,16 +397,23 @@ def sweep_breakeven(*, limit: int = DEFAULT_LIMIT) -> dict:
                 counts["skipped"] += 1
                 continue
 
-            prev_stage = (job.payload or {}).get("protection_stage") if job else None
             new_job = _enqueue_modify(plan, leg, trade, target_sl, desired_stage)
             if new_job is None:
                 counts["inflight" if _protection_inflight(trade, desired_stage) else "skipped"] += 1
                 continue
             leg.breakeven_job = new_job
-            leg.breakeven_attempts = (leg.breakeven_attempts + 1) if prev_stage == desired_stage else 1
+            # Bump the retry counter only for a genuine (re)attempt of this stage; a soft broker-band
+            # deferral is expected and must not march the leg toward the CRITICAL retry-exhausted page.
+            if soft_defer:
+                pass  # attempts unchanged
+            elif job_stage == desired_stage:
+                leg.breakeven_attempts = leg.breakeven_attempts + 1
+            else:
+                leg.breakeven_attempts = 1
             leg.save(update_fields=["breakeven_job", "breakeven_attempts"])
             counts["enqueued"] += 1
-            logger.info("protection: plan %s leg %s → %s MODIFY job %s sl=%s (attempt %s)",
-                        plan.id, leg.leg_index, desired_stage, new_job.id, target_sl, leg.breakeven_attempts)
+            logger.info("protection: plan %s leg %s → %s MODIFY job %s sl=%s (attempt %s%s)",
+                        plan.id, leg.leg_index, desired_stage, new_job.id, target_sl,
+                        leg.breakeven_attempts, " soft-defer" if soft_defer else "")
 
     return counts
