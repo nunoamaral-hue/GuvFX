@@ -16,6 +16,13 @@
 > `guvfx-windows-history-agent` repo + governed VPS probes — see
 > `docs/PROGRAMME_STATE.md`. Notion (*Current State v0.52*) is authoritative.
 
+## Production-stabilisation follow-ups (2026-07-15 packet — separate track)
+- [ ] **Capture auto-breakeven broker evidence** on the first natural TP1 close (`MODIFY_POSITION`
+  job `result.verified_sl` + leg `breakeven_applied_at`) — the one pending WS-B verification.
+- [ ] **Operator decisions (PM/Nuno):** reset the stale `RECOVERY_CIRCUIT:global` circuit breaker and
+  decide whether to enable `RELIABILITY_CORE_ENABLED` (turns on automated recovery) — see KNOWN_ISSUES.
+- [ ] **Optional:** add an `/operations` nav link (page is deployed, URL-only today).
+
 ## PM improvement backlog (in progress, Claude-as-PM)
 Green/Amber items proceed autonomously; Red items are flagged for Nuno's approval.
 - [x] **A — reconcile these stale handoff docs** to the true 006D/S1 state.
