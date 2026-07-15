@@ -36,7 +36,7 @@ type Summary = {
   control: { auto_execution: boolean; mode: string; kill_switch: boolean };
   components: Component[];
   heartbeats: Heartbeat[];
-  infra: Record<string, InfraItem>;
+  infra: Record<string, InfraItem | boolean>;
   strategies: StratRow[];
   positions: { open: number; promoted_plans: number; pending_candidates: number; failed_candidates: number };
   dispatch: { enabled: boolean; transport: string; last_delivery_at: string | null };
@@ -192,9 +192,10 @@ export default function OperationsPage() {
 
       <Section title="Infrastructure">
         {coreOff && <div style={{ color: "#a16207", fontSize: 12, marginBottom: 8 }}>Reliability core dormant — components without a live producer read UNKNOWN.</div>}
-        {INFRA_ORDER.filter((k) => s.infra?.[k]).map((k) => (
-          <Row key={k} label={k} value={String(s.infra[k].status)} color={STATE_COLOR[String(s.infra[k].status)] || "gray"} />
-        ))}
+        {INFRA_ORDER.filter((k) => s.infra?.[k]).map((k) => {
+          const item = s.infra[k] as InfraItem;
+          return <Row key={k} label={k} value={String(item.status)} color={STATE_COLOR[String(item.status)] || "gray"} />;
+        })}
       </Section>
 
       <Section title="Component health">
