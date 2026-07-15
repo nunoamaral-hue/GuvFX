@@ -1058,6 +1058,9 @@ class NotificationDelivery(models.Model):
     correlation_id = models.CharField(max_length=64, blank=True, default="")
     rendered_message = models.TextField(blank=True, default="")
     detail = models.CharField(max_length=255, blank=True, default="")
+    # B2: the provider (Telegram) message id of a REAL transmission — durable proof of delivery.
+    # Blank for dry-run/failed rows and for historical rows (no backfill).
+    provider_message_id = models.CharField(max_length=64, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

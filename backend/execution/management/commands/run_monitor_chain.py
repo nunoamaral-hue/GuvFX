@@ -36,7 +36,7 @@ from execution.breakeven import sweep_breakeven
 from execution.close_monitor import DEFAULT_LIMIT, process_closed_trades, resolve_completed_plans
 from execution.execution_health import sweep_execution_health
 from execution.notifications.dispatcher import dispatch_enabled, dispatch_pending
-from execution.notifications.reconcile import reconcile_notifications
+from execution.notifications.reconcile import check_notification_health, reconcile_notifications
 from execution.outcome_router import route_outcomes
 
 logger = logging.getLogger("guvfx.execution.monitor_chain")
@@ -78,6 +78,8 @@ class Command(BaseCommand):
             # BEFORE dispatch so anything it revives/backfills is sent the same tick.
             ("reconcile", reconcile_notifications),
             ("dispatch", dispatch_pending),
+            # WS-B4: roll up notification-transport health into one auto-resolving alert.
+            ("notify_health", check_notification_health),
         )
         for name, fn in steps:
             try:
@@ -96,6 +98,7 @@ class Command(BaseCommand):
         outr = results.get("outcome_router", {})
         rec = results.get("reconcile", {})
         disp = results.get("dispatch", {})
+        nh = results.get("notify_health", {})
         # One grep-friendly summary line for the cron log. ``dispatch_enabled`` is echoed so the
         # log itself proves the dry-run posture; ``transmitted`` is never anything but zero here.
         self.stdout.write(
@@ -107,6 +110,7 @@ class Command(BaseCommand):
             "outcome[routed={orr} candidates={oc} internal_only={oi}] "
             "reconcile[delivered={rmd} backfilled={rbf} revived={rrv} alerted={ral}] "
             "dispatch[enabled={de} claimed={dcl} sent={dsent} failed={df} skipped={dsk}] "
+            "notify_health[issues={nhi} alerted={nha} resolved={nhr}] "
             "failures={failed} "
             "(internal records + no order/WIMS; dispatch OFF/dry-run by default)".format(
                 ehr=eh.get("reclaimed", 0), ehs=eh.get("stuck_alerted", 0),
@@ -122,6 +126,7 @@ class Command(BaseCommand):
                 rrv=rec.get("revived", 0), ral=rec.get("alerted", 0),
                 de=disp.get("enabled", dispatch_enabled()), dcl=disp.get("claimed", 0),
                 dsent=disp.get("sent", 0), df=disp.get("failed", 0), dsk=disp.get("skipped", 0),
+                nhi=nh.get("issues", 0), nha=nh.get("alerted", 0), nhr=nh.get("resolved", 0),
                 failed=(",".join(failures) if failures else "none"),
             )
         )

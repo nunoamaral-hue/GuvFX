@@ -20,9 +20,10 @@ from execution.notifications.contracts import (
 class DeliveryResult:
     ok: bool
     status: str          # "SENT" or "FAILED"
-    transmitted: bool    # ALWAYS False in this foundation — dry-run only
+    transmitted: bool    # False for dry-run; True only for a real transmission
     rendered_message: str
     detail: str = ""
+    message_id: str = ""  # B2: the provider (Telegram) message id of a real transmission, else ""
 
 
 class NotificationTransport(ABC):

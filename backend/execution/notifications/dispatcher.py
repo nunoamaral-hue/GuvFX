@@ -72,6 +72,7 @@ def _persist_transmission(candidate, transport_name, attempt, result) -> None:
             result=NotificationDelivery.Result.SENT, transmitted=True, attempt=attempt,
             correlation_id=candidate.correlation_id,
             rendered_message=result.rendered_message, detail=result.detail,
+            provider_message_id=getattr(result, "message_id", "") or "",  # B2
         )
 
 
@@ -91,6 +92,7 @@ def _finalize_result(cid, candidate, transport_name, attempt, result, ok, delive
                 attempt=attempt, correlation_id=candidate.correlation_id,
                 rendered_message=(result.rendered_message if result is not None else ""),
                 detail=(result.detail if result is not None else "transport raised"),
+                provider_message_id=(getattr(result, "message_id", "") or "") if result is not None else "",  # B2
             )
 
 
