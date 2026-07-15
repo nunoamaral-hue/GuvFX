@@ -147,6 +147,36 @@ def _active_signal_lots(account_id, symbol=None, exclude_plan_id=None) -> Decima
     return total
 
 
+def exposure_attribution(account_id, symbol=None) -> dict:
+    """WS-C: per-SOURCE breakdown of what holds the SHARED account concurrency/exposure budget.
+
+    Account exposure, symbol exposure and concurrency are per-account aggregates SHARED between TI
+    and Wayond — a busy Wayond book can block TI (and vice-versa) under a same-source-looking code.
+    This makes the shared budget's real consumer visible, so a block can be told apart from a
+    stalled-resolver slot leak. Best-effort/read-only; source resolved via ``plan.source``."""
+    from collections import defaultdict
+    acc = defaultdict(lambda: {"active_plans": 0, "inflight_lots": Decimal("0")})
+    plans = SignalExecutionPlan.objects.filter(
+        account_id=account_id, status__in=_ACTIVE_PLAN_STATUSES)
+    if symbol:
+        plans = plans.filter(symbol=symbol)
+    for src in plans.values_list("source", flat=True):
+        acc[src or "unknown"]["active_plans"] += 1
+    legs = ProposedOrderLeg.objects.filter(
+        plan__account_id=account_id, plan__status=SignalExecutionPlan.Status.PROMOTED
+    ).select_related("plan")
+    if symbol:
+        legs = legs.filter(plan__symbol=symbol)
+    open_comments = set(
+        Trade.objects.filter(account_id=account_id, close_time__isnull=True)
+        .exclude(comment="").values_list("comment", flat=True))
+    for leg in legs:
+        if f"WAY{leg.plan_id}L{leg.leg_index}" not in open_comments:
+            acc[(leg.plan.source or "unknown")]["inflight_lots"] += leg.lot_size or Decimal("0")
+    return {s: {"active_plans": v["active_plans"], "inflight_lots": str(v["inflight_lots"])}
+            for s, v in acc.items()}
+
+
 def _open_positions_count(account_id) -> int:
     """Open real positions + active (PENDING/RUNNING) order-opening jobs."""
     open_trades = Trade.objects.filter(account_id=account_id, close_time__isnull=True).count()
@@ -273,12 +303,17 @@ def evaluate_promotion_risk(plan, legs) -> str | None:
             account_id, exclude_plan_id=plan.id
         )
         if acct_exposure + new_total > MAX_ACCOUNT_EXPOSURE_LOT:
+            logger.warning("risk: account_exposure_exceeded plan=%s source=%s used=%s+new=%s>cap=%s attribution=%s",
+                           plan.id, plan.source, acct_exposure, new_total, MAX_ACCOUNT_EXPOSURE_LOT,
+                           exposure_attribution(account_id))
             return "account_exposure_exceeded"
 
         sym_exposure = _open_position_lots(account_id, symbol) + _active_signal_lots(
             account_id, symbol, exclude_plan_id=plan.id
         )
         if sym_exposure + new_total > MAX_SYMBOL_EXPOSURE_LOT:
+            logger.warning("risk: symbol_exposure_exceeded plan=%s symbol=%s source=%s attribution=%s",
+                           plan.id, symbol, plan.source, exposure_attribution(account_id, symbol))
             return "symbol_exposure_exceeded"
 
         # 3: max open positions / active jobs
@@ -305,6 +340,8 @@ def evaluate_promotion_risk(plan, legs) -> str | None:
             .count()
         )
         if other_active >= PLAN_MAX_CONCURRENT_GROUPS:
+            logger.warning("risk: concurrent_position_limit plan=%s symbol=%s source=%s other_active=%s attribution=%s",
+                           plan.id, symbol, plan.source, other_active, exposure_attribution(account_id, symbol))
             return "concurrent_position_limit"
 
         return None

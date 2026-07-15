@@ -241,9 +241,26 @@ def _auto_execute(approval, acquired, *, assignment_mode, promote_fn, label) -> 
             return  # HELD/VOIDED (data/staleness) → no promotion, no job
         promote_fn(plan, actor=actor)  # shadow → PLACE_ORDER_SHADOW; demo → PLACE_ORDER
     except (PlanRejected, PromotionRejected) as exc:
+        # These already write a durable PlanAuditEvent / PromotionAuditEvent before raising.
         logger.info("auto_router: %s path rejected (%s)", label, getattr(exc, "code", exc))
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("auto_router: %s path error (%s)", label, exc)
+        _record_deferral(approval, f"{label}_error:{type(exc).__name__}")  # WS-C: no silent swallow
+
+
+def _record_deferral(approval, reason: str) -> None:
+    """WS-C: durably persist WHY the auto-router left a signal in the MANUAL queue (or hit a
+    swallowed error), so no auto-deferral is silent. Best-effort + fail-OPEN — an audit-write
+    failure must NEVER change routing (which is already fail-closed to MANUAL)."""
+    try:
+        from signal_intake.models import SignalAuditEvent
+        SignalAuditEvent.objects.create(
+            event=SignalAuditEvent.Event.AUTO_ROUTE_DEFERRED, approval=approval,
+            detail={"reason": reason},
+        )
+    except Exception:  # pragma: no cover - defensive; observability must not break routing
+        logger.warning("auto_router: failed to persist deferral reason=%s for approval=%s",
+                       reason, getattr(approval, "id", "?"))
 
 
 def route_acquired_signal(sender=None, *, provider=None, acquired=None,
@@ -260,8 +277,10 @@ def route_acquired_signal(sender=None, *, provider=None, acquired=None,
             mode, reason = effective_mode(approval)
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("auto_router: effective_mode failed (%s) -> manual", exc)
+            _record_deferral(approval, f"error:{type(exc).__name__}")
             return
         if mode == MODE_MANUAL:
+            _record_deferral(approval, reason)  # WS-C: reason was previously discarded
             return  # MANUAL — the approval stays PENDING exactly as today
         # Dispatch on the SAME tier ``effective_mode`` validated (single mode read — no second
         # ``get_solo()``), so shadow → dry-run job and demo → real order can never be crossed.
@@ -275,3 +294,5 @@ def route_acquired_signal(sender=None, *, provider=None, acquired=None,
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("auto_router: route failed (%s) -> left manual", exc)
+        if approval is not None:
+            _record_deferral(approval, f"route_error:{type(exc).__name__}")

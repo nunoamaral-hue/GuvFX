@@ -105,6 +105,9 @@ class SignalAuditEvent(models.Model):
         SIGNAL_REJECTED = "SIGNAL_REJECTED", "Signal rejected"
         # E3-APPROVAL-RBAC: refused approve/reject attempts are audited too.
         APPROVAL_DENIED = "APPROVAL_DENIED", "Approve/reject attempt denied (no reviewer permission)"
+        # WS-C: the auto-router left a signal in the MANUAL queue (or a swallowed error). Persists
+        # the previously-discarded ``effective_mode`` reason so no auto-deferral is silent.
+        AUTO_ROUTE_DEFERRED = "AUTO_ROUTE_DEFERRED", "Auto-route deferred to manual (reason recorded)"
 
     timestamp = models.DateTimeField(auto_now_add=True)
     actor = models.ForeignKey(

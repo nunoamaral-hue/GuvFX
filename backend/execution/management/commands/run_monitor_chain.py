@@ -34,6 +34,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from execution.breakeven import sweep_breakeven
 from execution.close_monitor import DEFAULT_LIMIT, process_closed_trades, resolve_completed_plans
+from execution.execution_health import sweep_execution_health
 from execution.notifications.dispatcher import dispatch_enabled, dispatch_pending
 from execution.notifications.reconcile import reconcile_notifications
 from execution.outcome_router import route_outcomes
@@ -62,6 +63,10 @@ class Command(BaseCommand):
         # Fixed dependency order: close-monitor feeds the outcome-router, which feeds the
         # dispatcher. Resolved here (not at import) so each name is looked up at call time.
         steps = (
+            # WS-C: always-on reliability sweep — reclaim dead SYNC orphans + alert on order-opening
+            # jobs stuck PENDING (never claimed → plan promoted but no order placed). Runs first so a
+            # reclaimed slot / surfaced defect is visible to the rest of the chain this tick.
+            ("execution_health", sweep_execution_health),
             ("resolve_plans", resolve_completed_plans),
             # WS-B AUTO-BREAKEVEN — after TP1 closes, move remaining legs' SL to entry. Inert
             # unless BREAKEVEN_ENABLED. Enqueue-only + idempotent, so safe to run every minute.
@@ -84,6 +89,7 @@ class Command(BaseCommand):
                 self.stderr.write(f"monitor-chain: STEP FAILED name={name} error={exc!r}")
                 failures.append(name)
 
+        eh = results.get("execution_health", {})
         rp = results.get("resolve_plans", {})
         be = results.get("breakeven", {})
         cm = results.get("close_monitor", {})
@@ -94,6 +100,7 @@ class Command(BaseCommand):
         # log itself proves the dry-run posture; ``transmitted`` is never anything but zero here.
         self.stdout.write(
             "monitor-chain: "
+            "exec_health[reclaimed={ehr} stuck_alerted={ehs}] "
             "resolve[scanned={rs} closed={rc} still_open={ro}] "
             "breakeven[enabled={ben} synced={bsy} enqueued={beq} applied={bap} inflight={binf} skipped={bsk} alerted={bal}] "
             "close[processed={cp} win={cw} loss={cl} be={cb} skipped={cs}] "
@@ -102,6 +109,7 @@ class Command(BaseCommand):
             "dispatch[enabled={de} claimed={dcl} sent={dsent} failed={df} skipped={dsk}] "
             "failures={failed} "
             "(internal records + no order/WIMS; dispatch OFF/dry-run by default)".format(
+                ehr=eh.get("reclaimed", 0), ehs=eh.get("stuck_alerted", 0),
                 rs=rp.get("scanned", 0), rc=rp.get("closed", 0), ro=rp.get("still_open", 0),
                 ben=be.get("enabled", False), bsy=be.get("synced", 0), beq=be.get("enqueued", 0),
                 bap=be.get("applied", 0), binf=be.get("inflight", 0), bsk=be.get("skipped", 0),
