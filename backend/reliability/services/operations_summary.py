@@ -232,6 +232,45 @@ def _protection_block(now):
     }
 
 
+def _signal_disposition_block(now):
+    """GFX-PKT-TI-SIGNALS-NON-EXECUTION-INCIDENT — durable-disposition visibility. Every tradeable
+    APPROVED signal must reach a plan or a durable AUTO_ROUTE_DEFERRED reason. Surfaces, per tradeable
+    source over the last 24h: how many APPROVED signals planned, how many were durably deferred (with
+    the reason breakdown), and how many are UNPLANNED WITHOUT a durable reason — the silent-loss count
+    that must stay 0. Read-only."""
+    from datetime import timedelta
+    from collections import Counter
+    from signal_intake.models import PendingSignalApproval, SignalAuditEvent
+    from execution.models import SignalExecutionPlan, SignalSourceConfig
+    tradeable = list(SignalSourceConfig.objects.filter(auto_demo_execution_enabled=True)
+                     .values_list("source", flat=True))
+    since = now - timedelta(hours=24)
+    by_source = {}
+    silent_total = 0
+    for src in tradeable:
+        appr = list(PendingSignalApproval.objects.filter(
+            source=src, status=PendingSignalApproval.Status.APPROVED, created_at__gte=since))
+        planned = deferred = silent = 0
+        reasons = Counter()
+        for a in appr:
+            if SignalExecutionPlan.objects.filter(approval=a).exists():
+                planned += 1
+                continue
+            rev = (SignalAuditEvent.objects.filter(
+                approval=a, event=SignalAuditEvent.Event.AUTO_ROUTE_DEFERRED)
+                .order_by("-id").first())
+            if rev is not None:
+                deferred += 1
+                reasons[(rev.detail or {}).get("reason", "unknown")] += 1
+            else:
+                silent += 1
+        silent_total += silent
+        by_source[src] = {"approved_24h": len(appr), "planned": planned,
+                          "deferred": deferred, "unplanned_no_reason": silent,
+                          "deferral_reasons": dict(reasons)}
+    return {"window_hours": 24, "by_source": by_source, "silent_loss_total": silent_total}
+
+
 def build_operations_summary() -> dict:
     """The full read-only operational summary for the status page (and alert enrichment)."""
     from reliability.models import ComponentHealth, Heartbeat, AlertEvent
@@ -323,6 +362,7 @@ def build_operations_summary() -> dict:
 
     infra = _infra_block(now, broker, dispatch, heartbeats)
     protection = _protection_block(now)
+    signal_dispositions = _signal_disposition_block(now)
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -333,6 +373,7 @@ def build_operations_summary() -> dict:
         "heartbeats": heartbeats,
         "infra": infra,
         "protection": protection,
+        "signal_dispositions": signal_dispositions,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},

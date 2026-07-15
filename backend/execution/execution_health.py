@@ -39,6 +39,14 @@ logger = logging.getLogger("guvfx.execution.health")
 STUCK_PENDING_ORDER_SECONDS = int(os.getenv("STUCK_PENDING_ORDER_SECONDS", "300") or 300)
 _ORDER_TYPES = (ExecutionJob.JobType.PLACE_ORDER, ExecutionJob.JobType.PLACE_TEST_ORDER)
 
+# A tradeable (auto-eligible source) APPROVED signal plans synchronously within seconds. One with
+# NEITHER a plan NOR a durable AUTO_ROUTE_DEFERRED reason after this long vanished silently — the TI
+# non-execution incident, where a leg-INSERT IntegrityError was mis-labelled ``duplicate_plan`` and
+# never persisted. Generous vs the synchronous plan latency so a healthy signal never trips it.
+UNPLANNED_SIGNAL_ALERT_SECONDS = int(os.getenv("UNPLANNED_SIGNAL_ALERT_SECONDS", "300") or 300)
+# Only look back this far — a silent loss older than this is not actionable and bounds the scan.
+UNPLANNED_SIGNAL_LOOKBACK_SECONDS = int(os.getenv("UNPLANNED_SIGNAL_LOOKBACK_SECONDS", "86400") or 86400)
+
 
 def execution_health_enabled() -> bool:
     return os.getenv("EXECUTION_HEALTH_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
@@ -135,14 +143,86 @@ def detect_stuck_pending_orders(now) -> int:
     return n
 
 
+def _alert_unplanned_signal(approval, now) -> None:
+    """One deduped WARN per tradeable APPROVED signal that reached no plan and no durable reason."""
+    try:
+        from reliability.constants import Component
+        from reliability.models import AlertEvent
+        dedup_key = f"unplanned_tradeable_signal:approval:{approval.id}"
+        if AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).exists():
+            return
+        AlertEvent.objects.create(
+            severity=AlertEvent.Severity.WARN,
+            component=Component.EXECUTION_PIPELINE,
+            trading_account_id=None,
+            title=f"TRADEABLE signal never planned — approval #{approval.id} ({approval.source})",
+            body=(f"APPROVED {approval.source} {getattr(approval, 'symbol', '?')} "
+                  f"{getattr(approval, 'direction', '?')} signal (approval #{approval.id}, "
+                  f"message {approval.message_id}) reached NEITHER a plan NOR a durable "
+                  f"AUTO_ROUTE_DEFERRED reason after {UNPLANNED_SIGNAL_ALERT_SECONDS}s — it was lost "
+                  f"silently. Check the auto-router/planning path (runtime-schema parity, integrity "
+                  f"errors)."),
+            dedup_key=dedup_key, status=AlertEvent.Status.OPEN,
+            detail={"approval_id": approval.id, "source": approval.source,
+                    "message_id": approval.message_id, "symbol": getattr(approval, "symbol", None),
+                    "direction": getattr(approval, "direction", None)},
+        )
+        logger.error("execution_health: UNPLANNED-SIGNAL alert approval=%s source=%s",
+                     approval.id, approval.source)
+    except Exception:  # pragma: no cover - alerting is best-effort
+        logger.exception("execution_health: failed to alert unplanned signal approval=%s",
+                         getattr(approval, "id", "?"))
+
+
+def detect_unplanned_tradeable_signals(now) -> dict:
+    """A tradeable (auto-eligible source) APPROVED signal must reach a durable disposition — a plan,
+    OR an AUTO_ROUTE_DEFERRED reason — within a bounded interval. One with NEITHER after the threshold
+    vanished silently (the TI non-execution incident). Raise ONE deduped WARN per approval and
+    auto-resolve when a plan or a durable reason later appears. ALERT-ONLY — never plans, mutates the
+    approval, or replays a signal. Returns ``{"unplanned_alerted", "unplanned_resolved"}``."""
+    from signal_intake.models import PendingSignalApproval, SignalAuditEvent
+    from execution.models import SignalExecutionPlan, SignalSourceConfig
+    from reliability.models import AlertEvent
+    tradeable = set(SignalSourceConfig.objects.filter(auto_demo_execution_enabled=True)
+                    .values_list("source", flat=True))
+    if not tradeable:
+        return {"unplanned_alerted": 0, "unplanned_resolved": 0}
+    lookback = now - timedelta(seconds=UNPLANNED_SIGNAL_LOOKBACK_SECONDS)
+    cutoff = now - timedelta(seconds=UNPLANNED_SIGNAL_ALERT_SECONDS)
+    # ``execution_plan`` is the OneToOne reverse relation (SignalExecutionPlan.approval).
+    cands = list(PendingSignalApproval.objects.filter(
+        source__in=tradeable, status=PendingSignalApproval.Status.APPROVED,
+        created_at__gte=lookback, created_at__lt=cutoff,
+    ).order_by("-id")[:500])
+    alerted = resolved = 0
+    for a in cands:
+        has_plan = SignalExecutionPlan.objects.filter(approval=a).exists()
+        has_reason = SignalAuditEvent.objects.filter(
+            approval=a, event=SignalAuditEvent.Event.AUTO_ROUTE_DEFERRED).exists()
+        dedup_key = f"unplanned_tradeable_signal:approval:{a.id}"
+        if has_plan or has_reason:
+            resolved += AlertEvent.objects.filter(
+                dedup_key=dedup_key, status=AlertEvent.Status.OPEN).update(
+                status=AlertEvent.Status.RESOLVED, resolved_at=now)
+            continue
+        existed = AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).exists()
+        _alert_unplanned_signal(a, now)
+        if not existed:  # count only genuinely-new alerts
+            alerted += 1
+    return {"unplanned_alerted": alerted, "unplanned_resolved": resolved}
+
+
 def sweep_execution_health(*, limit: int = 500) -> dict:
-    """One pass: reclaim dead SYNC orphans + alert on stuck-PENDING orders. Returns a counts dict."""
+    """One pass: reclaim dead SYNC/MODIFY orphans + alert on stuck-PENDING orders and tradeable
+    signals that never reached a plan or a durable reason. Returns a counts dict."""
     if not execution_health_enabled():
         return {"enabled": False}
     now = timezone.now()
+    unplanned = detect_unplanned_tradeable_signals(now)
     return {
         "enabled": True,
         "reclaimed": reclaim_orphaned_sync_jobs(now),
         "reclaimed_modify": reclaim_orphaned_modify_jobs(now),
         "stuck_alerted": detect_stuck_pending_orders(now),
+        **unplanned,
     }

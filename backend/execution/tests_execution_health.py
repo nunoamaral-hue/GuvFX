@@ -129,3 +129,68 @@ class AutoRouterDeferralTests(TestCase):
         with mock.patch("signal_intake.models.SignalAuditEvent.objects.create",
                         side_effect=RuntimeError("db down")):
             auto_router._record_deferral(self.appr, "kill_switch")  # must not raise
+
+
+class UnplannedSignalAlertTests(TestCase):
+    """GFX-PKT-TI-SIGNALS-NON-EXECUTION-INCIDENT — a tradeable APPROVED signal with NEITHER a plan
+    NOR a durable AUTO_ROUTE_DEFERRED reason is a silent loss → deduped WARN, auto-resolving."""
+
+    def setUp(self):
+        from execution.models import SignalSourceConfig
+        self.user = User.objects.create_user(username="us", email="us@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="US1", is_demo=True)
+        SignalSourceConfig.objects.create(source=TI, auto_demo_execution_enabled=True)
+        SignalSourceConfig.objects.create(source=WAY, auto_demo_execution_enabled=False)
+
+    def _appr(self, mid, *, age_s):
+        a = PendingSignalApproval.objects.create(
+            source=TI, message_id=mid, symbol="XAUUSD", direction="BUY",
+            stop_loss="4050", take_profits=["4060", "4061", "4062"],
+            status=PendingSignalApproval.Status.APPROVED)
+        PendingSignalApproval.objects.filter(id=a.id).update(
+            created_at=timezone.now() - timedelta(seconds=age_s))
+        return PendingSignalApproval.objects.get(id=a.id)
+
+    def test_silent_unplanned_signal_alerts(self):
+        from reliability.models import AlertEvent
+        a = self._appr("u1", age_s=execution_health.UNPLANNED_SIGNAL_ALERT_SECONDS + 60)
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["unplanned_alerted"], 1)
+        self.assertTrue(AlertEvent.objects.filter(
+            dedup_key=f"unplanned_tradeable_signal:approval:{a.id}", status="OPEN").exists())
+
+    def test_recent_signal_not_yet_alerted(self):
+        self._appr("u2", age_s=10)  # within the synchronous plan window → not stuck
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["unplanned_alerted"], 0)
+
+    def test_durable_reason_suppresses_and_resolves(self):
+        from reliability.models import AlertEvent
+        a = self._appr("u3", age_s=execution_health.UNPLANNED_SIGNAL_ALERT_SECONDS + 60)
+        execution_health.sweep_execution_health()  # opens the alert
+        SignalAuditEvent.objects.create(
+            event=SignalAuditEvent.Event.AUTO_ROUTE_DEFERRED, approval=a,
+            detail={"reason": "auto-demo_rejected:plan_integrity_error"})
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["unplanned_resolved"], 1)
+        self.assertFalse(AlertEvent.objects.filter(
+            dedup_key=f"unplanned_tradeable_signal:approval:{a.id}", status="OPEN").exists())
+
+    def test_planned_signal_not_alerted(self):
+        a = self._appr("u4", age_s=execution_health.UNPLANNED_SIGNAL_ALERT_SECONDS + 60)
+        SignalExecutionPlan.objects.create(
+            approval=a, account=self.acct, source=TI, message_id="u4", symbol="XAUUSD",
+            direction="BUY", is_demo=True, status=SignalExecutionPlan.Status.PLANNED)
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["unplanned_alerted"], 0)
+
+    def test_non_tradeable_source_ignored(self):
+        # A signal from a source that is NOT auto-eligible is a manual-only signal, not a silent loss.
+        a = PendingSignalApproval.objects.create(
+            source=WAY, message_id="w1", symbol="XAUUSD", direction="BUY", stop_loss="1",
+            take_profits=["2"], status=PendingSignalApproval.Status.APPROVED)
+        PendingSignalApproval.objects.filter(id=a.id).update(
+            created_at=timezone.now() - timedelta(seconds=execution_health.UNPLANNED_SIGNAL_ALERT_SECONDS + 60))
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["unplanned_alerted"], 0)

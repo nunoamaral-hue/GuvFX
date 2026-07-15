@@ -297,24 +297,30 @@ def plan_demo_execution(
                 _audit(PlanAuditEvent.Event.LEG_CREATED, plan=plan, leg=leg,
                        approval=approval, actor=actor, leg_index=idx,
                        take_profit=tp, lot_size=str(lot))
-    except IntegrityError:
-        existing = SignalExecutionPlan.objects.filter(approval=approval).first()
-        if existing:
-            return existing
-        raise PlanRejected("duplicate_plan", f"approval #{approval.id} already planned")
+    except IntegrityError as exc:
+        return _existing_or_raise(approval, exc)
 
     log_stage("planning_complete", correlation_id, plan_id=plan.id,
               symbol=symbol, direction=direction, legs=n, status=plan.status)
     return plan
 
 
-def _existing_or_raise(approval):
-    """Lost a race on the OneToOne(approval) / (source,chat,message) constraint —
-    return the already-created plan idempotently, else surface the integrity error."""
+def _existing_or_raise(approval, exc=None):
+    """Resolve an IntegrityError from the plan+legs transaction.
+
+    A genuine idempotency race on the OneToOne(approval) / (source,chat,message) constraint leaves an
+    existing plan behind → return it (correct, benign). If NO plan exists the rollback was caused by a
+    DIFFERENT integrity error (e.g. a NOT-NULL column this writer's model does not populate — a
+    schema/runtime-parity gap) and must NEVER be reported as ``duplicate_plan``: that mislabel is what
+    lost two valid TI signals silently. Raise a DISTINCT ``plan_integrity_error`` code carrying the
+    real DB error so the auto-router records a durable, accurate disposition and the operator can see
+    the true cause. Fail-closed: no plan is created either way."""
     existing = SignalExecutionPlan.objects.filter(approval=approval).first()
     if existing:
         return existing
-    raise PlanRejected("duplicate_plan", f"approval #{approval.id} already planned")
+    detail = f": {type(exc).__name__}: {exc}" if exc is not None else ""
+    raise PlanRejected("plan_integrity_error",
+                       f"approval #{approval.id} plan create failed (not a duplicate){detail}")
 
 
 def _hold(common, actor, reason, *, detail="") -> SignalExecutionPlan:
@@ -327,8 +333,8 @@ def _hold(common, actor, reason, *, detail="") -> SignalExecutionPlan:
             _audit(PlanAuditEvent.Event.PLAN_HELD, plan=plan, approval=common["approval"],
                    actor=actor, reason=reason, detail=detail)
         return plan
-    except IntegrityError:
-        return _existing_or_raise(common["approval"])
+    except IntegrityError as exc:
+        return _existing_or_raise(common["approval"], exc)
 
 
 def _void(common, actor, reason, **extra) -> SignalExecutionPlan:
@@ -341,8 +347,8 @@ def _void(common, actor, reason, **extra) -> SignalExecutionPlan:
             _audit(PlanAuditEvent.Event.PLAN_VOIDED, plan=plan, approval=common["approval"],
                    actor=actor, reason=reason, **extra)
         return plan
-    except IntegrityError:
-        return _existing_or_raise(common["approval"])
+    except IntegrityError as exc:
+        return _existing_or_raise(common["approval"], exc)
 
 
 # ---------------------------------------------------------------------------
