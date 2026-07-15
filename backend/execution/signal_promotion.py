@@ -269,8 +269,8 @@ def promote_plan_to_demo_jobs(plan: SignalExecutionPlan, *, actor=None, now=None
     default is SHADOW, so this NEVER runs unless an operator has explicitly flipped
     ``signal_execution_mode=DEMO`` (under Nuno's recorded sign-off) AND armed every other gate. It
     inherits the identical demo-only + symbol + SL/TP + lot-cap + staleness + runtime-risk +
-    kill-switch validation, and the worker enforces a 0.02 lot cap and demo account. Idempotent;
-    fail-closed.
+    kill-switch validation, and the worker enforces the per-SOURCE lot cap (from the payload's
+    ``max_lot``, fail-closed) and demo account. Idempotent; fail-closed.
     """
     return _promote_plan(
         plan, expected_mode=ExecutionControl.SignalExecutionMode.DEMO,

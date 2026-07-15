@@ -97,15 +97,23 @@ DEMO_ORDER_ALLOWED_SIDES = ["BUY", "SELL"]
 # it never lifts a source's own cap.
 BRIDGE_HARD_MAX_LOT = 1.0
 
+# Independent per-SOURCE ceiling at the outermost bridge gate — the payload's max_lot may go LOWER
+# but never above the source's authorised size, even if the payload is malformed/forged. Unknown /
+# missing source → the conservative default. A CEILING only (fail-safe: clamps down, never up).
+BRIDGE_SOURCE_HARD_CAP = {"ti_signals": float(os.getenv("TI_SOURCE_MAX_LOT", "0.40"))}
+
 
 def _effective_max_lot(container) -> float:
     """The per-order lot ceiling: the source-scoped ``max_lot`` from the (internal) promotion
-    payload, fail-closed to ``DEMO_ORDER_MAX_LOT_SIZE`` and bounded by ``BRIDGE_HARD_MAX_LOT``."""
+    payload, bounded by BOTH the source's independent hard ceiling AND ``BRIDGE_HARD_MAX_LOT``,
+    fail-closed to ``DEMO_ORDER_MAX_LOT_SIZE`` for an unknown/missing source."""
+    c = container or {}
     try:
-        cap = float((container or {}).get("max_lot") or DEMO_ORDER_MAX_LOT_SIZE)
+        cap = float(c.get("max_lot") or DEMO_ORDER_MAX_LOT_SIZE)
     except (TypeError, ValueError):
         cap = DEMO_ORDER_MAX_LOT_SIZE
-    return min(max(cap, 0.0), BRIDGE_HARD_MAX_LOT)
+    src_ceiling = BRIDGE_SOURCE_HARD_CAP.get(str(c.get("signal_source") or ""), DEMO_ORDER_MAX_LOT_SIZE)
+    return min(max(cap, 0.0), src_ceiling, BRIDGE_HARD_MAX_LOT)
 
 # Fail-closed reasons returned when the terminal cannot trade the requested symbol.
 SYMBOL_NOT_AVAILABLE_ON_MT5 = "SYMBOL_NOT_AVAILABLE_ON_MT5"

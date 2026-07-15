@@ -114,10 +114,13 @@ class PromotionCapTests(_Base):
         plan = self._plan_with_legs(source=TI, lots=("0.40", "0.40", "0.40", "0.40"), mid="over-total")
         self.assertEqual(self._reject_code(plan), "total_lot_exceeds_cap")
 
-    # TI at exactly the cap promotes cleanly to 3 SUPPRESSED shadow jobs (no order)
+    # TI at exactly the cap promotes cleanly to 3 SUPPRESSED shadow jobs (no order).
+    # The margin guard is disabled here (no bridge in CI → it fail-closes); it is exercised
+    # directly in FreeMarginGuardTests.
     def test_ti_at_cap_promotes_to_three_shadow_jobs(self):
         plan = self._plan_with_legs(source=TI, lots=("0.40", "0.40", "0.40"), mid="ok")
-        jobs = promote_plan_to_shadow_jobs(plan, actor=self.user)
+        with mock.patch.object(risk_controls, "MARGIN_GUARD_ENABLED", False):
+            jobs = promote_plan_to_shadow_jobs(plan, actor=self.user)
         self.assertEqual(len(jobs), 3)  # 12 — three independent legs → three jobs
         self.assertTrue(all(j.job_type == ExecutionJob.JobType.PLACE_ORDER_SHADOW for j in jobs))
         # each job's payload carries the source + the per-source cap (source reaches worker/bridge)
@@ -127,15 +130,17 @@ class PromotionCapTests(_Base):
 
 
 class WorkerCapTests(SimpleTestCase):
-    # 7 — worker admits 0.40 when the payload cap allows it, rejects above the hard ceiling,
-    #     and fail-closes to 0.02 when the payload carries no source cap.
+    # 7 — worker admits 0.40 for ti_signals, clamps a forged payload to the source ceiling, and
+    #     fail-closes to 0.02 for an unknown/missing/other source regardless of the payload.
     def test_worker_max_lot_source_scoped_and_failclosed(self):
-        self.assertEqual(worker.worker_max_lot({"max_lot": "0.40"}), 0.40)   # TI cap admitted
-        self.assertEqual(worker.worker_max_lot({}), 0.02)                    # fail-closed default
-        self.assertEqual(worker.worker_max_lot({"max_lot": "bad"}), 0.02)    # invalid → default
-        self.assertEqual(worker.worker_max_lot({"max_lot": "5.0"}),
-                         worker.WORKER_HARD_MAX_LOT)                         # bounded by hard ceiling
-        self.assertLessEqual(0.40, worker.worker_max_lot({"max_lot": "0.40"}))
+        self.assertEqual(worker.worker_max_lot({"max_lot": "0.40", "signal_source": "ti_signals"}), 0.40)
+        # a forged/oversized payload is still clamped to the source's independent ceiling
+        self.assertEqual(worker.worker_max_lot({"max_lot": "5.0", "signal_source": "ti_signals"}), 0.40)
+        # unknown / missing / other source → fail-closed 0.02 even if the payload asks for 0.40
+        self.assertEqual(worker.worker_max_lot({"max_lot": "0.40"}), 0.02)
+        self.assertEqual(worker.worker_max_lot({"max_lot": "0.40", "signal_source": "wayond"}), 0.02)
+        self.assertEqual(worker.worker_max_lot({}), 0.02)
+        self.assertEqual(worker.worker_max_lot({"max_lot": "bad", "signal_source": "ti_signals"}), 0.02)
 
 
 class _FakeResp:
@@ -181,14 +186,31 @@ class FreeMarginGuardTests(_Base):
              mock.patch("urllib.request.urlopen", return_value=_FakeResp(resp)):
             self.assertIsNone(risk_controls._margin_guard_reason(plan, legs, Decimal("1.20")))
 
-    # 11b — FAIL-OPEN: a bridge/network error must never block a within-spec signal
-    def test_margin_guard_fail_open_on_bridge_error(self):
+    # 11b — FAIL-CLOSED: a larger order whose margin cannot be verified (bridge error) is BLOCKED,
+    #       never placed unverified.
+    def test_margin_guard_fail_closed_on_bridge_error(self):
         plan = self._plan()
         legs = list(plan.legs.all())
         with mock.patch.object(risk_controls, "MARGIN_GUARD_ENABLED", True), \
              mock.patch.dict("os.environ", {"GUVFX_WINDOWS_AGENT_BASE_URL": "http://bridge"}), \
              mock.patch("urllib.request.urlopen", side_effect=OSError("bridge down")):
-            self.assertIsNone(risk_controls._margin_guard_reason(plan, legs, Decimal("1.20")))
+            self.assertEqual(
+                risk_controls._margin_guard_reason(plan, legs, Decimal("1.20")),
+                "margin_unverifiable",
+            )
+
+    # 11c — FAIL-CLOSED when no bridge is configured at all (guard cannot reach the bridge)
+    def test_margin_guard_fail_closed_when_no_bridge(self):
+        plan = self._plan()
+        legs = list(plan.legs.all())
+        with mock.patch.object(risk_controls, "MARGIN_GUARD_ENABLED", True), \
+             mock.patch.dict("os.environ",
+                             {"GUVFX_WINDOWS_AGENT_BASE_URL": "", "GUVFX_AGENT_URL": "",
+                              "WINDOWS_AGENT_BASE": ""}, clear=False):
+            self.assertEqual(
+                risk_controls._margin_guard_reason(plan, legs, Decimal("1.20")),
+                "margin_unverifiable",
+            )
 
     # small orders (<= the global default total) skip the guard entirely (no network call)
     def test_margin_guard_skips_small_orders(self):
