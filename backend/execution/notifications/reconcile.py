@@ -36,6 +36,10 @@ logger = logging.getLogger("guvfx.execution.notifications.reconcile")
 DEFAULT_LIMIT = 500
 # A WIN still undelivered after this long is an incident, not a lag — alert once. Env-overridable.
 UNDELIVERED_ALERT_SECONDS = int(os.getenv("NOTIFICATION_UNDELIVERED_ALERT_SECONDS", "1200") or 1200)
+# WS-B4 notification-health thresholds.
+NOTIFICATION_MIN_FAIL_ATTEMPTS = int(os.getenv("NOTIFICATION_MIN_FAIL_ATTEMPTS", "3") or 3)
+NOTIFICATION_DIVERGENCE_MINUTES = int(os.getenv("NOTIFICATION_DIVERGENCE_MINUTES", "30") or 30)
+_HEALTH_DEDUP_KEY = "notify_pipeline_health:global"
 
 _WIN = TradeOutcomeRecord.Outcome.WIN
 _SENT = NotificationCandidate.Status.SENT
@@ -94,6 +98,15 @@ def reconcile_notifications(*, limit: int = DEFAULT_LIMIT) -> dict:
     )
     if to_mark:
         counts["marked_delivered"] = TradeOutcomeRecord.objects.filter(id__in=to_mark).update(delivered=True)
+        # WS-B4: auto-RESOLVE the (fire-once) undelivered-WIN alert now that the winner is delivered —
+        # the reconcile alert has no ComponentHealth key so reliability's auto-resolve never touched it.
+        try:
+            from reliability.models import AlertEvent
+            keys = [f"notify_undelivered:outcome:{i}" for i in to_mark]
+            AlertEvent.objects.filter(dedup_key__in=keys, status=AlertEvent.Status.OPEN).update(
+                status=AlertEvent.Status.RESOLVED, resolved_at=now)
+        except Exception:  # pragma: no cover - alert resolve is best-effort
+            logger.exception("reconcile: failed to auto-resolve undelivered alerts")
 
     # (B) Backfill a missing candidate for any delivery-candidate WIN (mirrors outcome_router).
     orphans = TradeOutcomeRecord.objects.filter(
@@ -139,4 +152,61 @@ def reconcile_notifications(*, limit: int = DEFAULT_LIMIT) -> dict:
         _alert_undelivered(rec, now)
         counts["alerted"] += 1
 
+    return counts
+
+
+def check_notification_health(*, limit: int = DEFAULT_LIMIT) -> dict:
+    """WS-B4: one rolled-up, AUTO-RESOLVING health alert for the notification transport pipeline.
+
+    Runs in the always-on monitor chain (no reliability-core dependency). It OPENs one deduped WARN
+    (`notify_pipeline_health:global`) when the pipeline is degraded — (1) persistent transport
+    failure (candidates FAILED with ≥N attempts, never transmitted) or (2) a SENT-but-untransmitted
+    divergence persisting under the real transport (the "SENT trap") — and RESOLVEs it once healthy.
+    Per-WIN loss is covered separately by the (also auto-resolving) undelivered-WIN alert."""
+    from django.db.models import Count
+    from reliability.constants import Component
+    from reliability.models import AlertEvent
+    now = timezone.now()
+    C = NotificationCandidate
+    counts = {"issues": 0, "alerted": 0, "resolved": 0}
+    issues = []
+
+    failing = (
+        C.objects.filter(status=C.Status.FAILED)
+        .annotate(n=Count("deliveries")).filter(n__gte=NOTIFICATION_MIN_FAIL_ATTEMPTS)
+        .exclude(deliveries__transmitted=True).count()
+    )
+    if failing:
+        issues.append(f"transport_failing={failing}")
+
+    if _real_transport_active():
+        cutoff = now - timedelta(minutes=NOTIFICATION_DIVERGENCE_MINUTES)
+        diverge = (
+            C.objects.filter(status=C.Status.SENT, updated_at__lt=cutoff)
+            .exclude(deliveries__transmitted=True).count()
+        )
+        if diverge:
+            issues.append(f"sent_untransmitted={diverge}")
+
+    counts["issues"] = len(issues)
+    try:
+        open_alert = AlertEvent.objects.filter(
+            dedup_key=_HEALTH_DEDUP_KEY, status=AlertEvent.Status.OPEN).first()
+        if issues:
+            if open_alert is None:
+                AlertEvent.objects.create(
+                    severity=AlertEvent.Severity.WARN, component=Component.EXECUTION_PIPELINE,
+                    title="Notification pipeline degraded", body="; ".join(issues),
+                    dedup_key=_HEALTH_DEDUP_KEY, status=AlertEvent.Status.OPEN,
+                    detail={"issues": issues})
+                counts["alerted"] = 1
+                logger.error("notification_health: OPENED — %s", "; ".join(issues))
+        elif open_alert is not None:
+            open_alert.status = AlertEvent.Status.RESOLVED
+            open_alert.resolved_at = now
+            open_alert.save(update_fields=["status", "resolved_at"])
+            counts["resolved"] = 1
+            logger.info("notification_health: RESOLVED (pipeline healthy)")
+    except Exception:  # pragma: no cover - alerting is best-effort
+        logger.exception("check_notification_health: alert upsert failed")
     return counts

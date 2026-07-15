@@ -100,9 +100,11 @@ class RealTelegramTransport(NotificationTransport):
 
         if not payload.get("ok"):
             return self._failed(text, f"telegram api error_code={payload.get('error_code')}")
+        # B2: capture the Telegram message id (an integer, no secret) for durable proof-of-delivery.
+        message_id = str((payload.get("result") or {}).get("message_id") or "")
         return DeliveryResult(
             ok=True, status="SENT", transmitted=True, rendered_message=text,
-            detail=f"sent {mode} to stakeholder review channel",
+            detail=f"sent {mode} to stakeholder review channel", message_id=message_id,
         )
 
     def _send(self, text: str) -> dict:
