@@ -35,6 +35,7 @@ from django.core.management.base import BaseCommand, CommandError
 from execution.breakeven import sweep_breakeven
 from execution.close_monitor import DEFAULT_LIMIT, process_closed_trades, resolve_completed_plans
 from execution.notifications.dispatcher import dispatch_enabled, dispatch_pending
+from execution.notifications.reconcile import reconcile_notifications
 from execution.outcome_router import route_outcomes
 
 logger = logging.getLogger("guvfx.execution.monitor_chain")
@@ -67,6 +68,10 @@ class Command(BaseCommand):
             ("breakeven", sweep_breakeven),
             ("close_monitor", process_closed_trades),
             ("outcome_router", route_outcomes),
+            # WS-C exactly-once safety net: backfill missing candidates, revive SENT-but-never-
+            # transmitted (real transport only), stamp delivered, alert on stuck winners. Runs
+            # BEFORE dispatch so anything it revives/backfills is sent the same tick.
+            ("reconcile", reconcile_notifications),
             ("dispatch", dispatch_pending),
         )
         for name, fn in steps:
@@ -83,6 +88,7 @@ class Command(BaseCommand):
         be = results.get("breakeven", {})
         cm = results.get("close_monitor", {})
         outr = results.get("outcome_router", {})
+        rec = results.get("reconcile", {})
         disp = results.get("dispatch", {})
         # One grep-friendly summary line for the cron log. ``dispatch_enabled`` is echoed so the
         # log itself proves the dry-run posture; ``transmitted`` is never anything but zero here.
@@ -92,6 +98,7 @@ class Command(BaseCommand):
             "breakeven[enabled={ben} synced={bsy} enqueued={beq} applied={bap} inflight={binf} skipped={bsk} alerted={bal}] "
             "close[processed={cp} win={cw} loss={cl} be={cb} skipped={cs}] "
             "outcome[routed={orr} candidates={oc} internal_only={oi}] "
+            "reconcile[delivered={rmd} backfilled={rbf} revived={rrv} alerted={ral}] "
             "dispatch[enabled={de} claimed={dcl} sent={dsent} failed={df} skipped={dsk}] "
             "failures={failed} "
             "(internal records + no order/WIMS; dispatch OFF/dry-run by default)".format(
@@ -103,6 +110,8 @@ class Command(BaseCommand):
                 cb=cm.get("breakeven", 0), cs=cm.get("skipped", 0),
                 orr=outr.get("routed", 0), oc=outr.get("candidates", 0),
                 oi=outr.get("internal_only", 0),
+                rmd=rec.get("marked_delivered", 0), rbf=rec.get("backfilled", 0),
+                rrv=rec.get("revived", 0), ral=rec.get("alerted", 0),
                 de=disp.get("enabled", dispatch_enabled()), dcl=disp.get("claimed", 0),
                 dsent=disp.get("sent", 0), df=disp.get("failed", 0), dsk=disp.get("skipped", 0),
                 failed=(",".join(failures) if failures else "none"),
