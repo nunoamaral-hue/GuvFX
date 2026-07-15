@@ -352,13 +352,14 @@ class DailyCapPerSourceTests(TestCase):
                     self._approval("cc2", source=SRC), account=self.demo)
         self.assertEqual(ctx.exception.code, "concurrent_limit_exceeded")
 
-    # 5 — the exposure / open-position / concurrency caps are unchanged by this
-    #     change (deployed overlap posture preserved).
+    # 5 — the deployed risk caps are the documented values. Exposure is 2.40 (raised by the
+    #     source-scoped 0.40/leg sizing packet, ADR-0012, to admit one 1.20-lot TI signal +
+    #     overlap); the concurrency / open-position caps are unchanged.
     def test_other_risk_caps_unchanged(self):
         from execution import risk_controls
         from execution import models as ex_models
-        self.assertEqual(risk_controls.MAX_ACCOUNT_EXPOSURE_LOT, Decimal("0.50"))
-        self.assertEqual(risk_controls.MAX_SYMBOL_EXPOSURE_LOT, Decimal("0.50"))
+        self.assertEqual(risk_controls.MAX_ACCOUNT_EXPOSURE_LOT, Decimal("2.40"))
+        self.assertEqual(risk_controls.MAX_SYMBOL_EXPOSURE_LOT, Decimal("2.40"))
         self.assertEqual(risk_controls.MAX_OPEN_POSITIONS_PER_ACCOUNT, 20)
         self.assertEqual(ex_models.PLAN_MAX_CONCURRENT_GROUPS, 10)
         self.assertEqual(ex_models.SIGNAL_MAX_CONCURRENT_POSITIONS, 20)
