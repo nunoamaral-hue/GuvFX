@@ -378,8 +378,8 @@ class LegEvidenceCollisionAndProgressiveTests(CanonicalBase):
         )
         leg1 = resolve_leg_evidence(self.CID, self.trade)["legs"][0]
         self.assertEqual(leg1["status"], "CLOSED")
-        # Picks the authoritative position row (T1, exit 1.0900, +21) — NOT the price-less 0-profit row.
-        self.assertEqual(leg1["exit"], "1.0900")
+        # Picks the authoritative position row (T1, exit 1.09000, +21) — NOT the price-less 0-profit row.
+        self.assertEqual(leg1["exit"], "1.09000")
         self.assertEqual(leg1["profit"], "21.00")
 
     def test_card_shows_only_legs_closed_by_its_own_close_time(self):
