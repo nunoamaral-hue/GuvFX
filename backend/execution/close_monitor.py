@@ -103,3 +103,62 @@ def process_closed_trades(*, limit: int = DEFAULT_LIMIT) -> dict:
         counts[str(outcome).lower()] = counts.get(str(outcome).lower(), 0) + 1
 
     return counts
+
+
+def resolve_completed_plans(*, limit: int = DEFAULT_LIMIT) -> dict:
+    """Free a plan's concurrency/exposure slot once ALL its positions have resolved.
+
+    A PROMOTED plan holds a concurrency + exposure slot (it counts in the risk gate's
+    ``_ACTIVE_PLAN_STATUSES`` and ``_active_signal_lots``) until it reaches a terminal state — but
+    nothing ever moved it there, so the slot leaked forever and blocked every later signal. This
+    step transitions a PROMOTED plan to CLOSED once every leg is settled: each leg's ExecutionJob
+    is terminal (SUCCESS/FAILED) AND every SUCCESS leg has an INGESTED, CLOSED ``Trade``
+    (``close_time`` set). FAIL-CLOSED: a leg whose order is still in flight, or whose fill has not
+    yet been ingested/closed, keeps the plan PROMOTED — the slot is NEVER freed while any position
+    may still be open. Idempotent (compare-and-set on status); creates no order; mutates only
+    ``plan.status``.
+    """
+    from execution.models import ExecutionJob  # local import: avoid import cycle at module load
+
+    terminal = (ExecutionJob.Status.SUCCESS, ExecutionJob.Status.FAILED)
+    counts = {"scanned": 0, "closed": 0, "still_open": 0}
+    plans = (
+        SignalExecutionPlan.objects.filter(status=SignalExecutionPlan.Status.PROMOTED)
+        .order_by("id")[:limit]
+    )
+    for plan in plans:
+        counts["scanned"] += 1
+        legs = list(plan.legs.select_related("execution_job").order_by("leg_index"))
+        if not legs:
+            continue
+        settled = True
+        for leg in legs:
+            job = leg.execution_job
+            if job is None or job.status not in terminal:
+                settled = False  # order not yet placed / still running
+                break
+            if job.status == ExecutionJob.Status.FAILED:
+                continue  # rejected → this leg never opened a position
+            # SUCCESS leg → require an INGESTED, CLOSED trade (fail-closed on ingestion lag / open).
+            comment = "WAY%dL%d" % (plan.id, leg.leg_index)
+            trade = (
+                Trade.objects.filter(account_id=plan.account_id, comment=comment)
+                .order_by("-open_time")
+                .first()
+            )
+            if trade is None or trade.close_time is None:
+                settled = False
+                break
+        if not settled:
+            counts["still_open"] += 1
+            continue
+        updated = SignalExecutionPlan.objects.filter(
+            id=plan.id, status=SignalExecutionPlan.Status.PROMOTED
+        ).update(status=SignalExecutionPlan.Status.CLOSED)
+        if updated:
+            counts["closed"] += 1
+            logger.info(
+                "close_monitor: plan %s PROMOTED→CLOSED (all positions resolved; slot freed)",
+                plan.id,
+            )
+    return counts

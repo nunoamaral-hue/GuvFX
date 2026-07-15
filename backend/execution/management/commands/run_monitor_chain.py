@@ -32,7 +32,7 @@ import logging
 
 from django.core.management.base import BaseCommand, CommandError
 
-from execution.close_monitor import DEFAULT_LIMIT, process_closed_trades
+from execution.close_monitor import DEFAULT_LIMIT, process_closed_trades, resolve_completed_plans
 from execution.notifications.dispatcher import dispatch_enabled, dispatch_pending
 from execution.outcome_router import route_outcomes
 
@@ -60,6 +60,7 @@ class Command(BaseCommand):
         # Fixed dependency order: close-monitor feeds the outcome-router, which feeds the
         # dispatcher. Resolved here (not at import) so each name is looked up at call time.
         steps = (
+            ("resolve_plans", resolve_completed_plans),
             ("close_monitor", process_closed_trades),
             ("outcome_router", route_outcomes),
             ("dispatch", dispatch_pending),
@@ -74,6 +75,7 @@ class Command(BaseCommand):
                 self.stderr.write(f"monitor-chain: STEP FAILED name={name} error={exc!r}")
                 failures.append(name)
 
+        rp = results.get("resolve_plans", {})
         cm = results.get("close_monitor", {})
         outr = results.get("outcome_router", {})
         disp = results.get("dispatch", {})
@@ -81,11 +83,13 @@ class Command(BaseCommand):
         # log itself proves the dry-run posture; ``transmitted`` is never anything but zero here.
         self.stdout.write(
             "monitor-chain: "
+            "resolve[scanned={rs} closed={rc} still_open={ro}] "
             "close[processed={cp} win={cw} loss={cl} be={cb} skipped={cs}] "
             "outcome[routed={orr} candidates={oc} internal_only={oi}] "
             "dispatch[enabled={de} claimed={dcl} sent={dsent} failed={df} skipped={dsk}] "
             "failures={failed} "
             "(internal records + no order/WIMS; dispatch OFF/dry-run by default)".format(
+                rs=rp.get("scanned", 0), rc=rp.get("closed", 0), ro=rp.get("still_open", 0),
                 cp=cm.get("processed", 0), cw=cm.get("win", 0), cl=cm.get("loss", 0),
                 cb=cm.get("breakeven", 0), cs=cm.get("skipped", 0),
                 orr=outr.get("routed", 0), oc=outr.get("candidates", 0),
