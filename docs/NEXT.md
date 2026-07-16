@@ -1,5 +1,11 @@
 # NEXT — Priorities (keep this list short)
 
+## TP-protection latency follow-ups (2026-07-16 watcher packet)
+- [ ] **After arming the watcher, capture before/after latency** on the next natural TI trade where
+  TP1/TP2 close while TP3 runs (target: TP2-lock verified within seconds of ingestion, not ~1 min).
+- [ ] **Diagnose the intermittent MT5 bridge SYNC/PLACE_ORDER ~6-min hang** if `protection_sync_stall`
+  fires again — the short lease bounds the symptom but the bridge-side stall is the root.
+
 ## Post-deploy stabilisation follow-ups (2026-07-16 packet)
 - [ ] **Capture the first natural TP2_LOCKED broker proof** now that the ladder is armed + hardened
   (leg 3 SL → the TP2 price on a signal where TP1 and TP2 both close while TP3 runs). Do not force.
