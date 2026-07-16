@@ -428,15 +428,44 @@ class SignalExecutionBlockTests(TestCase):
         ex = self._plan("CLOSED", mid="m1")                       # executed
         ExecutionJob.objects.create(job_type="PLACE_ORDER", account=self.acct, status="SUCCESS",
                                     payload={"plan_id": ex.id, "leg_index": 1})
-        rj = self._plan("PLANNED", mid="m2")                      # rejected (durable)
+        rj = self._plan("PLANNED", mid="m2")                      # rejected (durable promotion audit)
         PromotionAuditEvent.objects.create(plan=rj, event="PROMOTION_REJECTED",
                                            detail={"code": "daily_drawdown_hit"})
-        self._plan("PLANNED", mid="m3")                          # pending (no order, no rejection)
+        self._plan("PLANNED", mid="m3")                          # pending (just created, in-flight)
         block = ops._signal_execution_block(timezone.now())["ti_signals"]
         self.assertEqual(block["signals_today"], 3)
         self.assertEqual(block["executed"], 1)
         self.assertEqual(block["rejected"], 1)
         self.assertEqual(block["pending"], 1)
+        self.assertEqual(block["pending_stuck"], 0)
         self.assertEqual(block["rejection_reasons"], {"daily_drawdown_hit": 1})
         self.assertEqual(block["execution_pct"], 33.3)
+        self.assertTrue(block["all_accounted"])  # fresh pending is in-flight, not a gap
+
+    def test_terminal_plan_stage_rejections_count_as_rejected(self):
+        """VOIDED/HELD/SUPERSEDED plans emit PLAN_VOIDED/PLAN_HELD (a hold_reason), NOT a
+        PROMOTION_REJECTED audit — they must bucket as rejected, not pending (matches _strategy_metrics)."""
+        v = self._plan("VOIDED", mid="v1"); v.hold_reason = "stale_signal"; v.save(update_fields=["hold_reason"])
+        h = self._plan("HELD", mid="h1"); h.hold_reason = "safety_gate"; h.save(update_fields=["hold_reason"])
+        self._plan("SUPERSEDED", mid="s1")                       # no hold_reason → falls back to status label
+        block = ops._signal_execution_block(timezone.now())["ti_signals"]
+        self.assertEqual(block["signals_today"], 3)
+        self.assertEqual(block["executed"], 0)
+        self.assertEqual(block["rejected"], 3)
+        self.assertEqual(block["pending"], 0)
+        self.assertEqual(block["rejection_reasons"],
+                         {"stale_signal": 1, "safety_gate": 1, "superseded": 1})
+        self.assertEqual(block["execution_pct"], 0.0)
         self.assertTrue(block["all_accounted"])
+
+    def test_stuck_pending_flips_all_accounted(self):
+        """A plan stuck PLANNED past the settle window with NO order and NO disposition is a genuine
+        gap — pending_stuck>0 → all_accounted False."""
+        from execution.models import SignalExecutionPlan
+        p = self._plan("PLANNED", mid="stuck1")
+        old = timezone.now() - timezone.timedelta(seconds=600)
+        SignalExecutionPlan.objects.filter(id=p.id).update(created_at=old)
+        block = ops._signal_execution_block(timezone.now())["ti_signals"]
+        self.assertEqual(block["pending"], 1)
+        self.assertEqual(block["pending_stuck"], 1)
+        self.assertFalse(block["all_accounted"])

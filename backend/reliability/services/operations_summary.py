@@ -478,40 +478,63 @@ def _signal_execution_block(now):
     TI with Wayond. ``all_accounted`` asserts the success criterion 'no silent signal loss' at a glance.
     Read-only. Companion to signal_dispositions (which is approval-anchored + tracks silent loss)."""
     from collections import Counter
-    from execution.models import (SignalExecutionPlan, PromotionAuditEvent, ExecutionJob,
-                                  SignalSourceConfig)
-    tstart = _today_start(now)
-    sources = sorted(set(SignalSourceConfig.objects.filter(auto_demo_execution_enabled=True)
-                         .values_list("source", flat=True)) | {"ti_signals", "wayond"})
-    out = {}
-    for src in sources:
-        plans = list(SignalExecutionPlan.objects.filter(source=src, created_at__gte=tstart)
-                     .values_list("id", "status"))
-        total = len(plans)
-        executed = rejected = pending = 0
-        reasons = Counter()
-        for pid, status in plans:
-            has_order = ExecutionJob.objects.filter(
-                payload__plan_id=pid, job_type="PLACE_ORDER").exists()
-            if has_order or status in ("PROMOTED", "CLOSED"):
-                executed += 1
+    from datetime import timedelta
+    try:
+        from execution.models import (SignalExecutionPlan, PromotionAuditEvent, ExecutionJob,
+                                      SignalSourceConfig)
+        tstart = _today_start(now)
+        # A just-created plan legitimately sits PLANNED for a moment before promotion/rejection commits;
+        # only a plan stuck past this window with NO terminal disposition is a genuine gap.
+        settle = now - timedelta(seconds=300)
+        sources = sorted(set(SignalSourceConfig.objects.filter(auto_demo_execution_enabled=True)
+                             .values_list("source", flat=True)) | {"ti_signals", "wayond"})
+        out = {}
+        for src in sources:
+            plans = list(SignalExecutionPlan.objects.filter(source=src, created_at__gte=tstart)
+                         .values_list("id", "status", "created_at", "hold_reason"))
+            total = len(plans)
+            if not total:
                 continue
-            rej = (PromotionAuditEvent.objects.filter(plan_id=pid, event="PROMOTION_REJECTED")
-                   .order_by("-created_at").values_list("detail", flat=True).first())
-            if rej is not None:
-                rejected += 1
-                reasons[(rej or {}).get("code", "promotion_rejected")] += 1
-            else:
-                pending += 1  # PLANNED, no order, no durable rejection yet (in-flight or void)
-        if total:
+            plan_ids = [p[0] for p in plans]
+            # ONE query each (no per-plan N+1): which plans have a PLACE_ORDER, and the latest durable
+            # promotion-reject reason per plan.
+            ordered = set(ExecutionJob.objects.filter(
+                job_type="PLACE_ORDER", payload__plan_id__in=plan_ids)
+                .values_list("payload__plan_id", flat=True))
+            promo = {}
+            for rpid, detail in (PromotionAuditEvent.objects.filter(
+                    plan_id__in=plan_ids, event="PROMOTION_REJECTED")
+                    .order_by("created_at").values_list("plan_id", "detail")):
+                promo[rpid] = detail  # last (latest) wins
+            executed = rejected = pending = pending_stuck = 0
+            reasons = Counter()
+            for pid, status, created, hold_reason in plans:
+                if pid in ordered or status in ("PROMOTED", "CLOSED"):
+                    executed += 1
+                elif status in ("VOIDED", "HELD", "SUPERSEDED"):
+                    # Terminal PLAN-STAGE rejections (stale→VOIDED, safety/data→HELD, provider→SUPERSEDED).
+                    # They carry a durable hold_reason, not a PROMOTION_REJECTED audit — count as rejected
+                    # (consistent with _strategy_metrics), NOT pending.
+                    rejected += 1
+                    reasons[hold_reason or status.lower()] += 1
+                elif pid in promo:
+                    rejected += 1
+                    reasons[(promo[pid] or {}).get("code", "promotion_rejected")] += 1
+                else:
+                    pending += 1
+                    if created and created < settle:
+                        pending_stuck += 1
             out[src] = {
                 "signals_today": total, "executed": executed, "rejected": rejected,
-                "pending": pending, "rejection_reasons": dict(reasons),
+                "pending": pending, "pending_stuck": pending_stuck,
+                "rejection_reasons": dict(reasons),
                 "execution_pct": round(100.0 * executed / total, 1),
-                # every plan lands in exactly one bucket → no silent loss on the plan side.
-                "all_accounted": (executed + rejected + pending == total),
+                # meaningful: no plan is stuck PLANNED past the settle window with no disposition.
+                "all_accounted": (pending_stuck == 0),
             }
-    return out
+        return out
+    except Exception:  # pragma: no cover - read-only; the status page must never 500 on this block
+        return {"status": "UNKNOWN", "error": "unavailable"}
 
 
 def build_operations_summary() -> dict:
