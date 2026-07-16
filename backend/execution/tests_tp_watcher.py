@@ -174,3 +174,36 @@ class SyncStallResilienceTests(WatcherBase):
         stuck.refresh_from_db()
         self.assertEqual(stuck.status, "FAILED")       # reclaimed
         self.assertTrue(stuck.recovered)
+
+
+class ProtectionSyncLeaseTests(WatcherBase):
+    """GFX-PKT-TP-PROTECTION-LATENCY — the claim-site fix: a protection sync (breakeven_sync) gets a
+    SHORT lease so a stranded one is reclaimed fast; a plain sync keeps the long default lease."""
+
+    def _claim(self):
+        from rest_framework.test import APIClient
+        from execution.models import WorkerIdentity
+        WorkerIdentity.objects.get_or_create(
+            worker_id="w-lease",
+            defaults={"worker_secret_hash": WorkerIdentity.hash_secret("s"),
+                      "status": WorkerIdentity.Status.ACTIVE})
+        return APIClient().get("/api/execution/jobs/next/?job_type=SYNC_POSITIONS",
+                               HTTP_X_WORKER_ID="w-lease", HTTP_X_WORKER_SECRET="s")
+
+    def test_protection_sync_gets_short_lease(self):
+        job = ExecutionJob.objects.create(
+            job_type="SYNC_POSITIONS", account=self.acct, status="PENDING",
+            payload={"breakeven_sync": True})
+        with mock.patch.dict("os.environ", {"EXECUTION_SYNC_LEASE_TTL_SECONDS": "60"}, clear=False):
+            resp = self._claim()
+        self.assertEqual(resp.status_code, 200)
+        job.refresh_from_db()
+        self.assertAlmostEqual((job.lease_expires_at - job.started_at).total_seconds(), 60, delta=5)
+
+    def test_plain_sync_keeps_default_lease(self):
+        job = ExecutionJob.objects.create(
+            job_type="SYNC_POSITIONS", account=self.acct, status="PENDING", payload={})
+        resp = self._claim()
+        self.assertEqual(resp.status_code, 200)
+        job.refresh_from_db()
+        self.assertAlmostEqual((job.lease_expires_at - job.started_at).total_seconds(), 300, delta=5)

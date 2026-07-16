@@ -33,13 +33,14 @@ services:
     restart: unless-stopped
     # Long-running adaptive loop (NOT the one-shot minute cron). Reuses the backend image + env.
     command: ["python", "manage.py", "run_tp_protection_watcher"]
-    environment:
-      # Dark by default — arm explicitly once verified. The ladder arm (BREAKEVEN_ENABLED) is
-      # inherited from telegram.env; the watcher additionally requires its own flag.
-      TP_WATCHER_ENABLED: "${TP_WATCHER_ENABLED:-0}"
-      TP_WATCHER_IDLE_INTERVAL: "${TP_WATCHER_IDLE_INTERVAL:-30}"
-      TP_WATCHER_PRE_INTERVAL: "${TP_WATCHER_PRE_INTERVAL:-3}"
-      TP_WATCHER_ACTIVE_INTERVAL: "${TP_WATCHER_ACTIVE_INTERVAL:-1}"
+    # NO `environment:` overrides here on purpose. TP_WATCHER_ENABLED (the arm flag) and the optional
+    # cadence tunables are inherited from telegram.env via `extends` → guvfx-backend, EXACTLY like
+    # BREAKEVEN_ENABLED. A compose `environment:` key would SHADOW the env_file value and a
+    # `${VAR:-0}` default interpolates from the shell/.env (NOT telegram.env), so the documented
+    # "set TP_WATCHER_ENABLED=1 in telegram.env" arm step would silently no-op. Dark-by-default is
+    # preserved because the flag is simply absent from telegram.env until arming and
+    # ``watcher_enabled()`` defaults to false when unset. Cadence defaults (30/3/1s) live in the
+    # command itself; override in telegram.env if ever needed.
     # No ports, no MT5 creds, no host mounts beyond what the backend already has.
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import os,sys; sys.exit(0)\""]

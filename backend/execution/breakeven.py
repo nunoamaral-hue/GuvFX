@@ -166,7 +166,15 @@ def _ensure_position_sync(account_ids) -> int:
 
 def _protection_inflight(trade, stage) -> bool:
     """A non-terminal MODIFY_POSITION for THIS account+ticket+stage already exists → don't duplicate.
-    Account-scoped (MT5 tickets are per-account, not global)."""
+    Account-scoped (MT5 tickets are per-account, not global).
+
+    NOTE: this check-then-create is not atomic across PROCESSES, so the fast watcher and the minute
+    monitor chain sweeping ti_signals in the same instant could both create one MODIFY for the same
+    (ticket, stage). That is BENIGN by design: a MODIFY places no order/trade/notification, the two
+    carry an identical risk-reducing SL, and the bridge re-reads the live SL and hard-refuses any
+    widen — so the worst case is one redundant, idempotent SL edit, never a wrong or doubled action.
+    The minute chain must keep sweeping ti_signals as the watcher's fallback, so it is deliberately
+    NOT excluded."""
     return ExecutionJob.objects.filter(
         job_type=ExecutionJob.JobType.MODIFY_POSITION,
         status__in=(ExecutionJob.Status.PENDING, ExecutionJob.Status.RUNNING),

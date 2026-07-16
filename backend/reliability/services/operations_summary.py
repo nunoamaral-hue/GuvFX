@@ -409,8 +409,10 @@ def _protection_watcher_block(now):
     detail = (hb.detail or {}) if hb else {}
     age = _age_s(hb.last_beat_at, now) if hb else None
     interval = (hb.expected_interval_s if hb else None) or 90
-    # Stale only matters when the watcher is meant to be running.
-    stale = bool(armed and (hb is None or (age is not None and age > interval * 2)))
+    # Stale only matters when the watcher is meant to be running. Uses the SAME 3x multiplier as the
+    # paging alert (execution_health.detect_protection_watcher_health) so the dashboard and the page
+    # never disagree about whether the watcher is stale.
+    stale = bool(armed and (hb is None or (age is not None and age > interval * 3)))
     tstart = _today_start(now)
     reclaimed_today = ExecutionJob.objects.filter(
         job_type="SYNC_POSITIONS", status="FAILED", recovered=True,

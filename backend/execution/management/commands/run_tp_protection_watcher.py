@@ -26,9 +26,12 @@ Design (each property required by the packet):
 * **Fallback** — the minute monitor chain STILL runs the same sweep as the slower reconciliation net.
   If this watcher stops, protection continues (just slower). Nothing here is load-bearing-once-only.
 * **Fail-safe** — every tick is wrapped; a transient DB/logic error is logged and the loop continues.
-* **Bounded bridge load** — the ladder's own idempotency (per-(ticket,stage) in-flight guard +
-  monotonic ``protection_stage``) means a faster poll NEVER enqueues a duplicate MODIFY, so bridge
-  calls do NOT scale with cadence.
+* **Bounded MODIFY load** — the ladder's own idempotency (per-(ticket,stage) in-flight guard +
+  monotonic ``protection_stage``) means a faster poll NEVER enqueues a duplicate MODIFY, so the
+  risk-bearing SL-edit bridge calls do NOT scale with cadence. (The position-SYNC/deals-fetch IS
+  intentionally driven faster in the HOT window — that is the whole point: detect a TP close within
+  ~1s instead of ~1min — but it is bounded to <=1 in-flight sync per account by
+  ``_ensure_position_sync`` and it places no order.)
 * **Observability** — a heartbeat (source ``tp_protection_watcher``) with cadence/state each tick.
 
 Inert unless ``BREAKEVEN_ENABLED`` (the ladder arm) AND ``TP_WATCHER_ENABLED`` (this watcher's arm).
@@ -107,8 +110,17 @@ class Command(BaseCommand):
             try:
                 cadence = self._tick(dry_run=dry_run, idle=idle, pre=pre, active=active)
             except OperationalError:
-                logger.exception("tp_watcher: DB error — dropping lock to reconnect")
-                return  # leave the loop → release + re-acquire (may reconnect)
+                # A bare management-command loop never fires Django's request signals, so a dropped
+                # connection is NOT auto-recycled: ensure_connection() only reconnects when
+                # ``self.connection is None`` — which only ``close()`` sets. Without this explicit
+                # close the broken connection is reused forever and the watcher wedges (every cursor
+                # raises, so even re-acquiring the lock fails). Close it → the next connect() is fresh.
+                logger.exception("tp_watcher: DB error — closing connection and re-acquiring lock")
+                try:
+                    connections[DEFAULT_DB_ALIAS].close()
+                except Exception:
+                    pass
+                return  # leave the loop → release (best-effort) + re-acquire on a fresh connection
             except Exception:
                 logger.exception("tp_watcher: tick failed (continuing)")
                 cadence = idle
@@ -156,10 +168,16 @@ class Command(BaseCommand):
             "advanced_open_legs": advanced, "enqueued": res.get("enqueued"),
             "deferred": res.get("deferred"), "tp2_locked": res.get("tp2_locked"),
             "superseded": res.get("superseded"), "reclaimed": reclaimed})
-        if state != "idle":
-            logger.info("tp_watcher: state=%s cadence=%ss open=%s advanced=%s enq=%s def=%s reclaimed=%s",
+        # Log only on a STATE TRANSITION or when something actually happened — NOT every active tick
+        # (at 1s that would grow the log by thousands of lines per protected position). Steady-state
+        # ticks are silent; the heartbeat detail above carries the per-tick state for /operations.
+        did_something = bool(res.get("enqueued") or res.get("deferred") or res.get("applied")
+                             or res.get("superseded") or reclaimed)
+        if state != getattr(self, "_last_state", None) or did_something:
+            logger.info("tp_watcher: state=%s cadence=%ss open=%s advanced=%s enq=%s def=%s applied=%s reclaimed=%s",
                         state, cadence, open_legs, advanced, res.get("enqueued"),
-                        res.get("deferred"), reclaimed)
+                        res.get("deferred"), res.get("applied"), reclaimed)
+        self._last_state = state
         return cadence
 
     # -- single-flight advisory lock ---------------------------------------
