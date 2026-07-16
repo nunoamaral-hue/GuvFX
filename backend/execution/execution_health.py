@@ -333,6 +333,57 @@ def detect_unplanned_tradeable_signals(now) -> dict:
     return {"unplanned_alerted": alerted, "unplanned_resolved": resolved}
 
 
+def detect_protection_watcher_health(now) -> dict:
+    """GFX-PKT-TP-PROTECTION-LATENCY / WS-L — deduped, auto-resolving alerts for the fast-protection
+    path: (1) the armed watcher's heartbeat is stale (it stopped → protection silently fell back to
+    the slow minute chain); (2) protection position-syncs are repeatedly stranding within the last
+    hour (the intermittent bridge/MT5 stall that delays TP-close ingestion). Best-effort; the only
+    mutation is the AlertEvent it manages."""
+    from datetime import timedelta
+    out = {"watcher_stale_alerted": 0, "sync_stall_alerted": 0}
+    try:
+        from reliability.constants import Component
+        from reliability.models import AlertEvent, Heartbeat
+        armed = os.getenv("TP_WATCHER_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+        hb = Heartbeat.objects.filter(source="tp_protection_watcher").first()
+        interval = (hb.expected_interval_s if hb else None) or 90
+        age = (now - hb.last_beat_at).total_seconds() if (hb and hb.last_beat_at) else None
+        stale = bool(armed and (hb is None or (age is not None and age > interval * 3)))
+        open_stale = AlertEvent.objects.filter(dedup_key="tp_watcher_stale", status=AlertEvent.Status.OPEN)
+        if stale and not open_stale.exists():
+            AlertEvent.objects.create(
+                severity=AlertEvent.Severity.WARN, component=Component.EXECUTION_PIPELINE,
+                title="TP protection watcher heartbeat stale",
+                body=("The adaptive TP-protection watcher is armed but has not heart-beaten in "
+                      f"{'?' if age is None else int(age)}s — protection has fallen back to the "
+                      "slower minute monitor chain."),
+                dedup_key="tp_watcher_stale", status=AlertEvent.Status.OPEN, detail={"age_s": age})
+            out["watcher_stale_alerted"] = 1
+        elif not stale and open_stale.exists():
+            open_stale.update(status=AlertEvent.Status.RESOLVED, resolved_at=now)
+
+        strands = ExecutionJob.objects.filter(
+            job_type=ExecutionJob.JobType.SYNC_POSITIONS, status=ExecutionJob.Status.FAILED,
+            recovered=True, payload__breakeven_sync=True, finished_at__gte=now - timedelta(hours=1)).count()
+        threshold = int(os.getenv("PROTECTION_SYNC_STALL_ALERT_THRESHOLD", "3"))
+        open_stall = AlertEvent.objects.filter(dedup_key="protection_sync_stall", status=AlertEvent.Status.OPEN)
+        if strands >= threshold and not open_stall.exists():
+            AlertEvent.objects.create(
+                severity=AlertEvent.Severity.WARN, component=Component.EXECUTION_PIPELINE,
+                title="Protection SYNC ingestion stalling",
+                body=(f"{strands} protection position-syncs stranded (lease-reclaimed) in the last hour "
+                      "— the MT5 bridge/terminal is intermittently hanging, delaying TP-close ingestion "
+                      "and protection. The short protection-sync lease bounds the impact; investigate "
+                      "the bridge if this persists."),
+                dedup_key="protection_sync_stall", status=AlertEvent.Status.OPEN, detail={"strands_1h": strands})
+            out["sync_stall_alerted"] = 1
+        elif strands < threshold and open_stall.exists():
+            open_stall.update(status=AlertEvent.Status.RESOLVED, resolved_at=now)
+    except Exception:  # pragma: no cover - alert-only must never break the sweep
+        logger.exception("execution_health: protection-watcher health check failed")
+    return out
+
+
 def sweep_execution_health(*, limit: int = 500) -> dict:
     """One pass: reclaim dead SYNC/MODIFY orphans + alert on stuck-PENDING orders and tradeable
     signals that never reached a plan or a durable reason. Returns a counts dict."""
@@ -362,4 +413,8 @@ def sweep_execution_health(*, limit: int = 500) -> dict:
         result.update(detect_unplanned_tradeable_signals(now))
     except Exception:  # pragma: no cover - defensive; alert-only must not break the sweep
         logger.exception("execution_health: unplanned-signal detector failed")
+    try:
+        result.update(detect_protection_watcher_health(now))
+    except Exception:  # pragma: no cover - defensive; alert-only must not break the sweep
+        logger.exception("execution_health: protection-watcher health check failed")
     return result

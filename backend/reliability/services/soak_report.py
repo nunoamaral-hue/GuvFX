@@ -125,6 +125,22 @@ def _source_soak(src, since):
     }
 
 
+def _watcher_soak(now, since):
+    """Fast TP-protection watcher evidence over the window: last heartbeat, and how many protection
+    position-syncs stranded (lease-reclaimed) — the bridge/MT5-stall indicator the watcher bounds."""
+    from execution.models import ExecutionJob
+    from reliability.models import Heartbeat
+    hb = Heartbeat.objects.filter(source="tp_protection_watcher").first()
+    return {
+        "heartbeat_age_s": (None if not hb or hb.last_beat_at is None
+                            else round((now - hb.last_beat_at).total_seconds())),
+        "state": (hb.detail or {}).get("state") if hb else None,
+        "protection_syncs_stranded": ExecutionJob.objects.filter(
+            job_type="SYNC_POSITIONS", status="FAILED", recovered=True,
+            payload__breakeven_sync=True, finished_at__gte=since).count(),
+    }
+
+
 def build_soak_snapshot(*, window_hours: int = 24, persist: bool = False) -> dict:
     from reliability.models import AlertEvent, Heartbeat, SoakSnapshot
     now = timezone.now()
@@ -147,6 +163,8 @@ def build_soak_snapshot(*, window_hours: int = 24, persist: bool = False) -> dic
              "interval_s": h.expected_interval_s}
             for h in Heartbeat.objects.all().order_by("source")
         ],
+        # GFX-PKT-TP-PROTECTION-LATENCY — fast-protection health over the window.
+        "protection_watcher": _watcher_soak(now, since),
     }
     if persist:
         SoakSnapshot.objects.create(window_hours=window_hours, data=snapshot)

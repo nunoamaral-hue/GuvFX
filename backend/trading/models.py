@@ -225,6 +225,13 @@ class Trade(models.Model):
     class Meta:
         unique_together = ("account", "ticket")
         ordering = ["-open_time"]
+        indexes = [
+            # TP-protection reads the newest Trade for a leg by (account, correlation comment) every
+            # tick — at the watcher's 1s cadence over a growing Trade history a seq-scan would dominate
+            # its DB load. This covering index makes it an index seek to the newest matching row.
+            models.Index(fields=["account", "comment", "-open_time"],
+                         name="trade_acct_comment_otime_idx"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.account} | {self.ticket} | {self.symbol} {self.side}"

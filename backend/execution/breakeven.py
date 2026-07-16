@@ -166,7 +166,15 @@ def _ensure_position_sync(account_ids) -> int:
 
 def _protection_inflight(trade, stage) -> bool:
     """A non-terminal MODIFY_POSITION for THIS account+ticket+stage already exists → don't duplicate.
-    Account-scoped (MT5 tickets are per-account, not global)."""
+    Account-scoped (MT5 tickets are per-account, not global).
+
+    NOTE: this check-then-create is not atomic across PROCESSES, so the fast watcher and the minute
+    monitor chain sweeping ti_signals in the same instant could both create one MODIFY for the same
+    (ticket, stage). That is BENIGN by design: a MODIFY places no order/trade/notification, the two
+    carry an identical risk-reducing SL, and the bridge re-reads the live SL and hard-refuses any
+    widen — so the worst case is one redundant, idempotent SL edit, never a wrong or doubled action.
+    The minute chain must keep sweeping ti_signals as the watcher's fallback, so it is deliberately
+    NOT excluded."""
     return ExecutionJob.objects.filter(
         job_type=ExecutionJob.JobType.MODIFY_POSITION,
         status__in=(ExecutionJob.Status.PENDING, ExecutionJob.Status.RUNNING),
@@ -313,20 +321,27 @@ def _alert_overdue_protection(plan, leg, stage, trigger_close, now) -> None:
         logger.exception("protection: overdue-alert failed plan %s leg %s", plan.id, leg.leg_index)
 
 
-def sweep_breakeven(*, limit: int = DEFAULT_LIMIT) -> dict:
+def sweep_breakeven(*, limit: int = DEFAULT_LIMIT, sources=None) -> dict:
     """One idempotent pass of the protection ladder over every PROMOTED plan. Returns a counts dict.
-    (Kept named ``sweep_breakeven`` for the monitor-chain wiring; it now drives the full ladder.)"""
+    (Kept named ``sweep_breakeven`` for the monitor-chain wiring; it now drives the full ladder.)
+
+    ``sources`` (optional iterable of source keys) scopes the pass to those signal sources — the
+    fast TP-protection watcher passes ``{"ti_signals"}`` so it only ever touches ti_signals plans
+    (Wayond stays exclusively on the minute monitor chain, untouched). ``None`` = all sources
+    (the minute-chain reconciliation pass, unchanged). ``open_legs`` / ``advanced_open_legs`` in the
+    returned counts drive the watcher's adaptive cadence without a second query pass."""
     counts = {"enabled": True, "scanned": 0, "synced": 0, "enqueued": 0, "applied": 0,
               "inflight": 0, "skipped": 0, "alerted": 0, "tp2_locked": 0, "overdue": 0,
-              "noop_closed": 0, "deferred": 0, "superseded": 0}
+              "noop_closed": 0, "deferred": 0, "superseded": 0,
+              "open_legs": 0, "advanced_open_legs": 0}
     if not breakeven_enabled():
         return {"enabled": False}
 
     active = (ExecutionJob.Status.PENDING, ExecutionJob.Status.RUNNING)
-    plans = list(
-        SignalExecutionPlan.objects.filter(status=SignalExecutionPlan.Status.PROMOTED)
-        .select_related("account", "account__mt5_instance").order_by("id")[:limit]
-    )
+    plan_qs = SignalExecutionPlan.objects.filter(status=SignalExecutionPlan.Status.PROMOTED)
+    if sources is not None:
+        plan_qs = plan_qs.filter(source__in=list(sources))
+    plans = list(plan_qs.select_related("account", "account__mt5_instance").order_by("id")[:limit])
     # Keep position state fresh so a just-closed TP is visible to this and the next tick.
     counts["synced"] = _ensure_position_sync({p.account_id for p in plans})
     incremental_sources = _incremental_sources()
@@ -344,6 +359,12 @@ def sweep_breakeven(*, limit: int = DEFAULT_LIMIT) -> dict:
             trade = trades_by_index.get(leg.leg_index)
             if trade is None or trade.close_time is not None:
                 continue  # not a currently-OPEN position (closed/never-filled → nothing to protect)
+
+            # Cadence signal: this is an OPEN protection-eligible leg. A leg already past INITIAL
+            # (breakeven applied) means a TP2-lock may become due imminently → the watcher runs HOT.
+            counts["open_legs"] += 1
+            if (leg.protection_stage or STAGE_INITIAL) != STAGE_INITIAL:
+                counts["advanced_open_legs"] += 1
 
             desired_stage, target_sl = _desired_stage(
                 plan, leg, legs_by_index, trades_by_index, allow_tp2_lock)

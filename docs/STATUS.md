@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-07-16 — GFX-PKT-TP-PROTECTION-LATENCY-AND-FAST-WATCHER: implemented, review+deploy in progress. 🟡**
+  Authoritative reconstruction of plan 33 (ti_signals SELL) proved the incremental ladder is **CORRECT**,
+  not defective: **job #405 verified the first live TP2_LOCKED** (leg 3 SL 4028.92→4025.30 at 07:26:06),
+  and leg 3 then closed at 4025.30 (the TP2 level, +$144.80). The screenshot Nuno saw (SL=entry) was a
+  **mid-deferral snapshot**. Latency was the real issue (~10 min close→verified): **~5 min hung-SYNC
+  ingestion stall** (the ingest worker recycled mid-call, stranding SYNC #392 RUNNING for its full 300s
+  lease while `_ensure_position_sync` refused a new sync → ingestion blind) + ~1 min monitor cadence +
+  **~4 min broker stops/freeze band** (irreducible). Fix (Nuno approved): a dedicated **adaptive
+  ti_signals TP-protection watcher** (`run_tp_protection_watcher`, idle 30s / pre-TP 3s / active 1s,
+  single-flight advisory lock, self-healing reclaim, enqueue-only, minute-chain fallback, Wayond
+  untouched) + **protection-sync short lease** (`EXECUTION_SYNC_LEASE_TTL_SECONDS=60`) so a stranded
+  sync frees ingestion in ~1 min not ~6. Ops: `/operations` protection_watcher block + deduped alerts;
+  soak watcher line. Deploy artefacts under `deploy/tp-protection-watcher/` (managed compose service,
+  dark by default). 827 backend tests green.
+
 - **2026-07-16 — GFX-PKT-POST-DEPLOY-STABILISATION-AND-EXECUTION-CORRECTIONS: implemented, review+deploy in progress. 🟡**
   New incidents investigated independently from production evidence (no assumptions):
   - **A (TP2 protection):** plan 24's leg 3 closed at breakeven (4038.01) not TP2 (4034.50). Root cause:

@@ -1,0 +1,49 @@
+# GFX-PKT-TP-PROTECTION-LATENCY — managed, restart-safe adaptive TP-protection watcher.
+#
+# A dedicated VPS-side service that drives the EXISTING protection ladder
+# (`run_tp_protection_watcher`) scoped to ti_signals, at ~1s cadence only inside a live
+# protection window (idle otherwise). It is ENQUEUE-ONLY and holds NO MT5/bridge credentials —
+# it reuses the ingest worker + bridge exactly as the minute chain does. The minute monitor
+# chain REMAINS as the slower reconciliation fallback; this service only makes it faster.
+#
+# It reuses the backend service's full configuration (image, volumes, network, shared env via
+# telegram.env — DB creds + BREAKEVEN_ENABLED) through `extends`, overriding ONLY the command,
+# container identity, and the watcher's own env. NO secret is stored here.
+#
+# Single-flight is enforced in-process via a Postgres advisory lock, so even an accidental double
+# start cannot double-act (the second instance idles).
+#
+# Deploy (from the prod compose directory; base resolved via GUVFX_COMPOSE_BASE):
+#   docker compose -f docker-compose.yml \
+#     -f /home/ubuntu/guvfx-app/deploy/tp-protection-watcher/docker-compose.tp-watcher.yml \
+#     up -d --no-deps guvfx-tp-protection-watcher
+#
+# Arm (after verifying dark): set TP_WATCHER_ENABLED=1 in telegram.env and recreate this service.
+# Disarm: set TP_WATCHER_ENABLED=0 (or 'docker compose stop guvfx-tp-protection-watcher'); the
+# minute chain keeps protecting at its slower cadence — nothing is lost.
+#
+# This file makes NO change to the backend, worker, or listener services.
+
+services:
+  guvfx-tp-protection-watcher:
+    extends:
+      file: "${GUVFX_COMPOSE_BASE:-docker-compose.yml}"
+      service: guvfx-backend
+    container_name: guvfx-tp-protection-watcher
+    restart: unless-stopped
+    # Long-running adaptive loop (NOT the one-shot minute cron). Reuses the backend image + env.
+    command: ["python", "manage.py", "run_tp_protection_watcher"]
+    # NO `environment:` overrides here on purpose. TP_WATCHER_ENABLED (the arm flag) and the optional
+    # cadence tunables are inherited from telegram.env via `extends` → guvfx-backend, EXACTLY like
+    # BREAKEVEN_ENABLED. A compose `environment:` key would SHADOW the env_file value and a
+    # `${VAR:-0}` default interpolates from the shell/.env (NOT telegram.env), so the documented
+    # "set TP_WATCHER_ENABLED=1 in telegram.env" arm step would silently no-op. Dark-by-default is
+    # preserved because the flag is simply absent from telegram.env until arming and
+    # ``watcher_enabled()`` defaults to false when unset. Cadence defaults (30/3/1s) live in the
+    # command itself; override in telegram.env if ever needed.
+    # No ports, no MT5 creds, no host mounts beyond what the backend already has.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,sys; sys.exit(0)\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3

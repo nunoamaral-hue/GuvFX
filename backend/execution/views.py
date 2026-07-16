@@ -300,6 +300,15 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
             # RX-2E: mandatory lease on RUNNING. An expired/absent lease marks the
             # job an orphan for the reliability supervisor (detection only, Phase 1).
             _lease_ttl = int(os.getenv("EXECUTION_LEASE_TTL_SECONDS", "300"))
+            # TP-PROTECTION LATENCY: a protection sync (``breakeven_sync``) is idempotent and normally
+            # completes in a couple of snapshot fetches (~≤30s). If the worker hangs/recycles mid-call
+            # (a slow/stalled MT5 snapshot), the full 300s lease leaves position ingestion — and thus
+            # the whole protection ladder — BLIND for minutes, because ``_ensure_position_sync`` will
+            # not enqueue a fresh sync while one is RUNNING. Give protection syncs a much shorter lease
+            # so the (existing, idempotent, lease-based) reclaim frees ingestion within ~a minute.
+            if (job.job_type == ExecutionJob.JobType.SYNC_POSITIONS
+                    and (job.payload or {}).get("breakeven_sync")):
+                _lease_ttl = int(os.getenv("EXECUTION_SYNC_LEASE_TTL_SECONDS", "60"))
             job.lease_expires_at = _now + _timedelta(seconds=_lease_ttl)
             job.save(update_fields=["status", "worker_id", "started_at", "lease_expires_at"])
 

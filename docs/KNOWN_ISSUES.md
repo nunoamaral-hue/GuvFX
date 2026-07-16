@@ -2,6 +2,22 @@
 
 List active problems with reproduction steps and workarounds.
 
+## TP2_LOCKED is now broker-PROVEN; residual latency has two floors (2026-07-16)
+
+- **First natural TP2_LOCKED broker proof:** plan 33 leg 3, job **#405** verified SL 4028.92→4025.30
+  (the TP2 price); leg 3 then closed at 4025.30 (+$144.80). The ladder is correct.
+- The **adaptive watcher** cuts the *cadence* floor (~1 min → ~1 s in-window) and the **short
+  protection-sync lease** cuts the *ingestion-stall* floor (~6 min → ~1 min). The **broker
+  stops/freeze band** (`sl_within_stops_level`) remains an **irreducible** floor — a TP2-price SL
+  sits inside the band until price moves off it (was ~4 min for plan 33); this is soft-deferred and
+  retried, never clamped/forced.
+- Intermittent **MT5 bridge/SYNC stalls** (SYNC #392/#406 ran 358/359s; PLACE_ORDER #386 354s) are
+  the underlying cause of the ingestion stall. The short lease + watcher reclaim BOUND the impact and
+  a deduped alert (`protection_sync_stall`) now surfaces it, but the bridge-side hang itself is a
+  separate item worth diagnosing if it recurs.
+- The watcher is deployed **dark** first (`TP_WATCHER_ENABLED=0`) then armed; the minute monitor
+  chain remains the fallback, so disarming loses nothing.
+
 ## Daily-drawdown circuit-breaker re-scaled to $2,000 (2026-07-16)
 
 - `RISK_MAX_DAILY_DRAWDOWN_ABS` was unset in prod → the **$100 default**. At ti_signals' 1.20-lot

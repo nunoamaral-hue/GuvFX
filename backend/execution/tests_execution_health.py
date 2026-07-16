@@ -309,3 +309,51 @@ class OrphanedPlaceOrderResolveTests(TestCase):
         # A genuinely missing order must NOT be silently resolved just because the job left RUNNING.
         self.assertTrue(AlertEvent.objects.filter(
             dedup_key=f"orphaned_place_order:job:{job.id}", status="OPEN").exists())
+
+
+class ProtectionWatcherHealthTests(TestCase):
+    """GFX-PKT-TP-PROTECTION-LATENCY WS-L — deduped, auto-resolving alerts for the fast-protection path:
+    a stale (armed) watcher heartbeat, and repeated protection-SYNC strands (the bridge/MT5 stall)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="pw", email="pw@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="PW1", is_demo=True)
+
+    def _beat(self, age_s, interval=90):
+        from reliability.models import Heartbeat
+        Heartbeat.objects.update_or_create(
+            source="tp_protection_watcher",
+            defaults={"last_beat_at": timezone.now() - timedelta(seconds=age_s),
+                      "expected_interval_s": interval, "detail": {"state": "idle"}})
+
+    def test_stale_armed_watcher_alerts_then_resolves(self):
+        from reliability.models import AlertEvent
+        self._beat(age_s=400, interval=90)     # >3x interval → stale
+        with mock.patch.dict("os.environ", {"TP_WATCHER_ENABLED": "1"}, clear=False):
+            r = execution_health.detect_protection_watcher_health(timezone.now())
+        self.assertEqual(r["watcher_stale_alerted"], 1)
+        self.assertTrue(AlertEvent.objects.filter(dedup_key="tp_watcher_stale", status="OPEN").exists())
+        # fresh beat → auto-resolves
+        self._beat(age_s=5, interval=90)
+        with mock.patch.dict("os.environ", {"TP_WATCHER_ENABLED": "1"}, clear=False):
+            execution_health.detect_protection_watcher_health(timezone.now())
+        self.assertFalse(AlertEvent.objects.filter(dedup_key="tp_watcher_stale", status="OPEN").exists())
+
+    def test_not_armed_watcher_never_alerts(self):
+        from reliability.models import AlertEvent
+        # No heartbeat at all, but watcher disabled → not a fault.
+        with mock.patch.dict("os.environ", {"TP_WATCHER_ENABLED": "0"}, clear=False):
+            execution_health.detect_protection_watcher_health(timezone.now())
+        self.assertFalse(AlertEvent.objects.filter(dedup_key="tp_watcher_stale", status="OPEN").exists())
+
+    def test_repeated_sync_strands_alert(self):
+        from reliability.models import AlertEvent
+        now = timezone.now()
+        for i in range(3):
+            ExecutionJob.objects.create(
+                job_type="SYNC_POSITIONS", account=self.acct, status="FAILED", recovered=True,
+                payload={"breakeven_sync": True}, finished_at=now - timedelta(minutes=5))
+        r = execution_health.detect_protection_watcher_health(now)
+        self.assertEqual(r["sync_stall_alerted"], 1)
+        self.assertTrue(AlertEvent.objects.filter(dedup_key="protection_sync_stall", status="OPEN").exists())

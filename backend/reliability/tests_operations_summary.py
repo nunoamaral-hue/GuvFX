@@ -367,3 +367,35 @@ class RiskStateBlockTests(TestCase):
         with mock.patch("execution.risk_controls.MAX_DAILY_DRAWDOWN_ABS", Decimal("2000")):
             block = ops._risk_state_block(timezone.now())
         self.assertTrue(block["accounts"][0]["drawdown_tripped"])
+
+
+class ProtectionWatcherBlockTests(TestCase):
+    """GFX-PKT-TP-PROTECTION-LATENCY WS-L — the /operations protection_watcher block: state, cadence,
+    heartbeat staleness (only a fault when armed), and protection-sync ingestion health."""
+
+    def _beat(self, age_s, state="active", interval=5):
+        from reliability.models import Heartbeat
+        Heartbeat.objects.update_or_create(
+            source="tp_protection_watcher",
+            defaults={"last_beat_at": timezone.now() - __import__("datetime").timedelta(seconds=age_s),
+                      "expected_interval_s": interval, "detail": {"state": state, "cadence_s": 1, "open_legs": 2}})
+
+    def test_fresh_armed_watcher_not_stale(self):
+        self._beat(age_s=2, state="active", interval=5)
+        with mock.patch.dict("os.environ", {"TP_WATCHER_ENABLED": "1"}, clear=False):
+            block = ops._protection_watcher_block(timezone.now())
+        self.assertTrue(block["armed"])
+        self.assertEqual(block["state"], "active")
+        self.assertFalse(block["stale"])
+
+    def test_stale_armed_watcher_flagged(self):
+        self._beat(age_s=400, state="active", interval=5)
+        with mock.patch.dict("os.environ", {"TP_WATCHER_ENABLED": "1"}, clear=False):
+            block = ops._protection_watcher_block(timezone.now())
+        self.assertTrue(block["stale"])
+
+    def test_disabled_watcher_absent_hb_not_stale(self):
+        with mock.patch.dict("os.environ", {"TP_WATCHER_ENABLED": "0"}, clear=False):
+            block = ops._protection_watcher_block(timezone.now())
+        self.assertFalse(block["armed"])
+        self.assertFalse(block["stale"])
