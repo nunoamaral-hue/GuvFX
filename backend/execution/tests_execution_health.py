@@ -357,3 +357,30 @@ class ProtectionWatcherHealthTests(TestCase):
         r = execution_health.detect_protection_watcher_health(now)
         self.assertEqual(r["sync_stall_alerted"], 1)
         self.assertTrue(AlertEvent.objects.filter(dedup_key="protection_sync_stall", status="OPEN").exists())
+
+
+class ThrottleStormAlertTests(TestCase):
+    """GFX-PKT-MT5-BRIDGE-STALL — a distinct deduped, auto-resolving alert when many SYNCs orphan in
+    an hour (the worker being HTTP-429'd and leaving jobs RUNNING — the self-inflicted stall)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="ts", email="ts@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="TS1", is_demo=True)
+
+    def test_throttle_storm_alert_opens_and_resolves(self):
+        from reliability.models import AlertEvent
+        now = timezone.now()
+        for i in range(15):
+            ExecutionJob.objects.create(
+                job_type="SYNC_POSITIONS", account=self.acct, status="FAILED", recovered=True,
+                payload={}, finished_at=now - timedelta(minutes=5))
+        r = execution_health.detect_protection_watcher_health(now)
+        self.assertEqual(r.get("throttle_storm_alerted"), 1)
+        self.assertEqual(r.get("orphaned_sync_1h"), 15)
+        self.assertTrue(AlertEvent.objects.filter(dedup_key="worker_throttle_storm", status="OPEN").exists())
+        # clear the orphans → next pass auto-resolves
+        ExecutionJob.objects.filter(job_type="SYNC_POSITIONS", recovered=True).update(
+            finished_at=now - timedelta(hours=3))
+        execution_health.detect_protection_watcher_health(timezone.now())
+        self.assertFalse(AlertEvent.objects.filter(dedup_key="worker_throttle_storm", status="OPEN").exists())

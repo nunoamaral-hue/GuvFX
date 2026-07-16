@@ -379,6 +379,28 @@ def detect_protection_watcher_health(now) -> dict:
             out["sync_stall_alerted"] = 1
         elif strands < threshold and open_stall.exists():
             open_stall.update(status=AlertEvent.Status.RESOLVED, resolved_at=now)
+
+        # BSTALL: throttle-storm detector. If MANY jobs (any SYNC type) orphan within the hour, the
+        # worker is likely being HTTP-429'd by the backend claim throttle and leaving jobs RUNNING —
+        # the self-inflicted stall root cause. A distinct deduped, auto-resolving alert so a recurrence
+        # is caught directly (the be_sync alert above only sees protection syncs).
+        all_strands = ExecutionJob.objects.filter(
+            job_type=ExecutionJob.JobType.SYNC_POSITIONS, status=ExecutionJob.Status.FAILED,
+            recovered=True, finished_at__gte=now - timedelta(hours=1)).count()
+        storm_threshold = int(os.getenv("WORKER_THROTTLE_STORM_THRESHOLD", "15"))
+        out["orphaned_sync_1h"] = all_strands
+        open_storm = AlertEvent.objects.filter(dedup_key="worker_throttle_storm", status=AlertEvent.Status.OPEN)
+        if all_strands >= storm_threshold and not open_storm.exists():
+            AlertEvent.objects.create(
+                severity=AlertEvent.Severity.WARN, component=Component.EXECUTION_PIPELINE,
+                title="Worker job-claim throttle storm (orphaned SYNCs)",
+                body=(f"{all_strands} SYNC jobs orphaned (lease-reclaimed) in the last hour — the ingest "
+                      "worker is likely exceeding the backend claim rate limit (HTTP 429) and leaving "
+                      "jobs RUNNING. Check worker logs for 'rate_limited'/429 and the jobs/next/ call rate."),
+                dedup_key="worker_throttle_storm", status=AlertEvent.Status.OPEN, detail={"orphaned_sync_1h": all_strands})
+            out["throttle_storm_alerted"] = 1
+        elif all_strands < storm_threshold and open_storm.exists():
+            open_storm.update(status=AlertEvent.Status.RESOLVED, resolved_at=now)
     except Exception:  # pragma: no cover - alert-only must never break the sweep
         logger.exception("execution_health: protection-watcher health check failed")
     return out
