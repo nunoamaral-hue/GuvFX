@@ -247,9 +247,10 @@ class ShadowPollGateTests(SimpleTestCase):
         None -> nothing claimable)."""
         calls = []
 
-        def fake_claim(job_type=None):
-            calls.append(job_type)
-            return responder(job_type) if responder else None
+        def fake_claim(job_type=None, job_types=None):
+            key = job_types if job_types is not None else job_type
+            calls.append(key)
+            return responder(key) if responder else None
 
         with mock.patch.object(self.worker, "claim_next_job", side_effect=fake_claim), \
              mock.patch.object(self.worker, "SHADOW_WORKER_ENABLED", shadow_enabled):
@@ -257,22 +258,22 @@ class ShadowPollGateTests(SimpleTestCase):
         return job, calls
 
     # --- normal mode (flag OFF, default) -----------------------------------
-    def test_normal_mode_claim_sequence_unchanged(self):
-        # Req 1/6: executable claim sequence (now incl. the risk-reducing MODIFY_POSITION),
-        # no shadow claim.
+    def test_normal_mode_single_prioritized_claim(self):
+        # BSTALL-B: the normal worker now makes exactly ONE prioritized claim per loop (was 5 HTTP
+        # calls → ~150/min → 100/min throttle → 429 storm). Priority = risk-reducing protection first.
         job, calls = self._run_claim(shadow_enabled=False)
         self.assertIsNone(job)
-        self.assertEqual(calls, ["PLACE_TEST_ORDER", "PLACE_ORDER", "MODIFY_POSITION", "CLOSE_TRADE", None])
-        self.assertNotIn("PLACE_ORDER_SHADOW", calls)
+        self.assertEqual(calls, ["MODIFY_POSITION,CLOSE_TRADE,PLACE_ORDER,PLACE_TEST_ORDER,SYNC_POSITIONS"])
+        self.assertNotIn("PLACE_ORDER_SHADOW", str(calls))
 
-    def test_normal_mode_short_circuits(self):
-        # If PLACE_TEST_ORDER yields a job, no further claims are made.
+    def test_normal_mode_returns_claimed_job(self):
+        # The single prioritized call returns whatever the backend claimed (priority resolved server-side).
         job, calls = self._run_claim(
             shadow_enabled=False,
-            responder=lambda jt: {"id": 1} if jt == "PLACE_TEST_ORDER" else None,
+            responder=lambda key: {"id": 1, "job_type": "MODIFY_POSITION"},
         )
-        self.assertEqual(job, {"id": 1})
-        self.assertEqual(calls, ["PLACE_TEST_ORDER"])
+        self.assertEqual(job, {"id": 1, "job_type": "MODIFY_POSITION"})
+        self.assertEqual(len(calls), 1)  # ONE claim call
 
     # --- shadow mode (flag ON) ---------------------------------------------
     def test_shadow_mode_claims_only_shadow(self):

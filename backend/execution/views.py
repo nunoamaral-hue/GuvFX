@@ -189,18 +189,25 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         worker_id = request.query_params.get("worker_id", "mt5-worker")
         account_id = request.query_params.get("account_id")
         job_type = request.query_params.get("job_type")
-
-        qs = ExecutionJob.objects.filter(status=ExecutionJob.Status.PENDING)
-
-        # Job type filtering: explicit param or default to SYNC_POSITIONS
-        if job_type:
-            qs = qs.filter(job_type=job_type)
+        # BSTALL-B: a worker may pass ``job_types`` = a PRIORITY-ORDERED CSV to claim the
+        # highest-priority PENDING job across several types in ONE request. This replaces the old
+        # "one HTTP call per job type per loop" pattern, which multiplied the worker's poll rate ~5x
+        # and tripped the 100/min throttle (→ chronic HTTP 429 → orphaned jobs + a self-sustaining
+        # retry storm that intermittently blocked ALL claims, protection MODIFYs included). The
+        # single ``job_type`` param and the SYNC-only default are UNCHANGED.
+        job_types_param = request.query_params.get("job_types")
+        if job_types_param:
+            types_to_try = [t.strip() for t in job_types_param.split(",") if t.strip()]
+        elif job_type:
+            types_to_try = [job_type]
         else:
-            # Default: only return SYNC_POSITIONS (backward compat for Linux ingest worker)
-            qs = qs.filter(job_type=ExecutionJob.JobType.SYNC_POSITIONS)
+            # Default: only SYNC_POSITIONS (backward compat for the Linux ingest worker).
+            types_to_try = [ExecutionJob.JobType.SYNC_POSITIONS]
 
+        # Base queryset (PENDING + account), type applied per-priority below.
+        base_qs = ExecutionJob.objects.filter(status=ExecutionJob.Status.PENDING)
         if account_id:
-            qs = qs.filter(account_id=account_id)
+            base_qs = base_qs.filter(account_id=account_id)
 
         # ------------------------------------------------------------------
         # Node-aware filtering
@@ -217,7 +224,7 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         # the emergent "no deployed consumer asks for it" fact. No deployed worker
         # carries this permission today, so no shadow job is ever served.
         if not bool(perms.get("shadow_worker")):
-            qs = qs.exclude(job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW)
+            base_qs = base_qs.exclude(job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW)
 
         # Determine routing mode for audit trail
         routing_mode = "node_aware" if authorized_nodes else "legacy_null_node"
@@ -233,20 +240,28 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
                     status=TerminalNode.Status.ACTIVE,
                 ).values_list("id", flat=True)
             )
-            qs = qs.filter(terminal_node_id__in=active_node_ids)
+            base_qs = base_qs.filter(terminal_node_id__in=active_node_ids)
         else:
             # Legacy worker (no authorized_nodes): only claim NULL-node jobs.
-            qs = qs.filter(terminal_node__isnull=True)
+            base_qs = base_qs.filter(terminal_node__isnull=True)
 
-        # Atomic claim: lock the row so only one worker can claim it.
-        # skip_locked=True causes concurrent claimants to skip the locked
-        # row and try the next PENDING job (or get None).
+        # ``qs`` = the effective claimable set (used by the no-jobs / wrong-node audit below). When a
+        # single type is requested it is that type's set; the priority loop tries each type in order.
+        qs = base_qs.filter(job_type__in=types_to_try)
+
+        # Atomic claim: lock the row so only one worker can claim it. skip_locked=True causes
+        # concurrent claimants to skip the locked row. The priority loop claims the highest-priority
+        # type that has a PENDING job — in ONE request (one transaction).
         with transaction.atomic():
-            job = (
-                qs.order_by("created_at")
-                .select_for_update(skip_locked=True)
-                .first()
-            )
+            job = None
+            for _jt in types_to_try:
+                job = (
+                    base_qs.filter(job_type=_jt).order_by("created_at")
+                    .select_for_update(skip_locked=True)
+                    .first()
+                )
+                if job:
+                    break
 
             if not job:
                 # ---------------------------------------------------------
@@ -255,21 +270,16 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
                 # that the worker *cannot* claim due to node mismatch,
                 # emit NODE_WRONG_CLAIM audit event.
                 # ---------------------------------------------------------
-                base_qs = ExecutionJob.objects.filter(
+                audit_qs = ExecutionJob.objects.filter(
                     status=ExecutionJob.Status.PENDING,
+                    job_type__in=types_to_try,
                 )
-                if job_type:
-                    base_qs = base_qs.filter(job_type=job_type)
-                else:
-                    base_qs = base_qs.filter(
-                        job_type=ExecutionJob.JobType.SYNC_POSITIONS,
-                    )
                 if account_id:
-                    base_qs = base_qs.filter(account_id=account_id)
+                    audit_qs = audit_qs.filter(account_id=account_id)
 
                 # Peek at the first excluded job (without locking) for
                 # audit context.  Do NOT expose its payload to the worker.
-                excluded_job = base_qs.exclude(
+                excluded_job = audit_qs.exclude(
                     id__in=qs.values_list("id", flat=True)
                 ).values("id", "terminal_node_id").first()
 
