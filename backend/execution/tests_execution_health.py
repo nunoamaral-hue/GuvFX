@@ -276,6 +276,45 @@ class StuckPromotionAlertTests(TestCase):
         self.assertEqual(res["stuck_promotion_resolved"], 1)
         self.assertFalse(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
 
+    def test_resolves_when_rejection_appears(self):
+        # A stuck alert must also auto-close if a durable PROMOTION_REJECTED reason lands late.
+        from reliability.models import AlertEvent
+        from execution.models import PromotionAuditEvent
+        p = self._plan("s8", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60)
+        execution_health.sweep_execution_health()  # opens the alert
+        self.assertTrue(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+        PromotionAuditEvent.objects.create(plan=p, event="PROMOTION_REJECTED",
+                                           detail={"code": "daily_drawdown_hit"})
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_resolved"], 1)
+        self.assertFalse(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+
+    def test_resolves_when_status_goes_terminal(self):
+        # A stuck alert must auto-close if the plan later reaches a terminal (non-PLANNED) status.
+        from reliability.models import AlertEvent
+        p = self._plan("s9", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60)
+        execution_health.sweep_execution_health()  # opens the alert
+        self.assertTrue(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+        SignalExecutionPlan.objects.filter(id=p.id).update(status=SignalExecutionPlan.Status.VOIDED)
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_resolved"], 1)
+        self.assertFalse(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+
+    def test_resolve_runs_even_with_no_tradeable_source(self):
+        # The RESOLVE pass must run independently of `tradeable` — disabling every auto_demo source
+        # while an alert is OPEN must not strand it once the plan is disposed.
+        from reliability.models import AlertEvent
+        from execution.models import SignalSourceConfig
+        p = self._plan("s10", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60)
+        execution_health.sweep_execution_health()  # opens the alert
+        self.assertTrue(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+        SignalSourceConfig.objects.update(auto_demo_execution_enabled=False)  # disable all sources
+        ExecutionJob.objects.create(job_type="PLACE_ORDER", account=self.acct, status="SUCCESS",
+                                    payload={"plan_id": p.id, "leg_index": 1})
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_resolved"], 1)
+        self.assertFalse(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+
 
 class OrphanedPlaceOrderReconcileTests(TestCase):
     """GFX-PKT-POST-INCIDENT — a lease-expired RUNNING PLACE_ORDER is NEVER re-run (would duplicate);

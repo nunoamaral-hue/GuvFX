@@ -376,48 +376,63 @@ def detect_stuck_promotions(now) -> dict:
     from execution.models import (SignalExecutionPlan, ExecutionJob, PromotionAuditEvent,
                                   SignalSourceConfig)
     from reliability.models import AlertEvent
+
+    def _plans_with_order(plan_ids):
+        # ONE query (no per-plan N+1): which of these plan ids have a PLACE_ORDER job.
+        if not plan_ids:
+            return set()
+        return set(ExecutionJob.objects.filter(
+            job_type="PLACE_ORDER", payload__plan_id__in=list(plan_ids))
+            .values_list("payload__plan_id", flat=True))
+
     tradeable = set(SignalSourceConfig.objects.filter(auto_demo_execution_enabled=True)
                     .values_list("source", flat=True))
-    if not tradeable:
-        return {"stuck_promotion_alerted": 0, "stuck_promotion_resolved": 0}
-    lookback = now - timedelta(seconds=UNPLANNED_SIGNAL_LOOKBACK_SECONDS)
     cutoff = now - timedelta(seconds=STUCK_PROMOTION_ALERT_SECONDS)
-    # ALERT — PLANNED plans in the window, MINUS those carrying a durable PROMOTION_REJECTED reason
-    # (the normal drawdown/risk rejections, e.g. daily_drawdown_hit). PROMOTED/CLOSED/VOIDED/HELD/
-    # SUPERSEDED are already excluded by ``status=PLANNED``. The remainder is the stuck set (~empty).
-    candidates = (SignalExecutionPlan.objects.filter(
-        source__in=tradeable, status=SignalExecutionPlan.Status.PLANNED,
-        created_at__gte=lookback, created_at__lt=cutoff)
-        .exclude(promotion_audit_events__event="PROMOTION_REJECTED")
-        .distinct().order_by("id")[:500])
+    # ALERT — only when there is a tradeable source. PLANNED plans in the window, MINUS those carrying a
+    # durable PROMOTION_REJECTED reason (the normal drawdown/risk rejections, e.g. daily_drawdown_hit).
+    # PROMOTED/CLOSED/VOIDED/HELD/SUPERSEDED are already excluded by ``status=PLANNED``. The exclude is a
+    # NOT-EXISTS subquery (no join fan-out), so the remainder is the stuck set (~empty), no DISTINCT.
     alerted = 0
-    for p in candidates:
-        if ExecutionJob.objects.filter(payload__plan_id=p.id, job_type="PLACE_ORDER").exists():
-            continue  # an order exists → executed (status merely lagged), not a silent gap
-        dedup_key = f"stuck_promotion:plan:{p.id}"
-        if AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).exists():
-            continue
-        _alert_stuck_promotion(p, now)
-        alerted += 1
-    # RESOLVE — auto-close any OPEN alert whose plan has since gained an order, a rejection, or a
-    # non-PLANNED status. Bounded by the (tiny) number of open alerts.
+    if tradeable:
+        lookback = now - timedelta(seconds=UNPLANNED_SIGNAL_LOOKBACK_SECONDS)
+        candidates = list(SignalExecutionPlan.objects.filter(
+            source__in=tradeable, status=SignalExecutionPlan.Status.PLANNED,
+            created_at__gte=lookback, created_at__lt=cutoff)
+            .exclude(promotion_audit_events__event="PROMOTION_REJECTED")
+            .order_by("id")[:500])
+        ordered = _plans_with_order([p.id for p in candidates])
+        for p in candidates:
+            if p.id in ordered:
+                continue  # an order exists → executed (status merely lagged), not a silent gap
+            dedup_key = f"stuck_promotion:plan:{p.id}"
+            if AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).exists():
+                continue
+            _alert_stuck_promotion(p, now)
+            alerted += 1
+    # RESOLVE — ALWAYS runs (independent of ``tradeable``, so disabling every source cannot strand an
+    # OPEN alert). Auto-close any OPEN alert whose plan has since gained an order, a rejection, or a
+    # non-PLANNED status. Bounded by the (tiny) number of open alerts; batched, no per-plan N+1.
     resolved = 0
-    for al in AlertEvent.objects.filter(
-            dedup_key__startswith="stuck_promotion:plan:", status=AlertEvent.Status.OPEN):
-        pid = (al.detail or {}).get("plan_id")
-        if pid is None:
-            continue
-        p = SignalExecutionPlan.objects.filter(id=pid).first()
-        if p is None:
-            continue
-        if (p.status != SignalExecutionPlan.Status.PLANNED
-                or ExecutionJob.objects.filter(payload__plan_id=pid, job_type="PLACE_ORDER").exists()
-                or PromotionAuditEvent.objects.filter(plan_id=pid,
-                                                      event="PROMOTION_REJECTED").exists()):
-            al.status = AlertEvent.Status.RESOLVED
-            al.resolved_at = now
-            al.save(update_fields=["status", "resolved_at"])
-            resolved += 1
+    open_alerts = list(AlertEvent.objects.filter(
+        dedup_key__startswith="stuck_promotion:plan:", status=AlertEvent.Status.OPEN))
+    open_pids = [pid for pid in ((al.detail or {}).get("plan_id") for al in open_alerts)
+                 if pid is not None]
+    if open_pids:
+        status_by_id = dict(SignalExecutionPlan.objects.filter(id__in=open_pids)
+                            .values_list("id", "status"))
+        ordered_open = _plans_with_order(open_pids)
+        rejected_open = set(PromotionAuditEvent.objects.filter(
+            plan_id__in=open_pids, event="PROMOTION_REJECTED").values_list("plan_id", flat=True))
+        for al in open_alerts:
+            pid = (al.detail or {}).get("plan_id")
+            if pid is None or pid not in status_by_id:
+                continue
+            if (status_by_id[pid] != SignalExecutionPlan.Status.PLANNED
+                    or pid in ordered_open or pid in rejected_open):
+                al.status = AlertEvent.Status.RESOLVED
+                al.resolved_at = now
+                al.save(update_fields=["status", "resolved_at"])
+                resolved += 1
     return {"stuck_promotion_alerted": alerted, "stuck_promotion_resolved": resolved}
 
 
