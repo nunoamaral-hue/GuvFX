@@ -177,3 +177,28 @@ class CloseIngestedAtTests(LatencyBase):
         upsert_trades(self.acct, [self._deal("900", 0, 4028.92, o), self._deal("900", 1, 4025.30, c)])
         tr.refresh_from_db()
         self.assertEqual(tr.close_ingested_at, first_stamp)
+
+
+class ErrorNullResilienceTests(LatencyBase):
+    """Review SHOULD_FIX: a MODIFY result with a JSON-null ``error`` must NOT raise (which would blank
+    the whole /operations TP-protection section via the ops block's try/except)."""
+
+    def test_null_error_in_result_does_not_raise(self):
+        plan = self._plan()
+        self._trade(plan, 2, close_broker=timezone.now(), close_ingested=timezone.now())
+        self._trade(plan, 3)
+        leg3 = plan.legs.get(leg_index=3)
+        leg3.protection_stage = "TP2_LOCKED"
+        leg3.save(update_fields=["protection_stage"])
+        j = ExecutionJob.objects.create(
+            job_type="MODIFY_POSITION", account=self.acct, status="SUCCESS",
+            payload={"plan_id": plan.id, "leg_index": 3, "protection_stage": "TP2_LOCKED",
+                     "signal_source": "ti_signals"},
+            result={"ok": True, "verified_sl": "4025.3", "error": None},  # JSON null error
+            started_at=timezone.now(), finished_at=timezone.now())
+        # must not raise (previously None + str -> TypeError)
+        rec = pl.leg_protection_latency(plan, 3)
+        self.assertEqual(rec["final_stage"], "TP2_LOCKED")
+        self.assertEqual(rec["defer_count"], 0)
+        stats = pl.protection_floor_stats(source="ti_signals", days=7)
+        self.assertEqual(stats["deferred_groups"], 0)

@@ -83,8 +83,11 @@ def _final_modify(plan_id, leg_index, stage):
     first = jobs[0]
     verified = next((j for j in jobs if j.status == ExecutionJob.Status.SUCCESS
                      and not (j.result or {}).get("already_closed")), None)
-    defers = sum(1 for j in jobs if "sl_within_stops_level" in ((j.result or {}).get("error", "")
-                                                                + (j.error_message or "")))
+    # ``or ""`` guards a stored result whose ``error`` key is present but JSON-null (the bridge may
+    # emit a uniform ``{"ok":true,...,"error":null}`` envelope) — ``.get("error","")`` returns None in
+    # that case, and ``None + str`` would raise, blanking the whole ops section. Mirrors floor-stats.
+    defers = sum(1 for j in jobs if "sl_within_stops_level" in
+                 (((j.result or {}).get("error", "") or "") + (j.error_message or "")))
     return first, verified, defers
 
 
@@ -93,7 +96,6 @@ def leg_protection_latency(plan, leg_index) -> dict:
     datapoint is unavailable. ``final_stage`` is the leg's persisted protection_stage."""
     leg = plan.legs.filter(leg_index=leg_index).first()
     stage = (leg.protection_stage if leg else None) or "INITIAL"
-    my_trade = _leg_trade(plan.account_id, plan.id, leg_index)
     trig_idx = STAGE_TRIGGER.get(stage)
     trig_trade = _leg_trade(plan.account_id, plan.id, trig_idx) if trig_idx else None
 
@@ -179,6 +181,12 @@ def protection_floor_stats(*, source="ti_signals", days=7) -> dict:
         if j.status == ExecutionJob.Status.SUCCESS and not rs.get("already_closed"):
             g["verified"] = j.finished_at
 
+    # Pre-fetch (direction, account_id) for all deferred plans in ONE query — avoids an N+1 (plus a
+    # second redundant lookup) inside the loop.
+    deferred_plan_ids = {pid for (pid, _leg, _stage), g in groups.items() if g["defers"]}
+    plan_meta = {row[0]: (row[1], row[2]) for row in SignalExecutionPlan.objects.filter(
+        id__in=deferred_plan_ids).values_list("id", "direction", "account_id")}
+
     windows = []           # resolved deferral windows (seconds)
     by_stage = defaultdict(list)
     by_dir = defaultdict(list)
@@ -187,15 +195,14 @@ def protection_floor_stats(*, source="ti_signals", days=7) -> dict:
         if not g["defers"]:
             continue
         deferred_groups += 1
-        plan = SignalExecutionPlan.objects.filter(id=pid).values_list("direction", flat=True).first()
+        direction, account_id = plan_meta.get(pid, (None, None))
         if g["verified"] and g["first"]:
             w = round((g["verified"] - g["first"]).total_seconds(), 1)
-            windows.append(w); by_stage[stage].append(w); by_dir[plan or "?"].append(w)
+            windows.append(w); by_stage[stage].append(w); by_dir[direction or "?"].append(w)
             resolved += 1
         else:
             # deferred but never verified → did the leg close first?
-            tr = _leg_trade(SignalExecutionPlan.objects.filter(id=pid).values_list(
-                "account_id", flat=True).first(), pid, leg)
+            tr = _leg_trade(account_id, pid, leg) if account_id else None
             if tr and tr.close_time is not None:
                 closed_first += 1
 
