@@ -614,6 +614,9 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
                 "comment": p["comment"],
                 "opened_by": "EA",
                 "source_stage": source_stage,
+                # WS-A: authoritative ingestion instant — set iff this row is born already-closed.
+                "close_ingested_at": (dt_module.datetime.now(dt_module.timezone.utc)
+                                      if p["close_time"] else None),
             },
         )
         if created:
@@ -623,6 +626,8 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
         # Idempotent update — fill/refresh mutable fields; never overwrite a value with None
         # (so a re-sync that no longer sees the exit deal can't blank a real close).
         changed = False
+        # WS-A: stamp the AUTHORITATIVE ingestion instant on the None→closed transition, once.
+        was_open = obj.close_time is None
         for field, val in [
             ("open_time", p["open_time"]),
             ("open_price", p["open_price"]),
@@ -639,6 +644,10 @@ def upsert_trades(account: TradingAccount, deals: list[dict]):
                 changed = True
         if obj.source_stage == "UNKNOWN" and source_stage != "UNKNOWN":
             obj.source_stage = source_stage
+            changed = True
+        # WS-A: first time we observe this position CLOSED, stamp the authoritative ingestion instant.
+        if was_open and obj.close_time is not None and obj.close_ingested_at is None:
+            obj.close_ingested_at = dt_module.datetime.now(dt_module.timezone.utc)
             changed = True
         if changed:
             obj.save()

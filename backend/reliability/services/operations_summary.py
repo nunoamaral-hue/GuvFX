@@ -435,6 +435,42 @@ def _protection_watcher_block(now):
     }
 
 
+def _tp_protection_block(now):
+    """GFX-PKT-TP-PROTECTION-OPTIMISATION WS-F — the dedicated, source-aware TP-Protection section:
+    per-leg protection-latency records (transition timestamps + segments A–H), the broker-imposed
+    soft-deferral floor, and an SLA status. Honest UNKNOWN where a datapoint is unavailable; TI is
+    never combined with Wayond. Read-only (a defensive try wraps it so the page never breaks)."""
+    import os
+    try:
+        from execution.protection_latency import (recent_protection_latency, protection_floor_stats,
+                                                   BROKER_UTC_OFFSET_HOURS)
+        # SLA thresholds — env-tunable; seeded from measured data (detection now ~seconds with the
+        # watcher; end-to-end includes the irreducible broker stops/freeze band ~up to ~4 min).
+        detection_sla = float(os.getenv("PROTECTION_DETECTION_SLA_SECONDS", "90"))
+        endtoend_sla = float(os.getenv("PROTECTION_ENDTOEND_SLA_SECONDS", "600"))
+        legs = recent_protection_latency(source="ti_signals", limit=8)
+        # SLA status from the most recent leg that actually reached a verified protection stage.
+        latest = next((l for l in legs if l["final_stage"] in ("BREAKEVEN", "TP2_LOCKED")
+                       and l["verified_at"]), None)
+        sla_status, det, e2e = "UNKNOWN", None, None
+        if latest:
+            det = latest["segments"].get("B_ingestion_to_detection")
+            e2e = latest["segments"].get("system_ingestion_to_verified")
+            breaches = [(det is not None and det > detection_sla),
+                        (e2e is not None and e2e > endtoend_sla)]
+            sla_status = ("WARNING" if any(breaches)
+                          else ("HEALTHY" if (det is not None or e2e is not None) else "UNKNOWN"))
+        return {
+            "sla": {"detection_sla_s": detection_sla, "endtoend_sla_s": endtoend_sla,
+                    "last_detection_s": det, "last_system_endtoend_s": e2e, "status": sla_status},
+            "broker_floor": protection_floor_stats(source="ti_signals", days=7),
+            "recent_legs": legs[:6],
+            "broker_utc_offset_hours_assumed": BROKER_UTC_OFFSET_HOURS,
+        }
+    except Exception as exc:  # pragma: no cover - read-only best-effort
+        return {"status": "UNKNOWN", "error": type(exc).__name__}
+
+
 def build_operations_summary() -> dict:
     """The full read-only operational summary for the status page (and alert enrichment)."""
     from reliability.models import ComponentHealth, Heartbeat, AlertEvent
@@ -535,6 +571,9 @@ def build_operations_summary() -> dict:
     protection_watcher = _protection_watcher_block(now)
     if protection_watcher.get("stale"):
         states.append("WARNING")
+    tp_protection = _tp_protection_block(now)
+    if (tp_protection.get("sla") or {}).get("status") == "WARNING":
+        states.append("WARNING")
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -550,6 +589,7 @@ def build_operations_summary() -> dict:
         "notification_reconciliation": notification_reconciliation,
         "risk_state": risk_state,
         "protection_watcher": protection_watcher,
+        "tp_protection": tp_protection,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},
