@@ -345,3 +345,71 @@ class OrphanModifyReclaimTests(Base):
         self.assertEqual(res["reclaimed_modify"], 1)
         self.assertEqual(stale.status, "FAILED")               # dead orphan failed → sweep re-enqueues
         self.assertEqual(fresh.status, "RUNNING")              # live lease untouched
+
+
+class TP2AlwaysWinsTests(Base):
+    """GFX-PKT-POST-DEPLOY WS-A — TP2 must always win: a leg never REMAINS at breakeven once TP2 has
+    closed, even across the monitor-cadence race where a breakeven was enqueued on an earlier tick."""
+
+    def test_pending_breakeven_superseded_when_tp2_locks(self):
+        # Earlier tick saw only TP1 → enqueued a breakeven for TP3 (still PENDING). Now TP2 has closed.
+        plan, legs = self._plan(direction="SELL", states=("tp", "tp", "open"))
+        be = self._mkjob("PENDING", "BREAKEVEN",
+                         payload_extra={"ticket": f"pos{plan.id}3", "leg_index": 3})
+        legs[2].breakeven_job = be
+        legs[2].breakeven_attempts = 1
+        legs[2].save(update_fields=["breakeven_job", "breakeven_attempts"])
+        with _enable():
+            res = breakeven.sweep_breakeven()
+        be.refresh_from_db()
+        self.assertEqual(be.status, "FAILED")                      # obsolete breakeven retired
+        self.assertEqual((be.result or {}).get("superseded_by"), "TP2_LOCKED")
+        self.assertGreaterEqual(res["superseded"], 1)
+        tp2 = self._modify_jobs("TP2_LOCKED")
+        self.assertEqual(len(tp2), 1)                              # TP3 locked to the TP2 price
+        self.assertEqual(tp2[0].payload["sl"], 4034.0)
+        self.assertEqual(tp2[0].payload["leg_index"], 3)
+
+    def test_never_remains_at_breakeven_after_tp2_invariant(self):
+        # Breakeven already applied to TP3, THEN TP2 closes → must advance to TP2_LOCKED (never left).
+        plan, legs = self._plan(direction="SELL", states=("tp", "tp", "open"))
+        legs[2].protection_stage = "BREAKEVEN"
+        legs[2].save(update_fields=["protection_stage"])
+        with _enable():
+            breakeven.sweep_breakeven()
+        j = self._modify_jobs("TP2_LOCKED")
+        self.assertEqual(len(j), 1)
+        self.assertEqual(j[0].payload["leg_index"], 3)
+
+    def test_running_breakeven_not_force_cancelled(self):
+        # A RUNNING breakeven (worker already claimed it) is NOT retired — the bridge refuse-widen
+        # backstop + the monotonic TP2 lock handle it. Only PENDING breakevens are superseded.
+        plan, legs = self._plan(direction="SELL", states=("tp", "tp", "open"))
+        be = self._mkjob("RUNNING", "BREAKEVEN",
+                         payload_extra={"ticket": f"pos{plan.id}3", "leg_index": 3})
+        legs[2].breakeven_job = be
+        legs[2].save(update_fields=["breakeven_job"])
+        with _enable():
+            res = breakeven.sweep_breakeven()
+        be.refresh_from_db()
+        self.assertEqual(be.status, "RUNNING")                     # untouched
+        self.assertEqual(res["superseded"], 0)
+        self.assertEqual(len(self._modify_jobs("TP2_LOCKED")), 1)  # TP2 lock still enqueued
+
+    def test_rapid_all_three_tps_close_no_error_no_orphan(self):
+        # Fast market: all three TPs close before any sweep. Nothing to protect → no jobs, no error.
+        self._plan(direction="SELL", states=("tp", "tp", "tp"))
+        with _enable():
+            res = breakeven.sweep_breakeven()
+        self.assertEqual(res["enqueued"], 0)
+        self.assertEqual(ExecutionJob.objects.filter(job_type="MODIFY_POSITION").count(), 0)
+
+    def test_superseded_pending_breakeven_only_for_same_ticket(self):
+        # The supersede is account+ticket scoped — a breakeven for a DIFFERENT leg/ticket is untouched.
+        plan, legs = self._plan(direction="SELL", states=("tp", "tp", "open"))
+        other_be = self._mkjob("PENDING", "BREAKEVEN",
+                               payload_extra={"ticket": "pos-unrelated", "leg_index": 2})
+        with _enable():
+            breakeven.sweep_breakeven()
+        other_be.refresh_from_db()
+        self.assertEqual(other_be.status, "PENDING")               # unrelated breakeven preserved

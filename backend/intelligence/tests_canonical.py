@@ -545,3 +545,28 @@ class CanonicalBoundaryTests(TestCase):
                               "urllib", "socket", "sendMessage", "create_contract",
                               "deliver_trade_result", "NotificationTransport"):
                 self.assertNotIn(forbidden, names, f"{mod} references {forbidden}")
+
+
+class BrandingLockTests(CanonicalBase):
+    """GFX-PKT-POST-DEPLOY WS-D — the stakeholder card's account label is the account's PUBLIC label
+    (``public_display_name`` e.g. 'IS6FX'), never the internal name or a raw account number."""
+
+    def test_account_label_uses_public_display_name(self):
+        self.acct.name = "IS6 Demo (1302561)"
+        self.acct.public_display_name = "IS6FX"
+        self.acct.save(update_fields=["name", "public_display_name"])
+        r = build_canonical_trade_result(self.trade, correlation_id=self.CID)
+        self.assertEqual(r.account_label, "IS6FX")
+
+    def test_account_label_falls_back_to_name_when_public_blank(self):
+        self.acct.name = "IS6 Demo (1302561)"
+        self.acct.public_display_name = ""
+        self.acct.save(update_fields=["name", "public_display_name"])
+        r = build_canonical_trade_result(self.trade, correlation_id=self.CID)
+        self.assertEqual(r.account_label, "IS6 Demo (1302561)")
+
+    def test_render_layer_strips_account_number_backstop(self):
+        from intelligence.results_card import _safe_account_label
+        self.assertEqual(_safe_account_label("IS6FX"), "IS6FX")
+        self.assertEqual(_safe_account_label("IS6 Demo (1302561)"), "IS6 Demo")
+        self.assertEqual(_safe_account_label("1302561"), "Managed account")

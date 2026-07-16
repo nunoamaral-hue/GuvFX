@@ -224,3 +224,83 @@ class ExecutionJobsBlockTests(TestCase):
         block = ops._execution_jobs_block(timezone.now())["place_order"]
         self.assertEqual(block["running"], 1)
         self.assertEqual(block["orphaned_running"], 1)
+
+
+class NotificationReconciliationBlockTests(TestCase):
+    """GFX-PKT-POST-DEPLOY WS-E — the ops chain reconciles WIN==candidate==SENT==transmitted per
+    source over the SETTLED window; a missing card surfaces as a mismatch (dashboard WARNING)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="nr", email="nr@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="NR1", is_demo=True)
+
+    def _win(self, i, *, deliver=True, sent=True, src="ti_signals"):
+        import datetime
+        from execution.models import (TradeOutcomeRecord, NotificationCandidate, NotificationDelivery)
+        settled = timezone.now() - datetime.timedelta(hours=1)  # older than the 180s settle window
+        tr = Trade.objects.create(
+            account=self.acct, symbol="XAUUSD", side="BUY", volume=Decimal("0.40"), ticket=f"nr{i}",
+            open_time=settled, open_price=Decimal("4000"), close_time=settled,
+            close_price=Decimal("4010"), profit=Decimal("100"), comment=f"WAYnr{i}")
+        rec = TradeOutcomeRecord.objects.create(
+            trade=tr, outcome="WIN", net_pnl=Decimal("100"), signal_source=src, correlation_id=f"cid{i}")
+        cand = NotificationCandidate.objects.create(
+            outcome_record=rec, signal_source=src, status=("SENT" if sent else "PENDING"),
+            net_pnl=Decimal("100"), correlation_id=f"cid{i}")
+        if deliver:
+            NotificationDelivery.objects.create(
+                candidate=cand, transmitted=True, transport="telegram-real", correlation_id=f"cid{i}")
+        # backdate the auto_now_add timestamps into the settled window
+        TradeOutcomeRecord.objects.filter(id=rec.id).update(created_at=settled)
+        NotificationCandidate.objects.filter(id=cand.id).update(created_at=settled)
+        NotificationDelivery.objects.filter(candidate=cand).update(created_at=settled)
+
+    def test_healthy_chain_reconciles_exactly_once(self):
+        for i in range(3):
+            self._win(i)
+        block = ops._notification_reconciliation_block(timezone.now())
+        self.assertFalse(block["any_mismatch"])
+        ti = block["by_source"]["ti_signals"]
+        self.assertEqual((ti["win_outcomes"], ti["candidates"], ti["sent"], ti["transmitted"]), (3, 3, 3, 3))
+        self.assertTrue(ti["exactly_once"])
+
+    def test_missing_delivery_flags_mismatch(self):
+        self._win(0, deliver=True)
+        self._win(1, deliver=False)   # WIN + candidate but no transmitted delivery
+        block = ops._notification_reconciliation_block(timezone.now())
+        self.assertTrue(block["any_mismatch"])
+        self.assertFalse(block["by_source"]["ti_signals"]["exactly_once"])
+
+
+class RiskStateBlockTests(TestCase):
+    """GFX-PKT-POST-DEPLOY WS-F — the dashboard explains a daily_drawdown_hit: today's realised PnL
+    vs the configured limit, and whether the circuit-breaker is tripped."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="rs", email="rs@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="IS6 Demo (1302561)", account_number="1302561",
+            is_demo=True, public_display_name="IS6FX")
+        from strategies.models import Strategy, StrategyAssignment
+        strat = Strategy.objects.create(owner=self.user, name="TI")
+        StrategyAssignment.objects.create(
+            strategy=strat, account=self.acct, signal_source="ti_signals", is_active=True)
+
+    def test_drawdown_not_tripped_under_limit(self):
+        Trade.objects.create(account=self.acct, symbol="XAUUSD", side="BUY", volume=Decimal("1.20"),
+                             ticket="rs1", open_time=timezone.now(), open_price=Decimal("4000"),
+                             close_time=timezone.now(), close_price=Decimal("3990"), profit=Decimal("-502.80"))
+        with mock.patch("execution.risk_controls.MAX_DAILY_DRAWDOWN_ABS", Decimal("2000")):
+            block = ops._risk_state_block(timezone.now())
+        acct = block["accounts"][0]
+        self.assertEqual(acct["account"], "IS6FX")
+        self.assertFalse(acct["drawdown_tripped"])
+
+    def test_drawdown_tripped_over_limit(self):
+        Trade.objects.create(account=self.acct, symbol="XAUUSD", side="BUY", volume=Decimal("1.20"),
+                             ticket="rs2", open_time=timezone.now(), open_price=Decimal("4000"),
+                             close_time=timezone.now(), close_price=Decimal("3900"), profit=Decimal("-2100"))
+        with mock.patch("execution.risk_controls.MAX_DAILY_DRAWDOWN_ABS", Decimal("2000")):
+            block = ops._risk_state_block(timezone.now())
+        self.assertTrue(block["accounts"][0]["drawdown_tripped"])

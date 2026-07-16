@@ -112,6 +112,20 @@ class PromotionRiskControlTests(TestCase):
         self._open_trade(symbol="GBPUSD", volume="0.01", closed=True, profit="-150")
         self.assertEqual(self._reject_code(self._plan()), "daily_drawdown_hit")
 
+    def test_daily_drawdown_scaled_admits_signal_after_one_ti_loss(self):
+        # GFX-PKT-POST-DEPLOY WS-B/C regression: at the re-scaled $2000 limit ONE ti_signals stop-out
+        # (~$500) must NOT halt the next signal — the $100 default halted after a single 1.20-lot loss.
+        self._open_trade(symbol="XAUUSD", volume="1.20", closed=True, profit="-502.80")
+        with mock.patch.object(risk_controls, "MAX_DAILY_DRAWDOWN_ABS", Decimal("2000")):
+            jobs = promote_plan_to_shadow_jobs(self._plan(), actor=self.user)
+        self.assertEqual(len(jobs), 2)                       # promoted, not blocked
+
+    def test_daily_drawdown_still_blocks_beyond_scaled_limit(self):
+        # The circuit-breaker still fires once the day's realised loss exceeds the re-scaled limit.
+        self._open_trade(symbol="XAUUSD", volume="1.20", closed=True, profit="-2100")
+        with mock.patch.object(risk_controls, "MAX_DAILY_DRAWDOWN_ABS", Decimal("2000")):
+            self.assertEqual(self._reject_code(self._plan()), "daily_drawdown_hit")
+
     def test_concurrent_position_blocks(self):
         self._plan(status=SignalExecutionPlan.Status.PROMOTED, mid="other", lots=("0.01",))
         with mock.patch.object(risk_controls, "PLAN_MAX_CONCURRENT_GROUPS", 1):

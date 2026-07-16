@@ -51,6 +51,17 @@ class SoakReportTests(TestCase):
             for f in ("wins", "losses", "realised_pnl", "breakeven_modifications", "provider_commands"):
                 self.assertIn(f, r)
 
+    def test_latency_and_protection_metrics_present(self):
+        # GFX-PKT-POST-DEPLOY WS-G — every source row carries pipeline latency + protection-job metrics.
+        snap = build_soak_snapshot(window_hours=24, persist=False)
+        for r in snap["by_source"]:
+            self.assertIn("latency", r)
+            for f in ("promotion_latency_s", "execution_latency_s", "notification_latency_s",
+                      "avg_latency_s"):
+                self.assertIn(f, r["latency"])
+            for f in ("protection_jobs", "protection_tp2_locked", "protection_superseded"):
+                self.assertIn(f, r)
+
     def test_persist_writes_durable_row(self):
         before = SoakSnapshot.objects.count()
         build_soak_snapshot(window_hours=1, persist=True)

@@ -174,6 +174,24 @@ def _protection_inflight(trade, stage) -> bool:
     ).exists()
 
 
+def _supersede_pending_breakeven(trade, now) -> int:
+    """TP2-ALWAYS-WINS. Once TP2 has closed and we are locking a leg to the TP2 price, any breakeven
+    MODIFY still merely PENDING (enqueued on an earlier tick that had seen only TP1) is now OBSOLETE:
+    its entry SL is strictly less protective than the TP2 lock. Atomically retire it — a compare-and-set
+    on ``status=PENDING`` so we never touch a job the worker has already claimed — so it can never land
+    an entry SL *after* TP2 is known closed (which is exactly how a leg ends up "at breakeven after
+    TP2"). A breakeven that already RAN is instead superseded by the risk-reducing TP2 lock plus the
+    bridge's refuse-widen backstop. Account+ticket+stage scoped. Returns the number retired."""
+    return ExecutionJob.objects.filter(
+        job_type=ExecutionJob.JobType.MODIFY_POSITION,
+        status=ExecutionJob.Status.PENDING,
+        account_id=trade.account_id, payload__ticket=trade.ticket,
+        payload__protection_stage=STAGE_BREAKEVEN,
+    ).update(status=ExecutionJob.Status.FAILED, finished_at=now,
+             error_message="superseded by TP2_LOCKED",
+             result={"ok": False, "superseded_by": STAGE_TP2_LOCKED, "retryable": False})
+
+
 def _enqueue_modify(plan: SignalExecutionPlan, leg, trade, target_sl: Decimal, stage: str):
     """Create ONE MODIFY_POSITION job advancing this leg's SL to ``target_sl`` for ``stage``.
     Enqueue-only; the worker executes it against the bridge. Idempotency key + stage recorded so a
@@ -300,7 +318,7 @@ def sweep_breakeven(*, limit: int = DEFAULT_LIMIT) -> dict:
     (Kept named ``sweep_breakeven`` for the monitor-chain wiring; it now drives the full ladder.)"""
     counts = {"enabled": True, "scanned": 0, "synced": 0, "enqueued": 0, "applied": 0,
               "inflight": 0, "skipped": 0, "alerted": 0, "tp2_locked": 0, "overdue": 0,
-              "noop_closed": 0, "deferred": 0}
+              "noop_closed": 0, "deferred": 0, "superseded": 0}
     if not breakeven_enabled():
         return {"enabled": False}
 
@@ -396,6 +414,11 @@ def sweep_breakeven(*, limit: int = DEFAULT_LIMIT) -> dict:
                             plan.id, leg.leg_index, desired_stage, target_sl, baseline, plan.direction)
                 counts["skipped"] += 1
                 continue
+
+            # TP2-ALWAYS-WINS: retire any obsolete still-PENDING breakeven for this leg BEFORE the
+            # TP2 lock is enqueued, so a stale entry SL can never land after TP2 has closed.
+            if desired_stage == STAGE_TP2_LOCKED:
+                counts["superseded"] += _supersede_pending_breakeven(trade, timezone.now())
 
             new_job = _enqueue_modify(plan, leg, trade, target_sl, desired_stage)
             if new_job is None:

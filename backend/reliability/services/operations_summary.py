@@ -218,14 +218,18 @@ def _protection_block(now):
     # A retryable failure is a benign broker stops/freeze-band deferral (self-heals on a later sweep),
     # NOT a real protection failure — surface it separately so it doesn't read as an incident.
     deferred_today = failed_today.filter(result__retryable=True).count()
+    # A SUPERSEDED breakeven is an obsolete entry-SL modify retired the moment TP2 locked in
+    # (TP2-always-wins) — an intentional cancel, not a failure. Surface separately too.
+    superseded_today = failed_today.filter(result__superseded_by="TP2_LOCKED").count()
     return {
         "incremental_by_source": by_source,
         "modify_jobs": {
             "pending": mp.filter(status="PENDING").count(),
             "running": mp.filter(status="RUNNING").count(),
             "success_today": mp.filter(status="SUCCESS", created_at__gte=tstart).count(),
-            "failed_today": failed_today.count() - deferred_today,
+            "failed_today": failed_today.count() - deferred_today - superseded_today,
             "deferred_today": deferred_today,
+            "superseded_today": superseded_today,
         },
         "leg_stages_active": stages,
         "last_protection": {
@@ -304,6 +308,75 @@ def _signal_disposition_block(now):
                           "deferred": deferred, "unplanned_no_reason": silent,
                           "deferral_reasons": dict(reasons)}
     return {"window_hours": 24, "by_source": by_source, "silent_loss_total": silent_total}
+
+
+def _notification_reconciliation_block(now):
+    """WS-E — exactly-once notification chain, reconciled per source over 24h:
+    WIN outcomes → NotificationCandidate → SENT → NotificationDelivery(transmitted). A healthy chain
+    has win == candidates == sent == transmitted, with no candidate stuck PENDING/PROCESSING and no
+    duplicate delivery. ``mismatch`` flags any per-source break so the dashboard (and the monitor-chain
+    alert) can surface a notification loss the moment it appears. Read-only."""
+    from datetime import timedelta
+    from execution.models import (TradeOutcomeRecord, NotificationCandidate, NotificationDelivery)
+    since = now - timedelta(hours=24)
+    # A WIN's candidate + card delivery commit a moment AFTER the outcome (async, up to ~a monitor
+    # cycle later). Reconcile only the SETTLED portion of the window so an in-flight just-won trade
+    # is never miscounted as a notification loss (it would flap the dashboard WARNING every close).
+    settle = now - timedelta(seconds=180)
+    sources = sorted(set(TradeOutcomeRecord.objects.filter(created_at__gte=since)
+                         .values_list("signal_source", flat=True)) | {"ti_signals", "wayond"})
+    by_source, any_mismatch = {}, False
+    for src in sources:
+        wins = TradeOutcomeRecord.objects.filter(
+            signal_source=src, outcome="WIN", created_at__gte=since, created_at__lt=settle).count()
+        cands = NotificationCandidate.objects.filter(
+            signal_source=src, created_at__gte=since, created_at__lt=settle)
+        sent = cands.filter(status="SENT").count()
+        stuck = cands.filter(status__in=("PENDING", "PROCESSING")).count()
+        failed = cands.filter(status="FAILED").count()
+        dels = NotificationDelivery.objects.filter(
+            candidate__signal_source=src, created_at__gte=since, created_at__lt=settle)
+        transmitted = dels.filter(transmitted=True).count()
+        # Exactly-once: one transmitted delivery per distinct candidate (no duplicate sends).
+        distinct_deliv = dels.filter(transmitted=True).values("candidate_id").distinct().count()
+        duplicates = transmitted - distinct_deliv
+        mismatch = not (wins == cands.count() == sent == transmitted) or stuck or failed or duplicates
+        if wins or cands.count():
+            any_mismatch = any_mismatch or bool(mismatch)
+            by_source[src] = {
+                "win_outcomes": wins, "candidates": cands.count(), "sent": sent,
+                "transmitted": transmitted, "stuck": stuck, "failed": failed,
+                "duplicates": duplicates, "exactly_once": not bool(mismatch),
+            }
+    return {"window_hours": 24, "by_source": by_source, "any_mismatch": bool(any_mismatch)}
+
+
+def _risk_state_block(now):
+    """WS-F — why a valid signal may be blocked: the runtime risk gates' live state. Surfaces the
+    per-account daily-drawdown position (today's realised PnL vs the configured limit, and whether the
+    circuit-breaker is currently tripped) so a ``daily_drawdown_hit`` promotion-reject is explainable
+    on the dashboard rather than looking like a silent loss. Read-only."""
+    from execution import risk_controls as rc
+    from strategies.models import StrategyAssignment
+    accts = list({a.account for a in StrategyAssignment.objects.filter(
+        is_active=True, account__isnull=False).select_related("account")})
+    limit = rc.MAX_DAILY_DRAWDOWN_ABS
+    out = []
+    for acct in accts:
+        try:
+            pnl = rc._today_realized_pnl(acct.id)
+            out.append({
+                "account": acct.public_label(),
+                "today_realised_pnl": str(pnl),
+                "daily_drawdown_limit": str(limit),
+                "drawdown_tripped": bool(pnl <= -limit),
+                "exposure_lots": str(rc._open_position_lots(acct.id)
+                                     + rc._active_signal_lots(acct.id)),
+                "exposure_cap": str(rc.MAX_ACCOUNT_EXPOSURE_LOT),
+            })
+        except Exception:  # pragma: no cover - read-only best-effort
+            out.append({"account": acct.public_label(), "error": "unavailable"})
+    return {"accounts": out, "daily_drawdown_limit": str(limit)}
 
 
 def build_operations_summary() -> dict:
@@ -399,6 +472,10 @@ def build_operations_summary() -> dict:
     protection = _protection_block(now)
     signal_dispositions = _signal_disposition_block(now)
     execution_jobs = _execution_jobs_block(now)
+    notification_reconciliation = _notification_reconciliation_block(now)
+    if notification_reconciliation.get("any_mismatch"):
+        states.append("WARNING")
+    risk_state = _risk_state_block(now)
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -411,6 +488,8 @@ def build_operations_summary() -> dict:
         "protection": protection,
         "signal_dispositions": signal_dispositions,
         "execution_jobs": execution_jobs,
+        "notification_reconciliation": notification_reconciliation,
+        "risk_state": risk_state,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},
