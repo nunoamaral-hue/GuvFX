@@ -62,6 +62,44 @@ class SoakReportTests(TestCase):
             for f in ("protection_jobs", "protection_tp2_locked", "protection_superseded"):
                 self.assertIn(f, r)
 
+    def test_latency_and_protection_values_computed(self):
+        # WS-G value assertions (finding-4): pin each latency leg + protection-stage count to seeded data.
+        import datetime
+        from execution.models import (ExecutionJob, NotificationCandidate, NotificationDelivery,
+                                       TradeOutcomeRecord)
+        plan = SignalExecutionPlan.objects.filter(source="ti_signals").first()
+        base = timezone.now() - datetime.timedelta(hours=2)
+        SignalExecutionPlan.objects.filter(id=plan.id).update(created_at=base)
+        # promotion = plan.created (base) → first PLACE_ORDER created (base+2s) = 2s
+        # execution  = order created (base+2s) → finished (base+5s) = 3s
+        oj = ExecutionJob.objects.create(
+            job_type="PLACE_ORDER", account=self.acct, status="SUCCESS",
+            payload={"plan_id": plan.id, "signal_source": "ti_signals"},
+            finished_at=base + datetime.timedelta(seconds=5))
+        ExecutionJob.objects.filter(id=oj.id).update(created_at=base + datetime.timedelta(seconds=2))
+        # notification = candidate.created (base) → delivery.created (base+4s) = 4s
+        rec = TradeOutcomeRecord.objects.filter(signal_source="ti_signals").first()
+        cand = NotificationCandidate.objects.create(
+            outcome_record=rec, signal_source="ti_signals", status="SENT", net_pnl=Decimal("20"))
+        NotificationCandidate.objects.filter(id=cand.id).update(created_at=base)
+        dl = NotificationDelivery.objects.create(
+            candidate=cand, transmitted=True, transport="telegram-real")
+        NotificationDelivery.objects.filter(id=dl.id).update(created_at=base + datetime.timedelta(seconds=4))
+        # protection: one verified TP2-lock + one superseded breakeven
+        ExecutionJob.objects.create(job_type="MODIFY_POSITION", account=self.acct, status="SUCCESS",
+                                    payload={"signal_source": "ti_signals", "protection_stage": "TP2_LOCKED"})
+        ExecutionJob.objects.create(job_type="MODIFY_POSITION", account=self.acct, status="FAILED",
+                                    payload={"signal_source": "ti_signals", "protection_stage": "BREAKEVEN"},
+                                    result={"superseded_by": "TP2_LOCKED"})
+        snap = build_soak_snapshot(window_hours=24, persist=False)
+        ti = next(r for r in snap["by_source"] if r["source"] == "ti_signals")
+        self.assertEqual(ti["latency"]["promotion_latency_s"], 2.0)
+        self.assertEqual(ti["latency"]["execution_latency_s"], 3.0)
+        self.assertEqual(ti["latency"]["notification_latency_s"], 4.0)
+        self.assertEqual(ti["latency"]["avg_latency_s"], 3.0)     # mean(2,3,4)
+        self.assertEqual(ti["protection_tp2_locked"], 1)
+        self.assertEqual(ti["protection_superseded"], 1)
+
     def test_persist_writes_durable_row(self):
         before = SoakSnapshot.objects.count()
         build_soak_snapshot(window_hours=1, persist=True)

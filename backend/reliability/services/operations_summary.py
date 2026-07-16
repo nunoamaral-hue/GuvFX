@@ -310,45 +310,61 @@ def _signal_disposition_block(now):
     return {"window_hours": 24, "by_source": by_source, "silent_loss_total": silent_total}
 
 
-def _notification_reconciliation_block(now):
+def _notification_reconciliation_block(now, dispatch):
     """WS-E — exactly-once notification chain, reconciled per source over 24h:
-    WIN outcomes → NotificationCandidate → SENT → NotificationDelivery(transmitted). A healthy chain
-    has win == candidates == sent == transmitted, with no candidate stuck PENDING/PROCESSING and no
-    duplicate delivery. ``mismatch`` flags any per-source break so the dashboard (and the monitor-chain
-    alert) can surface a notification loss the moment it appears. Read-only."""
+    WIN outcome → NotificationCandidate → SENT → NotificationDelivery(transmitted).
+
+    Two correctness properties (adversarial-review fixes):
+    * **Co-anchored cohorts.** A candidate/delivery commits strictly AFTER its WIN outcome, so windowing
+      each cohort on its OWN ``created_at`` would straddle the settle boundary and flap the dashboard
+      WARNING after every win. Instead every cohort is anchored to the WIN OUTCOME's timestamp (join
+      back through ``outcome_record``), so a counted win always drags in its own candidate + delivery.
+    * **Dispatch-posture aware.** Reconcile only as far as the ACTIVE transport goes: dispatch OFF never
+      SENDs (PENDING is expected, not a loss); the dry-run transport renders SENT but transmits nothing
+      (``transmitted`` stays 0 by design). Only REAL transport requires ``sent == transmitted``.
+    Read-only; ``settle`` (now-180s) ignores just-won in-flight trades."""
     from datetime import timedelta
     from execution.models import (TradeOutcomeRecord, NotificationCandidate, NotificationDelivery)
     since = now - timedelta(hours=24)
-    # A WIN's candidate + card delivery commit a moment AFTER the outcome (async, up to ~a monitor
-    # cycle later). Reconcile only the SETTLED portion of the window so an in-flight just-won trade
-    # is never miscounted as a notification loss (it would flap the dashboard WARNING every close).
     settle = now - timedelta(seconds=180)
-    sources = sorted(set(TradeOutcomeRecord.objects.filter(created_at__gte=since)
-                         .values_list("signal_source", flat=True)) | {"ti_signals", "wayond"})
+    dispatch_on = bool(dispatch.get("enabled"))
+    real_transport = dispatch_on and (dispatch.get("transport") or "dry-run") != "dry-run"
+    win_settled = TradeOutcomeRecord.objects.filter(
+        outcome="WIN", created_at__gte=since, created_at__lt=settle)
+    sources = sorted(set(win_settled.values_list("signal_source", flat=True)) | {"ti_signals", "wayond"})
     by_source, any_mismatch = {}, False
     for src in sources:
-        wins = TradeOutcomeRecord.objects.filter(
-            signal_source=src, outcome="WIN", created_at__gte=since, created_at__lt=settle).count()
-        cands = NotificationCandidate.objects.filter(
-            signal_source=src, created_at__gte=since, created_at__lt=settle)
-        sent = cands.filter(status="SENT").count()
-        stuck = cands.filter(status__in=("PENDING", "PROCESSING")).count()
-        failed = cands.filter(status="FAILED").count()
-        dels = NotificationDelivery.objects.filter(
-            candidate__signal_source=src, created_at__gte=since, created_at__lt=settle)
-        transmitted = dels.filter(transmitted=True).count()
-        # Exactly-once: one transmitted delivery per distinct candidate (no duplicate sends).
-        distinct_deliv = dels.filter(transmitted=True).values("candidate_id").distinct().count()
-        duplicates = transmitted - distinct_deliv
-        mismatch = not (wins == cands.count() == sent == transmitted) or stuck or failed or duplicates
-        if wins or cands.count():
-            any_mismatch = any_mismatch or bool(mismatch)
+        wins = win_settled.filter(signal_source=src).count()
+        cand_q = NotificationCandidate.objects.filter(   # anchored to the win outcome's timestamp
+            outcome_record__outcome="WIN", outcome_record__signal_source=src,
+            outcome_record__created_at__gte=since, outcome_record__created_at__lt=settle)
+        candidates = cand_q.count()
+        sent = cand_q.filter(status="SENT").count()
+        stuck = cand_q.filter(status__in=("PENDING", "PROCESSING")).count()
+        failed = cand_q.filter(status="FAILED").count()
+        del_q = NotificationDelivery.objects.filter(
+            candidate__outcome_record__outcome="WIN", candidate__outcome_record__signal_source=src,
+            candidate__outcome_record__created_at__gte=since,
+            candidate__outcome_record__created_at__lt=settle, transmitted=True)
+        transmitted = del_q.count()
+        duplicates = transmitted - del_q.values("candidate_id").distinct().count()
+        # Reconcile as far as the active posture guarantees delivery.
+        if not dispatch_on:
+            healthy = (wins == candidates) and not duplicates          # dispatch off → PENDING expected
+        elif not real_transport:
+            healthy = (wins == candidates == sent) and not (failed or duplicates)   # dry-run
+        else:
+            healthy = (wins == candidates == sent == transmitted) and not (stuck or failed or duplicates)
+        if wins or candidates:
+            any_mismatch = any_mismatch or (not healthy)
             by_source[src] = {
-                "win_outcomes": wins, "candidates": cands.count(), "sent": sent,
+                "win_outcomes": wins, "candidates": candidates, "sent": sent,
                 "transmitted": transmitted, "stuck": stuck, "failed": failed,
-                "duplicates": duplicates, "exactly_once": not bool(mismatch),
+                "duplicates": duplicates, "exactly_once": bool(healthy),
             }
-    return {"window_hours": 24, "by_source": by_source, "any_mismatch": bool(any_mismatch)}
+    return {"window_hours": 24, "settle_seconds": 180,
+            "transport_mode": ("real" if real_transport else ("dry-run" if dispatch_on else "disabled")),
+            "by_source": by_source, "any_mismatch": bool(any_mismatch)}
 
 
 def _risk_state_block(now):
@@ -472,7 +488,7 @@ def build_operations_summary() -> dict:
     protection = _protection_block(now)
     signal_dispositions = _signal_disposition_block(now)
     execution_jobs = _execution_jobs_block(now)
-    notification_reconciliation = _notification_reconciliation_block(now)
+    notification_reconciliation = _notification_reconciliation_block(now, dispatch)
     if notification_reconciliation.get("any_mismatch"):
         states.append("WARNING")
     risk_state = _risk_state_block(now)
