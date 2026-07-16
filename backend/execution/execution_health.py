@@ -376,7 +376,7 @@ def detect_protection_watcher_health(now) -> dict:
             AlertEvent.objects.create(
                 severity=AlertEvent.Severity.WARN, component=Component.EXECUTION_PIPELINE,
                 title="Protection SYNC ingestion stalling",
-                body=(f"{strands} protection position-syncs stranded (lease-reclaimed) in the last hour "
+                body=(f"{strands} protection position-syncs stranded (lease-reclaimed or worker fast-fail) in the last hour "
                       "— the MT5 bridge/terminal is intermittently hanging, delaying TP-close ingestion "
                       "and protection. The short protection-sync lease bounds the impact; investigate "
                       "the bridge if this persists."),
@@ -399,7 +399,7 @@ def detect_protection_watcher_health(now) -> dict:
             AlertEvent.objects.create(
                 severity=AlertEvent.Severity.WARN, component=Component.EXECUTION_PIPELINE,
                 title="Worker job-claim throttle storm (orphaned SYNCs)",
-                body=(f"{all_strands} SYNC jobs orphaned (lease-reclaimed) in the last hour — the ingest "
+                body=(f"{all_strands} SYNC jobs stranded (lease-reclaimed or worker fast-fail) in the last hour — the ingest "
                       "worker is likely exceeding the backend claim rate limit (HTTP 429) and leaving "
                       "jobs RUNNING. Check worker logs for 'rate_limited'/429 and the jobs/next/ call rate."),
                 dedup_key="worker_throttle_storm", status=AlertEvent.Status.OPEN, detail={"orphaned_sync_1h": all_strands})
