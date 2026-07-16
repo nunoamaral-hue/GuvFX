@@ -196,6 +196,126 @@ class UnplannedSignalAlertTests(TestCase):
         self.assertEqual(res["unplanned_alerted"], 0)
 
 
+class StuckPromotionAlertTests(TestCase):
+    """GFX-PKT-TI-SIGNAL-EXECUTION-VALIDATION-AND-PROTECTION-HARDENING WS-J — the PLAN-layer complement
+    to the unplanned-signal (approval-layer) guard: a PLANNED plan with NEITHER a PLACE_ORDER NOR a
+    durable PROMOTION_REJECTED reason is a silent promotion gap → deduped WARN, auto-resolving. A normal
+    drawdown/risk rejection (PROMOTION_REJECTED) must NOT alert."""
+
+    def setUp(self):
+        from execution.models import SignalSourceConfig
+        self.user = User.objects.create_user(username="sp", email="sp@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="SP1", is_demo=True)
+        SignalSourceConfig.objects.create(source=TI, auto_demo_execution_enabled=True)
+        SignalSourceConfig.objects.create(source=WAY, auto_demo_execution_enabled=False)
+
+    def _plan(self, mid, *, age_s, status=SignalExecutionPlan.Status.PLANNED, source=TI):
+        a = PendingSignalApproval.objects.create(
+            source=source, message_id=mid, symbol="XAUUSD", direction="BUY",
+            stop_loss="4050", take_profits=["4060", "4061", "4062"],
+            status=PendingSignalApproval.Status.APPROVED)
+        p = SignalExecutionPlan.objects.create(
+            approval=a, account=self.acct, source=source, message_id=mid, symbol="XAUUSD",
+            direction="BUY", is_demo=True, status=status)
+        SignalExecutionPlan.objects.filter(id=p.id).update(
+            created_at=timezone.now() - timedelta(seconds=age_s))
+        return SignalExecutionPlan.objects.get(id=p.id)
+
+    def _key(self, p):
+        return f"stuck_promotion:plan:{p.id}"
+
+    def test_stuck_plan_alerts(self):
+        from reliability.models import AlertEvent
+        p = self._plan("s1", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60)
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_alerted"], 1)
+        self.assertTrue(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+
+    def test_drawdown_rejected_plan_not_alerted(self):
+        # A PLANNED plan carrying a durable PROMOTION_REJECTED reason (the daily_drawdown_hit case) is
+        # correctly disposed — it must NEVER read as a stuck promotion.
+        from execution.models import PromotionAuditEvent
+        p = self._plan("s2", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60)
+        PromotionAuditEvent.objects.create(plan=p, event="PROMOTION_REJECTED",
+                                           detail={"code": "daily_drawdown_hit"})
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_alerted"], 0)
+
+    def test_plan_with_order_not_alerted(self):
+        p = self._plan("s3", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60)
+        ExecutionJob.objects.create(job_type="PLACE_ORDER", account=self.acct, status="SUCCESS",
+                                    payload={"plan_id": p.id, "leg_index": 1})
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_alerted"], 0)
+
+    def test_fresh_plan_not_alerted(self):
+        self._plan("s4", age_s=10)  # within the settle window → in-flight, not stuck
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_alerted"], 0)
+
+    def test_terminal_status_not_alerted(self):
+        self._plan("s5", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60,
+                   status=SignalExecutionPlan.Status.VOIDED)
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_alerted"], 0)
+
+    def test_non_tradeable_source_ignored(self):
+        self._plan("s6", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60, source=WAY)
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_alerted"], 0)
+
+    def test_resolves_when_order_appears(self):
+        from reliability.models import AlertEvent
+        p = self._plan("s7", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60)
+        execution_health.sweep_execution_health()  # opens the alert
+        self.assertTrue(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+        ExecutionJob.objects.create(job_type="PLACE_ORDER", account=self.acct, status="SUCCESS",
+                                    payload={"plan_id": p.id, "leg_index": 1})
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_resolved"], 1)
+        self.assertFalse(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+
+    def test_resolves_when_rejection_appears(self):
+        # A stuck alert must also auto-close if a durable PROMOTION_REJECTED reason lands late.
+        from reliability.models import AlertEvent
+        from execution.models import PromotionAuditEvent
+        p = self._plan("s8", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60)
+        execution_health.sweep_execution_health()  # opens the alert
+        self.assertTrue(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+        PromotionAuditEvent.objects.create(plan=p, event="PROMOTION_REJECTED",
+                                           detail={"code": "daily_drawdown_hit"})
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_resolved"], 1)
+        self.assertFalse(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+
+    def test_resolves_when_status_goes_terminal(self):
+        # A stuck alert must auto-close if the plan later reaches a terminal (non-PLANNED) status.
+        from reliability.models import AlertEvent
+        p = self._plan("s9", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60)
+        execution_health.sweep_execution_health()  # opens the alert
+        self.assertTrue(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+        SignalExecutionPlan.objects.filter(id=p.id).update(status=SignalExecutionPlan.Status.VOIDED)
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_resolved"], 1)
+        self.assertFalse(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+
+    def test_resolve_runs_even_with_no_tradeable_source(self):
+        # The RESOLVE pass must run independently of `tradeable` — disabling every auto_demo source
+        # while an alert is OPEN must not strand it once the plan is disposed.
+        from reliability.models import AlertEvent
+        from execution.models import SignalSourceConfig
+        p = self._plan("s10", age_s=execution_health.STUCK_PROMOTION_ALERT_SECONDS + 60)
+        execution_health.sweep_execution_health()  # opens the alert
+        self.assertTrue(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+        SignalSourceConfig.objects.update(auto_demo_execution_enabled=False)  # disable all sources
+        ExecutionJob.objects.create(job_type="PLACE_ORDER", account=self.acct, status="SUCCESS",
+                                    payload={"plan_id": p.id, "leg_index": 1})
+        res = execution_health.sweep_execution_health()
+        self.assertEqual(res["stuck_promotion_resolved"], 1)
+        self.assertFalse(AlertEvent.objects.filter(dedup_key=self._key(p), status="OPEN").exists())
+
+
 class OrphanedPlaceOrderReconcileTests(TestCase):
     """GFX-PKT-POST-INCIDENT — a lease-expired RUNNING PLACE_ORDER is NEVER re-run (would duplicate);
     it is reconciled against the broker: trade exists → SUCCESS; no trade → alert only."""
