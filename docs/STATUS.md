@@ -6,6 +6,33 @@
 
 ## Execution workstream log
 
+- **2026-07-16 — GFX-PKT-TI-SIGNAL-EXECUTION-VALIDATION-AND-PROTECTION-HARDENING: full forensics, no silent loss, stuck-promotion alert added, DEPLOYED. 🟢**
+  **Complete per-signal forensics (production):** SIGNAL_RECEIVED=12 → APPROVED=12 → 12 plans → **7 EXECUTED,
+  5 REJECTED (`daily_drawdown_hit`), 0 EXPIRED/MANUAL/UNKNOWN, 0 silent loss.** Message-ids 37–48 contiguous
+  (no dropped message); every approval → a plan; cross-checked 3 ways to raw tables. **Drawdown replay**
+  (all 4 limits): the 5 rejected plans each faced realised −502.80 (plan 27's loss) → $100/$500 REJECT,
+  $1000/$2000 EXECUTE — production rejected at the $100 limit in force (correct); $2000 admits them.
+  Config = 2000 in backend/watcher/**listener (authoritative)**; worker unset (harmless). Caught + corrected
+  a broker-time vs UTC replay subtlety (`Trade.close_time` is broker UTC+3; empirically ~+2.9h). **TP
+  protection** revalidated on 4 natural sequences: plans 33 & 36 = TP2_LOCKED broker-proven (#405 SL→4025.30;
+  #494 SL→4042.61), plans 34 & 38 = BREAKEVEN (plan 38 clean, 0 deferrals); all monotonic + risk-reducing,
+  no widen, no duplicate MODIFY, no revert — **no edge case, behaviour unchanged**. Pipeline priority
+  MODIFY>CLOSE>PLACE>SYNC (invariants hold; CLOSE-vs-PLACE flagged for Nuno). Watcher healthy (0.02% CPU,
+  ti_signals-only) — live-captured driving plan 38's breakeven.
+  - **Hardening (WS-J):** the one real gap was the PLAN layer — a plan that reaches PLANNED but gets NEITHER
+    a PLACE_ORDER NOR a PROMOTION_REJECTED reason had no alert (only the approval layer did). Added
+    `detect_stuck_promotions` (deduped WARN, auto-resolving), the plan-layer complement to
+    `detect_unplanned_tradeable_signals`. Drawdown rejections (which carry a PROMOTION_REJECTED audit) are
+    excluded → **0 false-positives on today's 5 rejected plans, verified live**. Alert-only, fail-open,
+    tradeable-scoped, Wayond-safe. No execution-rate-drop alert (would false-positive on legit rejections).
+  - **Review:** 4-lens adversarial workflow → 8 findings, 6 confirmed, **0 MUST_FIX**; fixed the NITs
+    (dead `.distinct()`, N+1→batched `payload__plan_id__in`, RESOLVE-always). **860 backend tests green; no
+    migration.** DEPLOYED backend-only (image `7f304f70`, rollback `rollback-preStuckPromotion`; worker +
+    watcher untouched; minute-chain execs into the fresh backend via host cron). Armed state intact
+    (auto/DEMO/kill=False; ti incr+provider-off; wayond unchanged; drawdown $2000/not-tripped; watcher
+    healthy; silent_loss=0). PR #144 (`main` 4faaffd). Evidence: Notion
+    GFX-EVD-TI-SIGNAL-EXECUTION-VALIDATION-AND-PROTECTION-HARDENING.
+
 - **2026-07-16 — GFX-PKT-TI-SIGNAL-EXECUTION-GAP-AND-TP-PROTECTION-FINAL-HARDENING: investigated, no defect; ops rollup added. 🟢**
   **Forensics (evidence): 11 TI signals today — 6 EXECUTED, 5 REJECTED (`daily_drawdown_hit`), 0 silent
   loss.** The "1 of 5" was an early snapshot: plan 27 closed 00:07 UTC realizing −502.80 → tripped the

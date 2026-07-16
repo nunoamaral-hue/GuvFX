@@ -1,5 +1,14 @@
 # NEXT — Priorities (keep this list short)
 
+## TI execution-validation follow-ups (2026-07-16)
+- [ ] **Nuno decision — worker claim priority CLOSE-vs-PLACE.** Running order is
+  `MODIFY > CLOSE > PLACE > SYNC`; the packet text listed `MODIFY > PLACE > CLOSE`. Hard invariants hold
+  (MODIFY first, SYNC last). Ratify the current (safer, exit-before-enter) order, or reorder to match — see
+  KNOWN_ISSUES. Execution-path change ⇒ needs a decision, not an in-passing edit.
+- [ ] **Watch `stuck_promotion` in production** — the new plan-layer alert should stay at 0 (every plan
+  reaches a disposition). A non-zero count means the promotion path crashed mid-disposition; investigate that
+  plan's listener path. Auto-resolves when the plan later disposes.
+
 ## TI execution-gap follow-ups (2026-07-16)
 - [ ] **Watch the daily-drawdown behaviour across a full day** — today's cumulative TI realised PnL
   reached −772.80 (still < $2000). If a losing streak pushes past −$2000, `daily_drawdown_hit` will
