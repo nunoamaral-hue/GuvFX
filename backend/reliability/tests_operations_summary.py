@@ -312,20 +312,28 @@ class NotificationReconciliationBlockTests(TestCase):
         self.assertEqual(block["transport_mode"], "disabled")
         self.assertFalse(block["any_mismatch"])
 
+    def test_stuck_candidate_flags_mismatch_real_transport(self):
+        self._win(0, deliver=False, sent=False)  # candidate stuck PENDING under real transport → loss
+        block = ops._notification_reconciliation_block(timezone.now(), self.REAL)
+        ti = block["by_source"]["ti_signals"]
+        self.assertEqual(ti["stuck"], 1)
+        self.assertTrue(block["any_mismatch"])
+
     def test_real_transport_mismatch_escalates_summary(self):
-        # Finding-5: a real transmit loss must surface in the full summary (any_mismatch → not HEALTHY).
+        # Finding-5: a real transmit loss must roll the summary up to WARNING. The broker is mocked
+        # REACHABLE so the ONLY warning source is the notification mismatch — isolating the escalation.
         import os
         from execution.models import SignalSourceConfig
         SignalSourceConfig.objects.get_or_create(
             source="ti_signals", defaults={"auto_demo_execution_enabled": True})
         self._win(0, deliver=False)   # SENT but never transmitted under real transport → loss
-        with mock.patch.dict(os.environ, {
-                "NOTIFICATION_DISPATCH_ENABLED": "1", "NOTIFICATION_DISPATCH_TRANSPORT": "telegram-real",
-                "GUVFX_WINDOWS_AGENT_BASE_URL": "", "GUVFX_AGENT_URL": "", "WINDOWS_AGENT_BASE": ""},
-                clear=False):
+        with mock.patch.object(ops, "_broker_metrics", return_value={"reachable": True}), \
+                mock.patch.dict(os.environ, {
+                    "NOTIFICATION_DISPATCH_ENABLED": "1",
+                    "NOTIFICATION_DISPATCH_TRANSPORT": "telegram-real"}, clear=False):
             s = ops.build_operations_summary()
         self.assertTrue(s["notification_reconciliation"]["any_mismatch"])
-        self.assertNotEqual(s["overall"], "HEALTHY")
+        self.assertEqual(s["overall"], "WARNING")   # broker healthy → mismatch is the sole warning
 
 
 class RiskStateBlockTests(TestCase):
