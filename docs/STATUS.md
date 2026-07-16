@@ -6,6 +6,18 @@
 
 ## Execution workstream log
 
+- **2026-07-16 — GFX-PKT-TI-SIGNAL-EXECUTION-GAP-AND-TP-PROTECTION-FINAL-HARDENING: investigated, no defect; ops rollup added. 🟢**
+  **Forensics (evidence): 11 TI signals today — 6 EXECUTED, 5 REJECTED (`daily_drawdown_hit`), 0 silent
+  loss.** The "1 of 5" was an early snapshot: plan 27 closed 00:07 UTC realizing −502.80 → tripped the
+  OLD $100 drawdown → plans 28–32 (01:03–06:02) durably `PROMOTION_REJECTED`; after the **$2,000** raise
+  (confirmed in the **listener** runtime, authoritative for promotion) signals resumed (33–37 executed).
+  Replay: $100/$500 reject, $1000/$2000 execute. **TP protection revalidated live:** plan 36 = a 2nd
+  TP2_LOCKED broker proof (#494 SL 4038.7→4042.61, leg 3 closed at the TP2 price +156.40, band cleared
+  ~8s); breakeven on plan 34; plans 35/37 (losses) INITIAL/no-protection-due (correct). Watcher healthy,
+  ti_signals-only. Priority MODIFY>PLACE>CLOSE>SYNC verified. **No blocker to remove.** Added a
+  `/operations.signal_execution` per-source rollup (today executed/rejected+reasons/pending, execution%,
+  all_accounted). 845+ tests green; no migration.
+
 - **2026-07-16 — GFX-PKT-MT5-BRIDGE-STALL-ROOT-CAUSE-AND-RESILIENCE: root cause found + fixed, review/deploy in progress. 🟡**
   The intermittent "5–6 min MT5 bridge/worker stall" is **NOT** MT5, a hung bridge, or worker death.
   **Root cause (evidence):** the ingest worker made **5 `jobs/next/` calls per loop (~150/min)** vs the
