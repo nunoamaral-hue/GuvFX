@@ -986,8 +986,15 @@ def main():
             # blindly FAILED, which could hide a real order).
             if claimed and claimed[1] in ("SYNC_POSITIONS", "MODIFY_POSITION", "CLOSE_TRADE"):
                 try:
+                    # NB: NO ``retryable`` flag here. For a MODIFY that flag is the breakeven
+                    # soft-defer (broker stops/freeze-band) semantic — it re-enqueues WITHOUT marching
+                    # the retry cap or paging. A genuine repeating processing error must instead flow
+                    # the normal retry-cap/alert path. A SYNC re-enqueues via _ensure_position_sync
+                    # regardless of this flag, so omitting it is safe there too. The
+                    # ``worker processing error`` marker makes the self-fail visible to the health
+                    # detectors (which self-fails do NOT reach via the lease reclaim).
                     complete_job(claimed[0], "FAILED",
-                                 {"ok": False, "error_category": type(e).__name__, "retryable": True},
+                                 {"ok": False, "error_category": type(e).__name__, "self_failed": True},
                                  f"worker processing error: {repr(e)[:180]}")
                 except Exception:
                     pass  # complete may itself be throttled; the lease-reclaim remains the backstop

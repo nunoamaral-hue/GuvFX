@@ -384,3 +384,27 @@ class ThrottleStormAlertTests(TestCase):
             finished_at=now - timedelta(hours=3))
         execution_health.detect_protection_watcher_health(timezone.now())
         self.assertFalse(AlertEvent.objects.filter(dedup_key="worker_throttle_storm", status="OPEN").exists())
+
+
+class SelfFailedSyncVisibilityTests(TestCase):
+    """Review SHOULD_FIX: a worker-self-failed (recovered=False) protection sync — the new fast-fail
+    path — must STILL be counted by the stall/throttle detectors so a bridge hang is not silent."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="sf", email="sf@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="SF1", is_demo=True)
+
+    def test_self_failed_protection_syncs_trip_alerts(self):
+        from reliability.models import AlertEvent
+        now = timezone.now()
+        for i in range(4):  # >= protection_sync_stall threshold (3)
+            ExecutionJob.objects.create(
+                job_type="SYNC_POSITIONS", account=self.acct, status="FAILED", recovered=False,
+                payload={"breakeven_sync": True}, result={"self_failed": True},
+                error_message="worker processing error: <HTTPError 429>",
+                finished_at=now - timedelta(minutes=2))
+        r = execution_health.detect_protection_watcher_health(now)
+        self.assertEqual(r.get("sync_stall_alerted"), 1)          # self-fails now visible
+        self.assertGreaterEqual(r.get("orphaned_sync_1h"), 4)
+        self.assertTrue(AlertEvent.objects.filter(dedup_key="protection_sync_stall", status="OPEN").exists())
