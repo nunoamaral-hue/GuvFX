@@ -6,7 +6,22 @@
 
 ## Execution workstream log
 
-- **2026-07-16 — GFX-PKT-TI-SIGNAL-EXECUTION-GAP-AND-TP-PROTECTION-FINAL-HARDENING: investigated, no defect; ops rollup added. 🟢**
+- **2026-07-16 — GFX-PKT-TI-SIGNAL-EXECUTION-GAP-AND-TP-PROTECTION-FINAL-HARDENING: investigated, no defect; ops rollup added, reviewed, DEPLOYED + verified. 🟢**
+  **Merged PR #142 (`main` 7bfedf2) → adversarial review found 3 defects in the new block, all fixed
+  (PR squash-merged): (1) HELD/VOIDED/SUPERSEDED (terminal PLAN-stage rejections) were mis-bucketed as
+  `pending` forever → now counted `rejected` with `hold_reason` (matches `_strategy_metrics`); (2)
+  `all_accounted` was tautologically True → redefined to `pending_stuck==0` (no plan stuck PLANNED past
+  a 300s settle window with no disposition); (3) per-plan unindexed `payload__plan_id` scan → two bulk
+  queries + in-memory classification; also wrapped in try/except so `/operations` never 500s. 850 backend
+  tests green; no migration. DEPLOYED backend-only (image `dbf46b59`, rollback tag `rollback-preSignalRollup`;
+  ingest-worker + tp-watcher containers left on the prior image, uptime preserved). VERIFIED live:
+  `signal_execution` block absent pre-deploy → present post-deploy = ti_signals 12 signals / 7 executed /
+  5 rejected (`daily_drawdown_hit`) / 0 pending / all_accounted=True / 58.3% — forensically cross-checked
+  against raw tables (plans=12, PLACE_ORDER-plans=7, PROMOTION_REJECTED-plans=5, identical). Armed state
+  intact (auto=True both; ti incremental=True/provider off; wayond incremental=False/provider off;
+  drawdown $2000 not tripped; watcher armed/healthy), notifications 13=13=13 exactly-once, silent_loss=0.
+  No new critical from the change (`overall=CRITICAL` is the documented stale 2026-07-07 breaker; one new
+  WARN is the pre-existing chronic validate-worker heartbeat flap — Windows-side, self-healing).**
   **Forensics (evidence): 11 TI signals today — 6 EXECUTED, 5 REJECTED (`daily_drawdown_hit`), 0 silent
   loss.** The "1 of 5" was an early snapshot: plan 27 closed 00:07 UTC realizing −502.80 → tripped the
   OLD $100 drawdown → plans 28–32 (01:03–06:02) durably `PROMOTION_REJECTED`; after the **$2,000** raise

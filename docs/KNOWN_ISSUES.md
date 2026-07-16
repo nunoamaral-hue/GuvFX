@@ -178,6 +178,13 @@ List active problems with reproduction steps and workarounds.
   auto-recovery suppressed these accumulate and read as `EXECUTION_PIPELINE DEGRADED`. Harmless to
   function (SYNC is idempotent; new SYNCs run), but should be cleaned. **Workaround:** force-fail
   lease-expired RUNNING SYNC jobs (`status=FAILED`). Cleared 6 such orphans on 2026-07-15.
+- **Chronic `VALIDATE_WORKER` heartbeat flap (WARN, dedup `VALIDATE_WORKER:0:0`)** — the Windows-side
+  MT5 validate worker/EA intermittently stops posting its heartbeat (observed `age_s` ~342s vs 60s
+  expected), raising a WARN that **auto-resolves** when it resumes. On 2026-07-16 it opened/resolved
+  ~5× (alerts 36/38/40/41) on a ~1–2h cadence; 42 re-opened at 14:20 near an unrelated backend recreate.
+  It is **not** caused by backend deploys (a ~6s backend blip cannot produce a multi-minute heartbeat
+  gap) and is orthogonal to signal execution / TP protection / notifications (all green during the flap).
+  Root fix is on the Windows validate EA (one of the known "2/11 healthchecks" gaps), not the backend.
 - **Broker health `MT5_BROKER`/`MT5_TERMINAL` = UNKNOWN** and `latest_trade_age_s` negative — the
   UNKNOWN follows from the dormant core (no terminal probe); the negative age is the known broker-
   server-timezone offset (bar/deal times are broker-server time, ~2h ahead — see data-acquisition tz).
