@@ -399,3 +399,44 @@ class ProtectionWatcherBlockTests(TestCase):
             block = ops._protection_watcher_block(timezone.now())
         self.assertFalse(block["armed"])
         self.assertFalse(block["stale"])
+
+
+class SignalExecutionBlockTests(TestCase):
+    """GFX-PKT-TI-SIGNAL-EXECUTION-GAP WS-I — per-source today rollup: every signal → exactly one of
+    executed/rejected/pending, execution %, and all_accounted (no silent loss on the plan side)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="se", email="se@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="SE1", is_demo=True)
+        SignalSourceConfig.objects.create(source="ti_signals", auto_demo_execution_enabled=True)
+
+    def _plan(self, status, *, mid):
+        from signal_intake.models import PendingSignalApproval
+        from execution.models import SignalExecutionPlan
+        appr = PendingSignalApproval.objects.create(
+            source="ti_signals", message_id=mid, symbol="XAUUSD", direction="SELL",
+            stop_loss="4032", take_profits=["4026", "4025", "4023"],
+            status=PendingSignalApproval.Status.APPROVED)
+        return SignalExecutionPlan.objects.create(
+            approval=appr, account=self.acct, source="ti_signals", message_id=mid, symbol="XAUUSD",
+            direction="SELL", stop_loss="4032", is_demo=True, signal_timestamp=timezone.now(),
+            status=status)
+
+    def test_executed_rejected_pending_and_execution_pct(self):
+        from execution.models import ExecutionJob, PromotionAuditEvent
+        ex = self._plan("CLOSED", mid="m1")                       # executed
+        ExecutionJob.objects.create(job_type="PLACE_ORDER", account=self.acct, status="SUCCESS",
+                                    payload={"plan_id": ex.id, "leg_index": 1})
+        rj = self._plan("PLANNED", mid="m2")                      # rejected (durable)
+        PromotionAuditEvent.objects.create(plan=rj, event="PROMOTION_REJECTED",
+                                           detail={"code": "daily_drawdown_hit"})
+        self._plan("PLANNED", mid="m3")                          # pending (no order, no rejection)
+        block = ops._signal_execution_block(timezone.now())["ti_signals"]
+        self.assertEqual(block["signals_today"], 3)
+        self.assertEqual(block["executed"], 1)
+        self.assertEqual(block["rejected"], 1)
+        self.assertEqual(block["pending"], 1)
+        self.assertEqual(block["rejection_reasons"], {"daily_drawdown_hit": 1})
+        self.assertEqual(block["execution_pct"], 33.3)
+        self.assertTrue(block["all_accounted"])

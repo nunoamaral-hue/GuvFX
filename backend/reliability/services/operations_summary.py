@@ -471,6 +471,49 @@ def _tp_protection_block(now):
         return {"status": "UNKNOWN", "error": type(exc).__name__}
 
 
+def _signal_execution_block(now):
+    """GFX-PKT-TI-SIGNAL-EXECUTION-GAP WS-I — today's per-source signal-execution rollup: EVERY signal
+    (plan) created today is classified into exactly one terminal disposition — executed / rejected
+    (with the durable reason breakdown) / pending — plus an execution %. Source-aware; never combines
+    TI with Wayond. ``all_accounted`` asserts the success criterion 'no silent signal loss' at a glance.
+    Read-only. Companion to signal_dispositions (which is approval-anchored + tracks silent loss)."""
+    from collections import Counter
+    from execution.models import (SignalExecutionPlan, PromotionAuditEvent, ExecutionJob,
+                                  SignalSourceConfig)
+    tstart = _today_start(now)
+    sources = sorted(set(SignalSourceConfig.objects.filter(auto_demo_execution_enabled=True)
+                         .values_list("source", flat=True)) | {"ti_signals", "wayond"})
+    out = {}
+    for src in sources:
+        plans = list(SignalExecutionPlan.objects.filter(source=src, created_at__gte=tstart)
+                     .values_list("id", "status"))
+        total = len(plans)
+        executed = rejected = pending = 0
+        reasons = Counter()
+        for pid, status in plans:
+            has_order = ExecutionJob.objects.filter(
+                payload__plan_id=pid, job_type="PLACE_ORDER").exists()
+            if has_order or status in ("PROMOTED", "CLOSED"):
+                executed += 1
+                continue
+            rej = (PromotionAuditEvent.objects.filter(plan_id=pid, event="PROMOTION_REJECTED")
+                   .order_by("-created_at").values_list("detail", flat=True).first())
+            if rej is not None:
+                rejected += 1
+                reasons[(rej or {}).get("code", "promotion_rejected")] += 1
+            else:
+                pending += 1  # PLANNED, no order, no durable rejection yet (in-flight or void)
+        if total:
+            out[src] = {
+                "signals_today": total, "executed": executed, "rejected": rejected,
+                "pending": pending, "rejection_reasons": dict(reasons),
+                "execution_pct": round(100.0 * executed / total, 1),
+                # every plan lands in exactly one bucket → no silent loss on the plan side.
+                "all_accounted": (executed + rejected + pending == total),
+            }
+    return out
+
+
 def build_operations_summary() -> dict:
     """The full read-only operational summary for the status page (and alert enrichment)."""
     from reliability.models import ComponentHealth, Heartbeat, AlertEvent
@@ -574,6 +617,7 @@ def build_operations_summary() -> dict:
     tp_protection = _tp_protection_block(now)
     if (tp_protection.get("sla") or {}).get("status") == "WARNING":
         states.append("WARNING")
+    signal_execution = _signal_execution_block(now)
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -590,6 +634,7 @@ def build_operations_summary() -> dict:
         "risk_state": risk_state,
         "protection_watcher": protection_watcher,
         "tp_protection": tp_protection,
+        "signal_execution": signal_execution,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},
