@@ -15,7 +15,9 @@ second.
 ## Safety properties
 - **Single-flight:** a Postgres advisory lock (`pg_try_advisory_lock`) — a duplicate start idles.
 - **Idempotent:** the ladder's per-(ticket,stage) in-flight guard + monotonic `protection_stage` mean
-  a faster poll **never** enqueues a duplicate MODIFY, so bridge calls do not scale with cadence.
+  a faster poll **never** enqueues a duplicate MODIFY, so the risk-bearing SL-edit (MODIFY) bridge
+  calls do not scale with cadence. (The position-SYNC/deals-fetch *is* driven faster in the hot
+  window — that is the point — but it is bounded to ≤1 in-flight per account and places no order.)
 - **Self-healing ingestion:** each tick also reclaims lease-expired RUNNING SYNC/MODIFY jobs. Combined
   with the short protection-sync lease (`EXECUTION_SYNC_LEASE_TTL_SECONDS`, default 60s), a stranded
   sync frees ingestion within ~a minute instead of blinding the ladder for several minutes.
