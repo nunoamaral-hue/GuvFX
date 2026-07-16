@@ -1,5 +1,11 @@
 # NEXT — Priorities (keep this list short)
 
+## Bridge-stall follow-ups (2026-07-16)
+- [ ] **After deploy, confirm the 429 storm stops** — worker `loop_error`/`rate_limited` rate → ~0,
+  orphaned-SYNC count → ~0. SOAK the claim rate under active trading (signal-time burst).
+- [ ] **Consider a dedicated worker throttle scope** if, under heavy concurrent load, one prioritized
+  claim/loop plus other internal clients still approaches 100/min (evidence did not warrant it yet).
+
 ## TP-protection finalisation follow-ups (2026-07-16)
 - [ ] **Complete the 24/48/72h soak** — the durable latency instrumentation (`close_ingested_at` +
   `protection_latency`) is live; aggregate before/after latency + soft-deferral distribution from

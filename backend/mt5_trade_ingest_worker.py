@@ -86,9 +86,22 @@ def api_headers():
         }
     return headers
 
-def claim_next_job(job_type: str | None = None):
+class RateLimited(Exception):
+    """Raised by claim_next_job on an HTTP 429 so the loop can back off (not tight-retry)."""
+    def __init__(self, retry_after: float):
+        self.retry_after = retry_after
+        super().__init__("rate_limited")
+
+
+def claim_next_job(job_type: str | None = None, job_types: str | None = None):
+    """Claim the next job. ``job_types`` (a PRIORITY-ORDERED CSV) claims the highest-priority pending
+    job across types in ONE request — the default the worker now uses so it makes ~1 claim call per
+    loop instead of ~5, staying well under the backend's 100/min throttle. A 429 raises RateLimited
+    (with any Retry-After) so the caller backs off instead of hammering (which sustained the storm)."""
     params = f"worker_id={urllib.parse.quote(WORKER_ID)}"
-    if job_type:
+    if job_types:
+        params += f"&job_types={urllib.parse.quote(job_types)}"
+    elif job_type:
         params += f"&job_type={urllib.parse.quote(job_type)}"
     url = f"{API_BASE}/api/execution/jobs/next/?{params}"
     req = urllib.request.Request(url, method="GET", headers=api_headers())
@@ -100,6 +113,13 @@ def claim_next_job(job_type: str | None = None):
     except urllib.error.HTTPError as e:
         if e.code == 204:
             return None
+        if e.code == 429:
+            ra = e.headers.get("Retry-After") if e.headers else None
+            try:
+                ra = float(ra) if ra is not None else 0.0
+            except (TypeError, ValueError):
+                ra = 0.0
+            raise RateLimited(ra)
         raise
 
 def complete_job(job_id: int, status: str, result: dict, error_message: str = ""):
@@ -673,16 +693,12 @@ def claim_worker_job():
     """
     if SHADOW_WORKER_ENABLED:
         return claim_next_job("PLACE_ORDER_SHADOW")
-    return (
-        claim_next_job("PLACE_TEST_ORDER")
-        or claim_next_job("PLACE_ORDER")
-        # WS-B AUTO-BREAKEVEN — risk-reducing SL moves rank ahead of the default SYNC so a
-        # remaining leg is protected promptly once TP1 closes; still below new order placement.
-        or claim_next_job("MODIFY_POSITION")
-        # WS-E: provider close commands — risk-reducing (flattens), ranked with the SL move.
-        or claim_next_job("CLOSE_TRADE")
-        or claim_next_job()
-    )
+    # BSTALL-B: ONE prioritized claim per loop (was 5 separate HTTP calls → ~150/min → 100/min
+    # throttle → 429 storm). Priority order = risk-reducing protection FIRST (MODIFY, CLOSE), then
+    # order placement, then the low-priority SYNC. The backend claims the highest-priority PENDING
+    # job present in this single request.
+    return claim_next_job(job_types=(
+        "MODIFY_POSITION,CLOSE_TRADE,PLACE_ORDER,PLACE_TEST_ORDER,SYNC_POSITIONS"))
 
 
 def main():
@@ -692,7 +708,9 @@ def main():
         raise SystemExit("GUVFX_AGENT_URL/TOKEN (or WINDOWS_AGENT_BASE/TOKEN) missing")
 
     print("worker:", WORKER_ID, "agent_order_base:", AGENT_ORDER_BASE)
+    backoff = 1.0
     while True:
+        claimed = None  # (job_id, job_type) once we've CLAIMED a job this iteration
         try:
             try:  # RX-2C: heartbeat (never break the worker loop)
                 from reliability.services.heartbeat import record_beat
@@ -701,9 +719,19 @@ def main():
                 pass
             # Claim by mode (see claim_worker_job): a dedicated shadow worker
             # (MT5_SHADOW_WORKER) claims ONLY PLACE_ORDER_SHADOW; the normal
-            # worker (default) claims PLACE_TEST_ORDER > PLACE_ORDER >
-            # SYNC_POSITIONS and never a shadow job.
-            job = claim_worker_job()
+            # worker (default) makes ONE prioritized claim per loop.
+            try:
+                job = claim_worker_job()
+            except RateLimited as rl:
+                # BSTALL-B: backend throttle → EXPONENTIAL BACKOFF (respect Retry-After), NOT a tight
+                # 2s retry — the tight retry is what sustained the 429 storm. Claiming NO job here can
+                # never orphan one.
+                wait = max(rl.retry_after or 0.0, backoff)
+                backoff = min(backoff * 2, 30.0)
+                print(f"rate_limited: backing off {wait:.1f}s")
+                time.sleep(wait)
+                continue
+            backoff = 1.0  # reset on a successful (non-429) claim call
             if not job:
                 time.sleep(SLEEP_SEC)
                 continue
@@ -712,6 +740,7 @@ def main():
             jt = job.get("job_type")
             payload = job.get("payload") or {}
             account_id = int(job.get("account"))
+            claimed = (job_id, jt)  # from here a processing error must NOT leave the job orphaned
 
             # EXEC-E2b: SHADOW jobs go to the dry-run path (order_check only),
             # NEVER the live PLACE_ORDER/order_send path below.
@@ -950,6 +979,25 @@ def main():
 
         except Exception as e:
             print("loop_error:", repr(e))
+            # BSTALL-B: if a job was CLAIMED and its processing then raised (e.g. a bridge/agent HTTP
+            # error or a 429 mid-request), mark the job FAILED so it does NOT linger RUNNING and get
+            # reclaimed a full lease later as a false "worker gone" orphan. ONLY for IDEMPOTENT job
+            # types — a place-order may have LANDED, so it is left for the broker-reconciler (never
+            # blindly FAILED, which could hide a real order).
+            if claimed and claimed[1] in ("SYNC_POSITIONS", "MODIFY_POSITION", "CLOSE_TRADE"):
+                try:
+                    # NB: NO ``retryable`` flag here. For a MODIFY that flag is the breakeven
+                    # soft-defer (broker stops/freeze-band) semantic — it re-enqueues WITHOUT marching
+                    # the retry cap or paging. A genuine repeating processing error must instead flow
+                    # the normal retry-cap/alert path. A SYNC re-enqueues via _ensure_position_sync
+                    # regardless of this flag, so omitting it is safe there too. The
+                    # ``worker processing error`` marker makes the self-fail visible to the health
+                    # detectors (which self-fails do NOT reach via the lease reclaim).
+                    complete_job(claimed[0], "FAILED",
+                                 {"ok": False, "error_category": type(e).__name__, "self_failed": True},
+                                 f"worker processing error: {repr(e)[:180]}")
+                except Exception:
+                    pass  # complete may itself be throttled; the lease-reclaim remains the backstop
             time.sleep(2.0)
 
 if __name__ == "__main__":

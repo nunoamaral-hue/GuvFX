@@ -362,16 +362,21 @@ def detect_protection_watcher_health(now) -> dict:
         elif not stale and open_stale.exists():
             open_stale.update(status=AlertEvent.Status.RESOLVED, resolved_at=now)
 
+        # A stranded protection sync is EITHER lease-reclaimed (recovered=True) OR self-failed fast by
+        # the worker on a bridge/HTTP error (marked ``self_failed`` — reaches FAILED before the lease,
+        # so the reclaimer never sees it). Count both so a real bridge/terminal hang still trips this.
+        from django.db.models import Q as _Q
+        _stranded = _Q(recovered=True) | _Q(error_message__startswith="worker processing error")
         strands = ExecutionJob.objects.filter(
-            job_type=ExecutionJob.JobType.SYNC_POSITIONS, status=ExecutionJob.Status.FAILED,
-            recovered=True, payload__breakeven_sync=True, finished_at__gte=now - timedelta(hours=1)).count()
+            _stranded, job_type=ExecutionJob.JobType.SYNC_POSITIONS, status=ExecutionJob.Status.FAILED,
+            payload__breakeven_sync=True, finished_at__gte=now - timedelta(hours=1)).count()
         threshold = int(os.getenv("PROTECTION_SYNC_STALL_ALERT_THRESHOLD", "3"))
         open_stall = AlertEvent.objects.filter(dedup_key="protection_sync_stall", status=AlertEvent.Status.OPEN)
         if strands >= threshold and not open_stall.exists():
             AlertEvent.objects.create(
                 severity=AlertEvent.Severity.WARN, component=Component.EXECUTION_PIPELINE,
                 title="Protection SYNC ingestion stalling",
-                body=(f"{strands} protection position-syncs stranded (lease-reclaimed) in the last hour "
+                body=(f"{strands} protection position-syncs stranded (lease-reclaimed or worker fast-fail) in the last hour "
                       "— the MT5 bridge/terminal is intermittently hanging, delaying TP-close ingestion "
                       "and protection. The short protection-sync lease bounds the impact; investigate "
                       "the bridge if this persists."),
@@ -379,6 +384,28 @@ def detect_protection_watcher_health(now) -> dict:
             out["sync_stall_alerted"] = 1
         elif strands < threshold and open_stall.exists():
             open_stall.update(status=AlertEvent.Status.RESOLVED, resolved_at=now)
+
+        # BSTALL: throttle-storm detector. If MANY jobs (any SYNC type) orphan within the hour, the
+        # worker is likely being HTTP-429'd by the backend claim throttle and leaving jobs RUNNING —
+        # the self-inflicted stall root cause. A distinct deduped, auto-resolving alert so a recurrence
+        # is caught directly (the be_sync alert above only sees protection syncs).
+        all_strands = ExecutionJob.objects.filter(
+            _stranded, job_type=ExecutionJob.JobType.SYNC_POSITIONS, status=ExecutionJob.Status.FAILED,
+            finished_at__gte=now - timedelta(hours=1)).count()
+        storm_threshold = int(os.getenv("WORKER_THROTTLE_STORM_THRESHOLD", "15"))
+        out["orphaned_sync_1h"] = all_strands
+        open_storm = AlertEvent.objects.filter(dedup_key="worker_throttle_storm", status=AlertEvent.Status.OPEN)
+        if all_strands >= storm_threshold and not open_storm.exists():
+            AlertEvent.objects.create(
+                severity=AlertEvent.Severity.WARN, component=Component.EXECUTION_PIPELINE,
+                title="Worker job-claim throttle storm (orphaned SYNCs)",
+                body=(f"{all_strands} SYNC jobs stranded (lease-reclaimed or worker fast-fail) in the last hour — the ingest "
+                      "worker is likely exceeding the backend claim rate limit (HTTP 429) and leaving "
+                      "jobs RUNNING. Check worker logs for 'rate_limited'/429 and the jobs/next/ call rate."),
+                dedup_key="worker_throttle_storm", status=AlertEvent.Status.OPEN, detail={"orphaned_sync_1h": all_strands})
+            out["throttle_storm_alerted"] = 1
+        elif all_strands < storm_threshold and open_storm.exists():
+            open_storm.update(status=AlertEvent.Status.RESOLVED, resolved_at=now)
     except Exception:  # pragma: no cover - alert-only must never break the sweep
         logger.exception("execution_health: protection-watcher health check failed")
     return out
