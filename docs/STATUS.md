@@ -6,6 +6,28 @@
 
 ## Execution workstream log
 
+- **2026-07-16 — GFX-PKT-POST-DEPLOY-STABILISATION-AND-EXECUTION-CORRECTIONS: implemented, review+deploy in progress. 🟡**
+  New incidents investigated independently from production evidence (no assumptions):
+  - **A (TP2 protection):** plan 24's leg 3 closed at breakeven (4038.01) not TP2 (4034.50). Root cause:
+    plan 24 ran at 17:16 UTC 07-15, **before** the incremental ladder (PR #131) merged at 18:27 UTC —
+    its MODIFY jobs 179/180 carry `stage=None` (old breakeven-only code). The new ladder had therefore
+    **never produced a TP2_LOCKED job in prod**. Fix: proved the ladder with deterministic tests +
+    added `_supersede_pending_breakeven` (TP2-always-wins) so a stale PENDING breakeven can't land an
+    entry SL after TP2 closes. Bridge refuse-widen backstop confirmed present (guarantees steady state).
+  - **B/C (non-executing signals):** plans 28–31 were each `PROMOTION_REJECTED: daily_drawdown_hit`.
+    Root cause: `RISK_MAX_DAILY_DRAWDOWN_ABS` unset → **$100 default**, but one 1.20-lot ti_signals
+    stop-out ≈ $500 (plan 27 realised −$502.80 today), so the breaker halts after the FIRST losing
+    signal each day (the $100 was sized for the old 0.06-lot scale). **Nuno approved re-scaling to
+    $2,000**; set durably in `telegram.env` (backend/worker) + `wayond-listener.env` (promotion). The
+    breaker is unchanged — only the threshold. 28–31 are NOT replayed (stale).
+  - **D (branding):** already correct — acct#1 `public_display_name='IS6FX'`, `public_label()='IS6FX'`,
+    and a fresh render in prod shows `account_label='IS6FX'`. The stakeholder saw a pre-fix card. Locked
+    with a regression test.
+  - **E (notifications):** reconciles clean (WIN 14 = candidates 14 = SENT 14 = transmitted 14,
+    exactly-once). Added a persistent per-source reconciliation block + WARNING on mismatch.
+  - **F/G:** operations_summary gained notification-reconciliation + risk_state (drawdown) blocks;
+    soak gained pipeline-latency (promotion/execution/notification) + protection-by-stage metrics.
+
 - **2026-07-16 — GFX-PKT-POST-INCIDENT-EXECUTION-AND-NOTIFICATION-STABILISATION: DONE + DEPLOYED (PR #136). 🟢**
   Fresh evidence-led investigation of TI non-executions AFTER the listener-parity fix (packet warned
   not to assume that incident explained any later failure). **Findings (both pre-migration, unrelated

@@ -2,6 +2,28 @@
 
 List active problems with reproduction steps and workarounds.
 
+## Daily-drawdown circuit-breaker re-scaled to $2,000 (2026-07-16)
+
+- `RISK_MAX_DAILY_DRAWDOWN_ABS` was unset in prod → the **$100 default**. At ti_signals' 1.20-lot
+  sizing one stop-out ≈ $500, so the breaker halted the strategy after the first losing signal each
+  UTC day (plans 28–31 on 07-16 were all `PROMOTION_REJECTED: daily_drawdown_hit` after plan 27
+  realised −$502.80). **Nuno approved re-scaling to $2,000** (~4 losing signals). Set durably in
+  `telegram.env` (backend/worker) AND `wayond-listener.env` (promotion runs in the listener). The
+  breaker is unchanged — only the threshold. NOTE the drawdown "day" uses **UTC** midnight while
+  `Trade.close_time` is broker-server time (~UTC+3, stored as-if-UTC); this ~3h skew is a known,
+  separate item (does not cause false blocks — a real intra-day loss still counts).
+
+## TP2-always-wins — the ladder was unproven in prod until now (2026-07-16)
+
+- The reported "leg 3 at breakeven after TP2" (plan 24) actually ran on the **pre-#131 breakeven-only
+  code** (jobs 179/180 have `stage=None`); the incremental ladder merged ~70 min later. The new
+  ladder is now proven by deterministic tests and hardened with `_supersede_pending_breakeven` (a
+  still-PENDING breakeven is retired the moment a leg locks TP2). Residual physical floor: if TP1 and
+  TP2 close in **different** sync cycles and price reverses within that ~60s window, leg 3 can still
+  close at a breakeven SL before the TP2 lock lands — inherent to a poll-based ladder; the bridge
+  refuse-widen backstop guarantees the *steady-state* SL is always the TP2 lock. Broker evidence of a
+  TP2_LOCKED modify is still **EVIDENCE-PENDING** (awaits the first natural eligible close).
+
 ## TP incremental protection — armed but broker evidence still EVIDENCE-PENDING (2026-07-16)
 
 - The ladder (`INITIAL→BREAKEVEN→TP2_LOCKED`) is DEPLOYED + ARMED for ti_signals (BREAKEVEN_ENABLED=1,
