@@ -1,5 +1,13 @@
 # NEXT — Priorities (keep this list short)
 
+## TP-protection finalisation follow-ups (2026-07-16)
+- [ ] **Complete the 24/48/72h soak** — the durable latency instrumentation (`close_ingested_at` +
+  `protection_latency`) is live; aggregate before/after latency + soft-deferral distribution from
+  natural trades. SOAK-IN-PROGRESS; do not force a trade.
+- [ ] **Verify the broker UTC offset** (`BROKER_UTC_OFFSET_HOURS`, currently assumed +3, unverified) —
+  the two broker-anchored latency segments (A, H) depend on it; the offset-independent
+  ingestion→verified segment does not. Tied to the pending broker-server-timezone probe.
+
 ## TP-protection latency follow-ups (2026-07-16 watcher packet)
 - [ ] **After arming the watcher, capture before/after latency** on the next natural TI trade where
   TP1/TP2 close while TP3 runs (target: TP2-lock verified within seconds of ingestion, not ~1 min).

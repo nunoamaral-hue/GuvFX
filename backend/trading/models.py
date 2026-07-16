@@ -181,6 +181,15 @@ class Trade(models.Model):
 
     open_time = models.DateTimeField()
     close_time = models.DateTimeField(null=True, blank=True)
+    # GFX-PKT-TP-PROTECTION-OPTIMISATION WS-A — the AUTHORITATIVE server-side (UTC) instant this
+    # position's close was first INGESTED (close_time transitioned None → value). The one durable
+    # timestamp the protection-latency instrumentation could not otherwise derive; it anchors the
+    # "broker close → ingestion" and "ingestion → protection verified" segments. Null for a still-open
+    # position and for closes ingested before this field existed (→ latency shows UNKNOWN, never a
+    # fabricated zero). Never overwritten once set (idempotent, replay-safe).
+    close_ingested_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Server-time (UTC) the close was first ingested; anchors protection-latency metrics.")
 
     open_price = models.DecimalField(max_digits=20, decimal_places=5)
     close_price = models.DecimalField(max_digits=20, decimal_places=5, null=True, blank=True)

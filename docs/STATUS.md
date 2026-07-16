@@ -6,6 +6,27 @@
 
 ## Execution workstream log
 
+- **2026-07-16 — GFX-PKT-TP-PROTECTION-OPTIMISATION-AND-RELIABILITY-FINALISATION: implemented, review+deploy in progress. 🟡**
+  Finalisation of the (already-correct, already-fast) TI protection subsystem — instrumentation, not
+  redesign. Reverified prod first: ladder correct, **TP2_LOCKED broker-proven (job #405)**, armed state
+  intact, Wayond unchanged, provider disabled.
+  - **A — durable latency instrumentation:** `Trade.close_ingested_at` (the worker stamps the
+    authoritative UTC ingestion instant on the None→closed transition, idempotent) +
+    `execution/protection_latency.py` computing per-plan/leg transition timestamps + segments A–H from
+    durable data. Missing datapoint = **UNKNOWN**, never a fabricated zero. Broker→UTC conversion is
+    explicit + tested (`BROKER_UTC_OFFSET_HOURS` default 3, flagged **unverified**); the system also
+    reports the offset-independent ingestion→verified latency.
+  - **E — broker floor quantified** (`protection_floor_stats`): soft-deferral windows by stage+direction
+    (empirical: TP2_LOCKED 243 s / BREAKEVEN 42 s) — the **irreducible** floor; `sl_within_stops_level`
+    stays a soft retryable deferral.
+  - **F/G — `/operations` `tp_protection` block** (per-leg latency + segments, broker floor, SLA status,
+    source-aware, honest UNKNOWN); SLA breach → overall WARNING. Existing deduped auto-resolving alerts
+    cover the rest (no redundant paging added).
+  - **D — benchmark (prod dry-run, no writes):** disabled 8 q/25 ms; **armed idle 12 q/42 ms per 30 s
+    tick (~0.4 qps — negligible)**; active 1 s only inside a live window; no bridge calls from the watcher.
+  - **H — soak: SOAK-IN-PROGRESS** — durable instrumentation installed; before/after latency accrues on
+    natural trades (no trade forced). Migrations `trading` 0010 (index) + 0011 (close_ingested_at).
+
 - **2026-07-16 — GFX-PKT-TP-PROTECTION-LATENCY-AND-FAST-WATCHER: implemented, review+deploy in progress. 🟡**
   Authoritative reconstruction of plan 33 (ti_signals SELL) proved the incremental ladder is **CORRECT**,
   not defective: **job #405 verified the first live TP2_LOCKED** (leg 3 SL 4028.92→4025.30 at 07:26:06),

@@ -2,6 +2,20 @@
 
 List active problems with reproduction steps and workarounds.
 
+## Protection latency is now durably instrumented; broker floor is the irreducible part (2026-07-16)
+
+- `execution/protection_latency.py` + `Trade.close_ingested_at` give per-plan/leg segment latencies
+  (A–H) from durable data; `/operations.tp_protection` surfaces them + the broker soft-deferral floor
+  + an SLA status. **Missing datapoints show UNKNOWN, never zero.**
+- Two broker-anchored segments (A broker-close→ingestion, H broker-close→verified) depend on the
+  **assumed +3h broker offset** (`BROKER_UTC_OFFSET_HOURS`, **unverified** until the timezone probe);
+  the offset-independent ingestion→verified segment is authoritative regardless.
+- The broker stops/freeze soft-deferral (`sl_within_stops_level`) is the **irreducible** latency floor
+  (empirical TP2_LOCKED ~243 s); it is correctly soft-deferred + retried, never clamped, never counted
+  as a hard failure. Reducible system latency (cadence + ingestion stall) is what the watcher + short
+  lease address.
+- **SOAK-IN-PROGRESS:** aggregate 24/48/72h latency accrues on natural trades — no trade forced.
+
 ## TP2_LOCKED is now broker-PROVEN; residual latency has two floors (2026-07-16)
 
 - **First natural TP2_LOCKED broker proof:** plan 33 leg 3, job **#405** verified SL 4028.92→4025.30
