@@ -395,6 +395,44 @@ def _risk_state_block(now):
     return {"accounts": out, "daily_drawdown_limit": str(limit)}
 
 
+def _protection_watcher_block(now):
+    """GFX-PKT-TP-PROTECTION-LATENCY — the adaptive TP-protection watcher's live health, and the
+    SYNC-ingestion resilience that feeds it. Surfaces the watcher heartbeat (state/cadence), whether
+    it is stale, and how often protection syncs are stranding (the intermittent bridge/MT5 stall that
+    used to blind the ladder for minutes). Read-only; honest UNKNOWN when the producer is absent."""
+    import os
+    from datetime import timedelta
+    from execution.models import ExecutionJob
+    from reliability.models import Heartbeat
+    armed = os.getenv("TP_WATCHER_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+    hb = Heartbeat.objects.filter(source="tp_protection_watcher").first()
+    detail = (hb.detail or {}) if hb else {}
+    age = _age_s(hb.last_beat_at, now) if hb else None
+    interval = (hb.expected_interval_s if hb else None) or 90
+    # Stale only matters when the watcher is meant to be running.
+    stale = bool(armed and (hb is None or (age is not None and age > interval * 2)))
+    tstart = _today_start(now)
+    reclaimed_today = ExecutionJob.objects.filter(
+        job_type="SYNC_POSITIONS", status="FAILED", recovered=True,
+        payload__breakeven_sync=True, finished_at__gte=tstart).count()
+    last_sync = (ExecutionJob.objects.filter(
+        job_type="SYNC_POSITIONS", status="SUCCESS", payload__breakeven_sync=True)
+        .order_by("-finished_at").first())
+    return {
+        "armed": armed,
+        "state": detail.get("state", "UNKNOWN") if hb else "UNKNOWN",
+        "cadence_s": detail.get("cadence_s"),
+        "open_legs": detail.get("open_legs"),
+        "heartbeat_age_s": None if age is None else round(age),
+        "heartbeat_interval_s": interval,
+        "stale": stale,
+        "protection_sync": {
+            "reclaimed_today": reclaimed_today,
+            "last_success_at": last_sync.finished_at.isoformat() if last_sync and last_sync.finished_at else None,
+        },
+    }
+
+
 def build_operations_summary() -> dict:
     """The full read-only operational summary for the status page (and alert enrichment)."""
     from reliability.models import ComponentHealth, Heartbeat, AlertEvent
@@ -492,6 +530,9 @@ def build_operations_summary() -> dict:
     if notification_reconciliation.get("any_mismatch"):
         states.append("WARNING")
     risk_state = _risk_state_block(now)
+    protection_watcher = _protection_watcher_block(now)
+    if protection_watcher.get("stale"):
+        states.append("WARNING")
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -506,6 +547,7 @@ def build_operations_summary() -> dict:
         "execution_jobs": execution_jobs,
         "notification_reconciliation": notification_reconciliation,
         "risk_state": risk_state,
+        "protection_watcher": protection_watcher,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},
