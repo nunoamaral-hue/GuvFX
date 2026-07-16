@@ -224,3 +224,146 @@ class ExecutionJobsBlockTests(TestCase):
         block = ops._execution_jobs_block(timezone.now())["place_order"]
         self.assertEqual(block["running"], 1)
         self.assertEqual(block["orphaned_running"], 1)
+
+
+class NotificationReconciliationBlockTests(TestCase):
+    """GFX-PKT-POST-DEPLOY WS-E — WIN==candidate==SENT==transmitted per source over the SETTLED window,
+    cohorts CO-ANCHORED to the WIN outcome (no boundary flap), POSTURE-aware (real vs dry-run vs
+    disabled); a missing/duplicate card surfaces as a mismatch that rolls the summary up to WARNING."""
+
+    REAL = {"enabled": True, "transport": "telegram-real"}
+    DRYRUN = {"enabled": True, "transport": "dry-run"}
+    OFF = {"enabled": False, "transport": "dry-run"}
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="nr", email="nr@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="Demo", account_number="NR1", is_demo=True)
+
+    def _win(self, i, *, deliver=True, sent=True, dup=False, age_seconds=3600, src="ti_signals"):
+        """One WIN chain. Only the OUTCOME's created_at anchors the window (candidate/delivery join
+        back through it), so those may keep 'now' timestamps — exactly the boundary the fix must
+        tolerate. ``age_seconds`` < 180 makes an UNSETTLED (in-flight) win."""
+        import datetime
+        from execution.models import (TradeOutcomeRecord, NotificationCandidate, NotificationDelivery)
+        anchor = timezone.now() - datetime.timedelta(seconds=age_seconds)
+        tr = Trade.objects.create(
+            account=self.acct, symbol="XAUUSD", side="BUY", volume=Decimal("0.40"), ticket=f"nr{i}",
+            open_time=anchor, open_price=Decimal("4000"), close_time=anchor,
+            close_price=Decimal("4010"), profit=Decimal("100"), comment=f"WAYnr{i}")
+        rec = TradeOutcomeRecord.objects.create(
+            trade=tr, outcome="WIN", net_pnl=Decimal("100"), signal_source=src, correlation_id=f"cid{i}")
+        cand = NotificationCandidate.objects.create(
+            outcome_record=rec, signal_source=src, status=("SENT" if sent else "PENDING"),
+            net_pnl=Decimal("100"), correlation_id=f"cid{i}")
+        if deliver:
+            for _ in range(2 if dup else 1):
+                NotificationDelivery.objects.create(
+                    candidate=cand, transmitted=True, transport="telegram-real", correlation_id=f"cid{i}")
+        TradeOutcomeRecord.objects.filter(id=rec.id).update(created_at=anchor)  # the only anchor
+        return rec, cand
+
+    def test_healthy_chain_reconciles_exactly_once(self):
+        for i in range(3):
+            self._win(i)
+        block = ops._notification_reconciliation_block(timezone.now(), self.REAL)
+        self.assertFalse(block["any_mismatch"])
+        ti = block["by_source"]["ti_signals"]
+        self.assertEqual((ti["win_outcomes"], ti["candidates"], ti["sent"], ti["transmitted"]), (3, 3, 3, 3))
+        self.assertTrue(ti["exactly_once"])
+
+    def test_fresh_win_within_settle_window_is_excluded_no_flap(self):
+        # Finding-3 regression: a just-won trade (<180s) with no card yet must NOT flap the WARNING.
+        self._win(0)                                     # settled healthy chain
+        self._win(9, deliver=False, sent=False, age_seconds=20)  # fresh WIN-only, unsettled
+        block = ops._notification_reconciliation_block(timezone.now(), self.REAL)
+        self.assertFalse(block["any_mismatch"])          # fresh win excluded → no false mismatch
+        self.assertEqual(block["by_source"]["ti_signals"]["win_outcomes"], 1)
+
+    def test_candidate_committing_after_settle_does_not_flap(self):
+        # The exact straddle: outcome just inside the window, its candidate/delivery timestamps 'now'
+        # (after settle). Co-anchoring on the outcome must still reconcile them as one cohort.
+        self._win(0, age_seconds=181)                    # outcome just past settle; card ts = now
+        block = ops._notification_reconciliation_block(timezone.now(), self.REAL)
+        self.assertFalse(block["any_mismatch"])
+
+    def test_missing_delivery_flags_mismatch(self):
+        self._win(0, deliver=True)
+        self._win(1, deliver=False)   # WIN + SENT candidate but no transmitted delivery
+        block = ops._notification_reconciliation_block(timezone.now(), self.REAL)
+        self.assertTrue(block["any_mismatch"])
+        self.assertFalse(block["by_source"]["ti_signals"]["exactly_once"])
+
+    def test_duplicate_delivery_flags_mismatch(self):
+        self._win(0, deliver=True, dup=True)   # two transmitted deliveries for one candidate
+        block = ops._notification_reconciliation_block(timezone.now(), self.REAL)
+        self.assertEqual(block["by_source"]["ti_signals"]["duplicates"], 1)
+        self.assertTrue(block["any_mismatch"])
+
+    def test_dryrun_sent_without_transmit_is_healthy(self):
+        self._win(0, deliver=False, sent=True)   # dry-run: SENT, nothing transmitted (by design)
+        block = ops._notification_reconciliation_block(timezone.now(), self.DRYRUN)
+        self.assertEqual(block["transport_mode"], "dry-run")
+        self.assertFalse(block["any_mismatch"])
+
+    def test_dispatch_disabled_pending_is_healthy(self):
+        self._win(0, deliver=False, sent=False)  # dispatch off: candidate PENDING, no delivery
+        block = ops._notification_reconciliation_block(timezone.now(), self.OFF)
+        self.assertEqual(block["transport_mode"], "disabled")
+        self.assertFalse(block["any_mismatch"])
+
+    def test_stuck_candidate_flags_mismatch_real_transport(self):
+        self._win(0, deliver=False, sent=False)  # candidate stuck PENDING under real transport → loss
+        block = ops._notification_reconciliation_block(timezone.now(), self.REAL)
+        ti = block["by_source"]["ti_signals"]
+        self.assertEqual(ti["stuck"], 1)
+        self.assertTrue(block["any_mismatch"])
+
+    def test_real_transport_mismatch_escalates_summary(self):
+        # Finding-5: a real transmit loss must roll the summary up to WARNING. The broker is mocked
+        # REACHABLE so the ONLY warning source is the notification mismatch — isolating the escalation.
+        import os
+        from execution.models import SignalSourceConfig
+        SignalSourceConfig.objects.get_or_create(
+            source="ti_signals", defaults={"auto_demo_execution_enabled": True})
+        self._win(0, deliver=False)   # SENT but never transmitted under real transport → loss
+        with mock.patch.object(ops, "_broker_metrics", return_value={"reachable": True}), \
+                mock.patch.dict(os.environ, {
+                    "NOTIFICATION_DISPATCH_ENABLED": "1",
+                    "NOTIFICATION_DISPATCH_TRANSPORT": "telegram-real"}, clear=False):
+            s = ops.build_operations_summary()
+        self.assertTrue(s["notification_reconciliation"]["any_mismatch"])
+        self.assertEqual(s["overall"], "WARNING")   # broker healthy → mismatch is the sole warning
+
+
+class RiskStateBlockTests(TestCase):
+    """GFX-PKT-POST-DEPLOY WS-F — the dashboard explains a daily_drawdown_hit: today's realised PnL
+    vs the configured limit, and whether the circuit-breaker is tripped."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="rs", email="rs@x.invalid", password="x")
+        self.acct = TradingAccount.objects.create(
+            user=self.user, name="IS6 Demo (1302561)", account_number="1302561",
+            is_demo=True, public_display_name="IS6FX")
+        from strategies.models import Strategy, StrategyAssignment
+        strat = Strategy.objects.create(owner=self.user, name="TI")
+        StrategyAssignment.objects.create(
+            strategy=strat, account=self.acct, signal_source="ti_signals", is_active=True)
+
+    def test_drawdown_not_tripped_under_limit(self):
+        Trade.objects.create(account=self.acct, symbol="XAUUSD", side="BUY", volume=Decimal("1.20"),
+                             ticket="rs1", open_time=timezone.now(), open_price=Decimal("4000"),
+                             close_time=timezone.now(), close_price=Decimal("3990"), profit=Decimal("-502.80"))
+        with mock.patch("execution.risk_controls.MAX_DAILY_DRAWDOWN_ABS", Decimal("2000")):
+            block = ops._risk_state_block(timezone.now())
+        acct = block["accounts"][0]
+        self.assertEqual(acct["account"], "IS6FX")
+        self.assertFalse(acct["drawdown_tripped"])
+
+    def test_drawdown_tripped_over_limit(self):
+        Trade.objects.create(account=self.acct, symbol="XAUUSD", side="BUY", volume=Decimal("1.20"),
+                             ticket="rs2", open_time=timezone.now(), open_price=Decimal("4000"),
+                             close_time=timezone.now(), close_price=Decimal("3900"), profit=Decimal("-2100"))
+        with mock.patch("execution.risk_controls.MAX_DAILY_DRAWDOWN_ABS", Decimal("2000")):
+            block = ops._risk_state_block(timezone.now())
+        self.assertTrue(block["accounts"][0]["drawdown_tripped"])

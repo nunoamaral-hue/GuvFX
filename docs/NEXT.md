@@ -1,5 +1,12 @@
 # NEXT — Priorities (keep this list short)
 
+## Post-deploy stabilisation follow-ups (2026-07-16 packet)
+- [ ] **Capture the first natural TP2_LOCKED broker proof** now that the ladder is armed + hardened
+  (leg 3 SL → the TP2 price on a signal where TP1 and TP2 both close while TP3 runs). Do not force.
+- [ ] **Confirm the re-scaled drawdown admits the next post-loss signal** on the next day ti_signals
+  takes an early loss then signals again (expect promotion, not `daily_drawdown_hit`).
+- [ ] **Broker-server timezone probe** (still Red/Nuno) — also aligns the drawdown "day" boundary.
+
 ## Post-incident stabilisation follow-ups (2026-07-16 packet)
 - [ ] **Capture the first natural incremental-TP-protection broker proof** on the next eligible
   ti_signals plan (TP1→remaining SL at entry; TP2→TP3 SL at the TP2 price). Auto-captured; still

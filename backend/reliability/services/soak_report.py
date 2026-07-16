@@ -41,6 +41,42 @@ def _provider_command_counts(src, since):
     return dict(qs.values_list("status").annotate(n=Count("id")).values_list("status", "n"))
 
 
+def _avg_seconds(pairs):
+    """Mean seconds between (start, end) datetime pairs, ignoring any incomplete pair. None if empty."""
+    vals = [(b - a).total_seconds() for a, b in pairs if a and b and b >= a]
+    return round(sum(vals) / len(vals), 1) if vals else None
+
+
+def _latency_metrics(src, since, plans, order_jobs, deliveries):
+    """WS-G pipeline-latency metrics for a source over the window (seconds, averaged):
+      promotion  — plan created → first PLACE_ORDER job enqueued
+      execution  — PLACE_ORDER job enqueued → broker-confirmed fill (finished)
+      notification — WIN candidate created → card transmitted
+    Read-only; bounded by the windowed querysets. ``avg`` is the mean of the available legs."""
+    from execution.models import ExecutionJob
+    prom_pairs = []
+    for p in plans.filter(status__in=("PROMOTED", "CLOSED")).values_list("id", "created_at"):
+        first_job = (ExecutionJob.objects.filter(job_type="PLACE_ORDER", payload__plan_id=p[0])
+                     .order_by("created_at").values_list("created_at", flat=True).first())
+        if first_job:
+            prom_pairs.append((p[1], first_job))
+    exec_pairs = [(c, f) for c, f in order_jobs.filter(status="SUCCESS")
+                  .values_list("created_at", "finished_at")]
+    notif_pairs = [(d.candidate.created_at, d.created_at)
+                   for d in deliveries.filter(transmitted=True).select_related("candidate")
+                   if d.candidate_id]
+    prom = _avg_seconds(prom_pairs)
+    ex = _avg_seconds(exec_pairs)
+    notif = _avg_seconds(notif_pairs)
+    legs = [v for v in (prom, ex, notif) if v is not None]
+    return {
+        "promotion_latency_s": prom,
+        "execution_latency_s": ex,
+        "notification_latency_s": notif,
+        "avg_latency_s": round(sum(legs) / len(legs), 1) if legs else None,
+    }
+
+
 def _source_soak(src, since):
     from execution.models import (
         ExecutionJob, ProposedOrderLeg, SignalExecutionPlan, TradeOutcomeRecord,
@@ -76,10 +112,16 @@ def _source_soak(src, since):
         "realised_pnl": str(sum((o.net_pnl for o in outcomes), Decimal("0"))),
         "breakeven_modifications": be_jobs.count(),
         "breakeven_verified": be_jobs.filter(status="SUCCESS").count(),
+        # WS-G: protection jobs by ladder stage (TP2-lock counted distinctly from breakeven).
+        "protection_jobs": be_jobs.count(),
+        "protection_tp2_locked": be_jobs.filter(payload__protection_stage="TP2_LOCKED",
+                                                status="SUCCESS").count(),
+        "protection_superseded": be_jobs.filter(result__superseded_by="TP2_LOCKED").count(),
         "provider_close_jobs": close_jobs.count(),
         "provider_commands": _provider_command_counts(src, since),
         "cards_delivered": deliveries.filter(transmitted=True).count(),
         "delivery_retries": max(0, deliveries.count() - deliveries.filter(transmitted=True).count()),
+        "latency": _latency_metrics(src, since, plans, order_jobs, deliveries),
     }
 
 

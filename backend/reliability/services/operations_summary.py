@@ -218,14 +218,18 @@ def _protection_block(now):
     # A retryable failure is a benign broker stops/freeze-band deferral (self-heals on a later sweep),
     # NOT a real protection failure — surface it separately so it doesn't read as an incident.
     deferred_today = failed_today.filter(result__retryable=True).count()
+    # A SUPERSEDED breakeven is an obsolete entry-SL modify retired the moment TP2 locked in
+    # (TP2-always-wins) — an intentional cancel, not a failure. Surface separately too.
+    superseded_today = failed_today.filter(result__superseded_by="TP2_LOCKED").count()
     return {
         "incremental_by_source": by_source,
         "modify_jobs": {
             "pending": mp.filter(status="PENDING").count(),
             "running": mp.filter(status="RUNNING").count(),
             "success_today": mp.filter(status="SUCCESS", created_at__gte=tstart).count(),
-            "failed_today": failed_today.count() - deferred_today,
+            "failed_today": failed_today.count() - deferred_today - superseded_today,
             "deferred_today": deferred_today,
+            "superseded_today": superseded_today,
         },
         "leg_stages_active": stages,
         "last_protection": {
@@ -304,6 +308,91 @@ def _signal_disposition_block(now):
                           "deferred": deferred, "unplanned_no_reason": silent,
                           "deferral_reasons": dict(reasons)}
     return {"window_hours": 24, "by_source": by_source, "silent_loss_total": silent_total}
+
+
+def _notification_reconciliation_block(now, dispatch):
+    """WS-E — exactly-once notification chain, reconciled per source over 24h:
+    WIN outcome → NotificationCandidate → SENT → NotificationDelivery(transmitted).
+
+    Two correctness properties (adversarial-review fixes):
+    * **Co-anchored cohorts.** A candidate/delivery commits strictly AFTER its WIN outcome, so windowing
+      each cohort on its OWN ``created_at`` would straddle the settle boundary and flap the dashboard
+      WARNING after every win. Instead every cohort is anchored to the WIN OUTCOME's timestamp (join
+      back through ``outcome_record``), so a counted win always drags in its own candidate + delivery.
+    * **Dispatch-posture aware.** Reconcile only as far as the ACTIVE transport goes: dispatch OFF never
+      SENDs (PENDING is expected, not a loss); the dry-run transport renders SENT but transmits nothing
+      (``transmitted`` stays 0 by design). Only REAL transport requires ``sent == transmitted``.
+    Read-only; ``settle`` (now-180s) ignores just-won in-flight trades."""
+    from datetime import timedelta
+    from execution.models import (TradeOutcomeRecord, NotificationCandidate, NotificationDelivery)
+    since = now - timedelta(hours=24)
+    settle = now - timedelta(seconds=180)
+    dispatch_on = bool(dispatch.get("enabled"))
+    real_transport = dispatch_on and (dispatch.get("transport") or "dry-run") != "dry-run"
+    win_settled = TradeOutcomeRecord.objects.filter(
+        outcome="WIN", created_at__gte=since, created_at__lt=settle)
+    sources = sorted(set(win_settled.values_list("signal_source", flat=True)) | {"ti_signals", "wayond"})
+    by_source, any_mismatch = {}, False
+    for src in sources:
+        wins = win_settled.filter(signal_source=src).count()
+        cand_q = NotificationCandidate.objects.filter(   # anchored to the win outcome's timestamp
+            outcome_record__outcome="WIN", outcome_record__signal_source=src,
+            outcome_record__created_at__gte=since, outcome_record__created_at__lt=settle)
+        candidates = cand_q.count()
+        sent = cand_q.filter(status="SENT").count()
+        stuck = cand_q.filter(status__in=("PENDING", "PROCESSING")).count()
+        failed = cand_q.filter(status="FAILED").count()
+        del_q = NotificationDelivery.objects.filter(
+            candidate__outcome_record__outcome="WIN", candidate__outcome_record__signal_source=src,
+            candidate__outcome_record__created_at__gte=since,
+            candidate__outcome_record__created_at__lt=settle, transmitted=True)
+        transmitted = del_q.count()
+        duplicates = transmitted - del_q.values("candidate_id").distinct().count()
+        # Reconcile as far as the active posture guarantees delivery.
+        if not dispatch_on:
+            healthy = (wins == candidates) and not duplicates          # dispatch off → PENDING expected
+        elif not real_transport:
+            healthy = (wins == candidates == sent) and not (failed or duplicates)   # dry-run
+        else:
+            healthy = (wins == candidates == sent == transmitted) and not (stuck or failed or duplicates)
+        if wins or candidates:
+            any_mismatch = any_mismatch or (not healthy)
+            by_source[src] = {
+                "win_outcomes": wins, "candidates": candidates, "sent": sent,
+                "transmitted": transmitted, "stuck": stuck, "failed": failed,
+                "duplicates": duplicates, "exactly_once": bool(healthy),
+            }
+    return {"window_hours": 24, "settle_seconds": 180,
+            "transport_mode": ("real" if real_transport else ("dry-run" if dispatch_on else "disabled")),
+            "by_source": by_source, "any_mismatch": bool(any_mismatch)}
+
+
+def _risk_state_block(now):
+    """WS-F — why a valid signal may be blocked: the runtime risk gates' live state. Surfaces the
+    per-account daily-drawdown position (today's realised PnL vs the configured limit, and whether the
+    circuit-breaker is currently tripped) so a ``daily_drawdown_hit`` promotion-reject is explainable
+    on the dashboard rather than looking like a silent loss. Read-only."""
+    from execution import risk_controls as rc
+    from strategies.models import StrategyAssignment
+    accts = list({a.account for a in StrategyAssignment.objects.filter(
+        is_active=True, account__isnull=False).select_related("account")})
+    limit = rc.MAX_DAILY_DRAWDOWN_ABS
+    out = []
+    for acct in accts:
+        try:
+            pnl = rc._today_realized_pnl(acct.id)
+            out.append({
+                "account": acct.public_label(),
+                "today_realised_pnl": str(pnl),
+                "daily_drawdown_limit": str(limit),
+                "drawdown_tripped": bool(pnl <= -limit),
+                "exposure_lots": str(rc._open_position_lots(acct.id)
+                                     + rc._active_signal_lots(acct.id)),
+                "exposure_cap": str(rc.MAX_ACCOUNT_EXPOSURE_LOT),
+            })
+        except Exception:  # pragma: no cover - read-only best-effort
+            out.append({"account": acct.public_label(), "error": "unavailable"})
+    return {"accounts": out, "daily_drawdown_limit": str(limit)}
 
 
 def build_operations_summary() -> dict:
@@ -399,6 +488,10 @@ def build_operations_summary() -> dict:
     protection = _protection_block(now)
     signal_dispositions = _signal_disposition_block(now)
     execution_jobs = _execution_jobs_block(now)
+    notification_reconciliation = _notification_reconciliation_block(now, dispatch)
+    if notification_reconciliation.get("any_mismatch"):
+        states.append("WARNING")
+    risk_state = _risk_state_block(now)
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -411,6 +504,8 @@ def build_operations_summary() -> dict:
         "protection": protection,
         "signal_dispositions": signal_dispositions,
         "execution_jobs": execution_jobs,
+        "notification_reconciliation": notification_reconciliation,
+        "risk_state": risk_state,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},
