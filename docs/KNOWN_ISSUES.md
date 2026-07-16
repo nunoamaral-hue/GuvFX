@@ -2,6 +2,18 @@
 
 List active problems with reproduction steps and workarounds.
 
+## "MT5 bridge stall" was a self-inflicted 429 throttle storm — FIXED (2026-07-16)
+
+- The intermittent stalls were the ingest worker **rate-limiting itself**: 5 `jobs/next/` calls per
+  loop (~150/min) > the backend `user` throttle (100/min) → HTTP 429 → `claim_next_job` raised → the
+  blanket `except` left the claimed job RUNNING (false "orphaned: worker gone") + tight-retried.
+- FIXED: `next_job` prioritized `job_types` CSV → one claim/loop (~30/min); 429 → exponential backoff;
+  idempotent jobs completed FAILED on error (never orphaned); `worker_throttle_storm` alert.
+- Residual (documented, not a defect): the worker is still **single-threaded**, so a genuinely *hung*
+  (not errored) agent call blocks the next claim for up to the ~15s HTTP timeout. Evidence shows this
+  is bounded and protection MODIFYs still get through; a dedicated SYNC lane was NOT warranted by the
+  evidence. The `agent_get` snapshot timeout is 15s; the be_sync lease is 60s.
+
 ## Protection latency is now durably instrumented; broker floor is the irreducible part (2026-07-16)
 
 - `execution/protection_latency.py` + `Trade.close_ingested_at` give per-plan/leg segment latencies

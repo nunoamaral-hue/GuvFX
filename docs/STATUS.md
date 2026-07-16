@@ -6,6 +6,19 @@
 
 ## Execution workstream log
 
+- **2026-07-16 — GFX-PKT-MT5-BRIDGE-STALL-ROOT-CAUSE-AND-RESILIENCE: root cause found + fixed, review/deploy in progress. 🟡**
+  The intermittent "5–6 min MT5 bridge/worker stall" is **NOT** MT5, a hung bridge, or worker death.
+  **Root cause (evidence):** the ingest worker made **5 `jobs/next/` calls per loop (~150/min)** vs the
+  backend `GuvFXUserRateThrottle` **100/min** → chronic **HTTP 429**; `claim_next_job` raised on 429 →
+  the blanket `except: print; sleep(2)` left the **claimed job RUNNING** (reclaimed a lease later as a
+  false *"orphaned: worker gone"*) and tight-retried → a self-sustaining storm that intermittently
+  blocked *all* claims incl. protection MODIFYs. Proof: **410 `loop_error`=429 in ~1h**, 89 orphaned
+  SYNCs/7d, worker RestartCount=0, no OOM, **interleaved successes** (worker alive), bridge reachable.
+  **Fix (minimum safe):** `next_job` takes a priority-ordered `job_types` CSV → **one prioritized claim
+  per loop (~30/min ≪ 100)**; worker maps 429→`RateLimited`→**exponential backoff**; on a per-job
+  processing error, `complete_job(FAILED)` for **idempotent** SYNC/MODIFY/CLOSE (PLACE_ORDER left for
+  the reconciler). Deduped `worker_throttle_storm` alert. 845 backend tests green; no migration.
+
 - **2026-07-16 — GFX-PKT-TP-PROTECTION-OPTIMISATION-AND-RELIABILITY-FINALISATION: implemented, review+deploy in progress. 🟡**
   Finalisation of the (already-correct, already-fast) TI protection subsystem — instrumentation, not
   redesign. Reverified prod first: ladder correct, **TP2_LOCKED broker-proven (job #405)**, armed state
