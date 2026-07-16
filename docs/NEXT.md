@@ -1,5 +1,13 @@
 # NEXT — Priorities (keep this list short)
 
+## TI execution-gap follow-ups (2026-07-16)
+- [ ] **Watch the daily-drawdown behaviour across a full day** — today's cumulative TI realised PnL
+  reached −772.80 (still < $2000). If a losing streak pushes past −$2000, `daily_drawdown_hit` will
+  correctly halt for the rest of the UTC day; confirm that reads correctly on `/operations.risk_state`.
+- [ ] **Broker-time/UTC boundary for the drawdown day** — plan 27 closing at broker-03:07 (UTC 00:07)
+  counts in the correct UTC day here, but the ~3h broker offset means the drawdown "day" and the
+  broker trading day differ; tied to the pending broker-timezone probe.
+
 ## Bridge-stall follow-ups (2026-07-16)
 - [ ] **After deploy, confirm the 429 storm stops** — worker `loop_error`/`rate_limited` rate → ~0,
   orphaned-SYNC count → ~0. SOAK the claim rate under active trading (signal-time burst).
