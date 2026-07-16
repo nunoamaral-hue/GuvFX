@@ -46,6 +46,9 @@ _ORDER_TYPES = (ExecutionJob.JobType.PLACE_ORDER, ExecutionJob.JobType.PLACE_TES
 UNPLANNED_SIGNAL_ALERT_SECONDS = int(os.getenv("UNPLANNED_SIGNAL_ALERT_SECONDS", "300") or 300)
 # Only look back this far — a silent loss older than this is not actionable and bounds the scan.
 UNPLANNED_SIGNAL_LOOKBACK_SECONDS = int(os.getenv("UNPLANNED_SIGNAL_LOOKBACK_SECONDS", "86400") or 86400)
+# A plan that reached PLANNED but never got a durable execute/reject disposition after this long is a
+# promotion-layer silent gap (the plan-layer complement to the unplanned-signal, approval-layer guard).
+STUCK_PROMOTION_ALERT_SECONDS = int(os.getenv("STUCK_PROMOTION_ALERT_SECONDS", "300") or 300)
 
 
 def execution_health_enabled() -> bool:
@@ -333,6 +336,91 @@ def detect_unplanned_tradeable_signals(now) -> dict:
     return {"unplanned_alerted": alerted, "unplanned_resolved": resolved}
 
 
+def _alert_stuck_promotion(plan, now) -> None:
+    """One deduped WARN per PLANNED plan that reached no order and no durable rejection."""
+    try:
+        from reliability.constants import Component
+        from reliability.models import AlertEvent
+        dedup_key = f"stuck_promotion:plan:{plan.id}"
+        if AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).exists():
+            return
+        AlertEvent.objects.create(
+            severity=AlertEvent.Severity.WARN,
+            component=Component.EXECUTION_PIPELINE,
+            trading_account_id=plan.account_id,
+            title=f"Promotion stuck — plan #{plan.id} ({plan.source}) has no disposition",
+            body=(f"{plan.source} {plan.symbol} {plan.direction} plan #{plan.id} (message "
+                  f"{plan.message_id}) is still PLANNED after {STUCK_PROMOTION_ALERT_SECONDS}s with "
+                  f"NEITHER a PLACE_ORDER job NOR a PROMOTION_REJECTED reason — it reached planning but "
+                  f"never got a durable execute/reject disposition. Check the promotion path."),
+            dedup_key=dedup_key, status=AlertEvent.Status.OPEN,
+            detail={"plan_id": plan.id, "source": plan.source, "message_id": plan.message_id,
+                    "symbol": plan.symbol, "direction": plan.direction},
+        )
+        logger.error("execution_health: STUCK-PROMOTION alert plan=%s source=%s",
+                     plan.id, plan.source)
+    except Exception:  # pragma: no cover - alerting is best-effort
+        logger.exception("execution_health: failed to alert stuck promotion plan=%s",
+                         getattr(plan, "id", "?"))
+
+
+def detect_stuck_promotions(now) -> dict:
+    """A PLANNED plan (auto-eligible source) must reach a durable disposition — a PLACE_ORDER job OR a
+    PROMOTION_REJECTED reason — within a bounded interval. One with NEITHER after the threshold is a
+    silent PROMOTION-layer gap: the plan-layer complement to ``detect_unplanned_tradeable_signals``
+    (which guards the approval layer). Together they close the gap end to end — every APPROVED signal
+    reaches a plan, and every plan reaches an execute/reject disposition. Raise ONE deduped WARN per
+    plan and auto-resolve when an order, a rejection, or a terminal status later appears. ALERT-ONLY —
+    never promotes, mutates the plan, or replays. Returns
+    ``{"stuck_promotion_alerted", "stuck_promotion_resolved"}``."""
+    from execution.models import (SignalExecutionPlan, ExecutionJob, PromotionAuditEvent,
+                                  SignalSourceConfig)
+    from reliability.models import AlertEvent
+    tradeable = set(SignalSourceConfig.objects.filter(auto_demo_execution_enabled=True)
+                    .values_list("source", flat=True))
+    if not tradeable:
+        return {"stuck_promotion_alerted": 0, "stuck_promotion_resolved": 0}
+    lookback = now - timedelta(seconds=UNPLANNED_SIGNAL_LOOKBACK_SECONDS)
+    cutoff = now - timedelta(seconds=STUCK_PROMOTION_ALERT_SECONDS)
+    # ALERT — PLANNED plans in the window, MINUS those carrying a durable PROMOTION_REJECTED reason
+    # (the normal drawdown/risk rejections, e.g. daily_drawdown_hit). PROMOTED/CLOSED/VOIDED/HELD/
+    # SUPERSEDED are already excluded by ``status=PLANNED``. The remainder is the stuck set (~empty).
+    candidates = (SignalExecutionPlan.objects.filter(
+        source__in=tradeable, status=SignalExecutionPlan.Status.PLANNED,
+        created_at__gte=lookback, created_at__lt=cutoff)
+        .exclude(promotion_audit_events__event="PROMOTION_REJECTED")
+        .distinct().order_by("id")[:500])
+    alerted = 0
+    for p in candidates:
+        if ExecutionJob.objects.filter(payload__plan_id=p.id, job_type="PLACE_ORDER").exists():
+            continue  # an order exists → executed (status merely lagged), not a silent gap
+        dedup_key = f"stuck_promotion:plan:{p.id}"
+        if AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).exists():
+            continue
+        _alert_stuck_promotion(p, now)
+        alerted += 1
+    # RESOLVE — auto-close any OPEN alert whose plan has since gained an order, a rejection, or a
+    # non-PLANNED status. Bounded by the (tiny) number of open alerts.
+    resolved = 0
+    for al in AlertEvent.objects.filter(
+            dedup_key__startswith="stuck_promotion:plan:", status=AlertEvent.Status.OPEN):
+        pid = (al.detail or {}).get("plan_id")
+        if pid is None:
+            continue
+        p = SignalExecutionPlan.objects.filter(id=pid).first()
+        if p is None:
+            continue
+        if (p.status != SignalExecutionPlan.Status.PLANNED
+                or ExecutionJob.objects.filter(payload__plan_id=pid, job_type="PLACE_ORDER").exists()
+                or PromotionAuditEvent.objects.filter(plan_id=pid,
+                                                      event="PROMOTION_REJECTED").exists()):
+            al.status = AlertEvent.Status.RESOLVED
+            al.resolved_at = now
+            al.save(update_fields=["status", "resolved_at"])
+            resolved += 1
+    return {"stuck_promotion_alerted": alerted, "stuck_promotion_resolved": resolved}
+
+
 def detect_protection_watcher_health(now) -> dict:
     """GFX-PKT-TP-PROTECTION-LATENCY / WS-L — deduped, auto-resolving alerts for the fast-protection
     path: (1) the armed watcher's heartbeat is stale (it stopped → protection silently fell back to
@@ -429,6 +517,8 @@ def sweep_execution_health(*, limit: int = 500) -> dict:
         "place_order_orphan_alerted": 0,
         "unplanned_alerted": 0,
         "unplanned_resolved": 0,
+        "stuck_promotion_alerted": 0,
+        "stuck_promotion_resolved": 0,
     }
     # Reconcile orphaned RUNNING place-orders against the broker (safe: never re-runs an order). Its
     # own try/except keeps a failure here from blocking the alert-only detector below.
@@ -440,6 +530,10 @@ def sweep_execution_health(*, limit: int = 500) -> dict:
         result.update(detect_unplanned_tradeable_signals(now))
     except Exception:  # pragma: no cover - defensive; alert-only must not break the sweep
         logger.exception("execution_health: unplanned-signal detector failed")
+    try:
+        result.update(detect_stuck_promotions(now))
+    except Exception:  # pragma: no cover - defensive; alert-only must not break the sweep
+        logger.exception("execution_health: stuck-promotion detector failed")
     try:
         result.update(detect_protection_watcher_health(now))
     except Exception:  # pragma: no cover - defensive; alert-only must not break the sweep
