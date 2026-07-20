@@ -75,6 +75,11 @@ class AlertListView(APIView):
 
     def get(self, request):
         qs = AlertEvent.objects.all()
+        # GFX-BETA-PHASE0 (C15): non-staff users see ONLY alerts for their own trading accounts.
+        # Operator/GLOBAL alerts (trading_account is NULL) and other users' alerts stay staff-only —
+        # otherwise a beta user would see the whole estate's operational state.
+        if not request.user.is_staff:
+            qs = qs.filter(trading_account__user=request.user)
         st = request.query_params.get("status")
         if st:
             qs = qs.filter(status=st.upper())
@@ -147,6 +152,10 @@ class RecommendationListView(APIView):
 
     def get(self, request):
         qs = RecoveryRecommendation.objects.all()
+        # GFX-BETA-PHASE0 (C15): non-staff users see ONLY recommendations for their own trading
+        # accounts. Operator/GLOBAL recommendations (trading_account NULL) stay staff-only.
+        if not request.user.is_staff:
+            qs = qs.filter(trading_account__user=request.user)
         st = request.query_params.get("status")
         if st:
             qs = qs.filter(status=st.upper())
