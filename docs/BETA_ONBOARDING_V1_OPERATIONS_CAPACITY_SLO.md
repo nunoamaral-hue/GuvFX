@@ -1568,6 +1568,8 @@ Concerns the **interactive** plane (§3, §10), which is *ephemeral and never dr
 
 ## D. Final procurement package (for approval — NO procurement yet)
 
+> **Superseded for the Phase-2 procurement decision by** [`BETA_ONBOARDING_V1_PROCUREMENT_PACKAGE.md`](BETA_ONBOARDING_V1_PROCUREMENT_PACKAGE.md) — the **supplier-backed** package (2026-07-20): real sourced prices across 6 routes, licensing-compliance analysis, the refined 5-dimension capacity model + concurrently-hosted broker-account cap, role-coexistence / Connection-Broker / failure-domain / backup-restore analyses, and the exact procurement action with first-month + recurring cost. The estimate-level envelope below stands as the planning baseline it refines.
+
 > **Status — DECISION-READY DESIGN, NOT A PURCHASE ORDER.** This section consolidates §§2, 3 (hardened capacity), 16–20 and the SLO targets into a single package for Nuno's approval. It authorises **nothing**: no procurement, no VM creation, no licence purchase, no architecture-dependent (Phase 2+) work. Every cost is an **ESTIMATE** (SPLA/cloud list-price bands, not quotes); every capacity figure is an **ESTIMATE derived from one measured MT5 terminal/bridge sample** (§3.1) except where marked **MEASURED**. Nuno's existing production Windows box, MT5 runtimes, broker accounts, Guacamole access, strategies, routing, lot sizes and AUTO_DEMO operation are **out of scope, untouched, and excluded from all math below.** Onboarding stays **CLOSED** (`BETA_ONBOARDING_ENABLED` off, default) and `can_deploy_automation` stays **False** for the `beta` plan until the Phase-4 gates (§19 item 8) pass. Nothing here places, sizes, or closes a trade.
 
 ---
