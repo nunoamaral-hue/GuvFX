@@ -1,7 +1,9 @@
 # GFX Beta Onboarding V1 — Programme Plan & Target Architecture (PROPOSAL)
 
-> **Status: ARCHITECTURE APPROVED (2026-07-20) — Option A (Multiple Windows VPSs). Phase 0 IN PROGRESS.
-> Customer onboarding stays CLOSED until Phase 2/3 isolation is built + verified.**
+> **Status: ARCHITECTURE APPROVED (2026-07-20) — Option A (Windows-native RDS/RemoteApp). Phase 0 COMPLETE
+> (all 5 increments shipped + deployed + verified, 2026-07-20). Customer onboarding stays CLOSED until
+> Phase 2/3 isolation is built + verified. Next gate: Nuno approves the Option A BoM/topology/licensing/cost
+> before any Phase-1/2 architecture-dependent (procurement) work — see execution log §Phase 0 Execution Log.**
 >
 > **Decision (Nuno, 2026-07-20):** target architecture = **Option A — Windows-native RDS/RemoteApp host
 > pool** (NOT 1 VPS/user). Native Windows Server + native MT5; properly licensed RDS; **RemoteApp** (only
@@ -19,6 +21,33 @@
 > Source of truth for the findings: read-only investigation `wf_e3b038d9-1e7` (8 parallel agents) +
 > production census, 2026-07-20. Nothing in production was changed. This document is a proposal; the
 > lifecycle/decision status is PM-owned and NOT advanced here.
+
+## Phase 0 Execution Log (2026-07-20)
+
+All Phase-0 increments are **additive**, **fail-closed**, and **isolation-preserving**: Nuno's staff account,
+Windows host, MT5 runtimes, strategies, routing, lot sizes and AUTO_DEMO operation were untouched throughout;
+customer onboarding stayed CLOSED (`BETA_ONBOARDING_ENABLED` unset/off); nothing was wired to live execution.
+Each increment: tests + full regression + adversarial review (MUST_FIX resolved) + controlled backend-only
+deploy (rollback image tagged) + post-deploy invariant verification.
+
+| # | PR | Increment | Migration | Prod deploy / rollback tag |
+|---|----|-----------|-----------|----------------------------|
+| 0 | #148 | Fail-close MT5 instance resolution + scope reliability leaks | none | `rollback-preBetaPhase0` |
+| 1 | #149 | Per-assignment lot-size override (versioned, audited, **unwired** from routing) | strategies 0013 | `rollback-preBetaInc1` |
+| 2 | #150 | Durable `AccountRuntime` state (1:1 per broker account) + immutable `RuntimeEvent` | terminal_provisioning 0004/0005 | `rollback-preBetaInc2` |
+| 3 | #151 | Truthful Account Status panel (account-owner scoped; never implies a terminal exists) | none | `rollback-preBetaInc3` |
+| 4 | #152 | Beta entitlement auto-grant (payment-bypassed) + **closed** onboarding gate + entitled marketplace foundation | billing 0003 | `rollback-preBetaInc4` |
+| 5 | #153 | Atomic broker-account cap (≤10, `SELECT … FOR UPDATE`; staff exempt) + read-only admin beta-estate (no decrypted creds) + agent-error sanitisation | none | `rollback-preBetaInc5` |
+
+Increment 5 deploy record (2026-07-20): image `guvfx-prod-guvfx-backend:latest` → `sha256:f2388bdf…`; recreated
+`guvfx-backend` only (`--no-deps`, no `--remove-orphans`); worker (`53e725f1`) + tp-protection-watcher (`7f304f70`)
++ shadow/validate workers untouched (uptimes unchanged); `migrate --check` exit 0; post-deploy `api.guvfx.com/health/`
+= 200, `guvfx.com/` = 200, `/api/` = 401 (auth-gated, not 502), `/api/admin/beta-estate/` = 401 (route live, not 404),
+gate still closed. Backend suite: 934 passed.
+
+**Standing next gate (Nuno):** approve the Option A Bill of Materials / topology / RDS licensing / cost / implementation
+sequence in [`BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md`](BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md) **before**
+any Phase-1/2 architecture-dependent or procurement work. No such work has started.
 
 ## 0. Verdict
 
