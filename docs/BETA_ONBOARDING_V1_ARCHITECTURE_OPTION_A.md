@@ -1,8 +1,12 @@
 # Beta Onboarding V1 — Option A Target Architecture (Windows-native RDS/RemoteApp host pool)
 
-> **Status: DESIGN FOR APPROVAL (2026-07-20). No procurement. No architecture-dependent implementation
-> has started.** This is the concrete Option-A design Nuno requested, for approval **before** any licence
-> or server purchase and **before** Phase 2. Onboarding stays CLOSED until Phase 4 isolation gates pass.
+> **Status: DESIGN FOR APPROVAL — v2 refined (2026-07-20). No procurement. No architecture-dependent
+> implementation has started.** v2 adds, per Nuno: the **canonical ownership model** (§0, User → Broker
+> Account → MT5 Runtime → Strategies → Positions → Notifications, runtime owned by the *broker account*),
+> the **full provisioning state machine + async workflow** (§8, durable transitions / retries / recovery /
+> truthful progress), the **deployment topology** (§18), the **implementation sequence** (§19), and the
+> **final BoM / licensing / cost** for approval (§20). Approval of §20 + §19 gates all Phase-2+ work and
+> any procurement. Onboarding stays CLOSED until Phase 4 isolation gates pass.
 > Companion: [`BETA_ONBOARDING_V1_PROGRAMME.md`](BETA_ONBOARDING_V1_PROGRAMME.md) (blocker analysis + phases).
 
 ## Design principles (from Nuno's authorisation)
@@ -19,6 +23,41 @@ box remains his isolated production runtime, untouched.
 Key enabler already in place: execution is **enqueue-only** (`ExecutionJob → ingest worker → per-runtime
 bridge`), so multi-tenancy is achieved by giving each account its own **runtime + bridge endpoint** the
 worker targets — not by rewriting execution.
+
+---
+
+## 0. Canonical ownership model (authoritative)
+
+```
+User ──owns──▶ Broker Account ──owns──▶ MT5 Runtime ──hosts──▶ Strategies ──produce──▶ Positions ──produce──▶ Notifications
+   │                (≤10/user)              (exactly 1                (AUTO_DEMO          (broker
+   └──owns──▶ Windows identity guvfx_u_<uid>  per account)             assignments)        tickets)
+                    │
+                    └── runs the runtime + is the subject of the RemoteApp / Guacamole session (ephemeral view)
+```
+
+**The MT5 Runtime is owned by the Broker Account — never by a strategy or a session.** Consequences that
+the design and data model MUST honour:
+
+- **One runtime per broker account**, 1:1. Its lifecycle (provision → run → repair → deprovision) is bound
+  to the *broker account*, not to any strategy assignment and not to any interactive session.
+- **Strategies are hosted BY the runtime**, downstream of it. Assigning/removing/enabling/disabling a
+  strategy on an account **never** creates or destroys the runtime — it only changes what executes *inside*
+  the already-owned runtime. A runtime with zero active strategies still exists and can run (idle).
+- **Sessions are ephemeral views, upstream of nothing.** A Guacamole/RemoteApp session is a transient window
+  onto the account's runtime; opening/closing it never provisions or tears down the runtime. **Automated
+  (AUTO_DEMO) terminals keep running when the user disconnects** — they belong to the account's runtime, not
+  to the session.
+- **Positions and Notifications are strictly downstream** and inherit ownership transitively: a Position
+  belongs to the Strategy→Runtime→Broker Account→User chain; a Notification belongs to its Position. Every
+  cross-tenant guard, query scope, and routing decision keys off this single chain.
+- **Windows identity** `guvfx_u_<uid>` is owned by the **User** (one per user); each of the user's
+  account-runtimes runs *under* that identity with per-account NTFS isolation. (Identity is per-user;
+  runtime is per-account.)
+
+Data-model mapping: `User (1)─(N) TradingAccount (1)─(1) AccountRuntime (1)─(N) StrategyAssignment
+(1)─(N) Position/Trade (1)─(N) Notification`. `AccountRuntime` (the new durable runtime record, an evolution
+of `AccountProvisioning`) carries the provisioning state machine (§8) and is FK-owned by `TradingAccount`.
 
 ---
 
@@ -99,18 +138,73 @@ launch **only** their MT5 RemoteApp (not a desktop), using **their** Windows ide
 - The **automated** terminal for this account runs under `guvfx_u_<uid>` as a background/service-like
   process (per-user scheduled task / logon task), independent of any interactive RemoteApp session.
 
-## 8. Runtime provisioning, start, stop, repair, removal (idempotent state machine)
+## 8. Runtime provisioning — state machine + asynchronous workflow (owned by the broker account)
 
-- **Provision:** create dir → copy portable MT5 → write per-account config (server, login) → inject
-  credential (§9) → register the automated-terminal task. Emit a durable `ProvisioningState` record at each
-  step; **never swallow exceptions** — failures are recorded + surfaced (Phase-0 item).
-- **Start:** launch the automated terminal (headless) + enable RemoteApp.
-- **Stop:** stop the automated-terminal task (interactive RemoteApp can close independently).
-- **Repair:** re-materialize idempotently (re-copy/reconfig/re-inject) + restart.
-- **Remove:** stop → delete dir → revoke RemoteApp + Guacamole entitlement.
-- Driven by the existing `terminal_provisioning` app extended with a real Windows-agent/WinRM materialiser
-  (replacing today's manual `Provision-GuvfxAccount.ps1`), keyed to the **AUTOMATED vs INTERACTIVE**
-  distinction so automated terminals survive disconnects.
+Provisioning is an **asynchronous, durable, idempotent state machine on `AccountRuntime`** (FK-owned by
+`TradingAccount`). Every transition is persisted before the side-effect is attempted and reconciled after,
+so a crash/host-failure resumes from the last durable state. **No exception is ever swallowed** — each
+failure writes a durable `RuntimeEvent` (stage, attempt, sanitised reason, raw-error-ref) and moves the
+runtime to a truthful state the Account Status panel renders verbatim.
+
+### 8.1 States
+
+| State | Meaning | User-facing label |
+|---|---|---|
+| `NOT_PROVISIONED` | Account exists; no runtime yet | Not provisioned |
+| `QUEUED` | Provisioning requested; awaiting a worker + host slot | Queued |
+| `BLOCKED` | Prerequisite missing (no host capacity / entitlement / gate closed) | Blocked (reason) |
+| `PROVISIONING` | Materialising identity/dir/portable-MT5/config/creds/task | Provisioning… |
+| `STARTING` | Launching the automated terminal | Starting… |
+| `AUTHENTICATING` | MT5 logging into the broker account | Authenticating… |
+| `RUNNING` | Automated terminal up + logged-in; account operational | Running |
+| `DEGRADED` | Was running; a health check failed (not logged-in / terminal gone) | Degraded (auto-repairing) |
+| `REPAIRING` | Re-materialise/restart in progress | Repairing… |
+| `STOPPING` / `STOPPED` | Deliberately stopped; runtime exists, terminal not running | Stopped |
+| `DEPROVISIONING` / `REMOVED` | Account offboarded; runtime torn down | Removing… / Removed |
+| `FAILED` | Terminal, non-retryable failure (bad creds / capacity exhausted / retries spent) | Failed (reason) — Retry |
+
+### 8.2 Transitions (with retries + recovery)
+
+```
+NOT_PROVISIONED ─(validated+entitled+gate-open)─▶ QUEUED
+QUEUED ─(host slot)─▶ PROVISIONING          QUEUED ─(no capacity/entitlement)─▶ BLOCKED ─(cleared)─▶ QUEUED
+PROVISIONING ─ok─▶ STARTING                 PROVISIONING ─err─▶ retry×N(backoff) ─exhausted─▶ FAILED
+STARTING ─launched─▶ AUTHENTICATING          STARTING ─err─▶ DEGRADED
+AUTHENTICATING ─login ok─▶ RUNNING           AUTHENTICATING ─bad creds─▶ FAILED   ─transient─▶ retry ─exhausted─▶ DEGRADED
+RUNNING ─health fail─▶ DEGRADED ─▶ REPAIRING ─ok─▶ RUNNING   REPAIRING ─exhausted─▶ FAILED
+RUNNING ─(pause/deactivate)─▶ STOPPING ─▶ STOPPED ─(resume)─▶ STARTING
+any ─(account delete)─▶ DEPROVISIONING ─▶ REMOVED
+FAILED ─(user/admin Retry)─▶ QUEUED
+```
+
+- **Retries:** every fail-able transition has a bounded exponential-backoff retry (`attempt`, `last_error`,
+  `next_retry_at` on `AccountRuntime`); on exhaustion → `FAILED`/`DEGRADED` with a truthful reason. Raw agent
+  strings are **sanitised** for the user (mapped to safe messages: *invalid broker credentials*, *wrong
+  server*, *host at capacity*, *broker unreachable*), with the raw text kept admin-only.
+- **Recovery / host failure:** the `AccountRuntime` record + state persist independently of the host; a
+  reconciler (extends `execution_health`) detects a runtime whose host is down or whose terminal died and
+  re-drives from the durable state onto a healthy host (idempotent materialisation).
+- **Idempotency:** every step is safe to re-run (create-if-absent identity/dir; overwrite config; re-inject
+  cred; ensure-task). Re-entry from any state converges to the target.
+
+### 8.3 Asynchronous workflow
+
+1. **Trigger:** broker-account validation succeeds **and** the user is entitled **and** the onboarding gate
+   is open (Phase 4) → enqueue a durable **`ProvisioningJob`** (same pattern as `ExecutionJob`) with a
+   target op (`PROVISION` / `START` / `STOP` / `REPAIR` / `DEPROVISION`).
+2. **Claim:** a **provisioning worker** (extends `terminal_provisioning`) claims the job (lease + single-
+   flight), loads the `AccountRuntime`, and drives the state machine **one durable step per iteration** via
+   the Windows agent over **WinRM/PowerShell** (create identity, materialise runtime, inject cred, start/stop/
+   repair/remove) — replacing today's hand-run `Provision-GuvfxAccount.ps1`.
+3. **Persist-then-act:** write the next state + `RuntimeEvent` **before** the side-effect; reconcile the
+   actual result after; on error record it and apply the retry/DEGRADED/FAILED policy — **never `pass`**.
+4. **Truthful progress:** the **Account Status panel** (Phase 0 scaffold) reads `AccountRuntime.state` +
+   the latest `RuntimeEvent` and shows the exact stage (Queued / Provisioning / Starting / Authenticating /
+   Running / Degraded / Failed / Blocked) with the sanitised reason + retry ETA — **never false success**;
+   unimplemented stages show `NOT PROVISIONED` / `BLOCKED`.
+5. **AUTOMATED vs INTERACTIVE:** the workflow provisions/keeps the **automated** terminal (AUTO_DEMO) alive
+   regardless of any interactive RemoteApp session; interactive sessions are a separate, ephemeral concern
+   (§10) and never drive runtime state.
 
 ## 9. Credential injection & encryption boundaries
 
@@ -200,6 +294,69 @@ BoM.**
   ceiling is host capacity + RDS infra HA, not the GuvFX code.
 
 ---
+
+## 18. Deployment topology (beta)
+
+```
+                         Internet (HTTPS/443)
+                                 │
+                        ┌────────▼────────┐
+                        │  Traefik (VPS)  │  guvfx.com / api.guvfx.com / guac.guvfx.com
+                        └───┬─────────┬───┘
+        ┌───────────────────┘         └───────────────────┐
+   ┌────▼─────┐                                       ┌────▼──────────┐
+   │ Frontend │                                       │  Guacamole    │──RDP/RemoteApp via RDGW──┐
+   │ + Backend│                                       │  (per-user    │                          │
+   │ + workers│──ExecutionJob/ProvisioningJob────┐    │  connections) │                          │
+   │ (Ubuntu) │                                  │    └───────────────┘                          │
+   └────┬─────┘                                  │                                               │
+        │ WinRM/agent (provision/start/…)        │ per-account bridge (orders)                   │
+        ▼                                        ▼                                               ▼
+   ┌─────────────────────────────┐   ┌───────────────── Windows RDSH pool (2–3 hosts, ≤~2 users each) ─────────────────┐
+   │ Infra host (Windows):       │   │  guvfx_u_<uid> (non-admin)  ├─ acct A runtime (portable MT5, automated + bridge) │
+   │  AD DS · RDCB · RDGW · RDWeb │◀──┤                             ├─ acct B runtime …                                 │
+   │  · RDS Licensing (Per-User) │   │  RemoteApp: only MT5.exe    └─ (NTFS-isolated per account)                      │
+   └─────────────────────────────┘   └───────────────────────────────────────────────────────────────────────────────┘
+   ┌─────────────────────────────┐
+   │ Nuno production Windows box │  ◀── UNTOUCHED, not in the pool
+   └─────────────────────────────┘
+```
+
+- Backend/workers/Guacamole/Traefik stay on the existing Ubuntu VPS. **New** Windows footprint = 1 infra host
+  + 2–3 RDSH. External RDP reaches RDSH **only** via RDGW (443); RDSH are not otherwise public.
+
+## 19. Implementation sequence (Phase 2+, each gated + reviewed; onboarding stays CLOSED until Phase 4)
+
+1. **Data model** — `AccountRuntime` (FK-owned by `TradingAccount`, the §8 state machine) + `RuntimeEvent`
+   (durable failures/progress) + `ProvisioningJob` (async queue). Migrations additive.
+2. **Windows agent** — idempotent WinRM/PowerShell provisioning endpoints (create identity, materialise
+   runtime, inject cred, start/stop/repair/remove) + health probe. Read-only proof first, then materialise.
+3. **Provisioning worker** — async job runner driving the state machine one durable step per iteration
+   (persist-then-act, retries, reconcile, no swallowed errors).
+4. **Per-account routing** — order routing to the account's runtime bridge (builds on the Phase-0
+   fail-closed `_get_user_mt5_instance`); the runtime endpoint is resolved from `AccountRuntime`.
+5. **Multi-tenant execution** — auto-router **fan-out** (resolve all AUTO_DEMO assignments per source → one
+   plan/execution per account → that account's runtime) + per-account **sizing override** (Phase-0 model).
+6. **RemoteApp + Guacamole** — RDS collection publishing MT5 RemoteApp; per-user AD identity; per-account
+   Guacamole connection granted only to the owner (entitlement mapped from GuvFX).
+7. **Account Status panel** — wire the Phase-0 scaffold to the live `AccountRuntime` state (truthful stages).
+8. **Isolation + load hardening (Phase 4 gates)** — per-user/per-account isolation red-team; 5-user load;
+   no cross-tenant data; existing production unaffected. Only then may onboarding open.
+
+## 20. Final BoM · licensing · costs (for approval — NO procurement yet)
+
+Bill of materials (beta): **1 Windows infra host** (AD DS + RDCB + RDGW + RDWeb + RDS Licensing) + **2–3
+Windows RDSH** + **5 RDS Per-User CALs/SALs** + TLS/backup. See §2 (specs) and §16 (cost table). Two
+licensing models:
+
+| Model | Up-front | Monthly | Best when |
+|---|---|---|---|
+| **SPLA / cloud-rented (recommended for beta)** | ~$0 | **~$350–700/mo** (3–4 Windows VMs + RDS SAL ×5) | elastic, prove density first |
+| **Owned licences** | **~$3.5–5.5k one-off** (Windows Server + RDS User CALs) + VM hosting | VM hosting only | steady-state after beta |
+
+**Recommendation:** start SPLA/monthly; revisit owned CALs once §3 density + retention are proven. **This BoM
++ topology + licensing + cost + the §19 sequence are what require Nuno's approval before any
+architecture-dependent (Phase 2+) work or procurement begins.**
 
 ## Approval gate
 
