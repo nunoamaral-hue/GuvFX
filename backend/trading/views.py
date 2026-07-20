@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import re
 import urllib.request
 import json
 import os
+
+logger = logging.getLogger(__name__)
 
 # Patterns to normalize close tags to base GS/GJ format:
 # - "MANUAL_CLOSE_GS0042" -> "GS0042"
@@ -194,7 +197,8 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except Exception as e:
-            return Response({"ok": False, "detail": f"Windows agent request failed: {e}"}, status=status.HTTP_502_BAD_GATEWAY)
+            logger.warning("test_mt5: windows agent request failed: %s", e)
+            return Response({"ok": False, "detail": "The MT5 agent could not be reached. Please try again."}, status=status.HTTP_502_BAD_GATEWAY)
 
         # passthrough
         return Response(data, status=status.HTTP_200_OK)
@@ -221,41 +225,53 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         return qs.order_by("-created_at")
 
     def perform_create(self, serializer):
+        from django.db import transaction
+        from rest_framework.exceptions import ValidationError
+        from billing.entitlements import resolve_entitlements
+        from billing.models import UserSubscriptionState
+
         user = self.request.user
 
         if user.is_staff:
             serializer.save(user=user)
             return
 
-        inst = _get_user_mt5_instance(user)
-
-        # If we can't determine an instance yet, still allow create (inactive).
-        if not inst:
-            serializer.save(user=user, mt5_instance=None, is_active=False)
-            return
-
-        # If user already has an active account on this instance,
-        # default new accounts to INACTIVE unless explicitly requested active.
-        requested = self.request.data.get("is_active", None)
-        if isinstance(requested, str):
-            requested_active = requested.strip().lower() in ("1", "true", "yes", "on")
-        elif requested is None:
-            requested_active = False
-        else:
-            requested_active = bool(requested)
-
-        has_active = TradingAccount.objects.filter(user=user, mt5_instance=inst, is_active=True).exists()
-        make_active = requested_active or (not has_active)
-
+        # GFX-BETA-PHASE0 Increment 5 — enforce the broker-account cap ATOMICALLY in the backend (not
+        # only the frontend). Lock the user row so two concurrent creates can't both slip past the count
+        # and exceed the cap. The cap is the plan's max_trading_accounts, hard-ceilinged at 10.
         with transaction.atomic():
+            type(user).objects.select_for_update().get(pk=user.pk)  # serialise this user's creates
+            ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
+            limit = min(10, ent.max_trading_accounts)
+            current = TradingAccount.objects.filter(user=user).count()
+            if current >= limit:
+                raise ValidationError(
+                    {"detail": f"Broker-account limit reached (maximum {limit})."})
+
+            inst = _get_user_mt5_instance(user)
+            # If we can't determine an instance yet, still allow create (inactive).
+            if not inst:
+                serializer.save(user=user, mt5_instance=None, is_active=False)
+                return
+
+            # If user already has an active account on this instance, default new accounts to INACTIVE
+            # unless explicitly requested active.
+            requested = self.request.data.get("is_active", None)
+            if isinstance(requested, str):
+                requested_active = requested.strip().lower() in ("1", "true", "yes", "on")
+            elif requested is None:
+                requested_active = False
+            else:
+                requested_active = bool(requested)
+
+            has_active = TradingAccount.objects.filter(
+                user=user, mt5_instance=inst, is_active=True).exists()
+            make_active = requested_active or (not has_active)
+
             if make_active:
                 TradingAccount.objects.filter(user=user, mt5_instance=inst).update(is_active=False)
 
-            serializer.save(
-                user=user,
-                mt5_instance=inst,
-                is_active=make_active,
-            )
+            serializer.save(user=user, mt5_instance=inst, is_active=make_active)
 
     from django.db import transaction
     from rest_framework.decorators import action
@@ -334,7 +350,8 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
                 except ValidationError as e:
                     return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
                 except Exception as e:
-                    return Response({"detail": f"MT5 validation error: {e}"}, status=status.HTTP_502_BAD_GATEWAY)
+                    logger.warning("set-active: MT5 validation error: %s", e)
+                    return Response({"detail": "MT5 validation failed. Please try again."}, status=status.HTTP_502_BAD_GATEWAY)
 
                 # Deactivate others on same instance
                 TradingAccount.objects.filter(
@@ -379,12 +396,19 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         valid = bool(data.get("valid", False))
         reason = str(data.get("reason") or "")
 
+        # GFX-BETA-PHASE0 Increment 5 — do NOT echo the raw agent `detail` to the client: on the
+        # failure paths it can carry str(e) or internal env-var names (WINDOWS_AGENT_BASE/TOKEN).
+        # Keep the safe structured fields; log the detail server-side only.
+        safe_agent = {k: v for k, v in data.items() if k != "detail"}
+        if data.get("detail"):
+            logger.warning("test_connection: agent reason=%s detail=%s", reason, data.get("detail"))
+
         return Response(
             {
                 "ok": ok,
                 "valid": valid,
                 "reason": reason,
-                "agent": data,
+                "agent": safe_agent,
             },
             status=status.HTTP_200_OK,
         )
@@ -925,8 +949,9 @@ class SyncNowView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         except urllib.error.URLError as e:
+            logger.warning("sync-now: agent unreachable: %s", e)
             return Response(
-                {"ok": False, "error": "agent_unreachable", "message": f"Cannot reach agent: {e.reason}"},
+                {"ok": False, "error": "agent_unreachable", "message": "The MT5 agent could not be reached. Please try again."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         except json.JSONDecodeError:
@@ -936,7 +961,7 @@ class SyncNowView(APIView):
             )
         except Exception as e:
             return Response(
-                {"ok": False, "error": "agent_error", "message": str(e)[:200]},
+                {"ok": False, "error": "agent_error", "message": "The MT5 agent request failed. Please try again."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 

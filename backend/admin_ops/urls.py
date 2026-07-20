@@ -14,6 +14,7 @@ from .views import (
     AdminEntitlementSummaryView,
     AdminEntitlementOverrideViewSet,
     AdminExecutionJobViewSet,
+    AdminBetaEstateView,
 )
 
 router = DefaultRouter()
@@ -30,6 +31,9 @@ urlpatterns = [
     path("workers/<int:pk>/", AdminWorkerViewSet.as_view({"get": "retrieve"}), name="admin-worker-detail"),
     path("workers/<int:pk>/rotate-secret/", AdminWorkerViewSet.as_view({"post": "rotate_secret"}), name="admin-worker-rotate"),
     path("workers/<int:pk>/revoke/", AdminWorkerViewSet.as_view({"post": "revoke"}), name="admin-worker-revoke"),
+
+    # GFX-BETA-PHASE0 Increment 5 — read-only per-user beta estate (no decrypted credentials)
+    path("beta-estate/", AdminBetaEstateView.as_view(), name="admin-beta-estate"),
 
     # Entitlements — summary + override CRUD
     path("entitlements/<int:user_id>/summary/", AdminEntitlementSummaryView.as_view(), name="admin-entitlement-summary"),

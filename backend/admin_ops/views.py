@@ -714,3 +714,44 @@ class AdminExecutionJobViewSet(viewsets.ReadOnlyModelViewSet):
             "job_id": job.id,
             "status": job.status,
         })
+
+
+class AdminBetaEstateView(APIView):
+    """GFX-BETA-PHASE0 Increment 5 — read-only per-user beta estate for operators. Shows each non-staff
+    user's broker accounts, their durable runtime state, and recent provisioning failures. NEVER exposes
+    decrypted broker credentials (only the non-secret account number). Read-only."""
+    permission_classes = [IsSuperOrOpsAdmin]
+
+    def get(self, request):
+        from django.contrib.auth import get_user_model
+        from trading.models import TradingAccount
+        from terminal_provisioning.models import AccountRuntime, RuntimeEvent
+        from billing.entitlements import resolve_entitlements
+        from billing.models import UserSubscriptionState
+
+        UserModel = get_user_model()
+        out = []
+        for u in UserModel.objects.filter(is_staff=False).order_by("id")[:200]:
+            accounts = []
+            for a in TradingAccount.objects.filter(user=u).order_by("id"):
+                rt = AccountRuntime.objects.filter(trading_account=a).first()
+                accounts.append({
+                    "account_id": a.id,
+                    "account_number": a.account_number,   # non-secret identifier only — NEVER the password
+                    "is_active": a.is_active,
+                    "runtime_state": rt.state if rt else "NOT_PROVISIONED",
+                    "runtime_last_error": (rt.last_error if rt else ""),   # sanitised reason only
+                })
+            ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=u).first())
+            fails = (RuntimeEvent.objects.filter(
+                runtime__trading_account__user=u, event_type="FAILURE").order_by("-id")[:5])
+            out.append({
+                "user_id": u.id, "email": u.email, "is_beta": ent.is_beta,
+                "account_count": len(accounts), "max_accounts": min(10, ent.max_trading_accounts),
+                "accounts": accounts,
+                "recent_failures": [{
+                    "account_id": f.runtime.trading_account_id, "reason": f.reason_code,
+                    "at": f.created_at.isoformat(),
+                } for f in fails],
+            })
+        return Response({"ok": True, "users": out})
