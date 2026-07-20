@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import ComponentHealth, TradingHealthSnapshot, AlertEvent, RecoveryRecommendation, RecoveryAttempt, CircuitBreakerState
+from trading.models import TradingAccount
 from .serializers import (
     ComponentHealthSerializer, TradingHealthSnapshotSerializer,
     AlertEventSerializer, RecoveryRecommendationSerializer, RecoveryAttemptSerializer,
@@ -25,10 +26,25 @@ class TradingHealthView(APIView):
     def get(self, request):
         account_id = request.query_params.get("account_id")
         terminal = request.query_params.get("terminal")
+        is_staff = request.user.is_staff
+        # GFX-BETA-PHASE0 (C14 + IDOR): a non-staff user may only read their OWN account's health.
+        # GLOBAL/operator health and arbitrary terminals are staff-only — never show a beta user the
+        # estate's health as if it were their own, and never let them probe another account_id.
         if account_id:
+            if not is_staff and not TradingAccount.objects.filter(
+                    id=account_id, user=request.user).exists():
+                return Response({"ok": False, "state": "UNKNOWN", "can_trade": False,
+                                 "reasons": ["Account not found."]}, status=http.HTTP_404_NOT_FOUND)
             snap = _latest("ACCOUNT", trading_account_id=account_id)
         elif terminal:
+            if not is_staff:
+                return Response({"ok": False, "state": "UNKNOWN", "can_trade": False,
+                                 "reasons": ["Provide your own account_id."]})
             snap = _latest("TERMINAL", terminal_node_id=terminal)
+        elif not is_staff:
+            # non-staff, no account_id → do NOT fall back to GLOBAL operator health.
+            return Response({"ok": False, "state": "UNKNOWN", "can_trade": False,
+                             "reasons": ["Provide your own account_id."]})
         else:
             snap = _latest("GLOBAL")
         if not snap:
@@ -41,7 +57,7 @@ class TradingHealthView(APIView):
 
 class HealthMatrixView(APIView):
     """GET /api/reliability/health/ — full component matrix + latest scoped snapshots."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get(self, request):
         components = ComponentHealthSerializer(ComponentHealth.objects.all(), many=True).data
@@ -164,7 +180,7 @@ class RecommendationListView(APIView):
 
 class RecoveryAttemptListView(APIView):
     """GET /api/reliability/recovery-attempts/?shadow=true&policy=&limit="""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get(self, request):
         qs = RecoveryAttempt.objects.all()
@@ -178,7 +194,7 @@ class RecoveryAttemptListView(APIView):
 
 class RecoveryStatusView(APIView):
     """GET /api/reliability/recovery-status/ — RX-2G control surfaces."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get(self, request):
         from .constants import auto_recovery_frozen, rx2g_enabled
@@ -203,7 +219,7 @@ class RecoveryStatusView(APIView):
 
 class CircuitResetView(APIView):
     """POST /api/reliability/circuit/reset/ — manual breaker reset path."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def post(self, request):
         from .recovery import reset_breaker

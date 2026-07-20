@@ -55,3 +55,60 @@ class ReliabilityScopingTests(TestCase):
 
     def test_staff_sees_all_recommendations(self):
         self.assertEqual(len(self._recs(self.staff)), 2)
+
+
+class TradingHealthScopingTests(TestCase):
+    """GFX-BETA-PHASE0 (C14 + IDOR) — trading-health is per-tenant for non-staff; GLOBAL/other-account
+    is staff-only; the 4 global operational endpoints are admin-only."""
+
+    def setUp(self):
+        from reliability.views import (TradingHealthView, HealthMatrixView,
+                                       RecoveryAttemptListView, RecoveryStatusView, CircuitResetView)
+        self.views = dict(th=TradingHealthView, hm=HealthMatrixView, ra=RecoveryAttemptListView,
+                          rs=RecoveryStatusView, cr=CircuitResetView)
+        self.u1 = U.objects.create_user(username="u1", email="u1@x.invalid", password="x")
+        self.u2 = U.objects.create_user(username="u2", email="u2@x.invalid", password="x")
+        self.staff = U.objects.create_user(
+            username="s", email="s@x.invalid", password="x", is_staff=True)
+        self.a1 = TradingAccount.objects.create(
+            user=self.u1, name="A1", account_number="A1", is_demo=True)
+        self.a2 = TradingAccount.objects.create(
+            user=self.u2, name="A2", account_number="A2", is_demo=True)
+        self.factory = APIRequestFactory()
+
+    def _th(self, user, qs=""):
+        req = self.factory.get("/api/reliability/trading-health/" + qs)
+        force_authenticate(req, user=user)
+        return self.views["th"].as_view()(req)
+
+    def test_non_staff_cannot_read_other_users_account(self):
+        r = self._th(self.u1, "?account_id=%d" % self.a2.id)
+        self.assertEqual(r.status_code, 404)
+
+    def test_non_staff_can_read_own_account(self):
+        r = self._th(self.u1, "?account_id=%d" % self.a1.id)
+        self.assertEqual(r.status_code, 200)  # allowed (UNKNOWN if no snapshot, but not 404)
+
+    def test_non_staff_no_account_id_is_not_global(self):
+        r = self._th(self.u1)
+        self.assertIn("account_id", " ".join(r.data.get("reasons", [])).lower())
+
+    def test_staff_no_account_id_uses_global(self):
+        r = self._th(self.staff)
+        # staff GLOBAL path — not the "provide your own account_id" refusal
+        self.assertNotIn("provide your own account_id", " ".join(r.data.get("reasons", [])).lower())
+
+    def _hit(self, key, user, method="get"):
+        req = getattr(self.factory, method)("/x")
+        force_authenticate(req, user=user)
+        return self.views[key].as_view()(req)
+
+    def test_global_operational_endpoints_are_admin_only(self):
+        for key, method in (("hm", "get"), ("ra", "get"), ("rs", "get"), ("cr", "post")):
+            self.assertEqual(self._hit(key, self.u1, method).status_code, 403,
+                             "%s must be admin-only for non-staff" % key)
+
+    def test_global_operational_endpoints_allow_staff(self):
+        for key, method in (("hm", "get"), ("ra", "get"), ("rs", "get")):
+            self.assertEqual(self._hit(key, self.staff, method).status_code, 200,
+                             "%s must allow staff" % key)
