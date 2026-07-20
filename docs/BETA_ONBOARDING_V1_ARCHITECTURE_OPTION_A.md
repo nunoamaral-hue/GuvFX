@@ -88,6 +88,8 @@ post-beta concern (see §17).
 5 beta users ÷ ~2/host = **3 RDSH** for headroom + one-host-failure tolerance; start with **2 RDSH** and
 add the 3rd once density/isolation is proven. Total **new** Windows VMs at beta: **3–4**.
 
+> **Extended by** [`BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md` §A](BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md) — detailed capacity planning (measured per-terminal footprint, automated-vs-interactive split, per-host budget tables, density math + raise gate, scaling formulas). The numbers below are the basic baseline it extends.
+
 ## 3. Session-host capacity assumptions
 
 - **≤~2 interactive beta users per RDSH** until compatibility, resource use, isolation and concurrent
@@ -248,6 +250,8 @@ single-target ambiguity; one user's arming/failure never affects another's.
    tenant-scoped alerts/health/ops (✓ Phase 0).
 5. **Network:** RD Gateway TLS-only; session hosts not publicly exposed.
 
+> **Extended by** [`…OPERATIONS_CAPACITY_SLO.md` §B](BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md) — full operational runbooks: onboarding, password/credential changes, broker migration, single-runtime recovery, **Windows host (RDSH) failure & pool recovery (SEV-1/SEV-2)**, and customer-support triage.
+
 ## 14. Host failure & account recovery
 
 Automated terminals are **per-account tasks** with **durable provisioning state** → on RDSH failure,
@@ -255,6 +259,8 @@ re-materialise the account's runtime on another pool host (idempotent) and re-po
 Broker handles interactive reconnect. No user data loss (positions are broker-side; the runtime is
 rebuildable from config + Fernet creds). The provisioning/GuvFX DB is backed up (ties into the estate's
 backup gap — see KNOWN_ISSUES/NEXT).
+
+> **Extended by** [`…OPERATIONS_CAPACITY_SLO.md` §C](BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md) — target **service-level objectives** (provisioning latency, recovery time, runtime availability, provisioning success, interactive/credential propagation) with SLIs mapped to the durable telemetry, plus the §E open-items list of Phase-2 telemetry prerequisites.
 
 ## 15. Observability & admin support
 
@@ -342,6 +348,8 @@ BoM.**
 7. **Account Status panel** — wire the Phase-0 scaffold to the live `AccountRuntime` state (truthful stages).
 8. **Isolation + load hardening (Phase 4 gates)** — per-user/per-account isolation red-team; 5-user load;
    no cross-tenant data; existing production unaffected. Only then may onboarding open.
+
+> **Superseded for approval by** [`…OPERATIONS_CAPACITY_SLO.md` §D](BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md) — the **final procurement package**: this §20 BoM refined with capacity-justified per-host specs (2 RDSH @ 4 vCPU/16 GB/120 GB SSD, infra @ 4 vCPU/16 GB/80 GB SSD), a reconciled monthly OPEX (~$290–710/mo new cloud infra; ~$530–1,600/mo all-in incl. existing VPS + labour; ~$49–87/user/mo marginal), the scaling model, and the explicit approval ask. The estimate ranges below stand; §D is the decision-ready consolidation to approve.
 
 ## 20. Final BoM · licensing · costs (for approval — NO procurement yet)
 
