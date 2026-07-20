@@ -1,5 +1,16 @@
 # NEXT — Priorities (keep this list short)
 
+## Beta Onboarding V1 (2026-07-20) — onboarding stays CLOSED
+- [ ] **Nuno decision (gate): approve the Option A architecture + BoM/cost** (`docs/BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md`)
+  — RDS/RemoteApp Windows host pool. No licence/server procurement and no architecture-gated (Phase 2+) work until approved.
+- [ ] **Continue Phase 0 (additive, onboarding closed):** per-account lot-size override model (default 0.01,
+  future-signals-only, NOT wired to live execution); beta-entitlement infra behind a closed server-side gate (NO
+  email-verify bypass); entitlement-scoped marketplace foundations; Account Status panel (truthful NOT PROVISIONED /
+  BLOCKED states); durable provisioning-state + failure records (no swallowed exceptions); user-scoped admin
+  visibility; raw-agent-error correction; max-10 broker accounts per user. Each: test + review + controlled deploy.
+- [ ] **Do NOT enable onboarding** until Phase 4 isolation gates pass (see KNOWN_ISSUES).
+
+
 ## TI execution-gap follow-ups (2026-07-16)
 - [ ] **Watch the daily-drawdown behaviour across a full day** — today's cumulative TI realised PnL
   reached −772.80 (still < $2000). If a losing streak pushes past −$2000, `daily_drawdown_hit` will
