@@ -1,4 +1,7 @@
+from decimal import Decimal, InvalidOperation
+
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
@@ -569,3 +572,129 @@ class StrategyRuntimeEvent(models.Model):
             f"{self.reason_code})"
         )
 
+
+
+class AssignmentLegSizing(models.Model):
+    """GFX-BETA-PHASE0 Increment 1 — per-(broker account + strategy assignment) lot-size override.
+
+    Owned by the ``StrategyAssignment`` (which itself encodes broker account + strategy + signal
+    source), realising the effective chain **User → Broker Account → Strategy Assignment → per-leg
+    lot-size**. Default ``0.01`` per TP leg.
+
+    STRICT Phase-0 boundaries:
+    - **NOT wired to live execution** — inert until Phase-3 multi-tenant routing. ``effective_lot_per_leg``
+      is a resolver for future use + read-only display; nothing in the live planning/execution path reads
+      it yet.
+    - Affects **future signals only**; it can never modify an open position (it is pure configuration).
+    - Never touches the global ``SignalSourceConfig`` operator sizing — an account with no row here falls
+      back to the source-global cap, so existing production sizing is unchanged.
+    - ``version`` + the append-only ``AssignmentLegSizingHistory`` give a durable audit trail and let a
+      future execution record exactly which config version it used (once routing is enabled in Phase 3).
+    """
+
+    LOT_MIN = Decimal("0.01")   # broker minimum (conservative default; per-broker via BrokerInstrument later)
+    LOT_STEP = Decimal("0.01")  # broker volume step
+    LOT_MAX = Decimal("100.00")  # broker maximum ceiling
+    DEFAULT_LOT = Decimal("0.01")
+
+    assignment = models.OneToOneField(
+        "strategies.StrategyAssignment", on_delete=models.CASCADE, related_name="leg_sizing")
+    lot_per_leg = models.DecimalField(max_digits=6, decimal_places=2, default=DEFAULT_LOT)
+    version = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def validate_lot(cls, value) -> Decimal:
+        """Broker min / max / volume-step validation. Accepts JSON numbers or strings; rejects
+        NaN/Infinity/garbage with a 400-safe ValidationError (never a 500). Raises on violation."""
+        if value is None:
+            raise ValidationError({"lot_per_leg": "required"})
+        try:
+            v = Decimal(str(value))  # str() → exact for JSON floats/ints (Decimal(0.03) would drift)
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValidationError({"lot_per_leg": "must be a valid decimal number"})
+        if not v.is_finite():  # NaN / Infinity
+            raise ValidationError({"lot_per_leg": "must be a finite number"})
+        if v < cls.LOT_MIN or v > cls.LOT_MAX:
+            raise ValidationError({"lot_per_leg": f"must be between {cls.LOT_MIN} and {cls.LOT_MAX}"})
+        if (v % cls.LOT_STEP) != 0:
+            raise ValidationError({"lot_per_leg": f"must be a multiple of the {cls.LOT_STEP} volume step"})
+        return v
+
+    def clean(self):
+        self.validate_lot(self.lot_per_leg)
+
+    def save(self, *args, **kwargs):
+        # Storage-layer guard: even a direct ORM write must be range/step-validated (the DB
+        # CheckConstraint below backstops the range; this also enforces the step).
+        self.validate_lot(self.lot_per_leg)
+        super().save(*args, **kwargs)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(lot_per_leg__gte=Decimal("0.01")) & Q(lot_per_leg__lte=Decimal("100.00")),
+                name="assignmentlegsizing_lot_range",
+            ),
+        ]
+
+    def __str__(self):
+        return f"AssignmentLegSizing(asn={self.assignment_id}, lot={self.lot_per_leg}, v{self.version})"
+
+
+class AssignmentLegSizingHistory(models.Model):
+    """Immutable, append-only audit of every lot-size change. ``version`` is the identifier a future
+    execution will record so each executed signal can be traced to the exact sizing config it used."""
+
+    assignment = models.ForeignKey(
+        "strategies.StrategyAssignment", on_delete=models.CASCADE, related_name="leg_sizing_history")
+    lot_per_leg = models.DecimalField(max_digits=6, decimal_places=2)
+    version = models.PositiveIntegerField()
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version"]
+        constraints = [
+            # Defense-in-depth: one immutable row per (assignment, version).
+            models.UniqueConstraint(fields=["assignment", "version"],
+                                    name="uniq_leg_sizing_history_version"),
+        ]
+
+    def __str__(self):
+        return f"AssignmentLegSizingHistory(asn={self.assignment_id}, lot={self.lot_per_leg}, v{self.version})"
+
+
+def effective_lot_per_leg(assignment) -> Decimal:
+    """Effective per-leg lot for a FUTURE signal on this assignment: the per-assignment override if one
+    exists, else the source-global cap (operator default). READ-ONLY resolver — NOT called from the live
+    planning/execution path in Phase 0; provided for the Account Status panel + Phase-3 routing."""
+    sizing = getattr(assignment, "leg_sizing", None)
+    if sizing is not None:
+        return sizing.lot_per_leg
+    from execution.models import SignalSourceConfig
+    cap, _ = SignalSourceConfig.sizing_caps(getattr(assignment, "signal_source", "") or "")
+    return cap
+
+
+def set_assignment_lot_per_leg(assignment, value, user=None):
+    """Atomically set the per-leg lot override for an assignment: validate (broker min/max/step),
+    upsert the current ``AssignmentLegSizing`` (bumping ``version`` on a real change), and append an
+    immutable ``AssignmentLegSizingHistory`` row. Future-only + audited; never touches open positions
+    or the global ``SignalSourceConfig``. Returns the ``AssignmentLegSizing``."""
+    from django.db import transaction
+    v = AssignmentLegSizing.validate_lot(value)
+    with transaction.atomic():
+        sizing, created = AssignmentLegSizing.objects.select_for_update().get_or_create(
+            assignment=assignment, defaults={"lot_per_leg": v, "version": 1})
+        if not created:
+            if sizing.lot_per_leg == v:
+                return sizing  # no-op: no version bump, no history row
+            sizing.lot_per_leg = v
+            sizing.version = sizing.version + 1
+            sizing.save(update_fields=["lot_per_leg", "version", "updated_at"])
+        AssignmentLegSizingHistory.objects.create(
+            assignment=assignment, lot_per_leg=v, version=sizing.version, changed_by=user)
+    return sizing
