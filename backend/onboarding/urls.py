@@ -10,6 +10,7 @@ from .views import (
     BrokerPartnerListView,
     BrokerReferralView,
     ExecutionReadinessView,
+    AccountStatusView,
 )
 
 urlpatterns = [
@@ -33,4 +34,7 @@ urlpatterns = [
 
     # Readiness gate
     path("readiness/", ExecutionReadinessView.as_view(), name="onboarding-readiness"),
+
+    # GFX-BETA-PHASE0 Increment 3 — truthful Account Status panel (account-owner scoped)
+    path("account-status/", AccountStatusView.as_view(), name="onboarding-account-status"),
 ]

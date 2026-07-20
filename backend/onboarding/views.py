@@ -212,3 +212,32 @@ class ExecutionReadinessView(APIView):
     def get(self, request):
         result = check_onboarding_permits_execution(request.user)
         return Response(result)
+
+
+class AccountStatusView(APIView):
+    """GFX-BETA-PHASE0 Increment 3 — GET /api/onboarding/account-status/?account_id=<id>
+
+    Truthful per-account status panel. Account-owner scoped (staff bypass). Runtime/terminal stages
+    reflect the durable AccountRuntime state and NEVER imply a live MT5 terminal while automatic
+    provisioning is undeployed (they read NOT_CONFIGURED). Read-only; never creates a runtime row.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from trading.models import TradingAccount
+        from terminal_provisioning.account_status import build_account_status
+
+        account_id = request.query_params.get("account_id")
+        qs = TradingAccount.objects.all()
+        if not request.user.is_staff:
+            qs = qs.filter(user=request.user)  # a user only sees their own accounts
+        if account_id:
+            try:
+                acct = qs.filter(id=int(account_id)).first()
+            except (TypeError, ValueError):
+                return Response({"detail": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            acct = qs.filter(user=request.user).order_by("id").first()  # the caller's primary account
+        if acct is None:
+            return Response({"detail": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"ok": True, **build_account_status(acct)})
