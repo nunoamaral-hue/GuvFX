@@ -2,6 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
+## ⚠️ Beta onboarding is NOT ready — keep external onboarding CLOSED (2026-07-20)
+
+- The platform is **single-tenant**. 21 Critical + 14 High blockers (see `docs/BETA_ONBOARDING_V1_PROGRAMME.md`).
+  External beta onboarding **must not be enabled** until the Phase-4 isolation gates pass (per-user terminal +
+  per-account runtime isolation, user-scoped routing/sizing, user-scoped Guacamole/RemoteApp, no shared AUTO_DEMO
+  routing ambiguity, no cross-tenant operational data, load + adversarial isolation tests, existing production
+  unaffected).
+- **It is safe today only because onboarding is hard-blocked** — email verification is required but the backend
+  never sends a code. **Do NOT bypass email verification / unblock onboarding before per-user isolation exists** —
+  doing so would arm dangerous paths against Nuno's live account (account-create could drive his terminal; the
+  shared VNC desktop is write-enabled on his live MT5).
+- Phase 0 hardening shipped so far (additive, onboarding stays closed): `_get_user_mt5_instance` is **fail-closed**
+  (a no-lease user resolves to None, never a shared/other instance); reliability alerts/recommendations/trading-health
+  are tenant-scoped for non-staff; global ops endpoints (health-matrix, recovery-attempts, recovery-status, and the
+  circuit-reset mutation) are admin-only. Target architecture = Option A (Windows RDS/RemoteApp host pool), pending
+  Nuno's cost approval before any procurement.
+
 ## "MT5 bridge stall" was a self-inflicted 429 throttle storm — FIXED (2026-07-16)
 
 - The intermittent stalls were the ingest worker **rate-limiting itself**: 5 `jobs/next/` calls per

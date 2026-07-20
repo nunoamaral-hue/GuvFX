@@ -6,6 +6,23 @@
 
 ## Execution workstream log
 
+- **2026-07-20 — GFX-PKT-BETA-ONBOARDING-V1: readiness = NOT READY; Option A approved; Phase 0 security shipped. 🟡**
+  Read-only investigation (workflow wf_e3b038d9-1e7, 8 agents) + prod census: the platform is **single-tenant**
+  and cannot onboard external beta users — **21 Critical + 14 High** blockers. **⚠️ Onboarding must stay CLOSED
+  until the Phase-4 isolation gates pass** (it is safe today only because email-verification never sends a code —
+  do NOT unblock it before per-user isolation exists). App-DATA isolation is solid (querysets scope to
+  request.user; creds Fernet-encrypted; no DB IDOR); the gap is the MT5-terminal / execution / routing / sizing
+  layer. **Architecture decision (Nuno):** Option A = **Windows-native RDS/RemoteApp host pool** (17-point design
+  + BoM in `docs/BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md`; no procurement until Nuno approves the cost model).
+  **Phase 0 (additive, onboarding stays closed) — first increment SHIPPED (PR #148, `main` f169418, image
+  5ec61598, rollback `rollback-preBetaPhase0`, no migration):** fail-close `_get_user_mt5_instance` (C2/C17/C19 —
+  a no-lease user can never bind to Nuno's box; verified live) + tenant-scoped alerts/recommendations/trading-health
+  and admin-only global ops endpoints incl. the circuit-reset **mutation** (C15/C14 + IDOR). 875 tests; review 0
+  MUST_FIX. Nuno's account/strategies/AUTO_DEMO untouched (verified: ti/wayond configs, drawdown $2000, watcher,
+  silent_loss=0). Evidence: Notion GFX-EVD-BETA-ONBOARDING-V1. Remaining Phase 0: per-account lot override, beta
+  entitlement behind a closed gate, marketplace foundations, Account Status panel, provisioning-state records,
+  user-scoped admin, raw-error correction, max-10 accounts.
+
 - **2026-07-16 — GFX-PKT-TI-SIGNAL-EXECUTION-GAP-AND-TP-PROTECTION-FINAL-HARDENING: investigated, no defect; ops rollup added. 🟢**
   **Forensics (evidence): 11 TI signals today — 6 EXECUTED, 5 REJECTED (`daily_drawdown_hit`), 0 silent
   loss.** The "1 of 5" was an early snapshot: plan 27 closed 00:07 UTC realizing −502.80 → tripped the
