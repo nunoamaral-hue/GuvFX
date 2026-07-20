@@ -1,6 +1,14 @@
 # GFX Beta Onboarding V1 — Programme Plan & Target Architecture (PROPOSAL)
 
-> **Status: PROPOSAL — awaiting Nuno's architecture approval. Customer onboarding stays CLOSED.**
+> **Status: ARCHITECTURE APPROVED (2026-07-20) — Option A (Multiple Windows VPSs). Phase 0 IN PROGRESS.
+> Customer onboarding stays CLOSED until Phase 2/3 isolation is built + verified.**
+>
+> **Decision (Nuno, 2026-07-20):** target architecture = **Option A — Multiple Windows VPSs** (≈1 per 2
+> users, native MT5, per-user provisioning automation). The Wine spike (Option C) is NOT taken. Nuno's
+> existing single Windows box remains his isolated production runtime, untouched. **Phase 0 approved** —
+> ship the additive, non-architecture-gated fixes now with onboarding kept closed.
+>
+> **Original proposal below (PROPOSAL — awaiting Nuno's architecture approval; superseded by the decision above).**
 > Source of truth for the findings: read-only investigation `wf_e3b038d9-1e7` (8 parallel agents) +
 > production census, 2026-07-20. Nothing in production was changed. This document is a proposal; the
 > lifecycle/decision status is PM-owned and NOT advanced here.
