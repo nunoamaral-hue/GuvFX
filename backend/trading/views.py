@@ -70,8 +70,19 @@ def _get_user_mt5_instance(user) -> Mt5Instance | None:
 
     Priority:
     1. Instance currently leased to this user.
-    2. Any Windows-platform instance (single-instance deployments).
+    2. Fallback: a Windows-platform instance that is NOT leased to a *different* user
+       (single-instance deployments). FAIL-CLOSED for multi-tenant safety.
+
+    GFX-BETA-PHASE0 (C2/C17/C19): the old priority-2 fallback returned *any* Windows instance, so a
+    new external user with no lease resolved to whatever shared box existed — in prod the operator's
+    single terminal (leased to Nuno). Creating/validating an account then drove the operator's terminal
+    into the new user's broker account. The fallback now excludes instances leased to someone else, so
+    an unowned user gets ``None`` (account stays unbound/inactive with a clear message) instead of
+    another user's terminal. Behaviour for the operator is unchanged: their instance is leased to them,
+    so priority-1 always resolves first and the fallback is never reached.
     """
+    from django.db.models import Q
+
     # 1. Leased to user
     inst = (
         Mt5Instance.objects.filter(is_leased=True, leased_to=user)
@@ -81,12 +92,14 @@ def _get_user_mt5_instance(user) -> Mt5Instance | None:
     if inst:
         return inst
 
-    # 2. Fallback: any Windows instance with a windows_username set
+    # 2. Fallback: a Windows instance that is unleased OR already leased to THIS user — never one
+    #    leased to a different user (that would drive their terminal).
     inst = (
         Mt5Instance.objects.filter(
             platform__iexact="windows",
             windows_username__gt="",
         )
+        .filter(Q(is_leased=False) | Q(leased_to=user))
         .order_by("hostname")
         .first()
     )
