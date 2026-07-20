@@ -344,6 +344,12 @@ def mark_account_connected(user, request=None) -> UserOnboardingState:
     state = get_or_create_onboarding_state(user)
     _check_prerequisites(state, "account_connected")
 
+    # GFX-BETA-PHASE0 Increment 4 — server-side gate. External beta onboarding stays CLOSED until the
+    # Phase-4 isolation gates pass; a non-staff user cannot progress past this step while it's closed.
+    from billing.beta import beta_onboarding_open
+    if not beta_onboarding_open() and not user.is_staff:
+        raise OnboardingStepError("Beta onboarding is not open yet.")
+
     account = TradingAccount.objects.filter(user=user, is_active=True).first()
     if not account:
         raise OnboardingStepError("No active trading account found. Connect one first.")
@@ -391,6 +397,11 @@ def mark_strategy_assigned(user, request=None) -> UserOnboardingState:
     """
     state = get_or_create_onboarding_state(user)
     _check_prerequisites(state, "strategy_assigned")
+
+    # GFX-BETA-PHASE0 Increment 4 — server-side gate (see mark_account_connected).
+    from billing.beta import beta_onboarding_open
+    if not beta_onboarding_open() and not user.is_staff:
+        raise OnboardingStepError("Beta onboarding is not open yet.")
 
     assignment = StrategyAssignment.objects.filter(
         account__user=user, is_active=True

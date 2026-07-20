@@ -11,6 +11,7 @@ from .views import (
     BrokerReferralView,
     ExecutionReadinessView,
     AccountStatusView,
+    BetaMarketplaceView,
 )
 
 urlpatterns = [
@@ -37,4 +38,7 @@ urlpatterns = [
 
     # GFX-BETA-PHASE0 Increment 3 — truthful Account Status panel (account-owner scoped)
     path("account-status/", AccountStatusView.as_view(), name="onboarding-account-status"),
+
+    # GFX-BETA-PHASE0 Increment 4 — entitlement-scoped marketplace foundation
+    path("marketplace/", BetaMarketplaceView.as_view(), name="onboarding-beta-marketplace"),
 ]

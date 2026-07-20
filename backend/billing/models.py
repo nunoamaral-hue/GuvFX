@@ -23,6 +23,7 @@ class UserSubscriptionState(models.Model):
         STANDARD = "standard", "Standard"
         PRO = "pro", "Pro"
         ADVANCED = "advanced", "Advanced"
+        BETA = "beta", "Beta (payment-bypassed)"  # GFX-BETA-PHASE0 Increment 4
 
     class PlanStatus(models.TextChoices):
         TRIAL_ACTIVE = "trial_active", "Trial Active"

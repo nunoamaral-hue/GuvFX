@@ -43,6 +43,9 @@ class Entitlements:
     viewer_mode: bool
     resolved_access_mode: str  # "viewer" | "trial" | "active" | "degraded"
 
+    # GFX-BETA-PHASE0 Increment 4 — beta cohort flag (default False; set only by the "beta" plan).
+    is_beta: bool = False
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -91,6 +94,25 @@ _PLAN_ENTITLEMENTS: dict[str, dict] = {
         "max_trading_accounts": 10,
         "max_active_strategies": 50,
         "historical_data_tier": "full",
+    },
+    # GFX-BETA-PHASE0 Increment 4 — the beta cohort (payment-bypassed). Grants config-level
+    # capabilities (up to 10 broker accounts, assign strategies) so a beta user can set things up.
+    # It does NOT by itself make trading reachable: external onboarding stays gated
+    # (BETA_ONBOARDING_ENABLED, default off) and terminal provisioning is undeployed.
+    "beta": {
+        "can_view_dashboard": True,
+        "can_browse_marketplace": True,
+        "can_run_backtests": True,
+        "can_assign_strategies": True,
+        # can_deploy_automation is the server-side EXECUTION-authorization entitlement (require_entitlement
+        # gates create_open_trade_job / create_place_order_job / the manual open-trade endpoints). It stays
+        # FALSE for Phase-0 beta — a fail-closed block on placing orders that is INDEPENDENT of whether a
+        # terminal is provisioned. Do NOT flip this to True until Phase 4 (tie it to beta_onboarding_open()).
+        "can_deploy_automation": False,
+        "max_trading_accounts": 10,
+        "max_active_strategies": 50,
+        "historical_data_tier": "standard",
+        "is_beta": True,
     },
 }
 

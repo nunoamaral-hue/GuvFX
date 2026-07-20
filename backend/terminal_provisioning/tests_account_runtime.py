@@ -102,6 +102,7 @@ class OnboardingProvisionRecordsFailureTests(TestCase):
             user=self.user, name="A", account_number="OB1", is_demo=True, is_active=True)
 
     def test_provision_failure_is_recorded_not_swallowed(self):
+        from django.test import override_settings
         from onboarding import services
         state = services.get_or_create_onboarding_state(self.user)
         # satisfy the prerequisites so account_connected can proceed
@@ -109,7 +110,8 @@ class OnboardingProvisionRecordsFailureTests(TestCase):
         state.email_verified = True
         state.risk_accepted = True
         state.save(update_fields=["plan_selected", "email_verified", "risk_accepted"])
-        with mock.patch(
+        # Open the beta gate (Increment 4) so we exercise the provisioning path itself, not the gate.
+        with override_settings(BETA_ONBOARDING_ENABLED=True), mock.patch(
                 "mt5.services.terminal_provisioning_service.provision_terminal_for_account",
                 side_effect=RuntimeError("agent exploded")):
             services.mark_account_connected(self.user)  # must NOT raise (non-blocking)

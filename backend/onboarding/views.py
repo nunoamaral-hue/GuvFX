@@ -241,3 +241,43 @@ class AccountStatusView(APIView):
         if acct is None:
             return Response({"detail": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         return Response({"ok": True, **build_account_status(acct)})
+
+
+class BetaMarketplaceView(APIView):
+    """GFX-BETA-PHASE0 Increment 4 — GET /api/onboarding/marketplace/
+
+    Entitlement-scoped marketplace FOUNDATION. Entitled (beta/staff) users see ONLY the two Wayond
+    strategies; everyone else sees an empty list. Visibility must NOT imply activation/provisioning is
+    available: each item carries a truthful ``available=False`` (gated by the closed onboarding gate +
+    undeployed provisioning), so the UI can render "coming soon", never an "activate now".
+    """
+    permission_classes = [IsAuthenticated]
+
+    _BETA_STRATEGIES = [
+        {"key": "wayond_auto_demo", "name": "Wayond Auto Demo",
+         "description": "Copies the Wayond demo signal feed."},
+        {"key": "wayond_wim", "name": "Wayond WIM Strategy",
+         "description": "Copies the TI Signals feed (WIM)."},
+    ]
+
+    def get(self, request):
+        from billing.entitlements import resolve_entitlements
+        from billing.models import UserSubscriptionState
+        from billing.beta import beta_onboarding_open
+
+        state = UserSubscriptionState.objects.filter(user=request.user).first()
+        ent = resolve_entitlements(state)
+        entitled = bool(getattr(ent, "is_beta", False)) or request.user.is_staff
+        if not entitled:
+            return Response({"ok": True, "entitled": False, "onboarding_open": False, "strategies": []})
+
+        available = beta_onboarding_open()  # False throughout Phase 0
+        strategies = [{
+            **s,
+            "available": available,             # truthful: not activatable yet
+            "activation_available": available,
+            "provisioning_available": False,    # per-user provisioning is undeployed (Phase 2)
+            "reason": None if available else "Not available yet — beta onboarding is not open.",
+        } for s in self._BETA_STRATEGIES]
+        return Response({"ok": True, "entitled": True, "onboarding_open": available,
+                         "strategies": strategies})
