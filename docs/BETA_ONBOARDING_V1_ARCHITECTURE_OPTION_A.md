@@ -1,0 +1,209 @@
+# Beta Onboarding V1 — Option A Target Architecture (Windows-native RDS/RemoteApp host pool)
+
+> **Status: DESIGN FOR APPROVAL (2026-07-20). No procurement. No architecture-dependent implementation
+> has started.** This is the concrete Option-A design Nuno requested, for approval **before** any licence
+> or server purchase and **before** Phase 2. Onboarding stays CLOSED until Phase 4 isolation gates pass.
+> Companion: [`BETA_ONBOARDING_V1_PROGRAMME.md`](BETA_ONBOARDING_V1_PROGRAMME.md) (blocker analysis + phases).
+
+## Design principles (from Nuno's authorisation)
+
+Native Windows Server + native MT5; properly licensed RDS; **RemoteApp** (only the user's MT5 app, never a
+shared desktop); browser access via Guacamole and/or RD Web; **one non-admin Windows identity per beta
+user**; **one isolated portable MT5 runtime per broker account**; strict 1:1 ownership mapping (GuvFX user
+↔ broker account ↔ Windows identity ↔ MT5 runtime ↔ RemoteApp ↔ Guacamole connection); **fail-closed**
+whenever an owned runtime is unavailable; horizontal scaling by adding session hosts; **≤~2 users/host**
+until proven; automated (AUTO_DEMO) terminals keep running when the user disconnects; **no shared
+Administrator desktop**; **no Windows containers** without a separate proof; **no Wine**. Nuno's existing
+box remains his isolated production runtime, untouched.
+
+Key enabler already in place: execution is **enqueue-only** (`ExecutionJob → ingest worker → per-runtime
+bridge`), so multi-tenancy is achieved by giving each account its own **runtime + bridge endpoint** the
+worker targets — not by rewriting execution.
+
+---
+
+## 1. Windows host roles
+
+| Role | Purpose | Beta placement |
+|---|---|---|
+| **AD Domain Controller (DC)** | Directory for per-user identities + groups; required for RDS **Per-User CAL** + RemoteApp collections | 1 small VM (dedicated) |
+| **RDS Connection Broker (RDCB)** | Routes each user to their RemoteApp/session; load-balances the host pool; reconnects to existing sessions | Co-located on the infra VM for beta |
+| **RDS Gateway (RDGW)** | Tunnels RDP over TLS/443 for external browser access (behind Guacamole / RD Web) | Co-located on the infra VM |
+| **RDS Web Access (RDWeb)** | Optional HTML5/portal RemoteApp feed | Co-located (optional) |
+| **RDS Licensing** | Activates + issues Per-User CALs | Co-located on the infra VM |
+| **RDS Session Host (RDSH)** | Runs each user's MT5 **RemoteApp** + the per-account **automated** MT5 terminals | **Pool of 2–3 hosts** |
+| **Provisioning control-plane** | Creates identities/runtimes/entitlements; start/stop/repair/remove | The existing **Ubuntu** control plane, driving the hosts over **WinRM/PowerShell (+ the GuvFX Windows agent)** |
+
+For beta, the **infra roles (DC + RDCB + RDGW + RDWeb + Licensing) collapse onto ONE Windows Server VM**
+("infra host"); the **RDSH pool is separate and horizontally scalable**. HA-splitting the infra roles is a
+post-beta concern (see §17).
+
+## 2. Number & initial specification of hosts
+
+| Host | Count (beta) | Spec (initial) | Notes |
+|---|---|---|---|
+| Infra (DC+RDCB+RDGW+RDWeb+Licensing) | 1 | 4 vCPU / 8–16 GB / 80 GB SSD, Windows Server 2022/2025 | Not HA at beta; snapshot/backup daily |
+| RDSH session host | **2–3** | 4 vCPU / 16 GB / 80–120 GB SSD, Windows Server 2022/2025 | ≤~2 interactive users/host initially |
+| (existing) Nuno production box | 1 | unchanged | **Untouched**; not part of the pool |
+
+5 beta users ÷ ~2/host = **3 RDSH** for headroom + one-host-failure tolerance; start with **2 RDSH** and
+add the 3rd once density/isolation is proven. Total **new** Windows VMs at beta: **3–4**.
+
+## 3. Session-host capacity assumptions
+
+- **≤~2 interactive beta users per RDSH** until compatibility, resource use, isolation and concurrent
+  operation are production-proven.
+- Each user: **up to 10 broker accounts**, but **not all interactive at once**. Distinguish:
+  - **Automated terminals** (AUTO_DEMO) — one lightweight MT5 process per *active* account, running
+    headless under the user identity, **kept alive across RemoteApp disconnects** (see §8).
+  - **Interactive RemoteApp** — on-demand, only while the user is viewing/trading.
+- RAM budget per RDSH (16 GB): OS/RDS ≈ 4 GB; MT5 terminal ≈ 150–300 MB each; 2 users × (say) up to ~5
+  active automated terminals ≈ 1.5–3 GB; interactive RemoteApp overhead ≈ 200–400 MB/session → **≈ 16 GB
+  comfortably covers 2 users**. CPU: MT5 is light except tick bursts. **Density is a Phase-4 proof, not an
+  assumption** — raise only with evidence.
+
+## 4. RDS Connection Broker, Gateway, Web Access, Licensing
+
+- **Connection Broker:** publishes a **RemoteApp collection** ("GuvFX-MT5"), routes each user to a host
+  running their session, reconnects to an existing session (so the interactive view re-attaches, while the
+  automated terminal has never stopped), and load-balances new sessions across the pool.
+- **Gateway:** RDP-over-HTTPS(443) with a TLS cert (same Let's Encrypt/Traefik estate or a dedicated cert);
+  the only externally reachable RDS surface. Session hosts are **not** publicly exposed.
+- **Web Access:** optional RemoteApp portal; for GuvFX we prefer the in-app Guacamole experience (§5).
+- **Licensing:** **Per-User RDS CALs** (requires AD). Licensing server activated against Microsoft; CALs
+  tracked per beta user. (Per-Device CALs are the workgroup alternative but don't fit per-user identity.)
+
+## 5. Guacamole vs RD Web vs both
+
+**Recommendation: Guacamole is the external browser gateway; RD Web is an optional admin/fallback path.**
+Guacamole is already deployed + GuvFX-integrated (branded in-app UX, per-user connection entitlement mapped
+from GuvFX). Each user's Guacamole **RDP connection** is configured with the **`remote-app`** parameter to
+launch **only** their MT5 RemoteApp (not a desktop), using **their** Windows identity, routed through the
+**RD Gateway**. GuvFX remains the source of truth for entitlement; RD Web stays available for operator use.
+
+## 6. Per-user Windows identity lifecycle
+
+- **Create** (on beta provisioning): AD user **`guvfx_u_<uid>`**, **non-administrative**, member of
+  `GuvFX-BetaUsers` (RemoteApp collection access only), **denied** full interactive desktop logon beyond
+  RemoteApp; strong random password generated by the provisioner and **Fernet-encrypted** in GuvFX.
+- **Enable / Disable (suspend):** toggle account + collection membership (fail-closed: disabled → no
+  launch). **Remove (offboard):** revoke entitlements, delete runtimes, delete the AD user.
+- Every transition is driven by the provisioning control-plane (AD cmdlets over WinRM) and **audited**.
+
+## 7. Per-account portable MT5 runtime layout
+
+- Per broker account: a **portable MT5 directory** on the RDSH, e.g.
+  `D:\GuvFX\users\<uid>\accounts\<account_id>\mt5\` (portable mode → isolated config/logs/history/EA),
+  a distinct `terminal64.exe` instance. **NTFS-ACL'd to only `guvfx_u_<uid>` (+ SYSTEM/admin)** so no other
+  user can read it — this eliminates the shared-handoff-dir credential exposure (C16).
+- The **automated** terminal for this account runs under `guvfx_u_<uid>` as a background/service-like
+  process (per-user scheduled task / logon task), independent of any interactive RemoteApp session.
+
+## 8. Runtime provisioning, start, stop, repair, removal (idempotent state machine)
+
+- **Provision:** create dir → copy portable MT5 → write per-account config (server, login) → inject
+  credential (§9) → register the automated-terminal task. Emit a durable `ProvisioningState` record at each
+  step; **never swallow exceptions** — failures are recorded + surfaced (Phase-0 item).
+- **Start:** launch the automated terminal (headless) + enable RemoteApp.
+- **Stop:** stop the automated-terminal task (interactive RemoteApp can close independently).
+- **Repair:** re-materialize idempotently (re-copy/reconfig/re-inject) + restart.
+- **Remove:** stop → delete dir → revoke RemoteApp + Guacamole entitlement.
+- Driven by the existing `terminal_provisioning` app extended with a real Windows-agent/WinRM materialiser
+  (replacing today's manual `Provision-GuvfxAccount.ps1`), keyed to the **AUTOMATED vs INTERACTIVE**
+  distinction so automated terminals survive disconnects.
+
+## 9. Credential injection & encryption boundaries
+
+- Broker credentials: **Fernet-encrypted at rest** in the GuvFX DB (already true, `GUVFX_FERNET_KEY`).
+- Decrypted **only at injection time**, transported to the RDSH over the **authenticated agent/WinRM
+  channel (TLS)**, written **only** into the per-account runtime dir ACL'd to `guvfx_u_<uid>`, and kept to
+  the minimum needed for MT5 auto-login. **No shared handoff directory** (kills C16).
+- The Windows identity password is generated by the provisioner and Fernet-stored; used to build the
+  per-user Guacamole/RemoteApp connection. **Encryption boundary:** plaintext exists only transiently inside
+  the isolated runtime; never in a shared path, never in logs.
+
+## 10. Guacamole / RemoteApp entitlement mapping
+
+One **Guacamole connection per (user, account-runtime)**, configured with the user's Windows identity +
+the MT5 **RemoteApp** + the RD Gateway, and **granted only to that GuvFX user** (Guac permission).
+GuvFX is the source of truth: provisioning **creates** the connection + grant; offboarding **revokes** it.
+Strict 1:1 chain enforced and audited: **GuvFX user ↔ broker account ↔ `guvfx_u_<uid>` ↔ MT5 runtime ↔
+RemoteApp resource ↔ Guacamole connection**. No shared connection object ever.
+
+## 11. Broker-account-to-runtime routing
+
+Each `TradingAccount` → its **own `Mt5Instance`/runtime** on a specific RDSH (per-account). The now
+fail-closed `_get_user_mt5_instance` (Phase 0) resolves to the **user's own leased per-account runtime**, or
+**None** (clear message) — never a shared/other-user box. The ingest worker/bridge targets **that** runtime's
+endpoint for the account's orders.
+
+## 12. Strategy-assignment-to-runtime routing
+
+The AUTO_DEMO `StrategyAssignment` (per account) → the account's runtime. The Phase-3 auto-router **fan-out**
+(C10) resolves **all** routable assignments bound to a source and plans **one execution per account**, each
+placed on that account's runtime, sized by the **per-account lot override** (C11, Phase 0). No global
+single-target ambiguity; one user's arming/failure never affects another's.
+
+## 13. Protection against cross-tenant access (defence in depth)
+
+1. **Windows:** non-admin per-user identities; **RemoteApp-only** (no shared desktop); **NTFS ACLs** per
+   runtime dir; cross-user deny.
+2. **RDS:** Connection Broker routes each user only to their RemoteApp collection.
+3. **Guacamole:** per-user connection grants; no shared connection.
+4. **GuvFX app:** fail-closed instance resolution (C2/C17/C19 ✓ Phase 0); user-scoped querysets (✓) +
+   tenant-scoped alerts/health/ops (✓ Phase 0).
+5. **Network:** RD Gateway TLS-only; session hosts not publicly exposed.
+
+## 14. Host failure & account recovery
+
+Automated terminals are **per-account tasks** with **durable provisioning state** → on RDSH failure,
+re-materialise the account's runtime on another pool host (idempotent) and re-point routing; the Connection
+Broker handles interactive reconnect. No user data loss (positions are broker-side; the runtime is
+rebuildable from config + Fernet creds). The provisioning/GuvFX DB is backed up (ties into the estate's
+backup gap — see KNOWN_ISSUES/NEXT).
+
+## 15. Observability & admin support
+
+- Per-runtime health (terminal running / logged-in / last heartbeat / last execution) → the **Account
+  Status panel** (Phase 0, truthful states incl. `NOT PROVISIONED` / `BLOCKED`) + **user-scoped admin**
+  visibility of all users/accounts/runtimes/entitlements/failures (Phase 0) — without cross-tenant leakage
+  in user views (✓ Phase 0 scoping).
+- Provisioning **state + failure records** (Phase 0) make onboarding debuggable; raw agent-error strings are
+  no longer surfaced to users (Phase 0).
+
+## 16. Expected beta infrastructure & licensing cost (BoM — estimate, for approval)
+
+> Indicative ranges for Nuno's approval; **not a purchase**. Two licensing models shown. Exact quotes depend
+> on the chosen cloud/provider and whether licences are **rented (SPLA, monthly)** or **owned (one-off CAL)**.
+
+| Item | Qty (beta) | Model A — Cloud/SPLA (monthly) | Model B — Owned licences (one-off) |
+|---|---|---|---|
+| Windows Server VM — infra (DC+RDS roles) | 1 | ≈ $80–150/mo (incl. Windows via SPLA) | Windows Server Std ≈ $900 one-off + VM host |
+| Windows Server VM — RDSH session host | 2–3 | ≈ $90–160/mo each | Windows Server Std ≈ $900 each one-off + VM host |
+| **RDS Per-User CAL / SAL** | 5 | ≈ **$4–7 / user / mo** (RDS SAL via SPLA) | RDS User CAL ≈ **$140–160 one-off / user** |
+| TLS cert / Gateway | 1 | included (Let's Encrypt) or ≈ $0–15/mo | — |
+| Backups / snapshots | — | ≈ $10–30/mo | — |
+| **Indicative beta total** | | **≈ $350–700 / month** | **≈ $3,500–5,500 one-off + VM hosting** |
+
+**Recommendation: start on the SPLA/monthly model** (elastic, no upfront CAL outlay, matches "add hosts to
+scale"); revisit owned CALs once beta density + retention are proven. **No purchase until Nuno approves this
+BoM.**
+
+## 17. Scaling path beyond five users
+
+- **Add RDSH** to the pool (each ~2 users initially; raise density once §3 is proven); the Connection Broker
+  load-balances automatically.
+- **CALs/SALs** scale per user (SPLA monthly is elastic).
+- The consolidated **infra VM** (DC + CB + GW + Licensing) serves well beyond beta; at ~scale, **split roles
+  and add HA** (redundant CB, GW farm, secondary DC, dedicated Licensing).
+- App-layer fan-out (per-account routing/sizing, Phase 3) is already O(N accounts) and host-agnostic, so the
+  ceiling is host capacity + RDS infra HA, not the GuvFX code.
+
+---
+
+## Approval gate
+
+**Nuno approves this design + the BoM/cost model → then Phase 1 procures (per approval) and Phase 2 begins.**
+Onboarding remains CLOSED until Phase 4 proves: per-user terminal isolation, per-account runtime isolation,
+user-scoped routing + sizing, user-scoped Guacamole/RemoteApp, no shared AUTO_DEMO routing ambiguity, no
+cross-tenant operational data, load + adversarial isolation tests pass, and existing production is unaffected.

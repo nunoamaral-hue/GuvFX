@@ -3,10 +3,17 @@
 > **Status: ARCHITECTURE APPROVED (2026-07-20) — Option A (Multiple Windows VPSs). Phase 0 IN PROGRESS.
 > Customer onboarding stays CLOSED until Phase 2/3 isolation is built + verified.**
 >
-> **Decision (Nuno, 2026-07-20):** target architecture = **Option A — Multiple Windows VPSs** (≈1 per 2
-> users, native MT5, per-user provisioning automation). The Wine spike (Option C) is NOT taken. Nuno's
-> existing single Windows box remains his isolated production runtime, untouched. **Phase 0 approved** —
-> ship the additive, non-architecture-gated fixes now with onboarding kept closed.
+> **Decision (Nuno, 2026-07-20):** target architecture = **Option A — Windows-native RDS/RemoteApp host
+> pool** (NOT 1 VPS/user). Native Windows Server + native MT5; properly licensed RDS; **RemoteApp** (only
+> the user's MT5 app, never a shared desktop); browser access via Guacamole and/or RD Web; one non-admin
+> Windows identity per beta user; one isolated portable MT5 runtime per broker account; strict 1:1 ownership
+> mapping; fail-closed; horizontal scaling by adding session hosts; **≤~2 users/host** until proven;
+> automated terminals keep running across RemoteApp disconnects; RDS licensing/CALs in the cost model; **no
+> Windows containers** without a separate proof; **no Wine**. Detailed 17-point design + BoM →
+> [`BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md`](BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md) (Phase 1;
+> Nuno approves before any procurement). Nuno's existing box stays his isolated production runtime,
+> untouched. **Phase 0 approved** — additive fixes now; onboarding stays CLOSED behind a server-side gate;
+> **no email-verification bypass** (nothing in Phase 0 makes external onboarding reachable).
 >
 > **Original proposal below (PROPOSAL — awaiting Nuno's architecture approval; superseded by the decision above).**
 > Source of truth for the findings: read-only investigation `wf_e3b038d9-1e7` (8 parallel agents) +
