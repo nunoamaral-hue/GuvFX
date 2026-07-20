@@ -132,3 +132,80 @@ class SessionAssignment(models.Model):
 
     def __str__(self):
         return f"route acct={self.trading_account_id} -> {self.windows_username} [{self.readiness} enabled={self.enabled}]"
+
+
+class RuntimeState(models.TextChoices):
+    """Option A §8 provisioning state machine (durable). See BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A."""
+    NOT_PROVISIONED = "NOT_PROVISIONED", "Not provisioned"
+    QUEUED = "QUEUED", "Queued"
+    BLOCKED = "BLOCKED", "Blocked"
+    PROVISIONING = "PROVISIONING", "Provisioning"
+    STARTING = "STARTING", "Starting"
+    AUTHENTICATING = "AUTHENTICATING", "Authenticating"
+    RUNNING = "RUNNING", "Running"
+    DEGRADED = "DEGRADED", "Degraded"
+    REPAIRING = "REPAIRING", "Repairing"
+    STOPPING = "STOPPING", "Stopping"
+    STOPPED = "STOPPED", "Stopped"
+    DEPROVISIONING = "DEPROVISIONING", "Deprovisioning"
+    REMOVED = "REMOVED", "Removed"
+    FAILED = "FAILED", "Failed"
+
+
+class AccountRuntime(models.Model):
+    """GFX-BETA-PHASE0 Increment 2 — durable per-account provisioning-state machine (Option A §8).
+
+    **1:1 owned by TradingAccount** (the MT5 runtime is owned by the broker account, never by a
+    strategy or a session). The user-facing state is derived from THIS durable record, NEVER inferred
+    solely from a transient live process/health check.
+
+    Phase-0 boundary: this records STATE only. It does NOT perform provisioning (that is the
+    architecture-dependent Phase-2 provisioner). Until that is deployed every runtime stays
+    ``NOT_PROVISIONED`` — so nothing may imply an MT5 terminal exists or is connected.
+    """
+
+    trading_account = models.OneToOneField(
+        "trading.TradingAccount", on_delete=models.CASCADE, related_name="runtime")
+    state = models.CharField(max_length=20, choices=RuntimeState.choices,
+                             default=RuntimeState.NOT_PROVISIONED)
+    attempt = models.PositiveIntegerField(default=0)
+    last_error = models.TextField(blank=True, default="")  # sanitised, user-safe (no raw agent strings)
+    next_retry_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"AccountRuntime(acct={self.trading_account_id}, {self.state})"
+
+
+class RuntimeEvent(models.Model):
+    """Immutable, append-only, chronological provisioning evidence for an ``AccountRuntime``.
+
+    NOTE: distinct from ``strategies.StrategyRuntimeEvent`` — different app/table, no collision.
+    Content-immutable: updates are refused at the app layer (``save()``) AND at the DB layer (a
+    BEFORE-UPDATE trigger, migration 0005). Direct ``delete()`` is refused at the app layer; rows are
+    removable only by CASCADE when the owning account/runtime is deleted (a lifecycle op, not a rewrite).
+    """
+
+    runtime = models.ForeignKey(AccountRuntime, on_delete=models.CASCADE, related_name="events")
+    event_type = models.CharField(max_length=32, default="TRANSITION")  # TRANSITION / RETRY / FAILURE
+    from_state = models.CharField(max_length=20, blank=True, default="")
+    to_state = models.CharField(max_length=20, blank=True, default="")
+    reason_code = models.CharField(max_length=64, blank=True, default="")
+    detail = models.TextField(blank=True, default="")  # sanitised
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]  # chronological
+        indexes = [models.Index(fields=["runtime", "id"])]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("RuntimeEvent is append-only/immutable; updates are not allowed")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("RuntimeEvent is append-only/immutable; deletes are not allowed")
+
+    def __str__(self):
+        return f"RuntimeEvent(rt={self.runtime_id}, {self.from_state}->{self.to_state})"

@@ -8,6 +8,7 @@ This service is orchestration-only:
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import pyotp
@@ -28,6 +29,8 @@ from core.audit import (
 from execution.models import TerminalNode
 from strategies.models import StrategyAssignment
 from trading.crypto import decrypt_password, encrypt_password
+
+logger = logging.getLogger(__name__)
 from trading.models import TradingAccount
 
 from .models import (
@@ -352,12 +355,23 @@ def mark_account_connected(user, request=None) -> UserOnboardingState:
     state.save(update_fields=["account_connected", "updated_at"])
     log_onboarding_account_connected(request, user.id, account.id)
 
-    # Auto-provision terminal access for the connected account
+    # Auto-provision terminal access for the connected account.
+    # GFX-BETA-PHASE0 Increment 2: do NOT swallow provisioning failures. Record them durably on the
+    # account's runtime state machine (an immutable RuntimeEvent + FAILED state) so the Account Status
+    # panel shows a truthful FAILED instead of silence. Still non-blocking — terminal access is a
+    # convenience, not an onboarding gate — but the failure is now evidence, not a swallowed exception.
+    from terminal_provisioning.runtime_state import get_or_create_runtime, record_transition
+    from terminal_provisioning.models import RuntimeState
+    runtime = get_or_create_runtime(account)  # durable 1:1 record (stays NOT_PROVISIONED here)
     try:
         from mt5.services.terminal_provisioning_service import provision_terminal_for_account
         provision_terminal_for_account(user, account)
-    except Exception:
-        pass  # Non-blocking — terminal access is a convenience, not a gate
+    except Exception as exc:  # noqa: BLE001 - recorded durably, not swallowed
+        record_transition(
+            runtime, RuntimeState.FAILED, event_type="FAILURE",
+            reason_code="provision_terminal_error", detail=str(exc))
+        logger.exception(
+            "onboarding: terminal provisioning failed for account=%s (recorded on runtime)", account.id)
 
     _check_completion(state)
     if state.onboarding_completed:
