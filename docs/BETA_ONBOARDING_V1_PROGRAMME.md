@@ -45,12 +45,15 @@ Increment 5 deploy record (2026-07-20): image `guvfx-prod-guvfx-backend:latest` 
 = 200, `guvfx.com/` = 200, `/api/` = 401 (auth-gated, not 502), `/api/admin/beta-estate/` = 401 (route live, not 404),
 gate still closed. Backend suite: 934 passed.
 
-**Standing next gate (Nuno):** approve the **final procurement package** in
-[`BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md` §D](BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md) — the decision-ready
-consolidation of BoM / capacity-justified specs / RDS licensing / topology / OPEX / scaling / implementation sequence,
-built on that doc's detailed capacity planning (§A), operational runbooks (§B) and target SLOs (§C), all adversarially
-reviewed — **before** any Phase-1/2 architecture-dependent or procurement work. No such work has started. Base architecture:
-[`BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md`](BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md).
+**Phase 2 ARCHITECTURE ACCEPTED (Nuno, 2026-07-20):** Option A is the target; Phase-2 **non-procurement**
+software planning/implementation authorised. **Standing next gate (Nuno):** approve the **supplier-backed procurement
+package** in [`BETA_ONBOARDING_V1_PROCUREMENT_PACKAGE.md` §5/§7](BETA_ONBOARDING_V1_PROCUREMENT_PACKAGE.md) — real
+sourced prices across 6 routes, licensing compliance, the refined 5-dimension capacity model + concurrently-hosted
+broker-account cap, coexistence/CB/SPOF/backup analyses, the Phase-2 implementation plan, and the **exact procurement
+action** (recommended: AWS EC2 + AWS EC2 RDS SAL $10/user/mo verified; ~$915–955/mo on-demand → ~$450–630/mo reserved;
+RDCB deferred; obtain binding AWS quote + one SPLA-hoster RDS SAL benchmark first) — **before** any procurement or paid
+infrastructure. No procurement has started. Estimate-level baseline: [`…OPERATIONS_CAPACITY_SLO.md` §D](BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md);
+base architecture: [`…ARCHITECTURE_OPTION_A.md`](BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md).
 
 ## 0. Verdict
 
