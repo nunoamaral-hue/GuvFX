@@ -37,6 +37,16 @@ class RegisterSerializer(serializers.ModelSerializer):
         user = User(**validated_data)
         user.set_password(password)
         user.save()
+        # GFX-BETA-PHASE0 Increment 4 — new users automatically become beta (payment-bypassed) in the
+        # data model. This grants config capabilities only; it does NOT open onboarding
+        # (beta_onboarding_open() stays False) and cannot make trading reachable.
+        try:
+            from billing.beta import grant_beta_entitlement
+            grant_beta_entitlement(user)
+        except Exception:  # pragma: no cover - entitlement is best-effort, never blocks registration
+            import logging
+            logging.getLogger(__name__).exception(
+                "register: beta entitlement grant failed for user=%s", user.id)
         return user
 
 
