@@ -45,15 +45,19 @@ Increment 5 deploy record (2026-07-20): image `guvfx-prod-guvfx-backend:latest` 
 = 200, `guvfx.com/` = 200, `/api/` = 401 (auth-gated, not 502), `/api/admin/beta-estate/` = 401 (route live, not 404),
 gate still closed. Backend suite: 934 passed.
 
-**Phase 2 ARCHITECTURE ACCEPTED (Nuno, 2026-07-20):** Option A is the target; Phase-2 **non-procurement**
-software planning/implementation authorised. **Standing next gate (Nuno):** approve the **supplier-backed procurement
-package** in [`BETA_ONBOARDING_V1_PROCUREMENT_PACKAGE.md` §5/§7](BETA_ONBOARDING_V1_PROCUREMENT_PACKAGE.md) — real
-sourced prices across 6 routes, licensing compliance, the refined 5-dimension capacity model + concurrently-hosted
-broker-account cap, coexistence/CB/SPOF/backup analyses, the Phase-2 implementation plan, and the **exact procurement
-action** (recommended: AWS EC2 + AWS EC2 RDS SAL $10/user/mo verified; ~$915–955/mo on-demand → ~$450–630/mo reserved;
-RDCB deferred; obtain binding AWS quote + one SPLA-hoster RDS SAL benchmark first) — **before** any procurement or paid
-infrastructure. No procurement has started. Estimate-level baseline: [`…OPERATIONS_CAPACITY_SLO.md` §D](BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md);
-base architecture: [`…ARCHITECTURE_OPTION_A.md`](BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md).
+**BETA REVISED TO NON-INTERACTIVE AUTOMATION (Nuno, 2026-07-20):** customer-facing MT5 terminal access
+(RDP/RemoteApp/Guacamole-to-Windows/RDS CALs-SALs) is **removed from beta scope** — a future separately-licensed
+feature. Beta users interact only via the web app; each hosted broker account keeps a **headless** native-Windows
+portable MT5 runtime + bridge. **Standing next gate (Nuno):** approve the **revised non-interactive package** in
+[`BETA_ONBOARDING_V1_NONINTERACTIVE_AUTOMATION.md` §10](BETA_ONBOARDING_V1_NONINTERACTIVE_AUTOMATION.md) — revised
+headless topology, cheap plain-Windows-VM comparison, **exact cost ≈ €52.90/mo (~$57/mo) incl VAT for 5 per-user VMs
+on Contabo (24-mo term), $0 RDS licensing** (vs the prior ~$915/mo RDS design), startup/session design, the **12
+technical proofs** + proof/soak criteria, and the non-procurement implementation sequence — **before** any procurement
+or paid infrastructure. Two decisions embedded: per-user VMs vs single shared host; Contabo 24-mo-term vs monthly.
+No procurement has started; onboarding stays CLOSED. **SUPERSEDED (now a future feature):** the RDS/RemoteApp
+[`…PROCUREMENT_PACKAGE.md`](BETA_ONBOARDING_V1_PROCUREMENT_PACKAGE.md); baseline capacity
+[`…OPERATIONS_CAPACITY_SLO.md`](BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md); base architecture
+[`…ARCHITECTURE_OPTION_A.md`](BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md).
 
 ## 0. Verdict
 

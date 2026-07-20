@@ -1,5 +1,12 @@
 # GFX Beta Onboarding V1 — Phase 2 Procurement & Planning Package (for approval)
 
+> **⚠️ SUPERSEDED FOR BETA (2026-07-20).** Nuno revised the beta to REMOVE all customer-facing MT5 terminal
+> access — so the RDS/RemoteApp/Guacamole-to-Windows/CAL-SAL design priced below is **no longer the beta
+> topology**; it is now a **future, separately-licensed feature**. The current beta package is
+> [`BETA_ONBOARDING_V1_NONINTERACTIVE_AUTOMATION.md`](BETA_ONBOARDING_V1_NONINTERACTIVE_AUTOMATION.md) —
+> a headless no-RDS design at **≈ $50–60/mo** (vs the ~$915/mo here). This document is retained as the
+> reference for adding interactive access later.
+
 > **Status: FOR APPROVAL — this is PLANNING, not procurement authority.** Nuno accepted Option A
 > (Windows-native RDS/RemoteApp) as the Phase-2 target architecture on 2026-07-20 and authorised Phase-2
 > **non-procurement software planning/implementation**. This document is the supplier-backed procurement
