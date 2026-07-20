@@ -45,9 +45,12 @@ Increment 5 deploy record (2026-07-20): image `guvfx-prod-guvfx-backend:latest` 
 = 200, `guvfx.com/` = 200, `/api/` = 401 (auth-gated, not 502), `/api/admin/beta-estate/` = 401 (route live, not 404),
 gate still closed. Backend suite: 934 passed.
 
-**Standing next gate (Nuno):** approve the Option A Bill of Materials / topology / RDS licensing / cost / implementation
-sequence in [`BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md`](BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md) **before**
-any Phase-1/2 architecture-dependent or procurement work. No such work has started.
+**Standing next gate (Nuno):** approve the **final procurement package** in
+[`BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md` §D](BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md) — the decision-ready
+consolidation of BoM / capacity-justified specs / RDS licensing / topology / OPEX / scaling / implementation sequence,
+built on that doc's detailed capacity planning (§A), operational runbooks (§B) and target SLOs (§C), all adversarially
+reviewed — **before** any Phase-1/2 architecture-dependent or procurement work. No such work has started. Base architecture:
+[`BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md`](BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md).
 
 ## 0. Verdict
 
