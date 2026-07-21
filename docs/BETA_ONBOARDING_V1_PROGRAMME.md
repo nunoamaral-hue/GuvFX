@@ -59,6 +59,36 @@ No procurement has started; onboarding stays CLOSED. **SUPERSEDED (now a future 
 [`…OPERATIONS_CAPACITY_SLO.md`](BETA_ONBOARDING_V1_OPERATIONS_CAPACITY_SLO.md); base architecture
 [`…ARCHITECTURE_OPTION_A.md`](BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md).
 
+## GFX-BETA-HEADLESS — co-hosted vertical-slice execution log (2026-07-21)
+
+Feasibility resolved (`BETA_HEADLESS_WSA_FEASIBILITY.md`): the existing box's runtime-level isolation was
+experimentally proven (6 portable MT5 runtimes coexist in one autologon session ~137 MB each, crash-isolated,
+Nuno's terminal + bridge :8788 untouched). **Nuno accepted Option A: co-host beta in the existing Administrator
+autologon Session 1** with per-account process/NTFS/bridge/credential isolation (20 compensating controls; no
+RDS, no customer terminal). Strategy = **vertical slice** (prove one full customer journey before scaling to 5).
+All increments additive, fail-closed, gates OFF, Nuno untouched; each = tests + adversarial review + backend-only
+deploy + post-deploy invariant verification.
+
+| # | PR | Increment | Migration | Prod img / rollback tag |
+|---|----|-----------|-----------|-------------------------|
+| 1 | #160 | `terminal_provisioning` runtime ownership + atomic capacity (`BetaCapacityLock` 5-global/1-per-user; `BETA_RUNTIMES_ENABLED` kill switch default OFF; cohort excludes PRODUCTION) | terminal_provisioning 0006 | `971740a1` |
+| 2 | #161 | Provisioning driver (`ProvisioningJob` queue; single-flight lease; persist-then-act idempotent; verify-before-RUNNING) + `Provision-BetaRuntime.ps1` (Session-1 Interactive task) | terminal_provisioning 0007 | `bcaae0b9` |
+| 3 | #162 | Immutable Provisioning Verification Report (atomic with verified RUNNING) + **real single-runtime box proof** (pid 13020, Session 1) | terminal_provisioning 0008 | `16b6b609` |
+| 4 | #163 | **Broker-INDEPENDENT provisioning** (`PROVISIONING_REQUIRE_BROKER_LOGIN` flag default OFF; report `broker_login_verified` = platform determination, not box self-report) + **provider-driven broker-validation abstraction** (`trading/brokers/`, MT5 first provider, fail-closed in reservation) | none | `7967c786` / `rollback-preBetaBrokerIndep` |
+
+**Broker-INDEPENDENT journey now complete end-to-end** (register → broker record [validated via the provider
+abstraction] → ProvisioningJob → runtime allocation → MT5 launch [Session 1] → process/session verify → verified
+RUNNING + durable Verification Report with `broker_login_verified=False`) — **with no broker connectivity**.
+Increment 4: 996 tests; two adversarial-review rounds (MUST_FIX validation-outside-lock + SHOULD_FIX
+broker_login_verified-self-report both fixed, 2 NITs applied). Docs: STATUS/NEXT via PR #164.
+
+**Remaining first-slice wiring (broker-independent):** strategy assignment → 0.01 per-assignment sizing →
+AUTO_DEMO-ready → truthful Account Status + Dashboard for a beta runtime.
+**Deferred — broker-login verification stage:** blocked on Nuno providing a **separate disposable demo broker
+account** (not production / existing demo); then add a real MT5 `verify_login` on the broker abstraction, flip
+`PROVISIONING_REQUIRE_BROKER_LOGIN=1` for beta, and prove RUNNING with `broker_login_verified=True` + identity
+match (control 8). Onboarding stays CLOSED; no procurement without Nuno's approval.
+
 ## 0. Verdict
 
 **GuvFX cannot onboard external beta users today, and must not, until per-user isolation exists.**
