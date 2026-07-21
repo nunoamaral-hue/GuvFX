@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
@@ -51,9 +50,9 @@ export function StrategyAssignmentStep({ state, onComplete }: Props) {
       </h2>
       <p style={{ color: "#b7c5dd", fontSize: "0.9rem", marginBottom: "1rem", lineHeight: 1.6 }}>
         Create and assign a strategy to your trading account. Visit the{" "}
-        <Link href="/strategies" style={{ color: "#4ab3ff", textDecoration: "none" }}>
+        <a href="/strategies" style={{ color: "#4ab3ff", textDecoration: "none" }}>
           Strategies
-        </Link>{" "}
+        </a>{" "}
         page to create a strategy and assign it to your account, then return here to confirm.
       </p>
 
