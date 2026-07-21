@@ -305,3 +305,49 @@ class ProvisioningJob(models.Model):
 
     def __str__(self):
         return f"ProvisioningJob(rt={self.runtime_id}, {self.op}, {self.status})"
+
+
+class ProvisioningVerificationReport(models.Model):
+    """GFX-BETA-HEADLESS Increment 3 — durable, immutable evidence that ONE runtime was provisioned and
+    verified end-to-end. Generated the moment a BETA runtime reaches a verified RUNNING state; it is the
+    audit artefact the milestone requires (runtime identity, ownership, broker identity, process/session
+    identity, provisioning duration, heartbeat, and the raw verification evidence). Append-only."""
+
+    runtime = models.ForeignKey(AccountRuntime, on_delete=models.CASCADE, related_name="verification_reports")
+    # ── Runtime identity ──
+    runtime_uuid = models.UUIDField()
+    runtime_root = models.CharField(max_length=255, blank=True, default="")
+    bridge_identity = models.CharField(max_length=64, blank=True, default="")
+    # ── Ownership ──
+    owner_user_id = models.IntegerField(null=True, blank=True)
+    owner_email = models.CharField(max_length=254, blank=True, default="")
+    trading_account_id = models.IntegerField(null=True, blank=True)
+    # ── Broker identity (verified) ──
+    broker_login = models.CharField(max_length=64, blank=True, default="")
+    broker_server = models.CharField(max_length=160, blank=True, default="")
+    broker_login_verified = models.BooleanField(default=False)  # False until a real login is confirmed
+    # ── Process / session identity ──
+    process_pid = models.IntegerField(null=True, blank=True)
+    windows_session = models.IntegerField(null=True, blank=True)
+    # ── Timing / liveness ──
+    provisioning_duration_ms = models.IntegerField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+    # ── Overall + raw evidence ──
+    verified = models.BooleanField(default=False)
+    evidence = models.JSONField(default=dict)  # raw verify payload + journal snippet (no secrets)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        indexes = [models.Index(fields=["runtime", "id"])]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("ProvisioningVerificationReport is append-only/immutable")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("ProvisioningVerificationReport is append-only; deletes are not allowed")
+
+    def __str__(self):
+        return f"VerificationReport(rt={self.runtime_id}, {self.runtime_uuid}, verified={self.verified})"
