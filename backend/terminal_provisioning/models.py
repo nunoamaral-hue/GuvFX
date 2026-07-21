@@ -269,3 +269,39 @@ class BetaCapacityLock(models.Model):
 
     def __str__(self):
         return "BetaCapacityLock(singleton)"
+
+
+class ProvisioningJob(models.Model):
+    """GFX-BETA-HEADLESS Increment 2 — a durable, leased work item that drives one provisioning op on
+    a BETA ``AccountRuntime``. The queue records intent; the driver (``provisioner.py``) walks the
+    ``AccountRuntime`` state machine one persist-then-act step at a time. Enqueue-only: the backend
+    creates jobs; a worker claims + advances them. Idempotent — a re-claimed job resumes from the
+    runtime's durable state, never re-runs a completed side-effect, and never places an order."""
+
+    class Op(models.TextChoices):
+        PROVISION = "PROVISION", "Provision"       # materialise → configure → start → verify → RUNNING
+        START = "START", "Start"                   # re-launch a STOPPED runtime
+        STOP = "STOP", "Stop"
+        DEPROVISION = "DEPROVISION", "Deprovision"  # tear down + remove
+
+    class Status(models.TextChoices):
+        QUEUED = "QUEUED", "Queued"
+        RUNNING = "RUNNING", "Running"     # a worker holds the lease and is advancing it
+        DONE = "DONE", "Done"
+        FAILED = "FAILED", "Failed"
+
+    runtime = models.ForeignKey(AccountRuntime, on_delete=models.CASCADE, related_name="provisioning_jobs")
+    op = models.CharField(max_length=16, choices=Op.choices)
+    status = models.CharField(max_length=8, choices=Status.choices, default=Status.QUEUED, db_index=True)
+    attempt = models.PositiveIntegerField(default=0)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=64, blank=True, default="")  # sanitised code only
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["status", "id"])]
+
+    def __str__(self):
+        return f"ProvisioningJob(rt={self.runtime_id}, {self.op}, {self.status})"
