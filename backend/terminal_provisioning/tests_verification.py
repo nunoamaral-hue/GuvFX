@@ -23,8 +23,15 @@ def _acct(n=1):
 
 @ENABLED
 class VerificationReportTests(TestCase):
+    @override_settings(PROVISIONING_REQUIRE_BROKER_LOGIN=True)
     def test_report_generated_on_verified_running_with_full_evidence(self):
+        from trading.models import BrokerServer
         acct = _acct(1)
+        # A normalised broker_server so the report's broker_server field reflects the platform-verified
+        # binding (not the box's self-report).
+        acct.broker_server = BrokerServer.objects.create(
+            broker_display_name="Demo", server_name="Demo-Srv")
+        acct.save(update_fields=["broker_server"])
         rt = cap.get_or_create_beta_runtime(acct)
         # verify() payload ALSO smuggles secret-looking keys — the allowlist must strip them.
         p = FakeProvisioner(verify_result={"running": True, "logged_in": True,
@@ -68,16 +75,31 @@ class VerificationReportTests(TestCase):
         with self.assertRaises(ValueError):
             rep.save()
 
-    def test_no_report_when_not_verified(self):
+    @override_settings(PROVISIONING_REQUIRE_BROKER_LOGIN=True)
+    def test_no_report_when_broker_login_required_and_fails(self):
+        # In the broker-LOGIN stage (flag ON), a login failure is terminal → FAILED, no report produced.
         acct = _acct(1)
         rt = cap.get_or_create_beta_runtime(acct)
-        # broker login fails → runtime FAILED, no report produced
         p = FakeProvisioner(verify_result={"running": True, "logged_in": False,
                                             "login": None, "server": None})
         advance_provisioning_job(enqueue_op(rt, ProvisioningJob.Op.PROVISION), p)
         rt.refresh_from_db()
         self.assertEqual(rt.state, RuntimeState.FAILED)
         self.assertEqual(ProvisioningVerificationReport.objects.filter(runtime=rt).count(), 0)
+
+    def test_broker_independent_report_when_running_not_logged_in(self):
+        # Default (broker-INDEPENDENT) phase: running-but-not-logged-in reaches RUNNING and DOES produce a
+        # report, with broker_login_verified=False (the honest "process up, login not yet verified").
+        acct = _acct(1)
+        rt = cap.get_or_create_beta_runtime(acct)
+        p = FakeProvisioner(verify_result={"running": True, "logged_in": False,
+                                            "login": None, "server": None})
+        advance_provisioning_job(enqueue_op(rt, ProvisioningJob.Op.PROVISION), p)
+        rt.refresh_from_db()
+        self.assertEqual(rt.state, RuntimeState.RUNNING)
+        rep = ProvisioningVerificationReport.objects.get(runtime=rt)
+        self.assertTrue(rep.verified)
+        self.assertFalse(rep.broker_login_verified)
 
     def test_generator_refuses_production_runtime(self):
         acct = _acct(1)
@@ -86,13 +108,16 @@ class VerificationReportTests(TestCase):
         with self.assertRaises(ValueError):
             build_verification_report(prod, {"running": True, "logged_in": True})
 
-    def test_generator_refuses_when_not_running_or_not_logged_in(self):
+    def test_generator_refuses_when_not_running(self):
         acct = _acct(1)
         rt = cap.get_or_create_beta_runtime(acct)
-        with self.assertRaises(ValueError):
-            build_verification_report(rt, {"running": True, "logged_in": False})
+        # Not running → never a report (we do not fabricate evidence for a dead runtime).
         with self.assertRaises(ValueError):
             build_verification_report(rt, {"running": False, "logged_in": True})
+        # Running but not logged in → a valid broker-INDEPENDENT report (login unverified, not refused).
+        rep = build_verification_report(rt, {"running": True, "logged_in": False})
+        self.assertTrue(rep.verified)
+        self.assertFalse(rep.broker_login_verified)
 
     def test_report_is_immutable_to_delete(self):
         acct = _acct(1)

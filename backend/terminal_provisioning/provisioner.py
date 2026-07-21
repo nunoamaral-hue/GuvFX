@@ -8,8 +8,10 @@ execution). Credentials are decrypted transiently and handed to the provisioner 
 real provisioner injects over an authenticated channel — never into a command line, URL, or log
 (control 10). Nuno's PRODUCTION runtimes are refused (control 14).
 """
+import os
 from typing import Protocol
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -21,6 +23,20 @@ from .runtime_state import record_transition
 
 MAX_ATTEMPTS = 3
 LEASE_TTL_SECONDS = 300
+
+
+def _require_broker_login() -> bool:
+    """Whether provisioning must verify a live broker LOGIN before a runtime reaches RUNNING.
+
+    **DEFAULT OFF** — the broker-INDEPENDENT phase: a runtime reaches RUNNING on process/session
+    verification alone and its Verification Report records ``broker_login_verified=False``. Broker-login
+    verification is a distinct, LATER stage; flipping this ON (once a disposable demo broker account
+    exists) restores the strict identity/login fail-closed checks (control 8). Because it only ever
+    gates BETA provisioning, it can never affect Nuno's PRODUCTION runtimes."""
+    val = getattr(settings, "PROVISIONING_REQUIRE_BROKER_LOGIN", None)
+    if val is None:
+        val = os.getenv("PROVISIONING_REQUIRE_BROKER_LOGIN", "")
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
 class ProvisionStepError(Exception):
@@ -129,25 +145,37 @@ def _step(runtime, fn, reason_code):
 
 
 def _start_and_verify(rt: AccountRuntime, p: WindowsProvisioner) -> None:
-    """Shared STARTING → AUTHENTICATING → RUNNING path used by both PROVISION and START, so a restart
-    also verifies broker identity before reaching RUNNING (control 8). Resumable per state."""
+    """Shared STARTING → AUTHENTICATING → RUNNING path used by both PROVISION and START. A runtime only
+    reaches RUNNING once its process is verified up in the right session. Resumable per state.
+
+    Broker-login verification is a SEPARATE, later stage. In the broker-INDEPENDENT phase (the default;
+    ``_require_broker_login()`` False) the runtime reaches RUNNING on process verification alone and its
+    Verification Report records ``broker_login_verified=False`` — no broker connectivity is required.
+    When ``PROVISIONING_REQUIRE_BROKER_LOGIN`` is ON, the runtime must additionally be logged in to its
+    OWN assigned broker account, with an exact identity match, before RUNNING (control 8)."""
     if rt.state == RuntimeState.STARTING:
         _step(rt, lambda: p.start(rt), "start_failed")
         rt = record_transition(rt, RuntimeState.AUTHENTICATING, reason_code="started")
     if rt.state == RuntimeState.AUTHENTICATING:
         v = _step(rt, lambda: p.verify(rt), "verify_failed") or {}
-        login, server = _expected_login_server(rt)
+        # Evaluate the mode ONCE for this verification, so the RUNNING gate and the report's
+        # ``broker_login_verified`` can never disagree (no OFF→ON flip observed mid-check).
+        require_login = _require_broker_login()
+        # Process verification is ALWAYS required — a runtime is never reported RUNNING unless its
+        # terminal is actually up. (Retryable: the process may still be starting.)
         if not v.get("running"):
             raise ProvisionStepError("terminal_not_running", retryable=True)
-        if not v.get("logged_in"):
-            raise ProvisionStepError("broker_login_failed", retryable=False)
-        if str(v.get("login") or "") != login:
-            # Authenticated to the WRONG account — fail closed, do NOT run it (controls 5/8).
-            raise ProvisionStepError("broker_identity_mismatch", retryable=False)
-        # Server is verified only when we have a reliable expected value (a normalised broker_server
-        # server_name). Free-text broker_name is not the MT5 server string, so we don't hard-fail on it.
-        if server is not None and (v.get("server") or "") != server:
-            raise ProvisionStepError("broker_identity_mismatch", retryable=False)
+        if require_login:
+            login, server = _expected_login_server(rt)
+            if not v.get("logged_in"):
+                raise ProvisionStepError("broker_login_failed", retryable=False)
+            if str(v.get("login") or "") != login:
+                # Authenticated to the WRONG account — fail closed, do NOT run it (controls 5/8).
+                raise ProvisionStepError("broker_identity_mismatch", retryable=False)
+            # Server is verified only when we have a reliable expected value (a normalised broker_server
+            # server_name). Free-text broker_name is not the MT5 server string, so we don't hard-fail on it.
+            if server is not None and (v.get("server") or "") != server:
+                raise ProvisionStepError("broker_identity_mismatch", retryable=False)
         # The RUNNING transition, the heartbeat stamp, and the durable Verification Report (Increment 3)
         # commit as ONE unit — so a runtime can never end up verified-RUNNING without its audit artefact.
         # If the report create fails, RUNNING rolls back to AUTHENTICATING and the retry re-attempts it.
@@ -156,7 +184,9 @@ def _start_and_verify(rt: AccountRuntime, p: WindowsProvisioner) -> None:
             rt = record_transition(rt, RuntimeState.RUNNING, reason_code="verified")
             rt.last_heartbeat_at = timezone.now()
             rt.save(update_fields=["last_heartbeat_at", "updated_at"])
-            build_verification_report(rt, v)
+            # Reaching here with the flag ON means the login + identity checks above passed, so the
+            # broker login IS platform-verified; with the flag OFF the platform verified no login.
+            build_verification_report(rt, v, broker_login_verified=require_login)
 
 
 def _drive_provision(rt: AccountRuntime, p: WindowsProvisioner) -> None:

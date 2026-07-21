@@ -23,7 +23,8 @@ def _user(n):
 
 
 def _acct(user, n):
-    return TradingAccount.objects.create(user=user, name=f"A{n}", account_number=str(n),
+    # account_number is the MT5 login: a positive integer (offset so the range-0 loops stay valid).
+    return TradingAccount.objects.create(user=user, name=f"A{n}", account_number=str(1000 + n),
                                          broker_name="B", is_demo=True)
 
 
@@ -159,6 +160,41 @@ class BetaCapacityTests(TestCase):
         r2 = cap.reserve_beta_slot(acct)
         self.assertEqual(r1.pk, r2.pk)
         self.assertEqual(cap.active_beta_runtime_count(), 1)
+
+    def test_reserve_of_held_runtime_with_now_invalid_record_stays_held(self):
+        # A slot-holding runtime must NOT be demoted to BLOCKED (nor lose its slot) by a re-reservation,
+        # even if the account record has since become malformed. Broker-record validation runs only for
+        # a NOT-yet-held runtime — the idempotency check returns first for a held one.
+        acct = _acct(_user(1), 1)
+        rt = cap.reserve_beta_slot(acct)
+        self.assertEqual(rt.state, RuntimeState.QUEUED)
+        acct.account_number = "not-a-number"   # record is now MT5-invalid
+        acct.save(update_fields=["account_number"])
+        rt2 = cap.reserve_beta_slot(acct)      # re-reservation of the held runtime
+        self.assertEqual(rt2.state, RuntimeState.QUEUED)          # still HELD, not BLOCKED
+        self.assertEqual(cap.active_beta_runtime_count(), 1)      # slot not released
+
+    def test_malformed_record_blocks_and_does_not_consume_a_slot(self):
+        acct = _acct(_user(1), 1)
+        acct.account_number = "not-a-number"
+        acct.save(update_fields=["account_number"])
+        with self.assertRaises(cap.CapacityError) as ctx:
+            cap.reserve_beta_slot(acct)
+        self.assertEqual(ctx.exception.reason_code, "broker_record_invalid")
+        rt = cap.get_or_create_beta_runtime(acct)
+        self.assertEqual(rt.state, RuntimeState.BLOCKED)
+        self.assertEqual(cap.active_beta_runtime_count(), 0)
+
+    def test_production_account_with_invalid_record_rejected_as_not_beta(self):
+        # A PRODUCTION account is rejected by the cohort guard BEFORE broker-record validation runs, so
+        # a malformed record on Nuno's account never even reaches (or blocks via) the beta validator.
+        pacct = _acct(_user(1), 1)
+        AccountRuntime.objects.create(trading_account=pacct, cohort=AccountRuntime.Cohort.PRODUCTION)
+        pacct.account_number = "not-a-number"
+        pacct.save(update_fields=["account_number"])
+        with self.assertRaises(cap.CapacityError) as ctx:
+            cap.reserve_beta_slot(pacct)
+        self.assertEqual(ctx.exception.reason_code, "not_a_beta_runtime")
 
     def test_release_frees_the_slot(self):
         acct = _acct(_user(1), 1)
