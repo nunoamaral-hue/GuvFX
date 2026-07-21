@@ -14,7 +14,7 @@
 // (technical state kept as secondary/tooltip).
 // =============================================================================
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useLang } from "@/components/AppShell";
 import { t } from "@/lib/i18n";
@@ -245,6 +245,20 @@ function MetricTile({ label, value, sub, subColor, info }: { label: string; valu
   );
 }
 
+// Stable, module-level presentational card (uses only its props + module constants), so it is not
+// re-created on every render (react-hooks/static-components).
+function SectionCard({ icon, title, info, children, action, style }: { icon: string; title: string; info?: string; children: React.ReactNode; action?: { href: string; label: string }; style?: React.CSSProperties }) {
+  return (
+    <div style={{ ...glass, ...style }}>
+      <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span><i className={`ti ti-${icon}`} aria-hidden="true" style={{ marginRight: 6 }} />{title}{info && <Info text={info} />}</span>
+        {action && <Link href={action.href} style={{ fontSize: "0.7rem", color: "#4ab3ff", textTransform: "none", fontWeight: 400, textDecoration: "none" }}>{action.label} →</Link>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const lang = useLang();
   const [firstName, setFirstName] = useState<string | null>(null);
@@ -272,6 +286,16 @@ export default function DashboardPage() {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [selLoading, setSelLoading] = useState(false);
   const [selAt, setSelAt] = useState("");
+  const [prevSymbol, setPrevSymbol] = useState("");
+
+  // Reset Market-Focus state the moment the selected market changes — done during render (React's
+  // "adjust state when a prop changes" pattern) rather than synchronously inside the fetch effect, so
+  // it does not trip react-hooks' set-state-in-effect rule. Behaviour is identical: the loading state
+  // shows and the stale selection clears immediately, then the effect below fetches the new selection.
+  if (symbol !== prevSymbol) {
+    setPrevSymbol(symbol);
+    if (symbol) { setSelLoading(true); setSelection(null); }
+  }
 
   // ── Boot (fast reads) ──
   useEffect(() => {
@@ -350,7 +374,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!symbol) return;
     try { window.localStorage.setItem(LS_KEY, symbol); } catch { /* ignore */ }
-    setSelLoading(true); setSelection(null);
+    // (loading/reset handled by the render-phase guard above when `symbol` changes)
     apiFetch<Selection>(`/api/backtests/strategy-selection/?symbol=${encodeURIComponent(symbol)}&timeframe=H1`, {})
       .then((res) => { setSelection(res?.ok ? res : null); setSelAt(nowClock()); })
       .catch(() => setSelection(null))
@@ -409,16 +433,6 @@ export default function DashboardPage() {
   const hasEvent = !!newsImpact || ms?.current_state === "NEWS_SHOCK";
 
   const setupComplete = strategies.length > 0 && accounts.length > 0;
-
-  const SectionCard = useCallback(({ icon, title, info, children, action, style }: { icon: string; title: string; info?: string; children: React.ReactNode; action?: { href: string; label: string }; style?: React.CSSProperties }) => (
-    <div style={{ ...glass, ...style }}>
-      <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span><i className={`ti ti-${icon}`} aria-hidden="true" style={{ marginRight: 6 }} />{title}{info && <Info text={info} />}</span>
-        {action && <Link href={action.href} style={{ fontSize: "0.7rem", color: "#4ab3ff", textTransform: "none", fontWeight: 400, textDecoration: "none" }}>{action.label} →</Link>}
-      </div>
-      {children}
-    </div>
-  ), []);
 
   function health(s: Strategy): { t: string; c: "green" | "yellow" | "gray" } {
     const stage = stageFor(s.id);
