@@ -13,6 +13,8 @@ idempotent provisioning script driven from this record.
 Secrets: the generated Windows password is stored Fernet-encrypted via the
 existing trading.crypto helper and is NEVER exposed through the API/UI/audit.
 """
+import uuid
+
 from django.db import models
 
 
@@ -164,6 +166,10 @@ class AccountRuntime(models.Model):
     ``NOT_PROVISIONED`` — so nothing may imply an MT5 terminal exists or is connected.
     """
 
+    class Cohort(models.TextChoices):
+        PRODUCTION = "PRODUCTION", "Production"   # Nuno's existing runtimes — EXCLUDED from beta caps/logic
+        BETA = "BETA", "Beta"                     # controlled co-hosted headless beta pool
+
     trading_account = models.OneToOneField(
         "trading.TradingAccount", on_delete=models.CASCADE, related_name="runtime")
     state = models.CharField(max_length=20, choices=RuntimeState.choices,
@@ -174,8 +180,47 @@ class AccountRuntime(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # ── GFX-BETA-HEADLESS Increment 1 — ownership + runtime-layout fields (additive; PRODUCTION default
+    #    keeps every existing/Nuno runtime out of the beta caps and beta code paths). ──
+    #: Immutable per-runtime identity (compensating control 3/4). Server-generated; never client-supplied.
+    runtime_uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    cohort = models.CharField(max_length=16, choices=Cohort.choices,
+                              default=Cohort.PRODUCTION, db_index=True)
+    #: Canonical portable-MT5 directory (control 1/4). Set ONLY by the server-side path generator.
+    runtime_root = models.CharField(max_length=255, blank=True, default="")
+    runtime_version = models.CharField(max_length=32, blank=True, default="")
+    credential_version = models.PositiveIntegerField(default=0)
+    #: Dedicated bridge-routing identity (control 6). Requests carrying anything else fail closed.
+    bridge_identity = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    last_heartbeat_at = models.DateTimeField(null=True, blank=True)
+    last_sync_at = models.DateTimeField(null=True, blank=True)
+    last_failure_reason = models.CharField(max_length=64, blank=True, default="")  # sanitised code only
+    #: Per-runtime quarantine (control 17) — a quarantined runtime is not re-provisioned until cleared.
+    quarantined = models.BooleanField(default=False, db_index=True)
+    quarantine_reason = models.CharField(max_length=64, blank=True, default="")
+
+    _IMMUTABLE_BINDING = ("runtime_uuid", "cohort", "trading_account_id")
+
+    def save(self, *args, **kwargs):
+        """Enforce the immutable owner/UUID/cohort binding (control 3). The hot-path
+        ``record_transition`` uses ``update_fields`` that never touch these, so the guard's
+        extra fetch runs only on a full save or an explicit attempt to change a bound field."""
+        if not self._state.adding:
+            uf = kwargs.get("update_fields")
+            touches_binding = uf is None or any(
+                f in uf for f in ("runtime_uuid", "cohort", "trading_account", "trading_account_id"))
+            if touches_binding:
+                old = type(self).objects.filter(pk=self.pk).values(
+                    "runtime_uuid", "cohort", "trading_account_id").first()
+                if old and (str(old["runtime_uuid"]) != str(self.runtime_uuid)
+                            or old["cohort"] != self.cohort
+                            or old["trading_account_id"] != self.trading_account_id):
+                    raise ValueError(
+                        "AccountRuntime owner/UUID/cohort binding is immutable after creation")
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"AccountRuntime(acct={self.trading_account_id}, {self.state})"
+        return f"AccountRuntime(acct={self.trading_account_id}, {self.cohort}, {self.state})"
 
 
 class RuntimeEvent(models.Model):
@@ -209,3 +254,18 @@ class RuntimeEvent(models.Model):
 
     def __str__(self):
         return f"RuntimeEvent(rt={self.runtime_id}, {self.from_state}->{self.to_state})"
+
+
+class BetaCapacityLock(models.Model):
+    """GFX-BETA-HEADLESS Increment 1 — a singleton row used purely as a serialising lock so that
+    concurrent beta runtime-slot reservations cannot both slip past the global cap. Reservers
+    ``select_for_update()`` this row inside the reservation transaction (see ``beta_capacity``)."""
+    singleton = models.PositiveSmallIntegerField(primary_key=True, default=1)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Beta Capacity Lock"
+        verbose_name_plural = "Beta Capacity Lock"
+
+    def __str__(self):
+        return "BetaCapacityLock(singleton)"
