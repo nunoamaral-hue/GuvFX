@@ -17,6 +17,7 @@ from django.utils import timezone
 
 from trading.crypto import decrypt_password
 
+from .beta_activation import ActivationDenied, assert_beta_activation_allowed
 from .beta_capacity import CapacityError, _require_beta, reserve_beta_slot
 from .models import AccountRuntime, ProvisioningJob, RuntimeState
 from .runtime_state import record_transition
@@ -123,6 +124,10 @@ def advance_provisioning_job(job: ProvisioningJob, provisioner: WindowsProvision
         # A capacity/kill-switch/quarantine denial is not a transient step error — the runtime is left
         # BLOCKED (or NOT_PROVISIONED for the disabled case) and the job fails truthfully with the reason.
         return _fail_terminal(j, e.reason_code)
+    except ActivationDenied as e:
+        # A narrow-activation denial (control 2) — refuse to launch; fail the job truthfully. No box work
+        # was performed (the gate runs before any materialise/launch side-effect).
+        return _fail_terminal(j, e.reason_code)
     except ValueError as e:
         return _fail_terminal(j, "invalid_runtime")
 
@@ -196,6 +201,11 @@ def _drive_provision(rt: AccountRuntime, p: WindowsProvisioner) -> None:
         reserve_beta_slot(rt.trading_account)
         rt = AccountRuntime.objects.get(pk=rt.pk)
 
+    # CONTROL-2 narrow-activation gate — re-verify EVERY activation condition before ANY box side-effect
+    # (materialise/launch). The global kill switch alone is not sufficient; a non-admitted user can never
+    # reach materialise/launch even with the flag on.
+    assert_beta_activation_allowed(rt)
+
     # QUEUED/PROVISIONING → materialise the isolated portable dir, then inject credentials. Both are
     # idempotent; the STARTING transition happens ONLY after both succeed — so a mid-step failure
     # leaves the runtime in a resumable (QUEUED/PROVISIONING) state that the next advance re-runs.
@@ -217,6 +227,8 @@ def _drive_start(rt: AccountRuntime, p: WindowsProvisioner) -> None:
     if rt.state in (RuntimeState.STOPPED, RuntimeState.STOPPING):
         rt = record_transition(rt, RuntimeState.STARTING, reason_code="restart")
     if rt.state in (RuntimeState.STARTING, RuntimeState.AUTHENTICATING):
+        # CONTROL-2 gate before any (re)launch box side-effect.
+        assert_beta_activation_allowed(rt)
         _start_and_verify(rt, p)
 
 
