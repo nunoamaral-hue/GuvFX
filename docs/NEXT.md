@@ -1,14 +1,17 @@
 # NEXT — Priorities (keep this list short)
 
-## Beta Onboarding V1 (2026-07-20) — onboarding stays CLOSED
-- [ ] **Nuno decision (gate): approve the Option A architecture + BoM/cost** (`docs/BETA_ONBOARDING_V1_ARCHITECTURE_OPTION_A.md`)
-  — RDS/RemoteApp Windows host pool. No licence/server procurement and no architecture-gated (Phase 2+) work until approved.
-- [ ] **Continue Phase 0 (additive, onboarding closed):** per-account lot-size override model (default 0.01,
-  future-signals-only, NOT wired to live execution); beta-entitlement infra behind a closed server-side gate (NO
-  email-verify bypass); entitlement-scoped marketplace foundations; Account Status panel (truthful NOT PROVISIONED /
-  BLOCKED states); durable provisioning-state + failure records (no swallowed exceptions); user-scoped admin
-  visibility; raw-agent-error correction; max-10 broker accounts per user. Each: test + review + controlled deploy.
-- [ ] **Do NOT enable onboarding** until Phase 4 isolation gates pass (see KNOWN_ISSUES).
+## Beta Onboarding — headless co-hosted vertical slice (2026-07-21) — onboarding stays CLOSED
+Architecture is now **non-interactive headless co-hosting on the existing box** (no RDS/RemoteApp — supersedes
+the 07-20 Option A plan); execution is a **vertical slice**. Increments 1–4 shipped (runtime state machine +
+capacity + provisioning driver + Verification Report + broker-independent decoupling + broker abstraction).
+- [ ] **Broker-login verification stage** — the ONE deferred part of the first slice. Blocked on Nuno providing
+  a **separate disposable demo broker account** (NOT prod / existing demo). When available: wire a real MT5
+  `verify_login` on the broker abstraction, flip `PROVISIONING_REQUIRE_BROKER_LOGIN=1` for beta, prove a runtime
+  reaches RUNNING with `broker_login_verified=True` + exact identity match (control 8).
+- [ ] **Finish the broker-independent slice wiring:** strategy assignment → 0.01 per-assignment sizing →
+  AUTO_DEMO-ready state → truthful Account Status + Dashboard for a beta runtime (no broker connectivity needed).
+  Each: test + adversarial review + controlled deploy with gates OFF.
+- [ ] **Do NOT enable onboarding** until Phase 4 isolation gates pass (see KNOWN_ISSUES). No procurement without Nuno's approval.
 
 
 ## TI execution-gap follow-ups (2026-07-16)

@@ -6,6 +6,31 @@
 
 ## Execution workstream log
 
+- **2026-07-21 — GFX-BETA-HEADLESS Increment 4: broker-INDEPENDENT provisioning slice + provider-driven broker-validation abstraction. 🟢**
+  Architecture note (supersedes the 07-20 RDS/RemoteApp plan): the beta target is now **non-interactive
+  headless co-hosting on the EXISTING box** (per-account portable MT5 runtime in the Administrator autologon
+  Session 1, per-runtime process/NTFS/bridge/credential isolation; **no RDS/RemoteApp/customer terminal**),
+  Nuno-approved, executed as a **vertical slice** (prove one full customer journey before scaling to five).
+  Increments 1–3 (shipped previously) built the durable `terminal_provisioning` machinery: `AccountRuntime`
+  state machine + cohort exclusion, atomic 5-global/1-per-user `BetaCapacityLock`, the enqueue-only
+  provisioning driver, and the immutable **Provisioning Verification Report** (with a real single-runtime box
+  proof, pid 13020 in Session 1, Nuno's terminal 4336 + bridge :8788 untouched). **Increment 4 (this):**
+  (a) **decoupled provisioning from broker login** — new `PROVISIONING_REQUIRE_BROKER_LOGIN` flag (**default
+  OFF** = broker-independent): a runtime reaches RUNNING on *process* verification alone and its report records
+  `broker_login_verified=False`; the strict control-8 identity/login fail-closed checks return only when the
+  flag is ON (the later broker-login stage). Report fields now record the runtime's OWN assigned binding, never
+  the box's self-report. (b) **broker-validation abstraction** (`trading/brokers/`) — provider-driven registry
+  + fail-closed fallback, **MT5 as the first provider** consuming it (format-only, no connectivity); the beta
+  reservation path consumes it fail-closed inside the capacity lock. So the **broker-independent journey is
+  complete through**: register → login → broker record → ProvisioningJob → runtime alloc → verified RUNNING +
+  durable Verification Report — with **no broker connectivity**. **PR #163, `main` 091585f, image 7967c786,
+  rollback `rollback-preBetaBrokerIndep` (→16b6b609), no migration.** 996 tests; two adversarial-review rounds
+  (all MUST_FIX/SHOULD_FIX resolved). Deployed backend-only with **all gates OFF**; verified beta dormant
+  (0 runtimes/reports/jobs), Django check clean, bridge :8788 alive, live execution flowed through the deploy
+  (single restart-blip on the ingest worker, recovered). **Onboarding stays CLOSED.** Next: broker-login
+  verification stage (needs a **separate disposable demo broker account** from Nuno — not prod/existing demo)
+  + the remaining slice wiring (strategy assignment → 0.01 per-assignment sizing → AUTO_DEMO-ready → dashboard).
+
 - **2026-07-20 — GFX-PKT-BETA-ONBOARDING-V1: readiness = NOT READY; Option A approved; Phase 0 security shipped. 🟡**
   Read-only investigation (workflow wf_e3b038d9-1e7, 8 agents) + prod census: the platform is **single-tenant**
   and cannot onboard external beta users — **21 Critical + 14 High** blockers. **⚠️ Onboarding must stay CLOSED
