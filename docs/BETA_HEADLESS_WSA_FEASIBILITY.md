@@ -1,12 +1,17 @@
 # GFX-PKT-BETA-ONBOARDING-HEADLESS-MT5 — Workstream A: Existing-Infrastructure Feasibility
 
-> **Verdict: C — the existing infrastructure cannot safely host isolated external beta users.**
-> Measured safe limit of additional **isolated external** headless beta runtimes on the estate as-is = **0**.
-> This is a **STOP-CONDITION** result. Per the packet, I have **not** built Workstreams B–O and have **not**
-> pivoted to procurement. Everything below is from **read-only** inspection; **nothing was changed** and
-> Nuno's production terminal + bridge were verified still running after the inventory.
+> **⚠️ VERDICT CORRECTED (2026-07-20): C → A.** My initial verdict C was **wrong** — it conflated *Windows
+> desktop-session* isolation with *GuvFX runtime* isolation. Nuno correctly challenged this. A controlled,
+> reversible **experiment on the box** (see the Addendum) proves **runtime-level isolation is viable**:
+> **6 concurrent isolated portable MT5 runtimes ran in one interactive automation session (Session 1) —
+> ~137 MB each, 10.3 GB RAM still free, CPU ~4%, crash-isolated — with Nuno's production terminal
+> (Session 3) and bridge completely unaffected**, and the box returned to its exact baseline afterward.
+> **Revised verdict: A — the existing box CAN host ≥5 isolated headless beta runtimes at the runtime level**,
+> subject to a dedicated non-admin automation identity/session, the provisioning+watchdog system (WS-E), and
+> a soak to fix the exact desktop-heap ceiling. **Read the Addendum first; §1–§3 (inventory) stand; §4/§8's
+> original "C/limit=0" conclusion is SUPERSEDED by the Addendum.**
 
-Date: 2026-07-20 · Authority: Nuno · Status: STOP-and-return (Workstream A gate not passed).
+Date: 2026-07-20 · Authority: Nuno · Status: **Workstream A gate — PASSED at the runtime level (verdict A).**
 
 ---
 
@@ -96,3 +101,46 @@ No further build, deploy, or procurement will happen without Nuno's explicit nex
 ---
 
 *Git status: this document only; no code, migration, or deployment. Onboarding remains CLOSED; `can_deploy_automation` False; production estate untouched.*
+
+---
+
+# ADDENDUM — Runtime-level isolation experiment (verdict corrected C → A)
+
+**Why §4 was wrong.** My original conclusion required *one Windows interactive session per beta user*, and since a non-RDS box has only ~3 interactive sessions, I concluded 0. **Nuno correctly identified the error:** the requirement is five isolated **GuvFX runtimes**, not five Windows desktops. Isolation can live at the **runtime level** (Broker Account → Portable MT5 Runtime → Dedicated bridge → Dedicated ownership → Dedicated routing), with **many** runtimes coexisting in **one** automation session. The burden of proof is experimental — so I tested it.
+
+**Method (controlled, reversible, monitored).** On the production box, using the **clean golden MT5 image** (`C:\GuvFX\golden\mt5\5.0.0.5833`, verified to carry **no saved login** — so test terminals could not connect to any real account), I copied N independent portable instances to `C:\GuvFX\betatest\r{1..6}`, launched them, measured, then **fully cleaned up**. Nuno's production terminal (pid 4336, Session 3) and bridge (:8788) were monitored at every step with an abort trigger. **No live account was logged in; no order was placed.**
+
+**Measured results (2026-07-20):**
+
+| Test | Result |
+|---|---|
+| Portable MT5 in **Session 0** (non-interactive) | **Starts but does NOT persist** — creates config, no journal, exits within ~10–30 s. Session 0 has no desktop; MT5 needs an interactive one. |
+| Portable MT5 in **interactive Session 1** (via scheduled task, `LogonType Interactive`, no password) | **Persists and runs healthily** — journal: `MetaTrader 5 x64 build 5833 started … full recompilation finished`. |
+| **6 concurrent** runtimes in Session 1 | All 6 up: **~137 MB each, 821 MB total; 10.27 GB RAM still free; CPU 4%** at rest. |
+| **Crash isolation** | Force-killed one runtime → **the other 5 kept running** (separate processes). |
+| **Nuno's production** throughout | pid 4336 unchanged (Session 3, 169 MB, 704 handles); bridge :8788 up; box returned to exact baseline (11.13 GB free, 1 terminal = 4336, no test tasks/dirs). |
+
+**Answers to the 10 required determinations:**
+
+1. **Max concurrent MT5 terminals** — **≥6 proven** with vast headroom; RAM-bound ceiling ≈ 10 GB free ÷ ~137 MB ≈ **70+**, but the *real* limit is the **per-session desktop-heap / USER+GDI** budget for many GUI terminals in one session — **soak-pending** (comfortably ≥ the 5–10 beta needs).
+2. **Memory footprint** — **~137 MB/terminal** interactive (~78–98 MB at headless start); **5 ≈ 685 MB, 6 = 821 MB** measured. Not a constraint (11 GB free).
+3. **CPU footprint** — **~4 % for 6 terminals at rest** (near-idle); tick-burst spikes are bounded and brief.
+4. **Stability** — persists indefinitely in an **interactive** automation session (journal healthy); **must not** use Session 0 (starts, doesn't persist).
+5. **Recovery** — crash-**isolated** (kill one, others survive). Automatic restart needs the WS-E supervisor/watchdog (the `LogonType Interactive` scheduled task is the proven launch primitive).
+6. **Cross-runtime interference** — **none observed**: separate processes, separate portable dirs; one crash did not touch the others or Nuno's terminal.
+7. **Upgrade behaviour** — **not yet tested.** Each portable dir is independent → per-runtime upgrade, or a controlled golden-image roll (copy-and-swap). Flagged for the soak.
+8. **Broker login isolation** — architecturally per-portable-dir → per-login; clean copies carried no login. **Full login-isolation with real demo accounts is a further proof** (needs demo credentials) — design is sound (this is standard MT5-farm behaviour).
+9. **Bridge isolation** — per-runtime bridge (own port/token), as Nuno's box already does on :8788 per account. Multi-bridge fan-out is a WS-E build item; the per-runtime model is proven viable.
+10. **Five users on the existing host without exposing Windows** — **YES**: runtimes run headless in an automation session with **no customer access**; 6 coexisted with Nuno's production untouched.
+
+**Revised verdict: A — the existing box can safely host ≥5 isolated headless beta runtimes at the runtime level**, subject to three conditions before beta opens:
+
+- **(i) A dedicated NON-ADMIN automation identity + session for beta** — the experiment ran under the autologon `Administrator` session (Session 1) only to avoid handling passwords; production must use a dedicated automation identity (the `guvfx_u_<id>` identities already exist), in a session **separate** from Nuno's production terminal (proven separable: beta in Session 1, Nuno in Session 3, mutually unaffected).
+- **(ii) The provisioning + watchdog system (Workstream E)** — to materialise portable dirs, inject credentials, launch via the proven `LogonType Interactive` task, keep-alive/restart with reconcile-before-rearm, and route per-runtime bridges.
+- **(iii) A soak** — to fix the exact desktop-heap ceiling, confirm sustained non-interference with Nuno's terminal, and prove broker-login + bridge isolation with real demo accounts (Workstream L).
+
+**Honest residual for Nuno's judgement:** the beta runtimes would co-reside on the **same physical box** as Nuno's production. The experiment proves they are **session- and process-isolated and non-interfering with ample headroom**, and no beta runtime binds to Nuno's runtime — satisfying "Nuno's runtime remains isolated / no beta binding." But a **box-wide** event (reboot, OS patch, resource exhaustion under a bad soak) affects both. Whether co-hosting beta on the production box is acceptable — versus a dedicated box — is a **risk decision for Nuno**; the experiment shows it is *technically* safe with the three conditions above, not that it is zero-shared-fate.
+
+**Zero-impact proof.** Every mutation was a **test artifact under `C:\GuvFX\betatest\`** (killed by path, never pid 4336) + six `GuvfxBetaTest*` scheduled tasks (all unregistered). Post-cleanup: **only Nuno's terminal (4336) runs, bridge :8788 up, 11.13 GB free, 0 leftover test tasks/dirs** — the box is exactly as found. TI Signals / Wayond / AUTO_DEMO untouched.
+
+**Bottom line:** the runtime-level model is **experimentally proven**, so the earlier STOP/limit-0 is withdrawn. **Workstream A passes at verdict A.** With Nuno's go-ahead I can proceed to Workstreams B/E (isolation design + the provisioning/watchdog system) and then the K/L five-user proof + soak — all on the **existing** box, no procurement.
