@@ -155,6 +155,46 @@ def _server_name_for_account(acc: TradingAccount) -> str:
         return acc.broker_server.server_name
     return (acc.broker_name or "").strip()
 
+
+def _maybe_enqueue_beta_provisioning(user, account) -> None:
+    """CVM-Inc-2: when an ADMITTED controlled-beta tester creates a broker-account RECORD, allocate its
+    OWNED beta runtime via the new path (``AccountRuntime`` + canonical beta-runtime root — never the
+    legacy shared MT5 instance, which is why ``mt5_instance`` is None for this account), reserve a pool
+    slot, and enqueue a PROVISION job. Broker-INDEPENDENT: no MT5-instance binding, no broker connectivity.
+
+    Fully gated by the ``BETA_RUNTIMES_ENABLED`` kill switch (DEFAULT OFF): while off, ``reserve_beta_slot``
+    denies (``beta_runtimes_disabled``) and the runtime is left NOT_PROVISIONED (no slot, no job) — the
+    broker RECORD is still created regardless. Only admitted beta testers are ever affected; nothing here
+    touches Nuno's estate.
+
+    Runs the beta DB work in its OWN savepoint (nested ``atomic``) so that a provisioning DB error
+    (lock/statement timeout, serialization failure, connection drop) rolls back ONLY the beta work and
+    heals ``needs_rollback`` — it can never roll back the caller's already-saved broker-account INSERT
+    while the API returns 201 (phantom-create guard). Never raises into the create path."""
+    from billing.beta import is_admitted_beta_tester
+    if not is_admitted_beta_tester(user):
+        return
+    try:
+        from django.db import transaction
+        from terminal_provisioning.beta_capacity import (
+            CapacityError, get_or_create_beta_runtime, reserve_beta_slot)
+        from terminal_provisioning.models import ProvisioningJob
+        from terminal_provisioning.provisioner import enqueue_op
+
+        with transaction.atomic():   # savepoint — contains any DB error so it can't poison the outer tx
+            get_or_create_beta_runtime(account)   # durable BETA runtime + canonical root (idempotent)
+            try:
+                runtime = reserve_beta_slot(account)   # QUEUED on success; CapacityError off/full/blocked
+            except CapacityError as e:
+                logger.info("beta provisioning deferred for account=%s: %s", account.id, e.reason_code)
+                return
+            enqueue_op(runtime, ProvisioningJob.Op.PROVISION)
+    except Exception:  # noqa: BLE001 — never fail the broker-record create on a provisioning hiccup
+        logger.exception(
+            "beta provisioning enqueue failed for account=%s (record still created)",
+            getattr(account, "id", None))
+
+
 class TradingAccountViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["POST"], url_path="test-mt5")
@@ -247,6 +287,16 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             if current >= limit:
                 raise ValidationError(
                     {"detail": f"Broker-account limit reached (maximum {limit})."})
+
+            # CVM-Inc-2: an ADMITTED controlled-beta tester is ALWAYS provisioned via the new
+            # owned-runtime path with NO legacy shared-instance binding — routed on ADMISSION, never on
+            # incidental lease state, so a spare unleased instance can never pull a beta tester onto the
+            # legacy path. Checked BEFORE the instance resolver.
+            from billing.beta import is_admitted_beta_tester
+            if is_admitted_beta_tester(user):
+                serializer.save(user=user, mt5_instance=None, is_active=False)
+                _maybe_enqueue_beta_provisioning(user, serializer.instance)
+                return
 
             inst = _get_user_mt5_instance(user)
             # If we can't determine an instance yet, still allow create (inactive).
