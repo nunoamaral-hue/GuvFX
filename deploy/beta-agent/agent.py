@@ -18,6 +18,7 @@ Run:  python agent.py     (config from the environment; see config.example.json 
 The SCM-managed form is ``service.py`` (pywin32). This file is a DARK artefact — never started, firewalled or
 scheduled until the controlled B3 install.
 """
+import itertools
 import json
 import logging
 import logging.handlers
@@ -93,10 +94,12 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             return
         try:
             super().process_request(request, client_address)   # spawns the worker thread
-        except BaseException:
-            # the worker thread never started (e.g. "can't start new thread" under load) → it will NOT run
-            # process_request_thread, so release the permit HERE to avoid permanently leaking it (which would
-            # otherwise wedge the concurrency gate fully closed after ``max_connections`` such failures).
+        except RuntimeError:
+            # Thread.start() failed ("can't start new thread" under load) — the ONLY exception source here, and
+            # it means the worker never started, so it will NOT run process_request_thread's release. Release
+            # HERE to avoid leaking the permit (which would otherwise wedge the gate closed after
+            # ``max_connections`` such failures). Narrow to RuntimeError so an interrupt arriving AFTER the
+            # worker started cannot double-release the BoundedSemaphore.
             self._conn_sem.release()
             raise
 
@@ -161,24 +164,27 @@ def make_handler(agent: BetaProvisioningAgent):
     return Handler
 
 
+_LOGGER_SEQ = itertools.count()
+
+
 def _make_logger(log_dir: str | None) -> logging.Logger:
-    """Lifecycle logger (start/stop/drain-timeout only — NEVER request bodies/paths/nonces/secrets) writing a
-    rotating file under ``log_dir`` so the state/log relocation is realised, not just declared."""
-    logger = logging.getLogger("beta-agent")
+    """Per-instance lifecycle logger (start/stop/drain-timeout only — NEVER request bodies/paths/nonces/
+    secrets) writing a rotating file under ``log_dir`` so the state/log relocation is realised, not just
+    declared. A UNIQUE name per instance + ``propagate=False`` keeps the agent's log out of the root logger
+    and stops handlers accumulating / bleeding across instances on a shared singleton; ``AgentServer.stop``
+    closes+removes the handler."""
+    logger = logging.getLogger(f"beta-agent.{next(_LOGGER_SEQ)}")
     logger.setLevel(logging.INFO)
-    logger.propagate = False           # the agent's operational log stays in its own file, not the root logger
+    logger.propagate = False
     if log_dir:
-        path = os.path.join(log_dir, "agent.log")
-        if not any(getattr(h, "_beta_path", None) == path for h in logger.handlers):
-            try:
-                os.makedirs(log_dir, exist_ok=True)
-                h = logging.handlers.RotatingFileHandler(path, maxBytes=1_000_000, backupCount=3,
-                                                         encoding="utf-8")
-                h._beta_path = path                                   # de-dupe handlers across instances
-                h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-                logger.addHandler(h)
-            except OSError:
-                pass
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            h = logging.handlers.RotatingFileHandler(os.path.join(log_dir, "agent.log"), maxBytes=1_000_000,
+                                                     backupCount=3, encoding="utf-8")
+            h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            logger.addHandler(h)
+        except OSError:
+            pass
     return logger
 
 
@@ -236,6 +242,11 @@ class AgentServer:
             self._thread = None
         (self._log.warning if not drained else self._log.info)(
             "agent stopped%s", "" if drained else " (drain timed out — forced)")
+        for h in list(self._log.handlers):          # release the rotating-file handle; do not leak across restarts
+            try:
+                h.close()
+            finally:
+                self._log.removeHandler(h)
         return drained
 
     def _await_drain(self, timeout_s: float) -> bool:

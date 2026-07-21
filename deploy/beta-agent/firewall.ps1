@@ -20,6 +20,14 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Fail($m) { throw "firewall.ps1: $m" }
+# Canonicalise a program path for comparison: expand %VAR% forms + resolve to a full path, lowercased. (Residual:
+# 8.3 short names / symlinks are not resolved here — the Tailscale ACL is the second layer for that edge.)
+function Canon($p) {
+  if (-not $p) { return "" }
+  $x = [System.Environment]::ExpandEnvironmentVariables("$p").Trim('"')
+  try { $x = [System.IO.Path]::GetFullPath($x) } catch {}
+  return $x.ToLower()
+}
 
 # 1. Resolve the profile bound to the Tailscale interface and assert it is default-deny inbound.
 $ip = Get-NetIPAddress -IPAddress $Interface -ErrorAction SilentlyContinue
@@ -41,12 +49,12 @@ Write-Host "ok   interface $Interface -> profile '$profileName' (DefaultInboundA
 # 2. Resolve the ACTUAL listening image of the installed service. Under pywin32 the socket is owned by the
 #    service host image (e.g. PythonService.exe), NOT python311.exe — so a pre-existing broad allow for the
 #    real host image must be matched. Fail-safe: if the service is not yet installed we cannot resolve it.
-$agentImages = @($AgentProgramPaths | ForEach-Object { $_.Trim('"').ToLower() })
+$agentImages = @($AgentProgramPaths | ForEach-Object { Canon $_ })
 $svc = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
 if ($svc -and $svc.PathName) {
   $pn = $svc.PathName
   $img = if ($pn.StartsWith('"')) { ($pn.Substring(1) -split '"', 2)[0] } else { ($pn -split '\s', 2)[0] }
-  if ($img) { $agentImages += $img.ToLower(); Write-Host "ok   resolved service listener image: $img" }
+  if ($img) { $agentImages += (Canon $img); Write-Host "ok   resolved service listener image: $img" }
 } else {
   Fail "service '$ServiceName' not found — run install_service.ps1 -Apply FIRST so the real listener image can be matched against pre-existing rules"
 }
@@ -80,9 +88,11 @@ foreach ($r in (Get-NetFirewallRule -Enabled True -Direction Inbound -Action All
   $remote = @($af.RemoteAddress)
   $nonBackendRemote = ($remote -contains "Any") -or (($remote | Where-Object { $_ -ne $AllowFrom }).Count -gt 0)
 
-  # Is it program-scoped to the agent interpreter (or Any program)?
-  $prog = if ($appf) { "$($appf.Program)".ToLower() } else { "any" }
-  $broadProgram = ($prog -eq "any") -or ($agentProg -contains $prog)
+  # Is it program-scoped to the agent listener image (or Any program)? Handle "Any" BEFORE canonicalising
+  # (GetFullPath would otherwise turn the literal "Any" into a path).
+  $progRaw = if ($appf -and $appf.Program) { "$($appf.Program)" } else { "Any" }
+  if ($progRaw -eq "Any") { $prog = "any"; $broadProgram = $true }
+  else { $prog = Canon $progRaw; $broadProgram = ($agentProg -contains $prog) }
 
   if ($nonBackendRemote -and $broadProgram) {
     $danger += "[$($r.DisplayName)] port=$($pf.LocalPort) remote=$($remote -join ',') program=$prog"
