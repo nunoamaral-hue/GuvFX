@@ -40,14 +40,17 @@ export default function LoginPage() {
     // Detect language from cookie/localStorage/navigator
     setLang(detectLang());
 
+    // Avoid next/navigation useSearchParams build requirement by reading from location directly.
     const params = new URLSearchParams(window.location.search);
     const reason = params.get("reason");
     const returnToParam = params.get("returnTo");
 
+    // Validate and store returnTo
     if (isValidReturnTo(returnToParam)) {
       setReturnTo(returnToParam);
     }
 
+    // Set reason message (will be translated in render using current lang)
     if (reason === "expired" || reason === "token_expired") {
       setInfoMessage("expired");
     } else if (reason === "unauthenticated") {
@@ -56,24 +59,6 @@ export default function LoginPage() {
       setInfoMessage("logged_out");
     } else {
       setInfoMessage(null);
-    }
-
-    // Redirect already-authenticated users to onboarding or dashboard
-    if (!reason) {
-      fetch("https://api.guvfx.com/api/onboarding/state/", {
-        method: "GET",
-        credentials: "include",
-      })
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (!data) return;
-          if (data.onboarding_completed) {
-            window.location.replace("/dashboard");
-          } else {
-            window.location.replace("/onboarding");
-          }
-        })
-        .catch(() => {});
     }
   }, []);
 
@@ -181,44 +166,42 @@ export default function LoginPage() {
             {t(lang, "login.subtitle")}
           </p>
 
-          <div style={{ marginTop: "2.5rem", display: "flex", gap: "0.6rem", alignItems: "center" }}>
+          <div style={{ marginTop: "2.5rem", display: "flex", gap: "1rem", alignItems: "center" }}>
             <button
               style={{
-                padding: "0.55rem 1.1rem",
-                borderRadius: 7,
-                border: "1px solid rgba(255,255,255,0.1)",
-                fontSize: "0.82rem",
+                padding: "0.9rem 2.4rem",
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.18)",
+                fontSize: "1rem",
                 fontWeight: 500,
                 cursor: "pointer",
-                background: "rgba(255,255,255,0.03)",
-                color: "#8fa0b7",
-                whiteSpace: "nowrap" as const,
+                background: "transparent",
+                color: "#c2d5ff",
               }}
               onClick={() => router.push("/")}
             >
-              Home
+              {t(lang, "login.home")}
             </button>
             <button
               style={{
-                padding: "0.55rem 1.25rem",
-                borderRadius: 7,
+                padding: "0.9rem 1.8rem",
+                borderRadius: 999,
                 border: "none",
-                fontSize: "0.82rem",
-                fontWeight: 600,
+                fontSize: "1rem",
+                fontWeight: 500,
                 cursor: "pointer",
-                background: "linear-gradient(135deg, #2563eb 0%, #0284c7 100%)",
+                background:
+                  "linear-gradient(135deg, #2979ff 0%, #3fe0ff 50%, #2979ff 100%)",
                 color: "#ffffff",
-                boxShadow: "0 3px 12px rgba(37, 99, 235, 0.25)",
-                whiteSpace: "nowrap" as const,
+                boxShadow: "0 12px 30px rgba(0, 0, 0, 0.5)",
               }}
               onClick={() => router.push("/register")}
             >
-              Create account
+              {t(lang, "login.goToSignUp")}
             </button>
             <LanguageDropdown
               lang={lang}
               onChange={(next) => { persistLang(next); setLang(next); }}
-              variant="compact"
             />
           </div>
         </div>
