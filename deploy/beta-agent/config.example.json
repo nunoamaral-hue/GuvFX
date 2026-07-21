@@ -1,0 +1,11 @@
+{
+  "_comment": "Example ONLY. Real secrets (BETA_AGENT_KEYRING/KEY_ID) are provisioned via the Windows secret store / env, NEVER committed. Set these as environment variables for the service.",
+  "BETA_AGENT_BIND_HOST": "100.79.101.19",
+  "BETA_AGENT_BIND_PORT": "8791",
+  "BETA_AGENT_ROOT": "C:\\GuvFX\\beta\\accounts",
+  "BETA_AGENT_TOMBSTONE": "C:\\GuvFX\\beta\\tombstones",
+  "BETA_AGENT_STATE_DB": "C:\\GuvFX\\beta\\agent\\state.sqlite",
+  "BETA_AGENT_MANIFEST": "C:\\GuvFX\\beta\\agent\\manifest.json",
+  "BETA_AGENT_KEYRING": "<< provisioned out-of-band: {\"k1\":\"<hex-secret>\"} >>",
+  "BETA_AGENT_KEY_ID": "k1"
+}
