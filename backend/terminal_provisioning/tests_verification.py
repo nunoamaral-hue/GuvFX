@@ -11,11 +11,14 @@ from terminal_provisioning.provisioner import FakeProvisioner, advance_provision
 from terminal_provisioning.verification import build_verification_report
 
 U = get_user_model()
-ENABLED = override_settings(BETA_RUNTIMES_ENABLED=True)
+ENABLED = override_settings(BETA_RUNTIMES_ENABLED=True, BETA_MAX_TESTERS=1000)
 
 
 def _acct(n=1):
-    user = U.objects.create_user(username=f"u{n}", email=f"u{n}@x.invalid", password="x")
+    from billing.models import BetaTester
+    email = f"u{n}@x.invalid"
+    user = U.objects.create_user(username=f"u{n}", email=email, password="x")
+    BetaTester.objects.create(email=email)   # admitted (CVM-Inc-3 activation gate precondition)
     return TradingAccount.objects.create(
         user=user, name=f"A{n}", account_number=str(2000 + n), broker_name="DemoBroker",
         is_demo=True, password_enc=encrypt_password("pw"))

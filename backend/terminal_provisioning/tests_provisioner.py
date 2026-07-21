@@ -17,14 +17,20 @@ from terminal_provisioning.provisioner import (
     FakeProvisioner, ProvisionStepError, advance_provisioning_job, enqueue_op)
 
 U = get_user_model()
-ENABLED = override_settings(BETA_RUNTIMES_ENABLED=True)
+# High BETA_MAX_TESTERS so multi-account tests can admit several testers (the CVM-Inc-3 activation gate
+# requires the runtime's owner to be an admitted BetaTester before launch).
+ENABLED = override_settings(BETA_RUNTIMES_ENABLED=True, BETA_MAX_TESTERS=1000)
 # The broker-login stage: broker runtimes enabled AND live broker-login verification required
 # (default for this flag is OFF — the broker-INDEPENDENT phase).
-REQUIRE_LOGIN = override_settings(BETA_RUNTIMES_ENABLED=True, PROVISIONING_REQUIRE_BROKER_LOGIN=True)
+REQUIRE_LOGIN = override_settings(BETA_RUNTIMES_ENABLED=True, PROVISIONING_REQUIRE_BROKER_LOGIN=True,
+                                  BETA_MAX_TESTERS=1000)
 
 
 def _acct(n=1, password="brokerpw123"):
-    user = U.objects.create_user(username=f"u{n}", email=f"u{n}@x.invalid", password="x")
+    from billing.models import BetaTester
+    email = f"u{n}@x.invalid"
+    user = U.objects.create_user(username=f"u{n}", email=email, password="x")
+    BetaTester.objects.create(email=email)   # admitted (activation gate precondition)
     return TradingAccount.objects.create(
         user=user, name=f"A{n}", account_number=str(1000 + n), broker_name="DemoBroker",
         is_demo=True, password_enc=encrypt_password(password))

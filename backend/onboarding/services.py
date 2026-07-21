@@ -358,6 +358,31 @@ mark_plan_selected = confirm_plan_selection
 # Account connected — reads existing TradingAccount state
 # ─────────────────────────────────────────────────────────────────────
 
+def _mark_beta_runtime_ready(user, state, request=None) -> UserOnboardingState:
+    """CVM-Inc-3: mark the beta "hosted runtime ready" milestone (stored on ``account_connected``) ONLY
+    when the owned beta runtime is genuinely runtime_ready — materialised/launched/process-verified,
+    heartbeat-fresh and carrying an immutable Verification Report. Never touches the legacy provisioning
+    path or ``mt5_instance``, and never implies broker connectivity (broker_connected is separate)."""
+    from terminal_provisioning.beta_activation import runtime_ready
+    from terminal_provisioning.models import AccountRuntime
+
+    account = TradingAccount.objects.filter(user=user).order_by("id").first()
+    if not account:
+        raise OnboardingStepError("Add a broker account first.")
+    runtime = AccountRuntime.objects.filter(trading_account=account).first()
+    if runtime is None or not runtime_ready(runtime):
+        raise OnboardingStepError("Hosted runtime is not ready yet.")
+    if state.account_connected:
+        return state  # idempotent
+    state.account_connected = True
+    state.save(update_fields=["account_connected", "updated_at"])
+    log_onboarding_account_connected(request, user.id, account.id)
+    _check_completion(state)
+    if state.onboarding_completed:
+        log_onboarding_completed(request, user.id)
+    return state
+
+
 def mark_account_connected(user, request=None) -> UserOnboardingState:
     """
     Mark account_connected=True on onboarding state.
@@ -366,9 +391,16 @@ def mark_account_connected(user, request=None) -> UserOnboardingState:
     state = get_or_create_onboarding_state(user)
     _check_prerequisites(state, "account_connected")
 
+    # CVM-Inc-3 (Nuno control 5 + truthful semantics): for an admitted controlled-beta user, this step
+    # means the OWNED beta runtime is RUNTIME-READY (materialised/launched/verified + Verification
+    # Report) — NOT that a broker is connected. It NEVER runs the legacy shared-instance provisioning
+    # and never binds mt5_instance; broker_connected stays a separate, later, false-until-verified state.
+    from billing.beta import beta_onboarding_open, is_admitted_beta_tester
+    if is_admitted_beta_tester(user):
+        return _mark_beta_runtime_ready(user, state, request=request)
+
     # GFX-BETA-PHASE0 Increment 4 — server-side gate. External beta onboarding stays CLOSED until the
     # Phase-4 isolation gates pass; a non-staff user cannot progress past this step while it's closed.
-    from billing.beta import beta_onboarding_open
     if not beta_onboarding_open() and not user.is_staff:
         raise OnboardingStepError("Beta onboarding is not open yet.")
 
