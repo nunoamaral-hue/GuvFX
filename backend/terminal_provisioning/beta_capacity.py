@@ -138,8 +138,15 @@ def reserve_beta_slot(account) -> AccountRuntime:
         if rt.quarantined:
             raise CapacityError("runtime_quarantined")
         if rt.state in HELD_STATES:
-            return rt  # idempotent — already holds a slot
-        if active_beta_runtime_count_for_user(account.user) >= BETA_MAX_ACTIVE_PER_USER:
+            return rt  # idempotent — already holds a slot (never re-validate/re-block a live runtime)
+        # Broker-record validation via the provider abstraction — BROKER-INDEPENDENT (format/completeness
+        # only, no connectivity), provider-driven (the MT5 provider is resolved, not special-cased) and
+        # fail-closed. Runs AFTER the idempotency check (so a slot-holding runtime is never demoted) and
+        # INSIDE the lock (so the resulting BLOCKED write commits with the decision, like any denial).
+        from trading.brokers import get_broker_validator
+        if not get_broker_validator(account).validate_account_record(account).ok:
+            denial = "broker_record_invalid"
+        elif active_beta_runtime_count_for_user(account.user) >= BETA_MAX_ACTIVE_PER_USER:
             denial = "per_user_runtime_cap"
         elif active_beta_runtime_count() >= BETA_MAX_ACTIVE_RUNTIMES:
             denial = "beta_pool_full"

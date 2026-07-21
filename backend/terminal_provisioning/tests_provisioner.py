@@ -18,6 +18,9 @@ from terminal_provisioning.provisioner import (
 
 U = get_user_model()
 ENABLED = override_settings(BETA_RUNTIMES_ENABLED=True)
+# The broker-login stage: broker runtimes enabled AND live broker-login verification required
+# (default for this flag is OFF — the broker-INDEPENDENT phase).
+REQUIRE_LOGIN = override_settings(BETA_RUNTIMES_ENABLED=True, PROVISIONING_REQUIRE_BROKER_LOGIN=True)
 
 
 def _acct(n=1, password="brokerpw123"):
@@ -60,8 +63,10 @@ class ProvisionHappyPathTests(TestCase):
         self.assertNotIn("s3cret-broker-pw", rt.last_failure_reason)
 
 
-@ENABLED
+@REQUIRE_LOGIN
 class VerifyBeforeRunningTests(TestCase):
+    """Broker-login stage (PROVISIONING_REQUIRE_BROKER_LOGIN=ON): a runtime must be logged in to its OWN
+    account, with an exact identity match, before RUNNING (control 8)."""
     def test_wrong_broker_identity_fails_closed_not_running(self):
         acct = _acct(1)
         rt = cap.get_or_create_beta_runtime(acct)
@@ -225,6 +230,7 @@ class DriverDenialAndEdgeTests(TestCase):
         self.assertEqual(rt.state, RuntimeState.RUNNING)
         self.assertIn("verify", [c[0] for c in p.calls])
 
+    @override_settings(PROVISIONING_REQUIRE_BROKER_LOGIN=True)
     def test_server_mismatch_with_broker_server_fails_closed(self):
         from trading.models import BrokerServer
         bs = BrokerServer.objects.create(broker_display_name="Demo", server_name="MetaQuotes-Demo")
@@ -239,3 +245,53 @@ class DriverDenialAndEdgeTests(TestCase):
         rt.refresh_from_db()
         self.assertEqual(rt.state, RuntimeState.FAILED)
         self.assertEqual(rt.last_failure_reason, "broker_identity_mismatch")
+
+
+@ENABLED
+class BrokerIndependentProvisionTests(TestCase):
+    """Default (broker-INDEPENDENT) phase: PROVISIONING_REQUIRE_BROKER_LOGIN is OFF, so a runtime reaches
+    RUNNING on process verification alone — no broker connectivity is required."""
+    def test_not_logged_in_still_reaches_running_with_login_unverified(self):
+        from terminal_provisioning.models import ProvisioningVerificationReport
+        acct = _acct(1)
+        rt = cap.get_or_create_beta_runtime(acct)
+        # The terminal is up but NOT logged in to any broker (no connectivity) — broker-independent.
+        p = FakeProvisioner(verify_result={"running": True, "logged_in": False,
+                                           "login": None, "server": None})
+        job = advance_provisioning_job(enqueue_op(rt, ProvisioningJob.Op.PROVISION), p)
+        rt.refresh_from_db()
+        self.assertEqual(rt.state, RuntimeState.RUNNING)     # reached READY without a broker login
+        self.assertEqual(job.status, ProvisioningJob.Status.DONE)
+        rep = ProvisioningVerificationReport.objects.get(runtime=rt)
+        self.assertTrue(rep.verified)                        # process verified
+        self.assertFalse(rep.broker_login_verified)          # ...but broker login is NOT claimed
+
+    def test_identity_is_not_checked_without_broker_login(self):
+        # A "wrong" login is irrelevant in the broker-independent phase (we never verify a broker login),
+        # so it must NOT fail closed here — the identity gate only applies once login verification is ON.
+        from terminal_provisioning.models import ProvisioningVerificationReport
+        acct = _acct(1)
+        rt = cap.get_or_create_beta_runtime(acct)
+        p = FakeProvisioner(verify_result={"running": True, "logged_in": True,
+                                           "login": "999999", "server": "OtherBroker"})
+        advance_provisioning_job(enqueue_op(rt, ProvisioningJob.Op.PROVISION), p)
+        rt.refresh_from_db()
+        self.assertEqual(rt.state, RuntimeState.RUNNING)
+        # ...and the report must NOT assert a broker login the platform never checked, nor echo the
+        # box's self-reported (wrong) login — it records the runtime's OWN assigned account.
+        rep = ProvisioningVerificationReport.objects.get(runtime=rt)
+        self.assertFalse(rep.broker_login_verified)
+        self.assertEqual(rep.broker_login, str(acct.account_number))
+        self.assertNotEqual(rep.broker_login, "999999")
+
+    def test_not_running_is_still_retryable_in_broker_independent_phase(self):
+        # Process verification is ALWAYS required, even broker-independent: a not-running terminal is a
+        # retryable failure, never RUNNING.
+        rt = cap.get_or_create_beta_runtime(_acct(1))
+        p = FakeProvisioner(verify_result={"running": False, "logged_in": False,
+                                           "login": None, "server": None})
+        job = advance_provisioning_job(enqueue_op(rt, ProvisioningJob.Op.PROVISION), p)
+        rt.refresh_from_db()
+        self.assertEqual(job.status, ProvisioningJob.Status.QUEUED)
+        self.assertEqual(rt.state, RuntimeState.AUTHENTICATING)
+        self.assertEqual(rt.last_failure_reason, "terminal_not_running")
