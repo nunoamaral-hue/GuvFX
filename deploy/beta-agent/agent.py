@@ -6,16 +6,21 @@ No other route exists — there is no way to submit a command, path, script or a
 
 B3P-1 hardening (verification):
  - B-9: the live bind is pinned to the single expected management address (``config.load_config``).
- - resource exhaustion: an oversize ``Content-Length`` is refused BEFORE the body is read, each connection has
-   a socket timeout, and concurrent connections are capped — so an UNAUTHENTICATED peer cannot exhaust the RAM
-   / thread budget of the box that also runs Nuno's live terminal + bridge.
- - B-6 drain: ``AgentServer.stop`` waits for in-flight mutating ops to finish before shutting down.
+ - resource exhaustion: an oversize ``Content-Length`` is refused BEFORE the body is read, keep-alive is
+   disabled (one request per connection), each connection has a per-recv socket timeout, and concurrent
+   connections are capped — so an UNAUTHENTICATED peer cannot exhaust the RAM / thread budget of the box that
+   also runs Nuno's live terminal + bridge. (The cap bounds the HOST budget; :8791 is additionally reachable
+   only from the backend via the firewall rule + Tailscale ACL, so a deliberate slow client is doubly gated.)
+ - B-6 drain: ``AgentServer.stop`` stops accepting new work, then waits for in-flight mutating ops to finish
+   before closing — so ``sc stop`` cannot kill a mutation mid-flight.
 
 Run:  python agent.py     (config from the environment; see config.example.json + RUNBOOK.md)
 The SCM-managed form is ``service.py`` (pywin32). This file is a DARK artefact — never started, firewalled or
 scheduled until the controlled B3 install.
 """
 import json
+import logging
+import logging.handlers
 import os
 import sys
 import threading
@@ -39,8 +44,12 @@ def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: s
                 enforce_integrity: bool = False) -> BetaProvisioningAgent:
     """Assemble the boundary-enforcing agent from config + the approved manifest. Injectable (win/store/
     locks) for tests; defaults to the real Windows ops + the SQLite state store. ``enforce_integrity``
-    (used by the live service) refuses to build if ANY implementation module drifts from the manifest —
-    the request-time per-op gate also blocks mutations, this is startup defense-in-depth."""
+    (used by the live service) hashes every implementation module on disk NOW and refuses to build if ANY
+    drifts from the manifest — this is the fresh-disk check. The request-time per-op gate then re-affirms
+    this START-TIME snapshot on every mutation (so a drift caught at start also blocks each op); fresh-disk
+    re-verification happens at the next (re)start, so on-disk tampering after start is caught on restart, not
+    per-request. The agent dir is ACL-scoped to the service account + admins, so tampering already requires
+    high privilege."""
     manifest_path = manifest_path or cfg.get("manifest_path") or os.path.join(_HERE, "manifest.json")
     approved = agent_manifest.load_manifest(manifest_path)
     actual = agent_manifest.compute_checksums(_HERE)
@@ -82,7 +91,14 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             # over the concurrency cap — refuse without spawning a handler thread
             self.shutdown_request(request)
             return
-        super().process_request(request, client_address)
+        try:
+            super().process_request(request, client_address)   # spawns the worker thread
+        except BaseException:
+            # the worker thread never started (e.g. "can't start new thread" under load) → it will NOT run
+            # process_request_thread, so release the permit HERE to avoid permanently leaking it (which would
+            # otherwise wedge the concurrency gate fully closed after ``max_connections`` such failures).
+            self._conn_sem.release()
+            raise
 
     def process_request_thread(self, request, client_address):
         try:
@@ -107,10 +123,15 @@ def make_handler(agent: BetaProvisioningAgent):
             return
 
         def _send(self, obj, code=200):
+            # One request per connection: forcing close means a slow/keep-alive client cannot hold a
+            # concurrency permit across multiple requests, and an early-return (413/400/404) path that did not
+            # consume the request body cannot desync a persistent connection.
+            self.close_connection = True
             body = json.dumps(obj).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
 
@@ -140,17 +161,40 @@ def make_handler(agent: BetaProvisioningAgent):
     return Handler
 
 
+def _make_logger(log_dir: str | None) -> logging.Logger:
+    """Lifecycle logger (start/stop/drain-timeout only — NEVER request bodies/paths/nonces/secrets) writing a
+    rotating file under ``log_dir`` so the state/log relocation is realised, not just declared."""
+    logger = logging.getLogger("beta-agent")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False           # the agent's operational log stays in its own file, not the root logger
+    if log_dir:
+        path = os.path.join(log_dir, "agent.log")
+        if not any(getattr(h, "_beta_path", None) == path for h in logger.handlers):
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                h = logging.handlers.RotatingFileHandler(path, maxBytes=1_000_000, backupCount=3,
+                                                         encoding="utf-8")
+                h._beta_path = path                                   # de-dupe handlers across instances
+                h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+                logger.addHandler(h)
+            except OSError:
+                pass
+    return logger
+
+
 class AgentServer:
     """Testable lifecycle controller for the agent HTTP server. Builds the agent (integrity-enforced),
-    serves in a background thread, and stops with a DRAIN: it waits for in-flight mutating ops to finish
-    (up to ``drain_timeout_s``) before shutting the socket so ``sc stop`` cannot kill a MATERIALISE/TOMBSTONE
-    mid-flight (verification B-6). The pywin32 SCM wrapper (``service.py``) is a thin delegate to this."""
+    serves in a background thread, and stops with a DRAIN: it first stops accepting new work, then waits for
+    in-flight mutating ops to finish (up to ``drain_timeout_s``) before shutting the socket, so ``sc stop``
+    cannot kill a MATERIALISE/TOMBSTONE mid-flight (verification B-6). The pywin32 SCM wrapper (``service.py``)
+    is a thin delegate to this."""
 
     def __init__(self, cfg: dict, *, win=None, store=None, locks=None, enforce_integrity: bool = True):
         self.cfg = cfg
         self._locks = locks if locks is not None else RuntimeLockManager()
         self._agent = build_agent(cfg, win=win, store=store, locks=self._locks,
                                   enforce_integrity=enforce_integrity)
+        self._log = _make_logger(cfg.get("log_dir"))
         self._httpd = None
         self._thread = None
 
@@ -170,18 +214,28 @@ class AgentServer:
         self._thread = threading.Thread(target=self._httpd.serve_forever, name="beta-agent-http",
                                         daemon=True)
         self._thread.start()
+        self._log.info("agent started bind=%s:%s", self.cfg["bind_host"], self.cfg["bind_port"])
 
     def stop(self, drain_timeout_s: float | None = None) -> bool:
-        """Drain in-flight mutating ops (bounded) then shut down. Returns True if fully drained, False if the
-        drain timed out (the shutdown still proceeds — the caller/SCM should log the forced stop)."""
-        drained = self._await_drain(self.cfg["drain_timeout_s"] if drain_timeout_s is None else drain_timeout_s)
+        """Stop accepting new work, drain in-flight mutating ops (bounded), then shut down. Returns True if
+        fully drained, False if the drain timed out (shutdown still proceeds; the SCM logs the forced stop).
+
+        Order matters (verification B-6): begin_drain() refuses any mutation that has not yet committed, and
+        shutdown() exits the accept loop, BEFORE we wait — so no new mutation can start during the drain
+        window and then be killed at teardown."""
+        self._locks.begin_drain()                     # refuse new mutations (denied, not killed)
         if self._httpd is not None:
-            self._httpd.shutdown()
+            self._httpd.shutdown()                    # stop accepting; serve_forever thread returns
+        drained = self._await_drain(
+            self.cfg["drain_timeout_s"] if drain_timeout_s is None else drain_timeout_s)
+        if self._httpd is not None:
             self._httpd.server_close()
             self._httpd = None
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+        (self._log.warning if not drained else self._log.info)(
+            "agent stopped%s", "" if drained else " (drain timed out — forced)")
         return drained
 
     def _await_drain(self, timeout_s: float) -> bool:

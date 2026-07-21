@@ -7,11 +7,14 @@ accurate NEGOTIATE. Also asserts the bundle's shared modules are byte-identical 
 """
 import hashlib
 import http.client
+import http.server
 import json
 import os
 import sys
 import tempfile
+import threading
 import time
+from unittest import mock
 
 from django.test import SimpleTestCase
 
@@ -278,13 +281,14 @@ class HardenedB2Tests(SimpleTestCase):
         self.assertNotIn("tombstoned", r)
 
 
-def _server_cfg(state_db, *, host="127.0.0.1", port=0):
+def _server_cfg(state_db, *, host="127.0.0.1", port=0, log_dir=None):
     """Full config for the AgentServer lifecycle tests — a loopback bind (host == expected_bind_host)."""
     return {
         "bind_host": host, "expected_bind_host": host, "bind_port": port,
         "keyring": KEYRING, "key_id": "k1", "beta_root": BETA_ROOT,
         "tombstone_base": r"C:\GuvFX\beta\tombstones", "state_db": state_db, "manifest_path": "",
-        "max_body_bytes": 16384, "max_connections": 8, "request_timeout_s": 5, "drain_timeout_s": 2,
+        "log_dir": log_dir,
+        "max_body_bytes": 16384, "max_connections": 8, "request_timeout_s": 5, "drain_timeout_s": 5,
     }
 
 
@@ -431,3 +435,92 @@ class ValidateAuthenticityTests(SimpleTestCase):
     def test_correct_manifest_hash_passes(self):
         h = hashlib.sha256(open(os.path.join(_BUNDLE, "manifest.json"), "rb").read()).hexdigest()
         self.assertEqual(self._run(["--expect-manifest-sha256", h]), 0)
+
+
+class KeepAliveDisabledTests(SimpleTestCase):
+    """Review fix: keep-alive is disabled (Connection: close) so no connection holds a permit across requests
+    and a reject path cannot desync a persistent connection."""
+
+    def test_response_forces_connection_close(self):
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        srv = agent_mod.AgentServer(_server_cfg(f.name), win=FakeWin(), enforce_integrity=False)
+        srv.start()
+        try:
+            host, port = srv._httpd.server_address
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            conn.request("POST", "/provision", json.dumps(_req("VERIFY")).encode())
+            resp = conn.getresponse(); resp.read(); conn.close()
+            self.assertEqual((resp.getheader("Connection") or "").lower(), "close")
+        finally:
+            srv.stop()
+
+
+class DrainOrderingTests(SimpleTestCase):
+    """Review fix (B-6): stop() stops accepting + refuses new mutations, then WAITS for an in-flight mutation
+    to finish (never kills it), and a request arriving during drain is cleanly refused, not started."""
+
+    def test_stop_blocks_until_in_flight_mutation_releases(self):
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        locks = RuntimeLockManager()
+        srv = agent_mod.AgentServer(_server_cfg(f.name), win=FakeWin(), locks=locks, enforce_integrity=False)
+        entered, release = threading.Event(), threading.Event()
+
+        def hold():
+            with locks.acquire("u-hold"):
+                entered.set()
+                release.wait(5)                      # keep the mutation "in flight"
+
+        holder = threading.Thread(target=hold); holder.start()
+        self.assertTrue(entered.wait(2))
+        result = {}
+        stopper = threading.Thread(target=lambda: result.__setitem__("drained", srv.stop(drain_timeout_s=5)))
+        stopper.start()
+        time.sleep(0.2)
+        self.assertTrue(stopper.is_alive())          # stop is still draining, not done
+        release.set()
+        stopper.join(5); holder.join(5)
+        self.assertTrue(result.get("drained"))       # drained cleanly once the op finished
+
+    def test_request_arriving_during_drain_is_refused_not_run(self):
+        win = FakeWin()
+        a, _, _ = _build(win=win)
+        a.runtime_locks.begin_drain()                # simulate: we are stopping
+        r = a.handle(_req("MATERIALISE"))
+        self.assertEqual((r["outcome"], r["reason_code"]), ("denied", "agent_stopping"))
+        self.assertEqual(win.golden, [])             # the op never ran
+
+
+class ConcurrencyCapTests(SimpleTestCase):
+    """Review fix: a worker-thread spawn failure must release the connection permit in the SAME thread, or the
+    concurrency gate leaks a permit per failure and eventually wedges the agent fully closed."""
+
+    def test_permit_released_when_worker_thread_fails_to_start(self):
+        import socketserver
+        srv = agent_mod.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), http.server.BaseHTTPRequestHandler,
+            max_body_bytes=100, request_timeout_s=1, max_connections=3)
+        try:
+            with mock.patch.object(socketserver.ThreadingMixIn, "process_request",
+                                   side_effect=RuntimeError("can't start new thread")):
+                for _ in range(5):                   # 5 failed spawns must NOT leak permits
+                    with self.assertRaises(RuntimeError):
+                        srv.process_request(object(), ("127.0.0.1", 1))
+            got = sum(1 for _ in range(3) if srv._conn_sem.acquire(blocking=False))
+            self.assertEqual(got, 3)                 # all permits still available (none leaked)
+        finally:
+            srv.server_close()
+
+
+class LifecycleLogTests(SimpleTestCase):
+    """Review fix: the relocated log_dir is actually written (lifecycle events only), so the claim is realised."""
+
+    def test_start_stop_writes_lifecycle_log(self):
+        d = tempfile.mkdtemp()
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        srv = agent_mod.AgentServer(_server_cfg(f.name, log_dir=d), win=FakeWin(), enforce_integrity=False)
+        srv.start(); srv.stop()
+        logpath = os.path.join(d, "agent.log")
+        self.assertTrue(os.path.exists(logpath))
+        content = open(logpath, encoding="utf-8").read()
+        self.assertIn("agent started", content)
+        self.assertNotIn("secret", content.lower())   # never logs secrets/keyring

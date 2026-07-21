@@ -39,7 +39,9 @@ foreach ($d in @($AgentDir, $StateDir, $BetaAccounts, $BetaTombstones)) {
 
 # 3. Install the pywin32 service, MANUAL start, under the virtual account. (No auto-start; no start here.)
 DoIt "install service '$ServiceName' (pywin32, startup=manual)" { & $Python (Join-Path $AgentDir "service.py") "--startup=manual" "install" }
-DoIt "set service logon to '$RunAsUser' + start=demand" { sc.exe config $ServiceName obj= "$RunAsUser" start= demand | Out-Null }
+# password= "" is required by sc.exe when assigning an NT SERVICE virtual account (harmless otherwise); without
+# it the obj= assignment can silently fail and leave the service running as over-privileged LocalSystem.
+DoIt "set service logon to '$RunAsUser' (no password) + start=demand" { sc.exe config $ServiceName obj= "$RunAsUser" password= "" start= demand | Out-Null }
 
 # 4. Recovery DISABLED for the first install (nothing may auto-restart before approval).
 DoIt "disable service recovery actions" { sc.exe failure $ServiceName reset= 0 actions= "" | Out-Null }
@@ -51,6 +53,11 @@ if ($Apply) {
   sc.exe qfailure $ServiceName
   $svc = Get-Service $ServiceName
   if ($svc.Status -ne "Stopped") { throw "service is $($svc.Status); expected Stopped (install-only)" }
+  $startName = (Get-CimInstance Win32_Service -Filter "Name='$ServiceName'").StartName
+  if ("$startName" -notmatch [regex]::Escape($RunAsUser)) {
+    throw "service identity is '$startName', expected '$RunAsUser' — LocalSystem means the obj= assignment failed; do NOT start"
+  }
+  Write-Host "ok   service identity = $startName"
   Write-Host "ok   service installed STOPPED. Firewall: run firewall.ps1 -Apply. Do NOT start until approval."
 } else {
   Write-Host "PLAN complete. Re-run with -Apply on the host to perform the install (install-only, no start)."

@@ -10,10 +10,11 @@
 # It NEVER touches the bridge (:8788) or backtest (:8787) rules.
 param(
   [string]$RuleName          = "GuvFX-Beta-Agent-In",
+  [string]$ServiceName       = "GuvFXBetaAgent",             # to resolve the REAL listening image
   [int]$Port                 = 8791,
   [string]$AllowFrom         = "100.119.23.29",              # GuvFX backend / control plane (Tailscale) — ONLY source
   [string]$Interface         = "100.79.101.19",              # private/Tailscale bind address
-  [string[]]$AgentProgramPaths = @("C:\GuvFX\python311.exe"),# the interpreter the agent service runs as
+  [string[]]$AgentProgramPaths = @("C:\GuvFX\python311.exe"),# fallback interpreter list
   [switch]$Apply
 )
 $ErrorActionPreference = "Stop"
@@ -24,17 +25,36 @@ function Fail($m) { throw "firewall.ps1: $m" }
 $ip = Get-NetIPAddress -IPAddress $Interface -ErrorAction SilentlyContinue
 if (-not $ip) { Fail "interface $Interface not found on this host" }
 $conn = Get-NetConnectionProfile -InterfaceIndex $ip.InterfaceIndex -ErrorAction SilentlyContinue
-$profileName = if ($conn) { $conn.NetworkCategory } else { "Private" }   # Tailscale usually classifies Private
+if (-not $conn) {
+  Fail "interface $Interface has no network connection profile; cannot determine which firewall profile governs it — classify the interface (or resolve manually) before applying"
+}
+$cat = "$(@($conn.NetworkCategory)[0])"
+$profileName = switch ($cat) { "DomainAuthenticated" { "Domain" } default { $cat } }   # NetworkCategory -> firewall profile name
 if ($profileName -eq "Public") { Fail "interface $Interface is on the Public profile; refusing (expected Private/Domain)" }
+if ($profileName -notin @("Private", "Domain")) { Fail "unexpected profile '$profileName' for $Interface; resolve manually" }
 $fp = Get-NetFirewallProfile -Name $profileName
 if ($fp.DefaultInboundAction -ne "Block") {
   Fail "profile '$profileName' DefaultInboundAction is '$($fp.DefaultInboundAction)', expected 'Block' — the scoped allow is not safe without default-deny inbound"
 }
 Write-Host "ok   interface $Interface -> profile '$profileName' (DefaultInboundAction=Block)"
 
-# 2. Enumerate every ENABLED inbound allow rule; fail on any that could ALSO authorise :8791 from a non-backend peer.
+# 2. Resolve the ACTUAL listening image of the installed service. Under pywin32 the socket is owned by the
+#    service host image (e.g. PythonService.exe), NOT python311.exe — so a pre-existing broad allow for the
+#    real host image must be matched. Fail-safe: if the service is not yet installed we cannot resolve it.
+$agentImages = @($AgentProgramPaths | ForEach-Object { $_.Trim('"').ToLower() })
+$svc = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+if ($svc -and $svc.PathName) {
+  $pn = $svc.PathName
+  $img = if ($pn.StartsWith('"')) { ($pn.Substring(1) -split '"', 2)[0] } else { ($pn -split '\s', 2)[0] }
+  if ($img) { $agentImages += $img.ToLower(); Write-Host "ok   resolved service listener image: $img" }
+} else {
+  Fail "service '$ServiceName' not found — run install_service.ps1 -Apply FIRST so the real listener image can be matched against pre-existing rules"
+}
+$agentImages = $agentImages | Where-Object { $_ } | Select-Object -Unique
+
+# 3. Enumerate every ENABLED inbound allow rule; fail on any that could ALSO authorise :8791 from a non-backend peer.
 $danger = @()
-$agentProg = $AgentProgramPaths | ForEach-Object { $_.ToLower() }
+$agentProg = $agentImages
 foreach ($r in (Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -ErrorAction SilentlyContinue)) {
   if ($r.DisplayName -eq $RuleName) { continue }   # our own rule (idempotent re-run)
   $pf = $r | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue
@@ -75,7 +95,7 @@ if ($danger.Count -gt 0) {
 }
 Write-Host "ok   no pre-existing inbound allow rule authorises :$Port from a non-backend source"
 
-# 3. Add the single scoped allow (only with -Apply).
+# 4. Add the single scoped allow (only with -Apply).
 if ($Apply) {
   if (Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue) {
     Write-Host "note rule '$RuleName' already exists; leaving as-is"

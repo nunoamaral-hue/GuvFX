@@ -78,24 +78,36 @@ class RuntimeLockManager:
         self._guard = threading.Lock()
         self._per_runtime: dict[str, threading.Lock] = {}
         self._active = 0                       # mutating ops currently holding a lock
+        self._draining = False                 # once set, no NEW mutation may begin
+
+    def begin_drain(self) -> None:
+        """Refuse any mutation that has not yet committed (verification B-6): a request arriving during
+        shutdown is denied (``agent_stopping``) rather than started and then killed. Ops already counted in
+        ``_active`` are unaffected — the stop path waits them out."""
+        with self._guard:
+            self._draining = True
 
     @contextlib.contextmanager
     def acquire(self, runtime_uuid: str):
         if not self._global.acquire(blocking=False):
             raise AgentError("agent_busy")
         try:
+            # Drain-check + per-runtime lock + active-count increment are ONE critical section, so once
+            # ``begin_drain`` is set no op can slip past the check and then increment (closes the race where a
+            # just-starting op is momentarily invisible to the drain counter).
             with self._guard:
+                if self._draining:
+                    raise AgentError("agent_stopping")
                 lk = self._per_runtime.setdefault(str(runtime_uuid), threading.Lock())
-            if not lk.acquire(blocking=False):
-                raise AgentError("runtime_busy")
-            with self._guard:
+                if not lk.acquire(blocking=False):          # non-blocking, safe under the guard
+                    raise AgentError("runtime_busy")
                 self._active += 1
             try:
                 yield
             finally:
                 with self._guard:
                     self._active -= 1
-                lk.release()
+                    lk.release()
         finally:
             self._global.release()
 
