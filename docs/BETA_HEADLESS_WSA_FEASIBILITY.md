@@ -144,3 +144,29 @@ No further build, deploy, or procurement will happen without Nuno's explicit nex
 **Zero-impact proof.** Every mutation was a **test artifact under `C:\GuvFX\betatest\`** (killed by path, never pid 4336) + six `GuvfxBetaTest*` scheduled tasks (all unregistered). Post-cleanup: **only Nuno's terminal (4336) runs, bridge :8788 up, 11.13 GB free, 0 leftover test tasks/dirs** — the box is exactly as found. TI Signals / Wayond / AUTO_DEMO untouched.
 
 **Bottom line:** the runtime-level model is **experimentally proven**, so the earlier STOP/limit-0 is withdrawn. **Workstream A passes at verdict A.** With Nuno's go-ahead I can proceed to Workstreams B/E (isolation design + the provisioning/watchdog system) and then the K/L five-user proof + soak — all on the **existing** box, no procurement.
+
+---
+
+# ADDENDUM 2 — Increment-1 session-mechanism finding (STOP-and-return: a Phase-1 decision is needed)
+
+**Context.** The co-hosted implementation packet's Phase 1 requires *"a dedicated **non-administrative** Windows automation identity and persistent interactive session for beta runtimes … **separate from Nuno's production Windows identity/session**."* Before mutating the production box I investigated the session mechanism **read-only**. Verdict A (runtime coexistence) stands — but the **dedicated non-admin *separate* session** cannot be established on the current box without a change that trips a STOP condition.
+
+**Measured (read-only, 2026-07-20):**
+- Identities: `guvfx_u_{1,6,7}` are **non-admin** (good beta candidates); `guvfx-rdp` is an **Administrator**.
+- Production already uses `LogonType Interactive` scheduled tasks as **Administrator** (`GuvFX_Autostart`, `GuvFX_SignalBridge`, `GuvFX_BridgeWatchdog`) to start the terminal + bridge.
+- **The box has exactly THREE interactive sessions, all Administrator/occupied:** S1 console (autologon **Administrator**) → runs the production **bridge**; S3 RDP (**Administrator**) → runs **Nuno's production terminal**; S4 RDP (**guvfx-rdp**, disconnected) → a full admin desktop (explorer/ServerManager/tailscale+wireguard tray, 24 procs).
+- **RDS-RD-Server = not installed** → the non-RDS ceiling is **console + 2 RDP sessions**, and **all three are consumed**. `fSingleSessionPerUser=0`, `fDenyTSConnections=0`.
+
+**The blocker.** MT5 only persists in an **interactive** session (Addendum 1). A **dedicated non-admin beta session would be a 4th interactive session** — impossible without RDS. The three that exist are all Administrator and occupied (one by Nuno's terminal, one by the production bridge). Getting a dedicated beta session would require: **changing the production autologon** (it is `Administrator`, and the production terminal/bridge start under it — changing it breaks production startup) — **or** competing for an RDP slot (both used; a 3rd RDP connection at the 2-session cap risks force-disconnecting **Nuno's terminal in S3**) — **or** a reboot that still cannot create a persistent 4th non-admin session without RDS. **Each is a STOP condition** (*"introducing the dedicated beta session requires changing production autologon or restarting Nuno's session"*; *"a Windows reboot is required outside an approved maintenance window"*; RDS is forbidden).
+
+**The only on-existing-box path (relaxes Phase 1) — Option A.** Run beta terminals in the **existing Administrator autologon session (S1)** as separate processes with per-account portable dirs (`C:\GuvFX\beta\accounts\<id>\`) + per-runtime bridges — **session-separated from Nuno's terminal (S3)** and **empirically proven** (6 terminals coexisted in S1 with the production bridge staying healthy). Its honest cost vs Phase 1: beta runs **as Administrator, not a non-admin identity** (weaker identity isolation — a compromised beta runtime would hold admin rights), and it **shares S1's desktop-heap with the production bridge** (a beta-induced session-heap issue could affect the bridge — held at 6 terminals, but a soak risk). This needs **no box reconfiguration and does not touch Nuno's terminal**, but it is a **material relaxation of Phase-1 isolation** that only Nuno can accept.
+
+**Decision required from Nuno (I will not reconfigure the production session model unilaterally):**
+1. **Accept Option A** — co-host beta in the shared Administrator autologon session with per-account process/dir/bridge isolation, accepting the admin-identity + shared-bridge-session residual (soak-bounded). Fastest, £0, no production disturbance.
+2. **Approve a maintenance window** to attempt a session-model reconfiguration — but note **no single non-RDS box can provide a persistent 4th non-admin interactive session**, so this cannot fully deliver Phase-1 isolation either.
+3. **RDS** — would deliver true per-user non-admin sessions, but is **explicitly forbidden** (no RDS/CALs).
+4. **A dedicated box** — delivers clean non-admin isolation, but is **procurement** (de-scoped).
+
+**Recommendation.** If staying on the existing box (no procurement), **Option A** is the only viable path — with the identity-isolation relaxation explicitly accepted and the shared-session-heap risk covered by the Phase-12 soak. Otherwise the clean Phase-1 isolation needs a dedicated box (procurement). **Everything else in the programme (runtime-ownership model, capacity service, provisioning-job state machine, per-runtime bridge routing, watchdog, controlled registration, broker onboarding, multi-tenant fan-out, per-assignment sizing) is session-agnostic backend that I can build + test + review now, behind flags, onboarding CLOSED — once the session model is chosen.**
+
+**Zero mutation.** This addendum is read-only investigation only; nothing on the box was changed; Nuno's terminal (S3) + bridge (:8788) untouched.
