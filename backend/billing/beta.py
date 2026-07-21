@@ -28,6 +28,17 @@ def grant_beta_entitlement(user) -> UserSubscriptionState:
     return state
 
 
+def is_admitted_beta_tester(user) -> bool:
+    """CVM controlled-beta admission check. True only for an email on the ACTIVE admission allowlist
+    (``BetaTester``). This is a strictly PER-IDENTITY admission — it never opens onboarding globally, and
+    an empty allowlist means nobody is admitted (public onboarding stays closed via ``beta_onboarding_open``)."""
+    from .models import BetaTester
+    email = (getattr(user, "email", "") or "").strip().lower()
+    if not email:
+        return False
+    return BetaTester.objects.filter(email__iexact=email, is_active=True).exists()
+
+
 def beta_onboarding_open() -> bool:
     """The server-side beta-onboarding gate. **DEFAULT CLOSED.** External beta onboarding may proceed
     only when explicitly opened via ``BETA_ONBOARDING_ENABLED`` (settings or env) — which must NOT happen
