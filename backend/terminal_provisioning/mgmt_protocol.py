@@ -16,9 +16,17 @@ import secrets
 
 PROTOCOL_VERSION = 1
 
-# The ONLY operations the protocol may carry. TOMBSTONE (quarantine) replaces destructive TEARDOWN for
-# the first production walk (requirement 2). No arbitrary delete is expressible.
-ALLOWED_OPERATIONS = ("MATERIALISE", "START", "VERIFY", "STOP", "TOMBSTONE")
+# The provisioning operations the protocol may carry. TOMBSTONE (quarantine) replaces destructive
+# TEARDOWN for the first production walk (requirement 2). No arbitrary delete is expressible.
+PROVISIONING_OPERATIONS = ("MATERIALISE", "START", "VERIFY", "STOP", "TOMBSTONE")
+# NEGOTIATE is a read-only, authenticated handshake (no runtime side-effect) the backend MUST perform to
+# agree protocol/agent/manifest versions + supported operations before sending any provisioning request
+# (versioned-contract requirement). It is signed like any request but touches no runtime.
+HANDSHAKE_OPERATIONS = ("NEGOTIATE",)
+ALLOWED_OPERATIONS = PROVISIONING_OPERATIONS + HANDSHAKE_OPERATIONS
+
+# runtime_uuid placeholder for the (runtime-less) NEGOTIATE handshake.
+NIL_UUID = "00000000-0000-0000-0000-000000000000"
 
 # Fields covered by the signature (the canonical body). Deliberately excludes ``signature`` itself and
 # any free-form payload — there is nowhere to smuggle a command, path or argument.

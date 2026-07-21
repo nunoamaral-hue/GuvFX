@@ -13,7 +13,8 @@ and refuses anything that is not provably contained beneath the canonical beta r
 import time
 import uuid
 
-from .mgmt_protocol import ALLOWED_OPERATIONS, ProtocolError, verify_request
+from .mgmt_protocol import (
+    ALLOWED_OPERATIONS, PROTOCOL_VERSION, PROVISIONING_OPERATIONS, ProtocolError, verify_request)
 
 # Agent-local canonical beta root (config-overridable at install). The agent derives paths ONLY from the
 # runtime UUID under this root — a request can never supply a path (requirement 1/3).
@@ -23,10 +24,11 @@ DEFAULT_BETA_ROOT = r"C:\GuvFX\beta\accounts"
 _MUTATING = frozenset({"MATERIALISE", "START", "STOP", "TOMBSTONE"})
 
 # The ONLY fields an agent response may contain (requirement 7 — never creds/env/cmdlines/fs-listings/raw
-# exceptions).
+# exceptions). Includes the NEGOTIATE handshake fields.
 _RESPONSE_ALLOWLIST = ("operation", "outcome", "runtime_uuid", "provisioning_job_id", "pid",
                        "session_id", "agent_version", "script_version", "duration_ms", "reason_code",
-                       "running", "logged_in", "verified_at")
+                       "running", "logged_in", "verified_at",
+                       "protocol_version", "manifest_version", "supported_operations")
 
 
 class AgentError(Exception):
@@ -60,7 +62,9 @@ class BetaProvisioningAgent:
 
     def __init__(self, *, keyring, nonce_store, idempotency_store, op_impls, agent_version,
                  script_manifest, script_versions, resolve_real_path, runtime_locks,
-                 base: str = DEFAULT_BETA_ROOT, now_fn=None, max_skew_seconds: int = 30):
+                 base: str = DEFAULT_BETA_ROOT, now_fn=None, max_skew_seconds: int = 30,
+                 manifest_version: str = ""):
+        self.manifest_version = manifest_version
         self.keyring = keyring
         self.nonce_store = nonce_store               # .seen(nonce)->bool ; .remember(nonce, expiry)
         self.idempotency_store = idempotency_store    # .get(job_id, op) ; .put(job_id, op, resp)
@@ -84,6 +88,15 @@ class BetaProvisioningAgent:
                 nonce_seen=self.nonce_store.seen, nonce_remember=self.nonce_store.remember,
                 max_skew_seconds=self.max_skew_seconds)
             op, ruuid, job_id = fields["operation"], fields["runtime_uuid"], fields["provisioning_job_id"]
+
+            # Read-only, runtime-less handshake: report versions + supported ops so the backend can
+            # negotiate the contract before any provisioning request. No path/idempotency/lock work.
+            if op == "NEGOTIATE":
+                return self._sanitise(op, job_id, ruuid, "ok", {
+                    "protocol_version": PROTOCOL_VERSION,
+                    "manifest_version": self.manifest_version,
+                    "supported_operations": list(PROVISIONING_OPERATIONS),
+                })
 
             if op not in ALLOWED_OPERATIONS or op not in self.op_impls:
                 raise AgentError("operation_not_allowed")
@@ -146,8 +159,9 @@ class BetaProvisioningAgent:
             "script_version": script_version or raw.get("script_version", ""),
             "reason_code": reason_code,
         }
-        # copy ONLY allowlisted evidence fields the impl produced
-        for k in ("pid", "session_id", "duration_ms", "running", "logged_in", "verified_at"):
+        # copy ONLY allowlisted evidence / handshake fields the impl produced
+        for k in ("pid", "session_id", "duration_ms", "running", "logged_in", "verified_at",
+                  "protocol_version", "manifest_version", "supported_operations"):
             if k in raw:
                 out[k] = raw[k]
         return {k: v for k, v in out.items() if k in _RESPONSE_ALLOWLIST}

@@ -19,6 +19,7 @@ from trading.crypto import decrypt_password
 
 from .beta_activation import ActivationDenied, assert_beta_activation_allowed
 from .beta_capacity import CapacityError, _require_beta, reserve_beta_slot
+from .mgmt_client import ManagementChannelTimeout
 from .models import AccountRuntime, ProvisioningJob, RuntimeState
 from .runtime_state import record_transition
 
@@ -42,11 +43,15 @@ def _require_broker_login() -> bool:
 
 class ProvisionStepError(Exception):
     """A provisioning step failed. ``reason_code`` is user-safe; ``detail`` is admin-only; ``retryable``
-    controls whether the driver retries (bad credentials, for example, are NOT retryable)."""
-    def __init__(self, reason_code: str, *, detail: str = "", retryable: bool = True):
+    controls whether the driver retries (bad credentials, for example, are NOT retryable). ``ambiguous``
+    marks a channel TIMEOUT — the op MAY have executed; the driver must never treat it as proof of
+    failure, and on repeated ambiguity it quarantines rather than re-launching (requirement 9)."""
+    def __init__(self, reason_code: str, *, detail: str = "", retryable: bool = True,
+                 ambiguous: bool = False):
         self.reason_code = reason_code
         self.detail = detail
         self.retryable = retryable
+        self.ambiguous = ambiguous
         super().__init__(reason_code)
 
 
@@ -145,6 +150,12 @@ def _step(runtime, fn, reason_code):
         return fn()
     except ProvisionStepError:
         raise
+    except ManagementChannelTimeout:
+        # A channel timeout is AMBIGUOUS — the op may have executed. Retryable (the agent's (job_id, op)
+        # idempotency returns the stored result on the resend, so a completed op is never re-launched),
+        # but flagged ambiguous so repeated ambiguity quarantines instead of declaring failure/re-running.
+        raise ProvisionStepError("op_ambiguous_timeout", detail="channel_timeout",
+                                 retryable=True, ambiguous=True)
     except Exception as exc:  # noqa: BLE001 — never leak a raw agent string to the user path
         raise ProvisionStepError(reason_code, detail=str(exc)[:2000], retryable=True)
 
@@ -279,6 +290,20 @@ def _fail_step(job: ProvisioningJob, rt: AccountRuntime, e: ProvisionStepError) 
     exhausted = job.attempt >= MAX_ATTEMPTS
     if e.retryable and not exhausted:
         job.status = ProvisioningJob.Status.QUEUED   # re-queue; runtime stays in its resumable state
+        job.lease_expires_at = None
+    elif e.ambiguous:
+        # Repeated AMBIGUITY (channel timeouts), not proven failure: a terminal MAY be running that we
+        # cannot confirm. Do NOT declare FAILED (which could imply "safe to re-launch") and do NOT
+        # re-launch — set the quarantine flag (blocks re-provisioning; the reserve gate refuses a
+        # quarantined runtime) and record the ambiguity WITHOUT forcing a STOPPED state we cannot verify.
+        rt_q = AccountRuntime.objects.get(pk=rt.pk)
+        rt_q.quarantined = True
+        rt_q.quarantine_reason = "ambiguous_timeout"
+        rt_q.save(update_fields=["quarantined", "quarantine_reason", "updated_at"])
+        record_transition(rt_q, rt_q.state, event_type="FAILURE",
+                          reason_code="ambiguous_timeout_quarantined")
+        job.status = ProvisioningJob.Status.FAILED
+        job.finished_at = timezone.now()
         job.lease_expires_at = None
     else:
         record_transition(rt, RuntimeState.FAILED, reason_code=e.reason_code)

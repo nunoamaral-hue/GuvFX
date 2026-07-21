@@ -8,7 +8,9 @@ timeout as AMBIGUOUS (never as proof of failure) — the worker reconciles those
 from django.conf import settings
 from django.utils import timezone
 
-from .mgmt_protocol import DEFAULT_TTL_SECONDS, ProtocolError, sign_request
+from .mgmt_protocol import (
+    DEFAULT_TTL_SECONDS, NIL_UUID, PROTOCOL_VERSION, PROVISIONING_OPERATIONS, ProtocolError,
+    sign_request)
 
 
 class ManagementChannelError(Exception):
@@ -67,6 +69,28 @@ class AgentWindowsProvisioner:
         if resp.get("outcome") != "ok":
             raise ManagementChannelError(resp.get("reason_code") or "agent_denied")
         return resp
+
+    # ── Versioned-contract negotiation (MUST run before any provisioning request) ──
+    def negotiate(self) -> dict:
+        """Authenticated, read-only handshake: fetch the agent's protocol/agent/manifest versions +
+        supported operations. Runtime-less (NIL_UUID)."""
+        class _Nil:
+            runtime_uuid = NIL_UUID
+        return self._call("NEGOTIATE", _Nil())
+
+    def assert_compatible(self, info: dict | None = None) -> dict:
+        """Refuse to proceed unless the agent speaks our exact protocol version, reports a known agent
+        + manifest version, and supports every provisioning operation we will send. Never silently
+        evolve the protocol."""
+        info = info or self.negotiate()
+        if info.get("protocol_version") != PROTOCOL_VERSION:
+            raise ManagementChannelError("protocol_version_mismatch")
+        supported = set(info.get("supported_operations") or [])
+        if not set(PROVISIONING_OPERATIONS).issubset(supported):
+            raise ManagementChannelError("unsupported_operations")
+        if not info.get("agent_version") or info.get("manifest_version") is None:
+            raise ManagementChannelError("agent_or_manifest_version_unknown")
+        return info
 
     # ── WindowsProvisioner interface ──
     def materialise(self, runtime) -> None:
