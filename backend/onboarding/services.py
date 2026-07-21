@@ -89,7 +89,29 @@ class OnboardingStepError(Exception):
 def get_or_create_onboarding_state(user) -> UserOnboardingState:
     """Get or create the onboarding state for a user."""
     state, _ = UserOnboardingState.objects.get_or_create(user=user)
+    _apply_beta_admission(user, state)
     return state
+
+
+def _apply_beta_admission(user, state) -> None:
+    """CVM controlled-beta admission: for an allowlisted beta identity ONLY, admission REPLACES email
+    verification (Nuno: do not require email-verify/2FA for the controlled identity) and ensures beta
+    entitlement. Strictly per-identity and idempotent — the side-effects run once (when email_verified
+    first flips), and non-allowlisted users are never touched (email verification still required for
+    them, so public onboarding stays closed). Does NOT open the onboarding gate globally."""
+    from django.db import transaction
+
+    from billing.beta import grant_beta_entitlement, is_admitted_beta_tester
+    # Estate-safety (defense-in-depth): NEVER apply beta admission to a staff/superuser (Nuno) account,
+    # even if their email were mistakenly allowlisted — his estate must stay untouched.
+    if state.email_verified or user.is_staff or user.is_superuser or not is_admitted_beta_tester(user):
+        return
+    # Commit the email-verified flip and the entitlement grant together, so a partial failure can never
+    # leave the tester verified-but-un-entitled (which the run-once guard would then never self-heal).
+    with transaction.atomic():
+        state.email_verified = True
+        state.save(update_fields=["email_verified", "updated_at"])
+        grant_beta_entitlement(user)
 
 
 def get_onboarding_state_dict(state: UserOnboardingState) -> dict:

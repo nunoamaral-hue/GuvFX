@@ -3,8 +3,12 @@ import json
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import connection, models, transaction
 from django.utils import timezone
+
+# Fixed advisory-lock key that serialises BetaTester activation so the active-tester cap is enforced
+# atomically (check+insert) even under concurrent operator invocations — not just check-then-act.
+_BETA_TESTER_LOCK_KEY = 0x42455441  # "BETA"
 
 
 # ---------------------------------------------------------------------------
@@ -467,3 +471,47 @@ class PaymentEvent(models.Model):
                 f"{subscription_reference}:{provider_timestamp}"
             )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# BetaTester — CVM controlled-beta admission allowlist
+# ---------------------------------------------------------------------------
+
+
+class BetaTester(models.Model):
+    """Customer-Validation-Mode admission allowlist (a single controlled beta test identity).
+
+    An admitted email that registers via the NORMAL public onboarding flow is treated as the beta test
+    identity: their admission REPLACES email verification (Nuno: do not require email-verify/2FA for the
+    controlled identity) and lets them past the closed onboarding gate — strictly PER-IDENTITY, WITHOUT
+    opening onboarding globally. An EMPTY allowlist is zero behaviour change (public onboarding stays
+    CLOSED). Cap-enforced (default 1 active) so the blast radius can never exceed the admitted set.
+    """
+
+    email = models.EmailField(unique=True)
+    is_active = models.BooleanField(default=True)
+    note = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "beta tester (admission allowlist)"
+        verbose_name_plural = "beta testers (admission allowlist)"
+
+    def __str__(self):
+        return f"{self.email} ({'active' if self.is_active else 'inactive'})"
+
+    def save(self, *args, **kwargs):
+        # Normalise + enforce the active-tester cap (default 1). Fail-closed: never admit beyond the cap.
+        self.email = (self.email or "").strip().lower()
+        if not self.is_active:
+            return super().save(*args, **kwargs)
+        cap = int(getattr(settings, "BETA_MAX_TESTERS", 1) or 1)
+        # Serialise the check+insert with a transaction-scoped advisory lock so two concurrent
+        # activations can never both pass the cap (durable "max N active", cap-agnostic).
+        with transaction.atomic():
+            with connection.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", [_BETA_TESTER_LOCK_KEY])
+            others = BetaTester.objects.filter(is_active=True).exclude(pk=self.pk).count()
+            if others >= cap:
+                raise ValidationError(f"beta tester cap reached ({cap} active)")
+            super().save(*args, **kwargs)
