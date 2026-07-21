@@ -29,17 +29,24 @@ def load_manifest(path: str) -> dict:
         return json.load(fh)
 
 
+def _combined(checksums: dict) -> str:
+    """One digest over ALL implementation modules — op_impls.py, win_ops.py AND the bundled protocol +
+    agent-core. Any single-module drift changes it, so a mutating op fails closed regardless of which
+    implementation file was tampered (S1)."""
+    return hashlib.sha256(
+        json.dumps({m: checksums.get(m) for m in IMPL_MODULES}, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def build_script_manifest(approved: dict, actual: dict, operations) -> dict:
-    """Produce the per-op ``script_manifest`` the agent-core consumes: each op maps to the approved
-    op_impls checksum, plus its ``:actual`` computed counterpart. A drift in the implementation module
-    therefore fails EVERY mutating op closed."""
-    impl_approved = approved.get("op_impls.py")
-    impl_actual = actual.get("op_impls.py")
+    """Produce the per-op ``script_manifest`` the agent-core consumes: each op maps to the COMBINED
+    approved checksum of every implementation module (+ its ``:actual`` counterpart). A drift in ANY
+    implementation module therefore fails EVERY mutating op closed."""
+    ca, cx = _combined(approved), _combined(actual)
     sm = {}
     for op in operations:
         name = f"op_{op.lower()}"
-        sm[name] = impl_approved
-        sm[name + ":actual"] = impl_actual
+        sm[name] = ca
+        sm[name + ":actual"] = cx
     return sm
 
 

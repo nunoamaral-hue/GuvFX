@@ -25,16 +25,20 @@ class SqliteStore:
         self._conn.commit()
 
     # ── nonce store (replay) ──
+    def burn(self, nonce: str, expiry: int) -> bool:
+        """ATOMIC single-use: insert the nonce and report whether THIS call was the first to do so.
+        The INSERT-OR-IGNORE + rowcount check under the connection lock makes seen+remember one step, so
+        two concurrent identical requests cannot both be accepted (S3)."""
+        with self._lock:
+            cur = self._conn.execute("INSERT OR IGNORE INTO nonces (nonce, expiry) VALUES (?, ?)",
+                                     (nonce, int(expiry)))
+            self._conn.commit()
+            return cur.rowcount == 1
+
     def seen(self, nonce: str) -> bool:
         with self._lock:
             cur = self._conn.execute("SELECT 1 FROM nonces WHERE nonce=?", (nonce,))
             return cur.fetchone() is not None
-
-    def remember(self, nonce: str, expiry: int) -> None:
-        with self._lock:
-            self._conn.execute("INSERT OR IGNORE INTO nonces (nonce, expiry) VALUES (?, ?)",
-                               (nonce, int(expiry)))
-            self._conn.commit()
 
     def purge_expired_nonces(self, now: int) -> None:
         with self._lock:

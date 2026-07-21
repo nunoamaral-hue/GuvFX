@@ -86,8 +86,7 @@ class BetaProvisioningAgent:
         try:
             fields = verify_request(
                 request, keyring=self.keyring, now=self.now_fn(),
-                nonce_seen=self.nonce_store.seen, nonce_remember=self.nonce_store.remember,
-                max_skew_seconds=self.max_skew_seconds)
+                nonce_burn=self.nonce_store.burn, max_skew_seconds=self.max_skew_seconds)
             op, ruuid, job_id = fields["operation"], fields["runtime_uuid"], fields["provisioning_job_id"]
 
             # Read-only, runtime-less handshake: report versions + supported ops so the backend can
@@ -113,16 +112,24 @@ class BetaProvisioningAgent:
                 return prior["response"]
 
             # Derive the canonical dir LOCALLY from the UUID; refuse anything not contained beneath the
-            # beta root (this IS the production-refusal + no-path-from-client guarantee).
+            # beta root (this IS the production-refusal + no-path-from-client guarantee). The UUID is
+            # NORMALISED once (canonical hex form) and that single form is used for the path, the ops and
+            # the response, so ``{ABC}`` and ``abc`` can never disagree on ownership.
             try:
-                canonical_dir = derive_canonical_runtime_dir(ruuid, self.base)
+                norm_uuid = str(uuid.UUID(str(ruuid)))
+                canonical_dir = derive_canonical_runtime_dir(norm_uuid, self.base)
             except (ValueError, AttributeError, TypeError):
                 raise AgentError("bad_runtime_uuid")
             if not is_beneath(canonical_dir, self.base):
                 raise AgentError("path_escape")
-            real = self.resolve_real_path(canonical_dir)
-            if real is not None and not is_beneath(real, self.base):
-                raise AgentError("reparse_escape")
+            # Reparse/junction escape: resolve the runtime dir AND its (pre-plantable) parent even when the
+            # leaf does not exist yet — MATERIALISE creates the leaf, so gating on leaf existence would let
+            # a junction planted at ``<base>\<uuid>`` be written through before the escape is noticed.
+            parent_dir = canonical_dir.rsplit("\\", 1)[0]
+            for candidate in (canonical_dir, parent_dir):
+                real = self.resolve_real_path(candidate)
+                if real is not None and not is_beneath(real, self.base):
+                    raise AgentError("reparse_escape")
 
             # Integrity (requirement 6): the local implementation must match the approved manifest.
             impl_name = f"op_{op.lower()}"
@@ -131,10 +138,10 @@ class BetaProvisioningAgent:
 
             impl = self.op_impls[op]
             if op in _MUTATING:
-                with self.runtime_locks.acquire(str(ruuid)):   # one mutating op per runtime at a time
-                    raw = impl(canonical_dir=canonical_dir, runtime_uuid=str(ruuid), base=self.base)
+                with self.runtime_locks.acquire(norm_uuid):    # one mutating op per runtime at a time
+                    raw = impl(canonical_dir=canonical_dir, runtime_uuid=norm_uuid, base=self.base)
             else:
-                raw = impl(canonical_dir=canonical_dir, runtime_uuid=str(ruuid), base=self.base)
+                raw = impl(canonical_dir=canonical_dir, runtime_uuid=norm_uuid, base=self.base)
 
             resp = self._sanitise(op, job_id, ruuid, "ok", raw,
                                   script_version=self.script_versions.get(impl_name, ""))

@@ -1,9 +1,9 @@
 {
   "agent_version": "beta-agent-1.0.0",
   "checksums": {
-    "lib/mgmt_agent_core.py": "58f9dc1b509e3529276a419f622422bd85655343841878b1a2a07f114b44cb75",
-    "lib/mgmt_protocol.py": "6e91796ac1f6dd0065204b57ee871022b459157676e3582e796de5c35e04d95e",
-    "op_impls.py": "3cea12aeed5f7d21c71ad02521211bd3c3dc2b712ad41ab9211d4dca35e547d8",
+    "lib/mgmt_agent_core.py": "0613945f6990d7ab0e5ab52e5482ed6e331bdbc125cc89c1ff1bea84d6650938",
+    "lib/mgmt_protocol.py": "7b9538f3fde36acac07e611dc80448b78f008ae2045928b0ebf8d83562e13e48",
+    "op_impls.py": "9a2312ea57bc46068fb1600f83407ca2dfbbc63fe77954b64bbce6b189a16713",
     "win_ops.py": "99c890a7033e50e6fc7c8c18a0eddee7b6676d26e5264e9a70b243ddbab91803"
   },
   "manifest_version": "2026-07-21.1",

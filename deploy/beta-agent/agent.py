@@ -25,12 +25,17 @@ from win_ops import RealWindowsOps                        # noqa: E402
 AGENT_VERSION = "beta-agent-1.0.0"
 
 
-def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: str = "") -> BetaProvisioningAgent:
+def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: str = "",
+                enforce_integrity: bool = False) -> BetaProvisioningAgent:
     """Assemble the boundary-enforcing agent from config + the approved manifest. Injectable (win/store/
-    locks) for tests; defaults to the real Windows ops + the SQLite state store."""
+    locks) for tests; defaults to the real Windows ops + the SQLite state store. ``enforce_integrity``
+    (used by the live service) refuses to build if ANY implementation module drifts from the manifest —
+    the request-time per-op gate also blocks mutations, this is startup defense-in-depth."""
     manifest_path = manifest_path or cfg.get("manifest_path") or os.path.join(_HERE, "manifest.json")
     approved = agent_manifest.load_manifest(manifest_path)
     actual = agent_manifest.compute_checksums(_HERE)
+    if enforce_integrity and not agent_manifest.integrity_ok(approved.get("checksums", {}), actual):
+        raise RuntimeError("agent implementation integrity check failed — refusing to start")
     script_manifest = agent_manifest.build_script_manifest(
         approved.get("checksums", {}), actual, approved.get("supported_operations", []))
 
@@ -82,7 +87,7 @@ def make_handler(agent: BetaProvisioningAgent):
 def main():
     cfg = agent_config.load_config()             # raises if the bind host is wildcard/public
     agent_config.assert_private_bind(cfg["bind_host"])
-    agent = build_agent(cfg)
+    agent = build_agent(cfg, enforce_integrity=True)
     httpd = ThreadingHTTPServer((cfg["bind_host"], cfg["bind_port"]), make_handler(agent))
     httpd.serve_forever()
 

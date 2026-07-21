@@ -53,6 +53,11 @@ class OpImplementations:
         if existing == str(runtime_uuid):
             return {"materialised": True, "idempotent": True}    # already materialised + owned
         self.win.make_dirs(canonical_dir)
+        # Defense-in-depth (S2): even after the agent-core's ancestor reparse check, re-verify the created
+        # dir's REAL path is contained before writing the golden image — a junction must never redirect it.
+        real = self.win.real_path(canonical_dir)
+        if real is not None and not _beneath(real, base):
+            raise OpError("reparse_escape_after_materialise")
         self.win.copy_golden(canonical_dir)
         self.win.write_owner_tag(canonical_dir, runtime_uuid)
         return {"materialised": True}

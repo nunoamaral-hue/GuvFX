@@ -25,9 +25,13 @@ def _req(op="MATERIALISE", *, now=1_000_000, key_id="k1", job_id=7, ruuid=RUUID,
 class ProtocolTests(SimpleTestCase):
     def _verify(self, req, *, now=1_000_010, seen=None):
         seen = seen if seen is not None else set()
-        return proto.verify_request(req, keyring=KEYRING, now=now,
-                                    nonce_seen=lambda n: n in seen,
-                                    nonce_remember=lambda n, e: seen.add(n))
+
+        def burn(n, e):
+            if n in seen:
+                return False
+            seen.add(n)
+            return True
+        return proto.verify_request(req, keyring=KEYRING, now=now, nonce_burn=burn)
 
     def test_sign_verify_roundtrip(self):
         got = self._verify(_req())
@@ -93,7 +97,11 @@ class ProtocolTests(SimpleTestCase):
 class _Nonce:
     def __init__(self): self._s = set()
     def seen(self, n): return n in self._s
-    def remember(self, n, e): self._s.add(n)
+    def burn(self, n, e):
+        if n in self._s:
+            return False
+        self._s.add(n)
+        return True
 
 
 class _Idem:

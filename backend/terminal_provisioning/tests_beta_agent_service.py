@@ -221,3 +221,53 @@ class AgentServiceTests(SimpleTestCase):
         req = _req("MATERIALISE")
         for forbidden in ("path", "port", "command", "cmd", "exe", "args", "script", "env"):
             self.assertNotIn(forbidden, req)
+
+
+class HardenedB2Tests(SimpleTestCase):
+    """Additional coverage for the B2 review fixes (S1 win_ops integrity, S2 parent reparse, S3, bind
+    boundaries, tombstone_dir stripping)."""
+
+    def test_win_ops_drift_blocks_mutation(self):
+        # S1: tampering win_ops.py (not op_impls.py) must still block every mutating op.
+        import json as _json
+        good = agent_manifest.load_manifest(os.path.join(_BUNDLE, "manifest.json"))
+        bad = dict(good); bad_checks = dict(good["checksums"]); bad_checks["win_ops.py"] = "TAMPERED"
+        bad["checksums"] = bad_checks
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        _json.dump(bad, f); f.close()
+        a, _, _ = _build(manifest_path=f.name)
+        r = a.handle(_req("MATERIALISE"))
+        self.assertEqual((r["outcome"], r["reason_code"]), ("denied", "impl_integrity_mismatch"))
+
+    def test_materialise_reparse_via_parent_junction_rejected(self):
+        # S2: a junction planted at the (not-yet-materialised) <uuid> parent must be caught before write.
+        win = FakeWin()
+        parent = CANON.rsplit("\\", 1)[0]           # C:\GuvFX\beta\accounts\<uuid>
+        win.reparse[parent] = r"C:\Windows\System32"
+        a, _, _ = _build(win=win)
+        r = a.handle(_req("MATERIALISE"))
+        self.assertEqual((r["outcome"], r["reason_code"]), ("denied", "reparse_escape"))
+        self.assertEqual(win.golden, [])             # never copied the golden image through the junction
+
+    def test_bind_guard_ipv6_and_tailscale_boundary(self):
+        # mapped-public + global IPv6 refused; Tailscale 100.64/10 boundary enforced.
+        for bad in ("::ffff:8.8.8.8", "2001:4860:4860::8888", "100.63.255.255", "100.128.0.1"):
+            with self.assertRaises(agent_config.ConfigError, msg=bad):
+                agent_config.assert_private_bind(bad)
+        for good in ("100.64.0.1", "100.127.255.254"):
+            agent_config.assert_private_bind(good)   # Tailscale CGNAT allowed
+
+    def test_atomic_nonce_burn(self):
+        # S3: burn is atomic single-use — first True, replay False.
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SqliteStore(f.name)
+        self.assertTrue(s.burn("n", 9_999_999_999))
+        self.assertFalse(s.burn("n", 9_999_999_999))
+
+    def test_tombstone_dir_not_leaked_in_response(self):
+        win = FakeWin(); win.dirs.add(CANON); win.owners[CANON] = RUUID
+        a, _, _ = _build(win=win)
+        r = a.handle(_req("TOMBSTONE"))
+        self.assertEqual(r["outcome"], "ok")
+        self.assertNotIn("tombstone_dir", r)         # full path stripped by the response allowlist
+        self.assertNotIn("tombstoned", r)

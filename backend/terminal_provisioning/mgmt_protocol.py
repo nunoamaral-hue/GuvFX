@@ -89,13 +89,14 @@ def sign_request(*, provisioning_job_id, runtime_uuid, operation, correlation_id
     return fields
 
 
-def verify_request(request: dict, *, keyring: dict, now: int, nonce_seen, nonce_remember,
+def verify_request(request: dict, *, keyring: dict, now: int, nonce_burn,
                    max_skew_seconds: int = DEFAULT_MAX_SKEW_SECONDS) -> dict:
     """Independently validate a request (used by the Windows agent). Raises ``ProtocolError`` on any
     failure; returns the validated signed fields on success.
 
-    ``nonce_seen(nonce) -> bool`` and ``nonce_remember(nonce, expiry)`` are the durable single-use nonce
-    store (persisted across agent restarts). Nonce is only remembered AFTER the signature verifies, so an
+    ``nonce_burn(nonce, expiry) -> bool`` is the durable single-use nonce store (persisted across agent
+    restarts): it ATOMICALLY records the nonce and returns True on first use, False on replay — so two
+    concurrent identical requests cannot both pass. It is called only AFTER the signature verifies, so an
     attacker cannot burn a victim's nonce with an unsigned request."""
     if not isinstance(request, dict):
         raise ProtocolError("malformed_request")
@@ -131,9 +132,10 @@ def verify_request(request: dict, *, keyring: dict, now: int, nonce_seen, nonce_
     if not hmac.compare_digest(expected, sig):    # constant-time
         raise ProtocolError("bad_signature")
 
-    # Replay: only AFTER the signature is proven do we consult/burn the durable nonce store.
-    if nonce_seen(request["nonce"]):
+    # Replay: only AFTER the signature is proven do we atomically burn the durable nonce. A single-call
+    # atomic burn (first-use → True, else False) closes the check-then-set race between concurrent
+    # identical requests.
+    if not nonce_burn(request["nonce"], exp):
         raise ProtocolError("nonce_replayed")
-    nonce_remember(request["nonce"], exp)
 
     return {k: request[k] for k in _SIGNED_FIELDS}
