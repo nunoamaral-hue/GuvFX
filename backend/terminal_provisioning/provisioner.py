@@ -148,7 +148,15 @@ def _start_and_verify(rt: AccountRuntime, p: WindowsProvisioner) -> None:
         # server_name). Free-text broker_name is not the MT5 server string, so we don't hard-fail on it.
         if server is not None and (v.get("server") or "") != server:
             raise ProvisionStepError("broker_identity_mismatch", retryable=False)
-        record_transition(rt, RuntimeState.RUNNING, reason_code="verified")
+        # The RUNNING transition, the heartbeat stamp, and the durable Verification Report (Increment 3)
+        # commit as ONE unit — so a runtime can never end up verified-RUNNING without its audit artefact.
+        # If the report create fails, RUNNING rolls back to AUTHENTICATING and the retry re-attempts it.
+        from .verification import build_verification_report
+        with transaction.atomic():
+            rt = record_transition(rt, RuntimeState.RUNNING, reason_code="verified")
+            rt.last_heartbeat_at = timezone.now()
+            rt.save(update_fields=["last_heartbeat_at", "updated_at"])
+            build_verification_report(rt, v)
 
 
 def _drive_provision(rt: AccountRuntime, p: WindowsProvisioner) -> None:
@@ -269,7 +277,9 @@ class FakeProvisioner:
         v = dict(self._verify)
         if v.get("login") is None:  # default: report the expected identity (happy path)
             login, server = _expected_login_server(runtime)
-            v["login"], v["server"] = login, server
+            v["login"], v["server"] = login, (server or "")
+        v.setdefault("pid", 4242)
+        v.setdefault("session", 1)
         self.calls.append(("verify", runtime.runtime_uuid))
         return v
 
