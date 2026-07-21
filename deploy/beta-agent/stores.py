@@ -66,12 +66,18 @@ class SqliteStore:
 class RuntimeLockManager:
     """In-process, NON-blocking mutation gate: one mutating op per runtime + a global cap. A conflict
     raises ``AgentError`` with a sanitised BUSY reason (the agent-core turns it into an ``outcome=denied``)
-    — conflicting operations never queue unpredictably."""
+    — conflicting operations never queue unpredictably.
+
+    B3P-1 drain support (verification B-6): the manager tracks the count of mutating ops currently holding a
+    lock, so the service stop handler can WAIT for in-flight mutations to finish before shutting down rather
+    than killing one mid-flight. (This is the in-process safety half; the durable crash-recovery marker is a
+    B3P-2 deliverable alongside the box-side MATERIALISE ops.)"""
 
     def __init__(self, max_global_mutations: int = 2):
         self._global = threading.Semaphore(max_global_mutations)
         self._guard = threading.Lock()
         self._per_runtime: dict[str, threading.Lock] = {}
+        self._active = 0                       # mutating ops currently holding a lock
 
     @contextlib.contextmanager
     def acquire(self, runtime_uuid: str):
@@ -82,9 +88,18 @@ class RuntimeLockManager:
                 lk = self._per_runtime.setdefault(str(runtime_uuid), threading.Lock())
             if not lk.acquire(blocking=False):
                 raise AgentError("runtime_busy")
+            with self._guard:
+                self._active += 1
             try:
                 yield
             finally:
+                with self._guard:
+                    self._active -= 1
                 lk.release()
         finally:
             self._global.release()
+
+    def active_mutations(self) -> int:
+        """Number of mutating ops currently executing under a runtime lock."""
+        with self._guard:
+            return self._active

@@ -1,12 +1,23 @@
-"""CVM-Inc-3 B2 — agent configuration + network bind-guard.
+"""CVM-Inc-3 B2/B3P-1 — agent configuration + network bind-guard.
 
 The agent binds ONLY to the configured Tailscale/private-management address (requirement 1/5). Startup
 fails hard if configured as a wildcard / public / non-private address. Secrets (the signing keyring) are
 loaded from the environment / an approved Windows secret mechanism — NEVER from Git.
+
+B3P-1 hardening (verification B-9): the LIVE service additionally pins the bind host to the EXACT expected
+management address (not merely "some private address") and refuses a bind port that collides with Nuno's
+services. The broad ``assert_private_bind`` predicate is retained ONLY for offline validation.
 """
 import ipaddress
 import json
 import os
+
+# The single management interface the live agent is expected to bind (verification B-9). ``load_config``
+# pins the live bind to this exact address; ``BETA_AGENT_EXPECTED_BIND_HOST`` overrides it for a different box.
+DEFAULT_EXPECTED_BIND_HOST = "100.79.101.19"
+
+# Ports that belong to Nuno's estate / RDP — the agent must never be pointed at one, even by fat-finger.
+FORBIDDEN_BIND_PORTS = frozenset({8787, 8788, 3389})
 
 
 class ConfigError(Exception):
@@ -31,28 +42,56 @@ def _is_private_mgmt_address(host: str) -> bool:
 
 
 def assert_private_bind(host: str) -> None:
-    """Refuse to start unless the bind host is a private/Tailscale management address."""
+    """Refuse to start unless the bind host is a private/Tailscale management address. Broad predicate —
+    used by offline validation. The LIVE service uses the stricter ``assert_exact_bind`` (B-9)."""
     if not _is_private_mgmt_address(host):
         raise ConfigError(f"refusing to bind to a non-private/management address: {host!r}")
 
 
+def assert_exact_bind(host: str, expected: str) -> None:
+    """LIVE bind pin (verification B-9): the running service must bind the ONE expected management address,
+    not merely some private one — a loopback / alternate-NIC bind would side-step the interface-scoped
+    firewall rule. Still requires the address to be private (defense-in-depth)."""
+    assert_private_bind(host)
+    if host != expected:
+        raise ConfigError(
+            f"refusing to bind {host!r}: live agent must bind exactly {expected!r} "
+            f"(set BETA_AGENT_EXPECTED_BIND_HOST to change the expected interface)")
+
+
 def load_config(env: dict | None = None) -> dict:
     """Load agent config from the environment. Required: BETA_AGENT_BIND_HOST, BETA_AGENT_BIND_PORT,
-    BETA_AGENT_KEYRING (JSON), BETA_AGENT_KEY_ID. Optional base/tombstone/state/manifest paths."""
+    BETA_AGENT_KEYRING (JSON), BETA_AGENT_KEY_ID. Optional base/tombstone/state/manifest paths.
+
+    The bind is pinned to the EXACT expected management address (B-9) and the port is refused if it collides
+    with Nuno's estate / RDP (B3P-1)."""
     env = env if env is not None else os.environ
     host = env.get("BETA_AGENT_BIND_HOST", "")
-    assert_private_bind(host)
+    expected = env.get("BETA_AGENT_EXPECTED_BIND_HOST", DEFAULT_EXPECTED_BIND_HOST)
+    assert_exact_bind(host, expected)
+    port = int(env.get("BETA_AGENT_BIND_PORT", "8791"))
+    if port in FORBIDDEN_BIND_PORTS:
+        raise ConfigError(f"refusing bind port {port}: reserved for Nuno's estate/RDP ({sorted(FORBIDDEN_BIND_PORTS)})")
     keyring_raw = env.get("BETA_AGENT_KEYRING", "")
     keyring = json.loads(keyring_raw) if keyring_raw else {}
     if not keyring or not env.get("BETA_AGENT_KEY_ID"):
         raise ConfigError("missing signing keyring / key id (provision via the Windows secret store)")
+    # State + logs live UNDER a dedicated state dir, SEPARATE from the code dir, so an update/rollback copy
+    # over the code dir can never clobber the durable nonce/idempotency store or logs (verification, §8/§11).
+    state_dir = env.get("BETA_AGENT_STATE_DIR", r"C:\GuvFX\beta\agent-state")
     return {
         "bind_host": host,
-        "bind_port": int(env.get("BETA_AGENT_BIND_PORT", "8791")),
+        "expected_bind_host": expected,
+        "bind_port": port,
         "keyring": keyring,
         "key_id": env["BETA_AGENT_KEY_ID"],
         "beta_root": env.get("BETA_AGENT_ROOT", r"C:\GuvFX\beta\accounts"),
         "tombstone_base": env.get("BETA_AGENT_TOMBSTONE", r"C:\GuvFX\beta\tombstones"),
-        "state_db": env.get("BETA_AGENT_STATE_DB", r"C:\GuvFX\beta\agent\state.sqlite"),
+        "state_db": env.get("BETA_AGENT_STATE_DB", state_dir + r"\state.sqlite"),
+        "log_dir": env.get("BETA_AGENT_LOG_DIR", state_dir + r"\logs"),
         "manifest_path": env.get("BETA_AGENT_MANIFEST", ""),
+        "max_body_bytes": int(env.get("BETA_AGENT_MAX_BODY_BYTES", "16384")),
+        "max_connections": int(env.get("BETA_AGENT_MAX_CONNECTIONS", "16")),
+        "request_timeout_s": float(env.get("BETA_AGENT_REQUEST_TIMEOUT_S", "10")),
+        "drain_timeout_s": float(env.get("BETA_AGENT_DRAIN_TIMEOUT_S", "20")),
     }

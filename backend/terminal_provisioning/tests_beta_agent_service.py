@@ -6,9 +6,12 @@ mismatch blocks mutation, START-once, STOP/TOMBSTONE process/dir ownership, resp
 accurate NEGOTIATE. Also asserts the bundle's shared modules are byte-identical to the backend originals.
 """
 import hashlib
+import http.client
+import json
 import os
 import sys
 import tempfile
+import time
 
 from django.test import SimpleTestCase
 
@@ -110,10 +113,12 @@ class BundleIntegrityTests(SimpleTestCase):
 class AgentServiceTests(SimpleTestCase):
     def test_negotiate_reports_versions_and_ops(self):
         a, _, _ = _build()
+        expected_version = agent_manifest.load_manifest(
+            os.path.join(_BUNDLE, "manifest.json")).get("manifest_version")
         r = a.handle(_req("NEGOTIATE", ruuid=proto.NIL_UUID))
         self.assertEqual(r["outcome"], "ok")
         self.assertEqual(r["protocol_version"], proto.PROTOCOL_VERSION)
-        self.assertEqual(r["manifest_version"], "2026-07-21.1")
+        self.assertEqual(r["manifest_version"], expected_version)
         self.assertEqual(set(r["supported_operations"]), set(proto.PROVISIONING_OPERATIONS))
         self.assertTrue(r["agent_version"])
 
@@ -271,3 +276,158 @@ class HardenedB2Tests(SimpleTestCase):
         self.assertEqual(r["outcome"], "ok")
         self.assertNotIn("tombstone_dir", r)         # full path stripped by the response allowlist
         self.assertNotIn("tombstoned", r)
+
+
+def _server_cfg(state_db, *, host="127.0.0.1", port=0):
+    """Full config for the AgentServer lifecycle tests — a loopback bind (host == expected_bind_host)."""
+    return {
+        "bind_host": host, "expected_bind_host": host, "bind_port": port,
+        "keyring": KEYRING, "key_id": "k1", "beta_root": BETA_ROOT,
+        "tombstone_base": r"C:\GuvFX\beta\tombstones", "state_db": state_db, "manifest_path": "",
+        "max_body_bytes": 16384, "max_connections": 8, "request_timeout_s": 5, "drain_timeout_s": 2,
+    }
+
+
+class ExactBindPinTests(SimpleTestCase):
+    """B-9: the LIVE bind is pinned to the exact expected management address, not merely 'some private'."""
+
+    def test_exact_bind_accepts_only_expected(self):
+        agent_config.assert_exact_bind("100.79.101.19", "100.79.101.19")   # no raise
+        for other in ("127.0.0.1", "10.0.0.5", "100.79.101.20"):
+            with self.assertRaises(agent_config.ConfigError):
+                agent_config.assert_exact_bind(other, "100.79.101.19")
+
+    def test_exact_bind_still_requires_private(self):
+        with self.assertRaises(agent_config.ConfigError):
+            agent_config.assert_exact_bind("8.8.8.8", "8.8.8.8")
+
+    def test_load_config_pins_bind_and_relocates_state(self):
+        env = {"BETA_AGENT_BIND_HOST": "100.79.101.19", "BETA_AGENT_KEYRING": json.dumps(KEYRING),
+               "BETA_AGENT_KEY_ID": "k1"}
+        cfg = agent_config.load_config(env)
+        self.assertEqual(cfg["bind_host"], "100.79.101.19")
+        self.assertTrue(cfg["state_db"].startswith(r"C:\GuvFX\beta\agent-state"))
+        self.assertTrue(cfg["log_dir"].endswith(r"agent-state\logs"))
+
+    def test_load_config_rejects_non_expected_bind(self):
+        env = {"BETA_AGENT_BIND_HOST": "127.0.0.1", "BETA_AGENT_KEYRING": json.dumps(KEYRING),
+               "BETA_AGENT_KEY_ID": "k1"}   # private but NOT the expected management address
+        with self.assertRaises(agent_config.ConfigError):
+            agent_config.load_config(env)
+
+    def test_load_config_refuses_reserved_ports(self):
+        for bad in ("8788", "8787", "3389"):
+            env = {"BETA_AGENT_BIND_HOST": "100.79.101.19", "BETA_AGENT_BIND_PORT": bad,
+                   "BETA_AGENT_KEYRING": json.dumps(KEYRING), "BETA_AGENT_KEY_ID": "k1"}
+            with self.assertRaises(agent_config.ConfigError):
+                agent_config.load_config(env)
+
+
+class FullBundleIntegrityTests(SimpleTestCase):
+    """B-7: a drift in a non-op module (config.py — the bind-guard) must fail the mutation gate too."""
+
+    def test_config_drift_blocks_mutation(self):
+        good = agent_manifest.load_manifest(os.path.join(_BUNDLE, "manifest.json"))
+        bad = dict(good); checks = dict(good["checksums"]); checks["config.py"] = "TAMPERED"
+        bad["checksums"] = checks
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        json.dump(bad, f); f.close()
+        a, _, _ = _build(manifest_path=f.name)
+        r = a.handle(_req("MATERIALISE"))
+        self.assertEqual((r["outcome"], r["reason_code"]), ("denied", "impl_integrity_mismatch"))
+
+    def test_manifest_covers_all_executable_modules(self):
+        approved = agent_manifest.load_manifest(os.path.join(_BUNDLE, "manifest.json")).get("checksums", {})
+        for m in ("agent.py", "config.py", "stores.py", "service.py", "manifest.py"):
+            self.assertIn(m, approved, f"{m} not covered by the integrity manifest")
+
+
+class DrainTests(SimpleTestCase):
+    """B-6: the stop drain waits for in-flight mutating ops; the lock manager exposes the active count."""
+
+    def test_lock_manager_tracks_active_mutations(self):
+        locks = RuntimeLockManager()
+        self.assertEqual(locks.active_mutations(), 0)
+        with locks.acquire("u-1"):
+            self.assertEqual(locks.active_mutations(), 1)
+        self.assertEqual(locks.active_mutations(), 0)
+
+    def test_await_drain_times_out_when_never_idle(self):
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        srv = agent_mod.AgentServer(_server_cfg(f.name), win=FakeWin(), enforce_integrity=False)
+
+        class _Busy:
+            def active_mutations(self): return 1
+        srv._locks = _Busy()
+        self.assertFalse(srv._await_drain(0.1))   # never drains → False (bounded, does not hang)
+
+    def test_await_drain_returns_true_when_idle(self):
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        srv = agent_mod.AgentServer(_server_cfg(f.name), win=FakeWin(), enforce_integrity=False)
+        self.assertTrue(srv._await_drain(0.1))
+
+
+class AgentServerHttpTests(SimpleTestCase):
+    """Resource-limit + routing behaviour of the live HTTP surface (loopback, real sockets)."""
+
+    def _start(self):
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        srv = agent_mod.AgentServer(_server_cfg(f.name), win=FakeWin(), enforce_integrity=False)
+        srv.start()
+        host, port = srv._httpd.server_address
+        return srv, host, port
+
+    def _post(self, host, port, body, *, content_length=None, path="/provision"):
+        conn = http.client.HTTPConnection(host, port, timeout=5)
+        headers = {"Content-Length": str(len(body) if content_length is None else content_length),
+                   "Connection": "close"}
+        conn.request("POST", path, body, headers)
+        resp = conn.getresponse(); data = resp.read(); conn.close()
+        return resp.status, data
+
+    def test_valid_request_ok_oversize_413_and_bad_route_404(self):
+        srv, host, port = self._start()
+        try:
+            body = json.dumps(_req("VERIFY")).encode()
+            status, data = self._post(host, port, body)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(data)["outcome"], "ok")
+
+            big = b"x" * (srv.cfg["max_body_bytes"] + 100)   # refused BEFORE being read
+            status, data = self._post(host, port, big)
+            self.assertEqual(status, 413)
+            self.assertEqual(json.loads(data)["reason_code"], "request_too_large")
+
+            status, _ = self._post(host, port, b"{}", path="/nope")
+            self.assertEqual(status, 404)
+        finally:
+            self.assertTrue(srv.stop())   # idle → drains cleanly
+
+    def test_get_has_no_route(self):
+        srv, host, port = self._start()
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            conn.request("GET", "/provision", headers={"Connection": "close"})
+            resp = conn.getresponse(); resp.read(); conn.close()
+            self.assertEqual(resp.status, 404)
+        finally:
+            srv.stop()
+
+
+class ValidateAuthenticityTests(SimpleTestCase):
+    """B-7 authenticity: validate.py fails when the pinned manifest.json hash does not match."""
+
+    @staticmethod
+    def _run(argv):
+        import contextlib
+        import io
+        import validate  # noqa: PLC0415 — bundle module
+        with contextlib.redirect_stdout(io.StringIO()):   # validate prints its own ok/FAIL lines
+            return validate.main(argv)
+
+    def test_wrong_manifest_hash_fails(self):
+        self.assertEqual(self._run(["--expect-manifest-sha256", "deadbeef"]), 1)
+
+    def test_correct_manifest_hash_passes(self):
+        h = hashlib.sha256(open(os.path.join(_BUNDLE, "manifest.json"), "rb").read()).hexdigest()
+        self.assertEqual(self._run(["--expect-manifest-sha256", h]), 0)

@@ -1,11 +1,18 @@
 {
-  "_comment": "Example ONLY. Real secrets (BETA_AGENT_KEYRING/KEY_ID) are provisioned via the Windows secret store / env, NEVER committed. Set these as environment variables for the service.",
+  "_comment": "Example ONLY. Real secrets (BETA_AGENT_KEYRING/KEY_ID) are provisioned out-of-band and NEVER committed. Set these as service-scoped environment variables. NOTE (verification): a machine env var is NOT a protected secret store — restrict it to the service account and rotate the key; DPAPI/Credential Manager retrieval is a follow-up. Do not provision the keyring until the post-approval start.",
   "BETA_AGENT_BIND_HOST": "100.79.101.19",
+  "BETA_AGENT_EXPECTED_BIND_HOST": "100.79.101.19",
   "BETA_AGENT_BIND_PORT": "8791",
   "BETA_AGENT_ROOT": "C:\\GuvFX\\beta\\accounts",
   "BETA_AGENT_TOMBSTONE": "C:\\GuvFX\\beta\\tombstones",
-  "BETA_AGENT_STATE_DB": "C:\\GuvFX\\beta\\agent\\state.sqlite",
+  "BETA_AGENT_STATE_DIR": "C:\\GuvFX\\beta\\agent-state",
+  "BETA_AGENT_STATE_DB": "C:\\GuvFX\\beta\\agent-state\\state.sqlite",
+  "BETA_AGENT_LOG_DIR": "C:\\GuvFX\\beta\\agent-state\\logs",
   "BETA_AGENT_MANIFEST": "C:\\GuvFX\\beta\\agent\\manifest.json",
+  "BETA_AGENT_MAX_BODY_BYTES": "16384",
+  "BETA_AGENT_MAX_CONNECTIONS": "16",
+  "BETA_AGENT_REQUEST_TIMEOUT_S": "10",
+  "BETA_AGENT_DRAIN_TIMEOUT_S": "20",
   "BETA_AGENT_KEYRING": "<< provisioned out-of-band: {\"k1\":\"<hex-secret>\"} >>",
   "BETA_AGENT_KEY_ID": "k1"
 }

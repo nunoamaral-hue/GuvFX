@@ -1,15 +1,26 @@
-"""CVM-Inc-3 B2 — approved implementation manifest + integrity verification (requirement 6).
+"""CVM-Inc-3 B2/B3P-1 — approved implementation manifest + integrity verification (requirement 6).
 
 The manifest pins agent/protocol/manifest versions, the supported operations, and SHA-256 checksums of
 the implementation modules. Mutating operations are refused unless the on-disk implementation matches the
 approved manifest. The agent NEVER self-updates through its API.
+
+B3P-1 (verification B-7): the covered set is EVERY executable module the running agent loads — not just the
+op implementations. A tampered/stale ``config.py`` (the bind-guard), ``agent.py`` (the HTTP server + route
+table), ``stores.py`` (durable replay), ``service.py`` (the SCM wrapper) or ``manifest.py`` itself must fail
+the integrity gate rather than pass a check that only covered the four op modules. (The checksums live in
+``manifest.json``, so hashing ``manifest.py``'s own source is non-circular.) ``validate.py`` is the checker,
+not the checked, and is intentionally excluded.
 """
 import hashlib
 import json
 import os
 
-# Implementation modules whose integrity gates mutating operations.
-IMPL_MODULES = ("op_impls.py", "win_ops.py", "lib/mgmt_protocol.py", "lib/mgmt_agent_core.py")
+# EVERY executable module the running agent loads. A drift in ANY of them fails every mutating op closed and
+# (via ``build_agent(enforce_integrity=True)``) refuses to start.
+IMPL_MODULES = (
+    "agent.py", "config.py", "stores.py", "manifest.py", "op_impls.py", "win_ops.py", "service.py",
+    "lib/mgmt_protocol.py", "lib/mgmt_agent_core.py",
+)
 
 
 def sha256_file(path: str) -> str:
