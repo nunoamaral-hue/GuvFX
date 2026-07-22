@@ -168,6 +168,7 @@ pool-aware op implementations and will be re-verified there.
 | B3P-2 step 2 (generation + 4-way invariant) | 60 | 1142 |
 | B3P-2 step 2b (monotonicity, quarantine, report evidence) | 71 | 1153 |
 | B3P-2 step 2c (remote-evidence boundary, audit, release order, clearance) | 87 | 1169 |
+| B3P-2 step 2d (occupancy_id, audit chain) | 97 | 1179 |
 
 
 ---
@@ -223,3 +224,36 @@ each explicitly confirmed — every one tested individually, with the slot verif
 each refusal. Reconciliation is *re-derived* (`assert_generation_monotonic`), not merely asserted by the
 operator. Clearing a slot that is not quarantined is refused. A successful clearance emits an auditable
 `quarantine_cleared` event and is verified **not to rewrite or delete** any historical ledger entry.
+
+
+---
+
+## EV-10 — Occupancy ID propagation
+
+**Status: PASS (unit-level).** 4 tests. `occupancy_id = SHA256("slot=<n>|generation=<g>")[:16]` is
+deterministic, normalises its inputs, and is distinct across both dimensions. Verified present in all five
+required surfaces: **Verification Report**, **remote evidence**, **slot audit**, **quarantine records**, and
+the management-channel response allowlist (which carries it to ProvisioningJob evidence). Because it is
+recomputable from `(slot, generation)` alone, an investigator can always re-derive it.
+
+## EV-11 — Audit chain verification
+
+**Status: PASS (unit-level).** 6 tests. Every audit record carries `previous_audit_hash` and `audit_hash`,
+forming a forward-linked chain from a `genesis` root. `verify_audit_chain()` returns
+`{"status": "VALID", "records": n}` on a healthy chain (and on an empty one), and raises
+`audit_chain_corrupt` on **deletion**, **content modification** and **insertion** — the three accidental
+corruptions it exists to catch.
+
+**No automatic repair — verified.** After tampering, `verify_audit_chain()` was called twice; it raised
+both times and the tampered row was confirmed **still tampered**. Recovery is operator investigation only.
+
+**Stated limitation (not a weakness — a scope boundary).** This is *not* cryptographic tamper-proofing:
+an actor able to rewrite the database can recompute the chain. It detects accidental deletion, insertion
+and ordering corruption, which is precisely what silently misleads an investigation.
+
+## EV-7 (elevated) — Historical attribution is deterministic
+
+Recorded as **permanent verification evidence** at Nuno's direction. The cycle
+*occupancy A → release → occupancy B → `audit_for_occupancy(slot, generation)`* returns **only occupancy
+B**. Attribution is by `(slot, generation)` — never slot alone — so a previous occupant's history can never
+be read as the current one's.

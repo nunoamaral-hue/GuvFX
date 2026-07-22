@@ -38,7 +38,8 @@ _RESPONSE_ALLOWLIST = ("operation", "outcome", "runtime_uuid", "provisioning_job
                        # the ATTESTATION that it did so. Verified: no backend lifecycle decision consumes a
                        # path from an agent response. The full path remains in the local Verification
                        # Report, Windows operational logs and authorised operator evidence.
-                       "slot", "generation", "owner_marker_digest", "canonical_path_digest",
+                       "slot", "generation", "occupancy_id", "owner_marker_digest",
+                       "canonical_path_digest",
                        "path_containment_verified", "executable_containment_verified")
 
 
@@ -184,7 +185,7 @@ class BetaProvisioningAgent:
         # copy ONLY allowlisted evidence / handshake fields the impl produced
         for k in ("pid", "session_id", "duration_ms", "running", "logged_in", "verified_at",
                   "protocol_version", "manifest_version", "supported_operations",
-                  "slot", "generation", "owner_marker_digest", "canonical_path_digest",
+                  "slot", "generation", "occupancy_id", "owner_marker_digest", "canonical_path_digest",
                   "path_containment_verified", "executable_containment_verified"):
             if k in raw:
                 out[k] = raw[k]

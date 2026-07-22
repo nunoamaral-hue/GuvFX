@@ -1005,3 +1005,98 @@ class QuarantineClearanceTests(SimpleTestCase):
         s = self._store(); slot, _ = s.assign(RUUID, now=1)
         with self.assertRaises(QuarantineClearanceRefused):
             s.clear_quarantine(slot=slot, **self._ok())
+
+
+class OccupancyIdTests(SimpleTestCase):
+    """Immutable, deterministic single reference for one occupancy."""
+
+    def test_deterministic_and_recomputable(self):
+        from stores import occupancy_id
+        self.assertEqual(occupancy_id(2, 5), occupancy_id(2, 5))
+        self.assertEqual(occupancy_id("2", "5"), occupancy_id(2, 5))   # normalised
+
+    def test_distinct_per_slot_and_per_generation(self):
+        from stores import occupancy_id
+        ids = {occupancy_id(1, 1), occupancy_id(1, 2), occupancy_id(2, 1), occupancy_id(2, 2)}
+        self.assertEqual(len(ids), 4)
+
+    def test_present_in_report_remote_evidence_audit_and_quarantine(self):
+        from stores import (SlotStore, build_verification_evidence, format_owner_marker, occupancy_id,
+                            remote_evidence)
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SlotStore(f.name, pool_size=2)
+        slot, gen = s.assign(RUUID, now=1)
+        expected = occupancy_id(slot, gen)
+        local = build_verification_evidence(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                            canonical_dir="d", marker_raw=format_owner_marker(RUUID, slot, gen))
+        self.assertEqual(local["occupancy_id"], expected)                       # Verification Report
+        self.assertEqual(remote_evidence(local)["occupancy_id"], expected)      # remote evidence
+        s.record_audit(event="runtime_started", runtime_uuid=RUUID, slot=slot, generation=gen, now=1)
+        self.assertEqual(s.audit_for_occupancy(slot, gen)[0]["occupancy_id"], expected)   # audit
+        s.quarantine_slot(slot, "x", 2)
+        self.assertEqual(s.quarantined_slots()[slot]["occupancy_id"], expected)           # quarantine
+
+    def test_in_response_allowlist(self):
+        from lib.mgmt_agent_core import _RESPONSE_ALLOWLIST
+        self.assertIn("occupancy_id", _RESPONSE_ALLOWLIST)
+
+
+class AuditChainTests(SimpleTestCase):
+    """Forward-linked chain detects accidental deletion, insertion and reordering. No auto-repair."""
+
+    @staticmethod
+    def _store_with(n=4):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SlotStore(f.name, pool_size=2)
+        slot, gen = s.assign(RUUID, now=1)
+        for i, ev in enumerate(("slot_assigned", "materialise_started", "materialise_completed",
+                                "runtime_started")[:n]):
+            s.record_audit(event=ev, runtime_uuid=RUUID, slot=slot, generation=gen, now=i + 1)
+        return s, slot, gen
+
+    def test_healthy_chain_is_valid(self):
+        s, _, _ = self._store_with()
+        self.assertEqual(s.verify_audit_chain()["status"], "VALID")
+        self.assertEqual(s.verify_audit_chain()["records"], 4)
+
+    def test_empty_chain_is_valid(self):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        self.assertEqual(SlotStore(f.name, pool_size=1).verify_audit_chain()["status"], "VALID")
+
+    def test_deletion_is_detected(self):
+        from stores import AuditChainCorrupt
+        s, _, _ = self._store_with()
+        s._conn.execute("DELETE FROM slot_audit WHERE id=2"); s._conn.commit()
+        with self.assertRaises(AuditChainCorrupt) as ctx:
+            s.verify_audit_chain()
+        self.assertEqual(ctx.exception.reason_code, "audit_chain_corrupt")
+
+    def test_content_modification_is_detected(self):
+        from stores import AuditChainCorrupt
+        s, _, _ = self._store_with()
+        s._conn.execute("UPDATE slot_audit SET resulting_state='TAMPERED' WHERE id=2"); s._conn.commit()
+        with self.assertRaises(AuditChainCorrupt):
+            s.verify_audit_chain()
+
+    def test_insertion_is_detected(self):
+        from stores import AuditChainCorrupt
+        s, slot, gen = self._store_with()
+        s._conn.execute(
+            "INSERT INTO slot_audit (event, runtime_uuid, slot, generation, occupancy_id, quarantined,"
+            " at, previous_audit_hash, audit_hash) VALUES ('runtime_started',?,?,?,'x',0,9,'bogus','bogus')",
+            (RUUID, slot, gen))
+        s._conn.commit()
+        with self.assertRaises(AuditChainCorrupt):
+            s.verify_audit_chain()
+
+    def test_verification_never_repairs(self):
+        from stores import AuditChainCorrupt
+        s, _, _ = self._store_with()
+        s._conn.execute("UPDATE slot_audit SET resulting_state='TAMPERED' WHERE id=2"); s._conn.commit()
+        for _ in range(2):
+            with self.assertRaises(AuditChainCorrupt):
+                s.verify_audit_chain()
+        still = s._conn.execute("SELECT resulting_state FROM slot_audit WHERE id=2").fetchone()[0]
+        self.assertEqual(still, "TAMPERED")     # untouched — operator investigation only

@@ -71,6 +71,31 @@ class PoolExhausted(AgentError):
         super().__init__("pool_exhausted")
 
 
+def _chain_hash(previous_hash: str, material: dict) -> str:
+    """Forward link: SHA-256 over the previous link plus a canonical serialisation of this record."""
+    body = json.dumps(material, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256((str(previous_hash) + "|" + body).encode("utf-8")).hexdigest()
+
+
+def occupancy_id(slot, generation) -> str:
+    """Immutable identifier for ONE occupancy of one execution slot.
+
+    ``(slot, generation)`` is already unique; this gives every downstream component a single stable
+    reference instead of re-concatenating the pair. Deterministic and reproducible from the pair alone, so
+    an investigator can always recompute it. Carried by the Verification Report, the slot audit,
+    ProvisioningJob evidence, operator evidence and quarantine records.
+    """
+    return hashlib.sha256(f"slot={int(slot)}|generation={int(generation)}".encode("utf-8")).hexdigest()[:16]
+
+
+class AuditChainCorrupt(AgentError):
+    """The forward-linked audit chain does not verify: a record was deleted, inserted or reordered."""
+
+    def __init__(self, detail=""):
+        self.detail = detail
+        super().__init__("audit_chain_corrupt")
+
+
 class ReleaseProofMissing(AgentError):
     """A slot release was attempted before every required proof was durably true."""
 
@@ -108,6 +133,8 @@ class SlotStore:
     """
 
     GENERATION_START = 1
+    #: First link of the forward-linked audit chain.
+    AUDIT_CHAIN_GENESIS = "genesis"
 
     def __init__(self, path: str, pool_size: int):
         if pool_size < 1:
@@ -134,15 +161,18 @@ class SlotStore:
         # A slot that failed an integrity assertion is quarantined and NEVER silently repaired or reused.
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS slot_quarantine ("
-            " slot INTEGER PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL)")
+            " slot INTEGER PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL,"
+            " occupancy_id TEXT, generation INTEGER)")
         # Append-only audit of material lifecycle events. Every row carries occupancy identity.
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS slot_audit ("
             " id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, runtime_uuid TEXT NOT NULL,"
-            " slot INTEGER NOT NULL, generation INTEGER NOT NULL, operation TEXT,"
+            " slot INTEGER NOT NULL, generation INTEGER NOT NULL, occupancy_id TEXT NOT NULL,"
+            " operation TEXT,"
             " provisioning_job_id INTEGER, correlation_id TEXT, prior_state TEXT, resulting_state TEXT,"
             " integrity_outcome TEXT, quarantined INTEGER NOT NULL DEFAULT 0, agent_version TEXT,"
-            " manifest_version TEXT, protocol_version INTEGER, at INTEGER NOT NULL)")
+            " manifest_version TEXT, protocol_version INTEGER, at INTEGER NOT NULL,"
+            " previous_audit_hash TEXT NOT NULL, audit_hash TEXT NOT NULL)")
         self._conn.commit()
 
     def lookup(self, runtime_uuid: str):
@@ -230,16 +260,63 @@ class SlotStore:
             raise ValueError(f"unknown audit event: {event}")
         if slot is None or generation is None:
             raise ValueError("audit events require both slot and generation (occupancy identity)")
+        occ = occupancy_id(slot, generation)
         with self._lock:
+            prev = self._conn.execute(
+                "SELECT audit_hash FROM slot_audit ORDER BY id DESC LIMIT 1").fetchone()
+            prev_hash = prev[0] if prev else self.AUDIT_CHAIN_GENESIS
+            material = {
+                "event": event, "runtime_uuid": str(runtime_uuid), "slot": int(slot),
+                "generation": int(generation), "occupancy_id": occ, "operation": operation,
+                "provisioning_job_id": provisioning_job_id, "correlation_id": correlation_id,
+                "prior_state": prior_state, "resulting_state": resulting_state,
+                "integrity_outcome": integrity_outcome, "quarantined": bool(quarantined),
+                "agent_version": agent_version, "manifest_version": manifest_version,
+                "protocol_version": protocol_version, "at": int(now),
+            }
+            this_hash = _chain_hash(prev_hash, material)
             self._conn.execute(
-                "INSERT INTO slot_audit (event, runtime_uuid, slot, generation, operation,"
+                "INSERT INTO slot_audit (event, runtime_uuid, slot, generation, occupancy_id, operation,"
                 " provisioning_job_id, correlation_id, prior_state, resulting_state, integrity_outcome,"
-                " quarantined, agent_version, manifest_version, protocol_version, at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (event, str(runtime_uuid), int(slot), int(generation), operation,
+                " quarantined, agent_version, manifest_version, protocol_version, at,"
+                " previous_audit_hash, audit_hash)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (event, str(runtime_uuid), int(slot), int(generation), occ, operation,
                  provisioning_job_id, correlation_id, prior_state, resulting_state, integrity_outcome,
-                 1 if quarantined else 0, agent_version, manifest_version, protocol_version, int(now)))
+                 1 if quarantined else 0, agent_version, manifest_version, protocol_version, int(now),
+                 prev_hash, this_hash))
             self._conn.commit()
+
+    def verify_audit_chain(self) -> dict:
+        """Walk the forward-linked audit chain and report ``VALID`` or raise :class:`AuditChainCorrupt`.
+
+        This is **not** cryptographic tamper-proofing — an actor who can rewrite the database can rewrite
+        the chain. It exists to detect **accidental** deletion, insertion and ordering corruption, which is
+        exactly what silently misleads an investigation.
+
+        **No automatic repair.** A corrupt chain is an operator investigation, never a self-heal.
+        """
+        with self._lock:
+            rows = list(self._conn.execute(
+                "SELECT id, event, runtime_uuid, slot, generation, occupancy_id, operation,"
+                " provisioning_job_id, correlation_id, prior_state, resulting_state, integrity_outcome,"
+                " quarantined, agent_version, manifest_version, protocol_version, at,"
+                " previous_audit_hash, audit_hash FROM slot_audit ORDER BY id"))
+        expected_prev = self.AUDIT_CHAIN_GENESIS
+        for r in rows:
+            material = {
+                "event": r[1], "runtime_uuid": r[2], "slot": r[3], "generation": r[4],
+                "occupancy_id": r[5], "operation": r[6], "provisioning_job_id": r[7],
+                "correlation_id": r[8], "prior_state": r[9], "resulting_state": r[10],
+                "integrity_outcome": r[11], "quarantined": bool(r[12]), "agent_version": r[13],
+                "manifest_version": r[14], "protocol_version": r[15], "at": r[16],
+            }
+            if r[17] != expected_prev:
+                raise AuditChainCorrupt(f"broken link at audit id {r[0]}")
+            if _chain_hash(r[17], material) != r[18]:
+                raise AuditChainCorrupt(f"content mismatch at audit id {r[0]}")
+            expected_prev = r[18]
+        return {"status": "VALID", "records": len(rows)}
 
     def audit_for_occupancy(self, slot: int, generation: int) -> list:
         """Events for ONE occupancy. Filtering on (slot, generation) — never slot alone — is what stops a
@@ -247,19 +324,24 @@ class SlotStore:
         with self._lock:
             rows = list(self._conn.execute(
                 "SELECT event, runtime_uuid, operation, prior_state, resulting_state, integrity_outcome,"
-                " quarantined, at FROM slot_audit WHERE slot=? AND generation=? ORDER BY id",
+                " quarantined, at, occupancy_id FROM slot_audit WHERE slot=? AND generation=? ORDER BY id",
                 (int(slot), int(generation))))
         return [{"event": r[0], "runtime_uuid": r[1], "operation": r[2], "prior_state": r[3],
                  "resulting_state": r[4], "integrity_outcome": r[5], "quarantined": bool(r[6]),
-                 "at": r[7]} for r in rows]
+                 "at": r[7], "occupancy_id": r[8]} for r in rows]
 
     # ── quarantine ──
     def quarantine_slot(self, slot: int, reason: str, now: int = 0) -> None:
         """Mark a slot as failed-integrity. It is NEVER silently repaired or reused — operator only."""
         with self._lock:
+            gen_row = self._conn.execute(
+                "SELECT generation FROM slots WHERE slot=?", (int(slot),)).fetchone()
+            gen = gen_row[0] if gen_row else None
             self._conn.execute(
-                "INSERT OR REPLACE INTO slot_quarantine (slot, reason, at) VALUES (?,?,?)",
-                (int(slot), str(reason)[:64], int(now)))
+                "INSERT OR REPLACE INTO slot_quarantine (slot, reason, at, occupancy_id, generation)"
+                " VALUES (?,?,?,?,?)",
+                (int(slot), str(reason)[:64], int(now),
+                 occupancy_id(slot, gen) if gen is not None else None, gen))
             self._conn.commit()
 
     def is_quarantined(self, slot: int) -> bool:
@@ -269,8 +351,9 @@ class SlotStore:
 
     def quarantined_slots(self) -> dict:
         with self._lock:
-            rows = list(self._conn.execute("SELECT slot, reason FROM slot_quarantine ORDER BY slot"))
-        return {slot: reason for slot, reason in rows}
+            rows = list(self._conn.execute(
+                "SELECT slot, reason, occupancy_id FROM slot_quarantine ORDER BY slot"))
+        return {slot: {"reason": reason, "occupancy_id": occ} for slot, reason, occ in rows}
 
     # ── invariants ──
     def assert_generation_monotonic(self, slot: int, expected_generation: int) -> None:
@@ -449,6 +532,7 @@ def build_verification_evidence(*, runtime_uuid, slot, generation, canonical_dir
         "runtime_uuid": str(runtime_uuid),
         "slot": int(slot),
         "generation": int(generation),
+        "occupancy_id": occupancy_id(slot, generation),
         "owner_marker_digest": owner_marker_digest(marker_raw),
         "canonical_path": canonical_dir,                       # LOCAL ONLY
         "canonical_path_digest": path_digest(canonical_dir),
@@ -467,7 +551,7 @@ def build_verification_evidence(*, runtime_uuid, slot, generation, canonical_dir
 # verifies containment on the box and the backend consumes only the attestation (verified — no backend
 # lifecycle decision reads a path from an agent response).
 REMOTE_EVIDENCE_FIELDS = (
-    "runtime_uuid", "slot", "generation", "owner_marker_digest", "canonical_path_digest",
+    "runtime_uuid", "slot", "generation", "occupancy_id", "owner_marker_digest", "canonical_path_digest",
     "path_containment_verified", "executable_containment_verified",
     "pid", "session_id", "manifest_version", "protocol_version", "verified_at",
 )
