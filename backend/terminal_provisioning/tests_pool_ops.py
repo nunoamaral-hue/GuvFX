@@ -549,3 +549,65 @@ class ReleaseTests(SimpleTestCase):
             impls.release(runtime_uuid=RUUID, slot=1, generation=1,
                           no_ambiguous_provisioning_job=True, no_mutation_lock_held=False)
         self.assertEqual(s.generation_of(1), 1)
+
+
+class ExecutionModelWiringTests(SimpleTestCase):
+    """The agent must actually BUILD the pool model when configured for it — and refuse rather than
+    silently revert when the settings it needs are absent."""
+
+    ENV = {
+        "BETA_AGENT_BIND_HOST": "100.79.101.19",
+        "BETA_AGENT_BIND_PORT": "8791",
+        "BETA_AGENT_KEYRING": '{"k1": "0123456789abcdef0123456789abcdef"}',
+        "BETA_AGENT_KEY_ID": "k1",
+    }
+
+    def _cfg(self, **over):
+        import config as agent_config
+        env = dict(self.ENV)
+        env.update(over)
+        return agent_config.load_config(env)
+
+    def test_default_config_is_the_compatibility_model(self):
+        from lib.mgmt_agent_core import EXECUTION_MODEL_UUID_DIR as UUID_DIR
+        self.assertEqual(self._cfg()["execution_model"], UUID_DIR)
+
+    def test_slot_pool_without_a_pool_size_refuses(self):
+        from config import ConfigError
+        with self.assertRaises(ConfigError):
+            self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_GOLDEN_DIGEST="d")
+
+    def test_slot_pool_without_a_golden_digest_refuses(self):
+        """An unset digest would make the stage-copy integrity check compare against the empty string."""
+        from config import ConfigError
+        with self.assertRaises(ConfigError):
+            self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_SLOT_POOL_SIZE="4")
+
+    def test_unknown_execution_model_refuses(self):
+        from config import ConfigError
+        with self.assertRaises(ConfigError):
+            self._cfg(BETA_AGENT_EXECUTION_MODEL="whatever")
+
+    def test_pool_mode_builds_the_pool_implementations_and_resolver(self):
+        import agent as agent_mod
+        cfg = self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_SLOT_POOL_SIZE="4",
+                        BETA_AGENT_GOLDEN_DIGEST="golden-digest-abc")
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        built = agent_mod.build_agent(cfg, win=FakeWin(), store=_FakeStore(),
+                                      slot_store_override=SlotStore(f.name, pool_size=4))
+        self.assertEqual(built.execution_model, "slot_pool")
+        self.assertIsInstance(built.slot_resolver, SlotResolver)
+        self.assertIsInstance(built.op_impls["MATERIALISE"].__self__, PoolOpImplementations)
+
+    def test_compatibility_mode_builds_neither(self):
+        import agent as agent_mod
+        from op_impls import OpImplementations
+        built = agent_mod.build_agent(self._cfg(), win=FakeWin(), store=_FakeStore())
+        self.assertIsNone(built.slot_resolver)
+        self.assertIsInstance(built.op_impls["MATERIALISE"].__self__, OpImplementations)
+
+
+class _FakeStore:
+    def burn(self, nonce, expiry): return True
+    def get(self, job_id, op): return None
+    def put(self, job_id, op, record): pass

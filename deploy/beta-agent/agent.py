@@ -34,15 +34,19 @@ sys.path.insert(0, _HERE)   # so the bundled ``lib`` package + agent modules imp
 from lib.mgmt_agent_core import BetaProvisioningAgent   # noqa: E402  bundled Django-free agent core
 import config as agent_config                            # noqa: E402
 import manifest as agent_manifest                        # noqa: E402
+from lib.mgmt_agent_core import (EXECUTION_MODEL_SLOT_POOL,  # noqa: E402
+                                 EXECUTION_MODEL_UUID_DIR)
 from op_impls import OpImplementations                   # noqa: E402
-from stores import RuntimeLockManager, SqliteStore       # noqa: E402
+from pool_op_impls import PoolOpImplementations, SlotResolver   # noqa: E402
+from stores import RuntimeLockManager, SlotStore, SqliteStore   # noqa: E402
 from win_ops import RealWindowsOps                        # noqa: E402
+from win_slot_ops import RealSlotWindowsOps               # noqa: E402
 
 AGENT_VERSION = "beta-agent-1.0.0"
 
 
 def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: str = "",
-                enforce_integrity: bool = False) -> BetaProvisioningAgent:
+                enforce_integrity: bool = False, slot_store_override=None) -> BetaProvisioningAgent:
     """Assemble the boundary-enforcing agent from config + the approved manifest. Injectable (win/store/
     locks) for tests; defaults to the real Windows ops + the SQLite state store. ``enforce_integrity``
     (used by the live service) hashes every implementation module on disk NOW and refuses to build if ANY
@@ -59,10 +63,26 @@ def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: s
     script_manifest = agent_manifest.build_script_manifest(
         approved.get("checksums", {}), actual, approved.get("supported_operations", []))
 
-    win = win if win is not None else RealWindowsOps()
     store = store if store is not None else SqliteStore(cfg["state_db"])
     locks = locks if locks is not None else RuntimeLockManager()
-    impls = OpImplementations(win, tombstone_base=cfg["tombstone_base"]).as_dict()
+    slot_pool = cfg.get("execution_model") == EXECUTION_MODEL_SLOT_POOL
+
+    # The two execution models get DIFFERENT adapters and DIFFERENT implementations. They are never mixed:
+    # the B2 uuid-directory model has no slot store, and the pool model never constructs the legacy ops.
+    if slot_pool:
+        win = win if win is not None else RealSlotWindowsOps(golden_dir=cfg["golden_dir"],
+                                                             slots_root=cfg["slots_root"])
+        slot_store = slot_store_override or SlotStore(cfg["slot_db"], pool_size=cfg["slot_pool_size"])
+        impls = PoolOpImplementations(
+            win, slot_store, golden_digest=cfg["golden_digest"],
+            golden_manifest_version=cfg["golden_manifest_version"],
+            manifest_version=approved.get("manifest_version", "")).as_dict()
+        resolver = SlotResolver(slot_store, slots_root=cfg["slots_root"], now_fn=lambda: int(time.time()))
+        base = cfg["slots_root"]
+    else:
+        win = win if win is not None else RealWindowsOps()
+        impls = OpImplementations(win, tombstone_base=cfg["tombstone_base"]).as_dict()
+        resolver, base = None, cfg["beta_root"]
 
     return BetaProvisioningAgent(
         keyring=cfg["keyring"], nonce_store=store, idempotency_store=store, op_impls=impls,
@@ -71,7 +91,9 @@ def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: s
         script_versions={f"op_{op.lower()}": approved.get("manifest_version", "")
                          for op in approved.get("supported_operations", [])},
         resolve_real_path=win.real_path, runtime_locks=locks,
-        base=cfg["beta_root"], manifest_version=approved.get("manifest_version", ""))
+        base=base, manifest_version=approved.get("manifest_version", ""),
+        execution_model=cfg.get("execution_model") or EXECUTION_MODEL_UUID_DIR,
+        slot_resolver=resolver)
 
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):

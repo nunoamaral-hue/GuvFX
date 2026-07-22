@@ -1,8 +1,8 @@
 {
   "agent_version": "beta-agent-1.0.0",
   "checksums": {
-    "agent.py": "c913b765980b69c9cff062ac2380d4dbba7164a087639e9a1019f96ffc91fed7",
-    "config.py": "a05adea52d9df5793ba494712caf78f47ead3c14c6a352d863fa2fa841664e1d",
+    "agent.py": "2c5b0249df1c50d90c38c7a2767bf44dbd2083cde554d79f97b156114efb03fc",
+    "config.py": "dc3f8ac8fddc64eb2c6d85a021c5147da5d810166b9a0a83e6ef003a135eb5da",
     "lib/mgmt_agent_core.py": "2100bd2fca8656017987d65cd2d8d7437ba02bfa0baefb01dfb3807b302e8214",
     "lib/mgmt_protocol.py": "7b9538f3fde36acac07e611dc80448b78f008ae2045928b0ebf8d83562e13e48",
     "lifecycle.py": "18bda6488fb74974bff766649bda00977772e8f3a6812b99267eadcb909efc62",
@@ -17,7 +17,7 @@
     "win_primitives.py": "c2345cd34476443b5c96a727c87b28d31964cc444631e94e181dc1ce2ad19054",
     "win_slot_ops.py": "4182480fa6729a68c992567d04d3072a7c9f4adb0eb04102b4eef1ca84f8c88d"
   },
-  "manifest_version": "2026-07-22.21",
+  "manifest_version": "2026-07-22.23",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",
