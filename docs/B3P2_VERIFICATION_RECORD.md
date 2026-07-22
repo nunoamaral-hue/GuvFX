@@ -514,3 +514,154 @@ root still passes.
 Cross-volume note: with the destination now pinned to a fixed root, a different volume can only arise from
 a mount point under that root — which is precisely why the `same_volume` refusal is retained, and the test
 was rewritten to model that case rather than an out-of-namespace `D:` path.
+
+---
+
+## EV-24 — Primitive capability declarations enforced across the whole mutating set
+
+**Status: PASS (unit-level).** Superseded scope note: EV-17 recorded the mechanism; this records the
+enforcement after the mutating set grew. `PrimitiveContext` validates its capability in `__post_init__`
+(an unknown value raises `ValueError`, so a typo cannot yield a permissive context), and all seven mutating
+entry points call `require_mutating()` as their first statement — before argument validation, before any
+host query, before any write. The parameterised test drives every entry point with `READ_ONLY_CONTEXT`,
+asserts `capability_violation`, and asserts the recording fake logged **zero** calls. `require_mutating`
+also refuses `ctx is None`, so a forgotten parameter fails closed rather than defaulting to permitted.
+
+---
+
+## EV-25 — Operation idempotency evidence (COMPLETED vs ALREADY_COMPLETED)
+
+**Status: PASS (unit-level).** Six statuses exist: `NOT_STARTED`, `REQUESTED`, `COMPLETED`,
+`ALREADY_COMPLETED`, `BLOCKED`, `FAILED`. The distinction that matters on a retry after an ambiguous
+failure is proven, not asserted:
+
+- a first run of `stage_copy` is `COMPLETED`;
+- a retry that finds the destination present **and passes all four post-checks** is `ALREADY_COMPLETED`,
+  performs **no** second copy, and carries `idempotent: true`;
+- a destination present with a **wrong digest** is `BLOCKED`, not waved through;
+- a **wrong generation** with a perfect-looking destination is `BLOCKED` — the "already done" path requires
+  that presence be the *only* failed precondition, so no other disagreement can be masked by a complete
+  directory;
+- a **partial copy** is `FAILED`, not `BLOCKED`, because `BLOCKED` carries the promise that nothing was
+  attempted on the host. A test asserts `copy_golden` was in fact called on that path.
+
+`NO_EFFECT_STATUSES` is checked against the recording fake: every `BLOCKED`/`ALREADY_COMPLETED` result
+recorded zero host calls. `attest()` refuses an unrecognised status outright. Read-only observations carry
+an **empty** status — an observation is not a lifecycle stage, and claiming otherwise would misrepresent it.
+
+---
+
+## EV-26 — Failure classification is total and single-valued
+
+**Status: PASS (unit-level).** Every sanitised reason code maps to exactly one of `CONFIGURATION`,
+`INTEGRITY`, `OBSERVATION`, `WINDOWS`, `OPERATOR`, `TIMEOUT`.
+
+Totality is **not** maintained by hand. A test walks the AST of every bundle module, collects every
+reason-code literal reachable from `_fail(...)`, `_wrap(...)`, `AgentError("...")`-style construction and
+`reason_code=` keywords, and fails if any is unclassified. A hand-written inventory would drift silently;
+this one cannot.
+
+Single-valuedness is structural: the category is derived inside `attest()` from a dict, so a code cannot be
+filed under two categories by two call sites. `classify(strict=True)` raises `UnclassifiedReasonCode` (CI);
+`classify(strict=False)` degrades to `INTEGRITY` — the conservative reading, since an outcome we cannot
+classify is by definition a disagreement — and records `classification_complete=False` so the degradation
+is visible rather than mistaken for a real classification.
+
+The semantic separations the categories exist to preserve are asserted individually:
+`process_observation_unavailable` is OBSERVATION and never WINDOWS; `process_still_running` is WINDOWS;
+`task_absent` is CONFIGURATION; `image_outside_slot` is INTEGRITY; `pool_exhausted` and
+`quarantine_clearance_refused` are OPERATOR.
+
+---
+
+## EV-27 — Per-stage contracts, checked against the implementation
+
+**Status: PASS (unit-level).** `STAGE_CONTRACTS` holds preconditions, invariant, postconditions and
+permitted statuses for all seven mutating stages, as **data beside the implementation**.
+
+The contract is verified in both directions: a test AST-scans `win_mutations.py` for the status each
+`_ok`/`_fail` call site emits (including the helper defaults) and asserts the set a stage **declares**
+equals the set it can **produce**. This caught a real inaccuracy immediately — `request_launch` declared a
+`BLOCKED` outcome it cannot emit, because an unauthorised slot input raises there rather than returning a
+record. The contract was corrected to match the code.
+
+`docs/B3P2_STAGE_CONTRACTS.md` is generated from the same structure by `render_contracts.py`, and a test
+asserts the published file matches the code. Editing the doc without changing the code fails CI.
+
+---
+
+## EV-28 — Evidence completeness, structural and detected
+
+**Status: PASS (unit-level).** Success and failure are both first-class audit events; ten stage results
+spanning every status are each run through `assert_evidence_present`, which requires all eight attestation
+keys, a non-empty evidence digest, a recognised status and an evidence body. Failure results additionally
+carry a reason code **and** a category.
+
+Durably, `SlotStore.record_stage` writes the sequence position and the evidence **in one transaction**,
+which makes "an operation happened but left no evidence" structurally impossible rather than merely
+detectable. A stage offered with no evidence digest is refused at the door and nothing is sequenced.
+`assert_evidence_complete` still exists for what the structure cannot cover — later tampering — and is
+proven to catch a deleted evidence row, an evidence row for an unsequenced operation, and an evidence row
+naming a different operation. A duplicate evidence row for one stage is impossible (primary key).
+
+---
+
+## EV-29 — Slot-aware path resolution
+
+**Status: PASS (unit-level).** `SlotResolver` maps a runtime UUID to its occupancy and derives the path
+from the **slot number alone**: tests assert the resolved path is `C:\GuvFX\beta\slots\1\terminal` and
+contains neither the UUID nor its hex form, and that the task names are the fixed
+`GuvFXBetaRuntime-1` / `GuvFXBetaRuntimeStop-1`.
+
+**Only `MATERIALISE` may allocate.** `START`, `VERIFY`, `STOP` and `TOMBSTONE` resolve by lookup and raise
+`runtime_not_assigned` for an unknown runtime; a test asserts the pool remained empty after four such
+attempts, so a replayed or out-of-order request cannot consume capacity. Resolution is stable across
+operations, and `occupancy_id` matches the `(slot, generation)` pair.
+
+**No silent fallback.** The execution model is explicit and validated at construction: `slot_pool` without
+a resolver raises, an unknown model raises, and the default remains the documented B2 compatibility model.
+A pool agent missing its resolver therefore fails to start rather than quietly provisioning into the old
+UUID-directory namespace — the same reasoning as security RULE 3.
+
+---
+
+## EV-30 — Pool-aware operation implementations
+
+**Status: PASS (unit-level).** The five allowlisted operations are expressed as sequences of the approved
+stages, with the integrity gate before every mutation.
+
+- **Ordering proof.** A full lifecycle records exactly `stage_copy → request_launch → confirm_launch →
+  request_terminate → confirm_terminated → tombstone → verify_cleanup`, and both `assert_sequence_valid`
+  and `assert_evidence_complete` reconcile afterwards.
+- **The marker follows the proof.** `write_owner_tag` runs only after stage-copy is `COMPLETED`; when a
+  post-check fails, the test asserts no marker was written. A marker vouching for a partial runtime is the
+  failure mode this ordering exists to prevent.
+- **Integrity gate.** A stale marker from generation 0, a marker naming another runtime, and an absent
+  marker are each refused with `slot_integrity_mismatch`, and the slot is **quarantined** rather than
+  repaired. A quarantined slot refuses further mutation. A missing slot binding is `slot_binding_missing`.
+- **START observes before triggering** — a running runtime returns `idempotent` with **zero** host calls,
+  so a second terminal cannot be launched.
+- **A trigger that starts nothing is not a start**: the evidence shows `REQUESTED` succeeded and
+  `confirm_launch` FAILED with `process_absent`.
+- **STOP** fails `process_still_running` when the terminate trigger is accepted but the process survives.
+- **Cleanup precedes release**: after tombstone the generation is still 1, and a process reappearing in the
+  slot blocks cleanup with `cleanup_incomplete`.
+- **Boundary**: no operation's response contains a filesystem path — a test asserts no returned value
+  contains `C:\GuvFX`, while `canonical_path_digest` (the attestation) is present.
+
+---
+
+## EV-31 — Windows API boundary enforced by scan
+
+**Status: PASS (unit-level).** A test AST-scans every bundle module for imports of
+`win32*`/`win32com`/`pywintypes`/`winreg`/`ctypes`/`subprocess`/`shutil`/`psutil`/`wmi` and for
+`os.system`/`os.popen`/`os.spawnl`/`os.startfile` calls, failing if any appears outside two permitted
+files: `win_ops.py` (the adapter — every host operation) and `service.py` (the Service Control Manager
+harness only). A second test asserts no stage or store layer imports the concrete adapter class.
+
+Recording `service.py` as separately permitted, with its own stated reason, is deliberate: folding it into
+"the adapter" would merge two different responsibilities into one statement (Rule 5).
+
+**Limitation.** This proves the boundary in the repository. It does not prove the real adapter works — no
+method in it has executed on a Windows host, and the contract's section 6 lists what only the viability
+trial can settle.
