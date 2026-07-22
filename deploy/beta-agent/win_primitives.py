@@ -164,8 +164,12 @@ def assert_authorised_slot_input(si: SlotInput) -> None:
 # ── requirement 2: minimal local attestation ───────────────────────────────────────────────────────────
 #: Keys a local attestation may carry. Occupancy identity is deliberately absent — the UPPER layer binds
 #: this local attestation to the full occupancy.
+#: B3P-2 requirements 1/3/5 add three fields: the lifecycle STATUS of the stage, the failure CATEGORY the
+#: reason code maps to, and whether that classification was authoritative. They carry no occupancy identity,
+#: so the boundary below is unchanged.
 ATTESTATION_FIELDS = ("slot", "operation", "observed_at", "primitive_version", "outcome",
-                      "reason_code", "evidence_digest")
+                      "reason_code", "evidence_digest", "stage_status", "failure_category",
+                      "classification_complete")
 FORBIDDEN_ATTESTATION_FIELDS = ("runtime_uuid", "generation", "occupancy_id", "provisioning_job_id",
                                 "tenant", "entitlement", "owner_email", "owner_user_id")
 
@@ -177,8 +181,20 @@ def evidence_digest(evidence: dict) -> str:
 
 
 def attest(*, slot: int, operation: str, outcome: str, reason_code: str, evidence: dict,
-           observed_at) -> dict:
-    """Build the minimal local attestation envelope wrapping a primitive observation."""
+           observed_at, stage_status: str = "") -> dict:
+    """Build the minimal local attestation envelope wrapping a primitive observation.
+
+    ``stage_status`` is empty for the read-only observation primitives — they are not lifecycle stages and
+    saying otherwise would misrepresent them. Every mutating stage supplies one.
+
+    The failure category is derived here rather than passed in, so a reason code can never be filed under
+    two categories by two different call sites. Classification uses the non-strict mode: an unknown code
+    degrades to INTEGRITY (the conservative reading) and ``classification_complete=False`` records that the
+    category was a fallback rather than an authoritative mapping.
+    """
+    from lifecycle import STAGE_STATUSES, classify, is_classified
+    if stage_status and stage_status not in STAGE_STATUSES:
+        raise ValueError(f"unknown stage status: {stage_status}")
     return {
         "slot": int(slot),
         "operation": operation,
@@ -187,6 +203,9 @@ def attest(*, slot: int, operation: str, outcome: str, reason_code: str, evidenc
         "outcome": outcome,
         "reason_code": reason_code,
         "evidence_digest": evidence_digest(evidence),
+        "stage_status": stage_status,
+        "failure_category": classify(reason_code, strict=False),
+        "classification_complete": is_classified(reason_code),
     }
 
 

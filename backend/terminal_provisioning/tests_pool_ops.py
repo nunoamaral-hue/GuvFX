@@ -1,0 +1,401 @@
+"""CVM-Inc-3 B3P-2 — slot-aware path resolution + pool-aware operation implementations.
+
+Covers the two layers the mutating primitives sit under: the resolver that turns a runtime UUID into a
+fixed slot path, and the operation implementations that sequence the stages, run the integrity gate and
+record evidence.
+"""
+import os
+import sys
+import tempfile
+
+from django.test import SimpleTestCase
+
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_BUNDLE = os.path.join(_REPO, "deploy", "beta-agent")
+if _BUNDLE not in sys.path:
+    sys.path.insert(0, _BUNDLE)
+
+import lifecycle as lc                                          # noqa: E402
+from lib.mgmt_agent_core import (AgentError, BetaProvisioningAgent, EXECUTION_MODEL_SLOT_POOL,  # noqa: E402
+                                 EXECUTION_MODEL_UUID_DIR)
+from pool_op_impls import PoolOpImplementations, SlotResolver    # noqa: E402
+from stores import (SlotIntegrityError, SlotStore, format_owner_marker, occupancy_id)   # noqa: E402
+
+RUUID = "0f2b8f2e-7a1a-4f6e-9c1a-2b3c4d5e6f70"
+OTHER = "99999999-8888-7777-6666-555555555555"
+DIGEST = "golden-digest-abc"
+MANIFEST_V = "2026-07-22.13"
+FILETIME = 133_000_000_000_000_000
+
+
+class FakeWin:
+    """Fake host. Records every write; serves marker/process/destination state the ops read back."""
+
+    def __init__(self, *, exists=False, process=None, dest=None, task_ok=True, launches=True):
+        self.calls = []
+        self._exists, self._process, self._task_ok, self._launches = exists, process, task_ok, launches
+        self._marker = None
+        self._dest = dest if dest is not None else {"digest": DIGEST, "executable_digest": "exe",
+                                                    "portable_marker": True, "ownership_marker": True}
+
+    # reads
+    def golden_source_info(self): return {"digest": DIGEST, "manifest_version": MANIFEST_V}
+    def destination_info(self, p): return self._dest
+    def path_exists(self, p): return self._exists
+    def real_path(self, p): return None
+    def read_owner_tag(self, p): return self._marker
+    def query_slot_process(self, p): return self._process
+    def same_volume(self, a, b): return True
+    def task_running(self, t): return False
+    def open_handles(self, p): return False
+
+    # writes
+    def copy_golden(self, p): self.calls.append(("copy_golden", p)); self._exists = True
+    def write_owner_tag(self, p, raw): self.calls.append(("write_owner_tag", p)); self._marker = raw
+    def move_dir(self, a, b): self.calls.append(("move_dir", a, b)); self._exists = False
+
+    def run_task(self, t):
+        self.calls.append(("run_task", t))
+        if not self._task_ok:
+            return False
+        if t.startswith("GuvFXBetaRuntimeStop"):
+            self._process = None                       # the stop task actually stops it
+        elif self._launches:
+            self._process = _proc()
+        return True
+
+
+def _proc(**over):
+    d = dict(pid=13020, created_at_filetime=FILETIME,
+             image=r"C:\GuvFX\beta\slots\1\terminal\terminal64.exe", image_digest="img",
+             user_sid="S-1-5-21-x-1001", session_id=1)
+    d.update(over)
+    return d
+
+
+def _store(pool_size=2):
+    f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+    return SlotStore(f.name, pool_size=pool_size)
+
+
+def _impls(win, store, **over):
+    args = dict(golden_digest=DIGEST, golden_manifest_version=MANIFEST_V, now_fn=lambda: 100,
+                manifest_version=MANIFEST_V)
+    args.update(over)
+    return PoolOpImplementations(win, store, **args)
+
+
+def _ctx(store, runtime_uuid=RUUID, operation="MATERIALISE"):
+    return SlotResolver(store, now_fn=lambda: 100).resolve(runtime_uuid=runtime_uuid,
+                                                           operation=operation)
+
+
+class SlotResolverTests(SimpleTestCase):
+    """Step 1: the path is a function of the SLOT NUMBER — never of anything a caller supplied."""
+
+    def test_path_is_derived_from_the_slot_not_the_uuid(self):
+        s = _store()
+        b = _ctx(s)
+        self.assertEqual(b["slot"], 1)
+        self.assertEqual(b["slot_path"], r"C:\GuvFX\beta\slots\1\terminal")
+        self.assertNotIn(RUUID, b["slot_path"])
+        self.assertNotIn(RUUID.replace("-", ""), b["slot_path"].lower())
+
+    def test_task_names_are_fixed_per_slot(self):
+        si = _ctx(_store())["slot_input"]
+        self.assertEqual((si.launch_task, si.terminate_task),
+                         ("GuvFXBetaRuntime-1", "GuvFXBetaRuntimeStop-1"))
+
+    def test_only_materialise_may_allocate(self):
+        s = _store()
+        for op in ("START", "VERIFY", "STOP", "TOMBSTONE"):
+            with self.assertRaises(AgentError, msg=op) as ctx:
+                _ctx(s, operation=op)
+            self.assertEqual(ctx.exception.reason_code, "runtime_not_assigned")
+        self.assertEqual(s.occupancy(), {})              # nothing was consumed by the failed lookups
+
+    def test_resolution_is_stable_across_operations(self):
+        s = _store()
+        first = _ctx(s)
+        for op in ("START", "VERIFY", "STOP", "TOMBSTONE"):
+            later = _ctx(s, operation=op)
+            self.assertEqual((later["slot"], later["generation"], later["slot_path"]),
+                             (first["slot"], first["generation"], first["slot_path"]), op)
+
+    def test_occupancy_id_matches_the_slot_generation_pair(self):
+        b = _ctx(_store())
+        self.assertEqual(b["occupancy_id"], occupancy_id(b["slot"], b["generation"]))
+
+    def test_two_runtimes_get_different_slots(self):
+        s = _store()
+        self.assertNotEqual(_ctx(s, RUUID)["slot"], _ctx(s, OTHER)["slot"])
+
+    def test_pool_exhaustion_is_not_a_silent_overwrite(self):
+        from stores import PoolExhausted
+        s = _store(pool_size=1)
+        _ctx(s, RUUID)
+        with self.assertRaises(PoolExhausted):
+            _ctx(s, OTHER)
+
+
+class ExecutionModelTests(SimpleTestCase):
+    """The model is explicit; a pool agent missing its resolver must not fall back to the old layout."""
+
+    _COMMON = dict(keyring={}, nonce_store=None, idempotency_store=None, op_impls={},
+                   agent_version="t", script_manifest={}, script_versions={},
+                   resolve_real_path=lambda p: None, runtime_locks=None)
+
+    def test_slot_pool_without_a_resolver_refuses_to_construct(self):
+        with self.assertRaises(ValueError):
+            BetaProvisioningAgent(execution_model=EXECUTION_MODEL_SLOT_POOL, slot_resolver=None,
+                                  **self._COMMON)
+
+    def test_unknown_execution_model_refuses_to_construct(self):
+        with self.assertRaises(ValueError):
+            BetaProvisioningAgent(execution_model="whatever_works", **self._COMMON)
+
+    def test_default_model_is_the_documented_compatibility_one(self):
+        agent = BetaProvisioningAgent(**self._COMMON)
+        self.assertEqual(agent.execution_model, EXECUTION_MODEL_UUID_DIR)
+
+
+class MaterialiseTests(SimpleTestCase):
+    def test_materialise_stages_the_copy_and_writes_the_marker_after(self):
+        s, win = _store(), FakeWin(exists=False)
+        out = _impls(win, s).materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        self.assertTrue(out["path_containment_verified"])
+        self.assertEqual([c[0] for c in win.calls], ["copy_golden", "write_owner_tag"])
+        self.assertEqual(out["slot"], 1)
+        self.assertEqual(out["generation"], 1)
+
+    def test_marker_is_written_only_after_the_copy_is_proven_complete(self):
+        """A marker on a partial runtime would vouch for something that was never verified."""
+        s = _store()
+        win = FakeWin(exists=False, dest={"digest": DIGEST, "executable_digest": "exe",
+                                          "portable_marker": None, "ownership_marker": True})
+        with self.assertRaises(AgentError) as ctx:
+            _impls(win, s).materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        self.assertEqual(ctx.exception.reason_code, "stage_copy_incomplete")
+        self.assertNotIn("write_owner_tag", [c[0] for c in win.calls])
+
+    def test_repeat_materialise_is_already_completed_and_copies_nothing(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        win.calls.clear()
+        out = impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        self.assertTrue(out["idempotent"])
+        self.assertEqual(win.calls, [])
+
+    def test_every_stage_is_recorded_with_evidence(self):
+        s, win = _store(), FakeWin(exists=False)
+        _impls(win, s).materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        ev = s.stage_evidence_for_occupancy(1, 1)
+        self.assertEqual([e["operation"] for e in ev], ["stage_copy"])
+        self.assertEqual(ev[0]["stage_status"], lc.COMPLETED)
+        s.assert_evidence_complete(1, 1)
+
+    def test_failures_are_recorded_too(self):
+        s = _store()
+        win = FakeWin(exists=False, dest={"digest": "WRONG", "executable_digest": "exe",
+                                          "portable_marker": True, "ownership_marker": True})
+        with self.assertRaises(AgentError):
+            _impls(win, s).materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        ev = s.stage_evidence_for_occupancy(1, 1)
+        self.assertEqual([e["stage_status"] for e in ev], [lc.FAILED])
+        self.assertEqual(ev[0]["failure_category"], lc.INTEGRITY)
+
+
+class IntegrityGateTests(SimpleTestCase):
+    """Before every mutating operation the database, marker, UUID, slot and generation must agree."""
+
+    def _materialised(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        return s, win, impls
+
+    def test_a_stale_marker_from_a_previous_occupancy_is_refused(self):
+        s, win, impls = self._materialised()
+        win._marker = format_owner_marker(RUUID, 1, 0)          # generation 0 = previous occupant
+        with self.assertRaises(SlotIntegrityError):
+            impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="START"))
+        self.assertTrue(s.is_quarantined(1))                     # and the slot is quarantined, not repaired
+
+    def test_a_marker_naming_another_runtime_is_refused(self):
+        s, win, impls = self._materialised()
+        win._marker = format_owner_marker(OTHER, 1, 1)
+        with self.assertRaises(SlotIntegrityError):
+            impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="START"))
+
+    def test_a_missing_marker_is_a_mismatch_not_an_implicit_free_slot(self):
+        s, win, impls = self._materialised()
+        win._marker = None
+        with self.assertRaises(SlotIntegrityError):
+            impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="START"))
+
+    def test_a_quarantined_slot_refuses_further_mutation(self):
+        s, win, impls = self._materialised()
+        s.quarantine_slot(1, "operator_test", 1)
+        with self.assertRaises(SlotIntegrityError):
+            impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="START"))
+
+    def test_missing_slot_binding_is_refused(self):
+        s, win, impls = self._materialised()
+        for bad in (None, {}, {"slot": 1}):
+            with self.assertRaises(AgentError) as ctx:
+                impls.start(canonical_dir="", runtime_uuid=RUUID, base="", context=bad)
+            self.assertEqual(ctx.exception.reason_code, "slot_binding_missing")
+
+
+class StartStopLifecycleTests(SimpleTestCase):
+    def _ready(self, **win_kw):
+        s = _store()
+        win = FakeWin(exists=False, **win_kw)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        win.calls.clear()
+        return s, win, impls
+
+    def _start(self, s, impls):
+        return impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                           context=_ctx(s, operation="START"))
+
+    def test_start_triggers_the_task_then_proves_the_process(self):
+        s, win, impls = self._ready()
+        out = self._start(s, impls)
+        self.assertEqual([c[0] for c in win.calls], ["run_task"])
+        self.assertTrue(out["running"])
+        self.assertEqual(out["pid"], 13020)
+        self.assertTrue(out["executable_containment_verified"])
+        self.assertEqual([e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)][1:],
+                         ["request_launch", "confirm_launch"])
+
+    def test_a_trigger_that_starts_nothing_is_not_a_started_runtime(self):
+        s, win, impls = self._ready(launches=False)
+        with self.assertRaises(AgentError) as ctx:
+            self._start(s, impls)
+        self.assertEqual(ctx.exception.reason_code, "process_absent")
+        ev = s.stage_evidence_for_occupancy(1, 1)
+        self.assertEqual(ev[-2]["stage_status"], lc.REQUESTED)     # the trigger WAS accepted
+        self.assertEqual(ev[-1]["stage_status"], lc.FAILED)        # the launch was NOT
+
+    def test_start_never_launches_a_second_terminal(self):
+        s, win, impls = self._ready()
+        self._start(s, impls)
+        win.calls.clear()
+        out = self._start(s, impls)
+        self.assertTrue(out["idempotent"])
+        self.assertEqual(win.calls, [])                            # no second trigger
+
+    def test_verify_is_read_only(self):
+        s, win, impls = self._ready()
+        self._start(s, impls)
+        win.calls.clear()
+        out = impls.verify(canonical_dir="", runtime_uuid=RUUID, base="",
+                           context=_ctx(s, operation="VERIFY"))
+        self.assertTrue(out["running"])
+        self.assertEqual(win.calls, [])
+
+    def test_verify_reports_not_running_without_claiming_a_stop(self):
+        s, win, impls = self._ready(launches=False)
+        out = impls.verify(canonical_dir="", runtime_uuid=RUUID, base="",
+                           context=_ctx(s, operation="VERIFY"))
+        self.assertFalse(out["running"])
+
+    def test_stop_succeeds_only_once_the_process_is_absent(self):
+        s, win, impls = self._ready()
+        self._start(s, impls)
+        out = impls.stop(canonical_dir="", runtime_uuid=RUUID, base="",
+                         context=_ctx(s, operation="STOP"))
+        self.assertFalse(out["running"])
+        self.assertEqual([e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)][-2:],
+                         ["request_terminate", "confirm_terminated"])
+
+    def test_a_stop_trigger_that_leaves_the_process_running_is_a_failure(self):
+        s, win, impls = self._ready()
+        self._start(s, impls)
+
+        def stubborn(t):
+            win.calls.append(("run_task", t)); return True        # accepted, but nothing dies
+        win.run_task = stubborn
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="",
+                       context=_ctx(s, operation="STOP"))
+        self.assertEqual(ctx.exception.reason_code, "process_still_running")
+
+
+class TombstoneLifecycleTests(SimpleTestCase):
+    def _stopped(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        impls.start(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="START"))
+        impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        win.calls.clear()
+        return s, win, impls
+
+    def test_tombstone_moves_into_this_slots_occupancy_directory(self):
+        s, win, impls = self._stopped()
+        out = impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
+                              context=_ctx(s, operation="TOMBSTONE"))
+        self.assertTrue(out["tombstoned"])
+        moves = [c for c in win.calls if c[0] == "move_dir"]
+        self.assertEqual(len(moves), 1)
+        self.assertEqual(moves[0][2], rf"C:\GuvFX\beta\tombstones\1\{occupancy_id(1, 1)}")
+
+    def test_cleanup_runs_after_the_move_and_before_release(self):
+        s, win, impls = self._stopped()
+        impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="TOMBSTONE"))
+        ops = [e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)]
+        self.assertEqual(ops[-2:], ["tombstone", "verify_cleanup"])
+        self.assertEqual(s.generation_of(1), 1)          # release has NOT happened here
+        s.assert_evidence_complete(1, 1)
+
+    def test_a_surviving_process_blocks_cleanup(self):
+        s, win, impls = self._stopped()
+        win._process = _proc()                            # something is running in the slot again
+        with self.assertRaises(AgentError) as ctx:
+            impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
+                            context=_ctx(s, operation="TOMBSTONE"))
+        self.assertEqual(ctx.exception.reason_code, "cleanup_incomplete")
+
+    def test_the_whole_lifecycle_reconciles(self):
+        s, win, impls = self._stopped()
+        impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="TOMBSTONE"))
+        ops = [e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)]
+        self.assertEqual(ops, ["stage_copy", "request_launch", "confirm_launch",
+                               "request_terminate", "confirm_terminated", "tombstone",
+                               "verify_cleanup"])
+        s.assert_sequence_valid(1, 1)
+        s.assert_evidence_complete(1, 1)
+        for e in s.stage_evidence_for_occupancy(1, 1):
+            self.assertIn(e["stage_status"], (lc.COMPLETED, lc.ALREADY_COMPLETED, lc.REQUESTED))
+
+
+class ResponseBoundaryTests(SimpleTestCase):
+    """The path never crosses the management channel, however deep the lifecycle goes."""
+
+    def test_no_operation_returns_a_filesystem_path(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        outs = [impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))]
+        outs.append(impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                                context=_ctx(s, operation="START")))
+        outs.append(impls.verify(canonical_dir="", runtime_uuid=RUUID, base="",
+                                 context=_ctx(s, operation="VERIFY")))
+        outs.append(impls.stop(canonical_dir="", runtime_uuid=RUUID, base="",
+                               context=_ctx(s, operation="STOP")))
+        outs.append(impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
+                                    context=_ctx(s, operation="TOMBSTONE")))
+        for out in outs:
+            self.assertNotIn("canonical_path", out)
+            for value in out.values():
+                self.assertNotIn(r"C:\GuvFX", str(value))
+            self.assertTrue(out["canonical_path_digest"])       # the attestation, not the layout

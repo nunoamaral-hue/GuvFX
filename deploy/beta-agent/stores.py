@@ -189,6 +189,14 @@ class SlotStore:
             " slot INTEGER NOT NULL, generation INTEGER NOT NULL, sequence_number INTEGER NOT NULL,"
             " operation TEXT NOT NULL, at INTEGER NOT NULL,"
             " PRIMARY KEY (slot, generation, sequence_number))")
+        # Evidence for each sequenced stage. Same primary key as the sequence table, so a stage cannot
+        # carry two evidence records, and a joined read cannot silently pick one of them.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS stage_evidence ("
+            " slot INTEGER NOT NULL, generation INTEGER NOT NULL, sequence_number INTEGER NOT NULL,"
+            " operation TEXT NOT NULL, stage_status TEXT NOT NULL, failure_category TEXT NOT NULL,"
+            " reason_code TEXT NOT NULL, evidence_digest TEXT NOT NULL, at INTEGER NOT NULL,"
+            " PRIMARY KEY (slot, generation, sequence_number))")
         # Global allocation block: set when audit corruption cannot be attributed to a single slot.
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS allocation_block ("
@@ -380,6 +388,63 @@ class SlotStore:
         """A missing or duplicated sequence number is an INTEGRITY FAILURE, not a warning."""
         seq = [e["sequence_number"] for e in self.sequence_for_occupancy(slot, generation)]
         if seq != list(range(1, len(seq) + 1)):
+            raise SlotIntegrityError()
+
+    # ── evidence completeness (B3P-2 requirement 5) ──
+    def record_stage(self, *, slot, generation, operation, attestation: dict, now: int = 0) -> int:
+        """Record ONE lifecycle stage: its sequence position and its evidence, in a single transaction.
+
+        Success and failure are both recorded — a blocked or failed stage is as much an audit event as a
+        successful one, and a lifecycle that only remembers its successes cannot be reconciled.
+
+        Sequencing and evidence are written together deliberately: it makes "an operation happened but left
+        no evidence" structurally impossible rather than merely detected after the fact.
+        :meth:`assert_evidence_complete` still exists, because it catches the case this cannot — later
+        tampering or corruption of the store.
+        """
+        att = attestation or {}
+        digest = str(att.get("evidence_digest") or "")
+        if not digest:
+            raise EvidenceIncomplete(operation)          # never record a stage with nothing to show for it
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(sequence_number) FROM occupancy_sequence WHERE slot=? AND generation=?",
+                (int(slot), int(generation))).fetchone()
+            nxt = (row[0] or 0) + 1
+            self._conn.execute(
+                "INSERT INTO occupancy_sequence (slot, generation, sequence_number, operation, at)"
+                " VALUES (?,?,?,?,?)", (int(slot), int(generation), nxt, operation, int(now)))
+            self._conn.execute(
+                "INSERT INTO stage_evidence (slot, generation, sequence_number, operation, stage_status,"
+                " failure_category, reason_code, evidence_digest, at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (int(slot), int(generation), nxt, operation, str(att.get("stage_status") or ""),
+                 str(att.get("failure_category") or ""), str(att.get("reason_code") or ""), digest,
+                 int(now)))
+            self._conn.commit()
+            return nxt
+
+    def stage_evidence_for_occupancy(self, slot, generation) -> list:
+        with self._lock:
+            rows = list(self._conn.execute(
+                "SELECT sequence_number, operation, stage_status, failure_category, reason_code,"
+                " evidence_digest FROM stage_evidence WHERE slot=? AND generation=?"
+                " ORDER BY sequence_number", (int(slot), int(generation))))
+        return [{"sequence_number": r[0], "operation": r[1], "stage_status": r[2],
+                 "failure_category": r[3], "reason_code": r[4], "evidence_digest": r[5]} for r in rows]
+
+    def assert_evidence_complete(self, slot, generation) -> None:
+        """Every sequenced operation must have evidence. **Absence of evidence is an integrity concern** —
+        not a gap to be tolerated, and never read as "that stage did not run"."""
+        self.assert_sequence_valid(slot, generation)
+        seq = {e["sequence_number"]: e["operation"] for e in self.sequence_for_occupancy(slot, generation)}
+        ev = {e["sequence_number"]: e for e in self.stage_evidence_for_occupancy(slot, generation)}
+        for n, operation in seq.items():
+            record = ev.get(n)
+            if record is None or not record.get("evidence_digest"):
+                raise SlotIntegrityError()
+            if record.get("operation") != operation:
+                raise SlotIntegrityError()
+        if set(ev) - set(seq):                            # evidence for an operation that never sequenced
             raise SlotIntegrityError()
 
     # ── quarantine ──
@@ -661,6 +726,16 @@ def remote_evidence(local_evidence: dict) -> dict:
     backend needs for lifecycle decisions.
     """
     return {k: local_evidence[k] for k in REMOTE_EVIDENCE_FIELDS if k in local_evidence}
+
+
+class EvidenceIncomplete(Exception):
+    """A stage was offered for recording with no evidence to record. Refused at the door: a lifecycle entry
+    with nothing behind it is worse than no entry, because it reads as proof."""
+
+    def __init__(self, operation: str = ""):
+        self.operation = operation
+        self.reason_code = "evidence_missing"
+        super().__init__("evidence_missing")
 
 
 class SlotIntegrityError(AgentError):

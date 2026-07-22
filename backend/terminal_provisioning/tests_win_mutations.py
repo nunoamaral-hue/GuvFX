@@ -132,10 +132,21 @@ class StageCopyIntegrityTests(SimpleTestCase):
         win = FakeWin(exists=False, source={"digest": DIGEST, "manifest_version": "old"})
         self.assertIn("source_manifest_version_matches", self._copy(win)["evidence"]["failed"])
 
-    def test_existing_destination_refuses(self):
-        win = FakeWin(exists=True)
+    def test_existing_destination_is_never_copied_over(self):
+        """Whatever the verdict, an existing destination is not overwritten by a second copy.
+
+        Since the idempotency-evidence requirement landed, the VERDICT depends on what is actually there:
+        a destination proven complete is ALREADY_COMPLETED (see ``tests_lifecycle``), and one that is not
+        is BLOCKED with ``destination_absent`` recorded as the failed precondition. Both refuse to copy.
+        """
+        incomplete = {"digest": "OTHER", "executable_digest": None,
+                      "portable_marker": False, "ownership_marker": False}
+        win = FakeWin(exists=True, dest=incomplete)
         self.assertIn("destination_absent", self._copy(win)["evidence"]["failed"])
         self.assertEqual(win.calls, [])
+        complete = FakeWin(exists=True)
+        self.assertEqual(self._copy(complete)["attestation"]["outcome"], "success")
+        self.assertEqual(complete.calls, [])
 
     def test_generation_mismatch_refuses(self):
         win = FakeWin(exists=False)

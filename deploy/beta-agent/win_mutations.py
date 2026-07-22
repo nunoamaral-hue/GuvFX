@@ -15,6 +15,7 @@ Two semantics are load-bearing and deliberately not shortened:
 * **Stop success means the process is ABSENT.** A terminate task can succeed while the process lives on.
 """
 from lib.mgmt_agent_core import AgentError, is_beneath
+from lifecycle import ALREADY_COMPLETED, BLOCKED, COMPLETED, FAILED, REQUESTED
 from win_primitives import (ABSENT, BETA_SLOTS_ROOT, FORBIDDEN_FRAGMENTS, PRESENT_VALID,
                             PrimitiveContext, SlotInput, UnauthorisedNamespace,
                             assert_authorised_slot_input, attest, observe_process, require_mutating)
@@ -79,24 +80,43 @@ def stage_copy(win, ctx: PrimitiveContext, si: SlotInput, *, expected_source_dig
     pre["destination_not_reparse"] = real is None or is_beneath(real, BETA_SLOTS_ROOT)
     pre["generation_matches"] = int(expected_generation) == int(actual_generation)
     failed_pre = [k for k in STAGE_PRE_CHECKS if not pre.get(k)]
+
     if failed_pre:
+        # ALREADY_COMPLETED, proven — not assumed. A retry after an ambiguous failure finds the destination
+        # present; that is only success if the EXISTING destination passes every post-check, and if the sole
+        # failed precondition is its presence. Any other failed precondition (wrong generation, wrong golden
+        # source, a reparse point) still blocks, however complete the directory looks.
+        if failed_pre == ["destination_absent"]:
+            existing = _post_checks(win, si, expected_source_digest)
+            if not existing["failed"]:
+                return _ok(si, "stage_copy",
+                           {"pre_checks": pre, "post_checks": existing["checks"], "idempotent": True},
+                           observed_at, status=ALREADY_COMPLETED)
         return _fail(si, "stage_copy", "stage_copy_precheck_failed",
-                     {"pre_checks": pre, "failed": failed_pre}, observed_at)
+                     {"pre_checks": pre, "failed": failed_pre}, observed_at, status=BLOCKED)
 
     win.copy_golden(si.slot_path)
 
-    post = {}
-    dest = win.destination_info(si.slot_path) or {}
-    post["destination_digest_matches"] = dest.get("digest") == expected_source_digest
-    post["executable_digest_matches"] = bool(dest.get("executable_digest"))
-    post["portable_marker_present"] = bool(dest.get("portable_marker"))
-    post["ownership_marker_present"] = bool(dest.get("ownership_marker"))
-    failed_post = [k for k in STAGE_POST_CHECKS if not post.get(k)]
-    if failed_post:
+    post = _post_checks(win, si, expected_source_digest)
+    if post["failed"]:
         # Partial or corrupt copy: refuse, and say so — never hand this to launch.
         return _fail(si, "stage_copy", "stage_copy_incomplete",
-                     {"pre_checks": pre, "post_checks": post, "failed": failed_post}, observed_at)
-    return _ok(si, "stage_copy", {"pre_checks": pre, "post_checks": post}, observed_at)
+                     {"pre_checks": pre, "post_checks": post["checks"], "failed": post["failed"]},
+                     observed_at)
+    return _ok(si, "stage_copy", {"pre_checks": pre, "post_checks": post["checks"]}, observed_at)
+
+
+def _post_checks(win, si: SlotInput, expected_source_digest) -> dict:
+    """Evaluate the four destination integrity checks. Used after a copy AND to prove an existing
+    destination is genuinely complete before calling a retry ALREADY_COMPLETED."""
+    dest = win.destination_info(si.slot_path) or {}
+    checks = {
+        "destination_digest_matches": dest.get("digest") == expected_source_digest,
+        "executable_digest_matches": bool(dest.get("executable_digest")),
+        "portable_marker_present": bool(dest.get("portable_marker")),
+        "ownership_marker_present": bool(dest.get("ownership_marker")),
+    }
+    return {"checks": checks, "failed": [k for k in STAGE_POST_CHECKS if not checks.get(k)]}
 
 
 # ── stage 5: fixed-task launch trigger (REQUESTED) ─────────────────────────────────────────────────────
@@ -117,7 +137,8 @@ def request_launch(win, ctx: PrimitiveContext, si: SlotInput, *, observed_at=Non
     if not accepted:
         return _fail(si, "request_launch", "launch_trigger_rejected",
                      {"task": si.launch_task}, observed_at)
-    return _ok(si, "request_launch", {"phase": "REQUESTED", "trigger_accepted": True}, observed_at)
+    return _ok(si, "request_launch", {"phase": "REQUESTED", "trigger_accepted": True}, observed_at,
+               status=REQUESTED)
 
 
 # ── stage 6: launch confirmation / verification via process-birth evidence ─────────────────────────────
@@ -156,7 +177,8 @@ def request_terminate(win, ctx: PrimitiveContext, si: SlotInput, *, observed_at=
         return _fail(si, "request_terminate", "terminate_trigger_unavailable", {}, observed_at)
     if not accepted:
         return _fail(si, "request_terminate", "terminate_trigger_rejected", {}, observed_at)
-    return _ok(si, "request_terminate", {"phase": "REQUESTED", "trigger_accepted": True}, observed_at)
+    return _ok(si, "request_terminate", {"phase": "REQUESTED", "trigger_accepted": True}, observed_at,
+               status=REQUESTED)
 
 
 def confirm_terminated(win, ctx: PrimitiveContext, si: SlotInput, *, birth, observed_at=None) -> dict:
@@ -221,9 +243,10 @@ def tombstone(win, ctx: PrimitiveContext, si: SlotInput, *, tombstone_dir, obser
     assert_authorised_slot_input(si)
     assert_authorised_tombstone_dir(si, tombstone_dir)
     if not win.path_exists(si.slot_path):
-        return _ok(si, "tombstone", {"already_absent": True, "idempotent": True}, observed_at)
+        return _ok(si, "tombstone", {"already_absent": True, "idempotent": True}, observed_at,
+                   status=ALREADY_COMPLETED)
     if not win.same_volume(si.slot_path, tombstone_dir):
-        return _fail(si, "tombstone", "cross_volume_move_refused", {}, observed_at)
+        return _fail(si, "tombstone", "cross_volume_move_refused", {}, observed_at, status=BLOCKED)
     win.move_dir(si.slot_path, tombstone_dir)
     moved = not win.path_exists(si.slot_path)
     if not moved:
@@ -269,13 +292,27 @@ def verify_cleanup(win, ctx: PrimitiveContext, si: SlotInput, *, generation_befo
 
 
 # ── attestation helpers ────────────────────────────────────────────────────────────────────────────────
-def _ok(si, operation, evidence, observed_at):
-    return {"attestation": attest(slot=si.slot, operation=operation, outcome="success",
-                                  reason_code="", evidence=evidence, observed_at=observed_at),
+def _result(si, operation, *, status, reason_code, evidence, observed_at):
+    """Build the one evidence record every stage emits, whatever the outcome (requirement 5).
+
+    ``outcome`` stays the coarse success/failure signal existing callers consume; ``stage_status`` carries
+    the finer lifecycle meaning, including the COMPLETED vs ALREADY_COMPLETED distinction that matters on a
+    retry after an ambiguous failure.
+    """
+    outcome = "success" if status in (COMPLETED, ALREADY_COMPLETED, REQUESTED) else "failure"
+    evidence = dict(evidence or {})
+    evidence["stage_status"] = status
+    return {"attestation": attest(slot=si.slot, operation=operation, outcome=outcome,
+                                  reason_code=reason_code, evidence=evidence, observed_at=observed_at,
+                                  stage_status=status),
             "evidence": evidence}
 
 
-def _fail(si, operation, reason_code, evidence, observed_at):
-    return {"attestation": attest(slot=si.slot, operation=operation, outcome="failure",
-                                  reason_code=reason_code, evidence=evidence, observed_at=observed_at),
-            "evidence": evidence}
+def _ok(si, operation, evidence, observed_at, status=COMPLETED):
+    return _result(si, operation, status=status, reason_code="", evidence=evidence,
+                   observed_at=observed_at)
+
+
+def _fail(si, operation, reason_code, evidence, observed_at, status=FAILED):
+    return _result(si, operation, status=status, reason_code=reason_code, evidence=evidence,
+                   observed_at=observed_at)

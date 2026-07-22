@@ -24,6 +24,9 @@ class OpError(AgentError):
 
 
 class OpImplementations:
+    """B2 UUID-directory implementations. ``context`` is accepted and ignored: the pool binding is
+    meaningful only in the slot-pool execution model, and these implementations predate it."""
+
     def __init__(self, win, *, tombstone_base: str = DEFAULT_TOMBSTONE_BASE):
         self.win = win
         self.tombstone_base = tombstone_base
@@ -48,7 +51,7 @@ class OpImplementations:
             raise OpError("not_owned")
 
     # ── operations ──
-    def materialise(self, *, canonical_dir, runtime_uuid, base) -> dict:
+    def materialise(self, *, canonical_dir, runtime_uuid, base, context=None) -> dict:
         existing = self._assert_owned_or_free(canonical_dir, runtime_uuid)
         if existing == str(runtime_uuid):
             return {"materialised": True, "idempotent": True}    # already materialised + owned
@@ -62,7 +65,7 @@ class OpImplementations:
         self.win.write_owner_tag(canonical_dir, runtime_uuid)
         return {"materialised": True}
 
-    def start(self, *, canonical_dir, runtime_uuid, base) -> dict:
+    def start(self, *, canonical_dir, runtime_uuid, base, context=None) -> dict:
         self._assert_owned(canonical_dir, runtime_uuid)          # must be materialised + owned first
         proc = self.win.find_runtime_process(canonical_dir)
         if proc is not None:
@@ -71,14 +74,14 @@ class OpImplementations:
         launched = self.win.launch_runtime(canonical_dir, runtime_uuid)
         return {"pid": launched.get("pid"), "session_id": launched.get("session_id")}
 
-    def verify(self, *, canonical_dir, runtime_uuid, base) -> dict:
+    def verify(self, *, canonical_dir, runtime_uuid, base, context=None) -> dict:
         proc = self.win.find_runtime_process(canonical_dir)      # image-beneath-canonical by construction
         if proc is None:
             return {"running": False, "logged_in": False}
         return {"running": True, "logged_in": False,
                 "pid": proc["pid"], "session_id": proc.get("session_id")}
 
-    def stop(self, *, canonical_dir, runtime_uuid, base) -> dict:
+    def stop(self, *, canonical_dir, runtime_uuid, base, context=None) -> dict:
         self._assert_owned(canonical_dir, runtime_uuid)
         proc = self.win.find_runtime_process(canonical_dir)
         if proc is None:
@@ -91,7 +94,7 @@ class OpImplementations:
         self.win.stop_pid(proc["pid"])
         return {"running": False, "pid": proc["pid"], "session_id": proc.get("session_id")}
 
-    def tombstone(self, *, canonical_dir, runtime_uuid, base) -> dict:
+    def tombstone(self, *, canonical_dir, runtime_uuid, base, context=None) -> dict:
         dest = rf"{self.tombstone_base}\{runtime_uuid}\{utc_stamp()}"
         # Idempotent: the runtime dir is already gone (previously tombstoned) → nothing to move.
         if not self.win.path_exists(canonical_dir):

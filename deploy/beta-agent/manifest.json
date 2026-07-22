@@ -3,18 +3,20 @@
   "checksums": {
     "agent.py": "c913b765980b69c9cff062ac2380d4dbba7164a087639e9a1019f96ffc91fed7",
     "config.py": "a05adea52d9df5793ba494712caf78f47ead3c14c6a352d863fa2fa841664e1d",
-    "lib/mgmt_agent_core.py": "d9de2785d9ef276c0f3fa300b9cae1fb49039de0f8a766a82d8e382c37acb75d",
+    "lib/mgmt_agent_core.py": "baeb54a22f57355d7fb326ceb3d7da081908dbe7c74d456a4af11e5b94109944",
     "lib/mgmt_protocol.py": "7b9538f3fde36acac07e611dc80448b78f008ae2045928b0ebf8d83562e13e48",
-    "manifest.py": "9548aff95d226b0d49cd2c52611d245936b5381d6c68ffa70755e5ba81a6984e",
+    "lifecycle.py": "e4a7ef63b4340eaf278675fea7c004179db6af5361378e7ce2d597efd785d13f",
+    "manifest.py": "363e9e794c569c950730c41485cc212588f04214ebcb0b04038577685b1d4572",
     "occupancy.py": "36baaf37e68b1a72d5d5544f99aa4b48ff05386d06db807a51f6ef166f1bf728",
-    "op_impls.py": "9a2312ea57bc46068fb1600f83407ca2dfbbc63fe77954b64bbce6b189a16713",
+    "op_impls.py": "e4ec790e4f0f6391dc8e40e8d981c0a9dc178689282f8eaca841a4076b5ef5e0",
+    "pool_op_impls.py": "452f243c69dd2b0ae5ba7c679c6231b6bad09579bde0d201bdb517cac177bf79",
     "service.py": "f6afd0bd9c8c989cdac912a063a6cdeacb6bd0c1f70a60434b96be447c4ef8d6",
-    "stores.py": "3f5cf6bcf34ae83f4ede88e720c668c4a7626736de29930c81dc3a6003bf6327",
-    "win_mutations.py": "c0c5562a8d15abfa18c778efdd84b3c0d2dc622cc33116e5d5071b228506ea22",
+    "stores.py": "25ca1275fe3f951d7a3897974593631be77c5a96007be4df2c3284790bf22273",
+    "win_mutations.py": "6bc01678eae0c85e2f62e9167f70e4df2c34f2ed0b38beef6e12e92fa74e5589",
     "win_ops.py": "99c890a7033e50e6fc7c8c18a0eddee7b6676d26e5264e9a70b243ddbab91803",
-    "win_primitives.py": "9e8b998aec768e0d48e204ba13602151f8568ecc00a1058bf89c889b35dfefb8"
+    "win_primitives.py": "3c5207e251db15868c741fe6f61ae525f150b2751b878820f7d2eb1103889708"
   },
-  "manifest_version": "2026-07-22.10",
+  "manifest_version": "2026-07-22.13",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",
