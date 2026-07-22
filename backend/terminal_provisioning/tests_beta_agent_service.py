@@ -1100,3 +1100,186 @@ class AuditChainTests(SimpleTestCase):
                 s.verify_audit_chain()
         still = s._conn.execute("SELECT resulting_state FROM slot_audit WHERE id=2").fetchone()[0]
         self.assertEqual(still, "TAMPERED")     # untouched — operator investigation only
+
+
+class OccupancyBindingTests(SimpleTestCase):
+    """The upper layer holds the full binding; a primitive sees only slot-scoped physical facts."""
+
+    @staticmethod
+    def _binding(slot=2, gen=3, path=r"C:\GuvFX\beta\slots\2\terminal"):
+        from occupancy import build_occupancy_binding
+        return build_occupancy_binding(
+            runtime_uuid=RUUID, slot=slot, generation=gen, slot_path=path,
+            task_identity={"task_name": "GuvFXBetaRuntime-2"}, integrity_outcome="ok", quarantined=False)
+
+    def test_binding_carries_all_required_fields(self):
+        from occupancy import BINDING_FIELDS
+        b = self._binding()
+        for f in BINDING_FIELDS:
+            self.assertIn(f, b, f)
+
+    def test_primitive_view_cannot_carry_policy_or_identity(self):
+        """The enforcement point for the boundary rule: a primitive literally cannot see these."""
+        from occupancy import slot_scoped_view
+        v = slot_scoped_view(self._binding(), slot_path=r"C:\GuvFX\beta\slots\2\terminal",
+                             launch_task="GuvFXBetaRuntime-2", terminate_task="GuvFXBetaRuntimeStop-2")
+        for forbidden in ("runtime_uuid", "generation", "occupancy_id", "provisioning_job_id",
+                          "integrity_outcome", "quarantined"):
+            self.assertNotIn(forbidden, v, forbidden)
+        self.assertEqual(set(v), {"slot", "slot_path", "launch_task", "terminate_task"})
+
+    def test_result_from_a_different_slot_is_rejected(self):
+        from occupancy import OccupancyBindingMismatch, reconcile_primitive_result
+        path = r"C:\GuvFX\beta\slots\2\terminal"
+        with self.assertRaises(OccupancyBindingMismatch):
+            reconcile_primitive_result(self._binding(), {"slot": 3}, slot_path=path)
+
+    def test_result_from_a_different_path_is_rejected(self):
+        from occupancy import OccupancyBindingMismatch, reconcile_primitive_result
+        path = r"C:\GuvFX\beta\slots\2\terminal"
+        with self.assertRaises(OccupancyBindingMismatch):
+            reconcile_primitive_result(self._binding(), {"slot": 2, "slot_path": r"C:\elsewhere"},
+                                       slot_path=path)
+
+    def test_matching_result_reconciles(self):
+        from occupancy import reconcile_primitive_result
+        path = r"C:\GuvFX\beta\slots\2\terminal"
+        reconcile_primitive_result(self._binding(), {"slot": 2, "slot_path": path}, slot_path=path)
+
+
+class ProcessBirthIdentityTests(SimpleTestCase):
+    """PID alone is not identity — PID reuse must not attribute a later process to an earlier occupancy."""
+
+    @staticmethod
+    def _birth(**over):
+        from occupancy import build_process_birth
+        args = dict(pid=13020, created_at="2026-07-22T08:00:00Z", image_digest="abc123",
+                    executable_containment_verified=True, user_sid="S-1-5-21-x-1001",
+                    session_id=1, slot=2)
+        args.update(over)
+        return build_process_birth(**args)
+
+    def test_identical_process_matches(self):
+        from occupancy import assert_same_process
+        b = self._birth()
+        assert_same_process(b, dict(b))
+
+    def test_pid_reuse_with_a_different_creation_time_fails_closed(self):
+        """THE case this exists for: same PID, later unrelated process."""
+        from occupancy import ProcessIdentityMismatch, assert_same_process
+        b = self._birth()
+        later = dict(b, created_at="2026-07-22T09:30:00Z")
+        with self.assertRaises(ProcessIdentityMismatch) as ctx:
+            assert_same_process(b, later)
+        self.assertEqual(ctx.exception.reason_code, "process_identity_mismatch")
+
+    def test_different_owner_image_session_or_slot_fails_closed(self):
+        from occupancy import ProcessIdentityMismatch, assert_same_process
+        b = self._birth()
+        for field, value in (("user_sid", "S-1-5-21-x-9999"), ("image_digest", "deadbeef"),
+                             ("session_id", 2), ("slot", 3)):
+            with self.assertRaises(ProcessIdentityMismatch, msg=field):
+                assert_same_process(b, dict(b, **{field: value}))
+
+    def test_unverified_executable_containment_fails_closed(self):
+        from occupancy import ProcessIdentityMismatch, assert_same_process
+        b = self._birth()
+        with self.assertRaises(ProcessIdentityMismatch):
+            assert_same_process(b, dict(b, executable_containment_verified=False))
+
+
+class TaskIdentityTests(SimpleTestCase):
+    """Task-definition drift blocks launch; the agent never repairs a task at runtime."""
+
+    @staticmethod
+    def _defn(**over):
+        d = dict(task_name="GuvFXBetaRuntime-2", run_as_identity="guvfx_u_beta_2",
+                 executable=r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe",
+                 working_directory=r"C:\GuvFX\beta\slots\2\terminal",
+                 logon_type="TASK_LOGON_PASSWORD", run_level="LEAST", enabled=True)
+        d.update(over)
+        return d
+
+    def test_matching_definition_passes(self):
+        from occupancy import assert_task_matches_approved
+        assert_task_matches_approved(self._defn(), self._defn())
+
+    def test_any_drift_blocks_launch(self):
+        from occupancy import TaskDefinitionDrift, assert_task_matches_approved
+        for field, value in (("run_as_identity", "Administrator"),
+                             ("executable", r"C:\Windows\System32\cmd.exe"),
+                             ("working_directory", r"C:\elsewhere"),
+                             ("logon_type", "TASK_LOGON_INTERACTIVE_TOKEN"),
+                             ("run_level", "HIGHEST"),
+                             ("task_name", "SomethingElse")):
+            with self.assertRaises(TaskDefinitionDrift, msg=field) as ctx:
+                assert_task_matches_approved(self._defn(), self._defn(**{field: value}))
+            self.assertEqual(ctx.exception.reason_code, "task_definition_drift")
+
+    def test_disabled_task_blocks_launch(self):
+        from occupancy import TaskDefinitionDrift, assert_task_matches_approved
+        with self.assertRaises(TaskDefinitionDrift):
+            assert_task_matches_approved(self._defn(), self._defn(enabled=False))
+
+    def test_digest_is_order_independent(self):
+        from occupancy import task_definition_digest
+        d = self._defn()
+        self.assertEqual(task_definition_digest(d),
+                         task_definition_digest(dict(reversed(list(d.items())))))
+
+
+class AuditCheckpointTests(SimpleTestCase):
+    """Chain verification is a lifecycle gate, not a reporting nicety."""
+
+    @staticmethod
+    def _store():
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=2)
+
+    def test_all_five_boundaries_are_defined(self):
+        from stores import SlotStore
+        for b in ("before_assign", "before_mutation", "before_release",
+                  "before_quarantine_clearance", "before_acceptance_evidence"):
+            self.assertIn(b, SlotStore.AUDIT_CHECKPOINTS, b)
+
+    def test_healthy_chain_passes_every_checkpoint(self):
+        from stores import SlotStore
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.record_audit(event="slot_assigned", runtime_uuid=RUUID, slot=slot, generation=gen, now=1)
+        for b in SlotStore.AUDIT_CHECKPOINTS:
+            self.assertEqual(s.audit_checkpoint(b, slot=slot)["status"], "VALID")
+
+    def test_corruption_with_attribution_quarantines_the_slot(self):
+        from stores import AuditChainCorrupt
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.record_audit(event="slot_assigned", runtime_uuid=RUUID, slot=slot, generation=gen, now=1)
+        s._conn.execute("UPDATE slot_audit SET resulting_state='X' WHERE id=1"); s._conn.commit()
+        with self.assertRaises(AuditChainCorrupt):
+            s.audit_checkpoint("before_mutation", slot=slot, now=2)
+        self.assertIn(slot, s.quarantined_slots())
+
+    def test_corruption_without_attribution_blocks_all_allocation(self):
+        from stores import AllocationBlocked, AuditChainCorrupt
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.record_audit(event="slot_assigned", runtime_uuid=RUUID, slot=slot, generation=gen, now=1)
+        s._conn.execute("UPDATE slot_audit SET resulting_state='X' WHERE id=1"); s._conn.commit()
+        with self.assertRaises(AuditChainCorrupt):
+            s.audit_checkpoint("before_assign", now=2)       # attribution uncertain
+        self.assertTrue(s.allocation_blocked())
+        with self.assertRaises(AllocationBlocked):
+            s.assign("11111111-2222-3333-4444-555555555555", now=3)
+
+    def test_allocation_block_clearance_requires_operator_attribution(self):
+        from stores import QuarantineClearanceRefused
+        s = self._store()
+        s.block_allocation("x", 1)
+        with self.assertRaises(QuarantineClearanceRefused):
+            s.clear_allocation_block(operator_identity="", evidence_reference="E-1")
+        s.clear_allocation_block(operator_identity="nuno", evidence_reference="E-1")
+        self.assertIsNone(s.allocation_blocked())
+
+    def test_unknown_checkpoint_rejected(self):
+        s = self._store()
+        with self.assertRaises(ValueError):
+            s.audit_checkpoint("whenever")

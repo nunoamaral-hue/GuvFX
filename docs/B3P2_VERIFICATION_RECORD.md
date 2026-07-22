@@ -169,6 +169,7 @@ pool-aware op implementations and will be re-verified there.
 | B3P-2 step 2b (monotonicity, quarantine, report evidence) | 71 | 1153 |
 | B3P-2 step 2c (remote-evidence boundary, audit, release order, clearance) | 87 | 1169 |
 | B3P-2 step 2d (occupancy_id, audit chain) | 97 | 1179 |
+| B3P-2 step 3 (binding, process birth, task identity, checkpoints) | 116 | 1198 |
 
 
 ---
@@ -257,3 +258,49 @@ Recorded as **permanent verification evidence** at Nuno's direction. The cycle
 *occupancy A → release → occupancy B → `audit_for_occupancy(slot, generation)`* returns **only occupancy
 B**. Attribution is by `(slot, generation)` — never slot alone — so a previous occupant's history can never
 be read as the current one's.
+
+
+---
+
+## EV-12 — Occupancy binding and the primitive boundary
+
+**Status: PASS (unit-level).** 5 tests. `build_occupancy_binding` carries all eight required fields.
+
+The boundary is enforced **structurally, not by convention**: `slot_scoped_view()` returns exactly
+`{slot, slot_path, launch_task, terminate_task}` and the test asserts `runtime_uuid`, `generation`,
+`occupancy_id`, `provisioning_job_id`, `integrity_outcome` and `quarantined` are **absent**. A primitive
+therefore *cannot* make a policy decision even by accident — it never receives the inputs for one.
+
+`reconcile_primitive_result` rejects a result reporting a different slot or a different path, so a
+primitive result can never be attributed to an occupancy it was not issued under.
+
+## EV-13 — Process birth identity (PID reuse)
+
+**Status: PASS (unit-level).** 4 tests. Birth evidence records PID, creation timestamp, image digest,
+executable-containment result, user SID, session and slot.
+
+`assert_same_process` fails closed when the **PID matches but** creation time, owner, image, session or
+slot differ — the exact PID-reuse case in which a later unrelated process would otherwise inherit an
+earlier occupancy's identity. Unverified executable containment also fails closed.
+
+## EV-14 — Task identity and drift
+
+**Status: PASS (unit-level).** 4 tests. The approved definition digest covers task name, run-as identity,
+executable, working directory, logon type, run level and enabled state, and is order-independent.
+
+Drift **blocks launch** — verified individually for a changed run-as identity (e.g. to `Administrator`),
+executable, working directory, logon type (e.g. to `INTERACTIVE_TOKEN`), run level (e.g. to `HIGHEST`) and
+task name, plus a disabled task. The agent surfaces drift as a refusal; it never repairs or rewrites a task
+at runtime.
+
+## EV-15 — Audit-chain checkpoints as lifecycle gates
+
+**Status: PASS (unit-level).** 6 tests. All five boundaries are defined and a healthy chain passes each.
+
+Corruption behaviour is verified in both attribution cases:
+- **attribution possible** (slot in hand) → the slot is **quarantined** and the checkpoint raises;
+- **attribution uncertain** (`before_assign`, no slot) → **all new allocation is blocked** —
+  a subsequent `assign` for any runtime raises `allocation_blocked`.
+
+Clearing the allocation block requires operator identity **and** an evidence reference; an empty identity
+is refused. Chain verification is therefore a lifecycle gate, not a reporting nicety.

@@ -96,6 +96,14 @@ class AuditChainCorrupt(AgentError):
         super().__init__("audit_chain_corrupt")
 
 
+class AllocationBlocked(AgentError):
+    """No slot may be handed out: audit corruption could not be attributed to a single slot."""
+
+    def __init__(self, reason=""):
+        self.reason = reason
+        super().__init__("allocation_blocked")
+
+
 class ReleaseProofMissing(AgentError):
     """A slot release was attempted before every required proof was durably true."""
 
@@ -173,6 +181,10 @@ class SlotStore:
             " integrity_outcome TEXT, quarantined INTEGER NOT NULL DEFAULT 0, agent_version TEXT,"
             " manifest_version TEXT, protocol_version INTEGER, at INTEGER NOT NULL,"
             " previous_audit_hash TEXT NOT NULL, audit_hash TEXT NOT NULL)")
+        # Global allocation block: set when audit corruption cannot be attributed to a single slot.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS allocation_block ("
+            " id INTEGER PRIMARY KEY CHECK (id = 1), reason TEXT NOT NULL, at INTEGER NOT NULL)")
         self._conn.commit()
 
     def lookup(self, runtime_uuid: str):
@@ -190,6 +202,9 @@ class SlotStore:
         operation resolves via :meth:`lookup`, so a stray request cannot consume a slot.
         """
         uid = str(runtime_uuid)
+        blocked = self.allocation_blocked()
+        if blocked:
+            raise AllocationBlocked(blocked)
         with self._lock:
             cur = self._conn.execute(
                 "SELECT slot, generation FROM slots WHERE runtime_uuid=?", (uid,))
@@ -376,6 +391,50 @@ class SlotStore:
             raise SlotIntegrityError()
         if gens[-1] != cur[0] or cur[0] != int(expected_generation):
             raise SlotIntegrityError()
+
+    #: Boundaries at which the audit chain MUST be verified — not merely in reporting tools.
+    AUDIT_CHECKPOINTS = ("before_assign", "before_mutation", "before_release",
+                         "before_quarantine_clearance", "before_acceptance_evidence")
+
+    def audit_checkpoint(self, boundary: str, *, slot=None, now: int = 0) -> dict:
+        """Verify the audit chain at a lifecycle boundary and act on corruption.
+
+        On corruption: **fail closed**; quarantine the affected slot when attribution is possible; when
+        attribution is uncertain (no slot in hand) **block all new allocation** instead of guessing. Never
+        repaired — operator investigation only.
+        """
+        if boundary not in self.AUDIT_CHECKPOINTS:
+            raise ValueError(f"unknown audit checkpoint: {boundary}")
+        try:
+            return self.verify_audit_chain()
+        except AuditChainCorrupt:
+            if slot is not None:
+                self.quarantine_slot(int(slot), f"audit_chain_corrupt:{boundary}", now)
+            else:
+                self.block_allocation(f"audit_chain_corrupt:{boundary}", now)
+            raise
+
+    # ── allocation block (attribution uncertain) ──
+    def block_allocation(self, reason: str, now: int = 0) -> None:
+        """Stop handing out ANY slot. Used when corruption cannot be attributed to one slot."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO allocation_block (id, reason, at) VALUES (1,?,?)",
+                (str(reason)[:96], int(now)))
+            self._conn.commit()
+
+    def allocation_blocked(self):
+        with self._lock:
+            row = self._conn.execute("SELECT reason FROM allocation_block WHERE id=1").fetchone()
+        return row[0] if row else None
+
+    def clear_allocation_block(self, *, operator_identity, evidence_reference, now: int = 0) -> None:
+        """Operator-only. Requires attribution of who cleared it and why — never an implicit reset."""
+        if not str(operator_identity or "").strip() or not str(evidence_reference or "").strip():
+            raise QuarantineClearanceRefused("operator_identity and evidence_reference are required")
+        with self._lock:
+            self._conn.execute("DELETE FROM allocation_block WHERE id=1")
+            self._conn.commit()
 
     #: The seven proofs that must ALL be durably true before a generation may advance.
     RELEASE_PROOFS = (
