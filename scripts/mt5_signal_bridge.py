@@ -50,6 +50,7 @@ USAGE:
 import os
 import sys
 import time
+import hmac
 import json
 import logging
 import random
@@ -173,8 +174,11 @@ FORCE_ONCE_TP_PIPS = float(os.getenv("FORCE_ONCE_TP_PIPS", "100"))
 # Configuration
 # =============================================================================
 API_URL = os.getenv("GUVFX_API_URL", "").rstrip("/")
-WORKER_TOKEN = os.getenv("GUVFX_WORKER_TOKEN", "")
-AGENT_TOKEN = os.getenv("GUVFX_AGENT_TOKEN", "").strip()  # For OHLC endpoint auth
+WORKER_TOKEN = os.getenv("GUVFX_WORKER_TOKEN", "").strip()
+AGENT_TOKEN = os.getenv("GUVFX_AGENT_TOKEN", "").strip()  # HTTP endpoint auth
+# The single credential every protected HTTP route is checked against. Whitespace-only values normalise to
+# "" above, so an empty/whitespace token is treated as NOT CONFIGURED and the bridge fails closed.
+HTTP_AUTH_TOKEN = AGENT_TOKEN or WORKER_TOKEN
 ACCOUNT_ID = os.getenv("MT5_ACCOUNT_ID", "")
 MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
@@ -247,6 +251,13 @@ def validate_config() -> bool:
         errors.append("GUVFX_WORKER_TOKEN is not set")
     if not ACCOUNT_ID:
         errors.append("MT5_ACCOUNT_ID is not set")
+    # Fail closed at STARTUP: refuse to run at all unless HTTP authentication is configured, so the bridge
+    # can never come up serving protected routes (including the order-placing POSTs) unauthenticated.
+    if not HTTP_AUTH_TOKEN:
+        errors.append(
+            "no HTTP auth token configured: set GUVFX_AGENT_TOKEN (or GUVFX_WORKER_TOKEN). "
+            "A missing/empty token is refused — the bridge will not start unauthenticated"
+        )
 
     if errors:
         for err in errors:
@@ -1550,20 +1561,26 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
 
     def _validate_token(self) -> bool:
         """
-        Validate the agent token from headers for OHLC endpoints.
+        Validate the agent token for EVERY protected route. **Fails closed.**
 
-        Uses GUVFX_AGENT_TOKEN if set, otherwise falls back to GUVFX_WORKER_TOKEN.
-        This allows separate tokens for OHLC data (backend) vs job polling (bridge).
+        Authentication is mandatory. Prefers GUVFX_AGENT_TOKEN, falling back to GUVFX_WORKER_TOKEN
+        (``HTTP_AUTH_TOKEN``). If neither is configured — missing, empty, or whitespace-only — every
+        protected request is DENIED. There is deliberately NO mode in which an unconfigured bridge serves
+        protected routes unauthenticated: the previous implementation ended with a permissive allow-all
+        fallback, so a bridge started without its env var accepted every request — including the
+        order-placing POST routes.
+
+        The comparison is constant-time so a caller cannot recover the token from response timing.
         """
-        provided_token = self.headers.get("X-GuvFX-Agent-Token", "")
+        provided_token = self.headers.get("X-GuvFX-Agent-Token", "") or ""
 
-        # Prefer AGENT_TOKEN for OHLC auth, fallback to WORKER_TOKEN
-        if AGENT_TOKEN:
-            return provided_token == AGENT_TOKEN
-        elif WORKER_TOKEN:
-            return provided_token == WORKER_TOKEN
-        else:
-            return True  # No token configured, allow all
+        if not HTTP_AUTH_TOKEN:
+            # Fail closed. Startup validation should already have prevented this state; deny regardless.
+            logger.error("HTTP auth denied: no bridge auth token configured (fail-closed)")
+            return False
+        if not provided_token:
+            return False
+        return hmac.compare_digest(provided_token, HTTP_AUTH_TOKEN)
 
     def do_GET(self):
         """Handle GET requests."""
@@ -1849,12 +1866,12 @@ def main_loop() -> None:
     logger.info(f"HTTP server:")
     logger.info(f"  - Port: {HTTP_SERVER_PORT}")
     logger.info(f"  - OHLC endpoint: /mt5/snapshots/rates")
+    # Never log a token value — only which variable supplied it. Startup aborts if neither is set, so there
+    # is no "auth disabled" state to report.
     if AGENT_TOKEN:
-        logger.info(f"  - OHLC auth: using GUVFX_AGENT_TOKEN")
-    elif WORKER_TOKEN:
-        logger.info(f"  - OHLC auth: using GUVFX_WORKER_TOKEN (fallback)")
+        logger.info(f"  - HTTP auth: REQUIRED (GUVFX_AGENT_TOKEN)")
     else:
-        logger.info(f"  - OHLC auth: DISABLED (no token configured)")
+        logger.info(f"  - HTTP auth: REQUIRED (GUVFX_WORKER_TOKEN fallback)")
     logger.info("=" * 60)
 
     while True:
