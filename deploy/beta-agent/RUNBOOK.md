@@ -1,20 +1,36 @@
-# Beta Provisioning Agent — Operational Runbook (CVM-Inc-3 B2 / B3P-1)
+# Beta Provisioning Agent — Operational Runbook (CVM-Inc-3 B2 / B3P-1 / B3P-2)
 
 A small, private-network Windows service that performs **only** allowlisted, UUID-scoped beta-runtime
 provisioning operations for the GuvFX backend, over a signed, replay-resistant protocol. It **never**
 accepts a command, script, path, argument, executable or environment value from the network.
 
-> **Still a dark artefact (B2 → B3P-1).** This directory is reviewed, CI-tested and merged. It may be
-> *copied* to the Windows host after merge, but it is **NOT** installed/started; no firewall rule, scheduled
-> task, autologon change, reboot, or any touch of Session 3 / port 8788. B3P-1 hardens the service (harness,
-> drain, full-bundle integrity, exact-bind pin, resource caps, network scripts); **B3P-2** adds the
-> per-runtime identity + launch/terminate; the **controlled install (INSTALL_REVIEW.md §16)** and the
-> end-to-end proof are separately gated behind Nuno's approval.
+> **Still a dark artefact.** Reviewed, CI-tested and merged; **nothing here has ever executed on a Windows
+> host.** The controlled install is gated behind the Install Authorisation packet
+> (`docs/B3P2_INSTALL_AUTHORISATION_PACKET.md`), the first service start behind a further approval, and the
+> bounded MT5 viability trial behind that.
+
+## Execution model (B3P-2 — read this first)
+A runtime occupies one **pre-provisioned slot**: a fixed non-admin identity `guvfx_b_slot<n>`, a fixed
+directory `C:\GuvFX\beta\slots\<n>\terminal`, and two fixed scheduled tasks the agent may only
+**trigger** — `GuvFXBetaRuntime-<n>` and `GuvFXBetaRuntimeStop-<n>`. `(slot, generation)` identifies one
+immutable occupancy.
+
+The agent creates no OS object, holds no runtime credential, and has **no method** to kill a process, launch
+one, delete a directory or write an ACL. Those absences are the security property.
+
+Two semantics are load-bearing: a trigger being accepted is **not** evidence MT5 started (only observed
+process-birth evidence completes a launch), and STOP succeeds only when the process is **ABSENT** — never
+merely "termination requested".
 
 ## What it exposes
 `POST /provision` only. Operations: `NEGOTIATE` (read-only handshake), `MATERIALISE`, `START`, `VERIFY`,
-`STOP`, `TOMBSTONE`. No other route. `TOMBSTONE` **moves** the runtime dir to
-`C:\GuvFX\beta\tombstones\<uuid>\<timestamp>\` — it never deletes. Permanent deletion is out of scope.
+`STOP`, `TOMBSTONE`. No other route. `TOMBSTONE` **moves** the slot dir to
+`C:\GuvFX\beta\tombstones\<slot>\<occupancy_id>\` — it never deletes. Permanent deletion is out of scope.
+
+**Launch gate.** `START` refuses unless the installed launch task matches its **approved definition**
+field-for-field (`approved_tasks.json`, written by `install_pool.ps1`). Drift, a changed principal or run
+level, a lost `/portable`, a disabled task or an absent task all block — and nothing is triggered. The agent
+never repairs a task.
 
 ## Security boundaries (enforced in code)
 - Binds only to a private/Tailscale address; **startup fails** on `0.0.0.0`/public (`config.assert_private_bind`).
@@ -27,9 +43,10 @@ accepts a command, script, path, argument, executable or environment value from 
   `key_id` rotation. Canonical path derived **locally** from the UUID; containment beneath
   `C:\GuvFX\beta\accounts`; reparse/symlink/junction escape refused; production/Nuno paths + port 8788
   structurally excluded (never referenced).
-- `STOP`/`TOMBSTONE` act on a PID **only** if its process image is beneath the owned canonical path
-  (never by exe name). `START` is idempotent (never a second terminal). Ownership tag conflict is refused.
-  *(The per-runtime identity + delegated launch/terminate that back these are the B3P-2 increment.)*
+- Process attribution is scoped by the slot's **runtime identity** (owner SID), then by image **path** —
+  never by image name. A materialised slot contains `terminal64.exe`, the same name as the operator's
+  production terminal, so a name-based match could not tell them apart. `START` observes before triggering
+  and refuses on anything that is not a proven ABSENT, so it can never launch a second terminal.
 - One mutating op per runtime + a global mutation cap → `BUSY`. Replay + completed-op evidence survive
   restart (SQLite). Mutating ops refused if **any** executable module's checksum ≠ approved manifest
   (full-bundle integrity, verification B-7 — `agent.py`/`config.py`/`stores.py`/`service.py` are now covered).
@@ -39,12 +56,15 @@ accepts a command, script, path, argument, executable or environment value from 
 - Responses carry only an allowlist of fields (no creds/env/cmdlines/exceptions/path listings).
 
 ## Config (env, service-scoped — never Git)
-`BETA_AGENT_BIND_HOST`, `BETA_AGENT_EXPECTED_BIND_HOST`, `BETA_AGENT_BIND_PORT`, `BETA_AGENT_KEYRING`
-(JSON `{key_id: secret}`), `BETA_AGENT_KEY_ID`, `BETA_AGENT_ROOT`, `BETA_AGENT_TOMBSTONE`,
-`BETA_AGENT_STATE_DIR` (holds `state.sqlite` + `logs/`, **separate from the code dir**), `BETA_AGENT_MANIFEST`,
-`BETA_AGENT_MAX_BODY_BYTES`, `BETA_AGENT_MAX_CONNECTIONS`, `BETA_AGENT_REQUEST_TIMEOUT_S`,
-`BETA_AGENT_DRAIN_TIMEOUT_S`. See `config.example.json` (no secrets). **Note:** a machine env var is not a
-protected secret store — scope the keyring to the service account and rotate it (DPAPI retrieval is a follow-up).
+See `config.example.json` (no secrets). Beyond the B2 set, the **slot-pool model requires** — and refuses to
+start without — `BETA_AGENT_EXECUTION_MODEL=slot_pool`, `BETA_AGENT_SLOT_POOL_SIZE` ≥ 1, all three of
+`BETA_AGENT_GOLDEN_DIR` / `_DIGEST` / `_MANIFEST_VERSION`, `BETA_AGENT_APPROVED_TASKS`, and
+`BETA_AGENT_DRAIN_TIMEOUT_S` **> 30** (it must exceed the settle window; the old default of 20 is refused).
+`BETA_AGENT_SLOTS_ROOT` is refused unless it equals the fixed namespace — slot paths come from code, not
+configuration.
+
+**Note:** a machine env var is not a protected secret store — scope the keyring to the service account and
+rotate it (DPAPI retrieval is a follow-up).
 
 ## Service host (pywin32)
 `service.py` wraps `AgentServer` in a `win32serviceutil.ServiceFramework` so the SCM can start/stop it as a
@@ -59,22 +79,38 @@ Proves the bind-guard refuses public binds, the exact-bind pin accepts only the 
 bundle matches the manifest, and — with `--expect-manifest-sha256` — that `manifest.json` itself equals the
 reviewed commit (so matched tampering of an impl file + its manifest entry is still caught).
 
-## B3 install (controlled; INSTALL-ONLY first, no start)
-1. Provision the virtual service account `NT SERVICE\GuvFXBetaAgent` (no password) + install pywin32 into the
-   agent interpreter. Provision the signing keyring **only at the post-approval start**.
-2. `install_service.ps1` (dry-run, then `-Apply`): scoped ACLs, pywin32 service `start=demand`, recovery
-   disabled, **no start**; then `firewall.ps1` (dry-run, then `-Apply`): pre-existing-rule gate +
-   `DefaultInboundAction=Block` assertion + single backend-scoped allow on the Tailscale profile.
-3. Add the **Tailscale ACL** (backend node → `100.79.101.19:8791` only) as a second isolation layer.
-4. Verify with `sc qc` + `sc qfailure` (STOPPED, manual, correct identity, no recovery), `icacls`, and the
-   firewall introspection commands; confirm `:8788`/Session 3/autologon unchanged; **STOP and await approval**.
-5. After approval: start; confirm `NEGOTIATE` reports the expected protocol/agent/manifest/ops; probe :8791
-   reachability from a non-backend tailnet peer (must be refused). Running one broker-independent runtime
-   end-to-end is the B3P-2 increment (per-runtime identity + launch).
+## Install (controlled; INSTALL-ONLY first, no start)
+**Every script is dry-run by default. Run PLAN, read it, get approval, then `-Apply`. The PLAN output is
+installation evidence.** Full order, timings, rollback points and stop conditions:
+`docs/B3P2_INSTALL_AUTHORISATION_PACKET.md`.
+
+1. **Operator** — stage the golden MT5 image into `C:\GuvFX\beta\golden\`, clean of per-instance state
+   (`config\accounts.dat`, `config\servers.dat`, `bases\`, `logs\`, `MQL5\Logs\`, `MQL5\Profiles\`).
+   Add `.guvfx_golden_manifest` (the approved image version) and `.guvfx_portable`. Record the tree digest.
+2. **Operator** — `install_pool.ps1`: creates the four non-admin identities, grants `SeBatchLogonRight`,
+   creates the slot/tombstone directories and per-slot ACLs, registers the **8 tasks disabled with no
+   triggers**, and writes `approved_tasks.json` by reading each registration back through the same COM
+   interface the agent uses. **Prompts for passwords as SecureString — they are never parameters.**
+3. `install_service.ps1`: scoped ACLs (Modify on state/tombstones/slots — the agent stages and moves
+   runtimes itself; ReadAndExecute on the golden image and on its own code), pywin32 service `start=demand`,
+   recovery disabled, **no start**. It refuses to run until the pool exists.
+4. `firewall.ps1`: pre-existing-rule gate + `DefaultInboundAction=Block` assertion + a single
+   backend-scoped allow on the Tailscale profile.
+5. Add the **Tailscale ACL** (backend node → `100.79.101.19:8791` only) as a second isolation layer.
+6. Verify per the install review §7: identities, ACLs, task definitions and digests, service
+   (`sc qc` + `sc qfailure` — STOPPED, demand, correct identity, no recovery), firewall, bundle checksums,
+   approvals; and confirm the estate is byte-identical — production task XML digests, Nuno's terminal PID
+   **and creation FILETIME**, `:8787`/`:8788` still bound by the same processes, autologon and uptime
+   unchanged. **STOP and await approval.**
+7. After approval: provision the keyring, start **once**, confirm `NEGOTIATE`, then the read-only
+   observation probe. The bounded MT5 viability trial follows only if the probe succeeds.
 
 ## Rollback
-`uninstall.ps1` (dry-run, then `-Apply`) — stop + remove the service, its firewall rule, its ACL grants and
-any launch tasks. Runtime + tombstone directories are retained (no deletion). Nuno's terminal, bridge,
+`uninstall.ps1` (dry-run, then `-Apply`) — revoke the service ACL grants, stop + remove the service, its
+firewall rule, **both** task families (launch and stop, so no stored credential is orphaned), the per-slot
+grants, and `SeBatchLogonRight`. Identities are **disabled, not deleted**, unless `-RemoveIdentities` is
+passed: deletion orphans anything they own and destroys attribution for retained tombstone evidence. Slot
+dirs, tombstones and `agent-state\` (the evidence chain) are retained. Nuno's terminal, bridge,
 Session 3 and port 8788 are never touched. Disabling/resetting the Windows Firewall on this host is a **Red
 action** (it de-isolates :8791). Backend rollback: `BETA_RUNTIMES_ENABLED` off disables all beta provisioning
 regardless of the agent.
