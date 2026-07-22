@@ -63,6 +63,92 @@ class SqliteStore:
             self._conn.commit()
 
 
+class PoolExhausted(AgentError):
+    """No free slot remains in the pre-provisioned pool."""
+
+    def __init__(self):
+        super().__init__("pool_exhausted")
+
+
+class SlotStore:
+    """Durable runtime-UUID → pool-slot assignment (B3P-2, per-slot execution model).
+
+    ARCHITECTURAL INTENT (Rule 5 — do not collapse these into one statement):
+
+    * **Intent.** Each concurrently-running beta runtime executes under its OWN dedicated non-admin Windows
+      identity, in its OWN fixed directory, launched and terminated by its OWN fixed scheduled tasks. That
+      is the isolation boundary.
+    * **Implementation.** The pool (identities + `TASK_LOGON_PASSWORD` launch/terminate tasks + per-slot
+      directories + ACLs) is **pre-provisioned once by a human administrator at install**. This store only
+      records which runtime currently occupies which pre-existing slot. It creates **no** OS object, no
+      user, and holds **no** credential — the agent is non-admin and must never be able to mint identities.
+    * **Compatibility.** A slot identity is reused after a runtime is torn down and its directory
+      tombstoned. Concurrent tenants therefore never share an identity; sequential ones may reuse a slot.
+      This matches the estate's existing ``guvfx_u_{1,6,7}`` per-slot pattern.
+
+    The fixed per-slot directory is what makes the launch target non-steerable: each slot's task hard-codes
+    its own path, so no caller-supplied value ever reaches a task action.
+    """
+
+    def __init__(self, path: str, pool_size: int):
+        if pool_size < 1:
+            raise ValueError("pool_size must be >= 1")
+        self.pool_size = int(pool_size)
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._lock = threading.Lock()
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS slots ("
+            " slot INTEGER PRIMARY KEY, runtime_uuid TEXT NOT NULL UNIQUE, assigned_at INTEGER NOT NULL)")
+        self._conn.commit()
+
+    def lookup(self, runtime_uuid: str):
+        """Slot currently assigned to this runtime, or None. Never allocates."""
+        with self._lock:
+            cur = self._conn.execute("SELECT slot FROM slots WHERE runtime_uuid=?", (str(runtime_uuid),))
+            row = cur.fetchone()
+        return row[0] if row else None
+
+    def assign(self, runtime_uuid: str, now: int) -> int:
+        """Idempotently assign the lowest free slot. Raises :class:`PoolExhausted` when the pool is full.
+
+        Only MATERIALISE may allocate; every other operation resolves via :meth:`lookup`, so a stray request
+        for an unknown runtime can never consume a slot.
+        """
+        uid = str(runtime_uuid)
+        with self._lock:
+            cur = self._conn.execute("SELECT slot FROM slots WHERE runtime_uuid=?", (uid,))
+            row = cur.fetchone()
+            if row:
+                return row[0]                      # idempotent: already assigned
+            taken = {r[0] for r in self._conn.execute("SELECT slot FROM slots")}
+            for slot in range(1, self.pool_size + 1):
+                if slot not in taken:
+                    self._conn.execute(
+                        "INSERT INTO slots (slot, runtime_uuid, assigned_at) VALUES (?, ?, ?)",
+                        (slot, uid, int(now)))
+                    self._conn.commit()
+                    return slot
+            raise PoolExhausted()
+
+    def release(self, runtime_uuid: str) -> bool:
+        """Free the runtime's slot (after TOMBSTONE). Idempotent; True if a row was removed."""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM slots WHERE runtime_uuid=?", (str(runtime_uuid),))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def occupancy(self) -> dict:
+        with self._lock:
+            rows = list(self._conn.execute("SELECT slot, runtime_uuid FROM slots ORDER BY slot"))
+        return {slot: uid for slot, uid in rows}
+
+
+def slot_runtime_dir(slots_root: str, slot: int) -> str:
+    """The FIXED per-slot runtime directory. Derived only from the slot number — never from any
+    caller-supplied value — which is what keeps each slot's launch task non-steerable."""
+    return rf"{slots_root}\{int(slot)}\terminal"
+
+
 class RuntimeLockManager:
     """In-process, NON-blocking mutation gate: one mutating op per runtime + a global cap. A conflict
     raises ``AgentError`` with a sanitised BUSY reason (the agent-core turns it into an ``outcome=denied``)

@@ -524,3 +524,74 @@ class LifecycleLogTests(SimpleTestCase):
         content = open(logpath, encoding="utf-8").read()
         self.assertIn("agent started", content)
         self.assertNotIn("secret", content.lower())   # never logs secrets/keyring
+
+
+class SlotPoolTests(SimpleTestCase):
+    """B3P-2 per-slot execution model: durable UUID->slot assignment over a PRE-PROVISIONED pool.
+
+    The store must never create an OS object; it only records occupancy of slots an administrator created
+    at install. Concurrent runtimes never share a slot; a slot is reusable only after release.
+    """
+
+    @staticmethod
+    def _store(pool_size=5):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=pool_size)
+
+    def test_assign_is_idempotent_per_runtime(self):
+        s = self._store()
+        a = s.assign(RUUID, now=1)
+        self.assertEqual(s.assign(RUUID, now=2), a)      # same slot, not a second one
+        self.assertEqual(list(s.occupancy()), [a])
+
+    def test_distinct_runtimes_get_distinct_slots(self):
+        s = self._store()
+        u2 = "11111111-2222-3333-4444-555555555555"
+        self.assertNotEqual(s.assign(RUUID, now=1), s.assign(u2, now=1))
+
+    def test_lowest_free_slot_is_reused_only_after_release(self):
+        s = self._store(pool_size=2)
+        u2 = "11111111-2222-3333-4444-555555555555"
+        u3 = "22222222-3333-4444-5555-666666666666"
+        s1, s2 = s.assign(RUUID, now=1), s.assign(u2, now=1)
+        self.assertEqual({s1, s2}, {1, 2})
+        with self.assertRaises(Exception):               # pool full -> denied, never over-allocated
+            s.assign(u3, now=1)
+        self.assertTrue(s.release(RUUID))
+        self.assertEqual(s.assign(u3, now=1), s1)        # freed slot reused
+        self.assertIsNone(s.lookup(RUUID))
+
+    def test_pool_exhaustion_is_a_sanitised_agent_error(self):
+        from lib.mgmt_agent_core import AgentError
+        from stores import PoolExhausted
+        s = self._store(pool_size=1)
+        s.assign(RUUID, now=1)
+        with self.assertRaises(PoolExhausted) as ctx:
+            s.assign("11111111-2222-3333-4444-555555555555", now=1)
+        self.assertIsInstance(ctx.exception, AgentError)
+        self.assertEqual(ctx.exception.reason_code, "pool_exhausted")
+
+    def test_lookup_never_allocates(self):
+        s = self._store()
+        self.assertIsNone(s.lookup(RUUID))
+        self.assertEqual(s.occupancy(), {})               # a stray request cannot consume a slot
+
+    def test_release_is_idempotent(self):
+        s = self._store()
+        s.assign(RUUID, now=1)
+        self.assertTrue(s.release(RUUID))
+        self.assertFalse(s.release(RUUID))
+
+    def test_assignment_survives_restart(self):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SlotStore(f.name, pool_size=5)
+        slot = s.assign(RUUID, now=1)
+        self.assertEqual(SlotStore(f.name, pool_size=5).lookup(RUUID), slot)
+
+    def test_slot_dir_is_derived_only_from_the_slot_number(self):
+        from stores import slot_runtime_dir
+        self.assertEqual(slot_runtime_dir(r"C:\GuvFX\beta\slots", 3), r"C:\GuvFX\beta\slots\3\terminal")
+        # no caller-supplied value can influence the path -> the per-slot task target stays fixed
+        self.assertEqual(slot_runtime_dir(r"C:\GuvFX\beta\slots", "2"), r"C:\GuvFX\beta\slots\2\terminal")
