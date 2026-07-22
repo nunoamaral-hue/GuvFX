@@ -174,11 +174,15 @@ FORCE_ONCE_TP_PIPS = float(os.getenv("FORCE_ONCE_TP_PIPS", "100"))
 # Configuration
 # =============================================================================
 API_URL = os.getenv("GUVFX_API_URL", "").rstrip("/")
-WORKER_TOKEN = os.getenv("GUVFX_WORKER_TOKEN", "").strip()
-AGENT_TOKEN = os.getenv("GUVFX_AGENT_TOKEN", "").strip()  # HTTP endpoint auth
-# The single credential every protected HTTP route is checked against. Whitespace-only values normalise to
-# "" above, so an empty/whitespace token is treated as NOT CONFIGURED and the bridge fails closed.
-HTTP_AUTH_TOKEN = AGENT_TOKEN or WORKER_TOKEN
+WORKER_TOKEN = os.getenv("GUVFX_WORKER_TOKEN", "").strip()   # bridge -> backend job polling (X-Worker-Token)
+AGENT_TOKEN = os.getenv("GUVFX_AGENT_TOKEN", "").strip()     # inbound HTTP endpoint auth
+# The ONE credential every protected HTTP route is checked against.
+#
+# WS1 (post-rotation hardening): this used to be ``AGENT_TOKEN or WORKER_TOKEN`` — a fallback between two
+# UNRELATED credentials. That is exactly the coupling the 2026-07-22 rotation exposed elsewhere, so the
+# fallback is removed: inbound auth uses the agent token and nothing else. Whitespace-only normalises to ""
+# above, so missing/empty is treated as NOT CONFIGURED and the bridge fails closed.
+HTTP_AUTH_TOKEN = AGENT_TOKEN
 ACCOUNT_ID = os.getenv("MT5_ACCOUNT_ID", "")
 MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
@@ -254,13 +258,15 @@ def validate_config() -> bool:
     # Fail closed at STARTUP: refuse to run at all unless HTTP authentication is configured, so the bridge
     # can never come up serving protected routes (including the order-placing POSTs) unauthenticated.
     if not HTTP_AUTH_TOKEN:
-        # NB: GUVFX_WORKER_TOKEN is separately mandatory above (job polling), so in practice the operator
-        # sets GUVFX_AGENT_TOKEN. Wording avoids implying either-one-is-enough.
         errors.append(
-            "no HTTP auth token configured: set GUVFX_AGENT_TOKEN "
-            "(GUVFX_WORKER_TOKEN is used as a fallback but is required in its own right). "
-            "A missing/empty token is refused — the bridge will not start unauthenticated"
+            "GUVFX_AGENT_TOKEN is not set (inbound HTTP auth). It has NO fallback: the bridge will not "
+            "substitute GUVFX_WORKER_TOKEN or any other credential, and will not start unauthenticated"
         )
+    # WS3 startup self-validation: reject obvious placeholder text rather than authenticating with it.
+    for _name, _val in (("GUVFX_AGENT_TOKEN", AGENT_TOKEN), ("GUVFX_WORKER_TOKEN", WORKER_TOKEN)):
+        if _val and any(m in _val.lower() for m in
+                        ("replace", "changeme", "example", "placeholder", "<", "${", "scrubbed")):
+            errors.append(f"{_name} looks like placeholder text, not a real secret")
 
     if errors:
         for err in errors:
@@ -1566,9 +1572,10 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
         """
         Validate the agent token for EVERY protected route. **Fails closed.**
 
-        Authentication is mandatory. Prefers GUVFX_AGENT_TOKEN, falling back to GUVFX_WORKER_TOKEN
-        (``HTTP_AUTH_TOKEN``). If neither is configured — missing, empty, or whitespace-only — every
-        protected request is DENIED. There is deliberately NO mode in which an unconfigured bridge serves
+        Authentication is mandatory and uses GUVFX_AGENT_TOKEN ONLY (``HTTP_AUTH_TOKEN``) — there is no
+        fallback to another service's credential. If it is not configured — missing, empty, or
+        whitespace-only — every protected request is DENIED. There is deliberately NO mode in which an
+        unconfigured bridge serves
         protected routes unauthenticated: the previous implementation ended with a permissive allow-all
         fallback, so a bridge started without its env var accepted every request — including the
         order-placing POST routes.

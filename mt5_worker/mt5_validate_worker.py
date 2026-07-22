@@ -28,6 +28,10 @@ def _agent_token() -> str:
 
 
 # ─── RX-2C reliability heartbeat (best-effort; never affects validation) ───
+class WorkerCredentialError(RuntimeError):
+    """This worker's own credential is missing, placeholder, or inconsistent across its aliases."""
+
+
 HEARTBEAT_SOURCE = "validate_worker"
 HEARTBEAT_INTERVAL_S = int(os.getenv("RELIABILITY_HEARTBEAT_INTERVAL_S", "60"))
 
@@ -40,13 +44,47 @@ def _backend_base() -> str:
 
 
 def _worker_token() -> str:
-    # Legacy worker token (X-Worker-Token). On this host GUVFX_AGENT_TOKEN == MT5_WORKER_TOKEN.
-    return (os.getenv("MT5_WORKER_TOKEN") or os.getenv("GUVFX_WORKER_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
+    """Resolve THIS worker's own credential (X-Worker-Token). No cross-credential fallback.
+
+    Post-rotation hardening (WS1): this previously fell back to ``GUVFX_AGENT_TOKEN`` — the BRIDGE's
+    credential — which only ever worked because the two secrets happened to hold the same value. The
+    2026-07-22 rotation broke that conflation and produced silent heartbeat 401s. ``GUVFX_WORKER_TOKEN``
+    remains an accepted ALIAS of the same worker secret; the bridge's agent token is not.
+    """
+    return _resolve_worker_token(os.environ)
+
+
+def _resolve_worker_token(env) -> str:
+    names = ("MT5_WORKER_TOKEN", "GUVFX_WORKER_TOKEN")   # aliases of the SAME worker secret
+    found = {n: (env.get(n) or "").strip() for n in names}
+    found = {n: v for n, v in found.items() if v}
+    if not found:
+        raise WorkerCredentialError(
+            "MT5_WORKER_TOKEN (validate-worker credential) is not configured. Checked: "
+            + ", ".join(names)
+            + ". This worker will NOT fall back to the bridge's GUVFX_AGENT_TOKEN."
+        )
+    values = set(found.values())
+    if len(values) > 1:
+        raise WorkerCredentialError(
+            "MT5_WORKER_TOKEN / GUVFX_WORKER_TOKEN hold different values — these must be the same "
+            "secret. Refusing to guess."
+        )
+    value = values.pop()
+    low = value.lower()
+    if any(m in low for m in ("replace", "changeme", "example", "placeholder", "<", "${", "scrubbed")):
+        raise WorkerCredentialError("MT5_WORKER_TOKEN looks like placeholder text, not a real secret.")
+    return value
 
 
 def emit_heartbeat() -> None:
     base = _backend_base()
-    token = _worker_token()
+    try:
+        token = _worker_token()
+    except WorkerCredentialError:
+        # Startup validation (main) already refuses to run without it; if we somehow get here, stay
+        # best-effort rather than killing the validation loop.
+        return
     if not base or not token:
         return
     try:
@@ -178,8 +216,23 @@ def handle_validate_once() -> None:
                     pass
 
 
+def validate_startup_config() -> None:
+    """WS3 startup self-validation: refuse to run without this worker's OWN credential.
+
+    Fails at start with an operator-actionable message instead of discovering the problem later as
+    silent heartbeat 401s (which is exactly how the 2026-07-22 coupling manifested).
+    """
+    _resolve_worker_token(os.environ)   # raises WorkerCredentialError with a clear diagnostic
+    print("[validate] startup config OK: worker credential present (MT5_WORKER_TOKEN)", flush=True)
+
+
 def main() -> None:
     print("[validate] mt5_validate_worker starting (WINDOWS / EA)", flush=True)
+    try:
+        validate_startup_config()
+    except WorkerCredentialError as exc:
+        print(f"[validate] FATAL: {exc}", flush=True)
+        raise SystemExit(1)
     last_hb = 0.0
     while True:
         now = time.time()
