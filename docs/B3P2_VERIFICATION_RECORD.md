@@ -665,3 +665,73 @@ Recording `service.py` as separately permitted, with its own stated reason, is d
 **Limitation.** This proves the boundary in the repository. It does not prove the real adapter works — no
 method in it has executed on a Windows host, and the contract's section 6 lists what only the viability
 trial can settle.
+
+---
+
+## EV-32 — Adversarial review of the adapter and lifecycle: 8 defects found and fixed
+
+Three reviewers (adapter correctness / lifecycle logic / boundary and containment) produced 22 candidate
+findings; one adjudication pass confirmed 20, deduplicated 3 and marked 1 unverifiable off-host. Every
+confirmed finding was re-checked against the code before it was acted on. **All 395 tests passed while
+these defects were present** — the record below is as much about the tests as the code.
+
+### The one that mattered most
+
+**MATERIALISE could never complete against the real adapter.** `stage_copy`'s post-checks require
+`ownership_marker_present`; the real `destination_info` reads that marker from disk; and `materialise` wrote
+it only *after* `stage_copy` returned COMPLETED. A fresh MATERIALISE would therefore always end
+`stage_copy_incomplete`, leaving a fully populated but marker-less slot that every later integrity gate
+would quarantine. The inverse arrangement is no better: a marker shipped inside the golden image is mutated
+by the later write, so `destination_digest_matches` could never hold again.
+
+**Why the tests missed it: the fake lied about the contract.** `FakeWin.destination_info` returned a
+constant with `ownership_marker: True`, so it asserted a state the real adapter cannot produce. The fake now
+derives that field from whether `write_owner_tag` was actually called. This is the sharpest lesson of the
+increment — a fake that answers more confidently than the real thing converts a whole test suite into
+decoration.
+
+**Fix.** `stage_copy` now writes the marker itself, between the copy and the proof, receiving it as an
+**opaque string** it never parses (the content is occupancy identity, which the primitive layer is forbidden
+to understand). The marker file is excluded from the tree digest on both sides so the destination digest can
+still equal the golden one, and a failed marker write is a recorded stage failure rather than an escape.
+
+### The other seven
+
+| Defect | Consequence | Fix |
+|---|---|---|
+| `unattributable` counted only `"denied"`, dropping `"unknown"` | Any `OpenProcess` failure outside winerror 5/87 → live MT5 reported ABSENT → tombstone renames a directory out from under a running terminal | count every non-`gone` state |
+| …and an unscoped counter makes ABSENT unreachable | One protected process anywhere on the host (PID 4, a security product) would make "this slot is empty" permanently unprovable, so STOP and TOMBSTONE could never succeed | scope the guard to processes whose executable NAME exists in the slot tree — a process named otherwise provably is not ours |
+| `_last_open_state` stashed on the shared adapter instance | One thread's `denied` verdict overwritten by another's `opened` between write and read, recreating the false-ABSENT | `_open_process` returns `(handle, state)`; the attributes are gone |
+| Empty birth record reached `assert_same_process` | `KeyError` escaping the stage → `agent_internal_error`, a REQUESTED row with no confirmation row, runtime still trading | refuse with `process_still_running` before the comparison |
+| START fell through to a trigger on an unobservable slot | A running-but-unreadable runtime gets a SECOND terminal; two processes then match the slot executable and every later operation raises `ambiguous_slot_process` **for ever** | only `ABSENT` triggers; anything else refuses with the observation's reason code |
+| TOMBSTONE retry quarantined a correctly torn-down slot | The move succeeded, so the marker is legitimately gone; the ordinary gate read that as corruption | a TOMBSTONE-only gate that proves identity from the durable store when the directory is absent |
+| Unreadable marker treated as ownership mismatch | A transient permission error on a healthy running slot recorded as corruption, needing operator recovery | `_marker` raises `owner_marker_unreadable`; absent and unreadable are now different answers |
+
+### Below the action cut, also fixed
+
+`os.walk` swallowed every scandir error (an unreadable subtree omitted from a digest that still "matched",
+and a missing root digesting to `sha256(b"")`); no `PermissionError` translation existed, so an ACL
+misconfiguration was filed as a retryable host fault and three reason codes were unreachable; the robocopy
+failure code was an f-string, therefore unclassifiable and invisible to the AST test that proves every code
+maps to a category; `owner_marker_digest(None)` produced `e3b0c44298fc` — the absence of evidence rendered
+as evidence; `path_containment_verified` was the literal `True` at all six call sites and is now derived
+from `inspect_filesystem`, which finally gives that stage a caller; `confirm_launch`/`confirm_terminated`
+observed in the statement after an asynchronous trigger and now poll a bounded settle window;
+`assign()` ran before the integrity gate and the lock, so a request refused for drift or drain had already
+burned pool capacity; and the run-as identity was compared as a bare name, letting `.\Administrator` past.
+
+### Two findings answered with a boundary rather than a fix
+
+**Release.** Nothing in the lifecycle called `release_after_tombstone`, so the generation never advanced and
+the pool would exhaust after `pool_size` tombstones. The obvious fix is wrong: `no_mutation_lock_held` is one
+of the seven release proofs and `tombstone()` runs *inside* that lock, so a release issued from there could
+only satisfy the proof by lying. `release()` is implemented and tested as its own step, taking the two proofs
+this layer cannot observe as explicit parameters; wiring it to a lifecycle operation changes the protocol
+surface, which is **Amber**. Until that decision, TOMBSTONE reports `released: false, release_pending: true`
+rather than implying the slot is free.
+
+**`open_handles`.** Already documented in the research findings §5. Unchanged: it raises, cleanup fails, and
+release is blocked — the strictest of the three options, pending Nuno's decision.
+
+**Standing caveat.** `agent.py` still wires the B2 `OpImplementations`; `PoolOpImplementations`,
+`SlotResolver` and `RealSlotWindowsOps` have no production caller. Every defect above was pre-deployment.

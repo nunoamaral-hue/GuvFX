@@ -57,11 +57,16 @@ STAGE_POST_CHECKS = ("destination_digest_matches", "executable_digest_matches", 
 
 def stage_copy(win, ctx: PrimitiveContext, si: SlotInput, *, expected_source_digest,
                expected_source_manifest_version, expected_generation, actual_generation,
-               observed_at=None) -> dict:
+               owner_marker, observed_at=None) -> dict:
     """Copy the golden runtime into the fixed slot directory, with integrity proven on BOTH sides.
 
     **No partial copy may ever proceed to launch:** every post-check must pass, and a failure leaves the
     caller with a refusal rather than a "probably fine" directory.
+
+    ``owner_marker`` is an OPAQUE string. The stage writes it and never parses it — its content is
+    occupancy identity, which this layer is forbidden to understand. It is written here rather than by the
+    caller because ``ownership_marker_present`` is one of the four post-checks: a caller writing it
+    afterwards could never satisfy its own stage, and the marker would have no stage record of its own.
     """
     require_mutating(ctx, "stage_copy")
     assert_authorised_slot_input(si)
@@ -76,8 +81,13 @@ def stage_copy(win, ctx: PrimitiveContext, si: SlotInput, *, expected_source_dig
     # nothing while reading as if it had.
     slot_dir = rf"{BETA_SLOTS_ROOT}\{si.slot}"
     pre["destination_beneath_slot"] = is_beneath(si.slot_path, slot_dir)
+    # The slot directory is created ONCE by the operator at the install gate, with the slot identity's ACL.
+    # Requiring it to exist does two things: it stops the agent materialising into a slot nobody
+    # provisioned (no identity, no ACL, no tasks — robocopy would happily create the whole chain), and it
+    # makes the reparse check meaningful. Treating "could not resolve" as a pass would leave the guard
+    # vacuously satisfied exactly when the directory is absent.
     real = win.real_path(slot_dir)
-    pre["destination_not_reparse"] = real is None or is_beneath(real, BETA_SLOTS_ROOT)
+    pre["destination_not_reparse"] = real is not None and is_beneath(real, BETA_SLOTS_ROOT)
     pre["generation_matches"] = int(expected_generation) == int(actual_generation)
     failed_pre = [k for k in STAGE_PRE_CHECKS if not pre.get(k)]
 
@@ -95,7 +105,16 @@ def stage_copy(win, ctx: PrimitiveContext, si: SlotInput, *, expected_source_dig
         return _fail(si, "stage_copy", "stage_copy_precheck_failed",
                      {"pre_checks": pre, "failed": failed_pre}, observed_at, status=BLOCKED)
 
-    win.copy_golden(si.slot_path)
+    try:
+        win.copy_golden(si.slot_path)
+        # The marker goes down INSIDE the staged tree, after the copy and before the proof, so the same
+        # stage that claims the runtime is complete is the one that claims it is owned.
+        win.write_owner_tag(si.slot_path, owner_marker)
+    except PermissionError:
+        return _fail(si, "stage_copy", "stage_copy_permission_denied",
+                     {"pre_checks": pre}, observed_at)
+    except Exception:
+        return _fail(si, "stage_copy", "stage_copy_failed", {"pre_checks": pre}, observed_at)
 
     post = _post_checks(win, si, expected_source_digest)
     if post["failed"]:
@@ -200,6 +219,13 @@ def confirm_terminated(win, ctx: PrimitiveContext, si: SlotInput, *, birth, obse
                      "termination_not_observed", {"observation": obs["attestation"]}, observed_at)
     ev = obs["evidence"]
     from occupancy import ProcessIdentityMismatch, assert_same_process
+    if not (birth or {}).get("pid"):
+        # No usable birth evidence (the pre-stop observation failed) AND a process is present. We cannot
+        # say whether it is the one we launched, so we say the only safe thing: it is still running.
+        # Reaching assert_same_process here would raise KeyError, escape the stage entirely, and leave a
+        # REQUESTED row with no confirmation row while the runtime kept trading.
+        return _fail(si, "confirm_terminated", "process_still_running",
+                     {"process_absent": False, "birth_evidence_missing": True}, observed_at)
     observed_identity = {
         "pid": ev["pid"], "created_at": ev["created_at_filetime"],
         "image_digest": ev.get("image_digest"),
@@ -242,12 +268,22 @@ def tombstone(win, ctx: PrimitiveContext, si: SlotInput, *, tombstone_dir, obser
     require_mutating(ctx, "tombstone")
     assert_authorised_slot_input(si)
     assert_authorised_tombstone_dir(si, tombstone_dir)
-    if not win.path_exists(si.slot_path):
-        return _ok(si, "tombstone", {"already_absent": True, "idempotent": True}, observed_at,
-                   status=ALREADY_COMPLETED)
-    if not win.same_volume(si.slot_path, tombstone_dir):
-        return _fail(si, "tombstone", "cross_volume_move_refused", {}, observed_at, status=BLOCKED)
-    win.move_dir(si.slot_path, tombstone_dir)
+    try:
+        if not win.path_exists(si.slot_path):
+            return _ok(si, "tombstone", {"already_absent": True, "idempotent": True}, observed_at,
+                       status=ALREADY_COMPLETED)
+        if not win.same_volume(si.slot_path, tombstone_dir):
+            return _fail(si, "tombstone", "cross_volume_move_refused", {}, observed_at, status=BLOCKED)
+    except Exception:
+        # Unwrapped, these escape the stage and become agent_internal_error with NO stage record —
+        # the one state record_stage is supposed to make impossible.
+        return _fail(si, "tombstone", "tombstone_precheck_unavailable", {}, observed_at, status=BLOCKED)
+    try:
+        win.move_dir(si.slot_path, tombstone_dir)
+    except PermissionError:
+        return _fail(si, "tombstone", "tombstone_move_permission_denied", {}, observed_at)
+    except Exception:
+        return _fail(si, "tombstone", "tombstone_move_incomplete", {}, observed_at)
     moved = not win.path_exists(si.slot_path)
     if not moved:
         return _fail(si, "tombstone", "tombstone_move_incomplete", {}, observed_at)

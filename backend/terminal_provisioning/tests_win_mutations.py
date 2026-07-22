@@ -33,12 +33,13 @@ class FakeWin:
         self._dest = dest if dest is not None else {"digest": DIGEST, "executable_digest": "exe",
                                                     "portable_marker": True, "ownership_marker": True}
         self._task_ok, self._same_volume = task_ok, same_volume
+        self._marker = None
         self._task_running, self._handles = task_running, handles
 
     def golden_source_info(self): return self._source
     def destination_info(self, p): return self._dest
     def path_exists(self, p): return self._exists
-    def real_path(self, p): return None
+    def real_path(self, p): return p          # provisioned slot dir, no reparse point
     def query_slot_process(self, p): return self._process
     def same_volume(self, a, b): return self._same_volume
     def task_running(self, t): return self._task_running
@@ -46,6 +47,9 @@ class FakeWin:
 
     def copy_golden(self, p):
         self.calls.append(("copy_golden", p)); self._exists = True
+
+    def write_owner_tag(self, p, raw):
+        self.calls.append(("write_owner_tag", p)); self._marker = raw
 
     def run_task(self, t):
         self.calls.append(("run_task", t)); return self._task_ok
@@ -65,6 +69,7 @@ def _proc(**over):
 SI = None
 MUT = wp.MUTATING_CONTEXT
 TOMB = r"C:\GuvFX\beta\tombstones\2\a1b2c3d4"
+MARKER = '{"generation": 1, "runtime_uuid": "u", "slot": 2}'    # opaque to the stage
 
 
 def setUpModule():
@@ -81,7 +86,8 @@ class CapabilityEnforcementTests(SimpleTestCase):
         cases = (
             ("stage_copy", lambda: wm.stage_copy(win, ro, SI, expected_source_digest=DIGEST,
                                                  expected_source_manifest_version=MANIFEST_V,
-                                                 expected_generation=1, actual_generation=1)),
+                                                 expected_generation=1, actual_generation=1,
+                                                 owner_marker=MARKER)),
             ("request_launch", lambda: wm.request_launch(win, ro, SI)),
             ("confirm_launch", lambda: wm.confirm_launch(win, ro, SI)),
             ("request_terminate", lambda: wm.request_terminate(win, ro, SI)),
@@ -109,7 +115,7 @@ class StageCopyIntegrityTests(SimpleTestCase):
 
     def _copy(self, win, **over):
         args = dict(expected_source_digest=DIGEST, expected_source_manifest_version=MANIFEST_V,
-                    expected_generation=1, actual_generation=1, observed_at=AT)
+                    expected_generation=1, actual_generation=1, owner_marker=MARKER, observed_at=AT)
         args.update(over)
         return wm.stage_copy(win, MUT, SI, **args)
 
@@ -333,7 +339,8 @@ class StageCopyContainmentIsNotTautologicalTests(SimpleTestCase):
         win = Reparse(exists=False)
         res = wm.stage_copy(win, MUT, SI, expected_source_digest=DIGEST,
                             expected_source_manifest_version=MANIFEST_V,
-                            expected_generation=1, actual_generation=1, observed_at=AT)
+                            expected_generation=1, actual_generation=1, owner_marker=MARKER,
+                            observed_at=AT)
         self.assertIn("destination_not_reparse", res["evidence"]["failed"])
         self.assertEqual(win.calls, [])
 
@@ -342,7 +349,8 @@ class StageCopyContainmentIsNotTautologicalTests(SimpleTestCase):
             def real_path(self, p): return r"C:\GuvFX\beta\slots\2"
         res = wm.stage_copy(Reparse(exists=False), MUT, SI, expected_source_digest=DIGEST,
                             expected_source_manifest_version=MANIFEST_V,
-                            expected_generation=1, actual_generation=1, observed_at=AT)
+                            expected_generation=1, actual_generation=1, owner_marker=MARKER,
+                            observed_at=AT)
         self.assertEqual(res["attestation"]["outcome"], "success")
 
 
@@ -355,3 +363,68 @@ class CleanupCoversBothTasksTests(SimpleTestCase):
                                 observed_at=AT)
         self.assertEqual(res["attestation"]["outcome"], "failure")
         self.assertIn("no_task_running", res["evidence"]["missing"])
+
+
+class MarkerIsWrittenByTheStageTests(SimpleTestCase):
+    """The ownership marker is one of stage_copy's own post-checks, so the stage must write it.
+
+    Before this, materialise() wrote the marker AFTER stage_copy returned - which meant a fresh
+    MATERIALISE could never satisfy ownership_marker_present and always ended stage_copy_incomplete,
+    leaving a fully populated marker-less slot that every later integrity gate quarantined.
+    """
+
+    def test_marker_is_written_between_copy_and_proof(self):
+        win = FakeWin(exists=False)
+        wm.stage_copy(win, MUT, SI, expected_source_digest=DIGEST,
+                      expected_source_manifest_version=MANIFEST_V, expected_generation=1,
+                      actual_generation=1, owner_marker=MARKER, observed_at=AT)
+        self.assertEqual([c[0] for c in win.calls], ["copy_golden", "write_owner_tag"])
+
+    def test_no_marker_is_written_when_a_precondition_blocks(self):
+        win = FakeWin(exists=False)
+        wm.stage_copy(win, MUT, SI, expected_source_digest=DIGEST,
+                      expected_source_manifest_version=MANIFEST_V, expected_generation=1,
+                      actual_generation=9, owner_marker=MARKER, observed_at=AT)
+        self.assertEqual(win.calls, [])
+
+    def test_a_failing_write_is_a_recorded_stage_failure_not_an_escape(self):
+        class Unwritable(FakeWin):
+            def write_owner_tag(self, p, raw):
+                raise PermissionError("denied")
+        res = wm.stage_copy(Unwritable(exists=False), MUT, SI, expected_source_digest=DIGEST,
+                            expected_source_manifest_version=MANIFEST_V, expected_generation=1,
+                            actual_generation=1, owner_marker=MARKER, observed_at=AT)
+        self.assertEqual(res["attestation"]["reason_code"], "stage_copy_permission_denied")
+
+
+class EmptyBirthTerminationTests(SimpleTestCase):
+    """An unobservable pre-stop observation yields an empty birth record. It must not reach the identity
+    comparison: that raised KeyError, escaped the stage entirely, and left a REQUESTED row with no
+    confirmation row while the runtime kept trading."""
+
+    def test_empty_birth_with_a_live_process_is_still_running_not_a_crash(self):
+        res = wm.confirm_terminated(FakeWin(process=_proc()), MUT, SI, birth={}, observed_at=AT)
+        self.assertEqual(res["attestation"]["reason_code"], "process_still_running")
+        self.assertTrue(res["evidence"]["birth_evidence_missing"])
+
+    def test_empty_birth_with_no_process_is_still_a_clean_stop(self):
+        res = wm.confirm_terminated(FakeWin(process=None), MUT, SI, birth={}, observed_at=AT)
+        self.assertEqual(res["attestation"]["outcome"], "success")
+
+
+class TombstoneAdapterFailureTests(SimpleTestCase):
+    """An adapter raising inside tombstone must become a recorded stage failure, never an escape."""
+
+    def test_move_failure_is_recorded(self):
+        class Stuck(FakeWin):
+            def move_dir(self, a, b):
+                raise PermissionError("sharing violation")
+        res = wm.tombstone(Stuck(exists=True), MUT, SI, tombstone_dir=TOMB, observed_at=AT)
+        self.assertEqual(res["attestation"]["reason_code"], "tombstone_move_permission_denied")
+
+    def test_precheck_failure_is_blocked_not_raised(self):
+        class Blind(FakeWin):
+            def same_volume(self, a, b):
+                raise OSError("volume identity unavailable")
+        res = wm.tombstone(Blind(exists=True), MUT, SI, tombstone_dir=TOMB, observed_at=AT)
+        self.assertEqual(res["attestation"]["reason_code"], "tombstone_precheck_unavailable")

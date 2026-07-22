@@ -41,6 +41,15 @@ PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 ERROR_ACCESS_DENIED = 5
 ERROR_INVALID_PARAMETER = 87
+#: [R:toolhelp-bitness-and-retry]
+TH32CS_SNAPPROCESS = 0x00000002
+INVALID_HANDLE_VALUE = -1
+
+
+def _reraise(error):
+    """``os.walk`` default ``onerror`` SWALLOWS every scandir error, so an unreadable subtree would simply
+    be omitted from a digest and the digest would still "match". Contract sections 3.1/3.2 say raise."""
+    raise error
 
 #: [R:task-state-enum] TASK_STATE values, exact.
 TASK_STATE_UNKNOWN, TASK_STATE_DISABLED, TASK_STATE_QUEUED, TASK_STATE_READY, TASK_STATE_RUNNING = 0, 1, 2, 3, 4
@@ -148,6 +157,25 @@ def portable_switch_present(arguments) -> bool:
     return "/portable" in str(arguments or "").lower().split()
 
 
+#: HRESULT/winerror values that mean "denied" rather than "broken".
+_ACCESS_DENIED_CODES = (5, -2147024891)                  # ERROR_ACCESS_DENIED, E_ACCESSDENIED (0x80070005)
+
+
+def translate_denial(exc):
+    """Re-raise a COM/pywin32 access denial as ``PermissionError``.
+
+    The stages branch on ``PermissionError`` SPECIFICALLY to produce ``*_permission_denied`` (category
+    OBSERVATION / WINDOWS-denial) rather than ``*_unavailable`` (a retryable host fault). Without this
+    translation an ACL misconfiguration is filed as a transient error and retried forever, and three
+    reason codes in the classification map are unreachable.
+    """
+    for value in (getattr(exc, "winerror", None), getattr(exc, "hresult", None),
+                  (exc.args[0] if getattr(exc, "args", None) else None)):
+        if isinstance(value, int) and value in _ACCESS_DENIED_CODES:
+            raise PermissionError(str(exc.__class__.__name__)) from exc
+    raise exc
+
+
 class RealSlotWindowsOps(SlotWindowsOps):
     """Box implementation. Untested on Windows; every method fails closed when it cannot be certain.
 
@@ -170,7 +198,7 @@ class RealSlotWindowsOps(SlotWindowsOps):
         return ctypes
 
     def _win32(self):
-        """Load kernel32/psapi with EXPLICIT restype and argtypes.
+        """Load kernel32 with EXPLICIT restype and argtypes.
 
         Two defects this avoids, both silent and both 64-bit-only — exactly the kind that would have been
         found on the box rather than in review:
@@ -186,7 +214,6 @@ class RealSlotWindowsOps(SlotWindowsOps):
         ctypes = self._ctypes()
         from ctypes import wintypes
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        psapi = ctypes.WinDLL("psapi", use_last_error=True)
         PDWORD = ctypes.POINTER(wintypes.DWORD)
         PFILETIME = ctypes.POINTER(wintypes.FILETIME)
 
@@ -208,10 +235,14 @@ class RealSlotWindowsOps(SlotWindowsOps):
         k32.GetVolumeNameForVolumeMountPointW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR,
                                                           wintypes.DWORD]
         k32.GetVolumeNameForVolumeMountPointW.restype = wintypes.BOOL
-        psapi.EnumProcesses.argtypes = [PDWORD, wintypes.DWORD, PDWORD]
-        psapi.EnumProcesses.restype = wintypes.BOOL
+        k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+        k32.Process32FirstW.restype = wintypes.BOOL
+        k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+        k32.Process32NextW.restype = wintypes.BOOL
 
-        self._api = {"ctypes": ctypes, "wintypes": wintypes, "k32": k32, "psapi": psapi}
+        self._api = {"ctypes": ctypes, "wintypes": wintypes, "k32": k32}
         return self._api
 
     @staticmethod
@@ -224,6 +255,8 @@ class RealSlotWindowsOps(SlotWindowsOps):
         except ImportError as exc:                      # pywin32 absent — a deployment fault, not a state
             raise WindowsApiUnavailable("pywin32 not installed") from exc
         return win32com.client, pywintypes
+
+
 
     # ── filesystem ───────────────────────────────────────────────────────────────────────────────────
     def path_exists(self, path: str) -> bool:
@@ -351,12 +384,17 @@ class RealSlotWindowsOps(SlotWindowsOps):
         gates recursion on ``os.path.islink``, which returns False for directory junctions, so junctions are
         walked into by default. Every entry is classified with ``os.lstat`` and a reparse point anywhere in
         a runtime tree is an integrity failure, not something to digest around."""
+        os.lstat(root)                       # a missing/unreadable root must raise, never digest to sha256(b"")
         entries = []
-        for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+        for dirpath, dirnames, filenames in os.walk(root, topdown=True, onerror=_reraise):
             for name in list(dirnames):
                 if self._is_reparse(os.path.join(dirpath, name)):
                     raise WindowsOpsError("reparse_point_in_tree")
             for name in filenames:
+                if dirpath == root and name == OWNER_FILE:
+                    # The occupancy marker is written INTO the staged tree after the copy, so digesting it
+                    # would guarantee the destination digest could never equal the golden one.
+                    continue
                 full = os.path.join(dirpath, name)
                 if self._is_reparse(full):
                     raise WindowsOpsError("reparse_point_in_tree")
@@ -380,22 +418,33 @@ class RealSlotWindowsOps(SlotWindowsOps):
                "/R:2", "/W:2", "/NFL", "/NDL", "/NP", "/NJH", "/NJS"]
         completed = subprocess.run(cmd, capture_output=True, text=True, check=False)  # noqa: S603
         if classify_robocopy_exit(completed.returncode) != "accepted":
-            # The exit code is the only thing recorded: robocopy output can contain full paths.
-            raise WindowsOpsError(f"golden_copy_failed_rc_{completed.returncode}")
+            # A FIXED reason code: an interpolated one cannot be classified, and would be invisible to the
+            # test that proves every reason code maps to a failure category. The exit code travels as an
+            # attribute instead. robocopy's output is never recorded — it can contain full paths.
+            error = WindowsOpsError("golden_copy_failed")
+            error.exit_code = completed.returncode
+            raise error
 
     # ── task scheduler ───────────────────────────────────────────────────────────────────────────────
     def _folder(self):
         client, _pywintypes = self._com()
-        service = client.Dispatch("Schedule.Service")        # [R:progid-schedule-service]
-        service.Connect()
-        return service.GetFolder("\\")
+        try:
+            service = client.Dispatch("Schedule.Service")    # [R:progid-schedule-service]
+            service.Connect()
+            return service.GetFolder("\\")
+        except Exception as exc:                             # noqa: BLE001 — denial vs fault, see below
+            translate_denial(exc)
 
     def _registered_task(self, task_name: str):
         """[R:cannot-missing-task-hresult] No Microsoft source maps a specific HRESULT to an absent task, so
         a failed ``GetTask`` cannot be read as "not there". Enumeration is used instead: absence from the
         folder listing is POSITIVE evidence of absence; anything else propagates as unreadable."""
         folder = self._folder()
-        for task in folder.GetTasks(0):
+        try:
+            tasks = list(folder.GetTasks(0))
+        except Exception as exc:                             # noqa: BLE001
+            translate_denial(exc)
+        for task in tasks:
             if str(task.Name).lower() == str(task_name).lower():
                 return task
         return None
@@ -448,7 +497,10 @@ class RealSlotWindowsOps(SlotWindowsOps):
             raise WindowsOpsError("task_absent")
         if not bool(task.Enabled) or int(task.State) == TASK_STATE_DISABLED:
             return False                                 # rejected — the caller records *_trigger_rejected
-        task.Run(None)                                   # pywin32 raises com_error on a FAILED hresult
+        try:
+            task.Run(None)                               # pywin32 raises com_error on a FAILED hresult
+        except Exception as exc:                         # noqa: BLE001
+            translate_denial(exc)
         return True
 
     # ── process observation ──────────────────────────────────────────────────────────────────────────
@@ -462,20 +514,29 @@ class RealSlotWindowsOps(SlotWindowsOps):
         1601). [R:psutil-createtime-loses-precision] psutil's ``create_time()`` is a float of seconds since
         1970 and 58% of tick values do not round-trip through it — unusable for process-birth identity.
         """
+        if not self.path_exists(slot_path):
+            return None                          # nothing can run from a directory that does not exist
         api = self._win32()
-        ctypes, wintypes, k32 = api["ctypes"], api["wintypes"], api["k32"]
+        k32 = api["k32"]
         canonical_slot = self._long_path(slot_path)
-        candidates, unattributable = [], 0
-        for pid in self._enum_pids(api):
-            handle = self._open_process(api, pid)
+        # Names of executables that exist in the slot tree RIGHT NOW. Any process launched from this slot
+        # must carry one of them, so a process whose name is absent from this set provably is not ours and
+        # its inaccessibility is irrelevant. This is what keeps the fail-closed rule below usable: without
+        # it, one protected process anywhere on the host (a security product, PID 4) would make "the slot
+        # is empty" permanently unprovable and STOP/TOMBSTONE could never succeed.
+        slot_names = self._slot_executable_names(slot_path)
+        candidates, unattributable = [], []
+        for pid, name in self._enum_processes(api):
+            handle, state = self._open_process(api, pid)
             if handle is None:
-                # Denied or unreadable. It MIGHT be the runtime, so it is counted, not ignored.
-                unattributable += 1 if self._last_open_state == "denied" else 0
+                if state != "gone" and name.lower() in slot_names:
+                    unattributable.append(pid)   # could be ours and we cannot tell — never ignored
                 continue
             try:
                 image = self._image_path(api, handle)
                 if image is None:
-                    unattributable += 1          # exists, but we cannot say WHERE it runs from
+                    if name.lower() in slot_names:
+                        unattributable.append(pid)   # exists, but we cannot say WHERE it runs from
                     continue
                 if not is_beneath_path(self._long_path(image), canonical_slot):
                     continue                     # positively attributed elsewhere — not our concern
@@ -491,15 +552,48 @@ class RealSlotWindowsOps(SlotWindowsOps):
                 k32.CloseHandle(handle)
         result = select_slot_process(candidates, slot_path)
         if result is None and unattributable:
-            # THE fail-open this design exists to prevent: some process on the box could not be attributed,
-            # so "no runtime is running" is not a claim we are entitled to make. Raising degrades this to
-            # process_observation_unavailable, which never completes a launch and never confirms a stop.
+            # THE fail-open this design exists to prevent: a process that could be this slot's runtime
+            # could not be attributed, so "no runtime is running" is not a claim we are entitled to make.
+            # Raising degrades this to process_observation_unavailable, which never completes a launch and
+            # never confirms a stop. If this fires routinely on the box, the agent identity lacks the
+            # access the design assumes — trial item 4, and far better discovered here than by tombstoning
+            # a directory out from under a live terminal.
             raise WindowsOpsError("process_attribution_incomplete")
         return result
 
-    #: State of the most recent OpenProcess attempt: "opened" | "denied" | "gone" | "unknown".
-    _last_open_state = "opened"
-    _last_open_rights = 0
+    def _slot_executable_names(self, slot_path: str) -> set:
+        names = set()
+        for _dirpath, _dirnames, filenames in os.walk(slot_path, onerror=_reraise):
+            names.update(n.lower() for n in filenames if n.lower().endswith(".exe"))
+        return names
+
+    def _enum_processes(self, api):
+        """``(pid, image_name)`` for every process. The NAME comes from Toolhelp, which needs no handle —
+        [R:toolhelp-name-not-path] it is a bare name and is used ONLY to rule a process out, never to
+        attribute one in. Attribution is always by full image path."""
+        ctypes, wintypes, k32 = api["ctypes"], api["wintypes"], api["k32"]
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                        ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_void_p),
+                        ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                        ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                        ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
+
+        snapshot = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snapshot == INVALID_HANDLE_VALUE:
+            raise WindowsOpsError("process_enumeration_failed")
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if not k32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                raise WindowsOpsError("process_enumeration_failed")
+            while True:
+                yield int(entry.th32ProcessID), str(entry.szExeFile)
+                if not k32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    return
+        finally:
+            k32.CloseHandle(snapshot)
 
     def _long_path(self, path: str) -> str:
         """[R:short-name-83-aliasing] 8.3 aliasing may or may not be enabled on the target volume — it is
@@ -513,20 +607,8 @@ class RealSlotWindowsOps(SlotWindowsOps):
             raise WindowsOpsError("path_normalisation_failed")
         return buf.value
 
-    @staticmethod
-    def _enum_pids(api):
-        ctypes, wintypes, psapi = api["ctypes"], api["wintypes"], api["psapi"]
-        size = 1024
-        while True:
-            arr = (wintypes.DWORD * size)()
-            needed = wintypes.DWORD()
-            if not psapi.EnumProcesses(ctypes.byref(arr), ctypes.sizeof(arr), ctypes.byref(needed)):
-                raise WindowsOpsError("process_enumeration_failed")
-            if needed.value < ctypes.sizeof(arr):
-                return [p for p in arr[: needed.value // ctypes.sizeof(wintypes.DWORD)] if p]
-            size *= 2                                    # grow-and-retry: the documented pattern
-
     def _open_process(self, api, pid):
+        """Returns ``(handle_or_None, state)`` where state is opened | denied | gone | unknown."""
         """[R:openprocesstoken-access-right] Microsoft's own pages disagree on whether
         PROCESS_QUERY_INFORMATION or the LIMITED variant suffices, and ProcessIdToSessionId documents the
         FULL right. The stronger right is requested first and the weaker used as a fallback, with the
@@ -535,13 +617,11 @@ class RealSlotWindowsOps(SlotWindowsOps):
         for rights in (PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION):
             handle = k32.OpenProcess(rights, False, pid)
             if handle:
-                self._last_open_state = "opened"
-                self._last_open_rights = rights
-                return handle
-        self._last_open_state = classify_open_process_error(ctypes.get_last_error())
-        if self._last_open_state == "gone":
-            return None                                  # raced with exit — genuinely not there
-        return None                                      # denied/unknown: counted as unattributable above
+                return handle, "opened"
+        # Returned, never stashed on self: one adapter instance is shared by concurrent requests, so an
+        # instance attribute used as an out-parameter can be overwritten by another thread between write
+        # and read — reintroducing exactly the false-ABSENT this classification exists to prevent.
+        return None, classify_open_process_error(ctypes.get_last_error())
 
     @staticmethod
     def _image_path(api, handle):

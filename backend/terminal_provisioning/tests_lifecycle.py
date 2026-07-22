@@ -107,12 +107,13 @@ class FakeWin:
     def golden_source_info(self): return {"digest": DIGEST, "manifest_version": MANIFEST_V}
     def destination_info(self, p): return self._dest
     def path_exists(self, p): return self._exists
-    def real_path(self, p): return None
+    def real_path(self, p): return p          # provisioned slot dir, no reparse point
     def query_slot_process(self, p): return self._process
     def same_volume(self, a, b): return self._same_volume
     def task_running(self, t): return False
     def open_handles(self, p): return False
     def copy_golden(self, p): self.calls.append(("copy_golden", p)); self._exists = True
+    def write_owner_tag(self, p, raw): self.calls.append(("write_owner_tag", p))
     def run_task(self, t): self.calls.append(("run_task", t)); return self._task_ok
     def move_dir(self, a, b): self.calls.append(("move_dir", a, b)); self._exists = False
 
@@ -128,7 +129,8 @@ def setUpModule():
 
 def _stage_copy(win, **over):
     args = dict(expected_source_digest=DIGEST, expected_source_manifest_version=MANIFEST_V,
-                expected_generation=1, actual_generation=1, observed_at=AT)
+                expected_generation=1, actual_generation=1,
+                owner_marker='{"generation": 1, "runtime_uuid": "u", "slot": 2}', observed_at=AT)
     args.update(over)
     return wm.stage_copy(win, MUT, SI, **args)
 
@@ -215,7 +217,7 @@ class StageStatusTests(SimpleTestCase):
                                           "portable_marker": None, "ownership_marker": True})
         res = _stage_copy(win)
         self.assertEqual(res["attestation"]["stage_status"], lc.FAILED)
-        self.assertEqual([c[0] for c in win.calls], ["copy_golden"])
+        self.assertEqual([c[0] for c in win.calls], ["copy_golden", "write_owner_tag"])
 
     def test_triggers_report_requested_never_completed(self):
         for fn, task in ((wm.request_launch, "launch"), (wm.request_terminate, "terminate")):

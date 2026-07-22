@@ -150,39 +150,20 @@ class BetaProvisioningAgent:
             except (ValueError, AttributeError, TypeError):
                 raise AgentError("bad_runtime_uuid")
 
-            # Slot-aware path resolution: in the pool model the path is a function of the SLOT NUMBER of
-            # the occupancy this runtime holds. The UUID selects the occupancy; it never shapes the path.
-            context = None
-            if self.execution_model == EXECUTION_MODEL_SLOT_POOL:
-                context = self.slot_resolver.resolve(runtime_uuid=norm_uuid, operation=op)
-                canonical_dir, base = context["slot_path"], context["slots_root"]
-            else:
-                canonical_dir, base = derive_canonical_runtime_dir(norm_uuid, self.base), self.base
-            if not is_beneath(canonical_dir, base):
-                raise AgentError("path_escape")
-            # Reparse/junction escape: resolve the runtime dir AND its (pre-plantable) parent even when the
-            # leaf does not exist yet — MATERIALISE creates the leaf, so gating on leaf existence would let
-            # a junction planted at ``<base>\<uuid>`` be written through before the escape is noticed.
-            parent_dir = canonical_dir.rsplit("\\", 1)[0]
-            for candidate in (canonical_dir, parent_dir):
-                real = self.resolve_real_path(candidate)
-                if real is not None and not is_beneath(real, base):
-                    raise AgentError("reparse_escape")
-
-            # Integrity (requirement 6): the local implementation must match the approved manifest.
+            # Integrity (requirement 6): the local implementation must match the approved manifest. This
+            # runs BEFORE slot resolution, because in the pool model resolving a MATERIALISE performs a
+            # durable slot ASSIGNMENT: a request that is then refused for drift, drain or path escape would
+            # already have burned pool capacity that nothing reclaims.
             impl_name = f"op_{op.lower()}"
             if not self._impl_integrity_ok(impl_name):
                 raise AgentError("impl_integrity_mismatch")
 
             impl = self.op_impls[op]
-            kwargs = {"canonical_dir": canonical_dir, "runtime_uuid": norm_uuid, "base": base}
-            if context is not None:
-                kwargs["context"] = context
             if op in _MUTATING:
                 with self.runtime_locks.acquire(norm_uuid):    # one mutating op per runtime at a time
-                    raw = impl(**kwargs)
+                    raw = impl(**self._resolve(op, norm_uuid))
             else:
-                raw = impl(**kwargs)
+                raw = impl(**self._resolve(op, norm_uuid))
 
             resp = self._sanitise(op, job_id, ruuid, "ok", raw,
                                   script_version=self.script_versions.get(impl_name, ""))
@@ -194,6 +175,33 @@ class BetaProvisioningAgent:
             return self._sanitise(op, job_id, ruuid, "denied", {}, reason_code=e.reason_code)
         except Exception:  # noqa: BLE001 — never leak a raw exception string (requirement 7)
             return self._sanitise(op, job_id, ruuid, "error", {}, reason_code="agent_internal_error")
+
+    def _resolve(self, op: str, norm_uuid: str) -> dict:
+        """Derive the local path for this operation and prove it is contained. Kept as one step so it can
+        run INSIDE the mutation lock and AFTER the integrity gate — in the pool model this is where a slot
+        is durably assigned, and an assignment made before those checks cannot be taken back."""
+        context = None
+        if self.execution_model == EXECUTION_MODEL_SLOT_POOL:
+            # Slot-aware path resolution: the path is a function of the SLOT NUMBER of the occupancy this
+            # runtime holds. The UUID selects the occupancy; it never shapes the path.
+            context = self.slot_resolver.resolve(runtime_uuid=norm_uuid, operation=op)
+            canonical_dir, base = context["slot_path"], context["slots_root"]
+        else:
+            canonical_dir, base = derive_canonical_runtime_dir(norm_uuid, self.base), self.base
+        if not is_beneath(canonical_dir, base):
+            raise AgentError("path_escape")
+        # Reparse/junction escape: resolve the runtime dir AND its (pre-plantable) parent even when the
+        # leaf does not exist yet — MATERIALISE creates the leaf, so gating on leaf existence would let a
+        # junction planted at ``<base>\<uuid>`` be written through before the escape is noticed.
+        parent_dir = canonical_dir.rsplit("\\", 1)[0]
+        for candidate in (canonical_dir, parent_dir):
+            real = self.resolve_real_path(candidate)
+            if real is not None and not is_beneath(real, base):
+                raise AgentError("reparse_escape")
+        kwargs = {"canonical_dir": canonical_dir, "runtime_uuid": norm_uuid, "base": base}
+        if context is not None:
+            kwargs["context"] = context
+        return kwargs
 
     def _impl_integrity_ok(self, impl_name: str) -> bool:
         approved = self.script_manifest.get(impl_name)

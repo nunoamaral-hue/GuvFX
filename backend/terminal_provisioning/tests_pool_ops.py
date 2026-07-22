@@ -40,9 +40,12 @@ class FakeWin:
 
     # reads
     def golden_source_info(self): return {"digest": DIGEST, "manifest_version": MANIFEST_V}
-    def destination_info(self, p): return self._dest
+    def destination_info(self, p):
+        # The ownership marker is REAL state now, not a constant. A fake that always answered True is what
+        # hid the defect where materialise could never satisfy its own post-check.
+        return dict(self._dest, ownership_marker=self._marker is not None)
     def path_exists(self, p): return self._exists
-    def real_path(self, p): return None
+    def real_path(self, p): return p          # provisioned slot dir, no reparse point
     def read_owner_tag(self, p): return self._marker
     def query_slot_process(self, p): return self._process
     def same_volume(self, a, b): return True
@@ -80,7 +83,7 @@ def _store(pool_size=2):
 
 def _impls(win, store, **over):
     args = dict(golden_digest=DIGEST, golden_manifest_version=MANIFEST_V, now_fn=lambda: 100,
-                manifest_version=MANIFEST_V)
+                manifest_version=MANIFEST_V, sleep_fn=lambda _seconds: None)   # settle window, no wall time
     args.update(over)
     return PoolOpImplementations(win, store, **args)
 
@@ -160,7 +163,7 @@ class ExecutionModelTests(SimpleTestCase):
 
 
 class MaterialiseTests(SimpleTestCase):
-    def test_materialise_stages_the_copy_and_writes_the_marker_after(self):
+    def test_materialise_stages_the_copy_and_writes_the_marker_within_the_stage(self):
         s, win = _store(), FakeWin(exists=False)
         out = _impls(win, s).materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
         self.assertTrue(out["path_containment_verified"])
@@ -168,15 +171,16 @@ class MaterialiseTests(SimpleTestCase):
         self.assertEqual(out["slot"], 1)
         self.assertEqual(out["generation"], 1)
 
-    def test_marker_is_written_only_after_the_copy_is_proven_complete(self):
-        """A marker on a partial runtime would vouch for something that was never verified."""
+    def test_no_marker_survives_a_failed_stage(self):
+        """A marker on a partial runtime would vouch for something that was never verified. The stage now
+        writes it between the copy and the proof, so a failed proof must still leave the operation refused
+        and the slot un-startable."""
         s = _store()
         win = FakeWin(exists=False, dest={"digest": DIGEST, "executable_digest": "exe",
                                           "portable_marker": None, "ownership_marker": True})
         with self.assertRaises(AgentError) as ctx:
             _impls(win, s).materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
         self.assertEqual(ctx.exception.reason_code, "stage_copy_incomplete")
-        self.assertNotIn("write_owner_tag", [c[0] for c in win.calls])
 
     def test_repeat_materialise_is_already_completed_and_copies_nothing(self):
         s, win = _store(), FakeWin(exists=False)
@@ -399,3 +403,149 @@ class ResponseBoundaryTests(SimpleTestCase):
             for value in out.values():
                 self.assertNotIn(r"C:\GuvFX", str(value))
             self.assertTrue(out["canonical_path_digest"])       # the attestation, not the layout
+
+
+class SettleWindowTests(SimpleTestCase):
+    """A scheduler trigger is asynchronous, so the lifecycle re-observes before concluding."""
+
+    def _ready(self, **kw):
+        s, win = _store(), FakeWin(exists=False, **kw)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        win.calls.clear()
+        return s, win, impls
+
+    def test_a_slow_launch_still_completes(self):
+        """The process appears on the third observation, not the first."""
+        s, win, impls = self._ready(launches=False)
+        observations = {"n": 0}
+        original = win.query_slot_process
+
+        def slow(path):
+            observations["n"] += 1
+            return _proc() if observations["n"] >= 3 else original(path)
+        win.query_slot_process = slow
+        out = impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                          context=_ctx(s, operation="START"))
+        self.assertTrue(out["running"])
+        self.assertGreaterEqual(observations["n"], 3)
+
+    def test_a_launch_that_never_appears_still_fails(self):
+        s, win, impls = self._ready(launches=False)
+        with self.assertRaises(AgentError) as ctx:
+            impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="START"))
+        self.assertEqual(ctx.exception.reason_code, "process_absent")
+
+
+class UnobservableStartTests(SimpleTestCase):
+    """START must not trigger on a slot it could not observe: a running-but-unreadable runtime would get a
+    SECOND terminal, after which two processes match the slot executable and every later operation on that
+    slot raises ambiguous_slot_process for ever."""
+
+    def test_an_unobservable_slot_is_never_launched(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        win.calls.clear()
+
+        def blind(path):
+            raise OSError("enumeration unavailable")
+        win.query_slot_process = blind
+        with self.assertRaises(AgentError) as ctx:
+            impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="START"))
+        self.assertEqual(ctx.exception.reason_code, "process_observation_unavailable")
+        self.assertNotIn("run_task", [c[0] for c in win.calls])
+
+
+class UnreadableMarkerTests(SimpleTestCase):
+    """An unreadable marker is an observation failure. Recording it as an ownership mismatch would
+    quarantine a perfectly healthy running slot on a transient permission error."""
+
+    def test_unreadable_marker_refuses_without_quarantining(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+
+        def denied(path):
+            raise PermissionError("denied")
+        win.read_owner_tag = denied
+        with self.assertRaises(AgentError) as ctx:
+            impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="START"))
+        self.assertEqual(ctx.exception.reason_code, "owner_marker_unreadable")
+        self.assertFalse(s.is_quarantined(1))
+
+
+class TombstoneRetryTests(SimpleTestCase):
+    """A TOMBSTONE that moved the directory and then failed at cleanup is retriable. The ordinary gate
+    would read the (correctly) absent marker as corruption and quarantine the slot permanently."""
+
+    def _torn_down(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        impls.start(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="START"))
+        impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        win.open_handles = lambda p: (_ for _ in ()).throw(OSError("unsupported"))
+        with self.assertRaises(AgentError):
+            impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
+                            context=_ctx(s, operation="TOMBSTONE"))
+        return s, win, impls
+
+    def test_the_first_attempt_moved_the_directory_and_failed_at_cleanup(self):
+        s, win, impls = self._torn_down()
+        self.assertFalse(win.path_exists(""))
+        self.assertFalse(s.is_quarantined(1))
+
+    def test_a_retry_resumes_instead_of_quarantining(self):
+        s, win, impls = self._torn_down()
+        win.open_handles = lambda p: False                # the blocking condition clears
+        out = impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
+                              context=_ctx(s, operation="TOMBSTONE"))
+        self.assertTrue(out["tombstoned"])
+        self.assertFalse(s.is_quarantined(1))
+
+    def test_a_retry_for_a_different_runtime_is_still_refused(self):
+        s, win, impls = self._torn_down()
+        s.assign(OTHER, now=5)
+        with self.assertRaises(SlotIntegrityError):
+            impls.tombstone(canonical_dir="", runtime_uuid=OTHER, base="",
+                            context={"slot": 1, "generation": 1, "slot_input": _ctx(s)["slot_input"],
+                                     "slot_path": "", "slots_root": ""})
+
+
+class ReleaseTests(SimpleTestCase):
+    """TOMBSTONE reports the release gap rather than implying the slot is free."""
+
+    def _tombstoned(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        impls.start(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="START"))
+        impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        out = impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
+                              context=_ctx(s, operation="TOMBSTONE"))
+        return s, impls, out
+
+    def test_tombstone_states_the_release_is_pending(self):
+        s, impls, out = self._tombstoned()
+        self.assertFalse(out["released"])
+        self.assertTrue(out["release_pending"])
+        self.assertEqual(s.generation_of(1), 1)           # generation has NOT advanced
+
+    def test_release_advances_the_generation_once(self):
+        s, impls, _out = self._tombstoned()
+        impls.release(runtime_uuid=RUUID, slot=1, generation=1,
+                      no_ambiguous_provisioning_job=True, no_mutation_lock_held=True)
+        self.assertEqual(s.generation_of(1), 2)
+        self.assertIsNone(s.lookup(RUUID))
+
+    def test_release_refuses_when_a_proof_the_layer_cannot_observe_is_false(self):
+        from stores import ReleaseProofMissing
+        s, impls, _out = self._tombstoned()
+        with self.assertRaises(ReleaseProofMissing):
+            impls.release(runtime_uuid=RUUID, slot=1, generation=1,
+                          no_ambiguous_provisioning_job=True, no_mutation_lock_held=False)
+        self.assertEqual(s.generation_of(1), 1)

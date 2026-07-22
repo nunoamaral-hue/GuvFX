@@ -114,6 +114,9 @@ REASON_CATEGORY = {
     # Some process on the host could not be attributed to a location, so "nothing is running in this slot"
     # is not a claim we are entitled to make.
     "process_attribution_incomplete": OBSERVATION,
+    "owner_marker_unreadable": OBSERVATION,
+    "launch_precondition_unobservable": OBSERVATION,
+    "tombstone_precheck_unavailable": OBSERVATION,
     "task_permission_denied": OBSERVATION,
     "filesystem_permission_denied": OBSERVATION,
 
@@ -128,6 +131,10 @@ REASON_CATEGORY = {
     "process_still_running": WINDOWS,
     "tombstone_move_incomplete": WINDOWS,
     "cross_volume_move_refused": WINDOWS,
+    "golden_copy_failed": WINDOWS,
+    "stage_copy_failed": WINDOWS,
+    "stage_copy_permission_denied": WINDOWS,
+    "tombstone_move_permission_denied": WINDOWS,
     "agent_internal_error": WINDOWS,
 
     # ── CONFIGURATION: registration/deployment is wrong or absent ──

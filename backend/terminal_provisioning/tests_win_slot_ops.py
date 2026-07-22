@@ -62,7 +62,7 @@ class FailClosedOffHostTests(SimpleTestCase):
                      lambda: a.query_task("GuvFXBetaRuntime-1"),
                      lambda: a.task_running("GuvFXBetaRuntime-1"),
                      lambda: a.run_task("GuvFXBetaRuntime-1"),
-                     lambda: a.query_slot_process(r"C:\GuvFX\beta\slots\1\terminal"),
+                     lambda: a._win32(),
                      lambda: a.copy_golden(r"C:\GuvFX\beta\slots\1\terminal"),
                      lambda: a.read_acl(r"C:\GuvFX")):
             with self.assertRaises(WindowsOpsError):
@@ -158,7 +158,6 @@ class Win32BindingTests(SimpleTestCase):
         # Without use_last_error=True, ctypes.get_last_error() always returns 0, so denied-vs-gone -
         # the distinction the whole design rests on - would read every failure as "unknown".
         self.assertIn('WinDLL("kernel32", use_last_error=True)', source)
-        self.assertIn('WinDLL("psapi", use_last_error=True)', source)
 
     def test_no_undeclared_windll_shortcut_remains(self):
         source = open(os.path.join(_BUNDLE, "win_slot_ops.py"), encoding="utf-8").read()
@@ -261,3 +260,59 @@ class NoForbiddenDependencyTests(SimpleTestCase):
     def test_move_uses_os_rename_which_cannot_degrade_to_copy(self):
         source = inspect.getsource(wso.RealSlotWindowsOps.move_dir)
         self.assertIn("os.rename", source)
+
+
+class ProcessAttributionScopeTests(SimpleTestCase):
+    """The unattributable guard must be scoped to processes that could BE the slot's runtime.
+
+    Unscoped, one protected process anywhere on the host (a security product, PID 4) would make "this slot
+    is empty" permanently unprovable, so STOP and TOMBSTONE could never succeed. Scoped too loosely and a
+    live runtime gets reported absent. The name set from the slot tree is what separates the two.
+    """
+
+    def test_absent_slot_directory_means_no_process_without_touching_win32(self):
+        class NoSlot(wso.RealSlotWindowsOps):
+            def path_exists(self, path): return False
+        adapter = NoSlot(golden_dir="g", slots_root="s")
+        self.assertIsNone(adapter.query_slot_process(r"C:\GuvFX\beta\slots\1\terminal"))
+
+    def test_the_scope_is_derived_from_the_slot_tree(self):
+        source = inspect.getsource(wso.RealSlotWindowsOps.query_slot_process)
+        self.assertIn("slot_names", source)
+        self.assertIn("name.lower() in slot_names", source)
+
+    def test_every_non_gone_state_counts_when_the_name_matches(self):
+        """Previously only 'denied' counted, silently dropping 'unknown' - the reachable winerrors the
+        suite itself lists (0, 6, 8, 299, 1450) all classify as unknown."""
+        source = inspect.getsource(wso.RealSlotWindowsOps.query_slot_process)
+        self.assertIn('state != "gone"', source)
+
+    def test_open_process_returns_its_verdict_instead_of_stashing_it(self):
+        """One adapter instance is shared by concurrent requests, so an instance attribute used as an
+        out-parameter can be overwritten between write and read."""
+        self.assertFalse(hasattr(wso.RealSlotWindowsOps, "_last_open_state"))
+        self.assertIn("return None, classify_open_process_error",
+                      inspect.getsource(wso.RealSlotWindowsOps._open_process))
+
+    def test_denial_translation_exists_for_the_com_surface(self):
+        """Stages branch on PermissionError specifically; without translation an ACL misconfiguration is
+        filed as a retryable host fault and three reason codes are unreachable."""
+        self.assertIn("PermissionError", inspect.getsource(wso.translate_denial))
+        for method in (wso.RealSlotWindowsOps._folder, wso.RealSlotWindowsOps._registered_task,
+                       wso.RealSlotWindowsOps.run_task):
+            self.assertIn("translate_denial", inspect.getsource(method), method.__name__)
+
+    def test_robocopy_failure_uses_a_classified_fixed_reason_code(self):
+        """An interpolated reason code cannot be classified and is invisible to the AST test that proves
+        every reason code maps to a category."""
+        import lifecycle as lc
+        source = inspect.getsource(wso.RealSlotWindowsOps.copy_golden)
+        self.assertIn('WindowsOpsError("golden_copy_failed")', source)
+        self.assertTrue(lc.is_classified("golden_copy_failed"))
+
+    def test_the_tree_digest_root_must_be_readable(self):
+        """os.walk's default onerror swallows every scandir error, so an unreadable root digested to
+        sha256(b'') and an unreadable subtree was silently omitted while the digest still 'matched'."""
+        source = inspect.getsource(wso.RealSlotWindowsOps._tree_digest)
+        self.assertIn("os.lstat(root)", source)
+        self.assertIn("onerror=_reraise", source)

@@ -24,8 +24,13 @@ from lifecycle import ALREADY_COMPLETED, COMPLETED, REQUESTED, assert_evidence_p
 from stores import (build_verification_evidence, format_owner_marker, occupancy_id, remote_evidence)
 from win_mutations import (BETA_TOMBSTONES_ROOT, confirm_launch, confirm_terminated, request_launch,
                            request_terminate, stage_copy, tombstone, verify_cleanup)
-from win_primitives import (BETA_SLOTS_ROOT, MUTATING_CONTEXT, PRESENT_VALID, READ_ONLY_CONTEXT,
-                            observe_process, resolve_slot_input)
+from win_primitives import (ABSENT, BETA_SLOTS_ROOT, MUTATING_CONTEXT, PRESENT_VALID,
+                            READ_ONLY_CONTEXT, inspect_filesystem, observe_process, resolve_slot_input)
+
+
+def _default_sleep(seconds):
+    import time
+    time.sleep(seconds)
 
 
 class RuntimeNotAssigned(AgentError):
@@ -76,8 +81,15 @@ class SlotResolver:
 class PoolOpImplementations:
     """The five allowlisted operations, expressed as sequences of the approved mutating stages."""
 
+    #: How many times to re-observe after a trigger before concluding, and how long to wait between.
+    #: A scheduler trigger is ASYNCHRONOUS ([R:run-is-request-not-proof]): observing in the statement after
+    #: the trigger reports launch_not_observed for a normal launch while an orphan MT5 comes up that the
+    #: platform believes never started. The real values belong to the viability trial (trial item 7); these
+    #: are a starting point, and the poll distinguishes "not yet" from "not at the deadline".
+    LAUNCH_ATTEMPTS, STOP_ATTEMPTS, POLL_SECONDS = 20, 30, 1.0
+
     def __init__(self, win, slot_store, *, golden_digest: str, golden_manifest_version: str,
-                 now_fn=None, manifest_version: str = "", protocol_version=None):
+                 now_fn=None, manifest_version: str = "", protocol_version=None, sleep_fn=None):
         self.win = win
         self.slot_store = slot_store
         self.golden_digest = golden_digest
@@ -85,6 +97,7 @@ class PoolOpImplementations:
         self.now_fn = now_fn or (lambda: 0)
         self.manifest_version = manifest_version
         self.protocol_version = protocol_version
+        self.sleep_fn = sleep_fn or _default_sleep
 
     def as_dict(self) -> dict:
         return {"MATERIALISE": self.materialise, "START": self.start, "VERIFY": self.verify,
@@ -97,18 +110,39 @@ class PoolOpImplementations:
         return context
 
     def _marker(self, si):
-        try:
-            return self.win.read_owner_tag(si.slot_path) if self.win.path_exists(si.slot_path) else None
-        except Exception:
-            return None                      # unreadable marker is a MISMATCH below, never an implicit OK
+        """Returns the raw marker, or None when the slot directory is genuinely absent.
 
-    def _gate(self, context, runtime_uuid, *, require_marker: bool = True):
+        An UNREADABLE marker raises instead of returning None. The difference matters: None flows into the
+        integrity gate as a mismatch and QUARANTINES the slot, so a transient permission error on a
+        perfectly healthy running runtime would be recorded as corruption and need operator recovery.
+        """
+        try:
+            if not self.win.path_exists(si.slot_path):
+                return None
+            return self.win.read_owner_tag(si.slot_path)
+        except Exception as exc:
+            raise AgentError("owner_marker_unreadable") from exc
+
+    def _gate(self, context, runtime_uuid, *, require_marker: bool = True,
+              allow_torn_down: bool = False):
         """The pre-mutation integrity gate. ``require_marker=False`` applies ONLY to the first stage of a
         fresh occupancy, where the marker does not exist yet because stage-copy is what writes it; the slot
         must then be genuinely empty, and quarantine/monotonicity are still enforced."""
         b = self._binding(context)
         si, slot, generation = b["slot_input"], b["slot"], b["generation"]
         marker_raw = self._marker(si)
+        if marker_raw is None and allow_torn_down and not self.win.path_exists(si.slot_path):
+            # A TOMBSTONE that moved the directory and then failed at cleanup is RETRIABLE (denials are not
+            # stored idempotently). On retry the marker is gone because the move succeeded, so the ordinary
+            # gate would read a correct teardown as corruption and quarantine the slot permanently. The
+            # store still recording this runtime as holding (slot, generation) is what makes the retry
+            # safe: identity is proven from durable state rather than from a file that has legitimately
+            # moved.
+            if self.slot_store.lookup(runtime_uuid) != (slot, generation):
+                from stores import SlotIntegrityError
+                raise SlotIntegrityError()
+            self.slot_store.assert_generation_monotonic(slot, generation)
+            return b, si, slot, generation, None
         if marker_raw is None and not require_marker:
             from stores import SlotIntegrityError
             if self.slot_store.is_quarantined(slot):
@@ -120,6 +154,17 @@ class PoolOpImplementations:
                 now=self.now_fn())
         return b, si, slot, generation, marker_raw
 
+    def _await(self, si, wanted, attempts):
+        """Re-observe until the slot reaches ``wanted`` or the attempts run out. Returns the LAST
+        observation either way, so the caller records what was actually seen at the deadline."""
+        obs = observe_process(self.win, si, observed_at=self.now_fn())
+        for _ in range(max(0, attempts - 1)):
+            if obs["attestation"]["outcome"] == wanted:
+                return obs
+            self.sleep_fn(self.POLL_SECONDS)
+            obs = observe_process(self.win, si, observed_at=self.now_fn())
+        return obs
+
     def _record(self, slot, generation, result) -> dict:
         """Record one stage's evidence durably. Evidence completeness is asserted BEFORE the write, so an
         incomplete record is refused rather than stored."""
@@ -127,6 +172,20 @@ class PoolOpImplementations:
         self.slot_store.record_stage(slot=slot, generation=generation, operation=att["operation"],
                                      attestation=att, now=self.now_fn())
         return att
+
+    def _containment_verified(self, si) -> bool:
+        """Derive ``path_containment_verified`` from an ACTUAL filesystem observation.
+
+        It was previously the literal ``True`` at every call site — an attestation the backend consumes,
+        asserted rather than observed, and reported even for a directory that had just been moved away.
+        ``inspect_filesystem`` is the only code that checks per-component reparse and containment, so this
+        is also what finally gives it a caller.
+        """
+        try:
+            fs = inspect_filesystem(self.win, si, observed_at=self.now_fn())
+        except Exception:
+            return False
+        return bool(fs["evidence"].get("containment_verified"))
 
     def _evidence(self, *, runtime_uuid, slot, generation, si, marker_raw, pid=None, session_id=None,
                   path_ok=False, exe_ok=False, verified_at=None, extra=None) -> dict:
@@ -147,17 +206,14 @@ class PoolOpImplementations:
                          expected_source_digest=self.golden_digest,
                          expected_source_manifest_version=self.golden_manifest_version,
                          expected_generation=generation, actual_generation=generation,
+                         owner_marker=format_owner_marker(runtime_uuid, slot, generation),
                          observed_at=self.now_fn())
         att = self._record(slot, generation, res)
         if att["stage_status"] not in (COMPLETED, ALREADY_COMPLETED):
             raise AgentError(att["reason_code"] or "stage_copy_refused")
-        if att["stage_status"] == COMPLETED:
-            # The ownership marker is written only after the copy is PROVEN complete, so a marker can never
-            # vouch for a partial runtime.
-            self.win.write_owner_tag(si.slot_path, format_owner_marker(runtime_uuid, slot, generation))
         marker_raw = self._marker(si)
         return self._evidence(runtime_uuid=runtime_uuid, slot=slot, generation=generation, si=si,
-                              marker_raw=marker_raw, path_ok=True,
+                              marker_raw=marker_raw, path_ok=self._containment_verified(si),
                               extra={"materialised": True,
                                      "idempotent": att["stage_status"] == ALREADY_COMPLETED})
 
@@ -166,16 +222,25 @@ class PoolOpImplementations:
         b, si, slot, generation, marker_raw = self._gate(context, runtime_uuid)
         # Idempotency BEFORE triggering: a runtime already running is never launched a second time.
         already = observe_process(self.win, si, observed_at=self.now_fn())
-        if already["attestation"]["outcome"] == PRESENT_VALID:
+        outcome = already["attestation"]["outcome"]
+        if outcome == PRESENT_VALID:
             ev = already["evidence"]
             return self._evidence(runtime_uuid=runtime_uuid, slot=slot, generation=generation, si=si,
                                   marker_raw=marker_raw, pid=ev["pid"], session_id=ev.get("session_id"),
-                                  path_ok=True, exe_ok=ev["image_containment_verified"],
+                                  path_ok=self._containment_verified(si), exe_ok=ev["image_containment_verified"],
                                   extra={"running": True, "idempotent": True})
+        if outcome != ABSENT:
+            # Unobservable, denied, or present-but-invalid. Falling through to a trigger here would apply
+            # the design's forbidden "unobservable treated as absent" to START: a running-but-unreadable
+            # runtime gets a SECOND terminal, after which two processes match the slot executable and
+            # select_slot_process raises ambiguous_slot_process forever — STOP, TOMBSTONE and VERIFY all
+            # permanently broken for a slot running two live terminals.
+            raise AgentError(already["attestation"]["reason_code"] or "launch_precondition_unobservable")
         requested = request_launch(self.win, MUTATING_CONTEXT, si, observed_at=self.now_fn())
         att = self._record(slot, generation, requested)
         if att["stage_status"] != REQUESTED:
             raise AgentError(att["reason_code"] or "launch_trigger_rejected")
+        self._await(si, PRESENT_VALID, self.LAUNCH_ATTEMPTS)      # settle window, then the real record
         confirmed = confirm_launch(self.win, MUTATING_CONTEXT, si, observed_at=self.now_fn())
         catt = self._record(slot, generation, confirmed)
         if catt["stage_status"] != COMPLETED:
@@ -184,7 +249,7 @@ class PoolOpImplementations:
         birth = confirmed["evidence"]["birth"]
         return self._evidence(runtime_uuid=runtime_uuid, slot=slot, generation=generation, si=si,
                               marker_raw=marker_raw, pid=birth["pid"],
-                              session_id=birth.get("session_id"), path_ok=True,
+                              session_id=birth.get("session_id"), path_ok=self._containment_verified(si),
                               exe_ok=birth["executable_containment_verified"],
                               extra={"running": True, "logged_in": False})
 
@@ -197,7 +262,7 @@ class PoolOpImplementations:
         ev = obs["evidence"] if running else {}
         return self._evidence(runtime_uuid=runtime_uuid, slot=slot, generation=generation, si=si,
                               marker_raw=self._marker(si), pid=ev.get("pid"),
-                              session_id=ev.get("session_id"), path_ok=True,
+                              session_id=ev.get("session_id"), path_ok=self._containment_verified(si),
                               exe_ok=bool(ev.get("image_containment_verified")),
                               verified_at=self.now_fn(),
                               extra={"running": running, "logged_in": False})
@@ -210,13 +275,14 @@ class PoolOpImplementations:
         att = self._record(slot, generation, requested)
         if att["stage_status"] != REQUESTED:
             raise AgentError(att["reason_code"] or "terminate_trigger_rejected")
+        self._await(si, ABSENT, self.STOP_ATTEMPTS)
         confirmed = confirm_terminated(self.win, MUTATING_CONTEXT, si, birth=birth,
                                        observed_at=self.now_fn())
         catt = self._record(slot, generation, confirmed)
         if catt["stage_status"] != COMPLETED:
             raise AgentError(catt["reason_code"] or "termination_not_observed")
         return self._evidence(runtime_uuid=runtime_uuid, slot=slot, generation=generation, si=si,
-                              marker_raw=marker_raw, path_ok=True, extra={"running": False})
+                              marker_raw=marker_raw, path_ok=self._containment_verified(si), extra={"running": False})
 
     def _birth_from_observation(self, si) -> dict:
         """Best available identity of the process we are about to stop. An absent/unreadable process yields
@@ -233,7 +299,7 @@ class PoolOpImplementations:
 
     # ── TOMBSTONE: move the runtime aside, prove the slot is clean, then release it ──
     def tombstone(self, *, canonical_dir, runtime_uuid, base, context=None) -> dict:
-        b, si, slot, generation, marker_raw = self._gate(context, runtime_uuid)
+        b, si, slot, generation, marker_raw = self._gate(context, runtime_uuid, allow_torn_down=True)
         dest = rf"{BETA_TOMBSTONES_ROOT}\{slot}\{occupancy_id(slot, generation)}"
         moved = tombstone(self.win, MUTATING_CONTEXT, si, tombstone_dir=dest, observed_at=self.now_fn())
         matt = self._record(slot, generation, moved)
@@ -246,10 +312,46 @@ class PoolOpImplementations:
         catt = self._record(slot, generation, cleanup)
         if catt["stage_status"] != COMPLETED:
             raise AgentError(catt["reason_code"] or "cleanup_incomplete")
+        # RELEASE IS NOT PERFORMED HERE, and that is deliberate rather than an oversight.
+        # ``no_mutation_lock_held`` is one of the seven release proofs, and this method runs INSIDE the
+        # per-runtime mutation lock — so a release issued from here could only ever satisfy that proof by
+        # lying about it. Release therefore needs its own step outside the lock; :meth:`release` below
+        # implements it, but wiring it to a lifecycle operation changes the protocol surface, which is an
+        # Amber decision and not mine to take. Until then TOMBSTONE reports the gap explicitly instead of
+        # implying the slot is free: the slot stays assigned, so the pool exhausts after ``pool_size``
+        # tombstones and the generation never advances.
         return self._evidence(runtime_uuid=runtime_uuid, slot=slot, generation=generation, si=si,
-                              marker_raw=marker_raw, path_ok=True,
-                              extra={"tombstoned": True,
+                              marker_raw=marker_raw, path_ok=self._containment_verified(si),
+                              extra={"tombstoned": True, "released": False, "release_pending": True,
                                      "idempotent": matt["stage_status"] == ALREADY_COMPLETED})
+
+    def release(self, *, runtime_uuid, slot, generation, no_ambiguous_provisioning_job,
+                no_mutation_lock_held) -> dict:
+        """Advance the generation and free the slot. **Must run OUTSIDE the mutation lock.**
+
+        The two proofs this layer cannot observe for itself are passed in explicitly rather than assumed:
+        whether the backend still holds an ambiguous ProvisioningJob for this runtime, and whether the
+        caller is genuinely outside the lock. Making them parameters means a caller has to state them; a
+        default of ``True`` would have let the release protocol be satisfied by omission.
+        """
+        evidence = {e["operation"]: e for e in self.slot_store.stage_evidence_for_occupancy(slot,
+                                                                                            generation)}
+        cleanup, terminated = evidence.get("verify_cleanup"), evidence.get("confirm_terminated")
+        self.slot_store.assert_evidence_complete(slot, generation)
+        self.slot_store.record_audit(event="tombstone_completed", runtime_uuid=runtime_uuid, slot=slot,
+                                     generation=generation, operation="release", now=self.now_fn())
+        proofs = {
+            "runtime_process_stopped": bool(terminated and terminated["stage_status"] == COMPLETED),
+            "process_identity_verified": bool(terminated and terminated["stage_status"] == COMPLETED),
+            "canonical_directory_tombstoned": bool(evidence.get("tombstone")),
+            "tombstone_evidence_persisted": bool(cleanup and cleanup["stage_status"] == COMPLETED),
+            "no_ambiguous_provisioning_job": bool(no_ambiguous_provisioning_job),
+            "no_mutation_lock_held": bool(no_mutation_lock_held),
+            "slot_release_audit_persisted": True,
+        }
+        self.slot_store.release_after_tombstone(runtime_uuid=runtime_uuid, slot=slot,
+                                                generation=generation, proofs=proofs, now=self.now_fn())
+        return {"released": True, "slot": slot, "generation": generation}
 
     def _audit_complete(self, slot, generation) -> bool:
         """Cleanup's ``audit_complete`` proof: this occupancy's sequence and evidence must reconcile."""

@@ -269,7 +269,9 @@ def inspect_task(win, si: SlotInput, *, which: str = "launch", observed_at=None)
         return _wrap(si, operation, PRESENT_INVALID, "task_definition_incomplete", evidence, observed_at)
     if str(raw.get("task_name")) != task_name:
         return _wrap(si, operation, PRESENT_INVALID, "task_name_mismatch", evidence, observed_at)
-    if str(raw.get("run_as_identity", "")).lower() in FORBIDDEN_IDENTITIES:
+    # Compare the ACCOUNT component: a principal arrives as ``DOMAIN\user``, ``user@domain`` or a bare
+    # name, and exact membership against bare names would let ``.\Administrator`` through untouched.
+    if _account_component(raw.get("run_as_identity")) in FORBIDDEN_IDENTITIES:
         return _wrap(si, operation, PRESENT_INVALID, "forbidden_run_as_identity", evidence, observed_at)
     if not is_beneath(str(raw.get("executable") or ""), si.slot_path):
         return _wrap(si, operation, PRESENT_INVALID, "executable_outside_slot", evidence, observed_at)
@@ -277,6 +279,11 @@ def inspect_task(win, si: SlotInput, *, which: str = "launch", observed_at=None)
 
 
 # ── stage 2: process observation (READ ONLY) ───────────────────────────────────────────────────────────
+def _account_component(identity) -> str:
+    name = str(identity or "").strip().lower()
+    return name.rsplit("\\", 1)[-1].split("@", 1)[0]
+
+
 def observe_process(win, si: SlotInput, *, observed_at=None) -> dict:
     """Observe the slot's runtime process. Never starts, stops or signals anything.
 

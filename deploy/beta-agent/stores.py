@@ -663,10 +663,17 @@ def slot_runtime_dir(slots_root: str, slot: int) -> str:
     return rf"{slots_root}\{int(slot)}\terminal"
 
 
-def owner_marker_digest(marker_raw) -> str:
+def owner_marker_digest(marker_raw):
     """SHA-256 (12-hex prefix) of the on-disk ownership marker — evidence that the marker was the expected
-    one, without reproducing its contents."""
-    return hashlib.sha256((marker_raw or "").encode("utf-8")).hexdigest()[:12]
+    one, without reproducing its contents.
+
+    Returns **None** for an absent marker. Digesting the empty string produced ``e3b0c44298fc``, a
+    perfectly normal-looking digest that travelled to the backend as though a marker had been observed —
+    the absence of evidence rendered as evidence.
+    """
+    if not marker_raw:
+        return None
+    return hashlib.sha256(marker_raw.encode("utf-8")).hexdigest()[:12]
 
 
 def path_digest(canonical_dir) -> str:
