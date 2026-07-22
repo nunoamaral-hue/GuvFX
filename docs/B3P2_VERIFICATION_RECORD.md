@@ -735,3 +735,44 @@ release is blocked — the strictest of the three options, pending Nuno's decisi
 
 **Standing caveat.** `agent.py` still wires the B2 `OpImplementations`; `PoolOpImplementations`,
 `SlotResolver` and `RealSlotWindowsOps` have no production caller. Every defect above was pre-deployment.
+
+---
+
+## EV-33 — Execution-model wiring
+
+**Status: PASS (unit-level).** Until this point `PoolOpImplementations`, `SlotResolver` and
+`RealSlotWindowsOps` had **no production caller** — `agent.py` still built the B2 implementations, so an
+install would have deployed an agent unable to use the approved execution model. `build_agent` now branches
+on `cfg["execution_model"]`, and the two models are never mixed: `slot_pool` gets the slot adapter, the pool
+implementations, a resolver and a `SlotStore`; `uuid_dir` gets the B2 adapter and ops and no resolver.
+`resolve_real_path` binds to whichever adapter was built.
+
+Configuration is validated at **startup**, not at first use: `slot_pool` without
+`BETA_AGENT_SLOT_POOL_SIZE >= 1` refuses (a pool of zero accepts every runtime and then exhausts), without
+`BETA_AGENT_GOLDEN_DIGEST` refuses (an unset digest makes the stage-copy integrity check compare against the
+empty string), and an unknown model refuses. Six tests cover it, including that the default remains the
+documented B2 compatibility model and that each mode builds the right implementation object.
+
+---
+
+## EV-34 — CI green on the full check
+
+**Status: PASS.** `make check` — governance checks (secret scan, no-secrets tests, data-root tests,
+evidence-manifest linter), backend suite, frontend lint, frontend build.
+
+```
+Ran 18 tests ... OK      (no-secrets)
+Ran  7 tests ... OK      (data-root)
+Ran  6 tests ... OK      (evidence manifests)
+Ran 1408 tests in 98.614s ... OK   (backend)
+frontend lint ... OK
+frontend build ... OK
+MAKE RC=0
+```
+
+**One honest note about earlier runs in this session.** Two earlier `make check` invocations reported large
+error counts (293 and 201). Neither was a code failure: review subagents were running the Django suite
+concurrently and contending on the PostgreSQL test database, and a later run aborted leaving a stale
+`test_dev` database that made the next run prompt for confirmation and die on `EOFError`. The stale database
+was dropped and the run above is clean. Recording this because "the suite failed and then passed" is
+exactly the shape of a result that should not be waved away without an explanation.
