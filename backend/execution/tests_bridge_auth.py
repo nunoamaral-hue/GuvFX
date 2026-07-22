@@ -89,10 +89,16 @@ class BridgeAuthFailClosedTests(SimpleTestCase):
         self.assertFalse(_check(mod, GOOD + "x"))    # near-miss / prefix
         self.assertFalse(_check(mod, GOOD[:-1]))
 
-    def test_worker_token_is_used_as_fallback_and_still_fails_closed(self):
+    def test_worker_token_is_NOT_a_fallback_for_inbound_auth(self):
+        """WS1: the worker credential must never authenticate inbound HTTP requests.
+
+        This test previously asserted the opposite (worker token used as a fallback). That fallback was a
+        cross-credential coupling of exactly the kind the 2026-07-22 rotation exposed, so it was removed:
+        inbound auth is GUVFX_AGENT_TOKEN only, and with no agent token the bridge fails closed entirely.
+        """
         mod = _load_bridge(agent_token="", worker_token=GOOD)
-        self.assertEqual(mod.HTTP_AUTH_TOKEN, GOOD)
-        self.assertTrue(_check(mod, GOOD))
+        self.assertEqual(mod.HTTP_AUTH_TOKEN, "")     # no substitution
+        self.assertFalse(_check(mod, GOOD))           # the worker credential is rejected
         self.assertFalse(_check(mod, None))
         self.assertFalse(_check(mod, OTHER))
 
