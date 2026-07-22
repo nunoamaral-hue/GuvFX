@@ -184,7 +184,7 @@ class ApprovedTaskEmissionTests(SimpleTestCase):
         self.assertEqual(set(agent_config.APPROVED_TASK_FIELDS), set(TASK_IDENTITY_FIELDS))
         source = _read("install_pool.ps1")
         for field in TASK_IDENTITY_FIELDS:
-            self.assertIn(f"{field} =", source, field)
+            self.assertRegex(source, rf"{field}\s+=", field)
 
 
 class UninstallCompletenessTests(SimpleTestCase):
@@ -249,3 +249,94 @@ class NoAmbiguousInterpolationTests(SimpleTestCase):
             for match in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*?)(\d)\b", _read(name)):
                 self.assertNotIn(match.group(1), self.AMBIGUOUS,
                                  f"{name}: ambiguous ${match.group(1)}{match.group(2)} — use braces")
+
+
+class ServiceAccountCanDoItsJobTests(SimpleTestCase):
+    """The agent stages, marks and moves runtimes ITSELF — it does not delegate that to a task.
+
+    An earlier version granted the service account nothing on golden\\ or slots\\ on the reasoning that "the
+    agent only triggers tasks". It does not: win_slot_ops runs robocopy, writes the ownership marker inside
+    the slot, digests the golden tree and renames the slot into the tombstone root. That install would have
+    left the pool provisioned and permanently unusable.
+    """
+
+    def test_the_service_account_gets_modify_on_the_slot_root(self):
+        source = _code("install_service.ps1")
+        self.assertIn("$SlotsRoot", source)
+        self.assertIn("foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot))", source)
+
+    def test_the_service_account_gets_read_on_the_golden_image_only(self):
+        source = _code("install_service.ps1")
+        self.assertIn("foreach ($d in @($AgentDir, $GoldenDir))", source)
+        self.assertIn("(OI)(CI)RX", source)
+
+    def test_grant_failures_are_detected(self):
+        """icacls is a native command: $ErrorActionPreference does not apply, so a failed grant is silent."""
+        source = _code("install_service.ps1")
+        self.assertIn("$LASTEXITCODE -ne 0", source)
+        self.assertIn("the grant did not take; do NOT start", source)
+
+    def test_the_approval_file_is_readable_by_the_service_account(self):
+        source = _code("install_pool.ps1")
+        self.assertIn("NT SERVICE\\GuvFXBetaAgent:(R)", source)
+
+    def test_the_approval_file_is_written_without_a_bom(self):
+        """Set-Content -Encoding UTF8 emits a BOM under PS 5.1; the agent would call that malformed JSON."""
+        source = _code("install_pool.ps1")
+        self.assertIn("UTF8Encoding $false", source)
+        self.assertNotIn("Set-Content -Path $ApprovedTasksOut", source)
+
+
+class ApprovalReflectsRealityTests(SimpleTestCase):
+    """The approval must pin what IS registered, not what we intended to register."""
+
+    def test_the_approval_is_read_back_through_the_agents_own_interface(self):
+        source = _code("install_pool.ps1")
+        self.assertIn("Schedule.Service", source)
+        self.assertIn("$reg.Definition.Principal", source)
+        self.assertIn("[string]$p.UserId", source)
+
+    def test_the_approval_carries_the_arguments_and_asserts_portable(self):
+        source = _code("install_pool.ps1")
+        self.assertIn("arguments         = [string]$act.Arguments", source)
+        self.assertIn("does not carry /portable — refusing to approve it", source)
+
+    def test_registration_is_re_runnable(self):
+        source = _code("install_pool.ps1")
+        self.assertEqual(source.count("-RunLevel Limited -Force"), 2)
+
+    def test_the_password_is_prompted_once_and_confirmed(self):
+        source = _code("install_pool.ps1")
+        self.assertIn("Confirm password for $user", source)
+        self.assertIn("function Get-SlotSecret", source)
+
+
+class SeceditSafetyTests(SimpleTestCase):
+    """secedit rewrites MACHINE-WIDE security policy. It is the one step that reaches beyond the beta tree."""
+
+    def test_the_template_is_written_as_unicode(self):
+        """secedit exports UTF-16LE and the template declares Unicode=yes; PS 5.1 Set-Content defaults ANSI."""
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            self.assertIn("-Encoding Unicode", _code(name), name)
+
+    def test_every_secedit_call_is_checked(self):
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            source = _code(name)
+            self.assertEqual(source.count("secedit /export"), source.count("secedit /export"))
+            self.assertIn("secedit /export failed", source, name)
+            self.assertIn("secedit /configure failed", source, name)
+
+    def test_the_revoke_refuses_to_narrow_the_right_further_than_intended(self):
+        """Principals unrelated to beta hold this right, and the operator's own tasks use a batch logon."""
+        source = _code("uninstall.ps1")
+        self.assertIn("refusing to write SeBatchLogonRight", source)
+        self.assertIn("$expected", source)
+
+    def test_sids_are_collected_before_identities_are_removed(self):
+        """Remove-LocalUser first would leave four unresolvable SIDs on the right for ever."""
+        source = _code("uninstall.ps1")
+        self.assertLess(source.index("$SlotSids = @()"), source.index("Remove-LocalUser"))
+
+    def test_service_acls_are_revoked_before_the_service_is_deleted(self):
+        source = _code("uninstall.ps1")
+        self.assertLess(source.index("/remove:g"), source.index("sc.exe delete"))

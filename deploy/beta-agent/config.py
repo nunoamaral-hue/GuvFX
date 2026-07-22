@@ -69,7 +69,7 @@ def assert_exact_bind(host: str, expected: str) -> None:
 
 #: The seven fields a task approval must pin. Same set as ``occupancy.TASK_IDENTITY_FIELDS``; asserted
 #: equal by the tests so the two can never drift apart.
-APPROVED_TASK_FIELDS = ("task_name", "run_as_identity", "executable", "working_directory",
+APPROVED_TASK_FIELDS = ("task_name", "run_as_identity", "executable", "working_directory", "arguments",
                         "logon_type", "run_level", "enabled")
 
 
@@ -87,7 +87,9 @@ def _load_approved_tasks(path: str):
     except OSError as exc:
         raise ConfigError(f"approved task definitions unreadable: {path!r}") from exc
     try:
-        parsed = json.loads(raw.decode("utf-8"))
+        # utf-8-sig, not utf-8: a BOM is a benign encoding default on Windows, and rejecting it here would
+        # report a routine editor save as "tampering". The installer writes BOM-free; this is the safety net.
+        parsed = json.loads(raw.decode("utf-8-sig"))
     except (ValueError, UnicodeDecodeError) as exc:
         raise ConfigError("approved task definitions are not valid JSON") from exc
     if not isinstance(parsed, dict) or not parsed:

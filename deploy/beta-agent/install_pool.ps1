@@ -61,17 +61,33 @@ Write-Host "ok   golden image present, marked, and free of per-instance state"
 
 # ── 2. Identities. Created here because the agent cannot: it has no user-creation method and holds no
 #      credential. Passwords are prompted, never parameters.
+# ONE prompt per identity, confirmed by re-entry, held for that identity's whole provisioning. Prompting
+# separately for the account and for each task registration invited a typo that creates a working account
+# whose tasks can never log it on — a failure that would only surface at first start.
+$Secrets = @{}
+function Get-SlotSecret($user) {
+  if ($Secrets.ContainsKey($user)) { return $Secrets[$user] }
+  while ($true) {
+    $a = Read-Host -AsSecureString "Password for $user (not echoed, not logged)"
+    $b = Read-Host -AsSecureString "Confirm password for $user"
+    $pa = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($a))
+    $pb = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($b))
+    $same = ($pa -ceq $pb)
+    Remove-Variable pa, pb
+    if ($same) { $Secrets[$user] = $a; return $a }
+    Write-Host "     passwords did not match; try again"
+  }
+}
+
 for ($n = 1; $n -le $PoolSize; $n++) {
   $user = "$IdentityPrefix$n"
   if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) {
-    Write-Host "note identity '$user' already exists; leaving as-is"
+    Write-Host "note identity '$user' already exists; leaving as-is (its password is still needed below)"
     continue
   }
   DoIt "create non-admin identity '$user' (password prompted, never a parameter)" {
-    $pw = Read-Host -AsSecureString "Password for $user (not echoed, not logged)"
-    New-LocalUser -Name $user -Password $pw -PasswordNeverExpires -AccountNeverExpires `
+    New-LocalUser -Name $user -Password (Get-SlotSecret $user) -PasswordNeverExpires -AccountNeverExpires `
                   -Description "GuvFX beta slot $n runtime identity" | Out-Null
-    Remove-Variable pw
     Add-LocalGroupMember -Group "Users" -Member $user
   }
 }
@@ -93,6 +109,7 @@ if ($Apply) {
 DoIt "grant SeBatchLogonRight to ${IdentityPrefix}1..$PoolSize (via secedit)" {
   $tmp = New-TemporaryFile
   secedit /export /areas USER_RIGHTS /cfg "$tmp" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "secedit /export failed (exit $LASTEXITCODE)" }
   $cfg = Get-Content "$tmp"
   $sids = @()
   for ($n = 1; $n -le $PoolSize; $n++) {
@@ -103,8 +120,12 @@ DoIt "grant SeBatchLogonRight to ${IdentityPrefix}1..$PoolSize (via secedit)" {
   $merged = (@($existing -split "," | Where-Object { $_ }) + $sids | Select-Object -Unique) -join ","
   $new = if ($line) { $cfg -replace "^SeBatchLogonRight.*", "SeBatchLogonRight = $merged" }
          else { $cfg -replace "^\[Privilege Rights\]", "[Privilege Rights]`r`nSeBatchLogonRight = $merged" }
-  Set-Content -Path "$tmp" -Value $new
+  # secedit EXPORTS UTF-16LE and the template declares Unicode=yes; Set-Content's 5.1 default is ANSI, which
+  # would corrupt a machine-wide security template. -Encoding Unicode is mandatory, not cosmetic.
+  Set-Content -Path "$tmp" -Value $new -Encoding Unicode
   secedit /configure /db "$env:windir\security\local.sdb" /cfg "$tmp" /areas USER_RIGHTS | Out-Null
+  # secedit is a native command: $ErrorActionPreference does not apply, so a failed apply is silent.
+  if ($LASTEXITCODE -ne 0) { throw "secedit /configure failed (exit $LASTEXITCODE) — SeBatchLogonRight NOT granted" }
   Remove-Item "$tmp" -Force
 }
 
@@ -152,21 +173,19 @@ for ($n = 1; $n -le $PoolSize; $n++) {
   }
 
   DoIt "register '$launch' (disabled, no trigger, /portable, runs as $user)" {
-    $pw = Read-Host -AsSecureString "Password for $user (task registration; not echoed, not logged)"
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-               [Runtime.InteropServices.Marshal]::SecureStringToBSTR($pw))
+               [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user)))
     $action    = New-ScheduledTaskAction -Execute $exe -Argument "/portable" -WorkingDirectory $work
     $settings  = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
                    -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
     Register-ScheduledTask -TaskName $launch -Action $action -Settings $settings `
-      -User $user -Password $plain -RunLevel Limited | Out-Null
+      -User $user -Password $plain -RunLevel Limited -Force | Out-Null
     Disable-ScheduledTask -TaskName $launch | Out-Null
-    Remove-Variable plain, pw
+    Remove-Variable plain
   }
   DoIt "register '$stop' (disabled, no trigger, terminates ONLY this slot's image)" {
-    $pw = Read-Host -AsSecureString "Password for $user (stop task; not echoed, not logged)"
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-               [Runtime.InteropServices.Marshal]::SecureStringToBSTR($pw))
+               [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user)))
     # SCOPED BY IMAGE PATH, not by image name. `taskkill /IM terminal64.exe` would match by NAME — and the
     # operator's production terminal has the SAME name, because a slot is a copy of the same MT5 image.
     # Relying on "it runs as the slot identity so it can only kill its own processes" would make a
@@ -182,17 +201,37 @@ for ($n = 1; $n -le $PoolSize; $n++) {
                   -Argument ("-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command `"$kill`"")
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::FromMinutes(5))
     Register-ScheduledTask -TaskName $stop -Action $action -Settings $settings `
-      -User $user -Password $plain -RunLevel Limited | Out-Null
+      -User $user -Password $plain -RunLevel Limited -Force | Out-Null
     Disable-ScheduledTask -TaskName $stop | Out-Null
-    Remove-Variable plain, pw
+    Remove-Variable plain
   }
 
-  # The approved definition the agent's launch gate asserts against. Seven fields, matching
-  # occupancy.TASK_IDENTITY_FIELDS exactly. `enabled` is true because the gate runs at FIRST START, by
-  # which point the operator has enabled the tasks under a separate approval.
-  $Approved[$launch] = [ordered]@{
-    task_name = $launch; run_as_identity = $user; executable = $exe; working_directory = $work
-    logon_type = 1; run_level = 0; enabled = $true
+  # The approved definition the agent's launch gate asserts against. Read back through the SAME COM
+  # interface the agent uses (Schedule.Service), not from the values we intended: Task Scheduler may
+  # normalise the principal to a qualified form or a SID, and the gate compares the 7-field digest by exact
+  # equality. Pinning what we MEANT to register, while the agent reads what IS registered, would make every
+  # first launch fail task_definition_drift — permanently, since the agent never repairs a task.
+  if ($Apply) {
+    $svc = New-Object -ComObject Schedule.Service
+    $svc.Connect()
+    $reg = $svc.GetFolder("\").GetTask($launch)
+    $p   = $reg.Definition.Principal
+    $act = $reg.Definition.Actions.Item(1)
+    $Approved[$launch] = [ordered]@{
+      task_name         = [string]$reg.Name
+      run_as_identity   = [string]$p.UserId
+      executable        = [string]$act.Path
+      working_directory = [string]$act.WorkingDirectory
+      arguments         = [string]$act.Arguments
+      logon_type        = [int]$p.LogonType
+      run_level         = [int]$p.RunLevel
+      # The gate runs at FIRST START, by which point the operator has enabled the tasks under a separate
+      # approval — so the approval pins enabled=true even though the task is disabled right now.
+      enabled           = $true
+    }
+    if ($Approved[$launch].arguments -notmatch "(^|\s)/portable(\s|$)") {
+      throw "registered task '$launch' does not carry /portable — refusing to approve it"
+    }
   }
 }
 
@@ -200,9 +239,18 @@ for ($n = 1; $n -le $PoolSize; $n++) {
 #      refuses to start in slot_pool mode, and no launch can proceed.
 DoIt "write approved task definitions to $ApprovedTasksOut" {
   New-Item -ItemType Directory -Force -Path (Split-Path $ApprovedTasksOut) | Out-Null
-  $Approved | ConvertTo-Json -Depth 4 | Set-Content -Path $ApprovedTasksOut -Encoding UTF8
+  # WriteAllText with UTF8Encoding($false), NOT Set-Content -Encoding UTF8: under Windows PowerShell 5.1
+  # the latter emits a BOM, and the agent's json.loads would reject "\ufeff{" as malformed — reported as
+  # "tampering or a bad edit" during the one window when the operator is judging whether to trust the host.
+  [IO.File]::WriteAllText($ApprovedTasksOut, ($Approved | ConvertTo-Json -Depth 4),
+                          (New-Object Text.UTF8Encoding $false))
   icacls $ApprovedTasksOut /inheritance:r | Out-Null
-  icacls $ApprovedTasksOut /grant "*S-1-5-32-544:F" /grant "*S-1-5-18:F" | Out-Null
+  # The service account needs READ — it loads this file at startup and refuses to start without it. Read
+  # only: the agent must never be able to rewrite its own approvals. Inheritance is stripped, so the
+  # inheritable grant on the state dir cannot reach this file; the ACE has to be explicit.
+  icacls $ApprovedTasksOut /grant "*S-1-5-32-544:F" /grant "*S-1-5-18:F" `
+                           /grant "NT SERVICE\GuvFXBetaAgent:(R)" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "icacls failed on $ApprovedTasksOut (exit $LASTEXITCODE)" }
 }
 
 # ── 8. Verify (no start, no trigger, no enable).

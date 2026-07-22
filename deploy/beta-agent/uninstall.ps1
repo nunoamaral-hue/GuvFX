@@ -29,6 +29,14 @@ function DoIt($desc, [scriptblock]$block) {
   if ($Apply) { Write-Host "APPLY: $desc"; & $block } else { Write-Host "PLAN:  $desc" }
 }
 
+# 0. Revoke the service account's ACL grants BEFORE the service is deleted: once the SCM registration is
+#    gone, "NT SERVICE\<name>" may no longer resolve and the ACEs would be orphaned on retained data.
+foreach ($d in @($AgentDir, $StateDir, $BetaTombstones, $SlotsRoot, $GoldenDir)) {
+  DoIt "revoke '$RunAsUser' ACL grant on $d" {
+    if (Test-Path $d) { icacls $d /remove:g "$RunAsUser" | Out-Null }
+  }
+}
+
 # 1. Stop + delete the service (pywin32 remove cleans the SCM registration).
 DoIt "stop + remove service '$ServiceName'" {
   sc.exe stop $ServiceName 2>$null | Out-Null
@@ -55,14 +63,15 @@ foreach ($prefix in @($LaunchTaskPrefix, $StopTaskPrefix)) {
   }
 }
 
-# 4. Remove the service-account ACL grants (no standing principal on retained data).
-foreach ($d in @($AgentDir, $StateDir, $BetaTombstones)) {
-  DoIt "revoke '$RunAsUser' ACL grant on $d" {
-    if (Test-Path $d) { icacls $d /remove:g "$RunAsUser" | Out-Null }
-  }
-}
-
 # 5. Remove each slot identity's grants, revoke SeBatchLogonRight, and disable (not delete) the account.
+#    SIDs are collected FIRST: Remove-LocalUser inside the loop would make them unresolvable by the time the
+#    revoke block runs, so the right would silently keep four orphaned SIDs — and a future account created
+#    with the same RID would inherit a batch-logon grant nobody intended.
+$SlotSids = @()
+for ($n = 1; $n -le $PoolSize; $n++) {
+  $u = Get-LocalUser -Name "$IdentityPrefix$n" -ErrorAction SilentlyContinue
+  if ($u) { $SlotSids += "*" + $u.SID.Value }
+}
 for ($n = 1; $n -le $PoolSize; $n++) {
   $user = "$IdentityPrefix$n"
   if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) { continue }
@@ -81,17 +90,24 @@ for ($n = 1; $n -le $PoolSize; $n++) {
 DoIt "revoke SeBatchLogonRight from the slot identities" {
   $tmp = New-TemporaryFile
   secedit /export /areas USER_RIGHTS /cfg "$tmp" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "secedit /export failed (exit $LASTEXITCODE)" }
   $cfg  = Get-Content "$tmp"
   $line = ($cfg | Where-Object { $_ -match "^SeBatchLogonRight" })
-  if ($line) {
-    $sids = @()
-    for ($n = 1; $n -le $PoolSize; $n++) {
-      $u = Get-LocalUser -Name "$IdentityPrefix$n" -ErrorAction SilentlyContinue
-      if ($u) { $sids += "*" + $u.SID.Value }
+  if ($line -and $SlotSids.Count -gt 0) {
+    $current = ($line -split "=", 2)[1].Trim() -split "," | Where-Object { $_ }
+    $kept    = @($current | Where-Object { $SlotSids -notcontains $_ })
+    # This rewrites MACHINE-WIDE security policy. Principals unrelated to beta (Administrators, Backup
+    # Operators, Performance Log Users) hold this right, and the operator's own "run whether user is logged
+    # on or not" tasks use a BATCH logon — so narrowing it further than intended could stop live trading.
+    # Refuse any result that removed more than exactly our own SIDs.
+    $expected = $current.Count - @($current | Where-Object { $SlotSids -contains $_ }).Count
+    if ($kept.Count -ne $expected) {
+      throw "refusing to write SeBatchLogonRight: expected $expected principals, computed $($kept.Count)"
     }
-    $kept = (($line -split "=", 2)[1].Trim() -split "," | Where-Object { $_ -and ($sids -notcontains $_) }) -join ","
-    Set-Content -Path "$tmp" -Value ($cfg -replace "^SeBatchLogonRight.*", "SeBatchLogonRight = $kept")
+    Set-Content -Path "$tmp" -Value ($cfg -replace "^SeBatchLogonRight.*",
+                                     "SeBatchLogonRight = $($kept -join ',')") -Encoding Unicode
     secedit /configure /db "$env:windir\security\local.sdb" /cfg "$tmp" /areas USER_RIGHTS | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "secedit /configure failed (exit $LASTEXITCODE)" }
   }
   Remove-Item "$tmp" -Force
 }

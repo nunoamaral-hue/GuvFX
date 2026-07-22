@@ -28,7 +28,7 @@ APPROVED_TASK = {
     "task_name": "GuvFXBetaRuntime-1", "run_as_identity": "guvfx_b_slot1",
     "executable": r"C:\GuvFX\beta\slots\1\terminal\terminal64.exe",
     "working_directory": r"C:\GuvFX\beta\slots\1\terminal",
-    "logon_type": 1, "run_level": 0, "enabled": True,
+    "arguments": "/portable", "logon_type": 1, "run_level": 0, "enabled": True,
 }
 OTHER = "99999999-8888-7777-6666-555555555555"
 DIGEST = "golden-digest-abc"
@@ -64,7 +64,9 @@ class FakeWin:
     def query_task(self, t):
         if self._task_definition is None:
             return None
-        return dict(self._task_definition, task_name=t)
+        d = dict(self._task_definition, task_name=t)
+        d["portable_switch"] = "/portable" in str(d.get("arguments") or "").lower().split()
+        return d
 
     # writes
     def copy_golden(self, p): self.calls.append(("copy_golden", p)); self._exists = True
@@ -854,3 +856,42 @@ class ApprovedTasksConfigTests(SimpleTestCase):
         from config import ConfigError
         with self.assertRaises(ConfigError):
             self._cfg(BETA_AGENT_APPROVED_TASKS=self._file("{}"))
+
+
+class PortableSwitchGateTests(SimpleTestCase):
+    """Portable mode is a per-LAUNCH command-line property, so `arguments` is part of task identity.
+
+    A task edited from /portable to nothing keeps per-instance state in the identity's %APPDATA% - OUTSIDE
+    the slot, where tombstoning cannot reach it - to be inherited by the next occupancy. That is exactly the
+    leak install_pool.ps1 refuses in the golden image, arriving by a different door.
+    """
+
+    def _ready(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        win.calls.clear()
+        return s, win, impls
+
+    def test_a_task_that_lost_portable_blocks_the_launch(self):
+        s, win, impls = self._ready()
+        win._task_definition = dict(APPROVED_TASK, arguments="")
+        with self.assertRaises(AgentError) as ctx:
+            impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="START"))
+        self.assertEqual(ctx.exception.reason_code, "task_definition_drift")
+        self.assertEqual([c for c in win.calls if c[0] == "run_task"], [])
+
+    def test_arguments_are_part_of_task_identity(self):
+        from occupancy import TASK_IDENTITY_FIELDS
+        self.assertIn("arguments", TASK_IDENTITY_FIELDS)
+
+    def test_the_gate_records_the_observed_portable_switch(self):
+        """It was computed by the adapter and dropped by inspect_task, so every gate reported it null -
+        indistinguishable from 'not portable'."""
+        s, win, impls = self._ready()
+        impls.start(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="START"))
+        import win_primitives as wp
+        obs = wp.inspect_task(win, wp.resolve_slot_input(1), which="launch", observed_at=100)
+        self.assertTrue(obs["evidence"]["portable_switch"])
+        self.assertEqual(obs["evidence"]["arguments"], "/portable")

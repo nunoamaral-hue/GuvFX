@@ -268,7 +268,7 @@ def inspect_task(win, si: SlotInput, *, which: str = "launch", observed_at=None)
         return _wrap(si, operation, ABSENT, "task_absent", {"task_name": task_name}, observed_at)
 
     from occupancy import task_definition_digest
-    required = ("task_name", "run_as_identity", "executable", "working_directory",
+    required = ("task_name", "run_as_identity", "executable", "working_directory", "arguments",
                 "logon_type", "run_level", "enabled")
     missing = [k for k in required if raw.get(k) is None]
     evidence = {
@@ -278,6 +278,11 @@ def inspect_task(win, si: SlotInput, *, which: str = "launch", observed_at=None)
         "run_as_sid": raw.get("run_as_sid"),
         "executable": raw.get("executable"),
         "working_directory": raw.get("working_directory"),
+        "arguments": raw.get("arguments"),
+        # Portable mode is decided by the command line at launch, so this is the authoritative signal that
+        # the runtime will keep its state inside the slot. It was computed by the adapter and then dropped
+        # here, making every gate report it as null — indistinguishable from "not portable".
+        "portable_switch": raw.get("portable_switch"),
         "logon_type": raw.get("logon_type"),
         "run_level": raw.get("run_level"),
         "enabled": raw.get("enabled"),
