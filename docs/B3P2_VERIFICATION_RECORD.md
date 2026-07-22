@@ -170,6 +170,7 @@ pool-aware op implementations and will be re-verified there.
 | B3P-2 step 2c (remote-evidence boundary, audit, release order, clearance) | 87 | 1169 |
 | B3P-2 step 2d (occupancy_id, audit chain) | 97 | 1179 |
 | B3P-2 step 3 (binding, process birth, task identity, checkpoints) | 116 | 1198 |
+| B3P-2 step 4 (read-only Windows primitives, stages 1-3) | 116 + 36 | 1234 |
 
 
 ---
@@ -304,3 +305,52 @@ Corruption behaviour is verified in both attribution cases:
 
 Clearing the allocation block requires operator identity **and** an evidence reference; an empty identity
 is refused. Chain verification is therefore a lifecycle gate, not a reporting nicety.
+
+
+---
+
+## EV-16 — Read-only Windows primitives (stages 1–3)
+
+**Status: PASS (unit-level).** 36 tests in `tests_win_primitives.py`. Stages implemented: task-definition
+inspection, process observation, filesystem containment + reparse validation. **No mutating primitive
+exists yet** — no stage copy, launch, terminate or tombstone code is present.
+
+**Read-only proven mechanically, not by inspection.** `RecordingFakeWin` implements both the read *and*
+write surfaces; every write method (`make_dirs`, `copy_golden`, `write_owner_tag`, `move_dir`, `stop_pid`,
+`run_task`, `end_task`, `set_acl`, `register_task`, `open_for_write`) **records** the attempt instead of
+performing it. Tests assert `side_effects == []` after every primitive, including on the absent,
+permission-denied and query-failure paths where sloppy code is most tempted to "fix things up".
+
+**Immutability.** `SlotInput` is a frozen dataclass — assignment to any field raises. `from_scoped_view`
+takes a defensive copy, and a test mutates the caller's dict afterwards (to slot 99 and to
+`C:\GuvFX\accounts\1`) proving the in-flight input is unaffected.
+
+**Attestation.** Exactly the seven permitted keys; verified across all three primitives that
+`runtime_uuid`, `generation`, `occupancy_id`, `provisioning_job_id`, tenant and entitlement fields are
+**absent**.
+
+**Time.** Creation time is an integer FILETIME (100-ns ticks). Equality comparison with a documented
+tolerance constant of **0**; string/locale representations are refused outright (a test passes
+`"2026-07-22 09:00:00"`, `"22/07/2026 09:00"` and the stringified tick value — all reject). A process whose
+creation time is not machine-readable is `present_invalid`/`creation_time_unusable`, never valid.
+
+**Absence ≠ success.** Five distinct states verified: a missing task is `task_absent` (not "invalid"); a
+task query failure is `task_observation_unavailable`; permission denial is its own state; a process query
+failure is `process_observation_unavailable` (**not** "not running"); an unmaterialised slot is
+`terminal_path_absent` (not a containment failure).
+
+### Defect found and fixed by these tests
+
+The production-exclusion test caught a **real hole**: `is_beneath` is a *lexical* prefix test that does not
+resolve `..`, so `C:\GuvFX\beta\slots\..\..\accounts` passed containment while escaping the namespace.
+Traversal components are now rejected outright rather than normalised. This is exactly the class of bug the
+production-exclusion requirement exists to surface.
+
+**Production exclusion verified:** the resolver derives paths and task names from the slot NUMBER alone;
+Nuno's MT5 path, `C:\GuvFX\accounts`, `C:\GuvFX\terminals`, the bridge script, ports 8788/8787,
+production task names (`GuvFX_Autostart`, `GuvFX_SignalBridge`, `GuvFX_BridgeWatchdog`, `GuvFX_LaunchMT5`,
+`GFX_LaunchIS6`) and Administrator/SYSTEM/`guvfx-rdp` run-as identities are all refused. Session is not a
+parameter of any primitive — a primitive can observe a session but cannot request one.
+
+**Limitations.** All observations run against a fake adapter; no real Windows API is called and nothing has
+touched the host. The real adapter is written at the install-only gate.
