@@ -541,25 +541,25 @@ class SlotPoolTests(SimpleTestCase):
 
     def test_assign_is_idempotent_per_runtime(self):
         s = self._store()
-        a = s.assign(RUUID, now=1)
-        self.assertEqual(s.assign(RUUID, now=2), a)      # same slot, not a second one
-        self.assertEqual(list(s.occupancy()), [a])
+        slot, gen = s.assign(RUUID, now=1)
+        self.assertEqual(s.assign(RUUID, now=2), (slot, gen))   # same slot AND generation
+        self.assertEqual(list(s.occupancy()), [slot])
 
     def test_distinct_runtimes_get_distinct_slots(self):
         s = self._store()
         u2 = "11111111-2222-3333-4444-555555555555"
-        self.assertNotEqual(s.assign(RUUID, now=1), s.assign(u2, now=1))
+        self.assertNotEqual(s.assign(RUUID, now=1)[0], s.assign(u2, now=1)[0])
 
     def test_lowest_free_slot_is_reused_only_after_release(self):
         s = self._store(pool_size=2)
         u2 = "11111111-2222-3333-4444-555555555555"
         u3 = "22222222-3333-4444-5555-666666666666"
-        s1, s2 = s.assign(RUUID, now=1), s.assign(u2, now=1)
+        s1, s2 = s.assign(RUUID, now=1)[0], s.assign(u2, now=1)[0]
         self.assertEqual({s1, s2}, {1, 2})
         with self.assertRaises(Exception):               # pool full -> denied, never over-allocated
             s.assign(u3, now=1)
         self.assertTrue(s.release(RUUID))
-        self.assertEqual(s.assign(u3, now=1), s1)        # freed slot reused
+        self.assertEqual(s.assign(u3, now=1)[0], s1)     # freed slot reused
         self.assertIsNone(s.lookup(RUUID))
 
     def test_pool_exhaustion_is_a_sanitised_agent_error(self):
@@ -595,3 +595,93 @@ class SlotPoolTests(SimpleTestCase):
         self.assertEqual(slot_runtime_dir(r"C:\GuvFX\beta\slots", 3), r"C:\GuvFX\beta\slots\3\terminal")
         # no caller-supplied value can influence the path -> the per-slot task target stays fixed
         self.assertEqual(slot_runtime_dir(r"C:\GuvFX\beta\slots", "2"), r"C:\GuvFX\beta\slots\2\terminal")
+
+
+class SlotGenerationTests(SimpleTestCase):
+    """Durable per-slot GENERATION disambiguates historical vs current occupants of a reused slot."""
+
+    @staticmethod
+    def _store(pool_size=2):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=pool_size)
+
+    def test_generation_starts_at_one_and_increments_only_on_release(self):
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        self.assertEqual(gen, 1)
+        self.assertEqual(s.assign(RUUID, now=2)[1], 1)        # re-assign does NOT bump
+        self.assertTrue(s.release(RUUID))
+        self.assertEqual(s.generation_of(slot), 2)            # release bumps
+
+    def test_reused_slot_gives_the_next_occupant_a_greater_generation(self):
+        s = self._store()
+        u2 = "11111111-2222-3333-4444-555555555555"
+        slot1, gen1 = s.assign(RUUID, now=1)
+        s.release(RUUID)
+        slot2, gen2 = s.assign(u2, now=2)
+        self.assertEqual(slot2, slot1)                        # same physical slot
+        self.assertGreater(gen2, gen1)                        # but a distinct occupancy
+
+    def test_generation_survives_restart(self):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SlotStore(f.name, pool_size=2)
+        slot, _ = s.assign(RUUID, now=1)
+        s.release(RUUID)
+        self.assertEqual(SlotStore(f.name, pool_size=2).generation_of(slot), 2)
+
+    def test_release_of_unknown_runtime_does_not_bump_anything(self):
+        s = self._store()
+        slot, _ = s.assign(RUUID, now=1)
+        self.assertFalse(s.release("99999999-9999-9999-9999-999999999999"))
+        self.assertEqual(s.generation_of(slot), 1)
+
+
+class SlotIntegrityInvariantTests(SimpleTestCase):
+    """Four-way agreement (db / marker / uuid / generation) must hold before ANY mutating operation."""
+
+    @staticmethod
+    def _marker(uuid=RUUID, slot=1, generation=1):
+        from stores import format_owner_marker
+        return format_owner_marker(uuid, slot, generation)
+
+    def test_all_four_agreeing_passes(self):
+        from stores import assert_slot_integrity
+        assert_slot_integrity(runtime_uuid=RUUID, slot=1, generation=1,
+                              marker_raw=self._marker())        # no raise
+
+    def test_stale_generation_fails_closed(self):
+        """The exact ambiguity this prevents: a marker left by the PREVIOUS occupant of a reused slot."""
+        from stores import SlotIntegrityError, assert_slot_integrity
+        with self.assertRaises(SlotIntegrityError) as ctx:
+            assert_slot_integrity(runtime_uuid=RUUID, slot=1, generation=2,
+                                  marker_raw=self._marker(generation=1))
+        self.assertEqual(ctx.exception.reason_code, "slot_integrity_mismatch")
+
+    def test_wrong_uuid_fails_closed(self):
+        from stores import SlotIntegrityError, assert_slot_integrity
+        with self.assertRaises(SlotIntegrityError):
+            assert_slot_integrity(runtime_uuid="11111111-2222-3333-4444-555555555555",
+                                  slot=1, generation=1, marker_raw=self._marker())
+
+    def test_wrong_slot_fails_closed(self):
+        from stores import SlotIntegrityError, assert_slot_integrity
+        with self.assertRaises(SlotIntegrityError):
+            assert_slot_integrity(runtime_uuid=RUUID, slot=2, generation=1, marker_raw=self._marker())
+
+    def test_absent_or_corrupt_marker_is_a_mismatch_not_free(self):
+        from stores import SlotIntegrityError, assert_slot_integrity
+        for bad in (None, "", "not-json", '{"runtime_uuid": "x"}', "[]"):
+            with self.assertRaises(SlotIntegrityError, msg=repr(bad)):
+                assert_slot_integrity(runtime_uuid=RUUID, slot=1, generation=1, marker_raw=bad)
+
+    def test_marker_roundtrips_and_carries_generation(self):
+        from stores import parse_owner_marker
+        m = parse_owner_marker(self._marker(slot=3, generation=7))
+        self.assertEqual((m["runtime_uuid"], m["slot"], m["generation"]), (RUUID, 3, 7))
+
+    def test_integrity_error_is_a_sanitised_agent_error(self):
+        from lib.mgmt_agent_core import AgentError
+        from stores import SlotIntegrityError
+        self.assertIsInstance(SlotIntegrityError(), AgentError)

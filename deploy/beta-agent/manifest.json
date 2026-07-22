@@ -8,10 +8,10 @@
     "manifest.py": "9e4628dcc99f81ae2644d6d29e11e20444c621b1ccff84456344c4f4c7d94bac",
     "op_impls.py": "9a2312ea57bc46068fb1600f83407ca2dfbbc63fe77954b64bbce6b189a16713",
     "service.py": "f6afd0bd9c8c989cdac912a063a6cdeacb6bd0c1f70a60434b96be447c4ef8d6",
-    "stores.py": "e1eacb73d23f76fa1573abdb1bdb8356f940cba8fa475b72e5ba5c394cf17e30",
+    "stores.py": "d35de7f574fc6669d201587e75b9d443c0d9b1bced2dc82794683819b664add9",
     "win_ops.py": "99c890a7033e50e6fc7c8c18a0eddee7b6676d26e5264e9a70b243ddbab91803"
   },
-  "manifest_version": "2026-07-22.1",
+  "manifest_version": "2026-07-22.2",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",

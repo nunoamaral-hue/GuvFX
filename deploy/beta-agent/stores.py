@@ -90,63 +90,152 @@ class SlotStore:
     its own path, so no caller-supplied value ever reaches a task action.
     """
 
+    GENERATION_START = 1
+
     def __init__(self, path: str, pool_size: int):
         if pool_size < 1:
             raise ValueError("pool_size must be >= 1")
         self.pool_size = int(pool_size)
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._lock = threading.Lock()
+        # One durable row PER SLOT. ``runtime_uuid`` NULL = free (SQLite treats NULLs as distinct, so the
+        # UNIQUE constraint still forbids two runtimes holding the same slot). ``generation`` is a per-slot
+        # monotonic counter that survives release, so (slot, generation) uniquely identifies one OCCUPANCY
+        # for the life of the pool — that is what disambiguates a historical occupant from the current one.
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS slots ("
-            " slot INTEGER PRIMARY KEY, runtime_uuid TEXT NOT NULL UNIQUE, assigned_at INTEGER NOT NULL)")
+            " slot INTEGER PRIMARY KEY,"
+            " runtime_uuid TEXT UNIQUE,"
+            " generation INTEGER NOT NULL,"
+            " assigned_at INTEGER)")
         self._conn.commit()
 
     def lookup(self, runtime_uuid: str):
-        """Slot currently assigned to this runtime, or None. Never allocates."""
+        """``(slot, generation)`` currently assigned to this runtime, or ``None``. NEVER allocates."""
         with self._lock:
-            cur = self._conn.execute("SELECT slot FROM slots WHERE runtime_uuid=?", (str(runtime_uuid),))
+            cur = self._conn.execute(
+                "SELECT slot, generation FROM slots WHERE runtime_uuid=?", (str(runtime_uuid),))
             row = cur.fetchone()
-        return row[0] if row else None
+        return (row[0], row[1]) if row else None
 
-    def assign(self, runtime_uuid: str, now: int) -> int:
-        """Idempotently assign the lowest free slot. Raises :class:`PoolExhausted` when the pool is full.
+    def assign(self, runtime_uuid: str, now: int):
+        """Idempotently assign the lowest free slot; returns ``(slot, generation)``.
 
-        Only MATERIALISE may allocate; every other operation resolves via :meth:`lookup`, so a stray request
-        for an unknown runtime can never consume a slot.
+        Raises :class:`PoolExhausted` when the pool is full. Only MATERIALISE may allocate; every other
+        operation resolves via :meth:`lookup`, so a stray request cannot consume a slot.
         """
         uid = str(runtime_uuid)
         with self._lock:
-            cur = self._conn.execute("SELECT slot FROM slots WHERE runtime_uuid=?", (uid,))
+            cur = self._conn.execute(
+                "SELECT slot, generation FROM slots WHERE runtime_uuid=?", (uid,))
             row = cur.fetchone()
             if row:
-                return row[0]                      # idempotent: already assigned
-            taken = {r[0] for r in self._conn.execute("SELECT slot FROM slots")}
+                return (row[0], row[1])            # idempotent: already assigned, same generation
+            existing = {r[0]: r[1] for r in self._conn.execute("SELECT slot, runtime_uuid FROM slots")}
             for slot in range(1, self.pool_size + 1):
-                if slot not in taken:
+                if existing.get(slot) is not None:
+                    continue                       # occupied
+                if slot in existing:               # free row exists -> reuse it, keep its generation
+                    gen = self._conn.execute(
+                        "SELECT generation FROM slots WHERE slot=?", (slot,)).fetchone()[0]
                     self._conn.execute(
-                        "INSERT INTO slots (slot, runtime_uuid, assigned_at) VALUES (?, ?, ?)",
-                        (slot, uid, int(now)))
-                    self._conn.commit()
-                    return slot
+                        "UPDATE slots SET runtime_uuid=?, assigned_at=? WHERE slot=?", (uid, int(now), slot))
+                else:                              # first ever use of this slot
+                    gen = self.GENERATION_START
+                    self._conn.execute(
+                        "INSERT INTO slots (slot, runtime_uuid, generation, assigned_at) VALUES (?,?,?,?)",
+                        (slot, uid, gen, int(now)))
+                self._conn.commit()
+                return (slot, gen)
             raise PoolExhausted()
 
     def release(self, runtime_uuid: str) -> bool:
-        """Free the runtime's slot (after TOMBSTONE). Idempotent; True if a row was removed."""
+        """Free the runtime's slot after TOMBSTONE and **increment that slot's generation**. Idempotent.
+
+        The increment is what makes a reused slot unambiguous: the next occupant gets a strictly greater
+        generation, so any stale marker, report or audit row from the previous occupancy can never be
+        mistaken for the current one — it will fail the integrity check instead.
+        """
         with self._lock:
-            cur = self._conn.execute("DELETE FROM slots WHERE runtime_uuid=?", (str(runtime_uuid),))
+            row = self._conn.execute(
+                "SELECT slot FROM slots WHERE runtime_uuid=?", (str(runtime_uuid),)).fetchone()
+            if not row:
+                return False
+            self._conn.execute(
+                "UPDATE slots SET runtime_uuid=NULL, assigned_at=NULL, generation=generation+1 "
+                "WHERE slot=?", (row[0],))
             self._conn.commit()
-            return cur.rowcount > 0
+            return True
+
+    def generation_of(self, slot: int):
+        with self._lock:
+            row = self._conn.execute("SELECT generation FROM slots WHERE slot=?", (int(slot),)).fetchone()
+        return row[0] if row else None
 
     def occupancy(self) -> dict:
+        """``{slot: (runtime_uuid, generation)}`` for OCCUPIED slots only."""
         with self._lock:
-            rows = list(self._conn.execute("SELECT slot, runtime_uuid FROM slots ORDER BY slot"))
-        return {slot: uid for slot, uid in rows}
+            rows = list(self._conn.execute(
+                "SELECT slot, runtime_uuid, generation FROM slots "
+                "WHERE runtime_uuid IS NOT NULL ORDER BY slot"))
+        return {slot: (uid, gen) for slot, uid, gen in rows}
 
 
 def slot_runtime_dir(slots_root: str, slot: int) -> str:
     """The FIXED per-slot runtime directory. Derived only from the slot number — never from any
     caller-supplied value — which is what keeps each slot's launch task non-steerable."""
     return rf"{slots_root}\{int(slot)}\terminal"
+
+
+class SlotIntegrityError(AgentError):
+    """The slot database, the on-disk ownership marker, the runtime UUID and the generation disagree."""
+
+    def __init__(self):
+        super().__init__("slot_integrity_mismatch")
+
+
+def format_owner_marker(runtime_uuid: str, slot: int, generation: int) -> str:
+    """Serialise the on-disk slot ownership marker. Carries the GENERATION so a marker left by a previous
+    occupant of the same slot is detectably stale rather than silently accepted."""
+    return json.dumps(
+        {"runtime_uuid": str(runtime_uuid), "slot": int(slot), "generation": int(generation)},
+        sort_keys=True)
+
+
+def parse_owner_marker(raw):
+    """Parse a marker written by :func:`format_owner_marker`. Returns None if absent or unparseable —
+    callers treat that as 'no verified owner', never as 'free'."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return {"runtime_uuid": str(data["runtime_uuid"]),
+                "slot": int(data["slot"]),
+                "generation": int(data["generation"])}
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def assert_slot_integrity(*, runtime_uuid: str, slot: int, generation: int, marker_raw) -> None:
+    """FAIL-CLOSED four-way agreement, required before ANY mutating operation.
+
+    All four must agree or the operation is refused with a sanitised ``slot_integrity_mismatch``:
+
+    1. the slot assignment database (``slot`` / ``generation`` passed in by the caller after lookup),
+    2. the on-disk slot ownership marker (``marker_raw``),
+    3. the runtime UUID of the request,
+    4. the slot generation.
+
+    An absent or corrupt marker is a mismatch, never an implicit "free" — that is the distinction that
+    stops a stale directory from a previous occupancy being adopted by the current one.
+    """
+    marker = parse_owner_marker(marker_raw)
+    if marker is None:
+        raise SlotIntegrityError()
+    if (marker["runtime_uuid"] != str(runtime_uuid)
+            or marker["slot"] != int(slot)
+            or marker["generation"] != int(generation)):
+        raise SlotIntegrityError()
 
 
 class RuntimeLockManager:
