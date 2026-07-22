@@ -46,3 +46,19 @@ Corollaries proven in the same incident: authentication must **fail closed** (an
 every request and refuses startup); credential comparison must be constant-time and total (compare bytes, so
 a malformed credential yields `401`, not `500`); and auth rejections must be logged, or "no auth errors" is
 not a provable claim.
+
+### Additional permanent rules (adopted 2026-07-22, after the follow-up review)
+
+- **RULE 5 — Operational documentation must keep four things distinct:** architectural *intent*, current
+  *implementation*, temporary *compatibility*, and historical *deployment artefacts*. Never merge them into
+  one statement. (A doc that records only current state will teach the next reader that an accident is a
+  design.)
+- **RULE 6 — A security inventory must distinguish aliases, compatibility names, shared values and
+  credential coupling. Sharing a value does NOT imply aliasing.** Two credentials that happen to hold the
+  same value are a coupling to be recorded and de-conflated, not one secret with two names.
+- **RULE 7 — Completion claims must describe actual scope.** Partial remediation, stated accurately, is
+  preferred over overstated completion. "Done for X and Y; N sites remain" beats "Done".
+- **RULE 8 — Operational launch paths that exist outside Git require explicit validation before every
+  production rotation.** Anything that starts a production service but is not reviewable in the repository
+  (e.g. the Windows `.bat` launchers and `bridge_watchdog.ps1`) must be checked on the host each time — see
+  the Launcher Gate in `docs/BRIDGE_TOKEN_ROTATION_PLAN.md` §9 step 4a.
