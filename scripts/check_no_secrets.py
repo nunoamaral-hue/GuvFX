@@ -56,6 +56,16 @@ PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     ("stripe-secret-key", re.compile(r"\b(?:sk|rk)_live_[0-9A-Za-z]{24,}\b")),
     ("slack-webhook",
      re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/]{20,}")),
+    # GuvFX agent/worker tokens are bare high-entropy strings with no distinctive prefix, so they are
+    # matched by CONTEXT: a literal value following the auth header or a token assignment. Environment
+    # references ("$GUVFX_AGENT_TOKEN", "${...}", '<token>', os.getenv("GUVFX_AGENT_TOKEN", "")) do not
+    # match, because the value character class excludes '$', '<', '{' and quotes.
+    ("guvfx-agent-token-header",
+     re.compile(r"X-GuvFX-Agent-Token\s*:\s*[A-Za-z0-9_\-]{16,}", re.IGNORECASE)),
+    ("guvfx-token-assignment",
+     re.compile(
+         r"\b(?:GUVFX_(?:WINDOWS_)?AGENT_TOKEN|GUVFX_WORKER_TOKEN|WINDOWS_AGENT_TOKEN)"
+         r"\s*[=:]\s*[\"']?[A-Za-z0-9_\-]{16,}")),
 ]
 
 

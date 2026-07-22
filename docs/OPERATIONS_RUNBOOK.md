@@ -139,8 +139,16 @@ ssh administrator@100.79.101.19 "taskkill /F /IM python.exe"
 
 **Verify bridge is running:**
 
+> **Credentials.** `$GUVFX_AGENT_TOKEN` is **never** written into this runbook or any tracked file. It lives
+> only in the deployment environment: on the VPS in the service env files (e.g. `telegram.env` /
+> `wayond-listener.env`, surfaced to Django as `GUVFX_WINDOWS_AGENT_TOKEN`), and on the Windows host as the
+> `GUVFX_AGENT_TOKEN` machine environment variable the bridge reads at start-up. Source it before running the
+> commands below (`set -a; . /home/ubuntu/guvfx-prod/telegram.env; set +a`). The repository secret scanner
+> (`scripts/check_no_secrets.py`, categories `guvfx-agent-token-header` / `guvfx-token-assignment`) fails CI if
+> a literal token is ever committed again.
+
 ```bash
-ssh ubuntu@guvfx.com 'curl -s -H "X-GuvFX-Agent-Token: Az9oFHkDxRfstI25gFnv" http://100.79.101.19:8788/health'
+ssh ubuntu@guvfx.com 'curl -s -H "X-GuvFX-Agent-Token: $GUVFX_AGENT_TOKEN" http://100.79.101.19:8788/health'
 # Expected: {"ok": true, "status": "healthy"}
 ```
 
@@ -297,7 +305,7 @@ for j in stuck:
 **Check open MT5 positions:**
 
 ```bash
-curl -s -H "X-GuvFX-Agent-Token: Az9oFHkDxRfstI25gFnv" \
+curl -s -H "X-GuvFX-Agent-Token: $GUVFX_AGENT_TOKEN" \
   "http://100.79.101.19:8788/mt5/positions"
 ```
 
@@ -305,7 +313,7 @@ curl -s -H "X-GuvFX-Agent-Token: Az9oFHkDxRfstI25gFnv" \
 
 ```bash
 curl -s -X POST \
-  -H "X-GuvFX-Agent-Token: Az9oFHkDxRfstI25gFnv" \
+  -H "X-GuvFX-Agent-Token: $GUVFX_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"ticket": TICKET_NUMBER}' \
   "http://100.79.101.19:8788/mt5/close-position"
@@ -437,7 +445,7 @@ echo "--- CONTAINERS ---"
 docker ps --format "{{.Names}}: {{.Status}}" | sort
 
 echo "--- BRIDGE ---"
-curl -s -m 5 -H "X-GuvFX-Agent-Token: Az9oFHkDxRfstI25gFnv" http://100.79.101.19:8788/health 2>&1 || echo "BRIDGE DOWN"
+curl -s -m 5 -H "X-GuvFX-Agent-Token: $GUVFX_AGENT_TOKEN" http://100.79.101.19:8788/health 2>&1 || echo "BRIDGE DOWN"
 
 echo "--- JOBS ---"
 docker exec guvfx-backend python manage.py shell -c "
@@ -463,7 +471,7 @@ tail -1 /var/log/guvfx/h1_scheduler.log
 tail -1 /var/log/guvfx/m5_scheduler.log
 
 # MT5 positions
-curl -s -H "X-GuvFX-Agent-Token: Az9oFHkDxRfstI25gFnv" "http://100.79.101.19:8788/mt5/positions"
+curl -s -H "X-GuvFX-Agent-Token: $GUVFX_AGENT_TOKEN" "http://100.79.101.19:8788/mt5/positions"
 
 # Database size
 docker exec guvfx-postgres psql -U guvfx -d guvfx -c "SELECT pg_size_pretty(pg_database_size(current_database()));"

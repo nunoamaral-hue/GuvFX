@@ -36,6 +36,11 @@ def _private_key_header():
     return "-----BEGIN " + "RSA PRIVATE KEY-----"
 
 
+def _guvfx_token():
+    # A synthetic 20-char bare token shaped like a real GuvFX agent token (built at runtime).
+    return "Aa0" + ("b" * 17)
+
+
 def _marker():
     # Avoid a literal marker token in non-test contexts.
     return scanner.IGNORE_MARKER
@@ -53,6 +58,32 @@ class TestSecretDetection(unittest.TestCase):
     def test_detects_github_token(self):
         findings = scanner.scan_text(f"token={_github_token()}", "backend/app/conf.py")
         self.assertTrue(any(c == "github-token" for _, c in findings))
+
+    def test_detects_guvfx_agent_token_in_header(self):
+        # Regression: a live bridge token was committed in the runbook as a literal header value.
+        line = "curl -H \"X-GuvFX-Agent-Token: " + _guvfx_token() + "\" http://host:8788/health"
+        findings = scanner.scan_text(line, "docs/OPERATIONS_RUNBOOK.md")
+        self.assertTrue(any(c == "guvfx-agent-token-header" for _, c in findings))
+
+    def test_detects_guvfx_token_assignment(self):
+        for name in ("GUVFX_AGENT_TOKEN", "GUVFX_WINDOWS_AGENT_TOKEN", "GUVFX_WORKER_TOKEN",
+                     "WINDOWS_AGENT_TOKEN"):
+            line = f"{name}={_guvfx_token()}"
+            findings = scanner.scan_text(line, "deploy/some.env")
+            self.assertTrue(any(c == "guvfx-token-assignment" for _, c in findings), name)
+
+    def test_guvfx_env_references_are_not_flagged(self):
+        """Env-var references and real source must NOT trip the new patterns (else CI breaks on clean code)."""
+        clean = "\n".join([
+            'curl -H "X-GuvFX-Agent-Token: $GUVFX_AGENT_TOKEN" http://host:8788/health',
+            'curl -H "X-GuvFX-Agent-Token: ${GUVFX_AGENT_TOKEN}" http://host:8788/health',
+            'AGENT_TOKEN = os.getenv("GUVFX_AGENT_TOKEN", "").strip()',
+            'GUVFX_WINDOWS_AGENT_TOKEN = env("GUVFX_WINDOWS_AGENT_TOKEN", "")',
+            'headers["X-GuvFX-Agent-Token"] = token',
+            '- GUVFX_AGENT_TOKEN: Token for OHLC endpoint auth (separate from WORKER_TOKEN)',
+            'a 401 usually means the backend env lacks a valid `GUVFX_WINDOWS_AGENT_TOKEN`.',
+        ])
+        self.assertEqual(scanner.scan_text(clean, "backend/app/conf.py"), [])
 
     def test_clean_fixture_passes(self):
         text = "def add(a, b):\n    return a + b\n# nothing secret here\n"
