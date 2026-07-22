@@ -140,12 +140,17 @@ ssh administrator@100.79.101.19 "taskkill /F /IM python.exe"
 **Verify bridge is running:**
 
 > **Credentials.** `$GUVFX_AGENT_TOKEN` is **never** written into this runbook or any tracked file. It lives
-> only in the deployment environment: on the VPS in the service env files (e.g. `telegram.env` /
-> `wayond-listener.env`, surfaced to Django as `GUVFX_WINDOWS_AGENT_TOKEN`), and on the Windows host as the
-> `GUVFX_AGENT_TOKEN` machine environment variable the bridge reads at start-up. Source it before running the
-> commands below (`set -a; . /home/ubuntu/guvfx-prod/telegram.env; set +a`). The repository secret scanner
-> (`scripts/check_no_secrets.py`, categories `guvfx-agent-token-header` / `guvfx-token-assignment`) fails CI if
-> a literal token is ever committed again.
+> only in the deployment environment:
+> - **VPS:** `/home/ubuntu/guvfx-prod/wayond-listener.env` (post-rotation: `bridge-agent.env`), surfaced to
+>   Django/workers as `GUVFX_WINDOWS_AGENT_TOKEN` / `WINDOWS_AGENT_TOKEN`. **Not** `telegram.env` — that file
+>   holds no token keys.
+> - **Windows host:** there are **no machine environment variables**; the bridge's tokens are set by
+>   `C:\GuvFX\start_signal_bridge.bat` (post-rotation: `C:\GuvFX\secrets\bridge.tokens.bat`, ACL-restricted).
+>
+> Source it before running the commands below, e.g.
+> `set -a; . /home/ubuntu/guvfx-prod/wayond-listener.env; set +a` (run on the VPS, not locally).
+> The repository secret scanner (`scripts/check_no_secrets.py`, categories `guvfx-agent-token-header` /
+> `guvfx-token-assignment`) fails CI if a literal token is ever committed again.
 
 ```bash
 ssh ubuntu@guvfx.com 'curl -s -H "X-GuvFX-Agent-Token: $GUVFX_AGENT_TOKEN" http://100.79.101.19:8788/health'

@@ -254,8 +254,11 @@ def validate_config() -> bool:
     # Fail closed at STARTUP: refuse to run at all unless HTTP authentication is configured, so the bridge
     # can never come up serving protected routes (including the order-placing POSTs) unauthenticated.
     if not HTTP_AUTH_TOKEN:
+        # NB: GUVFX_WORKER_TOKEN is separately mandatory above (job polling), so in practice the operator
+        # sets GUVFX_AGENT_TOKEN. Wording avoids implying either-one-is-enough.
         errors.append(
-            "no HTTP auth token configured: set GUVFX_AGENT_TOKEN (or GUVFX_WORKER_TOKEN). "
+            "no HTTP auth token configured: set GUVFX_AGENT_TOKEN "
+            "(GUVFX_WORKER_TOKEN is used as a fallback but is required in its own right). "
             "A missing/empty token is refused — the bridge will not start unauthenticated"
         )
 
@@ -1579,8 +1582,22 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
             logger.error("HTTP auth denied: no bridge auth token configured (fail-closed)")
             return False
         if not provided_token:
+            logger.warning("HTTP auth denied: no credential presented")
             return False
-        return hmac.compare_digest(provided_token, HTTP_AUTH_TOKEN)
+        # Compare as BYTES. http.server decodes request headers as latin-1, so a credential containing any
+        # byte >= 0x80 yields a non-ASCII str and hmac.compare_digest(str, str) would raise TypeError —
+        # turning a bad credential into a 500 instead of a clean 401. Encoding both sides makes the
+        # comparison total: a non-matching credential simply fails, and never raises.
+        try:
+            provided_bytes = provided_token.encode("latin-1")
+        except UnicodeEncodeError:  # pragma: no cover — defensive; header text is latin-1 by construction
+            provided_bytes = provided_token.encode("utf-8", "replace")
+        if not hmac.compare_digest(provided_bytes, HTTP_AUTH_TOKEN.encode("utf-8")):
+            # Never log the presented or expected value — only that a rejection happened, so that the
+            # post-rotation proof ("no auth errors after the window") is actually observable.
+            logger.warning("HTTP auth denied: credential mismatch")
+            return False
+        return True
 
     def do_GET(self):
         """Handle GET requests."""

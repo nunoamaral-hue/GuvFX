@@ -72,6 +72,31 @@ class TestSecretDetection(unittest.TestCase):
             findings = scanner.scan_text(line, "deploy/some.env")
             self.assertTrue(any(c == "guvfx-token-assignment" for _, c in findings), name)
 
+    def test_detects_quoted_and_yaml_forms(self):
+        """Review gap: the same credential quoted / in YAML / JSON must not slip past."""
+        tok = _guvfx_token()
+        for line in (
+            f'"X-GuvFX-Agent-Token": "{tok}"',
+            f"GUVFX_AGENT_TOKEN: '{tok}'",
+            f'GUVFX_WINDOWS_AGENT_TOKEN: "{tok}"',
+            f'MT5_WORKER_TOKEN="{tok}"',
+            f"set GUVFX_AGENT_TOKEN={tok}",
+        ):
+            findings = scanner.scan_text(line, "deploy/compose.yml")
+            self.assertTrue(findings, f"missed: {line}")
+
+    def test_obvious_placeholders_do_not_fail_ci(self):
+        """An example env file must not break CI, while a real value still does."""
+        for line in (
+            "GUVFX_AGENT_TOKEN=replace_with_real_token_value",
+            "GUVFX_AGENT_TOKEN=<your-token-here>",
+            "GUVFX_AGENT_TOKEN=${BRIDGE_TOKEN_FROM_SECRET_STORE}",
+            "GUVFX_AGENT_TOKEN=changeme_changeme_changeme",
+        ):
+            self.assertEqual(scanner.scan_text(line, "deploy/bridge-agent.env.example"), [], line)
+        # ...but a genuine-looking value is still caught
+        self.assertTrue(scanner.scan_text(f"GUVFX_AGENT_TOKEN={_guvfx_token()}", "deploy/x.env"))
+
     def test_guvfx_env_references_are_not_flagged(self):
         """Env-var references and real source must NOT trip the new patterns (else CI breaks on clean code)."""
         clean = "\n".join([

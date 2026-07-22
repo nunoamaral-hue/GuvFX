@@ -60,13 +60,30 @@ PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     # matched by CONTEXT: a literal value following the auth header or a token assignment. Environment
     # references ("$GUVFX_AGENT_TOKEN", "${...}", '<token>', os.getenv("GUVFX_AGENT_TOKEN", "")) do not
     # match, because the value character class excludes '$', '<', '{' and quotes.
+    # Quotes are optional on BOTH patterns: the same credential appears unquoted in shell/.bat, quoted in
+    # YAML/JSON/source, so a quote-only difference must not slip past.
     ("guvfx-agent-token-header",
-     re.compile(r"X-GuvFX-Agent-Token\s*:\s*[A-Za-z0-9_\-]{16,}", re.IGNORECASE)),
+     re.compile(r"X-GuvFX-Agent-Token[\"']?\s*[:=]\s*[\"']?\s*[A-Za-z0-9_\-]{16,}", re.IGNORECASE)),
     ("guvfx-token-assignment",
      re.compile(
-         r"\b(?:GUVFX_(?:WINDOWS_)?AGENT_TOKEN|GUVFX_WORKER_TOKEN|WINDOWS_AGENT_TOKEN)"
-         r"\s*[=:]\s*[\"']?[A-Za-z0-9_\-]{16,}")),
+         r"\b(?:GUVFX_(?:WINDOWS_)?AGENT_TOKEN|GUVFX_WORKER_TOKEN|WINDOWS_AGENT_TOKEN|MT5_WORKER_TOKEN"
+         r"|GUVFX_BRIDGE_TOKEN|BRIDGE_AGENT_TOKEN)"
+         r"[\"']?\s*[=:]\s*[\"']?[A-Za-z0-9_\-]{16,}")),
 ]
+
+# Categories whose match is a NAME=VALUE / header pair, where an obvious placeholder must not fail CI.
+# (The rotation plan introduces an example env file; "GUVFX_AGENT_TOKEN=replace_me..." is documentation,
+# not a credential.) Anything not matching these markers is still treated as a real secret.
+_PLACEHOLDER_CHECKED = {"guvfx-agent-token-header", "guvfx-token-assignment"}
+_PLACEHOLDER_MARKERS = (
+    "replace", "example", "changeme", "change_me", "your", "xxx", "redacted", "placeholder",
+    "dummy", "sample", "<", "${", "$(", "todo", "fixme", "notreal", "fake",
+)
+
+
+def _is_placeholder(matched: str) -> bool:
+    low = matched.lower()
+    return any(marker in low for marker in _PLACEHOLDER_MARKERS)
 
 
 def _norm(rel_path: str) -> str:
@@ -96,8 +113,12 @@ def scan_text(text: str, rel_path: str) -> list[tuple[int, str]]:
             # Legitimately suppressed planted fixture secret.
             continue
         for category, pattern in PATTERNS:
-            if pattern.search(line):
-                findings.append((lineno, category))
+            match = pattern.search(line)
+            if not match:
+                continue
+            if category in _PLACEHOLDER_CHECKED and _is_placeholder(match.group(0)):
+                continue
+            findings.append((lineno, category))
     return findings
 
 
