@@ -58,8 +58,8 @@ Repeatability across distinct edits establishes the mechanism as deterministic r
 - It exercises the *build-time* snapshot path (`build_agent` hashes disk at startup, and the per-op gate
   re-affirms that snapshot). It does **not** prove detection of on-disk tampering *after* a live agent has
   started — that is caught at next restart, as documented in `build_agent`'s docstring.
-- It was observed in the test harness, not on the Windows host. On-box behaviour is a B3 install item.
-- Both triggers were observed in the harness; on-box behaviour remains a B3 install item.
+- Both triggers were observed in the test harness, not on the Windows host. On-box behaviour remains a
+  B3 install item.
 
 ---
 
@@ -110,8 +110,9 @@ on:
 | Surface | Status |
 |---|---|
 | Slot ownership marker (on disk) | **Done** — `format_owner_marker` writes `{runtime_uuid, slot, generation}` |
-| Provisioning Verification Report | **Open** — to be added with the report-writing step |
-| Audit evidence | **Open** — to be added with the op implementations |
+| Provisioning Verification Report | **Done (unit-level)** — `build_verification_evidence` carries it; population from a real cycle lands with the op implementations |
+| Management-channel response | **Done** — response allowlist carries `slot`/`generation`/`canonical_path`/`owner_marker_digest` |
+| Audit evidence | **Open** — lands with the pool-aware op implementations |
 
 ---
 
