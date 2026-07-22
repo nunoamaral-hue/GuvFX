@@ -117,6 +117,16 @@ client-401 window. Corrected order:
 3. **Record the baseline:** open positions (tickets + SL/TP), protection-ladder state, container health.
 4. Deploy the exact merged `mt5_signal_bridge.py` to disk — **no restart**. (Diff against the deployed file
    first; drift was verified NONE, but re-verify at execution time rather than trusting this document.)
+   **4a. LAUNCHER GATE (added after review).** The bridge now requires `GUVFX_AGENT_TOKEN` with **no
+   fallback**, so any launcher that supplies only a worker token will hard-fail `validate_config()` at its
+   next start — and the watchdog would restart-loop it. Before restarting ANY bridge, prove every launcher
+   supplies the agent token:
+   `findstr /I /C:"bridge.tokens.bat" C:\GuvFX\*.bat` must match **every** file that launches
+   `mt5_signal_bridge.py` (`start_signal_bridge.bat`, `guvfx_autostart.bat`,
+   `guvfx_autostart_bridge_only.bat`, `start_signal_bridge_is6.bat`), and
+   `findstr /I /C:"GUVFX_AGENT_TOKEN=" C:\GuvFX\*.bat` must return **nothing** (no stale inline copies).
+   These launchers are **not in Git**, so this cannot be verified from the repo — it must be checked on the
+   host every time.
 5. Create + ACL `C:\GuvFX\secrets\bridge.tokens.bat` **fully, before** editing `start_signal_bridge.bat`, so
    the `.bat` is never in a tokenless state. Then add the `call` line and scrub the `.bat` + both `.bak`s.
 6. Update the VPS `bridge-agent.env` + compose; set permissions.

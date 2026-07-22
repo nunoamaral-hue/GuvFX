@@ -32,7 +32,13 @@ Standing rules, not advice. They were paid for by a real incident — see
 - **RULE 3 — No production service may silently substitute another service's credential.** A service
   requires its own secret. Several environment NAMES for the SAME secret (aliases) are permitted and must
   agree; falling back to a DIFFERENT secret is forbidden. Missing credential ⇒ startup failure with a clear
-  diagnostic, never silent substitution. Canonical helper: `backend/core/credentials.resolve_secret`.
+  diagnostic, never silent substitution.
+  *Reference implementation:* `backend/core/credentials.resolve_secret` — use it for **new** Django-side
+  code. Note it is not yet retrofitted across existing call sites, and the two standalone services (the
+  Windows bridge and `mt5_validate_worker`) cannot import it, so they implement the same contract locally.
+  **The rule binds regardless of which mechanism enforces it**; the known non-compliant sites are listed in
+  `docs/POST_INCIDENT_REVIEW_BRIDGE_TOKEN.md` §7a and `docs/SECRET_INVENTORY.md` Gaps 6–8 and must not be
+  treated as precedent.
 - **RULE 4 — All secret rotations begin from the canonical inventory** (`docs/SECRET_INVENTORY.md`).
   Enumerate every consumer from it before touching anything; update it afterwards.
 

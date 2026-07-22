@@ -11,10 +11,15 @@ THE RULE (permanent governance): a service may never silently substitute another
 
 WHAT IS ALLOWED
 ---------------
-* **Aliases** — several environment NAMES for the SAME logical secret (e.g. the bridge agent token is read
-  as ``GUVFX_AGENT_TOKEN`` / ``GUVFX_WINDOWS_AGENT_TOKEN`` / ``WINDOWS_AGENT_TOKEN`` across deployments).
-  Aliases are declared explicitly and, if more than one is set, they **must agree** — disagreement is a
-  misconfiguration and fails closed rather than picking one.
+* **Aliases** — several environment NAMES for the SAME logical secret, where the names differ only for
+  deployment-history reasons (e.g. ``MT5_WORKER_TOKEN`` / ``GUVFX_WORKER_TOKEN`` both name the worker
+  credential). Aliases are declared explicitly and, if more than one is set, they **must agree** —
+  disagreement is a misconfiguration and fails closed rather than picking one.
+
+  **Counter-example — do NOT treat these as aliases:** ``GUVFX_AGENT_TOKEN`` and
+  ``GUVFX_WINDOWS_AGENT_TOKEN`` are described throughout this codebase as *different* services' credentials
+  (the legacy ``:8787`` agent vs the ``:8788`` bridge). They currently hold the same value in production,
+  which is a recorded Rule-3 conflation — see ``docs/SECRET_INVENTORY.md`` — not a licence to alias them.
 
 WHAT IS FORBIDDEN
 -----------------

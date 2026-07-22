@@ -69,14 +69,17 @@ def upsert_broker_instruments(account, raw_symbols) -> dict:
 def _fetch_symbols(account) -> list:
     """Fetch the broker symbol list from the bridge ``GET /mt5/symbols`` (the only network call).
 
-    The bridge's GET endpoints authenticate via the ``X-GuvFX-Agent-Token`` header
-    (validated against the bridge's agent token, falling back to the worker token) — NOT
-    the ``X-Worker-Token`` used by the POST order endpoints. Sending the wrong header 401s.
+    The bridge's endpoints authenticate via the ``X-GuvFX-Agent-Token`` header, validated against the
+    bridge's **agent** token only — NOT the ``X-Worker-Token`` used elsewhere. Sending the wrong header 401s.
+
+    WS1 (post-rotation hardening): ``MT5_WORKER_TOKEN`` was removed from this chain. It is the WORKER
+    credential standing in for the AGENT credential — exactly the cross-credential substitution Permanent
+    Rule 3 forbids, and it only ever worked while the two secrets happened to hold the same value. Since the
+    bridge no longer accepts the worker token for inbound auth, that fallback is now guaranteed to 401.
     """
     base_url = (os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL") or "").rstrip("/")
     token = (
         os.getenv("GUVFX_WINDOWS_AGENT_TOKEN")
-        or os.getenv("MT5_WORKER_TOKEN")
         or os.getenv("GUVFX_AGENT_TOKEN")
         or ""
     )

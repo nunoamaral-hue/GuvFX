@@ -93,13 +93,36 @@ Both were detected by the packet's own verification steps, which is the point of
 | Constant-time, total (byte) credential comparison | **Done** |
 | Auth-rejection logging so the proof is observable | **Done** |
 | Secret scanner detects this credential shape | **Done** — verified against the real leaked commit, 5/5, no false positives |
-| No cross-credential fallback anywhere | **Done** (WS1) |
-| Startup self-validation incl. placeholder rejection | **Done** (WS3) |
+| No cross-credential fallback in the bridge, validate worker and `sync_broker_instruments` | **Done** (WS1) |
+| No cross-credential fallback **anywhere else** | **PARTIAL — see below.** ~12 backend call sites still mix the bridge/legacy-agent/worker names |
+| Startup self-validation incl. placeholder rejection | **Done for the bridge + validate worker** (WS3); other services not yet |
 | Canonical secret inventory to start every rotation from | **Done** (WS2) |
 | Consolidate remaining inline compose secrets into `600` env files | **Open** (inventory §Gaps 1) |
 | Rotate `MT5_WORKER_TOKEN` | **Open** — not leaked, but shares the hardened storage |
 | Restore `/mt5/supervision` so probes stop reporting UNKNOWN | **Open** — pre-existing |
 | Remove the stale `GUVFX_AGENT_TOKEN` from `backend/.env` | **Open** — inert |
+
+### 7a. Remaining cross-credential fallbacks (recorded, NOT fixed)
+
+An adversarial review of the hardening packet itself caught this table overclaiming "Done — anywhere". It
+was not true. These chains still mix logically distinct credentials and are masked today only because the
+values coincide — the identical condition that hid A7:
+
+`backend/execution/risk_controls.py` · `backend/mt5_trade_ingest_worker.py` ·
+`backend/reliability/services/operations_summary.py` · `backend/strategies/signal_engine.py` ·
+`backend/strategies/management/commands/refresh_htf_zones.py` · `backend/backtests/engine.py` ·
+`backend/strategies/management/commands/strategy_live_status.py` · `backend/research/data_loader.py` ·
+`backend/trading/views.py` · `backend/analytics/views_trade_history.py` ·
+`mt5_worker/mt5_validate_worker.py` (the `/validate-mt5-ea` call, separate from the heartbeat fixed here).
+
+`risk_controls.py` matters most: it is the fail-closed margin guard whose 401 becomes a **terminal**
+`PROMOTION_REJECTED` (A4). Two higher-consequence items are recorded as Gaps 6–7 in the secret inventory:
+the `:8787`/`:8788` agent-token conflation, and `crypto.py` deriving the MT5-credential **encryption** key
+from `DJANGO_SECRET_KEY` — the latter deliberately untouched because fixing it requires re-encrypting every
+stored broker credential first.
+
+**Honest status: WS1 removed the two fallbacks the incident actually exercised, plus one more found by
+review. It did not eliminate the class.** That work needs its own packet.
 
 ## 8. The one-line lesson
 

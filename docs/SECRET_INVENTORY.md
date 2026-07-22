@@ -14,9 +14,20 @@ host, after the bridge-token rotation. "Last rotation" is recorded only where kn
 
 ## A. Bridge / worker credentials (execution path)
 
+> **⚠ Read this before rotating anything in this section.** `GUVFX_AGENT_TOKEN` and
+> `GUVFX_WINDOWS_AGENT_TOKEN` are **NOT aliases**, despite currently holding the same value. The codebase
+> describes them as *different services'* credentials (legacy `:8787` agent vs `:8788` bridge) and warns
+> "sending the wrong token returns 401" — see `backend/strategies/signal_engine.py`,
+> `backend/research/data_loader.py`, `backend/mt5/services/windows_agent.py`. They are equal in production
+> only because (a) the Windows **bridge validates the env name `GUVFX_AGENT_TOKEN`** while the **backend
+> sends `GUVFX_WINDOWS_AGENT_TOKEN`**, forcing them equal across that boundary, and (b) **no `:8787` agent
+> is deployed** (port not listening; no file on the host references 8787). This is a recorded **Rule-3
+> conflation** (Gap 6), not a licence to treat them as one secret.
+
 | Secret | Purpose | Authoritative location | Consumed by | Rotation | Owner | Last rotation |
 |---|---|---|---|---|---|---|
-| **`GUVFX_AGENT_TOKEN`**<br>aliases: `GUVFX_WINDOWS_AGENT_TOKEN`, `WINDOWS_AGENT_TOKEN` | Inbound auth for the MT5 bridge HTTP API (`:8788`) — gates `/health`, `/mt5/order`, `/mt5/close-position`, `/mt5/modify-position`, snapshots | **Windows:** `C:\GuvFX\secrets\bridge.tokens.bat` (SYSTEM+Administrators only)<br>**VPS:** `/home/ubuntu/guvfx-prod/bridge-agent.env` (`600`) | bridge (validates); backend, trade-ingest worker, validate worker, shadow worker, wayond listener (present) | [`BRIDGE_TOKEN_ROTATION_PLAN.md`](BRIDGE_TOKEN_ROTATION_PLAN.md) — single controlled restart, intake paused | Nuno | **2026-07-22** (leak remediation) |
+| **`GUVFX_AGENT_TOKEN`** (bridge-side name) | The value the **bridge** validates for inbound auth on `:8788` — gates `/health`, `/mt5/order`, `/mt5/close-position`, `/mt5/modify-position`, snapshots. Same env name is ALSO what `windows_agent.py` would send to the legacy `:8787` agent (not deployed). | **Windows:** `C:\GuvFX\secrets\bridge.tokens.bat` (SYSTEM+Administrators only) | bridge (**validates**); `bridge_watchdog.ps1` (health probe); launchers `start_signal_bridge.bat`, `guvfx_autostart.bat`, `guvfx_autostart_bridge_only.bat`, `start_signal_bridge_is6.bat` (all `call` the secrets file) | [`BRIDGE_TOKEN_ROTATION_PLAN.md`](BRIDGE_TOKEN_ROTATION_PLAN.md) — single controlled restart, intake paused | Nuno | **2026-07-22** (leak remediation) |
+| **`GUVFX_WINDOWS_AGENT_TOKEN`**<br>alias: `WINDOWS_AGENT_TOKEN` | The value **clients send** to the `:8788` bridge in `X-GuvFX-Agent-Token`. **Must equal the bridge-side value above** or every call 401s. | **VPS:** `/home/ubuntu/guvfx-prod/bridge-agent.env` (`600`) | backend, trade-ingest worker, validate worker, shadow worker, wayond listener | Rotate **together with** the bridge-side value — they are one wire-level credential under two names | Nuno | **2026-07-22** |
 | **`MT5_WORKER_TOKEN`**<br>alias: `GUVFX_WORKER_TOKEN` | Worker→backend auth (`X-Worker-Token`): job polling, completion, `/api/reliability/heartbeat/` | **VPS:** `.env` + inline in `docker-compose.yml` ⚠ (see Gaps)<br>**Windows:** `C:\GuvFX\secrets\bridge.tokens.bat` | bridge (job polling), validate worker, trade-ingest worker, backend (validates) | Same shape as the agent token; bridge + all workers must be updated together | Nuno | not rotated |
 | **`MT5_SHADOW_WORKER_TOKEN`** | Distinct identity for the shadow (dry-run) worker so it can never be mistaken for the live worker | **VPS:** `.env` (`600`), interpolated by the shadow compose | shadow worker only | Recreate the shadow worker after change; no bridge restart needed | Nuno | not rotated |
 
@@ -62,6 +73,19 @@ host, after the bridge-token rotation. "Last rotation" is recorded only where kn
 4. **"Last rotation" is unknown for most secrets** — populate as each is next rotated.
 5. `MT5_WORKER_TOKEN` was **not** rotated on 2026-07-22 (it was not leaked) but shares the storage that was
    hardened; rotating it is recommended follow-up work.
+6. **⚠ Rule-3 conflation — `GUVFX_AGENT_TOKEN` (legacy `:8787` agent) and `GUVFX_WINDOWS_AGENT_TOKEN`
+   (`:8788` bridge) share one value.** Harmless today only because no `:8787` agent is deployed. If one is
+   ever stood up it will inherit the bridge's credential, which is exactly the substitution Rule 3 forbids.
+   De-conflation plan: give the `:8787` agent its own secret at the moment it is deployed, and split these
+   into two independently-rotatable rows.
+7. **⚠ Rule-3 violation — `backend/trading/crypto.py::_get_fernet` derives the MT5-credential encryption key
+   from `DJANGO_SECRET_KEY`** when `GUVFX_FERNET_KEY` is unset (`sha256(DJANGO_SECRET_KEY)`). A signing key
+   and an encryption key are different secrets with different blast radii. **Not fixed here on purpose:**
+   changing it is destructive — every stored MT5 credential ciphertext must be re-encrypted first, and
+   rotating `DJANGO_SECRET_KEY` today would silently render those credentials undecryptable. Needs its own
+   packet (set `GUVFX_FERNET_KEY` explicitly, re-encrypt, then remove the fallback).
+8. **Cross-credential fallbacks remain in ~12 backend call sites** (see the post-incident review §7). WS1
+   fixed the bridge, the validate worker and `sync_broker_instruments`; the rest are recorded, not done.
 
 ## Rotation ground rules (from the 2026-07-22 exercise)
 
