@@ -23,7 +23,8 @@ from lib.mgmt_agent_core import AgentError
 from lifecycle import ALREADY_COMPLETED, COMPLETED, REQUESTED, assert_evidence_present
 from stores import (build_verification_evidence, format_owner_marker, occupancy_id, remote_evidence)
 from win_mutations import (BETA_TOMBSTONES_ROOT, confirm_launch, confirm_terminated, precheck_cleanup,
-                           request_launch, request_terminate, stage_copy, tombstone, verify_cleanup)
+                           precheck_launch_task, request_launch, request_terminate, stage_copy, tombstone,
+                           verify_cleanup)
 from win_primitives import (ABSENT, BETA_SLOTS_ROOT, MUTATING_CONTEXT, PRESENT_VALID,
                             READ_ONLY_CONTEXT, inspect_filesystem, observe_process, resolve_slot_input)
 
@@ -89,11 +90,15 @@ class PoolOpImplementations:
     LAUNCH_ATTEMPTS, STOP_ATTEMPTS, POLL_SECONDS = 20, 30, 1.0
 
     def __init__(self, win, slot_store, *, golden_digest: str, golden_manifest_version: str,
-                 now_fn=None, manifest_version: str = "", protocol_version=None, sleep_fn=None):
+                 approved_tasks: dict, now_fn=None, manifest_version: str = "", protocol_version=None,
+                 sleep_fn=None):
         self.win = win
         self.slot_store = slot_store
         self.golden_digest = golden_digest
         self.golden_manifest_version = golden_manifest_version
+        #: ``{task_name: approved 7-field definition}``, loaded at startup from the operator's approval
+        #: file. A slot whose launch task has no approved definition can never launch.
+        self.approved_tasks = dict(approved_tasks or {})
         self.now_fn = now_fn or (lambda: 0)
         self.manifest_version = manifest_version
         self.protocol_version = protocol_version
@@ -243,6 +248,17 @@ class PoolOpImplementations:
             # select_slot_process raises ambiguous_slot_process forever — STOP, TOMBSTONE and VERIFY all
             # permanently broken for a slot running two live terminals.
             raise AgentError(already["attestation"]["reason_code"] or "launch_precondition_unobservable")
+        # F3 — task-definition verification is a GATE, not a capability that merely exists. A launch may
+        # not proceed unless it has executed successfully for THIS occupancy, so it is recorded as a stage
+        # of this occupancy like any other.
+        approved = self.approved_tasks.get(si.launch_task)
+        if not approved:
+            raise AgentError("approved_task_definition_missing")
+        checked = precheck_launch_task(self.win, MUTATING_CONTEXT, si, approved_definition=approved,
+                                       observed_at=self.now_fn())
+        chatt = self._record(slot, generation, checked)
+        if chatt["stage_status"] != COMPLETED:
+            raise AgentError(chatt["reason_code"] or "task_definition_drift")
         requested = request_launch(self.win, MUTATING_CONTEXT, si, observed_at=self.now_fn())
         att = self._record(slot, generation, requested)
         if att["stage_status"] != REQUESTED:

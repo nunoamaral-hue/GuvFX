@@ -69,6 +69,7 @@ REASON_CATEGORY = {
     "process_identity_mismatch": INTEGRITY,
     "occupancy_binding_mismatch": INTEGRITY,
     "task_definition_drift": INTEGRITY,
+    "approved_task_definition_missing": CONFIGURATION,
     "slot_integrity_mismatch": INTEGRITY,
     "audit_chain_corrupt": INTEGRITY,
     "impl_integrity_mismatch": INTEGRITY,
@@ -231,8 +232,16 @@ STAGE_CONTRACTS = {
         ),
         "statuses": (COMPLETED, ALREADY_COMPLETED, BLOCKED, FAILED),
     },
-    "request_launch": {
+    "precheck_launch_task": {
         "preconditions": ("capability is MUTATING", "stage copy COMPLETED or ALREADY_COMPLETED",
+                          "an approved task definition exists for this slot"),
+        "invariant": "nothing is triggered yet, and the task is never repaired — drift is a refusal",
+        "postconditions": ("the installed launch task matches its approved definition field for field, "
+                           "and is enabled",),
+        "statuses": (COMPLETED, BLOCKED),
+    },
+    "request_launch": {
+        "preconditions": ("capability is MUTATING", "launch-task verification COMPLETED",
                           "slot input is authorised"),
         "invariant": "the occupancy binding is unchanged; only the fixed per-slot launch task is triggered "
                      "and no process identity is asserted",

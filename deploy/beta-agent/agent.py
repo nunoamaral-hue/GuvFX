@@ -79,6 +79,7 @@ def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: s
         impls = PoolOpImplementations(
             win, slot_store, golden_digest=cfg["golden_digest"],
             golden_manifest_version=cfg["golden_manifest_version"],
+            approved_tasks=cfg.get("approved_tasks") or {},
             now_fn=lambda: int(time.time()),
             manifest_version=approved.get("manifest_version", "")).as_dict()
         resolver = SlotResolver(slot_store, slots_root=cfg["slots_root"], now_fn=lambda: int(time.time()))

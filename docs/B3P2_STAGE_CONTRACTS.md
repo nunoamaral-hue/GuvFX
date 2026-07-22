@@ -29,10 +29,23 @@ outcome while keeping an old contract.
 
 **Statuses it may report** — COMPLETED, ALREADY_COMPLETED, BLOCKED, FAILED
 
-## `request_launch`
+## `precheck_launch_task`
 **Preconditions**
 - capability is MUTATING
 - stage copy COMPLETED or ALREADY_COMPLETED
+- an approved task definition exists for this slot
+
+**Invariant** — nothing is triggered yet, and the task is never repaired — drift is a refusal
+
+**Postconditions**
+- the installed launch task matches its approved definition field for field, and is enabled
+
+**Statuses it may report** — COMPLETED, BLOCKED
+
+## `request_launch`
+**Preconditions**
+- capability is MUTATING
+- launch-task verification COMPLETED
 - slot input is authorised
 
 **Invariant** — the occupancy binding is unchanged; only the fixed per-slot launch task is triggered and no process identity is asserted

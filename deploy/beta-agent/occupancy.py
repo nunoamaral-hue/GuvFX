@@ -170,6 +170,6 @@ def assert_task_matches_approved(approved: dict, installed: dict) -> None:
         raise TaskDefinitionDrift("missing definition")
     if task_definition_digest(approved) != task_definition_digest(installed):
         differing = [k for k in TASK_IDENTITY_FIELDS if approved.get(k) != installed.get(k)]
-        raise TaskDefinitionDrift(",".join(differing) or "digest")
+        raise TaskDefinitionDrift(",".join(differing) or "digest")   # names the fields, never the values
     if not installed.get("enabled"):
         raise TaskDefinitionDrift("disabled")

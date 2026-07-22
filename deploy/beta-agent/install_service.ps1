@@ -11,7 +11,11 @@ param(
   [string]$StateDir    = "C:\GuvFX\beta\agent-state",
   [string]$Python      = "C:\GuvFX\python311.exe",              # verified bundled 3.11.9 interpreter
   [string]$RunAsUser   = "NT SERVICE\GuvFXBetaAgent",           # virtual service account: no password, stable SID
-  [string]$BetaAccounts= "C:\GuvFX\beta\accounts",
+  # B3P-2 (install-only review F1): the pool model uses ...\beta\slots\<n>, NOT the legacy
+  # ...\beta\accounts\<uuid> layout. The service account needs Modify on its own state dir and on the
+  # tombstone root (it moves runtimes there); it needs only ReadAndExecute on its OWN code, and NOTHING on
+  # the golden image or the slot directories — the slot IDENTITY owns those, not the agent.
+  [string]$SlotsRoot   = "C:\GuvFX\beta\slots",
   [string]$BetaTombstones = "C:\GuvFX\beta\tombstones",
   [switch]$Apply
 )
@@ -32,9 +36,20 @@ Write-Host "ok   preconditions: agent.py, service.py, interpreter + pywin32 pres
 # 1. State dir (durable nonce/idempotency/logs), SEPARATE from the code dir so updates never clobber it.
 DoIt "create state dir $StateDir (+ logs)" { New-Item -ItemType Directory -Force -Path $StateDir, (Join-Path $StateDir "logs") | Out-Null }
 
-# 2. Scoped NTFS ACLs for the service account — Modify on the beta tree only; NOTHING outside ...\beta\, no golden DACL.
-foreach ($d in @($AgentDir, $StateDir, $BetaAccounts, $BetaTombstones)) {
+# 2. Scoped NTFS ACLs for the service account. LEAST PRIVILEGE, and narrower than the B2 version:
+#    - Modify on its state dir (durable stores + logs) and on the tombstone root (it moves runtimes there);
+#    - ReadAndExecute ONLY on its own code dir, so the service cannot rewrite the bundle it is integrity-
+#      checked against;
+#    - NOTHING on the golden image and NOTHING on the slot directories — those belong to the slot
+#      identities. The agent triggers tasks; it does not need to write where the runtimes live.
+foreach ($d in @($StateDir, $BetaTombstones)) {
   DoIt "grant '$RunAsUser' Modify on $d (inherit)" { icacls $d /grant ("{0}:(OI)(CI)M" -f $RunAsUser) | Out-Null }
+}
+DoIt "grant '$RunAsUser' ReadAndExecute on $AgentDir (inherit) — it must not rewrite its own code" {
+  icacls $AgentDir /grant ("{0}:(OI)(CI)RX" -f $RunAsUser) | Out-Null
+}
+if (-not (Test-Path $SlotsRoot)) {
+  throw "slot pool not provisioned at $SlotsRoot — run install_pool.ps1 -Apply FIRST (install-only review F1/F2)"
 }
 
 # 3. Install the pywin32 service, MANUAL start, under the virtual account. (No auto-start; no start here.)
@@ -59,6 +74,12 @@ if ($Apply) {
   }
   Write-Host "ok   service identity = $startName"
   Write-Host "ok   service installed STOPPED. Firewall: run firewall.ps1 -Apply. Do NOT start until approval."
+  Write-Host ""
+  Write-Host "REQUIRED environment for the slot-pool model (set before the first start, not now):"
+  Write-Host "  BETA_AGENT_EXECUTION_MODEL=slot_pool   BETA_AGENT_SLOT_POOL_SIZE=4"
+  Write-Host "  BETA_AGENT_GOLDEN_DIR / _DIGEST / _MANIFEST_VERSION   (all three; empty values are refused)"
+  Write-Host "  BETA_AGENT_APPROVED_TASKS=C:\GuvFX\beta\agent-state\approved_tasks.json  (launch gate, F3)"
+  Write-Host "  BETA_AGENT_DRAIN_TIMEOUT_S=45          (must exceed the 30s settle window, or startup refuses)"
 } else {
   Write-Host "PLAN complete. Re-run with -Apply on the host to perform the install (install-only, no start)."
 }

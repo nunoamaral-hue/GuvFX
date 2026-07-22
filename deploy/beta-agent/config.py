@@ -8,6 +8,7 @@ B3P-1 hardening (verification B-9): the LIVE service additionally pins the bind 
 management address (not merely "some private address") and refuses a bind port that collides with Nuno's
 services. The broad ``assert_private_bind`` predicate is retained ONLY for offline validation.
 """
+import hashlib
 import ipaddress
 import json
 import os
@@ -66,6 +67,40 @@ def assert_exact_bind(host: str, expected: str) -> None:
             f"(set BETA_AGENT_EXPECTED_BIND_HOST to change the expected interface)")
 
 
+#: The seven fields a task approval must pin. Same set as ``occupancy.TASK_IDENTITY_FIELDS``; asserted
+#: equal by the tests so the two can never drift apart.
+APPROVED_TASK_FIELDS = ("task_name", "run_as_identity", "executable", "working_directory",
+                        "logon_type", "run_level", "enabled")
+
+
+def _load_approved_tasks(path: str):
+    """Load the operator's approved task definitions, and refuse anything incomplete.
+
+    Fails closed in three distinct ways because each means something different: the file is missing
+    (deployment fault), the file is malformed (tampering or a bad edit), or a definition omits a pinned
+    field (an approval that does not actually approve anything). Returned alongside a digest of the file so
+    a change to the approvals themselves is visible in the evidence.
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        raise ConfigError(f"approved task definitions unreadable: {path!r}") from exc
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ConfigError("approved task definitions are not valid JSON") from exc
+    if not isinstance(parsed, dict) or not parsed:
+        raise ConfigError("approved task definitions are empty")
+    for name, definition in parsed.items():
+        if not isinstance(definition, dict):
+            raise ConfigError(f"approved task definition for {name!r} is not an object")
+        missing = [f for f in APPROVED_TASK_FIELDS if f not in definition]
+        if missing:
+            raise ConfigError(f"approved task definition for {name!r} omits {','.join(missing)}")
+    return parsed, hashlib.sha256(raw).hexdigest()[:16]
+
+
 def load_config(env: dict | None = None) -> dict:
     """Load agent config from the environment. Required: BETA_AGENT_BIND_HOST, BETA_AGENT_BIND_PORT,
     BETA_AGENT_KEYRING (JSON), BETA_AGENT_KEY_ID. Optional base/tombstone/state/manifest paths.
@@ -91,6 +126,8 @@ def load_config(env: dict | None = None) -> dict:
         raise ConfigError(f"unknown execution model {model!r}")
     pool_size = int(env.get("BETA_AGENT_SLOT_POOL_SIZE", "0"))
     golden_digest = env.get("BETA_AGENT_GOLDEN_DIGEST", "")
+    approved_tasks_path = env.get("BETA_AGENT_APPROVED_TASKS", "")
+    approved_tasks, approved_tasks_digest = {}, ""
     if model == EXECUTION_MODEL_SLOT_POOL:
         # The pool cannot be inferred. A pool of zero would silently accept every runtime and then exhaust;
         # an unset golden digest would make the stage-copy integrity check compare against "".
@@ -101,6 +138,8 @@ def load_config(env: dict | None = None) -> dict:
         if not env.get("BETA_AGENT_GOLDEN_MANIFEST_VERSION"):
             # Left empty, the stage-copy pre-check would compare "" == "" and pass on an unversioned image.
             raise ConfigError("slot_pool execution model requires BETA_AGENT_GOLDEN_MANIFEST_VERSION")
+        if not approved_tasks_path:
+            raise ConfigError("slot_pool execution model requires BETA_AGENT_APPROVED_TASKS")
         slots_root = env.get("BETA_AGENT_SLOTS_ROOT", BETA_SLOTS_ROOT)
         if slots_root != BETA_SLOTS_ROOT:
             # The knob is honoured for the containment base but the primitives derive every slot path from
@@ -115,6 +154,7 @@ def load_config(env: dict | None = None) -> dict:
             # force-kills it mid-stage — the exact outcome the drain exists to prevent.
             raise ConfigError(
                 f"BETA_AGENT_DRAIN_TIMEOUT_S must exceed the settle window ({settle:.0f}s)")
+        approved_tasks, approved_tasks_digest = _load_approved_tasks(approved_tasks_path)
     return {
         "bind_host": host,
         "expected_bind_host": expected,
@@ -141,4 +181,7 @@ def load_config(env: dict | None = None) -> dict:
         "golden_digest": golden_digest,
         "golden_manifest_version": env.get("BETA_AGENT_GOLDEN_MANIFEST_VERSION", ""),
         "slot_db": env.get("BETA_AGENT_SLOT_DB", state_dir + r"\slots.sqlite"),
+        "approved_tasks_path": approved_tasks_path,
+        "approved_tasks": approved_tasks,
+        "approved_tasks_digest": approved_tasks_digest,
     }

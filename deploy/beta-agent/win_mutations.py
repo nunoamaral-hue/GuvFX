@@ -18,7 +18,8 @@ from lib.mgmt_agent_core import AgentError, is_beneath
 from lifecycle import ALREADY_COMPLETED, BLOCKED, COMPLETED, FAILED, REQUESTED
 from win_primitives import (ABSENT, BETA_SLOTS_ROOT, FORBIDDEN_FRAGMENTS, PRESENT_VALID,
                             PrimitiveContext, SlotInput, UnauthorisedNamespace,
-                            assert_authorised_slot_input, attest, observe_process, require_mutating)
+                            assert_authorised_slot_input, attest, inspect_task, observe_process,
+                            require_mutating)
 
 #: Tombstoned runtimes are retained here — inside the beta namespace, never beside the operator's estate.
 BETA_TOMBSTONES_ROOT = r"C:\GuvFX\beta\tombstones"
@@ -144,6 +145,45 @@ def _post_checks(win, si: SlotInput, expected_source_digest) -> dict:
         "ownership_marker_present": bool(dest.get("ownership_marker")),
     }
     return {"checks": checks, "failed": [k for k in STAGE_POST_CHECKS if not checks.get(k)]}
+
+
+# ── stage 4b: launch-task verification (F3 — REQUIRED before any trigger) ──────────────────────────────
+def precheck_launch_task(win, ctx: PrimitiveContext, si: SlotInput, *, approved_definition,
+                         observed_at=None) -> dict:
+    """Assert the INSTALLED launch task still matches its APPROVED definition, before it is triggered.
+
+    Same shape as :func:`precheck_cleanup`, and for the same reason: the check that decides whether an
+    irreversible action may happen runs BEFORE it, so a refusal costs nothing.
+
+    Having ``inspect_task`` and ``assert_task_matches_approved`` available was not sufficient — nothing
+    called them, so the agent would have triggered a task without ever asserting what that task now does.
+    A task whose executable, principal, logon type or run level has been changed since approval is a
+    different task, and triggering it would launch something the platform never approved under an identity
+    it never approved.
+
+    The agent NEVER repairs a task. Drift is a refusal.
+    """
+    require_mutating(ctx, "precheck_launch_task")
+    assert_authorised_slot_input(si)
+    from occupancy import TaskDefinitionDrift, assert_task_matches_approved
+    obs = inspect_task(win, si, which="launch", observed_at=observed_at)
+    outcome = obs["attestation"]["outcome"]
+    if outcome != PRESENT_VALID:
+        return _fail(si, "precheck_launch_task",
+                     obs["attestation"]["reason_code"] or "task_observation_unavailable",
+                     {"phase": "PRE_TRIGGER", "observation": obs["attestation"]}, observed_at,
+                     status=BLOCKED)
+    installed = obs["evidence"]
+    try:
+        assert_task_matches_approved(approved_definition, installed)
+    except TaskDefinitionDrift as drift:
+        return _fail(si, "precheck_launch_task", "task_definition_drift",
+                     {"phase": "PRE_TRIGGER", "differing": getattr(drift, "detail", "")}, observed_at,
+                     status=BLOCKED)
+    return _ok(si, "precheck_launch_task",
+               {"phase": "PRE_TRIGGER", "definition_digest": installed.get("definition_digest"),
+                "portable_switch": installed.get("portable_switch"),
+                "run_as_identity": installed.get("run_as_identity")}, observed_at)
 
 
 # ── stage 5: fixed-task launch trigger (REQUESTED) ─────────────────────────────────────────────────────
