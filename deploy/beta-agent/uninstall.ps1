@@ -12,14 +12,29 @@ param(
   [string]$RunAsUser   = "NT SERVICE\GuvFXBetaAgent",
   [string]$AgentDir    = "C:\GuvFX\beta\agent",
   [string]$StateDir    = "C:\GuvFX\beta\agent-state",
-  [string]$BetaAccounts= "C:\GuvFX\beta\accounts",
+  [string]$SlotsRoot   = "C:\GuvFX\beta\slots",
   [string]$BetaTombstones = "C:\GuvFX\beta\tombstones",
+  [string]$GoldenDir   = "C:\GuvFX\beta\golden",
   [string]$LaunchTaskPrefix = "GuvFXBetaRuntime-",
+  [string]$StopTaskPrefix   = "GuvFXBetaRuntimeStop-",
+  [string]$IdentityPrefix   = "guvfx_b_slot",
+  [int]$PoolSize            = 4,
+  # Identities are DISABLED by default, not deleted: deletion orphans anything they own and destroys the
+  # ability to attribute retained tombstone evidence. -RemoveIdentities is an explicit operator choice.
+  [switch]$RemoveIdentities,
   [switch]$Apply
 )
 $ErrorActionPreference = "Stop"
 function DoIt($desc, [scriptblock]$block) {
   if ($Apply) { Write-Host "APPLY: $desc"; & $block } else { Write-Host "PLAN:  $desc" }
+}
+
+# 0. Revoke the service account's ACL grants BEFORE the service is deleted: once the SCM registration is
+#    gone, "NT SERVICE\<name>" may no longer resolve and the ACEs would be orphaned on retained data.
+foreach ($d in @($AgentDir, $StateDir, $BetaTombstones, $SlotsRoot, $GoldenDir)) {
+  DoIt "revoke '$RunAsUser' ACL grant on $d" {
+    if (Test-Path $d) { icacls $d /remove:g "$RunAsUser" | Out-Null }
+  }
 }
 
 # 1. Stop + delete the service (pywin32 remove cleans the SCM registration).
@@ -38,20 +53,67 @@ DoIt "remove firewall rule '$RuleName'" {
   }
 }
 
-# 3. Remove any per-runtime launch tasks registered under the fixed prefix (none in B3P-1).
-DoIt "unregister launch tasks '$LaunchTaskPrefix*'" {
-  Get-ScheduledTask -TaskName "$LaunchTaskPrefix*" -ErrorAction SilentlyContinue |
-    Unregister-ScheduledTask -Confirm:$false
-}
-
-# 4. Remove the service-account ACL grants from the beta tree (no standing principal on retained data).
-foreach ($d in @($AgentDir, $StateDir, $BetaAccounts, $BetaTombstones)) {
-  DoIt "revoke '$RunAsUser' ACL grant on $d" {
-    if (Test-Path $d) { icacls $d /remove:g "$RunAsUser" | Out-Null }
+# 3. Remove BOTH task families. The B2 version removed only the launch prefix, which left the terminate
+#    tasks — and their stored credentials — behind (install-only review F4). Unregistering a task removes
+#    its credential with it.
+foreach ($prefix in @($LaunchTaskPrefix, $StopTaskPrefix)) {
+  DoIt "unregister tasks '$prefix*'" {
+    Get-ScheduledTask -TaskName "$prefix*" -ErrorAction SilentlyContinue |
+      Unregister-ScheduledTask -Confirm:$false
   }
 }
 
+# 5. Remove each slot identity's grants, revoke SeBatchLogonRight, and disable (not delete) the account.
+#    SIDs are collected FIRST: Remove-LocalUser inside the loop would make them unresolvable by the time the
+#    revoke block runs, so the right would silently keep four orphaned SIDs — and a future account created
+#    with the same RID would inherit a batch-logon grant nobody intended.
+$SlotSids = @()
+for ($n = 1; $n -le $PoolSize; $n++) {
+  $u = Get-LocalUser -Name "$IdentityPrefix$n" -ErrorAction SilentlyContinue
+  if ($u) { $SlotSids += "*" + $u.SID.Value }
+}
+for ($n = 1; $n -le $PoolSize; $n++) {
+  $user = "$IdentityPrefix$n"
+  if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) { continue }
+  foreach ($d in @((Join-Path $SlotsRoot "$n"), $GoldenDir)) {
+    DoIt "revoke '$user' ACL grant on $d" {
+      if (Test-Path $d) { icacls $d /remove:g "$user" | Out-Null }
+    }
+  }
+  DoIt "disable identity '$user' (NOT deleted unless -RemoveIdentities)" {
+    Disable-LocalUser -Name $user
+  }
+  if ($RemoveIdentities) {
+    DoIt "DELETE identity '$user' (explicitly requested)" { Remove-LocalUser -Name $user }
+  }
+}
+DoIt "revoke SeBatchLogonRight from the slot identities" {
+  $tmp = New-TemporaryFile
+  secedit /export /areas USER_RIGHTS /cfg "$tmp" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "secedit /export failed (exit $LASTEXITCODE)" }
+  $cfg  = Get-Content "$tmp"
+  $line = ($cfg | Where-Object { $_ -match "^SeBatchLogonRight" })
+  if ($line -and $SlotSids.Count -gt 0) {
+    $current = ($line -split "=", 2)[1].Trim() -split "," | Where-Object { $_ }
+    $kept    = @($current | Where-Object { $SlotSids -notcontains $_ })
+    # This rewrites MACHINE-WIDE security policy. Principals unrelated to beta (Administrators, Backup
+    # Operators, Performance Log Users) hold this right, and the operator's own "run whether user is logged
+    # on or not" tasks use a BATCH logon — so narrowing it further than intended could stop live trading.
+    # Refuse any result that removed more than exactly our own SIDs.
+    $expected = $current.Count - @($current | Where-Object { $SlotSids -contains $_ }).Count
+    if ($kept.Count -ne $expected) {
+      throw "refusing to write SeBatchLogonRight: expected $expected principals, computed $($kept.Count)"
+    }
+    Set-Content -Path "$tmp" -Value ($cfg -replace "^SeBatchLogonRight.*",
+                                     "SeBatchLogonRight = $($kept -join ',')") -Encoding Unicode
+    secedit /configure /db "$env:windir\security\local.sdb" /cfg "$tmp" /areas USER_RIGHTS | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "secedit /configure failed (exit $LASTEXITCODE)" }
+  }
+  Remove-Item "$tmp" -Force
+}
+
 Write-Host ""
-Write-Host "RETAINED (never deleted): runtime dirs under $BetaAccounts and tombstones under $BetaTombstones."
+Write-Host "RETAINED (never deleted): slot dirs under $SlotsRoot, tombstones under $BetaTombstones,"
+Write-Host "                          and $StateDir (nonce/idempotency/slot/audit stores = the evidence chain)."
 Write-Host "UNTOUCHED: Nuno's terminal (Session 3), bridge (:8788), :8787, autologon, startup tasks."
 if (-not $Apply) { Write-Host "PLAN complete. Re-run with -Apply on the host to perform the teardown." }

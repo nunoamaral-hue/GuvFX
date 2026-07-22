@@ -143,7 +143,11 @@ def assert_same_process(birth: dict, observed: dict) -> None:
 
 
 # ── 3. task identity ───────────────────────────────────────────────────────────────────────────────────
-TASK_IDENTITY_FIELDS = ("task_name", "run_as_identity", "executable", "working_directory",
+#: ``arguments`` is part of task IDENTITY, not decoration: portable mode is a per-launch command-line
+#: property, so a task edited from ``/portable`` to nothing is a materially different task that would keep
+#: per-instance state in the identity's %APPDATA% — OUTSIDE the slot, where tombstoning cannot reach it, to
+#: be inherited by the next occupancy. Excluding it let that edit match its approved definition exactly.
+TASK_IDENTITY_FIELDS = ("task_name", "run_as_identity", "executable", "working_directory", "arguments",
                         "logon_type", "run_level", "enabled")
 
 
@@ -170,6 +174,6 @@ def assert_task_matches_approved(approved: dict, installed: dict) -> None:
         raise TaskDefinitionDrift("missing definition")
     if task_definition_digest(approved) != task_definition_digest(installed):
         differing = [k for k in TASK_IDENTITY_FIELDS if approved.get(k) != installed.get(k)]
-        raise TaskDefinitionDrift(",".join(differing) or "digest")
+        raise TaskDefinitionDrift(",".join(differing) or "digest")   # names the fields, never the values
     if not installed.get("enabled"):
         raise TaskDefinitionDrift("disabled")

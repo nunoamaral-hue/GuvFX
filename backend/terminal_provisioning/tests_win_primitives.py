@@ -78,7 +78,7 @@ def _task(**over):
     d = dict(task_name="GuvFXBetaRuntime-2", run_as_identity="guvfx_u_beta_2",
              run_as_sid="S-1-5-21-x-1002",
              executable=r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe",
-             working_directory=r"C:\GuvFX\beta\slots\2\terminal",
+             working_directory=r"C:\GuvFX\beta\slots\2\terminal", arguments="/portable",
              logon_type="TASK_LOGON_PASSWORD", run_level="LEAST", enabled=True, last_result=0)
     d.update(over)
     return d
@@ -244,7 +244,8 @@ class TaskInspectionContractTests(SimpleTestCase):
         res = wp.inspect_task(RecordingFakeWin(task=_task()), SI, observed_at=OBSERVED_AT)
         self.assertEqual(res["attestation"]["outcome"], wp.PRESENT_VALID)
         for f in ("task_name", "definition_digest", "run_as_identity", "run_as_sid", "executable",
-                  "working_directory", "logon_type", "run_level", "enabled", "last_result"):
+                  "working_directory", "arguments", "portable_switch", "logon_type", "run_level",
+                  "enabled", "last_result"):
             self.assertIn(f, res["evidence"], f)
 
     def test_administrator_run_as_is_invalid(self):

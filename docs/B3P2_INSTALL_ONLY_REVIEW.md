@@ -203,11 +203,20 @@ C:\GuvFX\beta\
 | Path | Owner | Access |
 |---|---|---|
 | `beta\` | Administrators | Administrators FC, SYSTEM FC, **inheritance disabled** |
-| `beta\golden\` | Administrators | Administrators FC; each `guvfx_b_slot<n>` **Read+Execute only** |
-| `beta\slots\<n>\` | Administrators | Administrators FC, SYSTEM FC, `guvfx_b_slot<n>` Modify. **No other slot identity has any access.** |
-| `beta\tombstones\<n>\` | Administrators | Administrators + SYSTEM only |
+| `beta\golden\` | Administrators | Administrators FC; each `guvfx_b_slot<n>` and the service account **Read+Execute only** |
+| `beta\slots\<n>\` | Administrators | Administrators FC, SYSTEM FC, `guvfx_b_slot<n>` Modify, **service account Modify**. No *other* slot identity has any access. |
+| `beta\tombstones\<n>\` | Administrators | Administrators + SYSTEM, **service account Modify** (it moves runtimes there) |
 | `beta\agent\` | Administrators | Administrators FC, service account **Read+Execute** — it cannot rewrite its own code |
 | `beta\agent-state\` | Administrators | Administrators FC, service account Modify |
+| `beta\agent-state\approved_tasks.json` | Administrators | Administrators + SYSTEM FC, service account **Read only** — the agent must never rewrite its own approvals |
+
+**Why the service account needs Modify on the slot root — corrected from the first draft of this review:**
+the agent does the staging work *itself*; it is not true that it "only triggers tasks". `win_slot_ops`
+runs robocopy from the service process, writes the ownership marker inside the slot, walks the golden tree
+to digest it, and renames the slot directory into the tombstone root. Granting it nothing there would have
+left the pool provisioned and permanently unusable: the first MATERIALISE would fail and TOMBSTONE could
+never complete. It gets **Read+Execute only** on the golden image, which is the grant that matters for
+isolation — if the agent could write the golden image, one compromised slot would compromise every future one.
 
 The golden image being read-only to the slot identities is load-bearing: if one runtime could write it, one
 compromised slot would compromise every future slot.

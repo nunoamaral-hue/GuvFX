@@ -4,6 +4,7 @@ Covers the two layers the mutating primitives sit under: the resolver that turns
 fixed slot path, and the operation implementations that sequence the stages, run the integrity gate and
 record evidence.
 """
+import json
 import os
 import sys
 import tempfile
@@ -22,6 +23,13 @@ from pool_op_impls import PoolOpImplementations, SlotResolver    # noqa: E402
 from stores import (SlotIntegrityError, SlotStore, format_owner_marker, occupancy_id)   # noqa: E402
 
 RUUID = "0f2b8f2e-7a1a-4f6e-9c1a-2b3c4d5e6f70"
+#: The approved launch-task definition for slot 1 — the seven fields occupancy.TASK_IDENTITY_FIELDS pins.
+APPROVED_TASK = {
+    "task_name": "GuvFXBetaRuntime-1", "run_as_identity": "guvfx_b_slot1",
+    "executable": r"C:\GuvFX\beta\slots\1\terminal\terminal64.exe",
+    "working_directory": r"C:\GuvFX\beta\slots\1\terminal",
+    "arguments": "/portable", "logon_type": 1, "run_level": 0, "enabled": True,
+}
 OTHER = "99999999-8888-7777-6666-555555555555"
 DIGEST = "golden-digest-abc"
 MANIFEST_V = "2026-07-22.13"
@@ -35,6 +43,7 @@ class FakeWin:
         self.calls = []
         self._exists, self._process, self._task_ok, self._launches = exists, process, task_ok, launches
         self._marker = None
+        self._task_definition = dict(APPROVED_TASK)
         self._dest = dest if dest is not None else {"digest": DIGEST, "executable_digest": "exe",
                                                     "portable_marker": True, "ownership_marker": True}
 
@@ -51,6 +60,13 @@ class FakeWin:
     def same_volume(self, a, b): return True
     def task_running(self, t): return False
     def open_handles(self, p): return False   # a real host CANNOT answer this - see the trial note
+
+    def query_task(self, t):
+        if self._task_definition is None:
+            return None
+        d = dict(self._task_definition, task_name=t)
+        d["portable_switch"] = "/portable" in str(d.get("arguments") or "").lower().split()
+        return d
 
     # writes
     def copy_golden(self, p): self.calls.append(("copy_golden", p)); self._exists = True
@@ -83,6 +99,7 @@ def _store(pool_size=2):
 
 def _impls(win, store, **over):
     args = dict(golden_digest=DIGEST, golden_manifest_version=MANIFEST_V, now_fn=lambda: 100,
+                approved_tasks={"GuvFXBetaRuntime-1": dict(APPROVED_TASK)},
                 manifest_version=MANIFEST_V, sleep_fn=lambda _seconds: None)   # settle window, no wall time
     args.update(over)
     return PoolOpImplementations(win, store, **args)
@@ -277,7 +294,7 @@ class StartStopLifecycleTests(SimpleTestCase):
         self.assertEqual(out["pid"], 13020)
         self.assertTrue(out["executable_containment_verified"])
         self.assertEqual([e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)][1:],
-                         ["request_launch", "confirm_launch"])
+                         ["precheck_launch_task", "request_launch", "confirm_launch"])
 
     def test_a_trigger_that_starts_nothing_is_not_a_started_runtime(self):
         s, win, impls = self._ready(launches=False)
@@ -376,7 +393,7 @@ class TombstoneLifecycleTests(SimpleTestCase):
         impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
                         context=_ctx(s, operation="TOMBSTONE"))
         ops = [e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)]
-        self.assertEqual(ops, ["stage_copy", "request_launch", "confirm_launch",
+        self.assertEqual(ops, ["stage_copy", "precheck_launch_task", "request_launch", "confirm_launch",
                                "request_terminate", "confirm_terminated", "precheck_cleanup",
                                "tombstone", "verify_cleanup"])
         s.assert_sequence_valid(1, 1)
@@ -560,6 +577,12 @@ class ExecutionModelWiringTests(SimpleTestCase):
     """The agent must actually BUILD the pool model when configured for it — and refuse rather than
     silently revert when the settings it needs are absent."""
 
+    @staticmethod
+    def _approved_file():
+        f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        f.write(json.dumps({"GuvFXBetaRuntime-1": APPROVED_TASK})); f.close()
+        return f.name
+
     ENV = {
         "BETA_AGENT_BIND_HOST": "100.79.101.19",
         "BETA_AGENT_BIND_PORT": "8791",
@@ -611,6 +634,7 @@ class ExecutionModelWiringTests(SimpleTestCase):
         import agent as agent_mod
         cfg = self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_SLOT_POOL_SIZE="4",
                         BETA_AGENT_GOLDEN_DIGEST="d", BETA_AGENT_GOLDEN_MANIFEST_VERSION="v",
+                        BETA_AGENT_APPROVED_TASKS=self._approved_file(),
                         BETA_AGENT_DRAIN_TIMEOUT_S="45")
         f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
         built = agent_mod.build_agent(cfg, win=FakeWin(), store=_FakeStore(),
@@ -633,6 +657,7 @@ class ExecutionModelWiringTests(SimpleTestCase):
         cfg = self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_SLOT_POOL_SIZE="4",
                         BETA_AGENT_GOLDEN_DIGEST="golden-digest-abc",
                         BETA_AGENT_GOLDEN_MANIFEST_VERSION="2026-07-22.24",
+                        BETA_AGENT_APPROVED_TASKS=self._approved_file(),
                         BETA_AGENT_DRAIN_TIMEOUT_S="45")
         f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
         built = agent_mod.build_agent(cfg, win=FakeWin(), store=_FakeStore(),
@@ -697,3 +722,176 @@ class VerifyObservabilityTests(SimpleTestCase):
         out = impls.verify(canonical_dir="", runtime_uuid=RUUID, base="",
                            context=_ctx(s, operation="VERIFY"))
         self.assertFalse(out["running"])
+
+
+class LaunchTaskVerificationGateTests(SimpleTestCase):
+    """F3, promoted to an implementation gate: a launch may not proceed unless task-definition
+    verification has executed successfully FOR THIS OCCUPANCY.
+
+    Having inspect_task and assert_task_matches_approved available was not sufficient - nothing called
+    them, so the agent would have triggered a task without ever asserting what that task now does.
+    """
+
+    def _ready(self, **kw):
+        s, win = _store(), FakeWin(exists=False, **kw)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        win.calls.clear()
+        return s, win, impls
+
+    def _start(self, s, impls):
+        return impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                           context=_ctx(s, operation="START"))
+
+    def test_verification_is_recorded_as_a_stage_before_the_trigger(self):
+        s, win, impls = self._ready()
+        self._start(s, impls)
+        ops = [e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)]
+        self.assertEqual(ops[1:4], ["precheck_launch_task", "request_launch", "confirm_launch"])
+
+    def test_a_task_repointed_outside_the_slot_never_launches(self):
+        """Containment fires before the digest comparison — a stronger guarantee, asserted as such."""
+        s, win, impls = self._ready()
+        win._task_definition = dict(APPROVED_TASK, executable=r"C:\Windows\System32\cmd.exe")
+        with self.assertRaises(AgentError) as ctx:
+            self._start(s, impls)
+        self.assertEqual(ctx.exception.reason_code, "executable_outside_slot")
+        self.assertEqual([c for c in win.calls if c[0] == "run_task"], [])
+
+    def test_drift_within_the_slot_still_blocks_the_launch(self):
+        """The digest path: a change the containment guard cannot see, e.g. the working directory."""
+        s, win, impls = self._ready()
+        win._task_definition = dict(APPROVED_TASK, working_directory=r"C:\GuvFX\beta\slots\1")
+        with self.assertRaises(AgentError) as ctx:
+            self._start(s, impls)
+        self.assertEqual(ctx.exception.reason_code, "task_definition_drift")
+        self.assertEqual([c for c in win.calls if c[0] == "run_task"], [])
+
+    def test_a_changed_principal_blocks_the_launch(self):
+        s, win, impls = self._ready()
+        win._task_definition = dict(APPROVED_TASK, run_as_identity="Administrator")
+        with self.assertRaises(AgentError):
+            self._start(s, impls)
+        self.assertEqual([c for c in win.calls if c[0] == "run_task"], [])
+
+    def test_a_disabled_task_blocks_the_launch(self):
+        s, win, impls = self._ready()
+        win._task_definition = dict(APPROVED_TASK, enabled=False)
+        with self.assertRaises(AgentError):
+            self._start(s, impls)
+
+    def test_an_absent_task_blocks_the_launch(self):
+        s, win, impls = self._ready()
+        win._task_definition = None
+        with self.assertRaises(AgentError) as ctx:
+            self._start(s, impls)
+        self.assertEqual(ctx.exception.reason_code, "task_absent")
+
+    def test_a_slot_with_no_approved_definition_can_never_launch(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s, approved_tasks={})
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        win.calls.clear()
+        with self.assertRaises(AgentError) as ctx:
+            self._start(s, impls)
+        self.assertEqual(ctx.exception.reason_code, "approved_task_definition_missing")
+        self.assertEqual(win.calls, [])
+
+    def test_the_agent_never_repairs_a_drifted_task(self):
+        s, win, impls = self._ready()
+        win._task_definition = dict(APPROVED_TASK, run_level=1)
+        with self.assertRaises(AgentError):
+            self._start(s, impls)
+        for forbidden in ("register_task", "set_acl", "enable_task"):
+            self.assertEqual([c for c in win.calls if c[0] == forbidden], [], forbidden)
+
+
+class ApprovedTasksConfigTests(SimpleTestCase):
+    """The approval file is loaded at startup and fails closed three distinct ways."""
+
+    ENV = dict(ExecutionModelWiringTests.ENV, BETA_AGENT_EXECUTION_MODEL="slot_pool",
+               BETA_AGENT_SLOT_POOL_SIZE="4", BETA_AGENT_GOLDEN_DIGEST="d",
+               BETA_AGENT_GOLDEN_MANIFEST_VERSION="v", BETA_AGENT_DRAIN_TIMEOUT_S="45")
+
+    def _cfg(self, **over):
+        import config as agent_config
+        env = dict(self.ENV); env.update(over)
+        return agent_config.load_config(env)
+
+    def _file(self, content):
+        f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        f.write(content); f.close()
+        return f.name
+
+    def test_missing_path_refuses(self):
+        from config import ConfigError
+        with self.assertRaises(ConfigError):
+            self._cfg()
+
+    def test_unreadable_file_refuses(self):
+        from config import ConfigError
+        with self.assertRaises(ConfigError):
+            self._cfg(BETA_AGENT_APPROVED_TASKS="/nonexistent/approved_tasks.json")
+
+    def test_malformed_json_refuses(self):
+        from config import ConfigError
+        with self.assertRaises(ConfigError):
+            self._cfg(BETA_AGENT_APPROVED_TASKS=self._file("{not json"))
+
+    def test_a_definition_missing_a_pinned_field_refuses(self):
+        """An approval that omits a field does not actually approve anything about it."""
+        from config import ConfigError
+        partial = dict(APPROVED_TASK); partial.pop("run_as_identity")
+        with self.assertRaises(ConfigError) as ctx:
+            self._cfg(BETA_AGENT_APPROVED_TASKS=self._file(json.dumps({"GuvFXBetaRuntime-1": partial})))
+        self.assertIn("run_as_identity", str(ctx.exception))
+
+    def test_a_valid_file_loads_with_a_digest(self):
+        cfg = self._cfg(BETA_AGENT_APPROVED_TASKS=self._file(
+            json.dumps({"GuvFXBetaRuntime-1": APPROVED_TASK})))
+        self.assertEqual(cfg["approved_tasks"]["GuvFXBetaRuntime-1"]["run_as_identity"], "guvfx_b_slot1")
+        self.assertTrue(cfg["approved_tasks_digest"])      # a change to the approvals is visible
+
+    def test_empty_approvals_refuse(self):
+        from config import ConfigError
+        with self.assertRaises(ConfigError):
+            self._cfg(BETA_AGENT_APPROVED_TASKS=self._file("{}"))
+
+
+class PortableSwitchGateTests(SimpleTestCase):
+    """Portable mode is a per-LAUNCH command-line property, so `arguments` is part of task identity.
+
+    A task edited from /portable to nothing keeps per-instance state in the identity's %APPDATA% - OUTSIDE
+    the slot, where tombstoning cannot reach it - to be inherited by the next occupancy. That is exactly the
+    leak install_pool.ps1 refuses in the golden image, arriving by a different door.
+    """
+
+    def _ready(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        win.calls.clear()
+        return s, win, impls
+
+    def test_a_task_that_lost_portable_blocks_the_launch(self):
+        s, win, impls = self._ready()
+        win._task_definition = dict(APPROVED_TASK, arguments="")
+        with self.assertRaises(AgentError) as ctx:
+            impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="START"))
+        self.assertEqual(ctx.exception.reason_code, "task_definition_drift")
+        self.assertEqual([c for c in win.calls if c[0] == "run_task"], [])
+
+    def test_arguments_are_part_of_task_identity(self):
+        from occupancy import TASK_IDENTITY_FIELDS
+        self.assertIn("arguments", TASK_IDENTITY_FIELDS)
+
+    def test_the_gate_records_the_observed_portable_switch(self):
+        """It was computed by the adapter and dropped by inspect_task, so every gate reported it null -
+        indistinguishable from 'not portable'."""
+        s, win, impls = self._ready()
+        impls.start(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="START"))
+        import win_primitives as wp
+        obs = wp.inspect_task(win, wp.resolve_slot_input(1), which="launch", observed_at=100)
+        self.assertTrue(obs["evidence"]["portable_switch"])
+        self.assertEqual(obs["evidence"]["arguments"], "/portable")
