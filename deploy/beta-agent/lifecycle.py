@@ -85,6 +85,10 @@ REASON_CATEGORY = {
     "ownership_conflict": INTEGRITY,
     "not_owned": INTEGRITY,
     "cleanup_incomplete": INTEGRITY,
+    "reparse_point_in_tree": INTEGRITY,
+    # Several processes run from one slot and none is the runtime executable: choosing one by enumeration
+    # order would bind the whole termination chain to an arbitrary process.
+    "ambiguous_slot_process": INTEGRITY,
     "evidence_missing": INTEGRITY,
     "bad_signature": INTEGRITY,
     "job_op_conflict": INTEGRITY,
@@ -98,6 +102,15 @@ REASON_CATEGORY = {
     "termination_not_observed": OBSERVATION,
     "creation_time_unusable": OBSERVATION,
     "process_permission_denied": OBSERVATION,
+    # B3P-2 real adapter: each of these means "the host could not be read reliably", never "absent".
+    "process_enumeration_failed": OBSERVATION,
+    "process_open_failed": OBSERVATION,
+    "process_times_unavailable": OBSERVATION,
+    "volume_path_unavailable": OBSERVATION,
+    "volume_identity_unavailable": OBSERVATION,
+    "path_normalisation_failed": OBSERVATION,
+    # No supported API can answer this on any Windows build — see the research findings, section 5.
+    "handle_enumeration_unsupported": OBSERVATION,
     "task_permission_denied": OBSERVATION,
     "filesystem_permission_denied": OBSERVATION,
 
@@ -132,6 +145,8 @@ REASON_CATEGORY = {
     "launch_not_available_off_box": CONFIGURATION,
     "process_enum_not_available_off_box": CONFIGURATION,
     "stop_not_available_off_box": CONFIGURATION,
+    "windows_api_unavailable": CONFIGURATION,
+    "no_existing_ancestor": CONFIGURATION,
 
     # ── OPERATOR: a human must decide or intervene ──
     "pool_exhausted": OPERATOR,

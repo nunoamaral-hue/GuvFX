@@ -1,7 +1,8 @@
 # CVM-Inc-3 B3P-2 — Windows adapter interface contract
 
-**Status:** contract agreed; real adapter implemented against it; **no method has ever executed on a
-Windows host.** Every claim below about *behaviour on the box* is an expectation to be measured at the
+**Status:** contract agreed; real adapter implemented in `win_slot_ops.py` against it, using only
+documented facts that survived adversarial verification (see `docs/B3P2_WINDOWS_RESEARCH_FINDINGS.md`);
+**no method has ever executed on a Windows host.** Every claim below about *behaviour on the box* is an expectation to be measured at the
 bounded viability trial, not an observation.
 
 This is the implementation contract required before the real adapter was written (review requirement 4).
@@ -23,17 +24,20 @@ The adapter is the **only** component that may call Win32, COM or the Task Sched
 | Lifecycle policy | `pool_op_impls.py` | **No** |
 | Stages (read-only) | `win_primitives.py` | **No** |
 | Stages (mutating) | `win_mutations.py` | **No** |
-| **Adapter** | `win_ops.py` | **Yes — host operations** |
+| Adapter **interface** | `win_ops.py` | **No** — the contract only |
+| Adapter **implementation** | `win_slot_ops.py` | **Yes — every host operation** |
 | Service harness | `service.py` | **Yes — Service Control Manager only** |
 
-Two files, and only two. `win_ops.py` owns every host operation. `service.py` is a genuinely separate
+Two files may touch Win32, and only two. The interface is deliberately separate from the implementation so
+every layer can import the contract without importing the host. `service.py` is a genuinely separate
 concern: it is the pywin32 SCM wrapper that lets the agent run as a Windows service at all, and it performs
 no slot, task or process work. Recording it as a second permitted file is honest; folding it into "the
 adapter" would blur two different responsibilities (Rule 5).
 
 A test enforces this by scanning the bundle's AST for imports of `win32*`, `win32com`, `pywintypes`,
-`winreg`, `ctypes`, `subprocess` and `shutil`, plus calls to `os.system`/`os.popen`, and failing if any
-appear outside those two files. The boundary is enforced, not merely described.
+`winreg`, `ctypes`, `subprocess`, `shutil`, `psutil` and `wmi`, plus calls to `os.system`/`os.popen`, and
+failing if any appear outside `win_slot_ops.py` and `service.py`. A second test asserts the interface file
+itself stays clean. The boundary is enforced, not merely described.
 
 The practical payoff: **the adapter is the only component that needs Windows-specific testing.** Everything
 above it is provably exercised off-host, which is why 1300+ tests can run on a Mac and still mean something.
@@ -212,3 +216,28 @@ These cannot be settled off-host and must not be guessed:
    `open_handles` permanently best-effort?
 6. Does the terminate task reliably end MT5, and how long may `confirm_terminated` legitimately need to
    wait before `process_still_running` means a genuine failure rather than an in-progress shutdown?
+
+
+---
+
+## 7. Implementation decisions forced by the research
+
+Recorded here because each one is a place where the obvious implementation would have been wrong.
+
+| Decision | Why |
+|---|---|
+| `os.rename` for the tombstone, **never** `shutil.move` | `shutil.move` catches every `OSError` from `os.rename` and falls back to `copytree` + `rmtree`, turning the move into the copy-and-delete this design forbids. `os.rename` calls `MoveFileExW` with `dwFlags=0`, so it *cannot* degrade. The legacy B2 adapter had the `shutil.move` defect and was fixed in the same change. |
+| `os.path.realpath(..., strict=True)` | The default non-strict mode silently tolerates a documented list of errors and returns a partially resolved path — useless as a containment guard. |
+| `os.lstat`, never `os.path.exists` | `os.path.exists` returns `False` on an access denial, which would report an existing directory as absent. |
+| Reparse points classified per entry, never `os.path.islink` | `islink()` returns `False` for directory junctions, so `os.walk(followlinks=False)` walks into them. |
+| Robocopy accepted only on exit **0 or 1** | Microsoft documents only that "≥ 8 indicates failure"; "0–7 is success" is folklore. Codes 2–7 mean extras or mismatches, which cannot legitimately occur when copying into a destination already proven absent. Equally, `check=True` would reject exit 1, the normal success. |
+| No `/MIR` | `/MIR` implies `/PURGE`, which really deletes destination content. |
+| Volume **GUID** comparison, not drive letters | A directory can be a mounted folder for a different volume. |
+| Raw `FILETIME` via `ctypes`, not `psutil` | `psutil.create_time()` is a float of seconds since 1970; 58 % of tick values do not round-trip. Process-birth identity needs the exact 100-ns value. |
+| Task presence by **enumeration**, not by a `GetTask` error | No Microsoft source maps a specific HRESULT to an absent task, so a failed call cannot be read as "not there". Absence from the folder listing is positive evidence. |
+| `Enabled`/`State` checked before triggering | Microsoft's pages are mutually inconsistent about whether `Run` or `RunEx` reports a disabled task. |
+| `IRunningTask.EnginePID` discarded | It is the PID of the task *engine*, not of the executable in the task's action. |
+| Both paths normalised with `GetLongPathNameW`, raising on failure | 8.3 aliasing is per-volume configurable and unknowable off-host; a containment verdict from possibly-aliased paths is worse than no verdict. |
+| Ambiguous slot process **raises** | If several processes run from one slot and none is `terminal64.exe`, picking by enumeration order would bind the termination chain to an arbitrary process. |
+| `open_handles()` **raises, always** | No supported API can answer it. See findings §5 — this blocks release and needs a decision. |
+| Portable mode read from the launch task's `/portable` argument | MetaQuotes documents **no** on-disk portable marker; it is a per-launch command-line property. The in-tree marker is an explicit GuvFX artefact, not an MT5 one. |

@@ -82,8 +82,11 @@ class RealWindowsOps(WindowsOps):
                os.path.splitdrive(os.path.abspath(b))[0].lower()
 
     def move_dir(self, src, dest):
-        import shutil
-        shutil.move(src, dest)
+        # NOT shutil.move: it catches every OSError from os.rename and falls back to copytree+rmtree, so a
+        # tombstone silently becomes the copy-and-delete this design forbids (verified in CPython's
+        # Lib/shutil.py). os.rename calls MoveFileExW with dwFlags=0 - no MOVEFILE_COPY_ALLOWED - and so
+        # cannot degrade. Found while researching the B3P-2 adapter and fixed here too.
+        os.rename(src, dest)
 
 
 def utc_stamp() -> str:

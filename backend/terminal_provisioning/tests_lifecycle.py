@@ -432,7 +432,7 @@ class WindowsApiBoundaryTests(SimpleTestCase):
     """
 
     #: Modules that may touch Windows-specific APIs, and the single reason each is allowed to.
-    PERMITTED = {"win_ops.py": "the adapter — every host operation",
+    PERMITTED = {"win_slot_ops.py": "the real adapter — every host operation",
                  "service.py": "the Service Control Manager harness only"}
     FORBIDDEN_IMPORTS = ("win32", "win32api", "win32con", "win32com", "win32file", "win32process",
                          "win32security", "win32service", "win32serviceutil", "pywintypes", "winreg",
@@ -471,3 +471,14 @@ class WindowsApiBoundaryTests(SimpleTestCase):
                     imported.update(a.name for a in node.names)
             self.assertNotIn("RealWindowsOps", imported, module)
             self.assertNotIn("RealSlotWindowsOps", imported, module)
+
+    def test_the_interface_file_itself_holds_no_windows_api(self):
+        """win_ops.py declares the contract; win_slot_ops.py implements it. Keeping the declaration free of
+        Win32 is what lets every layer import the interface without importing the host."""
+        tree = ast.parse(open(os.path.join(_BUNDLE, "win_ops.py"), encoding="utf-8").read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    self.assertNotIn(a.name.split(".")[0], self.FORBIDDEN_IMPORTS, a.name)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                self.assertNotIn(node.module.split(".")[0], self.FORBIDDEN_IMPORTS, node.module)
