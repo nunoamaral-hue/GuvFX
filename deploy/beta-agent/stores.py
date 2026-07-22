@@ -71,6 +71,22 @@ class PoolExhausted(AgentError):
         super().__init__("pool_exhausted")
 
 
+class ReleaseProofMissing(AgentError):
+    """A slot release was attempted before every required proof was durably true."""
+
+    def __init__(self, missing):
+        self.missing = list(missing)
+        super().__init__("release_proof_missing")
+
+
+class QuarantineClearanceRefused(AgentError):
+    """Operator quarantine clearance did not meet the required evidence bar."""
+
+    def __init__(self, detail=""):
+        self.detail = detail
+        super().__init__("quarantine_clearance_refused")
+
+
 class SlotStore:
     """Durable runtime-UUID → pool-slot assignment (B3P-2, per-slot execution model).
 
@@ -119,6 +135,14 @@ class SlotStore:
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS slot_quarantine ("
             " slot INTEGER PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL)")
+        # Append-only audit of material lifecycle events. Every row carries occupancy identity.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS slot_audit ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, runtime_uuid TEXT NOT NULL,"
+            " slot INTEGER NOT NULL, generation INTEGER NOT NULL, operation TEXT,"
+            " provisioning_job_id INTEGER, correlation_id TEXT, prior_state TEXT, resulting_state TEXT,"
+            " integrity_outcome TEXT, quarantined INTEGER NOT NULL DEFAULT 0, agent_version TEXT,"
+            " manifest_version TEXT, protocol_version INTEGER, at INTEGER NOT NULL)")
         self._conn.commit()
 
     def lookup(self, runtime_uuid: str):
@@ -187,6 +211,48 @@ class SlotStore:
             self._conn.commit()
             return True
 
+    # ── audit evidence ──
+    #: Material lifecycle events. EVERY one carries occupancy identity (slot AND generation), so a
+    #: historical event can never be attributed to the current occupant merely because the slot matches.
+    AUDIT_EVENTS = (
+        "slot_assigned", "materialise_started", "materialise_completed", "runtime_started",
+        "verification_completed", "stop_requested", "stop_completed", "tombstone_completed",
+        "slot_released", "integrity_mismatch", "slot_quarantined", "quarantine_cleared",
+    )
+
+    def record_audit(self, *, event: str, runtime_uuid, slot, generation, operation="",
+                     provisioning_job_id=None, correlation_id="", prior_state="", resulting_state="",
+                     integrity_outcome="", quarantined=False, agent_version="", manifest_version="",
+                     protocol_version=None, now: int = 0) -> None:
+        """Append one material lifecycle event. Occupancy identity (``slot`` + ``generation``) is
+        MANDATORY — an event without a generation must never be attributed to the current occupant."""
+        if event not in self.AUDIT_EVENTS:
+            raise ValueError(f"unknown audit event: {event}")
+        if slot is None or generation is None:
+            raise ValueError("audit events require both slot and generation (occupancy identity)")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO slot_audit (event, runtime_uuid, slot, generation, operation,"
+                " provisioning_job_id, correlation_id, prior_state, resulting_state, integrity_outcome,"
+                " quarantined, agent_version, manifest_version, protocol_version, at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (event, str(runtime_uuid), int(slot), int(generation), operation,
+                 provisioning_job_id, correlation_id, prior_state, resulting_state, integrity_outcome,
+                 1 if quarantined else 0, agent_version, manifest_version, protocol_version, int(now)))
+            self._conn.commit()
+
+    def audit_for_occupancy(self, slot: int, generation: int) -> list:
+        """Events for ONE occupancy. Filtering on (slot, generation) — never slot alone — is what stops a
+        previous occupant's history being read as the current one's."""
+        with self._lock:
+            rows = list(self._conn.execute(
+                "SELECT event, runtime_uuid, operation, prior_state, resulting_state, integrity_outcome,"
+                " quarantined, at FROM slot_audit WHERE slot=? AND generation=? ORDER BY id",
+                (int(slot), int(generation))))
+        return [{"event": r[0], "runtime_uuid": r[1], "operation": r[2], "prior_state": r[3],
+                 "resulting_state": r[4], "integrity_outcome": r[5], "quarantined": bool(r[6]),
+                 "at": r[7]} for r in rows]
+
     # ── quarantine ──
     def quarantine_slot(self, slot: int, reason: str, now: int = 0) -> None:
         """Mark a slot as failed-integrity. It is NEVER silently repaired or reused — operator only."""
@@ -227,6 +293,94 @@ class SlotStore:
             raise SlotIntegrityError()
         if gens[-1] != cur[0] or cur[0] != int(expected_generation):
             raise SlotIntegrityError()
+
+    #: The seven proofs that must ALL be durably true before a generation may advance.
+    RELEASE_PROOFS = (
+        "runtime_process_stopped",
+        "process_identity_verified",
+        "canonical_directory_tombstoned",
+        "tombstone_evidence_persisted",
+        "no_ambiguous_provisioning_job",
+        "no_mutation_lock_held",
+        "slot_release_audit_persisted",
+    )
+
+    def release_after_tombstone(self, *, runtime_uuid, slot, generation, proofs: dict, now: int = 0):
+        """Advance a slot's generation ONLY after all seven release proofs are durably true.
+
+        Ordering guarantee: the slot is **never exposed to another runtime between TOMBSTONE and successful
+        generation advancement**. It stays occupied (``runtime_uuid`` set, so ``assign`` skips it) until the
+        single transaction below commits; if that transaction fails or the process is interrupted, the slot
+        remains occupied and the generation unadvanced — fail-closed, recoverable, never half-released.
+
+        The whole advancement is ONE SQLite transaction: clear the runtime UUID, increment the generation by
+        exactly one, append the ledger entry, and persist the free state. SQLite gives atomicity and
+        durability here, so no separate recovery protocol is required; an interruption rolls back entirely.
+        """
+        missing = [p for p in self.RELEASE_PROOFS if not proofs.get(p)]
+        if missing:
+            raise ReleaseProofMissing(missing)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT slot, generation FROM slots WHERE runtime_uuid=?",
+                (str(runtime_uuid),)).fetchone()
+            if not row or row[0] != int(slot) or row[1] != int(generation):
+                raise SlotIntegrityError()          # the caller's view disagrees with the database
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "UPDATE slots SET runtime_uuid=NULL, assigned_at=NULL, generation=? WHERE slot=?",
+                    (int(generation) + 1, int(slot)))
+                self._conn.execute(
+                    "INSERT INTO slot_generations (slot, generation, event, at) VALUES (?,?,?,?)",
+                    (int(slot), int(generation) + 1, "release", int(now)))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()               # slot stays OCCUPIED; generation unadvanced
+                raise
+        return int(generation) + 1
+
+    # ── operator quarantine clearance ──
+    def clear_quarantine(self, *, slot, diagnosed_reason, operator_identity, evidence_reference,
+                         reconciliation_confirmed, no_runtime_process_confirmed,
+                         slot_directory_safe_confirmed, runtime_uuid="operator", generation=None,
+                         agent_version="", manifest_version="", protocol_version=None, now: int = 0):
+        """Clear a quarantine. **Not a boolean reset.**
+
+        Requires a diagnosed reason, the operator's identity, an evidence reference, and explicit
+        confirmation of: database/ledger/marker reconciliation, that no runtime process remains, and that
+        the slot directory is safe. Emits an auditable ``quarantine_cleared`` event.
+
+        Historical ledger entries are **never rewritten or deleted** — clearance removes only the
+        quarantine flag, leaving the generation history intact and auditable.
+        """
+        for name, value in (("diagnosed_reason", diagnosed_reason),
+                            ("operator_identity", operator_identity),
+                            ("evidence_reference", evidence_reference)):
+            if not str(value or "").strip():
+                raise QuarantineClearanceRefused(f"{name} is required")
+        for name, value in (("reconciliation_confirmed", reconciliation_confirmed),
+                            ("no_runtime_process_confirmed", no_runtime_process_confirmed),
+                            ("slot_directory_safe_confirmed", slot_directory_safe_confirmed)):
+            if not value:
+                raise QuarantineClearanceRefused(f"{name} must be explicitly confirmed")
+        if not self.is_quarantined(int(slot)):
+            raise QuarantineClearanceRefused("slot is not quarantined")
+        gen = self.generation_of(int(slot)) if generation is None else int(generation)
+        if gen is None:
+            raise QuarantineClearanceRefused("slot has no generation history")
+        # Reconciliation must actually hold, not merely be asserted by the operator.
+        self.assert_generation_monotonic(int(slot), gen)
+        with self._lock:
+            self._conn.execute("DELETE FROM slot_quarantine WHERE slot=?", (int(slot),))
+            self._conn.commit()
+        self.record_audit(event="quarantine_cleared", runtime_uuid=runtime_uuid, slot=int(slot),
+                          generation=gen, operation="CLEAR_QUARANTINE",
+                          prior_state="quarantined", resulting_state="cleared",
+                          integrity_outcome="operator_cleared",
+                          correlation_id=str(evidence_reference), quarantined=False,
+                          agent_version=agent_version, manifest_version=manifest_version,
+                          protocol_version=protocol_version, now=now)
 
     def assert_occupancy_integrity(self, *, runtime_uuid, slot, generation, marker_raw, now: int = 0):
         """THE pre-mutation gate. Asserts, in order: not quarantined → database / ownership marker /
@@ -271,21 +425,35 @@ def owner_marker_digest(marker_raw) -> str:
     return hashlib.sha256((marker_raw or "").encode("utf-8")).hexdigest()[:12]
 
 
+def path_digest(canonical_dir) -> str:
+    """SHA-256 (12-hex prefix) of the canonical path — lets the backend correlate/compare without ever
+    receiving the local filesystem layout."""
+    return hashlib.sha256((canonical_dir or "").encode("utf-8")).hexdigest()[:12]
+
+
 def build_verification_evidence(*, runtime_uuid, slot, generation, canonical_dir, marker_raw,
                                 pid=None, session_id=None, manifest_version="", protocol_version=None,
-                                verified_at=None, started_at=None) -> dict:
-    """Assemble the first-class evidence carried by a completed Provisioning Verification Report.
+                                verified_at=None, started_at=None,
+                                path_containment_verified=False,
+                                executable_containment_verified=False) -> dict:
+    """Assemble the LOCAL, immutable Provisioning Verification Report evidence.
 
     Generation is part of RUNTIME IDENTITY, not an implementation detail: ``(slot, generation)`` names one
-    immutable occupancy of one execution slot, while ``runtime_uuid`` remains the logical identity. Every
-    field below is required by the B3P-2 report contract.
+    immutable occupancy of one execution slot, while ``runtime_uuid`` remains the logical identity.
+
+    This is the **local** record and DOES retain the complete ``canonical_path``. Use
+    :func:`remote_evidence` for anything crossing the management channel — the backend receives an
+    attestation that the agent verified containment, not the filesystem layout itself.
     """
     return {
         "runtime_uuid": str(runtime_uuid),
         "slot": int(slot),
         "generation": int(generation),
         "owner_marker_digest": owner_marker_digest(marker_raw),
-        "canonical_path": canonical_dir,
+        "canonical_path": canonical_dir,                       # LOCAL ONLY
+        "canonical_path_digest": path_digest(canonical_dir),
+        "path_containment_verified": bool(path_containment_verified),
+        "executable_containment_verified": bool(executable_containment_verified),
         "pid": pid,
         "session_id": session_id,
         "manifest_version": manifest_version,
@@ -293,6 +461,26 @@ def build_verification_evidence(*, runtime_uuid, slot, generation, canonical_dir
         "verified_at": verified_at,
         "started_at": started_at,
     }
+
+
+# Fields the management channel may carry. The complete path is deliberately absent: the agent derives and
+# verifies containment on the box and the backend consumes only the attestation (verified — no backend
+# lifecycle decision reads a path from an agent response).
+REMOTE_EVIDENCE_FIELDS = (
+    "runtime_uuid", "slot", "generation", "owner_marker_digest", "canonical_path_digest",
+    "path_containment_verified", "executable_containment_verified",
+    "pid", "session_id", "manifest_version", "protocol_version", "verified_at",
+)
+
+
+def remote_evidence(local_evidence: dict) -> dict:
+    """Project local report evidence down to what may cross the management channel.
+
+    Strips ``canonical_path`` (and anything else not explicitly allowed) so the local filesystem layout
+    never leaves the host, while preserving the occupancy identity and containment attestations the
+    backend needs for lifecycle decisions.
+    """
+    return {k: local_evidence[k] for k in REMOTE_EVIDENCE_FIELDS if k in local_evidence}
 
 
 class SlotIntegrityError(AgentError):

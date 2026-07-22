@@ -32,9 +32,14 @@ _RESPONSE_ALLOWLIST = ("operation", "outcome", "runtime_uuid", "provisioning_job
                        "protocol_version", "manifest_version", "supported_operations",
                        # B3P-2: (slot, generation) identifies ONE immutable runtime occupancy and is part
                        # of runtime identity, so it is first-class evidence rather than an internal detail.
-                       # ``canonical_path`` is the FIXED per-slot path (derivable from ``slot`` alone) and
-                       # ``owner_marker_digest`` is a digest, never the marker contents.
-                       "slot", "generation", "canonical_path", "owner_marker_digest")
+                       #
+                       # The complete local filesystem path is deliberately NOT exposed remotely. The agent
+                       # independently derives and verifies containment on the box; the backend needs only
+                       # the ATTESTATION that it did so. Verified: no backend lifecycle decision consumes a
+                       # path from an agent response. The full path remains in the local Verification
+                       # Report, Windows operational logs and authorised operator evidence.
+                       "slot", "generation", "owner_marker_digest", "canonical_path_digest",
+                       "path_containment_verified", "executable_containment_verified")
 
 
 class AgentError(Exception):
@@ -179,7 +184,8 @@ class BetaProvisioningAgent:
         # copy ONLY allowlisted evidence / handshake fields the impl produced
         for k in ("pid", "session_id", "duration_ms", "running", "logged_in", "verified_at",
                   "protocol_version", "manifest_version", "supported_operations",
-                  "slot", "generation", "canonical_path", "owner_marker_digest"):
+                  "slot", "generation", "owner_marker_digest", "canonical_path_digest",
+                  "path_containment_verified", "executable_containment_verified"):
             if k in raw:
                 out[k] = raw[k]
         return {k: v for k, v in out.items() if k in _RESPONSE_ALLOWLIST}

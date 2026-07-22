@@ -112,7 +112,7 @@ on:
 | Slot ownership marker (on disk) | **Done** — `format_owner_marker` writes `{runtime_uuid, slot, generation}` |
 | Provisioning Verification Report | **Done (unit-level)** — `build_verification_evidence` carries it; population from a real cycle lands with the op implementations |
 | Management-channel response | **Done** — response allowlist carries `slot`/`generation`/`canonical_path`/`owner_marker_digest` |
-| Audit evidence | **Open** — lands with the pool-aware op implementations |
+| Audit evidence | **Done (unit-level)** — `slot_audit` requires slot+generation on every event; `audit_for_occupancy` filters on both |
 
 ---
 
@@ -167,3 +167,59 @@ pool-aware op implementations and will be re-verified there.
 | B3P-2 step 1 (slot allocator) | 49 | 1131 |
 | B3P-2 step 2 (generation + 4-way invariant) | 60 | 1142 |
 | B3P-2 step 2b (monotonicity, quarantine, report evidence) | 71 | 1153 |
+| B3P-2 step 2c (remote-evidence boundary, audit, release order, clearance) | 87 | 1169 |
+
+
+---
+
+## EV-6 — Remote evidence boundary (hardening requirement)
+
+**Status: PASS (unit-level).** 3 tests. **Finding: the full path was NOT required remotely.**
+
+**Question asked.** Does the backend genuinely need `canonical_path` in the management response?
+
+**Evidence gathered.** `grep` over the backend for any consumer of a path returned by an agent found
+**none** — the only occurrences were the allowlist entry itself and the agent's own internal variables.
+`ProvisioningVerificationReport.runtime_root` exists, but is populated from the backend's own derivation
+of the canonical root, not from an agent response.
+
+**Conclusion.** No backend lifecycle decision requires the complete local filesystem path, so the preferred
+contract was adopted rather than documented-and-retained. `canonical_path` was **removed** from the shared
+response allowlist and replaced by `canonical_path_digest`, `path_containment_verified` and
+`executable_containment_verified` — the backend receives the *attestation* that the agent independently
+derived and verified containment, not the filesystem layout.
+
+Verified: the local report still retains the full path; `remote_evidence()` strips it (test asserts the
+string `GuvFX` appears nowhere in the projection); the allowlist no longer contains `canonical_path`.
+
+## EV-7 — Audit propagation with occupancy identity
+
+**Status: PASS (unit-level).** 5 tests. Every material lifecycle event carries all fourteen required
+fields, and `slot` + `generation` are **mandatory** — `record_audit` raises if either is absent, and an
+unknown event name is rejected. All twelve required event types are supported.
+
+**The core rule is tested directly:** after a full occupancy → release → re-assign cycle,
+`audit_for_occupancy(slot, generation)` returns *only* the current occupant's events; the previous
+occupant's history is not attributed to it despite the identical slot number.
+
+## EV-8 — Release order (seven proofs, atomic advancement)
+
+**Status: PASS (unit-level).** 4 tests. A generation advances only when all seven proofs are durably
+true; each proof is tested individually as a blocker (`release_proof_missing`, naming the missing proof).
+
+**Ordering guarantee tested:** on a **pool of size 1**, a failed release leaves the slot occupied — a
+subsequent `assign` for a different runtime raises `pool_exhausted` and the generation is unadvanced. The
+slot is therefore never exposed to another runtime between TOMBSTONE and successful advancement.
+
+Advancement is a single SQLite transaction (`BEGIN IMMEDIATE` → clear UUID → generation +1 → append
+ledger → commit), which supplies atomicity and durability; an interruption rolls back entirely, leaving
+the slot occupied and fail-closed. A stale caller view (wrong generation) is refused.
+
+## EV-9 — Quarantine clearance
+
+**Status: PASS (unit-level).** 4 tests. Clearance is refused unless a diagnosed reason, operator identity
+and evidence reference are all supplied **and** reconciliation, no-runtime-process and directory-safe are
+each explicitly confirmed — every one tested individually, with the slot verified still quarantined after
+each refusal. Reconciliation is *re-derived* (`assert_generation_monotonic`), not merely asserted by the
+operator. Clearing a slot that is not quarantined is refused. A successful clearance emits an auditable
+`quarantine_cleared` event and is verified **not to rewrite or delete** any historical ledger entry.

@@ -802,6 +802,206 @@ class VerificationEvidenceTests(SimpleTestCase):
         self.assertNotIn(RUUID, ev["owner_marker_digest"])
 
     def test_response_allowlist_now_carries_generation_identity(self):
+        """Superseded contract: canonical_path was REMOVED by the hardening requirement — the channel
+        carries occupancy identity plus containment attestations, not the filesystem layout."""
         from lib.mgmt_agent_core import _RESPONSE_ALLOWLIST
-        for f in ("slot", "generation", "canonical_path", "owner_marker_digest"):
+        for f in ("slot", "generation", "owner_marker_digest", "canonical_path_digest"):
             self.assertIn(f, _RESPONSE_ALLOWLIST, f)
+        self.assertNotIn("canonical_path", _RESPONSE_ALLOWLIST)
+
+
+def _proofs(**over):
+    from stores import SlotStore
+    p = {k: True for k in SlotStore.RELEASE_PROOFS}
+    p.update(over)
+    return p
+
+
+class RemoteEvidenceBoundaryTests(SimpleTestCase):
+    """The complete local filesystem path must not cross the management channel."""
+
+    def _local(self):
+        from stores import build_verification_evidence, format_owner_marker
+        return build_verification_evidence(
+            runtime_uuid=RUUID, slot=2, generation=4,
+            canonical_dir=r"C:\GuvFX\beta\slots\2\terminal",
+            marker_raw=format_owner_marker(RUUID, 2, 4), pid=13020, session_id=1,
+            manifest_version="m", protocol_version=1, verified_at=1,
+            path_containment_verified=True, executable_containment_verified=True)
+
+    def test_local_report_retains_the_full_path(self):
+        self.assertEqual(self._local()["canonical_path"], r"C:\GuvFX\beta\slots\2\terminal")
+
+    def test_remote_projection_strips_the_full_path_but_keeps_the_attestation(self):
+        from stores import remote_evidence
+        r = remote_evidence(self._local())
+        self.assertNotIn("canonical_path", r)
+        self.assertNotIn("GuvFX", json.dumps(r))          # no filesystem layout leaks at all
+        for f in ("slot", "generation", "runtime_uuid", "canonical_path_digest",
+                  "path_containment_verified", "executable_containment_verified"):
+            self.assertIn(f, r, f)
+        self.assertTrue(r["path_containment_verified"] and r["executable_containment_verified"])
+
+    def test_response_allowlist_matches_the_remote_contract(self):
+        from lib.mgmt_agent_core import _RESPONSE_ALLOWLIST
+        self.assertNotIn("canonical_path", _RESPONSE_ALLOWLIST)
+        for f in ("canonical_path_digest", "path_containment_verified",
+                  "executable_containment_verified"):
+            self.assertIn(f, _RESPONSE_ALLOWLIST, f)
+
+
+class AuditPropagationTests(SimpleTestCase):
+    """Every material lifecycle event carries occupancy identity."""
+
+    @staticmethod
+    def _store():
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=2)
+
+    def test_audit_requires_slot_and_generation(self):
+        s = self._store()
+        for bad in ({"slot": None, "generation": 1}, {"slot": 1, "generation": None}):
+            with self.assertRaises(ValueError):
+                s.record_audit(event="slot_assigned", runtime_uuid=RUUID, **bad)
+
+    def test_unknown_event_rejected(self):
+        s = self._store()
+        with self.assertRaises(ValueError):
+            s.record_audit(event="not_a_real_event", runtime_uuid=RUUID, slot=1, generation=1)
+
+    def test_all_required_lifecycle_events_are_supported(self):
+        from stores import SlotStore
+        for e in ("slot_assigned", "materialise_started", "materialise_completed", "runtime_started",
+                  "verification_completed", "stop_requested", "stop_completed", "tombstone_completed",
+                  "slot_released", "integrity_mismatch", "slot_quarantined", "quarantine_cleared"):
+            self.assertIn(e, SlotStore.AUDIT_EVENTS, e)
+
+    def test_history_is_never_attributed_across_generations(self):
+        """The core rule: a previous occupant's events must not be readable as the current one's."""
+        s = self._store()
+        u2 = "11111111-2222-3333-4444-555555555555"
+        slot, g1 = s.assign(RUUID, now=1)
+        s.record_audit(event="runtime_started", runtime_uuid=RUUID, slot=slot, generation=g1, now=1)
+        s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=g1, proofs=_proofs(), now=2)
+        _, g2 = s.assign(u2, now=3)
+        s.record_audit(event="runtime_started", runtime_uuid=u2, slot=slot, generation=g2, now=3)
+        cur = s.audit_for_occupancy(slot, g2)
+        self.assertEqual([e["runtime_uuid"] for e in cur], [u2])   # previous occupant absent
+        self.assertEqual([e["runtime_uuid"] for e in s.audit_for_occupancy(slot, g1)], [RUUID])
+
+    def test_audit_carries_the_full_field_set(self):
+        s = self._store()
+        s.record_audit(event="verification_completed", runtime_uuid=RUUID, slot=1, generation=1,
+                       operation="VERIFY", provisioning_job_id=42, correlation_id="c-1",
+                       prior_state="STARTED", resulting_state="VERIFIED", integrity_outcome="ok",
+                       quarantined=False, agent_version="a", manifest_version="m", protocol_version=1,
+                       now=5)
+        ev = s.audit_for_occupancy(1, 1)[0]
+        self.assertEqual((ev["operation"], ev["prior_state"], ev["resulting_state"],
+                          ev["integrity_outcome"]), ("VERIFY", "STARTED", "VERIFIED", "ok"))
+
+
+class ReleaseOrderTests(SimpleTestCase):
+    """A generation may advance only after all seven proofs; the slot is never exposed mid-release."""
+
+    @staticmethod
+    def _store():
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=1)
+
+    def test_all_seven_proofs_required(self):
+        from stores import ReleaseProofMissing, SlotStore
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        for proof in SlotStore.RELEASE_PROOFS:
+            with self.assertRaises(ReleaseProofMissing, msg=proof) as ctx:
+                s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                          proofs=_proofs(**{proof: False}), now=2)
+            self.assertIn(proof, ctx.exception.missing)
+            self.assertEqual(ctx.exception.reason_code, "release_proof_missing")
+
+    def test_slot_is_not_exposed_to_another_runtime_before_advancement(self):
+        from stores import PoolExhausted
+        s = self._store()                                   # pool_size=1
+        slot, gen = s.assign(RUUID, now=1)
+        try:
+            s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                      proofs=_proofs(no_mutation_lock_held=False), now=2)
+        except Exception:
+            pass
+        with self.assertRaises(PoolExhausted):              # still occupied — never handed out
+            s.assign("11111111-2222-3333-4444-555555555555", now=3)
+        self.assertEqual(s.generation_of(slot), gen)        # generation unadvanced
+
+    def test_successful_release_advances_by_exactly_one_and_frees_the_slot(self):
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        self.assertEqual(s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                                   proofs=_proofs(), now=2), gen + 1)
+        self.assertIsNone(s.lookup(RUUID))
+        s.assert_generation_monotonic(slot, gen + 1)
+        self.assertEqual(s.assign("11111111-2222-3333-4444-555555555555", now=3)[1], gen + 1)
+
+    def test_stale_caller_view_fails_closed(self):
+        from stores import SlotIntegrityError
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        with self.assertRaises(SlotIntegrityError):
+            s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=gen + 1,
+                                      proofs=_proofs(), now=2)
+
+
+class QuarantineClearanceTests(SimpleTestCase):
+    """Clearance is an evidenced operator action, never a boolean reset."""
+
+    @staticmethod
+    def _store():
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=2)
+
+    def _ok(self, **over):
+        args = dict(diagnosed_reason="stale marker after manual copy", operator_identity="nuno",
+                    evidence_reference="EV-123", reconciliation_confirmed=True,
+                    no_runtime_process_confirmed=True, slot_directory_safe_confirmed=True)
+        args.update(over)
+        return args
+
+    def test_missing_evidence_is_refused(self):
+        from stores import QuarantineClearanceRefused
+        s = self._store(); slot, _ = s.assign(RUUID, now=1); s.quarantine_slot(slot, "x", 1)
+        for field in ("diagnosed_reason", "operator_identity", "evidence_reference"):
+            with self.assertRaises(QuarantineClearanceRefused, msg=field):
+                s.clear_quarantine(slot=slot, **self._ok(**{field: ""}))
+        for field in ("reconciliation_confirmed", "no_runtime_process_confirmed",
+                      "slot_directory_safe_confirmed"):
+            with self.assertRaises(QuarantineClearanceRefused, msg=field):
+                s.clear_quarantine(slot=slot, **self._ok(**{field: False}))
+        self.assertTrue(s.is_quarantined(slot))          # still quarantined after every refusal
+
+    def test_full_evidence_clears_and_emits_an_auditable_event(self):
+        s = self._store(); slot, gen = s.assign(RUUID, now=1); s.quarantine_slot(slot, "x", 1)
+        s.clear_quarantine(slot=slot, now=9, **self._ok())
+        self.assertFalse(s.is_quarantined(slot))
+        events = [e["event"] for e in s.audit_for_occupancy(slot, gen)]
+        self.assertIn("quarantine_cleared", events)
+
+    def test_clearance_does_not_rewrite_history(self):
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=gen, proofs=_proofs(), now=2)
+        before = [r[0] for r in s._conn.execute(
+            "SELECT generation FROM slot_generations WHERE slot=? ORDER BY generation", (slot,))]
+        s.quarantine_slot(slot, "x", 3)
+        s.clear_quarantine(slot=slot, now=4, **self._ok())
+        after = [r[0] for r in s._conn.execute(
+            "SELECT generation FROM slot_generations WHERE slot=? ORDER BY generation", (slot,))]
+        self.assertEqual(before, after)                  # ledger untouched
+
+    def test_clearing_a_healthy_slot_is_refused(self):
+        from stores import QuarantineClearanceRefused
+        s = self._store(); slot, _ = s.assign(RUUID, now=1)
+        with self.assertRaises(QuarantineClearanceRefused):
+            s.clear_quarantine(slot=slot, **self._ok())
