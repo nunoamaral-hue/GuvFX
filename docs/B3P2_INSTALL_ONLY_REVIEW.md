@@ -8,7 +8,7 @@ The gate question is *"if we install today, do we understand exactly what will h
 **The honest answer is: yes — and what would happen is the wrong install.** The install scripts merged in
 B2/B3P-1 (`install_service.ps1`, `firewall.ps1`, `uninstall.ps1`) predate the per-slot execution model. Run
 today they would provision the B2 uuid-directory layout: no slot identities, no scheduled tasks, no golden
-image, and ACLs on `C:\GuvFX\beta\accounts` rather than `C:\GuvFX\beta\slots\<n>`. **Section 10 lists
+image, and ACLs on `C:\GuvFX\beta\accounts` rather than `C:\GuvFX\beta\slots\<n>`. **Section 11 lists
 exactly what must change first.** This review documents the install as it must be, and marks precisely which
 parts exist today and which do not.
 
@@ -21,7 +21,7 @@ Recorded first because both were wrong in the version summarised at the last gat
 **C-1 — I withdraw the request for temporary LocalSystem.** The merged `install_service.ps1` already runs
 the service as the virtual service account `NT SERVICE\GuvFXBetaAgent`, and it *hard-fails* if the identity
 resolves to LocalSystem — the script's own words: *"LocalSystem means the obj= assignment failed; do NOT
-start"*. I proposed an elevation that the existing, reviewed install explicitly refuses. Section 9 replaces
+start"*. I proposed an elevation that the existing, reviewed install explicitly refuses. Section 10 replaces
 that request with what should have been there: a bounded observation-capability probe under the intended
 account, and an elevation question that only arises if the probe fails.
 
@@ -33,15 +33,15 @@ account, and an elevation question that only arises if the probe fails.
 
 | # | Object | Action | Exists today? | Reversed by |
 |---|---|---|---|---|
-| 1 | 4 local accounts `guvfx_b_slot1..4` | create, non-admin | **No script** | §7 step 6 |
-| 2 | `SeBatchLogonRight` for those 4 | grant | **No script** | §7 step 6 |
-| 3 | `C:\GuvFX\beta\` tree (`slots\1..4\`, `tombstones\1..4\`, `golden\`, `agent\`, `agent-state\`) | create | Partial — `agent\`, `agent-state\` only | §7 step 5 |
-| 4 | ACLs on that tree | set | Partial — wrong paths (§10 F1) | §7 step 4 |
-| 5 | 8 tasks `GuvFXBetaRuntime-{1..4}` / `GuvFXBetaRuntimeStop-{1..4}` | register, **disabled** | **No script** | §7 step 3 |
-| 6 | Golden MT5 image + `.guvfx_golden_manifest` + `.guvfx_portable` | stage, digest recorded | **No script** | retained (§7) |
-| 7 | Agent bundle (15 modules + `manifest.json`) | copy to `C:\GuvFX\beta\agent\` | Yes | §7 step 5 |
-| 8 | Service `GuvFXBetaAgent` | install, `start=demand`, recovery disabled, **not started** | Yes | §7 step 1 |
-| 9 | Firewall rule `GuvFX-Beta-Agent-In` | create | Yes | §7 step 2 |
+| 1 | 4 local accounts `guvfx_b_slot1..4` | create, non-admin | **No script** | §8 step 6 |
+| 2 | `SeBatchLogonRight` for those 4 | grant | **No script** | §8 step 6 |
+| 3 | `C:\GuvFX\beta\` tree (`slots\1..4\`, `tombstones\1..4\`, `golden\`, `agent\`, `agent-state\`) | create | Partial — `agent\`, `agent-state\` only | §8 step 5 |
+| 4 | ACLs on that tree | set | Partial — wrong paths (§11 F1) | §8 step 4 |
+| 5 | 8 tasks `GuvFXBetaRuntime-{1..4}` / `GuvFXBetaRuntimeStop-{1..4}` | register, **disabled** | **No script** | §8 step 3 |
+| 6 | Golden MT5 image + `.guvfx_golden_manifest` + `.guvfx_portable` | stage, digest recorded | **No script** | retained (§8) |
+| 7 | Agent bundle (15 modules + `manifest.json`) | copy to `C:\GuvFX\beta\agent\` | Yes | §8 step 5 |
+| 8 | Service `GuvFXBetaAgent` | install, `start=demand`, recovery disabled, **not started** | Yes | §8 step 1 |
+| 9 | Firewall rule `GuvFX-Beta-Agent-In` | create | Yes | §8 step 2 |
 
 **Nothing else.** No change to autologon; no reboot; no touching Session 1 or Session 3; no change to
 `GuvFX_Autostart`, `GuvFX_SignalBridge`, `GuvFX_BridgeWatchdog`, `GuvFX_LaunchMT5`, `GFX_LaunchIS6`; no
@@ -88,11 +88,11 @@ cannot re-ACL anything, including its own tree.
 
 ### Removal procedure
 
-1. Confirm no process runs as the identity (§6 step 10 probe, inverted).
+1. Confirm no process runs as the identity (§7 step 14 probe, inverted).
 2. Unregister its two tasks — this removes the stored credential with them.
 3. Revoke `SeBatchLogonRight`.
 4. **Disable** the account.
-5. Delete only after evidence capture (§8). Deleting an account orphans every file it owns; because the
+5. Delete only after evidence capture (§9). Deleting an account orphans every file it owns; because the
    identities own nothing, deletion is safe once the tasks are gone.
 
 ---
@@ -139,9 +139,9 @@ task_name, run_as_identity, executable, working_directory, logon_type, run_level
 drift is a refusal.
 
 At install, the 16 digests (8 tasks × enabled-false at install, plus the 8 expected enabled-true values for
-first start) are recorded in the evidence pack (§8) and become the approved baseline.
+first start) are recorded in the evidence pack (§9) and become the approved baseline.
 
-> **Gap F3 (§10):** the digest machinery exists and is tested, but `inspect_task` and
+> **Gap F3 (§11):** the digest machinery exists and is tested, but `inspect_task` and
 > `assert_task_matches_approved` have **no caller in the lifecycle**. Today the agent would trigger a launch
 > task without first asserting the task still matches its approved definition. This must be wired before
 > first start, not before install.
@@ -271,7 +271,60 @@ short names or symlinks, so a program-scoped rule is not a complete defence on i
 
 ---
 
-## 7. Rollback and uninstall
+## 7. Operational verification
+
+Run immediately after installation, **before any approval to start**. Every step is a read-only
+observation. Any failure stops the install and triggers §8 rollback — the service is never started to
+"see if it works".
+
+### A. The objects that were created
+
+1. **Identities** — 4 accounts exist; each is in `Users` and **not** in `Administrators` or
+   `Remote Desktop Users`; `secedit /export /areas USER_RIGHTS` shows all four holding
+   `SeBatchLogonRight` and **none** holding `SeInteractiveLogonRight` or `SeServiceLogonRight`.
+2. **Directories** — the §5 tree exists; `icacls` output matches §5 exactly, including inheritance
+   disabled at `beta\`; **no component of any slot path is a reparse point**
+   (`(Get-Item …).Attributes -band 'ReparsePoint'` is 0 for `beta\`, `beta\slots\`, `beta\slots\<n>\`).
+3. **Tasks** — 8 exist; **all disabled**; each has principal `guvfx_b_slot<n>`, logon type 1
+   (`TASK_LOGON_PASSWORD`), least-privilege run level, an executable beneath its own slot, and no trigger;
+   the launch task carries `/portable`. Record the 8 definition digests (§3) as the approved baseline.
+4. **Golden image** — present; its tree digest equals `BETA_AGENT_GOLDEN_DIGEST`; `terminal64.exe` present;
+   `.guvfx_golden_manifest` and `.guvfx_portable` present; and **no per-instance state** is present:
+   `config\accounts.dat`, `config\servers.dat`, `bases\`, `logs\`, `MQL5\Logs\`, `MQL5\Profiles\`.
+5. **Bundle** — file checksums equal `manifest.json` for all 15 modules; manifest version recorded.
+6. **Service** — exists; `sc qc` shows `start= demand` and `StartName = NT SERVICE\GuvFXBetaAgent`;
+   `sc qfailure` shows **no recovery actions**; `Get-Service` reports **Stopped**.
+7. **Firewall** — exactly one new rule, `GuvFX-Beta-Agent-In`: TCP 8791, local `100.79.101.19`, remote
+   `100.119.23.29` only, on the interface's own profile; the profile's `DefaultInboundAction` is `Block`;
+   **no rule references 8787 or 8788**.
+8. **Tailscale ACL** — the console policy permits `100.119.23.29 → 100.79.101.19:8791` and denies every
+   other peer to that port.
+
+### B. The estate that must be untouched
+
+These are the checks that prove the install did not disturb live trading. Captured before **and** after,
+and **diffed** (§9 items 2, 3, 4, 7).
+
+9. Task XML digests for `GuvFX_Autostart`, `GuvFX_SignalBridge`, `GuvFX_BridgeWatchdog`,
+   `GuvFX_LaunchMT5`, `GFX_LaunchIS6` — **byte-identical**.
+10. Nuno's `terminal64.exe` — **same PID and same creation FILETIME** as before. The pair is the identity;
+    PID alone is not, because PIDs are reused.
+11. Ports 8787 and 8788 — still bound, by the **same** processes.
+12. Autologon registry values — unchanged. System uptime — unchanged (no reboot occurred).
+13. No session was created or destroyed.
+
+### C. Observation capability — the decisive pre-start measurement
+
+14. Run the §10 probe under the intended service account. Record the result **whether it passes or fails**;
+    both are results, and a failure here is an architecture finding, not an install failure.
+
+This is the step that most justifies its own place in the checklist. If the agent cannot observe a slot
+process, `STOP` and `TOMBSTONE` can never be confirmed — and that must be discovered now, against an empty
+slot, rather than later with a live terminal in one and no way to prove it stopped.
+
+---
+
+## 8. Rollback and uninstall
 
 Reverse order of §1. Nothing here deletes runtime or audit data.
 
@@ -302,7 +355,7 @@ Reverse order of §1. Nothing here deletes runtime or audit data.
 
 ---
 
-## 8. Evidence collected during installation
+## 9. Evidence collected during installation
 
 Captured **before** and **after**, and compared. Redacted per the security rule: no passwords, no keyring
 material, no token values — digests and prefixes only.
@@ -329,13 +382,13 @@ material, no token values — digests and prefixes only.
     authorises.
 14. `Get-Service GuvFXBetaAgent` → **Stopped**; `Win32_Service.StartName` → `NT SERVICE\GuvFXBetaAgent`.
 15. The §6 (verification) checklist result, pass/fail per item.
-16. The §9 observation-capability probe result.
+16. The §10 observation-capability probe result.
 
 Filed as an evidence manifest under `evidence/` per the evidence rule, with an explicit "not covered" list.
 
 ---
 
-## 9. Service identity and the observation-capability question
+## 10. Service identity and the observation-capability question
 
 *(This section replaces the LocalSystem request, per correction C-1.)*
 
@@ -366,7 +419,7 @@ confirmed**. The system fails closed and does nothing. It does not misreport.
 
 ### The probe, and the evidence it produces
 
-A bounded, read-only probe run **after install, before first start**, under the intended service account:
+A bounded, read-only probe run **after install, before first start** (§7 step 14), under the intended service account:
 
 1. `WTSEnumerateProcessesEx` level 1 — does it return, and does it include processes owned by other accounts?
 2. `LookupAccountName("guvfx_b_slot1")` — does the SID resolve?
@@ -374,7 +427,7 @@ A bounded, read-only probe run **after install, before first start**, under the 
    `QueryFullProcessImageNameW` + `GetProcessTimes` + `ProcessIdToSessionId` on it.
 
 Evidence recorded: the exact API called, success/failure, and on failure the `GetLastError` value. No
-process is started, stopped or signalled. This is item 16 of §8.
+process is started, stopped or signalled. This is item 14 of §7.
 
 **This is why the probe exists at all:** if the agent cannot observe a slot process, that must be discovered
 against an *empty* slot — not later, with a live MT5 terminal in one and no way to confirm stopping it.
@@ -395,7 +448,7 @@ its own architecture decision, because it contradicts §5.4 of the adapter contr
 
 ---
 
-## 10. What must change before the install can be performed
+## 11. What must change before the install can be performed
 
 These are **not** requests to implement now — no implementation is authorised. They are the review's finding
 that the install cannot proceed as scripted today.
@@ -413,7 +466,7 @@ bounded increment, re-review the scripts (short, script-only), then authorise th
 
 ---
 
-## 11. Amber items — accepted, documented, not solved during the install
+## 12. Amber items — accepted, documented, not solved during the install
 
 ### Amber 1 — `open_handles()` has no supported Windows implementation
 
@@ -440,7 +493,7 @@ sequence is what answers the trial's actual question.
 
 ---
 
-## 12. Install success criteria
+## 13. Install success criteria
 
 The install is successful **only** if all of the following hold:
 
@@ -452,9 +505,9 @@ The install is successful **only** if all of the following hold:
 - [ ] ACLs applied and verified by `icacls` on every directory
 - [ ] Bundle checksums match `manifest.json` (15 modules, `2026-07-22.26`)
 - [ ] Golden image staged; tree digest recorded and matching `BETA_AGENT_GOLDEN_DIGEST`
-- [ ] Validation (§6) passes every item
-- [ ] Before/after evidence diff shows the estate untouched (§8 items 2, 3, 4, 7 byte-identical)
-- [ ] Observation-capability probe (§9) recorded — pass or fail, both are results
+- [ ] Validation (§7) passes every item
+- [ ] Before/after evidence diff shows the estate untouched (§9 items 2, 3, 4, 7 byte-identical)
+- [ ] Observation-capability probe (§10) recorded — pass or fail, both are results
 
 And **none** of the following occurred:
 
@@ -466,7 +519,7 @@ And **none** of the following occurred:
 
 ---
 
-## 13. What this install still cannot tell us
+## 14. What this install still cannot tell us
 
 The install proves the objects exist and are shaped correctly. It proves nothing about behaviour. The twelve
 questions in `docs/B3P2_WINDOWS_RESEARCH_FINDINGS.md` §4 remain open; the first three decide whether the
@@ -478,9 +531,9 @@ execution model works at all:
 
 ---
 
-## 14. Approval requested
+## 15. Approval requested
 
-Approval of this review's **content**, and a decision on the §10 sequencing.
+Approval of this review's **content**, and a decision on the §11 sequencing.
 
 **Not requested, and not to be inferred:** performing the install, creating any user, registering any task,
 starting the service, triggering any task, launching MT5, or contacting the Windows host.
