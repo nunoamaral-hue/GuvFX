@@ -776,3 +776,60 @@ concurrently and contending on the PostgreSQL test database, and a later run abo
 `test_dev` database that made the next run prompt for confirmation and die on `EOFError`. The stale database
 was dropped and the run above is clean. Recording this because "the suite failed and then passed" is
 exactly the shape of a result that should not be waved away without an explanation.
+
+---
+
+## EV-35 — Review round 2: the fix that traded one failure mode for another
+
+Three lenses (fix regressions / wiring / install readiness), 18 candidates, one adjudication pass. The
+adjudicator confirmed the substance and usefully **narrowed two** claims — a discipline worth recording,
+since a review that only ever escalates is not a review.
+
+### The finding that matters: my own round-1 fix could not have worked on the host
+
+Round 1 found that `unattributable` counted only `"denied"`, dropping `"unknown"`. Fixing that naively makes
+ABSENT unreachable (one protected process anywhere on the host blocks every teardown), so I scoped the guard
+to **executable names present in the slot tree**.
+
+That scope cannot work. A materialised slot is a copy of the golden MT5 image, so it contains
+`terminal64.exe` — the **same name** as the operator's production terminal, which runs permanently as
+Administrator in another session. Every denial on Nuno's process would have landed in scope; ABSENT would
+have been unreachable; STOP and TOMBSTONE could never have succeeded while his terminal ran, which is
+always. The module's own `[R:toolhelp-name-not-path]` note says name matching "would match the operator's
+production MT5" — I wrote that line and then built the scope on the thing it warns about.
+
+**Fix.** Scope by the slot's fixed **runtime identity**. `SlotInput` now carries `guvfx_b_slot<n>`, derived
+from the slot number exactly like the paths and task names, and validated against the identity namespace.
+The adapter enumerates process owners with `WTSEnumerateProcessesEx` level 1 — pid, name, session and SID,
+**with no handle** — so the scope is decided before any process is opened and the operator's estate is out
+of scope by construction rather than by a comparison that cannot separate them. An unresolvable identity
+raises rather than matching nothing.
+
+### The other confirmed findings
+
+| Finding | Consequence | Fix |
+|---|---|---|
+| TOMBSTONE moved, then ran cleanup, whose `no_runtime_handles` proof can never hold | **every** first teardown moves the runtime aside and then errors, leaving the slot assigned and the tree under the tombstone root | `precheck_cleanup` evaluates the four pre-move-provable proofs **before** the move; a doomed teardown now costs nothing |
+| VERIFY collapsed "could not observe" into `running: False` | it is the reconciliation step after an ambiguous STOP, and `provisioner.py` raises `terminal_not_running` off that field — one denied `OpenProcess` while MT5 was live would be recorded as a stopped terminal | raise on any outcome that is neither `PRESENT_VALID` nor `ABSENT` |
+| `released` / `release_pending` stripped by the sanitiser | the backend saw an unqualified TOMBSTONE success and would believe the pool had capacity it does not | allowlisted. `tombstoned` deliberately was **not** — it carries nothing `outcome` does not, and an existing test asserts its absence |
+| `PoolOpImplementations` built without `now_fn` | every durable stage record, audit row and release timestamp written as `0`, making the evidence chain unorderable in time | real clock wired; a test asserts the built implementation's clock is not the zero default |
+| torn-down gate skipped the quarantine check, and required the directory to be absent | a MATERIALISE interrupted between the copy and the marker write left a populated marker-less slot that no operation could recover, and the recovery attempt quarantined it | quarantine checked; the gate now accepts marker-absent whenever the store still records this occupancy, covering both recoverable shapes |
+| `stage_copy` pre-checks called the adapter unwrapped | a wrong `BETA_AGENT_GOLDEN_DIR` escaped as `agent_internal_error` on the very first MATERIALISE | wrapped; `golden_source_unavailable` / `stage_copy_precheck_permission_denied` |
+| settle window (30s) longer than the drain budget (20s) | a service stop during a mutation is *guaranteed* to force-kill it mid-stage — the outcome the drain exists to prevent | `load_config` refuses a drain budget that does not exceed the settle window |
+| `generation_matches` compared a variable with itself | a pre-check recorded in the Verification Report that could not fail | the actual value is read back from the store, so the two sides have different sources |
+| `golden_manifest_version` defaulted to `""` | `"" == ""` passed the source-version pre-check on an unversioned image | required in config; the adapter returns `None`, not `""`, for an absent manifest |
+| `BETA_AGENT_SLOTS_ROOT` honoured for containment but ignored by derivation | any non-default value fails `path_escape` at runtime | refused at **startup** |
+| two release proofs not derived from the evidence they claimed | `process_identity_verified` was satisfied by a branch where the identity comparison never runs; a FAILED tombstone stage satisfied its proof by existing | both derived from the stages that actually prove them |
+
+### Narrowed by the adjudicator, and recorded as such
+
+- The `generation_matches` tautology has **no reachable failure**: `_gate` → `assert_generation_monotonic`
+  already asserts the store's generation before `stage_copy` runs. It is an evidence-quality defect, fixed
+  as one.
+- The `canonical_directory_tombstoned` half of the release-proof finding is a real inconsistency with no
+  reachable failure — a failed move leaves the directory present, so `slot_directory_empty` fails and
+  cleanup can never COMPLETE. Fixed anyway; recorded as unreachable.
+
+**Tests: 434 `terminal_provisioning`, 1417 backend, `make check` RC=0.** The fake that returned
+`open_handles → False` is now annotated with the fact a real host cannot answer it, so the next reader does
+not mistake the test fixture for the contract.
