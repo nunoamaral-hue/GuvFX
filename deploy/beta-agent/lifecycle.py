@@ -111,6 +111,9 @@ REASON_CATEGORY = {
     "path_normalisation_failed": OBSERVATION,
     # No supported API can answer this on any Windows build — see the research findings, section 5.
     "handle_enumeration_unsupported": OBSERVATION,
+    # Some process on the host could not be attributed to a location, so "nothing is running in this slot"
+    # is not a claim we are entitled to make.
+    "process_attribution_incomplete": OBSERVATION,
     "task_permission_denied": OBSERVATION,
     "filesystem_permission_denied": OBSERVATION,
 

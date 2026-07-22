@@ -148,6 +148,37 @@ class OpenProcessErrorTests(SimpleTestCase):
             self.assertEqual(wso.classify_open_process_error(code), "unknown", code)
 
 
+class Win32BindingTests(SimpleTestCase):
+    """Two silent 64-bit-only defects that would otherwise have surfaced only on the box."""
+
+    def test_bindings_declare_restype_and_use_last_error(self):
+        source = inspect.getsource(wso.RealSlotWindowsOps._win32)
+        # Without restype=HANDLE, ctypes defaults to C int and truncates a 64-bit handle.
+        self.assertIn("OpenProcess.restype = wintypes.HANDLE", source)
+        # Without use_last_error=True, ctypes.get_last_error() always returns 0, so denied-vs-gone -
+        # the distinction the whole design rests on - would read every failure as "unknown".
+        self.assertIn('WinDLL("kernel32", use_last_error=True)', source)
+        self.assertIn('WinDLL("psapi", use_last_error=True)', source)
+
+    def test_no_undeclared_windll_shortcut_remains(self):
+        source = open(os.path.join(_BUNDLE, "win_slot_ops.py"), encoding="utf-8").read()
+        self.assertNotIn("ctypes.windll", source)      # the undeclared, truncating form
+
+
+class UnattributableProcessTests(SimpleTestCase):
+    """A process that cannot be attributed to a location must not be silently skipped: skipping it turns
+    'I could not look' into 'nothing is running', which is the fail-open the design exists to prevent."""
+
+    def test_the_guard_is_present_and_raises(self):
+        source = inspect.getsource(wso.RealSlotWindowsOps.query_slot_process)
+        self.assertIn("process_attribution_incomplete", source)
+        self.assertIn("unattributable", source)
+
+    def test_the_reason_code_is_an_observation_failure_not_an_absence(self):
+        import lifecycle as lc
+        self.assertEqual(lc.classify("process_attribution_incomplete"), lc.OBSERVATION)
+
+
 class TreeDigestTests(SimpleTestCase):
     def test_digest_is_order_independent(self):
         a = [("a.txt", 1, "aa"), ("b/c.txt", 2, "bb")]

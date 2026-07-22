@@ -159,6 +159,7 @@ class RealSlotWindowsOps(SlotWindowsOps):
         self.golden_dir = golden_dir
         self.slots_root = slots_root
         self.hash_chunk = hash_chunk
+        self._api = None
 
     # ── lazy Win32 access ──
     @staticmethod
@@ -167,6 +168,51 @@ class RealSlotWindowsOps(SlotWindowsOps):
             raise WindowsApiUnavailable("not running on Windows")
         import ctypes
         return ctypes
+
+    def _win32(self):
+        """Load kernel32/psapi with EXPLICIT restype and argtypes.
+
+        Two defects this avoids, both silent and both 64-bit-only — exactly the kind that would have been
+        found on the box rather than in review:
+
+        * without ``restype = HANDLE``, ctypes defaults to C ``int`` and TRUNCATES a 64-bit process handle
+          to 32 bits, so every subsequent call on that handle addresses the wrong object;
+        * without ``use_last_error=True`` on the library, ``ctypes.get_last_error()`` always returns 0, so
+          the denied-vs-gone classification — the distinction the whole design depends on — would read
+          every failure as "unknown".
+        """
+        if self._api is not None:
+            return self._api
+        ctypes = self._ctypes()
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        PDWORD = ctypes.POINTER(wintypes.DWORD)
+        PFILETIME = ctypes.POINTER(wintypes.FILETIME)
+
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+        k32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                   PDWORD]
+        k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        k32.GetProcessTimes.argtypes = [wintypes.HANDLE, PFILETIME, PFILETIME, PFILETIME, PFILETIME]
+        k32.GetProcessTimes.restype = wintypes.BOOL
+        k32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, PDWORD]
+        k32.ProcessIdToSessionId.restype = wintypes.BOOL
+        k32.GetLongPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        k32.GetLongPathNameW.restype = wintypes.DWORD
+        k32.GetVolumePathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        k32.GetVolumePathNameW.restype = wintypes.BOOL
+        k32.GetVolumeNameForVolumeMountPointW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR,
+                                                          wintypes.DWORD]
+        k32.GetVolumeNameForVolumeMountPointW.restype = wintypes.BOOL
+        psapi.EnumProcesses.argtypes = [PDWORD, wintypes.DWORD, PDWORD]
+        psapi.EnumProcesses.restype = wintypes.BOOL
+
+        self._api = {"ctypes": ctypes, "wintypes": wintypes, "k32": k32, "psapi": psapi}
+        return self._api
 
     @staticmethod
     def _com():
@@ -211,16 +257,17 @@ class RealSlotWindowsOps(SlotWindowsOps):
         return self._volume_guid(a) == self._volume_guid(b)
 
     def _volume_guid(self, path: str) -> str:
-        ctypes = self._ctypes()
+        api = self._win32()
+        ctypes, k32 = api["ctypes"], api["k32"]
         probe = self._nearest_existing(path)
         buf = ctypes.create_unicode_buffer(260)
-        if not ctypes.windll.kernel32.GetVolumePathNameW(probe, buf, 260):
+        if not k32.GetVolumePathNameW(probe, buf, 260):
             raise WindowsOpsError("volume_path_unavailable")
         mount = buf.value
         if not mount.endswith("\\"):
             mount += "\\"                                # GetVolumeNameForVolumeMountPointW REQUIRES this
         guid = ctypes.create_unicode_buffer(60)
-        if not ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(mount, guid, 60):
+        if not k32.GetVolumeNameForVolumeMountPointW(mount, guid, 60):
             raise WindowsOpsError("volume_identity_unavailable")
         return guid.value.lower()
 
@@ -415,46 +462,60 @@ class RealSlotWindowsOps(SlotWindowsOps):
         1601). [R:psutil-createtime-loses-precision] psutil's ``create_time()`` is a float of seconds since
         1970 and 58% of tick values do not round-trip through it — unusable for process-birth identity.
         """
-        ctypes = self._ctypes()
-        from ctypes import wintypes
-        k32, psapi = ctypes.windll.kernel32, ctypes.windll.psapi
+        api = self._win32()
+        ctypes, wintypes, k32 = api["ctypes"], api["wintypes"], api["k32"]
         canonical_slot = self._long_path(slot_path)
-        candidates = []
-        for pid in self._enum_pids(ctypes, psapi):
-            handle, rights = self._open_process(ctypes, k32, pid)
+        candidates, unattributable = [], 0
+        for pid in self._enum_pids(api):
+            handle = self._open_process(api, pid)
             if handle is None:
+                # Denied or unreadable. It MIGHT be the runtime, so it is counted, not ignored.
+                unattributable += 1 if self._last_open_state == "denied" else 0
                 continue
             try:
-                image = self._image_path(ctypes, wintypes, k32, handle)
-                if image is None or not is_beneath_path(self._long_path(image), canonical_slot):
+                image = self._image_path(api, handle)
+                if image is None:
+                    unattributable += 1          # exists, but we cannot say WHERE it runs from
                     continue
+                if not is_beneath_path(self._long_path(image), canonical_slot):
+                    continue                     # positively attributed elsewhere — not our concern
                 candidates.append({
                     "pid": pid,
-                    "created_at_filetime": self._creation_filetime(ctypes, wintypes, k32, handle),
+                    "created_at_filetime": self._creation_filetime(api, handle),
                     "image": image,
                     "image_digest": self._file_digest(image) if self.path_exists(image) else None,
                     "user_sid": self._user_sid(pid),
-                    "session_id": self._session_id(ctypes, wintypes, k32, pid, rights),
+                    "session_id": self._session_id(api, pid),
                 })
             finally:
                 k32.CloseHandle(handle)
-        return select_slot_process(candidates, slot_path)
+        result = select_slot_process(candidates, slot_path)
+        if result is None and unattributable:
+            # THE fail-open this design exists to prevent: some process on the box could not be attributed,
+            # so "no runtime is running" is not a claim we are entitled to make. Raising degrades this to
+            # process_observation_unavailable, which never completes a launch and never confirms a stop.
+            raise WindowsOpsError("process_attribution_incomplete")
+        return result
+
+    #: State of the most recent OpenProcess attempt: "opened" | "denied" | "gone" | "unknown".
+    _last_open_state = "opened"
+    _last_open_rights = 0
 
     def _long_path(self, path: str) -> str:
         """[R:short-name-83-aliasing] 8.3 aliasing may or may not be enabled on the target volume — it is
         per-volume configurable and unknowable off-host. Both sides of a containment comparison are
         normalised to their long form; if normalisation fails we RAISE, because a containment verdict
         computed from possibly-aliased paths is worse than no verdict."""
-        ctypes = self._ctypes()
-        buf = ctypes.create_unicode_buffer(32768)
-        written = ctypes.windll.kernel32.GetLongPathNameW(path, buf, 32768)
+        api = self._win32()
+        buf = api["ctypes"].create_unicode_buffer(32768)
+        written = api["k32"].GetLongPathNameW(path, buf, 32768)
         if not written:
             raise WindowsOpsError("path_normalisation_failed")
         return buf.value
 
     @staticmethod
-    def _enum_pids(ctypes, psapi):
-        from ctypes import wintypes
+    def _enum_pids(api):
+        ctypes, wintypes, psapi = api["ctypes"], api["wintypes"], api["psapi"]
         size = 1024
         while True:
             arr = (wintypes.DWORD * size)()
@@ -465,25 +526,26 @@ class RealSlotWindowsOps(SlotWindowsOps):
                 return [p for p in arr[: needed.value // ctypes.sizeof(wintypes.DWORD)] if p]
             size *= 2                                    # grow-and-retry: the documented pattern
 
-    @staticmethod
-    def _open_process(ctypes, k32, pid):
+    def _open_process(self, api, pid):
         """[R:openprocesstoken-access-right] Microsoft's own pages disagree on whether
         PROCESS_QUERY_INFORMATION or the LIMITED variant suffices, and ProcessIdToSessionId documents the
         FULL right. The stronger right is requested first and the weaker used as a fallback, with the
         granted level returned so callers know what they may attempt."""
+        ctypes, k32 = api["ctypes"], api["k32"]
         for rights in (PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION):
             handle = k32.OpenProcess(rights, False, pid)
             if handle:
-                return handle, rights
-        code = ctypes.get_last_error() or k32.GetLastError()
-        if classify_open_process_error(code) == "gone":
-            return None, 0                               # raced with exit — genuinely not there
-        if classify_open_process_error(code) == "denied":
-            return None, 0                               # exists but opaque; never counted as absent
-        raise WindowsOpsError("process_open_failed")
+                self._last_open_state = "opened"
+                self._last_open_rights = rights
+                return handle
+        self._last_open_state = classify_open_process_error(ctypes.get_last_error())
+        if self._last_open_state == "gone":
+            return None                                  # raced with exit — genuinely not there
+        return None                                      # denied/unknown: counted as unattributable above
 
     @staticmethod
-    def _image_path(ctypes, wintypes, k32, handle):
+    def _image_path(api, handle):
+        ctypes, wintypes, k32 = api["ctypes"], api["wintypes"], api["k32"]
         buf = ctypes.create_unicode_buffer(32768)
         size = wintypes.DWORD(32768)
         if not k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
@@ -491,7 +553,8 @@ class RealSlotWindowsOps(SlotWindowsOps):
         return buf.value
 
     @staticmethod
-    def _creation_filetime(ctypes, wintypes, k32, handle) -> int:
+    def _creation_filetime(api, handle) -> int:
+        ctypes, wintypes, k32 = api["ctypes"], api["wintypes"], api["k32"]
         creation, exit_t, kernel, user = (wintypes.FILETIME() for _ in range(4))
         if not k32.GetProcessTimes(handle, ctypes.byref(creation), ctypes.byref(exit_t),
                                    ctypes.byref(kernel), ctypes.byref(user)):
@@ -499,7 +562,11 @@ class RealSlotWindowsOps(SlotWindowsOps):
         return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
 
     @staticmethod
-    def _session_id(ctypes, wintypes, k32, pid, rights):
+    def _session_id(api, pid):
+        """[R:processidtosessionid-requires-pqi] Documented to need the FULL PROCESS_QUERY_INFORMATION, but
+        it takes a PID rather than a handle, so the granted right cannot be passed in. Failure yields None:
+        session is evidence, never a gate."""
+        ctypes, wintypes, k32 = api["ctypes"], api["wintypes"], api["k32"]
         session = wintypes.DWORD()
         if not k32.ProcessIdToSessionId(pid, ctypes.byref(session)):
             return None                                  # evidence field, not a gate
