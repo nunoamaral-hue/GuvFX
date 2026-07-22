@@ -524,3 +524,827 @@ class LifecycleLogTests(SimpleTestCase):
         content = open(logpath, encoding="utf-8").read()
         self.assertIn("agent started", content)
         self.assertNotIn("secret", content.lower())   # never logs secrets/keyring
+
+
+class SlotPoolTests(SimpleTestCase):
+    """B3P-2 per-slot execution model: durable UUID->slot assignment over a PRE-PROVISIONED pool.
+
+    The store must never create an OS object; it only records occupancy of slots an administrator created
+    at install. Concurrent runtimes never share a slot; a slot is reusable only after release.
+    """
+
+    @staticmethod
+    def _store(pool_size=5):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=pool_size)
+
+    def test_assign_is_idempotent_per_runtime(self):
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        self.assertEqual(s.assign(RUUID, now=2), (slot, gen))   # same slot AND generation
+        self.assertEqual(list(s.occupancy()), [slot])
+
+    def test_distinct_runtimes_get_distinct_slots(self):
+        s = self._store()
+        u2 = "11111111-2222-3333-4444-555555555555"
+        self.assertNotEqual(s.assign(RUUID, now=1)[0], s.assign(u2, now=1)[0])
+
+    def test_lowest_free_slot_is_reused_only_after_release(self):
+        s = self._store(pool_size=2)
+        u2 = "11111111-2222-3333-4444-555555555555"
+        u3 = "22222222-3333-4444-5555-666666666666"
+        s1, s2 = s.assign(RUUID, now=1)[0], s.assign(u2, now=1)[0]
+        self.assertEqual({s1, s2}, {1, 2})
+        with self.assertRaises(Exception):               # pool full -> denied, never over-allocated
+            s.assign(u3, now=1)
+        self.assertTrue(s.release(RUUID))
+        self.assertEqual(s.assign(u3, now=1)[0], s1)     # freed slot reused
+        self.assertIsNone(s.lookup(RUUID))
+
+    def test_pool_exhaustion_is_a_sanitised_agent_error(self):
+        from lib.mgmt_agent_core import AgentError
+        from stores import PoolExhausted
+        s = self._store(pool_size=1)
+        s.assign(RUUID, now=1)
+        with self.assertRaises(PoolExhausted) as ctx:
+            s.assign("11111111-2222-3333-4444-555555555555", now=1)
+        self.assertIsInstance(ctx.exception, AgentError)
+        self.assertEqual(ctx.exception.reason_code, "pool_exhausted")
+
+    def test_lookup_never_allocates(self):
+        s = self._store()
+        self.assertIsNone(s.lookup(RUUID))
+        self.assertEqual(s.occupancy(), {})               # a stray request cannot consume a slot
+
+    def test_release_is_idempotent(self):
+        s = self._store()
+        s.assign(RUUID, now=1)
+        self.assertTrue(s.release(RUUID))
+        self.assertFalse(s.release(RUUID))
+
+    def test_assignment_survives_restart(self):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SlotStore(f.name, pool_size=5)
+        slot = s.assign(RUUID, now=1)
+        self.assertEqual(SlotStore(f.name, pool_size=5).lookup(RUUID), slot)
+
+    def test_slot_dir_is_derived_only_from_the_slot_number(self):
+        from stores import slot_runtime_dir
+        self.assertEqual(slot_runtime_dir(r"C:\GuvFX\beta\slots", 3), r"C:\GuvFX\beta\slots\3\terminal")
+        # no caller-supplied value can influence the path -> the per-slot task target stays fixed
+        self.assertEqual(slot_runtime_dir(r"C:\GuvFX\beta\slots", "2"), r"C:\GuvFX\beta\slots\2\terminal")
+
+
+class SlotGenerationTests(SimpleTestCase):
+    """Durable per-slot GENERATION disambiguates historical vs current occupants of a reused slot."""
+
+    @staticmethod
+    def _store(pool_size=2):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=pool_size)
+
+    def test_generation_starts_at_one_and_increments_only_on_release(self):
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        self.assertEqual(gen, 1)
+        self.assertEqual(s.assign(RUUID, now=2)[1], 1)        # re-assign does NOT bump
+        self.assertTrue(s.release(RUUID, now=3))
+        self.assertEqual(s.generation_of(slot), 2)            # release bumps
+
+    def test_reused_slot_gives_the_next_occupant_a_greater_generation(self):
+        s = self._store()
+        u2 = "11111111-2222-3333-4444-555555555555"
+        slot1, gen1 = s.assign(RUUID, now=1)
+        s.release(RUUID)
+        slot2, gen2 = s.assign(u2, now=2)
+        self.assertEqual(slot2, slot1)                        # same physical slot
+        self.assertGreater(gen2, gen1)                        # but a distinct occupancy
+
+    def test_generation_survives_restart(self):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SlotStore(f.name, pool_size=2)
+        slot, _ = s.assign(RUUID, now=1)
+        s.release(RUUID)
+        self.assertEqual(SlotStore(f.name, pool_size=2).generation_of(slot), 2)
+
+    def test_release_of_unknown_runtime_does_not_bump_anything(self):
+        s = self._store()
+        slot, _ = s.assign(RUUID, now=1)
+        self.assertFalse(s.release("99999999-9999-9999-9999-999999999999"))
+        self.assertEqual(s.generation_of(slot), 1)
+
+
+class SlotIntegrityInvariantTests(SimpleTestCase):
+    """Four-way agreement (db / marker / uuid / generation) must hold before ANY mutating operation."""
+
+    @staticmethod
+    def _marker(uuid=RUUID, slot=1, generation=1):
+        from stores import format_owner_marker
+        return format_owner_marker(uuid, slot, generation)
+
+    def test_all_four_agreeing_passes(self):
+        from stores import assert_slot_integrity
+        assert_slot_integrity(runtime_uuid=RUUID, slot=1, generation=1,
+                              marker_raw=self._marker())        # no raise
+
+    def test_stale_generation_fails_closed(self):
+        """The exact ambiguity this prevents: a marker left by the PREVIOUS occupant of a reused slot."""
+        from stores import SlotIntegrityError, assert_slot_integrity
+        with self.assertRaises(SlotIntegrityError) as ctx:
+            assert_slot_integrity(runtime_uuid=RUUID, slot=1, generation=2,
+                                  marker_raw=self._marker(generation=1))
+        self.assertEqual(ctx.exception.reason_code, "slot_integrity_mismatch")
+
+    def test_wrong_uuid_fails_closed(self):
+        from stores import SlotIntegrityError, assert_slot_integrity
+        with self.assertRaises(SlotIntegrityError):
+            assert_slot_integrity(runtime_uuid="11111111-2222-3333-4444-555555555555",
+                                  slot=1, generation=1, marker_raw=self._marker())
+
+    def test_wrong_slot_fails_closed(self):
+        from stores import SlotIntegrityError, assert_slot_integrity
+        with self.assertRaises(SlotIntegrityError):
+            assert_slot_integrity(runtime_uuid=RUUID, slot=2, generation=1, marker_raw=self._marker())
+
+    def test_absent_or_corrupt_marker_is_a_mismatch_not_free(self):
+        from stores import SlotIntegrityError, assert_slot_integrity
+        for bad in (None, "", "not-json", '{"runtime_uuid": "x"}', "[]"):
+            with self.assertRaises(SlotIntegrityError, msg=repr(bad)):
+                assert_slot_integrity(runtime_uuid=RUUID, slot=1, generation=1, marker_raw=bad)
+
+    def test_marker_roundtrips_and_carries_generation(self):
+        from stores import parse_owner_marker
+        m = parse_owner_marker(self._marker(slot=3, generation=7))
+        self.assertEqual((m["runtime_uuid"], m["slot"], m["generation"]), (RUUID, 3, 7))
+
+    def test_integrity_error_is_a_sanitised_agent_error(self):
+        from lib.mgmt_agent_core import AgentError
+        from stores import SlotIntegrityError
+        self.assertIsInstance(SlotIntegrityError(), AgentError)
+
+
+class GenerationMonotonicityTests(SimpleTestCase):
+    """new_generation == previous_generation + 1, always. No repeat, no gap, no decrease.
+    A violation is a PERMANENT integrity failure: fail closed, quarantine, operator review — never repair."""
+
+    @staticmethod
+    def _store(pool_size=2):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=pool_size)
+
+    def test_ledger_is_contiguous_across_occupancies(self):
+        s = self._store()
+        u2 = "11111111-2222-3333-4444-555555555555"
+        slot, _ = s.assign(RUUID, now=1)
+        s.release(RUUID, now=2)
+        s.assign(u2, now=3); s.release(u2, now=4)
+        s.assert_generation_monotonic(slot, 3)          # 1 -> 2 -> 3, no raise
+
+    def test_current_generation_must_match_expected(self):
+        from stores import SlotIntegrityError
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_generation_monotonic(slot, gen + 5)
+
+    def test_tampered_generation_is_detected_against_the_ledger(self):
+        """A rolled-forward slots.generation with no matching ledger entry must fail closed."""
+        from stores import SlotIntegrityError
+        s = self._store()
+        slot, _ = s.assign(RUUID, now=1)
+        s._conn.execute("UPDATE slots SET generation=99 WHERE slot=?", (slot,)); s._conn.commit()
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_generation_monotonic(slot, 99)
+
+    def test_gap_in_the_ledger_is_detected(self):
+        from stores import SlotIntegrityError
+        s = self._store()
+        slot, _ = s.assign(RUUID, now=1)
+        s._conn.execute("INSERT INTO slot_generations (slot, generation, event, at) VALUES (?,?,?,?)",
+                        (slot, 5, "forged", 0))
+        s._conn.execute("UPDATE slots SET generation=5 WHERE slot=?", (slot,)); s._conn.commit()
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_generation_monotonic(slot, 5)
+
+    def test_unknown_slot_fails_closed(self):
+        from stores import SlotIntegrityError
+        s = self._store()
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_generation_monotonic(99, 1)
+
+
+class OccupancyIntegrityGateTests(SimpleTestCase):
+    """The full pre-mutation gate: quarantine -> 4-way agreement -> monotonicity, quarantining on failure."""
+
+    @staticmethod
+    def _store():
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=2)
+
+    def test_healthy_occupancy_passes(self):
+        from stores import format_owner_marker
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        s.assert_occupancy_integrity(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                     marker_raw=format_owner_marker(RUUID, slot, gen), now=2)
+        self.assertEqual(s.quarantined_slots(), {})     # healthy path must NOT quarantine
+
+    def test_stale_marker_quarantines_the_slot_and_fails_closed(self):
+        from stores import SlotIntegrityError, format_owner_marker
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        stale = format_owner_marker(RUUID, slot, gen - 1 if gen > 1 else 99)
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_occupancy_integrity(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                         marker_raw=stale, now=2)
+        self.assertIn(slot, s.quarantined_slots())
+
+    def test_quarantined_slot_is_refused_even_when_everything_else_agrees(self):
+        """Quarantine is not silently repaired — a subsequent healthy request is still refused."""
+        from stores import SlotIntegrityError, format_owner_marker
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        s.quarantine_slot(slot, "manual", 1)
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_occupancy_integrity(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                         marker_raw=format_owner_marker(RUUID, slot, gen), now=2)
+
+
+class VerificationEvidenceTests(SimpleTestCase):
+    """Generation is first-class report evidence, not an implementation detail."""
+
+    def test_report_carries_every_required_field(self):
+        from stores import build_verification_evidence, format_owner_marker
+        marker = format_owner_marker(RUUID, 2, 4)
+        ev = build_verification_evidence(
+            runtime_uuid=RUUID, slot=2, generation=4,
+            canonical_dir=r"C:\GuvFX\beta\slots\2\terminal", marker_raw=marker,
+            pid=13020, session_id=1, manifest_version="2026-07-22.3", protocol_version=1,
+            verified_at=1700000000, started_at=1699999999)
+        for field in ("runtime_uuid", "slot", "generation", "owner_marker_digest", "canonical_path",
+                      "pid", "session_id", "manifest_version", "protocol_version", "verified_at",
+                      "started_at"):
+            self.assertIn(field, ev, field)
+        self.assertEqual((ev["slot"], ev["generation"]), (2, 4))
+
+    def test_marker_digest_is_a_digest_not_the_contents(self):
+        from stores import build_verification_evidence, format_owner_marker
+        marker = format_owner_marker(RUUID, 2, 4)
+        ev = build_verification_evidence(runtime_uuid=RUUID, slot=2, generation=4,
+                                         canonical_dir="x", marker_raw=marker)
+        self.assertEqual(len(ev["owner_marker_digest"]), 12)
+        self.assertNotIn(RUUID, ev["owner_marker_digest"])
+
+    def test_response_allowlist_now_carries_generation_identity(self):
+        """Superseded contract: canonical_path was REMOVED by the hardening requirement — the channel
+        carries occupancy identity plus containment attestations, not the filesystem layout."""
+        from lib.mgmt_agent_core import _RESPONSE_ALLOWLIST
+        for f in ("slot", "generation", "owner_marker_digest", "canonical_path_digest"):
+            self.assertIn(f, _RESPONSE_ALLOWLIST, f)
+        self.assertNotIn("canonical_path", _RESPONSE_ALLOWLIST)
+
+
+def _proofs(**over):
+    from stores import SlotStore
+    p = {k: True for k in SlotStore.RELEASE_PROOFS}
+    p.update(over)
+    return p
+
+
+class RemoteEvidenceBoundaryTests(SimpleTestCase):
+    """The complete local filesystem path must not cross the management channel."""
+
+    def _local(self):
+        from stores import build_verification_evidence, format_owner_marker
+        return build_verification_evidence(
+            runtime_uuid=RUUID, slot=2, generation=4,
+            canonical_dir=r"C:\GuvFX\beta\slots\2\terminal",
+            marker_raw=format_owner_marker(RUUID, 2, 4), pid=13020, session_id=1,
+            manifest_version="m", protocol_version=1, verified_at=1,
+            path_containment_verified=True, executable_containment_verified=True)
+
+    def test_local_report_retains_the_full_path(self):
+        self.assertEqual(self._local()["canonical_path"], r"C:\GuvFX\beta\slots\2\terminal")
+
+    def test_remote_projection_strips_the_full_path_but_keeps_the_attestation(self):
+        from stores import remote_evidence
+        r = remote_evidence(self._local())
+        self.assertNotIn("canonical_path", r)
+        self.assertNotIn("GuvFX", json.dumps(r))          # no filesystem layout leaks at all
+        for f in ("slot", "generation", "runtime_uuid", "canonical_path_digest",
+                  "path_containment_verified", "executable_containment_verified"):
+            self.assertIn(f, r, f)
+        self.assertTrue(r["path_containment_verified"] and r["executable_containment_verified"])
+
+    def test_response_allowlist_matches_the_remote_contract(self):
+        from lib.mgmt_agent_core import _RESPONSE_ALLOWLIST
+        self.assertNotIn("canonical_path", _RESPONSE_ALLOWLIST)
+        for f in ("canonical_path_digest", "path_containment_verified",
+                  "executable_containment_verified"):
+            self.assertIn(f, _RESPONSE_ALLOWLIST, f)
+
+
+class AuditPropagationTests(SimpleTestCase):
+    """Every material lifecycle event carries occupancy identity."""
+
+    @staticmethod
+    def _store():
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=2)
+
+    def test_audit_requires_slot_and_generation(self):
+        s = self._store()
+        for bad in ({"slot": None, "generation": 1}, {"slot": 1, "generation": None}):
+            with self.assertRaises(ValueError):
+                s.record_audit(event="slot_assigned", runtime_uuid=RUUID, **bad)
+
+    def test_unknown_event_rejected(self):
+        s = self._store()
+        with self.assertRaises(ValueError):
+            s.record_audit(event="not_a_real_event", runtime_uuid=RUUID, slot=1, generation=1)
+
+    def test_all_required_lifecycle_events_are_supported(self):
+        from stores import SlotStore
+        for e in ("slot_assigned", "materialise_started", "materialise_completed", "runtime_started",
+                  "verification_completed", "stop_requested", "stop_completed", "tombstone_completed",
+                  "slot_released", "integrity_mismatch", "slot_quarantined", "quarantine_cleared"):
+            self.assertIn(e, SlotStore.AUDIT_EVENTS, e)
+
+    def test_history_is_never_attributed_across_generations(self):
+        """The core rule: a previous occupant's events must not be readable as the current one's."""
+        s = self._store()
+        u2 = "11111111-2222-3333-4444-555555555555"
+        slot, g1 = s.assign(RUUID, now=1)
+        s.record_audit(event="runtime_started", runtime_uuid=RUUID, slot=slot, generation=g1, now=1)
+        s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=g1, proofs=_proofs(), now=2)
+        _, g2 = s.assign(u2, now=3)
+        s.record_audit(event="runtime_started", runtime_uuid=u2, slot=slot, generation=g2, now=3)
+        cur = s.audit_for_occupancy(slot, g2)
+        self.assertEqual([e["runtime_uuid"] for e in cur], [u2])   # previous occupant absent
+        self.assertEqual([e["runtime_uuid"] for e in s.audit_for_occupancy(slot, g1)], [RUUID])
+
+    def test_audit_carries_the_full_field_set(self):
+        s = self._store()
+        s.record_audit(event="verification_completed", runtime_uuid=RUUID, slot=1, generation=1,
+                       operation="VERIFY", provisioning_job_id=42, correlation_id="c-1",
+                       prior_state="STARTED", resulting_state="VERIFIED", integrity_outcome="ok",
+                       quarantined=False, agent_version="a", manifest_version="m", protocol_version=1,
+                       now=5)
+        ev = s.audit_for_occupancy(1, 1)[0]
+        self.assertEqual((ev["operation"], ev["prior_state"], ev["resulting_state"],
+                          ev["integrity_outcome"]), ("VERIFY", "STARTED", "VERIFIED", "ok"))
+
+
+class ReleaseOrderTests(SimpleTestCase):
+    """A generation may advance only after all seven proofs; the slot is never exposed mid-release."""
+
+    @staticmethod
+    def _store():
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=1)
+
+    def test_all_seven_proofs_required(self):
+        from stores import ReleaseProofMissing, SlotStore
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        for proof in SlotStore.RELEASE_PROOFS:
+            with self.assertRaises(ReleaseProofMissing, msg=proof) as ctx:
+                s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                          proofs=_proofs(**{proof: False}), now=2)
+            self.assertIn(proof, ctx.exception.missing)
+            self.assertEqual(ctx.exception.reason_code, "release_proof_missing")
+
+    def test_slot_is_not_exposed_to_another_runtime_before_advancement(self):
+        from stores import PoolExhausted
+        s = self._store()                                   # pool_size=1
+        slot, gen = s.assign(RUUID, now=1)
+        try:
+            s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                      proofs=_proofs(no_mutation_lock_held=False), now=2)
+        except Exception:
+            pass
+        with self.assertRaises(PoolExhausted):              # still occupied — never handed out
+            s.assign("11111111-2222-3333-4444-555555555555", now=3)
+        self.assertEqual(s.generation_of(slot), gen)        # generation unadvanced
+
+    def test_successful_release_advances_by_exactly_one_and_frees_the_slot(self):
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        self.assertEqual(s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                                   proofs=_proofs(), now=2), gen + 1)
+        self.assertIsNone(s.lookup(RUUID))
+        s.assert_generation_monotonic(slot, gen + 1)
+        self.assertEqual(s.assign("11111111-2222-3333-4444-555555555555", now=3)[1], gen + 1)
+
+    def test_stale_caller_view_fails_closed(self):
+        from stores import SlotIntegrityError
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        with self.assertRaises(SlotIntegrityError):
+            s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=gen + 1,
+                                      proofs=_proofs(), now=2)
+
+
+class QuarantineClearanceTests(SimpleTestCase):
+    """Clearance is an evidenced operator action, never a boolean reset."""
+
+    @staticmethod
+    def _store():
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=2)
+
+    def _ok(self, **over):
+        args = dict(diagnosed_reason="stale marker after manual copy", operator_identity="nuno",
+                    evidence_reference="EV-123", reconciliation_confirmed=True,
+                    no_runtime_process_confirmed=True, slot_directory_safe_confirmed=True)
+        args.update(over)
+        return args
+
+    def test_missing_evidence_is_refused(self):
+        from stores import QuarantineClearanceRefused
+        s = self._store(); slot, _ = s.assign(RUUID, now=1); s.quarantine_slot(slot, "x", 1)
+        for field in ("diagnosed_reason", "operator_identity", "evidence_reference"):
+            with self.assertRaises(QuarantineClearanceRefused, msg=field):
+                s.clear_quarantine(slot=slot, **self._ok(**{field: ""}))
+        for field in ("reconciliation_confirmed", "no_runtime_process_confirmed",
+                      "slot_directory_safe_confirmed"):
+            with self.assertRaises(QuarantineClearanceRefused, msg=field):
+                s.clear_quarantine(slot=slot, **self._ok(**{field: False}))
+        self.assertTrue(s.is_quarantined(slot))          # still quarantined after every refusal
+
+    def test_full_evidence_clears_and_emits_an_auditable_event(self):
+        s = self._store(); slot, gen = s.assign(RUUID, now=1); s.quarantine_slot(slot, "x", 1)
+        s.clear_quarantine(slot=slot, now=9, **self._ok())
+        self.assertFalse(s.is_quarantined(slot))
+        events = [e["event"] for e in s.audit_for_occupancy(slot, gen)]
+        self.assertIn("quarantine_cleared", events)
+
+    def test_clearance_does_not_rewrite_history(self):
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        s.release_after_tombstone(runtime_uuid=RUUID, slot=slot, generation=gen, proofs=_proofs(), now=2)
+        before = [r[0] for r in s._conn.execute(
+            "SELECT generation FROM slot_generations WHERE slot=? ORDER BY generation", (slot,))]
+        s.quarantine_slot(slot, "x", 3)
+        s.clear_quarantine(slot=slot, now=4, **self._ok())
+        after = [r[0] for r in s._conn.execute(
+            "SELECT generation FROM slot_generations WHERE slot=? ORDER BY generation", (slot,))]
+        self.assertEqual(before, after)                  # ledger untouched
+
+    def test_clearing_a_healthy_slot_is_refused(self):
+        from stores import QuarantineClearanceRefused
+        s = self._store(); slot, _ = s.assign(RUUID, now=1)
+        with self.assertRaises(QuarantineClearanceRefused):
+            s.clear_quarantine(slot=slot, **self._ok())
+
+
+class OccupancyIdTests(SimpleTestCase):
+    """Immutable, deterministic single reference for one occupancy."""
+
+    def test_deterministic_and_recomputable(self):
+        from stores import occupancy_id
+        self.assertEqual(occupancy_id(2, 5), occupancy_id(2, 5))
+        self.assertEqual(occupancy_id("2", "5"), occupancy_id(2, 5))   # normalised
+
+    def test_distinct_per_slot_and_per_generation(self):
+        from stores import occupancy_id
+        ids = {occupancy_id(1, 1), occupancy_id(1, 2), occupancy_id(2, 1), occupancy_id(2, 2)}
+        self.assertEqual(len(ids), 4)
+
+    def test_present_in_report_remote_evidence_audit_and_quarantine(self):
+        from stores import (SlotStore, build_verification_evidence, format_owner_marker, occupancy_id,
+                            remote_evidence)
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SlotStore(f.name, pool_size=2)
+        slot, gen = s.assign(RUUID, now=1)
+        expected = occupancy_id(slot, gen)
+        local = build_verification_evidence(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                            canonical_dir="d", marker_raw=format_owner_marker(RUUID, slot, gen))
+        self.assertEqual(local["occupancy_id"], expected)                       # Verification Report
+        self.assertEqual(remote_evidence(local)["occupancy_id"], expected)      # remote evidence
+        s.record_audit(event="runtime_started", runtime_uuid=RUUID, slot=slot, generation=gen, now=1)
+        self.assertEqual(s.audit_for_occupancy(slot, gen)[0]["occupancy_id"], expected)   # audit
+        s.quarantine_slot(slot, "x", 2)
+        self.assertEqual(s.quarantined_slots()[slot]["occupancy_id"], expected)           # quarantine
+
+    def test_in_response_allowlist(self):
+        from lib.mgmt_agent_core import _RESPONSE_ALLOWLIST
+        self.assertIn("occupancy_id", _RESPONSE_ALLOWLIST)
+
+
+class AuditChainTests(SimpleTestCase):
+    """Forward-linked chain detects accidental deletion, insertion and reordering. No auto-repair."""
+
+    @staticmethod
+    def _store_with(n=4):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SlotStore(f.name, pool_size=2)
+        slot, gen = s.assign(RUUID, now=1)
+        for i, ev in enumerate(("slot_assigned", "materialise_started", "materialise_completed",
+                                "runtime_started")[:n]):
+            s.record_audit(event=ev, runtime_uuid=RUUID, slot=slot, generation=gen, now=i + 1)
+        return s, slot, gen
+
+    def test_healthy_chain_is_valid(self):
+        s, _, _ = self._store_with()
+        self.assertEqual(s.verify_audit_chain()["status"], "VALID")
+        self.assertEqual(s.verify_audit_chain()["records"], 4)
+
+    def test_empty_chain_is_valid(self):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        self.assertEqual(SlotStore(f.name, pool_size=1).verify_audit_chain()["status"], "VALID")
+
+    def test_deletion_is_detected(self):
+        from stores import AuditChainCorrupt
+        s, _, _ = self._store_with()
+        s._conn.execute("DELETE FROM slot_audit WHERE id=2"); s._conn.commit()
+        with self.assertRaises(AuditChainCorrupt) as ctx:
+            s.verify_audit_chain()
+        self.assertEqual(ctx.exception.reason_code, "audit_chain_corrupt")
+
+    def test_content_modification_is_detected(self):
+        from stores import AuditChainCorrupt
+        s, _, _ = self._store_with()
+        s._conn.execute("UPDATE slot_audit SET resulting_state='TAMPERED' WHERE id=2"); s._conn.commit()
+        with self.assertRaises(AuditChainCorrupt):
+            s.verify_audit_chain()
+
+    def test_insertion_is_detected(self):
+        from stores import AuditChainCorrupt
+        s, slot, gen = self._store_with()
+        s._conn.execute(
+            "INSERT INTO slot_audit (event, runtime_uuid, slot, generation, occupancy_id, quarantined,"
+            " at, previous_audit_hash, audit_hash) VALUES ('runtime_started',?,?,?,'x',0,9,'bogus','bogus')",
+            (RUUID, slot, gen))
+        s._conn.commit()
+        with self.assertRaises(AuditChainCorrupt):
+            s.verify_audit_chain()
+
+    def test_verification_never_repairs(self):
+        from stores import AuditChainCorrupt
+        s, _, _ = self._store_with()
+        s._conn.execute("UPDATE slot_audit SET resulting_state='TAMPERED' WHERE id=2"); s._conn.commit()
+        for _ in range(2):
+            with self.assertRaises(AuditChainCorrupt):
+                s.verify_audit_chain()
+        still = s._conn.execute("SELECT resulting_state FROM slot_audit WHERE id=2").fetchone()[0]
+        self.assertEqual(still, "TAMPERED")     # untouched — operator investigation only
+
+
+class OccupancyBindingTests(SimpleTestCase):
+    """The upper layer holds the full binding; a primitive sees only slot-scoped physical facts."""
+
+    @staticmethod
+    def _binding(slot=2, gen=3, path=r"C:\GuvFX\beta\slots\2\terminal"):
+        from occupancy import build_occupancy_binding
+        return build_occupancy_binding(
+            runtime_uuid=RUUID, slot=slot, generation=gen, slot_path=path,
+            task_identity={"task_name": "GuvFXBetaRuntime-2"}, integrity_outcome="ok", quarantined=False)
+
+    def test_binding_carries_all_required_fields(self):
+        from occupancy import BINDING_FIELDS
+        b = self._binding()
+        for f in BINDING_FIELDS:
+            self.assertIn(f, b, f)
+
+    def test_primitive_view_cannot_carry_policy_or_identity(self):
+        """The enforcement point for the boundary rule: a primitive literally cannot see these."""
+        from occupancy import slot_scoped_view
+        v = slot_scoped_view(self._binding(), slot_path=r"C:\GuvFX\beta\slots\2\terminal",
+                             launch_task="GuvFXBetaRuntime-2", terminate_task="GuvFXBetaRuntimeStop-2")
+        for forbidden in ("runtime_uuid", "generation", "occupancy_id", "provisioning_job_id",
+                          "integrity_outcome", "quarantined"):
+            self.assertNotIn(forbidden, v, forbidden)
+        self.assertEqual(set(v), {"slot", "slot_path", "launch_task", "terminate_task"})
+
+    def test_result_from_a_different_slot_is_rejected(self):
+        from occupancy import OccupancyBindingMismatch, reconcile_primitive_result
+        path = r"C:\GuvFX\beta\slots\2\terminal"
+        with self.assertRaises(OccupancyBindingMismatch):
+            reconcile_primitive_result(self._binding(), {"slot": 3}, slot_path=path)
+
+    def test_result_from_a_different_path_is_rejected(self):
+        from occupancy import OccupancyBindingMismatch, reconcile_primitive_result
+        path = r"C:\GuvFX\beta\slots\2\terminal"
+        with self.assertRaises(OccupancyBindingMismatch):
+            reconcile_primitive_result(self._binding(), {"slot": 2, "slot_path": r"C:\elsewhere"},
+                                       slot_path=path)
+
+    def test_matching_result_reconciles(self):
+        from occupancy import reconcile_primitive_result
+        path = r"C:\GuvFX\beta\slots\2\terminal"
+        reconcile_primitive_result(self._binding(), {"slot": 2, "slot_path": path}, slot_path=path)
+
+
+class ProcessBirthIdentityTests(SimpleTestCase):
+    """PID alone is not identity — PID reuse must not attribute a later process to an earlier occupancy."""
+
+    @staticmethod
+    def _birth(**over):
+        from occupancy import build_process_birth
+        args = dict(pid=13020, created_at="2026-07-22T08:00:00Z", image_digest="abc123",
+                    executable_containment_verified=True, user_sid="S-1-5-21-x-1001",
+                    session_id=1, slot=2)
+        args.update(over)
+        return build_process_birth(**args)
+
+    def test_identical_process_matches(self):
+        from occupancy import assert_same_process
+        b = self._birth()
+        assert_same_process(b, dict(b))
+
+    def test_pid_reuse_with_a_different_creation_time_fails_closed(self):
+        """THE case this exists for: same PID, later unrelated process."""
+        from occupancy import ProcessIdentityMismatch, assert_same_process
+        b = self._birth()
+        later = dict(b, created_at="2026-07-22T09:30:00Z")
+        with self.assertRaises(ProcessIdentityMismatch) as ctx:
+            assert_same_process(b, later)
+        self.assertEqual(ctx.exception.reason_code, "process_identity_mismatch")
+
+    def test_different_owner_image_session_or_slot_fails_closed(self):
+        from occupancy import ProcessIdentityMismatch, assert_same_process
+        b = self._birth()
+        for field, value in (("user_sid", "S-1-5-21-x-9999"), ("image_digest", "deadbeef"),
+                             ("session_id", 2), ("slot", 3)):
+            with self.assertRaises(ProcessIdentityMismatch, msg=field):
+                assert_same_process(b, dict(b, **{field: value}))
+
+    def test_unverified_executable_containment_fails_closed(self):
+        from occupancy import ProcessIdentityMismatch, assert_same_process
+        b = self._birth()
+        with self.assertRaises(ProcessIdentityMismatch):
+            assert_same_process(b, dict(b, executable_containment_verified=False))
+
+
+class TaskIdentityTests(SimpleTestCase):
+    """Task-definition drift blocks launch; the agent never repairs a task at runtime."""
+
+    @staticmethod
+    def _defn(**over):
+        d = dict(task_name="GuvFXBetaRuntime-2", run_as_identity="guvfx_u_beta_2",
+                 executable=r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe",
+                 working_directory=r"C:\GuvFX\beta\slots\2\terminal",
+                 logon_type="TASK_LOGON_PASSWORD", run_level="LEAST", enabled=True)
+        d.update(over)
+        return d
+
+    def test_matching_definition_passes(self):
+        from occupancy import assert_task_matches_approved
+        assert_task_matches_approved(self._defn(), self._defn())
+
+    def test_any_drift_blocks_launch(self):
+        from occupancy import TaskDefinitionDrift, assert_task_matches_approved
+        for field, value in (("run_as_identity", "Administrator"),
+                             ("executable", r"C:\Windows\System32\cmd.exe"),
+                             ("working_directory", r"C:\elsewhere"),
+                             ("logon_type", "TASK_LOGON_INTERACTIVE_TOKEN"),
+                             ("run_level", "HIGHEST"),
+                             ("task_name", "SomethingElse")):
+            with self.assertRaises(TaskDefinitionDrift, msg=field) as ctx:
+                assert_task_matches_approved(self._defn(), self._defn(**{field: value}))
+            self.assertEqual(ctx.exception.reason_code, "task_definition_drift")
+
+    def test_disabled_task_blocks_launch(self):
+        from occupancy import TaskDefinitionDrift, assert_task_matches_approved
+        with self.assertRaises(TaskDefinitionDrift):
+            assert_task_matches_approved(self._defn(), self._defn(enabled=False))
+
+    def test_digest_is_order_independent(self):
+        from occupancy import task_definition_digest
+        d = self._defn()
+        self.assertEqual(task_definition_digest(d),
+                         task_definition_digest(dict(reversed(list(d.items())))))
+
+
+class AuditCheckpointTests(SimpleTestCase):
+    """Chain verification is a lifecycle gate, not a reporting nicety."""
+
+    @staticmethod
+    def _store():
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=2)
+
+    def test_all_five_boundaries_are_defined(self):
+        from stores import SlotStore
+        for b in ("before_assign", "before_mutation", "before_release",
+                  "before_quarantine_clearance", "before_acceptance_evidence"):
+            self.assertIn(b, SlotStore.AUDIT_CHECKPOINTS, b)
+
+    def test_healthy_chain_passes_every_checkpoint(self):
+        from stores import SlotStore
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.record_audit(event="slot_assigned", runtime_uuid=RUUID, slot=slot, generation=gen, now=1)
+        for b in SlotStore.AUDIT_CHECKPOINTS:
+            self.assertEqual(s.audit_checkpoint(b, slot=slot)["status"], "VALID")
+
+    def test_corruption_with_attribution_quarantines_the_slot(self):
+        from stores import AuditChainCorrupt
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.record_audit(event="slot_assigned", runtime_uuid=RUUID, slot=slot, generation=gen, now=1)
+        s._conn.execute("UPDATE slot_audit SET resulting_state='X' WHERE id=1"); s._conn.commit()
+        with self.assertRaises(AuditChainCorrupt):
+            s.audit_checkpoint("before_mutation", slot=slot, now=2)
+        self.assertIn(slot, s.quarantined_slots())
+
+    def test_corruption_without_attribution_blocks_all_allocation(self):
+        from stores import AllocationBlocked, AuditChainCorrupt
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.record_audit(event="slot_assigned", runtime_uuid=RUUID, slot=slot, generation=gen, now=1)
+        s._conn.execute("UPDATE slot_audit SET resulting_state='X' WHERE id=1"); s._conn.commit()
+        with self.assertRaises(AuditChainCorrupt):
+            s.audit_checkpoint("before_assign", now=2)       # attribution uncertain
+        self.assertTrue(s.allocation_blocked())
+        with self.assertRaises(AllocationBlocked):
+            s.assign("11111111-2222-3333-4444-555555555555", now=3)
+
+    def test_allocation_block_clearance_requires_operator_attribution(self):
+        from stores import QuarantineClearanceRefused
+        s = self._store()
+        s.block_allocation("x", 1)
+        with self.assertRaises(QuarantineClearanceRefused):
+            s.clear_allocation_block(operator_identity="", evidence_reference="E-1")
+        s.clear_allocation_block(operator_identity="nuno", evidence_reference="E-1")
+        self.assertIsNone(s.allocation_blocked())
+
+    def test_unknown_checkpoint_rejected(self):
+        s = self._store()
+        with self.assertRaises(ValueError):
+            s.audit_checkpoint("whenever")
+
+
+class OperationSequencingTests(SimpleTestCase):
+    """B3P-2 requirement 2: every mutating operation carries a sequence number within its OCCUPANCY.
+
+    Sequencing is what makes an out-of-order or replayed lifecycle visible: numbering restarts at 1 for
+    each ``(slot, generation)``, so a reused slot cannot inherit its predecessor's history.
+    """
+
+    @staticmethod
+    def _store(pool_size=2):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=pool_size)
+
+    def test_sequence_starts_at_one_and_is_contiguous(self):
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        got = [s.record_sequence(slot=slot, generation=gen, operation=op, now=i)
+               for i, op in enumerate(("stage_copy", "request_launch", "confirm_launch"), start=1)]
+        self.assertEqual(got, [1, 2, 3])
+        s.assert_sequence_valid(slot, gen)
+
+    def test_sequence_restarts_per_occupancy_not_per_slot(self):
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.record_sequence(slot=slot, generation=gen, operation="stage_copy", now=1)
+        s.record_sequence(slot=slot, generation=gen, operation="request_launch", now=2)
+        s.release(RUUID, now=3)
+        other = "99999999-8888-7777-6666-555555555555"
+        slot2, gen2 = s.assign(other, now=4)
+        self.assertEqual((slot2, gen2), (slot, gen + 1))          # same slot, new occupancy
+        self.assertEqual(s.record_sequence(slot=slot2, generation=gen2, operation="stage_copy", now=5), 1)
+        self.assertEqual(len(s.sequence_for_occupancy(slot, gen)), 2)   # predecessor untouched
+
+    def test_duplicate_sequence_number_is_structurally_impossible(self):
+        import sqlite3
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.record_sequence(slot=slot, generation=gen, operation="stage_copy", now=1)
+        with self.assertRaises(sqlite3.IntegrityError):          # PRIMARY KEY, not an application check
+            s._conn.execute(
+                "INSERT INTO occupancy_sequence (slot, generation, sequence_number, operation, at)"
+                " VALUES (?,?,?,?,?)", (slot, gen, 1, "stage_copy_again", 2))
+
+    def test_missing_sequence_number_is_an_integrity_failure(self):
+        from stores import SlotIntegrityError
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        for op in ("stage_copy", "request_launch", "confirm_launch"):
+            s.record_sequence(slot=slot, generation=gen, operation=op, now=1)
+        s._conn.execute("DELETE FROM occupancy_sequence WHERE slot=? AND generation=? AND"
+                        " sequence_number=2", (slot, gen))
+        s._conn.commit()
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_sequence_valid(slot, gen)
+
+    def test_sequence_survives_reopen(self):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SlotStore(f.name, pool_size=2); slot, gen = s.assign(RUUID, now=1)
+        s.record_sequence(slot=slot, generation=gen, operation="stage_copy", now=1)
+        self.assertEqual(
+            SlotStore(f.name, pool_size=2).record_sequence(
+                slot=slot, generation=gen, operation="request_launch", now=2), 2)
+
+    def test_empty_occupancy_sequence_is_valid(self):
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.assert_sequence_valid(slot, gen)                       # nothing done yet != corrupt

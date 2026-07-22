@@ -24,12 +24,35 @@ DEFAULT_BETA_ROOT = r"C:\GuvFX\beta\accounts"
 # Operations that mutate host state (need the single-op-per-runtime lock). VERIFY is read-only.
 _MUTATING = frozenset({"MATERIALISE", "START", "STOP", "TOMBSTONE"})
 
+# ── execution model (B3P-2 step 1: slot-aware path resolution) ──
+#: B2 compatibility. The runtime path is derived from the runtime UUID under ``DEFAULT_BETA_ROOT``.
+EXECUTION_MODEL_UUID_DIR = "uuid_dir"
+#: The approved B3P-2 model. The runtime path is derived from the SLOT NUMBER of the occupancy the runtime
+#: holds, so the launch target is fixed at install time and no request value reaches it.
+EXECUTION_MODEL_SLOT_POOL = "slot_pool"
+EXECUTION_MODELS = (EXECUTION_MODEL_UUID_DIR, EXECUTION_MODEL_SLOT_POOL)
+
 # The ONLY fields an agent response may contain (requirement 7 — never creds/env/cmdlines/fs-listings/raw
 # exceptions). Includes the NEGOTIATE handshake fields.
 _RESPONSE_ALLOWLIST = ("operation", "outcome", "runtime_uuid", "provisioning_job_id", "pid",
                        "session_id", "agent_version", "script_version", "duration_ms", "reason_code",
                        "running", "logged_in", "verified_at",
-                       "protocol_version", "manifest_version", "supported_operations")
+                       "protocol_version", "manifest_version", "supported_operations",
+                       # B3P-2: (slot, generation) identifies ONE immutable runtime occupancy and is part
+                       # of runtime identity, so it is first-class evidence rather than an internal detail.
+                       #
+                       # The complete local filesystem path is deliberately NOT exposed remotely. The agent
+                       # independently derives and verifies containment on the box; the backend needs only
+                       # the ATTESTATION that it did so. Verified: no backend lifecycle decision consumes a
+                       # path from an agent response. The full path remains in the local Verification
+                       # Report, Windows operational logs and authorised operator evidence.
+                       "slot", "generation", "occupancy_id", "owner_marker_digest",
+                       "canonical_path_digest",
+                       "path_containment_verified", "executable_containment_verified",
+                       # B3P-2: TOMBSTONE reports that the slot is NOT yet released. Stripping this would
+                       # show the backend an unqualified success and let it believe the pool had capacity
+                       # it does not have.
+                       "released", "release_pending")
 
 
 class AgentError(Exception):
@@ -64,7 +87,18 @@ class BetaProvisioningAgent:
     def __init__(self, *, keyring, nonce_store, idempotency_store, op_impls, agent_version,
                  script_manifest, script_versions, resolve_real_path, runtime_locks,
                  base: str = DEFAULT_BETA_ROOT, now_fn=None, max_skew_seconds: int = 30,
-                 manifest_version: str = ""):
+                 manifest_version: str = "", execution_model: str = EXECUTION_MODEL_UUID_DIR,
+                 slot_resolver=None):
+        # The execution model is EXPLICIT and validated at construction. There is deliberately no silent
+        # fallback from the slot pool to the UUID-directory layout: a pool agent missing its resolver fails
+        # to start rather than quietly provisioning into the wrong namespace (the same reasoning as
+        # security RULE 3 — a missing dependency is a startup failure, never a substitution).
+        if execution_model not in EXECUTION_MODELS:
+            raise ValueError(f"unknown execution model: {execution_model}")
+        if execution_model == EXECUTION_MODEL_SLOT_POOL and slot_resolver is None:
+            raise ValueError("slot_pool execution model requires a slot resolver")
+        self.execution_model = execution_model
+        self.slot_resolver = slot_resolver
         self.manifest_version = manifest_version
         self.keyring = keyring
         self.nonce_store = nonce_store               # .seen(nonce)->bool ; .remember(nonce, expiry)
@@ -117,21 +151,13 @@ class BetaProvisioningAgent:
             # the response, so ``{ABC}`` and ``abc`` can never disagree on ownership.
             try:
                 norm_uuid = str(uuid.UUID(str(ruuid)))
-                canonical_dir = derive_canonical_runtime_dir(norm_uuid, self.base)
             except (ValueError, AttributeError, TypeError):
                 raise AgentError("bad_runtime_uuid")
-            if not is_beneath(canonical_dir, self.base):
-                raise AgentError("path_escape")
-            # Reparse/junction escape: resolve the runtime dir AND its (pre-plantable) parent even when the
-            # leaf does not exist yet — MATERIALISE creates the leaf, so gating on leaf existence would let
-            # a junction planted at ``<base>\<uuid>`` be written through before the escape is noticed.
-            parent_dir = canonical_dir.rsplit("\\", 1)[0]
-            for candidate in (canonical_dir, parent_dir):
-                real = self.resolve_real_path(candidate)
-                if real is not None and not is_beneath(real, self.base):
-                    raise AgentError("reparse_escape")
 
-            # Integrity (requirement 6): the local implementation must match the approved manifest.
+            # Integrity (requirement 6): the local implementation must match the approved manifest. This
+            # runs BEFORE slot resolution, because in the pool model resolving a MATERIALISE performs a
+            # durable slot ASSIGNMENT: a request that is then refused for drift, drain or path escape would
+            # already have burned pool capacity that nothing reclaims.
             impl_name = f"op_{op.lower()}"
             if not self._impl_integrity_ok(impl_name):
                 raise AgentError("impl_integrity_mismatch")
@@ -139,9 +165,9 @@ class BetaProvisioningAgent:
             impl = self.op_impls[op]
             if op in _MUTATING:
                 with self.runtime_locks.acquire(norm_uuid):    # one mutating op per runtime at a time
-                    raw = impl(canonical_dir=canonical_dir, runtime_uuid=norm_uuid, base=self.base)
+                    raw = impl(**self._resolve(op, norm_uuid))
             else:
-                raw = impl(canonical_dir=canonical_dir, runtime_uuid=norm_uuid, base=self.base)
+                raw = impl(**self._resolve(op, norm_uuid))
 
             resp = self._sanitise(op, job_id, ruuid, "ok", raw,
                                   script_version=self.script_versions.get(impl_name, ""))
@@ -153,6 +179,33 @@ class BetaProvisioningAgent:
             return self._sanitise(op, job_id, ruuid, "denied", {}, reason_code=e.reason_code)
         except Exception:  # noqa: BLE001 — never leak a raw exception string (requirement 7)
             return self._sanitise(op, job_id, ruuid, "error", {}, reason_code="agent_internal_error")
+
+    def _resolve(self, op: str, norm_uuid: str) -> dict:
+        """Derive the local path for this operation and prove it is contained. Kept as one step so it can
+        run INSIDE the mutation lock and AFTER the integrity gate — in the pool model this is where a slot
+        is durably assigned, and an assignment made before those checks cannot be taken back."""
+        context = None
+        if self.execution_model == EXECUTION_MODEL_SLOT_POOL:
+            # Slot-aware path resolution: the path is a function of the SLOT NUMBER of the occupancy this
+            # runtime holds. The UUID selects the occupancy; it never shapes the path.
+            context = self.slot_resolver.resolve(runtime_uuid=norm_uuid, operation=op)
+            canonical_dir, base = context["slot_path"], context["slots_root"]
+        else:
+            canonical_dir, base = derive_canonical_runtime_dir(norm_uuid, self.base), self.base
+        if not is_beneath(canonical_dir, base):
+            raise AgentError("path_escape")
+        # Reparse/junction escape: resolve the runtime dir AND its (pre-plantable) parent even when the
+        # leaf does not exist yet — MATERIALISE creates the leaf, so gating on leaf existence would let a
+        # junction planted at ``<base>\<uuid>`` be written through before the escape is noticed.
+        parent_dir = canonical_dir.rsplit("\\", 1)[0]
+        for candidate in (canonical_dir, parent_dir):
+            real = self.resolve_real_path(candidate)
+            if real is not None and not is_beneath(real, base):
+                raise AgentError("reparse_escape")
+        kwargs = {"canonical_dir": canonical_dir, "runtime_uuid": norm_uuid, "base": base}
+        if context is not None:
+            kwargs["context"] = context
+        return kwargs
 
     def _impl_integrity_ok(self, impl_name: str) -> bool:
         approved = self.script_manifest.get(impl_name)
@@ -173,7 +226,10 @@ class BetaProvisioningAgent:
         }
         # copy ONLY allowlisted evidence / handshake fields the impl produced
         for k in ("pid", "session_id", "duration_ms", "running", "logged_in", "verified_at",
-                  "protocol_version", "manifest_version", "supported_operations"):
+                  "protocol_version", "manifest_version", "supported_operations",
+                  "slot", "generation", "occupancy_id", "owner_marker_digest", "canonical_path_digest",
+                  "path_containment_verified", "executable_containment_verified",
+                  "released", "release_pending"):
             if k in raw:
                 out[k] = raw[k]
         return {k: v for k, v in out.items() if k in _RESPONSE_ALLOWLIST}

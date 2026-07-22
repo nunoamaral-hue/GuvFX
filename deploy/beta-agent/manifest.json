@@ -1,17 +1,23 @@
 {
   "agent_version": "beta-agent-1.0.0",
   "checksums": {
-    "agent.py": "c913b765980b69c9cff062ac2380d4dbba7164a087639e9a1019f96ffc91fed7",
-    "config.py": "a05adea52d9df5793ba494712caf78f47ead3c14c6a352d863fa2fa841664e1d",
-    "lib/mgmt_agent_core.py": "0613945f6990d7ab0e5ab52e5482ed6e331bdbc125cc89c1ff1bea84d6650938",
+    "agent.py": "f3a8157806fbf3c0fd5e3ad531caf7896a372faa23be8a865164b370e2858321",
+    "config.py": "605b2d7a76404921a58411caebf77034bd19b38ea8967074d9dc8af488c20c32",
+    "lib/mgmt_agent_core.py": "e3a8c25f1e1c178e7b448cd36dfa5d0c4fa6d85cd74efe5a3ec1bba2c59cd677",
     "lib/mgmt_protocol.py": "7b9538f3fde36acac07e611dc80448b78f008ae2045928b0ebf8d83562e13e48",
-    "manifest.py": "9e4628dcc99f81ae2644d6d29e11e20444c621b1ccff84456344c4f4c7d94bac",
-    "op_impls.py": "9a2312ea57bc46068fb1600f83407ca2dfbbc63fe77954b64bbce6b189a16713",
+    "lifecycle.py": "2644582bbd34d9cc35bd8e349b1544f08c2cf2785340be60c9d9c8d820d22328",
+    "manifest.py": "d1befea5fd93487a033a0927e0f4c30ffb81bba27bd7405a3ac514aab3c51568",
+    "occupancy.py": "36baaf37e68b1a72d5d5544f99aa4b48ff05386d06db807a51f6ef166f1bf728",
+    "op_impls.py": "e4ec790e4f0f6391dc8e40e8d981c0a9dc178689282f8eaca841a4076b5ef5e0",
+    "pool_op_impls.py": "07dbf0122660aa0093d2c9bd7442976cb01779f1103c52f2c8f788c6fbf59ccb",
     "service.py": "f6afd0bd9c8c989cdac912a063a6cdeacb6bd0c1f70a60434b96be447c4ef8d6",
-    "stores.py": "ff40b4e0568175a243a8b1d67014e564e3b5efbefcf2cd85ad9277d22204164b",
-    "win_ops.py": "99c890a7033e50e6fc7c8c18a0eddee7b6676d26e5264e9a70b243ddbab91803"
+    "stores.py": "88a3d6bfa30e0453bd92562cecb13f4ca0b41829071daef2f205f093ba47bccb",
+    "win_mutations.py": "dc9a0a155d76bd045922274c35c899194b595189110dfe5d69b7d2c5c136ed02",
+    "win_ops.py": "6f20d87f8227d5e6b5d0b652430a42ab86141980a13938c9f31394283068d25e",
+    "win_primitives.py": "1a5be048bf0065cd15da3b20ebb8c752967cdc406fb955a7d2b4e03999db8c98",
+    "win_slot_ops.py": "515381458b09d1e3a36b7bb9a0e3ac34ead5a78400f33bef9f04385d5c4e592a"
   },
-  "manifest_version": "2026-07-21.3",
+  "manifest_version": "2026-07-22.26",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",

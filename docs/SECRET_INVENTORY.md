@@ -82,8 +82,8 @@ host, after the bridge-token rotation. "Last rotation" is recorded only where kn
    from `DJANGO_SECRET_KEY`** when `GUVFX_FERNET_KEY` is unset (`sha256(DJANGO_SECRET_KEY)`). A signing key
    and an encryption key are different secrets with different blast radii. **Not fixed here on purpose:**
    changing it is destructive — every stored MT5 credential ciphertext must be re-encrypted first, and
-   rotating `DJANGO_SECRET_KEY` today would silently render those credentials undecryptable. Needs its own
-   packet (set `GUVFX_FERNET_KEY` explicitly, re-encrypt, then remove the fallback).
+   rotating `DJANGO_SECRET_KEY` today would silently render those credentials undecryptable. Tracked as
+   **[SEC-CRYPTO-001](SEC-CRYPTO-001.md)** — authorised as its own packet, explicitly out of scope for B3P-2.
 8. **Cross-credential fallbacks remain in ~12 backend call sites** (see the post-incident review §7). WS1
    fixed the bridge, the validate worker and `sync_broker_instruments`; the rest are recorded, not done.
 

@@ -82,9 +82,58 @@ class RealWindowsOps(WindowsOps):
                os.path.splitdrive(os.path.abspath(b))[0].lower()
 
     def move_dir(self, src, dest):
-        import shutil
-        shutil.move(src, dest)
+        # NOT shutil.move: it catches every OSError from os.rename and falls back to copytree+rmtree, so a
+        # tombstone silently becomes the copy-and-delete this design forbids (verified in CPython's
+        # Lib/shutil.py). os.rename calls MoveFileExW with dwFlags=0 - no MOVEFILE_COPY_ALLOWED - and so
+        # cannot degrade. Found while researching the B3P-2 adapter and fixed here too.
+        os.rename(src, dest)
 
 
 def utc_stamp() -> str:
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+
+# ── B3P-2: the SLOT-POOL adapter surface ───────────────────────────────────────────────────────────────
+class SlotWindowsOps:
+    """The complete Windows surface the slot-pool execution model needs — and nothing more.
+
+    Contract: ``docs/B3P2_WINDOWS_ADAPTER_CONTRACT.md``. The fake adapter used by the test suite and the
+    real one below satisfy the SAME contract, which is what makes off-host tests evidence about the real
+    system rather than about a mock.
+
+    Three absences are deliberate and are the interface's main security property:
+
+    * **no process-kill method** — termination goes through the fixed per-slot terminate task, so the agent
+      never needs the right to kill another account's process;
+    * **no process-launch method** — launching goes through the fixed per-slot launch task, so the agent
+      holds no runtime credential;
+    * **no delete, no ACL write, no task registration, no user creation** — removal is a MOVE to tombstone,
+      and every OS object is created once by a human at the install-only gate.
+
+    Every method receives a slot-derived path or a fixed task name. None receives a runtime UUID,
+    generation, occupancy id or job id: a primitive that needed one would be a design error.
+
+    OBSERVATION RULE (the one that matters most): a method that cannot observe must RAISE. Returning
+    ``None``/``False`` for an unreadable state would let the caller honestly report an unproven claim — for
+    example a live runtime recorded as terminated. Absence and unavailability are different answers.
+    """
+
+    # reads
+    def golden_source_info(self) -> dict: raise NotImplementedError
+    def destination_info(self, slot_path: str) -> dict: raise NotImplementedError
+    def path_exists(self, path: str) -> bool: raise NotImplementedError
+    def real_path(self, path: str) -> str | None: raise NotImplementedError
+    def read_owner_tag(self, slot_path: str) -> str | None: raise NotImplementedError
+    def read_acl(self, path: str): raise NotImplementedError
+    def same_volume(self, a: str, b: str) -> bool: raise NotImplementedError
+    def query_task(self, task_name: str) -> dict | None: raise NotImplementedError
+    def task_running(self, task_name: str) -> bool: raise NotImplementedError
+    def query_slot_process(self, slot_path: str, runtime_identity: str = "") -> dict | None:
+        raise NotImplementedError
+    def open_handles(self, path: str) -> bool: raise NotImplementedError
+
+    # writes (the entire mutating surface — four methods)
+    def copy_golden(self, slot_path: str) -> None: raise NotImplementedError
+    def write_owner_tag(self, slot_path: str, marker_raw: str) -> None: raise NotImplementedError
+    def run_task(self, task_name: str) -> bool: raise NotImplementedError
+    def move_dir(self, src: str, dest: str) -> None: raise NotImplementedError

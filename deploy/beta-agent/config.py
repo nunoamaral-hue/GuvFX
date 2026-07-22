@@ -12,6 +12,13 @@ import ipaddress
 import json
 import os
 
+from lib.mgmt_agent_core import EXECUTION_MODEL_SLOT_POOL, EXECUTION_MODEL_UUID_DIR
+from win_primitives import BETA_SLOTS_ROOT
+
+#: Kept here rather than imported from pool_op_impls so config has no dependency on the lifecycle layer.
+#: Asserted equal to the implementation's values by ``tests_pool_ops``.
+LAUNCH_SETTLE_ATTEMPTS, STOP_SETTLE_ATTEMPTS, SETTLE_POLL_SECONDS = 20, 30, 1.0
+
 # The single management interface the live agent is expected to bind (verification B-9). ``load_config``
 # pins the live bind to this exact address; ``BETA_AGENT_EXPECTED_BIND_HOST`` overrides it for a different box.
 DEFAULT_EXPECTED_BIND_HOST = "100.79.101.19"
@@ -79,6 +86,35 @@ def load_config(env: dict | None = None) -> dict:
     # State + logs live UNDER a dedicated state dir, SEPARATE from the code dir, so an update/rollback copy
     # over the code dir can never clobber the durable nonce/idempotency store or logs (verification, §8/§11).
     state_dir = env.get("BETA_AGENT_STATE_DIR", r"C:\GuvFX\beta\agent-state")
+    model = env.get("BETA_AGENT_EXECUTION_MODEL", EXECUTION_MODEL_UUID_DIR)
+    if model not in (EXECUTION_MODEL_UUID_DIR, EXECUTION_MODEL_SLOT_POOL):
+        raise ConfigError(f"unknown execution model {model!r}")
+    pool_size = int(env.get("BETA_AGENT_SLOT_POOL_SIZE", "0"))
+    golden_digest = env.get("BETA_AGENT_GOLDEN_DIGEST", "")
+    if model == EXECUTION_MODEL_SLOT_POOL:
+        # The pool cannot be inferred. A pool of zero would silently accept every runtime and then exhaust;
+        # an unset golden digest would make the stage-copy integrity check compare against "".
+        if pool_size < 1:
+            raise ConfigError("slot_pool execution model requires BETA_AGENT_SLOT_POOL_SIZE >= 1")
+        if not golden_digest:
+            raise ConfigError("slot_pool execution model requires BETA_AGENT_GOLDEN_DIGEST")
+        if not env.get("BETA_AGENT_GOLDEN_MANIFEST_VERSION"):
+            # Left empty, the stage-copy pre-check would compare "" == "" and pass on an unversioned image.
+            raise ConfigError("slot_pool execution model requires BETA_AGENT_GOLDEN_MANIFEST_VERSION")
+        slots_root = env.get("BETA_AGENT_SLOTS_ROOT", BETA_SLOTS_ROOT)
+        if slots_root != BETA_SLOTS_ROOT:
+            # The knob is honoured for the containment base but the primitives derive every slot path from
+            # the module constant, so any other value makes every operation fail path_escape at RUNTIME.
+            # Refuse at STARTUP instead of shipping a config that cannot work.
+            raise ConfigError(
+                f"BETA_AGENT_SLOTS_ROOT must equal {BETA_SLOTS_ROOT!r}: slot paths are derived from the "
+                f"fixed namespace, not from configuration")
+        settle = max(LAUNCH_SETTLE_ATTEMPTS, STOP_SETTLE_ATTEMPTS) * SETTLE_POLL_SECONDS
+        if float(env.get("BETA_AGENT_DRAIN_TIMEOUT_S", "20")) <= settle:
+            # A settle window longer than the drain budget guarantees that a service stop during a mutation
+            # force-kills it mid-stage — the exact outcome the drain exists to prevent.
+            raise ConfigError(
+                f"BETA_AGENT_DRAIN_TIMEOUT_S must exceed the settle window ({settle:.0f}s)")
     return {
         "bind_host": host,
         "expected_bind_host": expected,
@@ -94,4 +130,15 @@ def load_config(env: dict | None = None) -> dict:
         "max_connections": int(env.get("BETA_AGENT_MAX_CONNECTIONS", "16")),
         "request_timeout_s": float(env.get("BETA_AGENT_REQUEST_TIMEOUT_S", "10")),
         "drain_timeout_s": float(env.get("BETA_AGENT_DRAIN_TIMEOUT_S", "20")),
+        # ── B3P-2 execution model ──
+        # EXPLICIT, with no silent fallback: selecting the slot pool without the settings it needs is a
+        # startup failure, not a quiet reversion to the B2 uuid-directory layout (security RULE 3's
+        # reasoning applied to configuration).
+        "execution_model": model,
+        "slot_pool_size": pool_size,
+        "slots_root": env.get("BETA_AGENT_SLOTS_ROOT", r"C:\GuvFX\beta\slots"),
+        "golden_dir": env.get("BETA_AGENT_GOLDEN_DIR", r"C:\GuvFX\beta\golden"),
+        "golden_digest": golden_digest,
+        "golden_manifest_version": env.get("BETA_AGENT_GOLDEN_MANIFEST_VERSION", ""),
+        "slot_db": env.get("BETA_AGENT_SLOT_DB", state_dir + r"\slots.sqlite"),
     }

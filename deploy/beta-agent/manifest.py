@@ -18,7 +18,9 @@ import os
 # EVERY executable module the running agent loads. A drift in ANY of them fails every mutating op closed and
 # (via ``build_agent(enforce_integrity=True)``) refuses to start.
 IMPL_MODULES = (
-    "agent.py", "config.py", "stores.py", "manifest.py", "op_impls.py", "win_ops.py", "service.py",
+    "agent.py", "config.py", "stores.py", "manifest.py", "op_impls.py", "pool_op_impls.py",
+    "win_ops.py", "win_slot_ops.py", "service.py",
+    "occupancy.py", "win_primitives.py", "win_mutations.py", "lifecycle.py",
     "lib/mgmt_protocol.py", "lib/mgmt_agent_core.py",
 )
 
