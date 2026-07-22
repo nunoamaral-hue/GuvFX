@@ -1283,3 +1283,68 @@ class AuditCheckpointTests(SimpleTestCase):
         s = self._store()
         with self.assertRaises(ValueError):
             s.audit_checkpoint("whenever")
+
+
+class OperationSequencingTests(SimpleTestCase):
+    """B3P-2 requirement 2: every mutating operation carries a sequence number within its OCCUPANCY.
+
+    Sequencing is what makes an out-of-order or replayed lifecycle visible: numbering restarts at 1 for
+    each ``(slot, generation)``, so a reused slot cannot inherit its predecessor's history.
+    """
+
+    @staticmethod
+    def _store(pool_size=2):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=pool_size)
+
+    def test_sequence_starts_at_one_and_is_contiguous(self):
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        got = [s.record_sequence(slot=slot, generation=gen, operation=op, now=i)
+               for i, op in enumerate(("stage_copy", "request_launch", "confirm_launch"), start=1)]
+        self.assertEqual(got, [1, 2, 3])
+        s.assert_sequence_valid(slot, gen)
+
+    def test_sequence_restarts_per_occupancy_not_per_slot(self):
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.record_sequence(slot=slot, generation=gen, operation="stage_copy", now=1)
+        s.record_sequence(slot=slot, generation=gen, operation="request_launch", now=2)
+        s.release(RUUID, now=3)
+        other = "99999999-8888-7777-6666-555555555555"
+        slot2, gen2 = s.assign(other, now=4)
+        self.assertEqual((slot2, gen2), (slot, gen + 1))          # same slot, new occupancy
+        self.assertEqual(s.record_sequence(slot=slot2, generation=gen2, operation="stage_copy", now=5), 1)
+        self.assertEqual(len(s.sequence_for_occupancy(slot, gen)), 2)   # predecessor untouched
+
+    def test_duplicate_sequence_number_is_structurally_impossible(self):
+        import sqlite3
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.record_sequence(slot=slot, generation=gen, operation="stage_copy", now=1)
+        with self.assertRaises(sqlite3.IntegrityError):          # PRIMARY KEY, not an application check
+            s._conn.execute(
+                "INSERT INTO occupancy_sequence (slot, generation, sequence_number, operation, at)"
+                " VALUES (?,?,?,?,?)", (slot, gen, 1, "stage_copy_again", 2))
+
+    def test_missing_sequence_number_is_an_integrity_failure(self):
+        from stores import SlotIntegrityError
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        for op in ("stage_copy", "request_launch", "confirm_launch"):
+            s.record_sequence(slot=slot, generation=gen, operation=op, now=1)
+        s._conn.execute("DELETE FROM occupancy_sequence WHERE slot=? AND generation=? AND"
+                        " sequence_number=2", (slot, gen))
+        s._conn.commit()
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_sequence_valid(slot, gen)
+
+    def test_sequence_survives_reopen(self):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        s = SlotStore(f.name, pool_size=2); slot, gen = s.assign(RUUID, now=1)
+        s.record_sequence(slot=slot, generation=gen, operation="stage_copy", now=1)
+        self.assertEqual(
+            SlotStore(f.name, pool_size=2).record_sequence(
+                slot=slot, generation=gen, operation="request_launch", now=2), 2)
+
+    def test_empty_occupancy_sequence_is_valid(self):
+        s = self._store(); slot, gen = s.assign(RUUID, now=1)
+        s.assert_sequence_valid(slot, gen)                       # nothing done yet != corrupt

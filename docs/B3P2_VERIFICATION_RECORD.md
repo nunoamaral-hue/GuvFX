@@ -354,3 +354,163 @@ parameter of any primitive — a primitive can observe a session but cannot requ
 
 **Limitations.** All observations run against a fake adapter; no real Windows API is called and nothing has
 touched the host. The real adapter is written at the install-only gate.
+
+
+---
+
+## EV-17 — Primitive capability declarations (READ_ONLY vs MUTATING)
+
+**Status: PASS (unit-level).** Capability is a construction-time property of `PrimitiveContext`, a frozen
+dataclass validating its value in `__post_init__` (an unknown capability raises `ValueError` — a typo
+cannot silently produce a permissive context). Two module constants exist, `READ_ONLY_CONTEXT` and
+`MUTATING_CONTEXT`.
+
+Every mutating primitive begins with `require_mutating(ctx, "<operation>")`, which raises
+`CapabilityViolation` (reason code `capability_violation`, operation name in the redactable detail).
+A parameterised test invokes **all seven** mutating entry points — `stage_copy`, `request_launch`,
+`confirm_launch`, `request_terminate`, `confirm_terminated`, `tombstone`, `verify_cleanup` — with
+`READ_ONLY_CONTEXT` and asserts each raises, then asserts the fake host recorded **zero** calls. The guard
+is the first statement in each function, so refusal happens before argument validation, before any host
+query and before any write.
+
+`require_mutating` also refuses `ctx is None`, so a caller that forgets the parameter fails closed rather
+than defaulting to permitted.
+
+**Limitation.** This binds Python call sites within the bundle; it is not an OS-level capability. Its value
+is that a future edit invoking a mutating helper from an observation path fails loudly in CI instead of
+quietly writing to the operator's host.
+
+---
+
+## EV-18 — Operation sequencing evidence
+
+**Status: PASS (unit-level).** 6 tests. Sequence numbers are allocated by `SlotStore.record_sequence()`
+from the `occupancy_sequence` table, whose `PRIMARY KEY (slot, generation, sequence_number)` makes a
+duplicate **structurally impossible** — the test proves this by attempting a raw duplicate INSERT and
+asserting `sqlite3.IntegrityError`, not by asserting an application-level check.
+
+Numbering starts at **1 within each occupancy**, not per slot: after release and reassignment of the same
+slot, the new `(slot, generation)` starts again at 1 and the predecessor's rows are untouched. A reused
+slot therefore cannot inherit or extend its predecessor's lifecycle history.
+
+`assert_sequence_valid()` treats a **gap** as `SlotIntegrityError` (verified by deleting sequence 2 of 3),
+consistent with the requirement that missing or duplicated sequence numbers are integrity failures rather
+than warnings. An occupancy with no operations yet is valid — "nothing has happened" is distinguished from
+"something is missing". Sequence state is durable across store reopen.
+
+---
+
+## EV-19 — Golden stage-copy integrity (stage 4)
+
+**Status: PASS (unit-level).** Integrity is proven on **both** sides of the copy.
+
+Six pre-checks run before `copy_golden` is called at all: `source_digest_matches`,
+`source_manifest_version_matches`, `destination_absent`, `destination_beneath_slot`,
+`destination_not_reparse`, `generation_matches`. Tests for a wrong source digest, a stale source manifest
+version, an already-present destination and a generation mismatch each assert the failure **and** that the
+fake host recorded no `copy_golden` call — the refusal happens before the host is touched.
+
+Four post-checks then run: `destination_digest_matches`, `executable_digest_matches`,
+`portable_marker_present`, `ownership_marker_present`. A parameterised test breaks each one in turn and
+asserts the result is `failure` / `stage_copy_incomplete`.
+
+**No partial copy may ever proceed to launch:** a post-check failure returns a refusal carrying the full
+per-check evidence map. There is no "probably fine" path — launch requires a successful stage-copy record.
+
+---
+
+## EV-20 — Launch attestation: REQUESTED is not OBSERVED (stages 5–6)
+
+**Status: PASS (unit-level).** Launch is two records with different meanings.
+
+`request_launch` emits `phase: "REQUESTED"` with `trigger_accepted` and **no process facts whatsoever** —
+a test asserts `pid`, `birth` and `created_at_filetime` are absent from that evidence. A rejected trigger
+is `launch_trigger_rejected`; permission denial and query failure are distinct reason codes.
+
+`confirm_launch` emits `phase: "OBSERVED"` and completes the launch only when the process is observed
+`present_valid` **and contained**. The decisive test is the realistic failure: the task trigger is accepted
+(`success`), then no process appears — `confirm_launch` returns `failure` / `process_absent`. A trigger is
+therefore never sufficient evidence that MT5 started. A process running from Nuno's production MT5 path
+also fails confirmation despite existing.
+
+Birth evidence carries pid, creation FILETIME, image digest, containment verification, user SID, session
+and slot — the fields `assert_same_process` later needs to prove the process it terminates is the one it
+started.
+
+---
+
+## EV-21 — Termination semantics: STOP success means ABSENT (stage 7)
+
+**Status: PASS (unit-level).** `request_terminate` triggers the fixed per-slot terminate task and is
+REQUESTED only. `confirm_terminated` returns success **only** when the slot process is `ABSENT`.
+
+Three failure modes are separated rather than collapsed:
+- process still present with matching birth identity → `process_still_running` (the trigger succeeded and
+  the process lived on — the exact case a "task returned 0" check would have called success);
+- process present but **not** the one launched → `unexpected_process_in_slot` (escalation, not success);
+- process cannot be observed → `process_observation_unavailable` — an unobservable process is **never**
+  reported as terminated.
+
+---
+
+## EV-22 — Tombstone move and cleanup/rollback verification (stages 8–9)
+
+**Status: PASS (unit-level).** `tombstone` performs a **move**; the fake host records exactly one
+`move_dir` and no delete call exists on the surface. A cross-volume destination is refused
+(`cross_volume_move_refused`) before any host call, because a cross-volume "move" is a copy-plus-delete. An
+already-absent slot directory returns success flagged `idempotent`, so a retried rollback does not fail.
+
+`verify_cleanup` proves six independent facts — `slot_directory_empty`, `no_task_running`,
+`no_runtime_process`, `no_runtime_handles`, `audit_complete`, `generation_unchanged` — and a test breaks
+each one individually, asserting the specific proof appears in `missing`. `generation_unchanged` is the
+ordering guard: cleanup runs **before** release, so an already-advanced generation means the release
+happened out of order.
+
+Failure still produces evidence: the incomplete result carries the full proof map and a signed evidence
+digest, so a failed rollback is auditable rather than silent.
+
+**Limitations (EV-19 → EV-22).** All six mutating stages run against fake host adapters. No real Windows
+API has been called, no file copied, no task triggered, no process started or stopped, and nothing has been
+installed on `WIN-RD8VDS93DK7`. The real adapter and the pool identities/tasks are created only at the
+separately approved install-only gate.
+
+---
+
+## EV-1C — Integrity gate triggered a third time (unplanned, positive evidence)
+
+Editing `win_mutations.py` **after** the manifest was regenerated failed 10 mutating-op tests plus the two
+manifest tests, exactly as designed: `drifted: ['win_mutations.py']`. The gate has now caught three
+unplanned edits (`stores.py`, `lib/mgmt_agent_core.py`, `win_mutations.py`), each time from a genuine
+mistake rather than a rehearsed demonstration. Manifest advanced `2026-07-22.8 → .9 → .10`; the covered set
+is now **12 modules**.
+
+---
+
+## EV-23 — Defects found by self-review of the mutating layer (fixed before merge)
+
+Three defects were found reviewing the mutating primitives against the production-exclusion requirement.
+All three are fixed and covered by tests.
+
+**1. `tombstone_dir` was trusted, not validated (containment hole).** Every other mutating primitive
+derives its target from the slot NUMBER, but the tombstone destination is necessarily caller-supplied —
+making it the one place a caller could steer a *write* outside the beta namespace, including on top of the
+operator's estate. `assert_authorised_tombstone_dir` now rejects traversal components, anything not beneath
+`C:\GuvFX\beta\tombstones\<slot>` (so slot 2 cannot write into slot 3's history either), and the forbidden
+production fragments. Tests prove `C:\GuvFX\accounts\1`, `C:\GuvFX\terminals\x`, the IS6 MT5 program
+directory, `C:\Windows\System32`, a `..`-escape and another slot's tombstone root are all refused **with
+zero host calls recorded** — including on the already-absent path, so the idempotent no-op cannot be used
+to smuggle an unvalidated destination past the guard.
+
+**2. `destination_beneath_slot` was a tautology.** It compared the destination against *its own parent* —
+true for every possible path. It recorded a passing check that proved nothing while reading as if it had.
+Containment is now asserted against the fixed `BETA_SLOTS_ROOT\<slot>`, and the reparse check against
+`BETA_SLOTS_ROOT`. A new test makes the slot directory a reparse point onto `C:\GuvFX\accounts\1` and
+asserts the copy is refused before any host call; a reparse point resolving to somewhere *inside* the beta
+root still passes.
+
+**3. `verify_cleanup` proved only the launch task was idle.** A terminate task still running is as much
+"not finished" as a launch task is. Both fixed task names are now checked.
+
+Cross-volume note: with the destination now pinned to a fixed root, a different volume can only arise from
+a mount point under that root — which is precisely why the `same_volume` refusal is retained, and the test
+was rewritten to model that case rather than an out-of-namespace `D:` path.

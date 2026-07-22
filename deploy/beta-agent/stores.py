@@ -181,6 +181,14 @@ class SlotStore:
             " integrity_outcome TEXT, quarantined INTEGER NOT NULL DEFAULT 0, agent_version TEXT,"
             " manifest_version TEXT, protocol_version INTEGER, at INTEGER NOT NULL,"
             " previous_audit_hash TEXT NOT NULL, audit_hash TEXT NOT NULL)")
+        # Per-occupancy operation sequence. PRIMARY KEY (slot, generation, sequence_number) makes a
+        # DUPLICATE sequence number structurally impossible; contiguity from 1 is asserted separately, so a
+        # GAP (a missing operation record) is an integrity failure rather than a silent hole.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS occupancy_sequence ("
+            " slot INTEGER NOT NULL, generation INTEGER NOT NULL, sequence_number INTEGER NOT NULL,"
+            " operation TEXT NOT NULL, at INTEGER NOT NULL,"
+            " PRIMARY KEY (slot, generation, sequence_number))")
         # Global allocation block: set when audit corruption cannot be attributed to a single slot.
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS allocation_block ("
@@ -344,6 +352,35 @@ class SlotStore:
         return [{"event": r[0], "runtime_uuid": r[1], "operation": r[2], "prior_state": r[3],
                  "resulting_state": r[4], "integrity_outcome": r[5], "quarantined": bool(r[6]),
                  "at": r[7], "occupancy_id": r[8]} for r in rows]
+
+    # ── operation sequencing (per occupancy) ──
+    def record_sequence(self, *, slot, generation, operation, now: int = 0) -> int:
+        """Allocate the next sequence number for THIS occupancy, starting at 1. Duplicates are impossible
+        (primary key); the returned number is the operation's position in the occupancy lifecycle."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(sequence_number) FROM occupancy_sequence WHERE slot=? AND generation=?",
+                (int(slot), int(generation))).fetchone()
+            nxt = (row[0] or 0) + 1
+            self._conn.execute(
+                "INSERT INTO occupancy_sequence (slot, generation, sequence_number, operation, at)"
+                " VALUES (?,?,?,?,?)", (int(slot), int(generation), nxt, operation, int(now)))
+            self._conn.commit()
+            return nxt
+
+    def sequence_for_occupancy(self, slot, generation) -> list:
+        with self._lock:
+            rows = list(self._conn.execute(
+                "SELECT sequence_number, operation FROM occupancy_sequence"
+                " WHERE slot=? AND generation=? ORDER BY sequence_number",
+                (int(slot), int(generation))))
+        return [{"sequence_number": n, "operation": op} for n, op in rows]
+
+    def assert_sequence_valid(self, slot, generation) -> None:
+        """A missing or duplicated sequence number is an INTEGRITY FAILURE, not a warning."""
+        seq = [e["sequence_number"] for e in self.sequence_for_occupancy(slot, generation)]
+        if seq != list(range(1, len(seq) + 1)):
+            raise SlotIntegrityError()
 
     # ── quarantine ──
     def quarantine_slot(self, slot: int, reason: str, now: int = 0) -> None:

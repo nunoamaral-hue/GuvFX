@@ -19,7 +19,7 @@ import os
 # (via ``build_agent(enforce_integrity=True)``) refuses to start.
 IMPL_MODULES = (
     "agent.py", "config.py", "stores.py", "manifest.py", "op_impls.py", "win_ops.py", "service.py",
-    "occupancy.py", "win_primitives.py",
+    "occupancy.py", "win_primitives.py", "win_mutations.py",
     "lib/mgmt_protocol.py", "lib/mgmt_agent_core.py",
 )
 

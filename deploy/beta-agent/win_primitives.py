@@ -60,6 +60,45 @@ class UnauthorisedNamespace(AgentError):
         super().__init__("unauthorised_namespace")
 
 
+# ── primitive capability declaration ───────────────────────────────────────────────────────────────────
+READ_ONLY = "read_only"
+MUTATING = "mutating"
+CAPABILITIES = (READ_ONLY, MUTATING)
+
+
+class CapabilityViolation(AgentError):
+    """A mutating helper was invoked from a READ_ONLY primitive context."""
+
+    def __init__(self, detail=""):
+        self.detail = detail
+        super().__init__("capability_violation")
+
+
+@dataclass(frozen=True)
+class PrimitiveContext:
+    """Declared capability of the primitive currently executing.
+
+    A mechanical safeguard against regression: every mutating helper calls :func:`require_mutating`, so a
+    future edit that calls one from an observation path fails loudly instead of quietly writing to the
+    operator's host.
+    """
+    capability: str = READ_ONLY
+
+    def __post_init__(self):
+        if self.capability not in CAPABILITIES:
+            raise ValueError(f"unknown capability: {self.capability}")
+
+
+READ_ONLY_CONTEXT = PrimitiveContext(READ_ONLY)
+MUTATING_CONTEXT = PrimitiveContext(MUTATING)
+
+
+def require_mutating(ctx: PrimitiveContext, operation: str) -> None:
+    """Refuse a mutating helper unless the caller declared MUTATING capability."""
+    if ctx is None or ctx.capability != MUTATING:
+        raise CapabilityViolation(operation)
+
+
 # ── requirement 1: immutable primitive input ───────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class SlotInput:
