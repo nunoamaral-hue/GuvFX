@@ -5,9 +5,14 @@ exact trigger and result — not what was expected. Limitations are stated (evid
 
 ---
 
-## EV-1 — Implementation-integrity gate (B-7) verified by accidental trigger
+## EV-1 — Implementation-integrity gate (B-7): demonstrated TWICE, independently
 
-**Status: PASS — positive verification evidence.**
+**Status: PASS — positive verification evidence, from two independent unplanned triggers.**
+
+Two separate demonstrations matter more than one: a single occurrence could be coincidence, two show the
+mechanism is **repeatable and deterministic**.
+
+### EV-1A — initial `stores.py` modification (slot allocator)
 
 **Trigger (not staged — this happened during ordinary development).** `deploy/beta-agent/stores.py` was
 edited to add `SlotStore`. `stores.py` is one of the nine modules covered by the full-bundle integrity
@@ -25,6 +30,20 @@ Affected: `test_conflicting_duplicate_fails_closed`, `test_start_cannot_launch_t
 
 **Resolution.** Regenerating `manifest.json` (→ `2026-07-22.1`) restored the match; all tests passed again.
 
+### EV-1B — generation-counter modification (independent second trigger)
+
+**Trigger.** `stores.py` edited again to add the durable generation counter, plus
+`lib/mgmt_agent_core.py` edited to extend the response allowlist — a *second* covered module.
+
+**Observed result.** Identical: mutating operations refused with `impl_integrity_mismatch`.
+
+**Resolution.** `manifest.json` regenerated (→ `2026-07-22.2`, then `2026-07-22.3` after the allowlist
+and evidence-builder changes); all tests passed again.
+
+**Why EV-1B strengthens EV-1A.** The two triggers were separated in time, touched *different* module sets
+(`stores.py` alone, then `stores.py` + `lib/mgmt_agent_core.py`), and neither was staged to test the gate.
+Repeatability across distinct edits establishes the mechanism as deterministic rather than accidental.
+
 **What this proves.**
 - The gate is **live, not decorative**: an unannounced change to a covered implementation module caused
   every mutating op to fail closed, with a sanitised `impl_integrity_mismatch`, with no code change needed
@@ -40,8 +59,7 @@ Affected: `test_conflicting_duplicate_fails_closed`, `test_start_cannot_launch_t
   re-affirms that snapshot). It does **not** prove detection of on-disk tampering *after* a live agent has
   started — that is caught at next restart, as documented in `build_agent`'s docstring.
 - It was observed in the test harness, not on the Windows host. On-box behaviour is a B3 install item.
-- A second regeneration (→ `2026-07-22.2`) was required after the generation-counter change, reproducing
-  the same behaviour a second time.
+- Both triggers were observed in the harness; on-box behaviour remains a B3 install item.
 
 ---
 
@@ -105,3 +123,46 @@ on:
 | B3P-2 step 2 (generation + invariant) | 60 | 1142 |
 
 Scanner: clean at every step. Nothing installed on the Windows host; no OS object created.
+
+
+---
+
+## EV-4 — Generation monotonicity + quarantine
+
+**Status: PASS (unit-level).** 8 tests.
+
+**Invariant.** For every slot, `new_generation == previous_generation + 1` — never unchanged after
+release, never decreasing, never skipping. Asserted against an **append-only ledger**
+(`slot_generations`), so a tampered or rolled-forward `slots.generation` is *detected* rather than
+trusted.
+
+Verified to fail closed on: a ledger gap; a forged/rolled-forward current generation with no matching
+ledger entry; a mismatch between the ledger tail, the stored generation and the expected value; and an
+unknown slot.
+
+**Quarantine.** `assert_occupancy_integrity` runs the full pre-mutation gate in order — *not quarantined →
+database / marker / UUID / slot / generation agree → generation monotonicity* — and on **any** failure
+quarantines the slot and raises a sanitised `slot_integrity_mismatch`. Verified that a quarantined slot is
+**still refused even when every other check subsequently agrees**: recovery is an operator action, never a
+silent repair. The healthy path is verified *not* to quarantine.
+
+## EV-5 — Generation as first-class report evidence
+
+**Status: PASS (unit-level).** 3 tests.
+
+`build_verification_evidence()` carries all required fields: runtime UUID, slot, **generation**, ownership
+marker **digest**, canonical runtime path, PID, session, implementation manifest version, protocol version,
+and timestamps. The marker appears only as a 12-hex digest — never its contents. The shared response
+allowlist (both byte-identical copies) now carries `slot`, `generation`, `canonical_path` and
+`owner_marker_digest`, so this evidence can actually cross the management channel.
+
+**Limitation.** Proven at unit level. Population from a real MATERIALISE/START/VERIFY cycle lands with the
+pool-aware op implementations and will be re-verified there.
+
+## Test totals (updated)
+
+| Step | Bundle suite | Full suite |
+|---|---|---|
+| B3P-2 step 1 (slot allocator) | 49 | 1131 |
+| B3P-2 step 2 (generation + 4-way invariant) | 60 | 1142 |
+| B3P-2 step 2b (monotonicity, quarantine, report evidence) | 71 | 1153 |

@@ -29,7 +29,12 @@ _MUTATING = frozenset({"MATERIALISE", "START", "STOP", "TOMBSTONE"})
 _RESPONSE_ALLOWLIST = ("operation", "outcome", "runtime_uuid", "provisioning_job_id", "pid",
                        "session_id", "agent_version", "script_version", "duration_ms", "reason_code",
                        "running", "logged_in", "verified_at",
-                       "protocol_version", "manifest_version", "supported_operations")
+                       "protocol_version", "manifest_version", "supported_operations",
+                       # B3P-2: (slot, generation) identifies ONE immutable runtime occupancy and is part
+                       # of runtime identity, so it is first-class evidence rather than an internal detail.
+                       # ``canonical_path`` is the FIXED per-slot path (derivable from ``slot`` alone) and
+                       # ``owner_marker_digest`` is a digest, never the marker contents.
+                       "slot", "generation", "canonical_path", "owner_marker_digest")
 
 
 class AgentError(Exception):
@@ -173,7 +178,8 @@ class BetaProvisioningAgent:
         }
         # copy ONLY allowlisted evidence / handshake fields the impl produced
         for k in ("pid", "session_id", "duration_ms", "running", "logged_in", "verified_at",
-                  "protocol_version", "manifest_version", "supported_operations"):
+                  "protocol_version", "manifest_version", "supported_operations",
+                  "slot", "generation", "canonical_path", "owner_marker_digest"):
             if k in raw:
                 out[k] = raw[k]
         return {k: v for k, v in out.items() if k in _RESPONSE_ALLOWLIST}

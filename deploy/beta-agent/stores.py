@@ -5,6 +5,7 @@ live in a SQLite file, not memory. Concurrency (requirement 8): at most one muta
 conservative global mutation limit; a conflicting op returns a sanitised BUSY reason rather than queueing.
 """
 import contextlib
+import hashlib
 import json
 import sqlite3
 import threading
@@ -108,6 +109,16 @@ class SlotStore:
             " runtime_uuid TEXT UNIQUE,"
             " generation INTEGER NOT NULL,"
             " assigned_at INTEGER)")
+        # Append-only ledger of every generation value a slot has ever held. Monotonicity is asserted
+        # against this, so a tampered/rolled-back ``slots.generation`` is detectable rather than trusted.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS slot_generations ("
+            " slot INTEGER NOT NULL, generation INTEGER NOT NULL, event TEXT NOT NULL,"
+            " at INTEGER NOT NULL, PRIMARY KEY (slot, generation))")
+        # A slot that failed an integrity assertion is quarantined and NEVER silently repaired or reused.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS slot_quarantine ("
+            " slot INTEGER PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL)")
         self._conn.commit()
 
     def lookup(self, runtime_uuid: str):
@@ -145,27 +156,94 @@ class SlotStore:
                     self._conn.execute(
                         "INSERT INTO slots (slot, runtime_uuid, generation, assigned_at) VALUES (?,?,?,?)",
                         (slot, uid, gen, int(now)))
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO slot_generations (slot, generation, event, at) "
+                        "VALUES (?,?,?,?)", (slot, gen, "init", int(now)))
                 self._conn.commit()
                 return (slot, gen)
             raise PoolExhausted()
 
-    def release(self, runtime_uuid: str) -> bool:
-        """Free the runtime's slot after TOMBSTONE and **increment that slot's generation**. Idempotent.
+    def release(self, runtime_uuid: str, now: int = 0) -> bool:
+        """Free the runtime's slot after TOMBSTONE and **increment that slot's generation by exactly 1**.
 
-        The increment is what makes a reused slot unambiguous: the next occupant gets a strictly greater
-        generation, so any stale marker, report or audit row from the previous occupancy can never be
-        mistaken for the current one — it will fail the integrity check instead.
+        Idempotent. The increment is what makes a reused slot unambiguous: the next occupant gets a
+        strictly greater generation, so any stale marker, report or audit row from the previous occupancy
+        can never be mistaken for the current one — it fails the integrity check instead. Every transition
+        is appended to ``slot_generations`` so monotonicity is provable, not assumed.
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT slot FROM slots WHERE runtime_uuid=?", (str(runtime_uuid),)).fetchone()
+                "SELECT slot, generation FROM slots WHERE runtime_uuid=?",
+                (str(runtime_uuid),)).fetchone()
             if not row:
                 return False
+            slot, prev = row[0], row[1]
             self._conn.execute(
-                "UPDATE slots SET runtime_uuid=NULL, assigned_at=NULL, generation=generation+1 "
-                "WHERE slot=?", (row[0],))
+                "UPDATE slots SET runtime_uuid=NULL, assigned_at=NULL, generation=? WHERE slot=?",
+                (prev + 1, slot))
+            self._conn.execute(
+                "INSERT OR IGNORE INTO slot_generations (slot, generation, event, at) VALUES (?,?,?,?)",
+                (slot, prev + 1, "release", int(now)))
             self._conn.commit()
             return True
+
+    # ── quarantine ──
+    def quarantine_slot(self, slot: int, reason: str, now: int = 0) -> None:
+        """Mark a slot as failed-integrity. It is NEVER silently repaired or reused — operator only."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO slot_quarantine (slot, reason, at) VALUES (?,?,?)",
+                (int(slot), str(reason)[:64], int(now)))
+            self._conn.commit()
+
+    def is_quarantined(self, slot: int) -> bool:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT 1 FROM slot_quarantine WHERE slot=?", (int(slot),)).fetchone() is not None
+
+    def quarantined_slots(self) -> dict:
+        with self._lock:
+            rows = list(self._conn.execute("SELECT slot, reason FROM slot_quarantine ORDER BY slot"))
+        return {slot: reason for slot, reason in rows}
+
+    # ── invariants ──
+    def assert_generation_monotonic(self, slot: int, expected_generation: int) -> None:
+        """GENERATION MONOTONICITY: for every slot the ledger must be exactly
+        ``GENERATION_START, +1, +1, …`` with no gap, no repeat and no decrease, its last value must equal
+        the slot's current generation, and that must equal ``expected_generation``.
+
+        A violation is a PERMANENT integrity failure requiring operator intervention — it is never
+        silently repaired.
+        """
+        with self._lock:
+            gens = [r[0] for r in self._conn.execute(
+                "SELECT generation FROM slot_generations WHERE slot=? ORDER BY generation", (int(slot),))]
+            cur = self._conn.execute(
+                "SELECT generation FROM slots WHERE slot=?", (int(slot),)).fetchone()
+        if not gens or cur is None:
+            raise SlotIntegrityError()
+        expected_seq = list(range(self.GENERATION_START, self.GENERATION_START + len(gens)))
+        if gens != expected_seq:                       # gap, repeat, decrease or wrong start
+            raise SlotIntegrityError()
+        if gens[-1] != cur[0] or cur[0] != int(expected_generation):
+            raise SlotIntegrityError()
+
+    def assert_occupancy_integrity(self, *, runtime_uuid, slot, generation, marker_raw, now: int = 0):
+        """THE pre-mutation gate. Asserts, in order: not quarantined → database / ownership marker /
+        runtime UUID / slot / generation agree → generation monotonicity.
+
+        On ANY failure the slot is **quarantined** and a sanitised ``slot_integrity_mismatch`` is raised.
+        The caller must not continue; recovery is an operator action.
+        """
+        if self.is_quarantined(int(slot)):
+            raise SlotIntegrityError()
+        try:
+            assert_slot_integrity(runtime_uuid=runtime_uuid, slot=slot, generation=generation,
+                                  marker_raw=marker_raw)
+            self.assert_generation_monotonic(slot, generation)
+        except SlotIntegrityError:
+            self.quarantine_slot(slot, "integrity_assertion_failed", now)
+            raise
 
     def generation_of(self, slot: int):
         with self._lock:
@@ -185,6 +263,36 @@ def slot_runtime_dir(slots_root: str, slot: int) -> str:
     """The FIXED per-slot runtime directory. Derived only from the slot number — never from any
     caller-supplied value — which is what keeps each slot's launch task non-steerable."""
     return rf"{slots_root}\{int(slot)}\terminal"
+
+
+def owner_marker_digest(marker_raw) -> str:
+    """SHA-256 (12-hex prefix) of the on-disk ownership marker — evidence that the marker was the expected
+    one, without reproducing its contents."""
+    return hashlib.sha256((marker_raw or "").encode("utf-8")).hexdigest()[:12]
+
+
+def build_verification_evidence(*, runtime_uuid, slot, generation, canonical_dir, marker_raw,
+                                pid=None, session_id=None, manifest_version="", protocol_version=None,
+                                verified_at=None, started_at=None) -> dict:
+    """Assemble the first-class evidence carried by a completed Provisioning Verification Report.
+
+    Generation is part of RUNTIME IDENTITY, not an implementation detail: ``(slot, generation)`` names one
+    immutable occupancy of one execution slot, while ``runtime_uuid`` remains the logical identity. Every
+    field below is required by the B3P-2 report contract.
+    """
+    return {
+        "runtime_uuid": str(runtime_uuid),
+        "slot": int(slot),
+        "generation": int(generation),
+        "owner_marker_digest": owner_marker_digest(marker_raw),
+        "canonical_path": canonical_dir,
+        "pid": pid,
+        "session_id": session_id,
+        "manifest_version": manifest_version,
+        "protocol_version": protocol_version,
+        "verified_at": verified_at,
+        "started_at": started_at,
+    }
 
 
 class SlotIntegrityError(AgentError):

@@ -611,7 +611,7 @@ class SlotGenerationTests(SimpleTestCase):
         slot, gen = s.assign(RUUID, now=1)
         self.assertEqual(gen, 1)
         self.assertEqual(s.assign(RUUID, now=2)[1], 1)        # re-assign does NOT bump
-        self.assertTrue(s.release(RUUID))
+        self.assertTrue(s.release(RUUID, now=3))
         self.assertEqual(s.generation_of(slot), 2)            # release bumps
 
     def test_reused_slot_gives_the_next_occupant_a_greater_generation(self):
@@ -685,3 +685,123 @@ class SlotIntegrityInvariantTests(SimpleTestCase):
         from lib.mgmt_agent_core import AgentError
         from stores import SlotIntegrityError
         self.assertIsInstance(SlotIntegrityError(), AgentError)
+
+
+class GenerationMonotonicityTests(SimpleTestCase):
+    """new_generation == previous_generation + 1, always. No repeat, no gap, no decrease.
+    A violation is a PERMANENT integrity failure: fail closed, quarantine, operator review — never repair."""
+
+    @staticmethod
+    def _store(pool_size=2):
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=pool_size)
+
+    def test_ledger_is_contiguous_across_occupancies(self):
+        s = self._store()
+        u2 = "11111111-2222-3333-4444-555555555555"
+        slot, _ = s.assign(RUUID, now=1)
+        s.release(RUUID, now=2)
+        s.assign(u2, now=3); s.release(u2, now=4)
+        s.assert_generation_monotonic(slot, 3)          # 1 -> 2 -> 3, no raise
+
+    def test_current_generation_must_match_expected(self):
+        from stores import SlotIntegrityError
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_generation_monotonic(slot, gen + 5)
+
+    def test_tampered_generation_is_detected_against_the_ledger(self):
+        """A rolled-forward slots.generation with no matching ledger entry must fail closed."""
+        from stores import SlotIntegrityError
+        s = self._store()
+        slot, _ = s.assign(RUUID, now=1)
+        s._conn.execute("UPDATE slots SET generation=99 WHERE slot=?", (slot,)); s._conn.commit()
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_generation_monotonic(slot, 99)
+
+    def test_gap_in_the_ledger_is_detected(self):
+        from stores import SlotIntegrityError
+        s = self._store()
+        slot, _ = s.assign(RUUID, now=1)
+        s._conn.execute("INSERT INTO slot_generations (slot, generation, event, at) VALUES (?,?,?,?)",
+                        (slot, 5, "forged", 0))
+        s._conn.execute("UPDATE slots SET generation=5 WHERE slot=?", (slot,)); s._conn.commit()
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_generation_monotonic(slot, 5)
+
+    def test_unknown_slot_fails_closed(self):
+        from stores import SlotIntegrityError
+        s = self._store()
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_generation_monotonic(99, 1)
+
+
+class OccupancyIntegrityGateTests(SimpleTestCase):
+    """The full pre-mutation gate: quarantine -> 4-way agreement -> monotonicity, quarantining on failure."""
+
+    @staticmethod
+    def _store():
+        from stores import SlotStore
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        return SlotStore(f.name, pool_size=2)
+
+    def test_healthy_occupancy_passes(self):
+        from stores import format_owner_marker
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        s.assert_occupancy_integrity(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                     marker_raw=format_owner_marker(RUUID, slot, gen), now=2)
+        self.assertEqual(s.quarantined_slots(), {})     # healthy path must NOT quarantine
+
+    def test_stale_marker_quarantines_the_slot_and_fails_closed(self):
+        from stores import SlotIntegrityError, format_owner_marker
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        stale = format_owner_marker(RUUID, slot, gen - 1 if gen > 1 else 99)
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_occupancy_integrity(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                         marker_raw=stale, now=2)
+        self.assertIn(slot, s.quarantined_slots())
+
+    def test_quarantined_slot_is_refused_even_when_everything_else_agrees(self):
+        """Quarantine is not silently repaired — a subsequent healthy request is still refused."""
+        from stores import SlotIntegrityError, format_owner_marker
+        s = self._store()
+        slot, gen = s.assign(RUUID, now=1)
+        s.quarantine_slot(slot, "manual", 1)
+        with self.assertRaises(SlotIntegrityError):
+            s.assert_occupancy_integrity(runtime_uuid=RUUID, slot=slot, generation=gen,
+                                         marker_raw=format_owner_marker(RUUID, slot, gen), now=2)
+
+
+class VerificationEvidenceTests(SimpleTestCase):
+    """Generation is first-class report evidence, not an implementation detail."""
+
+    def test_report_carries_every_required_field(self):
+        from stores import build_verification_evidence, format_owner_marker
+        marker = format_owner_marker(RUUID, 2, 4)
+        ev = build_verification_evidence(
+            runtime_uuid=RUUID, slot=2, generation=4,
+            canonical_dir=r"C:\GuvFX\beta\slots\2\terminal", marker_raw=marker,
+            pid=13020, session_id=1, manifest_version="2026-07-22.3", protocol_version=1,
+            verified_at=1700000000, started_at=1699999999)
+        for field in ("runtime_uuid", "slot", "generation", "owner_marker_digest", "canonical_path",
+                      "pid", "session_id", "manifest_version", "protocol_version", "verified_at",
+                      "started_at"):
+            self.assertIn(field, ev, field)
+        self.assertEqual((ev["slot"], ev["generation"]), (2, 4))
+
+    def test_marker_digest_is_a_digest_not_the_contents(self):
+        from stores import build_verification_evidence, format_owner_marker
+        marker = format_owner_marker(RUUID, 2, 4)
+        ev = build_verification_evidence(runtime_uuid=RUUID, slot=2, generation=4,
+                                         canonical_dir="x", marker_raw=marker)
+        self.assertEqual(len(ev["owner_marker_digest"]), 12)
+        self.assertNotIn(RUUID, ev["owner_marker_digest"])
+
+    def test_response_allowlist_now_carries_generation_identity(self):
+        from lib.mgmt_agent_core import _RESPONSE_ALLOWLIST
+        for f in ("slot", "generation", "canonical_path", "owner_marker_digest"):
+            self.assertIn(f, _RESPONSE_ALLOWLIST, f)
