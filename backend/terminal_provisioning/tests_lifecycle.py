@@ -409,3 +409,65 @@ class StoreEvidenceCompletenessTests(SimpleTestCase):
         slot2, gen2 = s.assign(other, now=3)
         self.assertEqual(s.stage_evidence_for_occupancy(slot2, gen2), [])
         self.assertEqual(len(s.stage_evidence_for_occupancy(slot, gen)), 1)
+
+
+class GeneratedContractDocTests(SimpleTestCase):
+    """The published contract doc is generated from the code, so it cannot quietly go stale."""
+
+    def test_doc_matches_the_code(self):
+        sys.path.insert(0, _BUNDLE)
+        import render_contracts
+        doc = os.path.join(_REPO, "docs", "B3P2_STAGE_CONTRACTS.md")
+        self.assertEqual(
+            open(doc, encoding="utf-8").read(), render_contracts.render(),
+            "docs/B3P2_STAGE_CONTRACTS.md is stale — regenerate: "
+            "python3 deploy/beta-agent/render_contracts.py > docs/B3P2_STAGE_CONTRACTS.md")
+
+
+class WindowsApiBoundaryTests(SimpleTestCase):
+    """Requirement 6: Windows-specific API lives ONLY in the adapter (plus the SCM service harness).
+
+    Scanned rather than reviewed, because this boundary is exactly the kind that erodes one convenient
+    import at a time.
+    """
+
+    #: Modules that may touch Windows-specific APIs, and the single reason each is allowed to.
+    PERMITTED = {"win_ops.py": "the adapter — every host operation",
+                 "service.py": "the Service Control Manager harness only"}
+    FORBIDDEN_IMPORTS = ("win32", "win32api", "win32con", "win32com", "win32file", "win32process",
+                         "win32security", "win32service", "win32serviceutil", "pywintypes", "winreg",
+                         "ctypes", "subprocess", "shutil", "psutil", "wmi")
+    FORBIDDEN_CALLS = ("system", "popen", "spawnl", "startfile")
+
+    def test_no_windows_api_outside_the_adapter(self):
+        offences = []
+        for path, tree in _bundle_sources():
+            name = os.path.basename(path)
+            if name in self.PERMITTED:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for a in node.names:
+                        if a.name.split(".")[0] in self.FORBIDDEN_IMPORTS:
+                            offences.append(f"{name}: import {a.name}")
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    if node.module.split(".")[0] in self.FORBIDDEN_IMPORTS:
+                        offences.append(f"{name}: from {node.module} import ...")
+                elif isinstance(node, ast.Call):
+                    fn = node.func
+                    if (isinstance(fn, ast.Attribute) and fn.attr in self.FORBIDDEN_CALLS
+                            and isinstance(fn.value, ast.Name) and fn.value.id == "os"):
+                        offences.append(f"{name}: os.{fn.attr}()")
+        self.assertEqual(offences, [], f"Windows API outside the adapter: {offences}")
+
+    def test_the_stage_layers_do_not_import_the_adapter_implementation(self):
+        """Stages talk to an injected ``win``; importing RealWindowsOps would bind them to the host."""
+        for module in ("win_primitives.py", "win_mutations.py", "pool_op_impls.py", "lifecycle.py",
+                       "occupancy.py", "stores.py"):
+            tree = ast.parse(open(os.path.join(_BUNDLE, module), encoding="utf-8").read())
+            imported = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "win_ops":
+                    imported.update(a.name for a in node.names)
+            self.assertNotIn("RealWindowsOps", imported, module)
+            self.assertNotIn("RealSlotWindowsOps", imported, module)
