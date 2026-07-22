@@ -48,7 +48,11 @@ _RESPONSE_ALLOWLIST = ("operation", "outcome", "runtime_uuid", "provisioning_job
                        # Report, Windows operational logs and authorised operator evidence.
                        "slot", "generation", "occupancy_id", "owner_marker_digest",
                        "canonical_path_digest",
-                       "path_containment_verified", "executable_containment_verified")
+                       "path_containment_verified", "executable_containment_verified",
+                       # B3P-2: TOMBSTONE reports that the slot is NOT yet released. Stripping this would
+                       # show the backend an unqualified success and let it believe the pool had capacity
+                       # it does not have.
+                       "released", "release_pending")
 
 
 class AgentError(Exception):
@@ -224,7 +228,8 @@ class BetaProvisioningAgent:
         for k in ("pid", "session_id", "duration_ms", "running", "logged_in", "verified_at",
                   "protocol_version", "manifest_version", "supported_operations",
                   "slot", "generation", "occupancy_id", "owner_marker_digest", "canonical_path_digest",
-                  "path_containment_verified", "executable_containment_verified"):
+                  "path_containment_verified", "executable_containment_verified",
+                  "released", "release_pending"):
             if k in raw:
                 out[k] = raw[k]
         return {k: v for k, v in out.items() if k in _RESPONSE_ALLOWLIST}

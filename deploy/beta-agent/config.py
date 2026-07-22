@@ -13,6 +13,11 @@ import json
 import os
 
 from lib.mgmt_agent_core import EXECUTION_MODEL_SLOT_POOL, EXECUTION_MODEL_UUID_DIR
+from win_primitives import BETA_SLOTS_ROOT
+
+#: Kept here rather than imported from pool_op_impls so config has no dependency on the lifecycle layer.
+#: Asserted equal to the implementation's values by ``tests_pool_ops``.
+LAUNCH_SETTLE_ATTEMPTS, STOP_SETTLE_ATTEMPTS, SETTLE_POLL_SECONDS = 20, 30, 1.0
 
 # The single management interface the live agent is expected to bind (verification B-9). ``load_config``
 # pins the live bind to this exact address; ``BETA_AGENT_EXPECTED_BIND_HOST`` overrides it for a different box.
@@ -93,6 +98,23 @@ def load_config(env: dict | None = None) -> dict:
             raise ConfigError("slot_pool execution model requires BETA_AGENT_SLOT_POOL_SIZE >= 1")
         if not golden_digest:
             raise ConfigError("slot_pool execution model requires BETA_AGENT_GOLDEN_DIGEST")
+        if not env.get("BETA_AGENT_GOLDEN_MANIFEST_VERSION"):
+            # Left empty, the stage-copy pre-check would compare "" == "" and pass on an unversioned image.
+            raise ConfigError("slot_pool execution model requires BETA_AGENT_GOLDEN_MANIFEST_VERSION")
+        slots_root = env.get("BETA_AGENT_SLOTS_ROOT", BETA_SLOTS_ROOT)
+        if slots_root != BETA_SLOTS_ROOT:
+            # The knob is honoured for the containment base but the primitives derive every slot path from
+            # the module constant, so any other value makes every operation fail path_escape at RUNTIME.
+            # Refuse at STARTUP instead of shipping a config that cannot work.
+            raise ConfigError(
+                f"BETA_AGENT_SLOTS_ROOT must equal {BETA_SLOTS_ROOT!r}: slot paths are derived from the "
+                f"fixed namespace, not from configuration")
+        settle = max(LAUNCH_SETTLE_ATTEMPTS, STOP_SETTLE_ATTEMPTS) * SETTLE_POLL_SECONDS
+        if float(env.get("BETA_AGENT_DRAIN_TIMEOUT_S", "20")) <= settle:
+            # A settle window longer than the drain budget guarantees that a service stop during a mutation
+            # force-kills it mid-stage — the exact outcome the drain exists to prevent.
+            raise ConfigError(
+                f"BETA_AGENT_DRAIN_TIMEOUT_S must exceed the settle window ({settle:.0f}s)")
     return {
         "bind_host": host,
         "expected_bind_host": expected,

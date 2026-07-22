@@ -41,9 +41,6 @@ PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 ERROR_ACCESS_DENIED = 5
 ERROR_INVALID_PARAMETER = 87
-#: [R:toolhelp-bitness-and-retry]
-TH32CS_SNAPPROCESS = 0x00000002
-INVALID_HANDLE_VALUE = -1
 
 
 def _reraise(error):
@@ -188,6 +185,7 @@ class RealSlotWindowsOps(SlotWindowsOps):
         self.slots_root = slots_root
         self.hash_chunk = hash_chunk
         self._api = None
+        self._sid_cache = {}
 
     # ── lazy Win32 access ──
     @staticmethod
@@ -235,12 +233,6 @@ class RealSlotWindowsOps(SlotWindowsOps):
         k32.GetVolumeNameForVolumeMountPointW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR,
                                                           wintypes.DWORD]
         k32.GetVolumeNameForVolumeMountPointW.restype = wintypes.BOOL
-        k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-        k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-        k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
-        k32.Process32FirstW.restype = wintypes.BOOL
-        k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
-        k32.Process32NextW.restype = wintypes.BOOL
 
         self._api = {"ctypes": ctypes, "wintypes": wintypes, "k32": k32}
         return self._api
@@ -359,9 +351,11 @@ class RealSlotWindowsOps(SlotWindowsOps):
 
     # ── golden image + destination integrity ─────────────────────────────────────────────────────────
     def golden_source_info(self) -> dict:
+        # None, not "": an absent manifest compared as "" == "" would make
+        # source_manifest_version_matches pass on an unversioned golden image.
         return {"digest": self._tree_digest(self.golden_dir),
                 "manifest_version": self._read_marker(
-                    os.path.join(self.golden_dir, GOLDEN_MANIFEST_FILE)) or ""}
+                    os.path.join(self.golden_dir, GOLDEN_MANIFEST_FILE))}
 
     def destination_info(self, slot_path: str) -> dict:
         exe = os.path.join(slot_path, RUNTIME_EXECUTABLE)
@@ -504,96 +498,108 @@ class RealSlotWindowsOps(SlotWindowsOps):
         return True
 
     # ── process observation ──────────────────────────────────────────────────────────────────────────
-    def query_slot_process(self, slot_path: str):
-        """Find the runtime process by IMAGE-PATH CONTAINMENT.
+    def query_slot_process(self, slot_path: str, runtime_identity: str = ""):
+        """Find the runtime process for this slot, scoped by the slot's fixed RUNTIME IDENTITY.
 
-        [R:toolhelp-name-not-path] Never by executable name: ``PROCESSENTRY32W.szExeFile`` is a bare name,
-        and matching ``terminal64.exe`` by name would match the operator's production MT5.
+        [R:toolhelp-name-not-path] Never by executable name. That is not a purity point: the golden image
+        is a copy of MetaTrader 5, so a materialised slot contains ``terminal64.exe`` — the SAME name as the
+        operator's production terminal running as Administrator in another session. A scope keyed on the
+        name cannot separate the two, and a denial on the operator's process would make "this slot is empty"
+        permanently unprovable, so STOP and TOMBSTONE could never succeed.
 
-        [R:creationtime-filetime-units] Creation time is read as a raw 64-bit FILETIME (100-ns ticks since
-        1601). [R:psutil-createtime-loses-precision] psutil's ``create_time()`` is a float of seconds since
-        1970 and 58% of tick values do not round-trip through it — unusable for process-birth identity.
+        [R:wts-enumerate-one-shot-sid-session] ``WTSEnumerateProcessesEx`` at level 1 returns pid, name,
+        session and owning SID **without opening any process**, so the scope is decided before a handle is
+        ever requested. Only processes owned by this slot's identity are candidates; the rest of the host,
+        including the operator's estate, is out of scope by construction.
+
+        [R:creationtime-filetime-units] Creation time is a raw 64-bit FILETIME.
+        [R:psutil-createtime-loses-precision] psutil cannot carry it.
         """
         if not self.path_exists(slot_path):
             return None                          # nothing can run from a directory that does not exist
         api = self._win32()
         k32 = api["k32"]
         canonical_slot = self._long_path(slot_path)
-        # Names of executables that exist in the slot tree RIGHT NOW. Any process launched from this slot
-        # must carry one of them, so a process whose name is absent from this set provably is not ours and
-        # its inaccessibility is irrelevant. This is what keeps the fail-closed rule below usable: without
-        # it, one protected process anywhere on the host (a security product, PID 4) would make "the slot
-        # is empty" permanently unprovable and STOP/TOMBSTONE could never succeed.
-        slot_names = self._slot_executable_names(slot_path)
+        expected = self._identity_sid(runtime_identity)
         candidates, unattributable = [], []
-        for pid, name in self._enum_processes(api):
+        for pid, _name, sid in self._enum_processes_with_owner():
+            if sid != expected:
+                continue                         # not this slot's identity — out of scope entirely
             handle, state = self._open_process(api, pid)
             if handle is None:
-                if state != "gone" and name.lower() in slot_names:
-                    unattributable.append(pid)   # could be ours and we cannot tell — never ignored
+                if state != "gone":
+                    # Owned by OUR identity and unreadable. A genuine anomaly, not ambient host noise.
+                    unattributable.append(pid)
                 continue
             try:
                 image = self._image_path(api, handle)
                 if image is None:
-                    if name.lower() in slot_names:
-                        unattributable.append(pid)   # exists, but we cannot say WHERE it runs from
+                    unattributable.append(pid)
                     continue
                 if not is_beneath_path(self._long_path(image), canonical_slot):
-                    continue                     # positively attributed elsewhere — not our concern
+                    continue                     # our identity, but running from elsewhere
                 candidates.append({
                     "pid": pid,
                     "created_at_filetime": self._creation_filetime(api, handle),
                     "image": image,
                     "image_digest": self._file_digest(image) if self.path_exists(image) else None,
-                    "user_sid": self._user_sid(pid),
+                    "user_sid": sid,
                     "session_id": self._session_id(api, pid),
                 })
             finally:
                 k32.CloseHandle(handle)
         result = select_slot_process(candidates, slot_path)
         if result is None and unattributable:
-            # THE fail-open this design exists to prevent: a process that could be this slot's runtime
-            # could not be attributed, so "no runtime is running" is not a claim we are entitled to make.
-            # Raising degrades this to process_observation_unavailable, which never completes a launch and
-            # never confirms a stop. If this fires routinely on the box, the agent identity lacks the
-            # access the design assumes — trial item 4, and far better discovered here than by tombstoning
-            # a directory out from under a live terminal.
             raise WindowsOpsError("process_attribution_incomplete")
         return result
 
-    def _slot_executable_names(self, slot_path: str) -> set:
-        names = set()
-        for _dirpath, _dirnames, filenames in os.walk(slot_path, onerror=_reraise):
-            names.update(n.lower() for n in filenames if n.lower().endswith(".exe"))
-        return names
+    def _identity_sid(self, runtime_identity: str) -> str:
+        """Resolve the slot's fixed account name to its SID, once, cached.
 
-    def _enum_processes(self, api):
-        """``(pid, image_name)`` for every process. The NAME comes from Toolhelp, which needs no handle —
-        [R:toolhelp-name-not-path] it is a bare name and is used ONLY to rule a process out, never to
-        attribute one in. Attribution is always by full image path."""
-        ctypes, wintypes, k32 = api["ctypes"], api["wintypes"], api["k32"]
-
-        class PROCESSENTRY32W(ctypes.Structure):
-            _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
-                        ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_void_p),
-                        ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
-                        ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
-                        ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
-
-        snapshot = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-        if snapshot == INVALID_HANDLE_VALUE:
-            raise WindowsOpsError("process_enumeration_failed")
+        An unresolvable identity RAISES: the account is created by the operator at the install gate, so its
+        absence is a deployment fault. Continuing with an empty scope would match nothing and report every
+        slot empty — the fail-open this method exists to prevent.
+        """
+        if not runtime_identity:
+            raise WindowsOpsError("runtime_identity_required")
+        if runtime_identity in self._sid_cache:
+            return self._sid_cache[runtime_identity]
+        if os.name != "nt":
+            raise WindowsApiUnavailable("not running on Windows")
         try:
-            entry = PROCESSENTRY32W()
-            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-            if not k32.Process32FirstW(snapshot, ctypes.byref(entry)):
-                raise WindowsOpsError("process_enumeration_failed")
-            while True:
-                yield int(entry.th32ProcessID), str(entry.szExeFile)
-                if not k32.Process32NextW(snapshot, ctypes.byref(entry)):
-                    return
-        finally:
-            k32.CloseHandle(snapshot)
+            import win32security
+        except ImportError as exc:
+            raise WindowsApiUnavailable("pywin32 not installed") from exc
+        try:
+            sid, _domain, _use = win32security.LookupAccountName(None, runtime_identity)
+            resolved = str(win32security.ConvertSidToStringSid(sid))
+        except Exception as exc:                             # noqa: BLE001
+            raise WindowsOpsError("runtime_identity_unresolvable") from exc
+        self._sid_cache[runtime_identity] = resolved
+        return resolved
+
+    def _enum_processes_with_owner(self):
+        """``(pid, name, owner_sid)`` for every process, WITHOUT opening any of them.
+
+        Failure raises rather than yielding a short list: a partial enumeration silently narrows the scope
+        and would report a running slot as empty.
+        """
+        if os.name != "nt":
+            raise WindowsApiUnavailable("not running on Windows")
+        try:
+            import win32security
+            import win32ts
+        except ImportError as exc:
+            raise WindowsApiUnavailable("pywin32 not installed") from exc
+        try:
+            rows = win32ts.WTSEnumerateProcessesEx(win32ts.WTS_CURRENT_SERVER_HANDLE, 1,
+                                                   win32ts.WTS_ANY_SESSION)
+        except Exception as exc:                             # noqa: BLE001
+            translate_denial(exc)
+            raise WindowsOpsError("process_enumeration_failed") from exc
+        for row in rows:
+            pid, name, sid = row[1], row[2], row[3]
+            yield int(pid), str(name), (str(win32security.ConvertSidToStringSid(sid)) if sid else "")
 
     def _long_path(self, path: str) -> str:
         """[R:short-name-83-aliasing] 8.3 aliasing may or may not be enabled on the target volume — it is

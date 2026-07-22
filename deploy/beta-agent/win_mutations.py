@@ -71,11 +71,20 @@ def stage_copy(win, ctx: PrimitiveContext, si: SlotInput, *, expected_source_dig
     require_mutating(ctx, "stage_copy")
     assert_authorised_slot_input(si)
     pre = {}
-    src = win.golden_source_info()
+    try:
+        src = win.golden_source_info()
+        pre["destination_absent"] = not win.path_exists(si.slot_path)
+        real = win.real_path(rf"{BETA_SLOTS_ROOT}\{si.slot}")
+    except PermissionError:
+        return _fail(si, "stage_copy", "stage_copy_precheck_permission_denied", {}, observed_at,
+                     status=BLOCKED)
+    except Exception:
+        # Nothing validates the golden image before this point, so a wrong or unreadable
+        # BETA_AGENT_GOLDEN_DIR first surfaces HERE — as a stage refusal, not as an escaped exception.
+        return _fail(si, "stage_copy", "golden_source_unavailable", {}, observed_at, status=BLOCKED)
     pre["source_digest_matches"] = bool(src) and src.get("digest") == expected_source_digest
-    pre["source_manifest_version_matches"] = bool(src) and \
+    pre["source_manifest_version_matches"] = bool(src) and bool(src.get("manifest_version")) and \
         src.get("manifest_version") == expected_source_manifest_version
-    pre["destination_absent"] = not win.path_exists(si.slot_path)
     # Containment is asserted against the FIXED roots, not against the destination's own parent — the
     # latter is a tautology (every path is beneath its own parent) and would record a check that proved
     # nothing while reading as if it had.
@@ -86,7 +95,6 @@ def stage_copy(win, ctx: PrimitiveContext, si: SlotInput, *, expected_source_dig
     # provisioned (no identity, no ACL, no tasks — robocopy would happily create the whole chain), and it
     # makes the reparse check meaningful. Treating "could not resolve" as a pass would leave the guard
     # vacuously satisfied exactly when the directory is absent.
-    real = win.real_path(slot_dir)
     pre["destination_not_reparse"] = real is not None and is_beneath(real, BETA_SLOTS_ROOT)
     pre["generation_matches"] = int(expected_generation) == int(actual_generation)
     failed_pre = [k for k in STAGE_PRE_CHECKS if not pre.get(k)]
@@ -295,15 +303,32 @@ CLEANUP_PROOFS = ("slot_directory_empty", "no_task_running", "no_runtime_process
                   "no_runtime_handles", "audit_complete", "generation_unchanged")
 
 
-def verify_cleanup(win, ctx: PrimitiveContext, si: SlotInput, *, generation_before, generation_now,
-                   audit_complete, observed_at=None) -> dict:
-    """Prove the slot is genuinely clean BEFORE release, and emit evidence either way.
+#: Proofs that can be evaluated BEFORE the tombstone move, and therefore before anything irreversible has
+#: happened. Running them first means a doomed teardown costs nothing.
+PRE_MOVE_PROOFS = ("no_task_running", "no_runtime_process", "no_runtime_handles", "generation_unchanged")
 
-    ``generation_unchanged`` is deliberately part of cleanup: the generation must NOT advance until the
-    release protocol runs, so an advanced generation here means release happened out of order.
+
+def precheck_cleanup(win, ctx: PrimitiveContext, si: SlotInput, *, generation_before, generation_now,
+                     observed_at=None) -> dict:
+    """Evaluate the pre-move-provable cleanup proofs BEFORE the tombstone move.
+
+    Without this the sequence was: move the directory (irreversible), then discover a proof cannot hold,
+    then fail — leaving the slot moved, the operation errored and the runtime dir under the tombstone root.
+    Since ``no_runtime_handles`` currently can never hold (no supported API answers it), that was not a
+    corner case: it was every teardown.
     """
-    require_mutating(ctx, "verify_cleanup")
+    require_mutating(ctx, "precheck_cleanup")
     assert_authorised_slot_input(si)
+    proofs = _cleanup_proofs(win, si, generation_before, generation_now, observed_at)
+    missing = [k for k in PRE_MOVE_PROOFS if not proofs.get(k)]
+    evidence = {"proofs": {k: proofs[k] for k in PRE_MOVE_PROOFS}, "missing": missing, "phase": "PRE_MOVE"}
+    if missing:
+        return _fail(si, "precheck_cleanup", "cleanup_precheck_failed", evidence, observed_at,
+                     status=BLOCKED)
+    return _ok(si, "precheck_cleanup", evidence, observed_at)
+
+
+def _cleanup_proofs(win, si, generation_before, generation_now, observed_at) -> dict:
     proofs = {}
     proofs["slot_directory_empty"] = not win.path_exists(si.slot_path)
     try:
@@ -318,8 +343,21 @@ def verify_cleanup(win, ctx: PrimitiveContext, si: SlotInput, *, generation_befo
         proofs["no_runtime_handles"] = not bool(win.open_handles(si.slot_path))
     except Exception:
         proofs["no_runtime_handles"] = False
-    proofs["audit_complete"] = bool(audit_complete)
     proofs["generation_unchanged"] = int(generation_before) == int(generation_now)
+    return proofs
+
+
+def verify_cleanup(win, ctx: PrimitiveContext, si: SlotInput, *, generation_before, generation_now,
+                   audit_complete, observed_at=None) -> dict:
+    """Prove the slot is genuinely clean BEFORE release, and emit evidence either way.
+
+    ``generation_unchanged`` is deliberately part of cleanup: the generation must NOT advance until the
+    release protocol runs, so an advanced generation here means release happened out of order.
+    """
+    require_mutating(ctx, "verify_cleanup")
+    assert_authorised_slot_input(si)
+    proofs = _cleanup_proofs(win, si, generation_before, generation_now, observed_at)
+    proofs["audit_complete"] = bool(audit_complete)
     missing = [k for k in CLEANUP_PROOFS if not proofs.get(k)]
     evidence = {"proofs": proofs, "missing": missing}
     if missing:

@@ -73,9 +73,13 @@ def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: s
         win = win if win is not None else RealSlotWindowsOps(golden_dir=cfg["golden_dir"],
                                                              slots_root=cfg["slots_root"])
         slot_store = slot_store_override or SlotStore(cfg["slot_db"], pool_size=cfg["slot_pool_size"])
+        # now_fn is load-bearing, not decoration: omitted, PoolOpImplementations falls back to
+        # ``lambda: 0`` and every durable stage record, audit row and release timestamp is written as 0,
+        # making the evidence chain unorderable in time.
         impls = PoolOpImplementations(
             win, slot_store, golden_digest=cfg["golden_digest"],
             golden_manifest_version=cfg["golden_manifest_version"],
+            now_fn=lambda: int(time.time()),
             manifest_version=approved.get("manifest_version", "")).as_dict()
         resolver = SlotResolver(slot_store, slots_root=cfg["slots_root"], now_fn=lambda: int(time.time()))
         base = cfg["slots_root"]

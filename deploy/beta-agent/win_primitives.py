@@ -48,6 +48,8 @@ FORBIDDEN_FRAGMENTS = (
     "8787",
 )
 FORBIDDEN_IDENTITIES = ("administrator", "system", "guvfx-rdp")
+#: Fixed per-slot runtime accounts. Pre-created by the operator; the agent never mints an identity.
+RUNTIME_IDENTITY_PREFIX = "guvfx_b_slot"
 FORBIDDEN_TASK_NAMES = ("guvfx_autostart", "guvfx_signalbridge", "guvfx_bridgewatchdog",
                         "guvfx_launchmt5", "gfx_launchis6", "guvfx_mt5test")
 
@@ -112,12 +114,16 @@ class SlotInput:
     slot_path: str
     launch_task: str
     terminate_task: str
+    #: The fixed non-admin account this slot's runtime executes as, created once by the operator at the
+    #: install gate. Derived from the slot number, never supplied by a caller.
+    runtime_identity: str = ""
 
     @classmethod
     def from_scoped_view(cls, view: dict) -> "SlotInput":
         v = dict(view)                                  # defensive copy: later caller mutation is inert
         obj = cls(slot=int(v["slot"]), slot_path=str(v["slot_path"]),
-                  launch_task=str(v["launch_task"]), terminate_task=str(v["terminate_task"]))
+                  launch_task=str(v["launch_task"]), terminate_task=str(v["terminate_task"]),
+                  runtime_identity=str(v.get("runtime_identity") or ""))
         assert_authorised_slot_input(obj)
         return obj
 
@@ -134,9 +140,15 @@ def resolve_slot_input(slot: int) -> SlotInput:
     obj = SlotInput(slot=n,
                     slot_path=rf"{BETA_SLOTS_ROOT}\{n}\terminal",
                     launch_task=f"GuvFXBetaRuntime-{n}",
-                    terminate_task=f"GuvFXBetaRuntimeStop-{n}")
+                    terminate_task=f"GuvFXBetaRuntimeStop-{n}",
+                    runtime_identity=f"{RUNTIME_IDENTITY_PREFIX}{n}")
     assert_authorised_slot_input(obj)
     return obj
+
+
+def _account_component(identity) -> str:
+    name = str(identity or "").strip().lower()
+    return name.rsplit("\\", 1)[-1].split("@", 1)[0]
 
 
 def assert_authorised_slot_input(si: SlotInput) -> None:
@@ -152,6 +164,12 @@ def assert_authorised_slot_input(si: SlotInput) -> None:
     for frag in FORBIDDEN_FRAGMENTS:
         if frag in low:
             raise UnauthorisedNamespace("forbidden path fragment")
+    identity = _account_component(si.runtime_identity)
+    if identity:
+        if identity in FORBIDDEN_IDENTITIES:
+            raise UnauthorisedNamespace("forbidden runtime identity")
+        if not identity.startswith(RUNTIME_IDENTITY_PREFIX):
+            raise UnauthorisedNamespace("identity outside the beta identity namespace")
     for task in (si.launch_task, si.terminate_task):
         t = task.lower()
         if not t.startswith("guvfxbetaruntime"):
@@ -279,11 +297,6 @@ def inspect_task(win, si: SlotInput, *, which: str = "launch", observed_at=None)
 
 
 # ── stage 2: process observation (READ ONLY) ───────────────────────────────────────────────────────────
-def _account_component(identity) -> str:
-    name = str(identity or "").strip().lower()
-    return name.rsplit("\\", 1)[-1].split("@", 1)[0]
-
-
 def observe_process(win, si: SlotInput, *, observed_at=None) -> dict:
     """Observe the slot's runtime process. Never starts, stops or signals anything.
 
@@ -293,7 +306,7 @@ def observe_process(win, si: SlotInput, *, observed_at=None) -> dict:
     assert_authorised_slot_input(si)
     operation = "observe_process"
     try:
-        proc = win.query_slot_process(si.slot_path)
+        proc = win.query_slot_process(si.slot_path, si.runtime_identity)
     except PermissionError:
         return _wrap(si, operation, PERMISSION_DENIED, "process_permission_denied", {}, observed_at)
     except Exception:

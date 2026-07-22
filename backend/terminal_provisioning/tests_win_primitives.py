@@ -43,7 +43,7 @@ class RecordingFakeWin:
             raise self._task_error
         return self._task
 
-    def query_slot_process(self, slot_path):
+    def query_slot_process(self, slot_path, identity=""):
         if self._process_error:
             raise self._process_error
         return self._process

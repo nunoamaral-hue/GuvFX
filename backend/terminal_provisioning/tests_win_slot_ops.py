@@ -276,14 +276,24 @@ class ProcessAttributionScopeTests(SimpleTestCase):
         adapter = NoSlot(golden_dir="g", slots_root="s")
         self.assertIsNone(adapter.query_slot_process(r"C:\GuvFX\beta\slots\1\terminal"))
 
-    def test_the_scope_is_derived_from_the_slot_tree(self):
+    def test_the_scope_is_the_slot_identity_not_the_executable_name(self):
+        """A materialised slot is a copy of MT5, so it contains terminal64.exe - the SAME name as the
+        operator's production terminal. Scoping by name cannot separate the two; scoping by the slot's
+        fixed identity SID puts the operator's estate out of scope by construction."""
         source = inspect.getsource(wso.RealSlotWindowsOps.query_slot_process)
-        self.assertIn("slot_names", source)
-        self.assertIn("name.lower() in slot_names", source)
+        self.assertIn("_identity_sid", source)
+        self.assertIn("sid != expected", source)
+        self.assertNotIn("slot_names", source)
 
-    def test_every_non_gone_state_counts_when_the_name_matches(self):
-        """Previously only 'denied' counted, silently dropping 'unknown' - the reachable winerrors the
-        suite itself lists (0, 6, 8, 299, 1450) all classify as unknown."""
+    def test_an_unresolvable_identity_raises_rather_than_matching_nothing(self):
+        """An empty scope would match no process and report every slot empty."""
+        with self.assertRaises(WindowsOpsError) as ctx:
+            _adapter()._identity_sid("")
+        self.assertEqual(ctx.exception.reason_code, "runtime_identity_required")
+
+    def test_every_non_gone_state_counts_within_the_identity_scope(self):
+        """Only 'denied' used to count, silently dropping 'unknown' - the reachable winerrors the suite
+        itself lists (0, 6, 8, 299, 1450) all classify as unknown."""
         source = inspect.getsource(wso.RealSlotWindowsOps.query_slot_process)
         self.assertIn('state != "gone"', source)
 

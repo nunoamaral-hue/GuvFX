@@ -40,7 +40,7 @@ class FakeWin:
     def destination_info(self, p): return self._dest
     def path_exists(self, p): return self._exists
     def real_path(self, p): return p          # provisioned slot dir, no reparse point
-    def query_slot_process(self, p): return self._process
+    def query_slot_process(self, p, identity=""): return self._process
     def same_volume(self, a, b): return self._same_volume
     def task_running(self, t): return self._task_running
     def open_handles(self, p): return self._handles
@@ -236,7 +236,7 @@ class TerminationSemanticsTests(SimpleTestCase):
 
     def test_unobservable_process_never_claims_termination(self):
         class Blind(FakeWin):
-            def query_slot_process(self, p): raise OSError("wmi down")
+            def query_slot_process(self, p, identity=""): raise OSError("wmi down")
         res = wm.confirm_terminated(Blind(), MUT, SI, birth=self.BIRTH, observed_at=AT)
         self.assertEqual(res["attestation"]["outcome"], "failure")
         self.assertEqual(res["attestation"]["reason_code"], "process_observation_unavailable")

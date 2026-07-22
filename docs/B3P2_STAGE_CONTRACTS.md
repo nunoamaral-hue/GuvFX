@@ -91,6 +91,18 @@ outcome while keeping an old contract.
 
 **Statuses it may report** — COMPLETED, ALREADY_COMPLETED, BLOCKED, FAILED
 
+## `precheck_cleanup`
+**Preconditions**
+- capability is MUTATING
+- process confirmed terminated
+
+**Invariant** — nothing has been moved yet — this stage exists so that a teardown which cannot complete costs nothing
+
+**Postconditions**
+- all four pre-move proofs hold, or the missing ones are named and the move is not attempted
+
+**Statuses it may report** — COMPLETED, BLOCKED
+
 ## `verify_cleanup`
 **Preconditions**
 - capability is MUTATING

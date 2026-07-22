@@ -47,10 +47,10 @@ class FakeWin:
     def path_exists(self, p): return self._exists
     def real_path(self, p): return p          # provisioned slot dir, no reparse point
     def read_owner_tag(self, p): return self._marker
-    def query_slot_process(self, p): return self._process
+    def query_slot_process(self, p, identity=""): return self._process
     def same_volume(self, a, b): return True
     def task_running(self, t): return False
-    def open_handles(self, p): return False
+    def open_handles(self, p): return False   # a real host CANNOT answer this - see the trial note
 
     # writes
     def copy_golden(self, p): self.calls.append(("copy_golden", p)); self._exists = True
@@ -357,17 +357,19 @@ class TombstoneLifecycleTests(SimpleTestCase):
         impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
                         context=_ctx(s, operation="TOMBSTONE"))
         ops = [e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)]
-        self.assertEqual(ops[-2:], ["tombstone", "verify_cleanup"])
+        self.assertEqual(ops[-3:], ["precheck_cleanup", "tombstone", "verify_cleanup"])
         self.assertEqual(s.generation_of(1), 1)          # release has NOT happened here
         s.assert_evidence_complete(1, 1)
 
-    def test_a_surviving_process_blocks_cleanup(self):
+    def test_a_surviving_process_blocks_the_move_itself(self):
+        """The refusal must come BEFORE the irreversible move, not after it."""
         s, win, impls = self._stopped()
         win._process = _proc()                            # something is running in the slot again
         with self.assertRaises(AgentError) as ctx:
             impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
                             context=_ctx(s, operation="TOMBSTONE"))
-        self.assertEqual(ctx.exception.reason_code, "cleanup_incomplete")
+        self.assertEqual(ctx.exception.reason_code, "cleanup_precheck_failed")
+        self.assertEqual([c for c in win.calls if c[0] == "move_dir"], [])   # nothing was moved
 
     def test_the_whole_lifecycle_reconciles(self):
         s, win, impls = self._stopped()
@@ -375,8 +377,8 @@ class TombstoneLifecycleTests(SimpleTestCase):
                         context=_ctx(s, operation="TOMBSTONE"))
         ops = [e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)]
         self.assertEqual(ops, ["stage_copy", "request_launch", "confirm_launch",
-                               "request_terminate", "confirm_terminated", "tombstone",
-                               "verify_cleanup"])
+                               "request_terminate", "confirm_terminated", "precheck_cleanup",
+                               "tombstone", "verify_cleanup"])
         s.assert_sequence_valid(1, 1)
         s.assert_evidence_complete(1, 1)
         for e in s.stage_evidence_for_occupancy(1, 1):
@@ -421,9 +423,9 @@ class SettleWindowTests(SimpleTestCase):
         observations = {"n": 0}
         original = win.query_slot_process
 
-        def slow(path):
+        def slow(path, identity=""):
             observations["n"] += 1
-            return _proc() if observations["n"] >= 3 else original(path)
+            return _proc() if observations["n"] >= 3 else original(path, identity)
         win.query_slot_process = slow
         out = impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
                           context=_ctx(s, operation="START"))
@@ -449,7 +451,7 @@ class UnobservableStartTests(SimpleTestCase):
         impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
         win.calls.clear()
 
-        def blind(path):
+        def blind(path, identity=""):
             raise OSError("enumeration unavailable")
         win.query_slot_process = blind
         with self.assertRaises(AgentError) as ctx:
@@ -494,9 +496,11 @@ class TombstoneRetryTests(SimpleTestCase):
                             context=_ctx(s, operation="TOMBSTONE"))
         return s, win, impls
 
-    def test_the_first_attempt_moved_the_directory_and_failed_at_cleanup(self):
+    def test_the_first_attempt_refused_BEFORE_moving_anything(self):
+        """With open_handles unanswerable, the precheck blocks and the runtime directory stays put -
+        a doomed teardown now costs nothing instead of leaving the tree under the tombstone root."""
         s, win, impls = self._torn_down()
-        self.assertFalse(win.path_exists(""))
+        self.assertTrue(win.path_exists(""))              # still there
         self.assertFalse(s.is_quarantined(1))
 
     def test_a_retry_resumes_instead_of_quarantining(self):
@@ -509,6 +513,7 @@ class TombstoneRetryTests(SimpleTestCase):
 
     def test_a_retry_for_a_different_runtime_is_still_refused(self):
         s, win, impls = self._torn_down()
+        win.move_dir("", "")                              # simulate the move having happened
         s.assign(OTHER, now=5)
         with self.assertRaises(SlotIntegrityError):
             impls.tombstone(canonical_dir="", runtime_uuid=OTHER, base="",
@@ -577,6 +582,41 @@ class ExecutionModelWiringTests(SimpleTestCase):
         with self.assertRaises(ConfigError):
             self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_GOLDEN_DIGEST="d")
 
+    def test_slot_pool_without_a_golden_manifest_version_refuses(self):
+        """An empty version would make the stage-copy pre-check compare '' == '' and pass."""
+        from config import ConfigError
+        with self.assertRaises(ConfigError):
+            self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_SLOT_POOL_SIZE="4",
+                      BETA_AGENT_GOLDEN_DIGEST="d")
+
+    def test_a_relocated_slots_root_refuses_at_startup(self):
+        """The knob was honoured for the containment base but ignored by path derivation, so any other
+        value made every operation fail path_escape at runtime instead of at startup."""
+        from config import ConfigError
+        with self.assertRaises(ConfigError):
+            self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_SLOT_POOL_SIZE="4",
+                      BETA_AGENT_GOLDEN_DIGEST="d", BETA_AGENT_GOLDEN_MANIFEST_VERSION="v",
+                      BETA_AGENT_SLOTS_ROOT=r"D:\GuvFX\beta\slots")
+
+    def test_a_settle_window_longer_than_the_drain_budget_refuses(self):
+        """A settle window past the drain budget guarantees a service stop force-kills a mutation."""
+        from config import ConfigError
+        with self.assertRaises(ConfigError):
+            self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_SLOT_POOL_SIZE="4",
+                      BETA_AGENT_GOLDEN_DIGEST="d", BETA_AGENT_GOLDEN_MANIFEST_VERSION="v",
+                      BETA_AGENT_DRAIN_TIMEOUT_S="20")
+
+    def test_the_built_implementation_has_a_real_clock(self):
+        """Omitted, now_fn falls back to lambda: 0 and every durable timestamp is written as 0."""
+        import agent as agent_mod
+        cfg = self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_SLOT_POOL_SIZE="4",
+                        BETA_AGENT_GOLDEN_DIGEST="d", BETA_AGENT_GOLDEN_MANIFEST_VERSION="v",
+                        BETA_AGENT_DRAIN_TIMEOUT_S="45")
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        built = agent_mod.build_agent(cfg, win=FakeWin(), store=_FakeStore(),
+                                      slot_store_override=SlotStore(f.name, pool_size=4))
+        self.assertGreater(built.op_impls["MATERIALISE"].__self__.now_fn(), 0)
+
     def test_slot_pool_without_a_golden_digest_refuses(self):
         """An unset digest would make the stage-copy integrity check compare against the empty string."""
         from config import ConfigError
@@ -591,7 +631,9 @@ class ExecutionModelWiringTests(SimpleTestCase):
     def test_pool_mode_builds_the_pool_implementations_and_resolver(self):
         import agent as agent_mod
         cfg = self._cfg(BETA_AGENT_EXECUTION_MODEL="slot_pool", BETA_AGENT_SLOT_POOL_SIZE="4",
-                        BETA_AGENT_GOLDEN_DIGEST="golden-digest-abc")
+                        BETA_AGENT_GOLDEN_DIGEST="golden-digest-abc",
+                        BETA_AGENT_GOLDEN_MANIFEST_VERSION="2026-07-22.24",
+                        BETA_AGENT_DRAIN_TIMEOUT_S="45")
         f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
         built = agent_mod.build_agent(cfg, win=FakeWin(), store=_FakeStore(),
                                       slot_store_override=SlotStore(f.name, pool_size=4))
@@ -611,3 +653,47 @@ class _FakeStore:
     def burn(self, nonce, expiry): return True
     def get(self, job_id, op): return None
     def put(self, job_id, op, record): pass
+
+
+class ReleasePendingReachesTheBackendTests(SimpleTestCase):
+    """The release boundary is only a boundary if the backend can see it. Stripped by the sanitiser, the
+    backend saw an unqualified TOMBSTONE success and would believe the pool had capacity it does not."""
+
+    def test_the_allowlist_carries_the_release_state(self):
+        from lib.mgmt_agent_core import _RESPONSE_ALLOWLIST
+        self.assertIn("released", _RESPONSE_ALLOWLIST)
+        self.assertIn("release_pending", _RESPONSE_ALLOWLIST)
+
+    def test_the_full_path_still_never_crosses(self):
+        from lib.mgmt_agent_core import _RESPONSE_ALLOWLIST
+        self.assertNotIn("canonical_path", _RESPONSE_ALLOWLIST)
+        self.assertNotIn("tombstone_dir", _RESPONSE_ALLOWLIST)
+
+
+class VerifyObservabilityTests(SimpleTestCase):
+    """VERIFY is the operation a worker calls to reconcile after an ambiguous STOP. Reporting
+    running=False for an observation that FAILED would let the backend conclude a live terminal is
+    stopped and proceed to tombstone it."""
+
+    def _ready(self):
+        s, win = _store(), FakeWin(exists=False)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        return s, win, impls
+
+    def test_unobservable_is_not_reported_as_not_running(self):
+        s, win, impls = self._ready()
+
+        def blind(path, identity=""):
+            raise OSError("enumeration unavailable")
+        win.query_slot_process = blind
+        with self.assertRaises(AgentError) as ctx:
+            impls.verify(canonical_dir="", runtime_uuid=RUUID, base="",
+                         context=_ctx(s, operation="VERIFY"))
+        self.assertEqual(ctx.exception.reason_code, "process_observation_unavailable")
+
+    def test_a_proven_absence_is_still_reported_as_not_running(self):
+        s, win, impls = self._ready()
+        out = impls.verify(canonical_dir="", runtime_uuid=RUUID, base="",
+                           context=_ctx(s, operation="VERIFY"))
+        self.assertFalse(out["running"])

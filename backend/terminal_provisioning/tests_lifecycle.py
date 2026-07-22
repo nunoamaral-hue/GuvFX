@@ -108,7 +108,7 @@ class FakeWin:
     def destination_info(self, p): return self._dest
     def path_exists(self, p): return self._exists
     def real_path(self, p): return p          # provisioned slot dir, no reparse point
-    def query_slot_process(self, p): return self._process
+    def query_slot_process(self, p, identity=""): return self._process
     def same_volume(self, a, b): return self._same_volume
     def task_running(self, t): return False
     def open_handles(self, p): return False

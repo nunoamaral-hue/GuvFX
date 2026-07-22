@@ -19,6 +19,7 @@ is a separate approval.
 | 3 | `C:\GuvFX\beta\` tree (`slots\1..4\`, `tombstones\1..4\`, `golden\`, `agent\`, `agent-state\`) | create | §7 step 3 |
 | 4 | ACLs on those directories | set | §7 step 3 |
 | 5 | 8 scheduled tasks `GuvFXBetaRuntime-{1..4}` / `GuvFXBetaRuntimeStop-{1..4}` | register, **disabled** | §7 step 4 |
+| 5a | `.guvfx_golden_manifest` in the golden image | create (records the approved image version) | removed with §7 step 3 |
 | 6 | Golden MT5 image in `C:\GuvFX\beta\golden\` | copy in, digest recorded | §7 step 3 |
 | 7 | Agent bundle in `C:\GuvFX\beta\agent\` | copy in | §7 step 5 |
 | 8 | Service `GuvFXBetaAgent` | install, **start=demand**, **not started** | §7 step 5 |
@@ -37,7 +38,7 @@ MT5 installation, and no stop/restart of Nuno's terminal.
 |---|---|---|
 | Name | `GuvFXBetaAgent` | distinct from every existing `GuvFX_*` task |
 | Start type | **Demand** at install; Automatic only after the first approved manual start | an install must not become a start by reboot |
-| Account | `LocalSystem` **for the trial**, pending trial item 4 | it must read another local account's process image path, creation time, SID and session; whether a lesser account can is the measurement |
+| Account | `LocalSystem` **for the trial**, pending trial item 4 | it must enumerate process owners (`WTSEnumerateProcessesEx`, documented Administrators-only) and read another local account's image path, creation time and session. **Verification step 10 below proves this before the trial relies on it.** |
 | Bind | `100.79.101.19:8791`, pinned to that exact address | `assert_exact_bind`; a loopback or alternate-NIC bind would side-step the interface-scoped firewall rule |
 | Integrity | `build_agent(enforce_integrity=True)` hashes all 17 bundle modules against `manifest.json` at start | a drifted bundle refuses to start |
 | Recovery | none configured at install | a crash-loop must be visible, not auto-restarted |
@@ -157,6 +158,12 @@ Run after install, before any approval to start. Every step is an observation.
    Nuno's MT5 process still running with the same PID and creation time as before the install; ports
    8787/8788 still bound by the same processes; autologon registry values unchanged.
 9. **No side effects** — no reboot occurred (uptime unchanged); no session was created or destroyed.
+10. **Observation capability** — the decisive pre-trial measurement, and the reason the beta identities are
+    created before the service starts: confirm the agent's account can (a) enumerate process owners via
+    `WTSEnumerateProcessesEx` level 1, and (b) `OpenProcess` a process owned by `guvfx_b_slot1`. If it
+    cannot, slot observation is impossible, `STOP` and `TOMBSTONE` can never succeed, and the service
+    account decision must be revisited **before** any runtime is launched — not discovered afterwards with
+    a live terminal in a slot.
 
 Steps 8 and 9 are the ones that prove the install did not disturb live trading. They should be captured
 before **and** after, and compared.
@@ -187,7 +194,9 @@ Reverse order of §1. Each step is independently reversible; nothing here delete
 | MATERIALISE fails at a post-check | a populated slot directory **with** its ownership marker | one `stage_copy` FAILED record | operator tombstones the slot directory manually, then retry |
 | Launch trigger accepted, no process | nothing changed | `request_launch` REQUESTED + `confirm_launch` FAILED | investigate the task; the slot stays materialised |
 | STOP trigger accepted, process survives | nothing changed | `confirm_terminated` FAILED `process_still_running` | operator intervention; **the agent will not escalate to a kill** |
-| TOMBSTONE moves, cleanup fails | slot directory now under `tombstones\<n>\<occupancy_id>\` | `tombstone` COMPLETED + `verify_cleanup` FAILED | **retry is safe** — the gate accepts a torn-down slot and resumes at cleanup |
+| TOMBSTONE refused at the pre-move check | **nothing moved** — the runtime directory is untouched | `precheck_cleanup` BLOCKED | fix the blocking condition and retry; the teardown cost nothing |
+| TOMBSTONE moved, then cleanup failed | slot directory under `tombstones\<n>\<occupancy_id>\` | `tombstone` COMPLETED + `verify_cleanup` FAILED | **retry is safe** — the gate accepts a torn-down slot and resumes at cleanup |
+| MATERIALISE interrupted after the copy, before the marker | populated slot directory, **no** `.guvfx_owner` | `stage_copy` FAILED | **retry TOMBSTONE** — the gate proves identity from the durable store when the marker is absent, so the slot is recoverable rather than stranded |
 | Integrity mismatch at any gate | unchanged | slot **quarantined** | operator-only clearance, requiring identity + evidence reference |
 
 ---
@@ -197,9 +206,11 @@ Reverse order of §1. Each step is independently reversible; nothing here delete
 Two things will stop the trial short of a full teardown. Both are deliberate and both need a decision that
 is not mine:
 
-1. **`open_handles()` raises unconditionally.** No supported Windows API can prove no process holds a handle
-   beneath a directory. The `no_runtime_handles` cleanup proof therefore never holds, `verify_cleanup`
-   fails, and slot release is blocked. Options are in `docs/B3P2_WINDOWS_RESEARCH_FINDINGS.md` §5.
+1. **`open_handles()` raises unconditionally.** No supported Windows API can prove no process holds a
+   handle beneath a directory. The `no_runtime_handles` proof therefore never holds, so **TOMBSTONE will
+   refuse at `precheck_cleanup` and nothing will be moved.** That refusal is now costless and reversible —
+   before the pre-move check existed, the same condition moved the runtime directory first and only then
+   failed. Options are in `docs/B3P2_WINDOWS_RESEARCH_FINDINGS.md` §5.
 2. **`release()` is implemented and tested but not wired.** `no_mutation_lock_held` is one of the seven
    release proofs and `tombstone()` runs inside that lock, so releasing from there could only satisfy the
    proof by lying. Wiring release to a lifecycle operation changes the protocol surface — an **Amber**

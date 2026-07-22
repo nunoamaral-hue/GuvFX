@@ -128,7 +128,8 @@ class SlotWindowsOps:
     def same_volume(self, a: str, b: str) -> bool: raise NotImplementedError
     def query_task(self, task_name: str) -> dict | None: raise NotImplementedError
     def task_running(self, task_name: str) -> bool: raise NotImplementedError
-    def query_slot_process(self, slot_path: str) -> dict | None: raise NotImplementedError
+    def query_slot_process(self, slot_path: str, runtime_identity: str = "") -> dict | None:
+        raise NotImplementedError
     def open_handles(self, path: str) -> bool: raise NotImplementedError
 
     # writes (the entire mutating surface — four methods)

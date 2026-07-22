@@ -22,8 +22,8 @@ Two properties are worth stating plainly because they are easy to lose in a refa
 from lib.mgmt_agent_core import AgentError
 from lifecycle import ALREADY_COMPLETED, COMPLETED, REQUESTED, assert_evidence_present
 from stores import (build_verification_evidence, format_owner_marker, occupancy_id, remote_evidence)
-from win_mutations import (BETA_TOMBSTONES_ROOT, confirm_launch, confirm_terminated, request_launch,
-                           request_terminate, stage_copy, tombstone, verify_cleanup)
+from win_mutations import (BETA_TOMBSTONES_ROOT, confirm_launch, confirm_terminated, precheck_cleanup,
+                           request_launch, request_terminate, stage_copy, tombstone, verify_cleanup)
 from win_primitives import (ABSENT, BETA_SLOTS_ROOT, MUTATING_CONTEXT, PRESENT_VALID,
                             READ_ONLY_CONTEXT, inspect_filesystem, observe_process, resolve_slot_input)
 
@@ -131,15 +131,18 @@ class PoolOpImplementations:
         b = self._binding(context)
         si, slot, generation = b["slot_input"], b["slot"], b["generation"]
         marker_raw = self._marker(si)
-        if marker_raw is None and allow_torn_down and not self.win.path_exists(si.slot_path):
-            # A TOMBSTONE that moved the directory and then failed at cleanup is RETRIABLE (denials are not
-            # stored idempotently). On retry the marker is gone because the move succeeded, so the ordinary
-            # gate would read a correct teardown as corruption and quarantine the slot permanently. The
-            # store still recording this runtime as holding (slot, generation) is what makes the retry
-            # safe: identity is proven from durable state rather than from a file that has legitimately
-            # moved.
+        if allow_torn_down and marker_raw is None:
+            # Two recoverable states share this shape, and BOTH need TOMBSTONE to work:
+            #  * the directory was moved and cleanup then failed — the marker is legitimately gone;
+            #  * a MATERIALISE was interrupted between the copy and the marker write, leaving a populated
+            #    but marker-less slot that no retry could otherwise recover (MATERIALISE refuses because
+            #    the destination exists, TOMBSTONE refused because the marker is missing).
+            # In both, identity is proven from DURABLE STATE rather than from a file: the store must still
+            # record this runtime as holding exactly this (slot, generation).
+            from stores import SlotIntegrityError
+            if self.slot_store.is_quarantined(slot):
+                raise SlotIntegrityError()       # every other mutating path checks this; so must this one
             if self.slot_store.lookup(runtime_uuid) != (slot, generation):
-                from stores import SlotIntegrityError
                 raise SlotIntegrityError()
             self.slot_store.assert_generation_monotonic(slot, generation)
             return b, si, slot, generation, None
@@ -205,7 +208,11 @@ class PoolOpImplementations:
         res = stage_copy(self.win, MUTATING_CONTEXT, si,
                          expected_source_digest=self.golden_digest,
                          expected_source_manifest_version=self.golden_manifest_version,
-                         expected_generation=generation, actual_generation=generation,
+                         # Two INDEPENDENT sources: the occupancy the resolver bound, and the value read
+                         # back from the store now. Passing the same variable twice made the pre-check
+                         # x == x — always true, and recorded in the report as a check that had passed.
+                         expected_generation=generation,
+                         actual_generation=self.slot_store.generation_of(slot),
                          owner_marker=format_owner_marker(runtime_uuid, slot, generation),
                          observed_at=self.now_fn())
         att = self._record(slot, generation, res)
@@ -258,7 +265,14 @@ class PoolOpImplementations:
         b = self._binding(context)
         si, slot, generation = b["slot_input"], b["slot"], b["generation"]
         obs = observe_process(self.win, si, observed_at=self.now_fn())
-        running = obs["attestation"]["outcome"] == PRESENT_VALID
+        outcome = obs["attestation"]["outcome"]
+        if outcome not in (PRESENT_VALID, ABSENT):
+            # VERIFY's whole job is to answer "is it running?", and it is the operation a worker calls to
+            # reconcile after an ambiguous STOP. Reporting running=False for an observation that FAILED
+            # would be the design's forbidden collapse in the one place it does the most damage: the
+            # backend would conclude the runtime is stopped and proceed to tombstone a live terminal.
+            raise AgentError(obs["attestation"]["reason_code"] or "process_observation_unavailable")
+        running = outcome == PRESENT_VALID
         ev = obs["evidence"] if running else {}
         return self._evidence(runtime_uuid=runtime_uuid, slot=slot, generation=generation, si=si,
                               marker_raw=self._marker(si), pid=ev.get("pid"),
@@ -300,6 +314,15 @@ class PoolOpImplementations:
     # ── TOMBSTONE: move the runtime aside, prove the slot is clean, then release it ──
     def tombstone(self, *, canonical_dir, runtime_uuid, base, context=None) -> dict:
         b, si, slot, generation, marker_raw = self._gate(context, runtime_uuid, allow_torn_down=True)
+        # Everything provable before the move is proved before the move. A teardown that cannot complete
+        # then costs nothing, instead of leaving the runtime directory under the tombstone root with the
+        # operation errored.
+        pre = precheck_cleanup(self.win, MUTATING_CONTEXT, si, generation_before=generation,
+                               generation_now=self.slot_store.generation_of(slot),
+                               observed_at=self.now_fn())
+        patt = self._record(slot, generation, pre)
+        if patt["stage_status"] != COMPLETED:
+            raise AgentError(patt["reason_code"] or "cleanup_precheck_failed")
         dest = rf"{BETA_TOMBSTONES_ROOT}\{slot}\{occupancy_id(slot, generation)}"
         moved = tombstone(self.win, MUTATING_CONTEXT, si, tombstone_dir=dest, observed_at=self.now_fn())
         matt = self._record(slot, generation, moved)
@@ -340,10 +363,17 @@ class PoolOpImplementations:
         self.slot_store.assert_evidence_complete(slot, generation)
         self.slot_store.record_audit(event="tombstone_completed", runtime_uuid=runtime_uuid, slot=slot,
                                      generation=generation, operation="release", now=self.now_fn())
+        moved = evidence.get("tombstone")
         proofs = {
             "runtime_process_stopped": bool(terminated and terminated["stage_status"] == COMPLETED),
-            "process_identity_verified": bool(terminated and terminated["stage_status"] == COMPLETED),
-            "canonical_directory_tombstoned": bool(evidence.get("tombstone")),
+            # NOT the same proof as the line above wearing a different name: confirm_terminated reaches
+            # COMPLETED on the ABSENT branch, where the identity comparison never runs. Identity is proven
+            # by the launch having recorded birth evidence for THIS occupancy.
+            "process_identity_verified": bool(evidence.get("confirm_launch", {}).get("stage_status")
+                                              == COMPLETED),
+            # A FAILED tombstone stage used to satisfy this simply by existing.
+            "canonical_directory_tombstoned": bool(
+                moved and moved["stage_status"] in (COMPLETED, ALREADY_COMPLETED)),
             "tombstone_evidence_persisted": bool(cleanup and cleanup["stage_status"] == COMPLETED),
             "no_ambiguous_provisioning_job": bool(no_ambiguous_provisioning_job),
             "no_mutation_lock_held": bool(no_mutation_lock_held),

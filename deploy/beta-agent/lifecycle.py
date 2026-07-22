@@ -86,6 +86,7 @@ REASON_CATEGORY = {
     "not_owned": INTEGRITY,
     "cleanup_incomplete": INTEGRITY,
     "reparse_point_in_tree": INTEGRITY,
+    "cleanup_precheck_failed": INTEGRITY,
     # Several processes run from one slot and none is the runtime executable: choosing one by enumeration
     # order would bind the whole termination chain to an arbitrary process.
     "ambiguous_slot_process": INTEGRITY,
@@ -117,6 +118,7 @@ REASON_CATEGORY = {
     "owner_marker_unreadable": OBSERVATION,
     "launch_precondition_unobservable": OBSERVATION,
     "tombstone_precheck_unavailable": OBSERVATION,
+    "stage_copy_precheck_permission_denied": OBSERVATION,
     "task_permission_denied": OBSERVATION,
     "filesystem_permission_denied": OBSERVATION,
 
@@ -157,6 +159,9 @@ REASON_CATEGORY = {
     "stop_not_available_off_box": CONFIGURATION,
     "windows_api_unavailable": CONFIGURATION,
     "no_existing_ancestor": CONFIGURATION,
+    "golden_source_unavailable": CONFIGURATION,
+    "runtime_identity_required": CONFIGURATION,
+    "runtime_identity_unresolvable": CONFIGURATION,
 
     # ── OPERATOR: a human must decide or intervene ──
     "pool_exhausted": OPERATOR,
@@ -264,6 +269,14 @@ STAGE_CONTRACTS = {
         "postconditions": ("the slot directory no longer exists and its contents are retained under the "
                            "tombstone root",),
         "statuses": (COMPLETED, ALREADY_COMPLETED, BLOCKED, FAILED),
+    },
+    "precheck_cleanup": {
+        "preconditions": ("capability is MUTATING", "process confirmed terminated"),
+        "invariant": "nothing has been moved yet — this stage exists so that a teardown which cannot "
+                     "complete costs nothing",
+        "postconditions": ("all four pre-move proofs hold, or the missing ones are named and the move is "
+                           "not attempted",),
+        "statuses": (COMPLETED, BLOCKED),
     },
     "verify_cleanup": {
         "preconditions": ("capability is MUTATING", "tombstone COMPLETED or ALREADY_COMPLETED"),
