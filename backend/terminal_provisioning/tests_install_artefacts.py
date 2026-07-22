@@ -212,3 +212,40 @@ class UninstallCompletenessTests(SimpleTestCase):
 
     def test_the_estate_is_declared_untouched(self):
         self.assertIn("UNTOUCHED: Nuno's terminal", _read("uninstall.ps1"))
+
+
+class StopTaskContainmentTests(SimpleTestCase):
+    """The single highest-risk line in the install: the task that terminates a runtime.
+
+    The operator's production terminal has the SAME image name as a slot's, because a slot is a copy of the
+    same MT5 image. The agent's own code refuses to match a process by name for exactly this reason; the
+    task the agent triggers must not do what the agent is forbidden to do.
+    """
+
+    def test_the_stop_task_does_not_match_by_image_name(self):
+        source = _code("install_pool.ps1")
+        self.assertNotIn("taskkill", source)
+        self.assertNotIn("/IM terminal64.exe", source)
+
+    def test_the_stop_task_filters_on_the_full_image_path(self):
+        source = _code("install_pool.ps1")
+        self.assertIn("$_.Path -eq '$exe'", source)
+        self.assertIn("Stop-Process -Force", source)
+
+    def test_the_slot_executable_path_is_slot_scoped(self):
+        source = _code("install_pool.ps1")
+        self.assertIn('$exe    = Join-Path $work "terminal64.exe"', source)
+        self.assertIn('$work   = Join-Path $slot "terminal"', source)
+
+
+class NoAmbiguousInterpolationTests(SimpleTestCase):
+    """`$Prefix1` parses as a variable named Prefix1, not as $Prefix followed by a literal 1."""
+
+    AMBIGUOUS = ("IdentityPrefix", "LaunchPrefix", "StopPrefix", "SlotsRoot", "GoldenDir")
+
+    def test_prefix_variables_followed_by_a_digit_are_braced(self):
+        import re
+        for name in SCRIPTS:
+            for match in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*?)(\d)\b", _read(name)):
+                self.assertNotIn(match.group(1), self.AMBIGUOUS,
+                                 f"{name}: ambiguous ${match.group(1)}{match.group(2)} — use braces")

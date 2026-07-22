@@ -90,7 +90,7 @@ if ($Apply) {
 
 # ── 3. SeBatchLogonRight. A LOGON RIGHT, not a privilege: it will not appear in `whoami /priv`.
 #      Granted explicitly so the documented ambiguity about auto-grant on task registration is irrelevant.
-DoIt "grant SeBatchLogonRight to $IdentityPrefix1..$PoolSize (via secedit)" {
+DoIt "grant SeBatchLogonRight to ${IdentityPrefix}1..$PoolSize (via secedit)" {
   $tmp = New-TemporaryFile
   secedit /export /areas USER_RIGHTS /cfg "$tmp" | Out-Null
   $cfg = Get-Content "$tmp"
@@ -167,10 +167,19 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     $pw = Read-Host -AsSecureString "Password for $user (stop task; not echoed, not logged)"
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
                [Runtime.InteropServices.Marshal]::SecureStringToBSTR($pw))
-    # taskkill scoped by IMAGE PATH is not available, so the stop task is scoped by running as the SLOT
-    # IDENTITY: it can only terminate processes that identity owns, which is exactly this slot's runtime.
-    # It can never reach the operator's terminal, which runs as a different account.
-    $action   = New-ScheduledTaskAction -Execute "taskkill.exe" -Argument "/IM terminal64.exe /T /F"
+    # SCOPED BY IMAGE PATH, not by image name. `taskkill /IM terminal64.exe` would match by NAME — and the
+    # operator's production terminal has the SAME name, because a slot is a copy of the same MT5 image.
+    # Relying on "it runs as the slot identity so it can only kill its own processes" would make a
+    # not-fully-verifiable OS access-control assumption load-bearing on the one action that could stop live
+    # trading. The agent's own code refuses to match a process by name for exactly this reason; the task it
+    # triggers must not do what the agent is forbidden to do.
+    #
+    # Get-Process .Path on another account's process yields nothing readable to a non-admin, and a null
+    # path can never equal this slot's path — so the filter fails safe in both directions.
+    $kill = "Get-Process -Name terminal64 -ErrorAction SilentlyContinue | " +
+            "Where-Object { `$_.Path -eq '$exe' } | Stop-Process -Force"
+    $action   = New-ScheduledTaskAction -Execute "powershell.exe" `
+                  -Argument ("-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command `"$kill`"")
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::FromMinutes(5))
     Register-ScheduledTask -TaskName $stop -Action $action -Settings $settings `
       -User $user -Password $plain -RunLevel Limited | Out-Null
