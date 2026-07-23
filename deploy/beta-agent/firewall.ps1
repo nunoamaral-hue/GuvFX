@@ -1,8 +1,8 @@
-# CVM-Inc-3 B2/B3P-1 — host firewall rule for the agent port, hardened against pre-existing broad allows.
+# CVM-Inc-3 B2/B3P-1 - host firewall rule for the agent port, hardened against pre-existing broad allows.
 # DARK ARTEFACT: RUN ONLY in B3, on the host, as Administrator. Dry-run by default; pass -Apply to add the rule.
 #
 # Verification B-8: adding a scoped allow is NOT enough on its own. A pre-existing program-scoped allow for the
-# agent's python.exe (very common — Windows offers "Allow" the first time a Python process listens) or any
+# agent's python.exe (very common - Windows offers "Allow" the first time a Python process listens) or any
 # broad rule covering :8791 from a non-backend source would authorise the agent port from EVERY tailnet peer,
 # bypassing the new rule. So this script HARD-FAILS if such a rule exists, asserts the interface profile is
 # default-deny inbound, and scopes the new rule to that profile only (never -Profile Any / Public).
@@ -12,7 +12,7 @@ param(
   [string]$RuleName          = "GuvFX-Beta-Agent-In",
   [string]$ServiceName       = "GuvFXBetaAgent",             # to resolve the REAL listening image
   [int]$Port                 = 8791,
-  [string]$AllowFrom         = "100.119.23.29",              # GuvFX backend / control plane (Tailscale) — ONLY source
+  [string]$AllowFrom         = "100.119.23.29",              # GuvFX backend / control plane (Tailscale) - ONLY source
   [string]$Interface         = "100.79.101.19",              # private/Tailscale bind address
   [string[]]$AgentProgramPaths = @("C:\GuvFX\python311.exe"),# fallback interpreter list
   [switch]$Apply
@@ -21,7 +21,7 @@ $ErrorActionPreference = "Stop"
 
 function Fail($m) { throw "firewall.ps1: $m" }
 # Canonicalise a program path for comparison: expand %VAR% forms + resolve to a full path, lowercased. (Residual:
-# 8.3 short names / symlinks are not resolved here — the Tailscale ACL is the second layer for that edge.)
+# 8.3 short names / symlinks are not resolved here - the Tailscale ACL is the second layer for that edge.)
 function Canon($p) {
   if (-not $p) { return "" }
   $x = [System.Environment]::ExpandEnvironmentVariables("$p").Trim('"')
@@ -34,7 +34,7 @@ $ip = Get-NetIPAddress -IPAddress $Interface -ErrorAction SilentlyContinue
 if (-not $ip) { Fail "interface $Interface not found on this host" }
 $conn = Get-NetConnectionProfile -InterfaceIndex $ip.InterfaceIndex -ErrorAction SilentlyContinue
 if (-not $conn) {
-  Fail "interface $Interface has no network connection profile; cannot determine which firewall profile governs it — classify the interface (or resolve manually) before applying"
+  Fail "interface $Interface has no network connection profile; cannot determine which firewall profile governs it - classify the interface (or resolve manually) before applying"
 }
 $cat = "$(@($conn.NetworkCategory)[0])"
 $profileName = switch ($cat) { "DomainAuthenticated" { "Domain" } default { $cat } }   # NetworkCategory -> firewall profile name
@@ -42,12 +42,12 @@ if ($profileName -eq "Public") { Fail "interface $Interface is on the Public pro
 if ($profileName -notin @("Private", "Domain")) { Fail "unexpected profile '$profileName' for $Interface; resolve manually" }
 $fp = Get-NetFirewallProfile -Name $profileName
 if ($fp.DefaultInboundAction -ne "Block") {
-  Fail "profile '$profileName' DefaultInboundAction is '$($fp.DefaultInboundAction)', expected 'Block' — the scoped allow is not safe without default-deny inbound"
+  Fail "profile '$profileName' DefaultInboundAction is '$($fp.DefaultInboundAction)', expected 'Block' - the scoped allow is not safe without default-deny inbound"
 }
 Write-Host "ok   interface $Interface -> profile '$profileName' (DefaultInboundAction=Block)"
 
 # 2. Resolve the ACTUAL listening image of the installed service. Under pywin32 the socket is owned by the
-#    service host image (e.g. PythonService.exe), NOT python311.exe — so a pre-existing broad allow for the
+#    service host image (e.g. PythonService.exe), NOT python311.exe - so a pre-existing broad allow for the
 #    real host image must be matched. Fail-safe: if the service is not yet installed we cannot resolve it.
 $agentImages = @($AgentProgramPaths | ForEach-Object { Canon $_ })
 $svc = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
@@ -56,7 +56,7 @@ if ($svc -and $svc.PathName) {
   $img = if ($pn.StartsWith('"')) { ($pn.Substring(1) -split '"', 2)[0] } else { ($pn -split '\s', 2)[0] }
   if ($img) { $agentImages += (Canon $img); Write-Host "ok   resolved service listener image: $img" }
 } else {
-  Fail "service '$ServiceName' not found — run install_service.ps1 -Apply FIRST so the real listener image can be matched against pre-existing rules"
+  Fail "service '$ServiceName' not found - run install_service.ps1 -Apply FIRST so the real listener image can be matched against pre-existing rules"
 }
 $agentImages = $agentImages | Where-Object { $_ } | Select-Object -Unique
 

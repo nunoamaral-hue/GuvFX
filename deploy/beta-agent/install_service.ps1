@@ -1,4 +1,4 @@
-# CVM-Inc-3 B2/B3P-1 — install the beta provisioning agent as a real SCM-managed Windows service.
+# CVM-Inc-3 B2/B3P-1 - install the beta provisioning agent as a real SCM-managed Windows service.
 # DARK ARTEFACT: RUN ONLY in B3, on the host, as Administrator, AFTER merge. INSTALL-ONLY: it does NOT start
 # the service, does NOT touch Session 3 / the prod terminal / the bridge / port 8788 / autologon / startup tasks.
 # Dry-run by default; pass -Apply to perform the install. The first manual start waits for explicit approval.
@@ -14,7 +14,7 @@ param(
   # B3P-2 (install-only review F1): the pool model uses ...\beta\slots\<n>, NOT the legacy
   # ...\beta\accounts\<uuid> layout. The service account needs Modify on its own state dir and on the
   # tombstone root (it moves runtimes there); it needs only ReadAndExecute on its OWN code, and NOTHING on
-  # the golden image or the slot directories — the slot IDENTITY owns those, not the agent.
+  # the golden image or the slot directories - the slot IDENTITY owns those, not the agent.
   [string]$SlotsRoot   = "C:\GuvFX\beta\slots",
   [string]$BetaTombstones = "C:\GuvFX\beta\tombstones",
   [string]$GoldenDir   = "C:\GuvFX\beta\golden",
@@ -31,13 +31,13 @@ if (-not (Test-Path (Join-Path $AgentDir "agent.py")))   { throw "agent.py not f
 if (-not (Test-Path (Join-Path $AgentDir "service.py"))) { throw "service.py not found under $AgentDir" }
 if (-not (Test-Path $Python)) { throw "interpreter not found: $Python" }
 & $Python -c "import win32serviceutil" 2>$null
-if ($LASTEXITCODE -ne 0) { throw "pywin32 not importable by $Python — install pywin32 into the agent interpreter first" }
+if ($LASTEXITCODE -ne 0) { throw "pywin32 not importable by $Python - install pywin32 into the agent interpreter first" }
 Write-Host "ok   preconditions: agent.py, service.py, interpreter + pywin32 present"
 
 # 1. State dir (durable nonce/idempotency/logs), SEPARATE from the code dir so updates never clobber it.
 DoIt "create state dir $StateDir (+ logs)" { New-Item -ItemType Directory -Force -Path $StateDir, (Join-Path $StateDir "logs") | Out-Null }
 
-# 2. Scoped NTFS ACLs for the service account. LEAST PRIVILEGE — but least privilege means the MINIMUM the
+# 2. Scoped NTFS ACLs for the service account. LEAST PRIVILEGE - but least privilege means the MINIMUM the
 #    agent actually needs, and the agent does the staging work itself. It is NOT true that "the agent only
 #    triggers tasks": win_slot_ops runs robocopy from the service process (copy_golden), opens the ownership
 #    marker for writing inside the slot (write_owner_tag), walks the golden tree to digest it, and renames
@@ -61,7 +61,7 @@ foreach ($d in @($AgentDir, $GoldenDir)) {
   }
 }
 if (-not (Test-Path $SlotsRoot)) {
-  throw "slot pool not provisioned at $SlotsRoot — run install_pool.ps1 -Apply FIRST (install-only review F1/F2)"
+  throw "slot pool not provisioned at $SlotsRoot - run install_pool.ps1 -Apply FIRST (install-only review F1/F2)"
 }
 
 # 3. Install the pywin32 service, MANUAL start, under the virtual account. (No auto-start; no start here.)
@@ -82,7 +82,7 @@ if ($Apply) {
   if ($svc.Status -ne "Stopped") { throw "service is $($svc.Status); expected Stopped (install-only)" }
   $startName = (Get-CimInstance Win32_Service -Filter "Name='$ServiceName'").StartName
   if ("$startName" -notmatch [regex]::Escape($RunAsUser)) {
-    throw "service identity is '$startName', expected '$RunAsUser' — LocalSystem means the obj= assignment failed; do NOT start"
+    throw "service identity is '$startName', expected '$RunAsUser' - LocalSystem means the obj= assignment failed; do NOT start"
   }
   Write-Host "ok   service identity = $startName"
   # Assert the DACLs actually took. icacls is a native command: $ErrorActionPreference does not apply to it,
@@ -90,7 +90,7 @@ if ($Apply) {
   foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot, $AgentDir, $GoldenDir)) {
     $acl = (icacls $d) -join "`n"
     if ($acl -notmatch [regex]::Escape($RunAsUser)) {
-      throw "no ACE for '$RunAsUser' on $d — the grant did not take; do NOT start"
+      throw "no ACE for '$RunAsUser' on $d - the grant did not take; do NOT start"
     }
     Write-Host "ok   DACL on $d carries an ACE for $RunAsUser"
   }
