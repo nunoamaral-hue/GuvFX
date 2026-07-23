@@ -85,7 +85,16 @@ foreach ($r in (Get-NetFirewallRule -Enabled True -Direction Inbound -Action All
   if (-not $coversPort) { continue }
 
   # Does it admit a remote OTHER than the backend?
-  $remote = @($af.RemoteAddress)
+  # $af is Get-NetFirewallAddressFilter with -ErrorAction SilentlyContinue, so it CAN be $null. @($null)
+  # would then yield a one-element array holding $null: -contains "Any" is false and the Where-Object
+  # yields nothing, so an unreadable rule would be judged NOT to admit a foreign remote - this exposure
+  # gate would fail OPEN. Treat an unreadable filter as maximally exposing instead.
+  if ($null -eq $af) {
+    Write-Host "WARN rule '$($r.DisplayName)': address filter unreadable - treating as exposed"
+    $remote = @("Any")
+  } else {
+    $remote = @($af.RemoteAddress)
+  }
   $nonBackendRemote = ($remote -contains "Any") -or (($remote | Where-Object { $_ -ne $AllowFrom }).Count -gt 0)
 
   # Is it program-scoped to the agent listener image (or Any program)? Handle "Any" BEFORE canonicalising
