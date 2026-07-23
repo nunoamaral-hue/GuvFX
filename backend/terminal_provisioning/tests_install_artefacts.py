@@ -314,11 +314,14 @@ class ApprovalReflectsRealityTests(SimpleTestCase):
 class UserRightManagementTests(SimpleTestCase):
     """User rights are managed with the LSA policy API, never secedit.
 
-    The install-only baseline found SeBatchLogonRight ABSENT from local policy on the target host, so
-    Windows' effective defaults were in force. secedit writes a COMPLETE assignment line — creating one
-    containing only our four SIDs would have replaced those defaults machine-wide. LsaAddAccountRights adds
-    one right to one account and touches nothing else, so there is no line to rewrite and no need for the
-    installer to know what the defaults are.
+    The 2026-07-22 baseline recorded SeBatchLogonRight as ABSENT from local policy. That reading was a
+    false negative in the capture — the right is explicitly assigned to the three Windows defaults
+    (Administrators, Backup Operators, Performance Log Users). The correction does not weaken the case for
+    the LSA API; it strengthens it. secedit writes a COMPLETE assignment line, so adding our four SIDs
+    means reconstructing those three default principals from a template exactly, and a reconstruction that
+    is wrong revokes batch logon machine-wide from whoever held it. LsaAddAccountRights adds one right to
+    one account and touches nothing else, so there is no line to rewrite and the installer never has to
+    know, infer or recreate the defaults.
 
     These are source-conformance checks. The LSA calls themselves cannot be exercised off Windows; the
     read-only half runs on the host during PLAN, before any APPLY, which is where the interop is proven.

@@ -244,12 +244,20 @@ if ($ValidateGoldenOnly) {
 # -- 1a. LSA interop. Loaded BEFORE identities are created (see the self-test below).
 #       SeBatchLogonRight is granted via the LSA policy API, NOT secedit.
 #
-#      WHY THIS IS NOT secedit (install-only baseline finding, 2026-07-22): on this host the right is
-#      ABSENT from local security policy entirely, so Windows' effective DEFAULTS are in force. secedit
-#      writes a COMPLETE assignment line, so creating one containing only our four SIDs would have
-#      REPLACED those defaults machine-wide - silently removing batch logon from whoever holds it by
-#      default. LsaAddAccountRights adds one right to one account and touches nothing else: there is no
-#      policy line to rewrite, and no need for this script to know or recreate what the defaults are.
+#      WHY THIS IS NOT secedit. On this host the right IS explicitly assigned in local security policy:
+#
+#          SeBatchLogonRight = *S-1-5-32-544,*S-1-5-32-551,*S-1-5-32-559
+#          (Administrators, Backup Operators, Performance Log Users - the Windows defaults)
+#
+#      CORRECTION, 2026-07-23: the 2026-07-22 baseline recorded this right as ABSENT, and that reading was
+#      wrong. It was a false negative in the CAPTURE, not a fact about the host - see
+#      evidence/b3p2-install/baseline_2026-07-22.md. The wrong premise does not change the decision, and
+#      the true state argues for it harder: secedit /configure writes a COMPLETE assignment line, so
+#      granting our four SIDs means reconstructing those three default principals from a template and
+#      hoping the reconstruction is exact. Get one wrong and batch logon is silently revoked machine-wide
+#      from whoever held it. LsaAddAccountRights adds ONE right to ONE account and touches nothing else:
+#      no line is rewritten, and this script never has to know, infer or recreate the defaults - which is
+#      also what the Phase 2 stop-condition decision required of it.
 #
 #      Properties: only SeBatchLogonRight; only an approved beta-slot SID; every other right and every
 #      other principal untouched; fails closed on any LSA error; idempotent.
