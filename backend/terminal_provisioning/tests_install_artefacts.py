@@ -277,8 +277,47 @@ class ServiceAccountCanDoItsJobTests(SimpleTestCase):
         self.assertIn("the grant did not take; do NOT start", source)
 
     def test_the_approval_file_is_readable_by_the_service_account(self):
+        """Granted via Set-Acl on the computed SID, NEVER via icacls.
+
+        install_pool.ps1 runs BEFORE install_service.ps1, so NT SERVICE\\GuvFXBetaAgent has no name
+        mapping yet. Measured on the host: icacls returns 1332 for the name AND for the raw SID (it
+        reverse-resolves), and because icacls applies an invocation atomically it discarded the
+        Administrators and SYSTEM grants issued in the same call - leaving the file with inheritance
+        stripped and no explicit ACE, then throwing on the LAST step of a credentialed APPLY.
+        """
         source = _code("install_pool.ps1")
-        self.assertIn("NT SERVICE\\GuvFXBetaAgent:(R)", source)
+        self.assertIn("function Grant-GuvfxServiceRead", source)
+        self.assertIn("sc.exe showsid", source)
+        self.assertIn("Set-Acl -Path $Path -AclObject $acl", source)
+        self.assertIn('Grant-GuvfxServiceRead -Path $ApprovedTasksOut -ServiceName "GuvFXBetaAgent"', source)
+        # The failing form must be gone: no icacls INVOCATION may name the service account. Both comment
+        # forms are stripped first — the reason this is forbidden is written next to the code avoiding it,
+        # and a check that trips on its own rationale is noise, not coverage.
+        code_only = re.sub(r"<#.*?#>", "", source, flags=re.S)
+        for line in code_only.splitlines():
+            stmt = line.split("#", 1)[0]
+            if "icacls" in stmt:
+                self.assertNotIn("NT SERVICE", stmt, f"icacls cannot resolve a service account: {line}")
+
+    def test_the_service_grant_refuses_a_non_service_sid(self):
+        """sc.exe output is parsed, so the parse result is validated before it becomes an ACE."""
+        source = _code("install_pool.ps1")
+        self.assertIn('"^S-1-5-80-\\d+-\\d+-\\d+-\\d+-\\d+$"', source)
+        self.assertIn("is not a service SID", source)
+        self.assertIn("post-check failed: service SID", source)
+
+    def test_the_service_grant_post_check_reads_the_dacl_as_sids(self):
+        """Asking for NTAccount would re-introduce the name lookup that cannot succeed - a post-check
+        that can never pass is worse than no post-check."""
+        source = _code("install_pool.ps1")
+        self.assertIn("GetAccessRules($true, $false,", source)
+        self.assertIn("[System.Security.Principal.SecurityIdentifier])", source)
+
+    def test_stripping_inheritance_is_checked_separately_from_the_grant(self):
+        """If /inheritance:r succeeds and the grant then fails, the file is left with NO explicit ACE.
+        One shared $LASTEXITCODE check cannot distinguish those two outcomes."""
+        source = _code("install_pool.ps1")
+        self.assertIn("icacls /inheritance:r failed on $ApprovedTasksOut", source)
 
     def test_the_approval_file_is_written_without_a_bom(self):
         """Set-Content -Encoding UTF8 emits a BOM under PS 5.1; the agent would call that malformed JSON."""

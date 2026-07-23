@@ -313,6 +313,43 @@ function Get-ApprovedSlotSidBytes {
   return @{ Bytes = $bytes; Value = $sid.Value }
 }
 
+function Grant-GuvfxServiceRead {
+  <# Grant READ on one file to the beta agent's virtual service account.
+
+     WHY THIS IS NOT icacls. This script runs BEFORE install_service.ps1, so the service does not exist
+     yet and "NT SERVICE\GuvFXBetaAgent" has no name mapping. icacls fails with 1332 - and it fails the
+     same way when handed the RAW SID, because it reverse-resolves the SID to a name before applying.
+     Measured on the host: exit 1332, "Successfully processed 0 files". Since icacls applies a whole
+     invocation atomically, that one unresolvable principal also discarded the Administrators and SYSTEM
+     grants in the same call, leaving the file with inheritance stripped and no explicit ACE.
+
+     A service SID is DERIVED from the service name, so it exists as a value before the service does.
+     sc.exe computes it, and Set-Acl binds a SecurityIdentifier directly - no name lookup anywhere. #>
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$ServiceName)
+  if ($ServiceName -ne "GuvFXBetaAgent") {
+    throw "refusing service grant for '$ServiceName': fixed to the beta agent service account"
+  }
+  $shown = & sc.exe showsid $ServiceName 2>&1
+  $match = $shown | Select-String -Pattern "SERVICE SID:\s*(S-1-5-80-\S+)"
+  if (-not $match) { throw "could not compute the service SID for '$ServiceName' (sc.exe showsid gave no SERVICE SID)" }
+  $value = $match.Matches.Groups[1].Value
+  if ($value -notmatch "^S-1-5-80-\d+-\d+-\d+-\d+-\d+$") {
+    throw "refusing: '$value' is not a service SID (expected the S-1-5-80- namespace)"
+  }
+  $sid = New-Object System.Security.Principal.SecurityIdentifier($value)
+  $acl = Get-Acl -Path $Path
+  $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $sid, [System.Security.AccessControl.FileSystemRights]::Read, "Allow")))
+  Set-Acl -Path $Path -AclObject $acl
+  # Read the DACL back AS SIDs. Asking for NTAccount here would re-introduce the same name lookup that
+  # cannot succeed, and a post-check that cannot pass is worse than none.
+  $rules = (Get-Acl -Path $Path).GetAccessRules($true, $false,
+             [System.Security.Principal.SecurityIdentifier])
+  $found = @($rules | Where-Object { $_.IdentityReference.Value -eq $value -and $_.AccessControlType -eq "Allow" })
+  if ($found.Count -eq 0) { throw "post-check failed: service SID $value is not on $Path" }
+  Write-Host "evidence approvals_acl service_sid=$value rights=Read result=granted"
+}
+
 function Open-GuvfxLsaPolicy {
   param([uint32]$Access)
   $oa = New-Object GuvfxLsa+LSA_OBJECT_ATTRIBUTES
@@ -586,12 +623,16 @@ DoIt "write approved task definitions to $ApprovedTasksOut" {
   [IO.File]::WriteAllText($ApprovedTasksOut, ($Approved | ConvertTo-Json -Depth 4),
                           (New-Object Text.UTF8Encoding $false))
   icacls $ApprovedTasksOut /inheritance:r | Out-Null
+  # Checked separately. If stripping inheritance succeeds and the grant below fails, the file is left with
+  # NO explicit ACE at all - so the two steps must not share one exit-code check.
+  if ($LASTEXITCODE -ne 0) { throw "icacls /inheritance:r failed on $ApprovedTasksOut (exit $LASTEXITCODE)" }
+  icacls $ApprovedTasksOut /grant "*S-1-5-32-544:F" /grant "*S-1-5-18:F" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "icacls failed on $ApprovedTasksOut (exit $LASTEXITCODE)" }
   # The service account needs READ - it loads this file at startup and refuses to start without it. Read
   # only: the agent must never be able to rewrite its own approvals. Inheritance is stripped, so the
   # inheritable grant on the state dir cannot reach this file; the ACE has to be explicit.
-  icacls $ApprovedTasksOut /grant "*S-1-5-32-544:F" /grant "*S-1-5-18:F" `
-                           /grant "NT SERVICE\GuvFXBetaAgent:(R)" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "icacls failed on $ApprovedTasksOut (exit $LASTEXITCODE)" }
+  # Literal, not a parameter: the grant target is fixed, exactly like the identity and task prefixes.
+  Grant-GuvfxServiceRead -Path $ApprovedTasksOut -ServiceName "GuvFXBetaAgent"
 }
 
 # -- 8. Verify (no start, no trigger, no enable).
