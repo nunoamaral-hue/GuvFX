@@ -39,6 +39,36 @@ believing a negative result. Full write-up: `evidence/b3p2-install/baseline_2026
   circuit-reset mutation) are admin-only. Target architecture = Option A (Windows RDS/RemoteApp host pool), pending
   Nuno's cost approval before any procurement.
 
+## Chronic `VALIDATE_WORKER` heartbeat flap — Windows-side, NOT caused by backend deploys (2026-07-16)
+
+- **Chronic `VALIDATE_WORKER` heartbeat flap (WARN, dedup `VALIDATE_WORKER:0:0`)** — the Windows-side
+  MT5 validate worker/EA intermittently stops posting its heartbeat (observed `age_s` ~342s vs 60s
+  expected), raising a WARN that **auto-resolves** when it resumes. On 2026-07-16 it opened/resolved
+  ~5× (alerts 36/38/40/41) on a ~1–2h cadence; 42 re-opened at 14:20 near an unrelated backend recreate.
+  It is **not** caused by backend deploys (a ~6s backend blip cannot produce a multi-minute heartbeat
+  gap) and is orthogonal to signal execution / TP protection / notifications (all green during the flap).
+  Root fix is on the Windows validate EA (one of the known "2/11 healthchecks" gaps), not the backend.
+
+## Worker claim priority is MODIFY > CLOSE > PLACE > SYNC (packet lists PLACE before CLOSE) (2026-07-16)
+
+- The ingest worker's single prioritized claim order (running code) is
+  `MODIFY_POSITION, CLOSE_TRADE, PLACE_ORDER, PLACE_TEST_ORDER, SYNC_POSITIONS`. The
+  TI-SIGNAL-EXECUTION-VALIDATION packet text expected `MODIFY, PLACE, CLOSE, SYNC`. The two **hard
+  invariants hold**: MODIFY is first (protection MODIFYs are never starved) and SYNC is last (bookkeeping
+  never blocks execution). Only the middle CLOSE-vs-PLACE order differs. CLOSE-before-PLACE (exit an
+  existing position before entering a new one) is arguably the *safer* default, so it was **left unchanged**
+  rather than silently reordering a live execution path. **Flagged for Nuno's decision** — reorder to match
+  the packet, or ratify the current (safer) order.
+
+## Plan-layer silent gaps are now alerted (stuck_promotion) (2026-07-16)
+
+- `detect_stuck_promotions` (minute-chain `sweep_execution_health`) raises a deduped WARN
+  (`stuck_promotion:plan:{id}`) when an auto_demo-source plan reaches PLANNED but gets NEITHER a PLACE_ORDER
+  job NOR a PROMOTION_REJECTED reason within 300s — the plan-layer complement to the approval-layer
+  `unplanned_tradeable_signal` alert. Normal `daily_drawdown_hit` rejections carry a PROMOTION_REJECTED audit
+  and are excluded (0 false-positives, verified live). Alert-only, fail-open, auto-resolving. Tunable via
+  `STUCK_PROMOTION_ALERT_SECONDS`.
+
 ## "MT5 bridge stall" was a self-inflicted 429 throttle storm — FIXED (2026-07-16)
 
 - The intermittent stalls were the ingest worker **rate-limiting itself**: 5 `jobs/next/` calls per
