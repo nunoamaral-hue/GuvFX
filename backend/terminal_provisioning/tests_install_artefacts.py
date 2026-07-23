@@ -929,11 +929,75 @@ class VerifyOnlyTests(SimpleTestCase):
         self.assertIn("if ($Mutate) {\n    Grant-GuvfxBatchLogonRight -AccountName $user", code)
         self.assertNotIn("if ($Check) {\n    Grant-GuvfxBatchLogonRight", code)
 
-    def test_no_password_prompt_can_be_reached_without_mutating(self):
-        """Get-SlotSecret is only ever called from inside a DoIt block, which -VerifyOnly skips."""
+    #: Every block that must run under BOTH -Apply and -VerifyOnly. Reverting any of these to `if ($Apply)`
+    #: silently turns -VerifyOnly into a no-op that still prints a green epilogue. Mutation testing during
+    #: review proved the suite stayed green for each one individually and for all three at once.
+    CHECK_GATED = (
+        # the group-membership assertions (non-admin, and positively in Users)
+        'if ($Check) {\n  for ($n = 1; $n -le $PoolSize; $n++) {\n    $user = "$IdentityPrefix$n"\n'
+        '    foreach ($g in @("Administrators","Remote Desktop Users","Backup Operators")) {',
+        # the approvals read-back, which carries the /portable and terminate-scope assertions
+        'if ($Check) {\n    $svc = New-Object -ComObject Schedule.Service',
+        # the VERIFY block itself
+        'if ($Check) {\n  Step "VERIFY pool',
+    )
+
+    def test_every_verification_block_is_gated_on_check_not_apply(self):
+        """The positive half of the gating, absent until review mutation-tested it.
+
+        The dangerous revert is the approvals read-back: with it on $Apply, a -VerifyOnly run skips the
+        assertion that the terminate task filters on this slot's own executable rather than piping
+        Get-Process straight into Stop-Process — the script's own comment calls that the only thing
+        standing between `Stop-Process -Force` and the operator's live terminal — and still prints
+        'ok pool VERIFIED'.
+        """
         code = _code("install_pool.ps1")
-        body = code[code.index("function Get-SlotSecret"):]
-        for i, line in enumerate(body.splitlines(), 1):
-            if "Get-SlotSecret $user" in line and "function" not in line:
-                self.assertNotIn("if ($Check)", body[:body.index(line)][-400:],
-                                 "a password prompt is reachable from a verification-only path")
+        for gate in self.CHECK_GATED:
+            self.assertIn(gate, code,
+                          f"a verification block is no longer gated on $Check:\n{gate}")
+
+    def test_no_bare_apply_gate_survives_outside_the_exclusion_guard(self):
+        """A NEW block must be classified as $Mutate or $Check, not default to invisible under -VerifyOnly."""
+        code = _code("install_pool.ps1")
+        for i, line in enumerate(code.splitlines(), 1):
+            stmt = line.split("#", 1)[0]
+            if re.search(r"if\s*\(\$Apply\)", stmt):
+                self.fail(f"install_pool.ps1:{i} gates on $Apply directly — use $Mutate (changes the host) "
+                          f"or $Check (asserts): {line.strip()}")
+        self.assertIn("if ($Apply -and $VerifyOnly)", code)      # the one sanctioned use
+
+    def test_verifyonly_asserts_the_user_right_rather_than_printing_a_plan_line(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("does NOT hold $GuvfxRight - the pool cannot launch - STOP", code)
+        self.assertIn("VERIFY: identity '$user' does not exist - the pool is not provisioned - STOP", code)
+
+    def test_verifyonly_does_not_print_the_provisioning_epilogue(self):
+        """'Next: install_service.ps1 -Apply' after a verify run would misreport what just happened."""
+        code = _code("install_pool.ps1")
+        self.assertIn("ok   pool VERIFIED. Nothing was created, changed or started by this run.", code)
+
+    def test_no_password_prompt_can_be_reached_without_mutating(self):
+        """EVERY Get-SlotSecret call site must sit inside a DoIt scriptblock, which -VerifyOnly skips.
+
+        The first version of this test used ``body.index(line)`` to locate each call site. Two of the three
+        call sites are byte-identical, so ``index`` returned the FIRST match every time and the test
+        asserted the same offset three times over — an unconditional prompt at the top of the script would
+        have passed it. Brace-match instead: find the enclosing block for real.
+        """
+        code = _code("install_pool.ps1")
+        lines = code.splitlines()
+        sites = [i for i, ln in enumerate(lines)
+                 if "Get-SlotSecret $user" in ln and not ln.lstrip().startswith("function")]
+        self.assertGreaterEqual(len(sites), 3, "expected the creation + two task-registration call sites")
+        for idx in sites:
+            # Walk backwards tracking brace depth; the innermost enclosing opener must be a DoIt block.
+            depth, opener = 0, None
+            for j in range(idx, -1, -1):
+                depth += lines[j].count("}") - lines[j].count("{")
+                if depth < 0:                      # this line opened the block we are inside
+                    opener = lines[j]
+                    break
+            self.assertIsNotNone(opener, f"line {idx + 1} is not inside any block")
+            self.assertIn("DoIt ", opener,
+                          f"Get-SlotSecret at line {idx + 1} is not inside a DoIt block, so -VerifyOnly "
+                          f"could reach a password prompt: enclosing opener was {opener.strip()!r}")

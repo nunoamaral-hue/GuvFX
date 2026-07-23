@@ -602,8 +602,19 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     # self-test runs before any account is created, so a broken interop costs nothing.
     if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) {
       $held = Get-GuvfxAccountRights -AccountName $user
-      $verb = if ($held -contains $GuvfxRight) { "already holds (no change)" } else { "WOULD ADD" }
-      Write-Host "PLAN:  $user $verb $GuvfxRight; currently holds $($held.Count) right(s): $($held -join ',')"
+      if ($VerifyOnly) {
+        # VerifyOnly ASSERTS. Printing a PLAN line here would have let a -VerifyOnly run reach the green
+        # epilogue while saying nothing at all about the one user right this pool depends on.
+        if ($held -notcontains $GuvfxRight) {
+          throw "VERIFY: '$user' does NOT hold $GuvfxRight - the pool cannot launch - STOP"
+        }
+        Write-Host "ok   $user holds $GuvfxRight (and $(Get-GuvfxCount $held) right(s) total)"
+      } else {
+        $verb = if ($held -contains $GuvfxRight) { "already holds (no change)" } else { "WOULD ADD" }
+        Write-Host "PLAN:  $user $verb $GuvfxRight; currently holds $(Get-GuvfxCount $held) right(s): $($held -join ',')"
+      }
+    } elseif ($VerifyOnly) {
+      throw "VERIFY: identity '$user' does not exist - the pool is not provisioned - STOP"
     } else {
       Write-Host "PLAN:  $user does not exist yet; WOULD ADD $GuvfxRight after creation (enumerate path not exercised until the account exists)"
     }
@@ -921,8 +932,12 @@ if ($Check) {
     Write-Host ("ok   estate task '$t' still present, principal unchanged" + $note)
   }
   Write-Host ""
-  Write-Host "ok   pool provisioned. Tasks are DISABLED. Nothing has been started, triggered or staged."
-  Write-Host "     Next: install_service.ps1 -Apply, then firewall.ps1 -Apply. Do NOT start until approval."
+  if ($VerifyOnly) {
+    Write-Host "ok   pool VERIFIED. Nothing was created, changed or started by this run."
+  } else {
+    Write-Host "ok   pool provisioned. Tasks are DISABLED. Nothing has been started, triggered or staged."
+    Write-Host "     Next: install_service.ps1 -Apply, then firewall.ps1 -Apply. Do NOT start until approval."
+  }
 } else {
   Write-Host ""
   Write-Host "PLAN complete. Re-run with -Apply on the host to provision the pool (install-only, no start)."

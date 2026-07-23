@@ -176,9 +176,12 @@ function Get-GuvfxAccountRightsU {
 # F3: a revoke that finds no resolvable identity is a SILENT NO-OP - indistinguishable from a clean
 # teardown while four SIDs keep the right for ever, inheritable by a future account with the same RID.
 # Say so loudly rather than printing the usual epilogue.
-# Null-safe: @($null).Count is 1, so a revoke that resolved NO identity would have counted as one and
-# skipped this warning entirely - the exact defect that aborted the 2026-07-23 APPLY, in the direction
-# that stays silent instead of shouting.
+# Null-safe by construction, as DEFENCE IN DEPTH - not because a live defect was found here. $SlotIdentities
+# is initialised to @() above and only ever appended to, so it cannot be $null today and `@($x).Count` was
+# correct. It is written this way because @($null).Count is 1: if a later edit ever let this variable be
+# $null, "no identity resolved" would count as one and this warning - the one that says four SIDs may keep
+# the right for ever - would be skipped SILENTLY. The 2026-07-23 APPLY failure was the same idiom in
+# install_pool.ps1, where the value genuinely could be $null.
 $slotIdentityCount = if ($null -eq $SlotIdentities) { 0 } else { @($SlotIdentities).Count }
 if ($slotIdentityCount -lt $PoolSize) {
   $found = @($SlotIdentities | ForEach-Object { $_.Name })
