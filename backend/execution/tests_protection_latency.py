@@ -126,7 +126,13 @@ class LegLatencyTests(LatencyBase):
 class FloorStatsTests(LatencyBase):
     def test_soft_deferral_window_measured(self):
         plan = self._plan()
-        base = datetime.datetime(2026, 7, 16, 7, 22, 0, tzinfo=UTC)
+        # Anchored to NOW, not to a calendar date. protection_floor_stats() filters on a ROLLING
+        # `days=7` window, so a hard-coded base silently ages out of it and the test starts failing on a
+        # date unrelated to any code change. It did: the old base of 2026-07-16 07:22 crossed the window
+        # boundary at 07:24 UTC on 2026-07-23 and turned CI red mid-run — one job on a commit passed and
+        # its sibling on the SAME commit failed. One day back keeps the fixture inside the window for good
+        # while staying entirely in the past.
+        base = timezone.now() - datetime.timedelta(days=1)
         # 3 deferred attempts then a verified success 240s after first attempt.
         for k in range(3):
             self._modify(plan, 3, "TP2_LOCKED", created=base + datetime.timedelta(minutes=k),

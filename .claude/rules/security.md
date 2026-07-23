@@ -83,3 +83,22 @@ not a provable claim.
   `.guvfx_golden_manifest`), expected portable layout, no broker account configured, no account-specific
   runtime state, no evidence of previous trading activity, no attached EA configuration, expected directory
   structure. Validation failure **aborts before PLAN**; it is never waived.
+
+### Permanent rule 11 (adopted 2026-07-23, B3P-2 baseline retraction)
+
+- **RULE 11 — A negative operational finding must not be treated as authoritative until the same
+  measurement path is shown capable of producing a known positive result.** Where encoding, parsing or
+  command-output interpretation is involved: verify raw bytes or machine-readable output; test both a
+  positive and a negative control; and record the parser and encoding assumptions alongside the result.
+
+  *Why this was paid for.* The 2026-07-22 install baseline reported
+  `SeBatchLogonRight = <ABSENT FROM POLICY>`, and the programme built a decision on it. The right was
+  assigned the whole time. The capture exported the policy to a path from `[IO.Path]::GetTempFileName()`,
+  which **creates** the file; `secedit /export` writing into an existing path emits UTF-16 with **no BOM**;
+  `Get-Content` had no BOM to detect, fell back to ANSI, and matched **nothing** — for *any* right. Exit
+  code was `0` and the file was non-empty, so nothing looked wrong. A single positive control — "does this
+  parser find a right I already know is there?" — would have caught it immediately.
+
+  *Corollary:* this is the same PowerShell 5.1 encoding trap as RULE 9, in the other direction (there
+  BOM-less UTF-8 read as ANSI; here BOM-less UTF-16). Treat "the tool exited 0 and the output did not
+  contain X" as **unproven** until the parser has been shown to find something.
