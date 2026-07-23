@@ -14,7 +14,7 @@ param(
   [string]$StateDir    = "C:\GuvFX\beta\agent-state",
   [string]$SlotsRoot   = "C:\GuvFX\beta\slots",
   [string]$BetaTombstones = "C:\GuvFX\beta\tombstones",
-  [string]$GoldenDir   = "C:\GuvFX\beta\golden",
+  [string]$GoldenDir   = "C:\GuvFX\golden\newMT5",
   [string]$LaunchTaskPrefix = "GuvFXBetaRuntime-",
   [string]$StopTaskPrefix   = "GuvFXBetaRuntimeStop-",
   [string]$IdentityPrefix   = "guvfx_b_slot",

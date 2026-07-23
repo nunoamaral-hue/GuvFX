@@ -30,6 +30,20 @@ APPROVED_TASK = {
     "working_directory": r"C:\GuvFX\beta\slots\1\terminal",
     "arguments": "/portable", "logon_type": 1, "run_level": 0, "enabled": True,
 }
+#: The approved TERMINATE definition for slot 1. install_pool.ps1 now pins BOTH task families, because the
+#: terminate task is the one that reaches a process — its argument string is all that keeps
+#: `Stop-Process -Force` off the operator's live terminal, which carries the same image name.
+APPROVED_STOP = {
+    "task_name": "GuvFXBetaRuntimeStop-1", "run_as_identity": "guvfx_b_slot1",
+    "executable": "powershell.exe",
+    "working_directory": "",
+    "arguments": ("-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Get-Process -Name "
+                  "terminal64 -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "
+                  "'C:\\GuvFX\\beta\\slots\\1\\terminal\\terminal64.exe' } | Stop-Process -Force\""),
+    "logon_type": 1, "run_level": 0, "enabled": True,
+}
+APPROVED_BOTH = {"GuvFXBetaRuntime-1": dict(APPROVED_TASK),
+                 "GuvFXBetaRuntimeStop-1": dict(APPROVED_STOP)}
 OTHER = "99999999-8888-7777-6666-555555555555"
 DIGEST = "golden-digest-abc"
 MANIFEST_V = "2026-07-22.13"
@@ -44,6 +58,7 @@ class FakeWin:
         self._exists, self._process, self._task_ok, self._launches = exists, process, task_ok, launches
         self._marker = None
         self._task_definition = dict(APPROVED_TASK)
+        self._stop_definition = dict(APPROVED_STOP)
         self._dest = dest if dest is not None else {"digest": DIGEST, "executable_digest": "exe",
                                                     "portable_marker": True, "ownership_marker": True}
 
@@ -64,7 +79,13 @@ class FakeWin:
     def query_task(self, t):
         if self._task_definition is None:
             return None
-        d = dict(self._task_definition, task_name=t)
+        # Answer PER TASK. Returning the launch definition for the terminate name too would let the
+        # terminate gate pass against a definition that is not the terminate task's — the exact shape of
+        # fake that has already hidden two real defects in this packet.
+        base = self._stop_definition if str(t).startswith("GuvFXBetaRuntimeStop-") else self._task_definition
+        if base is None:
+            return None
+        d = dict(base, task_name=t)
         d["portable_switch"] = "/portable" in str(d.get("arguments") or "").lower().split()
         return d
 
@@ -99,7 +120,7 @@ def _store(pool_size=2):
 
 def _impls(win, store, **over):
     args = dict(golden_digest=DIGEST, golden_manifest_version=MANIFEST_V, now_fn=lambda: 100,
-                approved_tasks={"GuvFXBetaRuntime-1": dict(APPROVED_TASK)},
+                approved_tasks={k: dict(v) for k, v in APPROVED_BOTH.items()},
                 manifest_version=MANIFEST_V, sleep_fn=lambda _seconds: None)   # settle window, no wall time
     args.update(over)
     return PoolOpImplementations(win, store, **args)
@@ -394,7 +415,8 @@ class TombstoneLifecycleTests(SimpleTestCase):
                         context=_ctx(s, operation="TOMBSTONE"))
         ops = [e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)]
         self.assertEqual(ops, ["stage_copy", "precheck_launch_task", "request_launch", "confirm_launch",
-                               "request_terminate", "confirm_terminated", "precheck_cleanup",
+                               "precheck_terminate_task", "request_terminate", "confirm_terminated",
+                               "precheck_cleanup",
                                "tombstone", "verify_cleanup"])
         s.assert_sequence_valid(1, 1)
         s.assert_evidence_complete(1, 1)
@@ -895,3 +917,65 @@ class PortableSwitchGateTests(SimpleTestCase):
         obs = wp.inspect_task(win, wp.resolve_slot_input(1), which="launch", observed_at=100)
         self.assertTrue(obs["evidence"]["portable_switch"])
         self.assertEqual(obs["evidence"]["arguments"], "/portable")
+
+
+class TerminateGateTests(SimpleTestCase):
+    """Negative coverage for the terminate gate.
+
+    Mutation-tested during review: deleting the whole containment branch, or dropping the scope check
+    alone, left the suite green. A gate whose removal no test notices is not a gate.
+    """
+
+    def _stopped_impls(self, **win_kw):
+        """A materialised, started, now-absent runtime — the state STOP is called from."""
+        s = _store()
+        win = FakeWin(exists=False, **win_kw)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        impls.start(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="START"))
+        win._process = None            # the terminate trigger will find it gone
+        win.calls.clear()
+        return s, win, impls
+
+    def test_a_terminate_task_without_an_approval_refuses_before_triggering(self):
+        s, win, impls = self._stopped_impls()
+        impls.approved_tasks.pop("GuvFXBetaRuntimeStop-1")
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        self.assertEqual(ctx.exception.reason_code, "approved_task_definition_missing")
+        self.assertNotIn(("run_task", "GuvFXBetaRuntimeStop-1"),
+                         [(c[0], c[1]) for c in win.calls if c[0] == "run_task"])
+
+    def test_a_terminate_task_whose_arguments_lost_the_path_filter_is_refused(self):
+        """The exact edit an operator would make to 'fix' a failing STOP: drop the Where-Object clause."""
+        s, win, impls = self._stopped_impls()
+        win._stop_definition = dict(
+            APPROVED_STOP,
+            arguments='-NoProfile -Command "Get-Process -Name terminal64 | Stop-Process -Force"')
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        self.assertEqual(ctx.exception.reason_code, "terminate_scope_unbounded")
+
+    def test_a_terminate_task_pointed_at_another_executable_is_refused(self):
+        s, win, impls = self._stopped_impls()
+        win._stop_definition = dict(APPROVED_STOP, executable=r"C:\Windows\System32\taskkill.exe")
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        self.assertEqual(ctx.exception.reason_code, "terminate_executable_unexpected")
+
+    def test_a_terminate_task_scoped_to_a_DIFFERENT_slot_is_refused(self):
+        """slots\\1 is a substring of slots\\10, so containment must be tested at a path boundary."""
+        s, win, impls = self._stopped_impls()
+        win._stop_definition = dict(
+            APPROVED_STOP,
+            arguments=APPROVED_STOP["arguments"].replace(r"slots\1\terminal", r"slots\10\terminal"))
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        self.assertEqual(ctx.exception.reason_code, "terminate_scope_unbounded")
+
+    def test_a_drifted_terminate_definition_is_refused(self):
+        s, win, impls = self._stopped_impls()
+        win._stop_definition = dict(APPROVED_STOP, run_as_identity="Administrator")
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        self.assertIn(ctx.exception.reason_code, ("task_definition_drift", "forbidden_run_as_identity"))

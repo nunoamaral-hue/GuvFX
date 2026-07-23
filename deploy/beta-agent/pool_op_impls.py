@@ -23,7 +23,8 @@ from lib.mgmt_agent_core import AgentError
 from lifecycle import ALREADY_COMPLETED, COMPLETED, REQUESTED, assert_evidence_present
 from stores import (build_verification_evidence, format_owner_marker, occupancy_id, remote_evidence)
 from win_mutations import (BETA_TOMBSTONES_ROOT, confirm_launch, confirm_terminated, precheck_cleanup,
-                           precheck_launch_task, request_launch, request_terminate, stage_copy, tombstone,
+                           precheck_launch_task, precheck_terminate_task, request_launch, request_terminate,
+                           stage_copy, tombstone,
                            verify_cleanup)
 from win_primitives import (ABSENT, BETA_SLOTS_ROOT, MUTATING_CONTEXT, PRESENT_VALID,
                             READ_ONLY_CONTEXT, inspect_filesystem, observe_process, resolve_slot_input)
@@ -301,6 +302,16 @@ class PoolOpImplementations:
     def stop(self, *, canonical_dir, runtime_uuid, base, context=None) -> dict:
         b, si, slot, generation, marker_raw = self._gate(context, runtime_uuid)
         birth = self._birth_from_observation(si)
+        # Same gate the launch path has had all along. The terminate task is the one that can reach a
+        # process, so it is the one that must be proven unchanged before it is triggered.
+        approved = self.approved_tasks.get(si.terminate_task)
+        if not approved:
+            raise AgentError("approved_task_definition_missing")
+        checked = precheck_terminate_task(self.win, MUTATING_CONTEXT, si, approved_definition=approved,
+                                          observed_at=self.now_fn())
+        chk = self._record(slot, generation, checked)
+        if chk["stage_status"] != COMPLETED:
+            raise AgentError(chk["reason_code"] or "task_definition_drift")
         requested = request_terminate(self.win, MUTATING_CONTEXT, si, observed_at=self.now_fn())
         att = self._record(slot, generation, requested)
         if att["stage_status"] != REQUESTED:

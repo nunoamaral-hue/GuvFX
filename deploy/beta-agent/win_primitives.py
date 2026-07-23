@@ -296,8 +296,30 @@ def inspect_task(win, si: SlotInput, *, which: str = "launch", observed_at=None)
     # name, and exact membership against bare names would let ``.\Administrator`` through untouched.
     if _account_component(raw.get("run_as_identity")) in FORBIDDEN_IDENTITIES:
         return _wrap(si, operation, PRESENT_INVALID, "forbidden_run_as_identity", evidence, observed_at)
-    if not is_beneath(str(raw.get("executable") or ""), si.slot_path):
-        return _wrap(si, operation, PRESENT_INVALID, "executable_outside_slot", evidence, observed_at)
+    # Containment means a different thing for each task family, and applying the launch rule to both was
+    # wrong in both directions.
+    #
+    #   LAUNCH    runs the slot's own MT5 binary, so the EXECUTABLE must live beneath the slot.
+    #   TERMINATE runs powershell.exe from System32 - it can never be inside the slot - and what actually
+    #             bounds it is its ARGUMENT string, which must name this slot's own executable. That is
+    #             the only thing separating `Stop-Process -Force` from the operator's production terminal,
+    #             which carries the same image name.
+    executable = str(raw.get("executable") or "")
+    if which == "launch":
+        if not is_beneath(executable, si.slot_path):
+            return _wrap(si, operation, PRESENT_INVALID, "executable_outside_slot", evidence, observed_at)
+    else:
+        if _account_component(executable).lower() not in ("powershell.exe", "pwsh.exe"):
+            return _wrap(si, operation, PRESENT_INVALID, "terminate_executable_unexpected", evidence,
+                         observed_at)
+        arguments = str(raw.get("arguments") or "")
+        # The slot path must appear as a PATH PREFIX, not merely as a substring: ``...\slots\1`` is a
+        # substring of ``...\slots\10``, so a bare containment test would accept slot 10's terminate
+        # arguments as scoping slot 1. Requiring the trailing separator makes the boundary explicit.
+        needle = si.slot_path.rstrip("\\").lower() + "\\"
+        if needle not in arguments.lower():
+            # An argument string that does not name this slot cannot be scoped to this slot.
+            return _wrap(si, operation, PRESENT_INVALID, "terminate_scope_unbounded", evidence, observed_at)
     return _wrap(si, operation, PRESENT_VALID, "", evidence, observed_at)
 
 

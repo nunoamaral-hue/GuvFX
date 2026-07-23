@@ -69,6 +69,8 @@ REASON_CATEGORY = {
     "process_identity_mismatch": INTEGRITY,
     "occupancy_binding_mismatch": INTEGRITY,
     "task_definition_drift": INTEGRITY,
+    "terminate_executable_unexpected": INTEGRITY,
+    "terminate_scope_unbounded": INTEGRITY,
     "approved_task_definition_missing": CONFIGURATION,
     "slot_integrity_mismatch": INTEGRITY,
     "audit_chain_corrupt": INTEGRITY,
@@ -238,6 +240,15 @@ STAGE_CONTRACTS = {
         "invariant": "nothing is triggered yet, and the task is never repaired — drift is a refusal",
         "postconditions": ("the installed launch task matches its approved definition field for field, "
                            "and is enabled",),
+        "statuses": (COMPLETED, BLOCKED),
+    },
+    "precheck_terminate_task": {
+        "preconditions": ("capability is MUTATING", "an approved task definition exists for this slot's "
+                          "terminate task"),
+        "invariant": "nothing is triggered yet, and the task is never repaired - drift is a refusal. The "
+                     "terminate task is the one that can reach a process, so it is the one that must be "
+                     "proven unchanged before it runs",
+        "postconditions": ("the installed terminate task matches its approved definition field for field",),
         "statuses": (COMPLETED, BLOCKED),
     },
     "request_launch": {

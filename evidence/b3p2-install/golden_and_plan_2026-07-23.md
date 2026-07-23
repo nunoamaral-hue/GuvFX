@@ -63,7 +63,7 @@ and an empty `.guvfx_portable`. The installation itself was not modified.
 | Path | `C:\GuvFX\golden\newMT5` |
 | Build | `5.0.0.6036` (`terminal64.exe` FileVersion == `.guvfx_golden_manifest`) |
 | Files | 584 |
-| `BETA_AGENT_GOLDEN_DIGEST` | `9458098538cbc613c4cd35ce1ad02ffbf03db3a0db10971082dadbc677d7ce32` |
+| `BETA_AGENT_GOLDEN_DIGEST` | `3a7fa6638e9eb9a0989edcaaff5b0c9ec93b15a6c62b9ee9b5f5f420d6313f10` |
 | `BETA_AGENT_GOLDEN_MANIFEST_VERSION` | `5.0.0.6036` |
 
 Digest method: every file sorted by full path, one line `<relative-path-lowercase-slash>|<bytes>|<sha256>`,

@@ -43,9 +43,12 @@ foreach ($p in @($SlotsRoot, $TombstonesRoot, $GoldenDir)) {
 # Beta-owned objects must live in the beta namespace. The golden image is different in kind: it is a
 # READ-ONLY INPUT that the agent only ever reads, so it may live under C:\GuvFX\golden\ as well. It is
 # still refused anywhere outside those two roots, and RULE 10 still forbids the production install.
-foreach ($p in @($SlotsRoot, $TombstonesRoot)) {
+foreach ($p in @($SlotsRoot, $TombstonesRoot, $ApprovedTasksOut)) {
   if ($p -notlike "C:\GuvFX\beta\*") { throw "refusing: '$p' is outside C:\GuvFX\beta\" }
 }
+# $ApprovedTasksOut had no refusal at all, yet it is the target of this script's most destructive file
+# primitive: inheritance is stripped and the DACL is rewritten. Pointed at an estate path it would have
+# stripped that path's inherited access. It is now held to the same namespace as every other write target.
 if (($GoldenDir -notlike "C:\GuvFX\beta\*") -and ($GoldenDir -notlike "C:\GuvFX\golden\*")) {
   throw "refusing: golden image '$GoldenDir' is outside C:\GuvFX\beta\ and C:\GuvFX\golden\"
 }
@@ -56,6 +59,16 @@ if ($IdentityPrefix -ne "guvfx_b_slot") {
   throw "refusing: identity prefix must match win_primitives.RUNTIME_IDENTITY_PREFIX"
 }
 Write-Host "ok   namespace refusals pass (estate paths, estate tasks, identity + task prefixes)"
+
+# Capture the estate BEFORE anything is created, so the post-APPLY comparison has a real "before" rather
+# than asserting that nothing changed by printing nothing. Read-only.
+$EstateBefore = @{}
+foreach ($t in $ForbiddenTasks) {
+  $e = Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
+  if ($e) { $EstateBefore[$t] = @{ state = [string]$e.State; principal = [string]$e.Principal.UserId } }
+}
+Write-Host ("ok   estate captured before any mutation (" + $EstateBefore.Count + " of " +
+            $ForbiddenTasks.Count + " estate tasks present)")
 
 # -- 1. Preconditions: the golden image must be a DEDICATED CLEAN INSTALL (permanent RULE 10).
 #
@@ -313,6 +326,74 @@ function Get-ApprovedSlotSidBytes {
   return @{ Bytes = $bytes; Value = $sid.Value }
 }
 
+function Add-GuvfxUsersMembership {
+  <# Idempotent 'Users' membership for one approved beta-slot account. Separate from creation because the
+     two are not atomic: a run interrupted between New-LocalUser and the group add leaves an account in no
+     group at all, and the re-run path must repair that rather than skip it. #>
+  param([Parameter(Mandatory)][string]$AccountName)
+  if ($AccountName -notmatch "^guvfx_b_slot[1-9][0-9]*$") {
+    throw "refusing group membership for '$AccountName': outside the beta-slot identity namespace"
+  }
+  $already = @(Get-LocalGroupMember -Group "Users" -ErrorAction SilentlyContinue |
+               Where-Object { $_.Name -like "*\$AccountName" })
+  if ($already.Count -gt 0) { return }
+  Add-LocalGroupMember -Group "Users" -Member $AccountName -ErrorAction Stop
+}
+
+function Invoke-GuvfxIcacls {
+  <# icacls is a NATIVE command, so $ErrorActionPreference = "Stop" does not apply to it and a failed ACL
+     is silent. Six of the eight calls in this script were previously unchecked, which meant a slot could
+     be left with the wrong access while the run printed "ok" and continued to the next step. Every call
+     goes through here so that cannot happen. #>
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Arguments)
+  # 2>&1 makes PS 5.1 wrap native stderr in ErrorRecords, which $ErrorActionPreference = "Stop" turns into
+  # a TERMINATING error - so the descriptive throw below would never be reached and the operator would see
+  # a bare icacls line instead of which grant on which path failed.
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try { $out = & icacls $Path @Arguments 2>&1 } finally { $ErrorActionPreference = $prev }
+  if ($LASTEXITCODE -ne 0) {
+    throw ("icacls " + ($Arguments -join " ") + " failed on '$Path' (exit $LASTEXITCODE): " + ($out -join "; "))
+  }
+}
+
+function Grant-GuvfxServiceRead {
+  <# Grant READ on one file to the beta agent's virtual service account.
+
+     WHY THIS IS NOT icacls. This script runs BEFORE install_service.ps1, so the service does not exist
+     yet and "NT SERVICE\GuvFXBetaAgent" has no name mapping. icacls fails with 1332 - and it fails the
+     same way when handed the RAW SID, because it reverse-resolves the SID to a name before applying.
+     Measured on the host: exit 1332, "Successfully processed 0 files". Since icacls applies a whole
+     invocation atomically, that one unresolvable principal also discarded the Administrators and SYSTEM
+     grants in the same call, leaving the file with inheritance stripped and no explicit ACE.
+
+     A service SID is DERIVED from the service name, so it exists as a value before the service does.
+     sc.exe computes it, and Set-Acl binds a SecurityIdentifier directly - no name lookup anywhere. #>
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$ServiceName)
+  if ($ServiceName -ne "GuvFXBetaAgent") {
+    throw "refusing service grant for '$ServiceName': fixed to the beta agent service account"
+  }
+  $shown = & sc.exe showsid $ServiceName 2>&1
+  $match = $shown | Select-String -Pattern "SERVICE SID:\s*(S-1-5-80-\S+)"
+  if (-not $match) { throw "could not compute the service SID for '$ServiceName' (sc.exe showsid gave no SERVICE SID)" }
+  $value = $match.Matches.Groups[1].Value
+  if ($value -notmatch "^S-1-5-80-\d+-\d+-\d+-\d+-\d+$") {
+    throw "refusing: '$value' is not a service SID (expected the S-1-5-80- namespace)"
+  }
+  $sid = New-Object System.Security.Principal.SecurityIdentifier($value)
+  $acl = Get-Acl -Path $Path
+  $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $sid, [System.Security.AccessControl.FileSystemRights]::Read, "Allow")))
+  Set-Acl -Path $Path -AclObject $acl
+  # Read the DACL back AS SIDs. Asking for NTAccount here would re-introduce the same name lookup that
+  # cannot succeed, and a post-check that cannot pass is worse than none.
+  $rules = (Get-Acl -Path $Path).GetAccessRules($true, $false,
+             [System.Security.Principal.SecurityIdentifier])
+  $found = @($rules | Where-Object { $_.IdentityReference.Value -eq $value -and $_.AccessControlType -eq "Allow" })
+  if ($found.Count -eq 0) { throw "post-check failed: service SID $value is not on $Path" }
+  Write-Host "evidence approvals_acl service_sid=$value rights=Read result=granted"
+}
+
 function Open-GuvfxLsaPolicy {
   param([uint32]$Access)
   $oa = New-Object GuvfxLsa+LSA_OBJECT_ATTRIBUTES
@@ -413,11 +494,25 @@ function Get-SlotSecret($user) {
   while ($true) {
     $a = Read-Host -AsSecureString "Password for $user (not echoed, not logged)"
     $b = Read-Host -AsSecureString "Confirm password for $user"
-    $pa = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($a))
-    $pb = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($b))
-    $same = ($pa -ceq $pb)
-    Remove-Variable pa, pb
-    if ($same) { $Secrets[$user] = $a; return $a }
+    # SecureStringToBSTR allocates UNMANAGED memory holding the plaintext. It must be released with
+    # ZeroFreeBSTR, which overwrites the buffer before freeing it - the earlier code freed nothing, so a
+    # plaintext copy of every password stayed in the process for the whole session. try/finally so a
+    # comparison failure cannot skip the wipe.
+    $ba = [IntPtr]::Zero; $bb = [IntPtr]::Zero
+    try {
+      $ba = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($a)
+      $bb = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($b)
+      $pa = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ba)
+      $pb = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bb)
+      $same  = ($pa -ceq $pb)
+      $empty = ($pa.Length -eq 0)
+    } finally {
+      if ($ba -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ba) }
+      if ($bb -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bb) }
+      Remove-Variable pa, pb -ErrorAction SilentlyContinue
+    }
+    if ($empty) { Write-Host "     empty password rejected; try again"; continue }
+    if ($same)  { $Secrets[$user] = $a; return $a }
     Write-Host "     passwords did not match; try again"
   }
 }
@@ -426,24 +521,41 @@ for ($n = 1; $n -le $PoolSize; $n++) {
   $user = "$IdentityPrefix$n"
   if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) {
     Write-Host "note identity '$user' already exists; leaving as-is (its password is still needed below)"
+    # New-LocalUser and Add-LocalGroupMember are two operations. A run interrupted between them leaves an
+    # account that exists but is in no group, and simply skipping here would never repair it. Membership is
+    # therefore reconciled on the existing-account path too, and is idempotent.
+    if ($Apply) { Add-GuvfxUsersMembership -AccountName $user }
     continue
   }
   DoIt "create non-admin identity '$user' (password prompted, never a parameter)" {
     New-LocalUser -Name $user -Password (Get-SlotSecret $user) -PasswordNeverExpires -AccountNeverExpires `
                   -Description "GuvFX beta slot $n runtime identity" | Out-Null
-    Add-LocalGroupMember -Group "Users" -Member $user
+    Add-GuvfxUsersMembership -AccountName $user
   }
 }
 # Assert group membership in BOTH directions: in Users, and in nothing privileged.
+# This assertion previously FAILED OPEN. `Get-LocalGroupMember -ErrorAction SilentlyContinue` yields an
+# empty pipeline when the cmdlet itself errors - an unresolvable SID in the group, a renamed group, an
+# access denial - and an empty pipeline was read as "not a member". The one check standing between the
+# sponsor's non-admin guarantee and a privileged runtime identity therefore passed loudest exactly when it
+# could see least. It now fails CLOSED: an enumeration error is an error, not a pass.
 if ($Apply) {
   for ($n = 1; $n -le $PoolSize; $n++) {
     $user = "$IdentityPrefix$n"
     foreach ($g in @("Administrators","Remote Desktop Users","Backup Operators")) {
-      $m = Get-LocalGroupMember -Group $g -ErrorAction SilentlyContinue |
-           Where-Object { $_.Name -like "*\$user" }
-      if ($m) { throw "identity '$user' is a member of '$g' - refusing to continue" }
+      try { $members = @(Get-LocalGroupMember -Group $g -ErrorAction Stop) }
+      catch { throw "cannot enumerate '$g' to prove '$user' is not a member, so non-admin is UNPROVEN: $($_.Exception.Message)" }
+      if ($members | Where-Object { $_.Name -like "*\$user" }) {
+        throw "identity '$user' is a member of '$g' - refusing to continue"
+      }
     }
-    Write-Host "ok   $user is non-admin"
+    # Positive direction: it must actually BE in Users. Absent that, the account exists in no group and
+    # the launch task would fail at first start, long after this window closed. (RULE 11: this loop now
+    # has an assertion that can fail, not only ones that can pass.)
+    try { $inUsers = @(Get-LocalGroupMember -Group "Users" -ErrorAction Stop | Where-Object { $_.Name -like "*\$user" }) }
+    catch { throw "cannot enumerate 'Users' to prove '$user' is a member: $($_.Exception.Message)" }
+    if ($inUsers.Count -eq 0) { throw "identity '$user' is not a member of 'Users' - refusing to continue" }
+    Write-Host "ok   $user is in Users and in no privileged group"
   }
 }
 
@@ -483,18 +595,35 @@ DoIt "create slot + tombstone directories" {
 #      golden image (if a runtime could write it, one compromised slot would compromise every future slot).
 #      Inheritance is broken at the beta root so nothing upstream can widen these.
 DoIt "break inheritance on C:\GuvFX\beta and set explicit ACLs" {
-  icacls "C:\GuvFX\beta" /inheritance:r | Out-Null
-  icacls "C:\GuvFX\beta" /grant "*S-1-5-32-544:(OI)(CI)F" /grant "*S-1-5-18:(OI)(CI)F" | Out-Null
+  Invoke-GuvfxIcacls "C:\GuvFX\beta" @("/inheritance:r")
+  Invoke-GuvfxIcacls "C:\GuvFX\beta" @("/grant", "*S-1-5-32-544:(OI)(CI)F", "/grant", "*S-1-5-18:(OI)(CI)F")
+}
+# The golden image needs its inheritance broken TOO, and it is the one directory where forgetting is not
+# cosmetic. MEASURED on this host: C:\GuvFX\golden\newMT5 inherits
+#     BUILTIN\Users  ReadAndExecute, AppendData, CreateFiles
+#     CREATOR OWNER  GENERIC_ALL (inherit-only)
+# Every slot identity is a member of Users, so without this it could CREATE files in the golden tree and
+# own them outright - and every future MATERIALISE would copy them into every future slot. That is exactly
+# the "one compromised slot would compromise every future slot" outcome above. `icacls /grant` is ADDITIVE:
+# granting RX does not take AppendData/CreateFiles away. Only breaking inheritance does.
+# The golden image lives outside C:\GuvFX\beta, so the beta-root break above cannot reach it.
+DoIt "break inheritance on $GoldenDir so the slot grants below are the ONLY non-admin access" {
+  Invoke-GuvfxIcacls $GoldenDir @("/inheritance:r")
+  Invoke-GuvfxIcacls $GoldenDir @("/grant", "*S-1-5-32-544:(OI)(CI)F", "/grant", "*S-1-5-18:(OI)(CI)F")
 }
 for ($n = 1; $n -le $PoolSize; $n++) {
   $user = "$IdentityPrefix$n"
   $slot = Join-Path $SlotsRoot "$n"
-  DoIt "grant '$user' Modify on $slot only" { icacls $slot /grant ("{0}:(OI)(CI)M" -f $user) | Out-Null }
-  DoIt "grant '$user' ReadAndExecute on $GoldenDir" { icacls $GoldenDir /grant ("{0}:(OI)(CI)RX" -f $user) | Out-Null }
+  DoIt "grant '$user' Modify on $slot only" {
+    Invoke-GuvfxIcacls $slot @("/grant", ("{0}:(OI)(CI)M" -f $user))
+  }
+  DoIt "grant '$user' ReadAndExecute on $GoldenDir" {
+    Invoke-GuvfxIcacls $GoldenDir @("/grant", ("{0}:(OI)(CI)RX" -f $user))
+  }
 }
 DoIt "restrict $TombstonesRoot to Administrators + SYSTEM" {
-  icacls $TombstonesRoot /inheritance:r | Out-Null
-  icacls $TombstonesRoot /grant "*S-1-5-32-544:(OI)(CI)F" /grant "*S-1-5-18:(OI)(CI)F" | Out-Null
+  Invoke-GuvfxIcacls $TombstonesRoot @("/inheritance:r")
+  Invoke-GuvfxIcacls $TombstonesRoot @("/grant", "*S-1-5-32-544:(OI)(CI)F", "/grant", "*S-1-5-18:(OI)(CI)F")
 }
 
 # -- 6. Scheduled tasks. Registered DISABLED, with NO trigger, on-demand only. TASK_LOGON_PASSWORD stores
@@ -514,19 +643,23 @@ for ($n = 1; $n -le $PoolSize; $n++) {
   }
 
   DoIt "register '$launch' (disabled, no trigger, /portable, runs as $user)" {
-    $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-               [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user)))
+    # Bound to a variable so ZeroFreeBSTR can reach it. Called inline, the pointer is unrecoverable and the
+    # plaintext stays in unmanaged memory for the life of the session - the same defect fixed in
+    # Get-SlotSecret, in the two places that actually hold the password longest.
+    $bp = [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user))
+    $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bp)
     $action    = New-ScheduledTaskAction -Execute $exe -Argument "/portable" -WorkingDirectory $work
     $settings  = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
                    -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
     Register-ScheduledTask -TaskName $launch -Action $action -Settings $settings `
       -User $user -Password $plain -RunLevel Limited -Force | Out-Null
     Disable-ScheduledTask -TaskName $launch | Out-Null
-    Remove-Variable plain
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bp)
+    Remove-Variable plain, bp
   }
   DoIt "register '$stop' (disabled, no trigger, terminates ONLY this slot's image)" {
-    $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-               [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user)))
+    $bp = [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user))
+    $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bp)
     # SCOPED BY IMAGE PATH, not by image name. `taskkill /IM terminal64.exe` would match by NAME - and the
     # operator's production terminal has the SAME name, because a slot is a copy of the same MT5 image.
     # Relying on "it runs as the slot identity so it can only kill its own processes" would make a
@@ -544,7 +677,8 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     Register-ScheduledTask -TaskName $stop -Action $action -Settings $settings `
       -User $user -Password $plain -RunLevel Limited -Force | Out-Null
     Disable-ScheduledTask -TaskName $stop | Out-Null
-    Remove-Variable plain
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bp)
+    Remove-Variable plain, bp
   }
 
   # The approved definition the agent's launch gate asserts against. Read back through the SAME COM
@@ -555,24 +689,44 @@ for ($n = 1; $n -le $PoolSize; $n++) {
   if ($Apply) {
     $svc = New-Object -ComObject Schedule.Service
     $svc.Connect()
-    $reg = $svc.GetFolder("\").GetTask($launch)
-    $p   = $reg.Definition.Principal
-    $act = $reg.Definition.Actions.Item(1)
-    $Approved[$launch] = [ordered]@{
-      task_name         = [string]$reg.Name
-      run_as_identity   = [string]$p.UserId
-      executable        = [string]$act.Path
-      working_directory = [string]$act.WorkingDirectory
-      arguments         = [string]$act.Arguments
-      logon_type        = [int]$p.LogonType
-      run_level         = [int]$p.RunLevel
-      # The gate runs at FIRST START, by which point the operator has enabled the tasks under a separate
-      # approval - so the approval pins enabled=true even though the task is disabled right now.
-      enabled           = $true
+    # BOTH task families are pinned. Recording only the launch task inverted the risk exactly backwards:
+    # the launch task merely starts MT5 inside an isolated slot, yet was pinned on every field and
+    # re-asserted before each trigger, while the TERMINATE task - whose argument string is the only thing
+    # standing between `Stop-Process -Force` and the operator's live trading terminal, which carries the
+    # SAME image name - was pinned nowhere and asserted never. The approvals file is written once, at
+    # install; adding the terminate definitions later would mean re-prompting four passwords and
+    # re-registering eight tasks on the live host.
+    foreach ($t in @($launch, $stop)) {
+      $reg = $svc.GetFolder("\").GetTask($t)
+      $p   = $reg.Definition.Principal
+      $act = $reg.Definition.Actions.Item(1)
+      $Approved[$t] = [ordered]@{
+        task_name         = [string]$reg.Name
+        run_as_identity   = [string]$p.UserId
+        executable        = [string]$act.Path
+        working_directory = [string]$act.WorkingDirectory
+        arguments         = [string]$act.Arguments
+        logon_type        = [int]$p.LogonType
+        run_level         = [int]$p.RunLevel
+        # The gate runs at FIRST START, by which point the operator has enabled the tasks under a separate
+        # approval - so the approval pins enabled=true even though the task is disabled right now.
+        enabled           = $true
+      }
     }
     if ($Approved[$launch].arguments -notmatch "(^|\s)/portable(\s|$)") {
       throw "registered task '$launch' does not carry /portable - refusing to approve it"
     }
+    # The terminate task's scope is its argument string. Assert what was ACTUALLY registered: it must
+    # filter on this slot's own executable path, and it must not reach Stop-Process on a name-only
+    # pipeline. Both halves are required - the presence of the right filter does not exclude the wrong one.
+    $stopArgs = [string]$Approved[$stop].arguments
+    if ($stopArgs -notmatch [regex]::Escape("`$_.Path -eq '$exe'")) {
+      throw "registered task '$stop' does not scope termination to '$exe' - refusing to approve it"
+    }
+    if ($stopArgs -match "Get-Process[^|]*\|\s*Stop-Process") {
+      throw "registered task '$stop' pipes Get-Process straight into Stop-Process with no path filter - refusing to approve it"
+    }
+    Write-Host "ok   $stop is scoped to this slot's own image path"
   }
 }
 
@@ -585,13 +739,15 @@ DoIt "write approved task definitions to $ApprovedTasksOut" {
   # "tampering or a bad edit" during the one window when the operator is judging whether to trust the host.
   [IO.File]::WriteAllText($ApprovedTasksOut, ($Approved | ConvertTo-Json -Depth 4),
                           (New-Object Text.UTF8Encoding $false))
-  icacls $ApprovedTasksOut /inheritance:r | Out-Null
+  # Two separate calls, each checked by the wrapper. If stripping inheritance succeeds and the grant then
+  # fails, the file is left with NO explicit ACE at all - so the two steps must not share one check.
+  Invoke-GuvfxIcacls $ApprovedTasksOut @("/inheritance:r")
+  Invoke-GuvfxIcacls $ApprovedTasksOut @("/grant", "*S-1-5-32-544:F", "/grant", "*S-1-5-18:F")
   # The service account needs READ - it loads this file at startup and refuses to start without it. Read
   # only: the agent must never be able to rewrite its own approvals. Inheritance is stripped, so the
   # inheritable grant on the state dir cannot reach this file; the ACE has to be explicit.
-  icacls $ApprovedTasksOut /grant "*S-1-5-32-544:F" /grant "*S-1-5-18:F" `
-                           /grant "NT SERVICE\GuvFXBetaAgent:(R)" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "icacls failed on $ApprovedTasksOut (exit $LASTEXITCODE)" }
+  # Literal, not a parameter: the grant target is fixed, exactly like the identity and task prefixes.
+  Grant-GuvfxServiceRead -Path $ApprovedTasksOut -ServiceName "GuvFXBetaAgent"
 }
 
 # -- 8. Verify (no start, no trigger, no enable).
@@ -608,10 +764,125 @@ if ($Apply) {
       Write-Host "ok   $t disabled, no trigger, principal $($principal.UserId), RunLevel Limited"
     }
   }
-  Step "VERIFY estate untouched"
+  # This loop previously had no failing branch: a MISSING estate task printed nothing and the run
+  # continued, so "estate untouched" was asserted by silence. The five names are captured BEFORE any
+  # mutation and compared after, and a task that has gone missing or changed principal is a hard stop.
+  # ACLs were the one authorised object class the VERIFY section never inspected: every grant was applied
+  # and then taken on trust. Read them back from the OS.
+  Step "VERIFY ACLs (read back from the filesystem, not from what we asked for)"
+  $goldenAcl = Get-Acl $GoldenDir
+  # (1) inheritance actually removed
+  if (-not $goldenAcl.AreAccessRulesProtected) {
+    throw "golden image '$GoldenDir' still inherits: the Read+Execute-only guarantee is NOT in force - STOP"
+  }
+  Write-Host "ok   golden: inheritance removed (AreAccessRulesProtected = True)"
+  # (2)(3)(4) NO principal may write, create or append - checked as RIGHTS BITS, not as a name substring.
+  #     A substring match on "Write|Modify" is what made an earlier check miss AppendData and CreateFiles
+  #     entirely and report the tree clean when it was not (RULE 11).
+  $WRITEISH = ([System.Security.AccessControl.FileSystemRights]::Write -bor
+               [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor
+               [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+               [System.Security.AccessControl.FileSystemRights]::AppendData -bor
+               [System.Security.AccessControl.FileSystemRights]::WriteData -bor
+               [System.Security.AccessControl.FileSystemRights]::Delete -bor
+               [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+               [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+               [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+               [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+               [System.Security.AccessControl.FileSystemRights]::TakeOwnership)
+  # Only these two may hold write-class rights on the golden image.
+  $GOLDEN_WRITERS = @("S-1-5-32-544", "S-1-5-18")     # Administrators, SYSTEM
+  $sidRules = $goldenAcl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
+  $adminSeen = $false; $systemSeen = $false
+  foreach ($r in $sidRules) {
+    $who = $r.IdentityReference.Value
+    if ($r.AccessControlType -ne "Allow") { continue }
+    # GENERIC_ALL/GENERIC_WRITE (0x10000000 / 0x40000000) have NO member in FileSystemRights, so a named-bit
+    # mask alone is blind to exactly the inherit-only CREATOR OWNER ACE this check exists to catch.
+    $raw = [int]$r.FileSystemRights
+    $writeish = (($raw -band [int]$WRITEISH) -ne 0) -or (($raw -band (0x10000000 -bor 0x40000000)) -ne 0)
+    if ($writeish -and ($GOLDEN_WRITERS -notcontains $who)) {
+      throw "golden image: '$who' holds write-class rights ($($r.FileSystemRights)) - unexpected writable principal - STOP"
+    }
+    if ($who -eq "S-1-5-32-544") { $adminSeen = $true }
+    if ($who -eq "S-1-5-18")     { $systemSeen = $true }
+    # (4) CREATOR OWNER must not survive as an inheritable grant: anything a slot identity created would
+    #     otherwise be owned by it with full control.
+    if ($who -eq "S-1-3-0" -and $writeish) {
+      throw "golden image: CREATOR OWNER still grants write-class rights - STOP"
+    }
+  }
+  Write-Host "ok   golden: no principal outside Administrators/SYSTEM holds Write, CreateFiles, AppendData, Delete or ChangePermissions"
+  # (6) Administrators and SYSTEM retain control - the operator must not lock themselves out.
+  if (-not $adminSeen)  { throw "golden image: BUILTIN\Administrators has NO ACE after the inheritance break - STOP" }
+  if (-not $systemSeen) { throw "golden image: NT AUTHORITY\SYSTEM has NO ACE after the inheritance break - STOP" }
+  Write-Host "ok   golden: Administrators and SYSTEM retain full control"
+  # (7) the image itself is unchanged - ACL work must not have touched content.
+  # This MUST reproduce win_slot_ops.tree_digest() byte for byte, because BETA_AGENT_GOLDEN_DIGEST is
+  # consumed by stage_copy's source_digest_matches pre-check and a mismatch BLOCKS every MATERIALISE.
+  #   normalise(p) = p.replace("/", "\").rstrip("\").lower()
+  #   line         = "{normalised_relpath}|{size}|{sha256}\n"
+  #   body         = "".join(lines sorted ORDINALLY by normalised relpath)
+  # An earlier version used forward slashes and Sort-Object FullName (culture-aware). It produced a
+  # different hex string for the same clean image - so the installer would have reported the image proven
+  # while the agent refused to stage it, permanently, after the passwords had been entered.
+  $goldenFiles = @(Get-ChildItem $GoldenDir -Recurse -File -Force -ErrorAction SilentlyContinue)
+  $rows = foreach ($f in $goldenFiles) {
+    $rel = $f.FullName.Substring($GoldenDir.Length + 1).Replace("/","\").TrimEnd("\").ToLower()
+    [pscustomobject]@{ Key = $rel
+                       Line = ("{0}|{1}|{2}`n" -f $rel, $f.Length,
+                               (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()) }
+  }
+  # Ordinal sort, matching Python's sorted() on the same keys. Sort-Object is culture-aware even with
+  # -CaseSensitive, so the comparison is done explicitly.
+  $keys = [string[]]($rows | ForEach-Object { $_.Key })
+  [Array]::Sort($keys, [System.StringComparer]::Ordinal)
+  $byKey = @{}; foreach ($r in $rows) { $byKey[$r.Key] = $r.Line }
+  $sb = New-Object Text.StringBuilder
+  foreach ($k in $keys) { [void]$sb.Append($byKey[$k]) }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  $treeDigest = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($sb.ToString()))).Replace("-","").ToLower()
+  Write-Host "ok   golden: $($goldenFiles.Count) files, tree digest $treeDigest"
+  Write-Host "     this is the value BETA_AGENT_GOLDEN_DIGEST must hold; a difference means the image changed - STOP"
+  for ($n = 1; $n -le $PoolSize; $n++) {
+    $user = "$IdentityPrefix$n"
+    $slot = Join-Path $SlotsRoot "$n"
+    $slotRules = @((Get-Acl $slot).Access | Where-Object { $_.IdentityReference.Value -like "*\$user" })
+    if ($slotRules.Count -eq 0) { throw "'$user' has NO ACE on its own slot '$slot' - the grant did not take - STOP" }
+    # It must have access to its OWN slot and to no other slot.
+    for ($m = 1; $m -le $PoolSize; $m++) {
+      if ($m -eq $n) { continue }
+      $other = Join-Path $SlotsRoot "$m"
+      $x = @((Get-Acl $other).Access | Where-Object { $_.IdentityReference.Value -like "*\$user" })
+      if ($x.Count -gt 0) { throw "'$user' has an ACE on slot $m ('$other') - cross-slot access - STOP" }
+    }
+    $gRules = @($goldenAcl.Access | Where-Object { $_.IdentityReference.Value -like "*\$user" })
+    if ($gRules.Count -eq 0) { throw "'$user' has no ACE on the golden image - MATERIALISE could not read it - STOP" }
+    foreach ($r in $gRules) {
+      if ($r.FileSystemRights.ToString() -match "Write|Modify|FullControl|CreateFiles|AppendData|Delete") {
+        throw "'$user' holds '$($r.FileSystemRights)' on the golden image; Read+Execute only was authorised - STOP"
+      }
+    }
+    Write-Host "ok   $user : Modify on its own slot, no ACE on any other slot, read-only on the golden image"
+  }
+
+  Step "VERIFY estate untouched (compared against the pre-mutation capture)"
   foreach ($t in $ForbiddenTasks) {
+    $before = $EstateBefore[$t]
     $e = Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
-    if ($e) { Write-Host "ok   estate task '$t' present and untouched (state $($e.State))" }
+    if ($null -eq $before) {
+      if ($e) { throw "estate task '$t' appeared during the install - refusing to report a clean run" }
+      Write-Host "ok   estate task '$t' absent before and after"
+      continue
+    }
+    if (-not $e) { throw "estate task '$t' was present before the install and is GONE - STOP" }
+    if ([string]$e.Principal.UserId -ne [string]$before.principal) {
+      throw "estate task '$t' principal changed from '$($before.principal)' to '$($e.Principal.UserId)' - STOP"
+    }
+    $note = if ([string]$e.State -ne [string]$before.state) {
+      " (state $($before.state) -> $($e.State); GuvFX_BridgeWatchdog and GuvFX_SignalBridge change state on their own - not proof of interference)"
+    } else { " (state $($e.State), unchanged)" }
+    Write-Host ("ok   estate task '$t' still present, principal unchanged" + $note)
   }
   Write-Host ""
   Write-Host "ok   pool provisioned. Tasks are DISABLED. Nothing has been started, triggered or staged."
