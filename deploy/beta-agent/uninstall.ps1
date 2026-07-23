@@ -1,4 +1,4 @@
-# CVM-Inc-3 B2/B3P-1 — teardown: remove the beta agent service, its firewall rule, its ACL grants and any
+# CVM-Inc-3 B2/B3P-1 - teardown: remove the beta agent service, its firewall rule, its ACL grants and any
 # launch tasks. RETAINS runtime + tombstone data (audit). Leaves Nuno's estate untouched.
 # DARK ARTEFACT: RUN ONLY in B3, on the host, as Administrator. Dry-run by default; pass -Apply to remove.
 #
@@ -59,7 +59,7 @@ DoIt "remove firewall rule '$RuleName'" {
 }
 
 # 3. Remove BOTH task families. The B2 version removed only the launch prefix, which left the terminate
-#    tasks — and their stored credentials — behind (install-only review F4). Unregistering a task removes
+#    tasks - and their stored credentials - behind (install-only review F4). Unregistering a task removes
 #    its credential with it.
 foreach ($prefix in @($LaunchTaskPrefix, $StopTaskPrefix)) {
   DoIt "unregister tasks '$prefix*'" {
@@ -70,7 +70,7 @@ foreach ($prefix in @($LaunchTaskPrefix, $StopTaskPrefix)) {
 
 # 5. Remove each slot identity's grants, revoke SeBatchLogonRight, and disable (not delete) the account.
 #    SIDs are collected FIRST: Remove-LocalUser inside the loop would make them unresolvable by the time the
-#    revoke block runs, so the right would silently keep four orphaned SIDs — and a future account created
+#    revoke block runs, so the right would silently keep four orphaned SIDs - and a future account created
 #    with the same RID would inherit a batch-logon grant nobody intended. The revoke (step 6) consumes this
 #    list, so it works whether the accounts were disabled, deleted, or left alone.
 $SlotIdentities = @()
@@ -93,7 +93,7 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     DoIt "DELETE identity '$user' (explicitly requested)" { Remove-LocalUser -Name $user }
   }
 }
-# 6. Revoke SeBatchLogonRight via the LSA policy API — NOT secedit.
+# 6. Revoke SeBatchLogonRight via the LSA policy API - NOT secedit.
 #    LsaRemoveAccountRights removes ONE right from ONE account. It cannot narrow anyone else's rights,
 #    which is what made the secedit rewrite dangerous: that path rebuilt the complete machine-wide
 #    assignment line by string-filtering, so any parse imperfection silently removed principals unrelated
@@ -125,14 +125,14 @@ public static class GuvfxLsaU {
 
 $GuvfxRight = "SeBatchLogonRight"
 # PowerShell parses an 8-hex-digit literal as Int32, so 0xC0000034 WRAPS to -1073741772 while the LSA
-# return is UInt32 3221225524 — the comparison would be False for ever, turning the benign "this account
+# return is UInt32 3221225524 - the comparison would be False for ever, turning the benign "this account
 # holds no rights" status into a hard failure. [uint32]0xC0000034 does not help: the literal has already
 # wrapped, and the cast then throws. The decimal form is the only one that survives.
 $STATUS_OBJECT_NAME_NOT_FOUND = [uint32]3221225524   # 0xC0000034 STATUS_OBJECT_NAME_NOT_FOUND
 
 function Get-ApprovedSlotSidBytesU {
   param([Parameter(Mandatory)][string]$AccountName, [Parameter(Mandatory)]$Sid)
-  # Uninstall must work for accounts that are about to be, or have been, disabled — so the SID is captured
+  # Uninstall must work for accounts that are about to be, or have been, disabled - so the SID is captured
   # BEFORE the loop and passed in. The namespace guard is unchanged: this function cannot be pointed at
   # Administrators or any principal outside the beta-slot namespace.
   if ($AccountName -notmatch '^guvfx_b_slot[1-9][0-9]*$') {
@@ -173,14 +173,14 @@ function Get-GuvfxAccountRightsU {
   } finally { [void][GuvfxLsaU]::LsaClose($h) }
 }
 
-# F3: a revoke that finds no resolvable identity is a SILENT NO-OP — indistinguishable from a clean
+# F3: a revoke that finds no resolvable identity is a SILENT NO-OP - indistinguishable from a clean
 # teardown while four SIDs keep the right for ever, inheritable by a future account with the same RID.
 # Say so loudly rather than printing the usual epilogue.
 if (@($SlotIdentities).Count -lt $PoolSize) {
   $found = @($SlotIdentities | ForEach-Object { $_.Name })
   for ($n = 1; $n -le $PoolSize; $n++) {
     if ($found -notcontains "$IdentityPrefix$n") {
-      Write-Host "WARNING: '$IdentityPrefix$n' could not be resolved — its $GuvfxRight grant CANNOT be verified as revoked."
+      Write-Host "WARNING: '$IdentityPrefix$n' could not be resolved - its $GuvfxRight grant CANNOT be verified as revoked."
       Write-Host "         If that account was deleted while still holding the right, the grant is orphaned on its SID."
       Write-Host "         Recover the SID from the install evidence and revoke it explicitly before reusing the pool."
     }

@@ -299,7 +299,7 @@ class ApprovalReflectsRealityTests(SimpleTestCase):
     def test_the_approval_carries_the_arguments_and_asserts_portable(self):
         source = _code("install_pool.ps1")
         self.assertIn("arguments         = [string]$act.Arguments", source)
-        self.assertIn("does not carry /portable — refusing to approve it", source)
+        self.assertIn("does not carry /portable - refusing to approve it", source)
 
     def test_registration_is_re_runnable(self):
         source = _code("install_pool.ps1")
@@ -506,3 +506,28 @@ class UninstallSilentNoOpTests(SimpleTestCase):
         code = _code("uninstall.ps1")
         self.assertIn('if ($IdentityPrefix -ne "guvfx_b_slot")', code)
         self.assertLess(code.index('$IdentityPrefix -ne "guvfx_b_slot"'), code.index("Disable-LocalUser"))
+
+
+class AsciiOnlyScriptTests(SimpleTestCase):
+    """Installation scripts must be pure ASCII.
+
+    Windows PowerShell 5.1 reads a BOM-less file as ANSI (Windows-1252), so a UTF-8 em-dash (E2 80 94)
+    decodes to three characters, the last of which is a double-quote that TERMINATES the enclosing string.
+    Parsing install_pool.ps1 on the host produced 20 syntax errors from nothing but punctuation - and
+    firewall.ps1 and install_service.ps1 had carried the same latent defect since B2/B3P-1, through two
+    adversarial reviews and a full install-only review, because nobody had ever parsed them on Windows.
+
+    ASCII-only makes the scripts parse identically under any encoding, with or without a BOM.
+    """
+
+    def test_every_install_script_is_pure_ascii(self):
+        for name in SCRIPTS:
+            raw = open(os.path.join(_BUNDLE, name), "rb").read()
+            offenders = sorted({b for b in raw if b > 127})
+            self.assertEqual(offenders, [], f"{name} contains non-ASCII bytes {offenders}")
+
+    def test_no_script_relies_on_a_bom(self):
+        """A BOM would also work, but it is a subtle dependency; ASCII-only needs no such assumption."""
+        for name in SCRIPTS:
+            raw = open(os.path.join(_BUNDLE, name), "rb").read(3)
+            self.assertNotEqual(raw, b"\xef\xbb\xbf", f"{name} starts with a UTF-8 BOM")
