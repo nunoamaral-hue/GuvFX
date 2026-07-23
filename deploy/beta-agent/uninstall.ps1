@@ -196,9 +196,9 @@ if ($slotIdentityCount -lt $PoolSize) {
 
 foreach ($entry in $SlotIdentities) {
   $name = $entry.Name
-  $sidBytes = Get-ApprovedSlotSidBytesU -AccountName $name -Sid $entry.Sid
+  $slotSidBytes = Get-ApprovedSlotSidBytesU -AccountName $name -Sid $entry.Sid
   DoIt "revoke $GuvfxRight from '$name' (LSA; no other principal is touched)" {
-    $before = Get-GuvfxAccountRightsU -SidBytes $sidBytes
+    $before = Get-GuvfxAccountRightsU -SidBytes $slotSidBytes
     if ($before -notcontains $GuvfxRight) {
       Write-Host "evidence right=$GuvfxRight sid=$($entry.Sid.Value) account=$name op=remove result=not_held"
     } else {
@@ -209,14 +209,14 @@ foreach ($entry in $SlotIdentities) {
         $u.Length        = [uint16]($GuvfxRight.Length * 2)
         $u.MaximumLength = [uint16](($GuvfxRight.Length + 1) * 2)
         # allRights = $false: remove ONLY the named right, never every right the account holds.
-        $st = [GuvfxLsaU]::LsaRemoveAccountRights($h, $sidBytes, $false, @($u), 1)
+        $st = [GuvfxLsaU]::LsaRemoveAccountRights($h, $slotSidBytes, $false, @($u), 1)
         [Runtime.InteropServices.Marshal]::FreeHGlobal($u.Buffer)
         if ($st -ne 0) {
           Write-Host "evidence right=$GuvfxRight sid=$($entry.Sid.Value) account=$name op=remove result=failed ntstatus=0x$('{0:X8}' -f $st)"
           throw "LsaRemoveAccountRights failed for $name : NTSTATUS 0x$('{0:X8}' -f $st)"
         }
       } finally { [void][GuvfxLsaU]::LsaClose($h) }
-      $after = Get-GuvfxAccountRightsU -SidBytes $sidBytes
+      $after = Get-GuvfxAccountRightsU -SidBytes $slotSidBytes
       if ($after -contains $GuvfxRight) { throw "post-check failed: $name still holds $GuvfxRight" }
       foreach ($r in $before) {
         if ($r -ne $GuvfxRight -and $after -notcontains $r) { throw "user-right regression: $name lost '$r'" }

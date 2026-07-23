@@ -236,9 +236,9 @@ function Test-GoldenImage {
     ForEach-Object {
       $scanned++
       $b = [IO.File]::ReadAllBytes($_.FullName)
-      $text = [Text.Encoding]::ASCII.GetString($b) + "`n" + [Text.Encoding]::Unicode.GetString($b)
+      $scanText = [Text.Encoding]::ASCII.GetString($b) + "`n" + [Text.Encoding]::Unicode.GetString($b)
       foreach ($fp in $foreign) {
-        if ($text -match [regex]::Escape($fp.Pattern)) {
+        if ($scanText -match [regex]::Escape($fp.Pattern)) {
           $hits += "$($_.FullName.Substring($Path.Length + 1)) references $($fp.Means)"
         }
       }
@@ -404,11 +404,11 @@ function Grant-GuvfxServiceRead {
   $shown = & sc.exe showsid $ServiceName 2>&1
   $match = $shown | Select-String -Pattern "SERVICE SID:\s*(S-1-5-80-\S+)"
   if (-not $match) { throw "could not compute the service SID for '$ServiceName' (sc.exe showsid gave no SERVICE SID)" }
-  $value = $match.Matches.Groups[1].Value
-  if ($value -notmatch "^S-1-5-80-\d+-\d+-\d+-\d+-\d+$") {
-    throw "refusing: '$value' is not a service SID (expected the S-1-5-80- namespace)"
+  $sidValue = $match.Matches.Groups[1].Value
+  if ($sidValue -notmatch "^S-1-5-80-\d+-\d+-\d+-\d+-\d+$") {
+    throw "refusing: '$sidValue' is not a service SID (expected the S-1-5-80- namespace)"
   }
-  $sid = New-Object System.Security.Principal.SecurityIdentifier($value)
+  $sid = New-Object System.Security.Principal.SecurityIdentifier($sidValue)
   $acl = Get-Acl -Path $Path
   $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
       $sid, [System.Security.AccessControl.FileSystemRights]::Read, "Allow")))
@@ -417,9 +417,9 @@ function Grant-GuvfxServiceRead {
   # cannot succeed, and a post-check that cannot pass is worse than none.
   $rules = (Get-Acl -Path $Path).GetAccessRules($true, $false,
              [System.Security.Principal.SecurityIdentifier])
-  $found = @($rules | Where-Object { $_.IdentityReference.Value -eq $value -and $_.AccessControlType -eq "Allow" })
-  if ($found.Count -eq 0) { throw "post-check failed: service SID $value is not on $Path" }
-  Write-Host "evidence approvals_acl service_sid=$value rights=Read result=granted"
+  $found = @($rules | Where-Object { $_.IdentityReference.Value -eq $sidValue -and $_.AccessControlType -eq "Allow" })
+  if ($found.Count -eq 0) { throw "post-check failed: service SID $sidValue is not on $Path" }
+  Write-Host "evidence approvals_acl service_sid=$sidValue rights=Read result=granted"
 }
 
 function Open-GuvfxLsaPolicy {
@@ -826,7 +826,7 @@ if ($Check) {
   # (2)(3)(4) NO principal may write, create or append - checked as RIGHTS BITS, not as a name substring.
   #     A substring match on "Write|Modify" is what made an earlier check miss AppendData and CreateFiles
   #     entirely and report the tree clean when it was not (RULE 11).
-  $WRITEISH = ([System.Security.AccessControl.FileSystemRights]::Write -bor
+  $WriteMask = ([System.Security.AccessControl.FileSystemRights]::Write -bor
                [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor
                [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
                [System.Security.AccessControl.FileSystemRights]::AppendData -bor
@@ -847,15 +847,22 @@ if ($Check) {
     # GENERIC_ALL/GENERIC_WRITE (0x10000000 / 0x40000000) have NO member in FileSystemRights, so a named-bit
     # mask alone is blind to exactly the inherit-only CREATOR OWNER ACE this check exists to catch.
     $raw = [int]$r.FileSystemRights
-    $writeish = (($raw -band [int]$WRITEISH) -ne 0) -or (($raw -band (0x10000000 -bor 0x40000000)) -ne 0)
-    if ($writeish -and ($GOLDEN_WRITERS -notcontains $who)) {
+    # NAMES DIFFERING ONLY BY CASE ARE THE SAME VARIABLE IN POWERSHELL. This was `$WRITEISH` (the mask) and
+    # `$writeish` (the per-ACE result): the first ACE - SYSTEM, FullControl - set the result to $true, which
+    # OVERWROTE the mask, and `[int]$true` is 1. Every later ACE was then tested against bit 0x1 (ReadData),
+    # which ReadAndExecute contains, so the check threw on the first slot identity and could never pass on a
+    # correctly configured golden image. Measured on the host: the mask read 0x1 where it should read
+    # 0xD0156. Case is not a namespace - the two names below are distinct words.
+    $hasWriteRight = (($raw -band [int]$WriteMask) -ne 0) -or
+                     (($raw -band (0x10000000 -bor 0x40000000)) -ne 0)
+    if ($hasWriteRight -and ($GOLDEN_WRITERS -notcontains $who)) {
       throw "golden image: '$who' holds write-class rights ($($r.FileSystemRights)) - unexpected writable principal - STOP"
     }
     if ($who -eq "S-1-5-32-544") { $adminSeen = $true }
     if ($who -eq "S-1-5-18")     { $systemSeen = $true }
     # (4) CREATOR OWNER must not survive as an inheritable grant: anything a slot identity created would
     #     otherwise be owned by it with full control.
-    if ($who -eq "S-1-3-0" -and $writeish) {
+    if ($who -eq "S-1-3-0" -and $hasWriteRight) {
       throw "golden image: CREATOR OWNER still grants write-class rights - STOP"
     }
   }
