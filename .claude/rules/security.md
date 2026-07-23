@@ -62,3 +62,24 @@ not a provable claim.
   production rotation.** Anything that starts a production service but is not reviewable in the repository
   (e.g. the Windows `.bat` launchers and `bridge_watchdog.ps1`) must be checked on the host each time — see
   the Launcher Gate in `docs/BRIDGE_TOKEN_ROTATION_PLAN.md` §9 step 4a.
+
+### Permanent rules 9 and 10 (adopted 2026-07-23, B3P-2 install gate)
+
+- **RULE 9 — Every PowerShell installation artefact must be successfully parsed by the target Windows
+  PowerShell version before its first execution.** Source review is not a substitute for the real parser.
+  All four B3P-2 install scripts failed to parse on the host despite two adversarial review rounds and a
+  full install-only review: Windows PowerShell 5.1 reads a BOM-less file as ANSI, so a UTF-8 em-dash
+  decoded to three characters whose last was a double-quote that terminated the enclosing string. Two of
+  the four had carried that defect since B2/B3P-1. Validate with
+  `[System.Management.Automation.Language.Parser]::ParseFile()`, which builds the AST **without executing**.
+  *Corollary:* installation scripts are written **ASCII-only**, so they parse identically under any
+  encoding, with or without a BOM.
+
+- **RULE 10 — The beta golden runtime must always originate from a dedicated clean installation. A
+  production MT5 installation must never be promoted to the golden image.** The production terminal carries
+  the operator's broker credentials in `config\accounts.dat` and its whole trading history in `bases\`;
+  promoting it would copy a live login into every beta slot. The installer must REFUSE a proposed golden
+  image showing evidence of previous runtime use — minimum: expected MT5 version/build (pinned by
+  `.guvfx_golden_manifest`), expected portable layout, no broker account configured, no account-specific
+  runtime state, no evidence of previous trading activity, no attached EA configuration, expected directory
+  structure. Validation failure **aborts before PLAN**; it is never waived.

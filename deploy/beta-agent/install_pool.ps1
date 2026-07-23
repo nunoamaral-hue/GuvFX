@@ -46,18 +46,89 @@ if ($IdentityPrefix -ne "guvfx_b_slot") {
 }
 Write-Host "ok   namespace refusals pass (estate paths, estate tasks, identity + task prefixes)"
 
-# -- 1. Preconditions.
-if (-not (Test-Path $GoldenDir)) { throw "golden image not staged at $GoldenDir - stage it before provisioning slots" }
-if (-not (Test-Path (Join-Path $GoldenDir "terminal64.exe"))) { throw "no terminal64.exe under $GoldenDir" }
-foreach ($marker in @(".guvfx_golden_manifest", ".guvfx_portable")) {
-  if (-not (Test-Path (Join-Path $GoldenDir $marker))) { throw "golden image missing required marker $marker" }
+# -- 1. Preconditions: the golden image must be a DEDICATED CLEAN INSTALL (permanent RULE 10).
+#
+#      The production MT5 installation must NEVER become the beta golden source. It carries the operator's
+#      broker credentials in config\accounts.dat and its whole trading history in bases\ - promoting it
+#      would copy a live login into every beta slot. The checks below are written to REFUSE such an image
+#      rather than to trust that nobody would do it.
+function Test-GoldenImage {
+  param([Parameter(Mandatory)][string]$Path)
+  $fail = @(); $ok = @()
+
+  # (a) expected directory structure
+  foreach ($required in @("terminal64.exe", "MQL5")) {
+    if (Test-Path (Join-Path $Path $required)) { $ok += "structure: $required present" }
+    else { $fail += "structure: required entry '$required' is missing" }
+  }
+  foreach ($marker in @(".guvfx_golden_manifest", ".guvfx_portable")) {
+    if (Test-Path (Join-Path $Path $marker)) { $ok += "marker: $marker present" }
+    else { $fail += "marker: required GuvFX marker '$marker' is missing" }
+  }
+
+  # (b) expected MT5 version/build, pinned by the manifest. This is what makes the manifest meaningful:
+  #     it is the same string the agent compares against BETA_AGENT_GOLDEN_MANIFEST_VERSION.
+  $manifestPath = Join-Path $Path ".guvfx_golden_manifest"
+  if (Test-Path $manifestPath) {
+    $pinned = ((Get-Content $manifestPath -Raw) -replace "\s+$", "").Trim()
+    $exe = Join-Path $Path "terminal64.exe"
+    if (Test-Path $exe) {
+      $actual = (Get-Item $exe).VersionInfo.FileVersion
+      $actual = if ($actual) { $actual.Trim() } else { "" }
+      if (-not $pinned) { $fail += "version: .guvfx_golden_manifest is empty; it must pin the MT5 build" }
+      elseif ($actual -ne $pinned) { $fail += "version: terminal64.exe is '$actual' but the manifest pins '$pinned'" }
+      else { $ok += "version: terminal64.exe $actual matches the pinned build" }
+    }
+  }
+
+  # (c) portable layout: MT5 in portable mode keeps its data INSIDE the install directory, so the data
+  #     directories must be creatable here. A read-only or redirected tree is not a usable golden image.
+  if (Test-Path (Join-Path $Path "MQL5")) { $ok += "layout: MQL5 tree present inside the install directory" }
+
+  # (d) no broker account configured, (e) no account-specific runtime state,
+  # (f) no evidence of previous trading activity, (g) no attached EA configuration.
+  #     Each entry is unambiguous evidence that the image was RUN before. Listed one per line so the
+  #     failure names exactly what was found rather than "validation failed".
+  $dirty = [ordered]@{
+    "config\accounts.dat"       = "a saved broker account (d)"
+    "config\servers.dat"        = "a downloaded broker server list (d)"
+    "config\common.ini"         = "terminal settings from a previous run (e)"
+    "config\terminal.ini"       = "terminal settings from a previous run (e)"
+    "config\certificates"       = "per-user certificates (e)"
+    "bases"                     = "downloaded market data / trade history (f)"
+    "logs"                      = "terminal logs from a previous run (f)"
+    "MQL5\Logs"                 = "MQL5 logs from a previous run (f)"
+    "MQL5\Profiles"             = "chart profiles, which carry attached-EA configuration (g)"
+    "MQL5\Presets"              = "saved EA input presets (g)"
+    "origin.txt"                = "a data-folder origin marker from a previous run (e)"
+  }
+  foreach ($rel in $dirty.Keys) {
+    if (Test-Path (Join-Path $Path $rel)) { $fail += "previous use: '$rel' present - $($dirty[$rel])" }
+  }
+  if ($fail.Count -eq 0) { $ok += "previous use: none of the 11 usage artefacts is present" }
+
+  # (h) an Experts directory containing compiled EAs is attached-EA configuration even without a profile.
+  $experts = Join-Path $Path "MQL5\Experts"
+  if (Test-Path $experts) {
+    $ex = @(Get-ChildItem $experts -Recurse -File -Include *.ex5, *.mq5 -ErrorAction SilentlyContinue)
+    if ($ex.Count -gt 0) { $fail += "previous use: MQL5\Experts contains $($ex.Count) EA file(s) - the golden image must carry no strategy (g)" }
+    else { $ok += "EA: MQL5\Experts present but empty" }
+  }
+
+  return [pscustomobject]@{ Passed = ($fail.Count -eq 0); Failures = $fail; Checks = $ok }
 }
-# Per-instance state must NOT be inherited from the golden image: it would carry one runtime's broker login
-# into every slot. MetaQuotes documents these as the terminal's own data directories.
-foreach ($leak in @("config\accounts.dat","config\servers.dat","bases","logs","MQL5\Logs","MQL5\Profiles")) {
-  if (Test-Path (Join-Path $GoldenDir $leak)) { throw "golden image contains per-instance state '$leak' - clean it before provisioning" }
+
+if (-not (Test-Path $GoldenDir)) {
+  throw "golden image not staged at $GoldenDir - commission a DEDICATED CLEAN MT5 install (RULE 10); the production terminal must never be promoted"
 }
-Write-Host "ok   golden image present, marked, and free of per-instance state"
+Step "validate golden image (RULE 10: dedicated clean install, never the production terminal)"
+$golden = Test-GoldenImage -Path $GoldenDir
+foreach ($c in $golden.Checks) { Write-Host "ok   $c" }
+foreach ($f in $golden.Failures) { Write-Host "FAIL $f" }
+if (-not $golden.Passed) {
+  throw "golden image validation FAILED ($($golden.Failures.Count) problem(s)) - aborting before PLAN. A dedicated clean install is required; never promote the production MT5 installation."
+}
+Write-Host "ok   golden image validated: clean, versioned, correctly structured"
 
 # -- 1a. LSA interop. Loaded BEFORE identities are created (see the self-test below).
 #       SeBatchLogonRight is granted via the LSA policy API, NOT secedit.

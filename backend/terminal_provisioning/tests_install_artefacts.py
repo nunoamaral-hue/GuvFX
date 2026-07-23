@@ -531,3 +531,75 @@ class AsciiOnlyScriptTests(SimpleTestCase):
         for name in SCRIPTS:
             raw = open(os.path.join(_BUNDLE, name), "rb").read(3)
             self.assertNotEqual(raw, b"\xef\xbb\xbf", f"{name} starts with a UTF-8 BOM")
+
+
+class GoldenImageValidationTests(SimpleTestCase):
+    """RULE 10: the golden runtime must come from a dedicated clean install, never the production terminal.
+
+    The production MT5 install carries the operator's broker credentials in config\\accounts.dat and its
+    whole trading history in bases\\ — promoting it would copy a live login into every beta slot. These
+    checks are written to REFUSE such an image, not to trust that nobody would do it.
+    """
+
+    REQUIRED_EVIDENCE = {
+        "config\\accounts.dat": "a saved broker account",
+        "config\\servers.dat": "a downloaded broker server list",
+        "config\\common.ini": "settings from a previous run",
+        "config\\terminal.ini": "settings from a previous run",
+        "bases": "market data / trade history",
+        "logs": "terminal logs",
+        "MQL5\\Logs": "MQL5 logs",
+        "MQL5\\Profiles": "chart profiles carrying attached-EA configuration",
+        "MQL5\\Presets": "saved EA input presets",
+    }
+
+    def test_every_required_usage_artefact_is_refused(self):
+        code = _code("install_pool.ps1")
+        for rel in self.REQUIRED_EVIDENCE:
+            self.assertIn(rel, code, f"golden validation does not refuse '{rel}'")
+
+    def test_the_mt5_build_is_pinned_by_the_manifest(self):
+        """The same string the agent compares against BETA_AGENT_GOLDEN_MANIFEST_VERSION."""
+        code = _code("install_pool.ps1")
+        self.assertIn("VersionInfo.FileVersion", code)
+        self.assertIn("the manifest pins", code)
+
+    def test_an_empty_manifest_is_refused(self):
+        self.assertIn("it must pin the MT5 build", _code("install_pool.ps1"))
+
+    def test_compiled_eas_are_refused(self):
+        """An Experts directory with compiled EAs is attached-strategy configuration even with no profile."""
+        code = _code("install_pool.ps1")
+        self.assertIn("MQL5\\Experts", code)
+        self.assertIn("the golden image must carry no strategy", code)
+
+    def test_the_expected_structure_is_asserted(self):
+        code = _code("install_pool.ps1")
+        self.assertIn('foreach ($required in @("terminal64.exe", "MQL5"))', code)
+        self.assertIn(".guvfx_golden_manifest", code)
+        self.assertIn(".guvfx_portable", code)
+
+    def test_validation_failure_aborts_before_plan(self):
+        """Abort, never warn: a dirty golden image must not reach the identity or task stages."""
+        code = _code("install_pool.ps1")
+        self.assertIn("golden image validation FAILED", code)
+        self.assertIn("aborting before PLAN", code)
+        self.assertLess(code.index("golden image validation FAILED"), code.index("New-LocalUser"))
+
+    def test_the_rule_is_stated_where_the_check_lives(self):
+        source = _read("install_pool.ps1")
+        self.assertIn("RULE 10", source)
+        self.assertIn("never promote the production MT5 installation", source)
+
+    def test_each_failure_names_what_was_found(self):
+        """'validation failed' is not actionable; the operator must be told which artefact was present."""
+        self.assertIn("previous use: '$rel' present", _code("install_pool.ps1"))
+
+
+class PermanentRulesTests(SimpleTestCase):
+    def test_rules_9_and_10_are_recorded(self):
+        rules = open(os.path.join(_REPO, ".claude", "rules", "security.md"), encoding="utf-8").read()
+        self.assertIn("RULE 9", rules)
+        self.assertIn("RULE 10", rules)
+        self.assertIn("ParseFile", rules)
+        self.assertIn("never be promoted to the golden image", rules)
