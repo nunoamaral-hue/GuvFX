@@ -176,7 +176,11 @@ function Get-GuvfxAccountRightsU {
 # F3: a revoke that finds no resolvable identity is a SILENT NO-OP - indistinguishable from a clean
 # teardown while four SIDs keep the right for ever, inheritable by a future account with the same RID.
 # Say so loudly rather than printing the usual epilogue.
-if (@($SlotIdentities).Count -lt $PoolSize) {
+# Null-safe: @($null).Count is 1, so a revoke that resolved NO identity would have counted as one and
+# skipped this warning entirely - the exact defect that aborted the 2026-07-23 APPLY, in the direction
+# that stays silent instead of shouting.
+$slotIdentityCount = if ($null -eq $SlotIdentities) { 0 } else { @($SlotIdentities).Count }
+if ($slotIdentityCount -lt $PoolSize) {
   $found = @($SlotIdentities | ForEach-Object { $_.Name })
   for ($n = 1; $n -le $PoolSize; $n++) {
     if ($found -notcontains "$IdentityPrefix$n") {

@@ -22,14 +22,42 @@ param(
   [string]$StopPrefix       = "GuvFXBetaRuntimeStop-",
   [string]$ApprovedTasksOut = "C:\GuvFX\beta\agent-state\approved_tasks.json",
   [switch]$Apply,
+  # Re-run the VERIFY block ALONE against an already-provisioned pool. Creates nothing, registers nothing,
+  # writes no ACL, and never prompts for a password. It exists because the mutating half of -Apply can
+  # succeed while VERIFY aborts: re-running -Apply to re-verify would re-register all eight tasks and
+  # re-prompt the operator for four passwords to redo work that was already correct.
+  [switch]$VerifyOnly,
   # Run ONLY the golden-image validation and exit. Read-only by construction: it reaches no identity,
   # right, ACL, task or directory-creation step.
   [switch]$ValidateGoldenOnly
 )
 $ErrorActionPreference = "Stop"
+if ($Apply -and $VerifyOnly) { throw "refusing: -Apply and -VerifyOnly are mutually exclusive" }
+#: May this run CHANGE the host? -VerifyOnly must never mutate.
+$Mutate = [bool]$Apply
+#: May this run ASSERT against a provisioned host? Both -Apply and -VerifyOnly verify; PLAN cannot.
+$Check  = ([bool]$Apply) -or ([bool]$VerifyOnly)
 function Step($m) { Write-Host "==> $m" }
 function DoIt($desc, [scriptblock]$block) {
-  if ($Apply) { Step "APPLY: $desc"; & $block } else { Step "PLAN:  $desc" }
+  if ($Mutate)         { Step "APPLY: $desc"; & $block }
+  elseif ($VerifyOnly) { Step "SKIP:  $desc (VerifyOnly - nothing is changed)" }
+  else                 { Step "PLAN:  $desc" }
+}
+
+function Get-GuvfxCount {
+  <# Count a value that may be $null, a scalar, or a collection.
+
+     `@($null).Count` is 1 in PowerShell, not 0 - @() wraps the null into a one-element array. Every
+     "how many of these are there" check written as `@($x).Count` therefore reads ABSENT as ONE.
+
+     This is not hypothetical. `if (@($task.Triggers).Count -gt 0)` aborted the credentialed APPLY on
+     2026-07-23 with "task 'GuvFXBetaRuntime-1' has a trigger; expected on-demand only". The task had no
+     trigger - COM reported Triggers.Count 0, the registered XML contained `<Triggers />`, and schtasks
+     said "On demand only". Get-ScheduledTask returns $null for .Triggers on a trigger-less task, and the
+     check counted that null as one. It could never have passed for ANY trigger-less task. #>
+  param($Value)
+  if ($null -eq $Value) { return 0 }
+  return @($Value).Count
 }
 
 # -- 0. Refusals. These are the estate objects this script must never come near. Checked BEFORE anything.
@@ -524,7 +552,7 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     # New-LocalUser and Add-LocalGroupMember are two operations. A run interrupted between them leaves an
     # account that exists but is in no group, and simply skipping here would never repair it. Membership is
     # therefore reconciled on the existing-account path too, and is idempotent.
-    if ($Apply) { Add-GuvfxUsersMembership -AccountName $user }
+    if ($Mutate) { Add-GuvfxUsersMembership -AccountName $user }
     continue
   }
   DoIt "create non-admin identity '$user' (password prompted, never a parameter)" {
@@ -539,7 +567,7 @@ for ($n = 1; $n -le $PoolSize; $n++) {
 # access denial - and an empty pipeline was read as "not a member". The one check standing between the
 # sponsor's non-admin guarantee and a privileged runtime identity therefore passed loudest exactly when it
 # could see least. It now fails CLOSED: an enumeration error is an error, not a pass.
-if ($Apply) {
+if ($Check) {
   for ($n = 1; $n -le $PoolSize; $n++) {
     $user = "$IdentityPrefix$n"
     foreach ($g in @("Administrators","Remote Desktop Users","Backup Operators")) {
@@ -564,7 +592,7 @@ if ($Apply) {
 Step "SeBatchLogonRight via the LSA policy API (adds one right to one account; no policy line is rewritten)"
 for ($n = 1; $n -le $PoolSize; $n++) {
   $user = "$IdentityPrefix$n"
-  if ($Apply) {
+  if ($Mutate) {
     Grant-GuvfxBatchLogonRight -AccountName $user
   } else {
     # PLAN reports the delta without modifying anything. Note honestly what it does and does not prove:
@@ -686,7 +714,7 @@ for ($n = 1; $n -le $PoolSize; $n++) {
   # normalise the principal to a qualified form or a SID, and the gate compares the 7-field digest by exact
   # equality. Pinning what we MEANT to register, while the agent reads what IS registered, would make every
   # first launch fail task_definition_drift - permanently, since the agent never repairs a task.
-  if ($Apply) {
+  if ($Check) {
     $svc = New-Object -ComObject Schedule.Service
     $svc.Connect()
     # BOTH task families are pinned. Recording only the launch task inverted the risk exactly backwards:
@@ -751,13 +779,21 @@ DoIt "write approved task definitions to $ApprovedTasksOut" {
 }
 
 # -- 8. Verify (no start, no trigger, no enable).
-if ($Apply) {
+if ($Check) {
   Step "VERIFY pool (expect: identities non-admin, tasks present and DISABLED, no triggers)"
+  $svcV = New-Object -ComObject Schedule.Service; $svcV.Connect()
   for ($n = 1; $n -le $PoolSize; $n++) {
     foreach ($t in @("$LaunchPrefix$n", "$StopPrefix$n")) {
       $task = Get-ScheduledTask -TaskName $t -ErrorAction Stop
       if ($task.State -ne "Disabled") { throw "task '$t' is $($task.State); expected Disabled (install-only)" }
-      if (@($task.Triggers).Count -gt 0) { throw "task '$t' has a trigger; expected on-demand only" }
+      # Counted null-safely, and corroborated against the Task Scheduler COM definition - the same source
+      # the approvals read-back uses - so one library's null convention cannot decide this alone.
+      $trigPs  = Get-GuvfxCount $task.Triggers
+      $trigCom = ($svcV.GetFolder("\").GetTask($t)).Definition.Triggers.Count
+      if ($trigPs -ne $trigCom) {
+        throw "task '$t' trigger count disagrees between sources (Get-ScheduledTask=$trigPs, COM=$trigCom) - refusing to judge it"
+      }
+      if ($trigCom -gt 0) { throw "task '$t' has $trigCom trigger(s); expected on-demand only" }
       $principal = $task.Principal
       if ($principal.UserId -notlike "*$IdentityPrefix$n") { throw "task '$t' principal is $($principal.UserId)" }
       if ($principal.RunLevel -ne "Limited") { throw "task '$t' RunLevel is $($principal.RunLevel); expected Limited" }

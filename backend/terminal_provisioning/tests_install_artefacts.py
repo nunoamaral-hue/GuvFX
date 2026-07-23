@@ -853,3 +853,87 @@ class GoldenDigestCanonicalisationTests(SimpleTestCase):
         self.assertEqual(cfg["BETA_AGENT_GOLDEN_DIGEST"],
                          "3a7fa6638e9eb9a0989edcaaff5b0c9ec93b15a6c62b9ee9b5f5f420d6313f10")
         self.assertEqual(cfg["BETA_AGENT_GOLDEN_MANIFEST_VERSION"], "5.0.0.6036")
+
+
+class NullCountTests(SimpleTestCase):
+    """`@($null).Count` is 1 in PowerShell, so `@($x).Count` reads ABSENT as ONE.
+
+    This aborted the credentialed APPLY on 2026-07-23:
+
+        if (@($task.Triggers).Count -gt 0) { throw "task '$t' has a trigger; expected on-demand only" }
+
+    Get-ScheduledTask returns $null for .Triggers on a trigger-less task, so the check fired on every
+    task that was correct. COM reported Triggers.Count 0, the registered XML held `<Triggers />`, and
+    schtasks said "On demand only" — the tasks were right and the check could never pass.
+    """
+
+    def test_no_script_counts_a_possibly_null_value_with_the_at_paren_idiom(self):
+        for name in SCRIPTS:
+            code = re.sub(r"<#.*?#>", "", _code(name), flags=re.S)
+            # Get-GuvfxCount is the ONE sanctioned use: it returns 0 for $null before reaching @().Count.
+            code = re.sub(r"function Get-GuvfxCount.*?\n}\n", "", code, flags=re.S)
+            for i, line in enumerate(code.splitlines(), 1):
+                stmt = line.split("#", 1)[0]
+                # An inline `if ($null -eq $x) { 0 } else { @($x).Count }` is null-safe by construction.
+                if re.search(r"\$null -eq \$[A-Za-z_][\w.]*", stmt):
+                    continue
+                m = re.search(r"@\(\$[A-Za-z_][\w.]*\)\.Count", stmt)
+                if m:
+                    self.fail(f"{name}:{i} counts with {m.group(0)} — @($null).Count is 1, "
+                              f"use Get-GuvfxCount / an explicit null test: {line.strip()}")
+
+    def test_the_null_safe_counter_exists_and_returns_zero_for_null(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("function Get-GuvfxCount", code)
+        self.assertIn("if ($null -eq $Value) { return 0 }", code)
+
+    def test_the_trigger_check_is_corroborated_by_a_second_source(self):
+        """One library's null convention must not decide this alone."""
+        code = _code("install_pool.ps1")
+        self.assertIn("$trigPs  = Get-GuvfxCount $task.Triggers", code)
+        self.assertIn("Definition.Triggers.Count", code)
+        self.assertIn("trigger count disagrees between sources", code)
+        self.assertIn("if ($trigCom -gt 0)", code)
+
+    def test_uninstall_counts_identities_null_safely(self):
+        code = _code("uninstall.ps1")
+        self.assertIn("$slotIdentityCount = if ($null -eq $SlotIdentities) { 0 }", code)
+
+
+class VerifyOnlyTests(SimpleTestCase):
+    """-VerifyOnly re-runs verification against an already-provisioned pool.
+
+    The mutating half of -Apply can succeed while VERIFY aborts — it did. Re-running -Apply to re-verify
+    would re-register all eight tasks and re-prompt the operator for four passwords to redo work that was
+    already correct, so verification is separable from mutation.
+    """
+
+    def test_the_switch_exists_and_excludes_apply(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("[switch]$VerifyOnly", code)
+        self.assertIn("-Apply and -VerifyOnly are mutually exclusive", code)
+
+    def test_mutation_and_verification_are_separate_gates(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("$Mutate = [bool]$Apply", code)
+        self.assertIn("$Check  = ([bool]$Apply) -or ([bool]$VerifyOnly)", code)
+        # DoIt — the only thing that changes the host — is gated on $Mutate, never on $Check.
+        doit = code[code.index("function DoIt"):code.index("function Get-GuvfxCount")]
+        self.assertIn("if ($Mutate)", doit)
+        self.assertNotIn("$Check", doit)
+
+    def test_every_mutating_step_is_gated_on_mutate_not_check(self):
+        """The two mutations outside DoIt: the Users membership repair and the user-right grant."""
+        code = _code("install_pool.ps1")
+        self.assertIn("if ($Mutate) { Add-GuvfxUsersMembership -AccountName $user }", code)
+        self.assertIn("if ($Mutate) {\n    Grant-GuvfxBatchLogonRight -AccountName $user", code)
+        self.assertNotIn("if ($Check) {\n    Grant-GuvfxBatchLogonRight", code)
+
+    def test_no_password_prompt_can_be_reached_without_mutating(self):
+        """Get-SlotSecret is only ever called from inside a DoIt block, which -VerifyOnly skips."""
+        code = _code("install_pool.ps1")
+        body = code[code.index("function Get-SlotSecret"):]
+        for i, line in enumerate(body.splitlines(), 1):
+            if "Get-SlotSecret $user" in line and "function" not in line:
+                self.assertNotIn("if ($Check)", body[:body.index(line)][-400:],
+                                 "a password prompt is reachable from a verification-only path")
