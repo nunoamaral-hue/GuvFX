@@ -33,6 +33,16 @@ services:
     restart: unless-stopped
     # Long-running adaptive loop (NOT the one-shot minute cron). Reuses the backend image + env.
     command: ["python", "manage.py", "run_tp_protection_watcher"]
+    # CRITICAL: this service `extends guvfx-backend`, which inherits the backend's traefik labels
+    # (the `guvfx-api` router/service on Host(`api.guvfx.com`)). This container runs a management
+    # command, NOT a web server, so nothing listens on :8000 — if traefik kept those inherited labels
+    # it would register this container as a SECOND (dead) server for `guvfx-api` and load-balance ~half
+    # of api.guvfx.com onto it → HTTP 502 (connection refused). Disable traefik entirely here, exactly
+    # like guvfx-mt5-trade-ingest-worker / guvfx-mt5-shadow-worker do. `traefik.enable=false` makes
+    # traefik ignore ALL of this container's traefik labels. (docker applies the last duplicate label
+    # key, so this wins over the inherited `traefik.enable=true`; verify with `docker compose config`.)
+    labels:
+      - "traefik.enable=false"
     # NO `environment:` overrides here on purpose. TP_WATCHER_ENABLED (the arm flag) and the optional
     # cadence tunables are inherited from telegram.env via `extends` → guvfx-backend, EXACTLY like
     # BREAKEVEN_ENABLED. A compose `environment:` key would SHADOW the env_file value and a

@@ -38,6 +38,24 @@ believing a negative result. Full write-up: `evidence/b3p2-install/baseline_2026
   are tenant-scoped for non-staff; global ops endpoints (health-matrix, recovery-attempts, recovery-status, and the
   circuit-reset mutation) are admin-only. Target architecture = Option A (Windows RDS/RemoteApp host pool), pending
   Nuno's cost approval before any procurement.
+## api.guvfx.com 502 / login outage — watcher inherited backend's traefik route — FIXED (2026-07-17)
+
+- **Symptom:** `guvfx.com/login` → "Failed to fetch" + browser CORS error on
+  `https://api.guvfx.com/api/auth/cookie/csrf/` (`net::ERR_FAILED`). The real cause was a traefik **502**;
+  the CORS message is a downstream symptom (a 502 error page carries no `Access-Control-Allow-Origin`).
+- **Root cause:** `guvfx-tp-protection-watcher` `extends guvfx-backend`, so it **inherited the backend's
+  traefik labels** — the `guvfx-api` router/service on `Host(api.guvfx.com)`. But the watcher runs
+  `manage.py run_tp_protection_watcher` (no web server on :8000), so traefik registered it as a **second,
+  dead server** for `guvfx-api` and load-balanced ~half of api.guvfx.com onto it → connection refused → 502.
+- **Fix:** add `traefik.enable=false` to the watcher overlay (`deploy/tp-protection-watcher/
+  docker-compose.tp-watcher.yml`), exactly like `guvfx-mt5-trade-ingest-worker` /
+  `guvfx-mt5-shadow-worker` already do; recreate only the watcher. Verified: api.guvfx.com stable 200/400
+  with CORS, 0 502s; watcher stays armed. PR #146.
+- **LESSON — any service that `extends guvfx-backend` inherits ALL its traefik labels.** A non-web
+  container (worker/watcher/one-shot) MUST set `traefik.enable=false`, or it silently becomes a dead
+  backend for `guvfx-api` → intermittent 502s. Check this on every new `extends guvfx-backend` service.
+  (Also: restarting traefik makes it re-read all labels — it does NOT fix a duplicate-router
+  misconfiguration, it re-applies it.)
 
 ## Chronic `VALIDATE_WORKER` heartbeat flap — Windows-side, NOT caused by backend deploys (2026-07-16)
 
