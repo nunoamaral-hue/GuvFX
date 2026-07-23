@@ -2,6 +2,26 @@
 
 List active problems with reproduction steps and workarounds.
 
+## ⚠️ `secedit /export` into an existing file writes UTF-16 with **no BOM** (2026-07-23)
+
+This produced a **false finding** in the B3P-2 install baseline that the programme then relied on. Any
+future policy capture must avoid it.
+
+```powershell
+$tmp = [IO.Path]::GetTempFileName()          # <-- CREATES the file
+secedit /export /areas USER_RIGHTS /cfg $tmp | Out-Null
+Get-Content $tmp | Where-Object { $_ -match "^SeBatchLogonRight" }   # matches NOTHING, for any right
+```
+
+`GetTempFileName()` creates the file; `secedit` writing into an existing path omits the byte-order mark;
+`Get-Content` has no BOM to detect, falls back to ANSI, and every line comes back NUL-interleaved. Exit code
+is 0 and the file is non-empty, so nothing looks wrong. First bytes tell them apart — `5B 00 50 00` (no BOM)
+versus `FF FE 5B 00`.
+
+**Workaround:** export to a path that does **not** already exist, or read with
+`[Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes($p))`. Verify a positive control before
+believing a negative result. Full write-up: `evidence/b3p2-install/baseline_2026-07-22.md`.
+
 ## ⚠️ Beta onboarding is NOT ready — keep external onboarding CLOSED (2026-07-20)
 
 - The platform is **single-tenant**. 21 Critical + 14 High blockers (see `docs/BETA_ONBOARDING_V1_PROGRAMME.md`).

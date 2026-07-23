@@ -314,11 +314,14 @@ class ApprovalReflectsRealityTests(SimpleTestCase):
 class UserRightManagementTests(SimpleTestCase):
     """User rights are managed with the LSA policy API, never secedit.
 
-    The install-only baseline found SeBatchLogonRight ABSENT from local policy on the target host, so
-    Windows' effective defaults were in force. secedit writes a COMPLETE assignment line — creating one
-    containing only our four SIDs would have replaced those defaults machine-wide. LsaAddAccountRights adds
-    one right to one account and touches nothing else, so there is no line to rewrite and no need for the
-    installer to know what the defaults are.
+    The 2026-07-22 baseline recorded SeBatchLogonRight as ABSENT from local policy. That reading was a
+    false negative in the capture — the right is explicitly assigned to the three Windows defaults
+    (Administrators, Backup Operators, Performance Log Users). The correction does not weaken the case for
+    the LSA API; it strengthens it. secedit writes a COMPLETE assignment line, so adding our four SIDs
+    means reconstructing those three default principals from a template exactly, and a reconstruction that
+    is wrong revokes batch logon machine-wide from whoever held it. LsaAddAccountRights adds one right to
+    one account and touches nothing else, so there is no line to rewrite and the installer never has to
+    know, infer or recreate the defaults.
 
     These are source-conformance checks. The LSA calls themselves cannot be exercised off Windows; the
     read-only half runs on the host during PLAN, before any APPLY, which is where the interop is proven.
@@ -531,3 +534,96 @@ class AsciiOnlyScriptTests(SimpleTestCase):
         for name in SCRIPTS:
             raw = open(os.path.join(_BUNDLE, name), "rb").read(3)
             self.assertNotEqual(raw, b"\xef\xbb\xbf", f"{name} starts with a UTF-8 BOM")
+
+
+class GoldenImageValidationTests(SimpleTestCase):
+    """RULE 10: the golden runtime must come from a dedicated clean install, never the production terminal.
+
+    The production MT5 install carries the operator's broker credentials in config\\accounts.dat and its
+    whole trading history in bases\\ — promoting it would copy a live login into every beta slot. These
+    checks are written to REFUSE such an image, not to trust that nobody would do it.
+    """
+
+    REQUIRED_EVIDENCE = {
+        "config\\accounts.dat": "a saved broker account",
+        "config\\servers.dat": "a downloaded broker server list",
+        "config\\common.ini": "settings from a previous run",
+        "config\\terminal.ini": "settings from a previous run",
+        "bases": "market data / trade history",
+        "logs": "terminal logs",
+        "MQL5\\Logs": "MQL5 logs",
+        "MQL5\\Profiles": "chart profiles carrying attached-EA configuration",
+        "MQL5\\Presets": "saved EA input presets",
+    }
+
+    def test_every_required_usage_artefact_is_refused(self):
+        code = _code("install_pool.ps1")
+        for rel in self.REQUIRED_EVIDENCE:
+            self.assertIn(rel, code, f"golden validation does not refuse '{rel}'")
+
+    def test_the_mt5_build_is_pinned_by_the_manifest(self):
+        """The same string the agent compares against BETA_AGENT_GOLDEN_MANIFEST_VERSION."""
+        code = _code("install_pool.ps1")
+        self.assertIn("VersionInfo.FileVersion", code)
+        self.assertIn("the manifest pins", code)
+
+    def test_an_empty_manifest_is_refused(self):
+        self.assertIn("it must pin the MT5 build", _code("install_pool.ps1"))
+
+    def test_compiled_eas_are_refused(self):
+        """An Experts directory with compiled EAs is attached-strategy configuration even with no profile."""
+        code = _code("install_pool.ps1")
+        self.assertIn("MQL5\\Experts", code)
+        self.assertIn("the golden image must carry no strategy", code)
+
+    def test_the_expected_structure_is_asserted(self):
+        """terminal64.exe is the ONLY hard structural requirement. MQL5 is deliberately optional: a fresh
+        non-portable install keeps its data under %APPDATA%\\MetaQuotes\\Terminal\\<hash>, so the tree
+        legitimately has none, and /portable creates one in the slot at first run. Requiring it rejected a
+        genuine MetaQuotes installer output."""
+        code = _code("install_pool.ps1")
+        self.assertIn('if (Test-Path (Join-Path $Path "terminal64.exe"))', code)
+        self.assertIn("non-portable install; /portable creates it in the slot", code)
+        self.assertIn(".guvfx_golden_manifest", code)
+        self.assertIn(".guvfx_portable", code)
+
+    def test_bases_is_judged_by_broker_directory_not_file_count(self):
+        """bases\\ SHIPS POPULATED - Bases\\Default carries demo history, 527 welcome messages and symbol
+        definitions, 537 files written within two seconds of install. Only a BROKER-NAMED subdirectory
+        proves the terminal ever connected."""
+        code = _code("install_pool.ps1")
+        self.assertIn('Where-Object { $_.Name -ne "Default" }', code)
+        self.assertIn("is a broker-named data directory", code)
+
+    def test_provenance_is_scanned_in_file_contents(self):
+        """The check that caught a tree copied from a live per-account runtime: MQL5\\experts.dat held 66
+        absolute paths rooted at another runtime's directory while every filename-based check passed."""
+        code = _code("install_pool.ps1")
+        self.assertIn("C:\\GuvFX\\terminals", code)
+        self.assertIn("this tree was COPIED from an existing runtime", code)
+        self.assertIn("[Text.Encoding]::Unicode.GetString($b)", code)
+
+    def test_validation_failure_aborts_before_plan(self):
+        """Abort, never warn: a dirty golden image must not reach the identity or task stages."""
+        code = _code("install_pool.ps1")
+        self.assertIn("golden image validation FAILED", code)
+        self.assertIn("aborting before PLAN", code)
+        self.assertLess(code.index("golden image validation FAILED"), code.index("New-LocalUser"))
+
+    def test_the_rule_is_stated_where_the_check_lives(self):
+        source = _read("install_pool.ps1")
+        self.assertIn("RULE 10", source)
+        self.assertIn("never promote the production MT5 installation", source)
+
+    def test_each_failure_names_what_was_found(self):
+        """'validation failed' is not actionable; the operator must be told which artefact was present."""
+        self.assertIn("previous use: '$rel' present", _code("install_pool.ps1"))
+
+
+class PermanentRulesTests(SimpleTestCase):
+    def test_rules_9_and_10_are_recorded(self):
+        rules = open(os.path.join(_REPO, ".claude", "rules", "security.md"), encoding="utf-8").read()
+        self.assertIn("RULE 9", rules)
+        self.assertIn("RULE 10", rules)
+        self.assertIn("ParseFile", rules)
+        self.assertIn("never be promoted to the golden image", rules)

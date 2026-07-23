@@ -6,6 +6,26 @@
 
 ## Execution workstream log
 
+- **2026-07-23 — B3P-2 Phase 2: golden image approved, PLAN run, baseline finding retracted. 🟠 waiting at the APPLY gate.**
+  **Golden image.** The previously staged `C:\GuvFX\golden\mt5\5.0.0.5833\` tree was **rejected**: a
+  content-level provenance scan found 66 absolute paths rooted at `C:\GuvFX\terminals\account_001\instance\`
+  inside `MQL5\experts.dat`, proving it was copied out of a live per-account runtime (RULE 10 violation).
+  Every filename-based check had passed it. A dedicated clean install at `C:\GuvFX\golden\newMT5\` was
+  commissioned by Nuno, validated read-only, and **promoted**: build `5.0.0.6036`, 584 files, tree digest
+  `9458098538cbc613c4cd35ce1ad02ffbf03db3a0db10971082dadbc677d7ce32`. Promotion wrote exactly two marker
+  files. The validator itself was corrected three times — it had rejected genuine MetaQuotes installer
+  output (`MQL5\` is absent in a non-portable install; `bases\` ships populated with 537 files; sample EAs
+  and `Profiles` ship). **`install_pool.ps1` PLAN ran clean** (4 identities, 4 rights, 8 disabled tasks,
+  approval file) with the **LSA interop self-test passing against the live policy**; post-PLAN state
+  unchanged — 0 identities, 0 tasks, no service, production MT5 pid 4336 and bridge pid 13292 untouched.
+  **Retraction.** The 2026-07-22 baseline's `SeBatchLogonRight = <ABSENT FROM POLICY>` was a **capture
+  defect**, not host state: the export path came from `GetTempFileName()`, which creates the file, and
+  `secedit /export` writing into an existing path emits UTF-16 **with no BOM**, so `Get-Content` read it as
+  ANSI and *no* line matched. Reproduced both ways on the host. The right holds the three Windows defaults
+  and always did (`secedit.sdb` last written 2026-03-19; `scesrv.log` absent ⇒ no `/configure` has ever
+  run). **No STOP condition met**; the LSA-over-`secedit` decision is unaffected and better supported.
+  PR #181, `make check` RC=0, 1514 backend tests. **Nothing installed, granted or started.**
+
 - **2026-07-21 — GFX-BETA-HEADLESS Increment 4: broker-INDEPENDENT provisioning slice + provider-driven broker-validation abstraction. 🟢**
   Architecture note (supersedes the 07-20 RDS/RemoteApp plan): the beta target is now **non-interactive
   headless co-hosting on the EXISTING box** (per-account portable MT5 runtime in the Administrator autologon

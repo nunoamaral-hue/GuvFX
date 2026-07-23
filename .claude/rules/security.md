@@ -62,3 +62,43 @@ not a provable claim.
   production rotation.** Anything that starts a production service but is not reviewable in the repository
   (e.g. the Windows `.bat` launchers and `bridge_watchdog.ps1`) must be checked on the host each time — see
   the Launcher Gate in `docs/BRIDGE_TOKEN_ROTATION_PLAN.md` §9 step 4a.
+
+### Permanent rules 9 and 10 (adopted 2026-07-23, B3P-2 install gate)
+
+- **RULE 9 — Every PowerShell installation artefact must be successfully parsed by the target Windows
+  PowerShell version before its first execution.** Source review is not a substitute for the real parser.
+  All four B3P-2 install scripts failed to parse on the host despite two adversarial review rounds and a
+  full install-only review: Windows PowerShell 5.1 reads a BOM-less file as ANSI, so a UTF-8 em-dash
+  decoded to three characters whose last was a double-quote that terminated the enclosing string. Two of
+  the four had carried that defect since B2/B3P-1. Validate with
+  `[System.Management.Automation.Language.Parser]::ParseFile()`, which builds the AST **without executing**.
+  *Corollary:* installation scripts are written **ASCII-only**, so they parse identically under any
+  encoding, with or without a BOM.
+
+- **RULE 10 — The beta golden runtime must always originate from a dedicated clean installation. A
+  production MT5 installation must never be promoted to the golden image.** The production terminal carries
+  the operator's broker credentials in `config\accounts.dat` and its whole trading history in `bases\`;
+  promoting it would copy a live login into every beta slot. The installer must REFUSE a proposed golden
+  image showing evidence of previous runtime use — minimum: expected MT5 version/build (pinned by
+  `.guvfx_golden_manifest`), expected portable layout, no broker account configured, no account-specific
+  runtime state, no evidence of previous trading activity, no attached EA configuration, expected directory
+  structure. Validation failure **aborts before PLAN**; it is never waived.
+
+### Permanent rule 11 (adopted 2026-07-23, B3P-2 baseline retraction)
+
+- **RULE 11 — A negative operational finding must not be treated as authoritative until the same
+  measurement path is shown capable of producing a known positive result.** Where encoding, parsing or
+  command-output interpretation is involved: verify raw bytes or machine-readable output; test both a
+  positive and a negative control; and record the parser and encoding assumptions alongside the result.
+
+  *Why this was paid for.* The 2026-07-22 install baseline reported
+  `SeBatchLogonRight = <ABSENT FROM POLICY>`, and the programme built a decision on it. The right was
+  assigned the whole time. The capture exported the policy to a path from `[IO.Path]::GetTempFileName()`,
+  which **creates** the file; `secedit /export` writing into an existing path emits UTF-16 with **no BOM**;
+  `Get-Content` had no BOM to detect, fell back to ANSI, and matched **nothing** — for *any* right. Exit
+  code was `0` and the file was non-empty, so nothing looked wrong. A single positive control — "does this
+  parser find a right I already know is there?" — would have caught it immediately.
+
+  *Corollary:* this is the same PowerShell 5.1 encoding trap as RULE 9, in the other direction (there
+  BOM-less UTF-8 read as ANSI; here BOM-less UTF-16). Treat "the tool exited 0 and the output did not
+  contain X" as **unproven** until the parser has been shown to find something.
