@@ -761,10 +761,60 @@ if ($Apply) {
   # and then taken on trust. Read them back from the OS.
   Step "VERIFY ACLs (read back from the filesystem, not from what we asked for)"
   $goldenAcl = Get-Acl $GoldenDir
+  # (1) inheritance actually removed
   if (-not $goldenAcl.AreAccessRulesProtected) {
     throw "golden image '$GoldenDir' still inherits: the Read+Execute-only guarantee is NOT in force - STOP"
   }
-  Write-Host "ok   $GoldenDir inheritance broken (inherited AppendData/CreateFiles for Users cannot apply)"
+  Write-Host "ok   golden: inheritance removed (AreAccessRulesProtected = True)"
+  # (2)(3)(4) NO principal may write, create or append - checked as RIGHTS BITS, not as a name substring.
+  #     A substring match on "Write|Modify" is what made an earlier check miss AppendData and CreateFiles
+  #     entirely and report the tree clean when it was not (RULE 11).
+  $WRITEISH = ([System.Security.AccessControl.FileSystemRights]::Write -bor
+               [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor
+               [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+               [System.Security.AccessControl.FileSystemRights]::AppendData -bor
+               [System.Security.AccessControl.FileSystemRights]::WriteData -bor
+               [System.Security.AccessControl.FileSystemRights]::Delete -bor
+               [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+               [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+               [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+               [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+               [System.Security.AccessControl.FileSystemRights]::TakeOwnership)
+  # Only these two may hold write-class rights on the golden image.
+  $GOLDEN_WRITERS = @("S-1-5-32-544", "S-1-5-18")     # Administrators, SYSTEM
+  $sidRules = $goldenAcl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
+  $adminSeen = $false; $systemSeen = $false
+  foreach ($r in $sidRules) {
+    $who = $r.IdentityReference.Value
+    if ($r.AccessControlType -ne "Allow") { continue }
+    $writeish = ([int]$r.FileSystemRights -band [int]$WRITEISH) -ne 0
+    if ($writeish -and ($GOLDEN_WRITERS -notcontains $who)) {
+      throw "golden image: '$who' holds write-class rights ($($r.FileSystemRights)) - unexpected writable principal - STOP"
+    }
+    if ($who -eq "S-1-5-32-544") { $adminSeen = $true }
+    if ($who -eq "S-1-5-18")     { $systemSeen = $true }
+    # (4) CREATOR OWNER must not survive as an inheritable grant: anything a slot identity created would
+    #     otherwise be owned by it with full control.
+    if ($who -eq "S-1-3-0" -and $writeish) {
+      throw "golden image: CREATOR OWNER still grants write-class rights - STOP"
+    }
+  }
+  Write-Host "ok   golden: no principal outside Administrators/SYSTEM holds Write, CreateFiles, AppendData, Delete or ChangePermissions"
+  # (6) Administrators and SYSTEM retain control - the operator must not lock themselves out.
+  if (-not $adminSeen)  { throw "golden image: BUILTIN\Administrators has NO ACE after the inheritance break - STOP" }
+  if (-not $systemSeen) { throw "golden image: NT AUTHORITY\SYSTEM has NO ACE after the inheritance break - STOP" }
+  Write-Host "ok   golden: Administrators and SYSTEM retain full control"
+  # (7) the image itself is unchanged - ACL work must not have touched content.
+  $goldenFiles = @(Get-ChildItem $GoldenDir -Recurse -File -Force -ErrorAction SilentlyContinue)
+  $sb = New-Object Text.StringBuilder
+  foreach ($f in ($goldenFiles | Sort-Object FullName)) {
+    $rel = $f.FullName.Substring($GoldenDir.Length + 1).Replace("\","/").ToLower()
+    [void]$sb.Append("$rel|$($f.Length)|$((Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower())`n")
+  }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  $treeDigest = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($sb.ToString()))).Replace("-","").ToLower()
+  Write-Host "ok   golden: $($goldenFiles.Count) files, tree digest $treeDigest"
+  Write-Host "     compare against BETA_AGENT_GOLDEN_DIGEST; any difference means the image changed - STOP"
   for ($n = 1; $n -le $PoolSize; $n++) {
     $user = "$IdentityPrefix$n"
     $slot = Join-Path $SlotsRoot "$n"

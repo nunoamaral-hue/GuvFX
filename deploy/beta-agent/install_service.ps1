@@ -48,16 +48,57 @@ DoIt "create state dir $StateDir (+ logs)" { New-Item -ItemType Directory -Force
 #      - ReadAndExecute on the golden image (read-only: if the agent could write it, one compromised slot
 #        would compromise every future slot) and on its OWN code dir (so it cannot rewrite the bundle it is
 #        integrity-checked against).
+
+function Get-GuvfxServiceSid {
+  <# The service SID is DERIVED from the service name, so it exists as a value before the service does.
+     Needed because this script grants ACLs BEFORE `sc create` runs (step 3), and at that point
+     "NT SERVICE\GuvFXBetaAgent" has no name mapping: icacls fails with 1332 - for the name AND for the
+     raw SID, because it reverse-resolves - and aborts the install at its first grant. #>
+  param([Parameter(Mandatory)][string]$ServiceName)
+  if ($ServiceName -ne "GuvFXBetaAgent") {
+    throw "refusing service SID lookup for '$ServiceName': fixed to the beta agent service account"
+  }
+  $m = (& sc.exe showsid $ServiceName) | Select-String -Pattern "SERVICE SID:\s*(S-1-5-80-\S+)"
+  if (-not $m) { throw "could not compute the service SID for '$ServiceName'" }
+  $v = $m.Matches.Groups[1].Value
+  if ($v -notmatch "^S-1-5-80-\d+-\d+-\d+-\d+-\d+$") { throw "refusing: '$v' is not a service SID" }
+  return $v
+}
+
+function Grant-GuvfxServiceAcl {
+  <# Grant one right set to the service SID on one directory, with container+object inheritance, using
+     Set-Acl so no name resolution is involved. Post-checked by reading the DACL back AS SIDs. #>
+  param([Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][ValidateSet("Modify","ReadAndExecute")][string]$Rights,
+        [Parameter(Mandatory)][string]$ServiceSid)
+  $sid  = New-Object System.Security.Principal.SecurityIdentifier($ServiceSid)
+  $acl  = Get-Acl -Path $Path
+  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $sid, [System.Security.AccessControl.FileSystemRights]::$Rights,
+            ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+             [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+            [System.Security.AccessControl.PropagationFlags]::None, "Allow")
+  $acl.AddAccessRule($rule)
+  Set-Acl -Path $Path -AclObject $acl
+  $rules = (Get-Acl -Path $Path).GetAccessRules($true, $false,
+             [System.Security.Principal.SecurityIdentifier])
+  if (@($rules | Where-Object { $_.IdentityReference.Value -eq $ServiceSid }).Count -eq 0) {
+    throw "post-check failed: service SID $ServiceSid is not on $Path"
+  }
+  Write-Host "evidence acl path=$Path service_sid=$ServiceSid rights=$Rights result=granted"
+}
+
+$ServiceSid = Get-GuvfxServiceSid -ServiceName $ServiceName
+Write-Host "ok   service SID computed before the service exists: $ServiceSid"
+
 foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot)) {
   DoIt "grant '$RunAsUser' Modify on $d (inherit)" {
-    icacls $d /grant ("{0}:(OI)(CI)M" -f $RunAsUser) | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls failed granting Modify on $d (exit $LASTEXITCODE)" }
+    Grant-GuvfxServiceAcl -Path $d -Rights Modify -ServiceSid $ServiceSid
   }
 }
 foreach ($d in @($AgentDir, $GoldenDir)) {
   DoIt "grant '$RunAsUser' ReadAndExecute on $d (inherit)" {
-    icacls $d /grant ("{0}:(OI)(CI)RX" -f $RunAsUser) | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls failed granting ReadAndExecute on $d (exit $LASTEXITCODE)" }
+    Grant-GuvfxServiceAcl -Path $d -Rights ReadAndExecute -ServiceSid $ServiceSid
   }
 }
 if (-not (Test-Path $SlotsRoot)) {
@@ -88,9 +129,11 @@ if ($Apply) {
   # Assert the DACLs actually took. icacls is a native command: $ErrorActionPreference does not apply to it,
   # so a silently failed grant would otherwise surface as a first-MATERIALISE failure on the live host.
   foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot, $AgentDir, $GoldenDir)) {
-    $acl = (icacls $d) -join "`n"
-    if ($acl -notmatch [regex]::Escape($RunAsUser)) {
-      throw "no ACE for '$RunAsUser' on $d - the grant did not take; do NOT start"
+    $sids = @((Get-Acl -Path $d).GetAccessRules($true, $false,
+                [System.Security.Principal.SecurityIdentifier]) |
+              ForEach-Object { $_.IdentityReference.Value })
+    if ($sids -notcontains $ServiceSid) {
+      throw "no ACE for '$RunAsUser' ($ServiceSid) on $d - the grant did not take; do NOT start"
     }
     Write-Host "ok   DACL on $d carries an ACE for $RunAsUser"
   }

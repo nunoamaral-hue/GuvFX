@@ -268,12 +268,27 @@ class ServiceAccountCanDoItsJobTests(SimpleTestCase):
     def test_the_service_account_gets_read_on_the_golden_image_only(self):
         source = _code("install_service.ps1")
         self.assertIn("foreach ($d in @($AgentDir, $GoldenDir))", source)
-        self.assertIn("(OI)(CI)RX", source)
+        self.assertIn("-Rights ReadAndExecute -ServiceSid $ServiceSid", source)
+        self.assertIn("-Rights Modify -ServiceSid $ServiceSid", source)
+
+    def test_the_service_acls_do_not_depend_on_name_resolution(self):
+        """These grants run BEFORE `sc create`, so NT SERVICE\GuvFXBetaAgent has no name mapping yet and
+        icacls aborts the install at its FIRST grant with 1332 — for the name and for the raw SID alike.
+        The SID is derived from the service name, so it exists as a value before the service does."""
+        source = _code("install_service.ps1")
+        self.assertIn("function Get-GuvfxServiceSid", source)
+        self.assertIn("sc.exe showsid", source)
+        self.assertIn("Set-Acl -Path $Path -AclObject $acl", source)
+        self.assertLess(source.index("$ServiceSid = Get-GuvfxServiceSid"), source.index("sc.exe config"))
+        for line in source.splitlines():
+            stmt = line.split("#", 1)[0]
+            if "icacls" in stmt and "$RunAsUser" in stmt:
+                self.fail(f"icacls cannot resolve the service account here: {line.strip()}")
 
     def test_grant_failures_are_detected(self):
-        """icacls is a native command: $ErrorActionPreference does not apply, so a failed grant is silent."""
+        """A silently failed grant would otherwise surface as a first-MATERIALISE failure on the live host."""
         source = _code("install_service.ps1")
-        self.assertIn("$LASTEXITCODE -ne 0", source)
+        self.assertIn("post-check failed: service SID", source)
         self.assertIn("the grant did not take; do NOT start", source)
 
     def test_the_approval_file_is_readable_by_the_service_account(self):
@@ -758,3 +773,40 @@ class ApplyReadinessReviewTests(SimpleTestCase):
         code = _code("install_pool.ps1")
         self.assertIn("cross-slot access - STOP", code)
         self.assertIn("Read+Execute only was authorised - STOP", code)
+
+
+class GoldenAclVerificationTests(SimpleTestCase):
+    """Decision 3: the golden image must not inherit writable permissions, and VERIFY must prove it."""
+
+    def test_write_class_rights_are_checked_as_bits_not_as_a_name_substring(self):
+        """A substring match on 'Write|Modify|FullControl' misses AppendData and CreateFiles — which is
+        exactly how an earlier check reported the tree clean while BUILTIN\\Users could create files in it
+        and own them Full Control via inherit-only CREATOR OWNER (RULE 11)."""
+        code = _code("install_pool.ps1")
+        self.assertIn("$WRITEISH = ", code)
+        for right in ("CreateFiles", "AppendData", "CreateDirectories", "WriteData",
+                      "Delete", "ChangePermissions", "TakeOwnership"):
+            self.assertIn(f"FileSystemRights]::{right}", code, right)
+        self.assertIn("-band [int]$WRITEISH", code)
+
+    def test_only_administrators_and_system_may_write_the_golden_image(self):
+        code = _code("install_pool.ps1")
+        self.assertIn('$GOLDEN_WRITERS = @("S-1-5-32-544", "S-1-5-18")', code)
+        self.assertIn("unexpected writable principal - STOP", code)
+
+    def test_creator_owner_is_explicitly_checked(self):
+        """Anything a slot identity created would otherwise be owned by it with full control."""
+        code = _code("install_pool.ps1")
+        self.assertIn('$who -eq "S-1-3-0"', code)
+        self.assertIn("CREATOR OWNER still grants write-class rights - STOP", code)
+
+    def test_administrators_and_system_must_survive_the_inheritance_break(self):
+        """Breaking inheritance without re-granting would lock the operator out of their own image."""
+        code = _code("install_pool.ps1")
+        self.assertIn("has NO ACE after the inheritance break - STOP", code)
+
+    def test_the_golden_digest_is_recomputed_after_the_acl_work(self):
+        """ACL changes must not have touched content."""
+        code = _code("install_pool.ps1")
+        self.assertIn("tree digest", code)
+        self.assertIn("BETA_AGENT_GOLDEN_DIGEST", code)
