@@ -37,7 +37,12 @@ GuvPay-pr/
 * 2.tsx
 * 2.json
 * 2.md
+# .ps1 was missing from this list. Duplicates of install_pool.ps1 / install_service.ps1 /
+# uninstall.ps1 appeared in deploy/beta-agent and showed as UNTRACKED rather than ignored - one
+# `git add -A` away from committing a second, unreviewed copy of a credentialed installer.
+* 2.ps1
 * 3.py
+* 3.ps1
 * 3.ts
 * 3.tsx
 * 3.json
