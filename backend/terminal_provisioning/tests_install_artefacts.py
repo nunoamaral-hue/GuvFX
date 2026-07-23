@@ -574,10 +574,31 @@ class GoldenImageValidationTests(SimpleTestCase):
         self.assertIn("the golden image must carry no strategy", code)
 
     def test_the_expected_structure_is_asserted(self):
+        """terminal64.exe is the ONLY hard structural requirement. MQL5 is deliberately optional: a fresh
+        non-portable install keeps its data under %APPDATA%\\MetaQuotes\\Terminal\\<hash>, so the tree
+        legitimately has none, and /portable creates one in the slot at first run. Requiring it rejected a
+        genuine MetaQuotes installer output."""
         code = _code("install_pool.ps1")
-        self.assertIn('foreach ($required in @("terminal64.exe", "MQL5"))', code)
+        self.assertIn('if (Test-Path (Join-Path $Path "terminal64.exe"))', code)
+        self.assertIn("non-portable install; /portable creates it in the slot", code)
         self.assertIn(".guvfx_golden_manifest", code)
         self.assertIn(".guvfx_portable", code)
+
+    def test_bases_is_judged_by_broker_directory_not_file_count(self):
+        """bases\\ SHIPS POPULATED - Bases\\Default carries demo history, 527 welcome messages and symbol
+        definitions, 537 files written within two seconds of install. Only a BROKER-NAMED subdirectory
+        proves the terminal ever connected."""
+        code = _code("install_pool.ps1")
+        self.assertIn('Where-Object { $_.Name -ne "Default" }', code)
+        self.assertIn("is a broker-named data directory", code)
+
+    def test_provenance_is_scanned_in_file_contents(self):
+        """The check that caught a tree copied from a live per-account runtime: MQL5\\experts.dat held 66
+        absolute paths rooted at another runtime's directory while every filename-based check passed."""
+        code = _code("install_pool.ps1")
+        self.assertIn("C:\\GuvFX\\terminals", code)
+        self.assertIn("this tree was COPIED from an existing runtime", code)
+        self.assertIn("[Text.Encoding]::Unicode.GetString($b)", code)
 
     def test_validation_failure_aborts_before_plan(self):
         """Abort, never warn: a dirty golden image must not reach the identity or task stages."""

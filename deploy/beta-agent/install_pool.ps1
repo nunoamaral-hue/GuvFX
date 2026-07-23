@@ -21,7 +21,10 @@ param(
   [string]$LaunchPrefix     = "GuvFXBetaRuntime-",
   [string]$StopPrefix       = "GuvFXBetaRuntimeStop-",
   [string]$ApprovedTasksOut = "C:\GuvFX\beta\agent-state\approved_tasks.json",
-  [switch]$Apply
+  [switch]$Apply,
+  # Run ONLY the golden-image validation and exit. Read-only by construction: it reaches no identity,
+  # right, ACL, task or directory-creation step.
+  [switch]$ValidateGoldenOnly
 )
 $ErrorActionPreference = "Stop"
 function Step($m) { Write-Host "==> $m" }
@@ -36,7 +39,15 @@ foreach ($p in @($SlotsRoot, $TombstonesRoot, $GoldenDir)) {
   foreach ($f in $ForbiddenPaths) {
     if ($p -like "$f*") { throw "refusing: '$p' is inside the operator's estate ('$f')" }
   }
+}
+# Beta-owned objects must live in the beta namespace. The golden image is different in kind: it is a
+# READ-ONLY INPUT that the agent only ever reads, so it may live under C:\GuvFX\golden\ as well. It is
+# still refused anywhere outside those two roots, and RULE 10 still forbids the production install.
+foreach ($p in @($SlotsRoot, $TombstonesRoot)) {
   if ($p -notlike "C:\GuvFX\beta\*") { throw "refusing: '$p' is outside C:\GuvFX\beta\" }
+}
+if (($GoldenDir -notlike "C:\GuvFX\beta\*") -and ($GoldenDir -notlike "C:\GuvFX\golden\*")) {
+  throw "refusing: golden image '$GoldenDir' is outside C:\GuvFX\beta\ and C:\GuvFX\golden\"
 }
 if ($LaunchPrefix -notlike "GuvFXBetaRuntime*" -or $StopPrefix -notlike "GuvFXBetaRuntime*") {
   throw "refusing: task prefixes must be in the beta task namespace"
@@ -53,69 +64,157 @@ Write-Host "ok   namespace refusals pass (estate paths, estate tasks, identity +
 #      would copy a live login into every beta slot. The checks below are written to REFUSE such an image
 #      rather than to trust that nobody would do it.
 function Test-GoldenImage {
+  <# Distinguishes SHIPPED artefacts from EVIDENCE OF USE.
+
+     A freshly installed MetaTrader 5 already contains sample Expert Advisors (Advisors, Examples,
+     Free Robots), default chart profiles and templates under both Profiles\ and MQL5\Profiles\, Sounds\,
+     and empty config\ and MQL5\Logs\ directories. Rejecting those would reject every clean install ever
+     made. What actually proves a terminal was RUN - and what actually carries risk into a slot - is the
+     FILES a run leaves behind: a saved broker login, a downloaded server list, settings written on exit,
+     downloaded history, logs. So every check below is on a FILE, not on the presence of a directory. #>
   param([Parameter(Mandatory)][string]$Path)
-  $fail = @(); $ok = @()
+  $fail = @(); $ok = @(); $note = @()
 
   # (a) expected directory structure
-  foreach ($required in @("terminal64.exe", "MQL5")) {
-    if (Test-Path (Join-Path $Path $required)) { $ok += "structure: $required present" }
-    else { $fail += "structure: required entry '$required' is missing" }
-  }
+  # terminal64.exe is the ONLY hard structural requirement. MQL5\ is deliberately NOT required: a fresh
+  # non-portable install keeps its data directory under %APPDATA%\MetaQuotes\Terminal\<hash>\, so the
+  # install tree legitimately has no MQL5 at all, and a /portable launch creates one inside the slot on
+  # first run. Requiring it rejected a genuine installer output.
+  if (Test-Path (Join-Path $Path "terminal64.exe")) { $ok += "structure: terminal64.exe present" }
+  else { $fail += "structure: required entry 'terminal64.exe' is missing" }
+  if (Test-Path (Join-Path $Path "MQL5")) { $ok += "structure: MQL5 present (portable-style tree)" }
+  else { $ok += "structure: no MQL5 (non-portable install; /portable creates it in the slot at first run)" }
   foreach ($marker in @(".guvfx_golden_manifest", ".guvfx_portable")) {
     if (Test-Path (Join-Path $Path $marker)) { $ok += "marker: $marker present" }
-    else { $fail += "marker: required GuvFX marker '$marker' is missing" }
+    else { $fail += "marker: required GuvFX marker '$marker' is missing (operator-created, one file)" }
   }
 
-  # (b) expected MT5 version/build, pinned by the manifest. This is what makes the manifest meaningful:
-  #     it is the same string the agent compares against BETA_AGENT_GOLDEN_MANIFEST_VERSION.
+  # (b) expected MT5 version/build, pinned by the manifest - the same string the agent compares against
+  #     BETA_AGENT_GOLDEN_MANIFEST_VERSION.
   $manifestPath = Join-Path $Path ".guvfx_golden_manifest"
-  if (Test-Path $manifestPath) {
+  $exe = Join-Path $Path "terminal64.exe"
+  if ((Test-Path $manifestPath) -and (Test-Path $exe)) {
     $pinned = ((Get-Content $manifestPath -Raw) -replace "\s+$", "").Trim()
-    $exe = Join-Path $Path "terminal64.exe"
-    if (Test-Path $exe) {
-      $actual = (Get-Item $exe).VersionInfo.FileVersion
-      $actual = if ($actual) { $actual.Trim() } else { "" }
-      if (-not $pinned) { $fail += "version: .guvfx_golden_manifest is empty; it must pin the MT5 build" }
-      elseif ($actual -ne $pinned) { $fail += "version: terminal64.exe is '$actual' but the manifest pins '$pinned'" }
-      else { $ok += "version: terminal64.exe $actual matches the pinned build" }
+    $actual = (Get-Item $exe).VersionInfo.FileVersion
+    $actual = if ($actual) { $actual.Trim() } else { "" }
+    if (-not $pinned) { $fail += "version: .guvfx_golden_manifest is empty; it must pin the MT5 build" }
+    elseif ($actual -ne $pinned) { $fail += "version: terminal64.exe is '$actual' but the manifest pins '$pinned'" }
+    else { $ok += "version: terminal64.exe $actual matches the pinned build" }
+  } elseif (Test-Path $exe) {
+    $note += "version: terminal64.exe reports $((Get-Item $exe).VersionInfo.FileVersion) (no manifest to compare against yet)"
+  }
+
+  # (c/d/e/f) evidence of previous use - FILES ONLY. Each entry names what it proves.
+  $dirtyFiles = [ordered]@{
+    "config\accounts.dat"  = "a saved broker account (runtime-created)"
+    "config\servers.dat"   = "a downloaded broker server list (runtime-created)"
+    "config\common.ini"    = "terminal settings written on exit (runtime-created)"
+    "config\terminal.ini"  = "terminal settings written on exit (runtime-created)"
+    "origin.txt"           = "a data-folder redirect marker (runtime-created)"
+    "MQL5\experts.dat"     = "the compiled-expert metadata cache (runtime-created)"
+  }
+  foreach ($rel in $dirtyFiles.Keys) {
+    if (Test-Path (Join-Path $Path $rel) -PathType Leaf) {
+      $fail += "previous use: '$rel' present - $($dirtyFiles[$rel])"
+    }
+  }
+  # Directories that SHIP EMPTY: only their CONTENTS prove a run.
+  $dirtyDirs = [ordered]@{
+    "config\certificates" = "per-user certificates (runtime-created)"
+    "logs"                = "terminal logs (runtime-created)"
+    "MQL5\Logs"           = "MQL5 logs (runtime-created)"
+    "MQL5\Presets"        = "saved EA input presets (operator-created)"
+  }
+  foreach ($rel in $dirtyDirs.Keys) {
+    $d = Join-Path $Path $rel
+    if (Test-Path $d) {
+      $n = @(Get-ChildItem $d -Recurse -File -Force -ErrorAction SilentlyContinue).Count
+      if ($n -gt 0) { $fail += "previous use: '$rel' contains $n file(s) - $($dirtyDirs[$rel])" }
+      else { $ok += "clean: '$rel' present but empty (ships empty)" }
     }
   }
 
-  # (c) portable layout: MT5 in portable mode keeps its data INSIDE the install directory, so the data
-  #     directories must be creatable here. A read-only or redirected tree is not a usable golden image.
-  if (Test-Path (Join-Path $Path "MQL5")) { $ok += "layout: MQL5 tree present inside the install directory" }
-
-  # (d) no broker account configured, (e) no account-specific runtime state,
-  # (f) no evidence of previous trading activity, (g) no attached EA configuration.
-  #     Each entry is unambiguous evidence that the image was RUN before. Listed one per line so the
-  #     failure names exactly what was found rather than "validation failed".
-  $dirty = [ordered]@{
-    "config\accounts.dat"       = "a saved broker account (d)"
-    "config\servers.dat"        = "a downloaded broker server list (d)"
-    "config\common.ini"         = "terminal settings from a previous run (e)"
-    "config\terminal.ini"       = "terminal settings from a previous run (e)"
-    "config\certificates"       = "per-user certificates (e)"
-    "bases"                     = "downloaded market data / trade history (f)"
-    "logs"                      = "terminal logs from a previous run (f)"
-    "MQL5\Logs"                 = "MQL5 logs from a previous run (f)"
-    "MQL5\Profiles"             = "chart profiles, which carry attached-EA configuration (g)"
-    "MQL5\Presets"              = "saved EA input presets (g)"
-    "origin.txt"                = "a data-folder origin marker from a previous run (e)"
+  # bases\ SHIPS POPULATED: Bases\Default carries MetaQuotes demo history for four pairs, 527 welcome
+  # messages and the symbol definitions - 537 files written within two seconds of install. Only a
+  # BROKER-NAMED subdirectory beside Default proves the terminal ever connected to a broker.
+  $bases = Join-Path $Path "bases"
+  if (Test-Path $bases) {
+    $brokerDirs = @(Get-ChildItem $bases -Directory -Force -EA SilentlyContinue |
+                    Where-Object { $_.Name -ne "Default" })
+    if ($brokerDirs.Count -gt 0) {
+      foreach ($d in $brokerDirs) {
+        $fail += "previous use: 'bases\$($d.Name)' is a broker-named data directory - the terminal connected to a broker (runtime-created)"
+      }
+    } else {
+      $n = @(Get-ChildItem $bases -Recurse -File -Force -EA SilentlyContinue).Count
+      $ok += "clean: bases\ holds only the shipped Default tree ($n installer files, no broker directory)"
+    }
   }
-  foreach ($rel in $dirty.Keys) {
-    if (Test-Path (Join-Path $Path $rel)) { $fail += "previous use: '$rel' present - $($dirty[$rel])" }
-  }
-  if ($fail.Count -eq 0) { $ok += "previous use: none of the 11 usage artefacts is present" }
 
-  # (h) an Experts directory containing compiled EAs is attached-EA configuration even without a profile.
+  # (g) attached EA configuration. MetaQuotes SHIPS sample EAs; only strategies outside the shipped set
+  #     indicate an attached or user-supplied strategy.
+  $shipped = @("Advisors", "Examples", "Free Robots")
   $experts = Join-Path $Path "MQL5\Experts"
   if (Test-Path $experts) {
-    $ex = @(Get-ChildItem $experts -Recurse -File -Include *.ex5, *.mq5 -ErrorAction SilentlyContinue)
-    if ($ex.Count -gt 0) { $fail += "previous use: MQL5\Experts contains $($ex.Count) EA file(s) - the golden image must carry no strategy (g)" }
-    else { $ok += "EA: MQL5\Experts present but empty" }
+    $custom = @(Get-ChildItem $experts -Recurse -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -in ".ex5", ".mq5" } |
+                Where-Object {
+                  $rel = $_.FullName.Substring($experts.Length).TrimStart("\")
+                  $top = ($rel -split "\\")[0]
+                  ($rel -eq $_.Name) -or ($shipped -notcontains $top)
+                })
+    if ($custom.Count -gt 0) {
+      $fail += "previous use: MQL5\Experts holds $($custom.Count) NON-SHIPPED strategy file(s) - the golden image must carry no strategy (operator-created)"
+      $custom | Select-Object -First 5 | ForEach-Object {
+        $fail += "              -> $($_.FullName.Substring($Path.Length + 1))"
+      }
+    } else {
+      $shippedCount = @(Get-ChildItem $experts -Recurse -File -Force -EA SilentlyContinue |
+                        Where-Object { $_.Extension -in ".ex5", ".mq5" }).Count
+      $ok += "EA: $shippedCount MetaQuotes sample strategies present, none outside the shipped set"
+    }
   }
 
-  return [pscustomobject]@{ Passed = ($fail.Count -eq 0); Failures = $fail; Checks = $ok }
+  # (i) FOREIGN PROVENANCE - scan file CONTENTS, not just filenames.
+  #     This check exists because the previous candidate golden image passed every filename-based check
+  #     while MQL5\experts.dat held 66 absolute paths rooted at another runtime's directory
+  #     (C:\GuvFX\terminals\account_001\instance\...). The tree had been copied from a live per-account
+  #     runtime and then cleaned; the one file that gave it away survived because nothing in its NAME
+  #     suggested it held paths. Checking only for artefacts we thought to name proves the weaker claim.
+  $foreign = @(
+    @{ Pattern = "C:\\GuvFX\\terminals"; Means = "a per-account runtime directory" },
+    @{ Pattern = "C:\\GuvFX\\accounts";  Means = "a legacy per-account runtime directory" },
+    @{ Pattern = "C:\\GuvFX\\beta\\slots"; Means = "a beta slot directory" },
+    @{ Pattern = "C:\\Users\\";          Means = "a user profile directory" }
+  )
+  $skipExt = @(".exe", ".dll", ".ico", ".bmp", ".wav", ".png", ".jpg", ".gif", ".mq5", ".mqh")
+  $scanned = 0
+  $hits = @()
+  Get-ChildItem $Path -Recurse -File -Force -ErrorAction SilentlyContinue |
+    Where-Object { ($skipExt -notcontains $_.Extension.ToLower()) -and ($_.Length -le 4MB) } |
+    ForEach-Object {
+      $scanned++
+      $b = [IO.File]::ReadAllBytes($_.FullName)
+      $text = [Text.Encoding]::ASCII.GetString($b) + "`n" + [Text.Encoding]::Unicode.GetString($b)
+      foreach ($fp in $foreign) {
+        if ($text -match [regex]::Escape($fp.Pattern)) {
+          $hits += "$($_.FullName.Substring($Path.Length + 1)) references $($fp.Means)"
+        }
+      }
+    }
+  if ($hits.Count -gt 0) {
+    $fail += "foreign provenance: $($hits.Count) file(s) contain paths belonging to another installation -"
+    $fail += "                    this tree was COPIED from an existing runtime, not installed fresh (RULE 10)"
+    $hits | Select-Object -First 8 | ForEach-Object { $fail += "              -> $_" }
+  } else {
+    $ok += "provenance: $scanned scanned file(s) contain no path from another runtime or user profile"
+  }
+
+  # (The config\ mtime heuristic that used to live here has been removed. It compared the directory
+  # mtime against terminal64.exe, i.e. INSTALL time against VENDOR BUILD time, so it fired on every
+  # genuine fresh install. The provenance content scan above answers the same question properly.)
+
+  return [pscustomobject]@{ Passed = ($fail.Count -eq 0); Failures = $fail; Checks = $ok; Notes = $note }
 }
 
 if (-not (Test-Path $GoldenDir)) {
@@ -125,10 +224,22 @@ Step "validate golden image (RULE 10: dedicated clean install, never the product
 $golden = Test-GoldenImage -Path $GoldenDir
 foreach ($c in $golden.Checks) { Write-Host "ok   $c" }
 foreach ($f in $golden.Failures) { Write-Host "FAIL $f" }
+foreach ($n in $golden.Notes) { Write-Host "note $n" }
 if (-not $golden.Passed) {
+  if ($ValidateGoldenOnly) {
+    Write-Host ""
+    Write-Host "ValidateGoldenOnly: validation FAILED. Nothing was created or modified."
+    return
+  }
   throw "golden image validation FAILED ($($golden.Failures.Count) problem(s)) - aborting before PLAN. A dedicated clean install is required; never promote the production MT5 installation."
 }
+foreach ($n in $golden.Notes) { Write-Host "note $n" }
 Write-Host "ok   golden image validated: clean, versioned, correctly structured"
+if ($ValidateGoldenOnly) {
+  Write-Host ""
+  Write-Host "ValidateGoldenOnly: stopping here. Nothing else was inspected, created or modified."
+  return
+}
 
 # -- 1a. LSA interop. Loaded BEFORE identities are created (see the self-test below).
 #       SeBatchLogonRight is granted via the LSA policy API, NOT secedit.
