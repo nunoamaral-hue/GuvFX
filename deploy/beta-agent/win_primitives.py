@@ -313,7 +313,11 @@ def inspect_task(win, si: SlotInput, *, which: str = "launch", observed_at=None)
             return _wrap(si, operation, PRESENT_INVALID, "terminate_executable_unexpected", evidence,
                          observed_at)
         arguments = str(raw.get("arguments") or "")
-        if si.slot_path.lower() not in arguments.lower():
+        # The slot path must appear as a PATH PREFIX, not merely as a substring: ``...\slots\1`` is a
+        # substring of ``...\slots\10``, so a bare containment test would accept slot 10's terminate
+        # arguments as scoping slot 1. Requiring the trailing separator makes the boundary explicit.
+        needle = si.slot_path.rstrip("\\").lower() + "\\"
+        if needle not in arguments.lower():
             # An argument string that does not name this slot cannot be scoped to this slot.
             return _wrap(si, operation, PRESENT_INVALID, "terminate_scope_unbounded", evidence, observed_at)
     return _wrap(si, operation, PRESENT_VALID, "", evidence, observed_at)

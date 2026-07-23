@@ -14,10 +14,10 @@
     "stores.py": "88a3d6bfa30e0453bd92562cecb13f4ca0b41829071daef2f205f093ba47bccb",
     "win_mutations.py": "38258c11a89ad4d9251d990d48d2d005a230d24317761844f8f7f81dcae0b626",
     "win_ops.py": "6f20d87f8227d5e6b5d0b652430a42ab86141980a13938c9f31394283068d25e",
-    "win_primitives.py": "7f09d85b180c40b0a8ab1f8461759b2e5bdd44367d2b2a1995697af822710b76",
+    "win_primitives.py": "cc39772787b6df7db0b5962211bfae7fd88620783405a967fe54183093c8589b",
     "win_slot_ops.py": "515381458b09d1e3a36b7bb9a0e3ac34ead5a78400f33bef9f04385d5c4e592a"
   },
-  "manifest_version": "2026-07-23.1",
+  "manifest_version": "2026-07-23.2",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",

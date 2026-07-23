@@ -917,3 +917,65 @@ class PortableSwitchGateTests(SimpleTestCase):
         obs = wp.inspect_task(win, wp.resolve_slot_input(1), which="launch", observed_at=100)
         self.assertTrue(obs["evidence"]["portable_switch"])
         self.assertEqual(obs["evidence"]["arguments"], "/portable")
+
+
+class TerminateGateTests(SimpleTestCase):
+    """Negative coverage for the terminate gate.
+
+    Mutation-tested during review: deleting the whole containment branch, or dropping the scope check
+    alone, left the suite green. A gate whose removal no test notices is not a gate.
+    """
+
+    def _stopped_impls(self, **win_kw):
+        """A materialised, started, now-absent runtime — the state STOP is called from."""
+        s = _store()
+        win = FakeWin(exists=False, **win_kw)
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        impls.start(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="START"))
+        win._process = None            # the terminate trigger will find it gone
+        win.calls.clear()
+        return s, win, impls
+
+    def test_a_terminate_task_without_an_approval_refuses_before_triggering(self):
+        s, win, impls = self._stopped_impls()
+        impls.approved_tasks.pop("GuvFXBetaRuntimeStop-1")
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        self.assertEqual(ctx.exception.reason_code, "approved_task_definition_missing")
+        self.assertNotIn(("run_task", "GuvFXBetaRuntimeStop-1"),
+                         [(c[0], c[1]) for c in win.calls if c[0] == "run_task"])
+
+    def test_a_terminate_task_whose_arguments_lost_the_path_filter_is_refused(self):
+        """The exact edit an operator would make to 'fix' a failing STOP: drop the Where-Object clause."""
+        s, win, impls = self._stopped_impls()
+        win._stop_definition = dict(
+            APPROVED_STOP,
+            arguments='-NoProfile -Command "Get-Process -Name terminal64 | Stop-Process -Force"')
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        self.assertEqual(ctx.exception.reason_code, "terminate_scope_unbounded")
+
+    def test_a_terminate_task_pointed_at_another_executable_is_refused(self):
+        s, win, impls = self._stopped_impls()
+        win._stop_definition = dict(APPROVED_STOP, executable=r"C:\Windows\System32\taskkill.exe")
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        self.assertEqual(ctx.exception.reason_code, "terminate_executable_unexpected")
+
+    def test_a_terminate_task_scoped_to_a_DIFFERENT_slot_is_refused(self):
+        """slots\\1 is a substring of slots\\10, so containment must be tested at a path boundary."""
+        s, win, impls = self._stopped_impls()
+        win._stop_definition = dict(
+            APPROVED_STOP,
+            arguments=APPROVED_STOP["arguments"].replace(r"slots\1\terminal", r"slots\10\terminal"))
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        self.assertEqual(ctx.exception.reason_code, "terminate_scope_unbounded")
+
+    def test_a_drifted_terminate_definition_is_refused(self):
+        s, win, impls = self._stopped_impls()
+        win._stop_definition = dict(APPROVED_STOP, run_as_identity="Administrator")
+        with self.assertRaises(AgentError) as ctx:
+            impls.stop(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s, operation="STOP"))
+        self.assertIn(ctx.exception.reason_code, ("task_definition_drift", "forbidden_run_as_identity"))

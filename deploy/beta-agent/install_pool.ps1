@@ -346,7 +346,12 @@ function Invoke-GuvfxIcacls {
      be left with the wrong access while the run printed "ok" and continued to the next step. Every call
      goes through here so that cannot happen. #>
   param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Arguments)
-  $out = & icacls $Path @Arguments 2>&1
+  # 2>&1 makes PS 5.1 wrap native stderr in ErrorRecords, which $ErrorActionPreference = "Stop" turns into
+  # a TERMINATING error - so the descriptive throw below would never be reached and the operator would see
+  # a bare icacls line instead of which grant on which path failed.
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try { $out = & icacls $Path @Arguments 2>&1 } finally { $ErrorActionPreference = $prev }
   if ($LASTEXITCODE -ne 0) {
     throw ("icacls " + ($Arguments -join " ") + " failed on '$Path' (exit $LASTEXITCODE): " + ($out -join "; "))
   }
@@ -638,19 +643,23 @@ for ($n = 1; $n -le $PoolSize; $n++) {
   }
 
   DoIt "register '$launch' (disabled, no trigger, /portable, runs as $user)" {
-    $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-               [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user)))
+    # Bound to a variable so ZeroFreeBSTR can reach it. Called inline, the pointer is unrecoverable and the
+    # plaintext stays in unmanaged memory for the life of the session - the same defect fixed in
+    # Get-SlotSecret, in the two places that actually hold the password longest.
+    $bp = [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user))
+    $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bp)
     $action    = New-ScheduledTaskAction -Execute $exe -Argument "/portable" -WorkingDirectory $work
     $settings  = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
                    -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
     Register-ScheduledTask -TaskName $launch -Action $action -Settings $settings `
       -User $user -Password $plain -RunLevel Limited -Force | Out-Null
     Disable-ScheduledTask -TaskName $launch | Out-Null
-    Remove-Variable plain
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bp)
+    Remove-Variable plain, bp
   }
   DoIt "register '$stop' (disabled, no trigger, terminates ONLY this slot's image)" {
-    $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-               [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user)))
+    $bp = [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user))
+    $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bp)
     # SCOPED BY IMAGE PATH, not by image name. `taskkill /IM terminal64.exe` would match by NAME - and the
     # operator's production terminal has the SAME name, because a slot is a copy of the same MT5 image.
     # Relying on "it runs as the slot identity so it can only kill its own processes" would make a
@@ -668,7 +677,8 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     Register-ScheduledTask -TaskName $stop -Action $action -Settings $settings `
       -User $user -Password $plain -RunLevel Limited -Force | Out-Null
     Disable-ScheduledTask -TaskName $stop | Out-Null
-    Remove-Variable plain
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bp)
+    Remove-Variable plain, bp
   }
 
   # The approved definition the agent's launch gate asserts against. Read back through the SAME COM
@@ -787,7 +797,10 @@ if ($Apply) {
   foreach ($r in $sidRules) {
     $who = $r.IdentityReference.Value
     if ($r.AccessControlType -ne "Allow") { continue }
-    $writeish = ([int]$r.FileSystemRights -band [int]$WRITEISH) -ne 0
+    # GENERIC_ALL/GENERIC_WRITE (0x10000000 / 0x40000000) have NO member in FileSystemRights, so a named-bit
+    # mask alone is blind to exactly the inherit-only CREATOR OWNER ACE this check exists to catch.
+    $raw = [int]$r.FileSystemRights
+    $writeish = (($raw -band [int]$WRITEISH) -ne 0) -or (($raw -band (0x10000000 -bor 0x40000000)) -ne 0)
     if ($writeish -and ($GOLDEN_WRITERS -notcontains $who)) {
       throw "golden image: '$who' holds write-class rights ($($r.FileSystemRights)) - unexpected writable principal - STOP"
     }
@@ -805,16 +818,32 @@ if ($Apply) {
   if (-not $systemSeen) { throw "golden image: NT AUTHORITY\SYSTEM has NO ACE after the inheritance break - STOP" }
   Write-Host "ok   golden: Administrators and SYSTEM retain full control"
   # (7) the image itself is unchanged - ACL work must not have touched content.
+  # This MUST reproduce win_slot_ops.tree_digest() byte for byte, because BETA_AGENT_GOLDEN_DIGEST is
+  # consumed by stage_copy's source_digest_matches pre-check and a mismatch BLOCKS every MATERIALISE.
+  #   normalise(p) = p.replace("/", "\").rstrip("\").lower()
+  #   line         = "{normalised_relpath}|{size}|{sha256}\n"
+  #   body         = "".join(lines sorted ORDINALLY by normalised relpath)
+  # An earlier version used forward slashes and Sort-Object FullName (culture-aware). It produced a
+  # different hex string for the same clean image - so the installer would have reported the image proven
+  # while the agent refused to stage it, permanently, after the passwords had been entered.
   $goldenFiles = @(Get-ChildItem $GoldenDir -Recurse -File -Force -ErrorAction SilentlyContinue)
-  $sb = New-Object Text.StringBuilder
-  foreach ($f in ($goldenFiles | Sort-Object FullName)) {
-    $rel = $f.FullName.Substring($GoldenDir.Length + 1).Replace("\","/").ToLower()
-    [void]$sb.Append("$rel|$($f.Length)|$((Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower())`n")
+  $rows = foreach ($f in $goldenFiles) {
+    $rel = $f.FullName.Substring($GoldenDir.Length + 1).Replace("/","\").TrimEnd("\").ToLower()
+    [pscustomobject]@{ Key = $rel
+                       Line = ("{0}|{1}|{2}`n" -f $rel, $f.Length,
+                               (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()) }
   }
+  # Ordinal sort, matching Python's sorted() on the same keys. Sort-Object is culture-aware even with
+  # -CaseSensitive, so the comparison is done explicitly.
+  $keys = [string[]]($rows | ForEach-Object { $_.Key })
+  [Array]::Sort($keys, [System.StringComparer]::Ordinal)
+  $byKey = @{}; foreach ($r in $rows) { $byKey[$r.Key] = $r.Line }
+  $sb = New-Object Text.StringBuilder
+  foreach ($k in $keys) { [void]$sb.Append($byKey[$k]) }
   $sha = [Security.Cryptography.SHA256]::Create()
   $treeDigest = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($sb.ToString()))).Replace("-","").ToLower()
   Write-Host "ok   golden: $($goldenFiles.Count) files, tree digest $treeDigest"
-  Write-Host "     compare against BETA_AGENT_GOLDEN_DIGEST; any difference means the image changed - STOP"
+  Write-Host "     this is the value BETA_AGENT_GOLDEN_DIGEST must hold; a difference means the image changed - STOP"
   for ($n = 1; $n -le $PoolSize; $n++) {
     $user = "$IdentityPrefix$n"
     $slot = Join-Path $SlotsRoot "$n"

@@ -810,3 +810,46 @@ class GoldenAclVerificationTests(SimpleTestCase):
         code = _code("install_pool.ps1")
         self.assertIn("tree digest", code)
         self.assertIn("BETA_AGENT_GOLDEN_DIGEST", code)
+
+
+class GoldenDigestCanonicalisationTests(SimpleTestCase):
+    """The installer's digest must reproduce win_slot_ops.tree_digest() byte for byte.
+
+    It did not. The installer used forward slashes and a culture-aware Sort-Object; the agent uses
+    backslashes (normalise() forces "/" -> "\\") and an ordinal sort. Over the real 584-file image the two
+    produced DIFFERENT hex strings, and the wrong one was what got recorded as BETA_AGENT_GOLDEN_DIGEST —
+    so stage_copy's source_digest_matches would have blocked every MATERIALISE on a clean, unmodified
+    image, after the install and after the passwords.
+
+        installer (corrected) 3a7fa6638e9eb9a0989edcaaff5b0c9ec93b15a6c62b9ee9b5f5f420d6313f10
+        agent                 3a7fa6638e9eb9a0989edcaaff5b0c9ec93b15a6c62b9ee9b5f5f420d6313f10
+    """
+
+    def test_the_installer_uses_backslash_separators_like_normalise(self):
+        code = _code("install_pool.ps1")
+        self.assertIn('.Replace("/","\\").TrimEnd("\\").ToLower()', code)
+        self.assertNotIn('.Replace("\\","/").ToLower()', code)
+
+    def test_the_installer_sorts_ordinally_not_by_culture(self):
+        """Sort-Object is culture-aware even with -CaseSensitive, so ordering is done explicitly."""
+        code = _code("install_pool.ps1")
+        self.assertIn("[System.StringComparer]::Ordinal", code)
+        self.assertNotIn("Sort-Object FullName", code)
+
+    def test_the_manifest_line_shape_matches_the_agent(self):
+        import sys
+        if _BUNDLE not in sys.path:
+            sys.path.insert(0, _BUNDLE)
+        from win_slot_ops import manifest_line, normalise
+        self.assertEqual(manifest_line("Bases\\Default\\x.dat", 7, "ab"), "bases\\default\\x.dat|7|ab\n")
+        self.assertEqual(normalise("Bases/Default/"), "bases\\default")
+        # the PowerShell builds "{0}|{1}|{2}`n" over the same normalised key
+        self.assertIn('("{0}|{1}|{2}`n" -f $rel, $f.Length,', _code("install_pool.ps1"))
+
+    def test_the_recorded_digest_is_the_agent_computed_one(self):
+        """Guards the specific value that ships in config.example.json."""
+        import json
+        cfg = json.load(open(os.path.join(_BUNDLE, "config.example.json"), encoding="utf-8"))
+        self.assertEqual(cfg["BETA_AGENT_GOLDEN_DIGEST"],
+                         "3a7fa6638e9eb9a0989edcaaff5b0c9ec93b15a6c62b9ee9b5f5f420d6313f10")
+        self.assertEqual(cfg["BETA_AGENT_GOLDEN_MANIFEST_VERSION"], "5.0.0.6036")

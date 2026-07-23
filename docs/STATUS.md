@@ -12,7 +12,7 @@
   inside `MQL5\experts.dat`, proving it was copied out of a live per-account runtime (RULE 10 violation).
   Every filename-based check had passed it. A dedicated clean install at `C:\GuvFX\golden\newMT5\` was
   commissioned by Nuno, validated read-only, and **promoted**: build `5.0.0.6036`, 584 files, tree digest
-  `9458098538cbc613c4cd35ce1ad02ffbf03db3a0db10971082dadbc677d7ce32`. Promotion wrote exactly two marker
+  `3a7fa6638e9eb9a0989edcaaff5b0c9ec93b15a6c62b9ee9b5f5f420d6313f10`. Promotion wrote exactly two marker
   files. The validator itself was corrected three times — it had rejected genuine MetaQuotes installer
   output (`MQL5\` is absent in a non-portable install; `bases\` ships populated with 537 files; sample EAs
   and `Profiles` ship). **`install_pool.ps1` PLAN ran clean** (4 identities, 4 rights, 8 disabled tasks,
