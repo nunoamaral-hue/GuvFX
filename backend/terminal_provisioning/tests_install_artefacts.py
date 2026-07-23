@@ -403,7 +403,7 @@ class UserRightManagementTests(SimpleTestCase):
         """allRights=$false is the difference between removing one right and removing every right."""
         code = _code("uninstall.ps1")
         self.assertIn("LsaRemoveAccountRights", code)
-        self.assertIn("$sidBytes, $false, @($u), 1", code)
+        self.assertIn("$slotSidBytes, $false, @($u), 1", code)
 
     def test_only_one_right_name_is_ever_used(self):
         for name in ("install_pool.ps1", "uninstall.ps1"):
@@ -783,11 +783,11 @@ class GoldenAclVerificationTests(SimpleTestCase):
         exactly how an earlier check reported the tree clean while BUILTIN\\Users could create files in it
         and own them Full Control via inherit-only CREATOR OWNER (RULE 11)."""
         code = _code("install_pool.ps1")
-        self.assertIn("$WRITEISH = ", code)
+        self.assertIn("$WriteMask = ", code)
         for right in ("CreateFiles", "AppendData", "CreateDirectories", "WriteData",
                       "Delete", "ChangePermissions", "TakeOwnership"):
             self.assertIn(f"FileSystemRights]::{right}", code, right)
-        self.assertIn("-band [int]$WRITEISH", code)
+        self.assertIn("-band [int]$WriteMask", code)
 
     def test_only_administrators_and_system_may_write_the_golden_image(self):
         code = _code("install_pool.ps1")
@@ -1001,3 +1001,40 @@ class VerifyOnlyTests(SimpleTestCase):
             self.assertIn("DoIt ", opener,
                           f"Get-SlotSecret at line {idx + 1} is not inside a DoIt block, so -VerifyOnly "
                           f"could reach a password prompt: enclosing opener was {opener.strip()!r}")
+
+
+class PowerShellCaseCollisionTests(SimpleTestCase):
+    """PowerShell variable names are CASE-INSENSITIVE: `$Foo` and `$foo` are one variable.
+
+    This broke the golden-ACL check. The mask was `$WRITEISH` and the per-ACE result was `$writeish`:
+
+        $WRITEISH = (...Write -bor ...Delete -bor ...)          # 0xD0156
+        $writeish = (($raw -band [int]$WRITEISH) -ne 0) -or ...  # SAME VARIABLE
+
+    The first ACE (SYSTEM, FullControl) set the result to $true, overwriting the mask, and `[int]$true` is
+    1. Every later ACE was then tested against bit 0x1 — ReadData, which `ReadAndExecute` contains — so the
+    check threw on the first slot identity and could never pass on a correctly configured image. Measured
+    on the host: the mask read `0x1`; the same expression in isolation gives `0xD0156`.
+
+    Using case to distinguish a constant from a local is not a style question here, it is a bug.
+    """
+
+    def test_no_script_has_two_variables_differing_only_by_case(self):
+        import collections
+        for name in SCRIPTS:
+            code = re.sub(r"<#.*?#>", "", _read(name), flags=re.S)
+            code = "\n".join(line.split("#", 1)[0] for line in code.splitlines())
+            groups = collections.defaultdict(set)
+            for var in re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", code):
+                groups[var.lower()].add(var)
+            collisions = {k: sorted(v) for k, v in groups.items() if len(v) > 1}
+            self.assertEqual(collisions, {},
+                             f"{name}: names differing only by case are the SAME variable in PowerShell — "
+                             f"{collisions}")
+
+    def test_the_mask_and_the_result_are_distinct_words(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("$WriteMask = ", code)
+        self.assertIn("$hasWriteRight = ", code)
+        self.assertNotIn("$WRITEISH", code)
+        self.assertNotIn("$writeish", code)
