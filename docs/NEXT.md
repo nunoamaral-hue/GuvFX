@@ -1,5 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
+## B3P-2 Phase 2A — waiting at the APPLY gate (2026-07-23)
+Golden image approved and pinned; `install_pool.ps1` PLAN is clean; nothing is installed.
+- [ ] **Nuno: accept the PLAN, then run `-Apply` locally** — it prompts for four passwords, which the model
+  must never see, request, log or store. Invoke with **`-GoldenDir C:\GuvFX\golden\newMT5`**; the built-in
+  default `C:\GuvFX\beta\golden` does not exist and aborts.
+- [ ] **Re-stage the bundle first.** PR #181 adds a comment-only correction to `install_pool.ps1`, so the
+  host copy no longer matches Git. Merge, re-copy, re-verify the checksum, parse-validate (RULE 9).
+- [ ] After APPLY: Phase 3 verification → Phase 4 service-start gate → Phase 5 observation probe →
+  Phase 6 bounded MT5 viability trial (**the trial question — does a GUI MT5 run under a
+  `TASK_LOGON_PASSWORD` task with no interactive session — is still unanswered**).
+- [ ] Still Nuno's calls, both blocking a *complete* lifecycle but not the trial: `open_handles()` has no
+  supported Windows implementation (TOMBSTONE refuses before moving anything), and `release()` is
+  implemented but unwired (the pool exhausts after `pool_size` tombstones).
+
 ## Beta Onboarding — headless co-hosted vertical slice (2026-07-21) — onboarding stays CLOSED
 Architecture is now **non-interactive headless co-hosting on the existing box** (no RDS/RemoteApp — supersedes
 the 07-20 Option A plan); execution is a **vertical slice**. Increments 1–4 shipped (runtime state machine +
