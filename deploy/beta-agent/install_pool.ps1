@@ -59,6 +59,159 @@ foreach ($leak in @("config\accounts.dat","config\servers.dat","bases","logs","M
 }
 Write-Host "ok   golden image present, marked, and free of per-instance state"
 
+# ── 1a. LSA interop. Loaded BEFORE identities are created (see the self-test below).
+#       SeBatchLogonRight is granted via the LSA policy API, NOT secedit.
+#
+#      WHY THIS IS NOT secedit (install-only baseline finding, 2026-07-22): on this host the right is
+#      ABSENT from local security policy entirely, so Windows' effective DEFAULTS are in force. secedit
+#      writes a COMPLETE assignment line, so creating one containing only our four SIDs would have
+#      REPLACED those defaults machine-wide — silently removing batch logon from whoever holds it by
+#      default. LsaAddAccountRights adds one right to one account and touches nothing else: there is no
+#      policy line to rewrite, and no need for this script to know or recreate what the defaults are.
+#
+#      Properties: only SeBatchLogonRight; only an approved beta-slot SID; every other right and every
+#      other principal untouched; fails closed on any LSA error; idempotent.
+if (-not ('GuvfxLsa' -as [type])) {
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class GuvfxLsa {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct LSA_UNICODE_STRING { public ushort Length; public ushort MaximumLength; public IntPtr Buffer; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct LSA_OBJECT_ATTRIBUTES {
+    public int Length; public IntPtr RootDirectory; public IntPtr ObjectName;
+    public int Attributes; public IntPtr SecurityDescriptor; public IntPtr SecurityQualityOfService; }
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern uint LsaOpenPolicy(IntPtr SystemName, ref LSA_OBJECT_ATTRIBUTES oa, uint access, out IntPtr handle);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern uint LsaAddAccountRights(IntPtr handle, byte[] sid, LSA_UNICODE_STRING[] rights, uint count);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern uint LsaRemoveAccountRights(IntPtr handle, byte[] sid,
+    [MarshalAs(UnmanagedType.U1)] bool allRights, LSA_UNICODE_STRING[] rights, uint count);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern uint LsaEnumerateAccountRights(IntPtr handle, byte[] sid, out IntPtr rights, out uint count);
+  [DllImport("advapi32.dll")] public static extern uint LsaClose(IntPtr handle);
+  [DllImport("advapi32.dll")] public static extern uint LsaFreeMemory(IntPtr buffer);
+  [DllImport("advapi32.dll")] public static extern int LsaNtStatusToWinError(uint status);
+}
+'@ -ErrorAction Stop
+}   # guarded: PLAN then APPLY in one console must not die on 'type already exists'
+
+# The ONLY right this script may touch. Any other value is a bug, not a parameter.
+$GuvfxRight = "SeBatchLogonRight"
+$LSA_READ  = 0x00000801   # POLICY_VIEW_LOCAL_INFORMATION | POLICY_LOOKUP_NAMES
+$LSA_WRITE = 0x00000811   # POLICY_CREATE_ACCOUNT          | POLICY_LOOKUP_NAMES
+# PowerShell parses an 8-hex-digit literal as Int32, so 0xC0000034 WRAPS to -1073741772 while the LSA
+# return is UInt32 3221225524 — the comparison would be False for ever, turning the benign "this account
+# holds no rights" status into a hard failure. [uint32]0xC0000034 does not help: the literal has already
+# wrapped, and the cast then throws. The decimal form is the only one that survives.
+$STATUS_OBJECT_NAME_NOT_FOUND = [uint32]3221225524   # 0xC0000034 STATUS_OBJECT_NAME_NOT_FOUND
+
+function Get-ApprovedSlotSidBytes {
+  <# Resolve an account name to SID BYTES, refusing anything outside the beta-slot namespace.
+     Taking a NAME and validating it — rather than accepting a SID — is what makes it impossible for this
+     function to act on Administrators, SYSTEM, or any other principal. #>
+  param([Parameter(Mandatory)][string]$AccountName)
+  if ($AccountName -notmatch '^guvfx_b_slot[1-9][0-9]*$') {
+    throw "refusing user-right operation on '$AccountName': outside the beta-slot identity namespace"
+  }
+  $u = Get-LocalUser -Name $AccountName -ErrorAction Stop
+  $sid = $u.SID
+  $bytes = New-Object byte[] $sid.BinaryLength
+  $sid.GetBinaryForm($bytes, 0)
+  return @{ Bytes = $bytes; Value = $sid.Value }
+}
+
+function Open-GuvfxLsaPolicy {
+  param([uint32]$Access)
+  $oa = New-Object GuvfxLsa+LSA_OBJECT_ATTRIBUTES
+  $oa.Length = [Runtime.InteropServices.Marshal]::SizeOf($oa)
+  $h = [IntPtr]::Zero
+  $st = [GuvfxLsa]::LsaOpenPolicy([IntPtr]::Zero, [ref]$oa, $Access, [ref]$h)
+  if ($st -ne 0) { throw "LsaOpenPolicy failed: NTSTATUS 0x$('{0:X8}' -f $st) (win32 $([GuvfxLsa]::LsaNtStatusToWinError($st)))" }
+  return $h
+}
+
+function New-GuvfxLsaString {
+  param([string]$Text)
+  $u = New-Object GuvfxLsa+LSA_UNICODE_STRING
+  $u.Buffer        = [Runtime.InteropServices.Marshal]::StringToHGlobalUni($Text)
+  $u.Length        = [uint16]($Text.Length * 2)
+  $u.MaximumLength = [uint16](($Text.Length + 1) * 2)
+  return $u
+}
+
+function Get-GuvfxAccountRights {
+  <# READ-ONLY. Returns the rights currently held by the account, or an empty array. #>
+  param([Parameter(Mandatory)][string]$AccountName)
+  $sid = Get-ApprovedSlotSidBytes -AccountName $AccountName
+  $h = Open-GuvfxLsaPolicy -Access $LSA_READ
+  try {
+    $ptr = [IntPtr]::Zero; $count = [uint32]0
+    $st = [GuvfxLsa]::LsaEnumerateAccountRights($h, $sid.Bytes, [ref]$ptr, [ref]$count)
+    if ($st -eq $STATUS_OBJECT_NAME_NOT_FOUND) { return @() }
+    if ($st -ne 0) { throw "LsaEnumerateAccountRights failed for $AccountName : NTSTATUS 0x$('{0:X8}' -f $st)" }
+    $out = @()
+    $size = [Runtime.InteropServices.Marshal]::SizeOf([type][GuvfxLsa+LSA_UNICODE_STRING])
+    for ($i = 0; $i -lt $count; $i++) {
+      $item = [Runtime.InteropServices.Marshal]::PtrToStructure(
+                [IntPtr]($ptr.ToInt64() + ($i * $size)), [type][GuvfxLsa+LSA_UNICODE_STRING])
+      $out += [Runtime.InteropServices.Marshal]::PtrToStringUni($item.Buffer, $item.Length / 2)
+    }
+    [void][GuvfxLsa]::LsaFreeMemory($ptr)
+    return $out
+  } finally { [void][GuvfxLsa]::LsaClose($h) }
+}
+
+function Grant-GuvfxBatchLogonRight {
+  <# Adds SeBatchLogonRight to ONE approved beta-slot account. Idempotent: LsaAddAccountRights succeeds if
+     the account already holds it, and we skip the call entirely when the read shows it present. #>
+  param([Parameter(Mandatory)][string]$AccountName)
+  $sid = Get-ApprovedSlotSidBytes -AccountName $AccountName
+  $before = Get-GuvfxAccountRights -AccountName $AccountName
+  if ($before -contains $GuvfxRight) {
+    Write-Host "evidence right=$GuvfxRight sid=$($sid.Value) account=$AccountName op=add result=already_present"
+    return
+  }
+  $h = Open-GuvfxLsaPolicy -Access $LSA_WRITE
+  try {
+    $arr = @(New-GuvfxLsaString -Text $GuvfxRight)
+    $st = [GuvfxLsa]::LsaAddAccountRights($h, $sid.Bytes, $arr, 1)
+    [Runtime.InteropServices.Marshal]::FreeHGlobal($arr[0].Buffer)
+    if ($st -ne 0) {
+      # Evidence BEFORE the throw: a failed user-right operation is as much an installation fact as a
+      # successful one, and the transcript is the only record of it.
+      Write-Host "evidence right=$GuvfxRight sid=$($sid.Value) account=$AccountName op=add result=failed ntstatus=0x$('{0:X8}' -f $st)"
+      throw "LsaAddAccountRights failed for $AccountName : NTSTATUS 0x$('{0:X8}' -f $st) (win32 $([GuvfxLsa]::LsaNtStatusToWinError($st)))"
+    }
+  } finally { [void][GuvfxLsa]::LsaClose($h) }
+  $after = Get-GuvfxAccountRights -AccountName $AccountName
+  if ($after -notcontains $GuvfxRight) {
+    Write-Host "evidence right=$GuvfxRight sid=$($sid.Value) account=$AccountName op=add result=postcheck_failed"
+    throw "post-check failed: $AccountName still lacks $GuvfxRight"
+  }
+  # Every other right the account held must survive. This is the assertion secedit could never make.
+  foreach ($r in $before) {
+    if ($after -notcontains $r) {
+      Write-Host "evidence right=$GuvfxRight sid=$($sid.Value) account=$AccountName op=add result=regression lost=$r"
+      throw "user-right regression: $AccountName lost '$r'"
+    }
+  }
+  Write-Host "evidence right=$GuvfxRight sid=$($sid.Value) account=$AccountName op=add result=granted other_rights_preserved=$($before.Count)"
+}
+
+
+# ── 2a. LSA interop self-test. Deliberately BEFORE any account is created: if the interop is wrong, the
+#       run must abort while the host is still untouched, not after four accounts exist. Opening and
+#       closing a read-only policy handle proves the type compiled, advapi32 bound, the LSA_OBJECT_ATTRIBUTES
+#       layout was accepted, and a handle round-tripped — on the real host, in PLAN as well as APPLY.
+#       It touches no account and modifies nothing.
+Step "LSA interop self-test (read-only policy handle; no account touched)"
+$probe = Open-GuvfxLsaPolicy -Access $LSA_READ
+[void][GuvfxLsa]::LsaClose($probe)
+Write-Host "ok   LSA interop available (LsaOpenPolicy/LsaClose round-trip succeeded)"
+
 # ── 2. Identities. Created here because the agent cannot: it has no user-creation method and holds no
 #      credential. Passwords are prompted, never parameters.
 # ONE prompt per identity, confirmed by re-entry, held for that identity's whole provisioning. Prompting
@@ -104,29 +257,27 @@ if ($Apply) {
   }
 }
 
-# ── 3. SeBatchLogonRight. A LOGON RIGHT, not a privilege: it will not appear in `whoami /priv`.
-#      Granted explicitly so the documented ambiguity about auto-grant on task registration is irrelevant.
-DoIt "grant SeBatchLogonRight to ${IdentityPrefix}1..$PoolSize (via secedit)" {
-  $tmp = New-TemporaryFile
-  secedit /export /areas USER_RIGHTS /cfg "$tmp" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "secedit /export failed (exit $LASTEXITCODE)" }
-  $cfg = Get-Content "$tmp"
-  $sids = @()
-  for ($n = 1; $n -le $PoolSize; $n++) {
-    $sids += "*" + (Get-LocalUser -Name "$IdentityPrefix$n").SID.Value
+
+# ── 3. Grant SeBatchLogonRight to each slot identity.
+Step "SeBatchLogonRight via the LSA policy API (adds one right to one account; no policy line is rewritten)"
+for ($n = 1; $n -le $PoolSize; $n++) {
+  $user = "$IdentityPrefix$n"
+  if ($Apply) {
+    Grant-GuvfxBatchLogonRight -AccountName $user
+  } else {
+    # PLAN reports the delta without modifying anything. Note honestly what it does and does not prove:
+    # on a FRESH host the accounts do not exist yet, so the enumerate path cannot be exercised and only the
+    # self-test above (LsaOpenPolicy/LsaClose) has entered advapi32. The enumerate marshalling is first
+    # exercised on a re-run of PLAN once the accounts exist, or at APPLY — which is why the interop
+    # self-test runs before any account is created, so a broken interop costs nothing.
+    if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) {
+      $held = Get-GuvfxAccountRights -AccountName $user
+      $verb = if ($held -contains $GuvfxRight) { "already holds (no change)" } else { "WOULD ADD" }
+      Write-Host "PLAN:  $user $verb $GuvfxRight; currently holds $($held.Count) right(s): $($held -join ',')"
+    } else {
+      Write-Host "PLAN:  $user does not exist yet; WOULD ADD $GuvfxRight after creation (enumerate path not exercised until the account exists)"
+    }
   }
-  $line = ($cfg | Where-Object { $_ -match "^SeBatchLogonRight" })
-  $existing = if ($line) { ($line -split "=", 2)[1].Trim() } else { "" }
-  $merged = (@($existing -split "," | Where-Object { $_ }) + $sids | Select-Object -Unique) -join ","
-  $new = if ($line) { $cfg -replace "^SeBatchLogonRight.*", "SeBatchLogonRight = $merged" }
-         else { $cfg -replace "^\[Privilege Rights\]", "[Privilege Rights]`r`nSeBatchLogonRight = $merged" }
-  # secedit EXPORTS UTF-16LE and the template declares Unicode=yes; Set-Content's 5.1 default is ANSI, which
-  # would corrupt a machine-wide security template. -Encoding Unicode is mandatory, not cosmetic.
-  Set-Content -Path "$tmp" -Value $new -Encoding Unicode
-  secedit /configure /db "$env:windir\security\local.sdb" /cfg "$tmp" /areas USER_RIGHTS | Out-Null
-  # secedit is a native command: $ErrorActionPreference does not apply, so a failed apply is silent.
-  if ($LASTEXITCODE -ne 0) { throw "secedit /configure failed (exit $LASTEXITCODE) — SeBatchLogonRight NOT granted" }
-  Remove-Item "$tmp" -Force
 }
 
 # ── 4. Directories. Slot directories MUST pre-exist: stage_copy refuses when real_path(slot dir) is null,

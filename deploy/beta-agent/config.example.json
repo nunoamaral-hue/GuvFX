@@ -1,18 +1,39 @@
 {
-  "_comment": "Example ONLY. Real secrets (BETA_AGENT_KEYRING/KEY_ID) are provisioned out-of-band and NEVER committed. Set these as service-scoped environment variables. NOTE (verification): a machine env var is NOT a protected secret store — restrict it to the service account and rotate the key; DPAPI/Credential Manager retrieval is a follow-up. Do not provision the keyring until the post-approval start.",
+  "_comment": "Example ONLY — no secrets. Real secrets (BETA_AGENT_KEYRING/KEY_ID) are provisioned out-of-band and NEVER committed. Set these as service-scoped environment variables. NOTE: a machine env var is NOT a protected secret store — restrict it to the service account and rotate the key; DPAPI/Credential Manager retrieval is a follow-up. Do NOT provision the keyring until the post-approval first start.",
+  "_execution_model": "B3P-2 per-slot pool. A runtime occupies a PRE-PROVISIONED slot: fixed non-admin identity, fixed directory, fixed launch/terminate tasks the agent may only TRIGGER. Run install_pool.ps1 BEFORE install_service.ps1 — the service install refuses to proceed until the pool exists.",
+
   "BETA_AGENT_BIND_HOST": "100.79.101.19",
   "BETA_AGENT_EXPECTED_BIND_HOST": "100.79.101.19",
   "BETA_AGENT_BIND_PORT": "8791",
-  "BETA_AGENT_ROOT": "C:\\GuvFX\\beta\\accounts",
+
+  "_model_selection": "slot_pool is EXPLICIT. Selecting it without the settings below is a STARTUP FAILURE, never a quiet fall back to the legacy uuid-directory layout. Omit BETA_AGENT_EXECUTION_MODEL entirely to get the B2 compatibility model.",
+  "BETA_AGENT_EXECUTION_MODEL": "slot_pool",
+  "BETA_AGENT_SLOT_POOL_SIZE": "4",
+
+  "_golden": "All THREE golden values are required in slot_pool mode and an empty value is refused. GOLDEN_DIGEST is the tree digest recorded when the image was staged. GOLDEN_MANIFEST_VERSION is the contents of .guvfx_golden_manifest — left empty, the stage-copy pre-check would compare '' == '' and pass on an unversioned image.",
+  "BETA_AGENT_GOLDEN_DIR": "C:\\GuvFX\\beta\\golden",
+  "BETA_AGENT_GOLDEN_DIGEST": "<< recorded when the golden image is staged >>",
+  "BETA_AGENT_GOLDEN_MANIFEST_VERSION": "<< contents of .guvfx_golden_manifest >>",
+
+  "_approved_tasks": "Written by install_pool.ps1. The launch gate asserts every installed launch task against these definitions before any trigger, so the agent REFUSES TO START without this file. Read-only to the service account: the agent must never rewrite its own approvals.",
+  "BETA_AGENT_APPROVED_TASKS": "C:\\GuvFX\\beta\\agent-state\\approved_tasks.json",
+
+  "_slots_root": "BETA_AGENT_SLOTS_ROOT is deliberately omitted. Slot paths are derived from the FIXED namespace in win_primitives, not from configuration; any other value is refused at startup rather than failing every operation with path_escape at runtime.",
+
   "BETA_AGENT_TOMBSTONE": "C:\\GuvFX\\beta\\tombstones",
   "BETA_AGENT_STATE_DIR": "C:\\GuvFX\\beta\\agent-state",
   "BETA_AGENT_STATE_DB": "C:\\GuvFX\\beta\\agent-state\\state.sqlite",
+  "BETA_AGENT_SLOT_DB": "C:\\GuvFX\\beta\\agent-state\\slots.sqlite",
   "BETA_AGENT_LOG_DIR": "C:\\GuvFX\\beta\\agent-state\\logs",
   "BETA_AGENT_MANIFEST": "C:\\GuvFX\\beta\\agent\\manifest.json",
+
   "BETA_AGENT_MAX_BODY_BYTES": "16384",
   "BETA_AGENT_MAX_CONNECTIONS": "16",
   "BETA_AGENT_REQUEST_TIMEOUT_S": "10",
-  "BETA_AGENT_DRAIN_TIMEOUT_S": "20",
-  "BETA_AGENT_KEYRING": "<< provisioned out-of-band: {\"k1\":\"<hex-secret>\"} >>",
+
+  "_drain": "MUST exceed the 30s settle window (the bounded re-observation after an asynchronous task trigger) or startup is REFUSED. The old value of 20 predates the settle window and would guarantee that a service stop during a STOP force-kills the mutation mid-stage.",
+  "BETA_AGENT_DRAIN_TIMEOUT_S": "45",
+
+  "BETA_AGENT_KEYRING": "<< provisioned out-of-band at the post-approval first start: {\"k1\":\"<hex-secret>\"} >>",
   "BETA_AGENT_KEY_ID": "k1"
 }
