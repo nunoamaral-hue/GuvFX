@@ -311,32 +311,198 @@ class ApprovalReflectsRealityTests(SimpleTestCase):
         self.assertIn("function Get-SlotSecret", source)
 
 
-class SeceditSafetyTests(SimpleTestCase):
-    """secedit rewrites MACHINE-WIDE security policy. It is the one step that reaches beyond the beta tree."""
+class UserRightManagementTests(SimpleTestCase):
+    """User rights are managed with the LSA policy API, never secedit.
 
-    def test_the_template_is_written_as_unicode(self):
-        """secedit exports UTF-16LE and the template declares Unicode=yes; PS 5.1 Set-Content defaults ANSI."""
+    The install-only baseline found SeBatchLogonRight ABSENT from local policy on the target host, so
+    Windows' effective defaults were in force. secedit writes a COMPLETE assignment line — creating one
+    containing only our four SIDs would have replaced those defaults machine-wide. LsaAddAccountRights adds
+    one right to one account and touches nothing else, so there is no line to rewrite and no need for the
+    installer to know what the defaults are.
+
+    These are source-conformance checks. The LSA calls themselves cannot be exercised off Windows; the
+    read-only half runs on the host during PLAN, before any APPLY, which is where the interop is proven.
+    """
+
+    def test_secedit_is_gone_from_both_scripts(self):
         for name in ("install_pool.ps1", "uninstall.ps1"):
-            self.assertIn("-Encoding Unicode", _code(name), name)
+            code = _code(name)
+            for call in ("secedit /export", "secedit /configure", "local.sdb"):
+                self.assertNotIn(call, code, f"{name} still calls {call}")
 
-    def test_every_secedit_call_is_checked(self):
+    def test_no_secedit_fallback_remains(self):
+        """A fallback would reintroduce exactly the failure mode this change removes."""
         for name in ("install_pool.ps1", "uninstall.ps1"):
-            source = _code(name)
-            self.assertEqual(source.count("secedit /export"), source.count("secedit /export"))
-            self.assertIn("secedit /export failed", source, name)
-            self.assertIn("secedit /configure failed", source, name)
+            self.assertNotIn("secedit", _code(name), name)
 
-    def test_the_revoke_refuses_to_narrow_the_right_further_than_intended(self):
-        """Principals unrelated to beta hold this right, and the operator's own tasks use a batch logon."""
-        source = _code("uninstall.ps1")
-        self.assertIn("refusing to write SeBatchLogonRight", source)
-        self.assertIn("$expected", source)
+    def test_install_adds_a_right_and_never_rewrites_an_assignment(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("LsaAddAccountRights", code)
+        self.assertNotIn("SeBatchLogonRight = ", code)      # the secedit line-rewrite form
 
-    def test_sids_are_collected_before_identities_are_removed(self):
-        """Remove-LocalUser first would leave four unresolvable SIDs on the right for ever."""
-        source = _code("uninstall.ps1")
-        self.assertLess(source.index("$SlotSids = @()"), source.index("Remove-LocalUser"))
+    def test_uninstall_removes_only_the_named_right(self):
+        """allRights=$false is the difference between removing one right and removing every right."""
+        code = _code("uninstall.ps1")
+        self.assertIn("LsaRemoveAccountRights", code)
+        self.assertIn("$sidBytes, $false, @($u), 1", code)
+
+    def test_only_one_right_name_is_ever_used(self):
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            code = _code(name)
+            self.assertIn('$GuvfxRight = "SeBatchLogonRight"', code)
+            for other in ("SeInteractiveLogonRight", "SeServiceLogonRight", "SeDebugPrivilege",
+                          "SeTcbPrivilege", "SeAssignPrimaryTokenPrivilege"):
+                self.assertNotIn(other, code, f"{name} references {other}")
+
+    def test_the_sid_namespace_guard_exists_in_both_scripts(self):
+        """Taking a NAME and validating it — rather than accepting a SID — is what makes it impossible for
+        these functions to act on Administrators, SYSTEM, or any principal outside the beta namespace."""
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            code = _code(name)
+            self.assertIn("guvfx_b_slot[1-9][0-9]*$", code, name)
+            self.assertIn("outside the beta-slot identity namespace", code, name)
+
+    def test_every_lsa_status_is_checked(self):
+        """NTSTATUS is a return value, not an exception: an unchecked call fails silently."""
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            code = _code(name)
+            self.assertIn("LsaOpenPolicy failed", code, name)
+            self.assertIn("LsaEnumerateAccountRights failed", code, name)
+        self.assertIn("LsaAddAccountRights failed", _code("install_pool.ps1"))
+        self.assertIn("LsaRemoveAccountRights failed", _code("uninstall.ps1"))
+
+    def test_the_add_is_idempotent(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("result=already_present", code)
+        self.assertIn("if ($before -contains $GuvfxRight)", code)
+
+    def test_the_remove_is_safe_to_repeat(self):
+        code = _code("uninstall.ps1")
+        self.assertIn("result=not_held", code)
+        self.assertIn("if ($before -notcontains $GuvfxRight)", code)
+
+    def test_other_rights_are_asserted_to_survive(self):
+        """The assertion secedit could never make: enumerate before, enumerate after, compare."""
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            self.assertIn("user-right regression", _code(name), name)
+
+    def test_the_operation_is_recorded_as_evidence(self):
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            code = _code(name)
+            self.assertIn("evidence right=$GuvfxRight sid=", code, name)
+            self.assertIn("op=", code, name)
+            self.assertIn("result=", code, name)
+
+    def test_uninstall_captures_sids_before_any_account_is_removed(self):
+        code = _code("uninstall.ps1")
+        self.assertLess(code.index("$SlotIdentities = @()"), code.index("Remove-LocalUser"))
+        self.assertLess(code.index("$SlotIdentities = @()"), code.index("Disable-LocalUser"))
+
+    def test_plan_mode_exercises_the_read_path_only(self):
+        """PLAN proves the LSA interop works on the real host and prints the exact delta, changing nothing."""
+        code = _code("install_pool.ps1")
+        self.assertIn("WOULD ADD", code)
+        self.assertIn("Get-GuvfxAccountRights -AccountName $user", code)
+
+    def test_no_default_memberships_are_inferred(self):
+        """The directive is explicit: do not infer or recreate Windows default account-right memberships."""
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            code = _code(name)
+            for well_known in ("S-1-5-32-551", "S-1-5-32-559", "Backup Operators:"):
+                self.assertNotIn(well_known, code, f"{name} references default holder {well_known}")
+
+
+class RestoredOrderingInvariantsTests(SimpleTestCase):
+    """Invariants that predate the LSA change and must survive it.
+
+    They were covered by the old SeceditSafetyTests class, which the LSA rewrite replaced wholesale — the
+    tests went with it. Restored here, decoupled from the mechanism they used to be attached to.
+    """
 
     def test_service_acls_are_revoked_before_the_service_is_deleted(self):
-        source = _code("uninstall.ps1")
-        self.assertLess(source.index("/remove:g"), source.index("sc.exe delete"))
+        """Once the SCM registration is gone, NT SERVICE\\<name> may no longer resolve."""
+        code = _code("uninstall.ps1")
+        self.assertLess(code.index("/remove:g"), code.index("sc.exe delete"))
+
+    def test_sids_are_collected_before_identities_are_removed(self):
+        code = _code("uninstall.ps1")
+        self.assertLess(code.index("$SlotIdentities = @()"), code.index("Remove-LocalUser"))
+        self.assertLess(code.index("$SlotIdentities = @()"), code.index("Disable-LocalUser"))
+
+
+class LsaLanguageTrapTests(SimpleTestCase):
+    """PowerShell parses an 8-hex-digit literal as Int32, so 0xC0000034 wraps to -1073741772 while the LSA
+    return value is UInt32 3221225524. Written as hex, the comparison is False for ever — turning the
+    benign 'this account holds no rights' status into a hard failure that aborts every -Apply after the
+    accounts have been created. [uint32]0xC0000034 does not rescue it: the literal has already wrapped and
+    the cast throws.
+    """
+
+    def test_the_ntstatus_constant_is_not_an_eight_digit_hex_literal(self):
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            code = _code(name)
+            self.assertNotIn("= 0xC0000034", code, name)
+            self.assertIn("[uint32]3221225524", code, name)
+
+    def test_the_wrap_is_documented_where_the_constant_is_defined(self):
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            self.assertIn("WRAPS", _read(name), name)
+
+
+class LsaReentryTests(SimpleTestCase):
+    """PLAN then APPLY in one console is the mandated workflow, so Add-Type must not be a second-run
+    terminating error."""
+
+    def test_add_type_is_guarded_by_a_type_existence_check(self):
+        self.assertIn("if (-not ('GuvfxLsa' -as [type]))", _code("install_pool.ps1"))
+        self.assertIn("if (-not ('GuvfxLsaU' -as [type]))", _code("uninstall.ps1"))
+
+    def test_the_interop_loads_before_any_account_is_created(self):
+        """A broken interop must abort while the host is still untouched, not after four accounts exist."""
+        code = _code("install_pool.ps1")
+        self.assertLess(code.index("Add-Type -TypeDefinition"), code.index("New-LocalUser"))
+        self.assertLess(code.index("LSA interop self-test"), code.index("New-LocalUser"))
+
+    def test_the_self_test_actually_enters_advapi32(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("$probe = Open-GuvfxLsaPolicy -Access $LSA_READ", code)
+        self.assertIn("LsaClose($probe)", code)
+
+    def test_the_plan_claim_matches_what_plan_can_prove(self):
+        """On a fresh host the accounts do not exist, so the enumerate path is NOT exercised by PLAN. The
+        comment must not claim otherwise."""
+        source = _read("install_pool.ps1")
+        self.assertIn("enumerate path cannot be exercised", source)
+        self.assertNotIn("it proves the LSA interop works and prints the", source)
+
+
+class EvidenceOnFailureTests(SimpleTestCase):
+    """A failed user-right operation is as much an installation fact as a successful one."""
+
+    def test_failure_paths_emit_evidence_before_throwing(self):
+        for name, ops in (("install_pool.ps1", ("result=failed", "result=postcheck_failed", "result=regression")),
+                          ("uninstall.ps1", ("result=failed",))):
+            code = _code(name)
+            for op in ops:
+                self.assertIn(op, code, f"{name}:{op}")
+
+    def test_evidence_uses_the_host_output_stream(self):
+        """A bare string is a return value; inside a function it flows to the caller, not the transcript."""
+        for name in ("install_pool.ps1", "uninstall.ps1"):
+            self.assertIn('Write-Host "evidence right=$GuvfxRight', _code(name), name)
+
+
+class UninstallSilentNoOpTests(SimpleTestCase):
+    """A revoke that resolves no identity is indistinguishable from a clean teardown while four SIDs keep
+    the right for ever — inheritable by a future account with the same RID."""
+
+    def test_unresolvable_identities_are_reported_loudly(self):
+        code = _code("uninstall.ps1")
+        self.assertIn("could not be resolved", code)
+        self.assertIn("CANNOT be verified as revoked", code)
+        self.assertIn("the grant is orphaned on its SID", code)
+
+    def test_the_identity_prefix_is_refused_up_front(self):
+        code = _code("uninstall.ps1")
+        self.assertIn('if ($IdentityPrefix -ne "guvfx_b_slot")', code)
+        self.assertLess(code.index('$IdentityPrefix -ne "guvfx_b_slot"'), code.index("Disable-LocalUser"))

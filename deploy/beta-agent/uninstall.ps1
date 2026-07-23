@@ -25,6 +25,11 @@ param(
   [switch]$Apply
 )
 $ErrorActionPreference = "Stop"
+# Symmetric with install_pool.ps1: a teardown pointed at another identity namespace is refused up front,
+# before it can disable an account or touch a user right.
+if ($IdentityPrefix -ne "guvfx_b_slot") {
+  throw "refusing: identity prefix must match win_primitives.RUNTIME_IDENTITY_PREFIX"
+}
 function DoIt($desc, [scriptblock]$block) {
   if ($Apply) { Write-Host "APPLY: $desc"; & $block } else { Write-Host "PLAN:  $desc" }
 }
@@ -66,11 +71,12 @@ foreach ($prefix in @($LaunchTaskPrefix, $StopTaskPrefix)) {
 # 5. Remove each slot identity's grants, revoke SeBatchLogonRight, and disable (not delete) the account.
 #    SIDs are collected FIRST: Remove-LocalUser inside the loop would make them unresolvable by the time the
 #    revoke block runs, so the right would silently keep four orphaned SIDs — and a future account created
-#    with the same RID would inherit a batch-logon grant nobody intended.
-$SlotSids = @()
+#    with the same RID would inherit a batch-logon grant nobody intended. The revoke (step 6) consumes this
+#    list, so it works whether the accounts were disabled, deleted, or left alone.
+$SlotIdentities = @()
 for ($n = 1; $n -le $PoolSize; $n++) {
   $u = Get-LocalUser -Name "$IdentityPrefix$n" -ErrorAction SilentlyContinue
-  if ($u) { $SlotSids += "*" + $u.SID.Value }
+  if ($u) { $SlotIdentities += [pscustomobject]@{ Name = $u.Name; Sid = $u.SID } }
 }
 for ($n = 1; $n -le $PoolSize; $n++) {
   $user = "$IdentityPrefix$n"
@@ -87,29 +93,130 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     DoIt "DELETE identity '$user' (explicitly requested)" { Remove-LocalUser -Name $user }
   }
 }
-DoIt "revoke SeBatchLogonRight from the slot identities" {
-  $tmp = New-TemporaryFile
-  secedit /export /areas USER_RIGHTS /cfg "$tmp" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "secedit /export failed (exit $LASTEXITCODE)" }
-  $cfg  = Get-Content "$tmp"
-  $line = ($cfg | Where-Object { $_ -match "^SeBatchLogonRight" })
-  if ($line -and $SlotSids.Count -gt 0) {
-    $current = ($line -split "=", 2)[1].Trim() -split "," | Where-Object { $_ }
-    $kept    = @($current | Where-Object { $SlotSids -notcontains $_ })
-    # This rewrites MACHINE-WIDE security policy. Principals unrelated to beta (Administrators, Backup
-    # Operators, Performance Log Users) hold this right, and the operator's own "run whether user is logged
-    # on or not" tasks use a BATCH logon — so narrowing it further than intended could stop live trading.
-    # Refuse any result that removed more than exactly our own SIDs.
-    $expected = $current.Count - @($current | Where-Object { $SlotSids -contains $_ }).Count
-    if ($kept.Count -ne $expected) {
-      throw "refusing to write SeBatchLogonRight: expected $expected principals, computed $($kept.Count)"
-    }
-    Set-Content -Path "$tmp" -Value ($cfg -replace "^SeBatchLogonRight.*",
-                                     "SeBatchLogonRight = $($kept -join ',')") -Encoding Unicode
-    secedit /configure /db "$env:windir\security\local.sdb" /cfg "$tmp" /areas USER_RIGHTS | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "secedit /configure failed (exit $LASTEXITCODE)" }
+# 6. Revoke SeBatchLogonRight via the LSA policy API — NOT secedit.
+#    LsaRemoveAccountRights removes ONE right from ONE account. It cannot narrow anyone else's rights,
+#    which is what made the secedit rewrite dangerous: that path rebuilt the complete machine-wide
+#    assignment line by string-filtering, so any parse imperfection silently removed principals unrelated
+#    to beta. There is no such line here.
+if (-not ('GuvfxLsaU' -as [type])) {
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class GuvfxLsaU {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct LSA_UNICODE_STRING { public ushort Length; public ushort MaximumLength; public IntPtr Buffer; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct LSA_OBJECT_ATTRIBUTES {
+    public int Length; public IntPtr RootDirectory; public IntPtr ObjectName;
+    public int Attributes; public IntPtr SecurityDescriptor; public IntPtr SecurityQualityOfService; }
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern uint LsaOpenPolicy(IntPtr SystemName, ref LSA_OBJECT_ATTRIBUTES oa, uint access, out IntPtr handle);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern uint LsaRemoveAccountRights(IntPtr handle, byte[] sid,
+    [MarshalAs(UnmanagedType.U1)] bool allRights, LSA_UNICODE_STRING[] rights, uint count);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern uint LsaEnumerateAccountRights(IntPtr handle, byte[] sid, out IntPtr rights, out uint count);
+  [DllImport("advapi32.dll")] public static extern uint LsaClose(IntPtr handle);
+  [DllImport("advapi32.dll")] public static extern uint LsaFreeMemory(IntPtr buffer);
+  [DllImport("advapi32.dll")] public static extern int LsaNtStatusToWinError(uint status);
+}
+'@ -ErrorAction Stop
+}   # guarded: PLAN then APPLY in one console must not die on 'type already exists'
+
+$GuvfxRight = "SeBatchLogonRight"
+# PowerShell parses an 8-hex-digit literal as Int32, so 0xC0000034 WRAPS to -1073741772 while the LSA
+# return is UInt32 3221225524 — the comparison would be False for ever, turning the benign "this account
+# holds no rights" status into a hard failure. [uint32]0xC0000034 does not help: the literal has already
+# wrapped, and the cast then throws. The decimal form is the only one that survives.
+$STATUS_OBJECT_NAME_NOT_FOUND = [uint32]3221225524   # 0xC0000034 STATUS_OBJECT_NAME_NOT_FOUND
+
+function Get-ApprovedSlotSidBytesU {
+  param([Parameter(Mandatory)][string]$AccountName, [Parameter(Mandatory)]$Sid)
+  # Uninstall must work for accounts that are about to be, or have been, disabled — so the SID is captured
+  # BEFORE the loop and passed in. The namespace guard is unchanged: this function cannot be pointed at
+  # Administrators or any principal outside the beta-slot namespace.
+  if ($AccountName -notmatch '^guvfx_b_slot[1-9][0-9]*$') {
+    throw "refusing user-right operation on '$AccountName': outside the beta-slot identity namespace"
   }
-  Remove-Item "$tmp" -Force
+  $bytes = New-Object byte[] $Sid.BinaryLength
+  $Sid.GetBinaryForm($bytes, 0)
+  return $bytes
+}
+
+function Open-GuvfxLsaPolicyU {
+  param([uint32]$Access)
+  $oa = New-Object GuvfxLsaU+LSA_OBJECT_ATTRIBUTES
+  $oa.Length = [Runtime.InteropServices.Marshal]::SizeOf($oa)
+  $h = [IntPtr]::Zero
+  $st = [GuvfxLsaU]::LsaOpenPolicy([IntPtr]::Zero, [ref]$oa, $Access, [ref]$h)
+  if ($st -ne 0) { throw "LsaOpenPolicy failed: NTSTATUS 0x$('{0:X8}' -f $st)" }
+  return $h
+}
+
+function Get-GuvfxAccountRightsU {
+  param([byte[]]$SidBytes)
+  $h = Open-GuvfxLsaPolicyU -Access 0x00000801
+  try {
+    $ptr = [IntPtr]::Zero; $count = [uint32]0
+    $st = [GuvfxLsaU]::LsaEnumerateAccountRights($h, $SidBytes, [ref]$ptr, [ref]$count)
+    if ($st -eq $STATUS_OBJECT_NAME_NOT_FOUND) { return @() }
+    if ($st -ne 0) { throw "LsaEnumerateAccountRights failed: NTSTATUS 0x$('{0:X8}' -f $st)" }
+    $out = @()
+    $size = [Runtime.InteropServices.Marshal]::SizeOf([type][GuvfxLsaU+LSA_UNICODE_STRING])
+    for ($i = 0; $i -lt $count; $i++) {
+      $item = [Runtime.InteropServices.Marshal]::PtrToStructure(
+                [IntPtr]($ptr.ToInt64() + ($i * $size)), [type][GuvfxLsaU+LSA_UNICODE_STRING])
+      $out += [Runtime.InteropServices.Marshal]::PtrToStringUni($item.Buffer, $item.Length / 2)
+    }
+    [void][GuvfxLsaU]::LsaFreeMemory($ptr)
+    return $out
+  } finally { [void][GuvfxLsaU]::LsaClose($h) }
+}
+
+# F3: a revoke that finds no resolvable identity is a SILENT NO-OP — indistinguishable from a clean
+# teardown while four SIDs keep the right for ever, inheritable by a future account with the same RID.
+# Say so loudly rather than printing the usual epilogue.
+if (@($SlotIdentities).Count -lt $PoolSize) {
+  $found = @($SlotIdentities | ForEach-Object { $_.Name })
+  for ($n = 1; $n -le $PoolSize; $n++) {
+    if ($found -notcontains "$IdentityPrefix$n") {
+      Write-Host "WARNING: '$IdentityPrefix$n' could not be resolved — its $GuvfxRight grant CANNOT be verified as revoked."
+      Write-Host "         If that account was deleted while still holding the right, the grant is orphaned on its SID."
+      Write-Host "         Recover the SID from the install evidence and revoke it explicitly before reusing the pool."
+    }
+  }
+}
+
+foreach ($entry in $SlotIdentities) {
+  $name = $entry.Name
+  $sidBytes = Get-ApprovedSlotSidBytesU -AccountName $name -Sid $entry.Sid
+  DoIt "revoke $GuvfxRight from '$name' (LSA; no other principal is touched)" {
+    $before = Get-GuvfxAccountRightsU -SidBytes $sidBytes
+    if ($before -notcontains $GuvfxRight) {
+      Write-Host "evidence right=$GuvfxRight sid=$($entry.Sid.Value) account=$name op=remove result=not_held"
+    } else {
+      $h = Open-GuvfxLsaPolicyU -Access 0x00000811
+      try {
+        $u = New-Object GuvfxLsaU+LSA_UNICODE_STRING
+        $u.Buffer        = [Runtime.InteropServices.Marshal]::StringToHGlobalUni($GuvfxRight)
+        $u.Length        = [uint16]($GuvfxRight.Length * 2)
+        $u.MaximumLength = [uint16](($GuvfxRight.Length + 1) * 2)
+        # allRights = $false: remove ONLY the named right, never every right the account holds.
+        $st = [GuvfxLsaU]::LsaRemoveAccountRights($h, $sidBytes, $false, @($u), 1)
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($u.Buffer)
+        if ($st -ne 0) {
+          Write-Host "evidence right=$GuvfxRight sid=$($entry.Sid.Value) account=$name op=remove result=failed ntstatus=0x$('{0:X8}' -f $st)"
+          throw "LsaRemoveAccountRights failed for $name : NTSTATUS 0x$('{0:X8}' -f $st)"
+        }
+      } finally { [void][GuvfxLsaU]::LsaClose($h) }
+      $after = Get-GuvfxAccountRightsU -SidBytes $sidBytes
+      if ($after -contains $GuvfxRight) { throw "post-check failed: $name still holds $GuvfxRight" }
+      foreach ($r in $before) {
+        if ($r -ne $GuvfxRight -and $after -notcontains $r) { throw "user-right regression: $name lost '$r'" }
+      }
+      Write-Host "evidence right=$GuvfxRight sid=$($entry.Sid.Value) account=$name op=remove result=revoked other_rights_preserved=$($after.Count)"
+    }
+  }
 }
 
 Write-Host ""
