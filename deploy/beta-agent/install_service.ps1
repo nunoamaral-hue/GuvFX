@@ -17,7 +17,7 @@ param(
   # the golden image or the slot directories - the slot IDENTITY owns those, not the agent.
   [string]$SlotsRoot   = "C:\GuvFX\beta\slots",
   [string]$BetaTombstones = "C:\GuvFX\beta\tombstones",
-  [string]$GoldenDir   = "C:\GuvFX\beta\golden",
+  [string]$GoldenDir   = "C:\GuvFX\golden\newMT5",
   [switch]$Apply
 )
 $ErrorActionPreference = "Stop"

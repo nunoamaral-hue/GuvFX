@@ -186,6 +186,41 @@ def precheck_launch_task(win, ctx: PrimitiveContext, si: SlotInput, *, approved_
                 "run_as_identity": installed.get("run_as_identity")}, observed_at)
 
 
+def precheck_terminate_task(win, ctx: PrimitiveContext, si: SlotInput, *, approved_definition,
+                            observed_at=None) -> dict:
+    """Assert the INSTALLED terminate task still matches its APPROVED definition, before it is triggered.
+
+    The launch task was gated from the start; this one was not, and the asymmetry pointed the wrong way.
+    A launch task starts MT5 inside an isolated slot. The terminate task runs ``Stop-Process -Force``, and
+    the only thing keeping that off the operator's live trading terminal is a path filter inside its
+    argument string — against a process with the *same image name*, because a slot is a copy of the same
+    MT5 build. An argument string edited by hand in taskschd.msc, or re-registered without the filter to
+    "make STOP work", would be triggered without anything noticing.
+
+    Drift is a refusal, exactly as for launch. The agent never repairs a task.
+    """
+    require_mutating(ctx, "precheck_terminate_task")
+    assert_authorised_slot_input(si)
+    from occupancy import TaskDefinitionDrift, assert_task_matches_approved
+    obs = inspect_task(win, si, which="terminate", observed_at=observed_at)
+    outcome = obs["attestation"]["outcome"]
+    if outcome != PRESENT_VALID:
+        return _fail(si, "precheck_terminate_task",
+                     obs["attestation"]["reason_code"] or "task_observation_unavailable",
+                     {"phase": "PRE_TRIGGER", "observation": obs["attestation"]}, observed_at,
+                     status=BLOCKED)
+    installed = obs["evidence"]
+    try:
+        assert_task_matches_approved(approved_definition, installed)
+    except TaskDefinitionDrift as drift:
+        return _fail(si, "precheck_terminate_task", "task_definition_drift",
+                     {"phase": "PRE_TRIGGER", "differing": getattr(drift, "detail", "")}, observed_at,
+                     status=BLOCKED)
+    return _ok(si, "precheck_terminate_task",
+               {"phase": "PRE_TRIGGER", "definition_digest": installed.get("definition_digest"),
+                "run_as_identity": installed.get("run_as_identity")}, observed_at)
+
+
 # ── stage 5: fixed-task launch trigger (REQUESTED) ─────────────────────────────────────────────────────
 def request_launch(win, ctx: PrimitiveContext, si: SlotInput, *, observed_at=None) -> dict:
     """Trigger the fixed per-slot launch task. Emits the **REQUESTED** record ONLY.

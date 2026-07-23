@@ -42,6 +42,18 @@ outcome while keeping an old contract.
 
 **Statuses it may report** — COMPLETED, BLOCKED
 
+## `precheck_terminate_task`
+**Preconditions**
+- capability is MUTATING
+- an approved task definition exists for this slot's terminate task
+
+**Invariant** — nothing is triggered yet, and the task is never repaired - drift is a refusal. The terminate task is the one that can reach a process, so it is the one that must be proven unchanged before it runs
+
+**Postconditions**
+- the installed terminate task matches its approved definition field for field
+
+**Statuses it may report** — COMPLETED, BLOCKED
+
 ## `request_launch`
 **Preconditions**
 - capability is MUTATING

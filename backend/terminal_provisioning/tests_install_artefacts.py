@@ -315,9 +315,11 @@ class ServiceAccountCanDoItsJobTests(SimpleTestCase):
 
     def test_stripping_inheritance_is_checked_separately_from_the_grant(self):
         """If /inheritance:r succeeds and the grant then fails, the file is left with NO explicit ACE.
-        One shared $LASTEXITCODE check cannot distinguish those two outcomes."""
+        One shared $LASTEXITCODE check cannot distinguish those two outcomes, so they are two calls -
+        each checked by Invoke-GuvfxIcacls, which throws naming the exact arguments that failed."""
         source = _code("install_pool.ps1")
-        self.assertIn("icacls /inheritance:r failed on $ApprovedTasksOut", source)
+        self.assertIn('Invoke-GuvfxIcacls $ApprovedTasksOut @("/inheritance:r")', source)
+        self.assertIn('Invoke-GuvfxIcacls $ApprovedTasksOut @("/grant", "*S-1-5-32-544:F"', source)
 
     def test_the_approval_file_is_written_without_a_bom(self):
         """Set-Content -Encoding UTF8 emits a BOM under PS 5.1; the agent would call that malformed JSON."""
@@ -500,8 +502,17 @@ class LsaReentryTests(SimpleTestCase):
         self.assertIn("if (-not ('GuvfxLsaU' -as [type]))", _code("uninstall.ps1"))
 
     def test_the_interop_loads_before_any_account_is_created(self):
-        """A broken interop must abort while the host is still untouched, not after four accounts exist."""
-        code = _code("install_pool.ps1")
+        """A broken interop must abort while the host is still untouched, not after four accounts exist.
+
+        Compares EXECUTION order, so comments are stripped first: a comment that merely names
+        New-LocalUser (explaining why group membership is reconciled separately, for instance) is not a
+        call to it, and an ordering test that trips on prose is measuring the wrong thing.
+        """
+        raw = _code("install_pool.ps1")
+        code = re.sub(r"<#.*?#>", "", raw, flags=re.S)
+        code = "\n".join(line.split("#", 1)[0] for line in code.splitlines())
+        # Both operands must index the SAME string — offsets from differently-stripped copies are not
+        # comparable, and comparing them is how this assertion first reported a false failure.
         self.assertLess(code.index("Add-Type -TypeDefinition"), code.index("New-LocalUser"))
         self.assertLess(code.index("LSA interop self-test"), code.index("New-LocalUser"))
 
@@ -666,3 +677,84 @@ class PermanentRulesTests(SimpleTestCase):
         self.assertIn("RULE 10", rules)
         self.assertIn("ParseFile", rules)
         self.assertIn("never be promoted to the golden image", rules)
+
+
+class ApplyReadinessReviewTests(SimpleTestCase):
+    """Findings from the adversarial review of the APPLY package, before it ran on the live host.
+
+    Every one of these is a defect that PLAN could not surface, because PLAN never reaches the step.
+    """
+
+    def test_every_icacls_call_goes_through_the_checked_wrapper(self):
+        """icacls is native, so $ErrorActionPreference does not apply and a failed ACL is silent. Six of
+        eight calls were unchecked: a slot could be left with the wrong access while the run printed ok."""
+        code = _code("install_pool.ps1")
+        self.assertIn("function Invoke-GuvfxIcacls", code)
+        body = re.sub(r"<#.*?#>", "", code, flags=re.S)   # block comments explain WHY, and name icacls
+        wrapper, callers = body.split("function Invoke-GuvfxIcacls", 1)[1].split("\n}\n", 1)
+        self.assertIn("$LASTEXITCODE -ne 0", wrapper)     # the wrapper itself checks
+        for line in callers.splitlines():
+            stmt = line.split("#", 1)[0]
+            if "icacls" in stmt and "Invoke-GuvfxIcacls" not in stmt:
+                self.fail(f"unchecked icacls call: {line.strip()}")
+
+    def test_the_golden_image_inheritance_is_broken(self):
+        """MEASURED on the host: the golden tree inherits BUILTIN\\Users ReadAndExecute + AppendData +
+        CreateFiles and an inherit-only CREATOR OWNER GENERIC_ALL. Slot identities are in Users, so without
+        breaking inheritance they could CREATE files there and own them - and every future MATERIALISE
+        would copy that into every future slot. icacls /grant is ADDITIVE; granting RX removes nothing."""
+        code = _code("install_pool.ps1")
+        self.assertIn('Invoke-GuvfxIcacls $GoldenDir @("/inheritance:r")', code)
+        self.assertIn("AreAccessRulesProtected", code)
+
+    def test_both_task_families_are_pinned_in_the_approval_file(self):
+        """The terminate task is the one that can reach a process. Pinning only the launch task inverted
+        the risk: the approvals file is written once at install, so adding it later would mean re-prompting
+        four passwords on the live host."""
+        code = _code("install_pool.ps1")
+        self.assertIn("foreach ($t in @($launch, $stop)) {", code)
+        self.assertIn("$Approved[$t] = [ordered]@{", code)
+        self.assertIn("does not scope termination to", code)
+        self.assertIn("pipes Get-Process straight into Stop-Process", code)
+
+    def test_the_non_admin_assertion_fails_closed(self):
+        """-ErrorAction SilentlyContinue turned an enumeration failure into 'not a member', so the one
+        check standing between the sponsor's guarantee and a privileged runtime identity passed loudest
+        exactly when it could see least."""
+        code = _code("install_pool.ps1")
+        self.assertIn("Get-LocalGroupMember -Group $g -ErrorAction Stop", code)
+        self.assertIn("non-admin is UNPROVEN", code)
+        self.assertIn("is not a member of 'Users' - refusing to continue", code)
+
+    def test_password_buffers_are_zeroed_and_freed(self):
+        """SecureStringToBSTR allocates unmanaged memory holding the plaintext; nothing freed it."""
+        code = _code("install_pool.ps1")
+        self.assertIn("ZeroFreeBSTR", code)
+        self.assertIn("empty password rejected", code)
+
+    def test_the_approvals_path_is_namespace_refused(self):
+        """It is the target of the script's most destructive file primitive - inheritance stripped and the
+        DACL rewritten - and it had no refusal at all."""
+        code = _code("install_pool.ps1")
+        self.assertIn("foreach ($p in @($SlotsRoot, $TombstonesRoot, $ApprovedTasksOut))", code)
+
+    def test_the_estate_check_can_actually_fail(self):
+        """It printed ok when a task was present and nothing when it was missing, so 'estate untouched'
+        was asserted by silence (RULE 11)."""
+        code = _code("install_pool.ps1")
+        self.assertIn("$EstateBefore", code)
+        self.assertIn("was present before the install and is GONE - STOP", code)
+        self.assertIn("principal changed from", code)
+
+    def test_the_follow_on_scripts_default_to_the_approved_golden_path(self):
+        """install_service.ps1 runs minutes after APPLY and hard-fails on a missing golden path."""
+        for name in ("install_service.ps1", "uninstall.ps1"):
+            source = _read(name)
+            self.assertIn(r'"C:\GuvFX\golden\newMT5"', source, name)
+            self.assertNotIn(r'$GoldenDir   = "C:\GuvFX\beta\golden"', source, name)
+
+    def test_verify_reads_acls_back_from_the_filesystem(self):
+        """ACLs were the one authorised object class VERIFY never inspected - applied, then trusted."""
+        code = _code("install_pool.ps1")
+        self.assertIn("cross-slot access - STOP", code)
+        self.assertIn("Read+Execute only was authorised - STOP", code)
