@@ -595,6 +595,172 @@ class ReleaseTests(SimpleTestCase):
         self.assertEqual(s.generation_of(1), 1)
 
 
+class OpReleaseTests(SimpleTestCase):
+    """RELEASE (ADR 0014): the authoritative Released -> Available step. It sources its two live proofs
+    (process stopped, identity verified) from a FRESH process observation rather than recorded launch/
+    terminate evidence — which is precisely what lets a runtime launched OUT OF BAND (no confirm_launch
+    record) complete its lifecycle. That runtime is the preserved slot-1 validation object."""
+
+    def _tombstoned_out_of_band(self):
+        """materialise -> tombstone, with NO start/stop ever recorded and the slot process absent
+        throughout: the evidence shape of a runtime launched outside the agent (slot 1)."""
+        s, win = _store(), FakeWin(exists=False)          # process=None: nothing running in the slot
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        impls.tombstone(canonical_dir="", runtime_uuid=RUUID, base="",
+                        context=_ctx(s, operation="TOMBSTONE"))
+        # No confirm_launch / confirm_terminated was ever recorded — the very evidence the proof-builder
+        # release() relies on. This asserts the premise the whole class rests on.
+        ops = {e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)}
+        self.assertNotIn("confirm_launch", ops)
+        self.assertNotIn("confirm_terminated", ops)
+        return s, win, impls
+
+    def _release(self, s, impls):
+        return impls.op_release(canonical_dir="", runtime_uuid=RUUID, base="",
+                                context=_ctx(s, operation="RELEASE"))
+
+    def test_release_advances_the_generation_once_and_frees_the_slot(self):
+        s, _win, impls = self._tombstoned_out_of_band()
+        out = self._release(s, impls)
+        self.assertTrue(out["released"])
+        self.assertTrue(out["available"])
+        self.assertEqual(s.generation_of(1), 2)           # advanced by exactly one
+        self.assertIsNone(s.lookup(RUUID))                # slot no longer bound to this runtime
+        self.assertEqual(s.occupancy(), {})               # returned to the free pool
+
+    def test_release_completes_what_the_recorded_evidence_builder_cannot(self):
+        """The ADR-0014 divergence, on ONE store: release() (recorded-evidence proofs) REFUSES the out-of-
+        band occupancy because confirm_launch/confirm_terminated are absent; op_release (live observation)
+        completes it. If op_release ever regressed to the recorded-evidence sourcing, this fails."""
+        from stores import ReleaseProofMissing
+        s, _win, impls = self._tombstoned_out_of_band()
+        with self.assertRaises(ReleaseProofMissing):       # the proof-builder cannot release slot 1
+            impls.release(runtime_uuid=RUUID, slot=1, generation=1,
+                          no_ambiguous_provisioning_job=True, no_mutation_lock_held=True)
+        self.assertEqual(s.generation_of(1), 1)            # nothing advanced on the refusal
+        out = self._release(s, impls)                      # the native lifecycle op DOES complete it
+        self.assertTrue(out["released"])
+        self.assertEqual(s.generation_of(1), 2)
+
+    def test_release_refuses_a_slot_that_still_holds_a_live_process(self):
+        """Fail-closed: RELEASE must never free an occupied slot. If observe reports PRESENT it refuses,
+        BEFORE any generation advance."""
+        s, win, impls = self._tombstoned_out_of_band()
+        win._process = _proc()                             # a process is (implausibly) live in the slot
+        with self.assertRaises(AgentError) as ctx:
+            self._release(s, impls)
+        self.assertEqual(ctx.exception.reason_code, "release_runtime_present")
+        self.assertEqual(s.generation_of(1), 1)            # not advanced
+        self.assertEqual(s.lookup(RUUID), (1, 1))          # still assigned
+
+    def test_release_refuses_when_the_host_is_unobservable(self):
+        """An unreadable host is not an absence. RELEASE must not fabricate 'stopped' from a failed
+        observation (mirrors VERIFY): it refuses rather than freeing the slot."""
+        s, win, impls = self._tombstoned_out_of_band()
+
+        def blind(path, identity=""):
+            raise OSError("enumeration unavailable")
+        win.query_slot_process = blind
+        with self.assertRaises(AgentError):
+            self._release(s, impls)
+        self.assertEqual(s.generation_of(1), 1)            # not advanced on an unreadable host
+        self.assertEqual(s.lookup(RUUID), (1, 1))
+
+    def test_release_is_restart_safe_before_commit(self):
+        """Interrupted BEFORE the atomic advance commits: the runtime stays assigned + tombstoned, so a
+        resend simply re-runs and completes. No half-released state."""
+        s, _win, impls = self._tombstoned_out_of_band()
+        real = s.release_after_tombstone
+        boom = {"fire": True}
+
+        def crash(**kw):
+            if boom["fire"]:
+                boom["fire"] = False
+                raise RuntimeError("interrupted at commit")
+            return real(**kw)
+        s.release_after_tombstone = crash
+        with self.assertRaises(RuntimeError):
+            self._release(s, impls)
+        self.assertEqual(s.generation_of(1), 1)            # unadvanced — fail-closed
+        self.assertEqual(s.lookup(RUUID), (1, 1))          # still assigned: recoverable
+        out = self._release(s, impls)                      # the resend completes the lifecycle
+        self.assertTrue(out["released"])
+        self.assertEqual(s.generation_of(1), 2)
+
+    def test_a_second_release_cannot_double_advance_the_generation(self):
+        """After a committed release the runtime is unassigned; a stale resend that reaches op_release with
+        the old (slot, generation) binding must NOT advance again. The store's runtime-uuid guard fails it
+        closed — the generation-monotonicity invariant is preserved."""
+        from stores import SlotIntegrityError
+        s, _win, impls = self._tombstoned_out_of_band()
+        self._release(s, impls)
+        self.assertEqual(s.generation_of(1), 2)
+        stale = SlotResolver(s, now_fn=lambda: 100)        # rebuild the pre-release binding by hand
+        stale_ctx = {"slot": 1, "generation": 1, "occupancy_id": occupancy_id(1, 1),
+                     "slot_input": _ctx(_store())["slot_input"], "slot_path": "", "slots_root": ""}
+        with self.assertRaises(SlotIntegrityError):
+            impls.op_release(canonical_dir="", runtime_uuid=RUUID, base="", context=stale_ctx)
+        self.assertEqual(s.generation_of(1), 2)            # STILL 2 — never advanced twice
+
+    def test_release_response_carries_no_filesystem_path(self):
+        s, _win, impls = self._tombstoned_out_of_band()
+        out = self._release(s, impls)
+        self.assertNotIn("canonical_path", out)
+        for value in out.values():
+            self.assertNotIn(r"C:\GuvFX", str(value))
+        self.assertTrue(out["canonical_path_digest"])      # the attestation, not the layout
+
+    def test_release_is_registered_but_not_a_mutating_operation(self):
+        """RELEASE is dispatchable AND deliberately outside the per-runtime mutation lock: one of its seven
+        proofs is ``no_mutation_lock_held``, which a lock-holding dispatch could only satisfy by lying."""
+        from lib.mgmt_agent_core import _MUTATING
+        self.assertIn("RELEASE", _impls(FakeWin(), _store()).as_dict())
+        self.assertNotIn("RELEASE", _MUTATING)
+
+    def test_release_refuses_a_quarantined_slot_and_never_frees_it(self):
+        """The fail-closed isolation invariant: a slot flagged for operator review is NEVER released or
+        reused. RELEASE is a generation-advancing mutation, so it must honour the quarantine gate that
+        every other mutating op does — the gate lives at the atomic advance so both release paths are
+        covered."""
+        from stores import SlotIntegrityError
+        s, _win, impls = self._tombstoned_out_of_band()
+        s.quarantine_slot(1, "operator_test", 1)
+        with self.assertRaises(SlotIntegrityError):
+            self._release(s, impls)
+        self.assertEqual(s.generation_of(1), 1)            # not advanced
+        self.assertEqual(s.lookup(RUUID), (1, 1))          # still bound to this runtime
+        self.assertTrue(s.is_quarantined(1))               # still quarantined for the operator
+
+    def test_a_successful_release_audits_slot_released_not_tombstone_completed(self):
+        """The audit event must name what RELEASE actually did. It records ``slot_released`` (RELEASE
+        performs no tombstone), and only AFTER the advance commits."""
+        s, _win, impls = self._tombstoned_out_of_band()
+        self._release(s, impls)
+        events = [e["event"] for e in s.audit_for_occupancy(1, 1)]
+        self.assertIn("slot_released", events)
+        self.assertNotIn("tombstone_completed", events)    # RELEASE does not tombstone
+
+    def test_a_refused_release_records_no_completion_event(self):
+        """Evidence rule: record only what happened. A RELEASE refused for missing tombstone evidence must
+        leave NO completion audit row — the pre-gate false ``tombstone_completed`` write is gone."""
+        from stores import ReleaseProofMissing
+        s, win = _store(), FakeWin(exists=False)           # materialised but NEVER tombstoned
+        impls = _impls(win, s)
+        impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
+        with self.assertRaises(ReleaseProofMissing):        # tombstone/verify_cleanup proofs are absent
+            self._release(s, impls)
+        self.assertEqual(s.generation_of(1), 1)            # not advanced
+        self.assertEqual(s.audit_for_occupancy(1, 1), [])  # NO false completion event persisted
+
+    def test_release_does_not_claim_containment_of_the_tombstoned_directory(self):
+        """The slot directory was tombstoned away, so path containment is not observable at release; the
+        response must not assert it verified."""
+        s, _win, impls = self._tombstoned_out_of_band()
+        out = self._release(s, impls)
+        self.assertFalse(out["path_containment_verified"])
+
+
 class ExecutionModelWiringTests(SimpleTestCase):
     """The agent must actually BUILD the pool model when configured for it — and refuse rather than
     silently revert when the settings it needs are absent."""

@@ -564,6 +564,17 @@ class SlotStore:
         missing = [p for p in self.RELEASE_PROOFS if not proofs.get(p)]
         if missing:
             raise ReleaseProofMissing(missing)
+        # Pre-mutation integrity gate for the release mutation itself. RELEASE is a generation-ADVANCING
+        # mutation, so it must not be the one lifecycle op that skips the gate. TOMBSTONE already removed the
+        # ownership marker, so ``assert_occupancy_integrity`` (which needs it) cannot be used here; the two
+        # marker-free invariants ARE enforced, fail-closed: a slot flagged for operator review can never be
+        # released and reused, and a generation ledger that is not the exact monotonic sequence up to the
+        # caller's generation blocks the advance. Neither is quarantined HERE — a stale caller (wrong
+        # generation, healthy ledger) is a caller error to DENY, not a slot to quarantine; a genuinely corrupt
+        # ledger is denied here and quarantined by the next operation's occupancy gate / audit checkpoint.
+        if self.is_quarantined(int(slot)):
+            raise SlotIntegrityError()                 # a quarantined slot is NEVER released or reused
+        self.assert_generation_monotonic(int(slot), int(generation))
         with self._lock:
             row = self._conn.execute(
                 "SELECT slot, generation FROM slots WHERE runtime_uuid=?",

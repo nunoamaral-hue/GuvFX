@@ -92,6 +92,8 @@ REASON_CATEGORY = {
     "cleanup_precheck_failed": INTEGRITY,
     # WS-B open-handle probe: asked to inspect a path outside the beta slots root (defensive scope guard).
     "open_handles_path_outside_slots_root": INTEGRITY,
+    # RELEASE (ADR 0014): a live process was observed in the slot at release time -> refuse to free it.
+    "release_runtime_present": INTEGRITY,
     # Several processes run from one slot and none is the runtime executable: choosing one by enumeration
     # order would bind the whole termination chain to an arbitrary process.
     "ambiguous_slot_process": INTEGRITY,

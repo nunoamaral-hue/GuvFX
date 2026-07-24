@@ -1,5 +1,17 @@
 # NEXT — Priorities (keep this list short)
 
+## B3P-2 RELEASE operation — SHIPPED to PR, host proof pending (2026-07-24)
+`op_release` (ADR 0014, PR #200) closes the two lifecycle gaps below: it is the RELEASE protocol op that
+advances the per-slot generation and frees the slot after TOMBSTONE, sourcing its proofs from a live
+`observe_process → ABSENT`. 639 tests + `make check` green; real `build_agent` E2E proven offline.
+- [ ] **Re-stage the agent bundle to the host, then prove slot 1** through the native lifecycle:
+  `NEGOTIATE → VERIFY → STOP (only if VERIFY finds it running) → TOMBSTONE → RELEASE → Available`, gen 1→2,
+  complete audit chain, production MT5 (pid 4336) + bridge (pid 13292) untouched. No manual intervention.
+- [ ] **Deploy ordering:** the agent bundle (RELEASE present) must re-stage before/with any backend that
+  expects it — `assert_compatible` requires the full `PROVISIONING_OPERATIONS` set (fail-closed).
+- [ ] **Deferred to CVM-Inc-5:** wire the backend to SEND RELEASE after TOMBSTONE (`_drive_deprovision`),
+  else a backend-driven deprovision tombstones without freeing. No live impact (`BETA_RUNTIMES_ENABLED` off).
+
 ## B3P-2 Phase 2A — waiting at the APPLY gate (2026-07-23)
 Golden image approved and pinned; `install_pool.ps1` PLAN is clean; nothing is installed.
 - [ ] **Nuno: accept the PLAN, then run `-Apply` locally** — it prompts for four passwords, which the model
@@ -10,9 +22,11 @@ Golden image approved and pinned; `install_pool.ps1` PLAN is clean; nothing is i
 - [ ] After APPLY: Phase 3 verification → Phase 4 service-start gate → Phase 5 observation probe →
   Phase 6 bounded MT5 viability trial (**the trial question — does a GUI MT5 run under a
   `TASK_LOGON_PASSWORD` task with no interactive session — is still unanswered**).
-- [ ] Still Nuno's calls, both blocking a *complete* lifecycle but not the trial: `open_handles()` has no
-  supported Windows implementation (TOMBSTONE refuses before moving anything), and `release()` is
-  implemented but unwired (the pool exhausts after `pool_size` tombstones).
+- [x] ~~`open_handles()` has no supported Windows implementation~~ — RESOLVED by WS-B (PR #199): Restart
+  Manager probe, host-proven with positive/negative controls.
+- [x] ~~`release()` implemented but unwired (pool exhausts after `pool_size` tombstones)~~ — RESOLVED by the
+  RELEASE operation (ADR 0014, PR #200); see the RELEASE section at the top. Backend-SEND wiring is the
+  only remaining piece (CVM-Inc-5).
 
 ## Beta Onboarding — headless co-hosted vertical slice (2026-07-21) — onboarding stays CLOSED
 Architecture is now **non-interactive headless co-hosting on the existing box** (no RDS/RemoteApp — supersedes

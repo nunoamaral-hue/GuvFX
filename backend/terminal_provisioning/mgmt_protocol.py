@@ -18,7 +18,11 @@ PROTOCOL_VERSION = 1
 
 # The provisioning operations the protocol may carry. TOMBSTONE (quarantine) replaces destructive
 # TEARDOWN for the first production walk (requirement 2). No arbitrary delete is expressible.
-PROVISIONING_OPERATIONS = ("MATERIALISE", "START", "VERIFY", "STOP", "TOMBSTONE")
+# RELEASE (ADR 0014) is the authoritative completion of the lifecycle and the ONLY operation permitted to
+# transition Released -> Available (advance the slot generation + free the slot). It runs OUTSIDE the
+# per-runtime mutation lock; it touches no filesystem. Added under protocol_version 1 and advertised via
+# NEGOTIATE's supported_operations, so an agent that predates it simply omits it (backward compatible).
+PROVISIONING_OPERATIONS = ("MATERIALISE", "START", "VERIFY", "STOP", "TOMBSTONE", "RELEASE")
 # NEGOTIATE is a read-only, authenticated handshake (no runtime side-effect) the backend MUST perform to
 # agree protocol/agent/manifest versions + supported operations before sending any provisioning request
 # (versioned-contract requirement). It is signed like any request but touches no runtime.

@@ -6,6 +6,27 @@
 
 ## Execution workstream log
 
+- **2026-07-24 — B3P-2 RELEASE operation shipped to PR #200 (ADR 0014 Accepted). 🟢 code complete, 🟠 host slot-1 proof pending.**
+  **What.** `op_release` — the RELEASE protocol operation that transitions a beta slot Released → Available.
+  It advances the durable per-slot generation by exactly one and frees the slot after TOMBSTONE, sourcing its
+  two live proofs from a fresh `observe_process → ABSENT` (never a fabricated "stopped"; a live process **or**
+  an unreadable host blocks it). This is what lets a runtime launched out-of-band (no `confirm_launch`) — the
+  preserved slot 1 — complete its lifecycle. Runs OUTSIDE the per-runtime mutation lock; touches no filesystem.
+  Added to `PROVISIONING_OPERATIONS` + `manifest.supported_operations` (NEGOTIATE advertises it; per-op
+  integrity manifest gains `op_release`); a drift-guard test pins the two lists equal.
+  **Adversarial review (5 lenses, each finding independently verified) — 12 confirmed, 5 behavioural fixes:**
+  quarantine + generation-monotonicity gate enforced at the single mutation point (`release_after_tombstone`,
+  fail-closed, both release paths); audit written only AFTER the commit as `slot_released` (was a false
+  pre-gate `tombstone_completed`) + mandated `before_release` checkpoint; reports the released occupancy's own
+  generation; `path_containment_verified=False` for the tombstoned-away dir. **Deferred + recorded:** the
+  backend does not yet SEND RELEASE (CVM-Inc-5; no live impact, `BETA_RUNTIMES_ENABLED` off); crash-window
+  idempotency is safe/fail-closed; `assert_compatible` makes RELEASE a fail-closed co-deployed capability.
+  **Verified.** 639 `terminal_provisioning` tests + full `make check` green (1622 backend, frontend build,
+  EVIDENCE-LINT PASS); real `build_agent` E2E (`enforce_integrity=True`, signed protocol):
+  NEGOTIATE→MATERIALISE(gen 1)→TOMBSTONE(release_pending)→RELEASE(released, available, **gen 1→2**)→slot freed,
+  audit `[slot_released]`, no manual step. **Not yet done:** host re-stage + slot-1 native-lifecycle proof.
+  Production MT5 pid 4336 + bridge pid 13292 untouched (no host mutation in this change).
+
 - **2026-07-23 — B3P-2 Phase 2: golden image approved, PLAN run, baseline finding retracted. 🟠 waiting at the APPLY gate.**
   **Golden image.** The previously staged `C:\GuvFX\golden\mt5\5.0.0.5833\` tree was **rejected**: a
   content-level provenance scan found 66 absolute paths rooted at `C:\GuvFX\terminals\account_001\instance\`
