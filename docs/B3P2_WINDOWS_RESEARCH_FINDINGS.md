@@ -1,5 +1,13 @@
 # CVM-Inc-3 B3P-2 — Windows API research findings
 
+> **SERVICE-CONTEXT NOTE ([ADR 0013](ADRs/0013-beta-agent-service-host-winsw.md), 2026-07-24).** The
+> "service context" surface below researched hosting the agent as a **native pywin32 service**
+> (`pythonservice.exe`, `SvcRun`/`SvcDoRun`, the `pythonservice.exe` path a firewall `-Program` rule would
+> match). That host was **rejected** after the 2026-07-24 STOP; the agent now runs under a **WinSW wrapper**
+> (venv Python child). The pywin32-service-lifecycle findings (items on `SvcRun`/`SvcDoRun`/error 1053) no
+> longer bear on the service host, though the pywin32 **filesystem/handle/session** findings still apply to
+> `win_slot_ops` runtime operations. The §4 MT5 viability questions are unaffected.
+
 **Provenance and its limits.** Documentation-only research across five surfaces (Task Scheduler, process
 observation, filesystem, golden-copy integrity, service context), 192 claims, of which 173 received an
 independent adversarial verdict. **Nothing here was executed.** No Windows host was contacted. Every

@@ -1,5 +1,12 @@
 # CVM-Inc-3 B3P-2 — Windows adapter interface contract
 
+> **SERVICE-HOST NOTE ([ADR 0013](ADRs/0013-beta-agent-service-host-winsw.md), 2026-07-24).** Where this
+> contract names `service.py` as the "service harness / pywin32 SCM wrapper", that is no longer the service
+> host: the agent runs under a **WinSW wrapper** (`SCM → GuvFXBetaAgent.exe → venv Python → agent.py`).
+> `service.py` is retained in the bundle but is off the service path. pywin32 is still used by
+> `win_slot_ops.py` (lazily, at runtime, from the venv). The layer boundary this contract defines is
+> unchanged.
+
 **Status:** contract agreed; real adapter implemented in `win_slot_ops.py` against it, using only
 documented facts that survived adversarial verification (see `docs/B3P2_WINDOWS_RESEARCH_FINDINGS.md`);
 **no method has ever executed on a Windows host.** Every claim below about *behaviour on the box* is an expectation to be measured at the
