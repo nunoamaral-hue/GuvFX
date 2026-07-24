@@ -41,11 +41,14 @@ SCM shim (`deploy/beta-agent/service.py`). Its APPLY on 2026-07-24 hit a STOP co
 ## Assumptions
 
 - WinSW v2.12.0 assigns the `NT SERVICE\GuvFXBetaAgent` **virtual** service account from
-  `<serviceaccount><username>` at `CreateService`, and the SCM auto-grants `SeServiceLogonRight` to a
-  service's own virtual account (so `<allowservicelogon>` is deliberately omitted). This is **not** provable
-  off-host; the installer's `-Apply` verify **fails closed** if `StartName` is not that account. If WinSW
-  cannot assign a virtual account here, that is the demonstrated technical requirement that would justify
-  falling back to native pywin32 (see Reversal path).
+  `<serviceaccount><username>` **plus `<allowservicelogon>true</allowservicelogon>`** at `CreateService`.
+  **HOST-PROVEN 2026-07-24:** without `<allowservicelogon>` WinSW ignores `<username>` and installs
+  LocalSystem (the `-Apply` verify caught this and refused to start); this **reversed the earlier review
+  finding F2** (which had removed the element on a hypothesised pre-registration LSA-resolve error — that
+  error does not occur, because `CreateService` auto-provisions the virtual account before the logon-right
+  grant). The installer's `-Apply` verify **fails closed** if `StartName` is not that account. If WinSW
+  could not assign the virtual account even with `<allowservicelogon>`, that would be the demonstrated
+  technical requirement justifying the native-pywin32 fallback (see Reversal path).
 - WinSW delivers `CTRL_C_EVENT` to the console child on stop, which Python raises as `KeyboardInterrupt`
   (agent.py `main()` catches it and drains). Bounded by `<stoptimeout>`.
 

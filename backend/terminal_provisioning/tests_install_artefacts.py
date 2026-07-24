@@ -1229,11 +1229,11 @@ class WinSwServiceHarnessTests(SimpleTestCase):
         self.assertIn("agent.py", xml)
         self.assertNotIn("C:\\GuvFX\\python311.exe", xml)                          # never the installer
         self.assertNotIn("Program Files\\Python311", xml)                          # never the bridge's base interpreter
-        # NT SERVICE virtual account: <allowservicelogon> must NOT be set (it forces a pre-registration
-        # name->SID resolve the account cannot yet satisfy; the SCM auto-grants the logon right). Check the
-        # ACTIVE config, not the explanatory comment that names the element it deliberately omits.
+        # NT SERVICE virtual account: <allowservicelogon>true</> IS required. HOST-PROVEN 2026-07-24 that
+        # WinSW v2.12.0 WITHOUT it ignores <username> and installs LocalSystem (this reverses finding F2).
+        # Assert on the ACTIVE config, not the explanatory comment.
         xml_no_comments = re.sub(r"<!--.*?-->", "", xml, flags=re.S)
-        self.assertNotIn("allowservicelogon", xml_no_comments)
+        self.assertIn("<allowservicelogon>true</allowservicelogon>", xml_no_comments)
 
     def test_the_apply_verify_fails_closed_on_identity_startmode_and_binary(self):
         source = _read("install_service.ps1")
