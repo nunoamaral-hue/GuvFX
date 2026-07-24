@@ -12,15 +12,17 @@
   <arguments>-u C:\GuvFX\beta\agent\agent.py</arguments>
   <workingdirectory>C:\GuvFX\beta\agent</workingdirectory>
 
-  <!-- Least privilege: the SCM-created virtual account. No password. For a service's OWN virtual account
-       (NT SERVICE\<id>) the SCM auto-grants Log-on-as-a-service at CreateService, so we deliberately do NOT
-       set <allowservicelogon>: that would make WinSW LSA-resolve NT SERVICE\GuvFXBetaAgent to a SID BEFORE
-       the service (hence the account) exists - the same pre-registration name->SID gap that forces every
-       ACL in install_service.ps1 to be bound to the raw SID via Set-Acl. This is the identity assignment
-       pywin32's `sc config obj=` failed to make; the installer's -Apply verify FAILS CLOSED if StartName is
-       not this account. -->
+  <!-- Least privilege: the SCM-created virtual account, no password. <allowservicelogon>true</> is REQUIRED
+       for WinSW v2.12.0 to actually apply this account. HOST-PROVEN 2026-07-24: WITHOUT it WinSW ignores
+       <username> and silently installs the service as LocalSystem (the installer's -Apply verify caught that
+       and refused to start). This CORRECTS review finding F2, which hypothesised the opposite - the feared
+       pre-registration LSA name->SID resolve does NOT occur, because CreateService auto-provisions the
+       NT SERVICE\<id> virtual account, so WinSW's SeServiceLogonRight grant resolves against an existing
+       account. This is the identity assignment pywin32's `sc config obj=` failed to make; the -Apply verify
+       still FAILS CLOSED if StartName is not exactly this account. -->
   <serviceaccount>
     <username>NT SERVICE\GuvFXBetaAgent</username>
+    <allowservicelogon>true</allowservicelogon>
   </serviceaccount>
 
   <!-- Manual: the operator starts it under a separate authorisation. Never Automatic. -->
