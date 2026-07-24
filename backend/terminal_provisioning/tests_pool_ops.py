@@ -23,12 +23,26 @@ from pool_op_impls import PoolOpImplementations, SlotResolver    # noqa: E402
 from stores import (SlotIntegrityError, SlotStore, format_owner_marker, occupancy_id)   # noqa: E402
 
 RUUID = "0f2b8f2e-7a1a-4f6e-9c1a-2b3c4d5e6f70"
-#: The approved launch-task definition for slot 1 — the seven fields occupancy.TASK_IDENTITY_FIELDS pins.
+#: A well-formed beta-agent service SID (S-1-5-80- namespace), as sc.exe showsid computes. The launch gate
+#: asserts SHAPE only; the exact value is bound by the arguments digest (ADR-0016).
+GRANTEE_SID = "S-1-5-80-3139157870-2983391045-3678747466-658725712-1809340420"
+#: The approved launch-task definition for slot 1 (ADR-0016). The launch task now runs powershell.exe against
+#: the FIXED, admin-only, hash-pinned wrapper AS the slot identity; the wrapper launches this slot's own
+#: terminal64 (suspended, /portable) and grants the service query access to that one process object. The
+#: arguments (part of TASK_IDENTITY_FIELDS) name the wrapper via -File, this slot's terminal64, the grantee
+#: SID, and a bare /portable detection marker. `arguments` is what bounds the launch, exactly like terminate.
 APPROVED_TASK = {
     "task_name": "GuvFXBetaRuntime-1", "run_as_identity": "guvfx_b_slot1",
-    "executable": r"C:\GuvFX\beta\slots\1\terminal\terminal64.exe",
+    "executable": "powershell.exe",
     "working_directory": r"C:\GuvFX\beta\slots\1\terminal",
-    "arguments": "/portable", "logon_type": 1, "run_level": 0, "enabled": True,
+    "arguments": (
+        '-NoProfile -NonInteractive -ExecutionPolicy Bypass '
+        '-File "C:\\GuvFX\\beta\\launcher\\slot_launch.ps1" '
+        '-TerminalPath "C:\\GuvFX\\beta\\slots\\1\\terminal\\terminal64.exe" '
+        '-WorkingDirectory "C:\\GuvFX\\beta\\slots\\1\\terminal" '
+        '-GranteeSid ' + GRANTEE_SID + ' /portable'
+    ),
+    "logon_type": 1, "run_level": 0, "enabled": True,
 }
 #: The approved TERMINATE definition for slot 1. install_pool.ps1 now pins BOTH task families, because the
 #: terminate task is the one that reaches a process — its argument string is all that keeps
@@ -937,13 +951,15 @@ class LaunchTaskVerificationGateTests(SimpleTestCase):
         ops = [e["operation"] for e in s.stage_evidence_for_occupancy(1, 1)]
         self.assertEqual(ops[1:4], ["precheck_launch_task", "request_launch", "confirm_launch"])
 
-    def test_a_task_repointed_outside_the_slot_never_launches(self):
-        """Containment fires before the digest comparison — a stronger guarantee, asserted as such."""
+    def test_a_task_repointed_at_a_different_executable_never_launches(self):
+        """The structural launch gate fires before the digest comparison — a stronger guarantee, asserted as
+        such. ADR-0016: the launch executable must be powershell.exe (running the fixed wrapper); cmd.exe is
+        refused as launch_executable_unexpected before assert_task_matches_approved is ever reached."""
         s, win, impls = self._ready()
         win._task_definition = dict(APPROVED_TASK, executable=r"C:\Windows\System32\cmd.exe")
         with self.assertRaises(AgentError) as ctx:
             self._start(s, impls)
-        self.assertEqual(ctx.exception.reason_code, "executable_outside_slot")
+        self.assertEqual(ctx.exception.reason_code, "launch_executable_unexpected")
         self.assertEqual([c for c in win.calls if c[0] == "run_task"], [])
 
     def test_drift_within_the_slot_still_blocks_the_launch(self):
@@ -1062,12 +1078,15 @@ class PortableSwitchGateTests(SimpleTestCase):
         return s, win, impls
 
     def test_a_task_that_lost_portable_blocks_the_launch(self):
+        # Drop ONLY the /portable token, keeping an otherwise-valid wrapper invocation, so the PORTABLE gate
+        # (not the wrapper/executable gate) is what fires. FakeWin.query_task recomputes portable_switch from
+        # the arguments, so it becomes False -> launch_not_portable, before the digest is ever compared.
         s, win, impls = self._ready()
-        win._task_definition = dict(APPROVED_TASK, arguments="")
+        win._task_definition = dict(APPROVED_TASK, arguments=APPROVED_TASK["arguments"].replace(" /portable", ""))
         with self.assertRaises(AgentError) as ctx:
             impls.start(canonical_dir="", runtime_uuid=RUUID, base="",
                         context=_ctx(s, operation="START"))
-        self.assertEqual(ctx.exception.reason_code, "task_definition_drift")
+        self.assertEqual(ctx.exception.reason_code, "launch_not_portable")
         self.assertEqual([c for c in win.calls if c[0] == "run_task"], [])
 
     def test_arguments_are_part_of_task_identity(self):
@@ -1082,7 +1101,10 @@ class PortableSwitchGateTests(SimpleTestCase):
         import win_primitives as wp
         obs = wp.inspect_task(win, wp.resolve_slot_input(1), which="launch", observed_at=100)
         self.assertTrue(obs["evidence"]["portable_switch"])
-        self.assertEqual(obs["evidence"]["arguments"], "/portable")
+        # The bare /portable token is carried within the wrapper invocation (ADR-0016); the full pinned
+        # argument string is recorded, and portable stays detectable from it.
+        self.assertEqual(obs["evidence"]["arguments"], APPROVED_TASK["arguments"])
+        self.assertIn("/portable", obs["evidence"]["arguments"])
 
 
 class TerminateGateTests(SimpleTestCase):

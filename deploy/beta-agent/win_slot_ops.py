@@ -39,8 +39,13 @@ GOLDEN_MANIFEST_FILE = ".guvfx_golden_manifest"
 RUNTIME_EXECUTABLE = "terminal64.exe"
 
 #: [R:toolhelp-bitness-and-retry], [R:enumeration-by-directory-algorithm]
-PROCESS_QUERY_INFORMATION = 0x0400
+#: ADR-0016 Option A: the slot's own process is opened at PROCESS_QUERY_LIMITED_INFORMATION | READ_CONTROL —
+#: exactly the access the launch-time ACE grants the service. LIMITED yields the image path; READ_CONTROL
+#: yields the process-OBJECT owner SID (``_object_owner_sid``) without the token, so PROCESS_QUERY_INFORMATION
+#: (which the ACE deliberately withholds) is never requested. The former PROCESS_QUERY_INFORMATION constant was
+#: removed with the token-based ``_user_sid`` it served.
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+READ_CONTROL = 0x00020000
 ERROR_ACCESS_DENIED = 5
 ERROR_INVALID_PARAMETER = 87
 ERROR_NO_MORE_FILES = 18                     # Process32NextW's clean end-of-enumeration signal
@@ -296,8 +301,27 @@ class RealSlotWindowsOps(SlotWindowsOps):
         k32.Process32FirstW.restype = wintypes.BOOL
         k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
         k32.Process32NextW.restype = wintypes.BOOL
+        # LocalFree frees the security descriptor GetSecurityInfo allocates and the string
+        # ConvertSidToStringSidW allocates. HLOCAL is a void*; the returned HLOCAL is discarded (NULL on success).
+        k32.LocalFree.argtypes = [ctypes.c_void_p]
+        k32.LocalFree.restype = ctypes.c_void_p
 
-        self._api = {"ctypes": ctypes, "wintypes": wintypes, "k32": k32,
+        # advapi32: read the process OBJECT owner SID (ADR-0016). Kept in ctypes-land with explicit argtypes —
+        # NOT pywin32 — so the ctypes HANDLE from OpenProcess is never marshalled across a second library, and
+        # the binding discipline (restype/argtypes/use_last_error) matches the rest of this adapter.
+        adv = ctypes.WinDLL("advapi32", use_last_error=True)
+        PVOID = ctypes.c_void_p
+        PPVOID = ctypes.POINTER(ctypes.c_void_p)
+        # DWORD GetSecurityInfo(HANDLE, SE_OBJECT_TYPE, SECURITY_INFORMATION,
+        #                       PSID*, PSID*, PACL*, PACL*, PSECURITY_DESCRIPTOR*)  -> ERROR_SUCCESS(0) on success
+        adv.GetSecurityInfo.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD,
+                                        PPVOID, PPVOID, PPVOID, PPVOID, PPVOID]
+        adv.GetSecurityInfo.restype = wintypes.DWORD
+        # BOOL ConvertSidToStringSidW(PSID, LPWSTR*)
+        adv.ConvertSidToStringSidW.argtypes = [PVOID, ctypes.POINTER(wintypes.LPWSTR)]
+        adv.ConvertSidToStringSidW.restype = wintypes.BOOL
+
+        self._api = {"ctypes": ctypes, "wintypes": wintypes, "k32": k32, "adv": adv,
                      "PROCESSENTRY32W": PROCESSENTRY32W}
         return self._api
 
@@ -639,12 +663,14 @@ class RealSlotWindowsOps(SlotWindowsOps):
                 unresolved.append(pid)           # denied/undeterminable on a PLAUSIBLE candidate -> NOT absence
                 continue
             try:
-                # OPENABLE candidate: owner SID + executable path are AUTHORITATIVE. Session is recorded as
-                # evidence only and NEVER excludes here — a slot process we can open in a surprise session is
-                # still matched by owner+path, so the session gate can never turn a live slot runtime into a
-                # false ABSENT (the fail-open this ordering exists to prevent).
+                # OPENABLE candidate: owner SID + executable path are AUTHORITATIVE. Both are read from THIS
+                # ONE handle (the object owner via READ_CONTROL, ADR-0016) — one handle to one kernel object,
+                # so image, owner and start time describe the SAME process with no PID-reuse window. Session is
+                # recorded as evidence only and NEVER excludes here — a slot process we can open in a surprise
+                # session is still matched by owner+path, so the session gate can never turn a live slot
+                # runtime into a false ABSENT (the fail-open this ordering exists to prevent).
                 image = self._image_path(api, handle)
-                sid = self._user_sid(pid)
+                sid = self._object_owner_sid(api, handle)
                 if image is None or sid is None:
                     unresolved.append(pid)       # path or owner unresolved on a plausible candidate
                     continue
@@ -773,16 +799,19 @@ class RealSlotWindowsOps(SlotWindowsOps):
 
     def _open_process(self, api, pid):
         """Returns ``(handle_or_None, state)`` where state is ``opened`` | ``denied`` | ``gone`` |
-        ``unknown``. The GRANTED access level is deliberately NOT surfaced: the handle is used only for the
-        path (``QueryFullProcessImageNameW``, which the LIMITED right satisfies), and the owner SID is read
-        from a SEPARATELY-opened token (``_user_sid``), so callers never need to know which right was granted
-        here. Microsoft's own pages disagree on whether ``PROCESS_QUERY_INFORMATION`` or the LIMITED variant
-        suffices, so the stronger right is requested first and the weaker used as a fallback."""
+        ``unknown``. ONE OpenProcess at ``PROCESS_QUERY_LIMITED_INFORMATION | READ_CONTROL`` — the exact
+        access the ADR-0016 launch-time ACE grants the service on the slot's OWN process. LIMITED satisfies
+        the image path (``QueryFullProcessImageNameW``) and the start time; READ_CONTROL is what lets the
+        object-owner SID be read from THIS SAME handle (``_object_owner_sid``) without a token, so
+        ``PROCESS_QUERY_INFORMATION`` — which the ACE deliberately withholds — is never requested.
+
+        Every attempted mask MUST carry READ_CONTROL: a mask that opens but omits it would succeed here and
+        then fail the owner read, collapsing every slot to a false UNAVAILABLE — a silent regression invisible
+        off-host, so it is pinned by a source-invariant test and a host positive control (RULE 11)."""
         ctypes, k32 = api["ctypes"], api["k32"]
-        for rights in (PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION):
-            handle = k32.OpenProcess(rights, False, pid)
-            if handle:
-                return handle, "opened"
+        handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | READ_CONTROL, False, pid)
+        if handle:
+            return handle, "opened"
         # Returned, never stashed on self: one adapter instance is shared by concurrent requests, so an
         # instance attribute used as an out-parameter can be overwritten by another thread between write
         # and read — reintroducing exactly the false-ABSENT this classification exists to prevent.
@@ -817,20 +846,39 @@ class RealSlotWindowsOps(SlotWindowsOps):
             return None                                  # evidence field, not a gate
         return session.value
 
-    def _user_sid(self, pid):
+    def _object_owner_sid(self, api, handle):
+        """The process OBJECT owner SID, read from the SAME handle ``_open_process`` already holds (which now
+        carries READ_CONTROL), via advapi32 ``GetSecurityInfo(SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION)``.
+
+        Reading owner + image + start time from ONE handle to ONE kernel object closes the PID-reuse/TOCTOU
+        window a fresh ``OpenProcess``-by-pid (the retired token-based owner read) would open. For a NON-admin
+        creator the object owner equals the account's own user SID (the default owner for a standard-user
+        token), so this is the slot identity SID — host-proven; NEVER valid for an admin identity (ADR-0016).
+        ``None`` on ANY failure: an owner that cannot be read leaves the candidate UNRESOLVED (fail closed),
+        never mis-attributed. No token is opened, so ``PROCESS_QUERY_INFORMATION`` — which the launch-time ACE
+        withholds — is never needed."""
+        ctypes, wintypes = api["ctypes"], api["wintypes"]
+        adv, k32 = api["adv"], api["k32"]
+        SE_KERNEL_OBJECT = 6
+        OWNER_SECURITY_INFORMATION = 0x00000001
+        psid = ctypes.c_void_p()
+        psd = ctypes.c_void_p()
+        rc = adv.GetSecurityInfo(handle, SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION,
+                                 ctypes.byref(psid), None, None, None, ctypes.byref(psd))
+        if rc != 0:
+            return None                                  # denied/unreadable -> unresolved, never wrong
         try:
-            import win32api
-            import win32con
-            import win32security
-        except ImportError:
-            return None
-        try:
-            handle = win32api.OpenProcess(win32con.PROCESS_QUERY_INFORMATION, False, pid)
-            token = win32security.OpenProcessToken(handle, win32con.TOKEN_QUERY)
-            sid, _attr = win32security.GetTokenInformation(token, win32security.TokenUser)
-            return str(win32security.ConvertSidToStringSid(sid))
-        except Exception:
-            return None                                  # evidence field: absent, never wrong
+            if not psid.value:
+                return None
+            strp = wintypes.LPWSTR()
+            if not adv.ConvertSidToStringSidW(psid, ctypes.byref(strp)):
+                return None
+            try:
+                return strp.value
+            finally:
+                k32.LocalFree(ctypes.cast(strp, ctypes.c_void_p))
+        finally:
+            k32.LocalFree(psd)                            # the owner PSID points INTO this SD; freed last
 
     def _wmi_session_map(self):
         """``{pid: session_id}`` for all processes from ONE bounded WMI ``Win32_Process`` query (ADR-0015/PN).

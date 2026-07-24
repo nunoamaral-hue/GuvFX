@@ -19,6 +19,7 @@ into "it is not running".
 """
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 
 from lib.mgmt_agent_core import AgentError, is_beneath
@@ -28,6 +29,28 @@ PRIMITIVE_VERSION = "win-primitives-1.0.0"
 
 #: The ONLY namespace a slot path may ever be derived from.
 BETA_SLOTS_ROOT = r"C:\GuvFX\beta\slots"
+
+#: The fixed launch wrapper (ADR-0016). The launch task runs powershell.exe against THIS file (admin-only,
+#: hash-pinned by install_pool.ps1); the F3 launch gate asserts the task invokes exactly it via -File.
+BETA_LAUNCHER_WRAPPER = r"C:\GuvFX\beta\launcher\slot_launch.ps1"
+def _is_inline_command_switch(token: str) -> bool:
+    """True if ``token`` is a powershell.exe switch that would run an INLINE command instead of the fixed
+    ``-File`` wrapper. powershell.exe resolves any UNAMBIGUOUS prefix of a parameter name, so ``-com``/``-en``
+    invoke ``-Command``/``-EncodedCommand`` just as the full names do — an exact-token blocklist would miss
+    them. ``-ExecutionPolicy`` (which the wrapper invocation legitimately carries) must NEVER be caught:
+    ``-encodedcommand`` and ``-executionpolicy`` diverge at the third character (``-en`` vs ``-ex``), so any
+    prefix of length >= 3 is unambiguous, and bare ``-e`` resolves to ``-EncodedCommand`` (not
+    ``-ExecutionPolicy``) at the powershell.exe CLI."""
+    t = token.lower()
+    if len(t) < 2 or not t.startswith("-"):
+        return False
+    if "-command".startswith(t):                          # -c, -co, ..., -command
+        return True
+    if t in ("-e", "-ec"):                                # documented powershell.exe -EncodedCommand aliases
+        return True
+    if len(t) >= 3 and "-encodedcommand".startswith(t):   # -enc, ..., -encodedcommand (never -ex...)
+        return True
+    return False
 
 #: Observation outcomes. These are distinct states, never conflated. MULTIPLE_MATCHING (ADR-0015) is a
 #: fail-closed state of its own — several fully-attributed slot processes — never collapsed into
@@ -301,23 +324,39 @@ def inspect_task(win, si: SlotInput, *, which: str = "launch", observed_at=None)
     # name, and exact membership against bare names would let ``.\Administrator`` through untouched.
     if _account_component(raw.get("run_as_identity")) in FORBIDDEN_IDENTITIES:
         return _wrap(si, operation, PRESENT_INVALID, "forbidden_run_as_identity", evidence, observed_at)
-    # Containment means a different thing for each task family, and applying the launch rule to both was
-    # wrong in both directions.
+    # Containment means a different thing for each task family. BOTH now run powershell.exe from System32 (it
+    # can never be inside the slot), so for BOTH what bounds the task is its ARGUMENT string.
     #
-    #   LAUNCH    runs the slot's own MT5 binary, so the EXECUTABLE must live beneath the slot.
-    #   TERMINATE runs powershell.exe from System32 - it can never be inside the slot - and what actually
-    #             bounds it is its ARGUMENT string, which must name this slot's own executable. That is
-    #             the only thing separating `Stop-Process -Force` from the operator's production terminal,
-    #             which carries the same image name.
+    #   LAUNCH    (ADR-0016) runs the fixed, admin-only, hash-pinned wrapper AS the slot identity; the wrapper
+    #             launches this slot's own terminal64 and grants the service query access to that one process.
+    #             The args must name the fixed wrapper (-File), this slot's own terminal64 (prefix-safe), a
+    #             well-formed service-SID grantee (SHAPE only), be portable, and carry no inline command.
+    #   TERMINATE runs `Stop-Process -Force` filtered on this slot's own executable path - the only thing
+    #             separating it from the operator's production terminal, which carries the same image name.
     executable = str(raw.get("executable") or "")
+    arguments = str(raw.get("arguments") or "")
     if which == "launch":
-        if not is_beneath(executable, si.slot_path):
-            return _wrap(si, operation, PRESENT_INVALID, "executable_outside_slot", evidence, observed_at)
+        if _account_component(executable).lower() not in ("powershell.exe", "pwsh.exe"):
+            return _wrap(si, operation, PRESENT_INVALID, "launch_executable_unexpected", evidence, observed_at)
+        low = arguments.lower()
+        if ('-file "' + BETA_LAUNCHER_WRAPPER.lower() + '"') not in low:
+            return _wrap(si, operation, PRESENT_INVALID, "launch_wrapper_unscoped", evidence, observed_at)
+        # This slot's own terminal64, prefix-safe: ``...\slots\1\terminal`` is a substring of ``...\slots\10``,
+        # so the full ``<slot_path>\terminal64.exe`` (slot_path already ends in \terminal) is required.
+        if (si.slot_path.rstrip("\\").lower() + "\\terminal64.exe") not in low:
+            return _wrap(si, operation, PRESENT_INVALID, "launch_scope_unbounded", evidence, observed_at)
+        # The grantee must be SOME service SID (S-1-5-80- namespace). The primitive asserts SHAPE only and
+        # never learns the specific GuvFX service SID value - that is bound above by the arguments digest.
+        if not re.search(r"-granteesid\s+s-1-5-80-\d+-\d+-\d+-\d+-\d+(\s|$)", low):
+            return _wrap(si, operation, PRESENT_INVALID, "launch_grantee_missing", evidence, observed_at)
+        if not raw.get("portable_switch"):
+            return _wrap(si, operation, PRESENT_INVALID, "launch_not_portable", evidence, observed_at)
+        if any(_is_inline_command_switch(t) for t in arguments.split()):
+            return _wrap(si, operation, PRESENT_INVALID, "launch_inline_command", evidence, observed_at)
     else:
         if _account_component(executable).lower() not in ("powershell.exe", "pwsh.exe"):
             return _wrap(si, operation, PRESENT_INVALID, "terminate_executable_unexpected", evidence,
                          observed_at)
-        arguments = str(raw.get("arguments") or "")
         # The slot path must appear as a PATH PREFIX, not merely as a substring: ``...\slots\1`` is a
         # substring of ``...\slots\10``, so a bare containment test would accept slot 10's terminate
         # arguments as scoping slot 1. Requiring the trailing separator makes the boundary explicit.

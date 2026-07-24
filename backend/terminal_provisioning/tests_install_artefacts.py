@@ -14,6 +14,9 @@ from django.test import SimpleTestCase
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _BUNDLE = os.path.join(_REPO, "deploy", "beta-agent")
 SCRIPTS = ("install_pool.ps1", "install_service.ps1", "uninstall.ps1", "firewall.ps1")
+#: The ADR-0016 launch wrapper. It is NOT an install script (no dry-run/apply, no password prompt), but it is
+#: a PowerShell artefact executed on the host, so it carries the same RULE 9 ASCII/BOM/parse hazards.
+WRAPPER = "slot_launch.ps1"
 
 
 def _read(name):
@@ -257,6 +260,77 @@ class StopTaskContainmentTests(SimpleTestCase):
         source = _code("install_pool.ps1")
         self.assertIn('$exe    = Join-Path $work "terminal64.exe"', source)
         self.assertIn('$work   = Join-Path $slot "terminal"', source)
+
+
+class LauncherProvisioningTests(SimpleTestCase):
+    """ADR-0016: install_pool.ps1 stages the launch wrapper into an admin-only directory and rewires the
+    launch task to run it AS the slot identity."""
+
+    def test_the_launch_task_runs_powershell_against_the_wrapper_via_file(self):
+        source = _code("install_pool.ps1")
+        self.assertIn('New-ScheduledTaskAction -Execute "powershell.exe"', source)
+        self.assertIn('-File "{0}"', source)          # the wrapper path, formatted into the args
+        self.assertIn("-TerminalPath", source)
+        self.assertIn("-GranteeSid", source)
+        # -File only: no inline command in the launch action.
+        self.assertNotIn('-Command `"$launch', source)
+
+    def test_the_launch_task_no_longer_executes_terminal64_directly(self):
+        # The whole point of ADR-0016: the launch action is powershell+wrapper, not the bare exe.
+        source = _code("install_pool.ps1")
+        self.assertNotIn('New-ScheduledTaskAction -Execute $exe', source)
+
+    def test_the_grantee_service_sid_is_computed_before_the_launch_task_is_registered(self):
+        # The wrapper argument needs the service SID; it must be computed (sc.exe showsid) BEFORE section-6
+        # registration, not after (the value is deterministic before the service exists).
+        source = _code("install_pool.ps1")
+        self.assertIn("Get-GuvfxServiceSidValue", source)
+        self.assertIn("sc.exe showsid", source)
+        self.assertLess(source.index("$ServiceSidValue = Get-GuvfxServiceSidValue"),
+                        source.index('New-ScheduledTaskAction -Execute "powershell.exe"'))
+
+    def test_the_launcher_dir_is_admin_only_write_slots_read_execute(self):
+        source = _code("install_pool.ps1")
+        # Inheritance broken, Administrators + SYSTEM Full, each slot ReadAndExecute; NO slot Modify/write.
+        self.assertIn('Invoke-GuvfxIcacls $LauncherDir @("/inheritance:r")', source)
+        self.assertIn('*S-1-5-32-544:(OI)(CI)F', source)
+        self.assertIn('{0}{1}:(OI)(CI)RX" -f $IdentityPrefix, $n', source)
+        self.assertNotIn('$LauncherDir @("/grant", ("{0}{1}:(OI)(CI)M"', source)
+
+    def test_the_wrapper_is_hash_pinned_before_and_after_staging(self):
+        source = _code("install_pool.ps1")
+        self.assertIn("$LaunchWrapperSha256", source)
+        # Refuse a mismatched bundle wrapper BEFORE staging, and re-hash the staged copy AFTER (WinSW pattern).
+        self.assertIn("refusing to stage a wrapper that is not the reviewed one", source)
+        self.assertIn("staged wrapper hash mismatch after copy", source)
+
+    def test_the_install_asserts_the_launch_args_scope_at_readback(self):
+        # The approved-task read-back must assert the launch args name the fixed wrapper, this slot's
+        # terminal64, and the service SID (mirroring the terminate-scope asserts).
+        source = _code("install_pool.ps1")
+        self.assertIn("does not invoke the fixed wrapper via -File", source)
+        self.assertIn("does not target this slot's own terminal64", source)
+        self.assertIn("does not carry the beta-agent service SID", source)
+
+    def test_verify_reads_back_the_launcher_acl_and_rehashes_the_wrapper(self):
+        # The launcher is executed as the slot identity every launch and is never re-hashed at runtime, so the
+        # -VerifyOnly integrity gate MUST inspect it: read the launcher DACL back (protected + no slot-writable
+        # ACE) and re-hash the staged wrapper against the pin. Runs in $Check (both -Apply and -VerifyOnly).
+        source = _code("install_pool.ps1")
+        self.assertIn("$launcherAcl = Get-Acl $LauncherDir", source)
+        self.assertIn("launcher '$LauncherDir' still inherits", source)
+        self.assertIn("a slot must never rewrite its own launcher", source)
+        self.assertIn("staged launch wrapper hash", source)
+        # It is inside the VERIFY ($Check) section, so -VerifyOnly exercises it (the sole pre-commissioning gate).
+        self.assertLess(source.index('Step "VERIFY launcher'), source.index('pool VERIFIED'))
+        self.assertLess(source.index('Step "VERIFY pool'), source.index('Step "VERIFY launcher'))
+
+    def test_the_readback_rejects_inline_command_abbreviations(self):
+        # The install-time inline-command regex must catch powershell.exe prefix abbreviations (-c..-command,
+        # -e/-ec/-en..-encodedcommand) and NOT -ExecutionPolicy, matching the runtime launch gate.
+        source = _code("install_pool.ps1")
+        self.assertIn("|ec|", source)                  # the -ec alias branch
+        self.assertIn("c(o(m(m(a(n(d)?)?)?)?)?)?", source)   # the -command prefix ladder
 
 
 class NoAmbiguousInterpolationTests(SimpleTestCase):
@@ -614,16 +688,124 @@ class AsciiOnlyScriptTests(SimpleTestCase):
     """
 
     def test_every_install_script_is_pure_ascii(self):
-        for name in SCRIPTS:
+        for name in SCRIPTS + (WRAPPER,):
             raw = open(os.path.join(_BUNDLE, name), "rb").read()
             offenders = sorted({b for b in raw if b > 127})
             self.assertEqual(offenders, [], f"{name} contains non-ASCII bytes {offenders}")
 
     def test_no_script_relies_on_a_bom(self):
         """A BOM would also work, but it is a subtle dependency; ASCII-only needs no such assumption."""
-        for name in SCRIPTS:
+        for name in SCRIPTS + (WRAPPER,):
             raw = open(os.path.join(_BUNDLE, name), "rb").read(3)
             self.assertNotEqual(raw, b"\xef\xbb\xbf", f"{name} starts with a UTF-8 BOM")
+
+
+class LaunchWrapperTests(SimpleTestCase):
+    """ADR-0016: the per-slot launch wrapper launches terminal64 suspended, grants the beta-agent service
+    query access to that ONE process object (read-modify-write, never a DACL replace), verifies it, and
+    resumes; on any failure it terminates the child by handle and exits non-zero. These checks pin the
+    safety-critical properties a review must never let regress."""
+
+    def _wrapper(self):
+        return _read(WRAPPER)
+
+    def _wrapper_code(self):
+        # Comment-stripped view: full-line PS '#' comments and C# '//' inline comments removed, so a check for
+        # the ABSENCE of a token tests what the wrapper DOES, not what its comments explain (RULE 5).
+        out = []
+        for ln in _read(WRAPPER).splitlines():
+            if ln.strip().startswith("#"):
+                continue
+            if "//" in ln:
+                ln = ln[:ln.index("//")]
+            out.append(ln)
+        return "\n".join(out)
+
+    def test_the_pinned_hash_in_install_pool_matches_the_wrapper_file(self):
+        # The install refuses to stage a wrapper whose hash differs from $LaunchWrapperSha256. If that
+        # constant ever drifts from the file, the install would refuse the real wrapper on the host. Bind
+        # them here so the pin can never silently rot (RULE 9: ASCII-only keeps the hash encoding-stable).
+        import hashlib
+        digest = hashlib.sha256(open(os.path.join(_BUNDLE, WRAPPER), "rb").read()).hexdigest()
+        pool = _read("install_pool.ps1")
+        self.assertIn('$LaunchWrapperSha256 = "%s"' % digest, pool,
+                      "install_pool.ps1 $LaunchWrapperSha256 does not match slot_launch.ps1's actual hash")
+
+    def test_the_ace_is_applied_read_modify_write_never_a_replace(self):
+        # A wholesale DACL replace would strip the owner's default PROCESS_TERMINATE and silently disable the
+        # slot's STOP task. The wrapper must READ the existing DACL and INSERT one ACE.
+        w = self._wrapper()
+        self.assertIn("GetKernelObjectSecurity", w)
+        self.assertIn("SetKernelObjectSecurity", w)
+        self.assertIn("InsertAce", w)
+        # A NULL DACL must fail closed, never be synthesised into a restrictive one.
+        self.assertIn("DiscretionaryAcl == null", w)
+
+    def test_the_grant_is_exactly_query_limited_plus_read_control(self):
+        # 0x21000 == PROCESS_QUERY_LIMITED_INFORMATION (0x1000) | READ_CONTROL (0x20000). Nothing broader.
+        w = self._wrapper()
+        code = self._wrapper_code()
+        # ONE source of truth for the mask, used by BOTH the ACE and its read-back.
+        self.assertIn("const int GRANT_MASK = 0x21000;", w)
+        # The read-back must assert EQUALITY (== GRANT_MASK), never 'contains at least' (& mask == mask), so a
+        # broader grant (e.g. one that also carries PROCESS_VM_READ) fails verification. This kills the
+        # over-grant regression the substring check alone would miss.
+        self.assertIn("ca.AccessMask == GRANT_MASK", w)
+        self.assertNotIn("& mask) == mask", w)
+        # No hard-coded broad masks anywhere in the CODE (the concept may be named in comments).
+        for forbidden in ("PROCESS_ALL_ACCESS", "0x1F0FFF", "GENERIC_ALL", "SeDebugPrivilege"):
+            self.assertNotIn(forbidden, code)
+        # 0x21000 appears in CODE ONLY as the single GRANT_MASK const, not scattered as literals.
+        self.assertEqual(code.count("0x21000"), 1, "the mask must be a single const, not repeated literals")
+
+    def test_it_launches_suspended_and_fails_closed_by_terminating_the_child(self):
+        # CREATE_SUSPENDED + verify + ResumeThread means terminal64 executes ZERO instructions (never reaches
+        # a broker) until the grant is confirmed; a failure terminates the child by the handle it created.
+        w = self._wrapper()
+        self.assertIn("CREATE_SUSPENDED", w)
+        self.assertIn("ResumeThread", w)
+        self.assertIn("TerminateProcess", w)
+        # Never by image name (the production terminal shares terminal64.exe).
+        self.assertNotIn("Stop-Process -Name", w)
+        self.assertNotIn("/IM terminal64", w)
+
+    def test_it_hard_codes_portable_and_never_forwards_a_free_arg_to_terminal64(self):
+        # /portable is a wrapper constant, not taken from the task argument -> no injection surface. The task
+        # argument's inert /portable is swallowed by ValueFromRemainingArguments.
+        w = self._wrapper()
+        self.assertIn("/portable", w)
+        self.assertIn("ValueFromRemainingArguments", w)
+
+    def test_it_refuses_a_grantee_that_is_not_the_service_account(self):
+        # The grantee SID must be a service SID (S-1-5-80-) that translates back to NT SERVICE\GuvFXBetaAgent.
+        w = self._wrapper()
+        self.assertIn("S-1-5-80-", w)
+        self.assertIn("NT SERVICE\\GuvFXBetaAgent", w)
+        self.assertIn("Translate", w)
+
+    def test_it_confines_the_terminal_path_to_the_beta_slots_root(self):
+        w = self._wrapper()
+        self.assertIn(r"C:\GuvFX\beta\slots", w)
+        self.assertIn("terminal64.exe", w)
+
+    def test_it_validates_the_working_directory_beneath_the_slots_root(self):
+        # The working dir becomes terminal64's CWD, so it is validated symmetrically with TerminalPath.
+        w = self._wrapper()
+        self.assertIn("WorkingDirectory is not beneath the beta slots root", w)
+
+    def test_fail_emits_exit_code_2_not_dead_code_under_stop(self):
+        # Under $ErrorActionPreference='Stop', Write-Error would throw and make 'exit 2' unreachable (emitting
+        # exit code 1). Fail must write to stderr directly so the intended non-zero exit code is actually set.
+        self.assertIn("[Console]::Error.WriteLine", self._wrapper())
+        self.assertNotIn("Write-Error", self._wrapper_code())   # not CALLED (a comment may name it)
+
+    def test_a_thrown_failure_still_terminates_the_suspended_child(self):
+        # A thrown exception after CreateProcessW must not slip past to the finally (which only closes handles)
+        # leaving a suspended terminal64 the wrapper can no longer kill by handle. A catch terminates first.
+        w = self._wrapper()
+        self.assertIn("catch", w)
+        # The catch terminates the child before the finally closes the handle.
+        self.assertIn("try { TerminateProcess(pi.hProcess, 1); } catch { }", w)
 
 
 class GoldenImageValidationTests(SimpleTestCase):
@@ -776,7 +958,7 @@ class ApplyReadinessReviewTests(SimpleTestCase):
         """It is the target of the script's most destructive file primitive - inheritance stripped and the
         DACL rewritten - and it had no refusal at all."""
         code = _code("install_pool.ps1")
-        self.assertIn("foreach ($p in @($SlotsRoot, $TombstonesRoot, $ApprovedTasksOut))", code)
+        self.assertIn("foreach ($p in @($SlotsRoot, $TombstonesRoot, $ApprovedTasksOut, $LauncherDir))", code)
 
     def test_the_estate_check_can_actually_fail(self):
         """It printed ok when a task was present and nothing when it was missing, so 'estate untouched'

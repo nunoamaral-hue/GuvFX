@@ -401,10 +401,12 @@ class _FakeSlotOps(wso.RealSlotWindowsOps):
     def _image_path(self, api, handle):
         return self._procs[handle].get("image")
 
-    def _user_sid(self, pid):
-        # Owner SID from the process token (real code: OpenProcessToken under PQI). A proc may set
-        # ``sid=None`` to model a token that could not be read even though the handle opened.
-        return self._procs.get(pid, {}).get("sid")
+    def _object_owner_sid(self, api, handle):
+        # Object OWNER SID read from the SAME handle (real code: advapi32 GetSecurityInfo(SE_KERNEL_OBJECT,
+        # OWNER_SECURITY_INFORMATION) under READ_CONTROL, ADR-0016). handle == pid here because the fake
+        # _open_process returns the pid as the handle. ``sid=None`` models an owner that could not be read
+        # even though the handle opened -> UNAVAILABLE, never absence.
+        return self._procs.get(handle, {}).get("sid")
 
     def _creation_filetime(self, api, handle):
         ft = self._procs[handle].get("filetime", 133000000000000000)
@@ -1052,23 +1054,40 @@ class WsAbSourceInvariantTests(SimpleTestCase):
         self.assertNotIn("WTSEnumerateProcesses(", s)        # the denied-to-the-service-account call
         self.assertNotIn("import win32ts", s)
 
-    def test_per_process_open_never_requests_all_access(self):
-        # Least-privilege: candidates are opened at PROCESS_QUERY_(LIMITED_)INFORMATION only. A
-        # PROCESS_ALL_ACCESS open would both need privilege the account lacks and over-reach.
+    def test_per_process_open_requests_limited_plus_read_control_never_all_access(self):
+        # Least-privilege AND ADR-0016: candidates are opened at PROCESS_QUERY_LIMITED_INFORMATION | READ_CONTROL
+        # only — LIMITED for the image path, READ_CONTROL for the object-owner SID (the exact access the
+        # launch-time ACE grants). A PROCESS_ALL_ACCESS open would over-reach; and the FULL
+        # PROCESS_QUERY_INFORMATION must NOT be requested on the slot path, because the ACE withholds it.
+        # READ_CONTROL-in-the-mask is the ONE regression the off-host suite cannot catch behaviourally (a mask
+        # that opens but omits it fails the owner read -> silent UNAVAILABLE), so it is pinned here in source.
+        import inspect
         s = self._src()
         self.assertIn("PROCESS_QUERY_LIMITED_INFORMATION", s)
+        self.assertIn("READ_CONTROL", s)
         self.assertNotIn("PROCESS_ALL_ACCESS", s)
+        open_src = inspect.getsource(wso.RealSlotWindowsOps._open_process)
+        # Assert the ACTUAL OpenProcess CALL carries READ_CONTROL, not merely that the string appears in the
+        # docstring — a mutation that drops it from the mask must be killed, not survive on prose (RULE 5).
+        self.assertIn("k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | READ_CONTROL", open_src)
 
-    def test_owner_sid_is_read_from_the_token_at_query_information(self):
-        # The one access-right the fakes cannot exercise (owner SID needs the token, opened at
-        # PROCESS_QUERY_INFORMATION — the ADR-0015 fail-closed case is 'path readable at LIMITED but token
-        # denied -> None -> UNAVAILABLE'). Pin the real primitive against an access-right / API regression.
+    def test_owner_sid_is_read_from_the_process_object_owner_not_the_token(self):
+        # ADR-0016: the owner SID is the process-OBJECT owner, read from the SAME handle via
+        # GetSecurityInfo(SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION) under READ_CONTROL — NOT the token
+        # user (which needs PROCESS_QUERY_INFORMATION, the access the launch-time ACE deliberately withholds).
+        # Pin the mechanism and FORBID any regression to the token read on the slot observe path.
         import inspect
-        src = inspect.getsource(wso.RealSlotWindowsOps._user_sid)
-        self.assertIn("PROCESS_QUERY_INFORMATION", src)
-        self.assertIn("OpenProcessToken", src)
-        self.assertIn("TokenUser", src)
+        src = inspect.getsource(wso.RealSlotWindowsOps._object_owner_sid)
+        self.assertIn("GetSecurityInfo", src)
+        self.assertIn("OWNER_SECURITY_INFORMATION", src)
+        self.assertIn("SE_KERNEL_OBJECT", src)
+        self.assertNotIn("OpenProcessToken", src)
+        self.assertNotIn("TokenUser", src)
         self.assertNotIn("PROCESS_ALL_ACCESS", src)
+        # The openable-candidate path must read the object owner from the handle, never a token by pid.
+        q = inspect.getsource(wso.RealSlotWindowsOps.query_slot_process)
+        self.assertIn("self._object_owner_sid(api, handle)", q)
+        self.assertNotIn("_user_sid", q)
 
     def test_open_handles_rm_failures_raise_never_clear(self):
         s = self._src()
