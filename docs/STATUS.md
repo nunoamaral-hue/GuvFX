@@ -6,6 +6,27 @@
 
 ## Execution workstream log
 
+- **2026-07-25 — B3P-2 TSV: DISCOVERY fix merged + APPLIED + PROVEN on host; native STOP uncovers a SECOND, separate blocker. 🟢 TSV complete, 🟠 lifecycle blocked by task-enablement gap.**
+  **TSV discovery = DONE.** `#212` (exact-name `GetTask` + HRESULT classification incl. `excepinfo[5]`;
+  `Grant-GuvfxServiceTaskAccess` least-privilege `0x1200a9`) merged; `#213`/`#214` added a credential-free
+  `-GrantTaskAccessOnly` install mode (admin-only SD change, no slot password, decoupled from golden validation).
+  **Applied on host** (`install_pool.ps1 -GrantTaskAccessOnly`, no passwords): 8 beta tasks now carry the service
+  ACE `mask=0x1200a9`; root task folder still holds **no** service ACE (least-privilege, exact-name lookup only).
+  **Proven under `NT SERVICE\GuvFXBetaAgent`** (temp service-context task driving the real `win_slot_ops`): beta
+  tasks `FOUND`, production `GuvFX_SignalBridge` `DENIED`, nonexistent `ABSENT`; RULE-11 raw controls show the real
+  `com_error` arrives **wrapped** (`DISP_E_EXCEPTION 0x80020009`) with the true SCODE only at `excepinfo[5]`
+  (`0x80070002`/`0x80070005`) — the shipped `excepinfo[5]` scan is load-bearing, host-confirmed.
+  **BUT the native lifecycle still cannot complete.** Signed `STOP` no longer returns `task_absent`; it now returns
+  `task_definition_drift`. Root cause (a **second, pre-existing blocker outside TSV scope**): the per-slot launch/stop
+  tasks are registered then `Disable-ScheduledTask`d ("install-only", asserted Disabled), `approved_tasks.json`
+  records `enabled:true`, and **no agent code path ever enables a task** — so installed `enabled:false` is the sole
+  differing identity field and `assert_task_matches_approved` (and `run_task`) reject a disabled task before any
+  trigger. This blocks the whole task-trigger path (START-via-task and STOP), and enabling an armed `Stop-Process
+  -Force` terminate task is security-sensitive → needs a scoped decision, not an in-passing edit. STOP was denied at
+  **precheck before any mutation**: slot 1 unchanged (gen 1, `running:false`, occ `19738ae6d1cfc9c4`); MT5 4336 +
+  bridge 13292 + 5 estate tasks untouched. **Recommendation: ACCEPT WITH RECORDED CONSTRAINTS** — TSV done; do not
+  declare B3P COMPLETE until the task-enablement gap is decided.
+
 - **2026-07-25 — B3P-2 TSV: Task Scheduler visibility remediation (the final lifecycle blocker). 🟢 code + review complete, 🟠 host proof + merge pending.**
   **What.** Native STOP returned `task_absent` because the least-privilege service `NT SERVICE\GuvFXBetaAgent`
   could not discover its per-slot scheduled tasks. **Root cause (host-measured, service-context authoritative):**
