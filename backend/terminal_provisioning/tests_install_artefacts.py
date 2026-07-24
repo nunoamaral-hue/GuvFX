@@ -389,6 +389,23 @@ class TaskAccessGrantTests(SimpleTestCase):
         # It lives in the $Check VERIFY section (so -VerifyOnly certifies it too).
         self.assertLess(source.index('Step "VERIFY task ACLs'), source.index('pool VERIFIED'))
 
+    def test_grant_task_access_only_mode_is_credential_free_and_standalone(self):
+        # The grant is admin-only, so -GrantTaskAccessOnly applies it without a full four-password -Apply.
+        source = _read("install_pool.ps1")       # raw (the section marker is a comment)
+        self.assertIn("[switch]$GrantTaskAccessOnly", source)
+        # Standalone: refuses combining with -Apply/-VerifyOnly/-ValidateGoldenOnly.
+        self.assertIn("-GrantTaskAccessOnly is a standalone mode", source)
+        # It grants both task families per slot and returns BEFORE the identity/password/registration section.
+        gate = source.index("if ($GrantTaskAccessOnly) {")
+        section2 = source.index("# -- 2. Identities")
+        self.assertLess(gate, section2, "the grant-only early-exit must precede identity/registration work")
+        block = source[gate:section2]
+        self.assertIn("Grant-GuvfxServiceTaskAccess -TaskName", block)
+        self.assertIn("return", block)
+        # It must NOT prompt for a password or register a task.
+        self.assertNotIn("Get-SlotSecret", block)
+        self.assertNotIn("Register-ScheduledTask", block)
+
     def test_the_service_gets_no_folder_level_task_grant(self):
         # Only task-level grants: EVERY SetSecurityDescriptor call must write the per-task object ($t), never
         # a folder — verb-scoped so an intermediate-variable folder grant ($r = GetFolder; $r.Set...) cannot
