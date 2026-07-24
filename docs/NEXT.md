@@ -1,16 +1,20 @@
 # NEXT — Priorities (keep this list short)
 
-## B3P-2 TSV — task-scheduler visibility, code+review complete, host proof next (2026-07-25)
-Resolves the final B3P lifecycle blocker (native STOP `task_absent`). Exact-name `GetTask` + HRESULT
-classification (code) + a least-privilege `0x1200a9` read+execute grant on the 8 beta tasks (install). 720
-tests + `make check` green; 5 review findings fixed; mutation-clean. One bounded next step:
-- [ ] **Merge, re-stage, RULE 9 parse.** Then a **service-context task-discovery proof** (register a temp
-  task as `NT SERVICE\GuvFXBetaAgent`, prove `GetTask` finds the granted beta task and is denied a
-  production/estate task) — **and** capture a RULE-11 positive/negative control of the real `com_error.args`/
-  `excepinfo` through the agent's `win32com` path.
-- [ ] **Then the full native lifecycle** NEGOTIATE→VERIFY ABSENT→START→VERIFY PRESENT→STOP→VERIFY ABSENT→
-  TOMBSTONE→RELEASE→Available, gen +1, STOP discovering+triggering only `GuvFXBetaRuntimeStop-1`, all 8 tasks
-  back to Disabled, production MT5 (4336) + bridge (13292) untouched.
+## B3P-2 TSV — DISCOVERY fix DONE + PROVEN; native lifecycle blocked by a SECOND issue (2026-07-25)
+TSV task-discovery is complete: `#212` (exact-name `GetTask` + HRESULT classification) + `#213`/`#214`
+(credential-free `-GrantTaskAccessOnly`) merged; grant **applied** on host (8 beta tasks `0x1200a9`, root folder
+no service ACE) and **proven** under `NT SERVICE\GuvFXBetaAgent` (beta FOUND / production DENIED / RULE-11
+`excepinfo[5]` controls). Native `STOP` no longer returns `task_absent`.
+**New blocker (separate decision required):** the per-slot tasks are install-only **Disabled** and no code enables
+them, so `STOP` now fails at precheck with `task_definition_drift` (installed `enabled:false` vs approved
+`enabled:true`). See KNOWN_ISSUES. One bounded next step:
+- [ ] **Decide the task-enablement lifecycle** (Nuno / ADR): when/how the per-slot launch+stop tasks move from
+  install-only Disabled to armed Enabled and back — mindful that the terminate task runs `Stop-Process -Force`.
+  Likely enable-at-MATERIALISE / disable-at-RELEASE, or arm-immediately-around-trigger. Then implement through the
+  pipeline (tests → mutation → adversarial review → CI → merge → re-stage → RULE 9), and only then run the full
+  native `NEGOTIATE→VERIFY ABSENT→START→VERIFY PRESENT→STOP→VERIFY ABSENT→TOMBSTONE→RELEASE→Available` on slot 1.
+- Slot 1 currently holds the ADR-0016 occupancy `1f1b4b83…` gen 1 (`running:false`); it will release once STOP can
+  trigger the (enabled) terminate task.
 
 ## B3P-2 ADR-0016 Option A — merged + re-staged, host proof gated on Nuno (2026-07-25)
 The launch-time process-ACL grant that makes unprivileged PRESENT attribution work. **Merged** (main

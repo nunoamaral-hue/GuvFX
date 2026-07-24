@@ -2,6 +2,33 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🔴 Per-slot tasks are install-only DISABLED and nothing enables them — blocks the native task-trigger lifecycle (2026-07-25)
+
+**The blocker after TSV.** With TSV's task-discovery fix applied+proven, the signed native `STOP` gets past
+discovery and now fails at `precheck_terminate_task` with `task_definition_drift`.
+
+**Root cause (evidence, host-measured).** `install_pool.ps1` registers the per-slot launch/stop tasks and then
+`Disable-ScheduledTask`s them ("install-only", and line ~980 asserts each is Disabled). The approved baseline
+`agent-state\approved_tasks.json` records `"enabled": true`. Diffing the installed `GuvFXBetaRuntimeStop-1`
+against approved: every `TASK_IDENTITY_FIELDS` value matches (run_as_identity `guvfx_b_slot1`, the path-filtered
+`Stop-Process -Force` argument, executable, logon_type, run_level) **except** `enabled` (installed `false` vs
+approved `true`). And **no agent code path (MATERIALISE / START / STOP / any primitive) ever enables a task** —
+`assert_task_matches_approved` (occupancy.py line ~178) rejects a disabled installed task *unconditionally*, and
+`win_slot_ops.run_task` (line ~610) refuses to trigger a disabled task. So the entire task-trigger path is
+blocked: START-via-task would fail at `run_task` (`*_trigger_rejected`) and STOP fails at precheck.
+
+**Why the ADR-0016 PRESENT proof still worked.** That proof launched slot-1 MT5 via the `slot_launch.ps1`
+wrapper *directly* (controlled launch), not by triggering the (disabled) launch task.
+
+**Why it is NOT fixed in passing.** Enabling the tasks is a task *modification* — outside the TSV packet's
+explicit "no task modification / no host patch outside the reviewed installer" envelope — and the terminate task
+runs `Stop-Process -Force`, so *when* it is armed is a security-sensitive lifecycle decision. It needs its own
+scoped decision/packet (e.g. enable-at-MATERIALISE and disable-at-RELEASE, or arm-around-trigger), reviewed,
+before the native `NEGOTIATE→…→RELEASE` lifecycle can run end-to-end.
+
+**Repro.** Signed `STOP` on slot-1's occupancy (`1f1b4b83…`, gen 1) → `outcome=denied reason_code=task_definition_drift`.
+The STOP is denied at precheck **before** any trigger/mutation, so slot 1 is left unchanged.
+
 ## ⚠️ ADR-0016 launch wrapper: two host preconditions unproven off-host (2026-07-25)
 
 The launch-time process-ACL grant (`slot_launch.ps1`) is code-complete and reviewed, but two properties can
