@@ -207,8 +207,99 @@ foreach ($d in @($AgentDir, $GoldenDir, $WinSwDir, $VenvDir)) {
   DoIt "grant '$RunAsUser' ReadAndExecute on $d (inherit)" { Grant-GuvfxServiceAcl -Path $d -Rights ReadAndExecute -ServiceSid $ServiceSid }
 }
 
+# LSA interop for the SERVICE-LOGON right. HOST-PROVEN 2026-07-24: WinSW v2.12.0 does NOT apply
+# <serviceaccount> (virtual-account support is a WinSW v3 feature; it installs LocalSystem), so identity is
+# assigned AFTER install by `sc config obj=` and the SERVICE account is granted SeServiceLogonRight here (it
+# is NOT auto-granted by sc config - secedit-verified). Same LSA policy API install_pool.ps1 uses for
+# SeBatchLogonRight, but addressed by the DERIVED SID because a virtual account has no Get-LocalUser entry.
+try {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class GuvfxLsaSvc {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct LSA_UNICODE_STRING { public ushort Length; public ushort MaximumLength; public IntPtr Buffer; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct LSA_OBJECT_ATTRIBUTES {
+    public int Length; public IntPtr RootDirectory; public IntPtr ObjectName;
+    public int Attributes; public IntPtr SecurityDescriptor; public IntPtr SecurityQualityOfService; }
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern uint LsaOpenPolicy(IntPtr SystemName, ref LSA_OBJECT_ATTRIBUTES oa, uint access, out IntPtr handle);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern uint LsaAddAccountRights(IntPtr handle, byte[] sid, LSA_UNICODE_STRING[] rights, uint count);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern uint LsaEnumerateAccountRights(IntPtr handle, byte[] sid, out IntPtr rights, out uint count);
+  [DllImport("advapi32.dll")] public static extern uint LsaClose(IntPtr handle);
+  [DllImport("advapi32.dll")] public static extern uint LsaFreeMemory(IntPtr buffer);
+  [DllImport("advapi32.dll")] public static extern int LsaNtStatusToWinError(uint status);
+}
+'@ -ErrorAction Stop
+} catch { if ("$_" -notmatch 'already exists') { throw } }
+$SvcLogonRight = "SeServiceLogonRight"
+$LSA_READ_SVC  = 0x00000801   # POLICY_VIEW_LOCAL_INFORMATION | POLICY_LOOKUP_NAMES
+$LSA_WRITE_SVC = 0x00000811   # POLICY_CREATE_ACCOUNT          | POLICY_LOOKUP_NAMES
+$STATUS_NAME_NOT_FOUND_SVC = [uint32]3221225524   # 0xC0000034 STATUS_OBJECT_NAME_NOT_FOUND (decimal: an 8-hex literal wraps to Int32)
+function Get-GuvfxServiceSidBytes {
+  param([Parameter(Mandatory)][string]$ServiceSid)
+  $s = New-Object System.Security.Principal.SecurityIdentifier($ServiceSid)
+  $b = New-Object byte[] $s.BinaryLength
+  $s.GetBinaryForm($b, 0)
+  return $b
+}
+function Open-GuvfxSvcLsaPolicy {
+  param([uint32]$Access)
+  $oa = New-Object GuvfxLsaSvc+LSA_OBJECT_ATTRIBUTES
+  $oa.Length = [Runtime.InteropServices.Marshal]::SizeOf($oa)
+  $h = [IntPtr]::Zero
+  $st = [GuvfxLsaSvc]::LsaOpenPolicy([IntPtr]::Zero, [ref]$oa, $Access, [ref]$h)
+  if ($st -ne 0) { throw "LsaOpenPolicy failed: NTSTATUS 0x$('{0:X8}' -f $st) (win32 $([GuvfxLsaSvc]::LsaNtStatusToWinError($st)))" }
+  return $h
+}
+function Get-GuvfxSidRights {
+  # READ-ONLY: the rights currently held by the SID, or an empty array.
+  param([Parameter(Mandatory)][string]$ServiceSid)
+  $sid = Get-GuvfxServiceSidBytes -ServiceSid $ServiceSid
+  $h = Open-GuvfxSvcLsaPolicy -Access $LSA_READ_SVC
+  try {
+    $ptr = [IntPtr]::Zero; $count = [uint32]0
+    $st = [GuvfxLsaSvc]::LsaEnumerateAccountRights($h, $sid, [ref]$ptr, [ref]$count)
+    if ($st -eq $STATUS_NAME_NOT_FOUND_SVC) { return @() }
+    if ($st -ne 0) { throw "LsaEnumerateAccountRights failed: NTSTATUS 0x$('{0:X8}' -f $st)" }
+    $out = @()
+    $size = [Runtime.InteropServices.Marshal]::SizeOf([type][GuvfxLsaSvc+LSA_UNICODE_STRING])
+    for ($i = 0; $i -lt $count; $i++) {
+      $item = [Runtime.InteropServices.Marshal]::PtrToStructure([IntPtr]($ptr.ToInt64() + ($i * $size)), [type][GuvfxLsaSvc+LSA_UNICODE_STRING])
+      $out += [Runtime.InteropServices.Marshal]::PtrToStringUni($item.Buffer, $item.Length / 2)
+    }
+    [void][GuvfxLsaSvc]::LsaFreeMemory($ptr)
+    return $out
+  } finally { [void][GuvfxLsaSvc]::LsaClose($h) }
+}
+function Grant-GuvfxServiceLogonRight {
+  # Adds ONLY SeServiceLogonRight to the service SID; idempotent; preserves every other right; post-checks.
+  param([Parameter(Mandatory)][string]$ServiceSid)
+  $before = Get-GuvfxSidRights -ServiceSid $ServiceSid
+  if ($before -contains $SvcLogonRight) { Write-Host "evidence right=$SvcLogonRight sid=$ServiceSid op=add result=already_present"; return }
+  $sid = Get-GuvfxServiceSidBytes -ServiceSid $ServiceSid
+  $h = Open-GuvfxSvcLsaPolicy -Access $LSA_WRITE_SVC
+  try {
+    $u = New-Object GuvfxLsaSvc+LSA_UNICODE_STRING
+    $u.Buffer        = [Runtime.InteropServices.Marshal]::StringToHGlobalUni($SvcLogonRight)
+    $u.Length        = [uint16]($SvcLogonRight.Length * 2)
+    $u.MaximumLength = [uint16](($SvcLogonRight.Length + 1) * 2)
+    $arr = @($u)
+    $st = [GuvfxLsaSvc]::LsaAddAccountRights($h, $sid, $arr, 1)
+    [Runtime.InteropServices.Marshal]::FreeHGlobal($u.Buffer)
+    if ($st -ne 0) { Write-Host "evidence right=$SvcLogonRight sid=$ServiceSid op=add result=failed ntstatus=0x$('{0:X8}' -f $st)"; throw "LsaAddAccountRights failed: NTSTATUS 0x$('{0:X8}' -f $st) (win32 $([GuvfxLsaSvc]::LsaNtStatusToWinError($st)))" }
+  } finally { [void][GuvfxLsaSvc]::LsaClose($h) }
+  $after = Get-GuvfxSidRights -ServiceSid $ServiceSid
+  if ($after -notcontains $SvcLogonRight) { throw "post-check failed: service account still lacks $SvcLogonRight - do NOT start" }
+  foreach ($r in $before) { if ($after -notcontains $r) { throw "user-right regression: service account lost '$r'" } }
+  Write-Host "evidence right=$SvcLogonRight sid=$ServiceSid op=add result=granted other_rights_preserved=$($before.Count)"
+}
+
 # 3. Lay down the WinSW wrapper (renamed to the service id) + its reviewed XML config. Copies only - no
-#    global writes, no pywin32, no `sc config obj=`.
+#    global writes, no pywin32.
 DoIt "stage WinSW wrapper -> $ServiceExe and config -> $ServiceXml" {
   Copy-Item -Path $WinSwSource -Destination $ServiceExe -Force
   Copy-Item -Path $XmlSource   -Destination $ServiceXml -Force
@@ -216,25 +307,46 @@ DoIt "stage WinSW wrapper -> $ServiceExe and config -> $ServiceXml" {
   if ($exeHash -ne $WinSwSha256.ToLower()) { throw "staged WinSW exe hash changed after copy - aborting" }
 }
 
-# 4. Register the service FROM the WinSW config (manual start, virtual account, recovery none per the XML).
-#    WinSW writes no global DLL and needs no obj= reassignment.
-DoIt "register service '$ServiceName' via WinSW (manual start, virtual account, STOPPED)" {
+# 4. Register the service FROM the WinSW config (manual start, recovery none, STOPPED). WinSW writes no
+#    global DLL. NOTE (host-proven 2026-07-24): WinSW v2.12.0 installs the service as LocalSystem regardless
+#    of <serviceaccount>; the least-privilege identity is assigned in step 4a, not by the XML alone.
+DoIt "register service '$ServiceName' via WinSW (manual start, STOPPED)" {
   & $ServiceExe install
   if ($LASTEXITCODE -ne 0) { throw "WinSW install failed (exit $LASTEXITCODE)" }
 }
 
+# 4a. Assign the NT SERVICE virtual account via the supported post-install mechanism (sc config obj=,
+#     host-proven to take for a WinSW-created service), then grant it SeServiceLogonRight (NOT auto-granted).
+#     The native sc.exe result is CAPTURED and VALIDATED (exit code + text) - never piped to Out-Null - and
+#     any unexpected result is a STOP.
+DoIt "assign identity: sc config obj= '$RunAsUser' + grant SeServiceLogonRight" {
+  $scOut  = & sc.exe config $ServiceName obj= "$RunAsUser" 2>&1
+  $scRc   = $LASTEXITCODE
+  $scText = ($scOut | Out-String).Trim()
+  Write-Host "evidence sc_config obj='$RunAsUser' exit=$scRc output=$scText"
+  if ($scRc -ne 0 -or $scText -notmatch 'ChangeServiceConfig SUCCESS') {
+    throw "sc config obj= failed (exit=$scRc): $scText - do NOT start"
+  }
+  Grant-GuvfxServiceLogonRight -ServiceSid $ServiceSid
+}
+
 # 5. Verify (no start).
 if ($Apply) {
-  Step "VERIFY service configuration (expect STOPPED, start=demand, NT SERVICE identity, recovery none, no global DLL)"
+  Step "VERIFY service configuration (expect STOPPED, ProcessId 0, NT SERVICE identity + SeServiceLogonRight, Manual, recovery none, no global DLL)"
   $svc = Get-Service $ServiceName -ErrorAction Stop
   if ($svc.Status -ne "Stopped") { throw "service is $($svc.Status); expected Stopped (install-only)" }
   $ci = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
-  if ("$($ci.StartName)" -notmatch [regex]::Escape($RunAsUser)) {
-    throw "service identity is '$($ci.StartName)', expected '$RunAsUser' - do NOT start"
+  # Identity must be EXACTLY the virtual account - reject LocalSystem/LocalService/NetworkService explicitly.
+  if ("$($ci.StartName)" -ne $RunAsUser) {
+    throw "service identity is '$($ci.StartName)', expected exactly '$RunAsUser' - no LocalSystem fallback; do NOT start"
   }
+  if ($ci.ProcessId -ne 0) { throw "service ProcessId is $($ci.ProcessId), expected 0 (not running) - do NOT start" }
   if ($ci.StartMode -notin @("Manual","Disabled")) { throw "service StartMode is '$($ci.StartMode)', expected Manual - do NOT start" }
   if ("$($ci.PathName)" -notmatch [regex]::Escape($ServiceExe)) { throw "service binary is '$($ci.PathName)', expected the WinSW wrapper $ServiceExe" }
-  Write-Host "ok   service: identity=$($ci.StartName)  startmode=$($ci.StartMode)  state=$($svc.Status)  bin=$($ci.PathName)"
+  # SeServiceLogonRight must be present or the (later, gated) first start fails 1069.
+  $svcRights = Get-GuvfxSidRights -ServiceSid $ServiceSid
+  if ($svcRights -notcontains 'SeServiceLogonRight') { throw "service account lacks SeServiceLogonRight - it cannot start; do NOT start" }
+  Write-Host "ok   service: identity=$($ci.StartName)  pid=$($ci.ProcessId)  startmode=$($ci.StartMode)  state=$($svc.Status)  SeServiceLogonRight=present  bin=$($ci.PathName)"
   # (F9) recovery must be NONE - PARSE sc.exe qfailure, do not merely print it. sc.exe is a native exe, so its
   # output is text, not objects; a restart/reboot/run action anywhere in it fails the install-only gate.
   $qf = (& sc.exe qfailure $ServiceName) -join "`n"
