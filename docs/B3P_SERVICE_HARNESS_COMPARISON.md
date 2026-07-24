@@ -84,9 +84,12 @@ so the fallback condition is not met.
 ## What this changes in the artefacts (implemented next, through the pipeline)
 
 - `install_service.ps1`: lay down a **pinned, hash-verified** `WinSW.exe` (renamed `GuvFXBetaAgent.exe`) and
-  `GuvFXBetaAgent.xml` under the beta tree; register via the wrapper; run as `NT SERVICE\GuvFXBetaAgent`;
-  install **stopped**, recovery disabled; verify identity/startmode/state. No `pywin32`, no `sc config obj=`,
-  no global DLL writes.
+  `GuvFXBetaAgent.xml` under the beta tree; register via the wrapper; then assign the identity **post-install**
+  — `sc config obj= "NT SERVICE\GuvFXBetaAgent"` (validated) + an LSA `SeServiceLogonRight` grant — because
+  WinSW v2.12.0 does not apply `<serviceaccount>` (host-proven 2026-07-24; see ADR 0013). Install **stopped**,
+  recovery disabled; verify exact identity / `ProcessId 0` / `SeServiceLogonRight` / startmode / state. No
+  `pywin32`, no global DLL writes. (`sc config obj=` here is the *supported* identity step for a WinSW-created
+  service — it takes cleanly; the incident's failure was pywin32-specific.)
 - The WinSW executable is a new third-party dependency. Introducing an executable to the production host is
   an operator-gated step: a specific release is pinned (WinSW v2.12.0 `WinSW.NET4.exe`, SHA-256
   `923111c7142b3dc783a3c722b19b8a21bcb78222d7a136ac33f0ca8a29f4cb66`) and verified on the host before first

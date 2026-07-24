@@ -157,16 +157,19 @@ class InstallOnlyTests(SimpleTestCase):
     def test_the_service_install_refuses_localsystem(self):
         """The identity check is the review's whole position on elevation, expressed as a hard failure.
 
-        Under WinSW there is no `sc config obj=` step to fail; instead the -Apply verify reads the installed
-        service's StartName and THROWS unless it is the NT SERVICE virtual account. A WinSW install that
-        silently landed as LocalSystem is caught and the service is never started."""
+        HOST-PROVEN 2026-07-24: WinSW v2.12.0 installs LocalSystem regardless of <serviceaccount>. Identity is
+        assigned post-install by `sc config obj=` (validated) + an LSA SeServiceLogonRight grant; the -Apply
+        verify then THROWS unless StartName is EXACTLY the NT SERVICE virtual account (no LocalSystem fallback).
+        See ADR 0013."""
         source = _read("install_service.ps1")
         self.assertIn("NT SERVICE\\GuvFXBetaAgent", source)
-        self.assertIn("service identity is '$($ci.StartName)', expected '$RunAsUser' - do NOT start", source)
-        # the failed pywin32 mechanism must be entirely gone from the service path
+        self.assertIn("no LocalSystem fallback; do NOT start", source)
+        self.assertIn('"$($ci.StartName)" -ne $RunAsUser', source)   # EXACT match, not substring
+        # the pywin32 SERVICE-HOST mechanism must still be gone (service.py / pythonservice / postinstall);
+        # sc config obj= is now a SUPPORTED post-install identity step, not the pywin32 path.
         code = _code("install_service.ps1")
-        for gone in ("sc.exe config", "obj= ", "service.py", "pythonservice", "pywin32_postinstall"):
-            self.assertNotIn(gone, code, f"install_service.ps1 still references the pywin32 path: {gone}")
+        for gone in ("service.py", "pythonservice", "pywin32_postinstall"):
+            self.assertNotIn(gone, code, f"install_service.ps1 still references the pywin32 host path: {gone}")
 
     def test_the_service_install_requires_the_pool_first(self):
         self.assertIn("run install_pool.ps1 -Apply FIRST", _read("install_service.ps1"))
@@ -1209,10 +1212,11 @@ class WinSwServiceHarnessTests(SimpleTestCase):
         self.assertIn("& $ServiceExe install", code)
         # the staged wrapper is re-hashed after copy (a swap between verify and register is caught)
         self.assertIn("staged WinSW exe hash changed after copy", code)
-        # none of the pywin32 service machinery survives on the service path
+        # none of the pywin32 SERVICE-HOST machinery survives on the service path. (`sc.exe config obj=` is
+        # NOT pywin32 machinery - it is the supported post-install identity assignment WinSW v2.12.0 needs.)
         for gone in ("service.py install", "service.py remove", "pythonservice", "win32serviceutil",
-                     "sc.exe config", "pywin32_postinstall"):
-            self.assertNotIn(gone, code, f"pywin32 service machinery still present: {gone}")
+                     "pywin32_postinstall"):
+            self.assertNotIn(gone, code, f"pywin32 service-host machinery still present: {gone}")
 
     def test_the_xml_declares_manual_start_virtual_account_and_no_recovery(self):
         xml = _read(self.XML)
@@ -1237,14 +1241,38 @@ class WinSwServiceHarnessTests(SimpleTestCase):
 
     def test_the_apply_verify_fails_closed_on_identity_startmode_and_binary(self):
         source = _read("install_service.ps1")
-        # identity must be the virtual account, else throw and do NOT start
-        self.assertIn("service identity is '$($ci.StartName)', expected '$RunAsUser' - do NOT start", source)
+        # identity must be EXACTLY the virtual account, else throw and do NOT start
+        self.assertIn('"$($ci.StartName)" -ne $RunAsUser', source)
+        self.assertIn("no LocalSystem fallback; do NOT start", source)
+        # ProcessId must be 0 (not running)
+        self.assertIn('$ci.ProcessId -ne 0', source)
         # start mode must be Manual/Disabled, else throw
         self.assertIn('$ci.StartMode -notin @("Manual","Disabled")', source)
         # the service binary must be the WinSW wrapper we staged
         self.assertIn("expected the WinSW wrapper $ServiceExe", source)
         # and it must be Stopped
         self.assertIn('if ($svc.Status -ne "Stopped")', source)
+
+    def test_identity_is_assigned_post_install_and_logon_right_granted(self):
+        """Option 1 (Nuno, 2026-07-24): WinSW installs, then sc config obj= assigns the virtual account and an
+        LSA grant gives it SeServiceLogonRight; both are host-proven and both results are validated."""
+        code = _code("install_service.ps1")
+        # sc config obj= to the virtual account, result CAPTURED + VALIDATED (not piped to Out-Null)
+        self.assertIn('& sc.exe config $ServiceName obj= "$RunAsUser"', code)
+        self.assertIn("ChangeServiceConfig SUCCESS", code)
+        self.assertIn("sc config obj= failed", code)
+        # no `sc.exe config ... | Out-Null` (unvalidated) anywhere
+        for line in code.splitlines():
+            if "sc.exe config" in line:
+                self.assertNotIn("Out-Null", line, f"sc.exe config result unvalidated: {line.strip()}")
+        # LSA grant of SeServiceLogonRight to the derived service SID, with post-check + regression guard
+        self.assertIn("function Grant-GuvfxServiceLogonRight", code)
+        self.assertIn('$SvcLogonRight = "SeServiceLogonRight"', code)
+        self.assertIn("LsaAddAccountRights", code)
+        self.assertIn("still lacks $SvcLogonRight", code)          # post-check
+        self.assertIn("user-right regression", code)               # other rights preserved
+        # verify asserts the right is present before declaring success
+        self.assertIn("$svcRights -notcontains 'SeServiceLogonRight'", code)
 
     def test_no_service_start_anywhere_in_the_installer(self):
         code = _code("install_service.ps1")

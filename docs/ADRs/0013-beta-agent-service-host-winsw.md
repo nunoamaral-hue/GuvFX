@@ -40,15 +40,18 @@ SCM shim (`deploy/beta-agent/service.py`). Its APPLY on 2026-07-24 hit a STOP co
 
 ## Assumptions
 
-- WinSW v2.12.0 assigns the `NT SERVICE\GuvFXBetaAgent` **virtual** service account from
-  `<serviceaccount><username>` **plus `<allowservicelogon>true</allowservicelogon>`** at `CreateService`.
-  **HOST-PROVEN 2026-07-24:** without `<allowservicelogon>` WinSW ignores `<username>` and installs
-  LocalSystem (the `-Apply` verify caught this and refused to start); this **reversed the earlier review
-  finding F2** (which had removed the element on a hypothesised pre-registration LSA-resolve error — that
-  error does not occur, because `CreateService` auto-provisions the virtual account before the logon-right
-  grant). The installer's `-Apply` verify **fails closed** if `StartName` is not that account. If WinSW
-  could not assign the virtual account even with `<allowservicelogon>`, that would be the demonstrated
-  technical requirement justifying the native-pywin32 fallback (see Reversal path).
+- **HOST-PROVEN 2026-07-24 (no longer an assumption):** WinSW v2.12.0 (.NET4) does **not** assign the
+  `NT SERVICE\GuvFXBetaAgent` **virtual** account from `<serviceaccount>` at all — with **or** without
+  `<allowservicelogon>` it installs **LocalSystem** (virtual-account support is a WinSW **v3** feature). The
+  installer's `-Apply` verify caught this both times and refused to start. Therefore the identity is assigned
+  **post-install, not by XML alone**: `sc.exe config <name> obj= "NT SERVICE\GuvFXBetaAgent"` (result
+  captured + validated) flips `StartName` to the virtual account (host-proven: `ChangeServiceConfig
+  SUCCESS`), and an **LSA `SeServiceLogonRight` grant** to the derived service SID makes it start-capable
+  (it is not auto-granted — secedit-verified). The `-Apply` verify then requires `StartName` to be **exactly**
+  the virtual account (no LocalSystem/LocalService/NetworkService fallback), `ProcessId 0`, and
+  `SeServiceLogonRight` present. This supersedes review finding F2 (which was wrong in both directions) and
+  the earlier "sc config obj= failed" incident note (that failure was pywin32-specific; `sc config obj=`
+  takes cleanly for a WinSW-created service).
 - WinSW delivers `CTRL_C_EVENT` to the console child on stop, which Python raises as `KeyboardInterrupt`
   (agent.py `main()` catches it and drains). Bounded by `<stoptimeout>`.
 
@@ -91,7 +94,12 @@ only how to run one child; the SCM knows only the wrapper.
   derived from the name via `sc.exe showsid` **before** the service exists and bound with `Set-Acl` (never
   `icacls`, which cannot resolve the not-yet-existent account → 1332). Grants: **Modify** on
   state/tombstones/slots; **ReadAndExecute** on the agent code, golden image, WinSW dir and the venv. Every
-  grant is post-checked; a missing ACE fails the install.
+  grant is post-checked; a missing ACE fails the install. **Canonical identity-assignment sequence (Nuno,
+  2026-07-24):** WinSW `install` → `sc config obj= "NT SERVICE\GuvFXBetaAgent"` (validated) → LSA grant of
+  `SeServiceLogonRight` to the service SID → fail-closed verify (exact `StartName`, `ProcessId 0`,
+  `SeServiceLogonRight` present, Manual, Stopped, recovery none). WinSW **remains** the approved service
+  host; the XML `<serviceaccount>` is retained (WinSW v3 would honour it) but is **not** relied upon for
+  identity on v2.12.0.
 - **Startup / shutdown.** `<startmode>Manual</startmode>` (no autostart); stop sends Ctrl+C to the child,
   bounded by `<stoptimeout>300 sec</stoptimeout>`, which the installer asserts is greater than
   `BETA_AGENT_DRAIN_TIMEOUT_S` so a stop cannot force-kill a mutation mid-drain (B-6).
