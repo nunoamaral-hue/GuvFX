@@ -699,6 +699,18 @@ class AsciiOnlyScriptTests(SimpleTestCase):
             raw = open(os.path.join(_BUNDLE, name), "rb").read(3)
             self.assertNotEqual(raw, b"\xef\xbb\xbf", f"{name} starts with a UTF-8 BOM")
 
+    def test_no_scope_qualifier_variable_trap(self):
+        """PS 5.1: `$Foo:` reads as a scoped variable ($scope:name) and is a PARSE ERROR unless `scope` is a
+        known scope. Host [Parser]::ParseFile is the authority (RULE 9), but PS 5.1 lives only on Windows, so
+        this cheap lint catches the common case in CI. `$LauncherDir:` in a DoIt description reached main this
+        way; use ${Foo} to delimit the name before a literal colon."""
+        KNOWN = {"env", "global", "script", "local", "private", "using", "variable", "workflow"}
+        pat = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*):")
+        for name in SCRIPTS + (WRAPPER,):
+            for m in pat.finditer(_code(name)):        # comment-stripped: a $Foo: in a comment is harmless
+                self.assertIn(m.group(1).lower(), KNOWN,
+                              f"{name}: '${m.group(1)}:' reads as a scope qualifier in PS 5.1 - use ${{{m.group(1)}}}")
+
 
 class LaunchWrapperTests(SimpleTestCase):
     """ADR-0016: the per-slot launch wrapper launches terminal64 suspended, grants the beta-agent service
