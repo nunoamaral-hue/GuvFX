@@ -350,6 +350,101 @@ class ProcessAttributionScopeTests(SimpleTestCase):
         self.assertIn("onerror=_reraise", source)
 
 
+#: The HRESULT can arrive from GetTask by four different surfaces. A REAL pythoncom.com_error carries it ONLY
+#: in args[0] (no winerror/hresult attributes); pywin32 errors expose .winerror; a wrapped automation error
+#: puts DISP_E_EXCEPTION in args[0] with the real SCODE at excepinfo[5]. A fake that only set attributes would
+#: never exercise the args[0]/excepinfo branch the production path actually uses ([[feedback-review-fakes]]).
+_COM_SURFACES = ("args0", "winerror", "hresult", "excepinfo")
+_DISP_E_EXCEPTION = -2147352567   # 0x80020009
+
+
+class _FakeComError(Exception):
+    """Models each way a COM/pywin32 error surfaces its HRESULT (see ``_COM_SURFACES``). Default ``args0`` is
+    the production-representative pythoncom.com_error (HRESULT in args[0], NO winerror/hresult attributes)."""
+    def __init__(self, hresult, surface="args0"):
+        self.excepinfo = None
+        if surface == "args0":
+            super().__init__(hresult, "com error")                 # args[0] == HRESULT; no attrs
+        elif surface == "winerror":
+            super().__init__("com error"); self.winerror = hresult
+        elif surface == "hresult":
+            super().__init__("com error"); self.hresult = hresult
+        elif surface == "excepinfo":
+            super().__init__(_DISP_E_EXCEPTION, "com error")       # wrapped: real code only in excepinfo[5]
+            self.excepinfo = (None, None, None, None, None, hresult)
+        else:
+            raise ValueError(surface)
+
+
+class _FakeFolder:
+    def __init__(self, *, task=None, raise_hresult=None, surface="args0"):
+        self._task, self._raise, self._surface, self.get_calls = task, raise_hresult, surface, []
+    def GetTask(self, name):
+        self.get_calls.append(name)
+        if self._raise is not None:
+            raise _FakeComError(self._raise, self._surface)
+        return self._task
+    def GetTasks(self, flags):                       # must NOT be reached (exact-name lookup, TSV)
+        raise AssertionError("enumeration (GetTasks) must not be used; exact-name GetTask only")
+
+
+class RegisteredTaskLookupTests(SimpleTestCase):
+    """TSV (2026-07-25): the agent opens the ONE approved task by EXACT NAME and classifies the HRESULT, so
+    the least-privilege service (read+execute on its own tasks, no folder-list) can find them — the old
+    GetTasks(0) enumeration returned nothing for the service and read every present task as task_absent.
+    Every classification is exercised across ALL FOUR COM surfaces (args0 is the real com_error), so a
+    regression that drops the args[0] or excepinfo term cannot pass on an attribute-only fake."""
+
+    _NOT_FOUND, _ACCESS_DENIED, _OTHER = -2147024894, -2147024891, -2147023170   # 0x80070002/05, arbitrary
+
+    def _ops(self, folder):
+        class TL(wso.RealSlotWindowsOps):
+            def _folder(self_inner):
+                return folder
+        return TL(golden_dir=r"C:\GuvFX\golden", slots_root=r"C:\GuvFX\beta\slots")
+
+    def test_exact_task_is_opened_by_name(self):
+        t = object()
+        f = _FakeFolder(task=t)
+        self.assertIs(t, self._ops(f)._registered_task("GuvFXBetaRuntimeStop-1"))
+        self.assertEqual(["GuvFXBetaRuntimeStop-1"], f.get_calls)   # exact name, no enumeration
+
+    def test_file_not_found_is_absent_on_every_surface(self):
+        # 0x80070002 -> genuinely absent -> None, whether the HRESULT arrives via args[0] (real com_error),
+        # an attribute, or wrapped in excepinfo. This is the fail-closed absent side.
+        for s in _COM_SURFACES:
+            self.assertIsNone(self._ops(_FakeFolder(raise_hresult=self._NOT_FOUND, surface=s))._registered_task("X"), s)
+
+    def test_access_denied_is_permission_error_never_absent_on_every_surface(self):
+        # 0x80070005 -> UNAVAILABLE via PermissionError; MUST NOT be read as absent, on ANY surface.
+        for s in _COM_SURFACES:
+            with self.assertRaises(PermissionError, msg=s):
+                self._ops(_FakeFolder(raise_hresult=self._ACCESS_DENIED, surface=s))._registered_task("X")
+
+    def test_other_hresult_propagates_never_absent_on_every_surface(self):
+        # Any other error is unreadable -> propagate, never a silent None, on ANY surface.
+        for s in _COM_SURFACES:
+            with self.assertRaises(_FakeComError, msg=s):
+                self._ops(_FakeFolder(raise_hresult=self._OTHER, surface=s))._registered_task("X")
+
+    def test_the_real_com_error_shape_has_no_hresult_or_winerror_attribute(self):
+        # Guards the fake against drifting back to an over-confident attribute-bearing shape: the default
+        # (production) surface must expose the HRESULT ONLY via args[0], exactly like pythoncom.com_error.
+        e = _FakeComError(self._NOT_FOUND)
+        self.assertFalse(hasattr(e, "winerror"))
+        self.assertFalse(hasattr(e, "hresult"))
+        self.assertEqual(self._NOT_FOUND, e.args[0])
+
+    def test_source_uses_exact_gettask_not_folder_enumeration(self):
+        src = inspect.getsource(wso.RealSlotWindowsOps._registered_task)
+        self.assertIn("folder.GetTask(task_name)", src)
+        self.assertNotIn("folder.GetTasks(", src)      # the CALL (a docstring may name the old path)
+        # The classifier scans every COM surface (args[0] + excepinfo), not just attributes.
+        codes = inspect.getsource(wso._com_error_codes)
+        self.assertIn("args[0]", codes)
+        self.assertIn("excepinfo", codes)
+
+
 # ── WS-A / WS-B follow-up: process-observation + open-handle DECISION logic ──────────────────────────────
 # The Win32 primitives are host-proven during APPLY. Here the logic ON TOP of them is exercised with fakes
 # that model the REAL primitive contracts (``_open_process`` -> (handle, "ok"|"denied"|"gone"); the

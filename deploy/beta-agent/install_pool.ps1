@@ -408,6 +408,42 @@ function Get-GuvfxServiceSidValue {
   return $v
 }
 
+#: Task Scheduler READ+EXECUTE (open + read definition + run). GENERIC_READ(0x120089)|FILE_EXECUTE(0x20).
+#: Deliberately NOT write/delete/change-permissions - the service may find and run its own tasks, nothing more.
+$GuvfxTaskReadRunMask = 0x1200a9
+
+function Grant-GuvfxServiceTaskAccess {
+  <# Grant the beta service SID READ+EXECUTE on ONE beta task (TSV, 2026-07-25). The service looks its task
+     up by exact name and needs task-level read to open it; it must NOT get folder-list, write, delete or
+     change-permissions. Idempotent: any existing ACE for this SID is removed before the single grant is
+     added, so re-running -Apply cannot accumulate ACEs. Uses RawSecurityDescriptor rather than SDDL string
+     surgery so the ACE mask/order is exact and the other ACEs are preserved unchanged. #>
+  param([Parameter(Mandatory)][string]$TaskName, [Parameter(Mandatory)][string]$ServiceSid)
+  if ($ServiceSid -notmatch "^S-1-5-80-\d+-\d+-\d+-\d+-\d+$") { throw "refusing task grant to non-service SID '$ServiceSid'" }
+  if ($TaskName -notmatch "^GuvFXBetaRuntime(Stop)?-[1-9][0-9]*$") { throw "refusing task grant to non-beta task '$TaskName'" }
+  $svc = New-Object -ComObject Schedule.Service; $svc.Connect()
+  $t = $svc.GetFolder("\").GetTask($TaskName)
+  $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor($t.GetSecurityDescriptor(7))
+  $sid = New-Object System.Security.Principal.SecurityIdentifier($ServiceSid)
+  for ($i = $sd.DiscretionaryAcl.Count - 1; $i -ge 0; $i--) {
+    if ($sd.DiscretionaryAcl[$i].SecurityIdentifier -eq $sid) { $sd.DiscretionaryAcl.RemoveAce($i) }
+  }
+  $ace = New-Object System.Security.AccessControl.CommonAce(
+      [System.Security.AccessControl.AceFlags]::None,
+      [System.Security.AccessControl.AceQualifier]::AccessAllowed,
+      $GuvfxTaskReadRunMask, $sid, $false, $null)
+  $sd.DiscretionaryAcl.InsertAce($sd.DiscretionaryAcl.Count, $ace)
+  $t.SetSecurityDescriptor($sd.GetSddlForm([System.Security.AccessControl.AccessControlSections]::All), 0)
+  # Read back and assert EXACTLY this mask for the service SID and nothing broader (RULE 11).
+  $back = New-Object System.Security.AccessControl.RawSecurityDescriptor(($svc.GetFolder("\").GetTask($TaskName)).GetSecurityDescriptor(7))
+  $svcAces = @($back.DiscretionaryAcl | Where-Object { $_.SecurityIdentifier -eq $sid })
+  if ($svcAces.Count -ne 1) { throw "task '$TaskName': expected exactly ONE service ACE, found $($svcAces.Count)" }
+  if ([int]$svcAces[0].AccessMask -ne $GuvfxTaskReadRunMask) {
+    throw ("task '$TaskName': service ACE mask is 0x{0:X} but read+execute 0x{1:X} was authorised - STOP" -f [int]$svcAces[0].AccessMask, $GuvfxTaskReadRunMask)
+  }
+  Write-Host ("evidence task_acl task=$TaskName service_sid=$ServiceSid mask=0x{0:X} result=granted" -f $GuvfxTaskReadRunMask)
+}
+
 function Grant-GuvfxServiceRead {
   <# Grant READ on one file to the beta agent's virtual service account.
 
@@ -791,6 +827,17 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     Remove-Variable plain, bp
   }
 
+  # TSV (2026-07-25): the beta service runs as NT SERVICE\GuvFXBetaAgent and looks its ONE approved task up by
+  # EXACT NAME (win_slot_ops._registered_task). Host-measured: the root task folder grants Authenticated Users
+  # (the service among them) only WRITE, not list, and the tasks carry no service ACE - so the service reads
+  # every present task as task_absent, blocking native STOP/TOMBSTONE. Grant the service READ+EXECUTE
+  # (0x1200a9: open + read the definition + run) on THIS slot's two tasks only. NOT folder-wide, and no
+  # write/delete/change-permissions - a strictly task-scoped, least-privilege grant.
+  DoIt "grant the beta service read+execute on '$launch' and '$stop' (TSV: exact-name lookup needs task read)" {
+    Grant-GuvfxServiceTaskAccess -TaskName $launch -ServiceSid $ServiceSidValue
+    Grant-GuvfxServiceTaskAccess -TaskName $stop   -ServiceSid $ServiceSidValue
+  }
+
   # The approved definition the agent's launch gate asserts against. Read back through the SAME COM
   # interface the agent uses (Schedule.Service), not from the values we intended: Task Scheduler may
   # normalise the principal to a qualified form or a SID, and the gate compares the 7-field digest by exact
@@ -1066,6 +1113,34 @@ if ($Check) {
     throw "staged launch wrapper hash '$stagedHash' != pinned '$LaunchWrapperSha256' - the wrapper was altered - STOP"
   }
   Write-Host "ok   staged launch wrapper matches the pinned hash"
+
+  # TSV: the service must hold read+execute (exactly 0x1200a9) on each of the eight beta tasks and NOTHING
+  # broader - so it can find and run them by exact name but cannot modify or delete them. Read every task's
+  # DACL back from the OS (both -Apply and -VerifyOnly). A missing, broadened or write-bearing service ACE is
+  # a hard stop; production/estate tasks are never inspected or touched.
+  Step "VERIFY task ACLs (service read+execute on the eight beta tasks, nothing broader)"
+  $svcSidV = Get-GuvfxServiceSidValue "GuvFXBetaAgent"
+  $svcSidObj = New-Object System.Security.Principal.SecurityIdentifier($svcSidV)
+  $svcTaskV = New-Object -ComObject Schedule.Service; $svcTaskV.Connect()
+  for ($n = 1; $n -le $PoolSize; $n++) {
+    foreach ($t in @("$LaunchPrefix$n", "$StopPrefix$n")) {
+      $sdV = New-Object System.Security.AccessControl.RawSecurityDescriptor(($svcTaskV.GetFolder("\").GetTask($t)).GetSecurityDescriptor(7))
+      $aces = @($sdV.DiscretionaryAcl | Where-Object { $_.SecurityIdentifier -eq $svcSidObj })
+      if ($aces.Count -ne 1) { throw "task '$t': expected exactly ONE service ACE, found $($aces.Count) - STOP" }
+      # EXACT-equality to read+execute (0x1200A9) is the whole assertion: any write/delete/change-permission
+      # bit would make the mask differ, so a broadened grant is a hard stop by construction.
+      $m = [int]$aces[0].AccessMask
+      if ($m -ne 0x1200a9) { throw ("task '$t': service ACE mask 0x{0:X}, expected read+execute 0x1200A9 - STOP" -f $m) }
+      Write-Host "ok   $t : service holds read+execute only (0x1200A9), no write/delete"
+    }
+  }
+  # Defense in depth: the service must hold NO ACE on the ROOT task FOLDER. A folder-level grant would let it
+  # ENUMERATE every task on the host (incl. production/estate) - the opposite of the exact-name least-privilege
+  # design. Read the folder DACL back and hard-stop on any service ACE.
+  $rootSd = New-Object System.Security.AccessControl.RawSecurityDescriptor(($svcTaskV.GetFolder("\").GetSecurityDescriptor(7)))
+  $rootSvcAces = @($rootSd.DiscretionaryAcl | Where-Object { $_.SecurityIdentifier -eq $svcSidObj })
+  if ($rootSvcAces.Count -ne 0) { throw "root task folder carries $($rootSvcAces.Count) service ACE(s); the service must have NO folder-level access - STOP" }
+  Write-Host "ok   root task folder: service holds NO ACE (no folder-list; exact-name lookup only)"
 
   Step "VERIFY estate untouched (compared against the pre-mutation capture)"
   foreach ($t in $ForbiddenTasks) {

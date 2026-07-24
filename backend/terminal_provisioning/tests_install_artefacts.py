@@ -333,6 +333,74 @@ class LauncherProvisioningTests(SimpleTestCase):
         self.assertIn("c(o(m(m(a(n(d)?)?)?)?)?)?", source)   # the -command prefix ladder
 
 
+class TaskAccessGrantTests(SimpleTestCase):
+    """TSV (2026-07-25): the least-privilege service must be able to open its OWN eight beta tasks by exact
+    name (read+execute) and nothing more, so native STOP/TOMBSTONE can discover and run the terminate task."""
+
+    def test_the_grant_function_exists_and_is_read_execute_only(self):
+        source = _code("install_pool.ps1")
+        self.assertIn("function Grant-GuvfxServiceTaskAccess", source)
+        # 0x1200a9 == GENERIC_READ | FILE_EXECUTE == open + read definition + run. Nothing broader.
+        self.assertIn("$GuvfxTaskReadRunMask = 0x1200a9", source)
+        # The grant builds ONE AccessAllowed ACE with exactly that mask and asserts equality on read-back;
+        # it never grants a broad task mask (FullControl etc. appear only in the unrelated filesystem-ACL
+        # VERIFY blocks, so they are not forbidden here — the exact-mask equality is the real guarantee).
+        grant = source[source.index("function Grant-GuvfxServiceTaskAccess"):]
+        grant = grant[:grant.index("Write-Host") + 200]
+        self.assertIn("$GuvfxTaskReadRunMask, $sid", grant)   # the ACE uses exactly the read+execute mask
+        for broad in ("GENERIC_ALL", "0x1F01FF"):
+            self.assertNotIn(broad, grant)
+
+    def _grant_fn(self):
+        # The Grant-GuvfxServiceTaskAccess function body only, so an assertion pins THIS guard and cannot be
+        # satisfied by the same regex/token in an unrelated function (e.g. Grant-GuvfxServiceRead).
+        s = _code("install_pool.ps1")
+        s = s[s.index("function Grant-GuvfxServiceTaskAccess"):]
+        return s[:s.index("Write-Host")]
+
+    def test_the_grant_is_scoped_to_beta_service_and_beta_tasks(self):
+        grant = self._grant_fn()
+        # BOTH refusal guards pinned INSIDE the grant function — refuses any non-service SID and any non-beta
+        # task, so it can never target a production/estate task or hand access to a non-service principal.
+        self.assertIn('refusing task grant to non-service SID', grant)
+        self.assertIn('refusing task grant to non-beta task', grant)
+        self.assertIn(r'^S-1-5-80-\d+-\d+-\d+-\d+-\d+$', grant)
+        self.assertIn('^GuvFXBetaRuntime(Stop)?-[1-9][0-9]*$', grant)
+
+    def test_the_grant_is_applied_to_both_task_families_per_slot(self):
+        source = _code("install_pool.ps1")
+        self.assertIn("Grant-GuvfxServiceTaskAccess -TaskName $launch -ServiceSid $ServiceSidValue", source)
+        self.assertIn("Grant-GuvfxServiceTaskAccess -TaskName $stop", source)
+
+    def test_the_grant_is_idempotent_removes_prior_service_ace_first(self):
+        grant = self._grant_fn()
+        # SID-scoped RemoveAce MUST precede InsertAce, so a re-Apply strips the prior service ACE before adding
+        # exactly one — no accumulation, no stripping of the just-added ACE.
+        self.assertIn("SecurityIdentifier -eq $sid", grant)
+        self.assertIn("RemoveAce", grant)
+        self.assertIn("InsertAce", grant)
+        self.assertLess(grant.index("RemoveAce"), grant.index("InsertAce"))
+
+    def test_verify_reads_back_the_task_acls_in_both_apply_and_verifyonly(self):
+        source = _code("install_pool.ps1")
+        # A dedicated VERIFY step asserts the service ACE is exactly 0x1200A9 on every beta task.
+        self.assertIn('Step "VERIFY task ACLs', source)
+        self.assertIn("expected read+execute 0x1200A9", source)
+        # It lives in the $Check VERIFY section (so -VerifyOnly certifies it too).
+        self.assertLess(source.index('Step "VERIFY task ACLs'), source.index('pool VERIFIED'))
+
+    def test_the_service_gets_no_folder_level_task_grant(self):
+        # Only task-level grants: EVERY SetSecurityDescriptor call must write the per-task object ($t), never
+        # a folder — verb-scoped so an intermediate-variable folder grant ($r = GetFolder; $r.Set...) cannot
+        # evade it. AND the runtime VERIFY backstops it by asserting the root folder DACL has no service ACE.
+        source = _code("install_pool.ps1")
+        for m in re.finditer(r"(\$?\w+)\.SetSecurityDescriptor\(", source):
+            self.assertEqual("$t", m.group(1),
+                             f"SetSecurityDescriptor target must be the per-task $t, got '{m.group(1)}'")
+        self.assertIn("root task folder carries", source)               # the folder-DACL VERIFY exists
+        self.assertIn("service must have NO folder-level access", source)
+
+
 class NoAmbiguousInterpolationTests(SimpleTestCase):
     """`$Prefix1` parses as a variable named Prefix1, not as $Prefix followed by a literal 1."""
 

@@ -211,6 +211,29 @@ def portable_switch_present(arguments) -> bool:
 
 #: HRESULT/winerror values that mean "denied" rather than "broken".
 _ACCESS_DENIED_CODES = (5, -2147024891)                  # ERROR_ACCESS_DENIED, E_ACCESSDENIED (0x80070005)
+#: HRESULT/winerror values that mean a task is genuinely ABSENT (not merely unreadable). Host-measured
+#: (2026-07-25): ``ITaskFolder.GetTask`` on a missing task returns ERROR_FILE_NOT_FOUND — the documented
+#: not-found result the old enumeration path was written before this was known.
+_FILE_NOT_FOUND_CODES = (2, -2147024894)                 # ERROR_FILE_NOT_FOUND, HRESULT 0x80070002
+
+
+def _com_error_codes(exc):
+    """Yield every place a COM/pywin32 error may carry its HRESULT, as ints.
+
+    ``pythoncom.com_error`` has NO ``winerror``/``hresult`` attributes — it puts the HRESULT in ``args[0]``
+    (``args == (hresult, strerror, excepinfo, argerror)``). When a failure instead arrives WRAPPED as a
+    ``DISP_E_EXCEPTION`` automation exception, ``args[0]`` is ``0x80020009`` and the real code is the SCODE at
+    ``excepinfo[5]``. Scanning all four means the same HRESULT classifies identically however the COM layer
+    surfaces it, so ``pywin32`` (winerror), direct ``com_error`` (args[0]) and wrapped automation errors
+    (excepinfo) are all handled — the observe path is never mis-filed for the sake of the surfacing form.
+    """
+    yield getattr(exc, "winerror", None)
+    yield getattr(exc, "hresult", None)
+    if getattr(exc, "args", None):
+        yield exc.args[0]
+    ei = getattr(exc, "excepinfo", None)
+    if isinstance(ei, (tuple, list)) and len(ei) > 5:
+        yield ei[5]
 
 
 def translate_denial(exc):
@@ -221,8 +244,7 @@ def translate_denial(exc):
     translation an ACL misconfiguration is filed as a transient error and retried forever, and three
     reason codes in the classification map are unreachable.
     """
-    for value in (getattr(exc, "winerror", None), getattr(exc, "hresult", None),
-                  (exc.args[0] if getattr(exc, "args", None) else None)):
+    for value in _com_error_codes(exc):
         if isinstance(value, int) and value in _ACCESS_DENIED_CODES:
             raise PermissionError(str(exc.__class__.__name__)) from exc
     raise exc
@@ -518,18 +540,26 @@ class RealSlotWindowsOps(SlotWindowsOps):
             translate_denial(exc)
 
     def _registered_task(self, task_name: str):
-        """[R:cannot-missing-task-hresult] No Microsoft source maps a specific HRESULT to an absent task, so
-        a failed ``GetTask`` cannot be read as "not there". Enumeration is used instead: absence from the
-        folder listing is POSITIVE evidence of absence; anything else propagates as unreadable."""
+        """Open the ONE approved task by EXACT NAME (TSV, 2026-07-25).
+
+        ``ITaskFolder.GetTask`` needs read access to THAT task only, so the least-privilege service is
+        granted a read+execute ACE on its own eight beta tasks and NOT folder-enumerate access. The HRESULT
+        separates the fail-closed states — host-measured under ``NT SERVICE\\GuvFXBetaAgent``:
+          * ERROR_FILE_NOT_FOUND (0x80070002) -> the task is genuinely ABSENT -> ``None``;
+          * ERROR_ACCESS_DENIED (0x80070005) -> UNAVAILABLE via ``PermissionError``, NEVER "absent";
+          * anything else -> propagated as unreadable.
+        This replaces the former ``GetTasks(0)`` enumeration, which returned nothing for the service because
+        the root task folder grants Authenticated Users only write, not list — so the agent read every
+        present task as ``task_absent``. Exact-name lookup is the documented least-privilege path (a caller
+        may open a task it has rights on without rights to list the whole folder)."""
         folder = self._folder()
         try:
-            tasks = list(folder.GetTasks(0))
+            return folder.GetTask(task_name)
         except Exception as exc:                             # noqa: BLE001
-            translate_denial(exc)
-        for task in tasks:
-            if str(task.Name).lower() == str(task_name).lower():
-                return task
-        return None
+            for value in _com_error_codes(exc):
+                if isinstance(value, int) and value in _FILE_NOT_FOUND_CODES:
+                    return None                              # documented not-found -> ABSENT
+            translate_denial(exc)                            # access-denied -> PermissionError; else re-raise
 
     def query_task(self, task_name: str):
         task = self._registered_task(task_name)

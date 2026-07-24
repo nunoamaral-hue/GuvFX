@@ -112,7 +112,7 @@ caveat. The categorisation below reflects the substance, not the label.
 
 | Question | Why it is unresolved | What the adapter does |
 |---|---|---|
-| Exact HRESULT for a **missing task** via `GetTask` | No Microsoft source maps a specific code to an absent task | Enumerate `GetTasks(0)` and test membership by name — absence from the enumeration is *positive* evidence, an error is not |
+| Exact HRESULT for a **missing task** via `GetTask` | RESOLVED (TSV, host-measured 2026-07-25 under the service identity) | `GetTask(exact)` + HRESULT: `0x80070002` (ERROR_FILE_NOT_FOUND) → absent (`None`); `0x80070005` (ERROR_ACCESS_DENIED) → UNAVAILABLE via `PermissionError`, never absent; else → re-raise. Replaced the `GetTasks(0)` enumeration, which needed folder-LIST access the least-privilege service lacks and so read every present task as absent. |
 | Whether `ProcessIdToSessionId` succeeds with only `PROCESS_QUERY_LIMITED_INFORMATION` | Doc says the full right; the function takes a PID, not a handle | Request `PROCESS_QUERY_INFORMATION` first, fall back to LIMITED, and record which succeeded |
 | `GetLastError` for `OpenProcess` on a genuinely dead PID | ERROR_INVALID_PARAMETER (87) is empirical, not documented | 87 → treat as gone (skip); **5 → treat as denied, never as absent** |
 | Whether **8.3 aliasing** is enabled on the volume holding `C:\GuvFX` | Per-volume setting; unknowable off-host | Normalise both paths with `GetLongPathNameW`; if normalisation fails, **raise** rather than risk a wrong containment verdict |

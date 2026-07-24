@@ -6,6 +6,30 @@
 
 ## Execution workstream log
 
+- **2026-07-25 — B3P-2 TSV: Task Scheduler visibility remediation (the final lifecycle blocker). 🟢 code + review complete, 🟠 host proof + merge pending.**
+  **What.** Native STOP returned `task_absent` because the least-privilege service `NT SERVICE\GuvFXBetaAgent`
+  could not discover its per-slot scheduled tasks. **Root cause (host-measured, service-context authoritative):**
+  the root Task Scheduler folder grants Authenticated Users (the service among them) only `FW` write, not
+  read/list — so the agent's `GetTasks(0)` enumeration returned nothing; and the individual tasks carry no
+  service ACE. `GetTask(exact)` returns `0x80070005` (access-denied), distinguishable from `0x80070002`
+  (not-found). **Fix (two parts, both least-privilege):** (1) `win_slot_ops._registered_task` — exact-name
+  `GetTask` + HRESULT classification (`0x80070002`→absent, `0x80070005`→`PermissionError`/UNAVAILABLE never
+  absent, else→re-raise), scanning every COM surface (winerror/hresult/args[0]/excepinfo[5]) via a shared
+  `_com_error_codes`; (2) `install_pool.ps1` `Grant-GuvfxServiceTaskAccess` grants the service exactly
+  `0x1200a9` (read+execute) on the 8 beta tasks only, idempotently (RawSecurityDescriptor), scoped-refusal
+  guards, per-grant + VERIFY-section read-backs (both `-Apply` and `-VerifyOnly`), plus a root-folder-DACL
+  VERIFY asserting the service has NO folder-level ACE. `uninstall` deletes the tasks (ACE goes with them).
+  **Phase A** temporarily granted the service read on one task and proved `GetTask`+read succeed with no
+  modify/delete, then reverted cleanly. **Adversarial review (4 lenses, each finding independently verified)
+  — 5 confirmed, all fixed:** MEDIUM (the test fake set winerror/hresult but a real `com_error` carries the
+  HRESULT only in args[0], so the tests never exercised the production path — fixed by modelling all four COM
+  surfaces) + 4 LOW (excepinfo scanning, idempotency order test, SID-scope test slice, folder-grant verb-scope
+  + runtime folder-DACL VERIFY). **Mutation-tested:** all fail-opens killed (incl. the args[0]/excepinfo drop
+  the old fake missed). 720 `terminal_provisioning` tests + full `make check` green (1703 backend, 0 lint).
+  Stale contract/research docs corrected to the host-measured HRESULTs. **Not yet done:** merge, re-stage,
+  service-context task-discovery proof, then native NEGOTIATE→VERIFY→START→PRESENT→STOP→ABSENT→TOMBSTONE→
+  RELEASE→Available. ADR-0016 process-ACL mechanism untouched. Production MT5 4336 + bridge 13292 untouched.
+
 - **2026-07-25 — B3P-2 ADR-0016 Option A: launch-time process-ACL grant + observe revert. 🟢 code + review complete, 🟠 host proof pending.**
   **What.** Completes unprivileged PRESENT attribution (the 4th and final least-privilege blocker: the service
   cannot open a cross-account slot process). A thin, admin-only, hash-pinned launch **wrapper**
