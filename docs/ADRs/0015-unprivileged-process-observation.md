@@ -82,6 +82,29 @@ process (the start time is carried as identity evidence for the upstream birth/t
   the target host* may a precisely identified minimal Windows right, or a narrowly scoped privileged broker,
   be proposed — under a separate sponsor decision.
 
+## Path normalisation (PN refinement — Nuno, 2026-07-25, code fix; NO ACL/privilege grant)
+
+The first host proof under the service identity got PAST enumeration and failed at `path_normalisation_failed`:
+`_long_path` called `GetLongPathNameW` **unconditionally**, and that resolves 8.3 short names by **listing
+every parent directory** (`FILE_LIST_DIRECTORY`). The least-privilege service is granted **nothing** on
+`C:\GuvFX` and `C:\GuvFX\beta` (only `Modify` on `…\slots` and below); `SeChangeNotifyPrivilege`
+(bypass-traverse) lets it *reach* the slot but not *list* those parents. 8.3 name creation is ENABLED on C:,
+so the resolution can't be blindly skipped. Per decision, fix in code — **do not grant the service LIST on
+those parents**.
+
+**Two-stage normalisation** (`_long_path`, `_has_short_name_component`):
+- **Stage A — lexical, no filesystem.** `ntpath.normpath` on the separator-normalised path: absolute form,
+  drive, and dot/dot-dot elimination. Needs no parent listing and prevents a `..` escaping the slot. This is
+  the only stage an ordinary (long-form) path uses.
+- **Stage B — filesystem, only where required.** `GetLongPathNameW` is called **only** when a component shows
+  8.3 short-name evidence (a tilde) — the reliable marker, since a name that fits 8.3 has short == long and a
+  name that doesn't appears WITH a `~N` tilde. A required resolution the service cannot perform fails **closed**
+  with `short_name_unresolved` (an OBSERVATION reason); it is **never** silently accepted as a normal long
+  path, and an ordinary long path is **never** failed merely because an unrelated parent is not listable.
+
+Reparse detection, containment (prefix-safe: slot 1 ≠ slot 10), golden/production exclusion, cross-slot
+isolation and case-insensitive comparison are all preserved (`is_beneath_path` / `os.path.realpath` unchanged).
+
 ## Consequences
 
 - The observe-dependent lifecycle (VERIFY/STOP/TOMBSTONE/RELEASE) can work under the least-privilege service

@@ -19,7 +19,9 @@ findings document, so a reviewer can check the basis of any line without reading
 from __future__ import annotations
 
 import hashlib
+import ntpath
 import os
+import re
 import stat
 import subprocess
 
@@ -118,6 +120,27 @@ def paths_equal(a: str, b: str) -> bool:
 def is_beneath_path(path: str, root: str) -> bool:
     p, r = normalise(path), normalise(root)
     return p == r or p.startswith(r + "\\")
+
+
+#: A GENERATED 8.3 short-name component: an 8.3-shaped stem, then ``~`` followed by DIGITS, optional 1-3
+#: char extension, anchored to the whole component. This is deliberately NOT "any tilde": ``~`` is a legal
+#: character in ordinary LONG filenames (``~$Report.xlsx``, ``~WRL0001.tmp``, ``backup~old``, ``settings.ini~``),
+#: and treating those as short names would force a filesystem resolution that the least-privilege service
+#: cannot perform (it must list non-listable parents) — permanently blocking release on an incidental tilde
+#: file. The generated short-name form is ``STEM~<digits>[.EXT]``; the ``~<digit>`` is the discriminator.
+_SHORT_NAME_COMPONENT = re.compile(r"^[^\\/~]{1,8}~[0-9]{1,7}(\.[^\\/.\s]{1,3})?$", re.IGNORECASE)
+
+
+def _has_short_name_component(path: str) -> bool:
+    """True if any component of ``path`` is a GENERATED 8.3 short name (``STEM~N[.EXT]``). ADR-0015/PN: a
+    name that fits 8.3 has short == long apart from case (handled by case-folding in ``is_beneath_path``);
+    a name that does NOT fit appears WITH a ``~N`` tilde in its short form — that ``~<digit>`` token, in an
+    8.3-shaped component, is the reliable marker. A component that is not a generated short name is already
+    long-form, so NO filesystem 8.3 resolution — and NO parent-directory listing — is required for it. This
+    is what lets the least-privilege service normalise an ordinary slot path it cannot parent-list, while
+    still resolving (or failing closed on) a genuine short-name path."""
+    return any(_SHORT_NAME_COMPONENT.match(comp)
+               for comp in (path or "").replace("/", "\\").split("\\"))
 
 
 def select_slot_process(candidates: list, slot_path: str):
@@ -608,7 +631,12 @@ class RealSlotWindowsOps(SlotWindowsOps):
                     continue
                 if sid != expected_sid:
                     continue                     # openable, WRONG OWNER -> another account (never the slot)
-                if not is_beneath_path(self._long_path(image), canonical_slot):
+                try:
+                    image_norm = self._long_path(image)
+                except WindowsOpsError:
+                    unresolved.append(pid)       # required 8.3 resolution of the image failed -> fail closed
+                    continue
+                if not is_beneath_path(image_norm, canonical_slot):
                     continue                     # openable, right owner, running from ELSEWHERE
                 try:
                     created = self._creation_filetime(api, handle)
@@ -697,15 +725,31 @@ class RealSlotWindowsOps(SlotWindowsOps):
             k32.CloseHandle(snap)
 
     def _long_path(self, path: str) -> str:
-        """[R:short-name-83-aliasing] 8.3 aliasing may or may not be enabled on the target volume — it is
-        per-volume configurable and unknowable off-host. Both sides of a containment comparison are
-        normalised to their long form; if normalisation fails we RAISE, because a containment verdict
-        computed from possibly-aliased paths is worse than no verdict."""
+        """Two-stage path normalisation (ADR-0015 / PN). A BLIND ``GetLongPathNameW`` resolves 8.3 short names
+        by LISTING every parent directory — access the least-privilege service account lacks on ``C:\\GuvFX``
+        and ``C:\\GuvFX\\beta`` (host-measured 2026-07-25), which made it fail on the whole tree even though
+        the service can traverse to and modify its own slots. So GetLongPathNameW is NOT called blindly.
+
+        STAGE A (pure lexical, NO filesystem): canonicalise with Windows path semantics — separators, drive,
+        and dot/dot-dot elimination — via ``ntpath.normpath``. This alone yields a comparable canonical form
+        and needs no parent listing; it also prevents a ``..`` component escaping the slot.
+
+        STAGE B (filesystem, ONLY where required): resolve 8.3 short names via ``GetLongPathNameW`` ONLY for a
+        path that shows short-name evidence (a component containing a tilde — see ``_has_short_name_component``).
+        8.3 short names are the only way a long-form path differs from its stored form, so a path with no
+        tilde is already long and needs no listing. A REQUIRED resolution the service cannot perform fails
+        CLOSED with a specific ``short_name_unresolved`` — NEVER silently accepted as a normal long path, and
+        an ordinary long path NEVER fails merely because an unrelated parent is not listable. ``[R:short-name-
+        83-aliasing]`` still holds: a genuine 8.3 component is resolved or the verdict is withheld."""
+        lexical = ntpath.normpath((path or "").replace("/", "\\"))
+        if not _has_short_name_component(lexical):
+            return lexical                       # already long-form: no GetLongPathNameW, no parent LIST
         api = self._win32()
         buf = api["ctypes"].create_unicode_buffer(32768)
-        written = api["k32"].GetLongPathNameW(path, buf, 32768)
+        written = api["k32"].GetLongPathNameW(lexical, buf, 32768)
         if not written:
-            raise WindowsOpsError("path_normalisation_failed")
+            # A genuine short-name component we were REQUIRED to resolve could not be (denied/absent).
+            raise WindowsOpsError("short_name_unresolved")
         return buf.value
 
     def _open_process(self, api, pid):
@@ -809,7 +853,11 @@ class RealSlotWindowsOps(SlotWindowsOps):
                 if e.is_dir(follow_symlinks=False):
                     stack.append(e.path)
                 elif e.is_file(follow_symlinks=False):
-                    out.append(self._long_path(e.path))
+                    # ``os.scandir`` on a directory the service CAN list already yields LONG entry names, so
+                    # ``e.path`` (long root + long name) is fully long — do NOT re-resolve it through
+                    # ``_long_path``. Re-resolving would run Stage B (and its parent listing) for any file
+                    # incidentally shaped like a short name, blocking cleanup on a benign tilde file.
+                    out.append(e.path)
         return out
 
     def open_handles(self, path: str) -> bool:
@@ -832,11 +880,12 @@ class RealSlotWindowsOps(SlotWindowsOps):
         handle to a *directory* object — as opposed to a file within it — is not registerable with RM and is
         not separately detected; the mutating move that follows would itself fail on such a handle.)
         """
-        # EXISTENCE FIRST — before any canonicalisation. GetLongPathNameW (self._long_path) returns 0 for a
-        # path whose components are not all on disk, so canonicalising a GONE directory RAISES. verify_cleanup
-        # calls open_handles(slot_path) AFTER the tombstone move, when the path is absent: a gone directory
-        # holds nothing, so it must return False here, mirroring query_slot_process's path_exists-then-canon
-        # order. (Off-host the fake path_exists governs this; on-host GetLongPathNameW is the reason.)
+        # EXISTENCE FIRST. verify_cleanup calls open_handles(slot_path) AFTER the tombstone move, when the
+        # path is absent: a gone directory holds nothing, so it must return False here. Since ADR-0015/PN
+        # ``_long_path`` no longer RAISES on a gone no-tilde path (Stage A returns the lexical form), the
+        # backstop for a moved-away slot is this existence check plus ``_enumerate_slot_files``' ``os.scandir``
+        # — which WOULD fail closed (``handle_observation_unavailable``) on a gone dir. Returning False first
+        # is what keeps a legitimately-absent slot from being read as an observation failure.
         if not self.path_exists(path):
             return False
         canonical = self._long_path(path)
