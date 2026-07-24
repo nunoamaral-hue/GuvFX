@@ -1087,3 +1087,59 @@ class InterpreterValidationTests(SimpleTestCase):
                 stmt = line.split("#", 1)[0]
                 if "python311.exe" in stmt and ("&" in stmt or "Start-Process" in stmt):
                     self.fail(f"{name} executes the installer path: {line.strip()}")
+
+
+class FirewallScopedBlockTests(SimpleTestCase):
+    """Report C / Workstream F: restrict :8791 to the backend with a scoped BLOCK + ALLOW, WITHOUT
+    changing the machine-wide profile default.
+
+    The bridge (:8788) is admitted by the broad Tailscale-In allow; that same rule over-exposes :8791 to
+    the whole tailnet. A Windows Block rule wins over an Allow, so a block scoped to 'everything except the
+    backend' denies non-backend peers while leaving the backend (and the bridge) reachable.
+    """
+
+    def test_it_does_not_require_or_change_the_machine_default(self):
+        code = _code("firewall.ps1")
+        # the old hard failure on DefaultInboundAction != Block is gone
+        self.assertNotIn("expected 'Block' - the scoped allow is not safe", code)
+        self.assertNotIn('DefaultInboundAction -ne "Block"', code)
+        # and nothing sets a profile default
+        self.assertNotIn("Set-NetFirewallProfile", code)
+
+    def test_it_adds_a_scoped_block_and_a_scoped_allow(self):
+        code = _code("firewall.ps1")
+        self.assertIn("-Action Block -Protocol TCP", code)
+        self.assertIn("-Action Allow -Protocol TCP", code)
+        self.assertIn("$BlockRuleName", code)
+        # both scoped to the agent port and the bind interface
+        self.assertIn("-LocalPort $Port -LocalAddress $Interface -RemoteAddress $BlockRemoteRanges", code)
+        self.assertIn("-LocalPort $Port -LocalAddress $Interface -RemoteAddress $AllowFrom", code)
+
+    def test_the_block_excludes_the_backend(self):
+        """A block that included the backend would deny it — the whole point is to allow it through."""
+        code = _code("firewall.ps1")
+        self.assertIn("remote INCLUDES the backend", code)   # the verify-time guard, in code
+        self.assertIn("it would deny the backend", code)
+        # the complement is derived from the backend IP, so a typo cannot silently widen exposure
+        self.assertIn("[System.Net.IPAddress]::Parse($AllowFrom).GetAddressBytes()", code)
+
+    def test_broad_allows_are_neutralised_not_fatal(self):
+        code = _code("firewall.ps1")
+        self.assertIn("NEUTRALISED by the scoped block", code)
+        # the old hard Fail on a pre-existing broad allow is gone
+        self.assertNotIn("BEFORE adding the agent rule or starting the service", code)
+
+    def test_it_never_touches_the_bridge_port(self):
+        code = _code("firewall.ps1")
+        # 8788 may appear only in an untouched-assurance message, NEVER in a mutating position
+        for line in code.splitlines():
+            if "8788" in line:
+                for mutating in ("New-NetFirewallRule", "Remove-NetFirewallRule", "Set-NetFirewallRule",
+                                 "-LocalPort", "-RemotePort"):
+                    self.assertNotIn(mutating, line, f"firewall.ps1 acts on 8788: {line.strip()}")
+        self.assertIn("bridge rules (:8788) and all unrelated rules untouched", _read("firewall.ps1"))
+
+    def test_the_default_agent_port_is_8791_from_the_backend_only(self):
+        source = _read("firewall.ps1")
+        self.assertIn("[int]$Port                 = 8791", source)
+        self.assertIn('$AllowFrom         = "100.119.23.29"', source)

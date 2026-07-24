@@ -9,11 +9,17 @@
 #
 # It NEVER touches the bridge (:8788) or backtest (:8787) rules.
 param(
-  [string]$RuleName          = "GuvFX-Beta-Agent-In",
+  [string]$RuleName          = "GuvFX-Beta-Agent-In",              # scoped ALLOW: :8791 from the backend only
+  [string]$BlockRuleName     = "GuvFX-Beta-Agent-Block-NonBackend", # scoped BLOCK: :8791 from everything else
   [string]$ServiceName       = "GuvFXBetaAgent",             # to resolve the REAL listening image
   [int]$Port                 = 8791,
   [string]$AllowFrom         = "100.119.23.29",              # GuvFX backend / control plane (Tailscale) - ONLY source
   [string]$Interface         = "100.79.101.19",              # private/Tailscale bind address
+  # The complement of $AllowFrom over the whole IPv4 space, as two ranges. This is the BLOCK rule's remote
+  # scope: "everything except the backend". Windows Firewall has no native "except", and a Block rule
+  # ALWAYS wins over an Allow rule for overlapping traffic - so the block MUST exclude the backend, or it
+  # would also deny the backend. Derived from $AllowFrom below; overridable only for tests.
+  [string[]]$BlockRemoteRanges = @(),
   # Fallback listener-image list. The service host is PythonService.exe (pywin32); this list is only a
   # fallback for rule scoping. It names the beta VENV interpreter, never C:\GuvFX\python311.exe (the
   # Python installer) - see install_service.ps1.
@@ -44,10 +50,25 @@ $profileName = switch ($cat) { "DomainAuthenticated" { "Domain" } default { $cat
 if ($profileName -eq "Public") { Fail "interface $Interface is on the Public profile; refusing (expected Private/Domain)" }
 if ($profileName -notin @("Private", "Domain")) { Fail "unexpected profile '$profileName' for $Interface; resolve manually" }
 $fp = Get-NetFirewallProfile -Name $profileName
-if ($fp.DefaultInboundAction -ne "Block") {
-  Fail "profile '$profileName' DefaultInboundAction is '$($fp.DefaultInboundAction)', expected 'Block' - the scoped allow is not safe without default-deny inbound"
+# Report C (accepted): this profile's DefaultInboundAction is 'NotConfigured', which Windows already
+# resolves to Block for inbound. We do NOT change the machine-wide default (out of scope, whole-estate).
+# Protection for :8791 comes from the SCOPED BLOCK added below, not from the profile default - so an
+# unset default is not a failure here, only reported.
+Write-Host "ok   interface $Interface -> profile '$profileName' (DefaultInboundAction=$($fp.DefaultInboundAction); scoped block below provides :$Port protection)"
+
+# The backend must be a single, parseable address; the block's complement is derived from it so a typo
+# cannot silently widen exposure.
+try { [void][System.Net.IPAddress]::Parse($AllowFrom) } catch { Fail "backend endpoint '$AllowFrom' is not a valid IP" }
+if ($BlockRemoteRanges.Count -eq 0) {
+  # complement of a single /32 over IPv4: [0.0.0.0 .. backend-1] and [backend+1 .. 255.255.255.255]
+  $b = [System.Net.IPAddress]::Parse($AllowFrom).GetAddressBytes()
+  [Array]::Reverse($b); $n = [System.BitConverter]::ToUInt32($b, 0)
+  function IntToIp([uint32]$v) { $x=[System.BitConverter]::GetBytes($v);[Array]::Reverse($x);([System.Net.IPAddress]::new($x)).ToString() }
+  $BlockRemoteRanges = @()
+  if ($n -gt 0)          { $BlockRemoteRanges += ("0.0.0.0-" + (IntToIp ($n - 1))) }
+  if ($n -lt [uint32]4294967295) { $BlockRemoteRanges += ((IntToIp ($n + 1)) + "-255.255.255.255") }
 }
-Write-Host "ok   interface $Interface -> profile '$profileName' (DefaultInboundAction=Block)"
+Write-Host "ok   block-remote (all except backend) = $($BlockRemoteRanges -join ' , ')"
 
 # 2. Resolve the ACTUAL listening image of the installed service. Under pywin32 the socket is owned by the
 #    service host image (e.g. PythonService.exe), NOT python311.exe - so a pre-existing broad allow for the
@@ -110,22 +131,58 @@ foreach ($r in (Get-NetFirewallRule -Enabled True -Direction Inbound -Action All
     $danger += "[$($r.DisplayName)] port=$($pf.LocalPort) remote=$($remote -join ',') program=$prog"
   }
 }
+# Report C: the expected broad allow is Tailscale-In (program=Any, port=Any, remote=Any on $Interface). It
+# is NOT removed - it carries the bridge (:8788) and all other tailnet traffic. The scoped BLOCK added
+# below neutralises its effect on :$Port specifically, because a Block rule wins over an Allow rule for
+# overlapping traffic. So a broad allow here is reported, not fatal - the block is the mitigation.
 if ($danger.Count -gt 0) {
-  Write-Host "DANGER pre-existing inbound allow rules could expose :$Port beyond the backend:"
+  Write-Host "note pre-existing broad inbound allow(s) cover :$Port from non-backend - NEUTRALISED by the scoped block:"
   $danger | ForEach-Object { Write-Host "  - $_" }
-  Fail "resolve the above (narrow/remove them or add a higher-priority block for :$Port from non-backend) BEFORE adding the agent rule or starting the service"
+} else {
+  Write-Host "ok   no pre-existing inbound allow rule authorises :$Port from a non-backend source"
 }
-Write-Host "ok   no pre-existing inbound allow rule authorises :$Port from a non-backend source"
 
-# 4. Add the single scoped allow (only with -Apply).
+# 4. Add the SCOPED BLOCK (everything except the backend) and the SCOPED ALLOW (backend only).
+#    The block is what restricts :$Port; the allow makes the backend path explicit (belt-and-braces with
+#    the existing Tailscale-In). A Windows Block rule wins over any Allow for overlapping traffic, and the
+#    block EXCLUDES the backend, so: non-backend -> matched by block -> DENIED; backend -> not matched by
+#    block -> allowed. Neither rule covers :8788, so the bridge is untouched.
 if ($Apply) {
+  if (Get-NetFirewallRule -DisplayName $BlockRuleName -ErrorAction SilentlyContinue) {
+    Write-Host "note block rule '$BlockRuleName' already exists; leaving as-is"
+  } else {
+    New-NetFirewallRule -DisplayName $BlockRuleName -Direction Inbound -Action Block -Protocol TCP `
+      -LocalPort $Port -LocalAddress $Interface -RemoteAddress $BlockRemoteRanges -Profile $profileName | Out-Null
+    Write-Host "ok   added inbound BLOCK: TCP $Port on $Interface from all-except-$AllowFrom (profile '$profileName')"
+  }
   if (Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue) {
-    Write-Host "note rule '$RuleName' already exists; leaving as-is"
+    Write-Host "note allow rule '$RuleName' already exists; leaving as-is"
   } else {
     New-NetFirewallRule -DisplayName $RuleName -Direction Inbound -Action Allow -Protocol TCP `
       -LocalPort $Port -LocalAddress $Interface -RemoteAddress $AllowFrom -Profile $profileName | Out-Null
-    Write-Host "ok   added inbound allow: TCP $Port on $Interface from $AllowFrom only (profile '$profileName')"
+    Write-Host "ok   added inbound ALLOW: TCP $Port on $Interface from $AllowFrom only (profile '$profileName')"
   }
+
+  # 5. Verify: both rules exist, scoped correctly, and no OTHER rule (esp. bridge :8788) was changed.
+  $bk = Get-NetFirewallRule -DisplayName $BlockRuleName -ErrorAction Stop
+  $al = Get-NetFirewallRule -DisplayName $RuleName -ErrorAction Stop
+  if ($bk.Action -ne "Block") { Fail "'$BlockRuleName' is $($bk.Action), expected Block" }
+  if ($al.Action -ne "Allow") { Fail "'$RuleName' is $($al.Action), expected Allow" }
+  $bkPort = ($bk | Get-NetFirewallPortFilter).LocalPort
+  $alPort = ($al | Get-NetFirewallPortFilter).LocalPort
+  if ("$bkPort" -ne "$Port" -or "$alPort" -ne "$Port") { Fail "a scoped rule is not on :$Port (block=$bkPort allow=$alPort)" }
+  $alRemote = @(($al | Get-NetFirewallAddressFilter).RemoteAddress)
+  if ($alRemote -contains "Any" -or ($alRemote | Where-Object { $_ -ne $AllowFrom }).Count -gt 0) {
+    Fail "'$RuleName' remote is '$($alRemote -join ',')', expected only $AllowFrom"
+  }
+  $bkRemote = @(($bk | Get-NetFirewallAddressFilter).RemoteAddress)
+  if ($bkRemote -contains $AllowFrom) { Fail "'$BlockRuleName' remote INCLUDES the backend $AllowFrom - it would deny the backend" }
+  Write-Host "ok   verified: BLOCK :$Port from all-except-$AllowFrom + ALLOW :$Port from $AllowFrom, both on $Interface/$profileName"
+  Write-Host "ok   bridge rules (:8788) and all unrelated rules untouched - this script only added the two :$Port rules"
 } else {
-  Write-Host "plan Would add inbound allow: TCP $Port on $Interface from $AllowFrom only (profile '$profileName'). Re-run with -Apply."
+  Write-Host "plan Would add TWO rules on $Interface (profile '$profileName'):"
+  Write-Host "plan   BLOCK TCP $Port  remote = all except $AllowFrom  ($($BlockRemoteRanges -join ' , '))"
+  Write-Host "plan   ALLOW TCP $Port  remote = $AllowFrom only"
+  Write-Host "plan   (a Block wins over an Allow; the block excludes the backend, so backend is allowed and everything else denied)"
+  Write-Host "plan   :8788 bridge and all unrelated rules are NOT touched. Re-run with -Apply."
 }
