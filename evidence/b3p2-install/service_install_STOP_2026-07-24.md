@@ -102,3 +102,33 @@ Each also needs the `obj=` fix (checked result + robust virtual-account assignme
 left in place, pending the decision. On direction I will: fix `install_service.ps1` (and the chosen
 approach) through the pipeline, then run `uninstall.ps1` to remove the service, then clean the DLLs, then
 re-install.
+
+---
+
+## Recovery performed (2026-07-24T06:46Z) — service removed, DLLs left, per decision
+
+Nuno's decision: host the service via a **WinSW wrapper** (see `docs/B3P_SERVICE_HARNESS_COMPARISON.md`);
+**remove the mis-installed service, leave the DLLs**.
+
+`uninstall.ps1` was **NOT** used — it is a full teardown (unregisters the 8 tasks, disables/removes the 4
+identities, revokes `SeBatchLogonRight`) and would have destroyed the verified Phase 2A pool. A **scoped**
+removal was used instead:
+
+```
+sc.exe delete GuvFXBetaAgent   ->  [SC] DeleteService SUCCESS (exit 0)
+```
+
+Post-recovery, verified:
+
+```
+beta_service          ABSENT
+beta_identities       4        (pool intact)
+beta_tasks_disabled   8/8      (pool intact)
+service-SID ACL grant present  (left in place, reused by the WinSW install under the same account)
+bridge python         pid 13292, owns 8788   (unchanged)
+production MT5         pid 4336, Session 3    (unchanged)
+DLLs                  left in place per decision (System32 + Program Files\Python311)
+```
+
+The host is back to the pre-service-install state except for the (retained) service-SID ACL grants and the
+(retained) pywin32 helper DLLs. Next: implement the WinSW harness through the pipeline, then re-install.
