@@ -2,6 +2,28 @@
 
 List active problems with reproduction steps and workarounds.
 
+## ⚠️ ADR-0016 launch wrapper: two host preconditions unproven off-host (2026-07-25)
+
+The launch-time process-ACL grant (`slot_launch.ps1`) is code-complete and reviewed, but two properties can
+only be established ON the host, as the slot identity, and MUST be checked before commissioning:
+- **Constrained Language Mode (CLM).** If the host enforces PowerShell CLM for non-admin identities
+  (AppLocker/WDAC), `Add-Type` (and reflection P/Invoke) are forbidden, so the wrapper's embedded C# cannot
+  compile as `guvfx_b_slot<n>`. This is invisible to an admin-run test. Run the wrapper (or a minimal Add-Type
+  probe) **as the slot identity**; if CLM blocks it, fall back to a hash-pinned precompiled exe (WinSW pin
+  model). The wrapper already fails closed (Add-Type failure → non-zero, terminal64 never launched).
+- **Object-owner == account SID.** Observe compares the process **object owner** SID to the slot identity SID;
+  this equivalence holds only for a non-admin creator (`TokenOwner` defaults to `TokenUser`). Prove it with a
+  host positive control before trusting a PRESENT; NEVER reuse for an admin identity or under a "Default owner
+  = Administrators group" policy.
+- **RULE 9:** the wrapper is a new PS artefact — `[Parser]::ParseFile` it under Windows PowerShell 5.1 (with a
+  negative control) before first execution. The embedded C# is NOT validated by ParseFile; the wrapper's own
+  interop self-test (GetKernelObjectSecurity on its own process) runs before it touches terminal64.
+
+**Deferred hardening (documented, not shipped):** an agent-side runtime re-hash of the wrapper. Its residual
+value is admin-vs-admin only (only an admin can write the admin-owned launcher), and it would require granting
+the service Read on the launcher (it has none today). Install-time SHA-256 pin + admin-only ACL + a VERIFY
+read-back (both `-Apply` and `-VerifyOnly`) are the shipped protections.
+
 ## ⚠️ Backend does not yet SEND RELEASE — a backend-driven deprovision tombstones without freeing (2026-07-24)
 
 The agent supports RELEASE (ADR 0014, PR #200) and NEGOTIATE advertises it, but the backend's

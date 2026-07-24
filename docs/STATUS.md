@@ -6,6 +6,36 @@
 
 ## Execution workstream log
 
+- **2026-07-25 — B3P-2 ADR-0016 Option A: launch-time process-ACL grant + observe revert. 🟢 code + review complete, 🟠 host proof pending.**
+  **What.** Completes unprivileged PRESENT attribution (the 4th and final least-privilege blocker: the service
+  cannot open a cross-account slot process). A thin, admin-only, hash-pinned launch **wrapper**
+  (`deploy/beta-agent/slot_launch.ps1`), run AS `guvfx_b_slot<n>` by the launch task, creates the slot's
+  `terminal64.exe` **suspended** (`/portable`), adds ONE DACL ACE granting the service
+  `PROCESS_QUERY_LIMITED_INFORMATION | READ_CONTROL` (0x21000, **read-modify-write**, EQUALITY-verified),
+  resumes it, and on any failure `TerminateProcess`-es the child by handle and exits non-zero — nothing ever
+  runs un-observably. The ACE is intrinsic to the process object: it dies with the process, no revocation
+  (ADR-0016 refinement). Observe (`win_slot_ops.py`) now opens at `PQLI | READ_CONTROL` and reads the process
+  **object owner** SID via ctypes `advapi32.GetSecurityInfo(SE_KERNEL_OBJECT)`; token-based `_user_sid` removed.
+  The F3 launch gate (`win_primitives.py`) moved to the terminate-style arg validation (powershell + fixed
+  wrapper via `-File` + this slot's terminal64 + service-SID shape + `/portable` + no inline command).
+  `install_pool.ps1` stages the wrapper into `C:\GuvFX\beta\launcher` (inheritance broken, slots RX-only),
+  rewires the launch task, and — after review — reads the launcher ACL back and re-hashes the wrapper in the
+  VERIFY block (both `-Apply` and `-VerifyOnly`).
+  **Design workflow (5 lenses)** locked the Windows-security invariants before implementation.
+  **Adversarial review (5 lenses, each finding independently verified) — 8 confirmed, all fixed:** the HIGH
+  (VerifyOnly never inspected the launcher ACL/hash) + MEDIUM (0x21000 not pinned as *exactly* that — now a
+  single `GRANT_MASK` const with equality read-back) + 6 LOW (exception-safety child leak; `exit 2` dead code;
+  unvalidated `$WorkingDirectory`; inline-switch abbreviations; ADR/text accuracy; install-vs-runtime list
+  divergence). **Mutation-tested:** every fail-open (owner-match inverted, dropped fail-closed raise, wrong-slot
+  terminal, non-powershell exe, lost `/portable`, inline command, dropped `READ_CONTROL`, weakened mask
+  equality) is killed by a test; one source-invariant test was strengthened after a mutation survived on a
+  docstring match.
+  **Verified.** 707 `terminal_provisioning` tests + full `make check` green (1684 backend, frontend build,
+  0 lint errors). ADR-0016 finalised to **Accepted**. **Not yet done:** merge, host re-stage (RULE 9 PS 5.1
+  parse of the wrapper + CLM check as the slot identity), then the slot-1 PRESENT proof and
+  VERIFY→STOP→TOMBSTONE→RELEASE→Available. Production MT5 pid 4336 + bridge pid 13292 untouched (no host
+  mutation in this change).
+
 - **2026-07-24 — B3P-2 RELEASE operation shipped to PR #200 (ADR 0014 Accepted). 🟢 code complete, 🟠 host slot-1 proof pending.**
   **What.** `op_release` — the RELEASE protocol operation that transitions a beta slot Released → Available.
   It advances the durable per-slot generation by exactly one and frees the slot after TOMBSTONE, sourcing its

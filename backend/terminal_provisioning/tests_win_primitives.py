@@ -74,11 +74,25 @@ class RecordingFakeWin:
     def open_for_write(self, path): self.side_effects.append(("open_for_write", path))
 
 
+#: A well-formed service SID (S-1-5-80- namespace), as the launch grantee. The gate asserts SHAPE only.
+_GRANTEE_SID = "S-1-5-80-3139157870-2983391045-3678747466-658725712-1809340420"
+
+
 def _task(**over):
+    # ADR-0016 launch shape: powershell.exe runs the fixed wrapper AS the slot identity (the wrapper launches
+    # this slot's terminal64 and grants the service query access). portable_switch is computed by the real
+    # query_task from the bare /portable token; the fake dict carries it directly.
     d = dict(task_name="GuvFXBetaRuntime-2", run_as_identity="guvfx_u_beta_2",
              run_as_sid="S-1-5-21-x-1002",
-             executable=r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe",
-             working_directory=r"C:\GuvFX\beta\slots\2\terminal", arguments="/portable",
+             executable="powershell.exe",
+             working_directory=r"C:\GuvFX\beta\slots\2\terminal",
+             arguments=(
+                 '-NoProfile -NonInteractive -ExecutionPolicy Bypass '
+                 '-File "C:\\GuvFX\\beta\\launcher\\slot_launch.ps1" '
+                 '-TerminalPath "C:\\GuvFX\\beta\\slots\\2\\terminal\\terminal64.exe" '
+                 '-WorkingDirectory "C:\\GuvFX\\beta\\slots\\2\\terminal" '
+                 '-GranteeSid ' + _GRANTEE_SID + ' /portable'),
+             portable_switch=True,
              logon_type="TASK_LOGON_PASSWORD", run_level="LEAST", enabled=True, last_result=0)
     d.update(over)
     return d
@@ -256,11 +270,79 @@ class TaskInspectionContractTests(SimpleTestCase):
                               observed_at=OBSERVED_AT)
         self.assertEqual(res["attestation"]["reason_code"], "forbidden_run_as_identity")
 
-    def test_executable_outside_the_slot_is_invalid(self):
+    def test_launch_executable_that_is_not_powershell_is_invalid(self):
+        # ADR-0016: the launch task runs powershell.exe against the fixed wrapper. Any other executable
+        # (here cmd.exe) means the task no longer runs the reviewed launcher -> launch_executable_unexpected.
         res = wp.inspect_task(
             RecordingFakeWin(task=_task(executable=r"C:\Windows\System32\cmd.exe")), SI,
             observed_at=OBSERVED_AT)
-        self.assertEqual(res["attestation"]["reason_code"], "executable_outside_slot")
+        self.assertEqual(res["attestation"]["reason_code"], "launch_executable_unexpected")
+
+    def test_launch_args_not_naming_the_fixed_wrapper_are_invalid(self):
+        # The args must invoke the FIXED wrapper via -File. An args string that runs a different script (or
+        # inline code) is refused before the launch can grant anything.
+        res = wp.inspect_task(
+            RecordingFakeWin(task=_task(arguments='-File "C:\\evil\\other.ps1" -GranteeSid '
+                                        + _GRANTEE_SID + ' /portable', portable_switch=True)),
+            SI, observed_at=OBSERVED_AT)
+        self.assertEqual(res["attestation"]["reason_code"], "launch_wrapper_unscoped")
+
+    def _launch_args(self, terminal, grantee=_GRANTEE_SID, portable=" /portable"):
+        return ('-NoProfile -NonInteractive -ExecutionPolicy Bypass '
+                '-File "C:\\GuvFX\\beta\\launcher\\slot_launch.ps1" '
+                '-TerminalPath "%s" '
+                '-WorkingDirectory "C:\\GuvFX\\beta\\slots\\2\\terminal" '
+                '-GranteeSid %s%s' % (terminal, grantee, portable))
+
+    def test_launch_targeting_another_slots_terminal_is_scope_unbounded(self):
+        # Prefix-safe: slot 2's gate must reject args naming slot 20's terminal64 (or any non-slot-2 path).
+        args = self._launch_args(r"C:\GuvFX\beta\slots\20\terminal\terminal64.exe")
+        res = wp.inspect_task(RecordingFakeWin(task=_task(arguments=args, portable_switch=True)), SI,
+                              observed_at=OBSERVED_AT)
+        self.assertEqual(res["attestation"]["reason_code"], "launch_scope_unbounded")
+
+    def test_launch_without_a_service_sid_grantee_is_refused(self):
+        # No S-1-5-80- grantee token -> the launch would not grant. Assert SHAPE only (a broad SID like the
+        # Everyone S-1-1-0 is not a service SID and is rejected).
+        args = self._launch_args(r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe", grantee="S-1-1-0")
+        res = wp.inspect_task(RecordingFakeWin(task=_task(arguments=args, portable_switch=True)), SI,
+                              observed_at=OBSERVED_AT)
+        self.assertEqual(res["attestation"]["reason_code"], "launch_grantee_missing")
+
+    def test_launch_that_is_not_portable_is_refused(self):
+        args = self._launch_args(r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe", portable="")
+        res = wp.inspect_task(RecordingFakeWin(task=_task(arguments=args, portable_switch=False)), SI,
+                              observed_at=OBSERVED_AT)
+        self.assertEqual(res["attestation"]["reason_code"], "launch_not_portable")
+
+    def test_launch_carrying_an_inline_command_is_refused(self):
+        # -File is the only permitted code path; an inline -Command / -EncodedCommand is refused even if the
+        # rest of the args look valid. powershell.exe resolves prefix abbreviations (-com, -en) and the -ec
+        # alias, so ALL of these must be caught.
+        for switch in ("-Command", "-command", "-c", "-com", "-comm",
+                       "-EncodedCommand", "-enc", "-en", "-e", "-ec"):
+            args = self._launch_args(r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe") + ' ' + switch + ' "x"'
+            res = wp.inspect_task(RecordingFakeWin(task=_task(arguments=args, portable_switch=True)), SI,
+                                  observed_at=OBSERVED_AT)
+            self.assertEqual(res["attestation"]["reason_code"], "launch_inline_command", switch)
+
+    def test_execution_policy_and_valid_switches_are_not_mistaken_for_inline_commands(self):
+        # -ExecutionPolicy (and its -ex abbreviations) must NEVER be caught by the inline-command guard: it is
+        # part of every legitimate wrapper invocation. A fully valid task must pass.
+        self.assertFalse(wp._is_inline_command_switch("-ExecutionPolicy"))
+        self.assertFalse(wp._is_inline_command_switch("-ex"))
+        self.assertFalse(wp._is_inline_command_switch("-exec"))
+        self.assertFalse(wp._is_inline_command_switch("-File"))
+        args = self._launch_args(r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe")
+        res = wp.inspect_task(RecordingFakeWin(task=_task(arguments=args, portable_switch=True)), SI,
+                              observed_at=OBSERVED_AT)
+        self.assertEqual(res["attestation"]["outcome"], wp.PRESENT_VALID)
+
+    def test_a_fully_valid_launch_wrapper_task_passes(self):
+        args = self._launch_args(r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe")
+        res = wp.inspect_task(RecordingFakeWin(task=_task(arguments=args, portable_switch=True)), SI,
+                              observed_at=OBSERVED_AT)
+        self.assertEqual(res["attestation"]["outcome"], wp.PRESENT_VALID)
 
     def test_incomplete_definition_is_present_invalid(self):
         res = wp.inspect_task(RecordingFakeWin(task=_task(logon_type=None)), SI, observed_at=OBSERVED_AT)

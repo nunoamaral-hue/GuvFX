@@ -71,6 +71,15 @@ REASON_CATEGORY = {
     "task_definition_drift": INTEGRITY,
     "terminate_executable_unexpected": INTEGRITY,
     "terminate_scope_unbounded": INTEGRITY,
+    # ADR-0016 launch-wrapper gate: the launch task now runs the fixed wrapper, so its ARGUMENT string (not a
+    # beneath-the-slot executable) is what bounds it. A drift in any of these is a task-definition integrity
+    # failure, exactly like the terminate-task ones above.
+    "launch_executable_unexpected": INTEGRITY,
+    "launch_wrapper_unscoped": INTEGRITY,
+    "launch_scope_unbounded": INTEGRITY,
+    "launch_grantee_missing": INTEGRITY,
+    "launch_not_portable": INTEGRITY,
+    "launch_inline_command": INTEGRITY,
     "approved_task_definition_missing": CONFIGURATION,
     "slot_integrity_mismatch": INTEGRITY,
     "audit_chain_corrupt": INTEGRITY,

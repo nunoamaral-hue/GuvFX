@@ -21,6 +21,10 @@ param(
   [string]$LaunchPrefix     = "GuvFXBetaRuntime-",
   [string]$StopPrefix       = "GuvFXBetaRuntimeStop-",
   [string]$ApprovedTasksOut = "C:\GuvFX\beta\agent-state\approved_tasks.json",
+  # ADR-0016: the launch wrapper lives in an admin-only-writable directory OUTSIDE every slot tree, so a slot
+  # can never rewrite its own launcher. Slots (and only slots) get ReadAndExecute on it.
+  [string]$LauncherDir      = "C:\GuvFX\beta\launcher",
+  [string]$LaunchWrapper    = "slot_launch.ps1",
   [switch]$Apply,
   # Re-run the VERIFY block ALONE against an already-provisioned pool. Creates nothing, registers nothing,
   # writes no ACL, and never prompts for a password. It exists because the mutating half of -Apply can
@@ -32,6 +36,10 @@ param(
   [switch]$ValidateGoldenOnly
 )
 $ErrorActionPreference = "Stop"
+# The reviewed launch wrapper's pinned SHA-256 (lowercase). tests_install_artefacts.py asserts this equals the
+# hash of deploy/beta-agent/slot_launch.ps1, so it can never drift from the file; the install refuses to stage
+# a wrapper whose hash differs, before AND after the copy (ADR-0016; WinSW hash-pin pattern).
+$LaunchWrapperSha256 = "c18f5c3cf71e1b4afe4567c4bc98808db8a26f613dea646e97c823f7c9b83261"
 if ($Apply -and $VerifyOnly) { throw "refusing: -Apply and -VerifyOnly are mutually exclusive" }
 #: May this run CHANGE the host? -VerifyOnly must never mutate.
 $Mutate = [bool]$Apply
@@ -71,7 +79,7 @@ foreach ($p in @($SlotsRoot, $TombstonesRoot, $GoldenDir)) {
 # Beta-owned objects must live in the beta namespace. The golden image is different in kind: it is a
 # READ-ONLY INPUT that the agent only ever reads, so it may live under C:\GuvFX\golden\ as well. It is
 # still refused anywhere outside those two roots, and RULE 10 still forbids the production install.
-foreach ($p in @($SlotsRoot, $TombstonesRoot, $ApprovedTasksOut)) {
+foreach ($p in @($SlotsRoot, $TombstonesRoot, $ApprovedTasksOut, $LauncherDir)) {
   if ($p -notlike "C:\GuvFX\beta\*") { throw "refusing: '$p' is outside C:\GuvFX\beta\" }
 }
 # $ApprovedTasksOut had no refusal at all, yet it is the target of this script's most destructive file
@@ -385,6 +393,21 @@ function Invoke-GuvfxIcacls {
   }
 }
 
+function Get-GuvfxServiceSidValue {
+  <# The beta agent's virtual service-account SID, computed from the FIXED name via sc.exe showsid. A service
+     SID is DERIVED from the name, so it is a stable value before the service exists (install_pool runs before
+     install_service). Read-only. Used to pin the grantee in the launch task's wrapper argument (ADR-0016) so
+     the wrapper grants query access to exactly NT SERVICE\GuvFXBetaAgent and nothing else. #>
+  param([Parameter(Mandatory)][string]$ServiceName)
+  if ($ServiceName -ne "GuvFXBetaAgent") { throw "refusing service SID lookup for '$ServiceName'" }
+  $shown = & sc.exe showsid $ServiceName 2>&1
+  $match = $shown | Select-String -Pattern "SERVICE SID:\s*(S-1-5-80-\S+)"
+  if (-not $match) { throw "could not compute the service SID for '$ServiceName' (sc.exe showsid gave no SERVICE SID)" }
+  $v = $match.Matches.Groups[1].Value
+  if ($v -notmatch "^S-1-5-80-\d+-\d+-\d+-\d+-\d+$") { throw "refusing: '$v' is not a service SID (expected the S-1-5-80- namespace)" }
+  return $v
+}
+
 function Grant-GuvfxServiceRead {
   <# Grant READ on one file to the beta agent's virtual service account.
 
@@ -665,6 +688,47 @@ DoIt "restrict $TombstonesRoot to Administrators + SYSTEM" {
   Invoke-GuvfxIcacls $TombstonesRoot @("/grant", "*S-1-5-32-544:(OI)(CI)F", "/grant", "*S-1-5-18:(OI)(CI)F")
 }
 
+# -- 5b. Launch wrapper (ADR-0016 Option A). Stage the reviewed, hash-pinned wrapper into an admin-only-writable
+#        directory OUTSIDE every slot tree, so a slot cannot rewrite its own launcher. Slots (and only slots)
+#        get ReadAndExecute -- the launch task runs the wrapper AS the slot identity. The wrapper launches
+#        terminal64 suspended, grants the beta-agent service query access to that ONE process object, verifies
+#        it, and resumes; on failure it terminates the child and fails closed (nothing runs un-observably).
+$WrapperSource = Join-Path $PSScriptRoot $LaunchWrapper
+$WrapperDest   = Join-Path $LauncherDir $LaunchWrapper
+# Computed from the FIXED service name; embedded (pinned) in each launch task's wrapper argument below. sc.exe
+# showsid is read-only, so it is safe in every mode; the value is deterministic before the service exists.
+$ServiceSidValue = Get-GuvfxServiceSidValue "GuvFXBetaAgent"
+Write-Host "ok   beta-agent service SID computed for the launch grantee: $ServiceSidValue"
+
+DoIt "verify the bundled launch wrapper matches the pinned hash BEFORE staging it" {
+  if (-not (Test-Path -LiteralPath $WrapperSource -PathType Leaf)) {
+    throw "launch wrapper missing from the bundle: $WrapperSource"
+  }
+  $srcHash = (Get-FileHash -LiteralPath $WrapperSource -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($srcHash -ne $LaunchWrapperSha256) {
+    throw "launch wrapper hash mismatch (bundle=$srcHash pinned=$LaunchWrapperSha256) - refusing to stage a wrapper that is not the reviewed one"
+  }
+  Write-Host "ok   bundled $LaunchWrapper matches the pinned hash"
+}
+DoIt "create $LauncherDir and stage the launch wrapper (re-hash after copy)" {
+  New-Item -ItemType Directory -Force -Path $LauncherDir | Out-Null
+  Copy-Item -LiteralPath $WrapperSource -Destination $WrapperDest -Force
+  $dstHash = (Get-FileHash -LiteralPath $WrapperDest -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($dstHash -ne $LaunchWrapperSha256) {
+    throw "staged wrapper hash mismatch after copy (got=$dstHash) - refusing to leave a wrong wrapper in place"
+  }
+}
+DoIt "ACL $LauncherDir: break inheritance, Administrators + SYSTEM Full, each slot ReadAndExecute ONLY" {
+  # Same pattern as the golden image (which slots may only Read+Execute): break inheritance first, then the
+  # explicit grants are the ONLY non-admin access. A slot with Modify here could rewrite the grant target or
+  # the launched binary, so slots get NO write.
+  Invoke-GuvfxIcacls $LauncherDir @("/inheritance:r")
+  Invoke-GuvfxIcacls $LauncherDir @("/grant", "*S-1-5-32-544:(OI)(CI)F", "/grant", "*S-1-5-18:(OI)(CI)F")
+  for ($n = 1; $n -le $PoolSize; $n++) {
+    Invoke-GuvfxIcacls $LauncherDir @("/grant", ("{0}{1}:(OI)(CI)RX" -f $IdentityPrefix, $n))
+  }
+}
+
 # -- 6. Scheduled tasks. Registered DISABLED, with NO trigger, on-demand only. TASK_LOGON_PASSWORD stores
 #      the credential in the Task Scheduler credential store - the agent never sees it and cannot read it.
 #      S4U was rejected: it stores no password but grants no network access, which MT5 needs.
@@ -681,13 +745,20 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     if ($ForbiddenTasks -contains $t) { throw "refusing: '$t' collides with an estate task" }
   }
 
-  DoIt "register '$launch' (disabled, no trigger, /portable, runs as $user)" {
+  DoIt "register '$launch' (disabled, no trigger, wrapper launches /portable + grants, runs as $user)" {
     # Bound to a variable so ZeroFreeBSTR can reach it. Called inline, the pointer is unrecoverable and the
     # plaintext stays in unmanaged memory for the life of the session - the same defect fixed in
     # Get-SlotSecret, in the two places that actually hold the password longest.
     $bp = [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user))
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bp)
-    $action    = New-ScheduledTaskAction -Execute $exe -Argument "/portable" -WorkingDirectory $work
+    # ADR-0016: the launch action is now powershell.exe running the fixed, admin-only, hash-pinned wrapper AS
+    # the slot identity. The wrapper launches this slot's own terminal64 (suspended, /portable) and grants the
+    # beta-agent service query access to that ONE process object. -File (never -Command/-EncodedCommand) so the
+    # code is a fixed on-disk file, not an inline string. The trailing bare /portable is an inert detection
+    # marker for portable_switch_present + the approvals digest; the wrapper swallows it and hard-codes its own
+    # /portable, so a task argument can never control what terminal64 runs with (no injection surface).
+    $wrapArgs = ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -TerminalPath "{1}" -WorkingDirectory "{2}" -GranteeSid {3} /portable' -f $WrapperDest, $exe, $work, $ServiceSidValue)
+    $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $wrapArgs -WorkingDirectory $work
     $settings  = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
                    -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
     Register-ScheduledTask -TaskName $launch -Action $action -Settings $settings `
@@ -755,6 +826,33 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     if ($Approved[$launch].arguments -notmatch "(^|\s)/portable(\s|$)") {
       throw "registered task '$launch' does not carry /portable - refusing to approve it"
     }
+    # ADR-0016 launch-wrapper scope. The launch task now runs powershell.exe against the fixed wrapper, so -
+    # exactly like the terminate task - what bounds it is its ARGUMENT string, not a beneath-the-slot
+    # executable. Assert what was ACTUALLY registered: powershell.exe, invoking the FIXED wrapper via -File,
+    # naming THIS slot's own terminal64, carrying the beta-agent service SID as grantee, and with NO inline
+    # command. Any one of these missing means the launch would not grant (or would grant to the wrong
+    # principal, or run un-reviewed code), so all are required.
+    $launchExe  = [string]$Approved[$launch].executable
+    $launchArgs = [string]$Approved[$launch].arguments
+    if ($launchExe -notmatch "(?i)(^|\\)powershell\.exe$") {
+      throw "registered task '$launch' executable is '$launchExe', not powershell.exe - refusing to approve it"
+    }
+    if ($launchArgs -notmatch [regex]::Escape('-File "' + $WrapperDest + '"')) {
+      throw "registered task '$launch' does not invoke the fixed wrapper via -File `"$WrapperDest`" - refusing to approve it"
+    }
+    if ($launchArgs -notmatch [regex]::Escape('-TerminalPath "' + $exe + '"')) {
+      throw "registered task '$launch' does not target this slot's own terminal64 ('$exe') - refusing to approve it"
+    }
+    if ($launchArgs -notmatch [regex]::Escape('-GranteeSid ' + $ServiceSidValue)) {
+      throw "registered task '$launch' does not carry the beta-agent service SID ($ServiceSidValue) as grantee - refusing to approve it"
+    }
+    # Catch ANY powershell.exe prefix-abbreviation of -Command or -EncodedCommand (-c..-command, -e/-ec/-en..
+    # -encodedcommand), but NEVER -ExecutionPolicy (which diverges at -ex). Mirrors win_primitives
+    # _is_inline_command_switch, so the install approval and the runtime launch gate agree.
+    if ($launchArgs -match "(?i)(^|\s)-(c(o(m(m(a(n(d)?)?)?)?)?)?|ec|e(n(c(o(d(e(d(c(o(m(m(a(n(d)?)?)?)?)?)?)?)?)?)?)?)?)?)(\s|$)") {
+      throw "registered task '$launch' carries an inline command (-Command/-EncodedCommand) - only -File is permitted - refusing to approve it"
+    }
+    Write-Host "ok   $launch runs the fixed wrapper against this slot's terminal64, granting $ServiceSidValue"
     # The terminate task's scope is its argument string. Assert what was ACTUALLY registered: it must
     # filter on this slot's own executable path, and it must not reach Stop-Process on a name-only
     # pipeline. Both halves are required - the presence of the right filter does not exclude the wrong one.
@@ -919,6 +1017,55 @@ if ($Check) {
     }
     Write-Host "ok   $user : Modify on its own slot, no ACE on any other slot, read-only on the golden image"
   }
+
+  # ADR-0016: the launcher is HIGHER-value than the golden image - it is EXECUTED as the slot identity every
+  # launch, and nothing re-hashes it at runtime - yet the VERIFY block above never inspected it, so a silent
+  # icacls mis-apply or a post-install tamper would leave a slot able to rewrite its own (shared) launcher and
+  # -VerifyOnly would still print "pool VERIFIED". Read the launcher ACL back from the OS and re-hash the
+  # staged wrapper here, in $Check, so both -Apply and -VerifyOnly certify it (RULE 11: do not trust the grant
+  # or the copy step - read back what is on disk).
+  Step "VERIFY launcher (ADR-0016: admin-only, slots read-execute only, wrapper hash pinned)"
+  $launcherAcl = Get-Acl $LauncherDir
+  if (-not $launcherAcl.AreAccessRulesProtected) {
+    throw "launcher '$LauncherDir' still inherits: the admin-only guarantee is NOT in force - STOP"
+  }
+  Write-Host "ok   launcher: inheritance removed (AreAccessRulesProtected = True)"
+  # No principal outside Administrators (S-1-5-32-544) and SYSTEM (S-1-5-18) may hold ANY write-class bit -
+  # checked as RIGHTS BITS (the same $WriteMask the golden read-back uses), never a name/string match.
+  $launcherSidRules = $launcherAcl.GetAccessRules($true, $true,
+                        [System.Security.Principal.SecurityIdentifier])
+  foreach ($r in $launcherSidRules) {
+    if ($r.AccessControlType -ne "Allow") { continue }
+    $raw = [int]$r.FileSystemRights
+    $ff  = [int][System.Security.AccessControl.FileSystemRights]::FullControl
+    $hasWrite = (($raw -band [int]$WriteMask) -ne 0) -or (($raw -band $ff) -eq $ff)
+    $sidV = $r.IdentityReference.Value
+    if ($hasWrite -and $sidV -ne "S-1-5-32-544" -and $sidV -ne "S-1-5-18") {
+      throw "launcher '$LauncherDir': '$sidV' holds a write-class right; only Administrators/SYSTEM may write - STOP"
+    }
+  }
+  Write-Host "ok   launcher: no principal outside Administrators/SYSTEM holds a write-class right"
+  # Each slot identity must hold an ACE (ReadAndExecute) and NO write bit - it runs the wrapper, never edits it.
+  for ($n = 1; $n -le $PoolSize; $n++) {
+    $user = "$IdentityPrefix$n"
+    $lr = @($launcherAcl.Access | Where-Object { $_.IdentityReference.Value -like "*\$user" })
+    if ($lr.Count -eq 0) { throw "'$user' has NO ACE on the launcher '$LauncherDir' - it cannot run its own wrapper - STOP" }
+    foreach ($r in $lr) {
+      if ($r.FileSystemRights.ToString() -match "Write|Modify|FullControl|CreateFiles|AppendData|Delete") {
+        throw "'$user' holds '$($r.FileSystemRights)' on the launcher; Read+Execute only was authorised - a slot must never rewrite its own launcher - STOP"
+      }
+    }
+  }
+  Write-Host "ok   each slot identity: read-execute only on the launcher"
+  # Re-hash the STAGED wrapper against the pin (RULE 11: read back on-disk bytes; do not trust the copy step).
+  if (-not (Test-Path -LiteralPath $WrapperDest -PathType Leaf)) {
+    throw "launch wrapper missing from '$LauncherDir' - STOP"
+  }
+  $stagedHash = (Get-FileHash -LiteralPath $WrapperDest -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($stagedHash -ne $LaunchWrapperSha256) {
+    throw "staged launch wrapper hash '$stagedHash' != pinned '$LaunchWrapperSha256' - the wrapper was altered - STOP"
+  }
+  Write-Host "ok   staged launch wrapper matches the pinned hash"
 
   Step "VERIFY estate untouched (compared against the pre-mutation capture)"
   foreach ($t in $ForbiddenTasks) {

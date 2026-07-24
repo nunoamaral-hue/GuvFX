@@ -1,5 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
+## B3P-2 ADR-0016 Option A — code + review complete, host proof pending (2026-07-25)
+The launch-time process-ACL grant that makes unprivileged PRESENT attribution work. 707 tests + `make check`
+green; adversarial review's 8 findings all fixed. One bounded next step:
+- [ ] **Merge the implementation PR**, then re-stage the agent bundle to the host (byte-identical) — the
+  wrapper `slot_launch.ps1` is a NEW install artefact, so **RULE 9**: `[Parser]::ParseFile` it under Windows
+  PowerShell 5.1 with a positive+negative control BEFORE first execution.
+- [ ] **CLM gate (RULE 11):** run the wrapper's Add-Type ACE mechanism **as `guvfx_b_slot1`** (not admin) to
+  confirm Constrained Language Mode is not enforced. If it is, fall back to a hash-pinned precompiled exe.
+- [ ] **Host PRESENT proof under `NT SERVICE\GuvFXBetaAgent`:** before grant `OpenProcess(slot)` DENIED; after
+  grant ALLOWED at `PQLI|READ_CONTROL` yielding the exact slot path + `guvfx_b_slot1` object-owner SID (==
+  the account SID); production terminal stays denied/session-excluded; STOP still terminates a granted runtime
+  (proves the ACE is additive). Then slot-1 VERIFY→STOP→TOMBSTONE→RELEASE→Available, gen +1.
+  Production MT5 (pid 4336) + bridge (pid 13292) untouched.
+
 ## B3P-2 RELEASE operation — SHIPPED to PR, host proof pending (2026-07-24)
 `op_release` (ADR 0014, PR #200) closes the two lifecycle gaps below: it is the RELEASE protocol op that
 advances the per-slot generation and frees the slot after TOMBSTONE, sourcing its proofs from a live
