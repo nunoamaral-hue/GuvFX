@@ -6,6 +6,20 @@
 
 ## Execution workstream log
 
+- **2026-07-24 — B3P-2 RELEASE merged (main 418d8fb, #200). Host slot-1 proof 🔴 BLOCKED by a service-account observation constraint.**
+  Attempted the host re-stage + slot-1 native-lifecycle proof. Read-only reconnaissance confirmed the drive
+  mechanism (host-local signer reads the machine-env keyring in-process — never seen/printed — and posts
+  signed requests to `:8791`); NEGOTIATE succeeded. But **VERIFY(slot 1) is denied `process_observation_
+  unavailable`**: `observe_process` works as admin (207 procs → `absent`) yet is denied to the deployed
+  service identity `NT SERVICE\GuvFXBetaAgent`. Since VERIFY/STOP/TOMBSTONE/RELEASE all depend on
+  `observe_process`, the native lifecycle cannot complete in the real service context — RELEASE would
+  correctly refuse rather than fabricate a "stopped". This is a **pre-existing win-layer × service-privilege
+  constraint, not a RELEASE defect** (WS-A/#199 verified observation as admin, never as the service — a
+  RULE-11 context blind spot). Bundle was **NOT re-staged** (pointless until this is resolved); only a benign
+  beta-service restart occurred. Production MT5 4336 + bridge 13292 untouched; slot 1 preserved (1340 items).
+  Needs a Nuno architecture/security decision — see KNOWN_ISSUES. **RELEASE code itself: proven correct
+  offline (`build_agent` E2E), 639 tests + make check green.**
+
 - **2026-07-24 — B3P-2 RELEASE operation shipped to PR #200 (ADR 0014 Accepted). 🟢 code complete, 🟠 host slot-1 proof pending.**
   **What.** `op_release` — the RELEASE protocol operation that transitions a beta slot Released → Available.
   It advances the durable per-slot generation by exactly one and frees the slot after TOMBSTONE, sourcing its

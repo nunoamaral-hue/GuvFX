@@ -1,16 +1,20 @@
 # NEXT — Priorities (keep this list short)
 
-## B3P-2 RELEASE operation — SHIPPED to PR, host proof pending (2026-07-24)
-`op_release` (ADR 0014, PR #200) closes the two lifecycle gaps below: it is the RELEASE protocol op that
-advances the per-slot generation and frees the slot after TOMBSTONE, sourcing its proofs from a live
-`observe_process → ABSENT`. 639 tests + `make check` green; real `build_agent` E2E proven offline.
-- [ ] **Re-stage the agent bundle to the host, then prove slot 1** through the native lifecycle:
-  `NEGOTIATE → VERIFY → STOP (only if VERIFY finds it running) → TOMBSTONE → RELEASE → Available`, gen 1→2,
-  complete audit chain, production MT5 (pid 4336) + bridge (pid 13292) untouched. No manual intervention.
-- [ ] **Deploy ordering:** the agent bundle (RELEASE present) must re-stage before/with any backend that
-  expects it — `assert_compatible` requires the full `PROVISIONING_OPERATIONS` set (fail-closed).
-- [ ] **Deferred to CVM-Inc-5:** wire the backend to SEND RELEASE after TOMBSTONE (`_drive_deprovision`),
-  else a backend-driven deprovision tombstones without freeing. No live impact (`BETA_RUNTIMES_ENABLED` off).
+## B3P-2 RELEASE — merged; host slot-1 proof BLOCKED by a service-account observe constraint (2026-07-24)
+`op_release` (ADR 0014, PR #200, main 418d8fb) is merged + proven correct offline (`build_agent` E2E, 639
+tests + make check). The host slot-1 proof is BLOCKED: `observe_process` is denied to the deployed low-priv
+service identity `NT SERVICE\GuvFXBetaAgent` (works as admin: 207 procs → `absent`; service → denied
+`process_observation_unavailable`). VERIFY/STOP/TOMBSTONE/RELEASE all need it. See KNOWN_ISSUES for the
+measured table + options.
+- [ ] **DECISION (Nuno, arch/security): how the service account gets process observation.** (1) grant a
+  minimal cross-session enumeration privilege; (2) switch `win_slot_ops` to an unprivileged mechanism
+  (`CreateToolhelp32Snapshot` + per-process `OpenProcess` LIMITED) — a code packet; (3) a privileged
+  observation broker. Do NOT prove the lifecycle as admin (validates code, not the service context).
+- [ ] **Then**: re-stage the agent bundle (RELEASE, `2026-07-24.2`) + prove slot 1
+  `NEGOTIATE→VERIFY→STOP(if running)→TOMBSTONE→RELEASE→Available` (gen 1→2), production untouched.
+- [ ] **Deploy ordering:** re-stage the agent bundle before/with any backend expecting RELEASE —
+  `assert_compatible` requires the full `PROVISIONING_OPERATIONS` set (fail-closed).
+- [ ] **Deferred to CVM-Inc-5:** wire the backend to SEND RELEASE after TOMBSTONE (`_drive_deprovision`).
 
 ## B3P-2 Phase 2A — waiting at the APPLY gate (2026-07-23)
 Golden image approved and pinned; `install_pool.ps1` PLAN is clean; nothing is installed.
