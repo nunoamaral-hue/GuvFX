@@ -12,7 +12,7 @@ decision (§17).** This document is produced *before* any B3 installation. The f
 | Host | `WIN-RD8VDS93DK7` @ `100.79.101.19` (Tailscale), Windows Server 2025 Datacenter |
 | CPU / RAM | 8 logical CPU / 32,758 MB total, **~10.4 GB free now** |
 | Disk `C:` | **458 GB free** |
-| Python | system **3.11.9** (+ 3.13.14); bundled `C:\GuvFX\python311.exe`. Agent is **stdlib-only** (`http.server`, `sqlite3`) — no pip deps. A **service harness** (pywin32 or nssm) is an added dependency — see §0/§6 |
+| Python | Beta service runs the **dedicated venv** `C:\GuvFX\beta\agent-venv\Scripts\python.exe` (3.11.9 + pywin32). **`C:\GuvFX\python311.exe` is the Python INSTALLER, never an interpreter — do not execute it.** The base 3.11.9 at `C:\Program Files\Python311` runs the live bridge and must not be package-modified. Agent code is stdlib-only; pywin32 is the one service-harness dependency, installed into the venv — see §0/§6 |
 | Must NOT touch | bridge **`:8788`** (PID 1856, Nuno's), backtest agent `:8787`, RDP `3389`, autologon **Administrator / Session 1** + `GuvFX_Autostart`/`GuvFX_SignalBridge` tasks, **Nuno's terminal (Session 3)**, `guvfx_u_{1,6,7}` + `C:\GuvFX\accounts\{1,6,7}`, golden `C:\GuvFX\golden\mt5` |
 | Agent port `:8791` | **free** (no collision with 8787/8788/3389) |
 | Service `GuvFXBetaAgent` | **does not exist** (no name collision) |
@@ -292,7 +292,8 @@ Run on the box as Administrator. **Every step is install/verify only; nothing is
 6. **Do NOT register the interactive launch task** (deferred to the post-approval start-enablement phase, §6).
 7. **Verify (no start):**
    - **binary** — bundle present at the install path; interpreter **import smoke test** (no listener):
-     `C:\GuvFX\python311.exe -B -c "import sqlite3, http.server, sys; sys.path.insert(0, r'C:\GuvFX\beta\agent'); import config, manifest"`.
+     `C:\GuvFX\beta\agent-venv\Scripts\python.exe -B -c "import sqlite3, http.server, sys; sys.path.insert(0, r'C:\GuvFX\beta\agent'); import config, manifest"`.
+     **NEVER `C:\GuvFX\python311.exe` — that path is the Python installer, and executing it launches an installer.**
    - **checksum** — `python -B validate.py` passes: **full-bundle** manifest match (all executable modules, B-7)
      **and** authenticity vs the merged commit **and** the bind-guard refuses public binds. (Reword the old
      "all modules" claim to name exactly what is covered.)

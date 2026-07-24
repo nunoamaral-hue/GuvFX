@@ -45,8 +45,12 @@ foreach ($d in @($AgentDir, $StateDir, $BetaTombstones, $SlotsRoot, $GoldenDir))
 # 1. Stop + delete the service (pywin32 remove cleans the SCM registration).
 DoIt "stop + remove service '$ServiceName'" {
   sc.exe stop $ServiceName 2>$null | Out-Null
-  if (Test-Path (Join-Path $AgentDir "service.py")) {
-    & "C:\GuvFX\python311.exe" (Join-Path $AgentDir "service.py") "remove" 2>$null
+  # pywin32's own `service.py remove` cleans the SCM registration IF the beta venv interpreter exists. Never
+  # C:\GuvFX\python311.exe - that path is the Python INSTALLER, and executing it launches an installer. If the
+  # venv is gone, sc.exe delete below still removes the service registration.
+  $venvPy = "C:\GuvFX\beta\agent-venv\Scripts\python.exe"
+  if ((Test-Path $venvPy) -and (Test-Path (Join-Path $AgentDir "service.py"))) {
+    & $venvPy (Join-Path $AgentDir "service.py") "remove" 2>$null
   }
   sc.exe delete $ServiceName 2>$null | Out-Null
 }

@@ -1038,3 +1038,52 @@ class PowerShellCaseCollisionTests(SimpleTestCase):
         self.assertIn("$hasWriteRight = ", code)
         self.assertNotIn("$WRITEISH", code)
         self.assertNotIn("$writeish", code)
+
+
+class InterpreterValidationTests(SimpleTestCase):
+    """PLAN must never execute a candidate interpreter, and an installer must be rejected by identity.
+
+    The service preflight previously ran `& $Python -c "import ..."` unconditionally. Pointed at
+    C:\\GuvFX\\python311.exe — which is the Python INSTALLER (OriginalFilename python-3.11.9-amd64.exe),
+    not an interpreter — a dry run launched an installer on the production host. `Test-Path` cannot tell
+    the two apart and neither can an exit code (a detaching bootstrapper leaves $LASTEXITCODE $null).
+    """
+
+    def test_plan_does_not_execute_the_candidate_interpreter(self):
+        code = _code("install_service.ps1")
+        # identity is static; runtime execution is gated on $Apply
+        self.assertIn("function Test-GuvfxInterpreterIdentity", code)
+        self.assertIn("function Test-GuvfxInterpreterRuntime", code)
+        self.assertIn("if ($Apply) { Test-GuvfxInterpreterRuntime -Path $Python }", code)
+        # the identity function must NOT execute the file
+        ident = code[code.index("function Test-GuvfxInterpreterIdentity"):
+                     code.index("function Test-GuvfxInterpreterRuntime")]
+        self.assertNotIn("& $Path", ident)
+        self.assertNotIn("--version", ident)
+
+    def test_the_installer_binary_is_rejected_by_metadata(self):
+        code = _code("install_service.ps1")
+        # Both guards must live INSIDE the identity function, each with its own throw — a stronger check
+        # than "the literals appear somewhere", so restructuring that disabled a guard would be caught.
+        ident = code[code.index("function Test-GuvfxInterpreterIdentity"):
+                     code.index("function Test-GuvfxInterpreterRuntime")]
+        self.assertIn("OriginalFilename", ident)
+        # negative guard: reject the installer name / .msi, then the positive guard — both in the function
+        self.assertIn(r"$orig -match '(?i)^python-.*\.exe$'", ident)
+        self.assertIn("is the Python INSTALLER", ident)
+        # positive guard: accept only interpreter/venv-shim names, with a throw
+        self.assertIn(r"'(?i)^(python|pythonw|py|pyw)\.exe$'", ident)   # accepts venv 'py.exe' shim
+        after_pos = ident[ident.index(r"'(?i)^(python|pythonw|py|pyw)\.exe$'"):]
+        self.assertIn("throw", after_pos)
+
+    def test_the_default_interpreter_is_the_beta_venv_not_the_installer(self):
+        source = _read("install_service.ps1")
+        self.assertIn(r'$Python      = "C:\GuvFX\beta\agent-venv\Scripts\python.exe"', source)
+
+    def test_no_script_executes_the_installer_path(self):
+        """The teardown had the same bug: & C:\\GuvFX\\python311.exe service.py remove."""
+        for name in SCRIPTS:
+            for line in _code(name).splitlines():
+                stmt = line.split("#", 1)[0]
+                if "python311.exe" in stmt and ("&" in stmt or "Start-Process" in stmt):
+                    self.fail(f"{name} executes the installer path: {line.strip()}")
