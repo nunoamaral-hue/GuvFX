@@ -718,7 +718,7 @@ DoIt "create $LauncherDir and stage the launch wrapper (re-hash after copy)" {
     throw "staged wrapper hash mismatch after copy (got=$dstHash) - refusing to leave a wrong wrapper in place"
   }
 }
-DoIt "ACL $LauncherDir: break inheritance, Administrators + SYSTEM Full, each slot ReadAndExecute ONLY" {
+DoIt "ACL ${LauncherDir}: break inheritance, Administrators + SYSTEM Full, each slot ReadAndExecute ONLY" {
   # Same pattern as the golden image (which slots may only Read+Execute): break inheritance first, then the
   # explicit grants are the ONLY non-admin access. A slot with Modify here could rewrite the grant target or
   # the launched binary, so slots get NO write.
