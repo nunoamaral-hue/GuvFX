@@ -70,8 +70,11 @@ and depends on the MT5 build size and disk.
 | 2.4 | `install_pool.ps1` **dry-run**. Read the PLAN. Confirm every line is expected | 2 min | n/a (no changes) |
 | 2.5 | `install_pool.ps1 -Apply`. Prompts for 4 passwords, each confirmed | 5–10 min | §4 R-3, R-4, R-5 |
 
-**Stop after 2.5 and hand back.** The script's own VERIFY block asserts tasks disabled, no triggers, correct
-principal, `RunLevel Limited`, identities non-admin — and refuses to continue if any fails.
+**Stop after 2.5 and hand back.** The script's own VERIFY block asserts tasks **ENABLED, zero triggers**
+(on-demand only — [ADR 0017](ADRs/0017-beta-task-enabled-triggerless-on-demand.md)), correct principal,
+`RunLevel Limited`, that no non-service principal can Run a task, and identities non-admin — and refuses to
+continue if any fails. (Enabled is not scheduled: zero triggers means nothing starts a task on its own; the
+only caller is a signed agent request.)
 
 ### Phase 2B — Model (or operator), non-credentialed
 
@@ -169,7 +172,7 @@ Phase 2 + 3 succeed only if **all** hold:
 
 - [ ] 4 identities created, non-admin, `SeBatchLogonRight` granted and verified
 - [ ] Directories created; `icacls` matches the review's §5 table; no path component is a reparse point
-- [ ] 8 tasks registered, **disabled**, no triggers, correct principal, `RunLevel Limited`, `/portable` on launch
+- [ ] 8 tasks registered, **ENABLED, zero triggers** (on-demand only — ADR 0017), no non-service principal can Run them, correct principal, `RunLevel Limited`, `/portable` on launch
 - [ ] `approved_tasks.json` written, readable by the service account, BOM-free, digest recorded
 - [ ] Golden image staged, digest matches, free of per-instance state
 - [ ] Bundle checksums equal `manifest.json` (15 modules, `2026-07-22.28`)
@@ -180,8 +183,9 @@ Phase 2 + 3 succeed only if **all** hold:
 - [ ] Estate evidence byte-identical before and after
 - [ ] Evidence manifest filed
 
-And **none** of these occurred: MT5 launched, runtime staged into a slot, task triggered or enabled,
-observation probe run, service started, reboot, autologon change, session change.
+And **none** of these occurred: MT5 launched, runtime staged into a slot, task **triggered**, observation
+probe run, service started, reboot, autologon change, session change. (The tasks ARE left enabled but
+triggerless per ADR 0017 — enabling is expected; *triggering/starting* is not.)
 
 ---
 

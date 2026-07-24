@@ -1,8 +1,10 @@
 # CVM-Inc-3 B3P-2 - provision the pre-provisioned SLOT POOL: identities, rights, directories, ACLs, tasks.
 # DARK ARTEFACT: RUN ONLY on the host, as Administrator, AFTER the Install Authorisation gate.
-# INSTALL-ONLY: it creates objects and stops. It does NOT start the service, does NOT enable any task, does
-# NOT trigger anything, does NOT launch MT5, does NOT stage a runtime into a slot, and never touches
-# Session 3 / the prod terminal / the bridge (:8788) / :8787 / autologon / any GuvFX_* task.
+# INSTALL-ONLY: it creates objects and stops. It does NOT start the service, does NOT TRIGGER any task, does
+# NOT launch MT5, does NOT stage a runtime into a slot, and never touches Session 3 / the prod terminal / the
+# bridge (:8788) / :8787 / autologon / any GuvFX_* task. ON-DEMAND MODEL (ADR 0017): the eight beta tasks are
+# registered ENABLED but TRIGGERLESS - enabled is not scheduled, so nothing starts them automatically; the only
+# thing that ever runs one is a signed, authorised agent request. Nothing runs during or after install.
 #
 # Dry-run by default. Pass -Apply to perform the provisioning.
 #
@@ -37,7 +39,13 @@ param(
   # TSV: apply ONLY the task-ACL grant (service read+execute on the eight beta tasks) and exit. Admin-only,
   # so it needs NO slot password and registers/re-registers NOTHING - it exists precisely because the grant
   # is a credential-free SD change that should not force a full four-password -Apply just to (re)apply it.
-  [switch]$GrantTaskAccessOnly
+  [switch]$GrantTaskAccessOnly,
+  # ON-DEMAND MODEL (ADR 0017): move the eight already-registered beta tasks from install-only Disabled to the
+  # ENABLED-but-triggerless resting state, and exit. Enable-ScheduledTask is an admin-only state change that
+  # needs NO slot password and re-registers NOTHING, so - like -GrantTaskAccessOnly - it must not force a full
+  # four-password -Apply. It refuses to enable anything that is not exactly a reviewed beta task (right
+  # principal, RunLevel Limited, zero triggers), and read-back-verifies Enabled + zero triggers.
+  [switch]$EnableTasksOnly
 )
 $ErrorActionPreference = "Stop"
 # The reviewed launch wrapper's pinned SHA-256 (lowercase). tests_install_artefacts.py asserts this equals the
@@ -45,8 +53,11 @@ $ErrorActionPreference = "Stop"
 # a wrapper whose hash differs, before AND after the copy (ADR-0016; WinSW hash-pin pattern).
 $LaunchWrapperSha256 = "c18f5c3cf71e1b4afe4567c4bc98808db8a26f613dea646e97c823f7c9b83261"
 if ($Apply -and $VerifyOnly) { throw "refusing: -Apply and -VerifyOnly are mutually exclusive" }
-if ($GrantTaskAccessOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly)) {
-  throw "refusing: -GrantTaskAccessOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly)"
+if ($GrantTaskAccessOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly -or $EnableTasksOnly)) {
+  throw "refusing: -GrantTaskAccessOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly/-EnableTasksOnly)"
+}
+if ($EnableTasksOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly -or $GrantTaskAccessOnly)) {
+  throw "refusing: -EnableTasksOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly/-GrantTaskAccessOnly)"
 }
 #: May this run CHANGE the host? -VerifyOnly must never mutate.
 $Mutate = [bool]$Apply
@@ -273,11 +284,11 @@ function Test-GoldenImage {
   return [pscustomobject]@{ Passed = ($fail.Count -eq 0); Failures = $fail; Checks = $ok; Notes = $note }
 }
 
-# -GrantTaskAccessOnly provisions no runtime and never reads the golden image, so it must NOT require a
-# staged golden. Golden validation (RULE 10) gates only the runtime-provisioning paths (-Apply / -VerifyOnly /
-# -ValidateGoldenOnly), which are mutually exclusive with -GrantTaskAccessOnly.
-if ($GrantTaskAccessOnly) {
-  Write-Host "note GrantTaskAccessOnly: golden-image validation skipped (a task-ACL grant provisions no runtime and never reads the golden image)"
+# The credential-free task modes provision no runtime and never read the golden image, so they must NOT
+# require a staged golden. Golden validation (RULE 10) gates only the runtime-provisioning paths (-Apply /
+# -VerifyOnly / -ValidateGoldenOnly), which are mutually exclusive with -GrantTaskAccessOnly/-EnableTasksOnly.
+if ($GrantTaskAccessOnly -or $EnableTasksOnly) {
+  Write-Host "note credential-free task mode: golden-image validation skipped (no runtime is provisioned and the golden image is never read)"
 } else {
   if (-not (Test-Path $GoldenDir)) {
     throw "golden image not staged at $GoldenDir - commission a DEDICATED CLEAN MT5 install (RULE 10); the production terminal must never be promoted"
@@ -458,6 +469,41 @@ function Grant-GuvfxServiceTaskAccess {
   Write-Host ("evidence task_acl task=$TaskName service_sid=$ServiceSid mask=0x{0:X} result=granted" -f $GuvfxTaskReadRunMask)
 }
 
+#: Task Scheduler RUN right == FILE_EXECUTE (0x20). Under ADR 0017 a task is ENABLED at rest, so its DACL is the
+#: sole start-authorisation gate; only Administrators, SYSTEM and the beta service may hold the run right.
+$GuvfxTaskRunBit = 0x20
+
+function Assert-GuvfxTaskRunAclSafe {
+  <# ON-DEMAND MODEL (ADR 0017): once a task is ENABLED, nothing but its DACL stops a non-agent caller starting
+     it. The boundary REQUIRES that the slot identity (and every other non-admin principal) has NO run right, so
+     the only way a task runs is a signed agent request (or an administrator). Assert it directly rather than
+     trust the OS-default DACL (RULE 11 / no-assumption): enumerate the FULL DACL and fail closed on ANY
+     AccessAllowed ACE that carries the run bit for a SID other than Administrators, SYSTEM or the beta service.
+     Read-only - it inspects, never modifies the descriptor. #>
+  param([Parameter(Mandatory)][string]$TaskName, [Parameter(Mandatory)][string]$ServiceSid)
+  if ($TaskName -notmatch "^GuvFXBetaRuntime(Stop)?-[1-9][0-9]*$") { throw "refusing run-ACL check for non-beta task '$TaskName'" }
+  $adminSid = "S-1-5-32-544"; $systemSid = "S-1-5-18"
+  $svc = New-Object -ComObject Schedule.Service; $svc.Connect()
+  $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor(($svc.GetFolder("\").GetTask($TaskName)).GetSecurityDescriptor(4))
+  $offenders = @()
+  foreach ($ace in $sd.DiscretionaryAcl) {
+    if ($ace.AceQualifier.ToString() -ne "AccessAllowed") { continue }
+    if (([int]$ace.AccessMask -band $GuvfxTaskRunBit) -eq 0) { continue }         # no run bit -> harmless
+    $sidV = $ace.SecurityIdentifier.Value
+    if ($sidV -eq $adminSid -or $sidV -eq $systemSid -or $sidV -eq $ServiceSid) { continue }   # trusted
+    $offenders += ("{0} mask=0x{1:X}" -f $sidV, [int]$ace.AccessMask)
+  }
+  # Positive control (RULE 11): the run-bit detector MUST fire on a run-bearing mask and MUST NOT on a
+  # read-only one, so a clean result means "no offending run ACE", never "the check matched nothing".
+  if ((0x1200a9 -band $GuvfxTaskRunBit) -eq 0 -or (0x120089 -band $GuvfxTaskRunBit) -ne 0) {
+    throw "run-bit detector self-test failed - refusing to certify '$TaskName'"
+  }
+  if ($offenders.Count -ne 0) {
+    throw "task '$TaskName': a NON-service principal can RUN it (run-bearing ACE(s): $($offenders -join '; ')) - the slot identity and all others must have NO run right - STOP"
+  }
+  Write-Host "ok   ${TaskName}: only Administrators/SYSTEM/beta-service hold the RUN right (no non-service Run ACE)"
+}
+
 function Grant-GuvfxServiceRead {
   <# Grant READ on one file to the beta agent's virtual service account.
 
@@ -603,6 +649,53 @@ if ($GrantTaskAccessOnly) {
   if ($gtaRootSvc.Count -ne 0) { throw "root task folder carries a service ACE; the service must have NO folder-level access - STOP" }
   Write-Host "ok   root task folder: service holds NO ACE (no folder-list; exact-name lookup only)"
   Write-Host "ok   GrantTaskAccessOnly complete: eight beta tasks granted read+execute; nothing registered or started"
+  return
+}
+
+# ON-DEMAND MODEL (ADR 0017): move the eight already-registered beta tasks from install-only Disabled to the
+# ENABLED-but-triggerless resting state, and exit. Admin-only - Enable-ScheduledTask needs NO slot password and
+# re-registers nothing. It NEVER creates, deletes, re-registers or edits a task action/principal/trigger; it
+# only flips Settings.Enabled from false to true, and only for something that is already exactly a reviewed beta
+# task. Reached only after the refusals + (skipped) golden validation + function definitions above.
+if ($EnableTasksOnly) {
+  Step "ENABLE TASKS ONLY: eight beta tasks -> ENABLED + triggerless on-demand (no registration, no passwords)"
+  $etSvc = New-Object -ComObject Schedule.Service; $etSvc.Connect()
+  $etServiceSid = Get-GuvfxServiceSidValue "GuvFXBetaAgent"
+  for ($n = 1; $n -le $PoolSize; $n++) {
+    foreach ($t in @("$LaunchPrefix$n", "$StopPrefix$n")) {
+      $task = Get-ScheduledTask -TaskName $t -ErrorAction Stop
+      # Refuse to enable anything that is not exactly a reviewed beta task: right slot principal + Limited run
+      # level. This blocks enabling a wrongly-principalled or elevated task that happens to share the name.
+      $principal = $task.Principal
+      if ($principal.UserId -notlike "*$IdentityPrefix$n") {
+        throw "refusing to enable '$t': principal is $($principal.UserId), not $IdentityPrefix$n"
+      }
+      if ($principal.RunLevel -ne "Limited") {
+        throw "refusing to enable '$t': RunLevel is $($principal.RunLevel), expected Limited"
+      }
+      # Zero triggers is the security invariant of the on-demand model; corroborate PS against COM so one
+      # library's null convention cannot decide it alone. Never enable a task that carries a trigger.
+      $trigPs  = Get-GuvfxCount $task.Triggers
+      $trigCom = ($etSvc.GetFolder("\").GetTask($t)).Definition.Triggers.Count
+      if ($trigPs -ne $trigCom) {
+        throw "refusing to enable '$t': trigger count disagrees (Get-ScheduledTask=$trigPs, COM=$trigCom)"
+      }
+      if ($trigCom -gt 0) { throw "refusing to enable '$t': it carries $trigCom trigger(s); on-demand requires ZERO" }
+      # Enabling makes the DACL the sole start gate: BEFORE enabling, prove no non-service principal can Run it
+      # (the slot identity in particular must have no run right), else a signed request is not the only caller.
+      Assert-GuvfxTaskRunAclSafe -TaskName $t -ServiceSid $etServiceSid
+      Enable-ScheduledTask -TaskName $t | Out-Null
+      # Read back through BOTH interfaces: the flag is on, the state is no longer Disabled, and no trigger
+      # appeared. A task that reports enabled but still Disabled, or gained a trigger, fails closed here.
+      $after    = Get-ScheduledTask -TaskName $t -ErrorAction Stop
+      $afterCom = $etSvc.GetFolder("\").GetTask($t)
+      if (-not $after.Settings.Enabled) { throw "post-enable '$t' still reports Settings.Enabled=false - STOP" }
+      if ($after.State -eq "Disabled")  { throw "post-enable '$t' state is still Disabled - STOP" }
+      if ($afterCom.Definition.Triggers.Count -gt 0) { throw "post-enable '$t' now carries a trigger - STOP" }
+      Write-Host "ok   $t ENABLED, zero triggers, principal $($principal.UserId), RunLevel Limited"
+    }
+  }
+  Write-Host "ok   EnableTasksOnly complete: eight beta tasks Enabled + triggerless; nothing registered, edited or started"
   return
 }
 
@@ -801,7 +894,8 @@ DoIt "ACL ${LauncherDir}: break inheritance, Administrators + SYSTEM Full, each 
   }
 }
 
-# -- 6. Scheduled tasks. Registered DISABLED, with NO trigger, on-demand only. TASK_LOGON_PASSWORD stores
+# -- 6. Scheduled tasks. Registered ENABLED but TRIGGERLESS (on-demand only, ADR 0017): zero triggers means
+#      nothing starts them on their own; the only caller is a signed, authorised agent request. TASK_LOGON_PASSWORD stores
 #      the credential in the Task Scheduler credential store - the agent never sees it and cannot read it.
 #      S4U was rejected: it stores no password but grants no network access, which MT5 needs.
 $Approved = @{}
@@ -817,7 +911,7 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     if ($ForbiddenTasks -contains $t) { throw "refusing: '$t' collides with an estate task" }
   }
 
-  DoIt "register '$launch' (disabled, no trigger, wrapper launches /portable + grants, runs as $user)" {
+  DoIt "register '$launch' (ENABLED, no trigger - on-demand capability; wrapper launches /portable + grants, runs as $user)" {
     # Bound to a variable so ZeroFreeBSTR can reach it. Called inline, the pointer is unrecoverable and the
     # plaintext stays in unmanaged memory for the life of the session - the same defect fixed in
     # Get-SlotSecret, in the two places that actually hold the password longest.
@@ -833,13 +927,17 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $wrapArgs -WorkingDirectory $work
     $settings  = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
                    -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
+    # ON-DEMAND MODEL (ADR 0017): the task is left ENABLED but TRIGGERLESS. Enabled does NOT mean scheduled -
+    # it has zero triggers, so nothing can start it automatically; the ONLY way it runs is a signed, authorised
+    # agent request that opens it by exact name and calls Run(). Leaving it enabled avoids granting the service
+    # any task write/modify right merely to toggle state before each invocation (New-ScheduledTaskSettingsSet
+    # defaults Enabled=$true, so registration alone leaves it enabled + triggerless).
     Register-ScheduledTask -TaskName $launch -Action $action -Settings $settings `
       -User $user -Password $plain -RunLevel Limited -Force | Out-Null
-    Disable-ScheduledTask -TaskName $launch | Out-Null
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bp)
     Remove-Variable plain, bp
   }
-  DoIt "register '$stop' (disabled, no trigger, terminates ONLY this slot's image)" {
+  DoIt "register '$stop' (ENABLED, no trigger - on-demand capability; terminates ONLY this slot's image)" {
     $bp = [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Get-SlotSecret $user))
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bp)
     # SCOPED BY IMAGE PATH, not by image name. `taskkill /IM terminal64.exe` would match by NAME - and the
@@ -856,9 +954,11 @@ for ($n = 1; $n -le $PoolSize; $n++) {
     $action   = New-ScheduledTaskAction -Execute "powershell.exe" `
                   -Argument ("-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command `"$kill`"")
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::FromMinutes(5))
+    # ON-DEMAND MODEL (ADR 0017): left ENABLED but TRIGGERLESS. Zero triggers -> nothing starts it
+    # automatically; the ONLY caller is a signed, authorised agent STOP that opens it by exact name and calls
+    # Run(). Registration alone leaves it enabled + triggerless; no separate enable/disable dance per invocation.
     Register-ScheduledTask -TaskName $stop -Action $action -Settings $settings `
       -User $user -Password $plain -RunLevel Limited -Force | Out-Null
-    Disable-ScheduledTask -TaskName $stop | Out-Null
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bp)
     Remove-Variable plain, bp
   }
@@ -901,8 +1001,9 @@ for ($n = 1; $n -le $PoolSize; $n++) {
         arguments         = [string]$act.Arguments
         logon_type        = [int]$p.LogonType
         run_level         = [int]$p.RunLevel
-        # The gate runs at FIRST START, by which point the operator has enabled the tasks under a separate
-        # approval - so the approval pins enabled=true even though the task is disabled right now.
+        # ON-DEMAND MODEL (ADR 0017): the task is registered ENABLED and triggerless and stays that way at rest,
+        # so the approval pins enabled=true and the runtime gate finds a matching enabled task. A task found
+        # DISABLED at runtime is drift and fails closed (occupancy.assert_task_matches_approved).
         enabled           = $true
       }
     }
@@ -970,14 +1071,20 @@ DoIt "write approved task definitions to $ApprovedTasksOut" {
   Grant-GuvfxServiceRead -Path $ApprovedTasksOut -ServiceName "GuvFXBetaAgent"
 }
 
-# -- 8. Verify (no start, no trigger, no enable).
+# -- 8. Verify (no start, no trigger). ON-DEMAND MODEL (ADR 0017): tasks are ENABLED but TRIGGERLESS at rest.
 if ($Check) {
-  Step "VERIFY pool (expect: identities non-admin, tasks present and DISABLED, no triggers)"
+  Step "VERIFY pool (expect: identities non-admin, tasks present and ENABLED, zero triggers, on-demand only)"
   $svcV = New-Object -ComObject Schedule.Service; $svcV.Connect()
+  $verifyServiceSid = Get-GuvfxServiceSidValue "GuvFXBetaAgent"
   for ($n = 1; $n -le $PoolSize; $n++) {
     foreach ($t in @("$LaunchPrefix$n", "$StopPrefix$n")) {
       $task = Get-ScheduledTask -TaskName $t -ErrorAction Stop
-      if ($task.State -ne "Disabled") { throw "task '$t' is $($task.State); expected Disabled (install-only)" }
+      # Enabled but triggerless. An enabled, non-running, triggerless task reports State 'Ready'. A 'Disabled'
+      # task can never be triggered by a signed agent request (run_task refuses it), so Disabled is now a
+      # provisioning FAILURE, not the resting state. Assert the Settings.Enabled flag directly as well, so a
+      # transient Running does not mask a task that has been disabled underneath us.
+      if (-not $task.Settings.Enabled) { throw "task '$t' is DISABLED; on-demand model requires Enabled" }
+      if ($task.State -eq "Disabled") { throw "task '$t' state is Disabled; on-demand model requires Enabled" }
       # Counted null-safely, and corroborated against the Task Scheduler COM definition - the same source
       # the approvals read-back uses - so one library's null convention cannot decide this alone.
       $trigPs  = Get-GuvfxCount $task.Triggers
@@ -985,11 +1092,14 @@ if ($Check) {
       if ($trigPs -ne $trigCom) {
         throw "task '$t' trigger count disagrees between sources (Get-ScheduledTask=$trigPs, COM=$trigCom) - refusing to judge it"
       }
-      if ($trigCom -gt 0) { throw "task '$t' has $trigCom trigger(s); expected on-demand only" }
+      if ($trigCom -gt 0) { throw "task '$t' has $trigCom trigger(s); on-demand model requires ZERO triggers" }
       $principal = $task.Principal
       if ($principal.UserId -notlike "*$IdentityPrefix$n") { throw "task '$t' principal is $($principal.UserId)" }
       if ($principal.RunLevel -ne "Limited") { throw "task '$t' RunLevel is $($principal.RunLevel); expected Limited" }
-      Write-Host "ok   $t disabled, no trigger, principal $($principal.UserId), RunLevel Limited"
+      # ON-DEMAND MODEL (ADR 0017): an enabled task's DACL is the sole start gate. Prove no non-service principal
+      # (in particular the slot identity) can Run it, so a signed agent request stays the only way to start it.
+      Assert-GuvfxTaskRunAclSafe -TaskName $t -ServiceSid $verifyServiceSid
+      Write-Host "ok   $t ENABLED, zero triggers (on-demand), principal $($principal.UserId), RunLevel Limited"
     }
   }
   # This loop previously had no failing branch: a MISSING estate task printed nothing and the run
@@ -1200,7 +1310,7 @@ if ($Check) {
   if ($VerifyOnly) {
     Write-Host "ok   pool VERIFIED. Nothing was created, changed or started by this run."
   } else {
-    Write-Host "ok   pool provisioned. Tasks are DISABLED. Nothing has been started, triggered or staged."
+    Write-Host "ok   pool provisioned. Tasks are ENABLED but TRIGGERLESS (on-demand only, ADR 0017). Nothing has been started, triggered or staged."
     Write-Host "     Next: install_service.ps1 -Apply, then firewall.ps1 -Apply. Do NOT start until approval."
   }
 } else {

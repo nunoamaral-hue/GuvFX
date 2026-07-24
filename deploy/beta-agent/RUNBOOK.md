@@ -29,8 +29,9 @@ merely "termination requested".
 
 **Launch gate.** `START` refuses unless the installed launch task matches its **approved definition**
 field-for-field (`approved_tasks.json`, written by `install_pool.ps1`). Drift, a changed principal or run
-level, a lost `/portable`, a disabled task or an absent task all block — and nothing is triggered. The agent
-never repairs a task.
+level, a lost `/portable`, a **disabled task**, a task that has gained **any trigger** (the on-demand model
+requires zero — [ADR 0017](../../docs/ADRs/0017-beta-task-enabled-triggerless-on-demand.md)) or an absent task
+all block — and nothing is triggered. The agent never repairs a task.
 
 ## Security boundaries (enforced in code)
 - Binds only to a private/Tailscale address; **startup fails** on `0.0.0.0`/public (`config.assert_private_bind`).
@@ -88,9 +89,14 @@ installation evidence.** Full order, timings, rollback points and stop condition
    (`config\accounts.dat`, `config\servers.dat`, `bases\`, `logs\`, `MQL5\Logs\`, `MQL5\Profiles\`).
    Add `.guvfx_golden_manifest` (the approved image version) and `.guvfx_portable`. Record the tree digest.
 2. **Operator** — `install_pool.ps1`: creates the four non-admin identities, grants `SeBatchLogonRight`,
-   creates the slot/tombstone directories and per-slot ACLs, registers the **8 tasks disabled with no
-   triggers**, and writes `approved_tasks.json` by reading each registration back through the same COM
-   interface the agent uses. **Prompts for passwords as SecureString — they are never parameters.**
+   creates the slot/tombstone directories and per-slot ACLs, registers the **8 tasks ENABLED but TRIGGERLESS**
+   (on-demand execution capabilities, not scheduled jobs — see [ADR 0017](../../docs/ADRs/0017-beta-task-enabled-triggerless-on-demand.md)),
+   grants the beta service read+execute on each task (TSV), and writes `approved_tasks.json` by reading each
+   registration back through the same COM interface the agent uses. **Prompts for passwords as SecureString —
+   they are never parameters.** *Enabled is not scheduled:* zero triggers means nothing starts a task on its
+   own; the only caller is a signed, authorised agent request. (Nothing runs during or after install.) A pool
+   already provisioned under the older install-only-Disabled model is moved to the resting state with the
+   credential-free `install_pool.ps1 -EnableTasksOnly` — no passwords, no re-registration.
 3. **Operator** — place the pinned WinSW wrapper (`WinSW.NET4.exe` v2.12.0, SHA-256
    `923111c7…f4cb66`) at `C:\GuvFX\beta\winsw-src\WinSW.NET4.exe`, and stage the agent bundle to
    `C:\GuvFX\beta\agent\` **including the `winsw\` subdir** (`GuvFXBetaAgent.xml`). Introducing a new

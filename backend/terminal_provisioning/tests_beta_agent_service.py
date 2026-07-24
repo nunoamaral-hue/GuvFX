@@ -1202,10 +1202,12 @@ class TaskIdentityTests(SimpleTestCase):
 
     @staticmethod
     def _defn(**over):
+        # trigger_count=0 models the ON-DEMAND resting state (ADR 0017): enabled but triggerless. The approved
+        # side is compared by digest only, so its trigger_count is irrelevant; the installed side must be 0.
         d = dict(task_name="GuvFXBetaRuntime-2", run_as_identity="guvfx_u_beta_2",
                  executable=r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe",
                  working_directory=r"C:\GuvFX\beta\slots\2\terminal",
-                 logon_type="TASK_LOGON_PASSWORD", run_level="LEAST", enabled=True)
+                 logon_type="TASK_LOGON_PASSWORD", run_level="LEAST", enabled=True, trigger_count=0)
         d.update(over)
         return d
 
@@ -1229,6 +1231,25 @@ class TaskIdentityTests(SimpleTestCase):
         from occupancy import TaskDefinitionDrift, assert_task_matches_approved
         with self.assertRaises(TaskDefinitionDrift):
             assert_task_matches_approved(self._defn(), self._defn(enabled=False))
+
+    def test_enabled_triggerless_is_accepted(self):
+        # ON-DEMAND MODEL (ADR 0017): enabled + zero triggers is the accepted resting state.
+        from occupancy import assert_task_matches_approved
+        assert_task_matches_approved(self._defn(), self._defn(enabled=True, trigger_count=0))
+
+    def test_any_trigger_blocks_launch(self):
+        # ON-DEMAND MODEL (ADR 0017): an approved task must be triggerless. ANY trigger -> drift, fail closed.
+        from occupancy import TaskDefinitionDrift, assert_task_matches_approved
+        for count in (1, 2, 5):
+            with self.assertRaises(TaskDefinitionDrift, msg=f"trigger_count={count}") as ctx:
+                assert_task_matches_approved(self._defn(), self._defn(trigger_count=count))
+            self.assertEqual(ctx.exception.reason_code, "task_definition_drift")
+
+    def test_unread_trigger_count_blocks_launch(self):
+        # A missing/unread trigger count must be treated as a trigger (fail closed), never optimistically as 0.
+        from occupancy import TaskDefinitionDrift, assert_task_matches_approved
+        with self.assertRaises(TaskDefinitionDrift):
+            assert_task_matches_approved(self._defn(), self._defn(trigger_count=None))
 
     def test_digest_is_order_independent(self):
         from occupancy import task_definition_digest

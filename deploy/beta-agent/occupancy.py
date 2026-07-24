@@ -177,3 +177,10 @@ def assert_task_matches_approved(approved: dict, installed: dict) -> None:
         raise TaskDefinitionDrift(",".join(differing) or "digest")   # names the fields, never the values
     if not installed.get("enabled"):
         raise TaskDefinitionDrift("disabled")
+    # ON-DEMAND MODEL (ADR 0017): an approved beta task is ENABLED but TRIGGERLESS. Enabled does NOT mean
+    # scheduled — the ONLY thing that may start it is a signed, authorised agent request. Any trigger means the
+    # task was re-registered or edited out of band into something that can start on its own, so it is drift and
+    # fails closed. A missing/unread count (None) is treated as a trigger, never optimistically as "none".
+    trigger_count = installed.get("trigger_count")
+    if trigger_count is None or trigger_count != 0:
+        raise TaskDefinitionDrift("triggered")

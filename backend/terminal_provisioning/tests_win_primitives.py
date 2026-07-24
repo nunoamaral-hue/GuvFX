@@ -93,7 +93,10 @@ def _task(**over):
                  '-WorkingDirectory "C:\\GuvFX\\beta\\slots\\2\\terminal" '
                  '-GranteeSid ' + _GRANTEE_SID + ' /portable'),
              portable_switch=True,
-             logon_type="TASK_LOGON_PASSWORD", run_level="LEAST", enabled=True, last_result=0)
+             logon_type="TASK_LOGON_PASSWORD", run_level="LEAST", enabled=True,
+             # ON-DEMAND MODEL (ADR 0017): approved tasks are enabled but triggerless. The real query_task reads
+             # this from Definition.Triggers.Count; the fake carries it directly. 0 is the valid resting value.
+             trigger_count=0, last_result=0)
     d.update(over)
     return d
 
@@ -262,8 +265,19 @@ class TaskInspectionContractTests(SimpleTestCase):
         self.assertEqual(res["attestation"]["outcome"], wp.PRESENT_VALID)
         for f in ("task_name", "definition_digest", "run_as_identity", "run_as_sid", "executable",
                   "working_directory", "arguments", "portable_switch", "logon_type", "run_level",
-                  "enabled", "last_result"):
+                  "enabled", "trigger_count", "last_result"):
             self.assertIn(f, res["evidence"], f)
+
+    def test_trigger_count_is_surfaced_in_evidence(self):
+        # ON-DEMAND MODEL (ADR 0017): the count reaches the definition gate so it can reject ANY trigger.
+        res = wp.inspect_task(RecordingFakeWin(task=_task(trigger_count=0)), SI, observed_at=OBSERVED_AT)
+        self.assertEqual(res["evidence"]["trigger_count"], 0)
+
+    def test_unread_trigger_count_is_incomplete_not_valid(self):
+        # A None trigger count (COM read failed) must fail closed as incomplete, never pass as "no trigger".
+        res = wp.inspect_task(RecordingFakeWin(task=_task(trigger_count=None)), SI, observed_at=OBSERVED_AT)
+        self.assertEqual(res["attestation"]["outcome"], wp.PRESENT_INVALID)
+        self.assertEqual(res["attestation"]["reason_code"], "task_definition_incomplete")
 
     def test_administrator_run_as_is_invalid(self):
         res = wp.inspect_task(RecordingFakeWin(task=_task(run_as_identity="Administrator")), SI,

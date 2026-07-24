@@ -581,6 +581,10 @@ class RealSlotWindowsOps(SlotWindowsOps):
             "logon_type": int(getattr(principal, "LogonType", TASK_STATE_UNKNOWN)),
             "run_level": int(getattr(principal, "RunLevel", 0)),
             "enabled": bool(task.Enabled),
+            # ON-DEMAND MODEL (ADR 0017): an approved beta task is ENABLED but must carry ZERO triggers - it is a
+            # capability run only by a signed agent request, never scheduled. The trigger count is surfaced so
+            # the runtime gate can fail closed on ANY trigger (occupancy.assert_task_matches_approved).
+            "trigger_count": int(definition.Triggers.Count),
             "last_result": int(task.LastTaskResult),
         }
 

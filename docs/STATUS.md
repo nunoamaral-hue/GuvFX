@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-07-25 — B3P-2 on-demand task model (ADR 0017): the task-enablement blocker is RESOLVED. 🟢 decided + implemented + reviewed, 🟠 host apply + final lifecycle next.**
+  **Decision (Nuno):** the eight beta tasks are **ENABLED but TRIGGERLESS** at rest — on-demand execution
+  capabilities, not scheduled jobs. No per-invocation enable/disable; no task-modification right for the service.
+  **Implemented:** installer registers the tasks enabled (removed the two `Disable-ScheduledTask` calls); VERIFY
+  now asserts Enabled + zero triggers; a credential-free `install_pool.ps1 -EnableTasksOnly` migrates an
+  already-provisioned pool (Enable-ScheduledTask, no password, refuses non-beta/wrong-principal/triggered tasks,
+  read-back). Runtime: `query_task` reads the trigger count, `inspect_task` carries it (unread ⇒ incomplete/fail
+  closed), `assert_task_matches_approved` rejects any trigger. **Security hardening beyond the ask (RULE 11):**
+  both the VERIFY and enable paths now assert **no non-service principal can Run a task** (full-DACL scan for the
+  FILE_EXECUTE bit, with a positive-control self-test). Host-measured on all 8 tasks: the slot identity holds
+  read-only `0x120089` (no run bit), beta service `0x1200a9`, no `Authenticated Users` ACE — so the boundary
+  ("slot identity gets no run right") already holds and is now self-checked. Adversarial review (5 lenses →
+  6 confirmed doc/test regressions fixed, 2 DACL findings refuted by host measurement). ADR 0017 written.
+  `make check` green. **Supersedes the 2026-07-25 "second blocker" entry below** — that blocker is resolved.
+
 - **2026-07-25 — B3P-2 TSV: DISCOVERY fix merged + APPLIED + PROVEN on host; native STOP uncovers a SECOND, separate blocker. 🟢 TSV complete, 🟠 lifecycle blocked by task-enablement gap.**
   **TSV discovery = DONE.** `#212` (exact-name `GetTask` + HRESULT classification incl. `excepinfo[5]`;
   `Grant-GuvfxServiceTaskAccess` least-privilege `0x1200a9`) merged; `#213`/`#214` added a credential-free
