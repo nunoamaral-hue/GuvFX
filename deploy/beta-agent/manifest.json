@@ -5,7 +5,7 @@
     "config.py": "2b80abd20de6f093f707ca731e198810492cf56dc1f86cd6227cd9f2dc12db23",
     "lib/mgmt_agent_core.py": "cd55ec9a6b2a44d40dd42adf8986b2140a0a905690eb03322647923e909e593e",
     "lib/mgmt_protocol.py": "48fcb8cb20169c56fb4402c76eb05f88f482b41efbe8dc34aacf1ec66f5d783e",
-    "lifecycle.py": "3b838ba67a1855acf2ee8bc24749ec91d28f7de77c5792a0bd8a50b6fc487930",
+    "lifecycle.py": "036d9abfae5f69cb4332465dc4ff8bf93cff81beae011382a2662e1a86988629",
     "manifest.py": "d1befea5fd93487a033a0927e0f4c30ffb81bba27bd7405a3ac514aab3c51568",
     "occupancy.py": "cfcd84f1a1e284b1265c69758343255ab1ce0ae0e2dc5f5b8d05cf063a250195",
     "op_impls.py": "e4ec790e4f0f6391dc8e40e8d981c0a9dc178689282f8eaca841a4076b5ef5e0",
@@ -15,9 +15,9 @@
     "win_mutations.py": "38258c11a89ad4d9251d990d48d2d005a230d24317761844f8f7f81dcae0b626",
     "win_ops.py": "36499a24b000befe144b1352988754e8f38bd15ea035943bef009f369f8e90b8",
     "win_primitives.py": "35f15b6677c260a7733a5ae4b81fc351a284cb66526902ff1689b974839e2d34",
-    "win_slot_ops.py": "1d93e7e2f1a703547c5f3fab17c21de07dc93b7e3632f5cbc840761279afa61d"
+    "win_slot_ops.py": "a6677f4910d113a13632345df309328c2d256921c05b2649f301b33e2387a601"
   },
-  "manifest_version": "2026-07-25.1",
+  "manifest_version": "2026-07-25.2",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",

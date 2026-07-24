@@ -7,6 +7,7 @@ What CANNOT be proven here, and is not claimed: that any Win32 call behaves as d
 WIN-RD8VDS93DK7. That is the viability trial's job — see docs/B3P2_WINDOWS_RESEARCH_FINDINGS.md §4.
 """
 import inspect
+import ntpath
 import os
 import sys
 from unittest import mock
@@ -77,10 +78,12 @@ class FailClosedOffHostTests(SimpleTestCase):
         self.assertEqual(ctx.exception.reason_code, "windows_api_unavailable")
 
     def test_open_handles_fails_closed_off_host(self):
-        """WS-B: open_handles is now IMPLEMENTED (Restart Manager, host-proven). For a slot dir that EXISTS
-        it must still fail closed off-host — it canonicalises (Win32) after the existence check, so it raises
-        windows_api_unavailable rather than fabricating a clear/held answer. (A GONE dir legitimately returns
-        clear — that path is covered by OpenHandlesOrderingTests.)"""
+        """WS-B: open_handles is IMPLEMENTED (Restart Manager, host-proven). For a slot dir that EXISTS it
+        must still fail closed off-host. Since ADR-0015/PN, ``_long_path`` no longer needs Win32 for an
+        ordinary (no-tilde) path — it returns the lexical form — so canonicalisation succeeds and the
+        fail-closed now comes from the host-only Restart Manager primitive: ``handle_observation_unavailable``
+        (still a WindowsOpsError, never a fabricated clear/held answer). (A GONE dir legitimately returns
+        clear — covered by OpenHandlesOrderingTests.)"""
         import tempfile
         import shutil
         if os.name == "nt":
@@ -91,7 +94,7 @@ class FailClosedOffHostTests(SimpleTestCase):
             a = wso.RealSlotWindowsOps(golden_dir=tmp, slots_root=tmp)
             with self.assertRaises(WindowsOpsError) as ctx:
                 a.open_handles(sub)
-            self.assertEqual(ctx.exception.reason_code, "windows_api_unavailable")
+            self.assertEqual(ctx.exception.reason_code, "handle_observation_unavailable")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -739,7 +742,9 @@ class OpenHandlesOrderingTests(SimpleTestCase):
         def path_exists(self, path):
             return self._exists
         def _long_path(self, path):
-            raise wso.WindowsOpsError("path_normalisation_failed")   # GetLongPathNameW on a missing path
+            # A required 8.3 resolution the service cannot perform (ADR-0015/PN) — the only way _long_path
+            # raises now that ordinary long paths return lexically. open_handles must still fail closed.
+            raise wso.WindowsOpsError("short_name_unresolved")
         def _enumerate_slot_files(self, c):
             return []
 
@@ -750,7 +755,137 @@ class OpenHandlesOrderingTests(SimpleTestCase):
     def test_present_but_uncanonicalisable_still_fails_closed(self):
         with self.assertRaises(WindowsOpsError) as cm:
             self._Ops(exists=True).open_handles(r"C:\GuvFX\beta\slots\1\terminal")
-        self.assertEqual(cm.exception.reason_code, "path_normalisation_failed")
+        self.assertEqual(cm.exception.reason_code, "short_name_unresolved")
+
+
+class PathNormalisationTests(SimpleTestCase):
+    """ADR-0015/PN two-stage normalisation: Stage A is pure-lexical (no parent LIST); Stage B calls
+    GetLongPathNameW ONLY for a component with short-name (tilde) evidence, failing closed if a REQUIRED
+    resolution cannot be done. This is what lets the least-privilege service normalise an ordinary slot path
+    it cannot parent-list, while still resolving (or withholding a verdict on) a genuine 8.3 path."""
+
+    def _ops(self, glpn=lambda p: p):
+        import ctypes as _ct
+        ops = wso.RealSlotWindowsOps(golden_dir=r"C:\GuvFX\golden\newMT5", slots_root=r"C:\GuvFX\beta\slots")
+        calls = {"win32": 0}
+
+        class _K32:
+            def GetLongPathNameW(self, path, buf, size):
+                res = glpn(path)                 # None models a required resolution that failed
+                if res is None:
+                    return 0
+                buf.value = res
+                return len(res)
+
+        def _win32():
+            calls["win32"] += 1
+            return {"ctypes": _ct, "k32": _K32()}
+        ops._win32 = _win32
+        ops._calls = calls
+        return ops
+
+    SLOT = r"C:\GuvFX\beta\slots\1\terminal"
+
+    def test_ordinary_long_path_normalises_without_calling_getlongpathname(self):
+        ops = self._ops()
+        self.assertEqual(ops._long_path(self.SLOT), self.SLOT)
+        self.assertEqual(ops._calls["win32"], 0)     # NO GetLongPathNameW -> NO parent LIST required
+
+    def test_service_context_parent_list_denial_does_not_block_an_ordinary_slot_path(self):
+        # THE host fix: parents non-listable. Model it by making any GetLongPathNameW attempt an error; an
+        # ordinary (no-tilde) slot path must STILL normalise via Stage A alone.
+        ops = wso.RealSlotWindowsOps(golden_dir=r"C:\GuvFX\golden", slots_root=r"C:\GuvFX\beta\slots")
+
+        def _boom():
+            raise AssertionError("GetLongPathNameW must NOT be called for an ordinary long path")
+        ops._win32 = _boom
+        self.assertEqual(ops._long_path(self.SLOT), self.SLOT)
+
+    def test_short_name_predicate_matches_only_generated_8dot3_shape(self):
+        # Genuine generated short names (STEM~<digit>[.EXT]) -> Stage B.
+        self.assertTrue(wso._has_short_name_component(r"C:\GUVFX~1\beta\slots\1\terminal"))
+        self.assertTrue(wso._has_short_name_component(r"C:\GuvFX\beta\PROGRA~1\x"))
+        self.assertTrue(wso._has_short_name_component(r"C:\x\MICROS~1.TXT"))
+        self.assertFalse(wso._has_short_name_component(self.SLOT))
+        self.assertFalse(wso._has_short_name_component(r"C:\GuvFX\beta\slots\10\terminal"))
+
+    def test_legitimate_tilde_filenames_are_NOT_treated_as_short_names(self):
+        # The HIGH review finding: '~' is legal in long filenames. These must stay on Stage A (no FS,
+        # no parent LIST) — otherwise an incidental tilde file permanently blocks slot release.
+        for legit in (r"C:\GuvFX\beta\slots\1\terminal\config\~$Report.xlsx",
+                      r"C:\GuvFX\beta\slots\1\terminal\bases\backup~old.ini",
+                      r"C:\GuvFX\beta\slots\1\terminal\~WRL0001.tmp",
+                      r"C:\GuvFX\beta\slots\1\terminal\settings.ini~",
+                      r"C:\GuvFX\beta\slots\1\terminal\my~file.set"):     # tilde, not tilde-DIGIT
+            self.assertFalse(wso._has_short_name_component(legit), legit)
+
+    def test_a_legitimate_tilde_path_normalises_on_stage_A_without_touching_win32(self):
+        ops = self._ops()
+        p = r"C:\GuvFX\beta\slots\1\terminal\config\~$Report.xlsx"
+        self.assertEqual(ops._long_path(p), ntpath.normpath(p))
+        self.assertEqual(ops._calls["win32"], 0)     # a benign tilde file never triggers the parent LIST
+
+    def test_stage_B_resolves_the_lexical_normpathd_form(self):
+        # #10: pin that GetLongPathNameW receives the Stage-A (normpath'd) path, and the resolved result is
+        # still containment-checked correctly (dot-dot eliminated before resolution).
+        seen = {}
+
+        def glpn(p):
+            seen["arg"] = p
+            return r"C:\GuvFX\beta\slots\1\terminal"
+        ops = self._ops(glpn=glpn)
+        # slots\1\..\1 collapses to slots\1; PROGRA~1 survives normpath -> Stage B on the normpath'd form.
+        out = ops._long_path(r"C:\GuvFX\beta\slots\1\..\1\PROGRA~1\terminal")
+        self.assertEqual(seen["arg"], r"C:\GuvFX\beta\slots\1\PROGRA~1\terminal")     # normpath'd, not raw
+        self.assertTrue(wso.is_beneath_path(out, self.SLOT))
+
+    def test_explicit_8dot3_path_invokes_resolution(self):
+        # Mutation guard: if the predicate were mutated to skip ALL resolution, GetLongPathNameW is never
+        # called and this fails (win32==0, wrong output).
+        ops = self._ops(glpn=lambda p: self.SLOT)
+        self.assertEqual(ops._long_path(r"C:\GUVFX~1\beta\slots\1\terminal"), self.SLOT)
+        self.assertEqual(ops._calls["win32"], 1)
+
+    def test_unresolved_8dot3_fails_closed(self):
+        ops = self._ops(glpn=lambda p: None)         # required resolution denied/absent -> 0
+        with self.assertRaises(WindowsOpsError) as cm:
+            ops._long_path(r"C:\GUVFX~1\beta\slots\1\terminal")
+        self.assertEqual(cm.exception.reason_code, "short_name_unresolved")
+
+    def test_dotdot_is_eliminated_and_cannot_escape_the_slot(self):
+        ops = self._ops()
+        norm = ops._long_path(r"C:\GuvFX\beta\slots\1\..\2\terminal\terminal64.exe")
+        self.assertFalse(wso.is_beneath_path(norm, self.SLOT))
+        self.assertTrue(wso.is_beneath_path(norm, r"C:\GuvFX\beta\slots\2\terminal"))
+        self.assertEqual(ops._calls["win32"], 0)     # dot-dot handled lexically, no FS
+
+    def test_slot1_does_not_match_slot10(self):
+        self.assertFalse(wso.is_beneath_path(r"C:\GuvFX\beta\slots\10\terminal\terminal64.exe", self.SLOT))
+
+    def test_case_and_slash_variations_compare_equal(self):
+        variant = "c:/guvfx/BETA/slots/1/TERMINAL/terminal64.exe".replace("/", "\\")
+        self.assertTrue(wso.is_beneath_path(variant, self.SLOT))
+
+    def test_production_and_golden_paths_are_excluded(self):
+        self.assertFalse(wso.is_beneath_path(r"C:\Program Files\IS6\terminal64.exe", self.SLOT))
+        self.assertFalse(wso.is_beneath_path(r"C:\GuvFX\golden\newMT5\terminal64.exe", self.SLOT))
+
+    def test_enumerate_slot_files_does_not_re_resolve_entries(self):
+        # #2: os.scandir yields long entry names; re-resolving through _long_path would run Stage B (and its
+        # parent LIST) on any incidentally short-name-shaped file, blocking cleanup. Pin the direct append.
+        import inspect
+        src = inspect.getsource(wso.RealSlotWindowsOps._enumerate_slot_files)
+        self.assertIn("out.append(e.path)", src)
+        self.assertNotIn("self._long_path(e.path)", src)
+
+    def test_no_getlongpathname_call_is_pinned_in_source_for_the_lexical_path(self):
+        # Source pin: the early return for a non-short-name path must precede any _win32()/GetLongPathNameW.
+        import inspect
+        src = inspect.getsource(wso.RealSlotWindowsOps._long_path)
+        self.assertIn("if not _has_short_name_component", src)
+        # The early return for a non-short-name path must precede the actual GetLongPathNameW CALL (prose
+        # mentions of the API in the docstring don't count — pin the call form).
+        self.assertLess(src.index("if not _has_short_name_component"), src.index("GetLongPathNameW("))
 
 
 class WsAbSourceInvariantTests(SimpleTestCase):

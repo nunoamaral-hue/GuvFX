@@ -128,7 +128,11 @@ REASON_CATEGORY = {
     "process_times_unavailable": OBSERVATION,
     "volume_path_unavailable": OBSERVATION,
     "volume_identity_unavailable": OBSERVATION,
-    "path_normalisation_failed": OBSERVATION,
+    # ADR-0015/PN two-stage normalisation: a genuine 8.3 short-name component the (least-privilege) service
+    # was REQUIRED to resolve could not be resolved -> the path verdict is withheld, never a normal long
+    # path. An ordinary long-form path never reaches here (Stage A is lexical, no parent listing). The old
+    # blind-GetLongPathNameW code ``path_normalisation_failed`` is retired — it can no longer be raised.
+    "short_name_unresolved": OBSERVATION,
     # No supported API can answer this on any Windows build — see the research findings, section 5.
     "handle_enumeration_unsupported": OBSERVATION,
     # Some process on the host could not be attributed to a location, so "nothing is running in this slot"
