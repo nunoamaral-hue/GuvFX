@@ -33,7 +33,11 @@ param(
   [switch]$VerifyOnly,
   # Run ONLY the golden-image validation and exit. Read-only by construction: it reaches no identity,
   # right, ACL, task or directory-creation step.
-  [switch]$ValidateGoldenOnly
+  [switch]$ValidateGoldenOnly,
+  # TSV: apply ONLY the task-ACL grant (service read+execute on the eight beta tasks) and exit. Admin-only,
+  # so it needs NO slot password and registers/re-registers NOTHING - it exists precisely because the grant
+  # is a credential-free SD change that should not force a full four-password -Apply just to (re)apply it.
+  [switch]$GrantTaskAccessOnly
 )
 $ErrorActionPreference = "Stop"
 # The reviewed launch wrapper's pinned SHA-256 (lowercase). tests_install_artefacts.py asserts this equals the
@@ -41,6 +45,9 @@ $ErrorActionPreference = "Stop"
 # a wrapper whose hash differs, before AND after the copy (ADR-0016; WinSW hash-pin pattern).
 $LaunchWrapperSha256 = "c18f5c3cf71e1b4afe4567c4bc98808db8a26f613dea646e97c823f7c9b83261"
 if ($Apply -and $VerifyOnly) { throw "refusing: -Apply and -VerifyOnly are mutually exclusive" }
+if ($GrantTaskAccessOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly)) {
+  throw "refusing: -GrantTaskAccessOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly)"
+}
 #: May this run CHANGE the host? -VerifyOnly must never mutate.
 $Mutate = [bool]$Apply
 #: May this run ASSERT against a provisioned host? Both -Apply and -VerifyOnly verify; PLAN cannot.
@@ -569,6 +576,28 @@ Step "LSA interop self-test (read-only policy handle; no account touched)"
 $probe = Open-GuvfxLsaPolicy -Access $LSA_READ
 [void][GuvfxLsa]::LsaClose($probe)
 Write-Host "ok   LSA interop available (LsaOpenPolicy/LsaClose round-trip succeeded)"
+
+# TSV: apply ONLY the task-ACL grant and exit. Admin-only - no slot password, no task (re)registration, no
+# directory/identity work. Reached only after the refusals + golden validation + function definitions above.
+# It grants the service read+execute on the eight beta tasks (each grant is read-back-verified inside
+# Grant-GuvfxServiceTaskAccess) and asserts the root task folder carries NO service ACE, then returns before
+# any identity/password step. Idempotent, so it may be re-run to re-assert the grant.
+if ($GrantTaskAccessOnly) {
+  Step "GRANT TASK ACCESS ONLY: service read+execute on the eight beta tasks (no registration, no passwords)"
+  $gtaSid = Get-GuvfxServiceSidValue "GuvFXBetaAgent"
+  for ($n = 1; $n -le $PoolSize; $n++) {
+    Grant-GuvfxServiceTaskAccess -TaskName "$LaunchPrefix$n" -ServiceSid $gtaSid
+    Grant-GuvfxServiceTaskAccess -TaskName "$StopPrefix$n"   -ServiceSid $gtaSid
+  }
+  $gtaSidObj = New-Object System.Security.Principal.SecurityIdentifier($gtaSid)
+  $gtaSvc = New-Object -ComObject Schedule.Service; $gtaSvc.Connect()
+  $gtaRoot = New-Object System.Security.AccessControl.RawSecurityDescriptor($gtaSvc.GetFolder("\").GetSecurityDescriptor(7))
+  $gtaRootSvc = @($gtaRoot.DiscretionaryAcl | Where-Object { $_.SecurityIdentifier -eq $gtaSidObj })
+  if ($gtaRootSvc.Count -ne 0) { throw "root task folder carries a service ACE; the service must have NO folder-level access - STOP" }
+  Write-Host "ok   root task folder: service holds NO ACE (no folder-list; exact-name lookup only)"
+  Write-Host "ok   GrantTaskAccessOnly complete: eight beta tasks granted read+execute; nothing registered or started"
+  return
+}
 
 # -- 2. Identities. Created here because the agent cannot: it has no user-creation method and holds no
 #      credential. Passwords are prompted, never parameters.
