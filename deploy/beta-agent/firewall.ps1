@@ -29,6 +29,53 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Fail($m) { throw "firewall.ps1: $m" }
+
+# IPv4 <-> uint32 (network order). Used to VERIFY block-range coverage NUMERICALLY - the earlier
+# `-contains $AllowFrom` guard only matched the backend as an exact list element, so it could never
+# detect the backend sitting INSIDE a range like "0.0.0.0-100.119.23.29", nor an under-covering block
+# that leaves a non-backend host reachable. Range membership must be checked as integers.
+function IpToUInt([string]$ip) {
+  $b = [System.Net.IPAddress]::Parse($ip).GetAddressBytes(); [Array]::Reverse($b)
+  return [System.BitConverter]::ToUInt32($b, 0)
+}
+function Assert-BlockScopeExcludesOnly {
+  # Prove $Ranges deny EVERY address except $Backend, by MERGING the ranges and comparing to the exact
+  # expected complement of the single backend /32. Numeric, not string membership - so a backend inside a
+  # range, an under-covering set (a reachable non-backend host), or an over-covering set (backend denied)
+  # are all caught. This is the security-critical guard for claim (b).
+  param([Parameter(Mandatory)][string[]]$Ranges, [Parameter(Mandatory)][string]$Backend)
+  $max = [uint32]4294967295
+  $bk = IpToUInt $Backend
+  $parsed = @()
+  foreach ($r in $Ranges) {
+    if ($r -notmatch '^(\d{1,3}(?:\.\d{1,3}){3})-(\d{1,3}(?:\.\d{1,3}){3})$') {
+      Fail "block range '$r' is not an 'a.b.c.d-e.f.g.h' range - cannot verify scope numerically"
+    }
+    $lo = IpToUInt $Matches[1]; $hi = IpToUInt $Matches[2]
+    if ($lo -gt $hi) { Fail "block range '$r' is inverted (lo > hi)" }
+    $parsed += ,([uint32[]]@($lo, $hi))
+  }
+  # merge overlapping/adjacent ranges
+  $parsed = @($parsed | Sort-Object { $_[0] })
+  $merged = @()
+  foreach ($pr in $parsed) {
+    if ($merged.Count -gt 0 -and $pr[0] -le ([uint64]$merged[-1][1] + 1)) {
+      if ($pr[1] -gt $merged[-1][1]) { $merged[-1][1] = $pr[1] }
+    } else { $merged += ,([uint32[]]@($pr[0], $pr[1])) }
+  }
+  # expected = [0..max] minus {backend}
+  $expected = @()
+  if ($bk -gt 0)   { $expected += ,([uint32[]]@([uint32]0, [uint32]($bk - 1))) }
+  if ($bk -lt $max){ $expected += ,([uint32[]]@([uint32]($bk + 1), $max)) }
+  if ($merged.Count -ne $expected.Count) {
+    Fail "block scope does not equal all-except-$Backend (merged $($merged.Count) range(s), expected $($expected.Count))"
+  }
+  for ($i = 0; $i -lt $expected.Count; $i++) {
+    if ($merged[$i][0] -ne $expected[$i][0] -or $merged[$i][1] -ne $expected[$i][1]) {
+      Fail "block scope does not equal all-except-$Backend (range $i is [$($merged[$i][0])..$($merged[$i][1])], expected [$($expected[$i][0])..$($expected[$i][1])])"
+    }
+  }
+}
 # Canonicalise a program path for comparison: expand %VAR% forms + resolve to a full path, lowercased. (Residual:
 # 8.3 short names / symlinks are not resolved here - the Tailscale ACL is the second layer for that edge.)
 function Canon($p) {
@@ -68,7 +115,8 @@ if ($BlockRemoteRanges.Count -eq 0) {
   if ($n -gt 0)          { $BlockRemoteRanges += ("0.0.0.0-" + (IntToIp ($n - 1))) }
   if ($n -lt [uint32]4294967295) { $BlockRemoteRanges += ((IntToIp ($n + 1)) + "-255.255.255.255") }
 }
-Write-Host "ok   block-remote (all except backend) = $($BlockRemoteRanges -join ' , ')"
+Assert-BlockScopeExcludesOnly -Ranges $BlockRemoteRanges -Backend $AllowFrom
+Write-Host "ok   block-remote (all except backend, verified numerically) = $($BlockRemoteRanges -join ' , ')"
 
 # 2. Resolve the ACTUAL listening image of the installed service. Under pywin32 the socket is owned by the
 #    service host image (e.g. PythonService.exe), NOT python311.exe - so a pre-existing broad allow for the
@@ -175,8 +223,12 @@ if ($Apply) {
   if ($alRemote -contains "Any" -or ($alRemote | Where-Object { $_ -ne $AllowFrom }).Count -gt 0) {
     Fail "'$RuleName' remote is '$($alRemote -join ',')', expected only $AllowFrom"
   }
+  # Verify the INSTALLED block's ranges numerically - this catches a stale/wrong same-named block that the
+  # "leaving as-is" branch did not re-scope, and any arithmetic regression, which the old string guard
+  # (-contains $AllowFrom) could not: a backend inside a range is not an exact list element.
   $bkRemote = @(($bk | Get-NetFirewallAddressFilter).RemoteAddress)
-  if ($bkRemote -contains $AllowFrom) { Fail "'$BlockRuleName' remote INCLUDES the backend $AllowFrom - it would deny the backend" }
+  Assert-BlockScopeExcludesOnly -Ranges $bkRemote -Backend $AllowFrom
+  Write-Host "ok   verified numerically: BLOCK :$Port denies every non-backend address, admits only $AllowFrom"
   Write-Host "ok   verified: BLOCK :$Port from all-except-$AllowFrom + ALLOW :$Port from $AllowFrom, both on $Interface/$profileName"
   Write-Host "ok   bridge rules (:8788) and all unrelated rules untouched - this script only added the two :$Port rules"
 } else {

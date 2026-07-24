@@ -1115,13 +1115,29 @@ class FirewallScopedBlockTests(SimpleTestCase):
         self.assertIn("-LocalPort $Port -LocalAddress $Interface -RemoteAddress $BlockRemoteRanges", code)
         self.assertIn("-LocalPort $Port -LocalAddress $Interface -RemoteAddress $AllowFrom", code)
 
-    def test_the_block_excludes_the_backend(self):
-        """A block that included the backend would deny it — the whole point is to allow it through."""
+    def test_the_block_scope_is_verified_numerically_not_by_string_membership(self):
+        """The old guard was `$bkRemote -contains $AllowFrom` — exact list-element equality, which can never
+        detect the backend sitting INSIDE a range string like '0.0.0.0-100.119.23.29', nor an under-covering
+        block that leaves a non-backend host reachable. It is replaced by a merge-and-compare over integers.
+        Proven on the host: correct complement PASSES; backend-in-range, a coverage gap, a bare IP, and the
+        whole space all FAIL."""
         code = _code("firewall.ps1")
-        self.assertIn("remote INCLUDES the backend", code)   # the verify-time guard, in code
-        self.assertIn("it would deny the backend", code)
-        # the complement is derived from the backend IP, so a typo cannot silently widen exposure
+        self.assertIn("function Assert-BlockScopeExcludesOnly", code)
+        self.assertIn("function IpToUInt", code)
+        # the weak string guard is gone
+        self.assertNotIn("$bkRemote -contains $AllowFrom", code)
+        # the numeric verifier runs on BOTH the derived ranges and the INSTALLED rule's ranges
+        self.assertIn("Assert-BlockScopeExcludesOnly -Ranges $BlockRemoteRanges -Backend $AllowFrom", code)
+        self.assertIn("Assert-BlockScopeExcludesOnly -Ranges $bkRemote -Backend $AllowFrom", code)
+        # the complement is derived from the backend IP (single source of truth)
         self.assertIn("[System.Net.IPAddress]::Parse($AllowFrom).GetAddressBytes()", code)
+
+    def test_the_complement_of_the_reference_backend_is_the_expected_two_ranges(self):
+        """Locks the contract the host-verified derivation must produce for the shipped backend."""
+        import ipaddress
+        bk = int(ipaddress.IPv4Address("100.119.23.29"))
+        expect = [f"0.0.0.0-{ipaddress.IPv4Address(bk-1)}", f"{ipaddress.IPv4Address(bk+1)}-255.255.255.255"]
+        self.assertEqual(expect, ["0.0.0.0-100.119.23.28", "100.119.23.30-255.255.255.255"])
 
     def test_broad_allows_are_neutralised_not_fatal(self):
         code = _code("firewall.ps1")
