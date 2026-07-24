@@ -1,5 +1,17 @@
 # CVM-Inc-3 B3P-2 — INSTALL-ONLY REVIEW
 
+> **SUPERSEDED IN PART by [ADR 0013](ADRs/0013-beta-agent-service-host-winsw.md) (2026-07-24).** The
+> **service-host** description in this review is historical: the beta agent is no longer a **native
+> pywin32 service**. Following the 2026-07-24 STOP (global pywin32 DLLs in System32 + the base interpreter;
+> `sc config obj=` left LocalSystem), the host is a **hash-pinned WinSW wrapper** running the venv Python
+> (PR #195, `bb02f74`). Wherever this document says `service.py` / `pythonservice.exe` /
+> `sc config … start= demand` / `python service.py remove`, the canonical behaviour is now: WinSW
+> `GuvFXBetaAgent.exe install` (manual start, `NT SERVICE\GuvFXBetaAgent`, `onfailure=none`, no global DLL),
+> and teardown via WinSW `uninstall` + `sc delete`. The identity, ACL, drain and install-only guarantees are
+> unchanged. See `docs/B3P_SERVICE_HARNESS_COMPARISON.md`, `deploy/beta-agent/winsw/GuvFXBetaAgent.xml` and
+> `deploy/beta-agent/RUNBOOK.md` for the current model. All other sections (pool, tasks, golden, firewall,
+> verification method) remain in force.
+
 **Status: submitted for approval. Nothing has been executed. No Windows host has been contacted at any
 point in B3P-2.**
 
