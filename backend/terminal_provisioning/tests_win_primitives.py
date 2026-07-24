@@ -233,8 +233,11 @@ class AbsenceIsNotSuccessTests(SimpleTestCase):
         self.assertEqual(res["attestation"]["outcome"], wp.ABSENT)
         self.assertEqual(res["attestation"]["reason_code"], "terminal_path_absent")
 
-    def test_all_five_states_are_distinct(self):
-        self.assertEqual(len(set(wp.OBSERVATION_STATUSES)), 5)
+    def test_all_observation_states_are_distinct(self):
+        # ADR-0015 added MULTIPLE_MATCHING as a sixth distinct fail-closed state.
+        self.assertEqual(len(set(wp.OBSERVATION_STATUSES)), 6)
+        self.assertIn(wp.MULTIPLE_MATCHING, wp.OBSERVATION_STATUSES)
+        self.assertNotEqual(wp.MULTIPLE_MATCHING, wp.UNAVAILABLE)     # never collapsed into unavailable
 
 
 class TaskInspectionContractTests(SimpleTestCase):

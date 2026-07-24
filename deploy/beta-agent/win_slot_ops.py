@@ -23,7 +23,7 @@ import os
 import stat
 import subprocess
 
-from win_ops import SlotWindowsOps, WindowsOpsError
+from win_ops import MultipleSlotProcesses, SlotWindowsOps, WindowsOpsError
 
 #: Marker files. Both are GuvFX artefacts, not MetaTrader ones.
 OWNER_FILE = ".guvfx_owner"
@@ -41,6 +41,31 @@ PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 ERROR_ACCESS_DENIED = 5
 ERROR_INVALID_PARAMETER = 87
+ERROR_NO_MORE_FILES = 18                     # Process32NextW's clean end-of-enumeration signal
+TH32CS_SNAPPROCESS = 0x00000002             # CreateToolhelp32Snapshot: processes only
+
+
+def _make_processentry32w(ctypes, wintypes):
+    """The Win32 ``PROCESSENTRY32W`` layout (10 fields, ``szExeFile`` = MAX_PATH wide chars). Defined via a
+    factory (not inside ``_win32``) so the EXACT layout the host relies on can be pinned off-host without
+    loading kernel32 (RULE 11 positive control).
+
+    The numeric fields use FIXED-WIDTH types (``c_uint32`` for ``DWORD``, ``c_int32`` for ``LONG``) rather
+    than ``wintypes.DWORD`` (= ``c_ulong``), because ``c_ulong`` is 8 bytes on LP64 (Linux/macOS) and 4 on
+    Windows LLP64 — so ``wintypes`` would make the off-host layout differ from the host's and defeat the
+    positive control. Fixed-width types are 4 bytes on every platform, matching Windows, so field OFFSETS
+    are validatable off-host. ``th32DefaultHeapID`` is ``ULONG_PTR`` (``c_void_p``, pointer-sized): on 64-bit
+    it forces 8-byte alignment; a regression to a 32-bit type shifts every later field and would make the
+    enumeration misread pid/name (fail-open). ``szExeFile`` keeps ``c_wchar`` for the string decode; its
+    per-char width is platform-dependent, but its OFFSET is not (every field before it is fixed-width)."""
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", ctypes.c_uint32), ("cntUsage", ctypes.c_uint32),
+                    ("th32ProcessID", ctypes.c_uint32),
+                    ("th32DefaultHeapID", ctypes.c_void_p),
+                    ("th32ModuleID", ctypes.c_uint32), ("cntThreads", ctypes.c_uint32),
+                    ("th32ParentProcessID", ctypes.c_uint32), ("pcPriClassBase", ctypes.c_int32),
+                    ("dwFlags", ctypes.c_uint32), ("szExeFile", ctypes.c_wchar * 260)]
+    return PROCESSENTRY32W
 
 
 def _reraise(error):
@@ -115,7 +140,9 @@ def select_slot_process(candidates: list, slot_path: str):
     exact = [c for c in candidates if normalise(c.get("image") or "") == target]
     if len(exact) == 1:
         return exact[0]
-    raise WindowsOpsError("ambiguous_slot_process")
+    # Several fully-attributed slot processes with no single canonical one — a DISTINCT fail-closed state
+    # (ADR-0015), never resolved by picking one by enumeration order.
+    raise MultipleSlotProcesses("multiple_matching_processes")
 
 
 def classify_open_process_error(winerror: int) -> str:
@@ -234,7 +261,21 @@ class RealSlotWindowsOps(SlotWindowsOps):
                                                           wintypes.DWORD]
         k32.GetVolumeNameForVolumeMountPointW.restype = wintypes.BOOL
 
-        self._api = {"ctypes": ctypes, "wintypes": wintypes, "k32": k32}
+        # Toolhelp process enumeration (ADR-0015): UNPRIVILEGED — works from the low-privilege beta service
+        # account, unlike WTSEnumerateProcesses which that account is denied. It yields (pid, name, ppid)
+        # WITHOUT opening any process; identity (path/SID/session) is then resolved per-candidate under the
+        # weakest access that works. The struct layout is defined once, at module level, so it is pinnable
+        # off-host (RULE 11) without loading kernel32.
+        PROCESSENTRY32W = _make_processentry32w(ctypes, wintypes)
+        k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        k32.Process32FirstW.restype = wintypes.BOOL
+        k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        k32.Process32NextW.restype = wintypes.BOOL
+
+        self._api = {"ctypes": ctypes, "wintypes": wintypes, "k32": k32,
+                     "PROCESSENTRY32W": PROCESSENTRY32W}
         return self._api
 
     @staticmethod
@@ -499,61 +540,96 @@ class RealSlotWindowsOps(SlotWindowsOps):
 
     # ── process observation ──────────────────────────────────────────────────────────────────────────
     def query_slot_process(self, slot_path: str, runtime_identity: str = ""):
-        """Find the runtime process for this slot, scoped by the slot's fixed RUNTIME IDENTITY.
+        """Find THE runtime process for this slot from an UNPRIVILEGED snapshot (ADR-0015), scoped by the
+        slot's fixed identity SID, executable path and session — NEVER by executable name alone.
 
-        [R:toolhelp-name-not-path] Never by executable name. That is not a purity point: the golden image
-        is a copy of MetaTrader 5, so a materialised slot contains ``terminal64.exe`` — the SAME name as the
-        operator's production terminal running as Administrator in another session. A scope keyed on the
-        name cannot separate the two, and a denial on the operator's process would make "this slot is empty"
-        permanently unprovable, so STOP and TOMBSTONE could never succeed.
+        [R:toolhelp-name-not-path] Name is not a match. The golden image is a copy of MetaTrader 5, so a
+        materialised slot contains ``terminal64.exe`` — the SAME name as the operator's production terminal
+        in an interactive session. Name only SCOPES which processes are worth inspecting; a candidate is
+        MATCHED only when its owner SID, executable path and session all agree with this slot.
 
-        [R:wts-enumerate-one-shot-sid-session] ``WTSEnumerateProcesses`` returns (session, pid, name, owning
-        SID) **without opening any process**, so the scope is decided before a handle is ever requested. Only
-        processes owned by this slot's identity are candidates; the rest of the host, including the operator's
-        estate, is out of scope by construction. (The ``…Ex`` variant is NOT exposed by the installed pywin32
-        build on the target host — host-proven 2026-07-24 it raises AttributeError — so the base
-        ``WTSEnumerateProcesses`` is used; both return the same (session, pid, name, sid) fields.)
+        Four outcomes, all fail-closed (``win_primitives.observe_process`` maps them):
+          * ``None``                    -> ABSENT   — no attributed process, and every plausible candidate
+                                                      was positively excluded by session or by evidence;
+          * one dict                    -> PRESENT;
+          * ``raise MultipleSlotProcesses`` -> MULTIPLE_MATCHING;
+          * ``raise WindowsOpsError``   -> OBSERVATION UNAVAILABLE — a plausible in-slot candidate whose
+                                            mandatory identity/path evidence could not be resolved (access
+                                            denied, or path/owner/start-time unreadable), or an enumeration
+                                            failure. A denial is NEVER read as absence.
+
+        Session is EVIDENCE, not a gate on real candidates. The authoritative match is owner SID + path,
+        both read from an OPEN handle; a candidate we can open is matched (or excluded) on those alone,
+        regardless of its session — so the session logic can never turn a live slot runtime into a false
+        ABSENT. Session is used in exactly ONE place: to exclude an UNOPENABLE same-name candidate whose
+        session is known and differs from the slot's expected (batch-logon = observer Session 0) one — i.e.
+        the operator's interactive terminal, which the low-privilege account is denied a handle to. A
+        same/unknown-session unopenable candidate stays UNRESOLVED (fail closed), never absence.
 
         [R:creationtime-filetime-units] Creation time is a raw 64-bit FILETIME.
-        [R:psutil-createtime-loses-precision] psutil cannot carry it.
         """
         if not self.path_exists(slot_path):
             return None                          # nothing can run from a directory that does not exist
         api = self._win32()
         k32 = api["k32"]
         canonical_slot = self._long_path(slot_path)
-        expected = self._identity_sid(runtime_identity)
-        candidates, unattributable = [], []
-        for pid, _name, sid in self._enum_processes_with_owner():
-            if sid != expected:
-                continue                         # not this slot's identity — out of scope entirely
+        expected_sid = self._identity_sid(runtime_identity)
+        expected_session = self._session_id(api, os.getpid())     # the observer's own (batch/service) session
+        runtime_exe = RUNTIME_EXECUTABLE.lower()
+        candidates, unresolved = [], []
+        for pid, name, _ppid in self._enumerate_process_entries():
+            if name.lower() != runtime_exe:
+                continue                         # not the runtime executable -> cannot BE the slot runtime
             handle, state = self._open_process(api, pid)
             if handle is None:
-                if state != "gone":
-                    # Owned by OUR identity and unreadable. A genuine anomaly, not ambient host noise.
-                    unattributable.append(pid)
+                if state == "gone":
+                    continue                     # exited during enumeration -> not present
+                # UNOPENABLE same-name candidate: owner and path CANNOT be read, so the ONLY discriminator
+                # left is the handle-less session. Exclude it as definitively-not-this-slot ONLY when its
+                # session is known AND differs from the slot's expected (batch-logon = observer's Session 0)
+                # session — that is the operator's interactive terminal, which the account cannot open. A
+                # same-session OR unknown-session unopenable candidate MIGHT be this slot's runtime, so it is
+                # UNRESOLVED (fail closed), never absence. Session here EXCLUDES a non-candidate; it NEVER
+                # gates a process we could actually attribute (see the open path below).
+                sess = self._session_id(api, pid)
+                if expected_session is not None and sess is not None and sess != expected_session:
+                    continue
+                unresolved.append(pid)           # denied/unknown on a PLAUSIBLE candidate -> NOT absence
                 continue
             try:
+                # OPENABLE candidate: owner SID + executable path are AUTHORITATIVE. Session is recorded as
+                # evidence only and NEVER excludes here — a slot process we can open in a surprise session is
+                # still matched by owner+path, so the session gate can never turn a live slot runtime into a
+                # false ABSENT (the fail-open this ordering exists to prevent).
                 image = self._image_path(api, handle)
-                if image is None:
-                    unattributable.append(pid)
+                sid = self._user_sid(pid)
+                if image is None or sid is None:
+                    unresolved.append(pid)       # path or owner unresolved on a plausible candidate
                     continue
+                if sid != expected_sid:
+                    continue                     # openable, WRONG OWNER -> another account (never the slot)
                 if not is_beneath_path(self._long_path(image), canonical_slot):
-                    continue                     # our identity, but running from elsewhere
+                    continue                     # openable, right owner, running from ELSEWHERE
+                try:
+                    created = self._creation_filetime(api, handle)
+                except WindowsOpsError:
+                    unresolved.append(pid)       # start-time evidence unreadable on a match -> fail closed
+                    continue
                 candidates.append({
                     "pid": pid,
-                    "created_at_filetime": self._creation_filetime(api, handle),
+                    "created_at_filetime": created,
                     "image": image,
                     "image_digest": self._file_digest(image) if self.path_exists(image) else None,
                     "user_sid": sid,
-                    "session_id": self._session_id(api, pid),
+                    "session_id": self._session_id(api, pid),      # evidence only, not a gate
                 })
             finally:
                 k32.CloseHandle(handle)
-        result = select_slot_process(candidates, slot_path)
-        if result is None and unattributable:
+        if unresolved:
+            # A plausible in-slot candidate could not be attributed -> observation UNAVAILABLE, block the
+            # lifecycle. Never silently skipped, never read as absence (ADR-0015 fail-closed rule).
             raise WindowsOpsError("process_attribution_incomplete")
-        return result
+        return select_slot_process(candidates, slot_path)   # None | the one | raise MultipleSlotProcesses
 
     def _identity_sid(self, runtime_identity: str) -> str:
         """Resolve the slot's fixed account name to its SID, once, cached.
@@ -580,37 +656,45 @@ class RealSlotWindowsOps(SlotWindowsOps):
         self._sid_cache[runtime_identity] = resolved
         return resolved
 
-    def _enum_processes_with_owner(self):
-        """``(pid, name, owner_sid)`` for every process, WITHOUT opening any of them.
+    def _enumerate_process_entries(self):
+        """``(pid, name, ppid)`` for every process via the Toolhelp snapshot — UNPRIVILEGED (ADR-0015).
 
-        Failure raises rather than yielding a short list: a partial enumeration silently narrows the scope
-        and would report a running slot as empty.
+        Replaces the WTS enumeration (``WTSEnumerateProcesses``), which the low-privilege beta service
+        account is DENIED — the whole reason the observe layer failed under the deployed service identity
+        while working as an administrator. Toolhelp opens no process and needs no session-query privilege.
+
+        Unlike WTS, Toolhelp yields NO owner SID (it is not in ``PROCESSENTRY32W``): identity — path, owner
+        SID and session — is resolved per-candidate later, under the weakest access that works.
+
+        Failure RAISES rather than yielding a short list: a partial enumeration silently narrows the scope
+        and would report a running slot as empty (fail-open — the exact failure this layer must never make).
         """
         if os.name != "nt":
             raise WindowsApiUnavailable("not running on Windows")
+        api = self._win32()
+        ctypes, k32, PE = api["ctypes"], api["k32"], api["PROCESSENTRY32W"]
+        invalid = ctypes.c_void_p(-1).value                  # INVALID_HANDLE_VALUE, bitness-correct
+        snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snap or snap == invalid:
+            raise WindowsOpsError("process_snapshot_failed")
         try:
-            import win32security
-            import win32ts
-        except ImportError as exc:
-            raise WindowsApiUnavailable("pywin32 not installed") from exc
-        try:
-            # WTSEnumerateProcesses (NOT the ...Ex variant, which the installed pywin32 build does not
-            # expose) returns one (SessionId, ProcessId, pProcessName, pUserSid) tuple per process WITHOUT
-            # opening any handle. SessionId 0 processes (services, and a batch-logon runtime) are included.
-            # ARGS ARE HOST-PROVEN, not derived from the raw-Win32 contract: pywin32's wrapper does NOT map
-            # (arg2,arg3) onto (Reserved,Version) in the documented order. On the target host (Server 2025 +
-            # its pywin32) `(WTS_CURRENT_SERVER_HANDLE, 1, 0)` returns 205 valid rows (e.g. smss.exe / S-1-5-18)
-            # while `(…, 0, 1)` raises error 87 "The parameter is incorrect." Positive+negative control run
-            # 2026-07-24. Do NOT "correct" these to (0,1) — that reasoning is right for the raw API and wrong
-            # for this wrapper.
-            rows = win32ts.WTSEnumerateProcesses(win32ts.WTS_CURRENT_SERVER_HANDLE, 1, 0)
-        except Exception as exc:                             # noqa: BLE001
-            translate_denial(exc)
-            raise WindowsOpsError("process_enumeration_failed") from exc
-        for row in rows:
-            # (session, pid, name, sid); a few well-known processes (Idle/System) carry a null SID -> skip.
-            pid, name, sid = row[1], row[2], row[3]
-            yield int(pid), str(name), (str(win32security.ConvertSidToStringSid(sid)) if sid else "")
+            entry = PE()
+            entry.dwSize = ctypes.sizeof(PE)
+            if not k32.Process32FirstW(snap, ctypes.byref(entry)):
+                # An empty snapshot is impossible on a live host (this process is always present); treat a
+                # failed first read as an enumeration failure, never as "no processes".
+                raise WindowsOpsError("process_snapshot_empty")
+            rows = []
+            while True:
+                rows.append((int(entry.th32ProcessID), str(entry.szExeFile),
+                             int(entry.th32ParentProcessID)))
+                if not k32.Process32NextW(snap, ctypes.byref(entry)):
+                    if ctypes.get_last_error() == ERROR_NO_MORE_FILES:
+                        break                                # clean end of enumeration
+                    raise WindowsOpsError("process_snapshot_iteration_failed")
+            return rows
+        finally:
+            k32.CloseHandle(snap)
 
     def _long_path(self, path: str) -> str:
         """[R:short-name-83-aliasing] 8.3 aliasing may or may not be enabled on the target volume — it is
@@ -625,11 +709,12 @@ class RealSlotWindowsOps(SlotWindowsOps):
         return buf.value
 
     def _open_process(self, api, pid):
-        """Returns ``(handle_or_None, state)`` where state is opened | denied | gone | unknown."""
-        """[R:openprocesstoken-access-right] Microsoft's own pages disagree on whether
-        PROCESS_QUERY_INFORMATION or the LIMITED variant suffices, and ProcessIdToSessionId documents the
-        FULL right. The stronger right is requested first and the weaker used as a fallback, with the
-        granted level returned so callers know what they may attempt."""
+        """Returns ``(handle_or_None, state)`` where state is ``opened`` | ``denied`` | ``gone`` |
+        ``unknown``. The GRANTED access level is deliberately NOT surfaced: the handle is used only for the
+        path (``QueryFullProcessImageNameW``, which the LIMITED right satisfies), and the owner SID is read
+        from a SEPARATELY-opened token (``_user_sid``), so callers never need to know which right was granted
+        here. Microsoft's own pages disagree on whether ``PROCESS_QUERY_INFORMATION`` or the LIMITED variant
+        suffices, so the stronger right is requested first and the weaker used as a fallback."""
         ctypes, k32 = api["ctypes"], api["k32"]
         for rights in (PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION):
             handle = k32.OpenProcess(rights, False, pid)

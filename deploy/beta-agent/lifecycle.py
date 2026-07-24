@@ -112,6 +112,16 @@ REASON_CATEGORY = {
     "process_permission_denied": OBSERVATION,
     # B3P-2 real adapter: each of these means "the host could not be read reliably", never "absent".
     "process_enumeration_failed": OBSERVATION,
+    # ADR-0015 unprivileged (Toolhelp) enumeration: a snapshot that could not be taken or fully walked is an
+    # observation failure, never "no processes"; a plausible in-slot candidate that could not be attributed
+    # (denied / path / owner / start-time unreadable) blocks rather than being read as absence.
+    "process_snapshot_failed": OBSERVATION,
+    "process_snapshot_empty": OBSERVATION,
+    "process_snapshot_iteration_failed": OBSERVATION,
+    "process_attribution_incomplete": OBSERVATION,
+    # Several fully-attributed slot processes: a DISTINCT fail-closed state (never "absent", never a silent
+    # pick-one). It blocks the lifecycle exactly like an unresolved observation.
+    "multiple_matching_processes": OBSERVATION,
     # WS-B open-handle probe: Restart Manager / enumeration could not answer reliably. Blocks release.
     "handle_observation_unavailable": OBSERVATION,
     "process_open_failed": OBSERVATION,

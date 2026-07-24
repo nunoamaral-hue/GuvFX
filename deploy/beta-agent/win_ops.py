@@ -18,6 +18,12 @@ class WindowsOpsError(Exception):
         super().__init__(reason_code)
 
 
+class MultipleSlotProcesses(WindowsOpsError):
+    """More than one fully-attributed runtime process was found for a single slot. A DISTINCT fail-closed
+    state (ADR-0015), never collapsed into "unavailable" or resolved by picking one: attaching the
+    termination/identity chain to a process chosen by enumeration order would be an integrity fault."""
+
+
 class WindowsOps:
     """Interface. Every method is a mechanical primitive with NO policy — policy lives in op_impls."""
     def path_exists(self, path: str) -> bool: raise NotImplementedError
