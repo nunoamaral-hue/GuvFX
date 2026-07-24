@@ -30,11 +30,17 @@
   terminal, non-powershell exe, lost `/portable`, inline command, dropped `READ_CONTROL`, weakened mask
   equality) is killed by a test; one source-invariant test was strengthened after a mutation survived on a
   docstring match.
-  **Verified.** 707 `terminal_provisioning` tests + full `make check` green (1684 backend, frontend build,
-  0 lint errors). ADR-0016 finalised to **Accepted**. **Not yet done:** merge, host re-stage (RULE 9 PS 5.1
-  parse of the wrapper + CLM check as the slot identity), then the slot-1 PRESENT proof and
-  VERIFY→STOP→TOMBSTONE→RELEASE→Available. Production MT5 pid 4336 + bridge pid 13292 untouched (no host
-  mutation in this change).
+  **Verified.** 707 `terminal_provisioning` tests + full `make check` green (1690 backend, frontend build,
+  0 lint errors). ADR-0016 finalised to **Accepted**. **Merged** main `23f38d8` (#209). **Re-staged to the
+  host** byte-identical (manifest INTEGRITY_OK); **RULE 9** `[Parser]::ParseFile` under Windows PowerShell
+  5.1.26100 caught a parse defect CI can't see — `$LauncherDir:` read as a scope qualifier — **fixed +
+  re-merged** main `fd716b8` (#210) + a CI lint added; all 5 install/wrapper scripts now parse **0 errors**
+  (negative control 4). Host baseline untouched throughout (prod MT5 pid 4336 only terminal64 + bridge pid
+  13292 running, beta service Running, all 8 tasks Disabled, launcher dir correctly absent).
+  **Only remaining step — GATED on Nuno's credentialed `install_pool.ps1 -Apply`** (re-registers the 4 launch
+  tasks with the wrapper action + 4 `TASK_LOGON_PASSWORD`s; creates + ACLs `C:\GuvFX\beta\launcher`; stages
+  `slot_launch.ps1`). After that, autonomously: CLM check as `guvfx_b_slot1`, object-owner==slot-SID positive
+  control, additive-ACE STOP-still-works, PRESENT proof, then slot-1 VERIFY→STOP→TOMBSTONE→RELEASE→Available.
 
 - **2026-07-24 — B3P-2 RELEASE operation shipped to PR #200 (ADR 0014 Accepted). 🟢 code complete, 🟠 host slot-1 proof pending.**
   **What.** `op_release` — the RELEASE protocol operation that transitions a beta slot Released → Available.
