@@ -14,7 +14,10 @@ param(
   [int]$Port                 = 8791,
   [string]$AllowFrom         = "100.119.23.29",              # GuvFX backend / control plane (Tailscale) - ONLY source
   [string]$Interface         = "100.79.101.19",              # private/Tailscale bind address
-  [string[]]$AgentProgramPaths = @("C:\GuvFX\python311.exe"),# fallback interpreter list
+  # Fallback listener-image list. The service host is PythonService.exe (pywin32); this list is only a
+  # fallback for rule scoping. It names the beta VENV interpreter, never C:\GuvFX\python311.exe (the
+  # Python installer) - see install_service.ps1.
+  [string[]]$AgentProgramPaths = @("C:\GuvFX\beta\agent-venv\Scripts\python.exe"),
   [switch]$Apply
 )
 $ErrorActionPreference = "Stop"

@@ -9,7 +9,10 @@ param(
   [string]$ServiceName = "GuvFXBetaAgent",
   [string]$AgentDir    = "C:\GuvFX\beta\agent",
   [string]$StateDir    = "C:\GuvFX\beta\agent-state",
-  [string]$Python      = "C:\GuvFX\python311.exe",              # verified bundled 3.11.9 interpreter
+  # The DEDICATED beta interpreter (workstream B), NOT C:\GuvFX\python311.exe (that path is the Python
+  # INSTALLER - OriginalFilename python-3.11.9-amd64.exe - and executing it launches an installer) and NOT
+  # C:\Program Files\Python311 (the interpreter the LIVE bridge runs on). A venv leaves both untouched.
+  [string]$Python      = "C:\GuvFX\beta\agent-venv\Scripts\python.exe",
   [string]$RunAsUser   = "NT SERVICE\GuvFXBetaAgent",           # virtual service account: no password, stable SID
   # B3P-2 (install-only review F1): the pool model uses ...\beta\slots\<n>, NOT the legacy
   # ...\beta\accounts\<uuid> layout. The service account needs Modify on its own state dir and on the
@@ -29,10 +32,52 @@ function DoIt($desc, [scriptblock]$block) {
 # 0. Preconditions (checked in both dry-run and apply)
 if (-not (Test-Path (Join-Path $AgentDir "agent.py")))   { throw "agent.py not found under $AgentDir" }
 if (-not (Test-Path (Join-Path $AgentDir "service.py"))) { throw "service.py not found under $AgentDir" }
-if (-not (Test-Path $Python)) { throw "interpreter not found: $Python" }
-& $Python -c "import win32serviceutil" 2>$null
-if ($LASTEXITCODE -ne 0) { throw "pywin32 not importable by $Python - install pywin32 into the agent interpreter first" }
-Write-Host "ok   preconditions: agent.py, service.py, interpreter + pywin32 present"
+# INTERPRETER IDENTITY IS VERIFIED BY METADATA BEFORE THE BINARY IS EVER EXECUTED. The previous preflight
+# ran `& $Python -c "import ..."` unconditionally - in PLAN as well as APPLY - which, pointed at the Python
+# INSTALLER (C:\GuvFX\python311.exe, OriginalFilename python-3.11.9-amd64.exe), launched an installer on the
+# production host from a dry run. `Test-Path` cannot tell an interpreter from an installer and neither can an
+# exit code (a detaching bootstrapper leaves $LASTEXITCODE $null). So identity is proven from PE metadata,
+# statically, and the interpreter is EXECUTED ONLY UNDER -Apply.
+function Test-GuvfxInterpreterIdentity {
+  <# STATIC. Proves $Path is a CPython interpreter and NOT an installer, from PE metadata alone. Never
+     executes the file. A CPython interpreter ships OriginalFilename 'python.exe'/'pythonw.exe'; the
+     redistributable installer ships 'python-<ver>-amd64.exe'. That is the positive discriminator. #>
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path $Path)) { throw "interpreter not found: $Path (run the beta-venv provisioning first)" }
+  if ((Get-Item $Path -Force).PSIsContainer) { throw "interpreter path is a directory: $Path" }
+  $vi = (Get-Item $Path -Force).VersionInfo
+  $orig = [string]$vi.OriginalFilename
+  $desc = [string]$vi.FileDescription
+  if ($orig -match '(?i)^python-.*\.exe$' -or $orig -match '(?i)\.msi$') {
+    throw "refusing: '$Path' is the Python INSTALLER (OriginalFilename '$orig'), not an interpreter"
+  }
+  if ($orig -notmatch '(?i)^python(w)?\.exe$') {
+    throw "refusing: '$Path' OriginalFilename is '$orig'; a CPython interpreter reports 'python.exe'"
+  }
+  if ($desc -notmatch '(?i)python') {
+    throw "refusing: '$Path' FileDescription is '$desc'; expected a Python interpreter"
+  }
+  Write-Host "ok   interpreter identity (metadata, not executed): OriginalFilename '$orig', '$desc' $($vi.FileVersion)"
+}
+
+function Test-GuvfxInterpreterRuntime {
+  <# EXECUTES the interpreter. Called ONLY under -Apply, and only after the static identity check passed. #>
+  param([Parameter(Mandatory)][string]$Path)
+  $ver = & $Path --version 2>&1
+  if ($LASTEXITCODE -ne 0 -or "$ver" -notmatch '(?i)^Python 3\.') {
+    throw "interpreter '$Path' did not report a Python 3 version (got '$ver', exit $LASTEXITCODE)"
+  }
+  & $Path -c "import win32serviceutil, win32service, win32event, servicemanager" 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    throw "pywin32 (win32serviceutil/win32service/win32event/servicemanager) not importable by '$Path' - provision the beta venv"
+  }
+  Write-Host "ok   interpreter runtime: $ver, pywin32 importable"
+}
+
+Test-GuvfxInterpreterIdentity -Path $Python
+if ($Apply) { Test-GuvfxInterpreterRuntime -Path $Python }
+else { Write-Host "PLAN:  interpreter runtime + pywin32 checks DEFERRED to -Apply (PLAN never executes a candidate binary)" }
+Write-Host "ok   preconditions: agent.py, service.py present; interpreter identity verified"
 
 # 1. State dir (durable nonce/idempotency/logs), SEPARATE from the code dir so updates never clobber it.
 DoIt "create state dir $StateDir (+ logs)" { New-Item -ItemType Directory -Force -Path $StateDir, (Join-Path $StateDir "logs") | Out-Null }
