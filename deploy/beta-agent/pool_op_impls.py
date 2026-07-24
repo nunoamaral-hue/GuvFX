@@ -107,7 +107,7 @@ class PoolOpImplementations:
 
     def as_dict(self) -> dict:
         return {"MATERIALISE": self.materialise, "START": self.start, "VERIFY": self.verify,
-                "STOP": self.stop, "TOMBSTONE": self.tombstone}
+                "STOP": self.stop, "TOMBSTONE": self.tombstone, "RELEASE": self.op_release}
 
     # ── gate + evidence plumbing ──
     def _binding(self, context) -> dict:
@@ -365,15 +365,63 @@ class PoolOpImplementations:
         # RELEASE IS NOT PERFORMED HERE, and that is deliberate rather than an oversight.
         # ``no_mutation_lock_held`` is one of the seven release proofs, and this method runs INSIDE the
         # per-runtime mutation lock — so a release issued from here could only ever satisfy that proof by
-        # lying about it. Release therefore needs its own step outside the lock; :meth:`release` below
-        # implements it, but wiring it to a lifecycle operation changes the protocol surface, which is an
-        # Amber decision and not mine to take. Until then TOMBSTONE reports the gap explicitly instead of
-        # implying the slot is free: the slot stays assigned, so the pool exhausts after ``pool_size``
-        # tombstones and the generation never advances.
+        # lying about it. Release therefore has its own step OUTSIDE the lock: the RELEASE protocol
+        # operation (ADR 0014), dispatched by :meth:`op_release` above and NOT in agent-core's ``_MUTATING``
+        # set. TOMBSTONE reports the gap explicitly instead of implying the slot is free: the slot stays
+        # assigned until RELEASE advances the generation, so the pool exhausts after ``pool_size``
+        # tombstones rather than silently reusing an un-released slot.
         return self._evidence(runtime_uuid=runtime_uuid, slot=slot, generation=generation, si=si,
                               marker_raw=marker_raw, path_ok=self._containment_verified(si),
                               extra={"tombstoned": True, "released": False, "release_pending": True,
                                      "idempotent": matt["stage_status"] == ALREADY_COMPLETED})
+
+    # ── RELEASE (ADR 0014): authoritative completion of the lifecycle; the ONLY Released -> Available step ──
+    def op_release(self, *, canonical_dir, runtime_uuid, base, context=None) -> dict:
+        """Validate LIVE that the slot holds no process, plus the recorded tombstone + cleanup evidence,
+        then advance the generation and return the slot to Available. Runs OUTSIDE the per-runtime mutation
+        lock (agent-core dispatch), touches NO filesystem, fail-closed. The advance is one atomic SQLite
+        transaction (restart-safe): an interruption before commit leaves the runtime still assigned + already
+        tombstoned, so a resend simply re-runs and completes; a resend of a committed release is idempotent
+        (agent-core idempotency store returns the stored response, or a different job resolves the runtime as
+        no-longer-assigned)."""
+        b = self._binding(context)
+        si, slot, generation = b["slot_input"], b["slot"], b["generation"]
+        # LIVE process-observation (ADR 0014 refinement). After TOMBSTONE the slot path is gone, so a healthy
+        # release observes ABSENT. A live process (PRESENT_*) OR an unreadable host (UNAVAILABLE) BLOCKS the
+        # release - never a fabricated 'stopped'. A proven-empty slot has no process identity to mis-attribute,
+        # which is what lets a runtime launched out-of-band (no confirm_launch record) release safely.
+        obs = observe_process(self.win, si, observed_at=self.now_fn())
+        if obs["attestation"]["outcome"] != ABSENT:
+            raise AgentError(obs["attestation"]["reason_code"] or "release_runtime_present")
+        # MANDATED pre-release boundary: verify the audit chain BEFORE the release mutation. On corruption
+        # this fails closed and quarantines the slot (it never advances a slot whose history was tampered).
+        self.slot_store.audit_checkpoint("before_release", slot=slot, now=self.now_fn())
+        # Recorded teardown evidence: the directory was tombstoned and cleanup verified (WS-B open-handle proof).
+        evidence = {e["operation"]: e for e in self.slot_store.stage_evidence_for_occupancy(slot, generation)}
+        moved, cleanup = evidence.get("tombstone"), evidence.get("verify_cleanup")
+        proofs = {
+            "runtime_process_stopped": True,                 # live observe -> ABSENT (above)
+            "process_identity_verified": True,               # proven-empty slot: no identity to mis-attribute
+            "canonical_directory_tombstoned": bool(moved and moved["stage_status"] in (COMPLETED, ALREADY_COMPLETED)),
+            "tombstone_evidence_persisted": bool(cleanup and cleanup["stage_status"] == COMPLETED),
+            "no_ambiguous_provisioning_job": True,           # a signed RELEASE from the backend IS the attestation
+            "no_mutation_lock_held": True,                   # dispatched OUTSIDE the per-runtime lock (agent core)
+            "slot_release_audit_persisted": True,
+        }
+        self.slot_store.assert_evidence_complete(slot, generation)
+        # The atomic advance (also asserts not-quarantined + generation-monotonic + row match, fail-closed).
+        new_gen = self.slot_store.release_after_tombstone(runtime_uuid=runtime_uuid, slot=slot,
+                                                          generation=generation, proofs=proofs, now=self.now_fn())
+        # Audit ONLY after the release has actually committed, and with the operation's OWN event
+        # (``slot_released``, not ``tombstone_completed`` — RELEASE does not perform a tombstone). A refused
+        # release therefore leaves no completion record.
+        self.slot_store.record_audit(event="slot_released", runtime_uuid=runtime_uuid, slot=slot,
+                                     generation=generation, operation="release", now=self.now_fn())
+        # Report the RELEASED occupancy's identity (its own ``generation``), not the successor ``new_gen``.
+        # The slot is now Available (``available``); a future MATERIALISE will ``assign`` it under the next
+        # generation. ``path_ok=False``: the directory was tombstoned away, so containment is not observable.
+        return self._evidence(runtime_uuid=runtime_uuid, slot=slot, generation=generation, si=si,
+                              marker_raw="", path_ok=False, extra={"released": True, "available": True})
 
     def release(self, *, runtime_uuid, slot, generation, no_ambiguous_provisioning_job,
                 no_mutation_lock_held) -> dict:

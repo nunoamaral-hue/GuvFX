@@ -51,8 +51,9 @@ _RESPONSE_ALLOWLIST = ("operation", "outcome", "runtime_uuid", "provisioning_job
                        "path_containment_verified", "executable_containment_verified",
                        # B3P-2: TOMBSTONE reports that the slot is NOT yet released. Stripping this would
                        # show the backend an unqualified success and let it believe the pool had capacity
-                       # it does not have.
-                       "released", "release_pending")
+                       # it does not have. RELEASE (ADR 0014) reports ``available``: the ONE signal the
+                       # backend uses to return the slot to the free pool, so it must survive the sanitiser.
+                       "released", "release_pending", "available")
 
 
 class AgentError(Exception):
@@ -229,7 +230,7 @@ class BetaProvisioningAgent:
                   "protocol_version", "manifest_version", "supported_operations",
                   "slot", "generation", "occupancy_id", "owner_marker_digest", "canonical_path_digest",
                   "path_containment_verified", "executable_containment_verified",
-                  "released", "release_pending"):
+                  "released", "release_pending", "available"):
             if k in raw:
                 out[k] = raw[k]
         return {k: v for k, v in out.items() if k in _RESPONSE_ALLOWLIST}

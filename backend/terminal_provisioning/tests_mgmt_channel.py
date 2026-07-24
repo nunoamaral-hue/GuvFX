@@ -202,6 +202,22 @@ class AgentCoreTests(SimpleTestCase):
         a.handle(_req("STOP"))
         self.assertEqual(locks.acquired, [RUUID])   # single-op lock acquired for the mutating op
 
+    def test_release_dispatches_outside_the_runtime_lock(self):
+        """RELEASE (ADR 0014) is the ONLY lifecycle op that runs OUTSIDE the per-runtime mutation lock —
+        it must, because ``no_mutation_lock_held`` is one of its release proofs. It still dispatches and
+        its ``available`` signal survives the response sanitiser so the backend can free the slot."""
+        locks = _Locks()
+        a = BetaProvisioningAgent(
+            keyring=KEYRING, nonce_store=_Nonce(), idempotency_store=_Idem(),
+            op_impls={"RELEASE": lambda **k: {"released": True, "available": True, "slot": 1}},
+            agent_version="agent-1.0", script_manifest={"op_release": "sha-ok"},
+            script_versions={"op_release": "ps-1.0"}, resolve_real_path=lambda p: None,
+            runtime_locks=locks, now_fn=lambda: 1_000_010)
+        resp = a.handle(_req("RELEASE"))
+        self.assertEqual(resp["outcome"], "ok")
+        self.assertTrue(resp["available"])                 # survives sanitisation → backend frees the slot
+        self.assertEqual(locks.acquired, [])               # NOT taken: RELEASE runs outside the lock
+
     def test_denied_request_not_stored_idempotently(self):
         # A denial (expired) must not poison the idempotency store — a later valid request can succeed.
         n = {"c": 0}

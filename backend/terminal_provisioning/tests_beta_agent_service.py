@@ -112,6 +112,15 @@ class BundleIntegrityTests(SimpleTestCase):
         actual = agent_manifest.compute_checksums(_BUNDLE)
         self.assertTrue(agent_manifest.integrity_ok(approved, actual))
 
+    def test_manifest_supported_operations_match_the_protocol(self):
+        """The drift that would have let RELEASE ship broken: NEGOTIATE advertises the code constant
+        PROVISIONING_OPERATIONS, but build_agent derives each op's integrity entry from
+        manifest.json.supported_operations. If the file omits an advertised op, the real agent denies it
+        with impl_integrity_mismatch — an op the backend believes is available but the host refuses."""
+        listed = agent_manifest.load_manifest(
+            os.path.join(_BUNDLE, "manifest.json")).get("supported_operations", [])
+        self.assertEqual(set(listed), set(proto.PROVISIONING_OPERATIONS))
+
 
 class AgentServiceTests(SimpleTestCase):
     def test_negotiate_reports_versions_and_ops(self):

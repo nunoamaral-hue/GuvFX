@@ -1,7 +1,31 @@
 # 0014 — Management-protocol RELEASE operation (beta per-slot lifecycle)
 
 - Date: 2026-07-24
-- Status: **Proposed** (awaiting Nuno's explicit authorisation — do NOT implement or merge the operation until approved)
+- Status: **Accepted** (Nuno, 2026-07-24 — "approved in principle; proceed with implementation") with the
+  refinement below.
+
+## Refinement adopted at approval (Nuno, 2026-07-24)
+
+RELEASE is **not a filesystem-cleanup operation**; it is the **authoritative completion of the runtime
+lifecycle** and the *only* operation permitted to transition `Released → Available`. No other operation may
+bypass it. Its responsibilities: validate lifecycle preconditions, STOP evidence, process-observation
+evidence, open-handle evidence and tombstone state; complete the audit evidence; return the slot to
+Available; and advance lifecycle state atomically. It must be **idempotent, restart-safe, resumable after
+interruption, fully audited, and fail-closed.**
+
+Implementation consequence (how this differs from the original proposal): the refined RELEASE sources its
+safety from **live re-observation at release time**, not only from historical stage evidence. Concretely it
+requires a **live `observe_process` → ABSENT** (no process runs under the slot identity from the — now
+tombstoned, hence gone — slot path) and the recorded `tombstone` + `verify_cleanup` (the latter having
+proved handles clear via the WS-B open-handle probe). The original `process_identity_verified` proof (which
+required a recorded `confirm_launch`) is **satisfied by the live proven-empty slot**: a slot with no running
+process has no process identity to mis-attribute, and a live absent-observation is strictly stronger for
+release *safety* than a historical launch record. This is what lets the preserved slot 1 — materialised by
+the agent but launched/terminated out-of-band in Phase 8 — be released through the native lifecycle
+`NEGOTIATE → VERIFY → STOP(if required) → TOMBSTONE → RELEASE → Available` with **no START and no manual
+intervention**. The seven `RELEASE_PROOFS` and the atomic `release_after_tombstone` transaction are
+unchanged; only the *sourcing* of two proofs (`runtime_process_stopped`, `process_identity_verified`) moves
+from recorded stage evidence to live observation.
 
 ## Context
 
@@ -91,8 +115,10 @@ touches **no filesystem** — it is a pure occupancy-ledger transition.
   backend sends RELEASE only if it is advertised. **This is the compatibility mechanism** (see below).
 - **MATERIALISE** is the only allocator; RELEASE is its inverse on the occupancy ledger (frees what
   MATERIALISE assigned), but only after the full teardown.
-- **START / STOP** produce the `confirm_launch` / `confirm_terminated` evidence that RELEASE's
-  `process_identity_verified` / `runtime_process_stopped` proofs consume.
+- **START / STOP** produce the `confirm_launch` / `confirm_terminated` evidence. The recorded-evidence
+  `release()` builder consumes it; the shipped `op_release` instead derives those two proofs from a live
+  proven-empty observation (the refinement), so an agent-native STOP is sufficient and a recorded
+  `confirm_launch` is not required.
 - **VERIFY** is read-only and unaffected; it may be used before RELEASE to confirm the occupancy.
 - **TOMBSTONE** is RELEASE's immediate predecessor and the two are deliberately split (§ next).
 
@@ -122,12 +148,21 @@ touches **no filesystem** — it is a pure occupancy-ledger transition.
 
 Two options; the ADR **recommends A**:
 
-- **A (recommended) — keep `PROTOCOL_VERSION = 1`; extend `PROVISIONING_OPERATIONS` with `RELEASE`.**
-  The channel already negotiates capability via NEGOTIATE's `supported_operations`, not the version int
-  alone. A backend sends RELEASE only when the agent advertises it; an agent that predates RELEASE simply
-  omits it and rejects a stray RELEASE with `operation_not_allowed` — graceful, backward-compatible, no
-  hard break. `verify_request`'s exact-match version gate is unchanged (RELEASE requests still carry
-  `protocol_version = 1`). Signing/verification untouched.
+- **A (recommended, implemented) — keep `PROTOCOL_VERSION = 1`; extend `PROVISIONING_OPERATIONS` with
+  `RELEASE`.** `verify_request`'s exact-match version gate is unchanged (RELEASE requests still carry
+  `protocol_version = 1`); signing/verification untouched; the direction is fail-closed. **Compatibility is
+  fail-closed, not tolerant** (this is the accurate framing — an earlier draft overstated "graceful old-agent
+  operation"): the backend client's `assert_compatible` requires the agent to advertise the **entire**
+  `PROVISIONING_OPERATIONS` set (`set(PROVISIONING_OPERATIONS).issubset(supported)`), so once the backend
+  knows RELEASE, an agent that does **not** advertise it is refused the **whole** channel
+  (`unsupported_operations`) — RELEASE becomes a **required co-deployed capability**, not an optional one.
+  That is the safe direction (a backend never silently drives an agent missing a lifecycle op) and is
+  correct because the backend and the agent bundle are versioned and re-staged from the same repo. **Deploy
+  ordering:** re-stage the agent bundle (RELEASE present) **before or with** the backend that expects it; a
+  drift-guard test pins `manifest.json.supported_operations == PROVISIONING_OPERATIONS` so NEGOTIATE can
+  never advertise an op the host's integrity manifest lacks. A truly legacy agent (predating RELEASE) still
+  rejects a *stray* RELEASE with `operation_not_allowed`, but the backend would not have negotiated with it
+  in the first place.
 - **B — bump `PROTOCOL_VERSION` 1→2.** Explicit about the contract change, but `verify_request`'s exact
   match makes it a **hard break**: every version-1 request is rejected until both sides upgrade, gated by
   NEGOTIATE agreeing v2. Heavier for no security gain over A, since capability is already negotiated.
@@ -137,19 +172,19 @@ backend learns whether this agent can RELEASE.
 
 ## Validating RELEASE on the preserved slot 1 once approved (Nuno point 7)
 
-The preserved occupancy is `1f1b4b83… / slot 1 / generation 1`. **Its evidence is incomplete for release:**
-Phase 8 launched and terminated MT5 via **direct scheduled-task triggers** (as that packet instructed), not
-via agent START/STOP, so there is **no `confirm_launch` / `confirm_terminated` record** — `release`'s
-`process_identity_verified` and `runtime_process_stopped` proofs cannot be met as-is. Two validation paths,
-to be chosen at approval time:
+The preserved occupancy is `1f1b4b83… / slot 1 / generation 1`. Phase 8 launched and terminated MT5 via
+**direct scheduled-task triggers** (as that packet instructed), not via agent START/STOP, so there is **no
+`confirm_launch` / `confirm_terminated` record**. Under the *original* proposal that blocked release; **the
+approval refinement removes the block** — `op_release` sources `process_identity_verified` /
+`runtime_process_stopped` from a live proven-empty observation, not from those records, so slot 1 is
+releasable **as-is** once its process is confirmed stopped and its directory tombstoned.
 
-- **Complete slot 1's evidence, then release it.** Run the agent-native tail on slot 1: `START` (re-launch
-  MT5 once, Session 0, no account → records `confirm_launch`) → `STOP` (→ `confirm_terminated`) →
-  `TOMBSTONE` → `RELEASE`. Frees the *actual* preserved slot and proves the end-to-end agent-native
-  lifecycle; costs one more bounded MT5 launch.
-- **Validate on a fresh runtime; leave slot 1 preserved.** Materialise a new runtime in a free slot and run
-  it fully through the agent, releasing it to Available; document slot 1's half-in/half-out Phase-8
-  lifecycle as a recorded special case.
+Adopted validation path (no START needed): run the agent-native tail on the *actual* preserved slot —
+`NEGOTIATE → VERIFY` (observe current state) `→ STOP (only if VERIFY finds it running) → TOMBSTONE → RELEASE
+→ Available`. This frees slot 1 through the native lifecycle and proves the end-to-end path with **no
+re-launch and no manual intervention**, which is precisely why the refinement was adopted. (Had the
+refinement not held, the fallback was to validate on a fresh materialised runtime and leave slot 1
+preserved; that is no longer necessary.)
 
 ## Consequences
 
@@ -186,6 +221,70 @@ post-TOMBSTONE step on a separate worker rather than a backend-driven operation)
 
 ## Approval
 
-**Pending — Nuno.** Implementation and merge of the RELEASE operation are blocked until this ADR is
-reviewed and explicitly authorised (Nuno, 2026-07-24 instruction). WS-A/WS-B (PR #199) are unaffected and
-already merged.
+**Approved in principle (Nuno, 2026-07-24)** — "proceed with implementation through the normal governance
+pipeline," with the refinement recorded at the top of this ADR. Option **A** (extend
+`PROVISIONING_OPERATIONS`, keep `PROTOCOL_VERSION = 1`) was implemented. WS-A/WS-B (PR #199) are unaffected
+and already merged.
+
+## As implemented (2026-07-24)
+
+Shipped exactly as Option A + the approval refinement:
+
+- `RELEASE` added to `PROVISIONING_OPERATIONS` (`lib/mgmt_protocol.py`); `PROTOCOL_VERSION` stays `1`.
+- `PoolOpImplementations.op_release` (`pool_op_impls.py`) implements the live-observation sourcing: it
+  requires a fresh `observe_process → ABSENT`, refuses on `PRESENT_*` (`release_runtime_present`) **and** on
+  an unreadable host (never fabricates "stopped"), then reuses the unchanged seven-proof
+  `release_after_tombstone` atomic advance. It is registered in `as_dict()` and is **not** in agent-core's
+  `_MUTATING` set, so it dispatches **outside** the per-runtime lock.
+- Response sanitiser carries the new `available` signal through **both** the copy loop and the allowlist
+  (`lib/mgmt_agent_core.py`); no path/secret crosses the channel.
+- `manifest.json.supported_operations` gains `RELEASE` so `build_agent`'s per-op integrity manifest contains
+  `op_release` and NEGOTIATE advertises it consistently. A new drift-guard test
+  (`test_manifest_supported_operations_match_the_protocol`) fails closed if that list ever diverges from
+  `PROVISIONING_OPERATIONS` — the precise failure mode that would otherwise let NEGOTIATE advertise an op the
+  host denies with `impl_integrity_mismatch`.
+- `release_runtime_present` classified INTEGRITY in `lifecycle.py`. Backend twins of `mgmt_protocol.py` /
+  `mgmt_agent_core.py` re-synced byte-for-byte.
+
+**Offline validation (real `build_agent`, `enforce_integrity=True`, signed protocol, FakeWin host):**
+NEGOTIATE advertised `[…, RELEASE]`; `MATERIALISE`(gen 1) → `TOMBSTONE`(released=False, release_pending) →
+`RELEASE`(released=True, available=True, **gen 1→2**) → slot returned to the free pool — no START, no manual
+step. 639 `terminal_provisioning` tests + full `make check` green. **Host slot-1 proof pending re-stage.**
+
+### Post-review remediation (adversarial review, 2026-07-24)
+
+A five-lens adversarial review (each finding independently verified) confirmed 12 findings; the five that
+touched behaviour were fixed in this branch, the three that are cross-component were recorded as bounded
+follow-ups (below), and the four low/duplicate notes fold into these.
+
+Fixed in code (+ tests):
+
+1. **Quarantine / monotonicity gate bypass (HIGH).** `op_release` skipped the pre-mutation integrity gate
+   every other mutating op runs, so a slot quarantined during the release-pending window could be released
+   and reused, and a broken generation ledger could be advanced. Fix: the gate now lives at the single
+   mutation point (`SlotStore.release_after_tombstone`) — it refuses a quarantined slot and asserts
+   generation monotonicity before advancing, fail-closed, covering **both** release paths. (It does not
+   quarantine on a stale-caller generation mismatch — that is a deny, not a corruption.)
+2. **False `tombstone_completed` audit before the gate.** The audit was written before the proofs were
+   evaluated, so a *refused* release left a chain-valid "completed" record for an occupancy that was never
+   released. Fix: audit is written **only after** the atomic advance commits, and with the operation's own
+   event **`slot_released`** (RELEASE performs no tombstone).
+3. **Successor-generation mislabel (LOW).** The response reported `generation = new_gen`; it now reports the
+   released occupancy's own generation, with `available: true` signalling the slot is now free.
+4. **Asserted containment of a tombstoned-away directory (LOW).** `path_containment_verified` was `True`
+   for a directory that no longer exists; now `False` (not observable at release).
+5. Added the mandated **`before_release` audit-chain checkpoint** to `op_release`.
+
+Deferred (bounded, recorded — NOT silently accepted):
+
+- **Backend does not yet *send* RELEASE (MEDIUM).** The agent supports RELEASE and NEGOTIATE advertises it,
+  but `provisioner._drive_deprovision` still calls only `teardown` (→ TOMBSTONE); no backend path issues
+  RELEASE, so a backend-driven deprovision would tombstone without freeing and the pool would exhaust after
+  `pool_size` teardowns. This is the **CVM-Inc-5** increment ("disable + remove beta runtime cleanly") and
+  is out of scope for "implement the operation + prove it on slot 1" (slot 1 is driven agent-side). No live
+  impact today: `BETA_RUNTIMES_ENABLED` is OFF and the beta deprovision path is not exercised.
+- **Crash-window idempotency (LOW).** A same-job RELEASE resent after the advance committed but before the
+  agent's idempotency record persisted resolves as `runtime_not_assigned` (the runtime is no longer bound) —
+  a **safe, fail-closed** denial that never double-advances; the state is already correct. The backend that
+  issues RELEASE (CVM-Inc-5) must map "RELEASE → `runtime_not_assigned` for a runtime it tombstoned" to
+  *already released*. Recorded there.
