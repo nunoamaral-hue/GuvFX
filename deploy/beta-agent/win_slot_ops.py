@@ -585,9 +585,12 @@ class RealSlotWindowsOps(SlotWindowsOps):
         both read from an OPEN handle; a candidate we can open is matched (or excluded) on those alone,
         regardless of its session — so the session logic can never turn a live slot runtime into a false
         ABSENT. Session is used in exactly ONE place: to exclude an UNOPENABLE same-name candidate whose
-        session is known and differs from the slot's expected (batch-logon = observer Session 0) one — i.e.
-        the operator's interactive terminal, which the low-privilege account is denied a handle to. A
-        same/unknown-session unopenable candidate stays UNRESOLVED (fail closed), never absence.
+        session is KNOWN and differs from the slot's expected (batch-logon = observer Session 0) one — i.e.
+        the operator's interactive terminal, which the low-privilege account is denied a handle to. Candidate
+        sessions come from ONE bounded WMI ``Win32_Process`` query per cycle (ADR-0015/PN) — the documented
+        source that works from the least-privilege service account, unlike ``ProcessIdToSessionId`` which is
+        denied cross-account. A same-session OR session-UNDETERMINABLE (WMI unavailable / pid absent)
+        unopenable candidate stays UNRESOLVED (fail closed), never absence.
 
         [R:creationtime-filetime-units] Creation time is a raw 64-bit FILETIME.
         """
@@ -597,7 +600,23 @@ class RealSlotWindowsOps(SlotWindowsOps):
         k32 = api["k32"]
         canonical_slot = self._long_path(slot_path)
         expected_sid = self._identity_sid(runtime_identity)
-        expected_session = self._session_id(api, os.getpid())     # the observer's own (batch/service) session
+        # The observer's OWN session — via ProcessIdToSessionId on our OWN pid (never a cross-account query,
+        # so never denied). Candidate (cross-account) sessions come from WMI instead (below).
+        expected_session = self._session_id(api, os.getpid())
+        # ONE bounded WMI Win32_Process pid->session map per observation cycle (ADR-0015/PN), built lazily on
+        # first need. WMI is the documented session source that works from the least-privilege service account
+        # where ProcessIdToSessionId is denied cross-account. ``None`` (query unavailable) or a pid absent
+        # from the map both mean "session could not be determined" -> the caller leaves the candidate
+        # unresolved (fail closed), never absent. There is NO ProcessIdToSessionId fallback for candidates.
+        smap = {"built": False, "map": None}
+
+        def session_of(pid):
+            if not smap["built"]:
+                smap["map"] = self._wmi_session_map()      # the single per-cycle query
+                smap["built"] = True
+            m = smap["map"]
+            return m.get(int(pid)) if m is not None else None
+
         runtime_exe = RUNTIME_EXECUTABLE.lower()
         candidates, unresolved = [], []
         for pid, name, _ppid in self._enumerate_process_entries():
@@ -608,16 +627,16 @@ class RealSlotWindowsOps(SlotWindowsOps):
                 if state == "gone":
                     continue                     # exited during enumeration -> not present
                 # UNOPENABLE same-name candidate: owner and path CANNOT be read, so the ONLY discriminator
-                # left is the handle-less session. Exclude it as definitively-not-this-slot ONLY when its
-                # session is known AND differs from the slot's expected (batch-logon = observer's Session 0)
-                # session — that is the operator's interactive terminal, which the account cannot open. A
-                # same-session OR unknown-session unopenable candidate MIGHT be this slot's runtime, so it is
-                # UNRESOLVED (fail closed), never absence. Session here EXCLUDES a non-candidate; it NEVER
-                # gates a process we could actually attribute (see the open path below).
-                sess = self._session_id(api, pid)
+                # left is the (WMI) session. Exclude it as definitively-not-this-slot ONLY when its session is
+                # KNOWN and differs from the slot's expected (batch-logon = observer's Session 0) one — that is
+                # the operator's interactive terminal, which the account cannot open. A same-session OR
+                # session-UNDETERMINABLE (WMI unavailable / pid absent) unopenable candidate MIGHT be this
+                # slot's runtime, so it is UNRESOLVED (fail closed), never absence. Session here EXCLUDES a
+                # non-candidate; it NEVER gates a process we could actually attribute (see the open path below).
+                sess = session_of(pid)
                 if expected_session is not None and sess is not None and sess != expected_session:
                     continue
-                unresolved.append(pid)           # denied/unknown on a PLAUSIBLE candidate -> NOT absence
+                unresolved.append(pid)           # denied/undeterminable on a PLAUSIBLE candidate -> NOT absence
                 continue
             try:
                 # OPENABLE candidate: owner SID + executable path are AUTHORITATIVE. Session is recorded as
@@ -649,7 +668,7 @@ class RealSlotWindowsOps(SlotWindowsOps):
                     "image": image,
                     "image_digest": self._file_digest(image) if self.path_exists(image) else None,
                     "user_sid": sid,
-                    "session_id": self._session_id(api, pid),      # evidence only, not a gate
+                    "session_id": session_of(pid),                 # WMI evidence, not a gate
                 })
             finally:
                 k32.CloseHandle(handle)
@@ -812,6 +831,70 @@ class RealSlotWindowsOps(SlotWindowsOps):
             return str(win32security.ConvertSidToStringSid(sid))
         except Exception:
             return None                                  # evidence field: absent, never wrong
+
+    def _wmi_session_map(self):
+        """``{pid: session_id}`` for all processes from ONE bounded WMI ``Win32_Process`` query (ADR-0015/PN).
+
+        WMI ``Win32_Process.SessionId`` is the CANONICAL documented session source that works from the
+        least-privilege service account — host-proven (evidence 2026-07-25) to return the correct session for
+        the operator's admin process, the exact case ``ProcessIdToSessionId`` is DENIED cross-account. It
+        needs no per-process handle and no privilege/ACL grant.
+
+        Fail-closed contract for the caller:
+          * returns a dict on success — a pid present with a valid SessionId;
+          * a pid ABSENT from the dict means its session could not be determined (missing/malformed row, or a
+            duplicate row with a CONFLICTING session — dropped as ambiguous);
+          * returns ``None`` when the WMI query itself is unavailable/denied.
+        In every "could not determine" case the caller must leave the candidate UNRESOLVED (never absent).
+        Issued ONCE per observation cycle — never per process.
+        """
+        if os.name != "nt":
+            return None
+        try:
+            import pythoncom
+            import win32com.client
+        except ImportError:
+            return None
+        # Self-contained COM apartment: the request thread already enters the MTA, but bracketing here (same
+        # MTA mode) is nesting-safe (ref-counted, returns S_FALSE) AND lets this run standalone — e.g. the
+        # host positive-control probe (RULE 11) — without CO_E_NOTINITIALIZED. Failure to initialise falls
+        # through to the query, which then fails closed to None.
+        com_inited = False
+        try:
+            pythoncom.CoInitializeEx(pythoncom.COINIT_MULTITHREADED)
+            com_inited = True
+        except Exception:                                # noqa: BLE001 — already initialised / mode set
+            pass
+        m, ambiguous = {}, set()
+        try:
+            svc = win32com.client.GetObject(r"winmgmts:\\.\root\cimv2")
+            # Bounded to the runtime executable — the only names this map is ever queried for — so the query
+            # stays cheap on the shared live host (it is issued on the launch/stop poll path). The COM rows
+            # MUST be iterated WHILE the apartment is live, so the whole map is built inside this block.
+            rows = svc.ExecQuery(
+                "SELECT ProcessId, SessionId FROM Win32_Process WHERE Name = '%s'" % RUNTIME_EXECUTABLE)
+            for r in rows:
+                pid_raw, sid_raw = r.ProcessId, r.SessionId
+                if pid_raw is None or sid_raw is None:
+                    continue                             # malformed row -> pid stays 'unknown' (fail-closed)
+                try:
+                    pid, sid = int(pid_raw), int(sid_raw)
+                except (TypeError, ValueError):
+                    continue                             # malformed SessionId -> omit
+                if pid in m and m[pid] != sid:
+                    ambiguous.add(pid)                   # duplicate pid, CONFLICTING session -> drop
+                m[pid] = sid
+        except Exception:                                # noqa: BLE001 — WMI unavailable/denied/mid-fail -> None
+            return None
+        finally:
+            if com_inited:
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:                        # noqa: BLE001
+                    pass
+        for pid in ambiguous:
+            m.pop(pid, None)                             # ambiguous -> absent from map -> caller unresolved (dict is COM-free)
+        return m
 
     # ── the one method with no supported implementation ──────────────────────────────────────────────
     def _enumerate_slot_files(self, canonical_root: str) -> list:

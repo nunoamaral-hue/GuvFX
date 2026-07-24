@@ -105,6 +105,43 @@ those parents**.
 Reparse detection, containment (prefix-safe: slot 1 ≠ slot 10), golden/production exclusion, cross-slot
 isolation and case-insensitive comparison are all preserved (`is_beneath_path` / `os.path.realpath` unchanged).
 
+## Session source (WMI refinement — Nuno, 2026-07-25; documented, no ACL/privilege grant)
+
+The host proof under the service identity then failed at `process_attribution_incomplete`: the session
+pre-filter used per-process `ProcessIdToSessionId`, which is **denied to the low-privilege service account for
+a process owned by another account** (host-measured: `ProcessIdToSessionId(prod pid 4336)` → `ACCESS_DENIED`).
+So the operator's unopenable production `terminal64` (Session 3) could not be excluded by session → it stayed
+an unresolved plausible candidate → fail-closed `UNAVAILABLE` (never a false `ABSENT`; the code is correct as
+admin). An evidence sweep of every realistic unprivileged PID→SessionId mechanism under the real service
+identity (`evidence/b3p2-install/session_id_mechanism_evidence_2026-07-25.md`) established:
+
+- `WTSEnumerateProcesses` — denied to the service (the original blocker).
+- `ProcessIdToSessionId` — denied cross-account.
+- Toolhelp / `WTSEnumerateSessions` / `WTSQuerySessionInformation` / `WTSGetActiveConsoleSessionId` /
+  `QueryFullProcessImageName` — no usable PID→SessionId mapping (or need a handle we are denied).
+- `NtQuerySystemInformation(SystemProcessInformation)` — **undocumented**, and its SessionId struct offset is
+  OS-version-dependent (the probe read the wrong session): not used.
+- **WMI `Win32_Process.SessionId`** — **documented**, needs no per-process handle and no privilege/ACL grant,
+  and host-proven to return the correct session under `NT SERVICE\GuvFXBetaAgent`.
+
+Decision: the **canonical documented session source is WMI `Win32_Process.SessionId`**. The session pre-filter
+builds a pid→session map from **one bounded WMI query per observation cycle** (via `win32com`, already in the
+agent venv), never one query per process. `ProcessIdToSessionId` is retained ONLY for the observer's OWN pid
+(not a cross-account query). Fail-closed is preserved exactly: a WMI query that is unavailable/denied, a pid
+absent from the map, a malformed `SessionId`, or a duplicate row with a conflicting session all leave the
+candidate **unresolved → `UNAVAILABLE`**, never silently excluded as absent. Owner-SID + exact-path + start
+evidence remain mandatory for a `PRESENT` match; session is only ever used to EXCLUDE an unopenable
+non-candidate. No Windows privilege, ACL grant, group membership, privileged helper, or undocumented NT API
+is used.
+
+**COM apartment.** The agent serves on a `ThreadingHTTPServer`, and COM must be initialised **per worker
+thread** or `GetObject`/`Dispatch` raise `CO_E_NOTINITIALIZED`. The request thread initialises the MTA once at
+its boundary (`process_request_thread`), which covers BOTH the WMI query and the pre-existing `Schedule.Service`
+task primitives; `_wmi_session_map` additionally brackets its own query (nesting the same MTA mode is
+ref-count-safe) so it is callable standalone for the host positive control. A COM-init or query failure falls
+through to `None` → fail-closed. The WMI query is bounded to `WHERE Name = 'terminal64.exe'` so it stays cheap
+on the launch/stop poll path.
+
 ## Consequences
 
 - The observe-dependent lifecycle (VERIFY/STOP/TOMBSTONE/RELEASE) can work under the least-privilege service

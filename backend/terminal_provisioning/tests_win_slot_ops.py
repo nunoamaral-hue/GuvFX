@@ -413,9 +413,22 @@ class _FakeSlotOps(wso.RealSlotWindowsOps):
         return ft
 
     def _session_id(self, api, pid):
-        # ``os.getpid()`` (the observer) is not in ``_procs`` -> default 0, the batch/service session that
-        # slot processes share; a proc may set ``session=None`` to model ProcessIdToSessionId failing.
+        # Now used ONLY for the observer's OWN session (expected_session). os.getpid() is not in _procs ->
+        # default 0, the batch/service session that slot processes share.
         return self._procs.get(pid, {}).get("session", 0)
+
+    def _wmi_session_map(self):
+        # The WMI pid->session map for CANDIDATE (cross-account) sessions. ``_wmi_unavailable=True`` models a
+        # failed WMI query (-> None); a proc with ``session=None`` models a pid ABSENT from the map.
+        if getattr(self, "_wmi_unavailable", False):
+            return None
+        m = {}
+        for pid, d in self._procs.items():
+            s = d.get("session", 0)
+            if s is None:
+                continue                            # pid absent from the WMI map -> session undeterminable
+            m[int(pid)] = s
+        return m
 
     def _file_digest(self, image):
         return "digest-stub"
@@ -589,6 +602,138 @@ class ProcessObservationUnprivilegedTests(SimpleTestCase):
         self.assertEqual(wp.MULTIPLE_MATCHING, out["attestation"]["outcome"])
         self.assertEqual("multiple_matching_processes", out["attestation"]["reason_code"])
         self.assertNotEqual(wp.UNAVAILABLE, out["attestation"]["outcome"])
+
+
+class WmiSessionPrefilterTests(SimpleTestCase):
+    """ADR-0015/PN: candidate (cross-account) sessions come from ONE bounded WMI Win32_Process query per
+    observation cycle; ProcessIdToSessionId is kept only for the observer's OWN pid. Fail-closed on WMI
+    unavailable / pid-absent / malformed / ambiguous."""
+
+    def q(self, procs):
+        return _FakeSlotOps(procs).query_slot_process(_SLOT1_DIR, "guvfx_b_slot1")
+
+    def test_wmi_query_is_issued_once_per_observation_cycle(self):
+        # Two unopenable same-session terminal64 candidates -> _wmi_session_map must be called exactly ONCE,
+        # never once per process.
+        ops = _FakeSlotOps(dict([_slot_proc(8200, session=0, open="denied"),
+                                 _slot_proc(8201, session=0, open="denied")]))
+        calls = {"n": 0}
+        real = ops._wmi_session_map
+
+        def counted():
+            calls["n"] += 1
+            return real()
+        ops._wmi_session_map = counted
+        with self.assertRaises(WindowsOpsError):
+            ops.query_slot_process(_SLOT1_DIR, "guvfx_b_slot1")
+        self.assertEqual(calls["n"], 1)              # ONE bounded query, not per-candidate
+
+    def test_wmi_unavailable_makes_an_unopenable_candidate_unavailable_not_absent(self):
+        ops = _FakeSlotOps(dict([_slot_proc(4336, sid=_ADMIN_SID, session=3, open="denied",
+                                            image=r"C:\Program Files\IS6\terminal64.exe")]))
+        ops._wmi_unavailable = True                  # WMI query returns None
+        with self.assertRaises(WindowsOpsError) as cm:
+            ops.query_slot_process(_SLOT1_DIR, "guvfx_b_slot1")
+        self.assertEqual(cm.exception.reason_code, "process_attribution_incomplete")
+
+    def test_pid_absent_from_wmi_map_is_unavailable_not_absent(self):
+        # session=None models a pid absent from the WMI map (undeterminable) on an UNOPENABLE candidate.
+        with self.assertRaises(WindowsOpsError):
+            self.q(dict([_slot_proc(4336, sid=_ADMIN_SID, session=None, open="denied",
+                                    image=r"C:\Program Files\IS6\terminal64.exe")]))
+
+    def test_production_session3_excluded_via_wmi_gives_absent(self):
+        # The whole point: WMI says production terminal64 is Session 3 (!= observer 0) -> excluded -> ABSENT.
+        self.assertIsNone(self.q(dict([_slot_proc(4336, sid=_ADMIN_SID, session=3, open="denied",
+                                                  image=r"C:\Program Files\IS6\terminal64.exe")])))
+
+    def test_candidate_session_comes_from_wmi_not_processidtosessionid(self):
+        import inspect
+        src = inspect.getsource(wso.RealSlotWindowsOps.query_slot_process)
+        self.assertIn("session_of(pid)", src)                    # candidates use the WMI map helper
+        self.assertIn("self._session_id(api, os.getpid())", src) # own pid only (not cross-account)
+        # the ONLY _session_id call is for os.getpid(); candidates never call it.
+        self.assertNotIn("self._session_id(api, pid)", src)
+
+    # ── the REAL _wmi_session_map parsing / fail-closed (fakes override the method above) ──
+    class _Row:
+        def __init__(self, pid, sid):
+            self.ProcessId, self.SessionId = pid, sid
+
+    def _fake_win32com(self, rows=(), raise_getobject=False, raise_query=False):
+        import types
+        client = types.ModuleType("win32com.client")
+
+        class _Svc:
+            def ExecQuery(self, _q):
+                if raise_query:
+                    raise RuntimeError("wmi query denied")
+                return list(rows)
+
+        def GetObject(_path):
+            if raise_getobject:
+                raise RuntimeError("wmi unavailable")
+            return _Svc()
+        client.GetObject = GetObject
+        pkg = types.ModuleType("win32com")
+        pkg.client = client
+        # _wmi_session_map also imports pythoncom for the self-contained COM apartment (CoInitializeEx).
+        pyc = types.ModuleType("pythoncom")
+        pyc.COINIT_MULTITHREADED = 0
+        pyc.CoInitializeEx = lambda _flags: None
+        pyc.CoUninitialize = lambda: None
+        return {"win32com": pkg, "win32com.client": client, "pythoncom": pyc}
+
+    def _real_map(self, **kw):
+        ops = wso.RealSlotWindowsOps(golden_dir=r"C:\GuvFX\golden\newMT5", slots_root=r"C:\GuvFX\beta\slots")
+        with mock.patch.object(wso.os, "name", "nt"), \
+                mock.patch.dict("sys.modules", self._fake_win32com(**kw)):
+            return ops._wmi_session_map()
+
+    def test_real_wmi_map_complete(self):
+        m = self._real_map(rows=[self._Row(100, 0), self._Row(4336, 3)])
+        self.assertEqual(m, {100: 0, 4336: 3})
+
+    def test_real_wmi_query_unavailable_returns_none(self):
+        self.assertIsNone(self._real_map(raise_getobject=True))
+        self.assertIsNone(self._real_map(raise_query=True))
+
+    def test_real_wmi_malformed_sessionid_is_omitted(self):
+        m = self._real_map(rows=[self._Row(100, 0), self._Row(200, None), self._Row(300, "x")])
+        self.assertEqual(m, {100: 0})                # None + non-int SessionId omitted (pid stays unknown)
+
+    def test_real_wmi_duplicate_conflicting_pid_is_dropped(self):
+        m = self._real_map(rows=[self._Row(100, 0), self._Row(100, 3), self._Row(200, 1)])
+        self.assertNotIn(100, m)                     # ambiguous -> absent from map -> caller unresolved
+        self.assertEqual(m.get(200), 1)
+
+    def test_real_wmi_duplicate_same_session_pid_survives(self):
+        m = self._real_map(rows=[self._Row(100, 2), self._Row(100, 2), self._Row(200, 1)])
+        self.assertEqual(m.get(100), 2)              # same-session duplicate is NOT dropped
+        self.assertEqual(m.get(200), 1)
+
+    def test_real_wmi_row_access_error_fails_closed(self):
+        class _BadRow:
+            ProcessId = 100
+            @property
+            def SessionId(self):
+                raise RuntimeError("com row access failed")
+        self.assertIsNone(self._real_map(rows=[_BadRow()]))
+
+    def test_real_wmi_pywin32_absent_returns_none(self):
+        ops = wso.RealSlotWindowsOps(golden_dir=r"C:\GuvFX\golden\newMT5", slots_root=r"C:\GuvFX\beta\slots")
+        with mock.patch.object(wso.os, "name", "nt"), \
+                mock.patch.dict("sys.modules", {"win32com": None, "win32com.client": None, "pythoncom": None}):
+            self.assertIsNone(ops._wmi_session_map())
+
+    def test_undeterminable_observer_session_does_not_exclude_a_candidate(self):
+        # #4: if the observer's OWN session is undeterminable, the exclusion guard must NOT fire — a
+        # different-session candidate cannot be safely excluded -> unresolved -> UNAVAILABLE, never ABSENT.
+        ops = _FakeSlotOps(dict([_slot_proc(4336, sid=_ADMIN_SID, session=3, open="denied",
+                                            image=r"C:\Program Files\IS6\terminal64.exe")]))
+        ops._session_id = lambda api, pid: None          # own (expected) session undeterminable
+        with self.assertRaises(WindowsOpsError):
+            ops.query_slot_process(_SLOT1_DIR, "guvfx_b_slot1")
 
 
 class ToolhelpEnumerationTests(SimpleTestCase):
