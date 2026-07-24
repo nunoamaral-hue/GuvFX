@@ -131,9 +131,26 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             raise
 
     def process_request_thread(self, request, client_address):
+        # Each request runs on a FRESH worker thread. COM must be initialised PER THREAD or the COM callers in
+        # the request path raise CO_E_NOTINITIALIZED — the WMI ``Win32_Process`` session query in observe
+        # (ADR-0015) AND the ``Schedule.Service`` task primitives (STOP/TOMBSTONE triggers). Initialise the
+        # MTA once at the thread boundary, balanced on exit. Off-host (pywin32 absent) this is a no-op.
+        com_inited = False
+        try:
+            import pythoncom
+            pythoncom.CoInitializeEx(pythoncom.COINIT_MULTITHREADED)
+            com_inited = True
+        except Exception:                    # noqa: BLE001 — off-host, or apartment already established
+            pass
         try:
             super().process_request_thread(request, client_address)
         finally:
+            if com_inited:
+                try:
+                    import pythoncom
+                    pythoncom.CoUninitialize()
+                except Exception:            # noqa: BLE001
+                    pass
             self._conn_sem.release()
 
 
