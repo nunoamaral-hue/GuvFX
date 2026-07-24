@@ -273,28 +273,35 @@ function Test-GoldenImage {
   return [pscustomobject]@{ Passed = ($fail.Count -eq 0); Failures = $fail; Checks = $ok; Notes = $note }
 }
 
-if (-not (Test-Path $GoldenDir)) {
-  throw "golden image not staged at $GoldenDir - commission a DEDICATED CLEAN MT5 install (RULE 10); the production terminal must never be promoted"
-}
-Step "validate golden image (RULE 10: dedicated clean install, never the production terminal)"
-$golden = Test-GoldenImage -Path $GoldenDir
-foreach ($c in $golden.Checks) { Write-Host "ok   $c" }
-foreach ($f in $golden.Failures) { Write-Host "FAIL $f" }
-foreach ($n in $golden.Notes) { Write-Host "note $n" }
-if (-not $golden.Passed) {
+# -GrantTaskAccessOnly provisions no runtime and never reads the golden image, so it must NOT require a
+# staged golden. Golden validation (RULE 10) gates only the runtime-provisioning paths (-Apply / -VerifyOnly /
+# -ValidateGoldenOnly), which are mutually exclusive with -GrantTaskAccessOnly.
+if ($GrantTaskAccessOnly) {
+  Write-Host "note GrantTaskAccessOnly: golden-image validation skipped (a task-ACL grant provisions no runtime and never reads the golden image)"
+} else {
+  if (-not (Test-Path $GoldenDir)) {
+    throw "golden image not staged at $GoldenDir - commission a DEDICATED CLEAN MT5 install (RULE 10); the production terminal must never be promoted"
+  }
+  Step "validate golden image (RULE 10: dedicated clean install, never the production terminal)"
+  $golden = Test-GoldenImage -Path $GoldenDir
+  foreach ($c in $golden.Checks) { Write-Host "ok   $c" }
+  foreach ($f in $golden.Failures) { Write-Host "FAIL $f" }
+  foreach ($n in $golden.Notes) { Write-Host "note $n" }
+  if (-not $golden.Passed) {
+    if ($ValidateGoldenOnly) {
+      Write-Host ""
+      Write-Host "ValidateGoldenOnly: validation FAILED. Nothing was created or modified."
+      return
+    }
+    throw "golden image validation FAILED ($($golden.Failures.Count) problem(s)) - aborting before PLAN. A dedicated clean install is required; never promote the production MT5 installation."
+  }
+  foreach ($n in $golden.Notes) { Write-Host "note $n" }
+  Write-Host "ok   golden image validated: clean, versioned, correctly structured"
   if ($ValidateGoldenOnly) {
     Write-Host ""
-    Write-Host "ValidateGoldenOnly: validation FAILED. Nothing was created or modified."
+    Write-Host "ValidateGoldenOnly: stopping here. Nothing else was inspected, created or modified."
     return
   }
-  throw "golden image validation FAILED ($($golden.Failures.Count) problem(s)) - aborting before PLAN. A dedicated clean install is required; never promote the production MT5 installation."
-}
-foreach ($n in $golden.Notes) { Write-Host "note $n" }
-Write-Host "ok   golden image validated: clean, versioned, correctly structured"
-if ($ValidateGoldenOnly) {
-  Write-Host ""
-  Write-Host "ValidateGoldenOnly: stopping here. Nothing else was inspected, created or modified."
-  return
 }
 
 # -- 1a. LSA interop. Loaded BEFORE identities are created (see the self-test below).

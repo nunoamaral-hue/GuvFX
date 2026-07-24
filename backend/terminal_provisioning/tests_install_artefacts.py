@@ -405,6 +405,11 @@ class TaskAccessGrantTests(SimpleTestCase):
         # It must NOT prompt for a password or register a task.
         self.assertNotIn("Get-SlotSecret", block)
         self.assertNotIn("Register-ScheduledTask", block)
+        # A task-ACL grant provisions no runtime, so golden-image validation (RULE 10) must be skipped in
+        # this mode - it must not require a staged golden that a grant has nothing to do with.
+        self.assertIn("GrantTaskAccessOnly: golden-image validation skipped", source)
+        # The golden-not-staged throw must be guarded so it cannot fire under -GrantTaskAccessOnly.
+        self.assertIn("if ($GrantTaskAccessOnly) {\n  Write-Host \"note GrantTaskAccessOnly: golden-image validation skipped", source)
 
     def test_the_service_gets_no_folder_level_task_grant(self):
         # Only task-level grants: EVERY SetSecurityDescriptor call must write the per-task object ($t), never
