@@ -2,6 +2,42 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🔴 Process observation FAILS from the low-privilege beta service account (2026-07-24) — BLOCKS the observe-dependent lifecycle
+
+`observe_process` (via `win_slot_ops._enum_processes_with_owner` →
+`win32ts.WTSEnumerateProcesses(WTS_CURRENT_SERVER_HANDLE, 1, 0)`) works **as an administrator** but is
+**denied to the deployed service identity `NT SERVICE\GuvFXBetaAgent`** (Session 0, low-privilege).
+
+Host-measured on `WIN-RD8VDS93DK7`, staged bundle `2026-07-24.1` (already includes the WS-A/#199 observe fix):
+
+| Context | `_enum_processes_with_owner` | `observe_process(slot 1)` |
+|---|---|---|
+| Administrator (SSH) | 207 processes | `absent` / `process_absent` |
+| Service account (signed VERIFY over `:8791`) | fails | denied `process_observation_unavailable` |
+
+**Impact.** VERIFY, STOP, TOMBSTONE and RELEASE all depend on `observe_process`. In the real service context
+the observation returns `UNAVAILABLE`, so the whole lifecycle beyond MATERIALISE cannot complete — including
+the ADR-0014 slot-1 RELEASE proof (`op_release` correctly *refuses* on a non-`ABSENT` observation, so RELEASE
+denies with `process_observation_unavailable` rather than fabricating a "stopped"). This is a **pre-existing
+win-layer × service-privilege constraint, not a defect in the RELEASE operation** (RELEASE is proven correct
+offline via `build_agent` E2E).
+
+**Root cause of the blind spot (RULE 11 / [[feedback-review-fakes]] shape).** WS-A/WS-B (#199) verified
+observation *as admin* and never in the deployed service identity, so a capability proven in one context was
+assumed to hold in another. A negative operational finding (service can't observe) was invisible until it was
+measured in the actual production context with a positive control (admin observe works, 207 procs).
+
+**Resolution options (architecture/security decision — Nuno's call, a separate packet):**
+1. Grant the service account the minimal privilege enabling cross-session `WTSEnumerateProcesses` — broadens
+   the least-privilege identity (security tradeoff; must verify it is the minimal grant).
+2. Change the enumeration mechanism to one that works unprivileged — e.g. `CreateToolhelp32Snapshot` +
+   per-process `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` for the slot's own process — a `win_slot_ops`
+   code change (design + tests + review).
+3. A separate privileged observation broker the agent calls (heavier).
+
+**Do NOT "prove" the slot-1 lifecycle by running it as admin** — that would validate the code, not the
+deployed service context, which is the whole point of the host proof.
+
 ## ⚠️ Backend does not yet SEND RELEASE — a backend-driven deprovision tombstones without freeing (2026-07-24)
 
 The agent supports RELEASE (ADR 0014, PR #200) and NEGOTIATE advertises it, but the backend's
