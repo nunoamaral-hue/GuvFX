@@ -507,10 +507,12 @@ class RealSlotWindowsOps(SlotWindowsOps):
         name cannot separate the two, and a denial on the operator's process would make "this slot is empty"
         permanently unprovable, so STOP and TOMBSTONE could never succeed.
 
-        [R:wts-enumerate-one-shot-sid-session] ``WTSEnumerateProcessesEx`` at level 1 returns pid, name,
-        session and owning SID **without opening any process**, so the scope is decided before a handle is
-        ever requested. Only processes owned by this slot's identity are candidates; the rest of the host,
-        including the operator's estate, is out of scope by construction.
+        [R:wts-enumerate-one-shot-sid-session] ``WTSEnumerateProcesses`` returns (session, pid, name, owning
+        SID) **without opening any process**, so the scope is decided before a handle is ever requested. Only
+        processes owned by this slot's identity are candidates; the rest of the host, including the operator's
+        estate, is out of scope by construction. (The ``…Ex`` variant is NOT exposed by the installed pywin32
+        build on the target host — host-proven 2026-07-24 it raises AttributeError — so the base
+        ``WTSEnumerateProcesses`` is used; both return the same (session, pid, name, sid) fields.)
 
         [R:creationtime-filetime-units] Creation time is a raw 64-bit FILETIME.
         [R:psutil-createtime-loses-precision] psutil cannot carry it.
@@ -592,12 +594,21 @@ class RealSlotWindowsOps(SlotWindowsOps):
         except ImportError as exc:
             raise WindowsApiUnavailable("pywin32 not installed") from exc
         try:
-            rows = win32ts.WTSEnumerateProcessesEx(win32ts.WTS_CURRENT_SERVER_HANDLE, 1,
-                                                   win32ts.WTS_ANY_SESSION)
+            # WTSEnumerateProcesses (NOT the ...Ex variant, which the installed pywin32 build does not
+            # expose) returns one (SessionId, ProcessId, pProcessName, pUserSid) tuple per process WITHOUT
+            # opening any handle. SessionId 0 processes (services, and a batch-logon runtime) are included.
+            # ARGS ARE HOST-PROVEN, not derived from the raw-Win32 contract: pywin32's wrapper does NOT map
+            # (arg2,arg3) onto (Reserved,Version) in the documented order. On the target host (Server 2025 +
+            # its pywin32) `(WTS_CURRENT_SERVER_HANDLE, 1, 0)` returns 205 valid rows (e.g. smss.exe / S-1-5-18)
+            # while `(…, 0, 1)` raises error 87 "The parameter is incorrect." Positive+negative control run
+            # 2026-07-24. Do NOT "correct" these to (0,1) — that reasoning is right for the raw API and wrong
+            # for this wrapper.
+            rows = win32ts.WTSEnumerateProcesses(win32ts.WTS_CURRENT_SERVER_HANDLE, 1, 0)
         except Exception as exc:                             # noqa: BLE001
             translate_denial(exc)
             raise WindowsOpsError("process_enumeration_failed") from exc
         for row in rows:
+            # (session, pid, name, sid); a few well-known processes (Idle/System) carry a null SID -> skip.
             pid, name, sid = row[1], row[2], row[3]
             yield int(pid), str(name), (str(win32security.ConvertSidToStringSid(sid)) if sid else "")
 
@@ -674,17 +685,121 @@ class RealSlotWindowsOps(SlotWindowsOps):
             return None                                  # evidence field: absent, never wrong
 
     # ── the one method with no supported implementation ──────────────────────────────────────────────
-    def open_handles(self, path: str) -> bool:
-        """**Fails closed, by design.** [R:no-fully-reliable-handle-check]
+    def _enumerate_slot_files(self, canonical_root: str) -> list:
+        """Every REGULAR file beneath the slot tree, long-path form.
 
-        Every documented route is disqualified: Restart Manager rejects directories outright
-        (``ERROR_ACCESS_DENIED`` at ``RmGetList``) *and* cannot act on another session from a LocalSystem
-        service; ``NtQuerySystemInformation`` is documented as internal and subject to change; ``openfiles``
-        needs a reboot to enable.
-
-        Returning ``False`` here would manufacture a cleanup proof out of nothing, so this raises and the
-        ``no_runtime_handles`` proof is recorded UNMET — which blocks slot release. That is deliberate: see
-        ``docs/B3P2_WINDOWS_RESEARCH_FINDINGS.md`` §5, which records this as a decision for Nuno rather than
-        one for me.
+        Any reparse point (junction/symlink) on a directory OR a file raises: a reparse could redirect the
+        probe to a target OUTSIDE the slot (e.g. the production tree), so the whole check fails closed rather
+        than register an out-of-slot resource or silently skip a real holder. An enumeration/stat failure
+        also raises — a partial file list would under-probe and could manufacture a false 'clear'.
         """
-        raise WindowsOpsError("handle_enumeration_unsupported")
+        REPARSE = 0x400   # FILE_ATTRIBUTE_REPARSE_POINT
+        def _is_reparse(st, link_probe):
+            # On Windows a junction OR symlink carries FILE_ATTRIBUTE_REPARSE_POINT (st_file_attributes,
+            # Windows-only). is_symlink()/islink() supplement it so the rejection is also exercisable on a
+            # POSIX test host (where st_file_attributes is absent and getattr(...,0) is a no-op).
+            return bool((getattr(st, "st_file_attributes", 0) & REPARSE) or link_probe)
+        # The ROOT itself must be checked — the per-entry loop only guards children. A junction AT the slot
+        # path (to production OR to another slot) is refused rather than walked through.
+        try:
+            root_st = os.lstat(canonical_root)
+        except OSError as exc:
+            raise WindowsOpsError("handle_observation_unavailable") from exc
+        if _is_reparse(root_st, os.path.islink(canonical_root)):
+            raise WindowsOpsError("reparse_point_in_tree")
+        out, stack = [], [canonical_root]
+        while stack:
+            d = stack.pop()
+            try:
+                entries = list(os.scandir(d))
+            except OSError as exc:
+                raise WindowsOpsError("handle_observation_unavailable") from exc
+            for e in entries:
+                try:
+                    st = e.stat(follow_symlinks=False)
+                except OSError as exc:
+                    raise WindowsOpsError("handle_observation_unavailable") from exc
+                if _is_reparse(st, e.is_symlink()):
+                    raise WindowsOpsError("reparse_point_in_tree")
+                if e.is_dir(follow_symlinks=False):
+                    stack.append(e.path)
+                elif e.is_file(follow_symlinks=False):
+                    out.append(self._long_path(e.path))
+        return out
+
+    def open_handles(self, path: str) -> bool:
+        """Whether any live process holds a handle to a file inside the slot runtime tree.
+
+        Uses the **Restart Manager** (``rstrtmgr.dll``): register the slot's FILES as resources and ask
+        ``RmGetList`` which processes must be shut down to modify them — precisely the set of processes
+        holding a handle open beneath the slot. RM was previously disqualified for *directories* (``RmGetList``
+        rejects a bare directory); registering **files** is supported, and the service now runs as
+        ``NT SERVICE\\GuvFXBetaAgent`` rather than LocalSystem. Bounded and synchronous — no ``NtQueryObject``
+        hang path.
+
+        Returns ``False`` (no holder) or ``True`` (>=1 holder). **Fails closed** — RAISES, which the cleanup
+        precheck maps to *observation unavailable* and BLOCKS release — on any RM error, an enumeration
+        failure, a reparse point in the tree, a path outside the slots root, or an empty tree it cannot
+        probe. It never manufactures a 'clear'.
+
+        Scope: only files enumerated from THIS slot path are registered, so a handle into another slot (or
+        the production tree) can never match, and production paths are never inspected. (Limitation: a raw
+        handle to a *directory* object — as opposed to a file within it — is not registerable with RM and is
+        not separately detected; the mutating move that follows would itself fail on such a handle.)
+        """
+        # EXISTENCE FIRST — before any canonicalisation. GetLongPathNameW (self._long_path) returns 0 for a
+        # path whose components are not all on disk, so canonicalising a GONE directory RAISES. verify_cleanup
+        # calls open_handles(slot_path) AFTER the tombstone move, when the path is absent: a gone directory
+        # holds nothing, so it must return False here, mirroring query_slot_process's path_exists-then-canon
+        # order. (Off-host the fake path_exists governs this; on-host GetLongPathNameW is the reason.)
+        if not self.path_exists(path):
+            return False
+        canonical = self._long_path(path)
+        # SCOPE + REPARSE, via the FULLY RESOLVED real path: os.path.realpath dereferences any junction /
+        # symlink in the slot path (which GetLongPathNameW does NOT), so a slot directory that is itself a
+        # junction into the production tree resolves outside the slots root and is refused here — before
+        # _enumerate_slot_files could ever scandir THROUGH it and inspect production files. The per-entry
+        # reparse guard in _enumerate_slot_files then covers junctions on descendants.
+        real = self._long_path(os.path.realpath(path))
+        if not is_beneath_path(real, self._long_path(os.path.realpath(self.slots_root))):
+            raise WindowsOpsError("open_handles_path_outside_slots_root")
+        files = self._enumerate_slot_files(canonical)
+        if not files:
+            # RM cannot register a bare directory, so with zero files we cannot PROVE 'clear' — fail closed.
+            raise WindowsOpsError("handle_observation_unavailable")
+        ctypes = self._ctypes()
+        from ctypes import wintypes
+        rm = ctypes.WinDLL("rstrtmgr", use_last_error=True)
+        rm.RmStartSession.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.LPWSTR]
+        rm.RmStartSession.restype = wintypes.DWORD
+        rm.RmRegisterResources.argtypes = [wintypes.DWORD, wintypes.UINT, ctypes.POINTER(wintypes.LPCWSTR),
+                                           wintypes.UINT, ctypes.c_void_p, wintypes.UINT,
+                                           ctypes.POINTER(wintypes.LPCWSTR)]
+        rm.RmRegisterResources.restype = wintypes.DWORD
+        rm.RmGetList.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT),
+                                 ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+        rm.RmGetList.restype = wintypes.DWORD
+        rm.RmEndSession.argtypes = [wintypes.DWORD]
+        rm.RmEndSession.restype = wintypes.DWORD
+        ERROR_SUCCESS, ERROR_MORE_DATA = 0, 234
+        session = wintypes.DWORD(0)
+        key = ctypes.create_unicode_buffer(33)     # CCH_RM_SESSION_KEY (32) + 1
+        rc = rm.RmStartSession(ctypes.byref(session), 0, key)
+        if rc != ERROR_SUCCESS:
+            raise WindowsOpsError("handle_observation_unavailable") from RuntimeError("RmStartSession rc=%d" % rc)
+        try:
+            CHUNK = 512                            # accumulate all files across several register calls
+            for i in range(0, len(files), CHUNK):
+                chunk = files[i:i + CHUNK]
+                arr = (wintypes.LPCWSTR * len(chunk))(*chunk)
+                rc = rm.RmRegisterResources(session.value, len(chunk), arr, 0, None, 0, None)
+                if rc != ERROR_SUCCESS:
+                    raise WindowsOpsError("handle_observation_unavailable") from RuntimeError("RmRegisterResources rc=%d" % rc)
+            needed = wintypes.UINT(0); have = wintypes.UINT(0); reasons = wintypes.DWORD(0)
+            rc = rm.RmGetList(session.value, ctypes.byref(needed), ctypes.byref(have), None,
+                              ctypes.byref(reasons))
+            if rc not in (ERROR_SUCCESS, ERROR_MORE_DATA):
+                raise WindowsOpsError("handle_observation_unavailable") from RuntimeError("RmGetList rc=%d" % rc)
+            return needed.value > 0                # >=1 process must close to modify a slot file => held
+        finally:
+            rm.RmEndSession(session.value)

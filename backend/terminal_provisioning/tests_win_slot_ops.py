@@ -75,11 +75,24 @@ class FailClosedOffHostTests(SimpleTestCase):
             _adapter().query_task("GuvFXBetaRuntime-1")
         self.assertEqual(ctx.exception.reason_code, "windows_api_unavailable")
 
-    def test_open_handles_fails_closed_everywhere(self):
-        """Not an off-host limitation: there is NO supported way to prove this on Windows either."""
-        with self.assertRaises(WindowsOpsError) as ctx:
-            _adapter().open_handles(r"C:\GuvFX\beta\slots\1\terminal")
-        self.assertEqual(ctx.exception.reason_code, "handle_enumeration_unsupported")
+    def test_open_handles_fails_closed_off_host(self):
+        """WS-B: open_handles is now IMPLEMENTED (Restart Manager, host-proven). For a slot dir that EXISTS
+        it must still fail closed off-host — it canonicalises (Win32) after the existence check, so it raises
+        windows_api_unavailable rather than fabricating a clear/held answer. (A GONE dir legitimately returns
+        clear — that path is covered by OpenHandlesOrderingTests.)"""
+        import tempfile
+        import shutil
+        if os.name == "nt":
+            self.skipTest("asserts the off-host behaviour")
+        tmp = tempfile.mkdtemp()
+        try:
+            sub = os.path.join(tmp, "slot"); os.mkdir(sub)
+            a = wso.RealSlotWindowsOps(golden_dir=tmp, slots_root=tmp)
+            with self.assertRaises(WindowsOpsError) as ctx:
+                a.open_handles(sub)
+            self.assertEqual(ctx.exception.reason_code, "windows_api_unavailable")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class RobocopyExitTests(SimpleTestCase):
@@ -326,3 +339,283 @@ class ProcessAttributionScopeTests(SimpleTestCase):
         source = inspect.getsource(wso.RealSlotWindowsOps._tree_digest)
         self.assertIn("os.lstat(root)", source)
         self.assertIn("onerror=_reraise", source)
+
+
+# ── WS-A / WS-B follow-up: process-observation + open-handle DECISION logic ──────────────────────────────
+# The Win32 primitives are host-proven during APPLY. Here the logic ON TOP of them is exercised with fakes
+# that model the REAL primitive contracts (``_open_process`` -> (handle, "ok"|"denied"|"gone"); the
+# enumerator yields (pid, name, sid) incl. a null-SID system row), so a test cannot pass against a weaker
+# behaviour than the box exposes.
+import win_primitives as wp   # noqa: E402
+
+_SLOT1_SID = "S-1-5-21-2216203845-1747098376-1637942580-1004"   # guvfx_b_slot1 (host-observed)
+_SLOT2_SID = "S-1-5-21-2216203845-1747098376-1637942580-1005"
+_ADMIN_SID = "S-1-5-21-2216203845-1747098376-1637942580-500"
+_SLOT1_DIR = r"C:\GuvFX\beta\slots\1\terminal"
+
+
+class _FakeK32:
+    def CloseHandle(self, h):
+        return True
+
+
+class _FakeSlotOps(wso.RealSlotWindowsOps):
+    """RealSlotWindowsOps with only the leaf Win32 primitives faked; the scoping / containment / select /
+    fail-closed logic of query_slot_process runs unchanged."""
+
+    def __init__(self, procs, *, slot_sid=_SLOT1_SID):
+        super().__init__(golden_dir=r"C:\GuvFX\golden\newMT5", slots_root=r"C:\GuvFX\beta\slots")
+        self._procs = dict(procs)
+        self._slot_sid = slot_sid
+
+    def path_exists(self, path):
+        return True
+
+    def _win32(self):
+        return {"k32": _FakeK32()}
+
+    def _long_path(self, path):
+        return path
+
+    def _identity_sid(self, runtime_identity):
+        return self._slot_sid
+
+    def _enum_processes_with_owner(self):
+        for pid, d in self._procs.items():
+            yield int(pid), d.get("name", "terminal64.exe"), d["sid"]
+
+    def _open_process(self, api, pid):
+        st = self._procs[pid]["open"]
+        return (pid, "ok") if st == "ok" else (None, st)
+
+    def _image_path(self, api, handle):
+        return self._procs[handle].get("image")
+
+    def _creation_filetime(self, api, handle):
+        return self._procs[handle].get("filetime", 133000000000000000)
+
+    def _session_id(self, api, pid):
+        return self._procs[pid].get("session", 0)
+
+    def _file_digest(self, image):
+        return "digest-stub"
+
+
+def _slot_proc(pid, sid=_SLOT1_SID, image=_SLOT1_DIR + r"\terminal64.exe", session=0, **kw):
+    d = {"sid": sid, "name": "terminal64.exe", "open": "ok", "image": image, "session": session}
+    d.update(kw)
+    return (pid, d)
+
+
+class ProcessObservationTests(SimpleTestCase):
+    """WS-A required scenarios against query_slot_process (the fixed WTSEnumerateProcesses path)."""
+
+    def q(self, procs, slot_sid=_SLOT1_SID):
+        return _FakeSlotOps(procs, slot_sid=slot_sid).query_slot_process(_SLOT1_DIR, "guvfx_b_slot1")
+
+    def test_no_matching_process_returns_absent(self):
+        procs = dict([_slot_proc(4336, sid=_ADMIN_SID,
+                      image=r"C:\Program Files\IS6 Technologies MT5 Terminal\terminal64.exe")])
+        procs[0] = {"sid": "", "name": "System Idle", "open": "gone"}      # null-SID system row is skipped
+        self.assertIsNone(self.q(procs))
+
+    def test_one_correct_slot_process_is_identified(self):
+        r = self.q(dict([_slot_proc(8200)]))
+        self.assertEqual(8200, r["pid"])
+        self.assertEqual(_SLOT1_SID, r["user_sid"])
+        self.assertEqual(0, r["session_id"])                               # Session 0 process observable
+        self.assertEqual(133000000000000000, r["created_at_filetime"])     # start-time evidence carried
+
+    def test_production_terminal_same_name_is_excluded(self):
+        procs = dict([_slot_proc(8200), _slot_proc(4336, sid=_ADMIN_SID, session=3,
+                      image=r"C:\Program Files\IS6 Technologies MT5 Terminal\terminal64.exe")])
+        self.assertEqual(8200, self.q(procs)["pid"])
+
+    def test_another_slots_process_is_excluded(self):
+        self.assertIsNone(self.q(dict([_slot_proc(9000, sid=_SLOT2_SID,
+                          image=r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe")])))
+
+    def test_wrong_owner_is_excluded(self):
+        self.assertIsNone(self.q(dict([_slot_proc(8200, sid=_ADMIN_SID)])))
+
+    def test_wrong_path_same_owner_is_excluded(self):
+        self.assertIsNone(self.q(dict([_slot_proc(8200, image=r"C:\GuvFX\beta\slots\1\evil\terminal64.exe")])))
+
+    def test_slot10_prefix_does_not_match_slot1(self):
+        self.assertIsNone(self.q(dict([_slot_proc(8200,
+                          image=r"C:\GuvFX\beta\slots\10\terminal\terminal64.exe")])))
+
+    def test_permission_failure_is_unavailable_not_absent(self):
+        with self.assertRaises(WindowsOpsError) as cm:
+            self.q(dict([_slot_proc(8200, open="denied")]))
+        self.assertEqual("process_attribution_incomplete", cm.exception.reason_code)
+
+    def test_gone_process_is_benign_absent(self):
+        self.assertIsNone(self.q(dict([_slot_proc(8200, open="gone")])))
+
+    def test_unreadable_image_owned_by_us_is_unavailable(self):
+        with self.assertRaises(WindowsOpsError):
+            self.q(dict([_slot_proc(8200, image=None)]))
+
+    def test_multiple_ambiguous_matches_fail_closed(self):
+        procs = dict([_slot_proc(8200, image=_SLOT1_DIR + r"\MQL5\a.exe"),
+                      _slot_proc(8201, image=_SLOT1_DIR + r"\MQL5\b.exe")])
+        with self.assertRaises(WindowsOpsError):
+            self.q(procs)
+
+    def test_canonical_terminal_wins_over_child(self):
+        procs = dict([_slot_proc(8200, image=_SLOT1_DIR + r"\terminal64.exe"),
+                      _slot_proc(4948, image=_SLOT1_DIR + r"\MetaEditor64.exe")])
+        self.assertEqual(8200, self.q(procs)["pid"])
+
+    def test_observe_process_wrapper_absent_and_valid(self):
+        si = wp.resolve_slot_input(1)
+        absent = wp.observe_process(_FakeSlotOps({}), si)
+        self.assertEqual("process_absent", absent["attestation"]["reason_code"])
+        present = wp.observe_process(_FakeSlotOps(dict([_slot_proc(8200)])), si)
+        self.assertEqual("", present["attestation"]["reason_code"])
+        self.assertEqual(8200, present["evidence"]["pid"])
+
+    def test_non_integer_creation_time_is_rejected(self):
+        si = wp.resolve_slot_input(1)
+        bad = wp.observe_process(_FakeSlotOps(dict([_slot_proc(8200, filetime=None)])), si)
+        self.assertEqual("creation_time_unusable", bad["attestation"]["reason_code"])
+
+
+class OpenHandlesLogicTests(SimpleTestCase):
+    """WS-B fail-closed guards that run BEFORE the host-only Restart Manager call."""
+
+    def _ops(self, *, exists=True, files=None):
+        class OH(_FakeSlotOps):
+            def path_exists(self, path):
+                return exists
+            def _enumerate_slot_files(self, canonical_root):
+                if files is None:
+                    raise AssertionError("enumeration must not be reached in this test")
+                return list(files)
+        return OH({})
+
+    def test_path_outside_slots_root_fails_closed(self):
+        with self.assertRaises(WindowsOpsError) as cm:
+            self._ops(files=[]).open_handles(r"C:\Windows\System32")
+        self.assertEqual("open_handles_path_outside_slots_root", cm.exception.reason_code)
+
+    def test_production_tree_is_never_inspected(self):
+        with self.assertRaises(WindowsOpsError) as cm:
+            self._ops(files=[]).open_handles(r"C:\Program Files\IS6 Technologies MT5 Terminal")
+        self.assertEqual("open_handles_path_outside_slots_root", cm.exception.reason_code)
+
+    def test_missing_slot_dir_is_clear(self):
+        self.assertFalse(self._ops(exists=False, files=[]).open_handles(_SLOT1_DIR))
+
+    def test_empty_tree_cannot_prove_clear_fails_closed(self):
+        with self.assertRaises(WindowsOpsError) as cm:
+            self._ops(exists=True, files=[]).open_handles(_SLOT1_DIR)
+        self.assertEqual("handle_observation_unavailable", cm.exception.reason_code)
+
+    def test_with_files_control_reaches_host_only_rm_and_is_unavailable_off_host(self):
+        ops = self._ops(exists=True, files=[_SLOT1_DIR + r"\terminal64.exe"])
+        with self.assertRaises(wso.WindowsApiUnavailable):
+            ops.open_handles(_SLOT1_DIR)
+
+
+import shutil as _shutil    # noqa: E402
+import tempfile as _tempfile   # noqa: E402
+
+
+class EnumerateSlotFilesRealTests(SimpleTestCase):
+    """Exercise the REAL _enumerate_slot_files (its reparse rejection) against a real temp tree — the fake
+    overrides used elsewhere hid it (adversarial review WS-A/B #6/#7). Only _long_path is faked (identity)
+    so the walk runs off-host; the reparse guard itself runs unchanged."""
+
+    def setUp(self):
+        self.tmp = _tempfile.mkdtemp()
+        self.ops = _FakeSlotOps({})    # _long_path is identity in the fake
+
+    def tearDown(self):
+        _shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_regular_files_are_enumerated(self):
+        f1 = os.path.join(self.tmp, "terminal64.exe"); open(f1, "w").close()
+        sub = os.path.join(self.tmp, "MQL5"); os.mkdir(sub)
+        f2 = os.path.join(sub, "x.ex5"); open(f2, "w").close()
+        self.assertEqual(sorted(self.ops._enumerate_slot_files(self.tmp)), sorted([f1, f2]))
+
+    def test_child_symlink_is_rejected_fail_closed(self):
+        open(os.path.join(self.tmp, "a.txt"), "w").close()
+        try:
+            os.symlink(os.path.dirname(self.tmp), os.path.join(self.tmp, "escape"))
+        except (OSError, NotImplementedError):
+            self.skipTest("symlink creation not permitted here")
+        with self.assertRaises(WindowsOpsError) as cm:
+            self.ops._enumerate_slot_files(self.tmp)
+        self.assertEqual(cm.exception.reason_code, "reparse_point_in_tree")
+
+    def test_root_symlink_is_rejected(self):
+        real = os.path.join(self.tmp, "real"); os.mkdir(real)
+        link = os.path.join(self.tmp, "rootlink")
+        try:
+            os.symlink(real, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlink creation not permitted here")
+        with self.assertRaises(WindowsOpsError) as cm:
+            self.ops._enumerate_slot_files(link)
+        self.assertEqual(cm.exception.reason_code, "reparse_point_in_tree")
+
+
+class OpenHandlesOrderingTests(SimpleTestCase):
+    """open_handles must test existence BEFORE canonicalising, or verify_cleanup's post-move call raises
+    (adversarial review #1/#3). Modelled with a _long_path that fails like GetLongPathNameW on a gone path."""
+
+    class _Ops(_FakeSlotOps):
+        def __init__(self, exists):
+            super().__init__({})
+            self._exists = exists
+        def path_exists(self, path):
+            return self._exists
+        def _long_path(self, path):
+            raise wso.WindowsOpsError("path_normalisation_failed")   # GetLongPathNameW on a missing path
+        def _enumerate_slot_files(self, c):
+            return []
+
+    def test_missing_path_returns_clear_without_canonicalising(self):
+        # exists=False -> returns False BEFORE _long_path is ever called (which would have raised)
+        self.assertFalse(self._Ops(exists=False).open_handles(r"C:\GuvFX\beta\slots\1\terminal"))
+
+    def test_present_but_uncanonicalisable_still_fails_closed(self):
+        with self.assertRaises(WindowsOpsError) as cm:
+            self._Ops(exists=True).open_handles(r"C:\GuvFX\beta\slots\1\terminal")
+        self.assertEqual(cm.exception.reason_code, "path_normalisation_failed")
+
+
+class WsAbSourceInvariantTests(SimpleTestCase):
+    """Source-level pins for the primitives the fakes cannot exercise (review #5/#8/#9): the exact WTS call,
+    the RM fail-closed branches, the existence-before-canon order, and the reparse-dereferencing scope guard."""
+
+    def _src(self):
+        return open(os.path.join(_BUNDLE, "win_slot_ops.py"), encoding="utf-8").read()
+
+    def test_wts_enumerate_uses_host_proven_args(self):
+        # HOST-PROVEN (positive+negative control 2026-07-24): (…,1,0) returns valid rows on the target
+        # pywin32; (…,0,1) raises error 87. Pin the working call and forbid the unavailable Ex variant.
+        s = self._src()
+        self.assertIn("win32ts.WTSEnumerateProcesses(win32ts.WTS_CURRENT_SERVER_HANDLE, 1, 0)", s)
+        self.assertNotIn("WTSEnumerateProcessesEx(", s)
+        self.assertNotIn("WTSEnumerateProcesses(win32ts.WTS_CURRENT_SERVER_HANDLE, 0, 1)", s)
+
+    def test_open_handles_rm_failures_raise_never_clear(self):
+        s = self._src()
+        self.assertIn("return needed.value > 0", s)               # result is a real count, not a hard-coded bool
+        self.assertGreaterEqual(
+            s.count('raise WindowsOpsError("handle_observation_unavailable") from RuntimeError'), 3)
+
+    def test_open_handles_checks_existence_before_canonicalising(self):
+        s = self._src()
+        head = s[s.index("def open_handles(self, path: str)"):][:3000]   # the method body fits this window
+        self.assertLess(head.index("if not self.path_exists(path):"),
+                        head.index("canonical = self._long_path(path)"))
+
+    def test_open_handles_scope_guard_dereferences_reparse(self):
+        s = self._src()
+        self.assertIn("os.path.realpath(path)", s)                # junction at the slot root resolves out of scope
+        self.assertIn("os.path.realpath(self.slots_root)", s)

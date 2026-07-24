@@ -90,6 +90,8 @@ REASON_CATEGORY = {
     "cleanup_incomplete": INTEGRITY,
     "reparse_point_in_tree": INTEGRITY,
     "cleanup_precheck_failed": INTEGRITY,
+    # WS-B open-handle probe: asked to inspect a path outside the beta slots root (defensive scope guard).
+    "open_handles_path_outside_slots_root": INTEGRITY,
     # Several processes run from one slot and none is the runtime executable: choosing one by enumeration
     # order would bind the whole termination chain to an arbitrary process.
     "ambiguous_slot_process": INTEGRITY,
@@ -108,6 +110,8 @@ REASON_CATEGORY = {
     "process_permission_denied": OBSERVATION,
     # B3P-2 real adapter: each of these means "the host could not be read reliably", never "absent".
     "process_enumeration_failed": OBSERVATION,
+    # WS-B open-handle probe: Restart Manager / enumeration could not answer reliably. Blocks release.
+    "handle_observation_unavailable": OBSERVATION,
     "process_open_failed": OBSERVATION,
     "process_times_unavailable": OBSERVATION,
     "volume_path_unavailable": OBSERVATION,
