@@ -91,26 +91,40 @@ installation evidence.** Full order, timings, rollback points and stop condition
    creates the slot/tombstone directories and per-slot ACLs, registers the **8 tasks disabled with no
    triggers**, and writes `approved_tasks.json` by reading each registration back through the same COM
    interface the agent uses. **Prompts for passwords as SecureString — they are never parameters.**
-3. `install_service.ps1`: scoped ACLs (Modify on state/tombstones/slots — the agent stages and moves
-   runtimes itself; ReadAndExecute on the golden image and on its own code), pywin32 service `start=demand`,
-   recovery disabled, **no start**. It refuses to run until the pool exists.
-4. `firewall.ps1`: pre-existing-rule gate + `DefaultInboundAction=Block` assertion + a single
-   backend-scoped allow on the Tailscale profile.
-5. Add the **Tailscale ACL** (backend node → `100.79.101.19:8791` only) as a second isolation layer.
-6. Verify per the install review §7: identities, ACLs, task definitions and digests, service
-   (`sc qc` + `sc qfailure` — STOPPED, demand, correct identity, no recovery), firewall, bundle checksums,
-   approvals; and confirm the estate is byte-identical — production task XML digests, Nuno's terminal PID
-   **and creation FILETIME**, `:8787`/`:8788` still bound by the same processes, autologon and uptime
-   unchanged. **STOP and await approval.**
-7. After approval: provision the keyring, start **once**, confirm `NEGOTIATE`, then the read-only
+3. **Operator** — place the pinned WinSW wrapper (`WinSW.NET4.exe` v2.12.0, SHA-256
+   `923111c7…f4cb66`) at `C:\GuvFX\beta\winsw-src\WinSW.NET4.exe`, and stage the agent bundle to
+   `C:\GuvFX\beta\agent\` **including the `winsw\` subdir** (`GuvFXBetaAgent.xml`). Introducing a new
+   executable to the production host is operator-gated; `install_service.ps1` **refuses** any WinSW binary
+   whose hash does not match the pin, and hard-fails if the `winsw\` config is missing.
+4. `install_service.ps1`: the service host is a **WinSW wrapper**, not pywin32 (see
+   `docs/B3P_SERVICE_HARNESS_COMPARISON.md` and the 2026-07-24 STOP). It validates the interpreter by PE
+   metadata; validates the XML *contract* (the `<executable>` equals the validated `-Python`, recovery is a
+   single `action=none`, `stoptimeout` exceeds `BETA_AGENT_DRAIN_TIMEOUT_S`); sets scoped ACLs (Modify on
+   state/tombstones/slots — the agent stages and moves runtimes itself; ReadAndExecute on the golden image,
+   its own code, the WinSW dir **and the venv**); registers a **manual-start** service as the
+   `NT SERVICE\GuvFXBetaAgent` virtual account with **recovery disabled** and **no start**; then MEASURES
+   (before/after) that no pywin32 DLL was written to System32 or the base interpreter. It refuses to run
+   until the pool exists.
+5. `firewall.ps1`: scoped **Block (all-except-backend) + Allow (backend)** on the agent port, verified
+   numerically, **without** changing the machine-wide profile default (the bridge's `:8788` is untouched).
+6. Add the **Tailscale ACL** (backend node → `100.79.101.19:8791` only) as a second isolation layer.
+7. Verify per the install review §7: identities, ACLs, task definitions and digests, service
+   (`sc qc` + `sc qfailure` — STOPPED, demand, correct `NT SERVICE\GuvFXBetaAgent` identity, WinSW wrapper
+   binary, no recovery), the measured no-global-DLL result, firewall, bundle checksums, approvals; and
+   confirm the estate is byte-identical — production task XML digests, Nuno's terminal PID **and creation
+   FILETIME**, `:8787`/`:8788` still bound by the same processes, autologon and uptime unchanged.
+   **STOP and await approval.**
+8. After approval: provision the keyring, start **once**, confirm `NEGOTIATE`, then the read-only
    observation probe. The bounded MT5 viability trial follows only if the probe succeeds.
 
 ## Rollback
-`uninstall.ps1` (dry-run, then `-Apply`) — revoke the service ACL grants, stop + remove the service, its
-firewall rule, **both** task families (launch and stop, so no stored credential is orphaned), the per-slot
-grants, and `SeBatchLogonRight`. Identities are **disabled, not deleted**, unless `-RemoveIdentities` is
-passed: deletion orphans anything they own and destroys attribution for retained tombstone evidence. Slot
-dirs, tombstones and `agent-state\` (the evidence chain) are retained. Nuno's terminal, bridge,
+`uninstall.ps1` (dry-run, then `-Apply`) — revoke the service ACL grants (**including the WinSW dir and the
+venv**), **WinSW-uninstall** then `sc.exe delete` the service, remove the staged WinSW wrapper dir
+(`agent-winsw`), remove the firewall rule, **both** task families (launch and stop, so no stored credential
+is orphaned), the per-slot grants, and `SeBatchLogonRight`. Identities are **disabled, not deleted**, unless
+`-RemoveIdentities` is passed: deletion orphans anything they own and destroys attribution for retained
+tombstone evidence. Slot dirs, tombstones and `agent-state\` (the evidence chain, incl. WinSW's captured
+child logs) are retained. Nuno's terminal, bridge,
 Session 3 and port 8788 are never touched. Disabling/resetting the Windows Firewall on this host is a **Red
 action** (it de-isolates :8791). Backend rollback: `BETA_RUNTIMES_ENABLED` off disables all beta provisioning
 regardless of the agent.

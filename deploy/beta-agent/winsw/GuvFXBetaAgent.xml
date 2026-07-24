@@ -1,0 +1,47 @@
+<service>
+  <!-- WinSW service definition for the GuvFX beta provisioning agent.
+       WinSW (a standalone .NET wrapper) runs the DEDICATED VENV python as a child; it writes nothing to
+       System32 or the base interpreter, so the production Python is never part of the beta runtime.
+       DARK / INSTALL-ONLY: startmode Manual (no autostart), recovery disabled - nothing auto-starts before
+       the first-start authorisation. -->
+  <id>GuvFXBetaAgent</id>
+  <name>GuvFX Beta Provisioning Agent</name>
+  <description>GuvFX beta per-slot provisioning agent. Runs the venv python; least-privilege virtual account.</description>
+
+  <executable>C:\GuvFX\beta\agent-venv\Scripts\python.exe</executable>
+  <arguments>-u C:\GuvFX\beta\agent\agent.py</arguments>
+  <workingdirectory>C:\GuvFX\beta\agent</workingdirectory>
+
+  <!-- Least privilege: the SCM-created virtual account. No password. For a service's OWN virtual account
+       (NT SERVICE\<id>) the SCM auto-grants Log-on-as-a-service at CreateService, so we deliberately do NOT
+       set <allowservicelogon>: that would make WinSW LSA-resolve NT SERVICE\GuvFXBetaAgent to a SID BEFORE
+       the service (hence the account) exists - the same pre-registration name->SID gap that forces every
+       ACL in install_service.ps1 to be bound to the raw SID via Set-Acl. This is the identity assignment
+       pywin32's `sc config obj=` failed to make; the installer's -Apply verify FAILS CLOSED if StartName is
+       not this account. -->
+  <serviceaccount>
+    <username>NT SERVICE\GuvFXBetaAgent</username>
+  </serviceaccount>
+
+  <!-- Manual: the operator starts it under a separate authorisation. Never Automatic. -->
+  <startmode>Manual</startmode>
+
+  <!-- WinSW captures the child's stdout/stderr to rolling logs, separate from the agent's own state logs. -->
+  <logpath>C:\GuvFX\beta\agent-state\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <!-- Graceful stop: WinSW signals the console child (Ctrl+C), bounded by stoptimeout, so agent.py's
+       main() catches KeyboardInterrupt and drains in-flight mutating ops before exit, THEN WinSW
+       force-terminates. stoptimeout MUST exceed BETA_AGENT_DRAIN_TIMEOUT_S (config; >30s settle floor, no
+       documented ceiling) or a stop force-kills a mutation mid-drain (B-6). Set well above any expected
+       drain; install_service.ps1 additionally ASSERTS stoptimeout > the configured drain at install time,
+       so raising the drain past this value fails the install rather than silently truncating a drain. -->
+  <stoptimeout>300 sec</stoptimeout>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+
+  <!-- Recovery DISABLED for the first install: nothing may auto-restart before approval. -->
+  <onfailure action="none" />
+</service>
