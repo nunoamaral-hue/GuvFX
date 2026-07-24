@@ -2,6 +2,26 @@
 
 List active problems with reproduction steps and workarounds.
 
+## ⚠️ Backend does not yet SEND RELEASE — a backend-driven deprovision tombstones without freeing (2026-07-24)
+
+The agent supports RELEASE (ADR 0014, PR #200) and NEGOTIATE advertises it, but the backend's
+`provisioner._drive_deprovision` still calls only `teardown` (→ TOMBSTONE). No backend path issues RELEASE, so
+a *backend-driven* deprovision would tombstone the slot without advancing its generation or freeing it — after
+`pool_size` teardowns the pool exhausts. **Scope:** this is the **CVM-Inc-5** increment ("disable + remove beta
+runtime cleanly"). **No live impact today:** `BETA_RUNTIMES_ENABLED` is OFF and the beta deprovision path is
+not exercised; the slot-1 lifecycle proof is driven agent-side (signed RELEASE), not via the backend flow.
+**When wiring it:** the backend must map "RELEASE → `runtime_not_assigned` for a runtime it tombstoned" to
+*already-released* (idempotent crash-window semantics — safe, fail-closed, never double-advances).
+
+## ⚠️ RELEASE is a fail-closed co-deployed capability — re-stage the agent bundle before/with the backend (2026-07-24)
+
+`mgmt_client.assert_compatible` requires the agent to advertise the **entire** `PROVISIONING_OPERATIONS` set
+(`issubset`). Since RELEASE is now in that set, a backend that knows RELEASE will refuse the **whole** channel
+(`unsupported_operations`) against an agent that does not advertise it. That is the safe direction, but it means
+the agent bundle (RELEASE present, `manifest.supported_operations` includes it) must be re-staged **before or
+with** any backend that expects it. A drift-guard test pins `manifest.supported_operations ==
+PROVISIONING_OPERATIONS` so NEGOTIATE can never advertise an op the host's integrity manifest lacks.
+
 ## ⚠️ `secedit /export` into an existing file writes UTF-16 with **no BOM** (2026-07-23)
 
 This produced a **false finding** in the B3P-2 install baseline that the programme then relied on. Any
