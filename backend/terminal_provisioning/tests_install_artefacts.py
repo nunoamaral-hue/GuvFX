@@ -123,10 +123,16 @@ class EstateRefusalTests(SimpleTestCase):
 class InstallOnlyTests(SimpleTestCase):
     """The whole point of the gate: create objects, then stop."""
 
+    # Every way PowerShell/Windows can start a service, so a first-start wiring attempt is caught here and
+    # not on the live host: Start-Service, Restart-Service, Set-Service -Status Running, the SCM `sc start`,
+    # the ServiceController .Start() method, and the WinSW wrapper's own `<exe> start`.
+    START_FORMS = (r"Start-Service|Restart-Service|Set-Service\b[^\n]*-Status\s+Running|"
+                   r"sc\.exe\s+start\b|\.Start\(|\$ServiceExe\s+start|service\.py.*['\"]start['\"]")
+
     def test_nothing_starts_the_service(self):
         for name in ("install_pool.ps1", "install_service.ps1"):
             source = _code(name)
-            self.assertNotRegex(source, r"Start-Service|sc\.exe start|service\.py.*['\"]start['\"]", name)
+            self.assertNotRegex(source, self.START_FORMS, name)
 
     def test_tasks_are_registered_disabled_and_never_enabled(self):
         source = _code("install_pool.ps1")
@@ -141,14 +147,26 @@ class InstallOnlyTests(SimpleTestCase):
 
     def test_the_service_install_asserts_it_is_stopped(self):
         source = _read("install_service.ps1")
-        self.assertIn("start= demand", source)
+        # WinSW sets the start mode from its XML (Manual), so there is no `sc create ... start= demand`;
+        # the install-only guarantee is now the post-install state assertion plus the Manual/Disabled check.
         self.assertIn('if ($svc.Status -ne "Stopped")', source)
+        self.assertIn('$ci.StartMode -notin @("Manual","Disabled")', source)
+        # and the WinSW config itself must declare manual start (no autostart)
+        self.assertIn("<startmode>Manual</startmode>", _read("winsw/GuvFXBetaAgent.xml"))
 
     def test_the_service_install_refuses_localsystem(self):
-        """The identity check is the review's whole position on elevation, expressed as a hard failure."""
+        """The identity check is the review's whole position on elevation, expressed as a hard failure.
+
+        Under WinSW there is no `sc config obj=` step to fail; instead the -Apply verify reads the installed
+        service's StartName and THROWS unless it is the NT SERVICE virtual account. A WinSW install that
+        silently landed as LocalSystem is caught and the service is never started."""
         source = _read("install_service.ps1")
         self.assertIn("NT SERVICE\\GuvFXBetaAgent", source)
-        self.assertIn("LocalSystem means the obj= assignment failed", source)
+        self.assertIn("service identity is '$($ci.StartName)', expected '$RunAsUser' - do NOT start", source)
+        # the failed pywin32 mechanism must be entirely gone from the service path
+        code = _code("install_service.ps1")
+        for gone in ("sc.exe config", "obj= ", "service.py", "pythonservice", "pywin32_postinstall"):
+            self.assertNotIn(gone, code, f"install_service.ps1 still references the pywin32 path: {gone}")
 
     def test_the_service_install_requires_the_pool_first(self):
         self.assertIn("run install_pool.ps1 -Apply FIRST", _read("install_service.ps1"))
@@ -267,7 +285,9 @@ class ServiceAccountCanDoItsJobTests(SimpleTestCase):
 
     def test_the_service_account_gets_read_on_the_golden_image_only(self):
         source = _code("install_service.ps1")
-        self.assertIn("foreach ($d in @($AgentDir, $GoldenDir))", source)
+        # ReadAndExecute now also covers the WinSW wrapper dir and the venv (the account runs the .exe and the
+        # venv python from there).
+        self.assertIn("foreach ($d in @($AgentDir, $GoldenDir, $WinSwDir, $VenvDir))", source)
         self.assertIn("-Rights ReadAndExecute -ServiceSid $ServiceSid", source)
         self.assertIn("-Rights Modify -ServiceSid $ServiceSid", source)
 
@@ -279,7 +299,9 @@ class ServiceAccountCanDoItsJobTests(SimpleTestCase):
         self.assertIn("function Get-GuvfxServiceSid", source)
         self.assertIn("sc.exe showsid", source)
         self.assertIn("Set-Acl -Path $Path -AclObject $acl", source)
-        self.assertLess(source.index("$ServiceSid = Get-GuvfxServiceSid"), source.index("sc.exe config"))
+        # The SID is computed and the ACLs are granted BEFORE the service is registered (WinSW `install`),
+        # so the account it creates inherits DACLs already keyed to its (deterministic) SID.
+        self.assertLess(source.index("$ServiceSid = Get-GuvfxServiceSid"), source.index("& $ServiceExe install"))
         for line in source.splitlines():
             stmt = line.split("#", 1)[0]
             if "icacls" in stmt and "$RunAsUser" in stmt:
@@ -1054,7 +1076,7 @@ class InterpreterValidationTests(SimpleTestCase):
         # identity is static; runtime execution is gated on $Apply
         self.assertIn("function Test-GuvfxInterpreterIdentity", code)
         self.assertIn("function Test-GuvfxInterpreterRuntime", code)
-        self.assertIn("if ($Apply) { Test-GuvfxInterpreterRuntime -Path $Python }", code)
+        self.assertIn("if ($Apply) { Test-GuvfxInterpreterRuntime -Path $Python -AgentDir $AgentDir }", code)
         # the identity function must NOT execute the file
         ident = code[code.index("function Test-GuvfxInterpreterIdentity"):
                      code.index("function Test-GuvfxInterpreterRuntime")]
@@ -1159,3 +1181,143 @@ class FirewallScopedBlockTests(SimpleTestCase):
         source = _read("firewall.ps1")
         self.assertIn("[int]$Port                 = 8791", source)
         self.assertIn('$AllowFrom         = "100.119.23.29"', source)
+
+
+class WinSwServiceHarnessTests(SimpleTestCase):
+    """The service host is a hash-pinned WinSW WRAPPER, not a pywin32 service.
+
+    Decision (2026-07-24): prefer a wrapper over native pywin32 unless a wrapper demonstrably cannot meet a
+    requirement. The pywin32 host caused the 2026-07-24 STOP by (a) writing helper DLLs to System32 and the
+    base interpreter and (b) failing the `sc config obj=` virtual-account assignment. WinSW runs the venv
+    python as a child, writes nothing global, and takes its account from a reviewed XML.
+    """
+
+    XML = "winsw/GuvFXBetaAgent.xml"
+
+    def test_the_winsw_binary_is_hash_pinned_and_refused_on_mismatch(self):
+        code = _code("install_service.ps1")
+        self.assertIn("function Test-GuvfxWinSw", code)
+        self.assertIn('$WinSwSha256 = "923111c7142b3dc783a3c722b19b8a21bcb78222d7a136ac33f0ca8a29f4cb66"',
+                      _read("install_service.ps1"))
+        self.assertIn("Get-FileHash $Path -Algorithm SHA256", code)
+        self.assertIn("REFUSING an unverified executable", code)
+        # absence is a hard refusal too, not a skip
+        self.assertIn("place the pinned WinSW.NET4.exe there first", code)
+
+    def test_the_service_is_registered_through_winsw_not_pywin32(self):
+        code = _code("install_service.ps1")
+        self.assertIn("& $ServiceExe install", code)
+        # the staged wrapper is re-hashed after copy (a swap between verify and register is caught)
+        self.assertIn("staged WinSW exe hash changed after copy", code)
+        # none of the pywin32 service machinery survives on the service path
+        for gone in ("service.py install", "service.py remove", "pythonservice", "win32serviceutil",
+                     "sc.exe config", "pywin32_postinstall"):
+            self.assertNotIn(gone, code, f"pywin32 service machinery still present: {gone}")
+
+    def test_the_xml_declares_manual_start_virtual_account_and_no_recovery(self):
+        xml = _read(self.XML)
+        self.assertIn("<startmode>Manual</startmode>", xml)                       # no autostart
+        self.assertIn("<username>NT SERVICE\\GuvFXBetaAgent</username>", xml)      # least-privilege virtual account
+        self.assertIn('<onfailure action="none" />', xml)                          # nothing auto-restarts pre-approval
+        # ABSENCE of any auto-restart is asserted too, not just presence of the 'none' entry: a SECOND
+        # <onfailure action="restart"> would re-enable recovery while the 'none' entry stays untouched.
+        self.assertEqual(1, xml.count("<onfailure"), "exactly one <onfailure> entry expected")
+        for act in ('action="restart"', 'action="reboot"', 'action="run"'):
+            self.assertNotIn(act, xml, f"XML re-enables auto-recovery: {act}")
+        # runs the VENV python (never the base interpreter / installer) on agent.py
+        self.assertIn("<executable>C:\\GuvFX\\beta\\agent-venv\\Scripts\\python.exe</executable>", xml)
+        self.assertIn("agent.py", xml)
+        self.assertNotIn("C:\\GuvFX\\python311.exe", xml)                          # never the installer
+        self.assertNotIn("Program Files\\Python311", xml)                          # never the bridge's base interpreter
+        # NT SERVICE virtual account: <allowservicelogon> must NOT be set (it forces a pre-registration
+        # name->SID resolve the account cannot yet satisfy; the SCM auto-grants the logon right). Check the
+        # ACTIVE config, not the explanatory comment that names the element it deliberately omits.
+        xml_no_comments = re.sub(r"<!--.*?-->", "", xml, flags=re.S)
+        self.assertNotIn("allowservicelogon", xml_no_comments)
+
+    def test_the_apply_verify_fails_closed_on_identity_startmode_and_binary(self):
+        source = _read("install_service.ps1")
+        # identity must be the virtual account, else throw and do NOT start
+        self.assertIn("service identity is '$($ci.StartName)', expected '$RunAsUser' - do NOT start", source)
+        # start mode must be Manual/Disabled, else throw
+        self.assertIn('$ci.StartMode -notin @("Manual","Disabled")', source)
+        # the service binary must be the WinSW wrapper we staged
+        self.assertIn("expected the WinSW wrapper $ServiceExe", source)
+        # and it must be Stopped
+        self.assertIn('if ($svc.Status -ne "Stopped")', source)
+
+    def test_no_service_start_anywhere_in_the_installer(self):
+        code = _code("install_service.ps1")
+        for forbidden in ("Start-Service", "$ServiceExe start", "sc.exe start", "Start-Process"):
+            self.assertNotIn(forbidden, code, f"installer starts the service: {forbidden}")
+        # and the forms the earlier matcher missed (mutation (d): .Start()/Restart-Service/Set-Service running)
+        self.assertNotRegex(code, InstallOnlyTests.START_FORMS, "installer starts the service via a missed form")
+
+    def test_the_xml_executable_is_bound_to_the_validated_interpreter(self):
+        """(F4/F8) The identity guard validates $Python, but the service runs the XML's <executable>. The
+        installer must refuse unless they are the same interpreter, else a relocated -Python validates one
+        binary while WinSW launches another."""
+        code = _code("install_service.ps1")
+        self.assertIn("function Test-GuvfxWinSwXmlContract", code)
+        self.assertIn('"$($svc.executable)" -ne $Python', code)
+        self.assertIn("Test-GuvfxWinSwXmlContract -XmlPath $XmlSource -Python $Python -AgentDir $AgentDir", code)
+        # and the arguments must be tied to -AgentDir\agent.py, not merely contain the literal 'agent.py'
+        self.assertIn('[regex]::Escape($agentPy)', code)
+
+    def test_the_service_account_gets_read_on_the_venv(self):
+        """(F3) WinSW runs the venv python and the agent loads pywin32 DLLs from the venv; the least-privilege
+        account must have RX there, granted AND verified like every other dir - never assumed inherited."""
+        code = _code("install_service.ps1")
+        self.assertIn("$VenvDir    = Split-Path (Split-Path $Python)", code)
+        self.assertIn("foreach ($d in @($AgentDir, $GoldenDir, $WinSwDir, $VenvDir))", code)      # granted
+        self.assertIn("$AgentDir, $GoldenDir, $WinSwDir, $VenvDir))", code)                        # verified in the ACE loop
+
+    def test_recovery_is_parsed_not_just_printed(self):
+        """(F9) VERIFY claims 'recovery none'; it must PARSE sc.exe qfailure and throw on a restart action,
+        not merely print the table."""
+        code = _code("install_service.ps1")
+        self.assertIn("$qf = (& sc.exe qfailure $ServiceName) -join", code)
+        self.assertIn("RESTART|RUN PROCESS|REBOOT", code)
+        self.assertIn("service has SCM recovery actions configured; expected none", code)
+
+    def test_stoptimeout_exceeds_the_configured_drain(self):
+        """(F7) A stop that force-kills a mutation mid-drain is the exact B-6 failure. The installer must
+        assert the XML stop timeout exceeds BETA_AGENT_DRAIN_TIMEOUT_S, and the XML must ship a generous value."""
+        code = _code("install_service.ps1")
+        self.assertIn('BETA_AGENT_DRAIN_TIMEOUT_S", "Machine"', code)
+        self.assertIn("$stopS -le $drainS", code)
+        self.assertIn("must EXCEED BETA_AGENT_DRAIN_TIMEOUT_S", code)
+        self.assertIn("<stoptimeout>300 sec</stoptimeout>", _read(self.XML))
+
+    def test_global_dll_writes_are_measured_not_asserted(self):
+        """(F10 / RULE 11) The 'writes nothing global' claim must be MEASURED (before/after), never a bare
+        unconditional Write-Host that prints PASS whether or not a write happened."""
+        code = _code("install_service.ps1")
+        self.assertIn("function Get-GuvfxGlobalDllState", code)
+        self.assertIn("$GlobalDllBaseline = Get-GuvfxGlobalDllState", code)
+        self.assertIn("GLOBAL WRITE: this install created", code)
+        self.assertIn("GLOBAL WRITE: this install modified", code)
+        # the old unconditional claim must be gone
+        self.assertNotIn("WinSW install writes nothing to System32 or the base interpreter (wrapper runs", code)
+
+
+class WinSwUninstallTests(SimpleTestCase):
+    """(F6) Teardown must match the WinSW harness: revoke the WinSW/venv ACLs, WinSW-uninstall the service,
+    and remove the staged wrapper dir so no orphaned binary or ACE for the deleted virtual-account SID remains.
+    """
+
+    def test_uninstall_revokes_the_winsw_and_venv_grants(self):
+        code = _code("uninstall.ps1")
+        self.assertIn("$AgentDir, $StateDir, $BetaTombstones, $SlotsRoot, $GoldenDir, $WinSwDir, $VenvDir", code)
+
+    def test_uninstall_uses_the_winsw_wrapper_and_removes_its_dir(self):
+        code = _code("uninstall.ps1")
+        self.assertIn("& $svcExe uninstall", code)
+        self.assertIn("Remove-Item -Recurse -Force $WinSwDir", code)
+        # sc.exe delete remains as the fallback that removes the registration if the wrapper is gone
+        self.assertIn("sc.exe delete $ServiceName", code)
+
+    def test_uninstall_drops_the_stale_pywin32_removal(self):
+        """The pywin32 'service.py remove' branch targets the retired host and must not survive the switch."""
+        code = _code("uninstall.ps1")
+        self.assertNotIn("service.py", code)

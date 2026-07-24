@@ -25,9 +25,26 @@ A service wrapper (WinSW or NSSM) is a **standalone native executable** register
 The SCM talks to the wrapper; the wrapper launches the **venv** Python as a child running `agent.py`
 (which already has a foreground, blocking `main()` with a graceful `stop()` on interrupt). The wrapper
 writes nothing to System32 or the base interpreter. **The base Python — the bridge's — is never touched;
-the venv is the beta runtime's only Python, and pywin32 is not needed for the service host at all** (the
-agent code is stdlib-only; only `service.py`, the pywin32 SCM shim, needed pywin32, and the wrapper
-replaces it).
+the venv is the beta runtime's only Python, and pywin32 is not needed by the service HOST at all** — the
+wrapper replaces `service.py` (the pywin32 SCM shim), which was the only code that needed pywin32 *to be a
+service*.
+
+**Precise scope of the pywin32 claim (do not overstate it).** The agent is *not* stdlib-only. Its
+slot-mutation code (`win_slot_ops`) imports `win32security`, `win32ts`, `win32api`, `win32com.client` and
+`pywintypes` — but **lazily, inside the methods that materialise a slot**, never at module top level. So:
+
+- The **service host** (WinSW) needs no pywin32. ✔
+- `import agent` (the installer's runtime smoke test) succeeds **without** pywin32 loaded, because those
+  imports are lazy — it validates the interpreter and bundle coherence, not that pywin32 works.
+- The **agent still needs pywin32 at runtime** to materialise a slot. That pywin32 stays **inside the
+  venv**; its native DLLs load from `<venv>\Lib\site-packages\pywin32_system32` via the pip-installed
+  `pywin32` bootstrap `.pth`. This needs **no** global DLL — *provided venv provisioning does not run
+  `pywin32_postinstall -install`*, which is the OTHER global write (it put `pywintypes311.dll` in System32
+  at 05:38 in the incident). `provision_beta_venv.ps1` is corrected to skip postinstall and to prove
+  `import win32security` works from the venv with no new System32 DLL.
+
+So "writes nothing global" is delivered by **two** changes together: WinSW as the host (removes the
+service-install global write) **and** a postinstall-free venv (removes the provisioning global write).
 
 ## Requirement-by-requirement
 
@@ -71,7 +88,18 @@ so the fallback condition is not met.
   install **stopped**, recovery disabled; verify identity/startmode/state. No `pywin32`, no `sc config obj=`,
   no global DLL writes.
 - The WinSW executable is a new third-party dependency. Introducing an executable to the production host is
-  an operator-gated step: a specific release is pinned and its published SHA-256 verified on the host before
-  first use. The installer refuses a WinSW.exe whose hash does not match the pinned value.
+  an operator-gated step: a specific release is pinned (WinSW v2.12.0 `WinSW.NET4.exe`, SHA-256
+  `923111c7142b3dc783a3c722b19b8a21bcb78222d7a136ac33f0ca8a29f4cb66`) and verified on the host before first
+  use. The installer refuses a `WinSW.exe` whose hash does not match the pinned value.
+- `provision_beta_venv.ps1`: **skip `pywin32_postinstall -install`** and instead prove `import
+  win32security` (+ `win32ts`, `win32api`) works from the venv via the pip bootstrap `.pth`, asserting no
+  new `pywintypes311.dll`/`pythoncom311.dll` appears in System32 or the base interpreter from that run. This
+  is the second half of "writes nothing global"; without it the WinSW switch removes only one of the two
+  global writes.
 - `service.py` (pywin32 SCM shim) is retained in the bundle but no longer on the service path; pywin32 is no
-  longer required for the service host.
+  longer required for the service HOST (it remains required, from the venv, for the agent's slot ops).
+- **On-host proof obligation.** WinSW's assignment of the `NT SERVICE\GuvFXBetaAgent` *virtual* account is
+  the one thing that cannot be verified off-host. The installer's `-Apply` verify **fails closed** if
+  `StartName` is not that account (it will not leave a mis-identified service installed). If WinSW cannot
+  assign a virtual service account on this host, that is the "demonstrated technical requirement a wrapper
+  cannot satisfy" the decision named — reported, not worked around.

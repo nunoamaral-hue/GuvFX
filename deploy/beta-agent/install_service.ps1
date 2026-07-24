@@ -1,198 +1,266 @@
-# CVM-Inc-3 B2/B3P-1 - install the beta provisioning agent as a real SCM-managed Windows service.
-# DARK ARTEFACT: RUN ONLY in B3, on the host, as Administrator, AFTER merge. INSTALL-ONLY: it does NOT start
-# the service, does NOT touch Session 3 / the prod terminal / the bridge / port 8788 / autologon / startup tasks.
+# CVM-Inc-3 B3P - install the beta provisioning agent as a real Windows service via a WinSW WRAPPER.
+# DARK ARTEFACT: RUN ONLY on the host, as Administrator, AFTER merge. INSTALL-ONLY: it does NOT start the
+# service, does NOT touch Session 3 / the prod terminal / the bridge / port 8788 / autologon / startup tasks.
 # Dry-run by default; pass -Apply to perform the install. The first manual start waits for explicit approval.
 #
-# Verification fixes: B-5 (pywin32 service wrapper, not a raw python binPath that would 1053 at start),
-# interpreter/account defaults corrected to the verified host facts, recovery-disabled verified via sc qfailure.
+# WHY WINSW, NOT a pywin32 SERVICE HOST (see docs/B3P_SERVICE_HARNESS_COMPARISON.md and the 2026-07-24 STOP).
+# The pywin32 service HOST (pythonservice.exe) (a) writes helper DLLs to System32 and next to the BASE
+# interpreter (the live bridge's Python) - the venv does not isolate them - and (b) failed to assign the
+# NT SERVICE virtual account via `sc config obj=`, leaving the service as over-privileged LocalSystem.
+# WinSW is a standalone .NET wrapper that runs the VENV python as a child and assigns the virtual account
+# from its XML, so THIS install writes nothing global and needs no pywin32 for the service host.
+# NOTE: the agent's own slot-mutation code (win_slot_ops) still imports pywin32 LAZILY at runtime; that
+# pywin32 lives in the venv and its DLLs load from the venv's pywin32_system32 via the pip bootstrap - it
+# is NOT a dependency of the service host, and provisioning the venv must not run pywin32_postinstall (which
+# is the OTHER global write). See provision_beta_venv.ps1.
 param(
   [string]$ServiceName = "GuvFXBetaAgent",
   [string]$AgentDir    = "C:\GuvFX\beta\agent",
   [string]$StateDir    = "C:\GuvFX\beta\agent-state",
-  # The DEDICATED beta interpreter (workstream B), NOT C:\GuvFX\python311.exe (that path is the Python
-  # INSTALLER - OriginalFilename python-3.11.9-amd64.exe - and executing it launches an installer) and NOT
-  # C:\Program Files\Python311 (the interpreter the LIVE bridge runs on). A venv leaves both untouched.
-  [string]$Python      = "C:\GuvFX\beta\agent-venv\Scripts\python.exe",
-  [string]$RunAsUser   = "NT SERVICE\GuvFXBetaAgent",           # virtual service account: no password, stable SID
-  # B3P-2 (install-only review F1): the pool model uses ...\beta\slots\<n>, NOT the legacy
-  # ...\beta\accounts\<uuid> layout. The service account needs Modify on its own state dir and on the
-  # tombstone root (it moves runtimes there); it needs only ReadAndExecute on its OWN code, and NOTHING on
-  # the golden image or the slot directories - the slot IDENTITY owns those, not the agent.
+  [string]$Python      = "C:\GuvFX\beta\agent-venv\Scripts\python.exe",  # dedicated venv; NOT the base/installer
+  [string]$RunAsUser   = "NT SERVICE\GuvFXBetaAgent",                    # virtual service account: no password
   [string]$SlotsRoot   = "C:\GuvFX\beta\slots",
   [string]$BetaTombstones = "C:\GuvFX\beta\tombstones",
   [string]$GoldenDir   = "C:\GuvFX\golden\newMT5",
+  # The WinSW wrapper. The operator PLACES the pinned release here (a new executable on the production host
+  # is operator-gated); this script REFUSES any binary whose SHA-256 does not match the pin below.
+  [string]$WinSwSource = "C:\GuvFX\beta\winsw-src\WinSW.NET4.exe",
+  [string]$WinSwSha256 = "923111c7142b3dc783a3c722b19b8a21bcb78222d7a136ac33f0ca8a29f4cb66",  # WinSW v2.12.0 NET4
+  [string]$WinSwDir    = "C:\GuvFX\beta\agent-winsw",
+  [string]$BaseInterpreterDir = "C:\Program Files\Python311",  # the LIVE bridge's Python - must NOT gain DLLs
   [switch]$Apply
 )
 $ErrorActionPreference = "Stop"
+$ServiceExe = Join-Path $WinSwDir "$ServiceName.exe"      # WinSW config pairs by basename: <name>.exe + <name>.xml
+$ServiceXml = Join-Path $WinSwDir "$ServiceName.xml"
+$XmlSource  = Join-Path $AgentDir "winsw\$ServiceName.xml"
+$VenvDir    = Split-Path (Split-Path $Python)             # ...\agent-venv\Scripts\python.exe -> ...\agent-venv
 function Step($m) { Write-Host "==> $m" }
 function DoIt($desc, [scriptblock]$block) {
   if ($Apply) { Step "APPLY: $desc"; & $block } else { Step "PLAN:  $desc" }
 }
 
-# 0. Preconditions (checked in both dry-run and apply)
-if (-not (Test-Path (Join-Path $AgentDir "agent.py")))   { throw "agent.py not found under $AgentDir" }
-if (-not (Test-Path (Join-Path $AgentDir "service.py"))) { throw "service.py not found under $AgentDir" }
-# INTERPRETER IDENTITY IS VERIFIED BY METADATA BEFORE THE BINARY IS EVER EXECUTED. The previous preflight
-# ran `& $Python -c "import ..."` unconditionally - in PLAN as well as APPLY - which, pointed at the Python
-# INSTALLER (C:\GuvFX\python311.exe, OriginalFilename python-3.11.9-amd64.exe), launched an installer on the
-# production host from a dry run. `Test-Path` cannot tell an interpreter from an installer and neither can an
-# exit code (a detaching bootstrapper leaves $LASTEXITCODE $null). So identity is proven from PE metadata,
+# 0. Preconditions (both dry-run and apply)
+if (-not (Test-Path (Join-Path $AgentDir "agent.py"))) { throw "agent.py not found under $AgentDir" }
+if (-not (Test-Path $XmlSource))                       { throw "WinSW config not found: $XmlSource (bundle incomplete)" }
+
+# INTERPRETER IDENTITY BY METADATA, BEFORE THE BINARY IS EVER EXECUTED. Pointed at the Python INSTALLER
+# (C:\GuvFX\python311.exe), executing it launches an installer; so identity is proven from PE metadata,
 # statically, and the interpreter is EXECUTED ONLY UNDER -Apply.
 function Test-GuvfxInterpreterIdentity {
-  <# STATIC. Proves $Path is a CPython interpreter and NOT an installer, from PE metadata alone. Never
-     executes the file. A CPython interpreter ships OriginalFilename 'python.exe'/'pythonw.exe'; the
-     redistributable installer ships 'python-<ver>-amd64.exe'. That is the positive discriminator. #>
   param([Parameter(Mandatory)][string]$Path)
-  if (-not (Test-Path $Path)) { throw "interpreter not found: $Path (run the beta-venv provisioning first)" }
+  if (-not (Test-Path $Path)) { throw "interpreter not found: $Path (run provision_beta_venv.ps1 -Apply first)" }
   if ((Get-Item $Path -Force).PSIsContainer) { throw "interpreter path is a directory: $Path" }
   $vi = (Get-Item $Path -Force).VersionInfo
-  $orig = [string]$vi.OriginalFilename
-  $desc = [string]$vi.FileDescription
+  $orig = [string]$vi.OriginalFilename; $desc = [string]$vi.FileDescription
   if ($orig -match '(?i)^python-.*\.exe$' -or $orig -match '(?i)\.msi$') {
     throw "refusing: '$Path' is the Python INSTALLER (OriginalFilename '$orig'), not an interpreter"
   }
-  # Accept-set: a full CPython interpreter reports OriginalFilename 'python.exe'/'pythonw.exe'; a VENV's
-  # Scripts\python.exe is a redirector shim reporting 'py.exe'/'pyw.exe' (verified on the host - the beta
-  # venv reports 'py.exe', FileDescription 'Python', and runs pywin32). BOTH are interpreters. The INSTALLER
-  # is 'python-<ver>-amd64.exe', which matches none of these and was already rejected above.
+  # A full CPython reports 'python.exe'/'pythonw.exe'; a venv Scripts\python.exe is the redirector shim
+  # 'py.exe'/'pyw.exe' (host-verified). BOTH are interpreters; the installer 'python-<ver>-amd64.exe' is not.
   if ($orig -notmatch '(?i)^(python|pythonw|py|pyw)\.exe$') {
-    throw "refusing: '$Path' OriginalFilename is '$orig'; expected a CPython interpreter or venv shim (python/pythonw/py/pyw .exe)"
+    throw "refusing: '$Path' OriginalFilename is '$orig'; expected a CPython interpreter or venv shim"
   }
-  if ($desc -notmatch '(?i)python') {
-    throw "refusing: '$Path' FileDescription is '$desc'; expected a Python interpreter"
-  }
+  if ($desc -notmatch '(?i)python') { throw "refusing: '$Path' FileDescription is '$desc'; expected Python" }
   Write-Host "ok   interpreter identity (metadata, not executed): OriginalFilename '$orig', '$desc' $($vi.FileVersion)"
 }
-
 function Test-GuvfxInterpreterRuntime {
-  <# EXECUTES the interpreter. Called ONLY under -Apply, and only after the static identity check passed. #>
-  param([Parameter(Mandatory)][string]$Path)
+  <# EXECUTES the interpreter. Only under -Apply, after the static identity check. Checks it is a Python 3
+     and that the agent bundle imports. The agent's pywin32 imports are LAZY (inside win_slot_ops methods),
+     so `import agent` succeeds without pywin32 loaded - this validates interpreter + bundle coherence, NOT
+     that pywin32 is functional (that is provision_beta_venv.ps1's job and the later runtime trial's). #>
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$AgentDir)
   $ver = & $Path --version 2>&1
   if ($LASTEXITCODE -ne 0 -or "$ver" -notmatch '(?i)^Python 3\.') {
     throw "interpreter '$Path' did not report a Python 3 version (got '$ver', exit $LASTEXITCODE)"
   }
-  & $Path -c "import win32serviceutil, win32service, win32event, servicemanager" 2>$null
-  if ($LASTEXITCODE -ne 0) {
-    throw "pywin32 (win32serviceutil/win32service/win32event/servicemanager) not importable by '$Path' - provision the beta venv"
-  }
-  Write-Host "ok   interpreter runtime: $ver, pywin32 importable"
+  & $Path -c "import sys; sys.path.insert(0, r'$AgentDir'); import config, agent, manifest" 2>$null
+  if ($LASTEXITCODE -ne 0) { throw "the agent's own modules (config/agent/manifest) do not import under '$Path'" }
+  Write-Host "ok   interpreter runtime: $ver, agent bundle imports (lazy pywin32 not exercised here)"
 }
-
 Test-GuvfxInterpreterIdentity -Path $Python
-if ($Apply) { Test-GuvfxInterpreterRuntime -Path $Python }
-else { Write-Host "PLAN:  interpreter runtime + pywin32 checks DEFERRED to -Apply (PLAN never executes a candidate binary)" }
-Write-Host "ok   preconditions: agent.py, service.py present; interpreter identity verified"
+if ($Apply) { Test-GuvfxInterpreterRuntime -Path $Python -AgentDir $AgentDir }
+else { Write-Host "PLAN:  interpreter runtime check DEFERRED to -Apply (PLAN never executes a candidate binary)" }
 
-# 1. State dir (durable nonce/idempotency/logs), SEPARATE from the code dir so updates never clobber it.
+# WinSW wrapper: identity by PINNED HASH before it is ever run. A new executable on the production host is
+# operator-placed; a hash mismatch (or absence) is a hard refusal - the wrapper is never fetched or trusted
+# by this script.
+function Test-GuvfxWinSw {
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$ExpectSha256)
+  if (-not (Test-Path $Path)) {
+    throw "WinSW wrapper not found: $Path - place the pinned WinSW.NET4.exe there first (operator-gated)"
+  }
+  $got = (Get-FileHash $Path -Algorithm SHA256).Hash.ToLower()
+  if ($got -ne $ExpectSha256.ToLower()) {
+    throw "WinSW hash mismatch at $Path : got $got, pinned $ExpectSha256 - REFUSING an unverified executable"
+  }
+  Write-Host "ok   WinSW wrapper verified by pinned SHA-256 ($ExpectSha256)"
+}
+Test-GuvfxWinSw -Path $WinSwSource -ExpectSha256 $WinSwSha256
+Write-Host "ok   preconditions: agent.py + WinSW config present; interpreter + wrapper verified"
+
+# XML CONTRACT VALIDATION. The identity/runtime guard validates $Python, but the SERVICE runs whatever the
+# XML's <executable> says. Bind them: refuse unless the XML runs exactly the interpreter we validated and the
+# agent under $AgentDir. Also enforce, from the reviewed XML, the two install-only invariants (no auto-restart
+# recovery; a stop timeout that exceeds the configured drain so a stop cannot force-kill a mutation mid-drain).
+function Test-GuvfxWinSwXmlContract {
+  param([Parameter(Mandatory)][string]$XmlPath, [Parameter(Mandatory)][string]$Python,
+        [Parameter(Mandatory)][string]$AgentDir)
+  [xml]$doc = Get-Content -Raw -Path $XmlPath
+  $svc = $doc.service
+  # (F4/F8) the interpreter the service will actually launch must be the one the guard just validated
+  if ("$($svc.executable)" -ne $Python) {
+    throw "XML <executable> '$($svc.executable)' != validated -Python '$Python' - the guard would validate a different interpreter than the service runs"
+  }
+  $agentPy = (Join-Path $AgentDir "agent.py")
+  if ("$($svc.arguments)" -notmatch [regex]::Escape($agentPy)) {
+    throw "XML <arguments> '$($svc.arguments)' does not run '$agentPy' under -AgentDir"
+  }
+  # (F5/F9) exactly one recovery entry and it must be 'none' - a second <onfailure> makes .onfailure an array
+  $of = @($svc.onfailure)
+  $ofActions = (@($of | ForEach-Object { [string]$_.action })) -join ','
+  if ($of.Count -ne 1 -or "$($of[0].action)" -ne "none") {
+    throw "XML recovery must be a single onfailure action=none entry; found $($of.Count) (actions: $ofActions)"
+  }
+  # (F7) stoptimeout must exceed the configured drain (machine env, else config.example default 45)
+  $stopRaw = "$($svc.stoptimeout)"
+  if ($stopRaw -match '^\s*(\d+)\s*sec\s*$') { $stopS = [int]$Matches[1] }
+  else { throw "XML <stoptimeout> '$stopRaw' is not '<N> sec'" }
+  $drainRaw = [Environment]::GetEnvironmentVariable("BETA_AGENT_DRAIN_TIMEOUT_S", "Machine")
+  $drainS = 45; if ($drainRaw -and ($drainRaw -match '^\s*\d+(\.\d+)?\s*$')) { $drainS = [int][math]::Ceiling([double]$drainRaw) }
+  if ($stopS -le $drainS) {
+    throw "XML <stoptimeout> ${stopS}s must EXCEED BETA_AGENT_DRAIN_TIMEOUT_S (${drainS}s) or a stop force-kills a mutation mid-drain (B-6)"
+  }
+  if ("$($svc.startmode)" -ne "Manual") { throw "XML <startmode> is '$($svc.startmode)', expected Manual (no autostart)" }
+  Write-Host "ok   XML contract: runs '$Python' on agent.py; recovery=none; stoptimeout ${stopS}s > drain ${drainS}s; startmode Manual"
+}
+Test-GuvfxWinSwXmlContract -XmlPath $XmlSource -Python $Python -AgentDir $AgentDir
+
+# GLOBAL-WRITE MEASUREMENT (RULE 11 / evidence.md). The whole point of WinSW is that this install writes no
+# pywin32 helper DLL to System32 or the base interpreter (the 2026-07-24 regression). We MEASURE that instead
+# of asserting it: snapshot the two DLL names in both locations BEFORE any mutation, and at VERIFY assert this
+# run created or modified neither. A DLL that already exists (from a prior postinstall) with an unchanged
+# timestamp is reported as pre-existing - it is NOT evidence that THIS run wrote it.
+$GlobalDllPaths = @(
+  (Join-Path $env:SystemRoot "System32\pywintypes311.dll"),
+  (Join-Path $env:SystemRoot "System32\pythoncom311.dll"),
+  (Join-Path $BaseInterpreterDir "pywintypes311.dll"),
+  (Join-Path $BaseInterpreterDir "pythoncom311.dll")
+)
+function Get-GuvfxGlobalDllState {
+  param([Parameter(Mandatory)][string[]]$Paths)
+  $s = @{}
+  foreach ($p in $Paths) {
+    $it = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+    $s[$p] = if ($it) { @{ exists = $true; mtime = $it.LastWriteTimeUtc.Ticks } } else { @{ exists = $false; mtime = 0 } }
+  }
+  return $s
+}
+$GlobalDllBaseline = $null
+if ($Apply) { $GlobalDllBaseline = Get-GuvfxGlobalDllState -Paths $GlobalDllPaths }
+
+# 1. State dir (durable nonce/idempotency/logs), SEPARATE from the code dir.
 DoIt "create state dir $StateDir (+ logs)" { New-Item -ItemType Directory -Force -Path $StateDir, (Join-Path $StateDir "logs") | Out-Null }
 
-# 2. Scoped NTFS ACLs for the service account. LEAST PRIVILEGE - but least privilege means the MINIMUM the
-#    agent actually needs, and the agent does the staging work itself. It is NOT true that "the agent only
-#    triggers tasks": win_slot_ops runs robocopy from the service process (copy_golden), opens the ownership
-#    marker for writing inside the slot (write_owner_tag), walks the golden tree to digest it, and renames
-#    the slot directory into the tombstone root (move_dir, which needs DELETE on the slot directory).
-#    Granting nothing on golden\ and slots\ would leave the pool provisioned and permanently unusable:
-#    the first MATERIALISE would fail and TOMBSTONE could never complete.
-#      - Modify   on the state dir, the tombstone root and the SLOT ROOT (stage, mark, move);
-#      - ReadAndExecute on the golden image (read-only: if the agent could write it, one compromised slot
-#        would compromise every future slot) and on its OWN code dir (so it cannot rewrite the bundle it is
-#        integrity-checked against).
-
+# 2. Scoped NTFS ACLs for the service SID (Modify on state/tombstones/slots; ReadAndExecute on code+golden).
 function Get-GuvfxServiceSid {
-  <# The service SID is DERIVED from the service name, so it exists as a value before the service does.
-     Needed because this script grants ACLs BEFORE `sc create` runs (step 3), and at that point
-     "NT SERVICE\GuvFXBetaAgent" has no name mapping: icacls fails with 1332 - for the name AND for the
-     raw SID, because it reverse-resolves - and aborts the install at its first grant. #>
   param([Parameter(Mandatory)][string]$ServiceName)
-  if ($ServiceName -ne "GuvFXBetaAgent") {
-    throw "refusing service SID lookup for '$ServiceName': fixed to the beta agent service account"
-  }
+  if ($ServiceName -ne "GuvFXBetaAgent") { throw "refusing service SID lookup for '$ServiceName'" }
   $m = (& sc.exe showsid $ServiceName) | Select-String -Pattern "SERVICE SID:\s*(S-1-5-80-\S+)"
   if (-not $m) { throw "could not compute the service SID for '$ServiceName'" }
   $v = $m.Matches.Groups[1].Value
   if ($v -notmatch "^S-1-5-80-\d+-\d+-\d+-\d+-\d+$") { throw "refusing: '$v' is not a service SID" }
   return $v
 }
-
 function Grant-GuvfxServiceAcl {
-  <# Grant one right set to the service SID on one directory, with container+object inheritance, using
-     Set-Acl so no name resolution is involved. Post-checked by reading the DACL back AS SIDs. #>
   param([Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][ValidateSet("Modify","ReadAndExecute")][string]$Rights,
         [Parameter(Mandatory)][string]$ServiceSid)
   $sid  = New-Object System.Security.Principal.SecurityIdentifier($ServiceSid)
   $acl  = Get-Acl -Path $Path
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $sid, [System.Security.AccessControl.FileSystemRights]::$Rights,
-            ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
-             [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
-            [System.Security.AccessControl.PropagationFlags]::None, "Allow")
-  $acl.AddAccessRule($rule)
+  $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $sid, [System.Security.AccessControl.FileSystemRights]::$Rights,
+      ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+       [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+      [System.Security.AccessControl.PropagationFlags]::None, "Allow")))
   Set-Acl -Path $Path -AclObject $acl
-  $rules = (Get-Acl -Path $Path).GetAccessRules($true, $false,
-             [System.Security.Principal.SecurityIdentifier])
+  $rules = (Get-Acl -Path $Path).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
   if (@($rules | Where-Object { $_.IdentityReference.Value -eq $ServiceSid }).Count -eq 0) {
     throw "post-check failed: service SID $ServiceSid is not on $Path"
   }
   Write-Host "evidence acl path=$Path service_sid=$ServiceSid rights=$Rights result=granted"
 }
-
 $ServiceSid = Get-GuvfxServiceSid -ServiceName $ServiceName
 Write-Host "ok   service SID computed before the service exists: $ServiceSid"
-
-foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot)) {
-  DoIt "grant '$RunAsUser' Modify on $d (inherit)" {
-    Grant-GuvfxServiceAcl -Path $d -Rights Modify -ServiceSid $ServiceSid
-  }
-}
-foreach ($d in @($AgentDir, $GoldenDir)) {
-  DoIt "grant '$RunAsUser' ReadAndExecute on $d (inherit)" {
-    Grant-GuvfxServiceAcl -Path $d -Rights ReadAndExecute -ServiceSid $ServiceSid
-  }
-}
 if (-not (Test-Path $SlotsRoot)) {
-  throw "slot pool not provisioned at $SlotsRoot - run install_pool.ps1 -Apply FIRST (install-only review F1/F2)"
+  throw "slot pool not provisioned at $SlotsRoot - run install_pool.ps1 -Apply FIRST"
+}
+# The WinSW wrapper dir must be readable+executable by the service account (it runs the .exe).
+DoIt "create WinSW dir $WinSwDir" { New-Item -ItemType Directory -Force -Path $WinSwDir | Out-Null }
+foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot)) {
+  DoIt "grant '$RunAsUser' Modify on $d (inherit)" { Grant-GuvfxServiceAcl -Path $d -Rights Modify -ServiceSid $ServiceSid }
+}
+# $VenvDir is where WinSW's <executable> python.exe AND the agent's pywin32 DLLs (Lib\site-packages\
+# pywin32_system32) load from - the least-privilege account must be able to read+execute it, so it is granted
+# and verified exactly like the code dirs, never left to an assumed inherited ACE (RULE 11).
+foreach ($d in @($AgentDir, $GoldenDir, $WinSwDir, $VenvDir)) {
+  DoIt "grant '$RunAsUser' ReadAndExecute on $d (inherit)" { Grant-GuvfxServiceAcl -Path $d -Rights ReadAndExecute -ServiceSid $ServiceSid }
 }
 
-# 3. Install the pywin32 service, MANUAL start, under the virtual account. (No auto-start; no start here.)
-DoIt "install service '$ServiceName' (pywin32, startup=manual)" { & $Python (Join-Path $AgentDir "service.py") "--startup=manual" "install" }
-# password= "" is required by sc.exe when assigning an NT SERVICE virtual account (harmless otherwise); without
-# it the obj= assignment can silently fail and leave the service running as over-privileged LocalSystem.
-DoIt "set service logon to '$RunAsUser' (no password) + start=demand" { sc.exe config $ServiceName obj= "$RunAsUser" password= "" start= demand | Out-Null }
+# 3. Lay down the WinSW wrapper (renamed to the service id) + its reviewed XML config. Copies only - no
+#    global writes, no pywin32, no `sc config obj=`.
+DoIt "stage WinSW wrapper -> $ServiceExe and config -> $ServiceXml" {
+  Copy-Item -Path $WinSwSource -Destination $ServiceExe -Force
+  Copy-Item -Path $XmlSource   -Destination $ServiceXml -Force
+  $exeHash = (Get-FileHash $ServiceExe -Algorithm SHA256).Hash.ToLower()
+  if ($exeHash -ne $WinSwSha256.ToLower()) { throw "staged WinSW exe hash changed after copy - aborting" }
+}
 
-# 4. Recovery DISABLED for the first install (nothing may auto-restart before approval).
-DoIt "disable service recovery actions" { sc.exe failure $ServiceName reset= 0 actions= "" | Out-Null }
+# 4. Register the service FROM the WinSW config (manual start, virtual account, recovery none per the XML).
+#    WinSW writes no global DLL and needs no obj= reassignment.
+DoIt "register service '$ServiceName' via WinSW (manual start, virtual account, STOPPED)" {
+  & $ServiceExe install
+  if ($LASTEXITCODE -ne 0) { throw "WinSW install failed (exit $LASTEXITCODE)" }
+}
 
 # 5. Verify (no start).
 if ($Apply) {
-  Step "VERIFY service configuration (expect STOPPED, start=demand, correct identity, no recovery actions)"
-  sc.exe qc $ServiceName
-  sc.exe qfailure $ServiceName
-  $svc = Get-Service $ServiceName
+  Step "VERIFY service configuration (expect STOPPED, start=demand, NT SERVICE identity, recovery none, no global DLL)"
+  $svc = Get-Service $ServiceName -ErrorAction Stop
   if ($svc.Status -ne "Stopped") { throw "service is $($svc.Status); expected Stopped (install-only)" }
-  $startName = (Get-CimInstance Win32_Service -Filter "Name='$ServiceName'").StartName
-  if ("$startName" -notmatch [regex]::Escape($RunAsUser)) {
-    throw "service identity is '$startName', expected '$RunAsUser' - LocalSystem means the obj= assignment failed; do NOT start"
+  $ci = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+  if ("$($ci.StartName)" -notmatch [regex]::Escape($RunAsUser)) {
+    throw "service identity is '$($ci.StartName)', expected '$RunAsUser' - do NOT start"
   }
-  Write-Host "ok   service identity = $startName"
-  # Assert the DACLs actually took. icacls is a native command: $ErrorActionPreference does not apply to it,
-  # so a silently failed grant would otherwise surface as a first-MATERIALISE failure on the live host.
-  foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot, $AgentDir, $GoldenDir)) {
-    $sids = @((Get-Acl -Path $d).GetAccessRules($true, $false,
-                [System.Security.Principal.SecurityIdentifier]) |
-              ForEach-Object { $_.IdentityReference.Value })
-    if ($sids -notcontains $ServiceSid) {
-      throw "no ACE for '$RunAsUser' ($ServiceSid) on $d - the grant did not take; do NOT start"
-    }
+  if ($ci.StartMode -notin @("Manual","Disabled")) { throw "service StartMode is '$($ci.StartMode)', expected Manual - do NOT start" }
+  if ("$($ci.PathName)" -notmatch [regex]::Escape($ServiceExe)) { throw "service binary is '$($ci.PathName)', expected the WinSW wrapper $ServiceExe" }
+  Write-Host "ok   service: identity=$($ci.StartName)  startmode=$($ci.StartMode)  state=$($svc.Status)  bin=$($ci.PathName)"
+  # (F9) recovery must be NONE - PARSE sc.exe qfailure, do not merely print it. sc.exe is a native exe, so its
+  # output is text, not objects; a restart/reboot/run action anywhere in it fails the install-only gate.
+  $qf = (& sc.exe qfailure $ServiceName) -join "`n"
+  Write-Host $qf
+  if ($qf -match '(?im)^\s*(RESTART|RUN PROCESS|REBOOT)\b' -or $qf -match '(?i)FAILURE_ACTIONS.*(RESTART|REBOOT|RUN)') {
+    throw "service has SCM recovery actions configured; expected none (install-only) - do NOT start"
+  }
+  Write-Host "ok   SCM recovery is none (sc qfailure parsed, no RESTART/REBOOT/RUN action)"
+  # (F10) MEASURED, not asserted: prove THIS run created/modified no pywin32 helper DLL globally.
+  $after = Get-GuvfxGlobalDllState -Paths $GlobalDllPaths
+  foreach ($p in $GlobalDllPaths) {
+    $b = $GlobalDllBaseline[$p]; $a = $after[$p]
+    if ((-not $b.exists) -and $a.exists) { throw "GLOBAL WRITE: this install created '$p' - the isolation guarantee is broken; do NOT start" }
+    if ($b.exists -and $a.exists -and ($b.mtime -ne $a.mtime)) { throw "GLOBAL WRITE: this install modified '$p'; do NOT start" }
+    $note = if ($a.exists) { "pre-existing, unchanged by this run" } else { "absent" }
+    Write-Host "ok   global DLL $p : $note"
+  }
+  Write-Host "ok   WinSW install created/modified NO pywin32 DLL in System32 or the base interpreter (measured before/after)"
+  foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot, $AgentDir, $GoldenDir, $WinSwDir, $VenvDir)) {
+    $sids = @((Get-Acl -Path $d).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })
+    if ($sids -notcontains $ServiceSid) { throw "no ACE for '$RunAsUser' ($ServiceSid) on $d - the grant did not take; do NOT start" }
     Write-Host "ok   DACL on $d carries an ACE for $RunAsUser"
   }
-  Write-Host "ok   service installed STOPPED. Firewall: run firewall.ps1 -Apply. Do NOT start until approval."
   Write-Host ""
-  Write-Host "REQUIRED environment for the slot-pool model (set before the first start, not now):"
-  Write-Host "  BETA_AGENT_EXECUTION_MODEL=slot_pool   BETA_AGENT_SLOT_POOL_SIZE=4"
-  Write-Host "  BETA_AGENT_GOLDEN_DIR / _DIGEST / _MANIFEST_VERSION   (all three; empty values are refused)"
-  Write-Host "  BETA_AGENT_APPROVED_TASKS=C:\GuvFX\beta\agent-state\approved_tasks.json  (launch gate, F3)"
-  Write-Host "  BETA_AGENT_DRAIN_TIMEOUT_S=45          (must exceed the 30s settle window, or startup refuses)"
+  Write-Host "ok   service installed STOPPED via WinSW. Next: firewall.ps1 -Apply, then the FIRST-START gate."
+  Write-Host "     The signing keyring (BETA_AGENT_KEYRING / _KEY_ID) must be provisioned by the operator before first start."
 } else {
   Write-Host "PLAN complete. Re-run with -Apply on the host to perform the install (install-only, no start)."
 }

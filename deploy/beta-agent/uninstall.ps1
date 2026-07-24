@@ -15,6 +15,8 @@ param(
   [string]$SlotsRoot   = "C:\GuvFX\beta\slots",
   [string]$BetaTombstones = "C:\GuvFX\beta\tombstones",
   [string]$GoldenDir   = "C:\GuvFX\golden\newMT5",
+  [string]$WinSwDir    = "C:\GuvFX\beta\agent-winsw",   # WinSW wrapper dir install_service.ps1 grants + stages
+  [string]$VenvDir     = "C:\GuvFX\beta\agent-venv",    # granted RX by install_service.ps1; revoke it too
   [string]$LaunchTaskPrefix = "GuvFXBetaRuntime-",
   [string]$StopTaskPrefix   = "GuvFXBetaRuntimeStop-",
   [string]$IdentityPrefix   = "guvfx_b_slot",
@@ -36,23 +38,32 @@ function DoIt($desc, [scriptblock]$block) {
 
 # 0. Revoke the service account's ACL grants BEFORE the service is deleted: once the SCM registration is
 #    gone, "NT SERVICE\<name>" may no longer resolve and the ACEs would be orphaned on retained data.
-foreach ($d in @($AgentDir, $StateDir, $BetaTombstones, $SlotsRoot, $GoldenDir)) {
+#    Mirrors install_service.ps1's grant set exactly (incl. the WinSW wrapper dir and the venv).
+foreach ($d in @($AgentDir, $StateDir, $BetaTombstones, $SlotsRoot, $GoldenDir, $WinSwDir, $VenvDir)) {
   DoIt "revoke '$RunAsUser' ACL grant on $d" {
     if (Test-Path $d) { icacls $d /remove:g "$RunAsUser" | Out-Null }
   }
 }
 
-# 1. Stop + delete the service (pywin32 remove cleans the SCM registration).
-DoIt "stop + remove service '$ServiceName'" {
+# 1. Stop + delete the service. The service host is a WinSW WRAPPER, not pywin32: prefer WinSW's own
+#    stop+uninstall (it signals the child for a graceful drain, then removes the SCM registration). If the
+#    staged wrapper is already gone, sc.exe delete still removes the registration (proven in the 2026-07-24
+#    recovery). The legacy pywin32 `service.py remove` path no longer applies and is removed.
+DoIt "stop + remove service '$ServiceName' (WinSW-aware)" {
+  $svcExe = Join-Path $WinSwDir "$ServiceName.exe"
   sc.exe stop $ServiceName 2>$null | Out-Null
-  # pywin32's own `service.py remove` cleans the SCM registration IF the beta venv interpreter exists. Never
-  # C:\GuvFX\python311.exe - that path is the Python INSTALLER, and executing it launches an installer. If the
-  # venv is gone, sc.exe delete below still removes the service registration.
-  $venvPy = "C:\GuvFX\beta\agent-venv\Scripts\python.exe"
-  if ((Test-Path $venvPy) -and (Test-Path (Join-Path $AgentDir "service.py"))) {
-    & $venvPy (Join-Path $AgentDir "service.py") "remove" 2>$null
+  if (Test-Path $svcExe) {
+    & $svcExe stop 2>$null | Out-Null
+    & $svcExe uninstall 2>$null | Out-Null
   }
   sc.exe delete $ServiceName 2>$null | Out-Null
+}
+
+# 1b. Remove the staged WinSW wrapper + config so no orphaned binary or ACE (for the now-deleted virtual
+#     account SID) is left on retained data. The agent-winsw dir holds only the exe + xml; WinSW's captured
+#     child logs live under agent-state\logs, which is deliberately RETAINED as evidence.
+DoIt "remove staged WinSW dir $WinSwDir" {
+  if (Test-Path $WinSwDir) { Remove-Item -Recurse -Force $WinSwDir }
 }
 
 # 2. Remove the firewall rule (leaves :8788/:8787 rules untouched).
