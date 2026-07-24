@@ -9,6 +9,7 @@ WIN-RD8VDS93DK7. That is the viability trial's job — see docs/B3P2_WINDOWS_RES
 import inspect
 import os
 import sys
+from unittest import mock
 
 from django.test import SimpleTestCase
 
@@ -135,10 +136,13 @@ class SlotProcessSelectionTests(SimpleTestCase):
         self.assertIs(wso.select_slot_process([helper, terminal], self.SLOT), terminal)
 
     def test_ambiguity_raises_rather_than_picking_by_enumeration_order(self):
+        from win_ops import MultipleSlotProcesses
         a, b = self._c(self.SLOT + r"\helper1.exe", 4), self._c(self.SLOT + r"\helper2.exe", 5)
-        with self.assertRaises(WindowsOpsError) as ctx:
+        # ADR-0015: a DISTINCT fail-closed state, not a generic ops error, so observe_process can report
+        # MULTIPLE_MATCHING rather than folding it into UNAVAILABLE.
+        with self.assertRaises(MultipleSlotProcesses) as ctx:
             wso.select_slot_process([a, b], self.SLOT)
-        self.assertEqual(ctx.exception.reason_code, "ambiguous_slot_process")
+        self.assertEqual(ctx.exception.reason_code, "multiple_matching_processes")
 
     def test_selection_is_case_insensitive_like_the_filesystem(self):
         c = self._c(self.SLOT.upper() + r"\TERMINAL64.EXE", pid=6)
@@ -184,7 +188,7 @@ class UnattributableProcessTests(SimpleTestCase):
     def test_the_guard_is_present_and_raises(self):
         source = inspect.getsource(wso.RealSlotWindowsOps.query_slot_process)
         self.assertIn("process_attribution_incomplete", source)
-        self.assertIn("unattributable", source)
+        self.assertIn("unresolved", source)         # the plausible-but-unresolvable accumulator (ADR-0015)
 
     def test_the_reason_code_is_an_observation_failure_not_an_absence(self):
         import lifecycle as lc
@@ -306,9 +310,11 @@ class ProcessAttributionScopeTests(SimpleTestCase):
 
     def test_every_non_gone_state_counts_within_the_identity_scope(self):
         """Only 'denied' used to count, silently dropping 'unknown' - the reachable winerrors the suite
-        itself lists (0, 6, 8, 299, 1450) all classify as unknown."""
+        itself lists (0, 6, 8, 299, 1450) all classify as unknown. The guard is now stated as: skip ONLY
+        the 'gone' state; every other open failure on a plausible candidate is unresolved (fail-closed)."""
         source = inspect.getsource(wso.RealSlotWindowsOps.query_slot_process)
-        self.assertIn('state != "gone"', source)
+        self.assertIn('state == "gone"', source)
+        self.assertIn("unresolved.append(pid)", source)   # every non-gone open failure counts
 
     def test_open_process_returns_its_verdict_instead_of_stashing_it(self):
         """One adapter instance is shared by concurrent requests, so an instance attribute used as an
@@ -380,9 +386,10 @@ class _FakeSlotOps(wso.RealSlotWindowsOps):
     def _identity_sid(self, runtime_identity):
         return self._slot_sid
 
-    def _enum_processes_with_owner(self):
-        for pid, d in self._procs.items():
-            yield int(pid), d.get("name", "terminal64.exe"), d["sid"]
+    def _enumerate_process_entries(self):
+        # Toolhelp yields (pid, name, ppid) and NO owner SID — owner is resolved per-candidate below.
+        return [(int(pid), d.get("name", "terminal64.exe"), d.get("ppid", 0))
+                for pid, d in self._procs.items()]
 
     def _open_process(self, api, pid):
         st = self._procs[pid]["open"]
@@ -391,11 +398,21 @@ class _FakeSlotOps(wso.RealSlotWindowsOps):
     def _image_path(self, api, handle):
         return self._procs[handle].get("image")
 
+    def _user_sid(self, pid):
+        # Owner SID from the process token (real code: OpenProcessToken under PQI). A proc may set
+        # ``sid=None`` to model a token that could not be read even though the handle opened.
+        return self._procs.get(pid, {}).get("sid")
+
     def _creation_filetime(self, api, handle):
-        return self._procs[handle].get("filetime", 133000000000000000)
+        ft = self._procs[handle].get("filetime", 133000000000000000)
+        if ft == "unreadable":
+            raise WindowsOpsError("process_times_unavailable")
+        return ft
 
     def _session_id(self, api, pid):
-        return self._procs[pid].get("session", 0)
+        # ``os.getpid()`` (the observer) is not in ``_procs`` -> default 0, the batch/service session that
+        # slot processes share; a proc may set ``session=None`` to model ProcessIdToSessionId failing.
+        return self._procs.get(pid, {}).get("session", 0)
 
     def _file_digest(self, image):
         return "digest-stub"
@@ -480,6 +497,154 @@ class ProcessObservationTests(SimpleTestCase):
         si = wp.resolve_slot_input(1)
         bad = wp.observe_process(_FakeSlotOps(dict([_slot_proc(8200, filetime=None)])), si)
         self.assertEqual("creation_time_unusable", bad["attestation"]["reason_code"])
+
+
+class ProcessObservationUnprivilegedTests(SimpleTestCase):
+    """ADR-0015 scenarios specific to the unprivileged (Toolhelp + limited-open) design, where owner SID is
+    resolved only AFTER opening and the pre-open SESSION filter is what excludes the operator's terminal."""
+
+    def q(self, procs, slot_sid=_SLOT1_SID):
+        return _FakeSlotOps(procs, slot_sid=slot_sid).query_slot_process(_SLOT1_DIR, "guvfx_b_slot1")
+
+    def test_unopenable_different_session_terminal_is_excluded_to_absent(self):
+        """THE crux for the low-privilege service account: the operator's production terminal64 — an
+        interactive session, UNOPENABLE by the beta service — is excluded BY SESSION in the unopenable
+        branch, so an empty slot is ABSENT, never UNAVAILABLE. (Session excludes only a non-candidate we
+        could not open; it never gates a process we can attribute.)"""
+        procs = dict([_slot_proc(4336, sid=_ADMIN_SID, session=3, open="denied",
+                                 image=r"C:\Program Files\IS6\terminal64.exe")])
+        self.assertIsNone(self.q(procs))
+
+    def test_openable_slot_process_in_a_surprise_session_is_present_not_absent(self):
+        """THE fail-OPEN guard (review finding #1/#3): a process with the correct slot owner SID and the
+        correct slot path, that the account CAN open, MUST be PRESENT even if its session differs from the
+        observer's. Session must never gate a process we can attribute by owner+path — otherwise a live slot
+        runtime in a surprise session is reported ABSENT and upstream TOMBSTONEs it. If the session filter
+        were a hard pre-open gate, this returns None and fails."""
+        r = self.q(dict([_slot_proc(8200, session=1)]))     # correct owner+path+openable, surprise session
+        self.assertIsNotNone(r, "openable slot process wrongly reported ABSENT due to its session")
+        self.assertEqual(8200, r["pid"])
+
+    def test_empty_slot_with_unopenable_non_runtime_process_is_absent(self):
+        """Name pre-filter behavioural pin (review finding #8): a same-session, non-terminal64 process the
+        account cannot open (e.g. a denied svchost) must not make an empty slot UNAVAILABLE — it is skipped
+        by name before any open. Removing the name filter opens it -> denied -> UNAVAILABLE, failing this."""
+        procs = dict([(9100, {"sid": None, "name": "svchost.exe", "open": "denied", "session": 0})])
+        self.assertIsNone(self.q(procs))
+
+    def test_two_identical_runtime_processes_are_multiple_matching(self):
+        """MULTIPLE_MATCHING boundary (review finding #7): two live processes both at <slot>\\terminal64.exe,
+        both the slot owner, both openable -> a DISTINCT fail-closed state, never a silent pick-one."""
+        from win_ops import MultipleSlotProcesses
+        procs = dict([_slot_proc(8200), _slot_proc(8201)])            # both exact <slot>\terminal64.exe
+        with self.assertRaises(MultipleSlotProcesses):
+            self.q(procs)
+
+    def test_same_session_unopenable_candidate_is_unavailable_not_absent(self):
+        """A same-session terminal64 the account cannot open IS a plausible in-slot candidate: fail closed
+        (UNAVAILABLE), never read as absence, never silently skipped."""
+        with self.assertRaises(WindowsOpsError) as cm:
+            self.q(dict([_slot_proc(8200, session=0, open="denied")]))
+        self.assertEqual("process_attribution_incomplete", cm.exception.reason_code)
+
+    def test_denied_candidate_is_not_masked_by_a_resolvable_one(self):
+        """One fully-attributed slot process AND one denied same-session terminal64 -> UNAVAILABLE, not
+        PRESENT: an unresolved plausible candidate must never be skipped just because another matched."""
+        procs = dict([_slot_proc(8200), _slot_proc(8201, session=0, open="denied")])
+        with self.assertRaises(WindowsOpsError):
+            self.q(procs)
+
+    def test_token_unreadable_after_open_is_unavailable(self):
+        """The handle opened (LIMITED) but the token/owner SID could not be read (needs PQI). Owner is
+        mandatory evidence, so this is UNAVAILABLE, not a match and not a miss."""
+        with self.assertRaises(WindowsOpsError):
+            self.q(dict([_slot_proc(8200, sid=None)]))          # _user_sid -> None
+
+    def test_unknown_session_but_openable_resolves_normally(self):
+        """ProcessIdToSessionId failing (None) is evidence, not a gate: the candidate is still opened and
+        matched by owner + path."""
+        r = self.q(dict([_slot_proc(8200, session=None)]))
+        self.assertEqual(8200, r["pid"])
+
+    def test_unknown_session_and_unopenable_is_unavailable(self):
+        """Session unknowable AND unopenable -> cannot be excluded and cannot be attributed -> UNAVAILABLE."""
+        with self.assertRaises(WindowsOpsError):
+            self.q(dict([_slot_proc(8200, session=None, open="denied")]))
+
+    def test_start_time_unreadable_on_a_match_is_unavailable(self):
+        """A matched candidate whose start-time evidence cannot be read fails closed (start time is part of
+        the identity binding used to reject PID reuse upstream)."""
+        with self.assertRaises(WindowsOpsError):
+            self.q(dict([_slot_proc(8200, filetime="unreadable")]))
+
+    def test_observe_wrapper_reports_multiple_matching_distinctly(self):
+        """MULTIPLE_MATCHING is its OWN outcome, not collapsed into UNAVAILABLE."""
+        si = wp.resolve_slot_input(1)
+        procs = dict([_slot_proc(8200, image=_SLOT1_DIR + r"\MQL5\a.exe"),
+                      _slot_proc(8201, image=_SLOT1_DIR + r"\MQL5\b.exe")])
+        out = wp.observe_process(_FakeSlotOps(procs), si)
+        self.assertEqual(wp.MULTIPLE_MATCHING, out["attestation"]["outcome"])
+        self.assertEqual("multiple_matching_processes", out["attestation"]["reason_code"])
+        self.assertNotEqual(wp.UNAVAILABLE, out["attestation"]["outcome"])
+
+
+class ToolhelpEnumerationTests(SimpleTestCase):
+    """The REAL _enumerate_process_entries failure branches (the fakes above override the method, so these
+    exercise the mechanism the host relies on): every failure RAISES, never yields a short list."""
+
+    def _ops_with_k32(self, k32):
+        import ctypes as _ct
+        ops = wso.RealSlotWindowsOps(golden_dir=r"C:\GuvFX\golden\newMT5", slots_root=r"C:\GuvFX\beta\slots")
+
+        class _PE(_ct.Structure):
+            _fields_ = [("dwSize", _ct.c_uint), ("th32ProcessID", _ct.c_uint),
+                        ("th32ParentProcessID", _ct.c_uint), ("szExeFile", _ct.c_wchar * 260)]
+        ops._api = {"ctypes": _ct, "k32": k32, "PROCESSENTRY32W": _PE}
+        return ops
+
+    def test_snapshot_failure_raises_never_empty(self):
+        import ctypes as _ct
+
+        class K32:
+            def CreateToolhelp32Snapshot(self, flags, pid):
+                return _ct.c_void_p(-1).value                  # INVALID_HANDLE_VALUE
+        with mock.patch.object(wso.os, "name", "nt"):          # exercise the ctypes path off-host
+            with self.assertRaises(WindowsOpsError) as cm:
+                self._ops_with_k32(K32())._enumerate_process_entries()
+        self.assertEqual("process_snapshot_failed", cm.exception.reason_code)
+
+    def test_first_read_failure_is_not_read_as_no_processes(self):
+        class K32:
+            def CreateToolhelp32Snapshot(self, flags, pid): return 123
+            def Process32FirstW(self, snap, entry): return False
+            def CloseHandle(self, h): return True
+        with mock.patch.object(wso.os, "name", "nt"):
+            with self.assertRaises(WindowsOpsError) as cm:
+                self._ops_with_k32(K32())._enumerate_process_entries()
+        self.assertEqual("process_snapshot_empty", cm.exception.reason_code)
+
+    def test_real_processentry32w_decodes_pid_name_ppid_at_the_right_offsets(self):
+        """RULE 11 positive control on the REAL layout (via the module-level factory the host uses — single
+        source of truth, no kernel32 needed off-host). A regression that drops the pointer-sized
+        th32DefaultHeapID shifts every later field, so pid/name decode garbage, the name filter never
+        matches, and every slot reports ABSENT while runtimes are live (fail-open) — uncaught without this."""
+        import ctypes as _ct
+        from ctypes import wintypes as _wt
+        PE = wso._make_processentry32w(_ct, _wt)             # the exact struct _win32() builds
+        off = {f[0]: getattr(PE, f[0]).offset for f in PE._fields_}
+        # Fixed-width numeric fields make these offsets identical on Windows and the test host. They only
+        # hold if th32DefaultHeapID is pointer-sized (8B, forcing the 12->16 pad) — the regression to catch.
+        self.assertEqual(off["th32ProcessID"], 8)
+        self.assertEqual(off["th32DefaultHeapID"], 16)       # 8-byte aligned ULONG_PTR on 64-bit
+        self.assertEqual(off["th32ModuleID"], 24)            # proves the pointer consumed 8, not 4
+        self.assertEqual(off["th32ParentProcessID"], 32)
+        self.assertEqual(off["szExeFile"], 44)
+        # szExeFile occupies 260 wide chars; c_wchar width is platform-dependent, so assert relative to it.
+        self.assertEqual(_ct.sizeof(PE) - off["szExeFile"] >= 260 * _ct.sizeof(_ct.c_wchar), True)
+        pe = PE()
+        pe.th32ProcessID, pe.th32ParentProcessID, pe.szExeFile = 4242, 7, "terminal64.exe"
+        self.assertEqual((int(pe.th32ProcessID), str(pe.szExeFile), int(pe.th32ParentProcessID)),
+                         (4242, "terminal64.exe", 7))
 
 
 class OpenHandlesLogicTests(SimpleTestCase):
@@ -595,13 +760,35 @@ class WsAbSourceInvariantTests(SimpleTestCase):
     def _src(self):
         return open(os.path.join(_BUNDLE, "win_slot_ops.py"), encoding="utf-8").read()
 
-    def test_wts_enumerate_uses_host_proven_args(self):
-        # HOST-PROVEN (positive+negative control 2026-07-24): (…,1,0) returns valid rows on the target
-        # pywin32; (…,0,1) raises error 87. Pin the working call and forbid the unavailable Ex variant.
+    def test_enumeration_is_unprivileged_toolhelp_not_wts(self):
+        # ADR-0015: WTSEnumerateProcesses is DENIED to the low-privilege service account (host-measured
+        # 2026-07-24: works as admin, denied as NT SERVICE\GuvFXBetaAgent). Pin the unprivileged Toolhelp
+        # path and forbid ANY return of the WTS enumeration that regressed us into a service-context blind.
         s = self._src()
-        self.assertIn("win32ts.WTSEnumerateProcesses(win32ts.WTS_CURRENT_SERVER_HANDLE, 1, 0)", s)
-        self.assertNotIn("WTSEnumerateProcessesEx(", s)
-        self.assertNotIn("WTSEnumerateProcesses(win32ts.WTS_CURRENT_SERVER_HANDLE, 0, 1)", s)
+        self.assertIn("CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)", s)
+        self.assertIn("Process32FirstW", s)
+        self.assertIn("Process32NextW", s)
+        # Forbid the CALL (prose that explains WHY we left WTS is fine and wanted — RULE 5).
+        self.assertNotIn("WTSEnumerateProcesses(", s)        # the denied-to-the-service-account call
+        self.assertNotIn("import win32ts", s)
+
+    def test_per_process_open_never_requests_all_access(self):
+        # Least-privilege: candidates are opened at PROCESS_QUERY_(LIMITED_)INFORMATION only. A
+        # PROCESS_ALL_ACCESS open would both need privilege the account lacks and over-reach.
+        s = self._src()
+        self.assertIn("PROCESS_QUERY_LIMITED_INFORMATION", s)
+        self.assertNotIn("PROCESS_ALL_ACCESS", s)
+
+    def test_owner_sid_is_read_from_the_token_at_query_information(self):
+        # The one access-right the fakes cannot exercise (owner SID needs the token, opened at
+        # PROCESS_QUERY_INFORMATION — the ADR-0015 fail-closed case is 'path readable at LIMITED but token
+        # denied -> None -> UNAVAILABLE'). Pin the real primitive against an access-right / API regression.
+        import inspect
+        src = inspect.getsource(wso.RealSlotWindowsOps._user_sid)
+        self.assertIn("PROCESS_QUERY_INFORMATION", src)
+        self.assertIn("OpenProcessToken", src)
+        self.assertIn("TokenUser", src)
+        self.assertNotIn("PROCESS_ALL_ACCESS", src)
 
     def test_open_handles_rm_failures_raise_never_clear(self):
         s = self._src()

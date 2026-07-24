@@ -22,19 +22,24 @@ import json
 from dataclasses import dataclass
 
 from lib.mgmt_agent_core import AgentError, is_beneath
+from win_ops import MultipleSlotProcesses, WindowsOpsError
 
 PRIMITIVE_VERSION = "win-primitives-1.0.0"
 
 #: The ONLY namespace a slot path may ever be derived from.
 BETA_SLOTS_ROOT = r"C:\GuvFX\beta\slots"
 
-#: Observation outcomes. These are distinct states, never conflated.
+#: Observation outcomes. These are distinct states, never conflated. MULTIPLE_MATCHING (ADR-0015) is a
+#: fail-closed state of its own — several fully-attributed slot processes — never collapsed into
+#: UNAVAILABLE nor resolved by picking one.
 PRESENT_VALID = "present_valid"
 ABSENT = "absent"
 PRESENT_INVALID = "present_invalid"
 UNAVAILABLE = "observation_unavailable"
 PERMISSION_DENIED = "permission_denied"
-OBSERVATION_STATUSES = (PRESENT_VALID, ABSENT, PRESENT_INVALID, UNAVAILABLE, PERMISSION_DENIED)
+MULTIPLE_MATCHING = "multiple_matching_processes"
+OBSERVATION_STATUSES = (PRESENT_VALID, ABSENT, PRESENT_INVALID, UNAVAILABLE, PERMISSION_DENIED,
+                        MULTIPLE_MATCHING)
 
 #: Paths/identities/ports the beta primitives must never derive or inspect. Matched case-insensitively as
 #: substrings of a normalised path, so a resolver bug cannot quietly point at the operator's estate.
@@ -334,6 +339,16 @@ def observe_process(win, si: SlotInput, *, observed_at=None) -> dict:
     operation = "observe_process"
     try:
         proc = win.query_slot_process(si.slot_path, si.runtime_identity)
+    except MultipleSlotProcesses:
+        # Several fully-attributed slot processes. A DISTINCT fail-closed state, never "not running" and
+        # never merged into the generic "unavailable" below.
+        return _wrap(si, operation, MULTIPLE_MATCHING, "multiple_matching_processes", {}, observed_at)
+    except WindowsOpsError as exc:
+        # A known observation failure (snapshot could not be taken/walked, or a plausible in-slot candidate
+        # could not be attributed). Still UNAVAILABLE (never "not running"), but the SPECIFIC reason survives
+        # into the attestation for diagnosis instead of being flattened to a single generic code.
+        return _wrap(si, operation, UNAVAILABLE, exc.reason_code or "process_observation_unavailable", {},
+                     observed_at)
     except PermissionError:
         return _wrap(si, operation, PERMISSION_DENIED, "process_permission_denied", {}, observed_at)
     except Exception:
