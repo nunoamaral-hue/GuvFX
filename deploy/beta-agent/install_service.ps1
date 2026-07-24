@@ -51,8 +51,12 @@ function Test-GuvfxInterpreterIdentity {
   if ($orig -match '(?i)^python-.*\.exe$' -or $orig -match '(?i)\.msi$') {
     throw "refusing: '$Path' is the Python INSTALLER (OriginalFilename '$orig'), not an interpreter"
   }
-  if ($orig -notmatch '(?i)^python(w)?\.exe$') {
-    throw "refusing: '$Path' OriginalFilename is '$orig'; a CPython interpreter reports 'python.exe'"
+  # Accept-set: a full CPython interpreter reports OriginalFilename 'python.exe'/'pythonw.exe'; a VENV's
+  # Scripts\python.exe is a redirector shim reporting 'py.exe'/'pyw.exe' (verified on the host - the beta
+  # venv reports 'py.exe', FileDescription 'Python', and runs pywin32). BOTH are interpreters. The INSTALLER
+  # is 'python-<ver>-amd64.exe', which matches none of these and was already rejected above.
+  if ($orig -notmatch '(?i)^(python|pythonw|py|pyw)\.exe$') {
+    throw "refusing: '$Path' OriginalFilename is '$orig'; expected a CPython interpreter or venv shim (python/pythonw/py/pyw .exe)"
   }
   if ($desc -notmatch '(?i)python') {
     throw "refusing: '$Path' FileDescription is '$desc'; expected a Python interpreter"

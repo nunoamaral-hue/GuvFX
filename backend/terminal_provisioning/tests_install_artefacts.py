@@ -1063,10 +1063,18 @@ class InterpreterValidationTests(SimpleTestCase):
 
     def test_the_installer_binary_is_rejected_by_metadata(self):
         code = _code("install_service.ps1")
-        self.assertIn("OriginalFilename", code)
-        self.assertIn("is the Python INSTALLER", code)
-        self.assertIn(r"'(?i)^python-.*\.exe$'", code)
-        self.assertIn(r"'(?i)^python(w)?\.exe$'", code)
+        # Both guards must live INSIDE the identity function, each with its own throw — a stronger check
+        # than "the literals appear somewhere", so restructuring that disabled a guard would be caught.
+        ident = code[code.index("function Test-GuvfxInterpreterIdentity"):
+                     code.index("function Test-GuvfxInterpreterRuntime")]
+        self.assertIn("OriginalFilename", ident)
+        # negative guard: reject the installer name / .msi, then the positive guard — both in the function
+        self.assertIn(r"$orig -match '(?i)^python-.*\.exe$'", ident)
+        self.assertIn("is the Python INSTALLER", ident)
+        # positive guard: accept only interpreter/venv-shim names, with a throw
+        self.assertIn(r"'(?i)^(python|pythonw|py|pyw)\.exe$'", ident)   # accepts venv 'py.exe' shim
+        after_pos = ident[ident.index(r"'(?i)^(python|pythonw|py|pyw)\.exe$'"):]
+        self.assertIn("throw", after_pos)
 
     def test_the_default_interpreter_is_the_beta_venv_not_the_installer(self):
         source = _read("install_service.ps1")
