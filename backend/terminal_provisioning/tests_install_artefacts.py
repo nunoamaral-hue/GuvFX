@@ -137,11 +137,19 @@ class InstallOnlyTests(SimpleTestCase):
             source = _code(name)
             self.assertNotRegex(source, self.START_FORMS, name)
 
-    def test_tasks_are_registered_disabled_and_never_enabled(self):
+    def test_tasks_are_registered_enabled_and_triggerless(self):
+        # ON-DEMAND MODEL (ADR 0017): the canonical -Apply path registers the eight tasks and leaves them
+        # ENABLED (New-ScheduledTaskSettingsSet defaults Enabled=$true), so it must NOT disable them at rest,
+        # and it must never START one. "Enabled" is not "scheduled": the tasks carry zero triggers.
         source = _code("install_pool.ps1")
-        self.assertIn("Disable-ScheduledTask", source)
-        self.assertNotIn("Enable-ScheduledTask", source)
-        self.assertNotIn("Start-ScheduledTask", source)
+        # Both ways to leave a task disabled are rejected: an explicit Disable-ScheduledTask call, AND the
+        # settings-object -Disable switch (a mutation that survives a label-only assertion — review-fakes).
+        self.assertNotIn("Disable-ScheduledTask", source)   # tasks are never left Disabled at rest
+        self.assertNotRegex(source, r"New-ScheduledTaskSettingsSet[^\r\n]*-Disable\b")
+        self.assertNotIn("Start-ScheduledTask", source)     # nothing starts a task at install
+        # The register-block descriptions call the tasks ENABLED (documentation-consistency, not the sole proof).
+        self.assertRegex(source, r"register '\$launch' \(ENABLED")
+        self.assertRegex(source, r"register '\$stop' \(ENABLED")
 
     def test_no_task_is_triggered_and_no_process_launched(self):
         source = _code("install_pool.ps1")
@@ -406,10 +414,10 @@ class TaskAccessGrantTests(SimpleTestCase):
         self.assertNotIn("Get-SlotSecret", block)
         self.assertNotIn("Register-ScheduledTask", block)
         # A task-ACL grant provisions no runtime, so golden-image validation (RULE 10) must be skipped in
-        # this mode - it must not require a staged golden that a grant has nothing to do with.
-        self.assertIn("GrantTaskAccessOnly: golden-image validation skipped", source)
-        # The golden-not-staged throw must be guarded so it cannot fire under -GrantTaskAccessOnly.
-        self.assertIn("if ($GrantTaskAccessOnly) {\n  Write-Host \"note GrantTaskAccessOnly: golden-image validation skipped", source)
+        # this mode - it must not require a staged golden that a grant has nothing to do with. The guard is
+        # shared with -EnableTasksOnly (both credential-free task modes provision nothing).
+        self.assertIn("golden-image validation skipped", source)
+        self.assertIn("if ($GrantTaskAccessOnly -or $EnableTasksOnly) {", source)
 
     def test_the_service_gets_no_folder_level_task_grant(self):
         # Only task-level grants: EVERY SetSecurityDescriptor call must write the per-task object ($t), never
@@ -1207,6 +1215,142 @@ class NullCountTests(SimpleTestCase):
     def test_uninstall_counts_identities_null_safely(self):
         code = _code("uninstall.ps1")
         self.assertIn("$slotIdentityCount = if ($null -eq $SlotIdentities) { 0 }", code)
+
+
+class OnDemandTaskModelTests(SimpleTestCase):
+    """ON-DEMAND MODEL (ADR 0017): the eight beta tasks are ENABLED but TRIGGERLESS at rest.
+
+    Enabled is not scheduled. A disabled task can never be triggered by a signed agent request, so Disabled is a
+    provisioning FAILURE, not the resting state; and any trigger would let something start a task on its own.
+    """
+
+    def test_verify_requires_enabled_not_disabled(self):
+        code = _code("install_pool.ps1")
+        # The VERIFY block must REQUIRE Enabled and REJECT Disabled (the inverse of the old install-only model).
+        self.assertIn("on-demand model requires Enabled", code)
+        self.assertIn("if (-not $task.Settings.Enabled)", code)
+        # It must NOT assert the task is Disabled anywhere.
+        self.assertNotIn('expected Disabled (install-only)', code)
+
+    def test_verify_requires_zero_triggers(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("if ($trigCom -gt 0)", code)
+        self.assertIn("on-demand model requires ZERO triggers", code)
+
+    def test_approved_definition_pins_enabled_true(self):
+        # The runtime gate demands enabled=true, so the approvals file the installer writes must pin it true.
+        code = _code("install_pool.ps1")
+        self.assertRegex(code, r"enabled\s*=\s*\$true")
+
+
+class TaskRunAclSafetyTests(SimpleTestCase):
+    """ON-DEMAND MODEL (ADR 0017): an enabled task's DACL is the sole start gate, so the installer must PROVE
+    that only Administrators/SYSTEM/the beta service can Run a task — never the slot identity — rather than
+    trust the OS-default DACL (RULE 11)."""
+
+    def _fn(self):
+        src = _code("install_pool.ps1")
+        start = src.index("function Assert-GuvfxTaskRunAclSafe")
+        end = src.index("function Grant-GuvfxServiceRead")
+        return src[start:end]
+
+    def test_the_run_acl_asserter_exists(self):
+        self.assertIn("function Assert-GuvfxTaskRunAclSafe", _code("install_pool.ps1"))
+
+    def test_it_checks_the_run_bit_and_allows_only_admin_system_service(self):
+        fn = self._fn()
+        self.assertIn("$GuvfxTaskRunBit = 0x20", _code("install_pool.ps1"))   # FILE_EXECUTE == Run
+        self.assertIn("-band $GuvfxTaskRunBit", fn)
+        # Trusted principals: Administrators, SYSTEM, and the beta service SID (passed in).
+        self.assertIn("S-1-5-32-544", fn)
+        self.assertIn("S-1-5-18", fn)
+        self.assertIn("$ServiceSid", fn)
+        # Any other run-bearing ACE is a hard stop.
+        self.assertRegex(fn, r"NON-service principal can RUN it")
+
+    def test_it_iterates_the_full_dacl_not_just_the_service_ace(self):
+        # Must enumerate every ACE (the whole DiscretionaryAcl), not filter to one SID.
+        fn = self._fn()
+        self.assertIn("foreach ($ace in $sd.DiscretionaryAcl)", fn)
+
+    def test_it_has_a_positive_control_self_test(self):
+        # RULE 11: the run-bit detector must be shown to fire on 0x1200a9 and NOT on read-only 0x120089, so a
+        # clean result means "no offending run ACE", not "the check matched nothing".
+        fn = self._fn()
+        self.assertIn("0x1200a9 -band $GuvfxTaskRunBit", fn)
+        self.assertIn("0x120089 -band $GuvfxTaskRunBit", fn)
+        self.assertIn("detector self-test failed", fn)
+
+    def test_it_refuses_a_non_beta_task_name(self):
+        self.assertIn("refusing run-ACL check for non-beta task", self._fn())
+
+    def test_verify_and_enable_paths_both_assert_run_acl(self):
+        code = _code("install_pool.ps1")
+        # It must be CALLED (not merely defined) in both the -Apply/-VerifyOnly VERIFY loop and -EnableTasksOnly.
+        calls = code.count("Assert-GuvfxTaskRunAclSafe -TaskName")
+        self.assertGreaterEqual(calls, 2, "run-ACL assertion must be called in both VERIFY and EnableTasksOnly")
+
+
+class EnableTasksOnlyTests(SimpleTestCase):
+    """-EnableTasksOnly moves already-registered tasks from install-only Disabled to Enabled + triggerless.
+
+    It is the credential-free delivery of the on-demand resting state: Enable-ScheduledTask needs no slot
+    password and re-registers nothing, so it must not force a four-password -Apply.
+    """
+
+    def _mode(self):
+        # The -EnableTasksOnly early-exit block, sliced from its gate to the section-2 marker.
+        src = _read("install_pool.ps1")
+        start = src.index("if ($EnableTasksOnly) {")
+        end = src.index("# -- 2. Identities")
+        return src[start:end]
+
+    def test_switch_exists_and_is_standalone(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("[switch]$EnableTasksOnly", code)
+        self.assertIn("-EnableTasksOnly is a standalone mode", code)
+
+    def test_mode_is_credential_free_and_registers_nothing(self):
+        block = self._mode()
+        self.assertIn("Enable-ScheduledTask", block)
+        self.assertIn("return", block)
+        # No password prompt, no (re)registration, nothing started.
+        self.assertNotIn("Get-SlotSecret", block)
+        self.assertNotIn("Register-ScheduledTask", block)
+        self.assertNotIn("Start-ScheduledTask", block)
+        self.assertNotIn("Unregister-ScheduledTask", block)
+
+    def test_mode_refuses_wrong_principal_or_run_level(self):
+        block = self._mode()
+        self.assertIn("refusing to enable", block)
+        self.assertIn("$IdentityPrefix$n", block)
+        self.assertIn('RunLevel is $($principal.RunLevel)', block)
+
+    def test_mode_refuses_a_triggered_task(self):
+        block = self._mode()
+        # Zero-triggers is corroborated across PS + COM before enabling, and a trigger refuses the enable.
+        self.assertIn("Get-GuvfxCount $task.Triggers", block)
+        self.assertIn("Definition.Triggers.Count", block)
+        self.assertIn("on-demand requires ZERO", block)
+
+    def test_mode_reads_back_enabled_and_triggerless(self):
+        block = self._mode()
+        # After Enable-ScheduledTask, re-read and fail closed if still disabled, or a trigger appeared.
+        self.assertIn("Settings.Enabled=false", block)
+        self.assertIn("state is still Disabled", block)
+        self.assertIn("now carries a trigger", block)
+
+    def test_mode_asserts_run_acl_before_enabling(self):
+        # Enabling makes the DACL the sole start gate, so the run-ACL safety check must run BEFORE the enable.
+        block = self._mode()
+        assert_pos = block.index("Assert-GuvfxTaskRunAclSafe -TaskName")
+        enable_pos = block.index("Enable-ScheduledTask -TaskName")
+        self.assertLess(assert_pos, enable_pos, "run-ACL must be asserted before Enable-ScheduledTask")
+
+    def test_mode_skips_golden_validation(self):
+        # Like -GrantTaskAccessOnly, enabling tasks provisions no runtime and must not require a staged golden.
+        code = _code("install_pool.ps1")
+        self.assertIn("if ($GrantTaskAccessOnly -or $EnableTasksOnly)", code)
 
 
 class VerifyOnlyTests(SimpleTestCase):

@@ -42,7 +42,9 @@ APPROVED_TASK = {
         '-WorkingDirectory "C:\\GuvFX\\beta\\slots\\1\\terminal" '
         '-GranteeSid ' + GRANTEE_SID + ' /portable'
     ),
-    "logon_type": 1, "run_level": 0, "enabled": True,
+    # ON-DEMAND MODEL (ADR 0017): enabled but TRIGGERLESS. The installed side query_task returns carries the
+    # count; the gate rejects any non-zero. 0 is the accepted resting state.
+    "logon_type": 1, "run_level": 0, "enabled": True, "trigger_count": 0,
 }
 #: The approved TERMINATE definition for slot 1. install_pool.ps1 now pins BOTH task families, because the
 #: terminate task is the one that reaches a process — its argument string is all that keeps
@@ -54,7 +56,7 @@ APPROVED_STOP = {
     "arguments": ("-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Get-Process -Name "
                   "terminal64 -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "
                   "'C:\\GuvFX\\beta\\slots\\1\\terminal\\terminal64.exe' } | Stop-Process -Force\""),
-    "logon_type": 1, "run_level": 0, "enabled": True,
+    "logon_type": 1, "run_level": 0, "enabled": True, "trigger_count": 0,
 }
 APPROVED_BOTH = {"GuvFXBetaRuntime-1": dict(APPROVED_TASK),
                  "GuvFXBetaRuntimeStop-1": dict(APPROVED_STOP)}
@@ -983,6 +985,17 @@ class LaunchTaskVerificationGateTests(SimpleTestCase):
         win._task_definition = dict(APPROVED_TASK, enabled=False)
         with self.assertRaises(AgentError):
             self._start(s, impls)
+
+    def test_a_triggered_task_blocks_the_launch(self):
+        # ON-DEMAND MODEL (ADR 0017): an approved task must be triggerless. A launch task that has gained a
+        # trigger (re-registered / edited out of band into something schedulable) is drift -> START fails
+        # closed and NOTHING is triggered.
+        s, win, impls = self._ready()
+        win._task_definition = dict(APPROVED_TASK, trigger_count=1)
+        with self.assertRaises(AgentError) as ctx:
+            self._start(s, impls)
+        self.assertEqual(ctx.exception.reason_code, "task_definition_drift")
+        self.assertEqual([c for c in win.calls if c[0] == "run_task"], [])
 
     def test_an_absent_task_blocks_the_launch(self):
         s, win, impls = self._ready()

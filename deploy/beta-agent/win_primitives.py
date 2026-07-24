@@ -296,8 +296,11 @@ def inspect_task(win, si: SlotInput, *, which: str = "launch", observed_at=None)
         return _wrap(si, operation, ABSENT, "task_absent", {"task_name": task_name}, observed_at)
 
     from occupancy import task_definition_digest
+    # trigger_count is REQUIRED: the on-demand model's zero-triggers invariant is only checkable when the count
+    # was actually read. A None here (COM read failed) must fail closed as incomplete, never pass as "no
+    # trigger". 0 is a legitimate value and passes the `is None` completeness test.
     required = ("task_name", "run_as_identity", "executable", "working_directory", "arguments",
-                "logon_type", "run_level", "enabled")
+                "logon_type", "run_level", "enabled", "trigger_count")
     missing = [k for k in required if raw.get(k) is None]
     evidence = {
         "task_name": raw.get("task_name"),
@@ -314,6 +317,9 @@ def inspect_task(win, si: SlotInput, *, which: str = "launch", observed_at=None)
         "logon_type": raw.get("logon_type"),
         "run_level": raw.get("run_level"),
         "enabled": raw.get("enabled"),
+        # ON-DEMAND MODEL (ADR 0017): carried so the definition gate can reject ANY trigger. An approved task
+        # is enabled but triggerless; a trigger means something re-registered or edited it out of band.
+        "trigger_count": raw.get("trigger_count"),
         "last_result": raw.get("last_result"),
     }
     if missing:
