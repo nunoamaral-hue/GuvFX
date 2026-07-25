@@ -96,6 +96,11 @@ valued, or if a non-server account string is read.
   funds, credentials unique to this validation, discardable, never reused from production.
 - **Credentials never enter chat/Git/logs/evidence/screenshots.** Nuno provisions the login into the slot config
   locally; the model never sees the password. Exact secret-safe operator instructions are returned in WS-C.
+- **The startup `guvfx_startup.ini` protects integrity, not confidentiality.** A config `terminal64` reads is
+  readable by in-slot code (both run as the slot identity), so a login placed in it is not secret from the
+  tenant (ADR-0016 amendment). This is acceptable ONLY because the account is a **disposable demo** owned by the
+  tester; a production/live credential must never go in a startup config. The account-free L2 trial uses a config
+  with **no** credentials (Expert + Symbol only).
 - **Symbol:** one liquid symbol the demo server offers and that is open during the observation window.
 
 ## 8. Containment checks

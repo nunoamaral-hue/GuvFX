@@ -203,3 +203,51 @@ Before resuming the slot-1 `TOMBSTONE → RELEASE` proof, prove on the host:
 Additive. Reverting the observe side restores the token-based owner read (re-introducing the cross-account
 PRESENT blocker); reverting the launch side restores the direct-`terminal64` task action (removing the grant).
 Both revert cleanly with no persistent residue, because the ACE was never persisted.
+
+---
+
+## Amendment — controlled `/config:` launch (2026-07-25, MT5 demo-validation packet)
+
+**Decision (Nuno, "Option 2 — extend ADR-0016 to support a tightly controlled `/config:` launch").** The launch
+wrapper may additionally pass `terminal64` a startup config so an approved EA auto-attaches. This is needed
+because in Session 0 the chart/MDI GUI fails, so MT5's normal profile-restore attach path cannot load an EA;
+a startup config is the only lifecycle-native way to attach one. Fresh measurement (2026-07-25, golden 6036)
+shows the Session-0 beta terminal **persists and its MQL5 compiler completes** — only the chart window fails —
+so an attach mechanism is worth having.
+
+**What changes.** `slot_launch.ps1`'s C# command-line builder still hard-codes `/portable`; it now *also* appends
+`/config:<file>` **only** when the file is trusted. The trust gate is entirely on the PowerShell side and is
+strict:
+
+- **Derived, never argued.** The config path is `Join-Path $WorkingDirectory 'guvfx_startup.ini'` — a fixed
+  filename beneath the already-validated slot working directory. It is never taken from a task/command argument,
+  so a tenant cannot steer which config `terminal64` reads. (No new `[Parameter]`.)
+- **Trusted on OWNER provenance, not writability.** The slot working directory is slot-*writable* (terminal64
+  `/portable` stores its data there), so an in-slot tenant can create `guvfx_startup.ini`. A write-probe is
+  **unsound**: the file's owner can drop its own `FILE_WRITE_DATA` (or set `+r`), and an inherited `Modify` grant
+  lets a slot delete-and-replace an admin file. So the config is honoured **only when its OWNER is Administrators
+  or SYSTEM** — a non-admin identity cannot set those owners (needs `SeRestorePrivilege`), so a slot-authored
+  config is always slot-owned and is rejected. The wrapper additionally refuses the file if any
+  non-admin/non-SYSTEM principal holds a write/delete/change-perms/take-ownership ACE, and rejects reparse
+  points. (SID-typed descriptor reads only — no `NTAccount` translation, which hangs on the workgroup host.)
+- **TOCTOU-pinned.** The file is opened with a deny-write + deny-delete share and that handle is held **across
+  the launch**, so it cannot be swapped between validation and terminal64 reading it.
+- **Whitespace-free** (an unquoted `/config:<path>` would split on a space; slot paths are space-free — a space
+  fails closed).
+- **Content-blind, and INTEGRITY not confidentiality.** The wrapper never reads the config content. But whatever
+  terminal64 reads, in-slot code can read too (both run as the slot identity), so a credential in the config is
+  **not secret from the tenant** — the owner-check protects the config's *integrity* (a tenant cannot substitute
+  it), not its *confidentiality*. Therefore **only a DISPOSABLE demo login may ever be placed in a startup
+  config; production/live credentials must not.** The `[StartUp]` directive set MT5 honours (Expert/Script/
+  Symbol/Period/Login/Password/Server/ExpertParameters) executes no arbitrary shell, so an admin-owned config is
+  a bounded surface.
+
+**What does NOT change.** The suspend → grant → verify → resume sequence, the `GRANT_MASK` (`0x21000`) and its
+equality read-back, the hard-coded `/portable`, the fail-closed terminate-on-any-failure, the grantee-SID
+validation, and the slots-root path confinement are all unchanged. The launch **task** action is unchanged (it
+still points at the fixed wrapper path), so no task re-registration is required; the wrapper file itself is
+re-staged by the credential-free `install_pool.ps1 -StageLauncherOnly` (hash-pinned before and after, launcher
+left admin-only + slots read-execute).
+
+**Reversal.** Additive: with no `guvfx_startup.ini` present the wrapper behaves exactly as before (`/portable`
+only). Removing the extension restores the prior wrapper; no persistent residue.
