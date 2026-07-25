@@ -47,6 +47,18 @@ string GuvfxAccountClass()
   }
 
 //+------------------------------------------------------------------+
+//| Fail-closed predicate: a LOGGED-IN account that is not DEMO is    |
+//| unsafe. login==0 (account-free trial) is safe. Checked at OnInit  |
+//| AND every OnTimer so a mid-run login to a non-demo account also   |
+//| latches closed, not only the account present at attach time.      |
+//+------------------------------------------------------------------+
+bool GuvfxAccountIsUnsafe()
+  {
+   return (AccountInfoInteger(ACCOUNT_LOGIN) != 0
+           && AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO);
+  }
+
+//+------------------------------------------------------------------+
 //| Slot-contained append log. NO FILE_COMMON: writes to THIS         |
 //| terminal's MQL5\Files, i.e. the runtime slot directory.           |
 //+------------------------------------------------------------------+
@@ -70,7 +82,7 @@ int OnInit()
 
    // Fail closed on a non-demo account. login==0 (no account yet) is NOT a failure - the account-free runtime
    // trial runs before any login. A REAL account IS a hard stop: refuse to operate.
-   if(AccountInfoInteger(ACCOUNT_LOGIN) != 0 && AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO)
+   if(GuvfxAccountIsUnsafe())
      {
       g_fatal = true;
       GuvfxLog("FATAL", "account is not DEMO (class=" + GuvfxAccountClass() + ") - refusing to operate");
@@ -105,12 +117,23 @@ void OnTick()
 //+------------------------------------------------------------------+
 void OnTimer()
   {
-   if(g_fatal) return;                                    // failed closed: emit nothing further
+   if(g_fatal) return;                                    // already failed closed: emit nothing further
+   // Re-assert the demo gate every heartbeat: a login to a non-demo account AFTER attach must also latch closed.
+   if(GuvfxAccountIsUnsafe())
+     {
+      g_fatal = true;
+      GuvfxLog("FATAL", "account became non-DEMO at runtime (class=" + GuvfxAccountClass() + ") - halting");
+      return;
+     }
    g_timer_count++;
 
+   int    dg         = (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS);  // the WATCHED symbol's own digits
+   if(dg <= 0) dg = _Digits;
    double bid        = SymbolInfoDouble(g_symbol, SYMBOL_BID);
    double ask        = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
-   long   trade_mode = SymbolInfoInteger(g_symbol, SYMBOL_TRADE_MODE);   // FULL/CLOSEONLY/DISABLED (open proxy)
+   long   trade_mode = SymbolInfoInteger(g_symbol, SYMBOL_TRADE_MODE);   // FULL/CLOSEONLY/DISABLED
+   datetime last_q   = (datetime)SymbolInfoInteger(g_symbol, SYMBOL_TIME); // last quote time (server)
+   bool   quotes_fresh = (last_q > 0 && (TimeCurrent() - last_q) < 120); // genuine "market active now" signal
    bool   connected  = (bool)TerminalInfoInteger(TERMINAL_CONNECTED);
    bool   selected   = (bool)SymbolInfoInteger(g_symbol, SYMBOL_SELECT);
    bool   term_trade = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED); // AutoTrading (terminal permission)
@@ -121,15 +144,17 @@ void OnTimer()
 
    GuvfxLog("HB", StringFormat(
       "t=%s timer=%d ticks=%d first_tick=%s connected=%s account=%s login_present=%s server=%s symbol=%s "
-      + "selected=%s bid=%s ask=%s sym_trade_mode=%d term_trade_allowed=%s ea_trade_allowed=%s "
-      + "chart_id=%d chart_windows=%d last_err=%d",
+      + "selected=%s bid=%s ask=%s sym_trade_mode=%d quotes_fresh=%s last_quote=%s term_trade_allowed=%s "
+      + "ea_trade_allowed=%s chart_id=%I64d chart_windows=%I64d last_err=%d",
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS), (int)g_timer_count, (int)g_tick_count,
       (g_first_tick > 0) ? TimeToString(g_first_tick, TIME_DATE|TIME_SECONDS) : "none",
       connected ? "true" : "false", GuvfxAccountClass(),
       (AccountInfoInteger(ACCOUNT_LOGIN) != 0) ? "true" : "false",
       AccountInfoString(ACCOUNT_SERVER), g_symbol, selected ? "true" : "false",
-      DoubleToString(bid, _Digits), DoubleToString(ask, _Digits), (int)trade_mode,
+      DoubleToString(bid, dg), DoubleToString(ask, dg), (int)trade_mode,
+      quotes_fresh ? "true" : "false",
+      (last_q > 0) ? TimeToString(last_q, TIME_DATE|TIME_SECONDS) : "none",
       term_trade ? "true" : "false", ea_trade ? "true" : "false",
-      (int)chart_id, (int)chart_wins, err));
+      chart_id, chart_wins, err));
   }
 //+------------------------------------------------------------------+

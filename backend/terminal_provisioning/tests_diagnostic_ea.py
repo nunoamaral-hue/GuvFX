@@ -31,11 +31,17 @@ class DiagnosticEaNoTradeTests(SimpleTestCase):
     # Any of these appearing in EXECUTABLE code means the EA can (or is preparing to) trade / reach out / load
     # native code. Matched against comment-stripped source so the documentation header is not a false positive.
     FORBIDDEN = (
+        # direct trade primitives
         "OrderSend", "OrderSendAsync", "OrderModify", "OrderClose", "OrderDelete",
         "PositionOpen", "PositionClose", "PositionModify",
         "CTrade", "CExpert", "OrderCalcMargin", "OrderCalcProfit",
         r"\.Buy\(", r"\.Sell\(", r"\.BuyLimit\(", r"\.SellLimit\(", r"\.BuyStop\(", r"\.SellStop\(",
+        # indirect control transfer to compiled code (a probe never loads or drives other MQL programs)
+        "ChartApplyTemplate", "iCustom", "IndicatorCreate", "EventChartCustom",
+        # network (incl. the TLS socket variants)
         "WebRequest", "SocketCreate", "SocketConnect", "SocketSend", "SocketRead",
+        "SocketTlsConnect", "SocketTlsSend", "SocketTlsRead", "SocketTlsHandshake",
+        # native code + off-box messaging
         r"#import", "SendFTP", "SendMail", "SendNotification",
     )
 
@@ -64,6 +70,23 @@ class DiagnosticEaNoTradeTests(SimpleTestCase):
         code = _code().lower()
         for tok in ("password", "investor", " account_login,"):     # a trailing comma => used as a format arg
             self.assertNotIn(tok, code, f"credential-shaped token in EA: {tok}")
+
+    def test_the_only_account_string_read_is_the_shared_server_name(self):
+        # Allowlist, not denylist: the server name is a shared demo-broker string and safe; any OTHER
+        # AccountInfoString (ACCOUNT_NAME = the holder's name, ACCOUNT_COMPANY, ...) could identify a person.
+        code = _code()
+        for m in re.finditer(r"AccountInfoString\(\s*(ACCOUNT_\w+)\s*\)", code):
+            self.assertEqual(m.group(1), "ACCOUNT_SERVER",
+                             f"EA reads a non-allowlisted account string: {m.group(1)}")
+
+    def test_comment_stripper_cannot_be_evaded_by_string_literals(self):
+        # The FORBIDDEN scan runs on comment-stripped source, and the EA header intentionally NAMES the banned
+        # APIs, so raw-source scanning is not an option. Guarantee the stripper is sound instead: no string
+        # literal may contain a comment delimiter (which could hide a banned token on the same line).
+        src = _src()
+        for lit in re.findall(r'"(?:[^"\\]|\\.)*"', src):
+            for delim in ("//", "/*", "*/"):
+                self.assertNotIn(delim, lit, f"comment delimiter {delim!r} inside a string literal: {lit!r}")
 
     def test_writes_are_slot_contained_never_common(self):
         # FILE_COMMON would write to the shared terminal common folder, escaping the slot. The EA must not use it.

@@ -8,9 +8,26 @@
 
 ## 1. Question this validation answers
 
-Does a disposable-demo MT5 runtime, launched through the approved GuvFX slot lifecycle **in Session 0**, provide
-the functions required for *automated* trading — **despite the recorded chart/MDI GUI limitation** — up to but
-**excluding** order execution?
+Does a disposable-demo MT5 runtime, launched through the approved GuvFX per-slot lifecycle, provide the functions
+required for *automated* trading — **despite the recorded chart/MDI GUI limitation** — up to but **excluding**
+order execution?
+
+### 1a. Session model — measured, not assumed (supersedes a stale finding)
+
+The B3P per-slot lifecycle launches the runtime via the per-slot batch-logon scheduled task, so the terminal
+lands in **Session 0** (the agent service is also Session 0; the operator's production terminal is Session 3).
+An earlier feasibility note (`BETA_HEADLESS_WSA_FEASIBILITY.md`, 2026-07-20, golden **5833**) recorded that a
+portable MT5 in Session 0 "starts but does not persist — exits within ~10–30 s", and the accepted co-host
+Option A therefore targeted an interactive **Session 1**.
+
+**That Session-0 finding no longer holds on the current mechanism.** Fresh measurement (2026-07-25, golden
+**6036**, launched via the ADR-0016 wrapper through the signed lifecycle): the Session-0 beta terminal
+**persisted ~5 minutes, healthy** (172→118 MB, 18 threads) and its **MQL5 compiler completed** ("full
+recompilation has been finished: 131 file(s) compiled"). The **chart/MDI GUI errors are present** as documented
+("MDI create failed", "create new frame CHART0x.CHR failed"), but they did **not** kill the terminal. So the
+current per-slot Session-0 launch is process-viable; whether an EA can attach and run *given* the chart failures
+is the open L2 question this validation answers. (This resolves the review's HIGH design finding by measurement:
+the doc no longer claims an unproven Session-0 persistence — it cites a current control.)
 
 ## 2. Viability layers (kept strictly distinct)
 
@@ -18,7 +35,7 @@ Process survival is **not** functional success. Each layer is judged on its own 
 
 | # | Layer | What proves it | Needs a demo account? |
 |---|-------|----------------|-----------------------|
-| L1 | Terminal process viability | one contained beta terminal64, Session 0, stable, IPC up | no (already proven in B3P) |
+| L1 | Terminal process viability | one contained beta terminal64 in Session 0, **persists** (≥5 min measured 2026-07-25), MQL5 compiler completes | no (measured — §1a) |
 | L2 | EA runtime viability | EA compiles, attaches, `OnInit` returns `INIT_SUCCEEDED`, `OnTimer` fires repeatedly, clean `OnDeinit` | **no** (timer is account-independent) |
 | L3 | Broker connectivity | terminal reaches the demo server; `TerminalInfoInteger(TERMINAL_CONNECTED)`; account info readable | **yes** |
 | L4 | Market-data viability | symbol selectable; bid/ask received; `OnTick` fires; tick timestamps advance | **yes** (and market open) |
@@ -64,10 +81,14 @@ to an open market (e.g. a major FX pair during London/NY session; a 24/5 symbol 
 A minimal EA that **never trades**. On a fixed `OnTimer` cadence it appends one sanitised heartbeat line to its
 slot-contained log with the fields the packet enumerates (build, login-present bool, trade mode, demo/real
 class, server-if-safe, connection state, symbol, symbol-available, bid/ask, first-tick ts, tick count, timer
-count, terminal/EA trade-permission, AutoTrading, market open/closed, last MQL5 error, chart-available, FS write
-path, heartbeat ts). It **fails closed** (logs a fatal marker + refuses to continue its checks) if the account
-classifies as anything other than demo. It contains **no** `OrderSend`, `CTrade` buy/sell, pending-order path,
-external network call, DLL import, or credential print. A static test rejects the EA if any trading API appears.
+count, terminal/EA trade-permission, AutoTrading, a genuine market-open signal (last-quote freshness) beside the
+symbol trade mode, last MQL5 error, chart id/windows, FS write path, heartbeat ts). It **fails closed** — logs a
+fatal marker and halts — if the account classifies as anything other than demo, re-asserted **every heartbeat
+(OnTimer), not only at OnInit**, so a mid-run login to a non-demo account also latches closed. It contains **no**
+`OrderSend`, `CTrade` buy/sell, pending-order path, indirect control transfer
+(`iCustom`/`ChartApplyTemplate`/`IndicatorCreate`/`EventChartCustom`), external network call, DLL import, or
+credential print. A static test (mutation-verified) rejects the EA if any of those appears, if the login is
+valued, or if a non-server account string is read.
 
 ## 7. Account & symbol prerequisites (→ WS-C, Nuno-gated)
 
@@ -81,13 +102,17 @@ external network call, DLL import, or credential print. A static test rejects th
 
 Every phase: all writes remain inside the assigned slot; golden image digest unchanged; slots not selected
 unchanged; production MT5 (pid/path/session) unchanged; bridge (pid/port 8788) unchanged; exactly one beta
-terminal64; no unexpected child process persists; no new port exposure; no credential in any evidence artefact.
+terminal64; the beta runtime's **observed owner SID is the expected slot identity** (`guvfx_b_slot<n>`), never
+the operator/Administrator; no unexpected child process persists; no new port exposure; no credential in any
+evidence artefact.
 
 ## 9. Cleanup & rollback
 
 Native signed shutdown only: STOP → VERIFY ABSENT → TOMBSTONE → RELEASE → Available. Account for the known
-Restart-Manager handle-release delay (retry TOMBSTONE only after a bounded wait when the **sole** refusal is
-`cleanup_precheck_failed`). No manual runtime deletion. Remove all scratch/credential artefacts; verify 0
+Restart-Manager handle-release delay: a TOMBSTONE `cleanup_precheck_failed` may be retried after a bounded wait
+**only** when it is attributable to lingering runtime handles AND the runtime process is independently proven
+ABSENT (VERIFY running:false); any other unmet cleanup proof (a still-present process, a generation/ownership
+mismatch) is a STOP, not a wait. No manual runtime deletion. Remove all scratch/credential artefacts; verify 0
 residue. Slots end all-Available; tasks remain Enabled + triggerless.
 
 ## 10. STOP conditions (verbatim intent)
@@ -96,7 +121,10 @@ Stop immediately, preserve evidence, on: account not conclusively demo; any cred
 order/trade attempted; >1 beta MT5 process; production MT5 changes; bridge changes; unexpected port exposure;
 runtime writes outside its slot; golden image changes; another slot changes; EA contains/reaches a trade path;
 service observation unavailable; native STOP fails; cleanup requires manual deletion; runtime cannot be released
-cleanly; any live-account identifier discovered.
+cleanly; any live-account identifier discovered; **any slot-integrity / (slot, generation) monotonicity /
+ownership-marker disagreement (SlotIntegrityError / slot quarantined) at any stage**; **the runtime is observed
+in a session other than the expected one, or does not persist (an unexpected early exit — the §1a control),
+which would confound the functional result**.
 
 ## 11. Sequence
 
