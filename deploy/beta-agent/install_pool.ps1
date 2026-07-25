@@ -57,7 +57,7 @@ $ErrorActionPreference = "Stop"
 # The reviewed launch wrapper's pinned SHA-256 (lowercase). tests_install_artefacts.py asserts this equals the
 # hash of deploy/beta-agent/slot_launch.ps1, so it can never drift from the file; the install refuses to stage
 # a wrapper whose hash differs, before AND after the copy (ADR-0016; WinSW hash-pin pattern).
-$LaunchWrapperSha256 = "ae2c4a485560cbd30b1eb3a30953357ff37bdafb6dec08b242af208505405b2d"
+$LaunchWrapperSha256 = "1c8dd36e37a5478618fea9c2049fb4ddc53ac26b99288124614f4d15e655cafe"
 if ($Apply -and $VerifyOnly) { throw "refusing: -Apply and -VerifyOnly are mutually exclusive" }
 if ($GrantTaskAccessOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly -or $EnableTasksOnly)) {
   throw "refusing: -GrantTaskAccessOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly/-EnableTasksOnly)"
@@ -723,13 +723,14 @@ if ($StageLauncherOnly) {
     throw "launch wrapper hash mismatch (bundle=$slSrcHash pinned=$LaunchWrapperSha256) - refusing to stage an unreviewed wrapper"
   }
   New-Item -ItemType Directory -Force -Path $LauncherDir | Out-Null
+  # Protect the directory BEFORE the copy: break inheritance and grant only Administrators + SYSTEM Full, so the
+  # staged wrapper never momentarily sits in an inheriting (possibly slot-writable) directory. Slot read+execute
+  # is granted AFTER the file is in place. A slot must never be able to rewrite the launcher it executes.
+  Invoke-GuvfxIcacls $LauncherDir @("/inheritance:r")
+  Invoke-GuvfxIcacls $LauncherDir @("/grant", "*S-1-5-32-544:(OI)(CI)F", "/grant", "*S-1-5-18:(OI)(CI)F")
   Copy-Item -LiteralPath $slSrc -Destination $slDst -Force
   $slDstHash = (Get-FileHash -LiteralPath $slDst -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($slDstHash -ne $LaunchWrapperSha256) { throw "staged wrapper hash mismatch after copy (got=$slDstHash) - STOP" }
-  # Admin-only-writable launcher, slots read+execute ONLY (identical to the -Apply launcher ACL): a slot must
-  # never be able to rewrite the launcher it executes.
-  Invoke-GuvfxIcacls $LauncherDir @("/inheritance:r")
-  Invoke-GuvfxIcacls $LauncherDir @("/grant", "*S-1-5-32-544:(OI)(CI)F", "/grant", "*S-1-5-18:(OI)(CI)F")
   for ($n = 1; $n -le $PoolSize; $n++) {
     Invoke-GuvfxIcacls $LauncherDir @("/grant", ("{0}{1}:(OI)(CI)RX" -f $IdentityPrefix, $n))
   }

@@ -69,15 +69,26 @@ if (-not $workFull.ToLowerInvariant().StartsWith($SLOTS_ROOT.ToLowerInvariant())
 # -- 1b. Optional tightly-controlled startup config (ADR-0016 extension). The wrapper MAY pass terminal64 a
 #        /config:<file> so an approved EA auto-attaches. In Session 0 the chart/MDI GUI fails, so the normal
 #        profile-restore attach path does not work; a startup config is the only lifecycle-native way to attach
-#        an EA. Controls that keep this injection-free and credential-free:
-#          * the path is DERIVED from the already-validated WorkingDirectory as a FIXED filename - it is NEVER
-#            taken from a task/command argument, so a tenant cannot point it elsewhere;
-#          * it is honoured ONLY when the file exists AND the slot identity CANNOT write it. The wrapper runs AS
-#            the slot identity, so if IT can open the file for write, untrusted in-slot code can too (a tenant
-#            could have planted a config) - such a config is IGNORED and the launch falls back to /portable-only;
-#          * the wrapper never reads the config CONTENT and never handles credentials: any Login/Password inside
-#            it is the operator's, protected by the file's admin-owned + slot-read-only ACL, not by the wrapper.
+#        an EA. Controls that keep this injection-safe:
+#          * DERIVED path (a FIXED filename beneath the already-validated WorkingDirectory) - NEVER a task/command
+#            argument, so a tenant cannot point it elsewhere;
+#          * trusted on PROVENANCE, not writability. The slot working dir is slot-WRITABLE (terminal64 /portable
+#            stores its data there), so an in-slot tenant CAN create guvfx_startup.ini. A mere write-probe is
+#            UNSOUND: the file's owner can drop its own FILE_WRITE_DATA (or set +r) and still control the content,
+#            and an inherited Modify grant lets a slot delete-and-replace an admin file. So the config is honoured
+#            ONLY when its OWNER is Administrators or SYSTEM - a non-admin identity cannot set a file's owner to
+#            those (needs SeRestorePrivilege), so a slot-authored config is always slot-owned and is rejected;
+#          * DACL: refuse if any non-admin/non-SYSTEM principal holds write/delete/change-perms/take-ownership;
+#          * reject reparse points; the path must be whitespace-free (an unquoted /config: splits on a space);
+#          * TOCTOU: pin the file with a deny-write + deny-delete share handle held ACROSS the launch, so it
+#            cannot be swapped between validation and terminal64 opening it.
+#        INTEGRITY, NOT CONFIDENTIALITY: whatever terminal64 reads, in-slot code can read too (both run as the
+#        slot identity), so a credential in the config is NOT secret from the tenant. Only a DISPOSABLE demo login
+#        may ever be placed in it; production/live credentials must not. The wrapper never reads the content.
 $ConfigPathToPass = ''
+$ConfigHandle = $null
+$ADMIN_SID  = 'S-1-5-32-544'
+$SYSTEM_SID = 'S-1-5-18'
 $configCandidate = Join-Path $workFull 'guvfx_startup.ini'
 if (Test-Path -LiteralPath $configCandidate -PathType Leaf) {
     $cfgFull = [System.IO.Path]::GetFullPath($configCandidate)
@@ -85,26 +96,39 @@ if (Test-Path -LiteralPath $configCandidate -PathType Leaf) {
         Fail ("startup config resolved outside the slot working directory: " + $cfgFull)
     }
     if ($cfgFull -match '\s') {
-        # An unquoted /config:<path> is passed on the command line; a space would split the argument. Slot paths
-        # are space-free by construction, so a space means an unexpected layout - fail closed rather than guess.
         Fail ("startup config path contains whitespace, refusing to pass /config: " + $cfgFull)
     }
-    $slotCanWrite = $true
-    try {
-        # FileMode.Open + FileAccess.Write opens the EXISTING file for writing WITHOUT truncating; closed at once.
-        $fsw = [System.IO.File]::Open($cfgFull, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
-        $fsw.Close()
-        $slotCanWrite = $true
-    } catch [System.UnauthorizedAccessException] {
-        $slotCanWrite = $false
-    } catch {
-        $slotCanWrite = $true   # cannot prove read-only (sharing/other) -> treat as untrusted, do not honour
-    }
-    if ($slotCanWrite) {
-        Write-Host "slot_launch: startup config present but slot-writable (untrusted) - ignoring; launching /portable only"
+    $cfgItem = Get-Item -LiteralPath $cfgFull -Force
+    if (($cfgItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Write-Host "slot_launch: startup config is a reparse point (untrusted) - ignoring; launching /portable only"
     } else {
-        $ConfigPathToPass = $cfgFull
-        Write-Host ("slot_launch: honouring admin-provisioned read-only startup config: " + $cfgFull)
+        # Pin the file: FileShare.Read denies writers AND deleters while the handle is held (across the launch),
+        # closing the swap window between validation and terminal64 reading it. Held for READ only; never read.
+        $ConfigHandle = [System.IO.File]::Open($cfgFull, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        # SID-typed reads (GetOwner/GetAccessRules with SecurityIdentifier) - NO NTAccount translation, which
+        # hangs on this workgroup host.
+        $sec = New-Object System.Security.AccessControl.FileSecurity($cfgFull, ([System.Security.AccessControl.AccessControlSections]::Owner -bor [System.Security.AccessControl.AccessControlSections]::Access))
+        $ownerSid = $sec.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+        $ownerTrusted = ($ownerSid -eq $ADMIN_SID -or $ownerSid -eq $SYSTEM_SID)
+        $writeBits = [int]([System.Security.AccessControl.FileSystemRights]"WriteData, AppendData, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership")
+        $nonAdminWrite = $false
+        foreach ($rule in $sec.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+            if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+            $rsid = $rule.IdentityReference.Value
+            if ($rsid -eq $ADMIN_SID -or $rsid -eq $SYSTEM_SID) { continue }
+            if (([int]$rule.FileSystemRights -band $writeBits) -ne 0) { $nonAdminWrite = $true }
+        }
+        if ($ownerTrusted -and (-not $nonAdminWrite)) {
+            $ConfigPathToPass = $cfgFull
+            Write-Host ("slot_launch: honouring admin-owned startup config (owner " + $ownerSid + "): " + $cfgFull)
+        } else {
+            $ConfigHandle.Close(); $ConfigHandle = $null
+            if (-not $ownerTrusted) {
+                Write-Host ("slot_launch: startup config owner is " + $ownerSid + ", not Administrators/SYSTEM (untrusted) - ignoring; launching /portable only")
+            } else {
+                Write-Host "slot_launch: startup config grants a non-admin principal write/delete (untrusted) - ignoring; launching /portable only"
+            }
+        }
     }
 }
 
@@ -288,6 +312,9 @@ if ($selfErr) { Fail $selfErr }
 
 # -- 4. Launch suspended, grant, verify, resume -- or terminate + fail. -------------------------------------
 $rc = [GuvfxLaunchGrant]::LaunchAndGrant($full, $WorkingDirectory, $GranteeSid, $ConfigPathToPass)
+# The deny-write+deny-delete pin on the startup config was held from validation through this launch so it could
+# not be swapped before terminal64 read it; release it now (the process, if started, has already read /config:).
+if ($ConfigHandle) { $ConfigHandle.Close(); $ConfigHandle = $null }
 if ($rc -ne 0) { Fail ("launch/grant failed at stage " + $rc) }
 
 $cfgNote = if ($ConfigPathToPass) { " with startup config" } else { " (/portable only)" }

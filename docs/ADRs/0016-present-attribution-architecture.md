@@ -222,17 +222,25 @@ strict:
 - **Derived, never argued.** The config path is `Join-Path $WorkingDirectory 'guvfx_startup.ini'` — a fixed
   filename beneath the already-validated slot working directory. It is never taken from a task/command argument,
   so a tenant cannot steer which config `terminal64` reads. (No new `[Parameter]`.)
-- **Honoured only when the slot identity CANNOT write it.** The wrapper runs AS the slot identity; if it can
-  open the file for write, untrusted in-slot code can too. Such a config is **ignored** (fall back to
-  `/portable` only), so a tenant that plants a `guvfx_startup.ini` cannot make the terminal auto-run anything.
-  The trusted config is admin-owned + slot-read-only, provisioned outside the slot's write reach.
+- **Trusted on OWNER provenance, not writability.** The slot working directory is slot-*writable* (terminal64
+  `/portable` stores its data there), so an in-slot tenant can create `guvfx_startup.ini`. A write-probe is
+  **unsound**: the file's owner can drop its own `FILE_WRITE_DATA` (or set `+r`), and an inherited `Modify` grant
+  lets a slot delete-and-replace an admin file. So the config is honoured **only when its OWNER is Administrators
+  or SYSTEM** — a non-admin identity cannot set those owners (needs `SeRestorePrivilege`), so a slot-authored
+  config is always slot-owned and is rejected. The wrapper additionally refuses the file if any
+  non-admin/non-SYSTEM principal holds a write/delete/change-perms/take-ownership ACE, and rejects reparse
+  points. (SID-typed descriptor reads only — no `NTAccount` translation, which hangs on the workgroup host.)
+- **TOCTOU-pinned.** The file is opened with a deny-write + deny-delete share and that handle is held **across
+  the launch**, so it cannot be swapped between validation and terminal64 reading it.
 - **Whitespace-free** (an unquoted `/config:<path>` would split on a space; slot paths are space-free — a space
   fails closed).
-- **Content-blind, credential-agnostic.** The wrapper never reads the config content and never handles a
-  credential. Any `Login`/`Password`/`Server` a demo-phase config carries is the operator's, protected by the
-  file ACL — not by the wrapper. The `[StartUp]` directive set MT5 honours (Expert/Script/Symbol/Period/Login/
-  Password/Server/ExpertParameters) executes no arbitrary shell, so an admin-owned slot-read-only config is a
-  bounded surface.
+- **Content-blind, and INTEGRITY not confidentiality.** The wrapper never reads the config content. But whatever
+  terminal64 reads, in-slot code can read too (both run as the slot identity), so a credential in the config is
+  **not secret from the tenant** — the owner-check protects the config's *integrity* (a tenant cannot substitute
+  it), not its *confidentiality*. Therefore **only a DISPOSABLE demo login may ever be placed in a startup
+  config; production/live credentials must not.** The `[StartUp]` directive set MT5 honours (Expert/Script/
+  Symbol/Period/Login/Password/Server/ExpertParameters) executes no arbitrary shell, so an admin-owned config is
+  a bounded surface.
 
 **What does NOT change.** The suspend → grant → verify → resume sequence, the `GRANT_MASK` (`0x21000`) and its
 equality read-back, the hard-coded `/portable`, the fail-closed terminate-on-any-failure, the grantee-SID

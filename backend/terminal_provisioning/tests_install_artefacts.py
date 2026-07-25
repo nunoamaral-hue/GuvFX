@@ -896,14 +896,28 @@ class LaunchWrapperTests(SimpleTestCase):
         # No parameter accepts a config path (only the three existing params + IgnoredRest may be [Parameter]s).
         self.assertNotRegex(code, r"\[Parameter[^\]]*\][^\n]*\$Config")
 
-    def test_the_startup_config_is_only_honoured_when_not_slot_writable(self):
-        # Enabling a task's DACL is not enough: the config the wrapper trusts must not be writable by the slot
-        # identity (the wrapper runs AS it). If the wrapper can open the file for write, the config is untrusted
-        # and is ignored (fall back to /portable only) -> a tenant cannot plant a config that auto-runs code.
+    def test_the_startup_config_is_trusted_by_owner_provenance_not_writability(self):
+        # A write-probe is UNSOUND: a slot that authors the file can make it non-self-writable (drop its own
+        # WRITE_DATA, or set +r) and still control the content. Trust must be PROVENANCE: the file's OWNER must be
+        # Administrators or SYSTEM - a non-admin identity cannot set those owners (needs SeRestorePrivilege), so a
+        # slot-authored config is always slot-owned and rejected.
         w = self._wrapper()
-        self.assertIn("FileAccess]::Write", w)
-        self.assertIn("UnauthorizedAccessException", w)
-        self.assertIn("slot-writable (untrusted) - ignoring", w)
+        self.assertIn("GetOwner([System.Security.Principal.SecurityIdentifier])", w)
+        self.assertIn("S-1-5-32-544", w)      # Administrators
+        self.assertIn("S-1-5-18", w)           # SYSTEM
+        self.assertIn("not Administrators/SYSTEM (untrusted) - ignoring", w)
+        # SID-typed reads only (GetAccessRules with SecurityIdentifier) - no NTAccount translation (workgroup hang).
+        self.assertIn("GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])", w)
+        # And no non-admin principal may hold a write/delete/change-perms ACE.
+        self.assertIn("grants a non-admin principal write/delete", w)
+
+    def test_the_startup_config_rejects_reparse_points_and_pins_against_swap(self):
+        w = self._wrapper()
+        # A symlink/junction could redirect to an admin file elsewhere -> reject reparse points.
+        self.assertIn("FileAttributes]::ReparsePoint", w)
+        # TOCTOU: the file is pinned deny-write+deny-delete (FileShare.Read) across the launch, released after.
+        self.assertIn("[System.IO.FileShare]::Read", w)
+        self.assertIn("$ConfigHandle.Close()", w)
 
     def test_the_config_is_appended_after_the_hardcoded_portable_and_gated_nonempty(self):
         # In the C# command-line builder /portable is unconditional; /config: is appended ONLY when the
