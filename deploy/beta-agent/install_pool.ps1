@@ -57,7 +57,7 @@ $ErrorActionPreference = "Stop"
 # The reviewed launch wrapper's pinned SHA-256 (lowercase). tests_install_artefacts.py asserts this equals the
 # hash of deploy/beta-agent/slot_launch.ps1, so it can never drift from the file; the install refuses to stage
 # a wrapper whose hash differs, before AND after the copy (ADR-0016; WinSW hash-pin pattern).
-$LaunchWrapperSha256 = "1c8dd36e37a5478618fea9c2049fb4ddc53ac26b99288124614f4d15e655cafe"
+$LaunchWrapperSha256 = "e9c945ca9170cf09976696c2f11ff57a01222a492b1a1d858cd9741650a1855f"
 if ($Apply -and $VerifyOnly) { throw "refusing: -Apply and -VerifyOnly are mutually exclusive" }
 if ($GrantTaskAccessOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly -or $EnableTasksOnly)) {
   throw "refusing: -GrantTaskAccessOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly/-EnableTasksOnly)"

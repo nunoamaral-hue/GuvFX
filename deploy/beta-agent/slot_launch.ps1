@@ -102,12 +102,17 @@ if (Test-Path -LiteralPath $configCandidate -PathType Leaf) {
     if (($cfgItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
         Write-Host "slot_launch: startup config is a reparse point (untrusted) - ignoring; launching /portable only"
     } else {
-        # Pin the file: FileShare.Read denies writers AND deleters while the handle is held (across the launch),
-        # closing the swap window between validation and terminal64 reading it. Held for READ only; never read.
+        # Pin the file: FileShare.Read denies writers AND deleters while the handle is held. The owner/DACL are
+        # then read FROM THIS HANDLE (not by re-opening the path), so validation and the pin describe the SAME
+        # file object - a path-level swap between open and validation cannot desync them. The pin is held through
+        # the wrapper's validation and the launch trigger; it does not (and is not relied on to) extend to
+        # terminal64's own later open of /config:, which is instead kept safe by the OWNER gate (a tenant cannot
+        # produce an admin-owned replacement) plus the deployment invariant that the slot dir grants the slot
+        # Modify, NOT Full Control (so no FILE_DELETE_CHILD -> the slot cannot delete an admin-owned config).
         $ConfigHandle = [System.IO.File]::Open($cfgFull, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
         # SID-typed reads (GetOwner/GetAccessRules with SecurityIdentifier) - NO NTAccount translation, which
         # hangs on this workgroup host.
-        $sec = New-Object System.Security.AccessControl.FileSecurity($cfgFull, ([System.Security.AccessControl.AccessControlSections]::Owner -bor [System.Security.AccessControl.AccessControlSections]::Access))
+        $sec = $ConfigHandle.GetAccessControl()
         $ownerSid = $sec.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
         $ownerTrusted = ($ownerSid -eq $ADMIN_SID -or $ownerSid -eq $SYSTEM_SID)
         $writeBits = [int]([System.Security.AccessControl.FileSystemRights]"WriteData, AppendData, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership")
@@ -312,8 +317,8 @@ if ($selfErr) { Fail $selfErr }
 
 # -- 4. Launch suspended, grant, verify, resume -- or terminate + fail. -------------------------------------
 $rc = [GuvfxLaunchGrant]::LaunchAndGrant($full, $WorkingDirectory, $GranteeSid, $ConfigPathToPass)
-# The deny-write+deny-delete pin on the startup config was held from validation through this launch so it could
-# not be swapped before terminal64 read it; release it now (the process, if started, has already read /config:).
+# Release the deny-write+deny-delete pin held across the wrapper's validation + launch trigger. (terminal64's
+# own later read of /config: is kept safe by the OWNER gate, not by this handle - see the pin comment in 1b.)
 if ($ConfigHandle) { $ConfigHandle.Close(); $ConfigHandle = $null }
 if ($rc -ne 0) { Fail ("launch/grant failed at stage " + $rc) }
 
