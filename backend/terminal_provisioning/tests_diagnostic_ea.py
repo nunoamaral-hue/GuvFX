@@ -8,6 +8,7 @@ compiled or run on the host.
 """
 import os
 import re
+
 from django.test import SimpleTestCase
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))

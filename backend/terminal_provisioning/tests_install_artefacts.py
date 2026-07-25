@@ -417,7 +417,7 @@ class TaskAccessGrantTests(SimpleTestCase):
         # this mode - it must not require a staged golden that a grant has nothing to do with. The guard is
         # shared with -EnableTasksOnly (both credential-free task modes provision nothing).
         self.assertIn("golden-image validation skipped", source)
-        self.assertIn("if ($GrantTaskAccessOnly -or $EnableTasksOnly) {", source)
+        self.assertIn("if ($GrantTaskAccessOnly -or $EnableTasksOnly -or $StageLauncherOnly) {", source)
 
     def test_the_service_gets_no_folder_level_task_grant(self):
         # Only task-level grants: EVERY SetSecurityDescriptor call must write the per-task object ($t), never
@@ -886,6 +886,45 @@ class LaunchWrapperTests(SimpleTestCase):
         self.assertIn("/portable", w)
         self.assertIn("ValueFromRemainingArguments", w)
 
+    # -- ADR-0016 controlled /config: launch extension -----------------------------------------------------
+    def test_the_startup_config_path_is_derived_never_taken_from_an_argument(self):
+        # The /config: path must be DERIVED from the already-validated WorkingDirectory as a fixed filename, so a
+        # tenant cannot steer terminal64's startup config. It is NOT a new [Parameter].
+        w = self._wrapper()
+        code = self._wrapper_code()
+        self.assertIn("Join-Path $workFull 'guvfx_startup.ini'", w)
+        # No parameter accepts a config path (only the three existing params + IgnoredRest may be [Parameter]s).
+        self.assertNotRegex(code, r"\[Parameter[^\]]*\][^\n]*\$Config")
+
+    def test_the_startup_config_is_only_honoured_when_not_slot_writable(self):
+        # Enabling a task's DACL is not enough: the config the wrapper trusts must not be writable by the slot
+        # identity (the wrapper runs AS it). If the wrapper can open the file for write, the config is untrusted
+        # and is ignored (fall back to /portable only) -> a tenant cannot plant a config that auto-runs code.
+        w = self._wrapper()
+        self.assertIn("FileAccess]::Write", w)
+        self.assertIn("UnauthorizedAccessException", w)
+        self.assertIn("slot-writable (untrusted) - ignoring", w)
+
+    def test_the_config_is_appended_after_the_hardcoded_portable_and_gated_nonempty(self):
+        # In the C# command-line builder /portable is unconditional; /config: is appended ONLY when the
+        # PowerShell side proved the file trusted (non-empty configPath).
+        w = self._wrapper()
+        self.assertIn('cmd.Append(" /config:").Append(configPath)', w)
+        self.assertIn("if (!string.IsNullOrEmpty(configPath))", w)
+
+    def test_the_wrapper_never_reads_config_content_or_handles_credentials(self):
+        # The wrapper passes the config PATH only; it never parses the content and never touches a credential.
+        code = self._wrapper_code()
+        self.assertNotIn("Get-Content", code)
+        for tok in ("Password", "Login=", "Server="):
+            self.assertNotIn(tok, code)
+
+    def test_a_config_path_with_whitespace_is_refused(self):
+        # An unquoted /config:<path> would split on a space; slot paths are space-free, so a space means an
+        # unexpected layout -> fail closed rather than pass a broken argument.
+        w = self._wrapper()
+        self.assertIn("startup config path contains whitespace", w)
+
     def test_it_refuses_a_grantee_that_is_not_the_service_account(self):
         # The grantee SID must be a service SID (S-1-5-80-) that translates back to NT SERVICE\GuvFXBetaAgent.
         w = self._wrapper()
@@ -1350,7 +1389,49 @@ class EnableTasksOnlyTests(SimpleTestCase):
     def test_mode_skips_golden_validation(self):
         # Like -GrantTaskAccessOnly, enabling tasks provisions no runtime and must not require a staged golden.
         code = _code("install_pool.ps1")
-        self.assertIn("if ($GrantTaskAccessOnly -or $EnableTasksOnly)", code)
+        self.assertIn("if ($GrantTaskAccessOnly -or $EnableTasksOnly -or $StageLauncherOnly)", code)
+
+
+class StageLauncherOnlyTests(SimpleTestCase):
+    """-StageLauncherOnly re-stages the reviewed hash-pinned launch wrapper (ADR-0016 controlled /config:
+    launch) without a full four-password -Apply. A wrapper file replacement + ACL is admin-only."""
+
+    def _mode(self):
+        src = _read("install_pool.ps1")
+        start = src.index("if ($StageLauncherOnly) {")
+        end = src.index("# -- 2. Identities")
+        return src[start:end]
+
+    def test_switch_exists_and_is_standalone(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("[switch]$StageLauncherOnly", code)
+        self.assertIn("-StageLauncherOnly is a standalone mode", code)
+
+    def test_mode_is_credential_free_and_registers_nothing(self):
+        block = self._mode()
+        self.assertIn("Copy-Item", block)
+        self.assertIn("return", block)
+        self.assertNotIn("Get-SlotSecret", block)
+        self.assertNotIn("Register-ScheduledTask", block)
+        self.assertNotIn("Start-ScheduledTask", block)
+
+    def test_mode_refuses_an_unpinned_wrapper_before_and_after_copy(self):
+        block = self._mode()
+        # Hash-verify BEFORE staging and AFTER the copy against the pin.
+        self.assertIn("refusing to stage an unreviewed wrapper", block)
+        self.assertIn("staged wrapper hash mismatch after copy", block)
+        self.assertGreaterEqual(block.count("-ne $LaunchWrapperSha256"), 2)   # before + after copy
+
+    def test_mode_reapplies_admin_only_launcher_acl_slots_rx(self):
+        block = self._mode()
+        self.assertIn("/inheritance:r", block)
+        self.assertIn("*S-1-5-32-544:(OI)(CI)F", block)          # Administrators full
+        self.assertIn("(OI)(CI)RX", block)                       # slots read+execute only
+        self.assertIn("AreAccessRulesProtected", block)          # read-back: inheritance removed
+
+    def test_mode_skips_golden_validation(self):
+        code = _code("install_pool.ps1")
+        self.assertIn("if ($GrantTaskAccessOnly -or $EnableTasksOnly -or $StageLauncherOnly)", code)
 
 
 class VerifyOnlyTests(SimpleTestCase):

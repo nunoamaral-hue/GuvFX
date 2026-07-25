@@ -1,7 +1,8 @@
 # slot_launch.ps1 -- GuvFX beta per-slot launch wrapper (ADR-0016 Option A).
 #
 # Runs AS the slot identity guvfx_b_slot<n> (the launch task's principal). It:
-#   1. creates the slot's terminal64.exe SUSPENDED (/portable, hard-coded here -- never taken from an argument),
+#   1. creates the slot's terminal64.exe SUSPENDED (/portable, hard-coded here -- never taken from an argument;
+#      may ALSO pass a tightly-controlled /config:<derived slot file> so an approved EA auto-attaches -- see 1b),
 #   2. adds ONE discretionary ACE to that process OBJECT granting the beta-agent service SID
 #      PROCESS_QUERY_LIMITED_INFORMATION | READ_CONTROL (0x21000) -- read-modify-write, never a DACL replace,
 #   3. reads the DACL back and asserts the ACE is present,
@@ -63,6 +64,48 @@ if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) { Fail "WorkingDirectory is
 $workFull = [System.IO.Path]::GetFullPath($WorkingDirectory)
 if (-not $workFull.ToLowerInvariant().StartsWith($SLOTS_ROOT.ToLowerInvariant())) {
     Fail ("WorkingDirectory is not beneath the beta slots root: " + $workFull)
+}
+
+# -- 1b. Optional tightly-controlled startup config (ADR-0016 extension). The wrapper MAY pass terminal64 a
+#        /config:<file> so an approved EA auto-attaches. In Session 0 the chart/MDI GUI fails, so the normal
+#        profile-restore attach path does not work; a startup config is the only lifecycle-native way to attach
+#        an EA. Controls that keep this injection-free and credential-free:
+#          * the path is DERIVED from the already-validated WorkingDirectory as a FIXED filename - it is NEVER
+#            taken from a task/command argument, so a tenant cannot point it elsewhere;
+#          * it is honoured ONLY when the file exists AND the slot identity CANNOT write it. The wrapper runs AS
+#            the slot identity, so if IT can open the file for write, untrusted in-slot code can too (a tenant
+#            could have planted a config) - such a config is IGNORED and the launch falls back to /portable-only;
+#          * the wrapper never reads the config CONTENT and never handles credentials: any Login/Password inside
+#            it is the operator's, protected by the file's admin-owned + slot-read-only ACL, not by the wrapper.
+$ConfigPathToPass = ''
+$configCandidate = Join-Path $workFull 'guvfx_startup.ini'
+if (Test-Path -LiteralPath $configCandidate -PathType Leaf) {
+    $cfgFull = [System.IO.Path]::GetFullPath($configCandidate)
+    if (-not $cfgFull.ToLowerInvariant().StartsWith($workFull.ToLowerInvariant())) {
+        Fail ("startup config resolved outside the slot working directory: " + $cfgFull)
+    }
+    if ($cfgFull -match '\s') {
+        # An unquoted /config:<path> is passed on the command line; a space would split the argument. Slot paths
+        # are space-free by construction, so a space means an unexpected layout - fail closed rather than guess.
+        Fail ("startup config path contains whitespace, refusing to pass /config: " + $cfgFull)
+    }
+    $slotCanWrite = $true
+    try {
+        # FileMode.Open + FileAccess.Write opens the EXISTING file for writing WITHOUT truncating; closed at once.
+        $fsw = [System.IO.File]::Open($cfgFull, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        $fsw.Close()
+        $slotCanWrite = $true
+    } catch [System.UnauthorizedAccessException] {
+        $slotCanWrite = $false
+    } catch {
+        $slotCanWrite = $true   # cannot prove read-only (sharing/other) -> treat as untrusted, do not honour
+    }
+    if ($slotCanWrite) {
+        Write-Host "slot_launch: startup config present but slot-writable (untrusted) - ignoring; launching /portable only"
+    } else {
+        $ConfigPathToPass = $cfgFull
+        Write-Host ("slot_launch: honouring admin-provisioned read-only startup config: " + $cfgFull)
+    }
 }
 
 if ($GranteeSid -notmatch '^S-1-5-80-\d+-\d+-\d+-\d+-\d+$') {
@@ -173,11 +216,17 @@ public static class GuvfxLaunchGrant
 
     // Returns 0 on success; a non-zero code identifies the failing stage. On any post-create failure the
     // suspended child is terminated via the handle we created (never by image name) so nothing runs ungranted.
-    public static int LaunchAndGrant(string exePath, string workDir, string granteeSid)
+    public static int LaunchAndGrant(string exePath, string workDir, string granteeSid, string configPath)
     {
         SecurityIdentifier sid = new SecurityIdentifier(granteeSid);
         StringBuilder cmd = new StringBuilder();
         cmd.Append('"').Append(exePath).Append("\" /portable");   // /portable is HARD-CODED here
+        // ADR-0016 extension: append a tightly-controlled /config:<file>. configPath is empty unless the
+        // PowerShell side already proved the file exists, is beneath the slot, is whitespace-free, and is NOT
+        // writable by the slot identity. It is a DERIVED path (never a task/command argument), so terminal64's
+        // startup config cannot be steered by a tenant.
+        if (!string.IsNullOrEmpty(configPath))
+            cmd.Append(" /config:").Append(configPath);
         STARTUPINFO si = new STARTUPINFO();
         si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
         PROCESS_INFORMATION pi;
@@ -238,8 +287,9 @@ $selfErr = [GuvfxLaunchGrant]::SelfTest()
 if ($selfErr) { Fail $selfErr }
 
 # -- 4. Launch suspended, grant, verify, resume -- or terminate + fail. -------------------------------------
-$rc = [GuvfxLaunchGrant]::LaunchAndGrant($full, $WorkingDirectory, $GranteeSid)
+$rc = [GuvfxLaunchGrant]::LaunchAndGrant($full, $WorkingDirectory, $GranteeSid, $ConfigPathToPass)
 if ($rc -ne 0) { Fail ("launch/grant failed at stage " + $rc) }
 
-Write-Host ("slot_launch: launched and granted " + $EXPECTED_GRANTEE_ACCOUNT + " query access to " + $full)
+$cfgNote = if ($ConfigPathToPass) { " with startup config" } else { " (/portable only)" }
+Write-Host ("slot_launch: launched and granted " + $EXPECTED_GRANTEE_ACCOUNT + " query access to " + $full + $cfgNote)
 exit 0

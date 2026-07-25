@@ -45,19 +45,28 @@ param(
   # needs NO slot password and re-registers NOTHING, so - like -GrantTaskAccessOnly - it must not force a full
   # four-password -Apply. It refuses to enable anything that is not exactly a reviewed beta task (right
   # principal, RunLevel Limited, zero triggers), and read-back-verifies Enabled + zero triggers.
-  [switch]$EnableTasksOnly
+  [switch]$EnableTasksOnly,
+  # ADR-0016 (controlled /config: launch): re-stage the reviewed, hash-pinned launch wrapper into the admin-only
+  # launcher directory (and re-apply its ACL), then exit. A wrapper file replacement + ACL is admin-only and
+  # needs NO slot password and re-registers NOTHING (the launch task's action already points at the fixed
+  # wrapper PATH, unchanged), so it must not force a full four-password -Apply. Refuses any wrapper whose hash
+  # is not the pinned reviewed one, before AND after the copy.
+  [switch]$StageLauncherOnly
 )
 $ErrorActionPreference = "Stop"
 # The reviewed launch wrapper's pinned SHA-256 (lowercase). tests_install_artefacts.py asserts this equals the
 # hash of deploy/beta-agent/slot_launch.ps1, so it can never drift from the file; the install refuses to stage
 # a wrapper whose hash differs, before AND after the copy (ADR-0016; WinSW hash-pin pattern).
-$LaunchWrapperSha256 = "c18f5c3cf71e1b4afe4567c4bc98808db8a26f613dea646e97c823f7c9b83261"
+$LaunchWrapperSha256 = "ae2c4a485560cbd30b1eb3a30953357ff37bdafb6dec08b242af208505405b2d"
 if ($Apply -and $VerifyOnly) { throw "refusing: -Apply and -VerifyOnly are mutually exclusive" }
 if ($GrantTaskAccessOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly -or $EnableTasksOnly)) {
   throw "refusing: -GrantTaskAccessOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly/-EnableTasksOnly)"
 }
 if ($EnableTasksOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly -or $GrantTaskAccessOnly)) {
   throw "refusing: -EnableTasksOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly/-GrantTaskAccessOnly)"
+}
+if ($StageLauncherOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly -or $GrantTaskAccessOnly -or $EnableTasksOnly)) {
+  throw "refusing: -StageLauncherOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly/-GrantTaskAccessOnly/-EnableTasksOnly)"
 }
 #: May this run CHANGE the host? -VerifyOnly must never mutate.
 $Mutate = [bool]$Apply
@@ -287,8 +296,8 @@ function Test-GoldenImage {
 # The credential-free task modes provision no runtime and never read the golden image, so they must NOT
 # require a staged golden. Golden validation (RULE 10) gates only the runtime-provisioning paths (-Apply /
 # -VerifyOnly / -ValidateGoldenOnly), which are mutually exclusive with -GrantTaskAccessOnly/-EnableTasksOnly.
-if ($GrantTaskAccessOnly -or $EnableTasksOnly) {
-  Write-Host "note credential-free task mode: golden-image validation skipped (no runtime is provisioned and the golden image is never read)"
+if ($GrantTaskAccessOnly -or $EnableTasksOnly -or $StageLauncherOnly) {
+  Write-Host "note credential-free maintenance mode: golden-image validation skipped (no runtime is provisioned and the golden image is never read)"
 } else {
   if (-not (Test-Path $GoldenDir)) {
     throw "golden image not staged at $GoldenDir - commission a DEDICATED CLEAN MT5 install (RULE 10); the production terminal must never be promoted"
@@ -696,6 +705,39 @@ if ($EnableTasksOnly) {
     }
   }
   Write-Host "ok   EnableTasksOnly complete: eight beta tasks Enabled + triggerless; nothing registered, edited or started"
+  return
+}
+
+# ADR-0016 (controlled /config: launch): re-stage the reviewed hash-pinned launch wrapper and re-apply the
+# launcher ACL, then exit. Admin-only - a wrapper file replacement + ACL needs NO slot password and registers
+# nothing (the launch task's action already points at the fixed wrapper path, unchanged). Refuses any wrapper
+# whose SHA-256 is not the pinned reviewed one, BEFORE and AFTER the copy; leaves the launcher admin-only-writable
+# with slots read+execute only. Self-contained (does not use the DoIt/-Apply mutation gate).
+if ($StageLauncherOnly) {
+  Step "STAGE LAUNCHER ONLY: re-stage the hash-pinned launch wrapper + re-ACL (no registration, no passwords)"
+  $slSrc = Join-Path $PSScriptRoot $LaunchWrapper
+  $slDst = Join-Path $LauncherDir $LaunchWrapper
+  if (-not (Test-Path -LiteralPath $slSrc -PathType Leaf)) { throw "launch wrapper missing from the bundle: $slSrc" }
+  $slSrcHash = (Get-FileHash -LiteralPath $slSrc -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($slSrcHash -ne $LaunchWrapperSha256) {
+    throw "launch wrapper hash mismatch (bundle=$slSrcHash pinned=$LaunchWrapperSha256) - refusing to stage an unreviewed wrapper"
+  }
+  New-Item -ItemType Directory -Force -Path $LauncherDir | Out-Null
+  Copy-Item -LiteralPath $slSrc -Destination $slDst -Force
+  $slDstHash = (Get-FileHash -LiteralPath $slDst -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($slDstHash -ne $LaunchWrapperSha256) { throw "staged wrapper hash mismatch after copy (got=$slDstHash) - STOP" }
+  # Admin-only-writable launcher, slots read+execute ONLY (identical to the -Apply launcher ACL): a slot must
+  # never be able to rewrite the launcher it executes.
+  Invoke-GuvfxIcacls $LauncherDir @("/inheritance:r")
+  Invoke-GuvfxIcacls $LauncherDir @("/grant", "*S-1-5-32-544:(OI)(CI)F", "/grant", "*S-1-5-18:(OI)(CI)F")
+  for ($n = 1; $n -le $PoolSize; $n++) {
+    Invoke-GuvfxIcacls $LauncherDir @("/grant", ("{0}{1}:(OI)(CI)RX" -f $IdentityPrefix, $n))
+  }
+  $slAcl = Get-Acl $LauncherDir
+  if (-not $slAcl.AreAccessRulesProtected) { throw "launcher '$LauncherDir' still inherits after re-ACL - STOP" }
+  $slBack = (Get-FileHash -LiteralPath $slDst -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($slBack -ne $LaunchWrapperSha256) { throw "post-stage wrapper hash drifted - STOP" }
+  Write-Host "ok   StageLauncherOnly complete: wrapper re-staged (sha256 $LaunchWrapperSha256), launcher admin-only + slots RX; nothing registered or started"
   return
 }
 

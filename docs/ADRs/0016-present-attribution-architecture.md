@@ -203,3 +203,43 @@ Before resuming the slot-1 `TOMBSTONE → RELEASE` proof, prove on the host:
 Additive. Reverting the observe side restores the token-based owner read (re-introducing the cross-account
 PRESENT blocker); reverting the launch side restores the direct-`terminal64` task action (removing the grant).
 Both revert cleanly with no persistent residue, because the ACE was never persisted.
+
+---
+
+## Amendment — controlled `/config:` launch (2026-07-25, MT5 demo-validation packet)
+
+**Decision (Nuno, "Option 2 — extend ADR-0016 to support a tightly controlled `/config:` launch").** The launch
+wrapper may additionally pass `terminal64` a startup config so an approved EA auto-attaches. This is needed
+because in Session 0 the chart/MDI GUI fails, so MT5's normal profile-restore attach path cannot load an EA;
+a startup config is the only lifecycle-native way to attach one. Fresh measurement (2026-07-25, golden 6036)
+shows the Session-0 beta terminal **persists and its MQL5 compiler completes** — only the chart window fails —
+so an attach mechanism is worth having.
+
+**What changes.** `slot_launch.ps1`'s C# command-line builder still hard-codes `/portable`; it now *also* appends
+`/config:<file>` **only** when the file is trusted. The trust gate is entirely on the PowerShell side and is
+strict:
+
+- **Derived, never argued.** The config path is `Join-Path $WorkingDirectory 'guvfx_startup.ini'` — a fixed
+  filename beneath the already-validated slot working directory. It is never taken from a task/command argument,
+  so a tenant cannot steer which config `terminal64` reads. (No new `[Parameter]`.)
+- **Honoured only when the slot identity CANNOT write it.** The wrapper runs AS the slot identity; if it can
+  open the file for write, untrusted in-slot code can too. Such a config is **ignored** (fall back to
+  `/portable` only), so a tenant that plants a `guvfx_startup.ini` cannot make the terminal auto-run anything.
+  The trusted config is admin-owned + slot-read-only, provisioned outside the slot's write reach.
+- **Whitespace-free** (an unquoted `/config:<path>` would split on a space; slot paths are space-free — a space
+  fails closed).
+- **Content-blind, credential-agnostic.** The wrapper never reads the config content and never handles a
+  credential. Any `Login`/`Password`/`Server` a demo-phase config carries is the operator's, protected by the
+  file ACL — not by the wrapper. The `[StartUp]` directive set MT5 honours (Expert/Script/Symbol/Period/Login/
+  Password/Server/ExpertParameters) executes no arbitrary shell, so an admin-owned slot-read-only config is a
+  bounded surface.
+
+**What does NOT change.** The suspend → grant → verify → resume sequence, the `GRANT_MASK` (`0x21000`) and its
+equality read-back, the hard-coded `/portable`, the fail-closed terminate-on-any-failure, the grantee-SID
+validation, and the slots-root path confinement are all unchanged. The launch **task** action is unchanged (it
+still points at the fixed wrapper path), so no task re-registration is required; the wrapper file itself is
+re-staged by the credential-free `install_pool.ps1 -StageLauncherOnly` (hash-pinned before and after, launcher
+left admin-only + slots read-execute).
+
+**Reversal.** Additive: with no `guvfx_startup.ini` present the wrapper behaves exactly as before (`/portable`
+only). Removing the extension restores the prior wrapper; no persistent residue.
