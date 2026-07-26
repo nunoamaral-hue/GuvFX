@@ -853,6 +853,17 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
 
         if result is None:
             error = mt5.last_error()
+            # Lost ACK (Control 2, guaranteed exposure recovery): order_send gave no response, but the
+            # broker MAY have filled. If a position with this comment is already visible, the order
+            # landed — report it as FILLED rather than a failure that would strand exposure the platform
+            # believes does not exist. Fast in-process path ONLY: a settlement-lag miss (position not yet
+            # visible) still reports failure and is only PARTIALLY backstopped by periodic SYNC ingest
+            # (which fires for accounts holding open plans) — a pre-existing residual this diff shrinks,
+            # not a new gap.
+            _recovered = find_existing_execution(mt5, comment)
+            if _recovered:
+                logger.warning(f"Job {job_id}: lost-ACK recovery — position {_recovered.get('ticket')} exists for comment '{comment}' (treating as filled)")
+                return True, {"ticket": _recovered.get("ticket"), "volume": _recovered.get("volume"), "lost_ack_recovered": True, "comment": comment}, ""
             return False, {}, f"Order send returned None: {error}"
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -1157,6 +1168,13 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
 
         if result is None:
             error = mt5.last_error()
+            # Lost ACK (Control 2): reconcile before declaring failure. Fast path only — a settlement-lag
+            # miss still reports failure (only partially backstopped by periodic SYNC ingest); pre-existing
+            # residual this shrinks, not a new gap.
+            _recovered = find_existing_execution(mt5, comment)
+            if _recovered:
+                logger.warning(f"[/mt5/order] lost-ACK recovery — position {_recovered.get('ticket')} exists for comment '{comment[:31]}' (treating as filled)")
+                return {"ok": True, "lost_ack_recovered": True, "order": _recovered.get("ticket"), "volume": _recovered.get("volume"), "comment": comment[:31]}
             return {"ok": False, "error": "order_send_none", "detail": str(error)}
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
