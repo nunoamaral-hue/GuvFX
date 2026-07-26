@@ -1141,6 +1141,17 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
         sl_str = f" sl={sl}" if sl else ""
         tp_str = f" tp={tp}" if tp else ""
         prov_str = f" provider_symbol={provider_symbol}" if provider_symbol else ""
+        # Phase 2 (Control 3): pre-flight order_check parity with the poller path — validate the request
+        # before sending. Fail SAFE: a None/errored check does NOT block (the broker still gives the
+        # verdict on send); a check that reports a non-executable retcode blocks the pointless send.
+        try:
+            _chk = mt5.order_check(request)
+        except Exception:
+            _chk = None
+        if _chk is not None and getattr(_chk, "retcode", 0) not in (0, mt5.TRADE_RETCODE_DONE):
+            logger.warning(f"[/mt5/order] order_check rejected pre-send: retcode={getattr(_chk, 'retcode', None)} comment={getattr(_chk, 'comment', '')}")
+            return {"ok": False, "error": "order_check_failed", "retcode": getattr(_chk, "retcode", None), "comment": getattr(_chk, "comment", "")}
+
         logger.info(f"[/mt5/order] Sending: {symbol} {side} {lots} @ {price}{sl_str}{tp_str}{prov_str} comment='{comment[:31]}'")
         result = mt5.order_send(request)
 
