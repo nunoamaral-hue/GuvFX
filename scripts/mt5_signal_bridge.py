@@ -204,6 +204,106 @@ def _filling_for(symbol):
         pass
     return mt5.ORDER_FILLING_IOC
 
+
+# --- Execution binding verification (Phase 2, Control 1: exact runtime binding) --------------------
+# Before any OPENING order_send (execute_mt5_trade / execute_demo_order), the bridge independently
+# verifies from BROKER TRUTH (not a payload flag) that the connected terminal is the intended account
+# and classification. (close_position / modify_position act on an existing position by ticket and keep
+# their own demo-only check; routing them through this gate is a tracked follow-up.) This ports the certified
+# "exact binding" gate into the production order paths — previously the poller path (execute_mt5_trade)
+# verified nothing and trusted the payload is_demo flag alone. Fail closed: if the binding cannot be
+# positively verified, refuse to trade. Optional identity pins (MT5_EXPECTED_LOGIN / MT5_EXPECTED_SERVER)
+# and MT5_ALLOW_LIVE are read fresh per call so operators/tests can set them without a restart.
+def _bridge_allow_live() -> bool:
+    return os.getenv("MT5_ALLOW_LIVE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def evaluate_binding(acc, term, expected):
+    """Pure broker-truth binding decision — no MT5, no I/O, fully unit/mutation-testable.
+
+    acc:  None, or a mapping with login / server / trade_mode (trade_mode: 0=DEMO, 1=CONTEST, 2=REAL).
+    term: None, or a mapping with connected / trade_allowed.
+    expected: mapping with is_demo(bool), allow_live(bool), expected_login(str|None), expected_server(str|None).
+    Returns (ok: bool, reason: str). ok is True ONLY when every applicable check passes (fail closed).
+    """
+    if term is None:
+        return False, "terminal_info_unavailable"
+    if not term.get("connected"):
+        return False, "terminal_not_connected"
+    if not term.get("trade_allowed"):
+        return False, "trade_not_allowed"
+    if acc is None:
+        return False, "account_info_unavailable"
+    trade_mode = acc.get("trade_mode")
+    if trade_mode is None:
+        return False, "trade_mode_unavailable"
+    is_demo_account = (trade_mode == 0)
+    # Classification agreement: a job flagged demo must NOT run against a non-demo account.
+    if expected.get("is_demo") and not is_demo_account:
+        return False, "classification_mismatch_job_demo_broker_trade_mode_%s" % trade_mode
+    # A non-demo (real/contest) account may trade ONLY when live execution is explicitly authorised.
+    if not is_demo_account and not expected.get("allow_live"):
+        return False, "live_execution_not_authorised_trade_mode_%s" % trade_mode
+    # Identity pins (enforced only when configured).
+    exp_login = expected.get("expected_login")
+    if exp_login and str(acc.get("login")) != str(exp_login):
+        return False, "account_login_mismatch"
+    exp_server = expected.get("expected_server")
+    if exp_server and str(acc.get("server")) != str(exp_server):
+        return False, "broker_server_mismatch"
+    return True, "ok"
+
+
+def _acc_snapshot(acc_raw):
+    if acc_raw is None:
+        return None
+    return {
+        "login": getattr(acc_raw, "login", None),
+        "server": getattr(acc_raw, "server", None),
+        "trade_mode": getattr(acc_raw, "trade_mode", None),
+    }
+
+
+def _term_snapshot(term_raw):
+    if term_raw is None:
+        return None
+    return {
+        "connected": bool(getattr(term_raw, "connected", False)),
+        "trade_allowed": bool(getattr(term_raw, "trade_allowed", False)),
+    }
+
+
+def verify_execution_binding(mt5, payload):
+    """Read broker truth from a live MT5 handle and evaluate the binding. Returns (ok, reason, details).
+
+    ``details`` carries only a REDACTED account suffix + server + trade_mode for audit/logs (never the
+    full login). A read error is treated as an UNVERIFIED binding (fail closed), never a pass.
+    """
+    try:
+        acc = _acc_snapshot(mt5.account_info())
+        term = _term_snapshot(mt5.terminal_info())
+        expected = {
+            "is_demo": bool(payload.get("is_demo", False)),
+            "allow_live": _bridge_allow_live(),
+            "expected_login": (os.getenv("MT5_EXPECTED_LOGIN", "").strip() or None),
+            "expected_server": (os.getenv("MT5_EXPECTED_SERVER", "").strip() or None),
+        }
+        ok, reason = evaluate_binding(acc, term, expected)
+        details = {}
+        if acc is not None:
+            login = acc.get("login")
+            details = {
+                "account_suffix": ("****" + str(login)[-4:]) if login is not None else None,
+                "server": acc.get("server"),
+                "trade_mode": acc.get("trade_mode"),
+            }
+        return ok, reason, details
+    except Exception as exc:
+        # ANY failure evaluating the binding (broker read, env, or logic) is an UNVERIFIED binding:
+        # fail closed, and never surface a login in the message.
+        return False, "binding_error_%s" % type(exc).__name__, {}
+
+
 # Timeframe mapping for MT5
 TIMEFRAME_MAP = {
     "M1": 1,      # TIMEFRAME_M1
@@ -267,6 +367,15 @@ def validate_config() -> bool:
         if _val and any(m in _val.lower() for m in
                         ("replace", "changeme", "example", "placeholder", "<", "${", "scrubbed")):
             errors.append(f"{_name} looks like placeholder text, not a real secret")
+
+    # Live execution requires an EXACT-ACCOUNT binding pin (Phase 2, Control 1): the binding gate
+    # always enforces demo/live classification, but the account-identity half is only enforced when
+    # MT5_EXPECTED_LOGIN is set. Refuse to start with live enabled and no account pin (fail closed).
+    if _bridge_allow_live() and not os.getenv("MT5_EXPECTED_LOGIN", "").strip():
+        errors.append(
+            "MT5_ALLOW_LIVE is enabled but MT5_EXPECTED_LOGIN is not set: live execution requires an "
+            "exact-account binding pin (set MT5_EXPECTED_LOGIN to the intended broker login)"
+        )
 
     if errors:
         for err in errors:
@@ -482,6 +591,13 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
         return False, {}, f"MT5 initialization failed: {error}"
 
     try:
+        # Phase 2 (Control 1): broker-truth binding gate BEFORE any order. Fail closed — refuse to
+        # trade unless the connected terminal is verified as the intended account/classification.
+        _bok, _breason, _bdetails = verify_execution_binding(mt5, payload)
+        if not _bok:
+            logger.error(f"Job {job_id}: EXECUTION BINDING REJECTED: {_breason} {_bdetails}")
+            return False, {"error": "binding_rejected", "reason": _breason, **_bdetails}, f"binding_rejected: {_breason}"
+
         # MT5-native symbol validation (replaces the old static allowlist). The exact
         # broker symbol resolved by the backend registry must exist and be selectable.
         ok, symbol_info, sym_err = validate_broker_symbol(mt5, symbol)
@@ -924,7 +1040,8 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": "mt5_init_failed", "detail": str(error)}
 
     try:
-        # Verify account is demo
+        # Verify account is demo (the HTTP order path is demo-only; kept FIRST so the existing
+        # account_not_demo contract is preserved for non-demo accounts).
         account_info = mt5.account_info()
         if account_info is None:
             return {"ok": False, "error": "account_info_failed"}
@@ -932,6 +1049,13 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
         # trade_mode: 0=DEMO, 1=CONTEST, 2=REAL
         if account_info.trade_mode != 0:
             return {"ok": False, "error": "account_not_demo", "detail": f"trade_mode={account_info.trade_mode}"}
+
+        # Phase 2 (Control 1): broker-truth binding gate. Fail closed — adds connected / trade_allowed
+        # and optional login/server pin verification on top of the demo check above.
+        _bok, _breason, _bdetails = verify_execution_binding(mt5, params)
+        if not _bok:
+            logger.error(f"[/mt5/order] EXECUTION BINDING REJECTED: {_breason} {_bdetails}")
+            return {"ok": False, "error": "binding_rejected", "reason": _breason, **_bdetails}
 
         # MT5-native symbol validation (replaces the old static allowlist). The exact
         # broker symbol resolved by the backend registry must exist and be selectable.
@@ -1895,7 +2019,7 @@ def main_loop() -> None:
     if AGENT_TOKEN:
         logger.info(f"  - HTTP auth: REQUIRED (GUVFX_AGENT_TOKEN)")
     else:
-        logger.info(f"  - HTTP auth: REQUIRED (GUVFX_WORKER_TOKEN fallback)")
+        logger.info(f"  - HTTP auth: REQUIRED (GUVFX_AGENT_TOKEN, no fallback)")
     logger.info("=" * 60)
 
     while True:
