@@ -304,6 +304,36 @@ def verify_execution_binding(mt5, payload):
         return False, "binding_error_%s" % type(exc).__name__, {}
 
 
+# --- Open-position idempotency guard (Phase 2, Control 4) ------------------------------------------
+# A re-delivered / retried PLACE_ORDER (worker retry, job redelivery, agent restart, backend timeout)
+# must NOT open a duplicate position. The order comment (e.g. "WAY{plan}L{leg}") is the intent's
+# idempotency key; before order_send we check whether an OPEN position already carries it. If so the
+# intent already executed — return the existing ticket instead of sending again.
+#
+# SCOPE / LIMITS (do not overstate — RULE 5/7): this is an OPEN-POSITION check, NOT durable state. The
+# primary idempotency guarantee lives in the backend (PLACE_ORDER is never re-enqueued + leg<->job
+# OneToOne); this bridge guard is a fail-safe SECOND line. Once a position closes the memory is gone
+# (a redelivery after close could re-open — bounded by the backend guarantee). It also assumes the
+# broker stores the comment verbatim in the first 31 chars; a broker that mangles comments would make
+# the guard miss. Fail SAFE: any read error / non-iterable / None returns None ("no match -> proceed").
+def find_existing_execution(mt5, comment):
+    """Return {'ticket', 'volume'} for an open position already carrying ``comment``, else None."""
+    c = (comment or "")[:31]
+    if not c:
+        return None
+    try:
+        positions = mt5.positions_get() or ()
+        for p in positions:
+            if getattr(p, "comment", "") == c:
+                return {"ticket": getattr(p, "ticket", None), "volume": getattr(p, "volume", None)}
+    except Exception as exc:
+        # Never fail the order on a guard read error — but never stay silent either (a chronic
+        # positions_get failure would disable the guard invisibly).
+        logger.warning(f"idempotency guard read error ({type(exc).__name__}); proceeding without it")
+        return None
+    return None
+
+
 # Timeframe mapping for MT5
 TIMEFRAME_MAP = {
     "M1": 1,      # TIMEFRAME_M1
@@ -597,6 +627,13 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
         if not _bok:
             logger.error(f"Job {job_id}: EXECUTION BINDING REJECTED: {_breason} {_bdetails}")
             return False, {"error": "binding_rejected", "reason": _breason, **_bdetails}, f"binding_rejected: {_breason}"
+
+        # Phase 2 (Control 4): idempotency guard at the order_send boundary — if this intent's comment
+        # is already on an open position, it already executed; return it rather than duplicating.
+        _existing = find_existing_execution(mt5, comment)
+        if _existing:
+            logger.warning(f"Job {job_id}: idempotent no-op, existing ticket={_existing.get('ticket')} comment='{comment}'")
+            return True, {"ticket": _existing.get("ticket"), "volume": _existing.get("volume"), "idempotent": True, "comment": comment}, ""
 
         # MT5-native symbol validation (replaces the old static allowlist). The exact
         # broker symbol resolved by the backend registry must exist and be selectable.
@@ -1056,6 +1093,13 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
         if not _bok:
             logger.error(f"[/mt5/order] EXECUTION BINDING REJECTED: {_breason} {_bdetails}")
             return {"ok": False, "error": "binding_rejected", "reason": _breason, **_bdetails}
+
+        # Phase 2 (Control 4): idempotency guard — if this intent's comment is already on an open
+        # position, it already executed; return it rather than duplicating.
+        _existing = find_existing_execution(mt5, comment)
+        if _existing:
+            logger.warning(f"[/mt5/order] idempotent no-op, existing ticket={_existing.get('ticket')} comment='{comment[:31]}'")
+            return {"ok": True, "idempotent": True, "order": _existing.get("ticket"), "volume": _existing.get("volume"), "comment": comment[:31]}
 
         # MT5-native symbol validation (replaces the old static allowlist). The exact
         # broker symbol resolved by the backend registry must exist and be selectable.
