@@ -6,6 +6,16 @@
 
 ## Execution workstream log
 
+- **2026-07-26 — EXECUTION PLANE CERTIFIED. 🟢 Infrastructure Research COMPLETE; Hosted Execution Mechanism FUNCTIONALLY CERTIFIED.**
+  A single 0.01 EURUSD disposable-demo `order_send` round-trip ran headlessly through a governed non-admin Session-0
+  `/portable` slot-2 runtime via exact-path MetaTrader5 IPC: OPEN retcode 10009 ticket 80896575, CLOSE retcode 10009
+  ticket 80896576, realized −$0.82, independently verified zero exposure, native STOP→TOMBSTONE→RELEASE (gen 3→4, 0
+  credential residue), production + reference + bridge + agent intact, golden unchanged. **ADR-0018 → Accepted &
+  Certified (rev 5).** Full record: [Infrastructure Research & Certification Report v1.0](INFRASTRUCTURE_RESEARCH_CERTIFICATION_REPORT.md).
+  Programme now transitions to the **Hosted MVP Completion Programme** (14 phases; production untouched until the Sponsor
+  Go-Live Gate). Two dead-on-arrival exec defects were caught by a **pre-execution** adversarial review (non-existent
+  `SYMBOL_FILLING_*` constants; missing guaranteed-close backstop) and fixed before the live order.
+
 - **2026-07-25 — B3P-2 on-demand task model (ADR 0017): the task-enablement blocker is RESOLVED. 🟢 decided + implemented + reviewed, 🟠 host apply + final lifecycle next.**
   **Decision (Nuno):** the eight beta tasks are **ENABLED but TRIGGERLESS** at rest — on-demand execution
   capabilities, not scheduled jobs. No per-invocation enable/disable; no task-modification right for the service.

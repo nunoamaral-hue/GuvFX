@@ -1,5 +1,11 @@
 # Beta Onboarding V1 — Option A Target Architecture (Windows-native RDS/RemoteApp host pool)
 
+> **⚠️ SUPERSEDED / HISTORICAL (2026-07-26).** This RDS/RemoteApp **multi-user host-pool** design is **not** the
+> current hosted architecture. The certified architecture is **one VPS per customer** with a **Separated Execution and
+> Visual Plane** model — see [ADR-0018 §0 (Accepted & Certified, rev 5)](ADRs/0018-interactive-runtime-architecture.md)
+> and the [Infrastructure Research & Certification Report v1.0](INFRASTRUCTURE_RESEARCH_CERTIFICATION_REPORT.md).
+> Retained for historical reference only.
+
 > **Status: DESIGN FOR APPROVAL — v2 refined (2026-07-20). No procurement. No architecture-dependent
 > implementation has started.** v2 adds, per Nuno: the **canonical ownership model** (§0, User → Broker
 > Account → MT5 Runtime → Strategies → Positions → Notifications, runtime owned by the *broker account*),

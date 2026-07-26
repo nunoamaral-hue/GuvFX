@@ -5,6 +5,10 @@
 > concise evidence. This file does not assert point-in-time PR status. Full state
 > map: [`docs/PROGRAMME_STATE.md`](PROGRAMME_STATE.md).
 
+- **Hosted execution — CERTIFIED (2026-07-26).** The hosted MT5 execution *mechanism* is functionally certified
+  (headless disposable-demo order round-trip; ADR-0018 Accepted & Certified rev 5). Infrastructure Research COMPLETE;
+  the frontier is now the **Hosted MVP Completion Programme** (14 phases; production untouched until the Sponsor
+  Go-Live Gate). See [Certification Report v1.0](INFRASTRUCTURE_RESEARCH_CERTIFICATION_REPORT.md).
 - **Synthetic foundation (006C arc) — DONE.** 006C + R1…R4-R2 merged to `main`
   (R4-R2 via PR #36; `main` `148437ae`). Synthetic-only; no real data/NAS/broker in
   this repository.

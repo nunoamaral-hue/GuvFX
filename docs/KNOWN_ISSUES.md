@@ -2,6 +2,14 @@
 
 List active problems with reproduction steps and workarounds.
 
+## ℹ️ Hosted MVP — production risks tracked in the Completion Programme (2026-07-26)
+
+The hosted execution *mechanism* is certified, but the production *platform* is not built. Open production risks —
+per-customer routing, credential lifecycle, reboot recovery / LiveUpdate prevention / modal watchdog, per-VPS backup
+isolation, the manual-trading side-door, and the commercial model — are enumerated in the
+[Infrastructure Research & Certification Report §14](INFRASTRUCTURE_RESEARCH_CERTIFICATION_REPORT.md) and owned by the
+Hosted MVP Completion Programme phases. These are tracked risks, not active defects.
+
 ## ✅ RESOLVED — per-slot tasks are now ENABLED but TRIGGERLESS (on-demand model, ADR 0017, 2026-07-25)
 
 *Was:* the per-slot tasks were registered install-only **Disabled** and nothing enabled them, so the native

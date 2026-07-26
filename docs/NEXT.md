@@ -1,5 +1,16 @@
 # NEXT — Priorities (keep this list short)
 
+## Hosted MVP Completion Programme — Phase 0 DONE, Phase 1 next (2026-07-26)
+Execution Plane **CERTIFIED**; ADR-0018 **Accepted & Certified (rev 5)**; Infrastructure Research **COMPLETE** (see
+[Certification Report v1.0](INFRASTRUCTURE_RESEARCH_CERTIFICATION_REPORT.md)). The 14-phase production programme is the
+frontier; production stays untouched until the final Sponsor Go-Live Gate. One bounded next action:
+- [ ] **Phase 1 — Authoritative MVP baseline.** Produce `docs/HOSTED-MVP-BASELINE.md` (topology; tenancy / execution /
+  trust boundaries; demo/paper/live classification; credential / backup / monitoring ownership; operator vs customer
+  responsibilities; supported failure & recovery model) + any ADR amendments. Documentation only, no production impact.
+
+> The prior B3P-2 host-apply items (ADR-0016 `-Apply`, slot-1 lifecycle) fold into **Phase 4 (per-VPS provisioning)**;
+> they remain Nuno-gated (slot task passwords the model must never see).
+
 ## B3P-2 — on-demand task model decided + implemented; final slot-1 lifecycle next (2026-07-25)
 TSV task-discovery is complete (`#212`/`#213`/`#214`). The follow-on task-enablement blocker is **resolved by
 [ADR 0017](ADRs/0017-beta-task-enabled-triggerless-on-demand.md)**: the eight beta tasks are ENABLED but

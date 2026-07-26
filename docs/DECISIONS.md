@@ -11,6 +11,20 @@ Record decisions that affect architecture, security, or major UX.
 - Decision:
 - Consequences:
 
+## 2026-07-26: Hosted execution architecture ACCEPTED AND CERTIFIED (ADR-0018 rev 5)
+- **Decision:** GuvFX hosts customer MT5 execution as a **Separated Execution and Visual Plane** architecture on a
+  **one-VPS-per-customer** topology. The **Execution Plane is functionally certified** (headless, Session 0,
+  `/portable`, non-admin runtime identity, exact-path MetaTrader5 Python IPC, broker-connected, chart-independent);
+  the **Visual Plane** is optional, separately governed, no execution authority by default.
+- **Context:** the central research question — can execution run headless without an interactive charted desktop?
+- **Evidence:** live disposable-demo `order_send` round-trip 2026-07-26 (OPEN retcode 10009 ticket 80896575 / CLOSE
+  10009 ticket 80896576; independent zero-exposure; native teardown; production preserved). See
+  [ADR-0018 §0](ADRs/0018-interactive-runtime-architecture.md) +
+  [Certification Report v1.0](INFRASTRUCTURE_RESEARCH_CERTIFICATION_REPORT.md).
+- **Consequences:** Infrastructure Research COMPLETE; the production *platform* is delivered by the **Hosted MVP
+  Completion Programme** (14 phases), production untouched until a separate Sponsor Go-Live Gate.
+- **Deviation:** sponsor-authorised acceptance of the wider Sunday-reopen spread (spread ceiling 50→90 pts only).
+
 ## 2025-12-16: VPS production routing & MT5 handoff
 - Traefik runs on the shared `traefik-public` docker network as the single TLS entrypoint for `guvfx.com`, `api.guvfx.com`, and `guac.guvfx.com`; certificates managed via Let's Encrypt keep routing uniform.
 - Guacamole sits behind `guac.guvfx.com/guacamole/` so the MT5 desktop is always served over HTTPS via Traefik.

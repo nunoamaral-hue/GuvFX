@@ -5,6 +5,16 @@
 > chains. **Notion is authoritative** for lifecycle (*GuvFX — Current State v0.52*);
 > this file mirrors it and must be kept consistent. Last reconciled: **2026-06-28**.
 
+## Hosted execution architecture — ACCEPTED & CERTIFIED (2026-07-26)
+
+The GuvFX **hosted MT5 execution mechanism** is **functionally certified**: a live disposable-demo `order_send`
+round-trip ran headlessly through a governed non-admin Session-0 `/portable` runtime via exact-path MetaTrader5 IPC,
+with independently verified zero exposure and clean native teardown, production untouched. Architecture = **Separated
+Execution and Visual Plane** on **one VPS per customer** ([ADR-0018 §0, rev 5](ADRs/0018-interactive-runtime-architecture.md)).
+Infrastructure Research is **COMPLETE**; the production platform is delivered by the **Hosted MVP Completion Programme**
+(14 phases; production untouched until the Sponsor Go-Live Gate). Full record:
+[Infrastructure Research & Certification Report v1.0](INFRASTRUCTURE_RESEARCH_CERTIFICATION_REPORT.md).
+
 ## Repositories
 
 | Logical role | Repository | Pin | Notes |
