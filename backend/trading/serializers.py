@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import TradingAccount, BrokerServer, Trade
 from .crypto import encrypt_password
+from .classification import classification_error
 from core.audit import log_customer_credential_event
 
 
@@ -41,6 +42,16 @@ class TradingAccountSerializer(serializers.ModelSerializer):
         broker_name = (attrs.get("broker_name") or getattr(self.instance, "broker_name", "") or "").strip()
         if not broker_server and not broker_name:
             raise serializers.ValidationError("Provide either broker_server or broker_name.")
+
+        # T7 (Phase 3 / P3-E): demo/live classification consistency, via the shared config-level check
+        # (also enforced at the add-with-mt5-login create endpoint). Scoped to requests that set the
+        # classification fields, so it never retroactively blocks an unrelated edit on a legacy
+        # inconsistent row. Broker-TRUTH verification (account_info().trade_mode) stays at execution.
+        if broker_server is not None and ("is_demo" in attrs or "broker_server" in attrs):
+            is_demo = attrs.get("is_demo", getattr(self.instance, "is_demo", False))
+            err = classification_error(is_demo, broker_server)
+            if err:
+                raise serializers.ValidationError({"is_demo": err})
         return attrs
 
     def create(self, validated_data):

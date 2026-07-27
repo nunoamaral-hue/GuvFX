@@ -51,6 +51,14 @@ class AddAccountWithMt5LoginView(APIView):
                 return Response({"ok": False, "detail": "Provide broker_server or broker_name"}, status=400)
             server_name = broker_name
 
+        # T7 (Phase 3 / P3-E): demo/live classification consistency — the same shared config-level
+        # check the serializer enforces, applied on THIS create path too (it does a direct ORM create,
+        # so it would otherwise bypass the serializer). Fail fast before the broker login call.
+        from trading.classification import classification_error
+        _cls_err = classification_error(is_demo, broker_server)
+        if _cls_err:
+            return Response({"ok": False, "detail": _cls_err}, status=400)
+
         inst = _get_user_mt5_instance(user)
         if not inst or not getattr(inst, "windows_username", ""):
             return Response({"ok": False, "detail": "No MT5 instance/windows user assigned"}, status=409)
