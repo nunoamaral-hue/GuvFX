@@ -569,7 +569,8 @@ def log_worker_auth_failed(
 
 # Full customer-credential lifecycle vocabulary (Phase 3 / ADR-0019). Worker-identity audits use
 # the CREATED/ROTATED/REVOKED subset; customer credentials add VERIFIED (login confirmed against
-# broker truth), ACCESSED (decrypted for use), and DESTROYED (crypto-shred/verified destruction).
+# broker truth), ACCESSED (decrypted for use), and DESTROYED (verified destruction — today a secure
+# ciphertext clear; per-customer crypto-shred is an ADR-0019 strategic item, not yet built).
 CREDENTIAL_ACTIONS = ("CREATED", "VERIFIED", "ACCESSED", "ROTATED", "REVOKED", "DESTROYED")
 
 # Actions that de-provision or remove access are elevated so they stand out in the audit stream.
