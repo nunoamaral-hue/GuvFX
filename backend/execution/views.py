@@ -15,6 +15,7 @@ from .models import (
     DEMO_FIXED_LOT_SIZE,
     DEMO_MAX_TRADES_PER_DAY,
     order_creation_kill_reason,
+    KILL_SWITCH_BLOCKED_JOB_TYPES,
 )
 from .serializers import (
     ExecutionJobSerializer,
@@ -203,6 +204,16 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         else:
             # Default: only SYNC_POSITIONS (backward compat for the Linux ingest worker).
             types_to_try = [ExecutionJob.JobType.SYNC_POSITIONS]
+
+        # Control 6 (kill switch honoured at CLAIM): while execution is suspended (ExecutionControl
+        # kill switch or GUVFX_EXECUTION_DISABLED), never hand out order-OPENING job types — an
+        # already-CREATED PLACE_ORDER/OPEN_TRADE must not be executed during a suspension. This closes
+        # the gap where the kill switch blocked only order CREATION. Risk-reducing types (CLOSE_TRADE,
+        # MODIFY_POSITION, SYNC_POSITIONS) still flow so open positions can be flattened/managed. If a
+        # worker requested only blocked types, ``types_to_try`` empties and the claim returns 204 no_jobs.
+        if order_creation_kill_reason():
+            _blocked = set(KILL_SWITCH_BLOCKED_JOB_TYPES)
+            types_to_try = [t for t in types_to_try if t not in _blocked]
 
         # Base queryset (PENDING + account), type applied per-priority below.
         base_qs = ExecutionJob.objects.filter(status=ExecutionJob.Status.PENDING)
