@@ -1,0 +1,50 @@
+# TB-5 (Trusted Beta) — managed, restart-safe beta ProvisioningJob worker.
+#
+# A dedicated VPS-side service that runs the EXISTING `run_beta_provisioning_worker` loop: it claims
+# QUEUED beta ProvisioningJobs and advances them through the signed management channel
+# (materialise → configure → start → verify → RUNNING). It is the missing piece that lets a QUEUED
+# beta runtime actually provision — without it the job never advances.
+#
+# It reuses the backend service's full configuration (image, volumes, network, shared env via the
+# backend's env_file — DB creds, BETA_RUNTIMES_ENABLED, the beta-agent config) through `extends`,
+# overriding ONLY the command and container identity. NO secret is stored here.
+#
+# DARK BY DEFAULT: `run_beta_provisioning_worker` / `beta_worker.process_one` is a no-op unless
+# BETA_RUNTIMES_ENABLED is on (default OFF). Bringing this service up while the flag is OFF starts an
+# idle loop that claims nothing and never touches the host — safe to stage before arming.
+#
+# Deploy (from the prod compose directory; base resolved via GUVFX_COMPOSE_BASE) — CLASS-B, Sponsor-gated:
+#   docker compose -f docker-compose.yml \
+#     -f /home/ubuntu/guvfx-app/deploy/beta-provisioner/docker-compose.beta-provisioner.yml \
+#     up -d --no-deps guvfx-beta-provisioner
+#
+# Arm (only after the B3P-2 host APPLY + the beta agent are installed and reachable, and after
+# verifying the service is dark): set BETA_RUNTIMES_ENABLED=1 in the backend env_file and recreate
+# this service. Disarm: set BETA_RUNTIMES_ENABLED=0 (or `docker compose stop guvfx-beta-provisioner`);
+# no runtime is torn down by stopping the worker — QUEUED jobs simply wait.
+#
+# Rollback: `docker compose ... stop guvfx-beta-provisioner && docker compose ... rm -f guvfx-beta-provisioner`.
+#
+# This file makes NO change to the backend, worker, or listener services.
+
+services:
+  guvfx-beta-provisioner:
+    extends:
+      file: "${GUVFX_COMPOSE_BASE:-docker-compose.yml}"
+      service: guvfx-backend
+    container_name: guvfx-beta-provisioner
+    restart: unless-stopped
+    # Long-running claim loop (NOT a one-shot). Reuses the backend image + env. Dark unless
+    # BETA_RUNTIMES_ENABLED (inherited from the backend env_file, EXACTLY like the other workers'
+    # arm flags — do NOT add an `environment:` override here or it would shadow the env_file value
+    # and the documented "set BETA_RUNTIMES_ENABLED=1 in the env_file" arm step would silently no-op).
+    command: ["python", "manage.py", "run_beta_provisioning_worker"]
+    # CRITICAL: this service `extends guvfx-backend`, inheriting the backend's traefik labels (the
+    # `guvfx-api` router on Host(`api.guvfx.com`)). This container runs a management command, not a
+    # web server — nothing listens on :8000. If traefik kept the inherited labels it would register
+    # this container as a SECOND (dead) backend for `guvfx-api` and load-balance ~half of
+    # api.guvfx.com onto it → HTTP 502. Disable traefik entirely here, exactly like the ingest /
+    # shadow / tp-watcher workers do. (Docker applies the last duplicate label key, so this wins over
+    # the inherited `traefik.enable=true`; verify with `docker compose config`.)
+    labels:
+      - "traefik.enable=false"
