@@ -281,6 +281,19 @@ export default function DashboardPage() {
   const [syncedAt, setSyncedAt] = useState("");
   const [bootLoaded, setBootLoaded] = useState(false);
 
+  // TB-4 (Trusted Beta) — the truthful per-account status machine (Awaiting → Validating → Runtime
+  // Pending → Ready → Active). Sourced from /api/onboarding/account-status/ (owner-scoped, and — unlike
+  // reliability trading-health — it does NOT need a reliability snapshot, so it renders for a beta
+  // account that has no runtime yet). Keyed on `accounts` so it re-fetches when the primary changes.
+  type AcctStatus = { overall?: string; stages?: { key: string; label: string; state: string; detail?: string }[] };
+  const [acctStatus, setAcctStatus] = useState<AcctStatus | null>(null);
+  useEffect(() => {
+    const primary = accounts.find((a) => a.is_active) || accounts[0];
+    if (!primary?.id) return;   // no primary yet — leave state as-is (never a synchronous setState here)
+    apiFetch<AcctStatus>(`/api/onboarding/account-status/?account_id=${primary.id}`, {})
+      .then((s) => setAcctStatus(s || null)).catch(() => setAcctStatus(null));
+  }, [accounts]);
+
   const [options, setOptions] = useState<string[]>([]);
   const [symbol, setSymbol] = useState("");
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -472,6 +485,15 @@ export default function DashboardPage() {
               );
             })()}
             {primaryAcct && <div style={{ fontSize: "0.73rem", color: "#8b9bb4", marginTop: 4 }}>{primaryAcct.broker_name || "Broker"} · {primaryAcct.name}</div>}
+            {acctStatus && (() => {
+              // TB-4: the truthful onboarding→ready state for the primary account — works for a beta
+              // account with no reliability snapshot (where the trading-health line above stays UNKNOWN).
+              const stages = acctStatus.stages || [];
+              const pending = stages.find((s) => s.state !== "HEALTHY" && s.state !== "RUNNING");
+              const label = acctStatus.overall === "HEALTHY" ? "Active" : (pending?.label || "Setting up");
+              const col = acctStatus.overall === "HEALTHY" ? "#86efac" : acctStatus.overall === "FAILED" ? "#fca5a5" : "#8b9bb4";
+              return <div style={{ fontSize: "0.73rem", color: col, marginTop: 2 }} title={pending?.detail || undefined}>Setup: {label}</div>;
+            })()}
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 110 }}>
             <div style={microLabel}><i className="ti ti-wallet" aria-hidden="true" style={{ marginRight: 5 }} />Equity</div>
