@@ -264,6 +264,21 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             qs = qs.filter(user=user)
         return qs.order_by("-created_at")
 
+    def perform_destroy(self, instance):
+        # Phase 3 (P3-D): securely destroy + audit the customer credential as part of deleting the
+        # account, so a removed account never leaves broker-password ciphertext behind. Wrapped in one
+        # transaction with the row delete: if the delete is refused (e.g. an account with a PROTECTed
+        # AccountProvisioning), the destruction + its durable DESTROYED audit row roll back too,
+        # preserving prior behaviour (the delete still raises as before). NOTE: a fully provisioned
+        # account cannot be DELETEd (PROTECT) — offboard it with the `destroy_customer_credential`
+        # management command (clear-without-delete) or tear the provisioning down first. Observability
+        # caveat: on a refused delete the durable AuditEvent is authoritative (0 rows), though the
+        # transient info-log line may still print — do not key alerts on the log alone.
+        from trading.credential_lifecycle import destroy_customer_credential
+        with transaction.atomic():
+            destroy_customer_credential(instance, actor="account-delete", request=self.request)
+            super().perform_destroy(instance)
+
     def perform_create(self, serializer):
         from django.db import transaction
         from rest_framework.exceptions import ValidationError
