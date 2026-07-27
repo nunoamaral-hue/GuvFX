@@ -567,7 +567,13 @@ def log_worker_auth_failed(
 # Credential Lifecycle Audit (SEC-CREDENTIAL-ROTATION)
 # =============================================================================
 
-CREDENTIAL_ACTIONS = ("CREATED", "ROTATED", "REVOKED")
+# Full customer-credential lifecycle vocabulary (Phase 3 / ADR-0019). Worker-identity audits use
+# the CREATED/ROTATED/REVOKED subset; customer credentials add VERIFIED (login confirmed against
+# broker truth), ACCESSED (decrypted for use), and DESTROYED (crypto-shred/verified destruction).
+CREDENTIAL_ACTIONS = ("CREATED", "VERIFIED", "ACCESSED", "ROTATED", "REVOKED", "DESTROYED")
+
+# Actions that de-provision or remove access are elevated so they stand out in the audit stream.
+_CREDENTIAL_SEVERITY = {"REVOKED": "WARN", "DESTROYED": "WARN"}
 
 
 def log_credential_event(
@@ -579,10 +585,10 @@ def log_credential_event(
     request: HttpRequest | None = None,
     **detail,
 ) -> None:
-    """Append-only audit for a credential lifecycle change (create / rotate /
-    revoke). NEVER pass a secret value — record only identifiers, the action, and
-    who performed it (``_sanitize_metadata`` scrubs known secret keys as a further
-    guard). Fail-open via ``log_event``.
+    """Append-only audit for a credential lifecycle change (create / verify / access / rotate /
+    revoke / destroy). NEVER pass a secret value — record only identifiers, the action, and who
+    performed it (``_sanitize_metadata`` scrubs known secret keys as a further guard). Fail-open
+    via ``log_event``.
 
     ``action`` should be one of ``CREDENTIAL_ACTIONS``; ``entity_type`` names the
     credential holder (e.g. ``"WorkerIdentity"``), ``entity_id`` its stable id;
@@ -592,11 +598,65 @@ def log_credential_event(
     log_event(
         request,
         event_type=f"CREDENTIAL_{act}",
-        severity="WARN" if act == "REVOKED" else "INFO",
+        severity=_CREDENTIAL_SEVERITY.get(act, "INFO"),
         entity_type=entity_type,
         entity_id=str(entity_id),
         metadata={"action": act, "actor": actor or "(system)", **detail},
     )
+
+
+def log_customer_credential_event(
+    action: str,
+    *,
+    account,
+    actor: str = "",
+    request: HttpRequest | None = None,
+    purpose: str = "",
+    **detail,
+) -> None:
+    """Append-only audit for a CUSTOMER broker credential (a ``TradingAccount`` password).
+
+    Records only a REDACTED reference — the account id, the last-4 of the account number, the broker
+    and the demo/live classification — and NEVER the plaintext password (both because we never pass
+    it and because ``_sanitize_metadata`` scrubs known secret keys). Use at intake (``CREATED``),
+    verification (``VERIFIED``), decrypt-for-use (``ACCESSED`` — pass ``purpose`` e.g.
+    "send-to-agent"), rotation (``ROTATED``), revocation (``REVOKED``) and destruction
+    (``DESTROYED``).
+
+    Fully fail-open: this helper is the general customer-credential audit entry point, so an audit
+    failure — including a caller passing a colliding/reserved ``**detail`` key — must NEVER break the
+    intake/rotation/access path. Reserved dispatch kwargs are stripped from ``detail`` and the
+    redacted reference is applied LAST so a caller can never override the redaction.
+    """
+    try:
+        acct_id = getattr(account, "id", None) if account is not None else None
+        acct_number = str(getattr(account, "account_number", "") or "") if account is not None else ""
+        # Mask fully unless there are MORE than 4 chars to keep hidden (a <=4 char number would be
+        # shown in full by a bare [-4:] slice).
+        suffix = f"****{acct_number[-4:]}" if len(acct_number) > 4 else "****"
+        # Start from caller detail, strip the dispatch kwargs it must not set, then apply the
+        # redacted reference LAST so redaction always wins.
+        meta = dict(detail)
+        for reserved in ("entity_type", "entity_id", "actor", "request"):
+            meta.pop(reserved, None)
+        meta.update({
+            "account_id": acct_id,
+            "account_number_suffix": suffix,
+            "broker_name": str(getattr(account, "broker_name", "") or "") if account is not None else "",
+            "is_demo": bool(getattr(account, "is_demo", False)) if account is not None else None,
+        })
+        if purpose:
+            meta["purpose"] = purpose
+        log_credential_event(
+            action,
+            entity_type="TradingAccount",
+            entity_id=str(acct_id) if acct_id is not None else "unknown",
+            actor=actor,
+            request=request,
+            **meta,
+        )
+    except Exception as exc:  # fail-open: never break the caller because an audit could not be written
+        logger.error("log_customer_credential_event failed for action=%s (audit skipped): %s", action, exc)
 
 
 # =============================================================================

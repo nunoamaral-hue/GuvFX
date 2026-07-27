@@ -101,6 +101,14 @@ class AuditEvent(models.Model):
         WORKER_AUTH_SUCCESS = "WORKER_AUTH_SUCCESS", "Worker Auth Success"
         WORKER_AUTH_FAILED = "WORKER_AUTH_FAILED", "Worker Auth Failed"
 
+        # Credential lifecycle (Phase 3 / ADR-0019 — customer + worker credentials)
+        CREDENTIAL_CREATED = "CREDENTIAL_CREATED", "Credential Created"
+        CREDENTIAL_VERIFIED = "CREDENTIAL_VERIFIED", "Credential Verified"
+        CREDENTIAL_ACCESSED = "CREDENTIAL_ACCESSED", "Credential Accessed"
+        CREDENTIAL_ROTATED = "CREDENTIAL_ROTATED", "Credential Rotated"
+        CREDENTIAL_REVOKED = "CREDENTIAL_REVOKED", "Credential Revoked"
+        CREDENTIAL_DESTROYED = "CREDENTIAL_DESTROYED", "Credential Destroyed"
+
         # Subscription mutations
         SUBSCRIPTION_CREATED = "SUBSCRIPTION_CREATED", "Subscription Created"
         SUBSCRIPTION_UPDATED = "SUBSCRIPTION_UPDATED", "Subscription Updated"
