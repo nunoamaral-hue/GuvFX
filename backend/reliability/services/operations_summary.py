@@ -285,10 +285,11 @@ def _signal_disposition_block(now):
         base = PendingSignalApproval.objects.filter(
             source=src, status=PendingSignalApproval.Status.APPROVED, created_at__gte=since)
         total = base.count()
-        # ``execution_plan`` is the OneToOne reverse relation → count planned in ONE query, then only
-        # loop over the (normally ~empty) UNPLANNED set to classify deferred vs silent. No N+1 over
-        # the healthy backlog.
-        planned = base.filter(execution_plan__isnull=False).count()
+        # ``execution_plan`` is the reverse relation → count planned in ONE query, then only loop over
+        # the (normally ~empty) UNPLANNED set to classify deferred vs silent. No N+1 over the healthy
+        # backlog. ADR-0020: it is now a FK (a fan-out approval may have >1 plan), so ``.distinct()``
+        # keeps this a count of DISTINCT approvals — a no-op under single-tenant (<=1 plan/approval).
+        planned = base.filter(execution_plan__isnull=False).distinct().count()
         unplanned = base.filter(execution_plan__isnull=True)
         # In-flight: approved within the planning-settle window and not yet planned — not a loss.
         in_flight = unplanned.filter(created_at__gte=settle_cutoff).count()

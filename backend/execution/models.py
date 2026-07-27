@@ -717,8 +717,12 @@ class SignalExecutionPlan(models.Model):
         BUY = "BUY", "Buy"
         SELL = "SELL", "Sell"
 
-    # One plan per approval — hard idempotency.
-    approval = models.OneToOneField(
+    # One plan per (approval, account) — hard idempotency. ADR-0020 (Trusted Beta multi-account
+    # routing) relaxed this from OneToOne(approval) to FK so one signal can fan out to N isolated
+    # customer accounts, each with its own plan. The uniqueness invariant is enforced by the
+    # (approval, account) constraint below. With MULTI_ACCOUNT_ROUTING_ENABLED OFF (default) at most
+    # one account is ever targeted per approval, so this is byte-identical to the single-tenant model.
+    approval = models.ForeignKey(
         "signal_intake.PendingSignalApproval",
         on_delete=models.PROTECT, related_name="execution_plan",
     )
@@ -760,9 +764,16 @@ class SignalExecutionPlan(models.Model):
     class Meta:
         ordering = ["-created_at"]
         constraints = [
+            # ADR-0020: the dedup identity gains the destination account so a fan-out message can
+            # produce one plan PER account. Equivalent to "one plan per source-approval + account".
             models.UniqueConstraint(
-                fields=["source", "chat_id", "message_id"],
-                name="uniq_plan_source_chat_message",
+                fields=["source", "chat_id", "message_id", "account"],
+                name="uniq_plan_source_chat_message_account",
+            ),
+            # Primary idempotency invariant: exactly one plan per (approval, destination account).
+            models.UniqueConstraint(
+                fields=["approval", "account"],
+                name="uniq_plan_approval_account",
             ),
         ]
         verbose_name = "Signal Execution Plan"
