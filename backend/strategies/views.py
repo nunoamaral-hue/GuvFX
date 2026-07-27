@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 
-from django.db import transaction
+from django.db import connection, transaction
 from trading.models import TradingAccount
 
 from .models import (
@@ -356,6 +356,53 @@ def validate_trendline_break_pocket_filters(filters: dict) -> dict:
                     errors[f"zones.{symbol}[{i}]"] = "Zone low/high must be numbers"
 
     return errors
+
+def _beta_self_serve_arm_enabled() -> bool:
+    """TB-2 self-service Enable-Trading flag. DEFAULT OFF, fail-closed. Explicit Django setting wins,
+    else the env var, else False."""
+    import os
+    val = getattr(settings, "BETA_SELF_SERVE_ARM_ENABLED", None)
+    if val is None:
+        val = os.getenv("BETA_SELF_SERVE_ARM_ENABLED", "")
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _routable_sibling_exists(source, *, exclude_strategy=None, exclude_account=None, active_only=False):
+    """Whether another arm could occupy the router's single-tenant slot for ``source``: an AUTO_DEMO +
+    stage-LIVE assignment on a demo + active account. is_active-AGNOSTIC by default — a PAUSED arm is
+    one toggle away from routable, so it is a LATENT 2nd that would break the router if reactivated
+    (the B-1 fix). ``active_only=True`` counts only currently-active siblings (used by resume). Excludes
+    the exact (strategy, account) being armed so idempotent re-arm is never self-blocked."""
+    qs = StrategyAssignment.objects.filter(
+        execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO, signal_source=source,
+        stage=StrategyAssignment.STAGE_LIVE, account__is_demo=True, account__is_active=True)
+    if active_only:
+        qs = qs.filter(is_active=True)
+    if exclude_strategy is not None and exclude_account is not None:
+        qs = qs.exclude(strategy=exclude_strategy, account=exclude_account)
+    elif exclude_account is not None:
+        qs = qs.exclude(account=exclude_account)
+    return qs.exists()
+
+
+def _account_execution_ready(account):
+    """(ready, reason) — TECHNICAL readiness for arming: the account's OWNED beta runtime is verified
+    up (runtime_ready), and — when broker login is required — the broker session is verified
+    (broker_connected). Fail-closed: no runtime / not ready → not ready. Lazy imports avoid an
+    app-load import cycle."""
+    from terminal_provisioning.beta_activation import broker_connected, runtime_ready
+    from terminal_provisioning.models import AccountRuntime
+    from terminal_provisioning.provisioner import _require_broker_login
+
+    runtime = AccountRuntime.objects.filter(trading_account=account).first()
+    if runtime is None or not runtime_ready(runtime):
+        return False, "runtime_not_ready"
+    if _require_broker_login() and not broker_connected(runtime):
+        return False, "broker_not_connected"
+    return True, "ready"
+
 
 class StrategyViewSet(viewsets.ModelViewSet):
     queryset = Strategy.objects.all()
@@ -978,6 +1025,130 @@ class StrategyViewSet(viewsets.ModelViewSet):
             "ambiguous": len(hits) > 1,          # >1 armed assignment → config error, fail-closed
         })
 
+    @action(detail=False, methods=["post"], url_path="signal-copy/arm")
+    def signal_copy_arm(self, request):
+        """TB-2 (Trusted Beta) — SELF-SERVICE "Enable Trading" for the customer's OWN demo account.
+
+        Creates (or reactivates) the AUTO_DEMO + signal_source + stage=LIVE assignment that arms the
+        signal-copy strategy — the one thing that previously had NO code path (admin/shell only). It is
+        gated by TECHNICAL VALIDATION, not admin review, and every check is fail-closed:
+
+          1. self-serve arming is enabled (BETA_SELF_SERVE_ARM_ENABLED, DEFAULT OFF — Class-B);
+          2. the strategy is a signal-copy template (has a signal_source);
+          3. the caller OWNS the account (non-staff scoped) and is an admitted beta tester (or staff);
+          4. the account is demo + active + has stored broker credentials;
+          5. the account's OWNED runtime is runtime_ready (RUNNING/verified) — and broker_connected too
+             when broker login is required (PROVISIONING_REQUIRE_BROKER_LOGIN);
+          6. single-tenant protection — while MULTI_ACCOUNT_ROUTING_ENABLED is OFF, refuse to create a
+             SECOND routable arm bound to this source (that would make the router ambiguous and stop
+             auto-copy for EVERYONE, incl. Nuno).
+
+        Arming only creates trading AUTHORITY; nothing fires until the global AUTO_DEMO master levers +
+        (for a 2nd account) the fan-out flag are enabled — all Class-B. Suspend uses the existing toggle.
+        """
+        marketplace_strategy_id = request.data.get("marketplace_strategy_id")
+        account_id = request.data.get("account_id")
+
+        if not _beta_self_serve_arm_enabled():
+            return Response(
+                {"status": "arming_disabled",
+                 "detail": "Self-service Enable Trading is not enabled for this environment."},
+                status=status.HTTP_409_CONFLICT)
+
+        tpl, source = self._signal_copy_source(marketplace_strategy_id)
+        if not tpl:
+            return Response({"detail": "Unknown marketplace_strategy_id"}, status=status.HTTP_400_BAD_REQUEST)
+        if not source:
+            return Response({"detail": "not a signal-copy strategy"}, status=status.HTTP_400_BAD_REQUEST)
+        if not account_id:
+            return Response({"detail": "account_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Ownership (non-staff scoped) — a user can only arm their OWN account.
+        acc_qs = TradingAccount.objects.filter(id=account_id)
+        if not request.user.is_staff:
+            acc_qs = acc_qs.filter(user=request.user)
+        account = acc_qs.select_related("broker_server").first()
+        if not account:
+            return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Admitted beta cohort (or staff) only.
+        from billing.beta import is_admitted_beta_tester
+        if not (request.user.is_staff or is_admitted_beta_tester(request.user)):
+            return Response({"status": "not_beta", "detail": "Not an admitted beta tester."},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        # Classification + credentials.
+        if not (account.is_demo and account.is_active):
+            return Response({"status": "account_not_ready",
+                             "detail": "Account must be demo and active."},
+                            status=status.HTTP_409_CONFLICT)
+        if not (account.password_enc or "").strip():
+            return Response({"status": "credentials_missing",
+                             "detail": "Enter and validate MT5 credentials first."},
+                            status=status.HTTP_409_CONFLICT)
+
+        # Technical readiness of the OWNED runtime.
+        ready, why = _account_execution_ready(account)
+        if not ready:
+            return Response({"status": why, "detail": "Account runtime is not ready to trade yet."},
+                            status=status.HTTP_409_CONFLICT)
+
+        # Single-tenant protection + arm, in ONE transaction serialized per-source (advisory lock) so
+        # the sibling check and the create are ATOMIC (no TOCTOU, H-1) and a PAUSED incumbent is never
+        # missed (is_active-agnostic, B-1). While fan-out is OFF the router requires a UNIQUE routable
+        # arm per source, so a second would stop auto-copy for every account (incl. Nuno).
+        from execution.auto_router import _multi_account_routing_enabled
+
+        template_name = tpl.get("name") or "Signal Copy"
+        tpl_filters = (tpl.get("defaults") or {}).get("filters") or {}
+        fanout_off = not _multi_account_routing_enabled()
+        refused = False
+        with transaction.atomic():
+            if fanout_off:
+                with connection.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)", [f"arm:{source}"])
+
+            strategy = (Strategy.objects.filter(owner=request.user, name=template_name)
+                        .order_by("-id").first())
+            if strategy is None:
+                strategy = Strategy.objects.create(
+                    owner=request.user, name=template_name, filters=tpl_filters)
+            elif tpl_filters and strategy.filters != tpl_filters:
+                strategy.filters = tpl_filters
+                strategy.save(update_fields=["filters", "updated_at"])
+
+            if fanout_off and _routable_sibling_exists(
+                    source, exclude_strategy=strategy, exclude_account=account):
+                refused = True
+                transaction.set_rollback(True)   # undo any Strategy just created
+            else:
+                assignment, created = StrategyAssignment.objects.select_for_update().get_or_create(
+                    strategy=strategy, account=account,
+                    defaults=dict(
+                        execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO, signal_source=source,
+                        stage=StrategyAssignment.STAGE_LIVE, is_active=True))
+                if not created:
+                    assignment.execution_mode = StrategyAssignment.ExecutionMode.AUTO_DEMO
+                    assignment.signal_source = source
+                    assignment.stage = StrategyAssignment.STAGE_LIVE
+                    assignment.is_active = True
+                    assignment.save(update_fields=[
+                        "execution_mode", "signal_source", "stage", "is_active", "updated_at"])
+
+        if refused:
+            return Response(
+                {"status": "source_single_tenant",
+                 "detail": "Multi-account routing is not enabled; another account is already armed on "
+                           "this source. Enabling a second would stop auto-copy for all."},
+                status=status.HTTP_409_CONFLICT)
+
+        log_assignment_created(request, assignment)
+        return Response({
+            "status": "armed", "marketplace_strategy_id": marketplace_strategy_id,
+            "signal_source": source, "assignment_id": assignment.id, "account_id": account.id,
+            "created": created, "enabled": True,
+        }, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=["post"], url_path="signal-copy/toggle")
     def signal_copy_toggle(self, request):
         marketplace_strategy_id = request.data.get("marketplace_strategy_id")
@@ -1024,6 +1195,18 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT,
             )
         assignment = hits[0]
+        # Single-tenant protection on RESUME too (source-GLOBAL, not owner-scoped): while fan-out is
+        # OFF, never activate a SECOND routable arm on the source — that would make the router
+        # ambiguous and stop auto-copy for everyone (incl. Nuno). Mirrors the arm-endpoint guard.
+        from execution.auto_router import _multi_account_routing_enabled
+        if (not assignment.is_active and not _multi_account_routing_enabled()
+                and _routable_sibling_exists(source, exclude_strategy=assignment.strategy,
+                                             exclude_account=assignment.account, active_only=True)):
+            return Response(
+                {"status": "source_single_tenant", "signal_source": source,
+                 "detail": "Another account is already actively copying this source; multi-account "
+                           "routing is not enabled."},
+                status=status.HTTP_409_CONFLICT)
         if not assignment.is_active:
             assignment.is_active = True
             assignment.save(update_fields=["is_active", "updated_at"])
