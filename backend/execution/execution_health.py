@@ -49,6 +49,10 @@ UNPLANNED_SIGNAL_LOOKBACK_SECONDS = int(os.getenv("UNPLANNED_SIGNAL_LOOKBACK_SEC
 # A plan that reached PLANNED but never got a durable execute/reject disposition after this long is a
 # promotion-layer silent gap (the plan-layer complement to the unplanned-signal, approval-layer guard).
 STUCK_PROMOTION_ALERT_SECONDS = int(os.getenv("STUCK_PROMOTION_ALERT_SECONDS", "300") or 300)
+# A PLACE_ORDER the bridge reported FAILED but whose position (leg comment) LATER appeared is a lost-ACK
+# that the in-process bridge recovery missed — exposure the platform believes ABSENT. Scan recently-
+# FAILED order jobs this far back and alert if the leg's Trade now exists (bounds the scan).
+FAILED_FILLED_LOOKBACK_SECONDS = int(os.getenv("FAILED_FILLED_LOOKBACK_SECONDS", "3600") or 3600)
 
 
 def execution_health_enabled() -> bool:
@@ -123,7 +127,7 @@ def reconcile_orphaned_place_orders(now) -> dict:
     from reliability.models import AlertEvent
     orphans = list(ExecutionJob.objects.filter(
         status=ExecutionJob.Status.RUNNING,
-        job_type=ExecutionJob.JobType.PLACE_ORDER,
+        job_type=ExecutionJob.JobType.PLACE_ORDER,   # WAY-comment reconcile is PLACE_ORDER-specific
         lease_expires_at__lt=now,
     ).order_by("id")[:200])
     reconciled = alerted = 0
@@ -174,8 +178,44 @@ def reconcile_orphaned_place_orders(now) -> dict:
             al.resolved_at = now
             al.save(update_fields=["status", "resolved_at"])
             resolved += 1
+
+    # (Control 5) FAILED-but-filled backstop — see module note + FAILED_FILLED_LOOKBACK_SECONDS. The
+    # RUNNING scan above never revisits a job that reached FAILED, so a lost-ACK whose position appeared
+    # only AFTER the bridge reported failure (settlement lag beyond the bridge's in-process recovery)
+    # leaves exposure the platform believes ABSENT — the most dangerous silent path. DETECT a recently-
+    # FAILED order job whose leg Trade now exists and raise ONE deduped CRITICAL alert. ALERT-ONLY: do
+    # NOT auto-flip FAILED->SUCCESS (that would mutate already-resolved plan state); an operator reconciles.
+    failed_filled_alerted = 0
+    for job in ExecutionJob.objects.filter(
+            status=ExecutionJob.Status.FAILED, job_type=ExecutionJob.JobType.PLACE_ORDER,
+            finished_at__gte=now - timedelta(seconds=FAILED_FILLED_LOOKBACK_SECONDS),
+    ).order_by("-finished_at")[:200]:   # recency-first so a burst never starves the newest still-open fill
+        payload = job.payload or {}
+        plan_id, leg_index = payload.get("plan_id"), payload.get("leg_index")
+        if plan_id is None or leg_index is None:
+            continue
+        if not Trade.objects.filter(
+                account_id=job.account_id, comment=_leg_comment(plan_id, leg_index)).exists():
+            continue
+        if _alert_failed_but_filled(job, now):
+            failed_filled_alerted += 1
+    # Resolve a failed-but-filled alert once its job is no longer FAILED (an operator reconciled it).
+    failed_filled_resolved = 0
+    for al in AlertEvent.objects.filter(
+            dedup_key__startswith="failed_but_filled:job:", status=AlertEvent.Status.OPEN):
+        jid = (al.detail or {}).get("job_id")
+        if jid is None:
+            continue
+        if not ExecutionJob.objects.filter(id=jid, status=ExecutionJob.Status.FAILED).exists():
+            al.status = AlertEvent.Status.RESOLVED
+            al.resolved_at = now
+            al.save(update_fields=["status", "resolved_at"])
+            failed_filled_resolved += 1
+
     return {"place_order_reconciled": reconciled, "place_order_orphan_alerted": alerted,
-            "place_order_orphan_resolved": resolved}
+            "place_order_orphan_resolved": resolved,
+            "place_order_failed_but_filled_alerted": failed_filled_alerted,
+            "place_order_failed_but_filled_resolved": failed_filled_resolved}
 
 
 def _alert_orphaned_place_order(job, now) -> None:
@@ -206,6 +246,40 @@ def _alert_orphaned_place_order(job, now) -> None:
     except Exception:  # pragma: no cover - alerting is best-effort
         logger.exception("execution_health: failed to alert orphaned place order job=%s",
                          getattr(job, "id", "?"))
+
+
+def _alert_failed_but_filled(job, now) -> bool:
+    """One deduped CRITICAL alert: an order job recorded FAILED but a Trade with the leg comment exists
+    — exposure is OPEN that the platform believes ABSENT (a lost-ACK the bridge recovery missed).
+    Returns True iff a NEW alert was created. Best-effort."""
+    try:
+        from reliability.constants import Component
+        from reliability.models import AlertEvent
+        dedup_key = f"failed_but_filled:job:{job.id}"
+        if AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).exists():
+            return False
+        payload = job.payload or {}
+        AlertEvent.objects.create(
+            severity=AlertEvent.Severity.CRITICAL, component=Component.EXECUTION_PIPELINE,
+            trading_account_id=job.account_id,
+            title=f"Exposure open for a FAILED order — job #{job.id} filled despite reported failure",
+            body=(f"{job.job_type} job #{job.id} (plan {payload.get('plan_id')} leg "
+                  f"{payload.get('leg_index')}, {payload.get('signal_source', '?')} "
+                  f"{payload.get('symbol', '?')}) was recorded FAILED, but a Trade with comment "
+                  f"{_leg_comment(payload.get('plan_id'), payload.get('leg_index'))} exists — the order "
+                  f"LANDED (lost ACK). The position is OPEN and UNMANAGED (the leg is FAILED). Manage/close "
+                  f"the position on the broker AND reconcile the job to SUCCESS — this alert clears ONLY "
+                  f"when the job is no longer FAILED (closing on the broker alone will not resolve it)."),
+            dedup_key=dedup_key, status=AlertEvent.Status.OPEN,
+            detail={"job_id": job.id, "plan_id": payload.get("plan_id"),
+                    "leg_index": payload.get("leg_index"), "signal_source": payload.get("signal_source")})
+        logger.error("execution_health: FAILED-BUT-FILLED alert job=%s plan=%s leg=%s",
+                     job.id, payload.get("plan_id"), payload.get("leg_index"))
+        return True
+    except Exception:  # pragma: no cover - alerting is best-effort
+        logger.exception("execution_health: failed to alert failed-but-filled job=%s",
+                         getattr(job, "id", "?"))
+        return False
 
 
 def _alert_stuck_order(job) -> None:
