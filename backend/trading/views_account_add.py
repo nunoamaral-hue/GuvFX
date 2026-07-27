@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -70,12 +71,27 @@ class AddAccountWithMt5LoginView(APIView):
             "password": password,
             "server": server_name,
         }
+        # Existing-account lookup (same identity, user-scoped) — used to stamp the durable TB-3
+        # validation state on EVERY outcome of a re-add, and for the duplicate path below.
+        norm_broker_name = broker_name or (broker_server.server_name if broker_server else "")
+        qs = TradingAccount.objects.filter(user=user, account_number=account_number)
+        if broker_server:
+            qs = qs.filter(broker_server=broker_server)
+        else:
+            qs = qs.filter(broker_server__isnull=True, broker_name=norm_broker_name)
+
         agent = _windows_agent_post_json("/mt5/login-and-validate", agent_payload)
 
         if not bool(agent.get("ok", False)):
+            # TB-3: a re-validation that could not run stamps an existing account TECHNICAL_ERROR (a
+            # first-time add has no row yet → no-op).
+            qs.update(validation_status=TradingAccount.ValidationStatus.TECHNICAL_ERROR)
             return Response({"ok": False, "detail": "Windows agent error", "agent": agent}, status=502)
 
         if not bool(agent.get("valid", False)):
+            # TB-3: a failed login stamps an existing account CONNECTION_FAILED (durable state); a
+            # first-time invalid add creates no row, so this is a no-op there.
+            qs.update(validation_status=TradingAccount.ValidationStatus.CONNECTION_FAILED)
             return Response(
                 {
                     "ok": True,
@@ -89,16 +105,6 @@ class AddAccountWithMt5LoginView(APIView):
 
         # Extract account currency from agent response if available
         account_currency = str(agent.get("currency") or "").strip() or None
-
-        # Normalized values used for uniqueness
-        norm_broker_name = broker_name or (broker_server.server_name if broker_server else "")
-
-        # Build queryset for "existing account" lookup (used in duplicate path)
-        qs = TradingAccount.objects.filter(user=user, account_number=account_number)
-        if broker_server:
-            qs = qs.filter(broker_server=broker_server)
-        else:
-            qs = qs.filter(broker_server__isnull=True, broker_name=norm_broker_name)
 
         with transaction.atomic():
             # Enforce "one active per MT5 instance" for this user+instance
@@ -118,6 +124,10 @@ class AddAccountWithMt5LoginView(APIView):
                         is_demo=is_demo,
                         is_active=True,
                         account_currency=account_currency,
+                        # TB-3: this path only creates the account AFTER the agent validated the login,
+                        # so the durable per-account state is VALIDATED.
+                        validation_status=TradingAccount.ValidationStatus.VALIDATED,
+                        validated_at=timezone.now(),
                     )
 
                     # Apply password encryption through serializer logic
@@ -148,7 +158,12 @@ class AddAccountWithMt5LoginView(APIView):
                 if existing.mt5_instance_id != inst.id:
                     existing.mt5_instance = inst
                 existing.is_active = True
-                existing.save(update_fields=["mt5_instance", "is_active", "updated_at"])
+                # TB-3 (M2): this branch is reached only after the agent validated the login, so the
+                # re-linked account is durably VALIDATED (not left showing "stored but not validated").
+                existing.validation_status = TradingAccount.ValidationStatus.VALIDATED
+                existing.validated_at = timezone.now()
+                existing.save(update_fields=[
+                    "mt5_instance", "is_active", "validation_status", "validated_at", "updated_at"])
 
                 ser_out = TradingAccountSerializer(existing, context={"request": request})
                 return Response(

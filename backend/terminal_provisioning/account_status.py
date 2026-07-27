@@ -56,6 +56,21 @@ def build_account_status(account) -> dict:
         HEALTHY if has_creds else NOT_CONFIGURED,
         "Broker credentials stored." if has_creds else "Add broker credentials."))
 
+    # 2b. Credentials validated (TB-3) — durable per-account validation result, distinct from merely
+    #     "stored". VALIDATED → HEALTHY; a failed validation → FAILED; stored-but-never-validated →
+    #     WARNING; no credentials yet → NOT_CONFIGURED.
+    vstatus = getattr(account, "validation_status", "NEVER") or "NEVER"
+    if not has_creds:
+        v_state, v_detail = NOT_CONFIGURED, "Add broker credentials."
+    elif vstatus == "VALIDATED":
+        v_state, v_detail = HEALTHY, "Credentials validated with the broker."
+    elif vstatus in ("CONNECTION_FAILED", "TECHNICAL_ERROR"):
+        v_state, v_detail = "FAILED", ("Connection failed — check the login/password/server."
+                                       if vstatus == "CONNECTION_FAILED" else "Validation could not run.")
+    else:
+        v_state, v_detail = WARNING, "Credentials stored but not yet validated."
+    stages.append(_stage("credentials_validated", "Credentials validated", v_state, v_detail))
+
     # 3. MT5 runtime — durable runtime state; NEVER implies a terminal exists while undeployed
     stages.append(_stage("mt5_runtime", "MT5 runtime", rt_state,
                          (rt_last_error if rt_state == "FAILED" and rt_last_error else _runtime_detail(rt_state))))

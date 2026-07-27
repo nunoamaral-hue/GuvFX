@@ -90,6 +90,23 @@ class TradingAccount(models.Model):
     is_demo = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
+    # TB-3 (Trusted Beta) — durable per-account credential-validation state, so the customer-facing
+    # journey can surface Validated / Connection Failed / Technical Error instead of only a transient
+    # HTTP response. Written by the agent-validated add path (AddAccountWithMt5LoginView): VALIDATED on
+    # a successful login (create or re-link), CONNECTION_FAILED when a re-add's login is invalid, and
+    # TECHNICAL_ERROR when the validation agent cannot run. NEVER for accounts created without agent
+    # validation (e.g. the plain serializer path).
+    class ValidationStatus(models.TextChoices):
+        NEVER = "NEVER", "Not validated"
+        VALIDATED = "VALIDATED", "Validated"
+        CONNECTION_FAILED = "CONNECTION_FAILED", "Connection failed"
+        TECHNICAL_ERROR = "TECHNICAL_ERROR", "Technical error"
+
+    validation_status = models.CharField(
+        max_length=20, choices=ValidationStatus.choices, default=ValidationStatus.NEVER,
+        help_text="Durable result of the last MT5 credential validation for this account.")
+    validated_at = models.DateTimeField(null=True, blank=True)
+
     # Multicurrency: account denomination (e.g. "USD", "EUR").
     # Nullable for backward compatibility; populated from MT5 account info.
     account_currency = models.CharField(
