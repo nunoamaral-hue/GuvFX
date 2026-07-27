@@ -187,6 +187,10 @@ ACCOUNT_ID = os.getenv("MT5_ACCOUNT_ID", "")
 MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
 HTTP_SERVER_PORT = int(os.getenv("HTTP_SERVER_PORT", "8788"))
+# Close-path robustness (Phase 2, Control 2): a close is risk-reducing, so retry a BOUNDED number of
+# times with a fresh price on retryable retcodes before declaring the position still open.
+CLOSE_MAX_ATTEMPTS = max(1, int(os.getenv("CLOSE_MAX_ATTEMPTS", "3") or 3))   # never 0 (would skip closing)
+CLOSE_RETRYABLE_RC = {10004, 10020, 10021}   # requote / price-changed / price-off (re-read + retry)
 
 
 def _filling_for(symbol):
@@ -1480,52 +1484,79 @@ def close_position(ticket: int) -> Dict[str, Any]:
         if account_info.trade_mode != 0:
             return {"ok": False, "error": "account_not_demo"}
 
-        positions = mt5.positions_get(ticket=ticket)
-        if not positions:
-            return {"ok": False, "error": "position_not_found", "detail": f"ticket={ticket}"}
+        # Control 2 (guaranteed exposure recovery, close side): a single order_send leaves the position
+        # OPEN on any transient reject. Retry a BOUNDED number of times with a FRESH price on retryable
+        # retcodes, re-checking each attempt whether the position has already gone (a lost-ACK close may
+        # have landed). On persistent failure return an EXPLICIT residual_exposure marker so the caller/
+        # operator knows the position is STILL OPEN.
+        last_err, last_rc, last_detail = "close_failed", None, None
+        for _attempt in range(CLOSE_MAX_ATTEMPTS):
+            positions = mt5.positions_get(ticket=ticket)
+            if positions is None:
+                # A query/IPC error is NOT proof the position is flat — NEVER infer "closed" from it
+                # (that would strand exposure silently). Retry; persistent failure -> residual_exposure.
+                last_err, last_rc, last_detail = "positions_get_failed", None, str(mt5.last_error())
+                continue
+            if len(positions) == 0:
+                if _attempt == 0:
+                    return {"ok": False, "error": "position_not_found", "detail": f"ticket={ticket}"}
+                # EXPLICITLY empty after a prior attempt -> the close landed (or a lost-ACK close did)
+                logger.info(f"[close] ticket={ticket} confirmed flat on re-check (attempt {_attempt})")
+                return {"ok": True, "ticket": ticket, "closed": True,
+                        "close_order": None, "close_deal": None, "close_price": None, "volume": None,
+                        "note": "position confirmed flat on re-check"}
 
-        pos = positions[0]
-        tick = mt5.symbol_info_tick(pos.symbol)
-        if not tick:
-            return {"ok": False, "error": "tick_failed"}
+            pos = positions[0]
+            tick = mt5.symbol_info_tick(pos.symbol)
+            if not tick:
+                last_err, last_rc, last_detail = "tick_failed", None, None
+                continue
 
-        if pos.type == mt5.POSITION_TYPE_BUY:
-            close_type = mt5.ORDER_TYPE_SELL
-            close_price = tick.bid
-        else:
-            close_type = mt5.ORDER_TYPE_BUY
-            close_price = tick.ask
+            if pos.type == mt5.POSITION_TYPE_BUY:
+                close_type = mt5.ORDER_TYPE_SELL
+                close_price = tick.bid
+            else:
+                close_type = mt5.ORDER_TYPE_BUY
+                close_price = tick.ask
 
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": pos.symbol,
-            "volume": pos.volume,
-            "type": close_type,
-            "position": ticket,
-            "price": close_price,
-            "deviation": 20,
-            "magic": pos.magic,
-            "comment": "GUVFX_CLOSE",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": _filling_for(pos.symbol),
-        }
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": pos.symbol,
+                "volume": pos.volume,
+                "type": close_type,
+                "position": ticket,
+                "price": close_price,
+                "deviation": 20,
+                "magic": pos.magic,
+                "comment": "GUVFX_CLOSE",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": _filling_for(pos.symbol),
+            }
 
-        result = mt5.order_send(request)
-        if result is None:
-            return {"ok": False, "error": "order_send_none", "detail": str(mt5.last_error())}
+            result = mt5.order_send(request)
+            if result is None:
+                # lost ACK — the close MAY have landed; re-check the position next iteration
+                last_err, last_rc, last_detail = "order_send_none", None, str(mt5.last_error())
+                continue
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                logger.info(f"[close] Closed ticket={ticket}: order={result.order} deal={result.deal} price={result.price}")
+                return {
+                    "ok": True,
+                    "ticket": ticket,
+                    "close_order": result.order,
+                    "close_deal": result.deal,
+                    "close_price": result.price,
+                    "volume": result.volume,
+                }
+            last_err, last_rc, last_detail = "close_rejected", result.retcode, result.comment
+            if result.retcode not in CLOSE_RETRYABLE_RC:
+                break  # hard rejection — retrying won't help
 
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            return {"ok": False, "error": "close_rejected", "retcode": result.retcode, "comment": result.comment}
-
-        logger.info(f"[close] Closed ticket={ticket}: order={result.order} deal={result.deal} price={result.price}")
-        return {
-            "ok": True,
-            "ticket": ticket,
-            "close_order": result.order,
-            "close_deal": result.deal,
-            "close_price": result.price,
-            "volume": result.volume,
-        }
+        # Exhausted attempts (or hard-rejected): as far as we can tell the position is STILL OPEN.
+        logger.error(f"[close] FAILED to close ticket={ticket} after {CLOSE_MAX_ATTEMPTS} attempts: "
+                     f"{last_err} retcode={last_rc}")
+        return {"ok": False, "error": "close_failed_position_open", "residual_exposure": True,
+                "last_error": last_err, "retcode": last_rc, "comment": last_detail, "ticket": ticket}
 
     except Exception as e:
         return {"ok": False, "error": "exception", "detail": str(e)}
