@@ -16,6 +16,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from trading.crypto import decrypt_password
+from core.audit import log_customer_credential_event
 
 from .beta_activation import ActivationDenied, assert_beta_activation_allowed
 from .beta_capacity import CapacityError, _require_beta, reserve_beta_slot
@@ -226,7 +227,14 @@ def _drive_provision(rt: AccountRuntime, p: WindowsProvisioner) -> None:
         _step(rt, lambda: p.materialise(rt), "materialise_failed")
         login, server = _expected_login_server(rt)
         acct = rt.trading_account
-        password = decrypt_password(acct.password_enc) if getattr(acct, "password_enc", "") else ""
+        if getattr(acct, "password_enc", ""):
+            password = decrypt_password(acct.password_enc)
+            # Customer-credential access audit (Phase 3): broker password read to configure the
+            # runtime. Redacted, no secret; background driver has no request.
+            log_customer_credential_event(
+                "ACCESSED", account=acct, actor="terminal_provisioning", purpose="runtime-configure")
+        else:
+            password = ""
         _step(rt, lambda: p.configure(rt, login=login, server=server or "", password=password),
               "configure_failed")
         rt = record_transition(rt, RuntimeState.STARTING, reason_code="configured")

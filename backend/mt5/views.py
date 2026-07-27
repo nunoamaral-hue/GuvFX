@@ -11,6 +11,7 @@ from .models import Mt5Credential
 from .crypto import encrypt_password
 from trading.models import TradingAccount
 from trading.crypto import decrypt_password as trading_decrypt_password
+from core.audit import log_customer_credential_event
 HANDOFF_VALIDATE = Path("/app/.guvfx_handoff_validate")
 HANDOFF = Path("/app/.guvfx_handoff")
 POOL_ROOT = Path("/srv/guvfx/mt5_pool")
@@ -200,6 +201,9 @@ class Mt5DesktopLinkView(APIView):
         # ── Resolve account credentials for handoff ──
         server_name = _server_name_for_account(account)
         pw = trading_decrypt_password(account.password_enc)
+        if account.password_enc:   # audit only a real decrypt (mirror the provisioner guard)
+            log_customer_credential_event(
+                "ACCESSED", account=account, request=request, purpose="launch-handoff")
 
         # ── Single handoff path: HANDOFF_POOL (pool-aware) ──
         udir = HANDOFF_POOL / inst.hostname
@@ -248,6 +252,9 @@ class Mt5LaunchApplyView(APIView):
 
         server_name = _server_name_for_account(account)
         pw = trading_decrypt_password(account.password_enc)
+        if account.password_enc:   # audit only a real decrypt (mirror the provisioner guard)
+            log_customer_credential_event(
+                "ACCESSED", account=account, request=request, purpose="launch-handoff")
 
         udir = HANDOFF_POOL / inst.hostname
         udir.mkdir(parents=True, exist_ok=True)
