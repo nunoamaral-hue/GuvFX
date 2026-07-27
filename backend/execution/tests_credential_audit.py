@@ -79,4 +79,11 @@ class CredentialAuditTests(TestCase):
             self.fail(f"log_credential_event raised: {exc!r}")
 
     def test_credential_actions_constant(self):
-        self.assertEqual(CREDENTIAL_ACTIONS, ("CREATED", "ROTATED", "REVOKED"))
+        # Phase 3 (P3-B) extended the vocabulary to the full customer-credential lifecycle. The
+        # original worker-identity subset (CREATED/ROTATED/REVOKED) must remain a subset for
+        # backward-compat.
+        self.assertEqual(
+            CREDENTIAL_ACTIONS,
+            ("CREATED", "VERIFIED", "ACCESSED", "ROTATED", "REVOKED", "DESTROYED"))
+        for a in ("CREATED", "ROTATED", "REVOKED"):
+            self.assertIn(a, CREDENTIAL_ACTIONS)

@@ -93,6 +93,15 @@ class Command(BaseCommand):
             f"DONE: total={grand_total} reencrypted={grand_reenc} skipped={grand_skipped} "
             f"failed={grand_failed} dry_run={dry} read_keys={status['read_key_count']}")
 
+        if not dry:
+            # Append-only audit that a key rotation ran (counts only, never a secret). Emitted even on
+            # partial failure so the audit reflects reality before the non-zero exit below.
+            from core.audit import log_credential_event
+            log_credential_event(
+                "ROTATED", entity_type="CustomerCredentialKeyMaterial",
+                entity_id="reencrypt_customer_credentials", actor="reencrypt_customer_credentials",
+                reencrypted=grand_reenc, failed=grand_failed, targets=len(_TARGETS))
+
         if grand_failed:
             # Non-zero exit: the rotation is NOT clean. Successfully-processed rows are already
             # committed under the primary; the failed rows were left byte-for-byte unchanged (never

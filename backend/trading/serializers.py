@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import TradingAccount, BrokerServer, Trade
 from .crypto import encrypt_password
+from core.audit import log_customer_credential_event
 
 
 class TradingAccountSerializer(serializers.ModelSerializer):
@@ -51,7 +52,12 @@ class TradingAccountSerializer(serializers.ModelSerializer):
             validated_data["password_enc"] = encrypt_password(raw_password)
             validated_data["broker_password"] = ""
 
-        return super().create(validated_data)
+        instance = super().create(validated_data)
+        if raw_password:
+            # Customer-credential audit (Phase 3): intake of a broker password. Redacted, no secret.
+            log_customer_credential_event(
+                "CREATED", account=instance, request=self.context.get("request"), purpose="intake")
+        return instance
 
     def update(self, instance, validated_data):
         raw_password = validated_data.pop("password", "") or ""
@@ -62,7 +68,12 @@ class TradingAccountSerializer(serializers.ModelSerializer):
             instance.password_enc = encrypt_password(raw_password)
             instance.broker_password = ""
 
-        return super().update(instance, validated_data)
+        instance = super().update(instance, validated_data)
+        if raw_password:
+            # A new password supplied for an existing account is a credential ROTATION.
+            log_customer_credential_event(
+                "ROTATED", account=instance, request=self.context.get("request"), purpose="intake-update")
+        return instance
 
 
 class TradeSerializer(serializers.ModelSerializer):
