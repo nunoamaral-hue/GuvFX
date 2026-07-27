@@ -186,8 +186,10 @@ def plan_demo_execution(
     source = approval.source
     message_id = approval.message_id
 
-    # 0. Idempotency — one plan per approval / (source, chat, message).
-    existing = SignalExecutionPlan.objects.filter(approval=approval).first()
+    # 0. Idempotency — one plan per (approval, account) / (source, chat, message, account) [ADR-0020].
+    # Keyed on the destination account so a fan-out signal produces one plan PER account; for the
+    # single-tenant case (one account per approval) this is identical to the old approval-only key.
+    existing = SignalExecutionPlan.objects.filter(approval=approval, account=account).first()
     if existing:
         return existing
 
@@ -298,24 +300,26 @@ def plan_demo_execution(
                        approval=approval, actor=actor, leg_index=idx,
                        take_profit=tp, lot_size=str(lot))
     except IntegrityError as exc:
-        return _existing_or_raise(approval, exc)
+        return _existing_or_raise(approval, account, exc)
 
     log_stage("planning_complete", correlation_id, plan_id=plan.id,
               symbol=symbol, direction=direction, legs=n, status=plan.status)
     return plan
 
 
-def _existing_or_raise(approval, exc=None):
+def _existing_or_raise(approval, account, exc=None):
     """Resolve an IntegrityError from the plan+legs transaction.
 
-    A genuine idempotency race on the OneToOne(approval) / (source,chat,message) constraint leaves an
-    existing plan behind → return it (correct, benign). If NO plan exists the rollback was caused by a
-    DIFFERENT integrity error (e.g. a NOT-NULL column this writer's model does not populate — a
-    schema/runtime-parity gap) and must NEVER be reported as ``duplicate_plan``: that mislabel is what
-    lost two valid TI signals silently. Raise a DISTINCT ``plan_integrity_error`` code carrying the
-    real DB error so the auto-router records a durable, accurate disposition and the operator can see
-    the true cause. Fail-closed: no plan is created either way."""
-    existing = SignalExecutionPlan.objects.filter(approval=approval).first()
+    A genuine idempotency race on the (approval, account) / (source,chat,message,account) constraint
+    [ADR-0020] leaves an existing plan for THIS account behind → return it (correct, benign). The
+    lookup is scoped to the destination account so a fan-out race on account B cannot resolve to
+    account A's plan. If NO plan exists for (approval, account) the rollback was caused by a DIFFERENT
+    integrity error (e.g. a NOT-NULL column this writer's model does not populate — a schema/runtime-
+    parity gap) and must NEVER be reported as ``duplicate_plan``: that mislabel is what lost two valid
+    TI signals silently. Raise a DISTINCT ``plan_integrity_error`` code carrying the real DB error so
+    the auto-router records a durable, accurate disposition and the operator can see the true cause.
+    Fail-closed: no plan is created either way."""
+    existing = SignalExecutionPlan.objects.filter(approval=approval, account=account).first()
     if existing:
         return existing
     detail = f": {type(exc).__name__}: {exc}" if exc is not None else ""
@@ -334,7 +338,7 @@ def _hold(common, actor, reason, *, detail="") -> SignalExecutionPlan:
                    actor=actor, reason=reason, detail=detail)
         return plan
     except IntegrityError as exc:
-        return _existing_or_raise(common["approval"], exc)
+        return _existing_or_raise(common["approval"], common["account"], exc)
 
 
 def _void(common, actor, reason, **extra) -> SignalExecutionPlan:
@@ -348,7 +352,7 @@ def _void(common, actor, reason, **extra) -> SignalExecutionPlan:
                    actor=actor, reason=reason, **extra)
         return plan
     except IntegrityError as exc:
-        return _existing_or_raise(common["approval"], exc)
+        return _existing_or_raise(common["approval"], common["account"], exc)
 
 
 # ---------------------------------------------------------------------------

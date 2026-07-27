@@ -20,6 +20,7 @@ its own future, separately-gated packet.
 from __future__ import annotations
 
 import logging
+import os
 
 from django.conf import settings
 
@@ -48,6 +49,32 @@ MODE_AUTO_DEMO = "AUTO_DEMO"
 
 # Decision §13.4 — minimum parser certification to permit auto is MEDIUM.
 _CONFIDENCE_OK = {"MEDIUM", "HIGH"}
+
+# Truthy env values for the ADR-0020 multi-account routing flag.
+_TRUE = {"1", "true", "yes", "on"}
+_FLAG_ON_WARNED = False
+
+
+def _multi_account_routing_enabled() -> bool:
+    """ADR-0020 fan-out master flag. DEFAULT OFF, fail-closed. Setting precedence: an explicit
+    Django ``MULTI_ACCOUNT_ROUTING_ENABLED`` setting wins; otherwise the env var; otherwise False.
+    With this OFF the router takes the single-tenant path unchanged (Nuno's live route byte-identical).
+
+    Emits a one-time WARN the first time it reads ON, so enabling the money-path fan-out (a Class-B
+    action) always leaves a durable trace in the logs even when set via the environment.
+    """
+    val = getattr(settings, "MULTI_ACCOUNT_ROUTING_ENABLED", None)
+    if val is None:
+        val = os.getenv("MULTI_ACCOUNT_ROUTING_ENABLED", "")
+    on = val if isinstance(val, bool) else str(val).strip().lower() in _TRUE
+    if on:
+        global _FLAG_ON_WARNED
+        if not _FLAG_ON_WARNED:
+            _FLAG_ON_WARNED = True
+            logger.warning(
+                "MULTI_ACCOUNT_ROUTING_ENABLED is ON — signal fan-out to multiple customer accounts "
+                "is ACTIVE (ADR-0020). This is a Class-B enablement; confirm it is intended.")
+    return on
 
 
 def _tier_for(global_mode):
@@ -140,6 +167,33 @@ def _resolve_target(assignment_mode, source=""):
     return unbound[0] if len(unbound) == 1 else None
 
 
+def _resolve_targets(assignment_mode, source=""):
+    """ADR-0020 fan-out — EVERY routable assignment to auto-execute for this signal's ``source``.
+
+    Returns a list (possibly empty). Called ONLY when ``MULTI_ACCOUNT_ROUTING_ENABLED`` is on. It
+    mirrors ``_resolve_target``'s routable filter (mode, stage LIVE, demo + active account, is_active)
+    but for a CLAIMED (source-bound) source returns ALL matching assignments instead of requiring
+    exactly one — so one Telegram source fans out to N isolated customer accounts. Per-account
+    isolation is intrinsic: an assignment that is paused (is_active=False) or whose account is
+    inactive is filtered out, dropping ONLY that destination and never the others (independent
+    suspension). The legacy UNBOUND path stays single-tenant — fan-out applies only to assignments
+    explicitly bound to a source via ``signal_source``.
+    """
+    base = StrategyAssignment.objects.filter(
+        execution_mode=assignment_mode,
+        stage=StrategyAssignment.STAGE_LIVE,
+        account__is_demo=True,
+        account__is_active=True,
+    )
+    if source and StrategyAssignment.objects.filter(signal_source=source).exists():
+        return list(
+            base.filter(signal_source=source, is_active=True).select_related("account")
+        )
+    # Unbound legacy fallback stays single-tenant (reuses _resolve_target's >1-source fail-closed guard).
+    single = _resolve_target(assignment_mode, source)
+    return [single] if single is not None else []
+
+
 def resolve_auto_shadow_target():
     """Back-compat: the unique active AUTO_SHADOW target (or None)."""
     return _resolve_target(StrategyAssignment.ExecutionMode.AUTO_SHADOW)
@@ -195,8 +249,14 @@ def effective_mode(approval):
     if not _confidence_ok(provider):
         return MODE_MANUAL, "parser_confidence_below_medium"
 
-    if _resolve_target(assignment_mode, approval.source) is None:
-        return MODE_MANUAL, "no_unique_auto_assignment"
+    if _multi_account_routing_enabled():
+        # ADR-0020: armed if AT LEAST ONE routable assignment is bound to the source (fan-out).
+        if not _resolve_targets(assignment_mode, approval.source):
+            return MODE_MANUAL, "no_routable_assignment"
+    else:
+        # Single-tenant (default): armed only for the UNIQUE routable assignment.
+        if _resolve_target(assignment_mode, approval.source) is None:
+            return MODE_MANUAL, "no_unique_auto_assignment"
 
     return tier_mode, "armed"
 
@@ -212,20 +272,34 @@ def should_auto_execute(approval):
 
 
 def _auto_execute(approval, acquired, *, assignment_mode, promote_fn, label) -> None:
-    """Run the armed auto path: approve → plan → promote (via ``promote_fn``).
+    """Run the armed auto path: approve → (per destination) plan → promote (via ``promote_fn``).
 
     ``promote_fn`` is the mode's promotion (shadow → PLACE_ORDER_SHADOW; demo → PLACE_ORDER),
     which re-validates its own gates (incl. that the global mode matches). Any rejection/exception
     is swallowed — acquisition is never disrupted; edited/non-pending approvals never act.
+
+    ADR-0020: with ``MULTI_ACCOUNT_ROUTING_ENABLED`` on, the signal fans out to EVERY routable
+    destination — the approval is approved ONCE, then each account is planned + promoted
+    INDEPENDENTLY so one destination's failure never blocks another. With the flag off there is a
+    single destination and the flow is byte-identical to the single-tenant path.
     """
     actor = _system_actor()
-    target = _resolve_target(assignment_mode, approval.source)
-    if actor is None or target is None:
-        logger.info("auto_router: unresolved actor/target -> manual")
+    if actor is None:
+        logger.info("auto_router: unresolved actor -> manual")
+        return
+    if _multi_account_routing_enabled():
+        targets = _resolve_targets(assignment_mode, approval.source)
+    else:
+        _t = _resolve_target(assignment_mode, approval.source)
+        targets = [_t] if _t is not None else []
+    if not targets:
+        logger.info("auto_router: unresolved target -> manual")
         return
     signal_ts = getattr(acquired, "telegram_date", None)
+
+    # Approve ONCE (shared across all fan-out destinations) — idempotent + audit-preserving on a
+    # race/replay. Edited/non-pending approvals never act.
     try:
-        # Re-read live state before acting (idempotent + audit-preserving on a race/replay).
         approval.refresh_from_db(fields=["status", "source_edited"])
         if approval.source_edited:
             return  # last-line defense: never auto-execute an edited signal
@@ -234,6 +308,21 @@ def _auto_execute(approval, acquired, *, assignment_mode, promote_fn, label) -> 
         elif approval.status != approval.Status.APPROVED:
             return  # rejected / expired / quarantined — never act; don't overwrite a decision
         # else: already APPROVED (e.g. by a human) — keep their metadata; just plan/promote.
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("auto_router: %s approve error (%s) -> manual", label, exc)
+        _record_deferral(approval, f"{label}_error:{type(exc).__name__}")
+        return
+
+    # Plan + promote per destination — each isolated so one account's failure never blocks another.
+    for target in targets:
+        _plan_and_promote_one(approval, target, actor, signal_ts, promote_fn, label)
+
+
+def _plan_and_promote_one(approval, target, actor, signal_ts, promote_fn, label) -> None:
+    """Plan + promote a SINGLE destination account, fully isolated. A rejection/exception is recorded
+    as a durable per-account deferral and never propagates to sibling destinations."""
+    acct_id = getattr(getattr(target, "account", None), "id", "?")
+    try:
         plan = plan_demo_execution(
             approval, account=target.account, actor=actor, signal_timestamp=signal_ts,
         )
@@ -247,10 +336,10 @@ def _auto_execute(approval, acquired, *, assignment_mode, promote_fn, label) -> 
         # a durable AUTO_ROUTE_DEFERRED here (idempotency/no silent swallow); the reason is the real
         # rejection code (e.g. ``plan_integrity_error``), never a swallowed stdout line.
         code = getattr(exc, "code", None) or type(exc).__name__
-        logger.info("auto_router: %s path rejected (%s)", label, code)
+        logger.info("auto_router: %s path rejected (%s) acct=%s", label, code, acct_id)
         _record_deferral(approval, f"{label}_rejected:{code}")
     except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("auto_router: %s path error (%s)", label, exc)
+        logger.warning("auto_router: %s path error (%s) acct=%s", label, exc, acct_id)
         _record_deferral(approval, f"{label}_error:{type(exc).__name__}")  # WS-C: no silent swallow
 
 
