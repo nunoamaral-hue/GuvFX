@@ -66,6 +66,10 @@ class Command(BaseCommand):
                 total += 1
                 ciphertext = getattr(row, field) or ""
                 try:
+                    # Classification (T8 boundary): this decrypt-then-immediately-re-encrypt is a key
+                    # ROTATION (lifecycle stage 8), not a decrypt-for-use ACCESS (stage 6). The
+                    # plaintext never leaves this process, so it is audited once as the aggregate
+                    # CREDENTIAL_ROTATED below, not per-account ACCESSED.
                     plaintext = decrypt_password(ciphertext)
                 except Exception:
                     failed += 1
