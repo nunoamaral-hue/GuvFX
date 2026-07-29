@@ -355,21 +355,36 @@ class ProvisioningVerificationReport(models.Model):
 
 class ProvisionerHeartbeat(models.Model):
     """ADR-0021 — durable liveness of the dedicated-runtime provisioner worker. A single row (pk=1) the
-    worker touches every loop. ``updated_at`` is the freshness signal used ONLY when reserving a NEW
-    runtime — a missing/stale heartbeat fails CLOSED (``provisioner_unhealthy``). It never gates an
+    worker refreshes at every lifecycle point (idle poll, before claim, during long stages, after
+    success/failure). ``updated_at`` is the freshness signal used ONLY when reserving a NEW runtime — a
+    missing/stale heartbeat fails CLOSED (``provisioner_unhealthy``). A **PROCESSING** worker with a fresh
+    heartbeat is HEALTHY: a long-running job that keeps refreshing never reads stale. It never gates an
     existing runtime's progression, strategy use, or reconciliation/recovery."""
+
+    class Status(models.TextChoices):
+        IDLE_READY = "IDLE_READY", "Idle / ready"
+        PROCESSING = "PROCESSING", "Processing a job"
+        DEGRADED = "DEGRADED", "Degraded"
+        ERROR = "ERROR", "Error"
 
     SINGLETON_ID = 1
     worker_id = models.CharField(max_length=64, blank=True, default="")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.IDLE_READY)
+    last_job_id = models.PositiveIntegerField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # PROCESSING and IDLE_READY are both "alive"; DEGRADED/ERROR are alive-but-unhealthy for reservation.
+    HEALTHY_STATES = ("IDLE_READY", "PROCESSING")
 
     def save(self, *args, **kwargs):
         self.pk = self.SINGLETON_ID
         super().save(*args, **kwargs)
 
     @classmethod
-    def touch(cls, worker_id: str = "") -> None:
-        cls.objects.update_or_create(pk=cls.SINGLETON_ID, defaults={"worker_id": worker_id or ""})
+    def touch(cls, worker_id: str = "", status: str = "IDLE_READY", last_job_id=None) -> None:
+        cls.objects.update_or_create(
+            pk=cls.SINGLETON_ID,
+            defaults={"worker_id": worker_id or "", "status": status, "last_job_id": last_job_id})
 
     def __str__(self):
-        return f"ProvisionerHeartbeat(updated_at={self.updated_at})"
+        return f"ProvisionerHeartbeat({self.status}, updated_at={self.updated_at})"

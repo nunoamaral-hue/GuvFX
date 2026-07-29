@@ -62,22 +62,30 @@ def default_client_factory(job: ProvisioningJob) -> AgentWindowsProvisioner:
     return AgentWindowsProvisioner(job_id=job.id, transport=make_http_transport())
 
 
-def process_one(client_factory=default_client_factory, *, negotiate: bool = True) -> str:
-    """Claim + advance ONE beta job. Returns a short status string. Never raises to the caller."""
-    # ADR-0021 liveness: record the durable heartbeat every loop, BEFORE the dark-check, so a running
-    # (even dark) worker proves liveness. Fail-open on the heartbeat write — it must never break the loop.
+def _hb(status: str, job_id=None) -> None:
+    """ADR-0021 durable heartbeat write. Fail-open — a heartbeat write must never break the worker loop."""
     try:
         import os as _os
 
         from .models import ProvisionerHeartbeat
-        ProvisionerHeartbeat.touch(_os.getenv("MT5_WORKER_ID", "beta-provisioner"))
+        ProvisionerHeartbeat.touch(_os.getenv("MT5_WORKER_ID", "beta-provisioner"), status, job_id)
     except Exception:  # noqa: BLE001
         logger.debug("beta worker: heartbeat write skipped", exc_info=True)
+
+
+def process_one(client_factory=default_client_factory, *, negotiate: bool = True) -> str:
+    """Claim + advance ONE beta job. Returns a short status string. Never raises to the caller.
+
+    ADR-0021 liveness: the durable heartbeat is refreshed at every lifecycle point (idle poll before the
+    dark-check, PROCESSING before/through a job, IDLE_READY after success, DEGRADED on agent-unreachable,
+    ERROR on unexpected failure) — so a long-running job that keeps advancing never reads stale."""
+    _hb("IDLE_READY")          # idle poll — proves liveness even while dark
     if not beta_runtimes_enabled():
-        return "disabled"     # dark by default; the worker does nothing until armed
+        return "disabled"      # dark by default; the worker does nothing until armed
     job = claim_next_beta_job()
     if job is None:
         return "no_job"
+    _hb("PROCESSING", job.id)  # a job is claimed — refresh as PROCESSING before any long stage
     client = client_factory(job)
     if negotiate:
         try:
@@ -86,6 +94,15 @@ def process_one(client_factory=default_client_factory, *, negotiate: bool = True
             # Cannot agree the contract / agent unreachable — leave the job QUEUED for a later attempt.
             logger.warning("beta worker: negotiation failed for job=%s: %s", job.id,
                            getattr(e, "reason_code", "timeout"))
+            _hb("DEGRADED", job.id)      # worker alive but agent connectivity degraded
             return "negotiation_failed"
-    advance_provisioning_job(job, client)
+    try:
+        # The heartbeat callback fires after EVERY provisioning step, so a long multi-step job keeps
+        # refreshing PROCESSING mid-run and never reads stale.
+        advance_provisioning_job(job, client, heartbeat=lambda: _hb("PROCESSING", job.id))
+    except Exception:  # noqa: BLE001 — never raise to the caller; surface worker-level trouble as ERROR
+        logger.exception("beta worker: advance failed for job=%s", job.id)
+        _hb("ERROR", job.id)
+        return "error"
+    _hb("PROCESSING", job.id)  # refresh after the step
     return "advanced"

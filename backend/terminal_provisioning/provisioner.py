@@ -8,6 +8,7 @@ execution). Credentials are decrypted transiently and handed to the provisioner 
 real provisioner injects over an authenticated channel — never into a command line, URL, or log
 (control 10). Nuno's PRODUCTION runtimes are refused (control 14).
 """
+import contextvars
 import os
 from typing import Protocol
 
@@ -26,6 +27,12 @@ from .runtime_state import record_transition
 
 MAX_ATTEMPTS = 3
 LEASE_TTL_SECONDS = 300
+
+# ADR-0021 — optional per-step heartbeat. The worker sets this so the durable liveness heartbeat is
+# refreshed after EVERY provisioning side-effect (materialise/start/verify/…), so a genuinely long
+# provisioning run keeps proving liveness (PROCESSING) and never reads stale mid-stage. Default None
+# (no-op) — the driver is fully usable without a worker/heartbeat.
+_STEP_HEARTBEAT: "contextvars.ContextVar" = contextvars.ContextVar("provisioner_step_heartbeat", default=None)
 
 
 def _require_broker_login() -> bool:
@@ -86,9 +93,21 @@ def enqueue_op(runtime: AccountRuntime, op: str) -> ProvisioningJob:
 
 
 # ── Driver ──
-def advance_provisioning_job(job: ProvisioningJob, provisioner: WindowsProvisioner) -> ProvisioningJob:
+def advance_provisioning_job(job: ProvisioningJob, provisioner: WindowsProvisioner,
+                             heartbeat=None) -> ProvisioningJob:
     """Claim (lease) and advance a job. Idempotent + resumable: dispatch is by the runtime's durable
-    state, so a re-claimed job continues from where it left off and never repeats a completed step."""
+    state, so a re-claimed job continues from where it left off and never repeats a completed step.
+
+    ``heartbeat`` (optional): a no-arg callable invoked after each provisioning step, so a long-running
+    job keeps the durable liveness heartbeat fresh. Failures in the callback never affect provisioning."""
+    hb_token = _STEP_HEARTBEAT.set(heartbeat)
+    try:
+        return _advance_provisioning_job_inner(job, provisioner)
+    finally:
+        _STEP_HEARTBEAT.reset(hb_token)
+
+
+def _advance_provisioning_job_inner(job: ProvisioningJob, provisioner: WindowsProvisioner) -> ProvisioningJob:
     # Single-flight claim: only one worker may hold a job at a time. ``attempt`` is incremented at
     # CLAIM time so a hard worker crash (re-claimed on lease expiry) is bounded by MAX_ATTEMPTS too —
     # not just clean ProvisionStepError failures.
@@ -145,10 +164,25 @@ def advance_provisioning_job(job: ProvisioningJob, provisioner: WindowsProvision
     return j
 
 
-def _step(runtime, fn, reason_code):
-    """Run one provisioner side-effect, converting any raw failure into a sanitised ProvisionStepError."""
+def _fire_step_heartbeat() -> None:
+    """Refresh the durable liveness heartbeat between provisioning steps (ADR-0021). Never let a heartbeat
+    error affect provisioning — liveness reporting is strictly best-effort."""
+    cb = _STEP_HEARTBEAT.get()
+    if cb is None:
+        return
     try:
-        return fn()
+        cb()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _step(runtime, fn, reason_code):
+    """Run one provisioner side-effect, converting any raw failure into a sanitised ProvisionStepError.
+    On success the durable liveness heartbeat is refreshed (a long multi-step job never reads stale)."""
+    try:
+        result = fn()
+        _fire_step_heartbeat()
+        return result
     except ProvisionStepError:
         raise
     except ManagementChannelTimeout:

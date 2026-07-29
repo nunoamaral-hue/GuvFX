@@ -82,8 +82,10 @@ def provisioning_service_healthy() -> bool:
 
 
 def _provisioner_heartbeat_fresh() -> bool:
-    """Beta provisioner liveness — **FAIL CLOSED**. Fresh ONLY if the singleton heartbeat was updated within
-    ``BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS`` (default 120). Missing / stale / unreadable ⇒ False."""
+    """Beta provisioner liveness + health — **FAIL CLOSED**. Healthy ONLY if the singleton heartbeat was
+    updated within ``BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS`` (default 120) AND its status is a healthy
+    state (``IDLE_READY`` or ``PROCESSING`` — a PROCESSING worker that keeps refreshing is healthy; a
+    long-running job never reads stale). Missing / stale / DEGRADED / ERROR / unreadable ⇒ False."""
     ttl = int(getattr(settings, "BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", 0)
               or os.getenv("BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", "120"))
     try:
@@ -93,7 +95,9 @@ def _provisioner_heartbeat_fresh() -> bool:
         hb = ProvisionerHeartbeat.objects.filter(pk=ProvisionerHeartbeat.SINGLETON_ID).first()
         if hb is None or hb.updated_at is None:
             return False
-        return (timezone.now() - hb.updated_at).total_seconds() <= ttl
+        if (timezone.now() - hb.updated_at).total_seconds() > ttl:
+            return False
+        return hb.status in ProvisionerHeartbeat.HEALTHY_STATES
     except Exception:  # unknown ⇒ fail closed
         return False
 
@@ -112,17 +116,42 @@ def host_agent_reachable() -> bool:
             or os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL", "")).strip()
     if not base:
         return False  # no agent configured ⇒ cannot reserve ⇒ fail closed
-    timeout = float(getattr(settings, "HOST_AGENT_PROBE_TIMEOUT_SECONDS", 0)
-                    or os.getenv("HOST_AGENT_PROBE_TIMEOUT_SECONDS", "3"))
+    # Short bounded cache to prevent a probe storm across many reservations.
+    from django.utils import timezone
+    cache_ttl = float(getattr(settings, "HOST_AGENT_PROBE_CACHE_SECONDS", 0)
+                      or os.getenv("HOST_AGENT_PROBE_CACHE_SECONDS", "10"))
+    now = timezone.now()
+    c = _HOST_AGENT_PROBE_CACHE
+    if c["at"] is not None and (now - c["at"]).total_seconds() <= cache_ttl:
+        return bool(c["ok"])
+    ok = _probe_host_agent(base)
+    _HOST_AGENT_PROBE_CACHE["at"] = now
+    _HOST_AGENT_PROBE_CACHE["ok"] = ok
+    return ok
+
+
+# Fixed, trusted, read-only liveness endpoint. Liveness is proven ONLY by an expected status:
+#   200 (open health) or 401/403 (auth-gated health, reached with NO credentials — nothing sensitive sent
+#   or logged). Any other status / timeout / connection error / malformed response ⇒ fail closed.
+_HOST_AGENT_PROBE_CACHE = {"at": None, "ok": None}
+_HOST_AGENT_LIVENESS_STATUSES = (200, 401, 403)
+
+
+def _probe_host_agent(base: str) -> bool:
     import urllib.error
     import urllib.request
+    timeout = float(getattr(settings, "HOST_AGENT_PROBE_TIMEOUT_SECONDS", 0)
+                    or os.getenv("HOST_AGENT_PROBE_TIMEOUT_SECONDS", "3"))
+    path = (getattr(settings, "HOST_AGENT_HEALTH_PATH", "")
+            or os.getenv("HOST_AGENT_HEALTH_PATH", "/")).strip() or "/"
+    url = base.rstrip("/") + "/" + path.lstrip("/")
     try:
-        urllib.request.urlopen(urllib.request.Request(base.rstrip("/") + "/", method="GET"), timeout=timeout)
-        return True
-    except urllib.error.HTTPError:
-        return True   # 401/403/etc — the agent responded ⇒ reachable
-    except Exception:
-        return False  # connection refused / timeout / DNS ⇒ unreachable ⇒ fail closed
+        resp = urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=timeout)
+        return 200 <= int(getattr(resp, "status", 0) or 0) < 300  # explicit 2xx = live
+    except urllib.error.HTTPError as e:  # the agent RESPONDED — only expected auth statuses prove liveness
+        return int(getattr(e, "code", 0) or 0) in _HOST_AGENT_LIVENESS_STATUSES
+    except Exception:  # timeout / connection refused / DNS / malformed ⇒ unreachable ⇒ fail closed
+        return False
 
 
 def runtime_capacity_available() -> bool:
