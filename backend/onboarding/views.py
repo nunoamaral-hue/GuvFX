@@ -1,11 +1,14 @@
 """
 Onboarding API views — step-based progression with backend-authoritative validation.
 """
+import logging
+
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
 
+from .emails import send_verification_email
 from .models import BrokerPartner
 from .serializers import (
     BrokerPartnerSerializer,
@@ -26,6 +29,8 @@ from .services import (
     verify_2fa,
     verify_email_token,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OnboardingStateView(APIView):
@@ -73,10 +78,18 @@ class EmailSendVerificationView(APIView):
 
         plaintext = create_email_verification_token(request.user)
 
-        # TODO: Integrate email sending service here.
-        # The plaintext token must be delivered via email, never in the API response.
-        # Email delivery integration is a separate infrastructure task.
-        _ = plaintext  # consumed by email sender when integrated
+        # Deliver the code via email (Google Workspace SMTP, env-configured). The token
+        # is NEVER returned in the API response. If transport fails we return a truthful
+        # error rather than the old stub's false "email sent".
+        try:
+            send_verification_email(request.user, plaintext)
+        except Exception:  # noqa: BLE001 — any transport/auth error → honest 502
+            logger.exception("verification email send failed for user_id=%s", request.user.id)
+            return Response(
+                {"detail": "We couldn't send the verification email right now. "
+                           "Please try again in a moment."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
         return Response(
             {"detail": "Verification email sent. Check your inbox."},
