@@ -200,8 +200,14 @@ function OnboardingGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isLocalhostEnv()) return;
 
-    // Allow the onboarding page itself to render without redirect
-    if (pathname === "/onboarding" || pathname.startsWith("/onboarding/")) {
+    // Allow the onboarding page itself AND the in-app pages the onboarding flow directs users to.
+    // The "Connect broker" step sends users to /accounts and the strategy step sends them to /strategies;
+    // without whitelisting these the gate bounces every such link straight back to /onboarding, so those
+    // steps can NEVER be completed (a self-contradicting loop that traps every customer at the broker
+    // step). This is only the UX funnel — backend permissions still gate what an incomplete user can
+    // actually do on these pages.
+    const ONBOARDING_REACHABLE = ["/onboarding", "/accounts", "/strategies"];
+    if (ONBOARDING_REACHABLE.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
       setGateState("complete");
       return;
     }
