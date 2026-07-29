@@ -69,7 +69,7 @@ class _FanoutBase(TestCase):
     def _acct(self, user, number, *, is_demo=True, broker_server=None):
         return TradingAccount.objects.create(
             user=user, name=number, account_number=number, is_demo=is_demo,
-            is_active=True, broker_server=broker_server)
+            is_active=True, broker_name="DemoBroker", broker_server=broker_server)
 
     def _bind(self, user, acct, *, active=True, mode=DEMO):
         strat = Strategy.objects.create(owner=user, name=f"WIM {acct.account_number}")

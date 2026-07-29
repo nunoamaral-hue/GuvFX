@@ -1,8 +1,9 @@
-"""CVM-Inc-1 — controlled beta admission (allowlist replaces email verification, per-identity).
+"""CVM-Inc-1 / ADR-0021 — controlled beta admission model (retained) is NO LONGER an eligibility gate.
 
-The admission allowlist admits ONE controlled beta identity whose admission replaces email verification
-and grants beta entitlement — WITHOUT opening onboarding globally. An empty allowlist is zero behaviour
-change (public onboarding stays closed).
+The ``BetaTester`` allowlist and ``is_admitted_beta_tester`` are RETAINED as an operator concept, but
+ADR-0021 removed admission as an eligibility gate: it no longer replaces email verification, no longer
+auto-grants entitlement on onboarding-state creation, and no longer gates provisioning/arming. Customers
+verify email via the genuine email flow. These tests pin that retained-but-inert behaviour.
 """
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
@@ -10,7 +11,7 @@ from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
 
 from billing.beta import is_admitted_beta_tester
-from billing.models import BetaTester, UserSubscriptionState
+from billing.models import BetaTester
 from onboarding.services import get_or_create_onboarding_state
 
 U = get_user_model()
@@ -28,16 +29,14 @@ class BetaAdmissionAllowlistTests(TestCase):
         # Non-allowlisted user: email verification is STILL required (not auto-satisfied) → public closed.
         self.assertFalse(state.email_verified)
 
-    def test_allowlisted_user_admission_replaces_email_verification(self):
+    def test_allowlist_no_longer_replaces_email_verification(self):
+        # ADR-0021: admission no longer bypasses email verification. The allowlist row still exists and
+        # is_admitted_beta_tester is still True, but onboarding-state creation does NOT auto-verify email.
         BetaTester.objects.create(email="tester@example.invalid")
         u = _user("tester@example.invalid")
-        self.assertTrue(is_admitted_beta_tester(u))
+        self.assertTrue(is_admitted_beta_tester(u))     # the function is retained…
         state = get_or_create_onboarding_state(u)
-        # Admission REPLACES email verification for this identity (no code required).
-        self.assertTrue(state.email_verified)
-        # ...and grants beta entitlement.
-        sub = UserSubscriptionState.objects.get(user=u)
-        self.assertEqual(sub.current_plan, UserSubscriptionState.Plan.BETA)
+        self.assertFalse(state.email_verified)          # …but it no longer bypasses email verification
 
     def test_admission_is_case_insensitive(self):
         BetaTester.objects.create(email="Mixed@Example.invalid")
@@ -50,15 +49,15 @@ class BetaAdmissionAllowlistTests(TestCase):
         self.assertFalse(is_admitted_beta_tester(u))
         self.assertFalse(get_or_create_onboarding_state(u).email_verified)
 
-    def test_admission_is_idempotent_and_does_not_reflip(self):
+    def test_repeated_onboarding_state_is_stable_noop(self):
+        # ADR-0021: repeated onboarding-state creation is a stable no-op that never force-flips email
+        # verification (admission does not touch it in either direction).
         BetaTester.objects.create(email="tester@example.invalid")
         u = _user("tester@example.invalid")
         s1 = get_or_create_onboarding_state(u)
-        self.assertTrue(s1.email_verified)
-        # A user manually un-verifying (edge) is not force-re-flipped on every read beyond the first admit;
-        # calling again is a no-op that does not error.
+        self.assertFalse(s1.email_verified)
         s2 = get_or_create_onboarding_state(u)
-        self.assertTrue(s2.email_verified)
+        self.assertFalse(s2.email_verified)
 
     def test_cap_enforced_default_one_active(self):
         BetaTester.objects.create(email="a@example.invalid")

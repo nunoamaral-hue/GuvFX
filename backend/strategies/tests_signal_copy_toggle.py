@@ -24,7 +24,7 @@ class SignalCopyToggleTests(TestCase):
         self.user = User.objects.create_user(username="u", email="u@x.invalid", password="x")
         self.other = User.objects.create_user(username="o", email="o@x.invalid", password="x")
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D1", is_demo=True,
+            user=self.user, name="Demo", account_number="D1", broker_name="DemoBroker", is_demo=True,
         )
         self.strategy = Strategy.objects.create(owner=self.user, name="Wayond WIM Strategy")
         self.client = APIClient()
@@ -141,7 +141,7 @@ class SignalCopyToggleTests(TestCase):
     def test_strategy_owner_who_does_not_own_account_cannot_toggle(self):
         # Arm owned-strategy on ANOTHER user's demo account (staff-created cross-owned pair).
         demo_b = TradingAccount.objects.create(
-            user=self.other, name="DemoB", account_number="DB1", is_demo=True,
+            user=self.other, name="DemoB", account_number="DB1", broker_name="DemoBroker", is_demo=True,
         )
         asn = StrategyAssignment.objects.create(
             strategy=self.strategy, account=demo_b, execution_mode=AM.AUTO_DEMO,

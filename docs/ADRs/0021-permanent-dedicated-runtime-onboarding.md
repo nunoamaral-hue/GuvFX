@@ -155,6 +155,19 @@ evidence. A **separate bounded risk packet/PR** — but **part of the Customer Z
 **jointly certified**, then STOP at the production-deployment gate for Sponsor approval (Golden-Reference
 STOP-check before + after).
 
+**Frontend-divergence deploy-gate item.** The state-driven `AccountConnectionStep` is authored in the
+**local Git repo** (the canonical PR-A source). The deployed prod frontend lives in a separate tree
+(`/home/ubuntu/guvfx-prod/frontend`) that has diverged from the repo (e.g. an earlier hot-fix that added
+broker fields to the connect step). Reconciling the repo's PR-A frontend onto the deployed tree is a
+**deploy-gate task** — performed only at Sponsor go-live, never as a live edit during PR A. No prod
+frontend file is touched by PR A.
+
+**Test-fixture consequence of `brokeridentity_present`.** Tightening the "every account has a broker
+identity" invariant into a DB constraint surfaced a large volume of pre-existing test fixtures that
+created bare accounts (no `broker_server`, empty `broker_name`). PR A adds a `broker_name` to those
+incidental fixtures across the suite (mechanical, additive). Production data was audited clean (0 rows),
+so no production remediation is required — only test data.
+
 ## Migration / normalisation plan (idempotency constraint)
 
 **Order of operations (all in PR A):**
@@ -167,18 +180,29 @@ STOP-check before + after).
    names are case-sensitive; normalisation is whitespace-only. The idempotency lookup uses the same
    normalised values.
 3. **Null-safe conditional uniqueness** — two **partial** `UniqueConstraint`s (Postgres treats NULLs as
-   distinct, so a single constraint spanning a nullable FK would not enforce the free-text path):
-   - `uniq_acct_fk` — `(user, account_number, broker_server)` `WHERE broker_server IS NOT NULL`.
-   - `uniq_acct_freetext` — `(user, account_number, broker_name)` `WHERE broker_server IS NULL AND broker_name <> ''`.
-4. **Data-preserving + reversible.** A `RunPython` pre-check aborts the migration loudly if step 1 finds
-   duplicates (so they are handled before the constraint lands). Reverse drops the constraints only.
+   distinct, so a single constraint spanning a nullable FK would not enforce the free-text path). These
+   two constraints **already existed** on `TradingAccount`; PR A relies on them as the DB-layer backstop:
+   - `uniq_user_brokerserver_accountnumber` — `(user, broker_server, account_number)` `WHERE broker_server IS NOT NULL`.
+   - `uniq_user_brokername_accountnumber` — `(user, broker_name, account_number)` `WHERE broker_server IS NULL AND broker_name <> ''`.
+   PR A **adds** a `CheckConstraint` `brokeridentity_present` — `broker_server IS NOT NULL OR broker_name <> ''`
+   — closing the NULL-FK + empty-name hole that would otherwise evade both partial constraints (trading
+   migration `0013`). Prod audit found ZERO incompatible rows; the migration carries a `RunPython` pre-check
+   that aborts loudly if any exist.
+4. **Exactly-one active provisioning job** — a partial `UniqueConstraint`
+   `uniq_active_job_per_runtime_op` on `ProvisioningJob (runtime, op) WHERE status IN (QUEUED, RUNNING)`
+   (terminal_provisioning migration `0010`) makes "at most one active job per (runtime, op)" a DB fact;
+   `enqueue_op` recovers the winner on the resulting `IntegrityError`. Its migration also carries a
+   `RunPython` duplicate-abort pre-check.
+5. **Data-preserving + reversible.** Each new constraint's reverse drops only the constraint.
 
 **Idempotency proofs (tests in PR A):**
-- Repeated submission of the same `(user, login, broker)` returns the **existing** account (200/── same id)
+- Repeated submission of the same `(user, login, broker)` returns the **existing** account (200/201, same id)
   and the **existing** provisioning state — no second account, no second slot, no duplicate PROVISION job.
-- Concurrent submissions cannot duplicate: `perform_create` already takes `select_for_update` on the user
-  row (serialises the two creates); the partial unique constraints are the DB-layer backstop
-  (`IntegrityError` → caught → return existing).
+- Concurrent submissions cannot duplicate — proven by a genuine real-thread `TransactionTestCase`
+  (`ConcurrentCreateTests`): `perform_create` does **canonical normalisation → existing-account lookup →
+  transactional create → IntegrityError winner recovery** and does **NOT depend on a row lock**; the DB
+  partial-unique constraints are the serialisation point, and the winner is recovered and returned
+  idempotently. Result: exactly one account, one runtime, one active PROVISION job, same resolved state.
 
 **Gate-removal migrations:** none (code-only). `BetaTester` rows retained; cohort unchanged (`BETA` remains
 the customer cohort, `PRODUCTION`/Nuno untouched); cosmetic rename deferred.

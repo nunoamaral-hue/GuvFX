@@ -24,7 +24,7 @@ class ReconcileTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="rc", email="rc@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="RC1", is_demo=True)
+            user=self.user, name="Demo", account_number="RC1", is_demo=True, broker_name="DemoBroker")
         self._n = 0
 
     def _win(self, *, candidate=True, transmitted=False, sent=False, age_seconds=0,

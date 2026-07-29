@@ -48,12 +48,11 @@ class ActivationGateTests(TestCase):
             assert_beta_activation_allowed(rt)
         self.assertEqual(ctx.exception.reason_code, "beta_runtimes_disabled")
 
-    def test_denies_non_admitted_user_even_with_flag_on(self):
-        # A reserved BETA runtime whose owner is NOT admitted must be refused launch (control 2).
+    def test_plain_user_not_denied_admission_removed(self):
+        # ADR-0021 removed per-user admission as an eligibility gate — a plain (non-allowlisted) owner's
+        # reserved BETA runtime now PASSES the activation gate.
         rt = self._reserved(admitted=False)
-        with self.assertRaises(ActivationDenied) as ctx:
-            assert_beta_activation_allowed(rt)
-        self.assertEqual(ctx.exception.reason_code, "user_not_admitted")
+        assert_beta_activation_allowed(rt)  # no raise
 
     def test_denies_production_cohort(self):
         acct = _acct(1)
@@ -81,18 +80,17 @@ class ActivationGateTests(TestCase):
 
 @ENABLED
 class ActivationGateInProvisionerTests(TestCase):
-    def test_non_admitted_reserved_runtime_cannot_launch(self):
-        # Reserve a BETA runtime for a NON-admitted account, then advance PROVISION → the gate denies
-        # BEFORE any box work; job FAILED, no materialise/start called.
+    def test_plain_user_runtime_launches_through_gate(self):
+        # ADR-0021: admission is no longer required to launch. A plain (non-allowlisted) customer's
+        # reserved runtime provisions to RUNNING through the (owner + flag + cohort + reserved) gate.
         acct = _acct(1, admitted=False)
         rt = cap.reserve_beta_slot(acct)
         p = FakeProvisioner()
         job = advance_provisioning_job(enqueue_op(rt, ProvisioningJob.Op.PROVISION), p)
-        self.assertEqual(job.status, ProvisioningJob.Status.FAILED)
-        self.assertEqual(job.last_error, "user_not_admitted")
-        self.assertEqual(p.calls, [])   # NO box side-effect (materialise/start) occurred
+        self.assertEqual(job.status, ProvisioningJob.Status.DONE)
         rt.refresh_from_db()
-        self.assertNotEqual(rt.state, RuntimeState.RUNNING)
+        self.assertEqual(rt.state, RuntimeState.RUNNING)
+        self.assertIn("materialise", [c[0] for c in p.calls])
 
     def test_admitted_runtime_launches_through_gate(self):
         acct = _acct(1, admitted=True)
@@ -143,9 +141,16 @@ class RuntimeReadySemanticsTests(TestCase):
 @ENABLED
 class AccountConnectedBetaSemanticsTests(TestCase):
     def _admitted_user_with_account(self):
-        acct = _acct(1, admitted=True)
+        acct = _acct(1)
+        from billing.beta import grant_beta_entitlement
         from onboarding.services import complete_step, get_or_create_onboarding_state
-        get_or_create_onboarding_state(acct.user)  # admit + entitle + email_verified
+        # ADR-0021: admission no longer grants entitlement or sets email_verified — the customer is
+        # entitled (registration auto-grants beta) and verifies email via the genuine flow. Set both up
+        # explicitly so the journey prerequisites for account_connected are satisfied.
+        grant_beta_entitlement(acct.user)
+        state = get_or_create_onboarding_state(acct.user)
+        state.email_verified = True
+        state.save(update_fields=["email_verified"])
         complete_step(acct.user, step="plan_selected")   # journey prerequisites for account_connected
         complete_step(acct.user, step="risk_accepted")
         return acct

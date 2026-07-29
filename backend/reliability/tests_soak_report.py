@@ -20,7 +20,7 @@ class SoakReportTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="sk", email="sk@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="SK1", is_demo=True)
+            user=self.user, name="Demo", account_number="SK1", is_demo=True, broker_name="DemoBroker")
         SignalSourceConfig.objects.create(source="ti_signals", max_lot_per_leg=Decimal("0.40"))
         # one winning ti_signals trade
         appr = PendingSignalApproval.objects.create(

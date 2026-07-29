@@ -79,7 +79,7 @@ class BuildPositionsTests(TestCase):
 class UpsertTradesTests(TestCase):
     def setUp(self):
         u = get_user_model().objects.create_user(username="iu", email="iu@x.invalid", password="x")
-        self.acct = TradingAccount.objects.create(user=u, name="D", account_number="ID1", is_demo=True)
+        self.acct = TradingAccount.objects.create(user=u, name="D", account_number="ID1", broker_name="DemoBroker", is_demo=True)
 
     def _closed(self, pid, comment):
         return [_deal(pid, 0, 1, 4054.61, 0.02, time=100, comment=comment),

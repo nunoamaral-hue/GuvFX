@@ -64,6 +64,7 @@ class _ArmedBase(TestCase):
         )
         self.demo = TradingAccount.objects.create(
             user=self.op, name="Demo", account_number="D1", is_demo=True,
+            broker_name="DemoBroker",
         )
         self.parser = ParserProfile.objects.create(
             slug="wayond_v1",
@@ -168,6 +169,7 @@ class GateFailClosedTests(_ArmedBase):
     def test_ambiguous_assignment_is_manual(self):
         acct2 = TradingAccount.objects.create(
             user=self.op, name="Demo2", account_number="D2", is_demo=True,
+            broker_name="DemoBroker",
         )
         StrategyAssignment.objects.create(
             strategy=Strategy.objects.create(owner=self.op, name="Other"),
@@ -267,6 +269,7 @@ class DefaultBehaviourTests(TestCase):
         op = User.objects.create_user(username="u", email="u@x.invalid", password="x")
         acct = TradingAccount.objects.create(
             user=op, name="A", account_number="A1", is_demo=True,
+            broker_name="DemoBroker",
         )
         assignment = StrategyAssignment.objects.create(
             strategy=Strategy.objects.create(owner=op, name="S"), account=acct,

@@ -47,7 +47,7 @@ class GenericCreateDisabledTests(TestCase):
             username="u", email="u@example.invalid", password="x"
         )
         self.account = TradingAccount.objects.create(
-            user=self.user, name="A", account_number="N1", is_demo=True
+            user=self.user, name="A", account_number="N1", is_demo=True, broker_name="DemoBroker"
         )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
@@ -106,7 +106,7 @@ class KillSwitchModelGuardTests(TestCase):
             username="k", email="k@example.invalid", password="x"
         )
         self.account = TradingAccount.objects.create(
-            user=self.user, name="A", account_number="N2", is_demo=True
+            user=self.user, name="A", account_number="N2", is_demo=True, broker_name="DemoBroker"
         )
 
     def _make(self, job_type):
@@ -170,7 +170,7 @@ class ProposalNoOrderRegressionTests(TestCase):
             username="p", email="p@example.invalid", password="x"
         )
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="N3", is_demo=True
+            user=self.user, name="Demo", account_number="N3", is_demo=True, broker_name="DemoBroker"
         )
 
     def test_proposal_creates_no_execution_job(self):

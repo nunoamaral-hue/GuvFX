@@ -302,6 +302,17 @@ class ProvisioningJob(models.Model):
 
     class Meta:
         indexes = [models.Index(fields=["status", "id"])]
+        constraints = [
+            # ADR-0021 — at most ONE active (QUEUED or RUNNING) job per (runtime, op). Makes the
+            # "exactly one active provisioning job" invariant a DB fact, so concurrent identical
+            # submissions can never stack a duplicate job (``enqueue_op`` recovers the winner on the
+            # resulting IntegrityError). A DONE/FAILED job never blocks a legitimate later re-enqueue.
+            models.UniqueConstraint(
+                fields=["runtime", "op"],
+                condition=models.Q(status__in=["QUEUED", "RUNNING"]),
+                name="uniq_active_job_per_runtime_op",
+            ),
+        ]
 
     def __str__(self):
         return f"ProvisioningJob(rt={self.runtime_id}, {self.op}, {self.status})"

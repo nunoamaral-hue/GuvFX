@@ -33,7 +33,7 @@ class WorkerActionGatingTests(TestCase):
             username="ordinary", email="ord@example.invalid", password="x"
         )
         self.account = TradingAccount.objects.create(
-            user=self.user, name="A", account_number="N1", is_demo=True
+            user=self.user, name="A", account_number="N1", is_demo=True, broker_name="DemoBroker"
         )
         # A claimable job so next_job has something to consider.
         self.job = ExecutionJob.objects.create(
@@ -106,7 +106,7 @@ class KillSwitchCleanHandlingTests(TestCase):
             username="su", email="su@example.invalid", password="x", is_superuser=True
         )
         self.account = TradingAccount.objects.create(
-            user=self.admin, name="A", account_number="N2", is_demo=True
+            user=self.admin, name="A", account_number="N2", is_demo=True, broker_name="DemoBroker"
         )
         # A FAILED order job to retry (created with the switch OFF).
         self.failed = ExecutionJob.objects.create(
@@ -140,7 +140,7 @@ class ProposalRegressionTests(TestCase):
             username="p", email="p@example.invalid", password="x"
         )
         demo = TradingAccount.objects.create(
-            user=user, name="Demo", account_number="N3", is_demo=True
+            user=user, name="Demo", account_number="N3", is_demo=True, broker_name="DemoBroker"
         )
         approval = PendingSignalApproval.objects.create(
             source=PendingSignalApproval.Source.WAYOND_TELEGRAM, message_id="r2",

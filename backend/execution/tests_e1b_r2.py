@@ -40,7 +40,7 @@ class NaiveTimestampTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="op", email="op@x.invalid", password="x")
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D1", is_demo=True
+            user=self.user, name="Demo", account_number="D1", is_demo=True, broker_name="DemoBroker"
         )
         SignalSourceConfig.objects.create(source=SRC, auto_demo_execution_enabled=True)
 
@@ -87,7 +87,7 @@ class HoldVoidIdempotencyTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="op2", email="op2@x.invalid", password="x")
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D2", is_demo=True
+            user=self.user, name="Demo", account_number="D2", is_demo=True, broker_name="DemoBroker"
         )
         SignalSourceConfig.objects.create(source=SRC, auto_demo_execution_enabled=True)
 
@@ -126,7 +126,7 @@ class InvalidLotTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="op3", email="op3@x.invalid", password="x")
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D3", is_demo=True
+            user=self.user, name="Demo", account_number="D3", is_demo=True, broker_name="DemoBroker"
         )
         SignalSourceConfig.objects.create(source=SRC, auto_demo_execution_enabled=True)
 
@@ -156,7 +156,7 @@ class NoOrderStillHoldsTests(TestCase):
     def test_no_execution_job_after_r2_paths(self):
         user = User.objects.create_user(username="op4", email="op4@x.invalid", password="x")
         demo = TradingAccount.objects.create(
-            user=user, name="Demo", account_number="D4", is_demo=True
+            user=user, name="Demo", account_number="D4", is_demo=True, broker_name="DemoBroker"
         )
         SignalSourceConfig.objects.create(source=SRC, auto_demo_execution_enabled=True)
         naive = timezone.now().replace(tzinfo=None).isoformat()

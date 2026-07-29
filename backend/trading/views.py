@@ -202,6 +202,22 @@ def _maybe_enqueue_beta_provisioning(user, account) -> None:
             getattr(account, "id", None))
 
 
+def _find_existing_account(user, acct_no, broker_server, broker_name):
+    """ADR-0021 canonical idempotency lookup: the ONE account matching this user's ``account_number`` +
+    broker identity in canonical (whitespace-stripped) form — mirroring exactly the two partial-unique
+    constraints. A ``broker_server`` FK takes precedence; otherwise a non-empty free-text ``broker_name``.
+    Returns ``None`` when there is no ``account_number`` or no broker identity to match on (such a row can
+    neither exist nor be created — the CheckConstraint forbids it)."""
+    if not acct_no:
+        return None
+    qs = TradingAccount.objects.filter(user=user, account_number=acct_no)
+    if broker_server is not None:
+        return qs.filter(broker_server=broker_server).first()
+    if broker_name:
+        return qs.filter(broker_server__isnull=True, broker_name=broker_name).first()
+    return None
+
+
 class TradingAccountViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["POST"], url_path="test-mt5")
@@ -287,7 +303,7 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             super().perform_destroy(instance)
 
     def perform_create(self, serializer):
-        from django.db import transaction
+        from django.db import IntegrityError, transaction
         from rest_framework.exceptions import ValidationError
         from billing.entitlements import resolve_entitlements
         from billing.models import UserSubscriptionState
@@ -300,35 +316,49 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
 
         # ADR-0021: dedicated-runtime provisioning is the DEFAULT customer execution model. Every non-staff
         # customer account is created with NO legacy shared-instance binding (``mt5_instance=None``); its
-        # owned runtime is provisioned via ``_maybe_enqueue_beta_provisioning``. IDEMPOTENT at both layers:
-        # a resubmission of the same ``(user, account_number, broker)`` returns the EXISTING account (never a
-        # duplicate) and re-drives provisioning idempotently. The cap is enforced atomically for new accounts.
-        with transaction.atomic():
-            type(user).objects.select_for_update().get(pk=user.pk)  # serialise this user's creates
+        # owned runtime is provisioned via ``_maybe_enqueue_beta_provisioning`` (idempotent).
+        #
+        # IDEMPOTENT AT BOTH LAYERS, WITHOUT DEPENDING ON A ROW LOCK for correctness:
+        #   1. canonical normalisation of the identity fields (strip);
+        #   2. an existing-account lookup (fast path — a resubmission returns the SAME account);
+        #   3. a transactional create whose DB partial-UNIQUE constraints are the real serialisation point;
+        #   4. IntegrityError WINNER RECOVERY — if a concurrent identical submission wins the race, recover
+        #      the winner and return it idempotently (exactly one account for a duplicate submission).
+        acct_no = str(self.request.data.get("account_number") or "").strip()
+        broker_name = str(self.request.data.get("broker_name") or "").strip()
+        broker_server = serializer.validated_data.get("broker_server")
 
-            acct_no = str(self.request.data.get("account_number") or "").strip()
-            broker_name = (str(self.request.data.get("broker_name") or "")).strip()
-            broker_server = serializer.validated_data.get("broker_server")
-            existing = None
-            if acct_no:
-                existing_qs = TradingAccount.objects.filter(user=user, account_number=acct_no)
-                if broker_server is not None:
-                    existing_qs = existing_qs.filter(broker_server=broker_server)
-                elif broker_name:
-                    existing_qs = existing_qs.filter(broker_server__isnull=True, broker_name=broker_name)
-                existing = existing_qs.first()
-            if existing is not None:
-                serializer.instance = existing  # idempotent: return the existing account, no duplicate
-                _maybe_enqueue_beta_provisioning(user, existing)  # idempotent re-drive of provisioning
-                return
+        # Friendly 400 — a customer account needs a usable broker identity (mirrors the DB CheckConstraint,
+        # so the customer gets a clear message instead of a 500 from a constraint violation).
+        if broker_server is None and not broker_name:
+            raise ValidationError({"broker": "Select a broker server or enter a broker name."})
 
-            ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
-            limit = min(10, ent.max_trading_accounts)
-            if TradingAccount.objects.filter(user=user).count() >= limit:
-                raise ValidationError({"detail": f"Broker-account limit reached (maximum {limit})."})
+        existing = _find_existing_account(user, acct_no, broker_server, broker_name)
+        if existing is not None:
+            serializer.instance = existing  # idempotent: return the existing account, no duplicate
+            _maybe_enqueue_beta_provisioning(user, existing)  # idempotent re-drive of provisioning
+            return
 
-            serializer.save(user=user, mt5_instance=None, is_active=False)
-            _maybe_enqueue_beta_provisioning(user, serializer.instance)
+        # Best-effort per-user cap. The DB uniqueness constraint (not this count) is what guarantees no
+        # duplicate; the count is an entry-time courtesy check.
+        ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
+        limit = min(10, ent.max_trading_accounts)
+        if TradingAccount.objects.filter(user=user).count() >= limit:
+            raise ValidationError({"detail": f"Broker-account limit reached (maximum {limit})."})
+
+        try:
+            with transaction.atomic():   # savepoint — an IntegrityError here must not poison the request tx
+                serializer.save(user=user, mt5_instance=None, is_active=False)
+        except IntegrityError:
+            # A concurrent identical submission won the race and created the row first. Recover it and
+            # return it idempotently — NOT a duplicate, NOT a 500.
+            winner = _find_existing_account(user, acct_no, broker_server, broker_name)
+            if winner is None:
+                raise   # a different integrity error (not the account-identity race) — surface it
+            serializer.instance = winner
+            _maybe_enqueue_beta_provisioning(user, winner)
+            return
+        _maybe_enqueue_beta_provisioning(user, serializer.instance)
 
     from django.db import transaction
     from rest_framework.decorators import action

@@ -81,7 +81,7 @@ class PlanBuilderTests(TestCase):
             username="op", email="op@example.invalid", password="x"
         )
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D1", is_demo=True
+            user=self.user, name="Demo", account_number="D1", is_demo=True, broker_name="DemoBroker"
         )
         SignalSourceConfig.objects.create(
             source=SRC, auto_demo_execution_enabled=True, total_lot_target=Decimal("0.03")
@@ -185,7 +185,7 @@ class PlanBuilderTests(TestCase):
 
     def test_live_account_blocked(self):
         live = TradingAccount.objects.create(
-            user=self.user, name="Live", account_number="L1", is_demo=False
+            user=self.user, name="Live", account_number="L1", is_demo=False, broker_name="DemoBroker"
         )
         with self.assertRaises(planning.PlanRejected) as ctx:
             planning.plan_demo_execution(_approved("r3"), account=live)
@@ -272,7 +272,7 @@ class DailyCapPerSourceTests(TestCase):
             username="dc", email="dc@example.invalid", password="x"
         )
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="DC1", is_demo=True
+            user=self.user, name="Demo", account_number="DC1", is_demo=True, broker_name="DemoBroker"
         )
         for src in (SRC, SRC_B):
             SignalSourceConfig.objects.create(
@@ -402,7 +402,7 @@ class ManagementCommandTests(TestCase):
             username="op2", email="op2@example.invalid", password="x"
         )
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D2", is_demo=True
+            user=self.user, name="Demo", account_number="D2", is_demo=True, broker_name="DemoBroker"
         )
 
     def test_command_creates_plan_and_no_jobs(self):
@@ -473,7 +473,7 @@ class IntegrityMisclassificationTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="nx", email="nx@x.invalid", password="x")
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="NX1", is_demo=True)
+            user=self.user, name="Demo", account_number="NX1", is_demo=True, broker_name="DemoBroker")
         SignalSourceConfig.objects.create(
             source=SRC, auto_demo_execution_enabled=True, total_lot_target=Decimal("0.03"))
 

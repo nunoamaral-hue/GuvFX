@@ -30,7 +30,8 @@ class Base(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="be", email="be@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="BE1", is_demo=True)
+            user=self.user, name="Demo", account_number="BE1", is_demo=True,
+            broker_name="DemoBroker")
         SignalSourceConfig.objects.create(source=TI, incremental_protection_enabled=True)
         SignalSourceConfig.objects.create(source=WAY, incremental_protection_enabled=False)
         p = mock.patch.object(breakeven, "_windows_username", return_value="mt5user")
@@ -237,7 +238,8 @@ class IsolationValidationTests(Base):
         # A MODIFY for the same ticket on another account must not suppress this plan's modify.
         plan, legs = self._plan(direction="SELL", states=("tp", "open", "open"))
         other = TradingAccount.objects.create(
-            user=self.user, name="Other", account_number="BE2", is_demo=True)
+            user=self.user, name="Other", account_number="BE2", is_demo=True,
+            broker_name="DemoBroker")
         t2 = Trade.objects.get(account=self.acct, comment=f"WAY{plan.id}L2")
         ExecutionJob.objects.create(job_type="MODIFY_POSITION", account=other, status="PENDING",
             payload={"ticket": t2.ticket, "protection_stage": "BREAKEVEN"})

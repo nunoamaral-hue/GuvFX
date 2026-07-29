@@ -56,7 +56,7 @@ class ProposalBridgeTests(TestCase):
             username="op", email="op@example.invalid", password="x"
         )
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D1", is_demo=True
+            user=self.user, name="Demo", account_number="D1", is_demo=True, broker_name="DemoBroker"
         )
 
     # ----- the central no-order guarantees -------------------------------
@@ -91,7 +91,7 @@ class ProposalBridgeTests(TestCase):
 
     def test_live_flag_account_rejected(self):
         live = TradingAccount.objects.create(
-            user=self.user, name="Live", account_number="L1", is_demo=False
+            user=self.user, name="Live", account_number="L1", is_demo=False, broker_name="DemoBroker"
         )
         with self.assertRaises(bridge.ProposalRejected) as ctx:
             bridge.propose_order_from_approval(_approval("m3"), account=live, actor=self.user)
@@ -262,7 +262,7 @@ class ManagementCommandTests(TestCase):
             username="op2", email="op2@example.invalid", password="x"
         )
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D2", is_demo=True
+            user=self.user, name="Demo", account_number="D2", is_demo=True, broker_name="DemoBroker"
         )
 
     def test_command_creates_proposal_and_no_jobs(self):
@@ -280,7 +280,7 @@ class ManagementCommandTests(TestCase):
 
     def test_command_rejects_live_account_and_creates_no_jobs(self):
         live = TradingAccount.objects.create(
-            user=self.user, name="Live", account_number="L2", is_demo=False
+            user=self.user, name="Live", account_number="L2", is_demo=False, broker_name="DemoBroker"
         )
         a = _approval("cmd2")
         with self.assertRaises(CommandError):

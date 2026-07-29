@@ -88,8 +88,22 @@ def _expected_login_server(runtime: AccountRuntime):
 
 # ── Enqueue (enqueue-only: callers create jobs; a worker advances them) ──
 def enqueue_op(runtime: AccountRuntime, op: str) -> ProvisioningJob:
+    """Enqueue ONE provisioning job — idempotent under the ``uniq_active_job_per_runtime_op`` invariant.
+    A concurrent identical enqueue that lost the race raises IntegrityError; we recover the winning active
+    job and return it, so a caller never stacks a duplicate and never sees a 500."""
+    from django.db import IntegrityError
     _require_beta(runtime)
-    return ProvisioningJob.objects.create(runtime=runtime, op=op)
+    try:
+        with transaction.atomic():   # savepoint — a unique violation here must not poison the outer tx
+            return ProvisioningJob.objects.create(runtime=runtime, op=op)
+    except IntegrityError:
+        existing = (ProvisioningJob.objects
+                    .filter(runtime=runtime, op=op,
+                            status__in=[ProvisioningJob.Status.QUEUED, ProvisioningJob.Status.RUNNING])
+                    .order_by("id").first())
+        if existing is None:
+            raise   # a different integrity error — surface it
+        return existing
 
 
 # ── Driver ──

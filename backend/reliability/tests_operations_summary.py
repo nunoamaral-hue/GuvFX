@@ -25,7 +25,7 @@ class OperationsSummaryTests(TestCase):
         self.user = User.objects.create_user(username="op", email="op@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
             user=self.user, name="IS6 Demo (1302561)", account_number="1302561",
-            is_demo=True, public_display_name="IS6FX")
+            is_demo=True, broker_name="DemoBroker", public_display_name="IS6FX")
         SignalSourceConfig.objects.create(
             source="ti_signals", auto_demo_execution_enabled=True,
             total_lot_target=Decimal("1.20"), max_lot_per_leg=Decimal("0.40"))
@@ -84,7 +84,7 @@ class OperationsD1toD4Tests(TestCase):
         self.user = User.objects.create_user(username="d", email="d@x.invalid", password="x", is_staff=True)
         self.acct = TradingAccount.objects.create(
             user=self.user, name="IS6 Demo (1302561)", account_number="1302561",
-            is_demo=True, is_active=True, public_display_name="IS6FX")
+            is_demo=True, is_active=True, broker_name="DemoBroker", public_display_name="IS6FX")
         SignalSourceConfig.objects.create(
             source="ti_signals", auto_demo_execution_enabled=True,
             total_lot_target=Decimal("1.20"), max_lot_per_leg=Decimal("0.40"),
@@ -162,7 +162,7 @@ class SignalDispositionBlockTests(TestCase):
         self.user = get_user_model().objects.create_user(
             username="d", email="d@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D9", is_demo=True)
+            user=self.user, name="Demo", account_number="D9", is_demo=True, broker_name="DemoBroker")
         SignalSourceConfig.objects.create(source="ti_signals", auto_demo_execution_enabled=True)
 
     def _appr(self, mid, *, age_s):
@@ -212,7 +212,7 @@ class ExecutionJobsBlockTests(TestCase):
         from django.contrib.auth import get_user_model
         self.user = get_user_model().objects.create_user(username="ej", email="ej@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="EJ1", is_demo=True)
+            user=self.user, name="Demo", account_number="EJ1", is_demo=True, broker_name="DemoBroker")
 
     def test_orphaned_running_place_order_surfaced(self):
         from execution.models import ExecutionJob
@@ -238,7 +238,7 @@ class NotificationReconciliationBlockTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="nr", email="nr@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="NR1", is_demo=True)
+            user=self.user, name="Demo", account_number="NR1", is_demo=True, broker_name="DemoBroker")
 
     def _win(self, i, *, deliver=True, sent=True, dup=False, age_seconds=3600, src="ti_signals"):
         """One WIN chain. Only the OUTCOME's created_at anchors the window (candidate/delivery join
@@ -344,7 +344,7 @@ class RiskStateBlockTests(TestCase):
         self.user = User.objects.create_user(username="rs", email="rs@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
             user=self.user, name="IS6 Demo (1302561)", account_number="1302561",
-            is_demo=True, public_display_name="IS6FX")
+            is_demo=True, broker_name="DemoBroker", public_display_name="IS6FX")
         from strategies.models import Strategy, StrategyAssignment
         strat = Strategy.objects.create(owner=self.user, name="TI")
         StrategyAssignment.objects.create(
@@ -408,7 +408,7 @@ class SignalExecutionBlockTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="se", email="se@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="SE1", is_demo=True)
+            user=self.user, name="Demo", account_number="SE1", is_demo=True, broker_name="DemoBroker")
         SignalSourceConfig.objects.create(source="ti_signals", auto_demo_execution_enabled=True)
 
     def _plan(self, status, *, mid):

@@ -53,7 +53,7 @@ class TransportBase(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="op", email="op@x.invalid", password="x")
         self.account = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D1", is_demo=True,
+            user=self.user, name="Demo", account_number="D1", is_demo=True, broker_name="DemoBroker",
         )
         self._n = 0
 
