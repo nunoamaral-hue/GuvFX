@@ -198,6 +198,14 @@ the customer cohort, `PRODUCTION`/Nuno untouched); cosmetic rename deferred.
   plan is auto-granted today). This ADR neither touches nor blocks it.
 - **Reversible:** re-introducing an eligibility gate is a one-line change to `onboarding_available()`.
 
+## Terminology (permanent)
+The legacy beta-era names are now the **standard dedicated customer-runtime path**, not a separate
+architecture: `cohort=BETA` = the standard customer runtime cohort; `BETA_MAX_TESTERS` = the customer
+runtime-capacity cap; `reserve_beta_slot` / `beta_activation` / `beta_worker` = the standard
+dedicated-runtime reservation + activation + provisioning path. **"Trusted Beta" is an operational
+rollout state, not an eligibility or onboarding architecture.** No admission check may be reintroduced
+through these legacy names. (A cosmetic rename to customer-neutral identifiers is deferred, non-blocking.)
+
 ## Alternatives considered
 - *Keep a separate beta journey* — rejected: dual-path tech debt; allowlist doesn't scale to public.
 - *Broker-independent provisioning (no validation)* — rejected: "credentials validated" would be untrue.

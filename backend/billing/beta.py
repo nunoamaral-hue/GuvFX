@@ -82,32 +82,47 @@ def provisioning_service_healthy() -> bool:
 
 
 def _provisioner_heartbeat_fresh() -> bool:
-    """Beta provisioner liveness. Fresh if a heartbeat was recorded within
-    ``BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS`` (default 120). Absent record ⇒ treat as healthy only when
-    the worker model has no heartbeat column yet (backward-compat); otherwise fail closed."""
+    """Beta provisioner liveness — **FAIL CLOSED**. Fresh ONLY if the singleton heartbeat was updated within
+    ``BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS`` (default 120). Missing / stale / unreadable ⇒ False."""
     ttl = int(getattr(settings, "BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", 0)
               or os.getenv("BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", "120"))
     try:
-        from terminal_provisioning.models import ProvisionerHeartbeat  # type: ignore
-    except Exception:
-        return True  # heartbeat model not present in this build — do not block on it
-    from django.utils import timezone
-    hb = ProvisionerHeartbeat.objects.order_by("-updated_at").first()
-    if hb is None:
+        from django.utils import timezone
+
+        from terminal_provisioning.models import ProvisionerHeartbeat
+        hb = ProvisionerHeartbeat.objects.filter(pk=ProvisionerHeartbeat.SINGLETON_ID).first()
+        if hb is None or hb.updated_at is None:
+            return False
+        return (timezone.now() - hb.updated_at).total_seconds() <= ttl
+    except Exception:  # unknown ⇒ fail closed
         return False
-    return (timezone.now() - hb.updated_at).total_seconds() <= ttl
 
 
 def host_agent_reachable() -> bool:
-    """The Windows agent/host required to MATERIALISE a runtime is reachable. Used ONLY when allocating a
-    NEW runtime (never on progression of an existing one). Cheap cached signal; never a per-request probe
-    in the hot path — see host-reachability cache. Default True if no signal is configured."""
-    val = getattr(settings, "HOST_AGENT_REACHABLE", None)
-    if val is None:
-        val = os.getenv("HOST_AGENT_REACHABLE", "")
-    if str(val).strip() == "":
-        return True  # no explicit signal configured — do not block (host_has_capacity already probes)
-    return str(val).strip().lower() in ("1", "true", "yes", "on")
+    """Windows agent/host reachability for a NEW runtime — **FAIL CLOSED**. An explicit
+    ``HOST_AGENT_REACHABLE`` override (tests/ops) wins if set; otherwise a **bounded live HTTP probe with an
+    explicit timeout** decides. Missing config / transport error / timeout / unknown ⇒ False. Only ever on
+    the NEW-reservation path (rare), never on existing-runtime progression."""
+    override = getattr(settings, "HOST_AGENT_REACHABLE", None)
+    if override is None:
+        override = os.getenv("HOST_AGENT_REACHABLE", "")
+    if str(override).strip() != "":  # explicit override (deterministic tests / ops break-glass)
+        return str(override).strip().lower() in ("1", "true", "yes", "on")
+    base = (getattr(settings, "GUVFX_WINDOWS_AGENT_BASE_URL", "")
+            or os.getenv("GUVFX_WINDOWS_AGENT_BASE_URL", "")).strip()
+    if not base:
+        return False  # no agent configured ⇒ cannot reserve ⇒ fail closed
+    timeout = float(getattr(settings, "HOST_AGENT_PROBE_TIMEOUT_SECONDS", 0)
+                    or os.getenv("HOST_AGENT_PROBE_TIMEOUT_SECONDS", "3"))
+    import urllib.error
+    import urllib.request
+    try:
+        urllib.request.urlopen(urllib.request.Request(base.rstrip("/") + "/", method="GET"), timeout=timeout)
+        return True
+    except urllib.error.HTTPError:
+        return True   # 401/403/etc — the agent responded ⇒ reachable
+    except Exception:
+        return False  # connection refused / timeout / DNS ⇒ unreachable ⇒ fail closed
 
 
 def runtime_capacity_available() -> bool:

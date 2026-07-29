@@ -351,3 +351,25 @@ class ProvisioningVerificationReport(models.Model):
 
     def __str__(self):
         return f"VerificationReport(rt={self.runtime_id}, {self.runtime_uuid}, verified={self.verified})"
+
+
+class ProvisionerHeartbeat(models.Model):
+    """ADR-0021 — durable liveness of the dedicated-runtime provisioner worker. A single row (pk=1) the
+    worker touches every loop. ``updated_at`` is the freshness signal used ONLY when reserving a NEW
+    runtime — a missing/stale heartbeat fails CLOSED (``provisioner_unhealthy``). It never gates an
+    existing runtime's progression, strategy use, or reconciliation/recovery."""
+
+    SINGLETON_ID = 1
+    worker_id = models.CharField(max_length=64, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        self.pk = self.SINGLETON_ID
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def touch(cls, worker_id: str = "") -> None:
+        cls.objects.update_or_create(pk=cls.SINGLETON_ID, defaults={"worker_id": worker_id or ""})
+
+    def __str__(self):
+        return f"ProvisionerHeartbeat(updated_at={self.updated_at})"

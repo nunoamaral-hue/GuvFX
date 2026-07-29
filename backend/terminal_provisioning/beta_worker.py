@@ -64,6 +64,15 @@ def default_client_factory(job: ProvisioningJob) -> AgentWindowsProvisioner:
 
 def process_one(client_factory=default_client_factory, *, negotiate: bool = True) -> str:
     """Claim + advance ONE beta job. Returns a short status string. Never raises to the caller."""
+    # ADR-0021 liveness: record the durable heartbeat every loop, BEFORE the dark-check, so a running
+    # (even dark) worker proves liveness. Fail-open on the heartbeat write — it must never break the loop.
+    try:
+        import os as _os
+
+        from .models import ProvisionerHeartbeat
+        ProvisionerHeartbeat.touch(_os.getenv("MT5_WORKER_ID", "beta-provisioner"))
+    except Exception:  # noqa: BLE001
+        logger.debug("beta worker: heartbeat write skipped", exc_info=True)
     if not beta_runtimes_enabled():
         return "disabled"     # dark by default; the worker does nothing until armed
     job = claim_next_beta_job()
