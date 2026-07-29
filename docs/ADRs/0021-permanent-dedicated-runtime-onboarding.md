@@ -262,3 +262,41 @@ through these legacy names. (A cosmetic rename to customer-neutral identifiers i
 - *Keep a separate beta journey* — rejected: dual-path tech debt; allowlist doesn't scale to public.
 - *Broker-independent provisioning (no validation)* — rejected: "credentials validated" would be untrue.
 - *Pre-provision shared validator* — rejected: more moving parts than validating via the real runtime.
+
+## Addendum (2026-07-29) — one canonical account-creation contract + explicit lifecycle
+
+**Decision (Sponsor programme decision):** there is exactly ONE `TradingAccount` creation contract, and it
+IS the dedicated-runtime path. Account creation records **customer intent only**; broker-login validation
+is part of runtime provisioning, not of account creation.
+
+**Why.** Two divergent create paths existed: the plain ViewSet create (`perform_create` — dedicated
+runtime, `mt5_instance=None`, provisioning enqueued) and `AddAccountWithMt5LoginView`
+(`add-with-mt5-login/`, used by the Accounts UI), which logged into MT5 via a **shared** instance and
+required one — so it returned `409 "No MT5 instance/windows user assigned"` for every dedicated-runtime
+customer (the Customer Zero block: prod has 0 unleased Windows instances). One customer could not create a
+broker account through the UI at all.
+
+**Contract.** `trading/account_service.create_customer_account(request, serializer) -> (account, created)`
+is the single implementation. Both entry points delegate to it. Behaviour: creation goes through
+`TradingAccountSerializer` (password encryption + credential-intake audit + demo/live classification
+preserved); `mt5_instance=None`; idempotent (fast-path lookup + DB partial-unique winner recovery); the
+per-user cap is enforced atomically; owned-runtime provisioning is enqueued; **no shared instance is
+required and no broker login is attempted at create time**. Staff keep the unchanged admin create. The
+Accounts UI is unchanged (same URL, request body, and `{ok, valid, created, account}` response — `valid`
+now means "intent recorded", not "broker login verified").
+
+**Removed (no silent deletion):** the immediate broker-login validation `add-with-mt5-login` performed at
+add-time — the retired stamping of `VALIDATED` / `CONNECTION_FAILED` / `TECHNICAL_ERROR` on the create
+call. That behaviour required a shared instance (only the operator has one; operators are staff-bypassed),
+so it affected no currently-succeeding customer. Its tests (`AddPathSetsValidatedTests`) are superseded by
+`AddPathRecordsIntentTests` (deferred contract). Broker-login validation now happens only at the
+provisioning stage, behind `PROVISIONING_REQUIRE_BROKER_LOGIN` (default OFF), where it belongs.
+
+**Explicit customer-facing lifecycle.** `build_account_status` surfaces an additive `lifecycle` object —
+**Account received → Provisioning runtime → Connecting to broker → Validated / Connection failed → Retry**
+— derived from the durable runtime + validation state (never from an operation's success). The
+"Connecting to broker" phase is present only when a broker login is actually required
+(`PROVISIONING_REQUIRE_BROKER_LOGIN`); otherwise the runtime reaching RUNNING IS the completed state. A
+`retryable` flag marks the failure phase. The onboarding panel renders this backend-authoritative
+lifecycle (with a fallback to the prior state-derived copy for stability); a full re-provision-on-retry
+endpoint is a deferred follow-up (the retry affordance currently re-polls).

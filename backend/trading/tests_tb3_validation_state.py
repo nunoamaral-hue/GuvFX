@@ -1,11 +1,9 @@
 """TB-3 (Trusted Beta) — durable per-account credential-validation state + account_status surfacing."""
-from unittest import mock
-
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
-from mt5.models import Mt5Instance
+from billing.beta import grant_beta_entitlement
 from terminal_provisioning.account_status import build_account_status
 from trading.models import TradingAccount
 from trading.views_account_add import AddAccountWithMt5LoginView
@@ -59,78 +57,55 @@ class AccountStatusValidationStageTests(TestCase):
         self.assertNotEqual(st["overall"], "FAILED")
 
 
-class AddPathSetsValidatedTests(TestCase):
+class AddPathRecordsIntentTests(TestCase):
+    """ADR-0021 canonical creation contract — adding a broker account records CUSTOMER INTENT ONLY: the
+    account is created (``mt5_instance=None``; ``validation_status`` deferred), with NO immediate broker
+    login and NO shared-instance requirement. A re-add is idempotent. Broker-login validation is proven at
+    the runtime-provisioning stage (``terminal_provisioning`` tests, behind
+    ``PROVISIONING_REQUIRE_BROKER_LOGIN``), never here.
+
+    Supersedes the removed ``AddPathSetsValidatedTests``, which asserted the RETIRED immediate-login
+    stamping of VALIDATED / CONNECTION_FAILED / TECHNICAL_ERROR at add-time (a shared-instance path that
+    ``409``'d every dedicated-runtime customer). The account-status rendering of ``validation_status`` —
+    now set by provisioning, not by add — is still covered by ``AccountStatusValidationStageTests`` above.
+    """
     def setUp(self):
         self.user = User.objects.create_user(username="a", email="a@x.invalid", password="x")
-        self.inst = Mt5Instance.objects.create(hostname="host-tb3", windows_username="guvfx_u_x")
+        grant_beta_entitlement(self.user)   # capacity to create accounts (the per-user cap now applies)
         self.factory = APIRequestFactory()
 
-    def test_created_account_is_validated(self):
-        with mock.patch("trading.views_account_add._get_user_mt5_instance", return_value=self.inst), \
-             mock.patch("trading.views_account_add._windows_agent_post_json",
-                        return_value={"ok": True, "valid": True, "currency": "USD"}):
-            req = self.factory.post("/api/trading/accounts/add-with-mt5-login/", {
-                "name": "A", "account_number": "700901", "password": "pw",
-                "broker_name": "DemoBroker", "is_demo": True}, format="json")
-            force_authenticate(req, user=self.user)
-            resp = AddAccountWithMt5LoginView.as_view()(req)
+    def _post(self, number, **extra):
+        body = {"name": "A", "account_number": number, "password": "pw",
+                "broker_name": "DemoBroker", "is_demo": True, **extra}
+        req = self.factory.post("/api/trading/accounts/add-with-mt5-login/", body, format="json")
+        force_authenticate(req, user=self.user)
+        return AddAccountWithMt5LoginView.as_view()(req)
+
+    def test_add_records_intent_not_validated(self):
+        resp = self._post("700901")
         self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertTrue(resp.data["ok"])
+        self.assertTrue(resp.data["valid"])    # "intent recorded" — NOT "broker login verified"
+        self.assertTrue(resp.data["created"])
         acct = TradingAccount.objects.get(user=self.user, account_number="700901")
-        self.assertEqual(acct.validation_status, VS.VALIDATED)
-        self.assertIsNotNone(acct.validated_at)
+        # Records intent only — NOT validated at add-time; broker login is deferred to provisioning.
+        self.assertEqual(acct.validation_status, VS.NEVER)
+        self.assertIsNone(acct.mt5_instance)    # never the legacy shared-instance binding
+        self.assertFalse(acct.is_active)
 
-    def _post(self, agent, number):
-        with mock.patch("trading.views_account_add._get_user_mt5_instance", return_value=self.inst), \
-             mock.patch("trading.views_account_add._windows_agent_post_json", return_value=agent):
-            req = self.factory.post("/api/trading/accounts/add-with-mt5-login/", {
-                "name": "A", "account_number": number, "password": "pw",
-                "broker_name": "DemoBroker", "is_demo": True}, format="json")
-            force_authenticate(req, user=self.user)
-            return AddAccountWithMt5LoginView.as_view()(req)
+    def test_readd_same_account_is_idempotent(self):
+        first = self._post("700904")
+        self.assertEqual(first.status_code, 201, first.data)
+        again = self._post("700904")
+        self.assertEqual(again.status_code, 200)   # existing account returned, never a duplicate
+        self.assertFalse(again.data["created"])
+        self.assertEqual(
+            TradingAccount.objects.filter(user=self.user, account_number="700904").count(), 1)
 
-    def test_relink_of_existing_account_stamps_validated(self):
-        # M2: re-adding an existing account with a valid login must stamp the EXISTING row VALIDATED,
-        # not leave it showing "stored but not validated".
-        existing = _acct(self.user, number="700904", validation_status=VS.NEVER)
-        resp = self._post({"ok": True, "valid": True, "currency": "USD"}, "700904")
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data.get("reason"), "already_linked")
-        existing.refresh_from_db()
-        self.assertEqual(existing.validation_status, VS.VALIDATED)
-        self.assertIsNotNone(existing.validated_at)
-
-    def test_readd_invalid_login_stamps_connection_failed(self):
-        # M1: a re-add whose login is now invalid stamps the existing account CONNECTION_FAILED.
-        existing = _acct(self.user, number="700905", validation_status=VS.VALIDATED)
-        resp = self._post({"ok": True, "valid": False, "reason": "invalid_password"}, "700905")
-        self.assertEqual(resp.status_code, 200)
-        existing.refresh_from_db()
-        self.assertEqual(existing.validation_status, VS.CONNECTION_FAILED)
-
-    def test_readd_agent_error_stamps_technical_error(self):
-        existing = _acct(self.user, number="700906", validation_status=VS.VALIDATED)
-        resp = self._post({"ok": False, "detail": "agent down"}, "700906")
-        self.assertEqual(resp.status_code, 502)
-        existing.refresh_from_db()
-        self.assertEqual(existing.validation_status, VS.TECHNICAL_ERROR)
-
-    def test_first_time_invalid_stamps_nothing(self):
-        # No existing row → the failure-path qs.update is a harmless no-op (no stray account).
-        resp = self._post({"ok": True, "valid": False, "reason": "invalid"}, "700907")
-        self.assertEqual(resp.status_code, 200)
-        self.assertFalse(TradingAccount.objects.filter(account_number="700907").exists())
-
-    def test_invalid_credentials_create_no_account(self):
-        # Fail-safe: an invalid login never creates an account (so no stray NEVER/unvalidated row);
-        # the customer gets a clear transient state, not an admin queue.
-        with mock.patch("trading.views_account_add._get_user_mt5_instance", return_value=self.inst), \
-             mock.patch("trading.views_account_add._windows_agent_post_json",
-                        return_value={"ok": True, "valid": False, "reason": "invalid_password"}):
-            req = self.factory.post("/api/trading/accounts/add-with-mt5-login/", {
-                "name": "A", "account_number": "700902", "password": "bad",
-                "broker_name": "DemoBroker", "is_demo": True}, format="json")
-            force_authenticate(req, user=self.user)
-            resp = AddAccountWithMt5LoginView.as_view()(req)
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data.get("valid"), False)
-        self.assertFalse(TradingAccount.objects.filter(account_number="700902").exists())
+    def test_missing_password_is_400(self):
+        req = self.factory.post("/api/trading/accounts/add-with-mt5-login/", {
+            "name": "A", "account_number": "700908", "broker_name": "DemoBroker", "is_demo": True},
+            format="json")
+        force_authenticate(req, user=self.user)
+        resp = AddAccountWithMt5LoginView.as_view()(req)
+        self.assertEqual(resp.status_code, 400)

@@ -303,70 +303,13 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             super().perform_destroy(instance)
 
     def perform_create(self, serializer):
-        from django.db import IntegrityError, transaction
-        from rest_framework.exceptions import ValidationError
-        from billing.entitlements import resolve_entitlements
-        from billing.models import UserSubscriptionState
-
-        user = self.request.user
-
-        if user.is_staff:
-            serializer.save(user=user)
-            return
-
-        # ADR-0021: dedicated-runtime provisioning is the DEFAULT customer execution model. Every non-staff
-        # customer account is created with NO legacy shared-instance binding (``mt5_instance=None``); its
-        # owned runtime is provisioned via ``_maybe_enqueue_beta_provisioning`` (idempotent).
-        #
-        # IDEMPOTENT AT BOTH LAYERS, WITHOUT DEPENDING ON A ROW LOCK for correctness:
-        #   1. canonical normalisation of the identity fields (strip);
-        #   2. an existing-account lookup (fast path — a resubmission returns the SAME account);
-        #   3. a transactional create whose DB partial-UNIQUE constraints are the real serialisation point;
-        #   4. IntegrityError WINNER RECOVERY — if a concurrent identical submission wins the race, recover
-        #      the winner and return it idempotently (exactly one account for a duplicate submission).
-        acct_no = str(self.request.data.get("account_number") or "").strip()
-        broker_name = str(self.request.data.get("broker_name") or "").strip()
-        broker_server = serializer.validated_data.get("broker_server")
-
-        # Friendly 400 — a customer account needs a usable broker identity (mirrors the DB CheckConstraint,
-        # so the customer gets a clear message instead of a 500 from a constraint violation).
-        if broker_server is None and not broker_name:
-            raise ValidationError({"broker": "Select a broker server or enter a broker name."})
-
-        # Fast path (no lock): an identical prior submission returns the SAME account.
-        existing = _find_existing_account(user, acct_no, broker_server, broker_name)
-        if existing is not None:
-            serializer.instance = existing  # idempotent: return the existing account, no duplicate
-            _maybe_enqueue_beta_provisioning(user, existing)  # idempotent re-drive of provisioning
-            return
-
-        # New account. Serialise THIS user's creates on their row so the per-user account CAP is enforced
-        # ATOMICALLY (a non-atomic count() would let concurrent creates exceed the plan limit).
-        # IMPORTANT: idempotency does NOT depend on this lock — the DB partial-unique constraints + the
-        # IntegrityError winner recovery below are the idempotency mechanism (proven by
-        # ``test_recovers_winner_on_integrityerror``). The lock is scoped solely to cap atomicity.
-        try:
-            with transaction.atomic():
-                type(user).objects.select_for_update().get(pk=user.pk)  # cap serialisation only
-                locked = _find_existing_account(user, acct_no, broker_server, broker_name)
-                if locked is not None:
-                    serializer.instance = locked   # a concurrent identical submission just won — reuse it
-                else:
-                    ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
-                    limit = min(10, ent.max_trading_accounts)
-                    if TradingAccount.objects.filter(user=user).count() >= limit:
-                        raise ValidationError({"detail": f"Broker-account limit reached (maximum {limit})."})
-                    serializer.save(user=user, mt5_instance=None, is_active=False)
-        except IntegrityError:
-            # Winner recovery (belt-and-suspenders backstop to the DB unique constraint): a concurrent
-            # identical submission created the row first — recover it, return idempotently, never a 500.
-            winner = _find_existing_account(user, acct_no, broker_server, broker_name)
-            if winner is None:
-                raise   # a different integrity error (not the account-identity race) — surface it
-            serializer.instance = winner
-            _maybe_enqueue_beta_provisioning(user, winner)
-            return
-        _maybe_enqueue_beta_provisioning(user, serializer.instance)
+        # ADR-0021 — the ONE canonical creation contract lives in ``trading.account_service``. Both this
+        # ViewSet and ``AddAccountWithMt5LoginView`` delegate to it, so there is exactly one creation
+        # behaviour: creation records CUSTOMER INTENT ONLY (``mt5_instance=None``; broker-login validation
+        # deferred to the runtime-provisioning stage). Idempotency, the per-user account cap, password
+        # encryption and the credential-intake audit all live in the service.
+        from trading.account_service import create_customer_account
+        create_customer_account(self.request, serializer)
 
     from django.db import transaction
     from rest_framework.decorators import action

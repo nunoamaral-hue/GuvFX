@@ -1,172 +1,64 @@
 from __future__ import annotations
 
-from django.db import IntegrityError, transaction
-from django.utils import timezone
+from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from trading.models import BrokerServer, TradingAccount
 from trading.serializers import TradingAccountSerializer
-from trading.views import _get_user_mt5_instance, _windows_agent_post_json
 
 
 class AddAccountWithMt5LoginView(APIView):
-    """
-    Atomic flow:
-    1) Ask Windows agent to MT5 login-and-validate (EA-based)
-    2) If valid -> create TradingAccount bound to user's mt5_instance
-       - Enforce 1 active per MT5 instance on create
-    3) If duplicate account exists -> return it (created=false) instead of 409/500
+    """ADR-0021 — thin wrapper over the ONE canonical creation contract (``trading.account_service``).
+
+    Historically this endpoint logged into MT5 via a SHARED instance and only created the account if the
+    login was valid (stamping VALIDATED / CONNECTION_FAILED), which required a leased Windows instance and
+    therefore ``409``'d every dedicated-runtime customer. Under the canonical contract, adding a broker
+    account records CUSTOMER INTENT ONLY: the account is created (``mt5_instance=None``) and its OWN
+    runtime is provisioned asynchronously — broker-login validation is DEFERRED to the provisioning stage
+    (behind ``PROVISIONING_REQUIRE_BROKER_LOGIN``).
+
+    The Accounts-page UI is unchanged: same URL, same request body, same ``{ok, valid, created, account}``
+    response shape. ``valid`` now means "customer intent recorded", not "broker login verified" — the
+    truthful broker-connection outcome is surfaced by the account-status lifecycle
+    (Account received → Provisioning runtime → Connecting to broker → Validated / Connection failed).
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        user = request.user
         data = request.data or {}
 
+        # Preserve the endpoint's input contract (the Accounts form always sends these three).
         name = str(data.get("name") or "").strip()
         account_number = str(data.get("account_number") or "").strip()
         password = str(data.get("password") or "").strip()
-        is_demo = bool(data.get("is_demo", True))
-
-        broker_server_id = data.get("broker_server")
-        broker_name = str(data.get("broker_name") or "").strip()
-
         if not name or not account_number or not password:
             return Response(
-                {"ok": False, "detail": "name/account_number/password required"},
-                status=400,
-            )
+                {"ok": False, "detail": "name/account_number/password required"}, status=400)
 
-        # Resolve server name
-        server_name = ""
-        broker_server = None
-        if broker_server_id:
-            broker_server = BrokerServer.objects.filter(id=broker_server_id, is_active=True).first()
-            if not broker_server:
-                return Response({"ok": False, "detail": "Invalid broker_server"}, status=400)
-            server_name = broker_server.server_name
-        else:
-            if not broker_name:
-                return Response({"ok": False, "detail": "Provide broker_server or broker_name"}, status=400)
-            server_name = broker_name
-
-        # T7 (Phase 3 / P3-E): demo/live classification consistency — the same shared config-level
-        # check the serializer enforces, applied on THIS create path too (it does a direct ORM create,
-        # so it would otherwise bypass the serializer). Fail fast before the broker login call.
-        from trading.classification import classification_error
-        _cls_err = classification_error(is_demo, broker_server)
-        if _cls_err:
-            return Response({"ok": False, "detail": _cls_err}, status=400)
-
-        inst = _get_user_mt5_instance(user)
-        if not inst or not getattr(inst, "windows_username", ""):
-            return Response({"ok": False, "detail": "No MT5 instance/windows user assigned"}, status=409)
-
-        # 1) Ask Windows Agent to login+validate (EA-based)
-        agent_payload = {
-            "username": inst.windows_username,
-            "login": account_number,
+        payload = {
+            "name": name,
+            "account_number": account_number,
             "password": password,
-            "server": server_name,
+            "is_demo": bool(data.get("is_demo", True)),
         }
-        # Existing-account lookup (same identity, user-scoped) — used to stamp the durable TB-3
-        # validation state on EVERY outcome of a re-add, and for the duplicate path below.
-        norm_broker_name = broker_name or (broker_server.server_name if broker_server else "")
-        qs = TradingAccount.objects.filter(user=user, account_number=account_number)
-        if broker_server:
-            qs = qs.filter(broker_server=broker_server)
+        # Broker identity: a BrokerServer id takes precedence; otherwise a free-text server name.
+        broker_server_id = data.get("broker_server")
+        if broker_server_id:
+            payload["broker_server"] = broker_server_id
         else:
-            qs = qs.filter(broker_server__isnull=True, broker_name=norm_broker_name)
+            payload["broker_name"] = str(data.get("broker_name") or "").strip()
 
-        agent = _windows_agent_post_json("/mt5/login-and-validate", agent_payload)
+        # Validate through the serializer (broker-identity presence + demo/live classification + field
+        # rules) so this path enforces exactly the same input contract as the ViewSet create.
+        serializer = TradingAccountSerializer(data=payload, context={"request": request})
+        serializer.is_valid(raise_exception=True)
 
-        if not bool(agent.get("ok", False)):
-            # TB-3: a re-validation that could not run stamps an existing account TECHNICAL_ERROR (a
-            # first-time add has no row yet → no-op).
-            qs.update(validation_status=TradingAccount.ValidationStatus.TECHNICAL_ERROR)
-            return Response({"ok": False, "detail": "Windows agent error", "agent": agent}, status=502)
+        from trading.account_service import create_customer_account
+        account, created = create_customer_account(request, serializer)
 
-        if not bool(agent.get("valid", False)):
-            # TB-3: a failed login stamps an existing account CONNECTION_FAILED (durable state); a
-            # first-time invalid add creates no row, so this is a no-op there.
-            qs.update(validation_status=TradingAccount.ValidationStatus.CONNECTION_FAILED)
-            return Response(
-                {
-                    "ok": True,
-                    "valid": False,
-                    "created": False,
-                    "reason": str(agent.get("reason") or "invalid"),
-                    "agent": agent,
-                },
-                status=200,
-            )
-
-        # Extract account currency from agent response if available
-        account_currency = str(agent.get("currency") or "").strip() or None
-
-        with transaction.atomic():
-            # Enforce "one active per MT5 instance" for this user+instance
-            TradingAccount.objects.filter(user=user, mt5_instance=inst).update(is_active=False)
-
-            # IMPORTANT: nested atomic creates a SAVEPOINT.
-            # If create throws IntegrityError, only savepoint is rolled back, outer transaction stays usable.
-            try:
-                with transaction.atomic():
-                    ta = TradingAccount.objects.create(
-                        user=user,
-                        name=name,
-                        mt5_instance=inst,
-                        broker_server=broker_server,
-                        broker_name=norm_broker_name,
-                        account_number=account_number,
-                        is_demo=is_demo,
-                        is_active=True,
-                        account_currency=account_currency,
-                        # TB-3: this path only creates the account AFTER the agent validated the login,
-                        # so the durable per-account state is VALIDATED.
-                        validation_status=TradingAccount.ValidationStatus.VALIDATED,
-                        validated_at=timezone.now(),
-                    )
-
-                    # Apply password encryption through serializer logic
-                    ser_in = TradingAccountSerializer(
-                        ta,
-                        data={"password": password},
-                        partial=True,
-                        context={"request": request},
-                    )
-                    ser_in.is_valid(raise_exception=True)
-                    ser_in.save()
-
-                    ser_out = TradingAccountSerializer(ta, context={"request": request})
-                    return Response(
-                        {"ok": True, "valid": True, "created": True, "reason": "ok", "account": ser_out.data, "agent": agent},
-                        status=201,
-                    )
-
-            except IntegrityError:
-                # Already exists: lock it, bind to instance, make active, return 200
-                existing = qs.select_for_update().order_by("id").first()
-                if not existing:
-                    return Response(
-                        {"ok": False, "valid": True, "created": False, "reason": "db_integrity_error", "detail": "duplicate but cannot find existing row"},
-                        status=409,
-                    )
-
-                if existing.mt5_instance_id != inst.id:
-                    existing.mt5_instance = inst
-                existing.is_active = True
-                # TB-3 (M2): this branch is reached only after the agent validated the login, so the
-                # re-linked account is durably VALIDATED (not left showing "stored but not validated").
-                existing.validation_status = TradingAccount.ValidationStatus.VALIDATED
-                existing.validated_at = timezone.now()
-                existing.save(update_fields=[
-                    "mt5_instance", "is_active", "validation_status", "validated_at", "updated_at"])
-
-                ser_out = TradingAccountSerializer(existing, context={"request": request})
-                return Response(
-                    {"ok": True, "valid": True, "created": False, "reason": "already_linked", "account": ser_out.data, "agent": agent},
-                    status=200,
-                )
+        out = TradingAccountSerializer(account, context={"request": request}).data
+        return Response(
+            {"ok": True, "valid": True, "created": created, "account": out},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
