@@ -170,10 +170,12 @@ def _maybe_enqueue_beta_provisioning(user, account) -> None:
     Runs the beta DB work in its OWN savepoint (nested ``atomic``) so that a provisioning DB error
     (lock/statement timeout, serialization failure, connection drop) rolls back ONLY the beta work and
     heals ``needs_rollback`` — it can never roll back the caller's already-saved broker-account INSERT
-    while the API returns 201 (phantom-create guard). Never raises into the create path."""
-    from billing.beta import is_admitted_beta_tester
-    if not is_admitted_beta_tester(user):
-        return
+    while the API returns 201 (phantom-create guard). Never raises into the create path.
+
+    ADR-0021: dedicated-runtime provisioning is the default for EVERY customer — no per-user admission
+    gate here. ``reserve_beta_slot`` remains the single operational gate (``BETA_RUNTIMES_ENABLED`` +
+    capacity) and is idempotent (an already-held runtime is returned, never re-reserved), and the
+    PROVISION enqueue is guarded so a duplicate submission never stacks a second job."""
     try:
         from django.db import transaction
         from terminal_provisioning.beta_capacity import (
@@ -188,7 +190,12 @@ def _maybe_enqueue_beta_provisioning(user, account) -> None:
             except CapacityError as e:
                 logger.info("beta provisioning deferred for account=%s: %s", account.id, e.reason_code)
                 return
-            enqueue_op(runtime, ProvisioningJob.Op.PROVISION)
+            # Idempotent enqueue: never stack a duplicate PROVISION job if one is already in flight.
+            unfinished = ProvisioningJob.objects.filter(
+                runtime=runtime, op=ProvisioningJob.Op.PROVISION,
+                status__in=[ProvisioningJob.Status.QUEUED, ProvisioningJob.Status.RUNNING]).exists()
+            if not unfinished:
+                enqueue_op(runtime, ProvisioningJob.Op.PROVISION)
     except Exception:  # noqa: BLE001 — never fail the broker-record create on a provisioning hiccup
         logger.exception(
             "beta provisioning enqueue failed for account=%s (record still created)",
@@ -291,52 +298,37 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             serializer.save(user=user)
             return
 
-        # GFX-BETA-PHASE0 Increment 5 — enforce the broker-account cap ATOMICALLY in the backend (not
-        # only the frontend). Lock the user row so two concurrent creates can't both slip past the count
-        # and exceed the cap. The cap is the plan's max_trading_accounts, hard-ceilinged at 10.
+        # ADR-0021: dedicated-runtime provisioning is the DEFAULT customer execution model. Every non-staff
+        # customer account is created with NO legacy shared-instance binding (``mt5_instance=None``); its
+        # owned runtime is provisioned via ``_maybe_enqueue_beta_provisioning``. IDEMPOTENT at both layers:
+        # a resubmission of the same ``(user, account_number, broker)`` returns the EXISTING account (never a
+        # duplicate) and re-drives provisioning idempotently. The cap is enforced atomically for new accounts.
         with transaction.atomic():
             type(user).objects.select_for_update().get(pk=user.pk)  # serialise this user's creates
+
+            acct_no = str(self.request.data.get("account_number") or "").strip()
+            broker_name = (str(self.request.data.get("broker_name") or "")).strip()
+            broker_server = serializer.validated_data.get("broker_server")
+            existing = None
+            if acct_no:
+                existing_qs = TradingAccount.objects.filter(user=user, account_number=acct_no)
+                if broker_server is not None:
+                    existing_qs = existing_qs.filter(broker_server=broker_server)
+                elif broker_name:
+                    existing_qs = existing_qs.filter(broker_server__isnull=True, broker_name=broker_name)
+                existing = existing_qs.first()
+            if existing is not None:
+                serializer.instance = existing  # idempotent: return the existing account, no duplicate
+                _maybe_enqueue_beta_provisioning(user, existing)  # idempotent re-drive of provisioning
+                return
+
             ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
             limit = min(10, ent.max_trading_accounts)
-            current = TradingAccount.objects.filter(user=user).count()
-            if current >= limit:
-                raise ValidationError(
-                    {"detail": f"Broker-account limit reached (maximum {limit})."})
+            if TradingAccount.objects.filter(user=user).count() >= limit:
+                raise ValidationError({"detail": f"Broker-account limit reached (maximum {limit})."})
 
-            # CVM-Inc-2: an ADMITTED controlled-beta tester is ALWAYS provisioned via the new
-            # owned-runtime path with NO legacy shared-instance binding — routed on ADMISSION, never on
-            # incidental lease state, so a spare unleased instance can never pull a beta tester onto the
-            # legacy path. Checked BEFORE the instance resolver.
-            from billing.beta import is_admitted_beta_tester
-            if is_admitted_beta_tester(user):
-                serializer.save(user=user, mt5_instance=None, is_active=False)
-                _maybe_enqueue_beta_provisioning(user, serializer.instance)
-                return
-
-            inst = _get_user_mt5_instance(user)
-            # If we can't determine an instance yet, still allow create (inactive).
-            if not inst:
-                serializer.save(user=user, mt5_instance=None, is_active=False)
-                return
-
-            # If user already has an active account on this instance, default new accounts to INACTIVE
-            # unless explicitly requested active.
-            requested = self.request.data.get("is_active", None)
-            if isinstance(requested, str):
-                requested_active = requested.strip().lower() in ("1", "true", "yes", "on")
-            elif requested is None:
-                requested_active = False
-            else:
-                requested_active = bool(requested)
-
-            has_active = TradingAccount.objects.filter(
-                user=user, mt5_instance=inst, is_active=True).exists()
-            make_active = requested_active or (not has_active)
-
-            if make_active:
-                TradingAccount.objects.filter(user=user, mt5_instance=inst).update(is_active=False)
-
-            serializer.save(user=user, mt5_instance=inst, is_active=make_active)
+            serializer.save(user=user, mt5_instance=None, is_active=False)
+            _maybe_enqueue_beta_provisioning(user, serializer.instance)
 
     from django.db import transaction
     from rest_framework.decorators import action

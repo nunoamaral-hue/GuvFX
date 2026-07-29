@@ -38,7 +38,6 @@ def assert_beta_activation_allowed(runtime: AccountRuntime) -> None:
     """Control-2 narrow-activation gate. ALL conditions must hold before a beta runtime is
     materialised/launched, else raise ``ActivationDenied``. Enforced at the provisioner chokepoint so
     the global kill switch alone can never provision an arbitrary account."""
-    from billing.beta import is_admitted_beta_tester
     from .beta_capacity import HELD_STATES, beta_runtimes_enabled
     from .beta_paths import canonical_beta_runtime_root
 
@@ -50,9 +49,10 @@ def assert_beta_activation_allowed(runtime: AccountRuntime) -> None:
         raise ActivationDenied("not_a_beta_runtime")
     acct = getattr(runtime, "trading_account", None)
     user = getattr(acct, "user", None)
-    # 3. the owning account's user is an ACTIVE admitted BetaTester (per-identity, not just the flag)
-    if user is None or not is_admitted_beta_tester(user):
-        raise ActivationDenied("user_not_admitted")
+    # 3. ADR-0021: dedicated-runtime is the DEFAULT customer model — no per-user admission allowlist.
+    #    The runtime must still structurally have an owning user (a runtime is 1:1 with an account).
+    if user is None:
+        raise ActivationDenied("no_owner")
     # 4. active admitted-tester count within the configured cap
     cap = int(getattr(settings, "BETA_MAX_TESTERS", 1) or 1)
     if beta_active_tester_count() > cap:

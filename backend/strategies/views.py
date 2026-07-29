@@ -1071,11 +1071,13 @@ class StrategyViewSet(viewsets.ModelViewSet):
         if not account:
             return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Admitted beta cohort (or staff) only.
-        from billing.beta import is_admitted_beta_tester
-        if not (request.user.is_staff or is_admitted_beta_tester(request.user)):
-            return Response({"status": "not_beta", "detail": "Not an admitted beta tester."},
-                            status=status.HTTP_403_FORBIDDEN)
+        # ADR-0021 — operational eligibility (not a per-user allowlist). Staff bypass.
+        from billing.beta import onboarding_available
+        if not request.user.is_staff:
+            _ok, _reason = onboarding_available(request.user)
+            if not _ok:
+                return Response({"status": _reason, "detail": "Onboarding is not currently available."},
+                                status=status.HTTP_403_FORBIDDEN)
 
         # Classification + credentials.
         if not (account.is_demo and account.is_active):
