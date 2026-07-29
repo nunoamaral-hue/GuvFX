@@ -44,10 +44,32 @@ class Entitlements:
     resolved_access_mode: str  # "viewer" | "trial" | "active" | "degraded"
 
     # GFX-BETA-PHASE0 Increment 4 — beta cohort flag (default False; set only by the "beta" plan).
+    # DEPRECATED as a marketplace-visibility gate (ADR-0021): visibility is now owned by
+    # ``visible_marketplace_catalogues`` below. ``is_beta`` remains only as a read-only cohort LABEL.
     is_beta: bool = False
+
+    # ADR-0021 — the entitlement layer OWNS which marketplace CATALOGUES a customer may browse (the
+    # Visibility layer of Access → Visibility → Activation → Execution). Catalogue names are enduring
+    # product groupings (NOT rollout phases). A consumer NEVER evaluates entitlement booleans to decide
+    # visibility — it asks the entitlement for this set and renders items whose catalogue is in it.
+    # Default empty (a viewer sees no catalogues).
+    visible_marketplace_catalogues: frozenset = frozenset()
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+class MarketplaceCatalogue:
+    """Enduring marketplace catalogue identifiers (ADR-0021 Visibility layer). Names represent durable
+    product groupings, not rollout phases. Marketplace items declare their catalogue; the entitlement
+    layer answers which catalogues a customer may browse."""
+    SIGNAL_COPY = "signal_copy"   # copy-trading strategies that mirror an external signal feed
+
+
+# Every ACTIVE onboarding plan may browse the signal-copy catalogue. Adding a future catalogue is DATA
+# (extend this set + the relevant plans), never a new boolean gate.
+ALL_MARKETPLACE_CATALOGUES: frozenset = frozenset({MarketplaceCatalogue.SIGNAL_COPY})
+_ONBOARDING_CATALOGUES: frozenset = frozenset({MarketplaceCatalogue.SIGNAL_COPY})
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +78,7 @@ class Entitlements:
 
 _PLAN_ENTITLEMENTS: dict[str, dict] = {
     "starter_trial": {
+        "visible_marketplace_catalogues": _ONBOARDING_CATALOGUES,
         "can_view_dashboard": True,
         "can_browse_marketplace": True,
         "can_run_backtests": True,
@@ -66,6 +89,7 @@ _PLAN_ENTITLEMENTS: dict[str, dict] = {
         "historical_data_tier": "basic",
     },
     "standard": {
+        "visible_marketplace_catalogues": _ONBOARDING_CATALOGUES,
         "can_view_dashboard": True,
         "can_browse_marketplace": True,
         "can_run_backtests": True,
@@ -76,6 +100,7 @@ _PLAN_ENTITLEMENTS: dict[str, dict] = {
         "historical_data_tier": "standard",
     },
     "pro": {
+        "visible_marketplace_catalogues": _ONBOARDING_CATALOGUES,
         "can_view_dashboard": True,
         "can_browse_marketplace": True,
         "can_run_backtests": True,
@@ -86,6 +111,7 @@ _PLAN_ENTITLEMENTS: dict[str, dict] = {
         "historical_data_tier": "full",
     },
     "advanced": {
+        "visible_marketplace_catalogues": _ONBOARDING_CATALOGUES,
         "can_view_dashboard": True,
         "can_browse_marketplace": True,
         "can_run_backtests": True,
@@ -100,6 +126,7 @@ _PLAN_ENTITLEMENTS: dict[str, dict] = {
     # It does NOT by itself make trading reachable: external onboarding stays gated
     # (BETA_ONBOARDING_ENABLED, default off) and terminal provisioning is undeployed.
     "beta": {
+        "visible_marketplace_catalogues": _ONBOARDING_CATALOGUES,
         "can_view_dashboard": True,
         "can_browse_marketplace": True,
         "can_run_backtests": True,
@@ -117,6 +144,7 @@ _PLAN_ENTITLEMENTS: dict[str, dict] = {
 }
 
 _VIEWER_DEFAULTS: dict = {
+    "visible_marketplace_catalogues": frozenset(),
     "can_view_dashboard": True,
     "can_browse_marketplace": True,
     "can_run_backtests": False,
