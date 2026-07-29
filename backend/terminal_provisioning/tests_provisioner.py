@@ -28,11 +28,16 @@ REQUIRE_LOGIN = override_settings(BETA_RUNTIMES_ENABLED=True, PROVISIONING_REQUI
 
 def _acct(n=1, password="brokerpw123"):
     from billing.models import BetaTester
+    from trading.models import BrokerServer
     email = f"u{n}@x.invalid"
     user = U.objects.create_user(username=f"u{n}", email=email, password="x")
     BetaTester.objects.create(email=email)   # admitted (activation gate precondition)
+    # A normalised BrokerServer — a genuine MT5 server string, required for broker-login validation
+    # (PROVISIONING_REQUIRE_BROKER_LOGIN). ``server_name`` is unique; get_or_create keeps same-n reuse safe.
+    bs, _ = BrokerServer.objects.get_or_create(
+        server_name=f"Srv-Demo-{n}", defaults={"broker_display_name": f"Broker {n}"})
     return TradingAccount.objects.create(
-        user=user, name=f"A{n}", account_number=str(1000 + n), broker_name="DemoBroker",
+        user=user, name=f"A{n}", account_number=str(1000 + n), broker_server=bs,
         is_demo=True, password_enc=encrypt_password(password))
 
 
