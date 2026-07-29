@@ -69,7 +69,11 @@ class WindowsProvisioner(Protocol):
     def materialise(self, runtime: AccountRuntime) -> None: ...
     def configure(self, runtime: AccountRuntime, *, login: str, server: str, password: str) -> None: ...
     def start(self, runtime: AccountRuntime) -> None: ...
-    def verify(self, runtime: AccountRuntime) -> dict: ...   # {running, logged_in, login, server}
+    # verify → {running, logged_in, login, server, is_demo, login_error?, init_error?}. When broker-login
+    # is required (PR B): ``is_demo`` is the CONNECTED account's demo/live classification; ``login_error``
+    # is the structured reason on a failed login (invalid_credentials / server_unavailable / timeout /
+    # mt5_init_failed / terminal_crashed); ``init_error`` is set when the terminal never initialised.
+    def verify(self, runtime: AccountRuntime) -> dict: ...
     def stop(self, runtime: AccountRuntime) -> None: ...
     def teardown(self, runtime: AccountRuntime) -> None: ...
 
@@ -84,6 +88,34 @@ def _expected_login_server(runtime: AccountRuntime):
     if getattr(acct, "broker_server_id", None):
         return login, (acct.broker_server.server_name or "").strip()
     return login, None
+
+
+# ADR-0021 PR B — broker-login failure taxonomy. The verify result carries a structured ``login_error``
+# reason when ``logged_in`` is False; each maps to a durable, sanitised runtime failure code and a
+# retry policy. A **retryable** failure is transient (server/agent/timeout) and re-attempted up to
+# MAX_ATTEMPTS; a **non-retryable** failure is a definitive rejection (bad credentials / wrong account /
+# demo-live mismatch) that fails the job immediately so a customer never loops on unfixable input.
+_LOGIN_FAILURE = {
+    "invalid_credentials": ("broker_login_failed", False),
+    "server_unavailable":  ("broker_server_unavailable", True),
+    "timeout":             ("broker_login_timeout", True),
+    "mt5_init_failed":     ("mt5_init_failed", True),
+    "terminal_crashed":    ("terminal_crashed", True),
+}
+
+
+def _login_failure(reason):
+    """Map a verify ``login_error`` reason to ``(durable_code, retryable)``. Unknown / missing ⇒ treat as
+    a definitive credential rejection (non-retryable) so an unrecognised login failure never loops."""
+    return _LOGIN_FAILURE.get(reason or "", ("broker_login_failed", False))
+
+
+def _broker_classification_matches(account, v: dict) -> bool:
+    """PR B — the CONNECTED account's demo/live classification must match the DECLARED ``is_demo``. The
+    agent reports the connected classification as a boolean ``is_demo`` (derived from the MT5
+    ``trade_mode``: DEMO/CONTEST ⇒ demo, REAL ⇒ live). If the agent did not report a classification we
+    do NOT silently pass — the caller treats a missing classification as unverified (fail closed)."""
+    return "is_demo" in v and bool(v.get("is_demo")) == bool(getattr(account, "is_demo", False))
 
 
 # ── Enqueue (enqueue-only: callers create jobs; a worker advances them) ──
@@ -227,20 +259,33 @@ def _start_and_verify(rt: AccountRuntime, p: WindowsProvisioner) -> None:
         # ``broker_login_verified`` can never disagree (no OFF→ON flip observed mid-check).
         require_login = _require_broker_login()
         # Process verification is ALWAYS required — a runtime is never reported RUNNING unless its
-        # terminal is actually up. (Retryable: the process may still be starting.)
+        # terminal is actually up. A reported MT5 initialisation failure is distinguished from a
+        # still-starting terminal (both retryable, but recorded with a truthful, distinct code).
         if not v.get("running"):
+            if v.get("init_error"):
+                raise ProvisionStepError("mt5_init_failed", retryable=True,
+                                         detail=str(v.get("init_error"))[:200])
             raise ProvisionStepError("terminal_not_running", retryable=True)
         if require_login:
             login, server = _expected_login_server(rt)
+            # (1) genuine broker session — a failed login carries a structured reason (bad creds vs
+            # server-unavailable vs timeout vs init/crash) mapped to a durable code + retry policy.
             if not v.get("logged_in"):
-                raise ProvisionStepError("broker_login_failed", retryable=False)
+                code, retryable = _login_failure(v.get("login_error"))
+                raise ProvisionStepError(code, retryable=retryable)
+            # (2) returned account identity MUST match the submitted account — else fail closed, do NOT
+            # run it (controls 5/8).
             if str(v.get("login") or "") != login:
-                # Authenticated to the WRONG account — fail closed, do NOT run it (controls 5/8).
                 raise ProvisionStepError("broker_identity_mismatch", retryable=False)
-            # Server is verified only when we have a reliable expected value (a normalised broker_server
-            # server_name). Free-text broker_name is not the MT5 server string, so we don't hard-fail on it.
+            # (3) broker/server identity consistency — verified only when we have a reliable expected
+            # value (a normalised broker_server server_name). Free-text broker_name is not the MT5 server
+            # string, so we don't hard-fail on it.
             if server is not None and (v.get("server") or "") != server:
                 raise ProvisionStepError("broker_identity_mismatch", retryable=False)
+            # (4) demo/live classification MUST match the declared account type (separate demo/live
+            # posture). A missing classification is treated as unverified — fail closed.
+            if not _broker_classification_matches(rt.trading_account, v):
+                raise ProvisionStepError("demo_live_mismatch", retryable=False)
         # The RUNNING transition, the heartbeat stamp, and the durable Verification Report (Increment 3)
         # commit as ONE unit — so a runtime can never end up verified-RUNNING without its audit artefact.
         # If the report create fails, RUNNING rolls back to AUTHENTICATING and the retry re-attempts it.
@@ -401,6 +446,8 @@ class FakeProvisioner:
         if v.get("login") is None:  # default: report the expected identity (happy path)
             login, server = _expected_login_server(runtime)
             v["login"], v["server"] = login, (server or "")
+        if "is_demo" not in v:  # default: report the DECLARED classification (happy path matches)
+            v["is_demo"] = bool(getattr(runtime.trading_account, "is_demo", False))
         v.setdefault("pid", 4242)
         v.setdefault("session", 1)
         self.calls.append(("verify", runtime.runtime_uuid))
