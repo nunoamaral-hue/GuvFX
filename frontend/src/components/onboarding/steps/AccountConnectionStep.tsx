@@ -81,6 +81,22 @@ function friendlyForState(runtimeState: string): { title: string; body: string; 
   }
 }
 
+/**
+ * Extract the backend's structured detail code from a thrown apiFetch error. apiFetch may surface either
+ * the bare `detail` string OR the raw JSON body (`{"detail":"..."}`) depending on its internal parse path,
+ * so we tolerate both. (A central apiFetch fix to always surface the bare `detail` is a separate follow-up.)
+ */
+function reasonFromError(err: unknown): string {
+  if (!(err instanceof Error)) return "";
+  const m = err.message;
+  try {
+    const o = JSON.parse(m) as { detail?: unknown };
+    return o && typeof o === "object" && typeof o.detail === "string" ? o.detail : m;
+  } catch {
+    return m;
+  }
+}
+
 /** Structured reason codes the backend returns on a 409 from complete-step → panel state (for display). */
 function stateForReason(reason: string): string {
   switch (reason) {
@@ -123,8 +139,7 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
       // Not actually ready yet — reflect the structured reason and keep polling. Reset the guard so the
       // next poll can re-attempt once the runtime finishes coming up.
       advancingRef.current = false;
-      const detail = err instanceof Error ? err.message : "";
-      setRuntimeState(stateForReason(detail));
+      setRuntimeState(stateForReason(reasonFromError(err)));
     }
   }, [onComplete]);
 
@@ -145,7 +160,7 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
       // A 404 means "no account yet" (backend returns {"detail":"not_found"}) → show the pending prompt.
       // Any OTHER error is a transient blip — do NOT regress the display to "waiting to start"; keep the
       // last known state (the initial state is already NOT_CONFIGURED, so a first-load blip is benign).
-      if (err instanceof Error && err.message === "not_found") {
+      if (reasonFromError(err) === "not_found") {
         setRuntimeState("NOT_CONFIGURED");
       }
     } finally {
