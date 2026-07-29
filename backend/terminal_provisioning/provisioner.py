@@ -112,10 +112,15 @@ def _login_failure(reason):
 
 def _broker_classification_matches(account, v: dict) -> bool:
     """PR B — the CONNECTED account's demo/live classification must match the DECLARED ``is_demo``. The
-    agent reports the connected classification as a boolean ``is_demo`` (derived from the MT5
-    ``trade_mode``: DEMO/CONTEST ⇒ demo, REAL ⇒ live). If the agent did not report a classification we
-    do NOT silently pass — the caller treats a missing classification as unverified (fail closed)."""
-    return "is_demo" in v and bool(v.get("is_demo")) == bool(getattr(account, "is_demo", False))
+    agent reports the connected classification as a **genuine boolean** ``is_demo`` (derived from the MT5
+    ``trade_mode``: DEMO/CONTEST ⇒ demo, REAL ⇒ live). FAIL CLOSED on anything that is not a real bool —
+    a missing key, JSON ``null`` (agent could not determine), or a non-boolean value is UNVERIFIED and
+    must never pass (strict identity, not truthiness — ``bool(None)==bool(False)`` would wrongly pass a
+    live account with an undetermined classification)."""
+    reported = v.get("is_demo")
+    if not isinstance(reported, bool):
+        return False
+    return reported == bool(getattr(account, "is_demo", False))
 
 
 # ── Enqueue (enqueue-only: callers create jobs; a worker advances them) ──
@@ -268,6 +273,13 @@ def _start_and_verify(rt: AccountRuntime, p: WindowsProvisioner) -> None:
             raise ProvisionStepError("terminal_not_running", retryable=True)
         if require_login:
             login, server = _expected_login_server(rt)
+            # (0) a genuine MT5 login REQUIRES a real server string. A free-text ``broker_name`` is NOT an
+            # MT5 server, so an account without a normalised ``broker_server`` cannot be broker-login
+            # validated — fail closed with a definitive config error rather than reach RUNNING claiming a
+            # verified login while the server leg was never checked (a per-server login number could
+            # otherwise match the wrong broker's account).
+            if not server:
+                raise ProvisionStepError("broker_server_required", retryable=False)
             # (1) genuine broker session — a failed login carries a structured reason (bad creds vs
             # server-unavailable vs timeout vs init/crash) mapped to a durable code + retry policy.
             if not v.get("logged_in"):
@@ -277,10 +289,9 @@ def _start_and_verify(rt: AccountRuntime, p: WindowsProvisioner) -> None:
             # run it (controls 5/8).
             if str(v.get("login") or "") != login:
                 raise ProvisionStepError("broker_identity_mismatch", retryable=False)
-            # (3) broker/server identity consistency — verified only when we have a reliable expected
-            # value (a normalised broker_server server_name). Free-text broker_name is not the MT5 server
-            # string, so we don't hard-fail on it.
-            if server is not None and (v.get("server") or "") != server:
+            # (3) broker/server identity consistency — now ALWAYS verified (a server is guaranteed present
+            # by check (0)).
+            if (v.get("server") or "") != server:
                 raise ProvisionStepError("broker_identity_mismatch", retryable=False)
             # (4) demo/live classification MUST match the declared account type (separate demo/live
             # posture). A missing classification is treated as unverified — fail closed.

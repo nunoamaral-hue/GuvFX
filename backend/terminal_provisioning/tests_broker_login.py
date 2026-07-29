@@ -138,6 +138,29 @@ class BrokerLoginFailureTaxonomyTests(TestCase):
         self.assertEqual(job.status, ProvisioningJob.Status.FAILED)   # non-retryable
         self.assertEqual(rt.state, RuntimeState.FAILED)
 
+    def test_free_text_account_requires_broker_server(self):
+        # A free-text broker_name (no normalised broker_server) is NOT an MT5 server — under require_login
+        # it cannot be broker-login validated and fails closed with a definitive, non-retryable code
+        # (never reaching RUNNING with an unverified server leg).
+        acct = _acct(11, with_server=False)   # broker_name="DemoBroker", broker_server=None
+        rt, job = self._fail(acct, {"running": True, "logged_in": True, "login": "88011", "is_demo": True})
+        self.assertEqual(job.last_error, "broker_server_required")
+        self.assertEqual(job.status, ProvisioningJob.Status.FAILED)
+        self.assertEqual(rt.state, RuntimeState.FAILED)
+
+    def test_null_classification_fails_closed(self):
+        # a PRESENT-but-null classification (agent could not determine) must NOT pass via bool() coercion
+        # (bool(None)==bool(False) would wrongly pass a live account) — strict boolean required.
+        rt, job = self._fail(_acct(12, is_demo=False), {"running": True, "logged_in": True, "login": None,
+                                                        "server": None, "is_demo": None})
+        self.assertEqual(job.last_error, "demo_live_mismatch")
+
+    def test_non_boolean_classification_fails_closed(self):
+        # a non-boolean truthy value (e.g. the string "false") must NOT pass for a demo-declared account
+        rt, job = self._fail(_acct(13, is_demo=True), {"running": True, "logged_in": True, "login": None,
+                                                       "server": None, "is_demo": "false"})
+        self.assertEqual(job.last_error, "demo_live_mismatch")
+
     def test_missing_classification_fails_closed(self):
         # the agent did not report a demo/live classification → treated as unverified (fail closed)
         acct = _acct(9, is_demo=True)

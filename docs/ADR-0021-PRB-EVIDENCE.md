@@ -19,11 +19,19 @@ reaches RUNNING and no Verification Report is written.
   **decrypted password** via the sanctioned credential path (`decrypt_password` → `configure(...)` over
   the authenticated channel), with a redacted `CREDENTIAL_ACCESSED` audit at decrypt time.
 
-## Durable failure taxonomy (9 states)
+A **normalised `broker_server` is required** under `require_login`: a free-text `broker_name` is not an
+MT5 server, so a server-less account cannot perform a genuine login and fails closed with
+`broker_server_required` (non-retryable) — it never reaches RUNNING with an unverified server leg. With a
+server present, the server-consistency check **always** applies. Customer Zero's account #11 is free-text
+today; before the flag is flipped ON it needs a normalised `broker_server` (surfaced truthfully as
+`broker_server_required`; resubmit/no-duplicate continuity is unaffected).
+
+## Durable failure taxonomy (10 states)
 
 | Failure mode | Durable code | Retry policy |
 |--------------|--------------|--------------|
 | invalid credentials | `broker_login_failed` | non-retryable (immediate FAIL — no loop on unfixable input) |
+| no MT5 server (free-text only) | `broker_server_required` | non-retryable (config error) |
 | broker server unavailable | `broker_server_unavailable` | retryable (bounded by MAX_ATTEMPTS) |
 | MT5 initialisation failure | `mt5_init_failed` | retryable |
 | login timeout | `broker_login_timeout` | retryable |
@@ -33,6 +41,21 @@ reaches RUNNING and no Verification Report is written.
 | account-identity mismatch (login/server) | `broker_identity_mismatch` | non-retryable (fail closed) |
 | demo/live mismatch | `demo_live_mismatch` | non-retryable (fail closed) |
 | unexpected technical error | sanitised `*_failed` code | retryable |
+
+The demo/live check compares **strict booleans** (`is_demo is True`/`is False`) — a missing key, JSON
+`null` (undetermined), or a non-boolean value is UNVERIFIED and fails closed (never a truthiness coercion
+that could pass a live account on an undetermined classification).
+
+## Adversarial review
+
+A focused adversarial review found **no critical** defect (no clean path to RUNNING +
+`broker_login_verified=True` without a genuine verified login) and two MEDIUMs, both resolved:
+- **demo/live used `bool()` coercion** (a present-null could pass a live account) → strict-boolean compare;
+- **server leg skippable while the report still claimed verified** → a real `broker_server` is now
+  required under `require_login`, so the server is always verified before RUNNING.
+Confirmed sound: exact login compare; retry safety (no-loop / bounded / idempotent reuse); `broker_login_verified`
+originates only from the post-gate path (single caller, atomic with RUNNING); no order/ExecutionJob/`order_send`
+reachable; estate safety (`_require_beta`, cohort scoping). Tests were added to pin the two fixes.
 
 Every code is recorded on the immutable `RuntimeEvent`, on `job.last_error`, and on
 `runtime.last_failure_reason` — all sanitised (≤64 chars, no raw strings, no secrets).
