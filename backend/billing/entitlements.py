@@ -56,7 +56,11 @@ class Entitlements:
     visible_marketplace_catalogues: frozenset = frozenset()
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        # Keep this JSON-safe: the catalogue set is a frozenset (not JSON-serialisable) — emit it as a
+        # sorted list so a caller can ``json.dumps(ent.to_dict())`` without a TypeError.
+        d = asdict(self)
+        d["visible_marketplace_catalogues"] = sorted(self.visible_marketplace_catalogues)
+        return d
 
 
 class MarketplaceCatalogue:
