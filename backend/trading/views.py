@@ -333,25 +333,33 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         if broker_server is None and not broker_name:
             raise ValidationError({"broker": "Select a broker server or enter a broker name."})
 
+        # Fast path (no lock): an identical prior submission returns the SAME account.
         existing = _find_existing_account(user, acct_no, broker_server, broker_name)
         if existing is not None:
             serializer.instance = existing  # idempotent: return the existing account, no duplicate
             _maybe_enqueue_beta_provisioning(user, existing)  # idempotent re-drive of provisioning
             return
 
-        # Best-effort per-user cap. The DB uniqueness constraint (not this count) is what guarantees no
-        # duplicate; the count is an entry-time courtesy check.
-        ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
-        limit = min(10, ent.max_trading_accounts)
-        if TradingAccount.objects.filter(user=user).count() >= limit:
-            raise ValidationError({"detail": f"Broker-account limit reached (maximum {limit})."})
-
+        # New account. Serialise THIS user's creates on their row so the per-user account CAP is enforced
+        # ATOMICALLY (a non-atomic count() would let concurrent creates exceed the plan limit).
+        # IMPORTANT: idempotency does NOT depend on this lock — the DB partial-unique constraints + the
+        # IntegrityError winner recovery below are the idempotency mechanism (proven by
+        # ``test_recovers_winner_on_integrityerror``). The lock is scoped solely to cap atomicity.
         try:
-            with transaction.atomic():   # savepoint — an IntegrityError here must not poison the request tx
-                serializer.save(user=user, mt5_instance=None, is_active=False)
+            with transaction.atomic():
+                type(user).objects.select_for_update().get(pk=user.pk)  # cap serialisation only
+                locked = _find_existing_account(user, acct_no, broker_server, broker_name)
+                if locked is not None:
+                    serializer.instance = locked   # a concurrent identical submission just won — reuse it
+                else:
+                    ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
+                    limit = min(10, ent.max_trading_accounts)
+                    if TradingAccount.objects.filter(user=user).count() >= limit:
+                        raise ValidationError({"detail": f"Broker-account limit reached (maximum {limit})."})
+                    serializer.save(user=user, mt5_instance=None, is_active=False)
         except IntegrityError:
-            # A concurrent identical submission won the race and created the row first. Recover it and
-            # return it idempotently — NOT a duplicate, NOT a 500.
+            # Winner recovery (belt-and-suspenders backstop to the DB unique constraint): a concurrent
+            # identical submission created the row first — recover it, return idempotently, never a 500.
             winner = _find_existing_account(user, acct_no, broker_server, broker_name)
             if winner is None:
                 raise   # a different integrity error (not the account-identity race) — surface it

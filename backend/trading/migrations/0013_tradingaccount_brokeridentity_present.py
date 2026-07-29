@@ -2,21 +2,22 @@
 
 from django.conf import settings
 from django.db import migrations, models
-from django.db.models import Q
-from django.db.models.functions import Trim
 
 
 def _abort_if_incompatible(apps, schema_editor):
-    """ADR-0021 pre-check — refuse to add ``brokeridentity_present`` if ANY existing row would violate it
-    (broker_server IS NULL AND the whitespace-trimmed broker_name is empty). Such a row has NO usable
-    broker identity and would evade both partial-unique constraints. The authorised read-only prod
-    preflight found ZERO such rows; this guard makes the migration self-defending regardless. On a hit it
-    raises with the offending IDs only (never any credential value) so an operator can remediate first."""
+    """ADR-0021 pre-check — refuse to add ``brokeridentity_present`` if ANY existing row would violate it.
+    The generated CHECK is exactly ``broker_server IS NOT NULL OR broker_name <> ''`` (``broker_name`` is
+    NOT NULL at the DB level, so the violating set is precisely ``broker_server IS NULL AND
+    broker_name = ''``). This pre-check matches that condition EXACTLY — no over-strict trimming — so it
+    aborts iff ``AddConstraint`` itself would fail, never spuriously. (Whitespace-only ``broker_name`` is
+    kept out going forward by ``TradingAccount.save()`` normalisation, not by this migration.) The
+    authorised read-only prod preflight found ZERO violating rows; this guard makes the migration
+    self-defending regardless. On a hit it raises with the offending IDs only (never any credential
+    value) so an operator can remediate first."""
     TradingAccount = apps.get_model("trading", "TradingAccount")
     bad = list(
-        TradingAccount.objects.annotate(_bn=Trim("broker_name"))
-        .filter(broker_server__isnull=True)
-        .filter(Q(_bn="") | Q(broker_name__isnull=True))
+        TradingAccount.objects
+        .filter(broker_server__isnull=True, broker_name="")
         .values_list("id", flat=True)
     )
     if bad:

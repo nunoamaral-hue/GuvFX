@@ -105,6 +105,20 @@ class BusyWorkerHeartbeatTests(TestCase):
         self.assertEqual(HB.objects.get(pk=HB.SINGLETON_ID).status, HB.Status.DEGRADED)
         self.assertFalse(beta.provisioning_service_healthy())         # degraded ⇒ fail closed
 
+    def test_repeated_negotiation_failure_stays_degraded_not_clobbered(self):
+        # FAIL-CLOSED regression guard: a hung/unreachable agent must NOT read healthy across loops. The
+        # worker must never overwrite a DEGRADED heartbeat with an unconditional top-of-loop IDLE_READY,
+        # and must never mark PROCESSING (healthy) BEFORE negotiation succeeds.
+        rt = cap.reserve_beta_slot(_acct(6))
+        ProvisioningJob.objects.create(runtime=rt, op=ProvisioningJob.Op.PROVISION)
+        for _ in range(3):   # simulate the worker's repeated loop against a persistently-dead agent
+            self.assertEqual(
+                beta_worker.process_one(lambda job: _NegotiationFailsClient(), negotiate=True),
+                "negotiation_failed")
+            # After EVERY iteration the durable heartbeat is DEGRADED (never a transient healthy state).
+            self.assertEqual(HB.objects.get(pk=HB.SINGLETON_ID).status, HB.Status.DEGRADED)
+            self.assertFalse(beta.provisioning_service_healthy())
+
     def test_worker_error_marks_error_and_unhealthy(self):
         rt = cap.reserve_beta_slot(_acct(5))
         ProvisioningJob.objects.create(runtime=rt, op=ProvisioningJob.Op.PROVISION)

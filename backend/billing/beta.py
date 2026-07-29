@@ -86,9 +86,11 @@ def _provisioner_heartbeat_fresh() -> bool:
     updated within ``BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS`` (default 120) AND its status is a healthy
     state (``IDLE_READY`` or ``PROCESSING`` — a PROCESSING worker that keeps refreshing is healthy; a
     long-running job never reads stale). Missing / stale / DEGRADED / ERROR / unreadable ⇒ False."""
-    ttl = int(getattr(settings, "BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", 0)
-              or os.getenv("BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", "120"))
     try:
+        # Parse the TTL INSIDE the guard — a malformed BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS must fail
+        # CLOSED (unhealthy), never raise an unhandled error out of a health check.
+        ttl = int(getattr(settings, "BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", 0)
+                  or os.getenv("BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", "120"))
         from django.utils import timezone
 
         from terminal_provisioning.models import ProvisionerHeartbeat

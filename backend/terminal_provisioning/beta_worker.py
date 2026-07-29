@@ -76,16 +76,25 @@ def _hb(status: str, job_id=None) -> None:
 def process_one(client_factory=default_client_factory, *, negotiate: bool = True) -> str:
     """Claim + advance ONE beta job. Returns a short status string. Never raises to the caller.
 
-    ADR-0021 liveness: the durable heartbeat is refreshed at every lifecycle point (idle poll before the
-    dark-check, PROCESSING before/through a job, IDLE_READY after success, DEGRADED on agent-unreachable,
-    ERROR on unexpected failure) — so a long-running job that keeps advancing never reads stale."""
-    _hb("IDLE_READY")          # idle poll — proves liveness even while dark
+    ADR-0021 liveness — FAIL-CLOSED ordering:
+    * ``IDLE_READY`` (healthy) is written ONLY when the worker is genuinely idle-and-OK — disabled or no
+      job queued. It is deliberately NOT written unconditionally at the top of the loop, because that
+      would erase a ``DEGRADED``/``ERROR`` recorded on the previous iteration and mask a dead agent.
+    * ``PROCESSING`` (healthy) is written ONLY AFTER a successful contract negotiation — i.e. once the
+      agent has actually answered. Marking healthy BEFORE the (up-to-transport-timeout) negotiation would
+      let a NEW-runtime reservation fail OPEN against a hung/unreachable agent.
+    * ``DEGRADED`` (agent unreachable / contract mismatch) and ``ERROR`` (unexpected failure) persist —
+      the next iteration only overwrites them with a healthy state once the agent answers again.
+    The per-step heartbeat callback keeps a long multi-step job fresh at ``PROCESSING``."""
     if not beta_runtimes_enabled():
-        return "disabled"      # dark by default; the worker does nothing until armed
+        _hb("IDLE_READY")          # dark but alive; nothing to provision
+        return "disabled"          # dark by default; the worker does nothing until armed
     job = claim_next_beta_job()
     if job is None:
+        _hb("IDLE_READY")          # alive + idle; no work queued
         return "no_job"
-    _hb("PROCESSING", job.id)  # a job is claimed — refresh as PROCESSING before any long stage
+    # A job is claimed. Do NOT mark PROCESSING yet — negotiation may block on a hung/unreachable agent,
+    # and PROCESSING is a HEALTHY state. The heartbeat holds its prior value across the negotiation.
     client = client_factory(job)
     if negotiate:
         try:
@@ -94,8 +103,10 @@ def process_one(client_factory=default_client_factory, *, negotiate: bool = True
             # Cannot agree the contract / agent unreachable — leave the job QUEUED for a later attempt.
             logger.warning("beta worker: negotiation failed for job=%s: %s", job.id,
                            getattr(e, "reason_code", "timeout"))
-            _hb("DEGRADED", job.id)      # worker alive but agent connectivity degraded
+            _hb("DEGRADED", job.id)      # agent connectivity degraded — stays unhealthy for reservation
             return "negotiation_failed"
+    # Negotiation succeeded — the agent answered — so the worker is genuinely PROCESSING (healthy).
+    _hb("PROCESSING", job.id)
     try:
         # The heartbeat callback fires after EVERY provisioning step, so a long multi-step job keeps
         # refreshing PROCESSING mid-run and never reads stale.

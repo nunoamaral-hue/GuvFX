@@ -130,6 +130,23 @@ class BetaProvisioningWiringTests(TestCase):
         self.assertIn(r2.status_code, (200, 201))
         self.assertEqual(TradingAccount.objects.filter(user=u).count(), 1)
 
+    @override_settings(BETA_RUNTIMES_ENABLED=True)
+    def test_recovers_winner_on_integrityerror(self):
+        # Directly exercise the IntegrityError WINNER RECOVERY branch, INDEPENDENT of the cap row-lock:
+        # a race where the canonical lookup MISSES but the DB already holds the row, so serializer.save()
+        # raises IntegrityError (partial-unique constraint). Recovery must return the winner idempotently
+        # — never a duplicate, never a 500. This proves idempotency does not depend on the lock.
+        from unittest import mock
+        u = _beta_customer()
+        winner = TradingAccount.objects.create(
+            user=u, name="W", account_number="500100", broker_name="DemoBroker",
+            is_demo=True, is_active=False)
+        # fast-path lookup + under-lock re-check both MISS; the recovery lookup finds the winner.
+        with mock.patch("trading.views._find_existing_account", side_effect=[None, None, winner]):
+            resp = _client(u).post("/api/trading/accounts/", _ACCT_PAYLOAD, format="json")
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+        self.assertEqual(TradingAccount.objects.filter(user=u, account_number="500100").count(), 1)
+
     def test_missing_broker_identity_is_400(self):
         # No broker_server and no broker_name → a clean 400 (mirrors the DB CheckConstraint), not a 500.
         u = _beta_customer()

@@ -15,30 +15,35 @@ type AccountStatus = { ok: boolean; stages?: Stage[] };
 
 const POLL_MS = 5000;
 
-type Tone = "progress" | "pending" | "failed" | "ready";
+type Tone = "progress" | "pending" | "failed";
 
 /**
  * ADR-0021 — customer-visible progress is STATE-DRIVEN: derived from the runtime's durable state, never
- * from whether an operation call happened to succeed. The FRONTEND owns the wording; the backend emits
- * only structured state / reason codes. This maps a durable runtime state (from the account-status
- * panel) OR a structured reason code (from a 409 on complete-step) to a friendly, customer-facing message.
+ * from whether an operation call succeeded. The FRONTEND owns the wording; the backend emits only
+ * structured state / reason codes. The states below are exactly the panel vocabulary emitted by the
+ * backend's ``user_facing_state`` (NOT the raw RuntimeState enum). RUNNING is deliberately a PROGRESS
+ * ("finishing") message, not a green "ready" claim — the real completion signal is the step advancing
+ * (``onComplete``), which only happens once the backend confirms the runtime is fully ready.
  */
 function friendlyForState(runtimeState: string): { title: string; body: string; tone: Tone } {
   switch (runtimeState) {
     case "RUNNING":
       return {
-        title: "Your trading terminal is ready.",
-        body: "Connection complete — finishing up…",
-        tone: "ready",
+        title: "Almost there — finishing setup…",
+        body: "Your terminal is up; we’re running the final readiness checks. This page advances on its own.",
+        tone: "progress",
       };
     case "QUEUED":
     case "PROVISIONING":
-    case "STARTING":
-    case "AUTHENTICATING":
-    case "REPAIRING":
       return {
         title: "Setting up your dedicated trading terminal…",
         body: "This usually takes a minute or two. Keep this page open — it updates automatically.",
+        tone: "progress",
+      };
+    case "DEGRADED":
+      return {
+        title: "Reconnecting your terminal…",
+        body: "Your terminal needs a moment to recover. We’re handling it automatically — no action needed.",
         tone: "progress",
       };
     case "BLOCKED":
@@ -47,14 +52,21 @@ function friendlyForState(runtimeState: string): { title: string; body: string; 
         body: "All setup slots are busy right now. Yours will start automatically as soon as one frees up.",
         tone: "pending",
       };
+    case "STOPPED":
+      return {
+        title: "Your terminal is paused.",
+        body: "It will resume automatically. If it stays paused, contact support.",
+        tone: "pending",
+      };
     case "FAILED":
+    case "REMOVING":
+    case "REMOVED":
       return {
         title: "We hit a problem setting up your terminal.",
         body: "Our team has been notified. Please try again shortly, or contact support if this persists.",
         tone: "failed",
       };
     case "NOT_CONFIGURED":
-    case "NOT_PROVISIONED":
       return {
         title: "Waiting to start setup…",
         body: "Once your broker account is saved on the Broker Accounts page, we begin setting up your terminal automatically.",
@@ -69,24 +81,23 @@ function friendlyForState(runtimeState: string): { title: string; body: string; 
   }
 }
 
-/** Structured reason codes the backend returns on a 409 from complete-step → friendly runtime state. */
+/** Structured reason codes the backend returns on a 409 from complete-step → panel state (for display). */
 function stateForReason(reason: string): string {
   switch (reason) {
     case "runtime_pending":
       return "NOT_CONFIGURED";
-    case "runtime_provisioning":
-      return "PROVISIONING";
     case "capacity_blocked":
       return "BLOCKED";
     case "runtime_failed":
       return "FAILED";
+    case "runtime_provisioning":
+    case "runtime_not_ready":
     default:
-      return "PROVISIONING"; // runtime_not_ready / anything unknown → keep the neutral "in progress" view
+      return "PROVISIONING"; // still coming up (e.g. RUNNING but readiness checks not yet complete)
   }
 }
 
 const TONE_COLOR: Record<Tone, string> = {
-  ready: "#86efac",
   progress: "#4ab3ff",
   pending: "#b7c5dd",
   failed: "#f87171",
@@ -97,7 +108,8 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
   const [checking, setChecking] = useState(true);
   const advancingRef = useRef(false);
 
-  // Advance the onboarding step once the durable runtime is ready (idempotent on the backend).
+  // Attempt to advance the onboarding step. The backend is authoritative: it only marks the step
+  // complete when the runtime is genuinely ready, and returns a structured reason code otherwise.
   const advance = useCallback(async () => {
     if (advancingRef.current) return;
     advancingRef.current = true;
@@ -106,9 +118,10 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
         method: "POST",
         body: JSON.stringify({ step: "account_connected" }),
       });
-      onComplete();
+      onComplete();   // real completion — the step unmounts; no misleading "ready" flash before this
     } catch (err: unknown) {
-      // Not ready after all (state moved) — reflect the structured reason and resume polling.
+      // Not actually ready yet — reflect the structured reason and keep polling. Reset the guard so the
+      // next poll can re-attempt once the runtime finishes coming up.
       advancingRef.current = false;
       const detail = err instanceof Error ? err.message : "";
       setRuntimeState(stateForReason(detail));
@@ -117,6 +130,7 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
 
   // Poll the durable, read-only account status and drive the UI from it.
   const poll = useCallback(async () => {
+    setChecking(true);
     try {
       const status = await apiFetch<AccountStatus>("/api/onboarding/account-status/");
       const stages = status.stages ?? [];
@@ -125,11 +139,15 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
       const rs = terminal?.state === "RUNNING" ? "RUNNING" : runtime?.state ?? "NOT_CONFIGURED";
       setRuntimeState(rs);
       if (rs === "RUNNING") {
-        void advance();
+        void advance();   // ask the backend to confirm readiness + advance (authoritative)
       }
-    } catch {
-      // No account yet (404) or a transient error — treat as "waiting to start".
-      setRuntimeState("NOT_CONFIGURED");
+    } catch (err: unknown) {
+      // A 404 means "no account yet" (backend returns {"detail":"not_found"}) → show the pending prompt.
+      // Any OTHER error is a transient blip — do NOT regress the display to "waiting to start"; keep the
+      // last known state (the initial state is already NOT_CONFIGURED, so a first-load blip is benign).
+      if (err instanceof Error && err.message === "not_found") {
+        setRuntimeState("NOT_CONFIGURED");
+      }
     } finally {
       setChecking(false);
     }
