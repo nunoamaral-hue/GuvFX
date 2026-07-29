@@ -9,6 +9,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
+from billing.beta import grant_beta_entitlement
 from trading.models import BrokerServer, TradingAccount
 from trading.serializers import TradingAccountSerializer
 from trading.views_account_add import AddAccountWithMt5LoginView
@@ -24,6 +25,7 @@ def _server(env, name):
 class ClassificationCrossCheckTests(TestCase):
     def setUp(self):
         self.user = U.objects.create_user(username="cc", email="cc@x.invalid", password="x")
+        grant_beta_entitlement(self.user)   # capacity to create accounts (the canonical cap now applies)
         self.demo_srv = _server(BrokerServer.DEMO, "srv-demo")
         self.live_srv = _server(BrokerServer.LIVE, "srv-live")
 
@@ -103,12 +105,17 @@ class ClassificationCrossCheckTests(TestCase):
         self.assertIn("Classification mismatch", str(resp.data))
 
     def test_add_with_mt5_login_endpoint_passes_classification_on_match(self):
-        # A matching pair passes the classification gate and proceeds (then stops at the missing MT5
-        # instance with 409) — proving the gate did not falsely reject a consistent account.
+        # A matching demo/demo pair passes the classification gate and the canonical contract CREATES the
+        # account (records intent; mt5_instance=None; broker-login deferred to provisioning) — proving the
+        # gate did not falsely reject a consistent account.
         factory = APIRequestFactory()
         req = factory.post("/api/accounts/add-with-mt5-login/", {
             "name": "A", "account_number": "12", "password": "pw",
             "broker_server": self.demo_srv.id, "is_demo": True}, format="json")
         force_authenticate(req, user=self.user)
         resp = AddAccountWithMt5LoginView.as_view()(req)
-        self.assertEqual(resp.status_code, 409)   # past classification; no MT5 instance assigned
+        self.assertEqual(resp.status_code, 201, resp.data)   # past classification → account created
+        self.assertTrue(resp.data["created"])
+        acct = TradingAccount.objects.get(user=self.user, account_number="12")
+        self.assertEqual(acct.broker_server_id, self.demo_srv.id)
+        self.assertIsNone(acct.mt5_instance)   # canonical contract: never the legacy shared instance

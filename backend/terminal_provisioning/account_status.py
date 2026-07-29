@@ -20,7 +20,7 @@ def _stage(key, label, state, detail, *, at=None):
 
 def _runtime_detail(rt_state):
     return {
-        "NOT_CONFIGURED": "No isolated MT5 runtime yet (automatic provisioning not deployed).",
+        "NOT_CONFIGURED": "Waiting to start — your dedicated runtime is provisioned automatically.",
         "QUEUED": "Provisioning queued.",
         "BLOCKED": "Blocked — waiting on a prerequisite.",
         "PROVISIONING": "Provisioning the isolated MT5 runtime…",
@@ -31,6 +31,72 @@ def _runtime_detail(rt_state):
         "REMOVED": "Runtime removed.",
         "REMOVING": "Removing runtime…",
     }.get(rt_state, "Not configured.")
+
+
+# ── Explicit customer-facing lifecycle (ADR-0021) ────────────────────────────────────────────────────
+# Account received → Provisioning runtime → Connecting to broker → Validated / Connection failed → Retry.
+# Derived from the durable runtime + validation state (never from whether an operation call succeeded).
+# The "Connecting to broker" phase applies ONLY when broker-login is required
+# (``PROVISIONING_REQUIRE_BROKER_LOGIN``); otherwise the runtime reaching RUNNING IS the completed state,
+# so that phase is truthfully absent from the sequence.
+_LC_ACCOUNT_RECEIVED = "account_received"
+_LC_PROVISIONING = "provisioning_runtime"
+_LC_CONNECTING = "connecting_broker"
+_LC_VALIDATED = "validated"
+_LC_FAILED = "connection_failed"
+
+_LC_COPY = {
+    _LC_ACCOUNT_RECEIVED: ("Account received",
+        "We've recorded your broker account. Setup of your dedicated terminal begins automatically."),
+    _LC_PROVISIONING: ("Provisioning runtime",
+        "We're preparing your dedicated trading runtime. This usually takes a minute or two."),
+    _LC_CONNECTING: ("Connecting to broker",
+        "Your runtime is up — we're logging in to your broker to validate the connection."),
+    _LC_VALIDATED: ("Validated",
+        "Your dedicated terminal is ready."),
+    _LC_FAILED: ("Connection failed",
+        "We couldn't complete setup. Please check your login details and try again."),
+}
+
+
+def _lifecycle(rt_state, vstatus, broker_required):
+    """Compute the explicit customer-facing lifecycle from durable state. Returns the current ``phase``,
+    its ``label``/``detail``, a ``retryable`` flag (true only on a failure the customer can retry), and an
+    ordered ``steps`` stepper (each ``done``/``current``/``pending``/``failed``)."""
+    failed_at = None
+    if rt_state == "FAILED":
+        phase, failed_at = _LC_FAILED, _LC_PROVISIONING
+    elif vstatus in ("CONNECTION_FAILED", "TECHNICAL_ERROR"):
+        phase, failed_at = _LC_FAILED, _LC_CONNECTING
+    elif rt_state == "RUNNING":
+        phase = _LC_CONNECTING if (broker_required and vstatus != "VALIDATED") else _LC_VALIDATED
+    elif rt_state in ("QUEUED", "PROVISIONING", "BLOCKED", "DEGRADED", "STOPPED", "REMOVING"):
+        phase = _LC_PROVISIONING
+    else:   # NOT_CONFIGURED / REMOVED — the account record exists but its runtime is not up yet
+        phase = _LC_ACCOUNT_RECEIVED
+
+    order = [_LC_ACCOUNT_RECEIVED, _LC_PROVISIONING]
+    if broker_required:
+        order.append(_LC_CONNECTING)
+    order.append(_LC_VALIDATED)
+
+    steps = []
+    if phase == _LC_FAILED:
+        fail_idx = order.index(failed_at) if failed_at in order else len(order) - 1
+        for i, key in enumerate(order):
+            status = "done" if i < fail_idx else ("failed" if i == fail_idx else "pending")
+            steps.append({"key": key, "label": _LC_COPY[key][0], "status": status})
+    else:
+        cur_idx = order.index(phase)
+        for i, key in enumerate(order):
+            status = "done" if i < cur_idx else ("current" if i == cur_idx else "pending")
+            if key == _LC_VALIDATED and phase == _LC_VALIDATED:
+                status = "done"   # the terminal success state is complete, not "in progress"
+            steps.append({"key": key, "label": _LC_COPY[key][0], "status": status})
+
+    label, detail = _LC_COPY[phase]
+    return {"phase": phase, "label": label, "detail": detail,
+            "retryable": phase == _LC_FAILED, "steps": steps}
 
 
 def build_account_status(account) -> dict:
@@ -110,11 +176,21 @@ def build_account_status(account) -> dict:
 
     # 8. Last heartbeat — a runtime heartbeat only exists once provisioned
     stages.append(_stage("last_heartbeat", "Last heartbeat", NOT_CONFIGURED,
-                         "No runtime heartbeat (provisioning not deployed)."))
+                         "No runtime heartbeat yet."))
 
     # 9. Last notification — per-account notification tracking is wired in a later increment
     stages.append(_stage("last_notification", "Last notification", NOT_CONFIGURED,
                          "No per-account notification history yet."))
+
+    # Explicit customer-facing lifecycle (ADR-0021). Additive: the granular ``stages`` above are
+    # unchanged; this is the compact, ordered progression the onboarding panel renders. The
+    # "Connecting to broker" phase is present only when a broker login is actually required.
+    try:
+        from terminal_provisioning.provisioner import _require_broker_login
+        broker_required = _require_broker_login()
+    except Exception:  # noqa: BLE001 — never let the flag lookup break a read-only status build
+        broker_required = False
+    lifecycle = _lifecycle(rt_state, vstatus, broker_required)
 
     return {
         "account_id": account.id,
@@ -122,6 +198,7 @@ def build_account_status(account) -> dict:
         "overall": _overall(stages),
         # explicit, so the UI can never assume a terminal from a green overall:
         "terminal_provisioning_available": False,
+        "lifecycle": lifecycle,
         "stages": stages,
     }
 

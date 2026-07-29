@@ -11,7 +11,12 @@ type Props = {
 };
 
 type Stage = { key: string; label: string; state: string; detail: string; at: string | null };
-type AccountStatus = { ok: boolean; stages?: Stage[] };
+type LifecycleStep = { key: string; label: string; status: string };
+// ADR-0021 — the explicit customer-facing lifecycle, owned by the backend (Account received →
+// Provisioning runtime → Connecting to broker → Validated / Connection failed → Retry). The frontend
+// renders it; it never invents the phase or copy.
+type Lifecycle = { phase: string; label: string; detail: string; retryable: boolean; steps?: LifecycleStep[] };
+type AccountStatus = { ok: boolean; stages?: Stage[]; lifecycle?: Lifecycle };
 
 const POLL_MS = 5000;
 
@@ -119,8 +124,19 @@ const TONE_COLOR: Record<Tone, string> = {
   failed: "#f87171",
 };
 
+// ADR-0021 — map the backend's explicit lifecycle phase to a panel tone. The backend owns the phase and
+// its copy; the frontend owns only the presentation (colour + retry affordance).
+const PHASE_TONE: Record<string, Tone> = {
+  account_received: "pending",
+  provisioning_runtime: "progress",
+  connecting_broker: "progress",
+  validated: "progress",
+  connection_failed: "failed",
+};
+
 export function AccountConnectionStep({ state, onComplete }: Props) {
   const [runtimeState, setRuntimeState] = useState<string>("NOT_CONFIGURED");
+  const [lifecycle, setLifecycle] = useState<Lifecycle | null>(null);
   const [checking, setChecking] = useState(true);
   const advancingRef = useRef(false);
 
@@ -148,6 +164,7 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
     setChecking(true);
     try {
       const status = await apiFetch<AccountStatus>("/api/onboarding/account-status/");
+      setLifecycle(status.lifecycle ?? null);   // backend-authoritative explicit lifecycle (for display)
       const stages = status.stages ?? [];
       const runtime = stages.find((s) => s.key === "mt5_runtime");
       const terminal = stages.find((s) => s.key === "hosted_terminal");
@@ -186,14 +203,39 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
     );
   }
 
-  const msg = friendlyForState(runtimeState);
-  const color = TONE_COLOR[msg.tone];
+  // The backend owns the explicit lifecycle phase + copy; fall back to the state-derived message only if
+  // the lifecycle field is absent (older backend / first-load blip) so the panel stays stable.
+  const fallback = friendlyForState(runtimeState);
+  const title = lifecycle ? lifecycle.label : fallback.title;
+  const body = lifecycle ? lifecycle.detail : fallback.body;
+  const tone: Tone = lifecycle ? (PHASE_TONE[lifecycle.phase] ?? "progress") : fallback.tone;
+  const color = TONE_COLOR[tone];
+  const showRetry = lifecycle ? lifecycle.retryable : tone === "failed";
 
   return (
     <div>
       <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
         Connecting your trading account
       </h2>
+
+      {lifecycle && lifecycle.steps && lifecycle.steps.length > 0 && (
+        <ol style={{ listStyle: "none", padding: 0, margin: "0 0 1rem", display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+          {lifecycle.steps.map((s) => {
+            const dotColor = s.status === "failed" ? TONE_COLOR.failed
+              : s.status === "done" ? "#4ade80"
+              : s.status === "current" ? TONE_COLOR.progress
+              : "#3a4658";
+            return (
+              <li key={s.key} style={{ display: "flex", alignItems: "center", gap: "0.4rem",
+                color: s.status === "pending" ? "#6b7a90" : "#b7c5dd", fontSize: "0.78rem" }}>
+                <span aria-hidden style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor,
+                  display: "inline-block" }} />
+                {s.label}
+              </li>
+            );
+          })}
+        </ol>
+      )}
 
       <div
         role="status"
@@ -207,12 +249,12 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
         }}
       >
         <p style={{ color, fontSize: "0.95rem", fontWeight: 600, marginBottom: "0.35rem" }}>
-          {msg.title}
+          {title}
         </p>
-        <p style={{ color: "#b7c5dd", fontSize: "0.85rem", lineHeight: 1.6 }}>{msg.body}</p>
+        <p style={{ color: "#b7c5dd", fontSize: "0.85rem", lineHeight: 1.6 }}>{body}</p>
       </div>
 
-      {msg.tone === "pending" && (
+      {tone === "pending" && (
         <p style={{ color: "#b7c5dd", fontSize: "0.85rem", lineHeight: 1.6 }}>
           Haven’t added your account yet? Do it on the{" "}
           <a href="/accounts" style={{ color: "#4ab3ff", textDecoration: "none" }}>
@@ -222,7 +264,9 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
         </p>
       )}
 
-      {msg.tone === "failed" && (
+      {showRetry && (
+        // Re-checks the durable status (a real re-provision endpoint is a deferred follow-up — ADR-0021
+        // addendum), so the label stays honest: this re-reads state, it does not re-attempt setup.
         <Button onClick={() => void poll()} disabled={checking}>
           {checking ? "Checking…" : "Check again"}
         </Button>
