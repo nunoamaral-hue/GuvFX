@@ -24,7 +24,7 @@ class FailedButFilledReconcileTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="fbf", email="fbf@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="FBF1", is_demo=True)
+            user=self.user, name="Demo", account_number="FBF1", is_demo=True, broker_name="DemoBroker")
 
     def _failed_job(self, plan_id, leg_index, *, finished_delta_s=-10, job_type="PLACE_ORDER"):
         j = ExecutionJob.objects.create(
@@ -91,7 +91,7 @@ class FailedButFilledReconcileTests(TestCase):
         # account must NOT trigger the alert.
         other_user = User.objects.create_user(username="fbf2", email="fbf2@x.invalid", password="x")
         other = TradingAccount.objects.create(
-            user=other_user, name="Demo2", account_number="FBF2", is_demo=True)
+            user=other_user, name="Demo2", account_number="FBF2", is_demo=True, broker_name="DemoBroker")
         self._failed_job(46, 1)
         Trade.objects.create(
             account=other, symbol="XAUUSD", side="BUY", volume=Decimal("0.40"), ticket="555006",

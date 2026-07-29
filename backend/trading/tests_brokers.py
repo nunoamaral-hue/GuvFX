@@ -39,7 +39,12 @@ class Mt5ValidatorTests(TestCase):
         self.assertEqual(r.reason_code, "invalid_login")
 
     def test_missing_server_rejected(self):
-        r = Mt5BrokerValidator().validate_account_record(_acct("100200", broker_name=""))
+        # An UNSAVED record with neither a BrokerServer FK nor a broker_name — the validator is DB-free
+        # and rejects it as missing_server. (Such a row can no longer be persisted: the DB
+        # ``brokeridentity_present`` CheckConstraint forbids it. Building the instance in-memory tests the
+        # validator's own completeness check without hitting that constraint.)
+        acct = TradingAccount(account_number="100200", broker_name="")
+        r = Mt5BrokerValidator().validate_account_record(acct)
         self.assertFalse(r.ok)
         self.assertEqual(r.reason_code, "missing_server")
 

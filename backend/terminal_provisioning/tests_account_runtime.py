@@ -18,7 +18,7 @@ class AccountRuntimeModelTests(TestCase):
     def setUp(self):
         self.user = U.objects.create_user(username="u", email="u@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="A", account_number="A1", is_demo=True)
+            user=self.user, name="A", account_number="A1", broker_name="DemoBroker", is_demo=True)
 
     def test_runtime_is_one_to_one_with_account(self):
         AccountRuntime.objects.create(trading_account=self.acct)
@@ -94,12 +94,14 @@ class AccountRuntimeModelTests(TestCase):
 
 
 class OnboardingProvisionRecordsFailureTests(TestCase):
-    """mark_account_connected must RECORD a provisioning failure on the runtime, not swallow it."""
+    """On the STAFF / legacy path, mark_account_connected must RECORD a provisioning failure on the
+    runtime, not swallow it. (ADR-0021: the non-staff path is state-driven and does not call the legacy
+    provisioner, so this behaviour is exercised via a staff user.)"""
 
     def setUp(self):
-        self.user = U.objects.create_user(username="ob", email="ob@x.invalid", password="x")
+        self.user = U.objects.create_user(username="ob", email="ob@x.invalid", password="x", is_staff=True)
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="A", account_number="OB1", is_demo=True, is_active=True)
+            user=self.user, name="A", account_number="OB1", broker_name="DemoBroker", is_demo=True, is_active=True)
 
     def test_provision_failure_is_recorded_not_swallowed(self):
         from django.test import override_settings

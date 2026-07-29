@@ -32,7 +32,7 @@ class ResolveTargetSourceScopingTests(TestCase):
     def setUp(self):
         self.op = User.objects.create_user(username="op", email="op@x.invalid", password="x")
         self.demo = TradingAccount.objects.create(
-            user=self.op, name="Demo", account_number="D1", is_demo=True,
+            user=self.op, name="Demo", account_number="D1", is_demo=True, broker_name="DemoBroker",
         )
         self.stra = Strategy.objects.create(owner=self.op, name="Strat A")
         self.strb = Strategy.objects.create(owner=self.op, name="Strat B")
@@ -142,7 +142,7 @@ class ResolveTargetSourceScopingTests(TestCase):
 
     def test_non_demo_account_never_targeted(self):
         live = TradingAccount.objects.create(
-            user=self.op, name="Live", account_number="L1", is_demo=False,
+            user=self.op, name="Live", account_number="L1", is_demo=False, broker_name="DemoBroker",
         )
         StrategyAssignment.objects.create(
             strategy=self.stra, account=live, execution_mode=DEMO,
@@ -158,7 +158,7 @@ class StrategyDisplayNameSourceAwareTests(TestCase):
     def setUp(self):
         self.op = User.objects.create_user(username="dn", email="dn@x.invalid", password="x")
         self.demo = TradingAccount.objects.create(
-            user=self.op, name="Demo", account_number="DN1", is_demo=True,
+            user=self.op, name="Demo", account_number="DN1", is_demo=True, broker_name="DemoBroker",
         )
         way = Strategy.objects.create(owner=self.op, name="Wayond Auto Demo")
         wim = Strategy.objects.create(owner=self.op, name="Wayond WIM Strategy")
@@ -185,7 +185,7 @@ class EffectiveModeBackCompatTests(TestCase):
         self.op = User.objects.create_user(username="op2", email="op2@x.invalid", password="x")
         call_command("provision_auto_shadow")
         self.demo = TradingAccount.objects.create(
-            user=self.op, name="Demo", account_number="D9", is_demo=True,
+            user=self.op, name="Demo", account_number="D9", is_demo=True, broker_name="DemoBroker",
         )
         self.parser = ParserProfile.objects.create(
             slug="wayond_v1", certification_level=ParserProfile.CertificationLevel.MEDIUM,

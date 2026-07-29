@@ -24,7 +24,7 @@ class PrioritizedClaimTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="w", email="w@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="A", account_number="N1", is_demo=True)
+            user=self.user, name="A", account_number="N1", is_demo=True, broker_name="DemoBroker")
         WorkerIdentity.objects.create(
             worker_id="w1", worker_secret_hash=WorkerIdentity.hash_secret("s1"),
             status=WorkerIdentity.Status.ACTIVE)

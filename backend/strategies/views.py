@@ -1071,11 +1071,9 @@ class StrategyViewSet(viewsets.ModelViewSet):
         if not account:
             return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Admitted beta cohort (or staff) only.
-        from billing.beta import is_admitted_beta_tester
-        if not (request.user.is_staff or is_admitted_beta_tester(request.user)):
-            return Response({"status": "not_beta", "detail": "Not an admitted beta tester."},
-                            status=status.HTTP_403_FORBIDDEN)
+        # ADR-0021: no per-user admission allowlist. Enable Trading is governed by ownership + account
+        # validation + runtime readiness + execution controls + the self-serve-arm operational flag
+        # (all enforced below) — NOT by spare runtime capacity or registration state.
 
         # Classification + credentials.
         if not (account.is_demo and account.is_active):

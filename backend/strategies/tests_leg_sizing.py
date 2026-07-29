@@ -21,7 +21,7 @@ class LegSizingTests(TestCase):
         self.other = U.objects.create_user(username="p", email="p@x.invalid", password="x")
         self.staff = U.objects.create_user(username="s", email="s@x.invalid", password="x", is_staff=True)
         self.acct = TradingAccount.objects.create(
-            user=self.owner, name="A", account_number="A1", is_demo=True)
+            user=self.owner, name="A", account_number="A1", broker_name="DemoBroker", is_demo=True)
         self.strat = Strategy.objects.create(owner=self.owner, name="WIM")
         self.asn = StrategyAssignment.objects.create(
             strategy=self.strat, account=self.acct, signal_source="wayond")

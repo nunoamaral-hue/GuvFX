@@ -53,7 +53,7 @@ class E3Base(TestCase):
         self.op = User.objects.create_user(username="op", email="op@x.invalid", password="x")
         call_command("provision_auto_shadow")  # the guvfx-auto-system reviewer
         self.demo = TradingAccount.objects.create(
-            user=self.op, name="Demo", account_number="D1", is_demo=True,
+            user=self.op, name="Demo", account_number="D1", is_demo=True, broker_name="DemoBroker",
         )
         self.parser = ParserProfile.objects.create(
             slug="wayond_v1", certification_level=ParserProfile.CertificationLevel.MEDIUM,

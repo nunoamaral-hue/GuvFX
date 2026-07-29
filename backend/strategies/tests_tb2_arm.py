@@ -75,14 +75,17 @@ class ArmGateTests(TestCase):
         other = _demo_acct(_admitted("g2"), "G2")
         self.assertEqual(self._post(account_id=other.id).status_code, 404)
 
-    def test_non_beta_user_forbidden(self):
+    def test_plain_user_can_arm_admission_removed(self):
+        # ADR-0021 removed per-user admission from Enable Trading: a plain (non-allowlisted) owner whose
+        # owned runtime is ready can arm — governed by ownership + validation + runtime-ready, NOT
+        # membership. (Arming only creates authority; nothing fires until the Class-B master levers.)
         plain = User.objects.create_user(username="plain", email="plain@x.invalid", password="x")
         acct = _demo_acct(plain, "PL1")
         with mock.patch(READY[0], return_value=(True, "ready")):
             r = _client(plain).post(ARM_URL, {"marketplace_strategy_id": MP, "account_id": acct.id},
                                     format="json")
-        self.assertEqual(r.status_code, 403)
-        self.assertEqual(r.json()["status"], "not_beta")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["status"], "armed")
 
     def test_non_demo_account_refused(self):
         self.acct.is_demo = False

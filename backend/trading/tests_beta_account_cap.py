@@ -85,21 +85,18 @@ class BrokerAccountCapTests(TestCase):
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertEqual(TradingAccount.objects.filter(user=user).count(), 1)
 
-    def test_create_takes_a_row_lock_on_the_user(self):
-        # Deterministic proof (no threads) that the cap check is serialised: a non-staff create must
-        # issue a `SELECT ... FOR UPDATE` on the user row so concurrent creates cannot both pass the count.
-        from django.db import connection
-        from django.test.utils import CaptureQueriesContext
-        user = self._make_user("lock@x.invalid", plan="beta")
+    def test_duplicate_create_is_idempotent_not_lock_dependent(self):
+        # ADR-0021: idempotency no longer depends on a user-row FOR UPDATE lock. A repeated identical
+        # submission returns the SAME account (canonical lookup + DB uniqueness + IntegrityError winner
+        # recovery), never a duplicate and never a 500.
+        user = self._make_user("dup@x.invalid", plan="beta")
         self.client.force_authenticate(user)
-        with CaptureQueriesContext(connection) as ctx:
-            resp = self.client.post(
-                LIST_URL, {"name": "L1", "account_number": "7", "broker_name": "B"}, format="json")
-        self.assertEqual(resp.status_code, 201, resp.content)
-        sqls = [q["sql"].upper() for q in ctx.captured_queries]
-        self.assertTrue(
-            any("FOR UPDATE" in s and "USERS_USER" in s for s in sqls),
-            msg=f"expected a SELECT ... FOR UPDATE on users_user; got: {sqls}")
+        payload = {"name": "L1", "account_number": "7", "broker_name": "B"}
+        r1 = self.client.post(LIST_URL, payload, format="json")
+        r2 = self.client.post(LIST_URL, payload, format="json")
+        self.assertEqual(r1.status_code, 201, r1.content)
+        self.assertIn(r2.status_code, (200, 201), r2.content)
+        self.assertEqual(TradingAccount.objects.filter(user=user).count(), 1)  # exactly one, not two
 
 
 class TestMt5RawErrorSanitisationTests(TestCase):

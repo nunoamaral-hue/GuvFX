@@ -57,11 +57,16 @@ class BetaEntitlementTests(TestCase):
 
 
 class OnboardingGateTests(TestCase):
+    """ADR-0021 — the non-staff ``account_connected`` milestone is STATE-DRIVEN (governed by the owned
+    runtime's durable state), NOT by the legacy ``beta_onboarding_open()`` flag. Staff keep the legacy
+    path. (The positive non-staff path — progression once the runtime is RUNNING/verified — is proven in
+    ``terminal_provisioning.tests_beta_activation.AccountConnectedBetaSemanticsTests``.)"""
     def setUp(self):
         self.user = U.objects.create_user(username="ob", email="ob@x.invalid", password="x")
         self.staff = U.objects.create_user(username="s", email="s@x.invalid", password="x", is_staff=True)
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="A", account_number="OB1", is_demo=True, is_active=True)
+            user=self.user, name="A", account_number="OB1", broker_name="DemoBroker",
+            is_demo=True, is_active=True)
 
     def _prep(self, user):
         from onboarding import services
@@ -71,28 +76,33 @@ class OnboardingGateTests(TestCase):
         state.risk_accepted = True
         state.save(update_fields=["plan_selected", "email_verified", "risk_accepted"])
 
-    def test_gate_default_closed(self):
+    def test_legacy_onboarding_flag_defaults_closed(self):
+        # The legacy flag is retained (backward-compat / staff paths) and still defaults CLOSED. It no
+        # longer governs the non-staff account_connected milestone.
         self.assertFalse(beta_onboarding_open())
 
-    def test_gate_blocks_account_connected_for_non_staff(self):
+    def test_non_staff_account_connected_blocked_until_runtime_ready(self):
+        from onboarding import services
+        self._prep(self.user)   # no runtime yet → state-driven block with a structured reason
+        with self.assertRaises(services.OnboardingStepError):
+            services.mark_account_connected(self.user)
+
+    @override_settings(BETA_ONBOARDING_ENABLED=True)
+    def test_legacy_flag_does_not_drive_non_staff_progression(self):
+        # Even with the legacy flag ON, a non-staff customer without a READY runtime is still blocked —
+        # progression is driven by runtime state, not by the flag.
         from onboarding import services
         self._prep(self.user)
         with self.assertRaises(services.OnboardingStepError):
-            services.mark_account_connected(self.user)  # gate closed → blocked
+            services.mark_account_connected(self.user)
 
-    @override_settings(BETA_ONBOARDING_ENABLED=True)
-    def test_gate_open_allows_progression(self):
+    def test_staff_progresses_on_legacy_path(self):
         from onboarding import services
-        self._prep(self.user)
-        state = services.mark_account_connected(self.user)  # gate open → proceeds
-        self.assertTrue(state.account_connected)
-
-    def test_staff_bypasses_closed_gate(self):
-        from onboarding import services
-        acct = TradingAccount.objects.create(
-            user=self.staff, name="S", account_number="S1", is_demo=True, is_active=True)
+        TradingAccount.objects.create(
+            user=self.staff, name="S", account_number="S1", broker_name="DemoBroker",
+            is_demo=True, is_active=True)
         self._prep(self.staff)
-        state = services.mark_account_connected(self.staff)  # staff bypass
+        state = services.mark_account_connected(self.staff)  # staff legacy path — unchanged
         self.assertTrue(state.account_connected)
 
 

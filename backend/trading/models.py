@@ -145,8 +145,27 @@ class TradingAccount(models.Model):
                 condition=Q(is_active=True) & Q(mt5_instance__isnull=False),
                 name="uniq_active_account_per_instance",
             ),
+            # ADR-0021 — broker identity must be PRESENT: either a normalised BrokerServer FK, or a
+            # non-empty (normalised) free-text broker_name for legacy/self-service records. Forbids the
+            # NULL-FK + empty-name hole that would otherwise evade BOTH partial-unique constraints above
+            # (a duplicate could then be created freely). Normalisation-on-write (``save``) strips
+            # whitespace, so a whitespace-only broker_name is stored as '' and is rejected here too.
+            models.CheckConstraint(
+                check=Q(broker_server__isnull=False) | ~Q(broker_name=""),
+                name="brokeridentity_present",
+            ),
         ]
         ordering = ["-created_at"]
+
+    def save(self, *args, **kwargs):
+        # ADR-0021 — normalise identity fields to a canonical form on EVERY write, so whitespace variants
+        # ("12345 " vs "12345") can never create a duplicate that slips past the uniqueness constraints.
+        # Only identity fields are touched; credentials and presentation fields are left exactly as-is.
+        if self.account_number is not None:
+            self.account_number = self.account_number.strip()
+        if self.broker_name is not None:
+            self.broker_name = self.broker_name.strip()
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         server = (

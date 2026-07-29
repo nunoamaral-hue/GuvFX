@@ -65,7 +65,7 @@ class PromotionTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="op", email="op@x.invalid", password="x")
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D1", is_demo=True
+            user=self.user, name="Demo", account_number="D1", is_demo=True, broker_name="DemoBroker"
         )
         SignalSourceConfig.objects.create(source=SRC, auto_demo_execution_enabled=True)
 
@@ -163,7 +163,7 @@ class PromotionTests(TestCase):
 
     def test_live_account_blocks_promotion(self):
         live = TradingAccount.objects.create(
-            user=self.user, name="Live", account_number="L1", is_demo=False
+            user=self.user, name="Live", account_number="L1", is_demo=False, broker_name="DemoBroker"
         )
         plan = _planned_plan(self.user, live, mid="m9")
         with self.assertRaises(promo.PromotionRejected) as ctx:
@@ -197,7 +197,7 @@ class EndpointGuardTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="op2", email="op2@x.invalid", password="x")
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D2", is_demo=True
+            user=self.user, name="Demo", account_number="D2", is_demo=True, broker_name="DemoBroker"
         )
         SignalSourceConfig.objects.create(source=SRC, auto_demo_execution_enabled=True)
         plan = _planned_plan(self.user, self.demo, mid="g1")
@@ -257,7 +257,7 @@ class CommandAndGuardTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="op3", email="op3@x.invalid", password="x")
         self.demo = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="D3", is_demo=True
+            user=self.user, name="Demo", account_number="D3", is_demo=True, broker_name="DemoBroker"
         )
         SignalSourceConfig.objects.create(source=SRC, auto_demo_execution_enabled=True)
 

@@ -32,6 +32,7 @@ class TradeHistoryBalanceIDORTests(APITestCase):
         cls.inst = Mt5Instance.objects.create(hostname="ac1f-host", windows_username="guvfx_u_ac1f")
         cls.acct = TradingAccount.objects.create(
             user=cls.owner, name="Owner Account", account_number="AC1F-OWN", mt5_instance=cls.inst,
+            broker_name="DemoBroker",
         )
 
     def _get(self, user, account_id):

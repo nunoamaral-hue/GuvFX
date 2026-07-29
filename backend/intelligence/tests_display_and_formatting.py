@@ -47,7 +47,7 @@ class PublicLabelTests(TestCase):
         self.user = User.objects.create_user(username="op", email="op@x.invalid", password="x")
 
     def _acct(self, **kw):
-        base = dict(user=self.user, name="IS6 Demo (1302561)", account_number="1302561", is_demo=True)
+        base = dict(user=self.user, name="IS6 Demo (1302561)", account_number="1302561", is_demo=True, broker_name="DemoBroker")
         base.update(kw)
         return TradingAccount.objects.create(**base)
 

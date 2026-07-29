@@ -26,7 +26,7 @@ class EngineBase(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="pe", email="pe@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="PE1", is_demo=True)
+            user=self.user, name="Demo", account_number="PE1", is_demo=True, broker_name="DemoBroker")
         pp = ParserProfile.objects.create(slug="ti_signals_v1")
         self.ti = SignalProvider.objects.create(slug="ti_signals", parser_profile=pp)
         ppw = ParserProfile.objects.create(slug="wayond_v1")
@@ -222,7 +222,7 @@ class ExecutorTests(EngineBase):
         # A CLOSE for the SAME ticket on a DIFFERENT account must not suppress this account's close.
         p = self._plan()
         other = TradingAccount.objects.create(
-            user=self.user, name="Other", account_number="PE2", is_demo=True)
+            user=self.user, name="Other", account_number="PE2", is_demo=True, broker_name="DemoBroker")
         t1 = Trade.objects.get(account=self.acct, comment=f"WAY{p.id}L1")
         ExecutionJob.objects.create(job_type="CLOSE_TRADE", account=other, status="PENDING",
                                     payload={"ticket": t1.ticket})  # same ticket, other account

@@ -89,7 +89,8 @@ class OnboardingStepError(Exception):
 def get_or_create_onboarding_state(user) -> UserOnboardingState:
     """Get or create the onboarding state for a user."""
     state, _ = UserOnboardingState.objects.get_or_create(user=user)
-    _apply_beta_admission(user, state)
+    # ADR-0021: email verification is genuine for every customer; admission no longer substitutes for it,
+    # so the old ``_apply_beta_admission`` side-effect (auto-flip email_verified) is retired.
     return state
 
 
@@ -368,19 +369,41 @@ def _mark_beta_runtime_ready(user, state, request=None) -> UserOnboardingState:
 
     account = TradingAccount.objects.filter(user=user).order_by("id").first()
     if not account:
-        raise OnboardingStepError("Add a broker account first.")
+        raise OnboardingStepError("no_broker_account")
     runtime = AccountRuntime.objects.filter(trading_account=account).first()
-    if runtime is None or not runtime_ready(runtime):
-        raise OnboardingStepError("Hosted runtime is not ready yet.")
-    if state.account_connected:
-        return state  # idempotent
-    state.account_connected = True
-    state.save(update_fields=["account_connected", "updated_at"])
-    log_onboarding_account_connected(request, user.id, account.id)
-    _check_completion(state)
-    if state.onboarding_completed:
-        log_onboarding_completed(request, user.id)
-    return state
+    if runtime is not None and runtime_ready(runtime):
+        if state.account_connected:
+            return state  # idempotent
+        state.account_connected = True
+        state.save(update_fields=["account_connected", "updated_at"])
+        log_onboarding_account_connected(request, user.id, account.id)
+        _check_completion(state)
+        if state.onboarding_completed:
+            log_onboarding_completed(request, user.id)
+        return state
+    # Not ready — structured, STATE-DERIVED reason (the frontend owns the wording).
+    raise OnboardingStepError(_runtime_progress_reason(runtime))
+
+
+def _runtime_progress_reason(runtime) -> str:
+    """Map a not-yet-ready runtime's durable state to a structured onboarding reason code (state-driven).
+    Never a capacity/registration signal — those gate only NEW reservation."""
+    from terminal_provisioning.models import RuntimeState
+    if runtime is None:
+        return "runtime_pending"          # broker added; reservation not yet made
+    if getattr(runtime, "quarantined", False):
+        return "runtime_failed"
+    st = runtime.state
+    if st == RuntimeState.BLOCKED:
+        return "capacity_blocked"         # reservation deferred — waiting for a slot
+    if st == RuntimeState.FAILED:
+        return "runtime_failed"
+    if st in (RuntimeState.QUEUED, RuntimeState.PROVISIONING, RuntimeState.STARTING,
+              RuntimeState.AUTHENTICATING, RuntimeState.REPAIRING):
+        return "runtime_provisioning"
+    if st == RuntimeState.NOT_PROVISIONED:
+        return "runtime_pending"
+    return "runtime_not_ready"
 
 
 def mark_account_connected(user, request=None) -> UserOnboardingState:
@@ -391,19 +414,14 @@ def mark_account_connected(user, request=None) -> UserOnboardingState:
     state = get_or_create_onboarding_state(user)
     _check_prerequisites(state, "account_connected")
 
-    # CVM-Inc-3 (Nuno control 5 + truthful semantics): for an admitted controlled-beta user, this step
-    # means the OWNED beta runtime is RUNTIME-READY (materialised/launched/verified + Verification
-    # Report) — NOT that a broker is connected. It NEVER runs the legacy shared-instance provisioning
-    # and never binds mt5_instance; broker_connected stays a separate, later, false-until-verified state.
-    from billing.beta import beta_onboarding_open, is_admitted_beta_tester
-    if is_admitted_beta_tester(user):
+    # ADR-0021: dedicated-runtime provisioning is the DEFAULT customer execution model. For every non-staff
+    # customer this step means the OWNED runtime is RUNTIME-READY. Progression is STATE-DRIVEN — governed by
+    # the runtime's durable state, NEVER by spare capacity / registration / new-provisioning availability
+    # (those gate only a NEW runtime reservation, at broker-add). Staff keep the legacy path below.
+    if not user.is_staff:
         return _mark_beta_runtime_ready(user, state, request=request)
 
-    # GFX-BETA-PHASE0 Increment 4 — server-side gate. External beta onboarding stays CLOSED until the
-    # Phase-4 isolation gates pass; a non-staff user cannot progress past this step while it's closed.
-    if not beta_onboarding_open() and not user.is_staff:
-        raise OnboardingStepError("Beta onboarding is not open yet.")
-
+    # Staff / legacy shared-instance path (Nuno) — unchanged.
     account = TradingAccount.objects.filter(user=user, is_active=True).first()
     if not account:
         raise OnboardingStepError("No active trading account found. Connect one first.")
@@ -452,11 +470,9 @@ def mark_strategy_assigned(user, request=None) -> UserOnboardingState:
     state = get_or_create_onboarding_state(user)
     _check_prerequisites(state, "strategy_assigned")
 
-    # GFX-BETA-PHASE0 Increment 4 — server-side gate (see mark_account_connected).
-    from billing.beta import beta_onboarding_open
-    if not beta_onboarding_open() and not user.is_staff:
-        raise OnboardingStepError("Beta onboarding is not open yet.")
-
+    # ADR-0021: STATE-DRIVEN — governed by an existing active StrategyAssignment (created by Enable
+    # Trading / arm, which itself checks ownership + validation + runtime readiness + execution controls).
+    # NOT gated by spare capacity or registration state.
     assignment = StrategyAssignment.objects.filter(
         account__user=user, is_active=True
     ).first()

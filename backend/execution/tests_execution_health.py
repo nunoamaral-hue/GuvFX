@@ -23,7 +23,7 @@ class ExecutionHealthTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="eh", email="eh@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="EH1", is_demo=True)
+            user=self.user, name="Demo", account_number="EH1", is_demo=True, broker_name="DemoBroker")
 
     def _job(self, job_type, status, *, lease_delta_s=None, created_delta_s=None, node=None):
         j = ExecutionJob.objects.create(job_type=job_type, account=self.acct, status=status,
@@ -86,7 +86,7 @@ class ExposureAttributionTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="ea", email="ea@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="EA1", is_demo=True)
+            user=self.user, name="Demo", account_number="EA1", is_demo=True, broker_name="DemoBroker")
 
     def _plan(self, source, status, mid):
         appr = PendingSignalApproval.objects.create(
@@ -139,7 +139,7 @@ class UnplannedSignalAlertTests(TestCase):
         from execution.models import SignalSourceConfig
         self.user = User.objects.create_user(username="us", email="us@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="US1", is_demo=True)
+            user=self.user, name="Demo", account_number="US1", is_demo=True, broker_name="DemoBroker")
         SignalSourceConfig.objects.create(source=TI, auto_demo_execution_enabled=True)
         SignalSourceConfig.objects.create(source=WAY, auto_demo_execution_enabled=False)
 
@@ -206,7 +206,7 @@ class StuckPromotionAlertTests(TestCase):
         from execution.models import SignalSourceConfig
         self.user = User.objects.create_user(username="sp", email="sp@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="SP1", is_demo=True)
+            user=self.user, name="Demo", account_number="SP1", is_demo=True, broker_name="DemoBroker")
         SignalSourceConfig.objects.create(source=TI, auto_demo_execution_enabled=True)
         SignalSourceConfig.objects.create(source=WAY, auto_demo_execution_enabled=False)
 
@@ -323,7 +323,7 @@ class OrphanedPlaceOrderReconcileTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="po", email="po@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="PO1", is_demo=True)
+            user=self.user, name="Demo", account_number="PO1", is_demo=True, broker_name="DemoBroker")
 
     def _po_job(self, plan_id, leg_index, *, lease_delta_s):
         j = ExecutionJob.objects.create(
@@ -392,7 +392,7 @@ class OrphanedPlaceOrderResolveTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="pr", email="pr@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="PR1", is_demo=True)
+            user=self.user, name="Demo", account_number="PR1", is_demo=True, broker_name="DemoBroker")
 
     def _po(self, plan_id, leg_index):
         j = ExecutionJob.objects.create(
@@ -438,7 +438,7 @@ class ProtectionWatcherHealthTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="pw", email="pw@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="PW1", is_demo=True)
+            user=self.user, name="Demo", account_number="PW1", is_demo=True, broker_name="DemoBroker")
 
     def _beat(self, age_s, interval=90):
         from reliability.models import Heartbeat
@@ -486,7 +486,7 @@ class ThrottleStormAlertTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="ts", email="ts@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="TS1", is_demo=True)
+            user=self.user, name="Demo", account_number="TS1", is_demo=True, broker_name="DemoBroker")
 
     def test_throttle_storm_alert_opens_and_resolves(self):
         from reliability.models import AlertEvent
@@ -513,7 +513,7 @@ class SelfFailedSyncVisibilityTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="sf", email="sf@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="SF1", is_demo=True)
+            user=self.user, name="Demo", account_number="SF1", is_demo=True, broker_name="DemoBroker")
 
     def test_self_failed_protection_syncs_trip_alerts(self):
         from reliability.models import AlertEvent

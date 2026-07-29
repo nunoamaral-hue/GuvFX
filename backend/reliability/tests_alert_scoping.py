@@ -18,9 +18,9 @@ class ReliabilityScopingTests(TestCase):
         self.staff = U.objects.create_user(
             username="s", email="s@x.invalid", password="x", is_staff=True)
         self.a1 = TradingAccount.objects.create(
-            user=self.u1, name="A1", account_number="A1", is_demo=True)
+            user=self.u1, name="A1", account_number="A1", is_demo=True, broker_name="DemoBroker")
         self.a2 = TradingAccount.objects.create(
-            user=self.u2, name="A2", account_number="A2", is_demo=True)
+            user=self.u2, name="A2", account_number="A2", is_demo=True, broker_name="DemoBroker")
         AlertEvent.objects.create(component="X", title="u1", dedup_key="k1",
                                   status="OPEN", trading_account=self.a1)
         AlertEvent.objects.create(component="X", title="u2", dedup_key="k2",
@@ -71,9 +71,9 @@ class TradingHealthScopingTests(TestCase):
         self.staff = U.objects.create_user(
             username="s", email="s@x.invalid", password="x", is_staff=True)
         self.a1 = TradingAccount.objects.create(
-            user=self.u1, name="A1", account_number="A1", is_demo=True)
+            user=self.u1, name="A1", account_number="A1", is_demo=True, broker_name="DemoBroker")
         self.a2 = TradingAccount.objects.create(
-            user=self.u2, name="A2", account_number="A2", is_demo=True)
+            user=self.u2, name="A2", account_number="A2", is_demo=True, broker_name="DemoBroker")
         self.factory = APIRequestFactory()
 
     def _th(self, user, qs=""):

@@ -41,7 +41,7 @@ class PlanMigration0025Tests(TransactionTestCase):
         u = U.objects.create(username=f"mu{suffix}", email=f"mu{suffix}@x.invalid", password="x")
         appr = PendingSignalApproval.objects.create(source="ti_signals", message_id=f"mm{suffix}")
         acct = account or TradingAccount.objects.create(
-            user=u, name="A", account_number=f"A{suffix}", is_demo=True)
+            user=u, name="A", account_number=f"A{suffix}", is_demo=True, broker_name="DemoBroker")
         plan = SignalExecutionPlan.objects.create(
             approval=appr, account=acct, source="ti_signals", message_id=f"mm{suffix}",
             symbol="EURUSD", direction="BUY", is_demo=True)
@@ -68,7 +68,7 @@ class PlanMigration0025Tests(TransactionTestCase):
 
         # ...but the SAME approval on a DIFFERENT account is now allowed (fan-out).
         acct2 = TradingAccount.objects.create(
-            user=acct.user, name="B", account_number="A1b", is_demo=True)
+            user=acct.user, name="B", account_number="A1b", is_demo=True, broker_name="DemoBroker")
         SignalExecutionPlan.objects.create(
             approval_id=aid, account=acct2, source="ti_signals", message_id="mm1",
             symbol="EURUSD", direction="BUY", is_demo=True)

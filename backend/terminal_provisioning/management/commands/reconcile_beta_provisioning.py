@@ -32,7 +32,6 @@ class Command(BaseCommand):
                             help="max runtimes to reconcile in one pass")
 
     def handle(self, *args, **opts):
-        from billing.beta import is_admitted_beta_tester
         from terminal_provisioning.beta_capacity import (
             CapacityError, beta_runtimes_enabled, get_or_create_beta_runtime, reserve_beta_slot)
         from terminal_provisioning.provisioner import enqueue_op
@@ -52,7 +51,8 @@ class Command(BaseCommand):
         reenqueued = skipped = denied = errors = 0
         for rt in candidates:
             acct = getattr(rt, "trading_account", None)
-            if acct is None or not is_admitted_beta_tester(acct.user):
+            # ADR-0021: no per-user admission — reconcile any BETA runtime with an owner.
+            if acct is None or getattr(acct, "user", None) is None:
                 skipped += 1
                 continue
             try:

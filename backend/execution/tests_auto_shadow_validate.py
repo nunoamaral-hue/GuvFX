@@ -69,6 +69,7 @@ class AutoShadowValidateBase(TestCase):
         call_command("provision_auto_shadow")
         self.demo = TradingAccount.objects.create(
             user=self.op, name="Demo", account_number="D1", is_demo=True,
+            broker_name="DemoBroker",
         )
         self.parser = ParserProfile.objects.create(
             slug="wayond_v1", certification_level=ParserProfile.CertificationLevel.MEDIUM,

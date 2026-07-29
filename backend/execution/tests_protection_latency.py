@@ -39,7 +39,7 @@ class LatencyBase(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="pl", email="pl@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="PL1", is_demo=True)
+            user=self.user, name="Demo", account_number="PL1", is_demo=True, broker_name="DemoBroker")
         SignalSourceConfig.objects.create(source="ti_signals", incremental_protection_enabled=True)
 
     def _plan(self, pid_hint="p1", direction="SELL"):

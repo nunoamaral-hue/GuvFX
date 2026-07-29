@@ -143,7 +143,7 @@ class ReencryptCommandTests(TestCase):
         user = U.objects.create_user(
             username=f"reenc-{n}", email=f"reenc-{n}@x.invalid", password="x")
         return TradingAccount.objects.create(
-            user=user, name="A", account_number=f"ACC{n}", is_demo=True, password_enc=ciphertext)
+            user=user, name="A", account_number=f"ACC{n}", broker_name="DemoBroker", is_demo=True, password_enc=ciphertext)
 
     def test_reencrypt_moves_derived_ciphertext_to_explicit_primary(self):
         with mock.patch.dict(os.environ, _DERIVED_ONLY):

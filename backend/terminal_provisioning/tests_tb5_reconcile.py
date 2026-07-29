@@ -66,10 +66,15 @@ class ReconcileBetaProvisioningTests(TestCase):
         self.assertEqual(_prov_jobs(rt).count(), 1)    # not duplicated
 
     @ENABLED
-    def test_skips_non_admitted_owner(self):
-        rt = _stuck_runtime(_acct(4, admitted=False))
-        call_command("reconcile_beta_provisioning")
-        self.assertFalse(_prov_jobs(rt).exists())
+    def test_reconciles_any_owner_regardless_of_admission(self):
+        # ADR-0021: admission is no longer an eligibility gate — a stuck runtime for ANY owner is
+        # re-enqueued (only null-owner / quarantined / production are excluded).
+        with override_settings(BETA_RUNTIMES_ENABLED=True, BETA_MAX_TESTERS=1000):
+            rt = _stuck_runtime(_acct(4, admitted=False))
+            call_command("reconcile_beta_provisioning")
+        self.assertTrue(_prov_jobs(rt).filter(status__in=ACTIVE).exists())
+        rt.refresh_from_db()
+        self.assertEqual(rt.state, RuntimeState.QUEUED)
 
     @ENABLED
     def test_skips_quarantined_runtime(self):

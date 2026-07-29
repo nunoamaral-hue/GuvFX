@@ -42,7 +42,7 @@ class NodeEnforcementTests(TestCase):
     def _account(self, node=None):
         return TradingAccount.objects.create(
             user=self.user, name="Demo", account_number="D1", is_demo=True,
-            terminal_node=node,
+            terminal_node=node, broker_name="DemoBroker",
         )
 
     def _plan(self, account, mid="p1"):

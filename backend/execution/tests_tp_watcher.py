@@ -37,7 +37,7 @@ class WatcherBase(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="w", email="w@x.invalid", password="x")
         self.acct = TradingAccount.objects.create(
-            user=self.user, name="Demo", account_number="W1", is_demo=True)
+            user=self.user, name="Demo", account_number="W1", is_demo=True, broker_name="DemoBroker")
         SignalSourceConfig.objects.create(source=TI, incremental_protection_enabled=True)
         SignalSourceConfig.objects.create(source=WAY, incremental_protection_enabled=False)
         p = mock.patch.object(breakeven, "_windows_username", return_value="mt5user")
