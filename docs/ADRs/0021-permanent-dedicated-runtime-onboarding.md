@@ -111,6 +111,34 @@ registration-open / provisioning-availability appear **only** on the new-runtime
 `can_reserve_new_runtime` short-circuits to `already_owned` when the user holds an active/held runtime, so
 an owner is a no-op re-drive (`reserve_beta_slot` returns their existing runtime), never blocked.
 
+## Entitlement architecture — Access → Visibility → Activation → Execution (Sponsor 2026-07-29)
+
+The **entitlement layer OWNS** the customer-facing product boundaries; consumers (the marketplace, the
+arm endpoint, the execution path) **never evaluate entitlement booleans themselves** — they ask the
+entitlement layer. Four distinct, ordered layers, each owned by the entitlement layer:
+
+| Layer | Question the consumer asks | Entitlement-owned answer |
+|---|---|---|
+| **Access** | May this customer open the marketplace? | `can_browse_marketplace` |
+| **Visibility** | *Which marketplace **catalogues** may this customer browse?* | `visible_marketplace_catalogues` (a **frozenset of catalogue ids**) |
+| **Activation** | May this customer arm/enable a visible item? | `can_assign_strategies` (permission) + operational readiness (runtime-ready, arm flag, single-tenant) |
+| **Execution** | May armed automation place orders? | `can_deploy_automation` + the AUTO_DEMO master levers + per-source arm flags |
+
+**Visibility is a catalogue, not a boolean.** Marketplace items **declare their catalogue** (an enduring
+product grouping — e.g. `signal_copy` — never a rollout phase). The entitlement layer answers *which
+catalogues* a plan may browse (`visible_marketplace_catalogues`, populated per plan like the existing
+`historical_data_tier`). The marketplace renders items whose catalogue is in that set and embeds no
+business rule. Adding a future catalogue is **data** (extend the set + tag items), never a new boolean
+gate — this is why the previous `is_beta`-as-visibility-gate was replaced rather than swapped for another
+boolean. Every active onboarding plan (`starter_trial`/`standard`/`pro`/`advanced`/`beta`) browses
+`signal_copy`; a viewer/inactive plan browses nothing.
+
+**`is_beta` is DEPRECATED as a visibility gate** — it survives only as a read-only cohort label (admin
+view). The layers stay independent: broadening *who can see and arm* a strategy never broadens *who can
+place orders* (Execution remains `can_deploy_automation` + Class-B levers, still fail-closed for beta).
+This also removed the flow contradiction where the mandatory plan-selection step (only `standard`/
+`starter_trial` selectable) stripped the `is_beta` the strategy step required, stranding every registrant.
+
 ## Architectural changes (minimum set)
 
 **Backend**

@@ -132,6 +132,30 @@ class BetaMarketplaceTests(TestCase):
             self.assertFalse(s["provisioning_available"])
             self.assertIsNotNone(s["reason"])
 
+    def test_standard_customer_sees_signal_copy_catalogue(self):
+        # ADR-0021 Visibility layer: visibility is owned by the entitlement's catalogue set, NOT the
+        # is_beta flag. A STANDARD (non-beta) customer whose plan may browse the signal_copy catalogue
+        # sees the strategies — the exact case that was previously (wrongly) empty.
+        std = U.objects.create_user(username="std", email="std@x.invalid", password="x")
+        UserSubscriptionState.objects.update_or_create(
+            user=std, defaults={"current_plan": UserSubscriptionState.Plan.STANDARD,
+                                "plan_status": UserSubscriptionState.PlanStatus.ACTIVE, "viewer_mode": False})
+        r = self._get(std)
+        self.assertTrue(r.data["entitled"])
+        self.assertEqual({s["key"] for s in r.data["strategies"]}, {"wayond_auto_demo", "wayond_wim"})
+        self.assertTrue(all(s["catalogue"] == "signal_copy" for s in r.data["strategies"]))
+
+    def test_lapsed_customer_with_plan_sees_empty_marketplace(self):
+        # view-level: a lapsed customer WITH a plan row (expired + viewer_mode per the model invariant)
+        # collapses to viewer → empty marketplace (not just the entitlement-level check).
+        exp = U.objects.create_user(username="exp", email="exp@x.invalid", password="x")
+        UserSubscriptionState.objects.update_or_create(
+            user=exp, defaults={"current_plan": UserSubscriptionState.Plan.STANDARD,
+                                "plan_status": UserSubscriptionState.PlanStatus.EXPIRED, "viewer_mode": True})
+        r = self._get(exp)
+        self.assertFalse(r.data["entitled"])
+        self.assertEqual(r.data["strategies"], [])
+
     def test_non_beta_sees_empty(self):
         r = self._get(self.viewer)
         self.assertFalse(r.data["entitled"])
@@ -141,3 +165,56 @@ class BetaMarketplaceTests(TestCase):
         r = self._get(self.staff)
         self.assertTrue(r.data["entitled"])
         self.assertEqual(len(r.data["strategies"]), 2)
+
+
+class MarketplaceCatalogueEntitlementTests(TestCase):
+    """ADR-0021 — the entitlement layer OWNS marketplace catalogue visibility (the Visibility layer).
+    A consumer asks 'which catalogues may this customer browse?'; it never evaluates entitlement booleans."""
+
+    def _ent(self, plan=None, status="active", viewer=False):
+        from billing.entitlements import resolve_entitlements
+        if plan is None:
+            return resolve_entitlements(None)
+        return resolve_entitlements(UserSubscriptionState(
+            current_plan=plan, plan_status=status, viewer_mode=viewer))
+
+    def test_active_onboarding_plans_may_browse_signal_copy(self):
+        from billing.entitlements import MarketplaceCatalogue
+        P = UserSubscriptionState.Plan
+        for plan in [P.STARTER_TRIAL, P.STANDARD, P.PRO, P.ADVANCED, P.BETA]:
+            self.assertIn(MarketplaceCatalogue.SIGNAL_COPY,
+                          self._ent(plan).visible_marketplace_catalogues, plan)
+
+    def test_viewer_and_inactive_browse_no_catalogue(self):
+        self.assertEqual(self._ent(None).visible_marketplace_catalogues, frozenset())
+        self.assertEqual(self._ent(UserSubscriptionState.Plan.STANDARD, status="expired")
+                         .visible_marketplace_catalogues, frozenset())
+        self.assertEqual(self._ent(UserSubscriptionState.Plan.STANDARD, viewer=True)
+                         .visible_marketplace_catalogues, frozenset())
+
+    def test_visibility_is_independent_of_is_beta_cohort(self):
+        # a standard customer is NOT is_beta, yet CAN browse the catalogue (visibility != cohort label)
+        ent = self._ent(UserSubscriptionState.Plan.STANDARD)
+        self.assertFalse(ent.is_beta)
+        self.assertTrue(ent.visible_marketplace_catalogues)
+
+    def test_visibility_broadened_but_execution_authority_unchanged(self):
+        # THE SAFETY BOUNDARY (ADR-0021): broadening Visibility must NOT broaden Execution. A beta customer
+        # can SEE the catalogue but execution authority (can_deploy_automation) stays fail-closed; a
+        # standard customer sees it AND retains its PRE-EXISTING can_deploy_automation (unchanged by this
+        # change). Visibility and Execution are independent layers.
+        beta = self._ent(UserSubscriptionState.Plan.BETA)
+        self.assertTrue(beta.visible_marketplace_catalogues)   # Visibility: can see
+        self.assertFalse(beta.can_deploy_automation)           # Execution: still fail-closed for beta
+        std = self._ent(UserSubscriptionState.Plan.STANDARD)
+        self.assertTrue(std.visible_marketplace_catalogues)
+        self.assertTrue(std.can_deploy_automation)             # standard already had this — unchanged
+
+    def test_to_dict_is_json_safe(self):
+        import json
+        from billing.entitlements import resolve_entitlements
+        d = resolve_entitlements(UserSubscriptionState(
+            current_plan=UserSubscriptionState.Plan.STANDARD,
+            plan_status=UserSubscriptionState.PlanStatus.ACTIVE, viewer_mode=False)).to_dict()
+        json.dumps(d)   # must not raise (the catalogue frozenset is emitted as a sorted list)
+        self.assertEqual(d["visible_marketplace_catalogues"], ["signal_copy"])

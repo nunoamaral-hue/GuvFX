@@ -8,6 +8,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
 
+from billing.entitlements import MarketplaceCatalogue
+
 from .emails import send_verification_email
 from .models import BrokerPartner
 from .serializers import (
@@ -257,40 +259,48 @@ class AccountStatusView(APIView):
 
 
 class BetaMarketplaceView(APIView):
-    """GFX-BETA-PHASE0 Increment 4 — GET /api/onboarding/marketplace/
+    """GET /api/onboarding/marketplace/ — the onboarding strategy marketplace.
 
-    Entitlement-scoped marketplace FOUNDATION. Entitled (beta/staff) users see ONLY the two Wayond
-    strategies; everyone else sees an empty list. Visibility must NOT imply activation/provisioning is
-    available: each item carries a truthful ``available=False`` (gated by the closed onboarding gate +
-    undeployed provisioning), so the UI can render "coming soon", never an "activate now".
+    ADR-0021 Visibility layer: the entitlement layer OWNS which marketplace CATALOGUES a customer may
+    browse. Each item declares its enduring ``catalogue`` (not a rollout phase); this view NEVER evaluates
+    an entitlement boolean — it asks the entitlement for the permitted catalogues and renders the items
+    whose catalogue is in that set. Visibility is deliberately SEPARATE from ACTIVATION: each item carries
+    a truthful ``available``/``provisioning_available`` (gated by the onboarding-open + provisioning
+    state), so the UI can render "coming soon", never an "activate now" the customer cannot use.
     """
     permission_classes = [IsAuthenticated]
 
-    _BETA_STRATEGIES = [
+    # Marketplace items declare the catalogue they belong to (the view owns CONTENT; the entitlement layer
+    # owns the visibility POLICY).
+    _MARKETPLACE_ITEMS = [
         {"key": "wayond_auto_demo", "name": "Wayond Auto Demo",
-         "description": "Copies the Wayond demo signal feed."},
+         "description": "Copies the Wayond demo signal feed.",
+         "catalogue": MarketplaceCatalogue.SIGNAL_COPY},
         {"key": "wayond_wim", "name": "Wayond WIM Strategy",
-         "description": "Copies the TI Signals feed (WIM)."},
+         "description": "Copies the TI Signals feed (WIM).",
+         "catalogue": MarketplaceCatalogue.SIGNAL_COPY},
     ]
 
     def get(self, request):
-        from billing.entitlements import resolve_entitlements
+        from billing.entitlements import ALL_MARKETPLACE_CATALOGUES, resolve_entitlements
         from billing.models import UserSubscriptionState
         from billing.beta import beta_onboarding_open
 
-        state = UserSubscriptionState.objects.filter(user=request.user).first()
-        ent = resolve_entitlements(state)
-        entitled = bool(getattr(ent, "is_beta", False)) or request.user.is_staff
-        if not entitled:
+        ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=request.user).first())
+        # VISIBILITY (entitlement-owned): which catalogues may this customer browse? Staff see all (an
+        # admin/auth override, not an entitlement rule). No entitlement boolean is evaluated here.
+        browsable = ALL_MARKETPLACE_CATALOGUES if request.user.is_staff else ent.visible_marketplace_catalogues
+        visible = [item for item in self._MARKETPLACE_ITEMS if item["catalogue"] in browsable]
+        if not visible:
             return Response({"ok": True, "entitled": False, "onboarding_open": False, "strategies": []})
 
-        available = beta_onboarding_open()  # False throughout Phase 0
+        available = beta_onboarding_open()  # ACTIVATION layer — separate from visibility
         strategies = [{
             **s,
             "available": available,             # truthful: not activatable yet
             "activation_available": available,
             "provisioning_available": False,    # per-user provisioning is undeployed (Phase 2)
-            "reason": None if available else "Not available yet — beta onboarding is not open.",
-        } for s in self._BETA_STRATEGIES]
+            "reason": None if available else "Not available yet — onboarding is not open.",
+        } for s in visible]
         return Response({"ok": True, "entitled": True, "onboarding_open": available,
                          "strategies": strategies})
