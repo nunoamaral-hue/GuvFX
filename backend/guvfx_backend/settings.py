@@ -294,6 +294,29 @@ else:
     SECURE_HSTS_PRELOAD = False
     SECURE_SSL_REDIRECT = False
 
+# ─────────────────────────────────────────────────────────────────────
+# Email (Google Workspace SMTP) — genuine customer email verification.
+# Every value is env-driven. EMAIL_HOST_PASSWORD is a Google Workspace App
+# Password: a SECRET supplied ONLY via the deploy env / secret store, never
+# committed to Git (RULE 3 — no secrets in tracked files). Defaults below are
+# non-secret and safe to keep in source; with EMAIL_HOST_USER/PASSWORD unset the
+# send path fails closed (a clear error), it never silently drops mail.
+# ─────────────────────────────────────────────────────────────────────
+EMAIL_BACKEND = env("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = env("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(env("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = env("EMAIL_USE_TLS", "True").lower() == "true"
+EMAIL_USE_SSL = env("EMAIL_USE_SSL", "False").lower() == "true"
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", "")  # SECRET — deploy env only, never in Git
+EMAIL_TIMEOUT = int(env("EMAIL_TIMEOUT", "20"))
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", "GuvFX Support <support@guvfx.com>")
+SERVER_EMAIL = env("SERVER_EMAIL", "admin@guvfx.com")
+# Reply-To for customer-facing mail (support inbox). Falls back to the From address.
+EMAIL_REPLY_TO = env("EMAIL_REPLY_TO", "support@guvfx.com")
+# Public site base used to build customer-facing links in emails.
+FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", "https://guvfx.com")
+
 # Logging Configuration
 LOGGING = {
     "version": 1,
