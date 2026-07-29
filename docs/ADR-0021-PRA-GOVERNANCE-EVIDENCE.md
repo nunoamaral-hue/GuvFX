@@ -89,5 +89,10 @@ confirmed**, all resolved (commit `3f74966`):
 | 7 | LOW | frontend | "Check again" showed no in-flight feedback | `poll()` sets `checking` at start |
 | 8 | MED | estate | Per-user cap downgraded to a non-atomic `count()` | Restored a row lock scoped **solely** to cap atomicity; idempotency stays lock-independent (constraint + IntegrityError winner recovery), proven by `test_recovers_winner_on_integrityerror` |
 
+A **final code review of the fix commit** (verifying the 8 fixes themselves) confirmed fixes 1–6 and 8
+correct and found one more issue, resolved in `dc65820`:
+
+| 9 | LOW | frontend | `apiFetch` surfaces the raw JSON body as `err.message` (its bare `catch` re-throws `new Error(text)`), so `err.message === "not_found"` and the 409 reason-code mapping never matched | Added `reasonFromError()` to tolerate both the bare `detail` and the JSON-body shape; a central `apiFetch` change to always surface the bare `detail` is a documented follow-up |
+
 Gates after fixes: backend **1974 tests OK** · frontend **lint 0 errors** · **build compiled
-successfully** · migrations reversible · no drift.
+successfully** · migrations reversible · no drift · **PR #240 CI green**.
