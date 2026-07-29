@@ -369,19 +369,41 @@ def _mark_beta_runtime_ready(user, state, request=None) -> UserOnboardingState:
 
     account = TradingAccount.objects.filter(user=user).order_by("id").first()
     if not account:
-        raise OnboardingStepError("Add a broker account first.")
+        raise OnboardingStepError("no_broker_account")
     runtime = AccountRuntime.objects.filter(trading_account=account).first()
-    if runtime is None or not runtime_ready(runtime):
-        raise OnboardingStepError("Hosted runtime is not ready yet.")
-    if state.account_connected:
-        return state  # idempotent
-    state.account_connected = True
-    state.save(update_fields=["account_connected", "updated_at"])
-    log_onboarding_account_connected(request, user.id, account.id)
-    _check_completion(state)
-    if state.onboarding_completed:
-        log_onboarding_completed(request, user.id)
-    return state
+    if runtime is not None and runtime_ready(runtime):
+        if state.account_connected:
+            return state  # idempotent
+        state.account_connected = True
+        state.save(update_fields=["account_connected", "updated_at"])
+        log_onboarding_account_connected(request, user.id, account.id)
+        _check_completion(state)
+        if state.onboarding_completed:
+            log_onboarding_completed(request, user.id)
+        return state
+    # Not ready — structured, STATE-DERIVED reason (the frontend owns the wording).
+    raise OnboardingStepError(_runtime_progress_reason(runtime))
+
+
+def _runtime_progress_reason(runtime) -> str:
+    """Map a not-yet-ready runtime's durable state to a structured onboarding reason code (state-driven).
+    Never a capacity/registration signal — those gate only NEW reservation."""
+    from terminal_provisioning.models import RuntimeState
+    if runtime is None:
+        return "runtime_pending"          # broker added; reservation not yet made
+    if getattr(runtime, "quarantined", False):
+        return "runtime_failed"
+    st = runtime.state
+    if st == RuntimeState.BLOCKED:
+        return "capacity_blocked"         # reservation deferred — waiting for a slot
+    if st == RuntimeState.FAILED:
+        return "runtime_failed"
+    if st in (RuntimeState.QUEUED, RuntimeState.PROVISIONING, RuntimeState.STARTING,
+              RuntimeState.AUTHENTICATING, RuntimeState.REPAIRING):
+        return "runtime_provisioning"
+    if st == RuntimeState.NOT_PROVISIONED:
+        return "runtime_pending"
+    return "runtime_not_ready"
 
 
 def mark_account_connected(user, request=None) -> UserOnboardingState:
@@ -392,15 +414,11 @@ def mark_account_connected(user, request=None) -> UserOnboardingState:
     state = get_or_create_onboarding_state(user)
     _check_prerequisites(state, "account_connected")
 
-    # ADR-0021: dedicated-runtime provisioning is the DEFAULT customer execution model. For every
-    # non-staff customer this step means the OWNED runtime is RUNTIME-READY (materialised/launched/
-    # verified + Verification Report) — NOT that a broker is connected. Eligibility is operational
-    # health (``onboarding_available``), never a per-user allowlist. Staff keep the legacy path below.
-    from billing.beta import onboarding_available
+    # ADR-0021: dedicated-runtime provisioning is the DEFAULT customer execution model. For every non-staff
+    # customer this step means the OWNED runtime is RUNTIME-READY. Progression is STATE-DRIVEN — governed by
+    # the runtime's durable state, NEVER by spare capacity / registration / new-provisioning availability
+    # (those gate only a NEW runtime reservation, at broker-add). Staff keep the legacy path below.
     if not user.is_staff:
-        ok, reason = onboarding_available(user)
-        if not ok:
-            raise OnboardingStepError(reason)  # structured code; the frontend owns the wording
         return _mark_beta_runtime_ready(user, state, request=request)
 
     # Staff / legacy shared-instance path (Nuno) — unchanged.
@@ -452,13 +470,9 @@ def mark_strategy_assigned(user, request=None) -> UserOnboardingState:
     state = get_or_create_onboarding_state(user)
     _check_prerequisites(state, "strategy_assigned")
 
-    # ADR-0021 — operational eligibility gate (see mark_account_connected). Staff bypass.
-    from billing.beta import onboarding_available
-    if not user.is_staff:
-        ok, reason = onboarding_available(user)
-        if not ok:
-            raise OnboardingStepError(reason)
-
+    # ADR-0021: STATE-DRIVEN — governed by an existing active StrategyAssignment (created by Enable
+    # Trading / arm, which itself checks ownership + validation + runtime readiness + execution controls).
+    # NOT gated by spare capacity or registration state.
     assignment = StrategyAssignment.objects.filter(
         account__user=user, is_active=True
     ).first()

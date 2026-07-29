@@ -37,8 +37,10 @@ Customer Zero (`beta.guvfx01@gmail.com`, genuine email verification confirmed) h
    database layers** — a repeat returns the existing account/runtime, never a duplicate.
 6. **Backend reason codes remain structured** (`{ok, reason, detail}`); the frontend owns wording.
 7. **Customer-facing wording is owned by the frontend.**
-8. **Eligibility = operational health, not an allowlist:** `onboarding_available()` =
-   `registration_enabled` AND `runtime_capacity_available` AND `provisioning_service_healthy`.
+8. **Eligibility = STAGE-SPECIFIC operational predicates, not an allowlist and NOT one universal gate.**
+   Capacity / registration-open / provisioning-availability must **never** block a customer who already
+   owns a runtime — those apply only to allocating a *new* runtime. Each transition has its own named
+   predicate (see "Operational gate model" below).
 
 ## Onboarding state model
 
@@ -54,32 +56,35 @@ stateDiagram-v2
     EmailVerified --> TermsAccepted: accept risk + plan
     TermsAccepted --> BrokerAdded: submit MT5 details (idempotent create)
 
-    BrokerAdded --> Provisioning: onboarding_available() ✓ (auto-enqueue reserve_beta_slot)
-    BrokerAdded --> CapacityBlocked: capacity full / provisioning unhealthy
+    BrokerAdded --> Provisioning: can_reserve_new_runtime() ✓ (auto-enqueue reserve_beta_slot)
+    BrokerAdded --> CapacityBlocked: can_reserve_new_runtime() ✗ (provisioning off / unhealthy / host unreachable / capacity full)
 
-    CapacityBlocked --> Provisioning: capacity frees (reconcile re-enqueue)
+    CapacityBlocked --> Provisioning: capacity frees (reconcile re-enqueue — runs regardless of new-reservation availability)
 
-    Provisioning --> RuntimeReady: runtime RUNNING + MT5 broker session established (validated)
+    Provisioning --> RuntimeReady: runtime RUNNING + MT5 broker session established (validated) [STATE-DRIVEN]
     Provisioning --> ProvisioningFailed: materialise/launch error
     Provisioning --> ValidationFailed: MT5 broker login rejected
 
     ValidationFailed --> BrokerAdded: customer re-enters credentials (idempotent update)
     ProvisioningFailed --> Provisioning: operator/auto retry (bounded)
 
-    RuntimeReady --> StrategySelected: customer selects strategy
-    StrategySelected --> TradingEnabled: Enable Trading (arm; AUTO_DEMO assignment)
+    RuntimeReady --> StrategySelected: customer selects strategy [STATE-DRIVEN — no capacity/registration]
+    StrategySelected --> TradingEnabled: Enable Trading (arm — ownership + validation + runtime-ready + exec-controls + arm-flag)
     TradingEnabled --> Active: dashboard reflects live state
     Active --> [*]
 
     note right of Provisioning
-      "Validate credentials" is fulfilled here:
-      the runtime logs into the customer's broker.
-      Idempotent: a duplicate request returns the
-      existing QUEUED/RUNNING runtime, never a new slot.
+      can_reserve_new_runtime() gates ONLY the
+      BrokerAdded→Provisioning edge. Every edge from
+      Provisioning onward is driven by the runtime's
+      DURABLE STATE — a runtime owner is NEVER blocked
+      by capacity / registration / provisioning-availability.
+      "Validate credentials" is fulfilled here (real MT5 login).
     end note
     note right of CapacityBlocked
-      Not an allowlist — a truthful operational
-      state. Resolved by freeing/adding a slot.
+      Not an allowlist — a truthful operational state for a
+      user who does NOT yet own a runtime. Resolved by a
+      freed/added slot; reconcile re-enqueues automatically.
     end note
 ```
 
@@ -87,36 +92,96 @@ stateDiagram-v2
 RuntimeReady, ProvisioningFailed, ValidationFailed, StrategySelected, TradingEnabled, Active`.
 No transition skips a predecessor; every transition is guarded by durable state (never a client claim).
 
+## Operational gate model (stage-specific — corrected)
+
+There is **no universal gate**. Each transition consults only the predicates it needs. Capacity /
+registration-open / provisioning-availability appear **only** on the new-runtime edge.
+
+| Transition | Predicate(s) | Capacity? | Registration? |
+|---|---|---|---|
+| Create **new user account** (register) | `registration_allowed()` | no | **yes (only here)** |
+| **Login** | none (any existing user) | no | no |
+| Email verify / risk / plan | step prerequisites only | no | no |
+| Add broker account (create record) | idempotent create; **no** eligibility gate | no | no |
+| **Reserve a NEW runtime** (BrokerAdded→Provisioning) | `can_reserve_new_runtime(user)` = provisioning-enabled + provisioner-heartbeat-fresh + host-agent-reachable + **not already-owning** + capacity | **yes (only here)** | no |
+| **Existing-runtime progression** (RuntimeReady, StrategySelected…) | runtime **durable state** (`runtime_ready` + `_runtime_progress_reason`) | no | no |
+| Strategy selection / Enable Trading (arm) | ownership + account validation + runtime readiness + execution controls + `BETA_SELF_SERVE_ARM_ENABLED` | no | no |
+| Reconciliation | BETA runtime + owner present — **runs for existing customers regardless** | no | no |
+
+`can_reserve_new_runtime` short-circuits to `already_owned` when the user holds an active/held runtime, so
+an owner is a no-op re-drive (`reserve_beta_slot` returns their existing runtime), never blocked.
+
 ## Architectural changes (minimum set)
 
 **Backend**
-- `billing/beta.py`: add `onboarding_available() -> (bool, reason)`; retain `BETA_RUNTIMES_ENABLED` /
-  `BETA_SELF_SERVE_ARM_ENABLED` as operational kill-switches. `is_admitted_beta_tester` / `BetaTester`
-  retained but **no longer consulted for onboarding eligibility** (may back a future invite feature).
-- `onboarding/services.py`: `mark_account_connected` + `mark_strategy_assigned` gate on
-  `onboarding_available()` (not `beta_onboarding_open()`), and use the **runtime-ready** semantics for all
-  non-staff. Retire `_apply_beta_admission` (email verification is genuine for everyone).
-- `trading/views.py`: `perform_create` non-staff branch **always** dedicated-runtime
-  (`mt5_instance=None` + idempotent `_maybe_enqueue_beta_provisioning`); **staff/Nuno branch unchanged**.
-  Account create is `get_or_create` on the idempotency key.
-- `terminal_provisioning/beta_activation.py` + `reconcile_beta_provisioning`: chokepoint gates on
-  `onboarding_available()` + `cohort==BETA` (drop the admission check). `reserve_beta_slot` is already
-  idempotent (returns the held runtime).
-- `PROVISIONING_REQUIRE_BROKER_LOGIN=1` in the provisioning path so validation is a real MT5 session;
-  `validation_status` / `broker_connected` become truthful.
-- Structured reason codes: `registration_closed, capacity_full, provisioning_unhealthy,
-  runtime_provisioning, runtime_failed, validation_failed`.
+- `billing/beta.py`: **stage-specific predicates** — `registration_allowed()`, `provisioning_service_healthy()`
+  (kill-switch + `_provisioner_heartbeat_fresh()`), `host_agent_reachable()`, `runtime_capacity_available()`,
+  `user_holds_runtime()`, `can_reserve_new_runtime(user) -> (ok, reason)`. `is_admitted_beta_tester` /
+  `BetaTester` retained but **never consulted for eligibility**; `beta_onboarding_open()` demoted to
+  staff/back-compat only.
+- `onboarding/services.py`: `mark_account_connected` (non-staff) is **pure state-driven** via
+  `_mark_beta_runtime_ready` → `_runtime_progress_reason(runtime)` (no capacity/registration gate);
+  `mark_strategy_assigned` governed by the existing `StrategyAssignment` only. `_apply_beta_admission`
+  retired. **Staff/Nuno legacy path unchanged.**
+- `trading/views.py`: `perform_create` non-staff branch is **idempotent** (`get_or_create` on the
+  normalised key; existing account returned, provisioning re-driven idempotently) + dedicated-runtime
+  default; `_maybe_enqueue_beta_provisioning` drops admission, guards a duplicate PROVISION enqueue.
+  **Staff branch unchanged.** New-runtime allocation is authoritatively gated + enforced atomically in
+  `reserve_beta_slot`; `can_reserve_new_runtime` is the entry pre-check that surfaces the reason.
+- `terminal_provisioning/beta_activation.py` + `reconcile_beta_provisioning`: drop the per-user admission
+  check (chokepoint keeps `beta_runtimes_enabled` + `cohort==BETA` + owner + cap). Reconcile runs for any
+  owned BETA runtime.
+- **PR B only:** `PROVISIONING_REQUIRE_BROKER_LOGIN=1` — provisioning establishes a real MT5 session;
+  `validation_status`/`broker_connected` become truthful.
+- Structured reason codes: `registration_closed, provisioning_disabled, provisioner_unhealthy,
+  host_unreachable, capacity_full, runtime_pending, runtime_provisioning, capacity_blocked, runtime_failed,
+  runtime_not_ready, validation_failed, no_broker_account`.
 
 **Frontend**
-- Onboarding orchestration: create account (idempotent) → poll `account-status` → advance when
-  `RuntimeReady`; render a "Validating & provisioning…" state; map reason codes to friendly copy.
+- Onboarding orchestration: create account (idempotent) → poll `account-status` → advance when the runtime
+  is ready; render a "Validating & provisioning…" state; map reason codes to friendly copy.
 
-## Migration impact
-- **One additive migration:** `UniqueConstraint` on `TradingAccount (user, account_number, broker_server)`
-  and `(user, account_number, broker_name)` for DB-layer idempotency. Data-preserving; a pre-check
-  de-duplicates first (Customer Zero's account #11 is the only customer account). Reversible.
-- No data migration for gate removal (code-only). `BetaTester` rows retained. Cohort unchanged
-  (`BETA` remains the customer cohort; `PRODUCTION`/Nuno untouched). Optional cosmetic rename deferred.
+## PR boundaries (jointly certified — PR B not deferred)
+
+**PR A** — admission removal + permanent dedicated-runtime path + account/provisioning idempotency +
+DB constraints (+ normalisation) + state-driven frontend orchestration + structured reason codes + friendly
+errors + full tests **including Golden-Reference preservation**. No host risk beyond existing provisioning.
+
+**PR B** — genuine MT5 broker-login validation during provisioning (`PROVISIONING_REQUIRE_BROKER_LOGIN=1`),
+isolated host verification, failure/retry/timeout/credential-safety tests, **no-order proof**, rollback
+evidence. A **separate bounded risk packet/PR** — but **part of the Customer Zero release**.
+
+**PR A MUST NOT deploy independently as the certified permanent onboarding.** PR A and PR B are merged and
+**jointly certified**, then STOP at the production-deployment gate for Sponsor approval (Golden-Reference
+STOP-check before + after).
+
+## Migration / normalisation plan (idempotency constraint)
+
+**Order of operations (all in PR A):**
+1. **Audit first (read-only):** query for existing duplicates by the normalised key before writing any
+   constraint — `GROUP BY user, TRIM(account_number), broker_server, TRIM(broker_name) HAVING COUNT(*)>1`.
+   Expectation: none (Customer Zero's account #11 is the only customer account; Nuno's are staff/separate).
+   If any surface, resolve explicitly (keep the active/newest, deactivate the rest) — never silently.
+2. **Normalise on write:** `account_number` and `broker_name` are `strip()`-normalised at intake
+   (serializer/`perform_create`) so the stored value is canonical. **Case is preserved** — MT5 server
+   names are case-sensitive; normalisation is whitespace-only. The idempotency lookup uses the same
+   normalised values.
+3. **Null-safe conditional uniqueness** — two **partial** `UniqueConstraint`s (Postgres treats NULLs as
+   distinct, so a single constraint spanning a nullable FK would not enforce the free-text path):
+   - `uniq_acct_fk` — `(user, account_number, broker_server)` `WHERE broker_server IS NOT NULL`.
+   - `uniq_acct_freetext` — `(user, account_number, broker_name)` `WHERE broker_server IS NULL AND broker_name <> ''`.
+4. **Data-preserving + reversible.** A `RunPython` pre-check aborts the migration loudly if step 1 finds
+   duplicates (so they are handled before the constraint lands). Reverse drops the constraints only.
+
+**Idempotency proofs (tests in PR A):**
+- Repeated submission of the same `(user, login, broker)` returns the **existing** account (200/── same id)
+  and the **existing** provisioning state — no second account, no second slot, no duplicate PROVISION job.
+- Concurrent submissions cannot duplicate: `perform_create` already takes `select_for_update` on the user
+  row (serialises the two creates); the partial unique constraints are the DB-layer backstop
+  (`IntegrityError` → caught → return existing).
+
+**Gate-removal migrations:** none (code-only). `BetaTester` rows retained; cohort unchanged (`BETA` remains
+the customer cohort, `PRODUCTION`/Nuno untouched); cosmetic rename deferred.
 
 ## Compatibility with the Golden Execution Reference — LOW risk
 - Nuno is staff/superuser → bypasses onboarding gates before and after (staff branches preserved).

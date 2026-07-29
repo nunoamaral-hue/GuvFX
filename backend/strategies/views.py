@@ -1071,13 +1071,9 @@ class StrategyViewSet(viewsets.ModelViewSet):
         if not account:
             return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # ADR-0021 — operational eligibility (not a per-user allowlist). Staff bypass.
-        from billing.beta import onboarding_available
-        if not request.user.is_staff:
-            _ok, _reason = onboarding_available(request.user)
-            if not _ok:
-                return Response({"status": _reason, "detail": "Onboarding is not currently available."},
-                                status=status.HTTP_403_FORBIDDEN)
+        # ADR-0021: no per-user admission allowlist. Enable Trading is governed by ownership + account
+        # validation + runtime readiness + execution controls + the self-serve-arm operational flag
+        # (all enforced below) — NOT by spare runtime capacity or registration state.
 
         # Classification + credentials.
         if not (account.is_demo and account.is_active):

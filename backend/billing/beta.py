@@ -44,8 +44,9 @@ def beta_onboarding_open() -> bool:
     only when explicitly opened via ``BETA_ONBOARDING_ENABLED`` (settings or env) — which must NOT happen
     until Phase-4 proves per-user isolation. Nothing in Phase 0 opens it.
 
-    RETAINED for backward-compat / staff paths only. ADR-0021 makes ``onboarding_available()`` the single
-    eligibility gate for customers; new code MUST NOT use this for customer eligibility."""
+    RETAINED for backward-compat / staff paths only. ADR-0021 replaces this with STAGE-SPECIFIC operational
+    predicates (``registration_allowed``, ``can_reserve_new_runtime``, runtime-state progression); new code
+    MUST NOT use this for customer eligibility."""
     val = getattr(settings, "BETA_ONBOARDING_ENABLED", None)
     if val is None:
         val = os.getenv("BETA_ONBOARDING_ENABLED", "")
@@ -59,15 +60,54 @@ def _flag(name: str, default: str) -> bool:
     return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
-def registration_enabled() -> bool:
-    """Operational kill-switch for new registrations. DEFAULT ON (registration is public)."""
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# ADR-0021 — STAGE-SPECIFIC operational predicates. There is deliberately NO universal onboarding gate:
+# capacity / registration / provisioning-availability must never block a customer who ALREADY owns a
+# runtime. Each predicate is scoped to exactly one transition. Each returns a structured reason code.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+def registration_allowed() -> bool:
+    """Governs ONLY the creation of NEW user accounts (the register endpoint). Closing registration must
+    never block an existing registered customer from logging in or completing onboarding."""
     return _flag("REGISTRATION_ENABLED", "true")
 
 
 def provisioning_service_healthy() -> bool:
-    """Provisioning is operationally available (the dedicated-runtime kill switch is on)."""
+    """The dedicated-runtime provisioner is operationally available: the kill switch is on AND the
+    provisioner worker is heartbeating recently. Used ONLY when allocating a NEW runtime."""
     from terminal_provisioning.beta_capacity import beta_runtimes_enabled
-    return beta_runtimes_enabled()
+    if not beta_runtimes_enabled():
+        return False
+    return _provisioner_heartbeat_fresh()
+
+
+def _provisioner_heartbeat_fresh() -> bool:
+    """Beta provisioner liveness. Fresh if a heartbeat was recorded within
+    ``BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS`` (default 120). Absent record ⇒ treat as healthy only when
+    the worker model has no heartbeat column yet (backward-compat); otherwise fail closed."""
+    ttl = int(getattr(settings, "BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", 0)
+              or os.getenv("BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", "120"))
+    try:
+        from terminal_provisioning.models import ProvisionerHeartbeat  # type: ignore
+    except Exception:
+        return True  # heartbeat model not present in this build — do not block on it
+    from django.utils import timezone
+    hb = ProvisionerHeartbeat.objects.order_by("-updated_at").first()
+    if hb is None:
+        return False
+    return (timezone.now() - hb.updated_at).total_seconds() <= ttl
+
+
+def host_agent_reachable() -> bool:
+    """The Windows agent/host required to MATERIALISE a runtime is reachable. Used ONLY when allocating a
+    NEW runtime (never on progression of an existing one). Cheap cached signal; never a per-request probe
+    in the hot path — see host-reachability cache. Default True if no signal is configured."""
+    val = getattr(settings, "HOST_AGENT_REACHABLE", None)
+    if val is None:
+        val = os.getenv("HOST_AGENT_REACHABLE", "")
+    if str(val).strip() == "":
+        return True  # no explicit signal configured — do not block (host_has_capacity already probes)
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
 def runtime_capacity_available() -> bool:
@@ -78,23 +118,31 @@ def runtime_capacity_available() -> bool:
     return active_beta_runtime_count() < BETA_MAX_ACTIVE_RUNTIMES and host_has_capacity()
 
 
-def _user_holds_runtime(user) -> bool:
-    """True if the user already owns a beta runtime slot (so capacity must never block their progress)."""
+def user_holds_runtime(user) -> bool:
+    """True if the user already owns a BETA runtime (active OR held). Such a user must NEVER be blocked by
+    capacity/registration/provisioning-availability — their progression is driven by the runtime's state."""
     if user is None:
         return False
-    from terminal_provisioning.models import AccountRuntime
+    from terminal_provisioning.beta_capacity import HELD_STATES
+    from terminal_provisioning.models import AccountRuntime, RuntimeState
+    live = set(HELD_STATES) | {RuntimeState.RUNNING}
     return AccountRuntime.objects.filter(
-        trading_account__user=user, cohort=AccountRuntime.Cohort.BETA).exists()
+        trading_account__user=user, cohort=AccountRuntime.Cohort.BETA, state__in=live).exists()
 
 
-def onboarding_available(user=None) -> tuple[bool, str]:
-    """ADR-0021 — the SINGLE customer onboarding-eligibility gate. Operational health, NOT an allowlist.
-    Returns ``(ok, reason)`` where reason is a structured code the frontend maps to friendly copy.
-    Capacity blocks only a user who does not already hold a runtime slot (an existing holder progresses)."""
-    if not registration_enabled():
-        return (False, "registration_closed")
-    if not provisioning_service_healthy():
-        return (False, "provisioning_unhealthy")
-    if not _user_holds_runtime(user) and not runtime_capacity_available():
+def can_reserve_new_runtime(user) -> tuple[bool, str]:
+    """ADR-0021 — gate for allocating a NEW dedicated runtime (BrokerAdded → Provisioning). Applies ONLY
+    when the customer does NOT already own an active/held runtime; an existing owner is a no-op re-drive
+    (``reserve_beta_slot`` returns their held runtime). Returns ``(ok, reason)``."""
+    if user_holds_runtime(user):
+        return (True, "already_owned")  # not a new reservation — reserve_beta_slot is idempotent
+    from terminal_provisioning.beta_capacity import beta_runtimes_enabled
+    if not beta_runtimes_enabled():
+        return (False, "provisioning_disabled")
+    if not _provisioner_heartbeat_fresh():
+        return (False, "provisioner_unhealthy")
+    if not host_agent_reachable():
+        return (False, "host_unreachable")
+    if not runtime_capacity_available():
         return (False, "capacity_full")
     return (True, "available")
