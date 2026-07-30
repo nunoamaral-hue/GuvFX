@@ -81,18 +81,6 @@ export const ONBOARDING_STEPS: StepConfig[] = [
     requiredFlags: ["risk_accepted"],
     componentKey: "profile",
   },
-  {
-    stepNumber: 4,
-    label: "Connect broker",
-    requiredFlags: ["account_connected"],
-    componentKey: "broker",
-  },
-  {
-    stepNumber: 5,
-    label: "Get started",
-    requiredFlags: ["strategy_assigned"],
-    componentKey: "get_started",
-  },
 ];
 
 /** Check if all required flags for a step are satisfied */

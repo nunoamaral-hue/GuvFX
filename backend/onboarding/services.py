@@ -66,12 +66,17 @@ STEP_ORDER = [
     "strategy_assigned",
 ]
 
+# Customer Zero Flow Simplification (Option 2): onboarding covers ONLY the minimum account setup required
+# before entering the application — identity + email + plan + risk/profile. Broker connection and strategy
+# assignment are now POST-onboarding PLATFORM SETUP (see ``resolve_setup_stage``), NOT prerequisites for
+# ``onboarding_completed``. ``account_connected`` / ``strategy_assigned`` remain durable setup state and
+# keep their ``mark_*`` functions + ``STEP_ORDER`` prerequisite ordering — they are simply no longer
+# required for completion. This keeps the onboarding route-guard a clean binary while removing the deadlock
+# where onboarding required broker connection but the guard blocked the Broker Accounts page.
 REQUIRED_STEPS = {
     "email_verified",
     "risk_accepted",
     "plan_selected",
-    "account_connected",
-    "strategy_assigned",
 }
 
 OPTIONAL_STEPS = {"two_factor_enabled"}
@@ -159,6 +164,71 @@ def _check_completion(state: UserOnboardingState) -> bool:
         state.save(update_fields=["onboarding_completed", "onboarding_completed_at", "updated_at"])
         return True
     return False
+
+
+def finalize_onboarding(user, request=None) -> UserOnboardingState:
+    """Explicit 'finish setup' action for the final onboarding screen: idempotently complete onboarding
+    once the minimum required steps (email + plan + risk) are done.
+
+    Runs the standard completion check — it NEVER forces completion when a required step is missing. For a
+    customer who already has all required steps (e.g. one whose flow predates this simplification, like
+    Customer Zero), this is what flips ``onboarding_completed``; no new required step is invented.
+    """
+    state = get_or_create_onboarding_state(user)
+    newly_completed = _check_completion(state)
+    if newly_completed and request is not None:
+        log_onboarding_completed(request, user.id)
+    return state
+
+
+def resolve_setup_stage(user) -> dict:
+    """Intelligent post-onboarding SETUP ROUTER — returns the customer's current setup stage and the route
+    that resumes it, computed from durable state (never from an operation's success). Onboarding completion
+    and PLATFORM-setup completion are deliberately separate; this resolves the latter so a customer can
+    resume the next incomplete stage naturally after any interruption.
+
+    Ladder (first unmet stage wins):
+      onboarding incomplete             -> /onboarding                (onboarding)
+      no broker account                 -> /accounts                  (connect_broker)
+      broker exists, runtime not RUNNING -> /accounts                  (provisioning)
+      runtime ready, no strategy         -> /strategies/marketplace    (select_strategy)
+      strategy selected, not enabled     -> /strategies                (enable_trading)
+      fully configured                   -> /dashboard                 (complete)
+    """
+    from trading.models import TradingAccount
+    from terminal_provisioning.models import AccountRuntime, RuntimeState
+    from strategies.models import StrategyAssignment
+
+    state = get_or_create_onboarding_state(user)
+    if not state.onboarding_completed:
+        return {"stage": "onboarding", "next_route": "/onboarding"}
+
+    if not TradingAccount.objects.filter(user=user).exists():
+        return {"stage": "connect_broker", "next_route": "/accounts"}
+
+    runtime_ready = AccountRuntime.objects.filter(
+        trading_account__user=user, state=RuntimeState.RUNNING).exists()
+    if not runtime_ready:
+        return {"stage": "provisioning", "next_route": "/accounts"}
+
+    # "Strategy selected" = any assignment on the user's account (marketplace_assign creates one
+    # is_active=True, stage=TEST — NOT yet trading). "Trading enabled" = the assignment is actually ARMED
+    # for execution, matching the authoritative armed signal used by the signal-copy router
+    # (``_armed_assignments``): AUTO_DEMO + stage=LIVE + is_active. Using bare ``is_active`` would wrongly
+    # treat a just-selected TEST assignment as complete (``is_active`` defaults True).
+    assignments = StrategyAssignment.objects.filter(account__user=user)
+    if not assignments.exists():
+        return {"stage": "select_strategy", "next_route": "/strategies/marketplace"}
+    armed = StrategyAssignment.objects.filter(
+        account__user=user,
+        execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+        stage=StrategyAssignment.STAGE_LIVE,
+        is_active=True,
+    ).exists()
+    if not armed:
+        return {"stage": "enable_trading", "next_route": "/strategies"}
+
+    return {"stage": "complete", "next_route": "/dashboard"}
 
 
 # ─────────────────────────────────────────────────────────────────────
