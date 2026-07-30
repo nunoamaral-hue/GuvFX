@@ -190,7 +190,7 @@ class GoldenImageTests(SimpleTestCase):
     def test_per_instance_state_is_refused_in_the_golden_image(self):
         """Inheriting one runtime's broker login into every slot is the failure this prevents."""
         source = _read("install_pool.ps1")
-        for leak in ("accounts.dat", "servers.dat", "MQL5\\Logs", "MQL5\\Profiles"):
+        for leak in ("accounts.dat", "MQL5\\Logs", "MQL5\\Profiles"):
             self.assertIn(leak, source, leak)
 
     def test_required_markers_are_asserted(self):
@@ -981,7 +981,6 @@ class GoldenImageValidationTests(SimpleTestCase):
 
     REQUIRED_EVIDENCE = {
         "config\\accounts.dat": "a saved broker account",
-        "config\\servers.dat": "a downloaded broker server list",
         "config\\common.ini": "settings from a previous run",
         "config\\terminal.ini": "settings from a previous run",
         "bases": "market data / trade history",
@@ -995,6 +994,22 @@ class GoldenImageValidationTests(SimpleTestCase):
         code = _code("install_pool.ps1")
         for rel in self.REQUIRED_EVIDENCE:
             self.assertIn(rel, code, f"golden validation does not refuse '{rel}'")
+
+    def test_installer_shipped_servers_dat_is_accepted_not_refused(self):
+        """RULE 10 objective is 'never OPERATIONALLY used'. config\\servers.dat is a PUBLIC broker-server LIST
+        the MT5 installer ships (build 5.0.0.6073+, written before any launch; no login/account/history), so its
+        mere presence must NOT fail a genuine clean install. It must NOT sit in the active dirty-file reject list
+        (only an explanatory comment may name it), and the rationale must be documented."""
+        # comment-stripped code must not reference servers.dat at all (it is out of the reject list)
+        self.assertNotIn("servers.dat", _code("install_pool.ps1"))
+        # the rationale IS documented in the raw source (the comment names both the file and its provenance)
+        raw = _read("install_pool.ps1")
+        self.assertIn("INSTALLER-SHIPPED", raw)
+        self.assertIn("config\\servers.dat", raw)
+        # the true operational-use artefacts remain rejected
+        code = _code("install_pool.ps1")
+        for rel in ("accounts.dat", "common.ini", "terminal.ini", "origin.txt", "MQL5\\experts.dat"):
+            self.assertIn(rel, code, rel)
 
     def test_the_mt5_build_is_pinned_by_the_manifest(self):
         """The same string the agent compares against BETA_AGENT_GOLDEN_MANIFEST_VERSION."""

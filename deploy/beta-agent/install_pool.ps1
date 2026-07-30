@@ -181,9 +181,15 @@ function Test-GoldenImage {
   }
 
   # (c/d/e/f) evidence of previous use - FILES ONLY. Each entry names what it proves.
+  # INSTALLER-SHIPPED, deliberately NOT rejected: config\servers.dat. From MT5 build 5.0.0.6073 the installer
+  # writes servers.dat (a PUBLIC broker-server LIST - no login, no account, no history) as part of install
+  # output, BEFORE the terminal is ever launched (proven 2026-07-30 by timestamp: servers.dat predated the
+  # first %APPDATA% terminal instance by 3s). It is reference data, not an operational-use artefact, so its
+  # mere presence must not fail a genuine clean install (same class as the earlier MQL5-missing / bases-populated
+  # / sample-EA false positives). The RULE-10 objective is "never OPERATIONALLY used" - the true operational
+  # signals below stay rejected. See docs/GOLDEN_IMAGE_RUNBOOK.md Golden Integrity Rules + evidence/beta-agent-phase3-cert/.
   $dirtyFiles = [ordered]@{
     "config\accounts.dat"  = "a saved broker account (runtime-created)"
-    "config\servers.dat"   = "a downloaded broker server list (runtime-created)"
     "config\common.ini"    = "terminal settings written on exit (runtime-created)"
     "config\terminal.ini"  = "terminal settings written on exit (runtime-created)"
     "origin.txt"           = "a data-folder redirect marker (runtime-created)"
