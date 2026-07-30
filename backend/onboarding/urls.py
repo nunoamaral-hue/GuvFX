@@ -2,6 +2,8 @@ from django.urls import path
 from .views import (
     OnboardingStateView,
     CompleteStepView,
+    OnboardingCompleteView,
+    SetupStatusView,
     EmailSendVerificationView,
     EmailVerifyView,
     TwoFactorSetupView,
@@ -17,6 +19,10 @@ from .views import (
 urlpatterns = [
     path("state/", OnboardingStateView.as_view(), name="onboarding-state"),
     path("complete-step/", CompleteStepView.as_view(), name="onboarding-complete-step"),
+
+    # CZFS (Option 2): finalize onboarding once the minimum steps are done + the post-onboarding setup router
+    path("complete/", OnboardingCompleteView.as_view(), name="onboarding-complete"),
+    path("setup-status/", SetupStatusView.as_view(), name="onboarding-setup-status"),
 
     # Email verification
     path("email/send-verification/", EmailSendVerificationView.as_view(), name="onboarding-email-send"),

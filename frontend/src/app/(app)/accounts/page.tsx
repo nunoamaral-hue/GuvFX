@@ -128,6 +128,206 @@ const HelpIcon: React.FC<HelpIconProps> = ({ text }) => {
     );
   };
 
+// ─────────────────────────────────────────────────────────────────────
+// Customer Zero Flow Simplification (Option 2) — post-onboarding broker-setup panel.
+// Broker connection is now POST-onboarding platform setup and lives here. This compact panel polls the
+// backend-owned account lifecycle (GET /api/onboarding/account-status/) and renders exactly what the
+// backend reports; it never invents the phase or copy. It replicates the AccountConnectionStep lifecycle
+// display (stepper dots + label/detail) WITHOUT that component's onboarding-advance side effects.
+// ─────────────────────────────────────────────────────────────────────
+
+type LifecycleStep = { key: string; label: string; status: string };
+type Lifecycle = {
+  phase: string;
+  label: string;
+  detail: string;
+  retryable: boolean;
+  steps?: LifecycleStep[];
+};
+type AccountStatus = { ok: boolean; lifecycle?: Lifecycle };
+
+const SETUP_TONE_COLOR: Record<"progress" | "pending" | "failed", string> = {
+  progress: "#4ab3ff",
+  pending: "#b7c5dd",
+  failed: "#f87171",
+};
+
+const SETUP_PHASE_TONE: Record<string, "progress" | "pending" | "failed"> = {
+  account_received: "pending",
+  provisioning_runtime: "progress",
+  connecting_broker: "progress",
+  validated: "progress",
+  connection_failed: "failed",
+};
+
+
+function PostOnboardingSetupPanel() {
+  const router = useRouter();
+  const [stage, setStage] = useState<string | null>(null);
+  const [lifecycle, setLifecycle] = useState<Lifecycle | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        // The setup-status router decides WHICH setup stage the customer is in; the account-status
+        // lifecycle supplies the provisioning progress detail. Gating the whole panel on the stage means it
+        // renders only during active broker→runtime→strategy setup, never for a fully-configured user.
+        const setup = await apiFetch<{ stage: string }>("/api/onboarding/setup-status/");
+        if (cancelled) return;
+        setStage(setup.stage);
+        if (setup.stage === "provisioning") {
+          try {
+            const status = await apiFetch<AccountStatus>("/api/onboarding/account-status/");
+            if (!cancelled) setLifecycle(status.lifecycle ?? null);
+          } catch { /* transient — keep the last known lifecycle */ }
+        }
+      } catch { /* transient — keep the last known stage */ }
+    };
+    void poll();
+    const id = setInterval(() => void poll(), 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  // Render ONLY during active setup — nothing for a fully-configured or returning customer (incl. staff).
+  if (stage !== "connect_broker" && stage !== "provisioning" && stage !== "select_strategy") {
+    return null;
+  }
+
+  // No broker account yet → first-use banner directing the user to the form below.
+  if (stage === "connect_broker") {
+    return (
+      <Card style={{ borderColor: "rgba(74, 179, 255, 0.35)" }}>
+        <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: "0 0 0.4rem" }}>
+          Connect your broker account
+        </h2>
+        <p style={{ color: "#b7c5dd", fontSize: "0.9rem", lineHeight: 1.6, margin: 0 }}>
+          GuvFX requires an MT5 broker account. Your credentials are encrypted, and setup and validation
+          happen automatically once you submit them below. Use a demo account during Trusted Beta.
+        </p>
+      </Card>
+    );
+  }
+
+  // Runtime ready → hand off to strategy selection.
+  if (stage === "select_strategy") {
+    return (
+      <Card style={{ borderColor: "rgba(34, 197, 94, 0.35)" }}>
+        <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: "0 0 0.4rem" }}>
+          Your dedicated runtime is ready
+        </h2>
+        <p style={{ color: "#86efac", fontSize: "0.9rem", lineHeight: 1.6, margin: "0 0 1rem" }}>
+          Your trading terminal is up. Choose a strategy to continue.
+        </p>
+        <Button type="button" onClick={() => router.push("/strategies/marketplace")}>
+          Choose a strategy
+        </Button>
+      </Card>
+    );
+  }
+
+  // stage === "provisioning": a broker account exists but its runtime is not ready yet. Provisioning only
+  // STARTS when the broker credentials are submitted — if it hasn't started (or it failed), guide the user
+  // to (re-)enter them in the form below rather than promising automatic setup that won't fire.
+  const phase = lifecycle?.phase;
+  if (!phase || phase === "account_received" || phase === "connection_failed") {
+    const failed = phase === "connection_failed";
+    return (
+      <Card style={{ borderColor: failed ? "rgba(248, 113, 113, 0.35)" : "rgba(74, 179, 255, 0.35)" }}>
+        <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: "0 0 0.4rem" }}>
+          {failed ? "We couldn't complete setup" : "Complete your broker connection"}
+        </h2>
+        <p style={{ color: "#b7c5dd", fontSize: "0.9rem", lineHeight: 1.6, margin: 0 }}>
+          {failed
+            ? "Please re-enter your broker details in the form below to try again."
+            : "Re-enter your broker details in the form below to start setting up your dedicated terminal."}
+        </p>
+      </Card>
+    );
+  }
+
+  // Provisioning is running → compact lifecycle stepper + label/detail (from account-status).
+  if (!lifecycle) return null;
+  const tone = SETUP_PHASE_TONE[phase] ?? "progress";
+  const color = SETUP_TONE_COLOR[tone];
+  return (
+    <Card style={{ borderColor: `${color}59` }}>
+      <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: "0 0 0.6rem" }}>
+        Connecting your broker account
+      </h2>
+
+      {lifecycle.steps && lifecycle.steps.length > 0 && (
+        <ol
+          style={{
+            listStyle: "none",
+            padding: 0,
+            margin: "0 0 0.85rem",
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "0.5rem",
+          }}
+        >
+          {lifecycle.steps.map((s) => {
+            const dotColor =
+              s.status === "failed"
+                ? SETUP_TONE_COLOR.failed
+                : s.status === "done"
+                  ? "#4ade80"
+                  : s.status === "current"
+                    ? SETUP_TONE_COLOR.progress
+                    : "#3a4658";
+            return (
+              <li
+                key={s.key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.4rem",
+                  color: s.status === "pending" ? "#6b7a90" : "#b7c5dd",
+                  fontSize: "0.78rem",
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: dotColor,
+                    display: "inline-block",
+                  }}
+                />
+                {s.label}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+
+      <div
+        role="status"
+        aria-live="polite"
+        style={{
+          border: `1px solid ${color}33`,
+          background: `${color}14`,
+          borderRadius: "0.5rem",
+          padding: "0.85rem",
+        }}
+      >
+        <p style={{ color, fontSize: "0.95rem", fontWeight: 600, margin: "0 0 0.3rem" }}>
+          {lifecycle.label}
+        </p>
+        <p style={{ color: "#b7c5dd", fontSize: "0.85rem", lineHeight: 1.6, margin: 0 }}>
+          {lifecycle.detail}
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 /**
  * Inner accounts content that uses lang from context.
  * Reads lang from LangContext provided by the (app) layout.
@@ -406,6 +606,9 @@ return (
         <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
           {t(lang, "accounts.subtitle")}
         </p>
+
+        {/* Customer Zero Flow Simplification (Option 2): post-onboarding broker-setup lifecycle panel. */}
+        <PostOnboardingSetupPanel />
 
         {error && <Alert type="error">{error}</Alert>}
         {info && <Alert type="info">{info}</Alert>}

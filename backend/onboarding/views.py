@@ -25,7 +25,9 @@ from .services import (
     check_onboarding_permits_execution,
     complete_step,
     create_email_verification_token,
+    finalize_onboarding,
     get_or_create_onboarding_state,
+    resolve_setup_stage,
     setup_2fa,
     track_broker_referral,
     verify_2fa,
@@ -256,6 +258,35 @@ class AccountStatusView(APIView):
         if acct is None:
             return Response({"detail": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         return Response({"ok": True, **build_account_status(acct)})
+
+
+class OnboardingCompleteView(APIView):
+    """POST /api/onboarding/complete/ — finalize onboarding (idempotent).
+
+    The 'finish setup' action the final onboarding screen calls once the minimum required steps
+    (email + plan + risk) are done. Broker connection and strategy assignment are POST-onboarding platform
+    setup, not prerequisites here. Returns the onboarding state PLUS the resolved next setup stage/route so
+    the UI can hand off directly into platform setup.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        state = finalize_onboarding(request.user, request=request)
+        data = OnboardingStateSerializer(state).data
+        return Response({**data, "setup": resolve_setup_stage(request.user)})
+
+
+class SetupStatusView(APIView):
+    """GET /api/onboarding/setup-status/ — the intelligent setup router.
+
+    Returns the customer's current post-onboarding setup stage and the route that resumes it (see
+    ``services.resolve_setup_stage``): onboarding -> connect_broker -> provisioning -> select_strategy ->
+    enable_trading -> complete. Onboarding completion and platform-setup completion stay separate.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(resolve_setup_stage(request.user))
 
 
 class BetaMarketplaceView(APIView):

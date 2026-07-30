@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
+import { Button } from "@/components/ui/Button";
 import type { OnboardingState } from "@/types/onboarding";
 import { ONBOARDING_STEPS, findCurrentStepIndex } from "@/types/onboarding";
 import { OnboardingProgress } from "./OnboardingProgress";
@@ -10,10 +11,10 @@ import { EmailVerificationStep } from "./steps/EmailVerificationStep";
 import { TwoFactorStep } from "./steps/TwoFactorStep";
 import { RiskAcceptanceStep } from "./steps/RiskAcceptanceStep";
 import { PlanSelectionStep } from "./steps/PlanSelectionStep";
-import { BrokerStep } from "./steps/BrokerStep";
-import { AccountConnectionStep } from "./steps/AccountConnectionStep";
-import { StrategyAssignmentStep } from "./steps/StrategyAssignmentStep";
-import { ReadinessStep } from "./steps/ReadinessStep";
+
+// Customer Zero Flow Simplification (Option 2): the post-onboarding setup router response
+// (GET /api/onboarding/setup-status/ and the `setup` block returned by POST /api/onboarding/complete/).
+type SetupStatus = { stage: string; next_route: string };
 
 // ─────────────────────────────────────────────────────────────────────
 // Glass card style (matches existing GuvFX pattern)
@@ -38,6 +39,7 @@ export function OnboardingShell() {
   const [state, setState] = useState<OnboardingState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [completing, setCompleting] = useState(false);
 
   const fetchState = useCallback(async () => {
     setLoading(true);
@@ -46,9 +48,16 @@ export function OnboardingShell() {
       const data = await apiFetch<OnboardingState>("/api/onboarding/state/", {});
       setState(data);
 
-      // Completed users → redirect to dashboard
+      // Completed users → resume the next incomplete platform-setup stage. /onboarding acts as an
+      // intelligent setup router: ask the backend where this customer should be and go there. On any
+      // failure, fall back to the dashboard.
       if (data.onboarding_completed) {
-        router.replace("/dashboard");
+        try {
+          const setup = await apiFetch<SetupStatus>("/api/onboarding/setup-status/");
+          router.replace(setup.next_route);
+        } catch {
+          router.replace("/dashboard");
+        }
         return;
       }
     } catch (err: unknown) {
@@ -65,6 +74,32 @@ export function OnboardingShell() {
   const handleStepComplete = useCallback(() => {
     fetchState();
   }, [fetchState]);
+
+  // Explicit "finish setup" hand-off for a customer whose required steps are already done but whose
+  // onboarding_completed is still false (e.g. Customer Zero). Finalizes onboarding (idempotent) then hands
+  // off into the resolved next platform-setup stage.
+  const handleComplete = useCallback(async () => {
+    setCompleting(true);
+    try {
+      const res = await apiFetch<OnboardingState & { setup?: SetupStatus }>(
+        "/api/onboarding/complete/",
+        { method: "POST" },
+      );
+      // Only hand off once onboarding actually completed. If a required step is still missing, the backend
+      // won't complete it and setup.stage stays "onboarding" — do NOT follow next_route to /onboarding
+      // (that would loop). Re-fetch state and surface the remaining step instead.
+      if (res.onboarding_completed && res.setup && res.setup.stage !== "onboarding") {
+        router.replace(res.setup.next_route);
+        return;
+      }
+      setCompleting(false);
+      setError("Please finish the remaining setup steps before continuing.");
+      fetchState();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to complete onboarding.");
+      setCompleting(false);
+    }
+  }, [router, fetchState]);
 
   // ── Loading ──
   if (loading && !state) {
@@ -92,11 +127,12 @@ export function OnboardingShell() {
 
   const currentStepIndex = findCurrentStepIndex(state);
 
-  // All steps complete but onboarding_completed not yet set — show readiness
+  // All wizard steps complete but onboarding_completed not yet set — show the completion hand-off panel
   const showReadiness = currentStepIndex === -1;
   const currentStep = showReadiness ? null : ONBOARDING_STEPS[currentStepIndex];
-  const stepNumber = currentStep ? currentStep.stepNumber : 5;
-  const totalSteps = 5;
+  // Steps: register = 1, plan = 2, profile = 3.
+  const totalSteps = 3;
+  const stepNumber = currentStep ? currentStep.stepNumber : totalSteps;
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
@@ -155,18 +191,19 @@ export function OnboardingShell() {
               )}
             </>
           )}
-          {currentStep?.componentKey === "broker" && (
-            <>
-              <BrokerStep />
-              <div style={{ marginTop: "1.25rem" }}>
-                <AccountConnectionStep state={state} onComplete={handleStepComplete} />
-              </div>
-            </>
+          {showReadiness && !state.onboarding_completed && (
+            <div>
+              <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
+                You&apos;re all set
+              </h2>
+              <p style={{ color: "#b7c5dd", fontSize: "0.9rem", lineHeight: 1.6, marginBottom: "1.25rem" }}>
+                Your account is ready — let&apos;s connect your broker so you can start trading.
+              </p>
+              <Button onClick={handleComplete} disabled={completing}>
+                {completing ? "Finishing…" : "Connect your broker"}
+              </Button>
+            </div>
           )}
-          {currentStep?.componentKey === "get_started" && !state.strategy_assigned && (
-            <StrategyAssignmentStep state={state} onComplete={handleStepComplete} />
-          )}
-          {showReadiness && <ReadinessStep />}
         </div>
       </div>
     </div>
