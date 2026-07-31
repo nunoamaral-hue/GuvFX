@@ -1887,3 +1887,50 @@ class WinSwUninstallTests(SimpleTestCase):
         """The pywin32 'service.py remove' branch targets the retired host and must not survive the switch."""
         code = _code("uninstall.ps1")
         self.assertNotIn("service.py", code)
+
+
+class ApplyGoldenAclOnlyModeTests(SimpleTestCase):
+    """PROMOTION: -ApplyGoldenAclOnly re-applies the golden ACL to a freshly-promoted tree WITHOUT a full
+    four-password -Apply, mirroring the existing scoped modes (-GrantTaskAccessOnly / -EnableTasksOnly /
+    -StageLauncherOnly). Admin-only, credential-free, golden-validated first, idempotent, read-back-verified."""
+
+    def setUp(self):
+        self.code = _code("install_pool.ps1")
+        self.raw = _read("install_pool.ps1")
+        # the mode's block, isolated via its unique Step banner (raw, so comment anchors survive)
+        self.block = self.raw.split("APPLY GOLDEN ACL ONLY:")[1].split("# -- 2. Identities")[0]
+
+    def test_switch_param_exists(self):
+        self.assertIn("[switch]$ApplyGoldenAclOnly", self.code)
+
+    def test_is_a_standalone_mode_excluding_every_other_mode(self):
+        guard = [ln for ln in self.code.splitlines() if "ApplyGoldenAclOnly is a standalone mode" in ln]
+        self.assertEqual(len(guard), 1, "exactly one standalone-mode refusal expected")
+        for other in ("-Apply", "-VerifyOnly", "-ValidateGoldenOnly",
+                      "-GrantTaskAccessOnly", "-EnableTasksOnly", "-StageLauncherOnly"):
+            self.assertIn(other, guard[0], other)
+
+    def test_golden_validated_first_not_in_credential_free_skip_list(self):
+        # credential-free task modes skip RULE-10 golden validation; -ApplyGoldenAclOnly operates ON the golden,
+        # so it must NOT be added to that skip guard (the golden must be validated before it is ACL'd).
+        skip = [ln for ln in self.code.splitlines()
+                if "if ($GrantTaskAccessOnly -or $EnableTasksOnly -or $StageLauncherOnly)" in ln]
+        self.assertEqual(len(skip), 1)
+        self.assertNotIn("ApplyGoldenAclOnly", skip[0])
+
+    def test_applies_the_complete_golden_acl(self):
+        self.assertIn("/inheritance:r", self.block)
+        self.assertIn("S-1-5-32-544:(OI)(CI)F", self.block)    # Administrators Full
+        self.assertIn("S-1-5-18:(OI)(CI)F", self.block)         # SYSTEM Full
+        self.assertIn("(OI)(CI)RX", self.block)                 # slots + service RX
+        self.assertIn("Get-GuvfxServiceSidValue", self.block)   # the service SID is granted RX
+
+    def test_credential_free_no_provisioning(self):
+        self.assertNotIn("Read-Host", self.block)               # no password prompt
+        self.assertNotIn("New-LocalUser", self.block)           # no identity creation
+        self.assertNotIn("Register-ScheduledTask", self.block)  # no task registration
+
+    def test_read_back_verified_by_rights_bits(self):
+        self.assertIn("AreAccessRulesProtected", self.block)    # inheritance actually broken
+        self.assertIn("FileSystemRights", self.block)           # write-class check by rights bits, not substring
+        self.assertIn("Get-GuvfxCount", self.block)             # an ABSENT slot ACE reads 0, not 1
