@@ -1,7 +1,11 @@
 # Production Regression — Orphaned PLANNED Plan Concurrency Leak
 
-**Independent workstream** (not Customer Zero / Phase A/B / Golden / Beta). Engineering implementation
-complete on branch `fix/orphaned-planned-plan-reclaim`. **NOT deployed. Production untouched.**
+**Independent workstream** (not Customer Zero / Phase A/B / Golden / Beta).
+**STATUS: RESOLVED 2026-07-31** — fix (PR #247 `04c6656`) deployed to prod (backend `d5461b63`, listener
+`731528ab`); the 10 orphans reclaimed `PLANNED→VOIDED` (`count_active` 10→0); recovery **live-proven** by
+signal 165 (plan 145 PROMOTED → MT5 orders 230672–230674 → Trades 419–421 → breakeven). Full post-incident
+review: **`docs/PIR_ORPHANED_PLANNED_PLAN_CONCURRENCY_LEAK.md`**. The design/implementation detail below is
+retained as the engineering record.
 
 ## Root cause (accepted programme fact)
 `count_active` counts `SignalExecutionPlan`s in status `PLANNED` only (`execution/models.py:809-813`); the
