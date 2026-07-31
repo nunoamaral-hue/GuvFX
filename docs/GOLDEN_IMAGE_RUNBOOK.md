@@ -86,6 +86,16 @@ version, build number, archive location + the archive's SHA-256. Git holds the *
 *bytes*. **Licensing:** internal DR archival of your own licensed install (no redistribution) is normally fine —
 confirm against the IS6/MetaQuotes licence before archiving.
 
+**Manual archive handoff — approved fallback (adopted 2026-07-30).** When the archive destination (the permanent
+NAS/DR store) requires credentials that are **intentionally not provisioned on the production host** (least
+privilege), do **NOT** provision NAS credentials onto the host and do **NOT** substitute another archive
+location. Instead: (1) create the archive + a metadata sidecar in a **transient** host handoff dir
+(`C:\GuvFX\golden\_handoff\`); (2) record the archive SHA-256, size, MT5 build, canonical digest, manifest
+version, file count; (3) hand the archive + metadata to the Sponsor, who places them into the permanent NAS/DR
+location **manually**; (4) the handoff dir is transient (not an archive location) and is cleared after the
+Sponsor confirms the NAS copy. The NAS/DR store remains the sole authoritative archive location; the host copy
+is a delivery artefact only.
+
 ---
 
 ## Procedure 1 — Golden Creation  *(Sponsor executes steps 1–3 once)*
