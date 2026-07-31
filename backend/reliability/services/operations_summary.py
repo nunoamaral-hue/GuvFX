@@ -538,6 +538,45 @@ def _signal_execution_block(now):
         return {"status": "UNKNOWN", "error": "unavailable"}
 
 
+def _concurrency_block(now):
+    """Per-account/symbol PLANNED concurrency-gate utilisation + the orphaned-PLANNED backlog — surfaces
+    the class of defect that silently saturates the gate and blocks trading, BEFORE it does. ``gates``
+    gives the live PLANNED count vs ``PLAN_MAX_CONCURRENT_GROUPS`` per (account, symbol); ``orphaned_planned``
+    counts PLANNED plans older than the reclaim threshold (i.e. un-promotable leak candidates) with an age
+    distribution. Read-only. Complements ``signal_execution`` (which carries the PromotionRejected reasons)."""
+    from datetime import timedelta
+    try:
+        from django.db.models import Count
+        from execution.execution_health import ORPHANED_PLANNED_RECLAIM_SECONDS
+        from execution.models import PLAN_MAX_CONCURRENT_GROUPS, SignalExecutionPlan
+
+        cap = PLAN_MAX_CONCURRENT_GROUPS
+        gates = []
+        for g in (SignalExecutionPlan.objects.filter(status="PLANNED")
+                  .values("account_id", "symbol").annotate(n=Count("id")).order_by("-n", "account_id", "symbol")):
+            n = g["n"]
+            gates.append({"account_id": g["account_id"], "symbol": g["symbol"], "planned": n, "cap": cap,
+                          "utilisation_pct": round(100.0 * n / cap, 1) if cap else None,
+                          "saturated": bool(cap and n >= cap)})
+        reclaim_cutoff = now - timedelta(seconds=ORPHANED_PLANNED_RECLAIM_SECONDS)
+        # Age distribution via bounded DB COUNTs — never iterate the (potentially large, pre-reclaim) backlog
+        # in Python on every status-page render.
+        base = SignalExecutionPlan.objects.filter(status="PLANNED", created_at__lt=reclaim_cutoff)
+        h1, h6, h24 = now - timedelta(hours=1), now - timedelta(hours=6), now - timedelta(hours=24)
+        orphan_total = base.count()
+        buckets = {
+            "lt_1h": base.filter(created_at__gte=h1).count(),
+            "1h_6h": base.filter(created_at__lt=h1, created_at__gte=h6).count(),
+            "6h_24h": base.filter(created_at__lt=h6, created_at__gte=h24).count(),
+            "gte_24h": base.filter(created_at__lt=h24).count(),
+        }
+        return {"cap": cap, "gates": gates, "orphaned_planned": orphan_total,
+                "orphan_age_buckets": buckets, "reclaim_threshold_s": ORPHANED_PLANNED_RECLAIM_SECONDS,
+                "any_saturated": any(x["saturated"] for x in gates)}
+    except Exception:  # pragma: no cover - read-only; the status page must never 500 on this block
+        return {"status": "UNKNOWN", "error": "unavailable"}
+
+
 def build_operations_summary() -> dict:
     """The full read-only operational summary for the status page (and alert enrichment)."""
     from reliability.models import ComponentHealth, Heartbeat, AlertEvent
@@ -642,6 +681,9 @@ def build_operations_summary() -> dict:
     if (tp_protection.get("sla") or {}).get("status") == "WARNING":
         states.append("WARNING")
     signal_execution = _signal_execution_block(now)
+    concurrency = _concurrency_block(now)
+    if concurrency.get("any_saturated"):
+        states.append("WARNING")
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -659,6 +701,7 @@ def build_operations_summary() -> dict:
         "protection_watcher": protection_watcher,
         "tp_protection": tp_protection,
         "signal_execution": signal_execution,
+        "concurrency": concurrency,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},
