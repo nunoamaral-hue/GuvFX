@@ -47,6 +47,93 @@ function Fail([string]$msg) {
     exit 2
 }
 
+function Apply-LiveUpdateContainment {
+    # Variant A LiveUpdate containment. Runs AS the slot identity, BEFORE terminal64 is launched. MT5's
+    # LiveUpdate stages a copy of terminal64.exe into the slot account's ROAMING profile
+    # (%APPDATA%\MetaQuotes\WebInstall and %APPDATA%\MetaQuotes\Terminal\<hash>\liveupdate) and relaunches
+    # from there - an executable OUTSIDE the slot, which breaks is_beneath VERIFY and the exact-path STOP
+    # task (both proven on the host: without this, the relocated exe survives the STOP task). This denies the
+    # slot identity WRITE on its OWN update-staging so MT5 cannot stage a relocation and always runs from the
+    # canonical <slot>\terminal64.exe. It PRESERVES executable-path containment (never weakens VERIFY or STOP,
+    # never broadens process matching); it adds NO new privilege (the slot owns its own profile, so the
+    # wrapper can set this DACL with no admin/SeRestorePrivilege); it is idempotent and self-cleaning (each
+    # launch purges any stale staged exe and re-establishes the Deny, so generation N+1 begins clean); and it
+    # is FAIL-CLOSED - if containment cannot be proven in force, terminal64 is NOT launched, because a
+    # relocated runtime would be unstoppable by the exact-path STOP task.
+    $roaming = $env:APPDATA
+    if ([string]::IsNullOrWhiteSpace($roaming)) {
+        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            Fail "LiveUpdate containment: cannot resolve the slot roaming profile (APPDATA and USERPROFILE both unset)"
+        }
+        $roaming = Join-Path $env:USERPROFILE 'AppData\Roaming'
+    }
+    $mqRoot = Join-Path $roaming 'MetaQuotes'
+    # The wrapper runs AS the slot identity, so the CURRENT token's user IS the slot SID. Deny that SID by
+    # value - no NTAccount translation, which hangs on this workgroup host (same reason the launch-grant path
+    # reads SIDs, not names).
+    $slotSid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User
+    # Update-staging paths. WebInstall (download, fixed name) is the LOAD-BEARING chokepoint: it is denied
+    # unconditionally, and host proof (2026-07-31) showed denying it alone stops MT5 obtaining the update, so
+    # nothing is ever staged to relocate. The per-hash Terminal\<hash>\liveupdate Denies are best-effort
+    # defence-in-depth for hashes that ALREADY exist at launch (a fresh portable slot has none). Only the
+    # slot's OWN roaming staging is touched - never the slot dir, never the operator estate, never another
+    # identity's profile.
+    $targets = New-Object System.Collections.Generic.List[string]
+    $targets.Add((Join-Path $mqRoot 'WebInstall'))
+    $terminalRoot = Join-Path $mqRoot 'Terminal'
+    if (Test-Path -LiteralPath $terminalRoot) {
+        foreach ($d in (Get-ChildItem -LiteralPath $terminalRoot -Directory -ErrorAction SilentlyContinue)) {
+            $targets.Add((Join-Path $d.FullName 'liveupdate'))
+        }
+    }
+    $writeRights = [System.Security.AccessControl.FileSystemRights]::Write
+    $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($t in $targets) {
+        # A concrete target for the Deny at first launch (hash-independent for the fixed WebInstall path).
+        if (-not (Test-Path -LiteralPath $t)) {
+            try { New-Item -ItemType Directory -Force -Path $t | Out-Null }
+            catch { Fail ("LiveUpdate containment: cannot create staging target " + $t + ": " + $_.Exception.Message) }
+        }
+        # Deterministic cleanup: empty the staging dir of ANY payload a prior occupancy left (a relocated
+        # terminal64.exe and any downloaded update parts), so generation N+1 begins genuinely clean. These
+        # dirs hold ONLY MT5 update staging, so emptying them removes nothing the runtime needs.
+        try {
+            Get-ChildItem -LiteralPath $t -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction Stop
+        }
+        catch { Fail ("LiveUpdate containment: cannot purge stale staging under " + $t + ": " + $_.Exception.Message) }
+        # Idempotent Deny(Write): drop any prior identical Deny we added, then add exactly one inheritable
+        # Deny. Repeated launches never accumulate ACEs. The slot's inherited FullControl Allow is untouched -
+        # this only ADDS a Deny, which takes precedence over Allow for the Write bits.
+        try {
+            $acl = Get-Acl -LiteralPath $t
+            $denyRule = New-Object System.Security.AccessControl.FileSystemAccessRule($slotSid, $writeRights, $inherit, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Deny)
+            [void]$acl.RemoveAccessRule($denyRule)
+            [void]$acl.AddAccessRule($denyRule)
+            Set-Acl -LiteralPath $t -AclObject $acl
+        }
+        catch { Fail ("LiveUpdate containment: cannot apply Deny on " + $t + ": " + $_.Exception.Message) }
+        # POSITIVE CONTROL (RULE 11): read the DACL back and assert an explicit slot-SID Deny that carries
+        # every Write bit is now in force. A grant that was requested but not verified is not a control.
+        # Enumerate BY SID (GetAccessRules with SecurityIdentifier), NEVER the default .Access - .Access
+        # name-translates every ACE to DOMAIN\name, so IdentityReference.Value would be 'HOST\guvfx_b_slot1'
+        # and could never equal the SID string $slotSid.Value, leaving $verified permanently false and failing
+        # every launch closed. This mirrors install_pool.ps1's SID-typed read-back convention.
+        $verified = $false
+        foreach ($rule in (Get-Acl -LiteralPath $t).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+            if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny -and
+                (-not $rule.IsInherited) -and
+                $rule.IdentityReference.Value -eq $slotSid.Value -and
+                (([int]$rule.FileSystemRights -band [int]$writeRights) -eq [int]$writeRights)) {
+                $verified = $true
+            }
+        }
+        if (-not $verified) {
+            Fail ("LiveUpdate containment: read-back could not confirm the Deny is in force on " + $t)
+        }
+    }
+    Write-Host ("slot_launch: LiveUpdate containment in force (Deny-write for the slot identity on " + $targets.Count + " staging path(s))")
+}
+
 # -- 1. Validate arguments (defense in depth; the launch gate and approved-task digest also bind these). ----
 if ([string]::IsNullOrWhiteSpace($TerminalPath)) { Fail "TerminalPath is empty" }
 $full = [System.IO.Path]::GetFullPath($TerminalPath)
@@ -314,6 +401,11 @@ try {
 # -- 3. Interop self-test (positive control) BEFORE launching terminal64. -----------------------------------
 $selfErr = [GuvfxLaunchGrant]::SelfTest()
 if ($selfErr) { Fail $selfErr }
+
+# -- 3b. LiveUpdate containment (Variant A) BEFORE launch: deny the slot identity write on its OWN roaming
+#        MT5 update-staging so MT5 cannot relocate terminal64 outside the slot. Fail-closed: Apply-...
+#        calls Fail (exit 2, no launch) if the Deny cannot be established and read back in force.
+Apply-LiveUpdateContainment
 
 # -- 4. Launch suspended, grant, verify, resume -- or terminate + fail. -------------------------------------
 $rc = [GuvfxLaunchGrant]::LaunchAndGrant($full, $WorkingDirectory, $GranteeSid, $ConfigPathToPass)
