@@ -6,6 +6,17 @@
 
 ## Execution workstream log
 
+- **2026-07-31 — LiveUpdate containment (Variant A, ADR-0022): SHIPPED + host-validated. 🟢**
+  MT5 LiveUpdate relocated `terminal64.exe` into the slot's roaming profile and relaunched outside the slot,
+  breaking `is_beneath` VERIFY and the exact-path STOP task (both host-proven). The launch wrapper
+  (`slot_launch.ps1`, runs as the slot identity) now denies that identity WRITE on its **own**
+  `%APPDATA%\MetaQuotes` update-staging **before** launching, so MT5 cannot relocate and always runs from the
+  canonical slot exe. Preserves VERIFY/STOP unchanged; no new privilege; idempotent; SID read-back; fail-closed.
+  A reversible host probe proved MT5 fails-closed (continues on the in-slot build) when staging is denied; the
+  deployed wrapper (sha256 `d870dcf8`) then made the lifecycle reach ABSENT for a would-relocate build.
+  **Merged PR #249 (main `21b4e08`); 30 focused tests + `make check` green; RULE 9 parse-gate passed; staged to
+  host; production untouched.** This removes the execution-plane prerequisite that gated Phase B.
+
 - **2026-07-25 — B3P-2 on-demand task model (ADR 0017): the task-enablement blocker is RESOLVED. 🟢 decided + implemented + reviewed, 🟠 host apply + final lifecycle next.**
   **Decision (Nuno):** the eight beta tasks are **ENABLED but TRIGGERLESS** at rest — on-demand execution
   capabilities, not scheduled jobs. No per-invocation enable/disable; no task-modification right for the service.

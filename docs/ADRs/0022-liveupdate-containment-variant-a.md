@@ -97,4 +97,23 @@ generation), and `uninstall.ps1` removes the Deny at **decommission** (resolving
 Adversarial review (2026-07-31, multi-lens) found and fixed a would-brick-every-launch defect (read-back had
 used `.Access`, which name-translates to `HOST\name` and never equals the SID string) plus three lower-severity
 improvements (whole-staging purge; honest WebInstall-chokepoint documentation; decommission profile resolved by
-SID). Host lifecycle validation evidence is recorded separately in the implementation handoff.
+SID).
+
+## Host validation (2026-07-31, deployed wrapper sha256 d870dcf8)
+
+The wrapper passed the Windows PowerShell 5.1 `Parser::ParseFile` gate (0 errors, RULE 9) and was staged via
+`install_pool.ps1 -StageLauncherOnly` (hash pin verified). On disposable slot 1 (build 6036 — the build that
+**relocated** in the reversible probe's negative control), driven through the deployed lifecycle tasks:
+
+- **CONTAINMENT applied by the wrapper at START** — the WebInstall Deny(Write) was absent before launch and
+  present after (the wrapper added it), read back by SID.
+- **START → contained, not relocated** — pid 11988 image = `C:\GuvFX\beta\slots\1\terminal\terminal64.exe`;
+  no relocated exe anywhere under `%APPDATA%\MetaQuotes`.
+- **VERIFY = `present_valid`** (real `observe_process` primitive); persisted 2.2 min.
+- **STOP (lifecycle task) → ABSENT** — 0 slot processes, `observe_process` = `absent`; **no manual kill**.
+- **Production terminals (pids 4336/8748) untouched** throughout.
+
+MATERIALISE, TOMBSTONE, RELEASE and SLOT REUSE are **unchanged by this change** (Variant A adds a step at
+START only; it does not alter the copy/move/generation ops) and were host-proven end-to-end in prior packets
+(REL-LC slot-1 native lifecycle; A16-7; the RELEASE-op host proof). They were **not** re-driven this session to
+avoid perturbing the live slot store and the running agent service.
