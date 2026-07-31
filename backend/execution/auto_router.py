@@ -338,9 +338,38 @@ def _plan_and_promote_one(approval, target, actor, signal_ts, promote_fn, label)
         code = getattr(exc, "code", None) or type(exc).__name__
         logger.info("auto_router: %s path rejected (%s) acct=%s", label, code, acct_id)
         _record_deferral(approval, f"{label}_rejected:{code}")
+        # PART B (concurrency-gate leak fix): a PromotionRejected leaves the just-created plan in PLANNED,
+        # and ``count_active`` counts PLANNED-only — so the slot leaks forever and eventually blocks every
+        # signal (concurrent_limit_exceeded). Move it to a terminal state at the source. Guard on
+        # PromotionRejected ONLY (W2): PlanRejected is raised INSIDE plan_demo_execution, before ``plan`` is
+        # bound / before a PLANNED row exists (HELD/VOIDED already returned early at :329), so ``plan`` may
+        # be unbound on that branch.
+        if isinstance(exc, PromotionRejected):
+            _void_rejected_plan(plan, code)
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("auto_router: %s path error (%s) acct=%s", label, exc, acct_id)
         _record_deferral(approval, f"{label}_error:{type(exc).__name__}")  # WS-C: no silent swallow
+
+
+def _void_rejected_plan(plan, code) -> None:
+    """PART B: transition a promotion-rejected plan ``PLANNED → VOIDED`` so it stops permanently holding a
+    concurrency slot (``count_active`` counts PLANNED-only). Compare-and-set (a plan promoted on a
+    concurrent path matches zero rows → untouched); creates NO order/job; best-effort audit; idempotent.
+    Fail-OPEN — a void/audit failure must never change routing (the deferral above is already durable)."""
+    try:
+        from execution.models import PlanAuditEvent
+        updated = SignalExecutionPlan.objects.filter(
+            id=plan.id, status=SignalExecutionPlan.Status.PLANNED
+        ).update(status=SignalExecutionPlan.Status.VOIDED,
+                 hold_reason=(f"promotion_rejected:{code}")[:64])
+        if updated:
+            PlanAuditEvent.objects.create(
+                event=PlanAuditEvent.Event.PLAN_VOIDED, plan_id=plan.id,
+                approval_id=getattr(plan, "approval_id", None),
+                detail={"reason": "promotion_rejected", "code": code})
+    except Exception:  # pragma: no cover - defensive; routing must not change on an audit failure
+        logger.warning("auto_router: failed to void promotion-rejected plan=%s code=%s",
+                       getattr(plan, "id", "?"), code)
 
 
 def _record_deferral(approval, reason: str) -> None:

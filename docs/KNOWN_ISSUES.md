@@ -2,6 +2,21 @@
 
 List active problems with reproduction steps and workarounds.
 
+## ⛔ PRODUCTION REGRESSION — orphaned PLANNED plans block Telegram trading (fix implemented, NOT deployed, 2026-07-31)
+
+- **Symptom:** prod acct #1 (nuno.amaral@live.com) stopped opening Telegram trades. Since 2026-07-31 02:06 UTC
+  every signal is rejected `concurrent_limit_exceeded` (last trade 2026-07-30 19:03). Telegram/parser/bridge/MT5
+  all healthy — the block is upstream at the planning concurrency gate.
+- **Root cause:** `count_active` counts `PLANNED`-only plans; a promotion-rejected (e.g. `daily_drawdown_hit`)
+  plan is left `PLANNED` forever. 10 such orphans saturated the acct #1/XAUUSD gate (cap 10). The drawdown gate
+  behaved correctly; the `PromotionRejected` lifecycle did not. **Not caused by Customer Zero / ADR-0021 / Golden /
+  Beta** (the routing/gate code is unchanged since before 2026-07-15).
+- **Fix (branch `fix/orphaned-planned-plan-reclaim`, engineering-only, NOT deployed):** Part A reclaim command
+  (dry-run default), Part B transition-on-reject (`PLANNED→VOIDED`), Part C gated monitor-chain self-heal, plus
+  saturation alerting + ops metrics. Full detail + deploy plan: `docs/INCIDENT_ORPHANED_PLANNED_PLAN.md`.
+- **Recovery (awaiting Sponsor Production Repair Deployment authorisation):** deploy → dry-run → review →
+  (separate auth) `reclaim_orphaned_planned_plans --account 1 --symbol XAUUSD --apply` → trading resumes.
+
 ## ⛔ BLOCKER — beta golden image drifted from its pinned digest (Phase-4 gate, 2026-07-30)
 
 - **Symptom:** the on-disk beta golden at `C:\GuvFX\golden\newMT5` no longer matches its recorded pin.

@@ -30,7 +30,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from execution.models import ExecutionJob
+from execution.models import ExecutionJob, PLAN_MAX_CONCURRENT_GROUPS, SIGNAL_MAX_AGE_SECONDS
 
 logger = logging.getLogger("guvfx.execution.health")
 
@@ -53,6 +53,27 @@ STUCK_PROMOTION_ALERT_SECONDS = int(os.getenv("STUCK_PROMOTION_ALERT_SECONDS", "
 # that the in-process bridge recovery missed — exposure the platform believes ABSENT. Scan recently-
 # FAILED order jobs this far back and alert if the leg's Trade now exists (bounds the scan).
 FAILED_FILLED_LOOKBACK_SECONDS = int(os.getenv("FAILED_FILLED_LOOKBACK_SECONDS", "3600") or 3600)
+
+# ── Orphaned-PLANNED-plan reclaim (concurrency-gate leak fix) ────────────────────────────────────
+# A promotion-rejected (e.g. daily_drawdown_hit) or otherwise never-promoted plan is left PLANNED
+# forever; ``count_active`` counts PLANNED-only, so each orphan permanently consumes one of
+# ``PLAN_MAX_CONCURRENT_GROUPS`` slots and eventually hard-blocks EVERY new signal. Reclaim = void such
+# a plan (PLANNED→VOIDED, no order) once it is old enough to be un-promotable.
+# W1: the reclaim age MUST exceed SIGNAL_MAX_AGE_SECONDS — promotion re-checks staleness, so a plan older
+# than that can never become an order; voiding it drops nothing. The reclaim function rejects any smaller
+# value (fail loud). Default 900s (15 min) >> 120s staleness.
+ORPHANED_PLANNED_RECLAIM_SECONDS = int(os.getenv("ORPHANED_PLANNED_RECLAIM_SECONDS", "900") or 900)
+# The monitor-chain SELF-HEAL is inert unless enabled — same default-OFF posture as the other mutating
+# monitor-chain behaviours (BREAKEVEN_ENABLED, PROVIDER_COMMANDS_ENABLED). Deploying the fix must NOT
+# auto-reclaim the existing backlog before the operator has reviewed a dry-run; the one-time recovery is
+# the ``reclaim_orphaned_planned_plans`` management command. Part B (transition-on-reject in the
+# auto_router) prevents FUTURE accumulation with NO flag and without touching existing rows.
+ORPHANED_PLANNED_RECLAIM_ENABLED = os.getenv(
+    "ORPHANED_PLANNED_RECLAIM_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+# Proactively WARN when a tradeable account+symbol's PLANNED concurrency gate approaches its cap — so the
+# defect is visible BEFORE it saturates and blocks trading (objective of the monitoring extension).
+CONCURRENCY_SATURATION_ALERT_RATIO = float(
+    os.getenv("CONCURRENCY_SATURATION_ALERT_RATIO", "0.8") or 0.8)
 
 
 def execution_health_enabled() -> bool:
@@ -588,6 +609,157 @@ def detect_protection_watcher_health(now) -> dict:
     return out
 
 
+def reclaim_orphaned_planned_plans(now=None, *, older_than_seconds=None, account_id=None,
+                                   symbol=None, source=None, limit=500, apply=False) -> dict:
+    """Reclaim orphaned PLANNED ``SignalExecutionPlan``s that permanently hold a concurrency slot.
+
+    Root cause context: ``count_active`` counts PLANNED-only, and a promotion-rejected / never-promoted
+    plan is left PLANNED forever — so each orphan permanently consumes one of the
+    ``PLAN_MAX_CONCURRENT_GROUPS`` slots and eventually rejects EVERY new signal (concurrent_limit_exceeded).
+
+    SAFE BY CONSTRUCTION. The only code that turns a plan into a real order (``signal_promotion._promote_plan``
+    → ``_validate``) re-reads ``status == PLANNED`` AND re-checks signal age ≤ ``SIGNAL_MAX_AGE_SECONDS``
+    before creating any job. We only ever void plans OLDER (by ``created_at`` — W5) than
+    ``older_than_seconds``, which MUST exceed ``SIGNAL_MAX_AGE_SECONDS`` (W1, enforced below): such a plan is
+    already un-promotable, so voiding it drops nothing that could execute. The transition is a compare-and-set
+    ``PLANNED → VOIDED`` (race-safe — a plan promoted concurrently matches zero rows and is untouched),
+    idempotent, and creates NO order or job.
+
+    ``apply=False`` (DEFAULT) is a pure DRY-RUN: it lists what WOULD be reclaimed and mutates nothing.
+    Returns a deterministic report dict (``scanned``/``reclaimed``/``apply``/``older_than_seconds``/
+    ``age_buckets``/``candidates``).
+    """
+    from datetime import timedelta
+
+    from execution.models import PlanAuditEvent, PromotionAuditEvent, SignalExecutionPlan
+
+    now = now or timezone.now()
+    threshold = ORPHANED_PLANNED_RECLAIM_SECONDS if older_than_seconds is None else int(older_than_seconds)
+    # W1 — hard floor: the entire safety argument depends on only voiding un-promotable (stale) plans.
+    if threshold <= SIGNAL_MAX_AGE_SECONDS:
+        raise ValueError(
+            f"reclaim threshold {threshold}s must exceed SIGNAL_MAX_AGE_SECONDS ({SIGNAL_MAX_AGE_SECONDS}s): "
+            f"a younger plan may still be within the promotable window")
+    # LOAD-BEARING INVARIANT: created_at is auto_now_add (set at INSERT, after the signal arrived), so
+    # signal_timestamp <= created_at always. A plan with created_at older than a threshold >
+    # SIGNAL_MAX_AGE_SECONDS is therefore necessarily stale (un-promotable). W5 keys on created_at for
+    # liveness even if signal_timestamp is bogus/future-dated.
+    cutoff = now - timedelta(seconds=threshold)  # W5 — created_at basis (never signal_timestamp)
+    qs = SignalExecutionPlan.objects.filter(
+        status=SignalExecutionPlan.Status.PLANNED, created_at__lt=cutoff)
+    if account_id is not None:
+        qs = qs.filter(account_id=account_id)
+    if symbol:
+        qs = qs.filter(symbol=symbol.upper())
+    if source:
+        qs = qs.filter(source=source)
+    plans = list(qs.order_by("id")[:limit])  # deterministic order for a reproducible dry-run report
+
+    reasons = {}  # latest durable PROMOTION_REJECTED code per candidate (one query; for report + audit)
+    if plans:
+        for rpid, detail in (PromotionAuditEvent.objects.filter(
+                plan_id__in=[p.id for p in plans], event="PROMOTION_REJECTED")
+                .order_by("created_at").values_list("plan_id", "detail")):
+            reasons[rpid] = (detail or {}).get("code", "promotion_rejected")  # last (latest) wins
+
+    candidates, buckets = [], {"lt_1h": 0, "1h_6h": 0, "6h_24h": 0, "gte_24h": 0}
+    for p in plans:
+        age_s = int((now - p.created_at).total_seconds())
+        buckets["lt_1h" if age_s < 3600 else "1h_6h" if age_s < 21600
+                else "6h_24h" if age_s < 86400 else "gte_24h"] += 1
+        candidates.append({
+            "plan_id": p.id, "account_id": p.account_id, "symbol": p.symbol, "source": p.source,
+            "direction": p.direction, "message_id": p.message_id,
+            "created_at": p.created_at.isoformat(), "age_seconds": age_s,
+            "prior_reject_reason": reasons.get(p.id),
+        })
+
+    reclaimed = 0
+    if apply:
+        for p in plans:
+            # Compare-and-set: a plan promoted concurrently (→ PROMOTED) matches zero rows → untouched.
+            updated = SignalExecutionPlan.objects.filter(
+                id=p.id, status=SignalExecutionPlan.Status.PLANNED
+            ).update(status=SignalExecutionPlan.Status.VOIDED, hold_reason="orphaned_planned_reclaim")
+            if not updated:
+                continue  # promoted/closed/voided between the read and here — leave it
+            reclaimed += 1
+            try:
+                PlanAuditEvent.objects.create(
+                    event=PlanAuditEvent.Event.PLAN_VOIDED, plan_id=p.id, approval_id=p.approval_id,
+                    detail={"reason": "orphaned_planned_reclaim",
+                            "age_seconds": int((now - p.created_at).total_seconds()),
+                            "prior_reject_reason": reasons.get(p.id), "threshold_seconds": threshold})
+            except Exception:  # pragma: no cover - audit is best-effort; the transition already committed
+                logger.exception("reclaim: PLAN_VOIDED audit failed for plan=%s (transition committed)", p.id)
+        if reclaimed:
+            logger.warning("execution_health: reclaimed %s orphaned PLANNED plans (freed concurrency slots) %s",
+                           reclaimed, [p.id for p in plans][:20])
+    return {"scanned": len(plans), "reclaimed": reclaimed, "apply": apply,
+            "older_than_seconds": threshold, "age_buckets": buckets, "candidates": candidates}
+
+
+def detect_saturated_concurrency_gates(now) -> dict:
+    """Proactively WARN when a tradeable account+symbol's PLANNED concurrency gate approaches its cap —
+    BEFORE it saturates and starts rejecting every signal (``concurrent_limit_exceeded``). One deduped
+    alert per (account, symbol); CRITICAL at the cap, WARN above the ratio; auto-resolves when utilisation
+    falls back below the threshold. ALERT-ONLY — never mutates a plan. Returns
+    ``{"saturation_alerted", "saturation_resolved"}``."""
+    from django.db.models import Count
+
+    from execution.models import SignalExecutionPlan, SignalSourceConfig
+    from reliability.constants import Component
+    from reliability.models import AlertEvent
+
+    result = {"saturation_alerted": 0, "saturation_resolved": 0}
+    tradeable = set(SignalSourceConfig.objects.filter(auto_demo_execution_enabled=True)
+                    .values_list("source", flat=True))
+    warn_at = max(1, int(CONCURRENCY_SATURATION_ALERT_RATIO * PLAN_MAX_CONCURRENT_GROUPS))
+    # Count PLANNED source-AGNOSTICALLY per (account, symbol) — this MUST match the real gate, which is
+    # source-agnostic: ``count_active`` / ``signal_planning.py:242`` count EVERY PLANNED plan for the
+    # (account, symbol), regardless of source. An orphan from a now-disabled source still saturates the gate
+    # and blocks tradeable signals, so it must be counted here or the alert under-reports the true block.
+    # We still gate the whole check on the system having at least one tradeable source (else nothing trades,
+    # so a saturated gate cannot block anything). One grouped query, no per-account loop.
+    saturated = {}
+    if tradeable:
+        for g in (SignalExecutionPlan.objects.filter(status=SignalExecutionPlan.Status.PLANNED)
+                  .values("account_id", "symbol").annotate(n=Count("id")).filter(n__gte=warn_at)):
+            key = f"concurrency_saturation:{g['account_id']}:{g['symbol']}"
+            saturated[key] = (g["account_id"], g["symbol"], g["n"])
+    for key, (acct, sym, n) in saturated.items():
+        if AlertEvent.objects.filter(dedup_key=key, status=AlertEvent.Status.OPEN).exists():
+            continue
+        at_cap = n >= PLAN_MAX_CONCURRENT_GROUPS
+        try:
+            AlertEvent.objects.create(
+                severity=AlertEvent.Severity.CRITICAL if at_cap else AlertEvent.Severity.WARN,
+                component=Component.EXECUTION_PIPELINE, trading_account_id=acct,
+                title=(f"Concurrency gate {'SATURATED' if at_cap else 'near cap'} — acct {acct} {sym} "
+                       f"({n}/{PLAN_MAX_CONCURRENT_GROUPS} PLANNED)"),
+                body=(f"{n} PLANNED plans hold the concurrency gate for account {acct} {sym} (cap "
+                      f"{PLAN_MAX_CONCURRENT_GROUPS}). AT the cap every new signal is rejected "
+                      f"concurrent_limit_exceeded. Orphaned PLANNED plans from rejected/never-promoted "
+                      f"signals leak here — run reclaim_orphaned_planned_plans."),
+                dedup_key=key, status=AlertEvent.Status.OPEN,
+                detail={"account_id": acct, "symbol": sym, "planned_count": n,
+                        "cap": PLAN_MAX_CONCURRENT_GROUPS})
+            result["saturation_alerted"] += 1
+            logger.error("execution_health: CONCURRENCY-SATURATION alert acct=%s %s planned=%s/%s",
+                         acct, sym, n, PLAN_MAX_CONCURRENT_GROUPS)
+        except Exception:  # pragma: no cover - alerting is best-effort
+            logger.exception("execution_health: failed to alert concurrency saturation acct=%s %s", acct, sym)
+    # RESOLVE — close any OPEN saturation alert whose group has dropped below the threshold.
+    for al in AlertEvent.objects.filter(dedup_key__startswith="concurrency_saturation:",
+                                        status=AlertEvent.Status.OPEN):
+        if al.dedup_key not in saturated:
+            al.status = AlertEvent.Status.RESOLVED
+            al.resolved_at = now
+            al.save(update_fields=["status", "resolved_at"])
+            result["saturation_resolved"] += 1
+    return result
+
+
 def sweep_execution_health(*, limit: int = 500) -> dict:
     """One pass: reclaim dead SYNC/MODIFY orphans + alert on stuck-PENDING orders and tradeable
     signals that never reached a plan or a durable reason. Returns a counts dict."""
@@ -608,7 +780,23 @@ def sweep_execution_health(*, limit: int = 500) -> dict:
         "unplanned_resolved": 0,
         "stuck_promotion_alerted": 0,
         "stuck_promotion_resolved": 0,
+        "planned_reclaimed": 0,
+        "planned_reclaim_scanned": 0,
+        "saturation_alerted": 0,
+        "saturation_resolved": 0,
     }
+    # Part C — self-heal orphaned PLANNED plans that permanently hold a concurrency slot. MUTATING, so
+    # inert unless ORPHANED_PLANNED_RECLAIM_ENABLED (same default-OFF posture as the other mutating
+    # monitor-chain behaviours) — deploying the fix must NOT auto-reclaim the existing backlog before the
+    # operator has reviewed a dry-run (that one-time recovery is the management command). Own try/except so
+    # a config/validation error never blocks the rest of the sweep.
+    if ORPHANED_PLANNED_RECLAIM_ENABLED:
+        try:
+            pr = reclaim_orphaned_planned_plans(now, apply=True, limit=limit)
+            result["planned_reclaimed"] = pr["reclaimed"]
+            result["planned_reclaim_scanned"] = pr["scanned"]
+        except Exception:  # pragma: no cover - defensive; self-heal must not break the sweep
+            logger.exception("execution_health: orphaned-PLANNED reclaim failed")
     # Reconcile orphaned RUNNING place-orders against the broker (safe: never re-runs an order). Its
     # own try/except keeps a failure here from blocking the alert-only detector below.
     try:
@@ -627,4 +815,8 @@ def sweep_execution_health(*, limit: int = 500) -> dict:
         result.update(detect_protection_watcher_health(now))
     except Exception:  # pragma: no cover - defensive; alert-only must not break the sweep
         logger.exception("execution_health: protection-watcher health check failed")
+    try:
+        result.update(detect_saturated_concurrency_gates(now))
+    except Exception:  # pragma: no cover - defensive; alert-only must not break the sweep
+        logger.exception("execution_health: concurrency-saturation detector failed")
     return result
