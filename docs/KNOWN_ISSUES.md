@@ -2,6 +2,36 @@
 
 List active problems with reproduction steps and workarounds.
 
+## ⛔ BLOCKER — beta golden image drifted from its pinned digest (Phase-4 gate, 2026-07-30)
+
+- **Symptom:** the on-disk beta golden at `C:\GuvFX\golden\newMT5` no longer matches its recorded pin.
+  Authoritative tree digest (from `install_pool.ps1 -VerifyOnly`, and independently reproduced read-only) =
+  `8a6480f40ce8340b3d65e6a106a21ab0d4bce0a18d9eb52ef75d9515a51c679b`; pinned
+  `BETA_AGENT_GOLDEN_DIGEST` (`deploy/beta-agent/config.example.json:16`) =
+  `3a7fa6638e9eb9a0989edcaaff5b0c9ec93b15a6c62b9ee9b5f5f420d6313f10`. The installer prints:
+  *"a difference means the image changed — STOP."*
+- **Root cause (mtime evidence):** `metatester64.exe` and `MetaEditor64.exe` were modified **2026-07-27 11:54**
+  (all other 582 files dated 07-23 staging). Two binaries changed in place; file count still 584, so structure
+  and cleanliness (no broker creds/history/EA) still pass RULE-10 — only the digest drifted.
+- **Corroborating concern:** a Windows firewall rule registers `C:\GuvFX\golden\newMT5\metatester64.exe` as the
+  live "MetaTrader 5 Strategy Tester Agent" — evidence the golden's binaries have been launched/used, in tension
+  with RULE-10 ("dedicated clean install, never runtime-used"). `terminal64.exe` itself is unchanged.
+- **Impact:** a `MATERIALISE` would fail `source_digest_matches` and be BLOCKED. This gates Beta-Agent Phase 4.
+- **Provenance verdict (2026-07-30, read-only investigation): RE-STAGE REQUIRED — do NOT re-pin.** The golden
+  `terminal64.exe` (pid 5912) was launched **interactively via Explorer** on 2026-07-27 11:48 (no `/portable`,
+  no broker login) and is still running; 6 min later **MT5 LiveUpdate replaced `metatester64.exe` +
+  `MetaEditor64.exe` in place with build 5.0.0.6061** (terminal64 stayed 6036 → mixed-build tree). All three
+  binaries are Authenticode-Valid MetaQuotes (genuine, not tampered), and the golden `metatester64.exe` is the
+  registered live Strategy Tester Agent. So the image is used + shared + auto-updating — its digest is a moving
+  target and cannot be pinned. Credential/history/config cleanliness is intact; dedication/immutability is not.
+- **Remediation (gated host mutation, Red/Sponsor):** sever the golden from runtime/tester use (stop pid 5912,
+  remove the Strategy-Tester-Agent firewall rule), then **re-stage a fresh dedicated never-launched golden** of
+  a single pinned build (decision: 6061 recommended vs 6036), LiveUpdate denied, and re-pin
+  `BETA_AGENT_GOLDEN_DIGEST` to the fresh digest. Full plan in the evidence file.
+- **Evidence:** `evidence/beta-agent-phase3-cert/PHASE3_CERT_2026-07-30.md` +
+  `evidence/beta-agent-phase3-cert/GOLDEN_PROVENANCE_2026-07-30.md`.
+- **Related non-blocking hygiene:** residual pywin32 DLLs — see `docs/OPERATIONAL_EXCEPTIONS.md` (OE-1).
+
 ## ✅ RESOLVED — per-slot tasks are now ENABLED but TRIGGERLESS (on-demand model, ADR 0017, 2026-07-25)
 
 *Was:* the per-slot tasks were registered install-only **Disabled** and nothing enabled them, so the native

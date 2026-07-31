@@ -190,7 +190,7 @@ class GoldenImageTests(SimpleTestCase):
     def test_per_instance_state_is_refused_in_the_golden_image(self):
         """Inheriting one runtime's broker login into every slot is the failure this prevents."""
         source = _read("install_pool.ps1")
-        for leak in ("accounts.dat", "servers.dat", "MQL5\\Logs", "MQL5\\Profiles"):
+        for leak in ("accounts.dat", "MQL5\\Logs", "MQL5\\Profiles"):
             self.assertIn(leak, source, leak)
 
     def test_required_markers_are_asserted(self):
@@ -981,7 +981,6 @@ class GoldenImageValidationTests(SimpleTestCase):
 
     REQUIRED_EVIDENCE = {
         "config\\accounts.dat": "a saved broker account",
-        "config\\servers.dat": "a downloaded broker server list",
         "config\\common.ini": "settings from a previous run",
         "config\\terminal.ini": "settings from a previous run",
         "bases": "market data / trade history",
@@ -995,6 +994,22 @@ class GoldenImageValidationTests(SimpleTestCase):
         code = _code("install_pool.ps1")
         for rel in self.REQUIRED_EVIDENCE:
             self.assertIn(rel, code, f"golden validation does not refuse '{rel}'")
+
+    def test_installer_shipped_servers_dat_is_accepted_not_refused(self):
+        """RULE 10 objective is 'never OPERATIONALLY used'. config\\servers.dat is a PUBLIC broker-server LIST
+        the MT5 installer ships (build 5.0.0.6073+, written before any launch; no login/account/history), so its
+        mere presence must NOT fail a genuine clean install. It must NOT sit in the active dirty-file reject list
+        (only an explanatory comment may name it), and the rationale must be documented."""
+        # comment-stripped code must not reference servers.dat at all (it is out of the reject list)
+        self.assertNotIn("servers.dat", _code("install_pool.ps1"))
+        # the rationale IS documented in the raw source (the comment names both the file and its provenance)
+        raw = _read("install_pool.ps1")
+        self.assertIn("INSTALLER-SHIPPED", raw)
+        self.assertIn("config\\servers.dat", raw)
+        # the true operational-use artefacts remain rejected
+        code = _code("install_pool.ps1")
+        for rel in ("accounts.dat", "common.ini", "terminal.ini", "origin.txt", "MQL5\\experts.dat"):
+            self.assertIn(rel, code, rel)
 
     def test_the_mt5_build_is_pinned_by_the_manifest(self):
         """The same string the agent compares against BETA_AGENT_GOLDEN_MANIFEST_VERSION."""
@@ -1872,3 +1887,69 @@ class WinSwUninstallTests(SimpleTestCase):
         """The pywin32 'service.py remove' branch targets the retired host and must not survive the switch."""
         code = _code("uninstall.ps1")
         self.assertNotIn("service.py", code)
+
+
+class ApplyGoldenAclOnlyModeTests(SimpleTestCase):
+    """PROMOTION: -ApplyGoldenAclOnly re-applies the golden ACL to a freshly-promoted tree WITHOUT a full
+    four-password -Apply, mirroring the existing scoped modes (-GrantTaskAccessOnly / -EnableTasksOnly /
+    -StageLauncherOnly). Admin-only, credential-free, golden-validated first, idempotent, read-back-verified."""
+
+    def setUp(self):
+        self.code = _code("install_pool.ps1")
+        self.raw = _read("install_pool.ps1")
+        # the mode's block, isolated via its unique Step banner (raw, so comment anchors survive)
+        self.block = self.raw.split("APPLY GOLDEN ACL ONLY:")[1].split("# -- 2. Identities")[0]
+
+    def test_switch_param_exists(self):
+        self.assertIn("[switch]$ApplyGoldenAclOnly", self.code)
+
+    def test_is_a_standalone_mode_excluding_every_other_mode(self):
+        guard = [ln for ln in self.code.splitlines() if "ApplyGoldenAclOnly is a standalone mode" in ln]
+        self.assertEqual(len(guard), 1, "exactly one standalone-mode refusal expected")
+        for other in ("-Apply", "-VerifyOnly", "-ValidateGoldenOnly",
+                      "-GrantTaskAccessOnly", "-EnableTasksOnly", "-StageLauncherOnly"):
+            self.assertIn(other, guard[0], other)
+
+    def test_golden_validated_first_not_in_credential_free_skip_list(self):
+        # credential-free task modes skip RULE-10 golden validation; -ApplyGoldenAclOnly operates ON the golden,
+        # so it must NOT be added to that skip guard (the golden must be validated before it is ACL'd).
+        skip = [ln for ln in self.code.splitlines()
+                if "if ($GrantTaskAccessOnly -or $EnableTasksOnly -or $StageLauncherOnly)" in ln]
+        self.assertEqual(len(skip), 1)
+        self.assertNotIn("ApplyGoldenAclOnly", skip[0])
+
+    def test_applies_the_complete_golden_acl(self):
+        self.assertIn("/inheritance:r", self.block)
+        self.assertIn("S-1-5-32-544:(OI)(CI)F", self.block)    # Administrators Full
+        self.assertIn("S-1-5-18:(OI)(CI)F", self.block)         # SYSTEM Full
+        self.assertIn("(OI)(CI)RX", self.block)                 # slot identities RX (via icacls)
+        self.assertIn("Get-GuvfxServiceSidValue", self.block)   # the service SID is computed
+
+    def test_service_sid_bound_via_setacl_not_icacls_1332_trap(self):
+        # The service SID is bound DIRECTLY via Set-Acl (SecurityIdentifier), NEVER icacls "*<SID>", which
+        # reverse-resolves the SID to a name and fails 1332 when the service is absent - the documented trap.
+        self.assertIn("SecurityIdentifier($agaSid)", self.block)
+        self.assertIn("Set-Acl", self.block)
+        self.assertIn("ReadAndExecute", self.block)             # service gets RX...
+        self.assertIn("ContainerInherit", self.block)           # ...inherited across the whole golden tree
+        self.assertNotIn("*{0}:(OI)(CI)RX", self.block)         # the old icacls "*SID" service grant is gone
+
+    def test_service_sid_ace_is_read_back_asserted_not_just_printed(self):
+        # finding-2 fix: the read-back PROVES the service ACE (by SID) rather than only printing it as done.
+        self.assertIn("$agaSvcAces", self.block)
+        self.assertIn("service SID $agaSid has NO ACE", self.block)
+
+    def test_credential_free_no_provisioning(self):
+        self.assertNotIn("Read-Host", self.block)               # no password prompt
+        self.assertNotIn("New-LocalUser", self.block)           # no identity creation
+        self.assertNotIn("Register-ScheduledTask", self.block)  # no task registration
+
+    def test_read_back_verified_by_rights_bits(self):
+        self.assertIn("AreAccessRulesProtected", self.block)    # inheritance actually broken
+        self.assertIn("FileSystemRights", self.block)           # write-class check by rights bits, not substring
+        self.assertIn("Get-GuvfxCount", self.block)             # an ABSENT slot ACE reads 0, not 1
+        # the read-back enumerates BY SID; never $agaAcl.Access (which would name-translate the just-added service
+        # SID and throw when the service is not installed). $agaAcl.Access must not appear in EXECUTABLE code
+        # (comment-stripped) - a comment may still name it to explain the choice.
+        self.assertNotIn("$agaAcl.Access", self.code)
+        self.assertIn("GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])", self.block)

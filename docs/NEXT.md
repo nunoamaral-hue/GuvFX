@@ -1,5 +1,23 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Customer Zero + Trusted Beta — Phase A COMPLETE (2026-07-31); Phase B next
+Programme directive widened Customer Zero to a full **trade-execution → ingestion → analytics** journey and
+made the golden the permanent baseline. Full phased plan (A golden re-stage → B Phase-4 keyring → C execution
+plane → D trading validation → E Trusted-Beta readiness): **`docs/TRUSTED_BETA_CZ_IMPLEMENTATION_PLAN.md`**.
+
+**✅ Phase A DONE (2026-07-31): golden re-staged + promoted.** Build **5.0.0.6073** is the active beta golden at
+`C:\GuvFX\golden\newMT5` (585 files, tree digest **`db54d94a…`**); prior golden retired-but-retained
+(`newMT5.retired-20260731T072529Z`); Machine env re-pinned `BETA_AGENT_GOLDEN_DIGEST` + `BETA_AGENT_GOLDEN_MANIFEST_VERSION=5.0.0.6073`
+(both required — B2 correction); agent Running. Nuno estate untouched. Blocker A REMOVED. Installer mode
+`-ApplyGoldenAclOnly` shipped via PR #246. Evidence: `evidence/beta-agent-phase3-cert/GOLDEN_PROMOTION_2026-07-31.md`.
+
+**One bounded next action — authorise Phase B (signing-key/keyring infrastructure):** provision the matching
+agent + provisioner keyrings so `guvfx-beta-provisioner` stops logging `unknown_key_id` and ProvisioningJob #1
+advances QUEUED → NEGOTIATE → runtime RUNNING for account #12. This is now the SOLE remaining blocker to the
+"Runtime Running" milestone. Key finding still stands: the beta **execution plane is unbuilt** (Phase C) — a beta
+slot "RUNNING" is view-only/broker-independent; Session-0 `order_send` on a slot is **unproven**. Do NOT begin
+Phase B without Sponsor authorisation; DECISION GATE C0 (per-slot-bridge vs per-VM) deliberated in parallel.
+
 ## B3P-2 — on-demand task model decided + implemented; final slot-1 lifecycle next (2026-07-25)
 TSV task-discovery is complete (`#212`/`#213`/`#214`). The follow-on task-enablement blocker is **resolved by
 [ADR 0017](ADRs/0017-beta-task-enabled-triggerless-on-demand.md)**: the eight beta tasks are ENABLED but

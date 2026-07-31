@@ -51,7 +51,14 @@ param(
   # needs NO slot password and re-registers NOTHING (the launch task's action already points at the fixed
   # wrapper PATH, unchanged), so it must not force a full four-password -Apply. Refuses any wrapper whose hash
   # is not the pinned reviewed one, before AND after the copy.
-  [switch]$StageLauncherOnly
+  [switch]$StageLauncherOnly,
+  # PROMOTION (2026-07-30): apply ONLY the golden-image ACL (break inheritance; Administrators + SYSTEM Full;
+  # each slot identity + the beta-agent service SID ReadAndExecute-only) and exit. Admin-only - an icacls-only
+  # operation needs NO slot password and provisions NO identity/task/directory, so - like -GrantTaskAccessOnly /
+  # -StageLauncherOnly - it must not force a full four-password -Apply just to (re)lock a freshly-promoted golden
+  # tree that a directory move has stripped of ACLs. The golden is RULE-10-validated FIRST (this mode is NOT in
+  # the credential-free skip list). Idempotent (icacls /inheritance:r + /grant are re-runnable) and read-back-verified.
+  [switch]$ApplyGoldenAclOnly
 )
 $ErrorActionPreference = "Stop"
 # The reviewed launch wrapper's pinned SHA-256 (lowercase). tests_install_artefacts.py asserts this equals the
@@ -67,6 +74,9 @@ if ($EnableTasksOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly -or $G
 }
 if ($StageLauncherOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly -or $GrantTaskAccessOnly -or $EnableTasksOnly)) {
   throw "refusing: -StageLauncherOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly/-GrantTaskAccessOnly/-EnableTasksOnly)"
+}
+if ($ApplyGoldenAclOnly -and ($Apply -or $VerifyOnly -or $ValidateGoldenOnly -or $GrantTaskAccessOnly -or $EnableTasksOnly -or $StageLauncherOnly)) {
+  throw "refusing: -ApplyGoldenAclOnly is a standalone mode (no -Apply/-VerifyOnly/-ValidateGoldenOnly/-GrantTaskAccessOnly/-EnableTasksOnly/-StageLauncherOnly)"
 }
 #: May this run CHANGE the host? -VerifyOnly must never mutate.
 $Mutate = [bool]$Apply
@@ -181,9 +191,15 @@ function Test-GoldenImage {
   }
 
   # (c/d/e/f) evidence of previous use - FILES ONLY. Each entry names what it proves.
+  # INSTALLER-SHIPPED, deliberately NOT rejected: config\servers.dat. From MT5 build 5.0.0.6073 the installer
+  # writes servers.dat (a PUBLIC broker-server LIST - no login, no account, no history) as part of install
+  # output, BEFORE the terminal is ever launched (proven 2026-07-30 by timestamp: servers.dat predated the
+  # first %APPDATA% terminal instance by 3s). It is reference data, not an operational-use artefact, so its
+  # mere presence must not fail a genuine clean install (same class as the earlier MQL5-missing / bases-populated
+  # / sample-EA false positives). The RULE-10 objective is "never OPERATIONALLY used" - the true operational
+  # signals below stay rejected. See docs/GOLDEN_IMAGE_RUNBOOK.md Golden Integrity Rules + evidence/beta-agent-phase3-cert/.
   $dirtyFiles = [ordered]@{
     "config\accounts.dat"  = "a saved broker account (runtime-created)"
-    "config\servers.dat"   = "a downloaded broker server list (runtime-created)"
     "config\common.ini"    = "terminal settings written on exit (runtime-created)"
     "config\terminal.ini"  = "terminal settings written on exit (runtime-created)"
     "origin.txt"           = "a data-folder redirect marker (runtime-created)"
@@ -739,6 +755,86 @@ if ($StageLauncherOnly) {
   $slBack = (Get-FileHash -LiteralPath $slDst -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($slBack -ne $LaunchWrapperSha256) { throw "post-stage wrapper hash drifted - STOP" }
   Write-Host "ok   StageLauncherOnly complete: wrapper re-staged (sha256 $LaunchWrapperSha256), launcher admin-only + slots RX; nothing registered or started"
+  return
+}
+
+# PROMOTION (2026-07-30): apply ONLY the golden-image ACL and exit. Reached after the refusals + RULE-10 golden
+# validation + function definitions above (this mode is NOT credential-free-skipped, so the golden WAS validated
+# first). An icacls-only operation: admin-only, needs NO slot password, provisions NO identity/task/directory.
+# It exists so a freshly-PROMOTED golden tree (a directory move strips every explicit ACL) can be re-locked
+# without a full four-password -Apply. Applies the COMPLETE golden ACL: the -Apply golden block grants
+# Administrators/SYSTEM Full + each slot RX; install_service.ps1 SEPARATELY grants the beta-agent service SID RX -
+# a moved tree loses BOTH, so this one mode re-applies both, leaving the golden readable by the agent + slots and
+# writable by no non-admin. Idempotent (icacls /inheritance:r + /grant re-runnable); read-back-verified (RULE 11).
+if ($ApplyGoldenAclOnly) {
+  Step "APPLY GOLDEN ACL ONLY: break inheritance + Administrators/SYSTEM Full + slots RX + service SID RX (no passwords, no provisioning)"
+  Write-Host "note ApplyGoldenAclOnly operating on golden: $GoldenDir"
+  $agaSid = Get-GuvfxServiceSidValue "GuvFXBetaAgent"
+  Invoke-GuvfxIcacls $GoldenDir @("/inheritance:r")
+  Invoke-GuvfxIcacls $GoldenDir @("/grant", "*S-1-5-32-544:(OI)(CI)F", "/grant", "*S-1-5-18:(OI)(CI)F")
+  for ($n = 1; $n -le $PoolSize; $n++) {
+    Invoke-GuvfxIcacls $GoldenDir @("/grant", ("{0}{1}:(OI)(CI)RX" -f $IdentityPrefix, $n))
+  }
+  # Grant the beta-agent SERVICE SID ReadAndExecute on the golden TREE by binding the SID DIRECTLY via Set-Acl -
+  # NEVER icacls "*SID", which reverse-resolves the SID to a NAME and fails 1332 ("Successfully processed 0 files")
+  # when the service is not installed, leaving a partially-ACL'd golden (Grant-GuvfxServiceRead:535-543 / ADR-0013).
+  # A service SID is derived from the fixed name, so it is a valid value before the service exists; ReadAndExecute
+  # + ContainerInherit|ObjectInherit so the agent (running as that SID) can read every file it copies at MATERIALISE.
+  $agaSidObj = New-Object System.Security.Principal.SecurityIdentifier($agaSid)
+  $agaGoldenAcl = Get-Acl -Path $GoldenDir
+  $agaGoldenAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $agaSidObj, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
+      ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+      [System.Security.AccessControl.PropagationFlags]::None, "Allow")))
+  Set-Acl -Path $GoldenDir -AclObject $agaGoldenAcl
+  # Read back from the OS (RULE 11): inheritance is actually broken, and NO non-admin principal holds a write-class
+  # right - as RIGHTS BITS, not a name/substring (a substring on "Write|Modify" misses AppendData/CreateFiles and
+  # GENERIC_ALL - the exact defect that once reported a writable golden as clean). Admin + SYSTEM are the only writers.
+  $agaAcl = Get-Acl $GoldenDir
+  if (-not $agaAcl.AreAccessRulesProtected) { throw "golden image '$GoldenDir' still inherits after ApplyGoldenAclOnly - STOP" }
+  $agaWriteMask = ([System.Security.AccessControl.FileSystemRights]::Write -bor
+                   [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor
+                   [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+                   [System.Security.AccessControl.FileSystemRights]::AppendData -bor
+                   [System.Security.AccessControl.FileSystemRights]::WriteData -bor
+                   [System.Security.AccessControl.FileSystemRights]::Delete -bor
+                   [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+                   [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+                   [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+                   [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+                   [System.Security.AccessControl.FileSystemRights]::TakeOwnership)
+  $agaWriters = @("S-1-5-32-544", "S-1-5-18")
+  foreach ($r in $agaAcl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])) {
+    if ($r.AccessControlType -ne "Allow") { continue }
+    $raw = [int]$r.FileSystemRights
+    $hasWrite = (($raw -band [int]$agaWriteMask) -ne 0) -or (($raw -band (0x10000000 -bor 0x40000000)) -ne 0)
+    if ($hasWrite -and ($agaWriters -notcontains $r.IdentityReference.Value)) {
+      throw "golden image: '$($r.IdentityReference.Value)' holds write-class rights ($($r.FileSystemRights)) after ApplyGoldenAclOnly - only Administrators/SYSTEM may write - STOP"
+    }
+  }
+  # Each slot identity must be able to READ the golden (a slot reads it at launch; the agent copies it at
+  # MATERIALISE under the service SID granted above). Get-GuvfxCount - never @().Count - so an ABSENT ACE reads 0.
+  # Enumerate BY SID so the service SID this mode just added - which has NO NAME until the service is installed -
+  # is never name-translated ($agaAcl.Access translates every ACE and would throw IdentityNotMappedException on it,
+  # contradicting this mode's service-absent-safe contract). Resolve each slot's OWN SID (the slot account exists).
+  $agaSidRules = $agaAcl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
+  for ($n = 1; $n -le $PoolSize; $n++) {
+    $agaUser = "$IdentityPrefix$n"
+    $agaUserSid = (New-Object System.Security.Principal.NTAccount($env:COMPUTERNAME, $agaUser)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    if ((Get-GuvfxCount ($agaSidRules | Where-Object { $_.IdentityReference.Value -eq $agaUserSid -and $_.AccessControlType -eq "Allow" })) -eq 0) {
+      throw "golden image: '$agaUser' has NO ACE after ApplyGoldenAclOnly - the slot cannot read the golden - STOP"
+    }
+  }
+  # The service-SID ACE is the grant UNIQUE to this mode and functionally required (the agent runs as that SID and
+  # must READ the golden to copy it at MATERIALISE). Assert it is present BY SID (a name lookup would re-introduce
+  # the 1332 trap) - do not merely print it as done. Get-GuvfxCount so an ABSENT ACE reads 0, not the @($null)=1 trap.
+  $agaSvcAces = @($agaAcl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) |
+                  Where-Object { $_.IdentityReference.Value -eq $agaSid -and $_.AccessControlType -eq "Allow" })
+  if ((Get-GuvfxCount $agaSvcAces) -eq 0) {
+    throw "golden image: beta-agent service SID $agaSid has NO ACE after ApplyGoldenAclOnly - the agent cannot read the golden - STOP"
+  }
+  Write-Host "ok   golden: inheritance removed, Administrators + SYSTEM Full, $PoolSize slot identities + service SID ReadAndExecute; no non-admin writer"
+  Write-Host "ok   ApplyGoldenAclOnly complete: golden ACL applied; no identity, task, directory or password work"
   return
 }
 
