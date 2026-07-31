@@ -6,8 +6,12 @@
 # beta runtime actually provision — without it the job never advances.
 #
 # It reuses the backend service's full configuration (image, volumes, network, shared env via the
-# backend's env_file — DB creds, BETA_RUNTIMES_ENABLED, the beta-agent config) through `extends`,
-# overriding ONLY the command and container identity. NO secret is stored here.
+# backend's env_file - DB creds, BETA_RUNTIMES_ENABLED) through `extends`, overriding the command and
+# container identity, AND adds a PROVISIONER-ONLY env_file (beta-provisioner.secret.env) carrying the HMAC
+# signing keyring + key id + agent URL. That secret file is loaded ONLY by this service - never by the
+# public api.guvfx.com backend - so the signing secret never enters the internet-facing backend's
+# environment (RULE 3, least privilege). No secret VALUE is stored in this compose file (only the
+# reference); the real beta-provisioner.secret.env is git-ignored and created on the VPS by the operator.
 #
 # DARK BY DEFAULT: `run_beta_provisioning_worker` / `beta_worker.process_one` is a no-op unless
 # BETA_RUNTIMES_ENABLED is on (default OFF). Bringing this service up while the flag is OFF starts an
@@ -34,6 +38,19 @@ services:
       service: guvfx-backend
     container_name: guvfx-beta-provisioner
     restart: unless-stopped
+    # PROVISIONER-ONLY secret scope (Phase B): the HMAC keyring + key id + agent URL come from a dedicated
+    # env_file that ONLY this service references. Per the compose spec, `extends` treats env_file as
+    # ADDITIVE, so the provisioner keeps every inherited backend value (DB creds, BETA_RUNTIMES_ENABLED) AND
+    # gains the provisioner-only secrets; the public backend, which never references this file, does not.
+    # PATH: a relative env_file resolves against the compose PROJECT directory (the dir of the base/first
+    # `-f` file = your CWD at deploy), NOT this overlay's dir. The default below points into the co-located
+    # deploy dir (matching the committed .example + the .gitignore line); set BETA_PROVISIONER_SECRET_ENV to
+    # an ABSOLUTE path if the base compose lives in a different tree. `docker compose up` fails LOUDLY with
+    # the exact resolved path if the file is misplaced. NEVER run `docker compose config` on THIS service
+    # after the secret is inserted - it renders BETA_AGENT_KEYRING in CLEARTEXT. Verify presence-only
+    # (runbook 6). The real file is git-ignored; only the .example template is committed.
+    env_file:
+      - "${BETA_PROVISIONER_SECRET_ENV:-deploy/beta-provisioner/beta-provisioner.secret.env}"
     # Long-running claim loop (NOT a one-shot). Reuses the backend image + env. Dark unless
     # BETA_RUNTIMES_ENABLED (inherited from the backend env_file, EXACTLY like the other workers'
     # arm flags — do NOT add an `environment:` override here or it would shadow the env_file value
@@ -45,6 +62,7 @@ services:
     # this container as a SECOND (dead) backend for `guvfx-api` and load-balance ~half of
     # api.guvfx.com onto it → HTTP 502. Disable traefik entirely here, exactly like the ingest /
     # shadow / tp-watcher workers do. (Docker applies the last duplicate label key, so this wins over
-    # the inherited `traefik.enable=true`; verify with `docker compose config`.)
+    # the inherited `traefik.enable=true`; verify the LABEL with `docker compose config` BEFORE the secret
+    # file exists - once it exists, `config` on THIS service prints BETA_AGENT_KEYRING in cleartext.)
     labels:
       - "traefik.enable=false"
