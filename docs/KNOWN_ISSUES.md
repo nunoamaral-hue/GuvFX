@@ -2,20 +2,19 @@
 
 List active problems with reproduction steps and workarounds.
 
-## ⛔ PRODUCTION REGRESSION — orphaned PLANNED plans block Telegram trading (fix implemented, NOT deployed, 2026-07-31)
+## ✅ RESOLVED (2026-07-31) — orphaned PLANNED plans blocked Telegram trading (prod acct #1)
 
-- **Symptom:** prod acct #1 (nuno.amaral@live.com) stopped opening Telegram trades. Since 2026-07-31 02:06 UTC
-  every signal is rejected `concurrent_limit_exceeded` (last trade 2026-07-30 19:03). Telegram/parser/bridge/MT5
-  all healthy — the block is upstream at the planning concurrency gate.
+- **Symptom (was):** prod acct #1 (nuno.amaral@live.com) stopped opening Telegram trades from 2026-07-31 02:06 UTC
+  (every signal `concurrent_limit_exceeded`); last pre-incident trade 2026-07-30 19:03.
 - **Root cause:** `count_active` counts `PLANNED`-only plans; a promotion-rejected (e.g. `daily_drawdown_hit`)
-  plan is left `PLANNED` forever. 10 such orphans saturated the acct #1/XAUUSD gate (cap 10). The drawdown gate
-  behaved correctly; the `PromotionRejected` lifecycle did not. **Not caused by Customer Zero / ADR-0021 / Golden /
-  Beta** (the routing/gate code is unchanged since before 2026-07-15).
-- **Fix (branch `fix/orphaned-planned-plan-reclaim`, engineering-only, NOT deployed):** Part A reclaim command
-  (dry-run default), Part B transition-on-reject (`PLANNED→VOIDED`), Part C gated monitor-chain self-heal, plus
-  saturation alerting + ops metrics. Full detail + deploy plan: `docs/INCIDENT_ORPHANED_PLANNED_PLAN.md`.
-- **Recovery (awaiting Sponsor Production Repair Deployment authorisation):** deploy → dry-run → review →
-  (separate auth) `reclaim_orphaned_planned_plans --account 1 --symbol XAUUSD --apply` → trading resumes.
+  plan was left `PLANNED` forever → 10 orphans saturated the acct #1/XAUUSD concurrency gate (cap 10). Drawdown
+  gate behaved correctly; the `PromotionRejected` lifecycle did not. NOT caused by CZ / ADR-0021 / Golden / Beta.
+- **Fix + resolution:** PR #247 (`04c6656`) — Part A reclaim command, Part B transition-on-reject (`PLANNED→VOIDED`),
+  Part C gated monitor-chain self-heal + saturation alert + ops metrics. **Deployed** (backend `d5461b63`, listener
+  `731528ab`); the 10 orphans reclaimed (`count_active` 10→0); **live-proven** by signal 165 (real MT5 orders
+  230672–230674 + Trades + breakeven). Post-incident review: `docs/PIR_ORPHANED_PLANNED_PLAN_CONCURRENCY_LEAK.md`.
+- **Open follow-ups (separate tasks):** (1) regularise the out-of-Git wayond-listener launch path into compose;
+  (2) review whether `MULTI_ACCOUNT_ROUTING_ENABLED=ON` in prod is intentional (docs/architecture review only).
 
 ## ⛔ BLOCKER — beta golden image drifted from its pinned digest (Phase-4 gate, 2026-07-30)
 
