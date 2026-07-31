@@ -101,6 +101,25 @@ for ($n = 1; $n -le $PoolSize; $n++) {
       if (Test-Path $d) { icacls $d /remove:g "$user" | Out-Null }
     }
   }
+  # Variant A LiveUpdate containment leaves a Deny-write ACE for the slot identity on its OWN roaming MT5
+  # update-staging (%APPDATA%\MetaQuotes\WebInstall and Terminal\<hash>\liveupdate). The launch wrapper
+  # re-applies it every START and never removes it (the least-privilege agent cannot reach a user profile);
+  # DECOMMISSION is the correct place to remove it. Done BEFORE the account is disabled/deleted so the name
+  # still resolves; /T recurses to the per-hash liveupdate children; /C /Q tolerate an absent/partial tree.
+  # Resolve the ACTUAL profile dir by SID (Win32_UserProfile) - the wrapper writes the Deny at the OS-resolved
+  # %APPDATA%, which a non-default ProfilesDirectory or a ".<COMPUTERNAME>" collision profile can move away
+  # from the default C:\Users\<user>; fall back to the default only if no profile is registered.
+  $slotProfile = $null
+  $slotUserObj = Get-LocalUser -Name $user -ErrorAction SilentlyContinue
+  if ($slotUserObj) {
+    $prof = Get-CimInstance Win32_UserProfile -Filter ("SID='" + $slotUserObj.SID.Value + "'") -ErrorAction SilentlyContinue
+    if ($prof) { $slotProfile = $prof.LocalPath }
+  }
+  if (-not $slotProfile) { $slotProfile = Join-Path "C:\Users" $user }
+  $slotMetaQuotes = Join-Path $slotProfile "AppData\Roaming\MetaQuotes"
+  DoIt "remove '$user' LiveUpdate-containment Deny under $slotMetaQuotes" {
+    if (Test-Path $slotMetaQuotes) { icacls $slotMetaQuotes /remove:d "$user" /T /C /Q | Out-Null }
+  }
   DoIt "disable identity '$user' (NOT deleted unless -RemoveIdentities)" {
     Disable-LocalUser -Name $user
   }

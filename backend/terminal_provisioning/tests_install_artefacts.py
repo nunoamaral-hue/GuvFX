@@ -1953,3 +1953,115 @@ class ApplyGoldenAclOnlyModeTests(SimpleTestCase):
         # (comment-stripped) - a comment may still name it to explain the choice.
         self.assertNotIn("$agaAcl.Access", self.code)
         self.assertIn("GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])", self.block)
+
+
+class LiveUpdateContainmentTests(SimpleTestCase):
+    """Variant A LiveUpdate containment (fail-closed behaviour PROVEN on the host 2026-07-31): the launch
+    wrapper, running AS the slot identity, denies that identity WRITE on its OWN roaming MT5 update-staging
+    BEFORE launching terminal64, so MT5 cannot relocate its executable out of the slot. Without it, the
+    relocated exe survives the exact-path STOP task (also host-proven). These checks pin the safety-critical
+    properties a review must never let regress: applied before launch, scoped to the slot's own %APPDATA%
+    staging ONLY, SID-typed (no name translation), read back (positive control), idempotent, self-cleaning,
+    fail-closed, and never a weakening of the is_beneath VERIFY or the exact-path STOP. Decommission removal is
+    uninstall.ps1's job - the wrapper never removes it, and the least-privilege agent cannot reach a profile."""
+
+    def setUp(self):
+        self.w = _read(WRAPPER)
+        out = []
+        for ln in self.w.splitlines():
+            if ln.strip().startswith("#"):
+                continue
+            if "//" in ln:
+                ln = ln[:ln.index("//")]
+            out.append(ln)
+        self.code = "\n".join(out)          # comment-stripped executable view
+
+    def _fn(self):
+        # Just the Apply-LiveUpdateContainment body (brace-matched), NOT the rest of the wrapper - the later
+        # grantee validation legitimately uses NTAccount and the slots root, which must not leak into these
+        # containment-scoped checks. The function has no braces inside strings, so brace counting is exact.
+        start = self.code.index("function Apply-LiveUpdateContainment")
+        depth = 0
+        opened = False
+        for i in range(self.code.index("{", start), len(self.code)):
+            if self.code[i] == "{":
+                depth += 1
+                opened = True
+            elif self.code[i] == "}":
+                depth -= 1
+                if opened and depth == 0:
+                    return self.code[start:i + 1]
+        return self.code[start:]
+
+    def test_containment_runs_before_the_launch(self):
+        launch = self.code.index("LaunchAndGrant($full")
+        defn = self.code.index("function Apply-LiveUpdateContainment")
+        invocation = self.code.rfind("Apply-LiveUpdateContainment", 0, launch)
+        self.assertNotEqual(invocation, -1, "wrapper never invokes containment before launch")
+        self.assertGreater(invocation, defn, "found only the definition, not the invocation, before launch")
+        self.assertLess(invocation, launch, "containment must be applied before terminal64 launches")
+
+    def test_containment_denies_write_on_the_slots_own_appdata_staging(self):
+        fn = self._fn()
+        self.assertIn("$env:APPDATA", fn)                       # the slot's OWN roaming profile
+        self.assertIn("MetaQuotes", fn)
+        self.assertIn("WebInstall", fn)                         # download staging
+        self.assertIn("liveupdate", fn)                         # relocation target
+        self.assertIn("AccessControlType]::Deny", fn)
+        self.assertIn("FileSystemRights]::Write", fn)
+
+    def test_containment_targets_only_the_roaming_profile_never_the_slot_or_estate(self):
+        fn = self._fn()
+        for forbidden in (r"C:\GuvFX", "slots", "Program Files", "accounts", "terminals"):
+            self.assertNotIn(forbidden, fn, f"containment must not target {forbidden}")
+
+    def test_containment_denies_the_current_token_sid_not_a_translated_name(self):
+        fn = self._fn()
+        self.assertIn("[System.Security.Principal.WindowsIdentity]::GetCurrent()).User", fn)
+        self.assertNotIn("NTAccount", fn)                       # no workgroup-hang name translation
+
+    def test_containment_reads_back_the_deny_as_a_positive_control(self):
+        fn = self._fn()
+        self.assertIn("Get-Acl", fn)
+        self.assertIn("$verified", fn)
+        self.assertIn("read-back could not confirm", fn)       # fail-closed message on an unverified deny
+        # RULE 11: the read-back must be SID-TYPED. The default .Access name-translates every ACE to
+        # DOMAIN\name, so IdentityReference.Value could never equal the SID string $slotSid.Value, leaving
+        # $verified permanently false and failing EVERY launch closed. This assertion is what catches that
+        # regression - a source grep for the literal 'NTAccount' does not (a fake positive control).
+        self.assertIn("GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])", fn)
+        self.assertNotIn(").Access", fn)                       # never the NTAccount-translating default enumerator
+
+    def test_containment_is_fail_closed(self):
+        fn = self._fn()
+        self.assertIn("catch { Fail", fn)
+        self.assertGreaterEqual(fn.count("Fail ("), 4)         # create, purge, apply, read-back all fail closed
+
+    def test_containment_purges_stale_staging_for_a_clean_generation(self):
+        fn = self._fn()
+        # Empties the whole staging dir (not just one filename) so generation N+1 begins genuinely clean of a
+        # prior occupancy's relocation payload.
+        self.assertIn("Get-ChildItem -LiteralPath $t -Force", fn)
+        self.assertIn("Remove-Item -Recurse -Force", fn)
+
+    def test_containment_is_idempotent_no_ace_accumulation(self):
+        fn = self._fn()
+        self.assertIn("RemoveAccessRule($denyRule)", fn)       # drop prior identical Deny before re-adding
+        self.assertIn("AddAccessRule($denyRule)", fn)
+
+    def test_containment_does_not_weaken_stop_or_verify(self):
+        fn = self._fn()
+        self.assertNotIn("Stop-Process", fn)                   # never image-name process matching
+        self.assertNotIn("/IM", fn)
+
+    def test_the_wrapper_pin_matches_after_the_containment_edit(self):
+        import hashlib
+        digest = hashlib.sha256(open(os.path.join(_BUNDLE, WRAPPER), "rb").read()).hexdigest()
+        self.assertIn('$LaunchWrapperSha256 = "%s"' % digest, _read("install_pool.ps1"),
+                      "install_pool.ps1 $LaunchWrapperSha256 not recomputed after the wrapper was edited")
+
+    def test_uninstall_removes_the_containment_deny_on_decommission(self):
+        u = _read("uninstall.ps1")
+        self.assertIn("/remove:d", u)                          # remove a DENY ace (not /remove:g)
+        self.assertIn("AppData\\Roaming\\MetaQuotes", u)
+        self.assertIn("LiveUpdate-containment Deny", u)
