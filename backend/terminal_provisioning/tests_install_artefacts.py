@@ -1948,3 +1948,7 @@ class ApplyGoldenAclOnlyModeTests(SimpleTestCase):
         self.assertIn("AreAccessRulesProtected", self.block)    # inheritance actually broken
         self.assertIn("FileSystemRights", self.block)           # write-class check by rights bits, not substring
         self.assertIn("Get-GuvfxCount", self.block)             # an ABSENT slot ACE reads 0, not 1
+        # the read-back enumerates BY SID; never $agaAcl.Access, which would name-translate the service SID and
+        # throw IdentityNotMappedException when the service is not yet installed (mode's service-absent contract).
+        self.assertNotIn("$agaAcl.Access", self.block)
+        self.assertIn("[System.Security.Principal.SecurityIdentifier]", self.block)

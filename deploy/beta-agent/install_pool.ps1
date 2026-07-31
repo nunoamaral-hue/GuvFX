@@ -814,9 +814,14 @@ if ($ApplyGoldenAclOnly) {
   }
   # Each slot identity must be able to READ the golden (a slot reads it at launch; the agent copies it at
   # MATERIALISE under the service SID granted above). Get-GuvfxCount - never @().Count - so an ABSENT ACE reads 0.
+  # Enumerate BY SID so the service SID this mode just added - which has NO NAME until the service is installed -
+  # is never name-translated ($agaAcl.Access translates every ACE and would throw IdentityNotMappedException on it,
+  # contradicting this mode's service-absent-safe contract). Resolve each slot's OWN SID (the slot account exists).
+  $agaSidRules = $agaAcl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
   for ($n = 1; $n -le $PoolSize; $n++) {
     $agaUser = "$IdentityPrefix$n"
-    if ((Get-GuvfxCount ($agaAcl.Access | Where-Object { $_.IdentityReference.Value -like "*\$agaUser" })) -eq 0) {
+    $agaUserSid = (New-Object System.Security.Principal.NTAccount($env:COMPUTERNAME, $agaUser)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    if ((Get-GuvfxCount ($agaSidRules | Where-Object { $_.IdentityReference.Value -eq $agaUserSid -and $_.AccessControlType -eq "Allow" })) -eq 0) {
       throw "golden image: '$agaUser' has NO ACE after ApplyGoldenAclOnly - the slot cannot read the golden - STOP"
     }
   }
