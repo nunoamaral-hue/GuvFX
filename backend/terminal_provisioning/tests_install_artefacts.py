@@ -1922,8 +1922,22 @@ class ApplyGoldenAclOnlyModeTests(SimpleTestCase):
         self.assertIn("/inheritance:r", self.block)
         self.assertIn("S-1-5-32-544:(OI)(CI)F", self.block)    # Administrators Full
         self.assertIn("S-1-5-18:(OI)(CI)F", self.block)         # SYSTEM Full
-        self.assertIn("(OI)(CI)RX", self.block)                 # slots + service RX
-        self.assertIn("Get-GuvfxServiceSidValue", self.block)   # the service SID is granted RX
+        self.assertIn("(OI)(CI)RX", self.block)                 # slot identities RX (via icacls)
+        self.assertIn("Get-GuvfxServiceSidValue", self.block)   # the service SID is computed
+
+    def test_service_sid_bound_via_setacl_not_icacls_1332_trap(self):
+        # The service SID is bound DIRECTLY via Set-Acl (SecurityIdentifier), NEVER icacls "*<SID>", which
+        # reverse-resolves the SID to a name and fails 1332 when the service is absent - the documented trap.
+        self.assertIn("SecurityIdentifier($agaSid)", self.block)
+        self.assertIn("Set-Acl", self.block)
+        self.assertIn("ReadAndExecute", self.block)             # service gets RX...
+        self.assertIn("ContainerInherit", self.block)           # ...inherited across the whole golden tree
+        self.assertNotIn("*{0}:(OI)(CI)RX", self.block)         # the old icacls "*SID" service grant is gone
+
+    def test_service_sid_ace_is_read_back_asserted_not_just_printed(self):
+        # finding-2 fix: the read-back PROVES the service ACE (by SID) rather than only printing it as done.
+        self.assertIn("$agaSvcAces", self.block)
+        self.assertIn("service SID $agaSid has NO ACE", self.block)
 
     def test_credential_free_no_provisioning(self):
         self.assertNotIn("Read-Host", self.block)               # no password prompt

@@ -768,13 +768,25 @@ if ($StageLauncherOnly) {
 # writable by no non-admin. Idempotent (icacls /inheritance:r + /grant re-runnable); read-back-verified (RULE 11).
 if ($ApplyGoldenAclOnly) {
   Step "APPLY GOLDEN ACL ONLY: break inheritance + Administrators/SYSTEM Full + slots RX + service SID RX (no passwords, no provisioning)"
+  Write-Host "note ApplyGoldenAclOnly operating on golden: $GoldenDir"
   $agaSid = Get-GuvfxServiceSidValue "GuvFXBetaAgent"
   Invoke-GuvfxIcacls $GoldenDir @("/inheritance:r")
   Invoke-GuvfxIcacls $GoldenDir @("/grant", "*S-1-5-32-544:(OI)(CI)F", "/grant", "*S-1-5-18:(OI)(CI)F")
   for ($n = 1; $n -le $PoolSize; $n++) {
     Invoke-GuvfxIcacls $GoldenDir @("/grant", ("{0}{1}:(OI)(CI)RX" -f $IdentityPrefix, $n))
   }
-  Invoke-GuvfxIcacls $GoldenDir @("/grant", ("*{0}:(OI)(CI)RX" -f $agaSid))
+  # Grant the beta-agent SERVICE SID ReadAndExecute on the golden TREE by binding the SID DIRECTLY via Set-Acl -
+  # NEVER icacls "*SID", which reverse-resolves the SID to a NAME and fails 1332 ("Successfully processed 0 files")
+  # when the service is not installed, leaving a partially-ACL'd golden (Grant-GuvfxServiceRead:535-543 / ADR-0013).
+  # A service SID is derived from the fixed name, so it is a valid value before the service exists; ReadAndExecute
+  # + ContainerInherit|ObjectInherit so the agent (running as that SID) can read every file it copies at MATERIALISE.
+  $agaSidObj = New-Object System.Security.Principal.SecurityIdentifier($agaSid)
+  $agaGoldenAcl = Get-Acl -Path $GoldenDir
+  $agaGoldenAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $agaSidObj, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
+      ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+      [System.Security.AccessControl.PropagationFlags]::None, "Allow")))
+  Set-Acl -Path $GoldenDir -AclObject $agaGoldenAcl
   # Read back from the OS (RULE 11): inheritance is actually broken, and NO non-admin principal holds a write-class
   # right - as RIGHTS BITS, not a name/substring (a substring on "Write|Modify" misses AppendData/CreateFiles and
   # GENERIC_ALL - the exact defect that once reported a writable golden as clean). Admin + SYSTEM are the only writers.
@@ -807,6 +819,14 @@ if ($ApplyGoldenAclOnly) {
     if ((Get-GuvfxCount ($agaAcl.Access | Where-Object { $_.IdentityReference.Value -like "*\$agaUser" })) -eq 0) {
       throw "golden image: '$agaUser' has NO ACE after ApplyGoldenAclOnly - the slot cannot read the golden - STOP"
     }
+  }
+  # The service-SID ACE is the grant UNIQUE to this mode and functionally required (the agent runs as that SID and
+  # must READ the golden to copy it at MATERIALISE). Assert it is present BY SID (a name lookup would re-introduce
+  # the 1332 trap) - do not merely print it as done. Get-GuvfxCount so an ABSENT ACE reads 0, not the @($null)=1 trap.
+  $agaSvcAces = @($agaAcl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) |
+                  Where-Object { $_.IdentityReference.Value -eq $agaSid -and $_.AccessControlType -eq "Allow" })
+  if ((Get-GuvfxCount $agaSvcAces) -eq 0) {
+    throw "golden image: beta-agent service SID $agaSid has NO ACE after ApplyGoldenAclOnly - the agent cannot read the golden - STOP"
   }
   Write-Host "ok   golden: inheritance removed, Administrators + SYSTEM Full, $PoolSize slot identities + service SID ReadAndExecute; no non-admin writer"
   Write-Host "ok   ApplyGoldenAclOnly complete: golden ACL applied; no identity, task, directory or password work"
