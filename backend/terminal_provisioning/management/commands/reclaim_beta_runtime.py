@@ -75,12 +75,14 @@ class Command(BaseCommand):
         # ── APPLY ──
         try:
             client = recovery.make_reclaim_client(job_id=job_id, correlation_id=f"reclaim-rt-{rt.pk}")
+            probe_client = recovery.make_probe_client(correlation_id=f"reclaim-probe-{rt.pk}")  # fresh id -> LIVE read
         except (recovery.ReclaimError, ManagementChannelError, ManagementChannelTimeout) as e:
             raise CommandError(f"negotiation failed: {getattr(e, 'reason_code', 'agent_unreachable')}")
 
-        # read-only occupancy probe first: already-released -> idempotent success; else assert it matches
+        # read-only occupancy probe first (under a FRESH probe id so the agent returns a live read, never a
+        # memoised VERIFY): already-released -> idempotent success; else assert it matches
         try:
-            probe = client.probe_occupancy(rt)
+            probe = probe_client.probe_occupancy(rt)
         except ManagementChannelError as e:
             if getattr(e, "reason_code", "") == "runtime_not_assigned":
                 self._out("agent reports runtime_not_assigned -> slot already released (idempotent)")
@@ -112,15 +114,19 @@ class Command(BaseCommand):
                                f"Inspect and retry (idempotent under the same job_id).")
 
         recovery.mark_reclaimed(rt)
+        # op_release reports the RELEASED occupancy's OWN generation (e.g. 4); the slot is now Available at the
+        # NEXT generation (5). ``idempotent`` marks an already-released resend.
         self._out(f"RELEASE ok: released={result.get('released')} available={result.get('available')} "
-                  f"slot={result.get('slot')} generation={result.get('generation')}")
-        self._out("SLOT_RECLAIMED; backend runtime -> REMOVED; agent slot advanced + Available. "
-                  "Backend recovery is the SEPARATE Phase 2 (recover_beta_runtime).")
+                  f"slot={result.get('slot')} released_generation={result.get('generation')}"
+                  + (" (idempotent already-released)" if result.get('idempotent') else ""))
+        self._out("SLOT_RECLAIMED; backend runtime -> REMOVED; agent slot advanced to the next generation + "
+                  "Available. Backend recovery is the SEPARATE Phase 2 (recover_beta_runtime).")
 
     def _probe_only(self, rt, job_id, o):
-        """Dry-run opt-in: a single read-only signed VERIFY occupancy probe (no mutation)."""
+        """Dry-run opt-in: a single read-only signed VERIFY occupancy probe under a FRESH probe id (no mutation,
+        always a live agent read)."""
         try:
-            client = recovery.make_reclaim_client(job_id=job_id, correlation_id=f"reclaim-probe-{rt.pk}")
+            client = recovery.make_probe_client(correlation_id=f"reclaim-probe-{rt.pk}")
             probe = client.probe_occupancy(rt)
             self._out(f"[probe] agent occupancy: slot={probe.get('slot')} generation={probe.get('generation')} "
                       f"running={probe.get('running')} uuid={probe.get('runtime_uuid')}")

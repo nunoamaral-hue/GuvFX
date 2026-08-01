@@ -22,7 +22,7 @@ from terminal_provisioning import provisioner as prov
 from terminal_provisioning import recovery
 from terminal_provisioning.mgmt_client import (
     AgentWindowsProvisioner, ManagementChannelError, ManagementChannelTimeout)
-from terminal_provisioning.models import AccountRuntime, ProvisioningJob, RuntimeState
+from terminal_provisioning.models import AccountRuntime, ProvisioningJob, RuntimeEvent, RuntimeState
 from terminal_provisioning.runtime_state import record_transition
 from terminal_provisioning.tests_mgmt_channel import KEYRING
 
@@ -63,8 +63,8 @@ def _fake_transport(script=None, ops=("MATERIALISE", "START", "VERIFY", "STOP", 
         if op == "VERIFY":   # echo the signed uuid so the occupancy guard matches by default
             return {"outcome": "ok", "running": False, "slot": 2, "generation": 4,
                     "occupancy_id": "379ff98c4149a4b5", "runtime_uuid": req.get("runtime_uuid")}
-        if op == "RELEASE":
-            return {"outcome": "ok", "released": True, "available": True, "slot": 2, "generation": 5}
+        if op == "RELEASE":   # op_release reports the RELEASED occupancy's OWN generation (4), not the successor
+            return {"outcome": "ok", "released": True, "available": True, "slot": 2, "generation": 4}
         return {"outcome": "ok"}
     return transport
 
@@ -186,6 +186,30 @@ class RecoveryHelperTests(TestCase):
         job = recovery.recover_to_provisionable(rt, require_removed=False)   # force accepts FAILED
         self.assertEqual(job.status, "QUEUED")
 
+    def test_recover_refuses_a_held_runtime_even_with_force(self):
+        # --force-from-failed must NEVER reset a live/HELD runtime (that would orphan its still-assigned slot).
+        rt = _beta_runtime(6, state=RuntimeState.RUNNING, uuid=CZ_UUID)
+        with self.assertRaises(recovery.ReclaimError) as c:
+            recovery.recover_to_provisionable(rt, require_removed=False)
+        self.assertEqual(c.exception.reason_code, "runtime_is_held")
+        self.assertEqual(ProvisioningJob.objects.filter(runtime=rt).count(), 0)  # no job created
+
+    def test_recover_refuses_an_active_non_provision_job(self):
+        rt = _beta_runtime(7, state=RuntimeState.REMOVED, uuid=CZ_UUID)
+        ProvisioningJob.objects.create(runtime=rt, op=ProvisioningJob.Op.DEPROVISION, status="QUEUED")
+        with self.assertRaises(recovery.ReclaimError) as c:
+            recovery.recover_to_provisionable(rt)
+        self.assertEqual(c.exception.reason_code, "active_non_provision_job")
+
+    def test_probe_client_uses_a_fresh_probe_namespace_job_id(self):
+        # The probe MUST NOT reuse a real job id (agent memoises VERIFY on (job_id,op)); a fresh, large id.
+        with override_settings(BETA_AGENT_KEYRING='{"k1": "s"}', BETA_AGENT_KEY_ID="k1",
+                               BETA_AGENT_BASE_URL="http://agent.invalid"):
+            c1 = recovery.make_probe_client()
+            c2 = recovery.make_probe_client()
+        self.assertGreaterEqual(c1.job_id, 2_000_000_000)
+        self.assertNotEqual(c1.job_id, c2.job_id)      # unique per invocation (always a live read)
+
 
 # ── reclaim command ───────────────────────────────────────────────────────────────────────────────────────
 @override_settings(BETA_RUNTIMES_ENABLED=False)
@@ -277,6 +301,22 @@ class ReclaimCommandTests(TestCase):
         rt.refresh_from_db()
         self.assertTrue(rt.quarantined)                     # quarantined
         self.assertNotEqual(rt.state, RuntimeState.REMOVED)  # NEVER removed on a failed reclaim
+        # an IMMUTABLE FAILURE RuntimeEvent is recorded for the failure path (audit integrity), even though
+        # the state (FAILED) is not HELD
+        self.assertTrue(RuntimeEvent.objects.filter(runtime=rt, event_type="FAILURE",
+                                                    reason_code="reclaim_failed").exists())
+
+    def test_apply_release_runtime_not_assigned_is_idempotent_success(self):
+        # A RELEASE resend after a committed release resolves to runtime_not_assigned -> idempotent SUCCESS
+        # (the slot IS released), never a quarantine.
+        rt = _beta_runtime(10, uuid=CZ_UUID)
+        ProvisioningJob.objects.create(runtime=rt, op="PROVISION", status="FAILED", attempt=3)
+        with _agent(script={"RELEASE": {"outcome": "denied", "reason_code": "runtime_not_assigned"}}):
+            out = self._run(runtime_uuid=CZ_UUID, expect_slot=2, expect_generation=4, apply=True)
+        self.assertIn("SLOT_RECLAIMED", out)
+        rt.refresh_from_db()
+        self.assertEqual(rt.state, RuntimeState.REMOVED)
+        self.assertFalse(rt.quarantined)
 
 
 # ── recover command ───────────────────────────────────────────────────────────────────────────────────────
@@ -318,3 +358,11 @@ class RecoverCommandTests(TestCase):
         self.assertIn("not_removed", str(c.exception))
         out = self._run(runtime_uuid=CZ_UUID, apply=True, force_from_failed=True)
         self.assertIn("EXACTLY_ONE_PROVISION_JOB", out)
+
+    @override_settings(BETA_RUNTIMES_ENABLED=True)
+    def test_recover_refuses_when_provisioner_is_armed(self):
+        rt = _beta_runtime(5, state=RuntimeState.REMOVED, uuid=CZ_UUID)
+        with self.assertRaises(CommandError) as c:
+            self._run(runtime_uuid=CZ_UUID, apply=True)
+        self.assertIn("provisioner_not_dark", str(c.exception))
+        self.assertEqual(ProvisioningJob.objects.filter(runtime=rt).count(), 0)

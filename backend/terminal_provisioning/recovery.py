@@ -18,9 +18,12 @@ under a NEW job_id AFTER a TOMBSTONE removed the slot's owner marker would hit t
 QUARANTINE the slot. So the whole reclaim sequence — and every re-invocation — MUST reuse a **stable job_id**
 (defaulting to the runtime's retained PROVISION job). This module makes that the caller's explicit input.
 """
+import time
+
 from django.db import transaction
 
-from .beta_capacity import _require_beta, beta_runtimes_enabled, clear_quarantine, quarantine_runtime
+from .beta_capacity import (
+    HELD_STATES, _require_beta, beta_runtimes_enabled, clear_quarantine, quarantine_runtime)
 from .models import AccountRuntime, ProvisioningJob, RuntimeState
 from .runtime_state import record_transition
 
@@ -114,6 +117,25 @@ def make_reclaim_client(*, job_id: int, correlation_id: str = ""):
     return client
 
 
+def make_probe_client(*, correlation_id: str = ""):
+    """A client for the read-only occupancy probe ONLY. It MUST NOT reuse the mutation/idempotency anchor:
+    the agent memoises every op (incl. VERIFY) on ``(job_id, operation)`` durably, so a probe under a job_id
+    that ever carried a VERIFY (e.g. the runtime's provisioning-time VERIFY) would replay a STALE snapshot.
+    A fresh, single-use probe job_id guarantees a LIVE agent read every time. VERIFY resolves the occupancy by
+    the runtime UUID, not the job_id, so a throwaway id is correct."""
+    from .beta_worker import make_http_transport
+    from .mgmt_client import AgentWindowsProvisioner
+    probe_job_id = _fresh_probe_job_id()
+    return AgentWindowsProvisioner(job_id=probe_job_id, transport=make_http_transport(),
+                                   correlation_id=correlation_id or f"reclaim-probe-{probe_job_id}")
+
+
+def _fresh_probe_job_id() -> int:
+    """A large, single-use id in a dedicated probe namespace — never collides with a real (small) job id and
+    is unique per invocation, so the agent never has a memoised VERIFY for it."""
+    return 2_000_000_000 + (time.time_ns() % 1_000_000_000)
+
+
 def drive_reclaim_op(rt, fn, reason_code, *, max_attempts=None):
     """Drive ONE agent op through ``provisioner._step`` (so PR#252's in-attempt reconcile for a timeout /
     same-runtime ``runtime_busy`` applies), with a bounded OUTER retry for a genuine *retryable* channel error
@@ -140,9 +162,21 @@ def drive_reclaim_sequence(rt, client) -> dict:
     """STOP -> TOMBSTONE -> RELEASE. RELEASE is only reached if STOP and TOMBSTONE succeeded, so a partial
     teardown never advances the generation. Returns the RELEASE result ({released, available, slot, generation,
     occupancy_id})."""
+    from . import provisioner as prov
     drive_reclaim_op(rt, lambda: client.stop(rt), "stop_failed")
     drive_reclaim_op(rt, lambda: client.teardown(rt), "teardown_failed")   # TOMBSTONE
-    return drive_reclaim_op(rt, lambda: client.release(rt), "release_failed")
+    try:
+        return drive_reclaim_op(rt, lambda: client.release(rt), "release_failed")
+    except prov.ProvisionStepError as e:
+        # RELEASE runs OUTSIDE the agent per-runtime lock, so unlike STOP/TOMBSTONE a reconcile re-send is not
+        # serialised. Once a RELEASE has committed the slot is unassigned, so a resend deterministically
+        # resolves to ``runtime_not_assigned`` — that is idempotent SUCCESS (the slot IS released), never a
+        # failure/quarantine. (A rarer post-advance ``slot_integrity_mismatch`` remains fail-closed → a
+        # reversible quarantine, never state corruption; the generation advanced exactly once.)
+        if e.reason_code == "runtime_not_assigned":
+            return {"released": True, "available": True, "slot": None, "generation": None,
+                    "occupancy_id": None, "idempotent": True}
+        raise
 
 
 def mark_reclaimed(rt: AccountRuntime) -> AccountRuntime:
@@ -152,9 +186,14 @@ def mark_reclaimed(rt: AccountRuntime) -> AccountRuntime:
 
 
 def quarantine_on_reclaim_failure(rt: AccountRuntime, reason_code: str) -> None:
-    """A reclaim step failed unrecoverably — quarantine the runtime (blocks re-provisioning until an operator
-    clears it) and DO NOT mark REMOVED (the agent occupancy state is unknown/partial)."""
-    quarantine_runtime(rt, reason=(reason_code or "reclaim_failed")[:64])
+    """A reclaim step failed unrecoverably — record an IMMUTABLE FAILURE RuntimeEvent (the failure path is the
+    one that most needs a durable audit trail; ``quarantine_runtime`` alone only appends an event for HELD
+    states, so a FAILED/STOPPED/… reclaim would otherwise leave the immutable chain empty), then quarantine
+    (blocks re-provisioning until cleared). DO NOT mark REMOVED — the agent occupancy state is unknown/partial."""
+    code = (reason_code or "reclaim_failed")[:64]
+    record_transition(rt, rt.state, event_type="FAILURE", reason_code="reclaim_failed",
+                      detail=f"reclaim step failed: {code}")
+    quarantine_runtime(rt, reason=code)
 
 
 # ── Phase 2: backend failed-state recovery -> exactly one claimable PROVISION job ──────────────────────────
@@ -167,14 +206,23 @@ def recover_to_provisionable(rt: AccountRuntime, *, require_removed: bool = True
     with transaction.atomic():
         locked = AccountRuntime.objects.select_for_update().get(pk=rt.pk)
         _require_beta(locked)
-        # Idempotent short-circuit FIRST: if an active PROVISION job already exists this runtime is already
-        # prepared — return it regardless of the current state (a re-run after a prior recover left it
-        # NOT_PROVISIONED must not trip the require-REMOVED guard).
-        existing = (ProvisioningJob.objects
-                    .filter(runtime=locked, op=ProvisioningJob.Op.PROVISION, status__in=_ACTIVE_JOB)
-                    .order_by("id").first())
+        # An active NON-PROVISION job (e.g. a QUEUED DEPROVISION) must block — a worker may own it, and the
+        # per-(runtime, op) unique constraint would otherwise let a second-op job coexist.
+        active = ProvisioningJob.objects.filter(runtime=locked, status__in=_ACTIVE_JOB)
+        if active.exclude(op=ProvisioningJob.Op.PROVISION).exists():
+            raise ReclaimError("active_non_provision_job")
+        # Idempotent short-circuit: if an active PROVISION job already exists this runtime is already prepared
+        # — return it regardless of the current state (a re-run after a prior recover left it NOT_PROVISIONED
+        # must not trip the require-REMOVED guard).
+        existing = active.filter(op=ProvisioningJob.Op.PROVISION).order_by("id").first()
         if existing is not None:
             return existing
+        # NEVER reset a HELD / live runtime — that would drop it from capacity accounting while its agent slot
+        # is still assigned and its terminal running (an orphan/desync). ``--force-from-failed`` widens the
+        # floor to FAILED, never to a live state.
+        if locked.state in HELD_STATES:
+            raise ReclaimError("runtime_is_held",
+                               detail=f"state={locked.state} is live/held; stop + reclaim it first")
         if require_removed and locked.state != RuntimeState.REMOVED:
             raise ReclaimError("not_removed",
                                detail="run reclaim first (Phase 1) or pass --force-from-failed")

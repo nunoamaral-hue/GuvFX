@@ -25,7 +25,11 @@ class Command(BaseCommand):
         parser.add_argument("--apply", action="store_true", help="execute (default is a dry-run)")
         parser.add_argument("--force-from-failed", action="store_true",
                             help="accept FAILED instead of requiring REMOVED (ORPHAN RISK if Phase-1 reclaim "
-                                 "has not run — the still-assigned agent slot would be orphaned by a later retry)")
+                                 "has not run — the still-assigned agent slot would be orphaned by a later retry; "
+                                 "never accepts a live/HELD state)")
+        parser.add_argument("--allow-armed", action="store_true",
+                            help="proceed even if the provisioner is armed (by default recover refuses so the "
+                                 "new job stays inert until a separate Phase-3 arming)")
 
     def _inventory(self, rt):
         jobs = list(ProvisioningJob.objects.filter(runtime=rt).order_by("id")
@@ -37,6 +41,9 @@ class Command(BaseCommand):
             rt = recovery.resolve_runtime(runtime_uuid=o["runtime_uuid"],
                                           account_runtime_id=o["account_runtime_id"])
             recovery.assert_beta(rt)
+            # Keep the pool DARK: an enqueued job under an armed worker would start a real retry WITHOUT the
+            # separate Phase-3 arming.
+            recovery.assert_dark_or_allow(allow_armed=o["allow_armed"])
         except recovery.ReclaimError as e:
             raise CommandError(f"refusing to recover: {e.reason_code}"
                                + (f" ({e.detail})" if e.detail else ""))
@@ -63,5 +70,11 @@ class Command(BaseCommand):
         self.stdout.write(f"RECOVERED: runtime state={rt.state}; created/active PROVISION job id={job.id} "
                           f"status={job.status}")
         self.stdout.write(f"jobs now (id,op,status) = {self._inventory(rt)}")
-        self.stdout.write("EXACTLY_ONE_PROVISION_JOB; provisioner remains DARK (job inert until a separate "
-                          "arming). Phase 3 (arm + retry to RUNNING) is a separate Sponsor authorisation.")
+        from terminal_provisioning.beta_capacity import beta_runtimes_enabled
+        dark = not beta_runtimes_enabled()
+        self.stdout.write("EXACTLY_ONE_PROVISION_JOB; " + (
+            "provisioner is DARK — the job is inert until a separate Phase-3 arming."
+            if dark else
+            "WARNING: the provisioner is ARMED (--allow-armed) — a worker may claim this job now; this is NOT "
+            "the intended separate Phase-3 arming.") + " Phase 3 (arm + retry to RUNNING) is a separate "
+            "Sponsor authorisation.")

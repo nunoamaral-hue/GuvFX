@@ -591,12 +591,12 @@ def _fail_step(job: ProvisioningJob, rt: AccountRuntime, e: ProvisionStepError) 
 
 class FakeProvisioner:
     """In-memory provisioner for tests: records calls and returns a scriptable ``verify`` result."""
-    def __init__(self, verify_result=None, fail_on=None, release_slot=2, release_generation=5):
+    def __init__(self, verify_result=None, fail_on=None, release_slot=2, release_generation=4):
         self.calls = []
         self._verify = verify_result or {"running": True, "logged_in": True, "login": None, "server": None}
         self._fail_on = fail_on or {}   # {"materialise": ProvisionStepError(...), ...}
-        self._release_slot = release_slot            # RELEASE reports the freed slot + its advanced generation
-        self._release_generation = release_generation
+        self._release_slot = release_slot            # RELEASE reports the RELEASED occupancy's OWN generation
+        self._release_generation = release_generation   # (matches the real agent op_release; slot then Available at gen+1)
 
     def _maybe_fail(self, name):
         if name in self._fail_on:
