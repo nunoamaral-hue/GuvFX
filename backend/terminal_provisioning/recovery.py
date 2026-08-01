@@ -18,6 +18,7 @@ under a NEW job_id AFTER a TOMBSTONE removed the slot's owner marker would hit t
 QUARANTINE the slot. So the whole reclaim sequence — and every re-invocation — MUST reuse a **stable job_id**
 (defaulting to the runtime's retained PROVISION job). This module makes that the caller's explicit input.
 """
+import itertools
 import time
 
 from django.db import transaction
@@ -130,10 +131,17 @@ def make_probe_client(*, correlation_id: str = ""):
                                    correlation_id=correlation_id or f"reclaim-probe-{probe_job_id}")
 
 
+_probe_seq = itertools.count()
+
+
 def _fresh_probe_job_id() -> int:
     """A large, single-use id in a dedicated probe namespace — never collides with a real (small) job id and
-    is unique per invocation, so the agent never has a memoised VERIFY for it."""
-    return 2_000_000_000 + (time.time_ns() % 1_000_000_000)
+    is unique per call, so the agent never replays a memoised VERIFY for it. Uses the FULL nanosecond clock
+    (NOT ``time_ns() % 1e9``, which kept only the sub-second component and could repeat across two runs that
+    landed at the same fractional second → a stale VERIFY snapshot) plus a process-local counter so two probes
+    in the same process are distinct even at identical clock resolution. The value is only ever a signed-envelope
+    idempotency key (``sign_request`` accepts any int and it is never persisted), so its magnitude is irrelevant."""
+    return 2_000_000_000 + time.time_ns() + next(_probe_seq)
 
 
 def drive_reclaim_op(rt, fn, reason_code, *, max_attempts=None):

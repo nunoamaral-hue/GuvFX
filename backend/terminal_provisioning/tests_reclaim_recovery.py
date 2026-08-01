@@ -209,6 +209,15 @@ class RecoveryHelperTests(TestCase):
             c2 = recovery.make_probe_client()
         self.assertGreaterEqual(c1.job_id, 2_000_000_000)
         self.assertNotEqual(c1.job_id, c2.job_id)      # unique per invocation (always a live read)
+        # Uses the FULL nanosecond clock, not time_ns()%1e9 — that entropy-losing modulo capped ids below 3e9
+        # and could repeat across two runs at the same sub-second offset (a stale VERIFY replay).
+        self.assertGreater(c1.job_id, 3_000_000_000)
+        # the process-local counter guarantees no collision even if the wall clock were frozen: many probe ids
+        # in a tight loop are all distinct (a bare time_ns() could repeat at coarse clock resolution).
+        with override_settings(BETA_AGENT_KEYRING='{"k1": "s"}', BETA_AGENT_KEY_ID="k1",
+                               BETA_AGENT_BASE_URL="http://agent.invalid"):
+            ids = {recovery.make_probe_client().job_id for _ in range(50)}
+        self.assertEqual(len(ids), 50)
 
 
 # ── reclaim command ───────────────────────────────────────────────────────────────────────────────────────
