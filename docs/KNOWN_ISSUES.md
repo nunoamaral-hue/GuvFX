@@ -2,6 +2,26 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 ACTIVE (2026-08-01) — Customer Zero slot-2 orphan + deferred provisioning hardening
+
+- **Orphaned slot-2 occupancy (Sponsor-gated cleanup).** After the CZ MATERIALISE incident the agent slot store
+  has **slot 2 → CZ uuid `66972e0e-…`, generation 4, fully materialised** (`stage_copy COMPLETED`, markers
+  valid), while the backend runtime/job are `FAILED` — a data-plane/control-plane divergence. It is contained
+  (no process, no broker, no order) and **must be left untouched** until the cleanup authorisation. Reclaim =
+  signed **STOP→TOMBSTONE→RELEASE** (never manual `slots.sqlite`/DB edits). Full read-only analysis + plan:
+  `docs/POST_INCIDENT_CZ_MATERIALISE_TIMEOUT.md` §4–6.
+- **No backend RELEASE driver (pre-existing pool-leak).** `AgentWindowsProvisioner` has no `release()`;
+  `_drive_deprovision` TOMBSTONEs then goes REMOVED **without** RELEASE, so a deprovisioned slot's generation
+  never advances and it never returns to Available. A governed RELEASE driver + `reclaim_beta_runtime` command
+  must be built under the cleanup authorisation (specified in the recovery plan). `reconcile_beta_provisioning`
+  only re-drives `NOT_PROVISIONED`, not `FAILED`/orphans.
+- **Deferred agent `put`-inside-lock hardening (ADR-0023).** `mgmt_agent_core.handle` stores the idempotency
+  result *after* releasing the runtime lock. The post-completion re-execution window is **benign today** (every
+  `_MUTATING` op is internally idempotent), but a future non-idempotent op would reopen a real hazard. **Binding
+  invariant until the put-inside-lock change ships (next agent re-stage): every `_MUTATING` agent op must be
+  re-entrant/idempotent.**
+
+
 ## ✅ RESOLVED (2026-07-31) — orphaned PLANNED plans blocked Telegram trading (prod acct #1)
 
 - **Symptom (was):** prod acct #1 (nuno.amaral@live.com) stopped opening Telegram trades from 2026-07-31 02:06 UTC

@@ -83,14 +83,21 @@ def provisioning_service_healthy() -> bool:
 
 def _provisioner_heartbeat_fresh() -> bool:
     """Beta provisioner liveness + health — **FAIL CLOSED**. Healthy ONLY if the singleton heartbeat was
-    updated within ``BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS`` (default 120) AND its status is a healthy
+    updated within ``BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS`` (default 900) AND its status is a healthy
     state (``IDLE_READY`` or ``PROCESSING`` — a PROCESSING worker that keeps refreshing is healthy; a
-    long-running job never reads stale). Missing / stale / DEGRADED / ERROR / unreadable ⇒ False."""
+    long-running job never reads stale). Missing / stale / DEGRADED / ERROR / unreadable ⇒ False.
+
+    Default raised 120 → 900 (Customer Zero 2026-08-01): a single blocking MATERIALISE POST copies the
+    ~380MB golden and emits NO per-step heartbeat mid-copy (the callback fires only after the step returns),
+    so a healthy long copy would false-trip ``provisioner_unhealthy`` and refuse a concurrent NEW reservation
+    at 120s. This gate is fail-closed either way — it only ever gates NEW reservations, never an existing
+    runtime's progression — so raising it cannot admit work against a genuinely dead provisioner beyond a
+    delayed detection window; it must stay ABOVE the MATERIALISE read timeout + reconcile budget."""
     try:
         # Parse the TTL INSIDE the guard — a malformed BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS must fail
         # CLOSED (unhealthy), never raise an unhandled error out of a health check.
         ttl = int(getattr(settings, "BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", 0)
-                  or os.getenv("BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", "120"))
+                  or os.getenv("BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS", "900"))
         from django.utils import timezone
 
         from terminal_provisioning.models import ProvisionerHeartbeat
