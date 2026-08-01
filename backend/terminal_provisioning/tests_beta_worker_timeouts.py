@@ -50,11 +50,16 @@ class OpReadTimeoutTests(SimpleTestCase):
         with mock.patch.dict(os.environ, {"BETA_AGENT_OP_TIMEOUTS": json.dumps({"MATERIALISE": 250})}):
             self.assertEqual(beta_worker._op_read_timeout("MATERIALISE"), 250)
 
-    def test_malformed_override_fails_safe_to_default(self):
+    def test_malformed_override_fails_safe_to_the_PER_OP_default(self):
+        # Both a malformed env JSON AND a malformed per-op VALUE must fall back to the PER-OP default (300 for
+        # MATERIALISE) — never the 20s scalar, which would silently reinstate the incident's short timeout.
         with mock.patch.dict(os.environ, {"BETA_AGENT_OP_TIMEOUTS": "{not json"}):
-            self.assertEqual(beta_worker._op_read_timeout("MATERIALISE"), 300)  # per-op default, not a crash
+            self.assertEqual(beta_worker._op_read_timeout("MATERIALISE"), 300)
         with override_settings(BETA_AGENT_OP_TIMEOUTS={"MATERIALISE": "oops"}):
-            self.assertEqual(beta_worker._op_read_timeout("MATERIALISE"), beta_worker.DEFAULT_TRANSPORT_TIMEOUT)
+            self.assertEqual(beta_worker._op_read_timeout("MATERIALISE"), 300)   # per-op default, NOT 20
+        # an unmapped op with a malformed override still uses the scalar default (nothing better to fall to)
+        with override_settings(BETA_AGENT_OP_TIMEOUTS={"WEIRD": "oops"}):
+            self.assertEqual(beta_worker._op_read_timeout("WEIRD"), beta_worker.DEFAULT_TRANSPORT_TIMEOUT)
 
 
 class TransportTimeoutTupleTests(SimpleTestCase):
@@ -107,6 +112,24 @@ class LeaseCouplingTests(SimpleTestCase):
         # catches it rather than shipping a job that can be re-claimed mid-flight.
         with self.assertRaises(AssertionError):
             provisioner.assert_lease_covers_op_timeouts()
+
+
+class ReasonSetCouplingTests(SimpleTestCase):
+    def test_only_runtime_busy_triggers_reconcile(self):
+        # agent_busy (global semaphore, OTHER runtimes) and agent_stopping (drain) are raised BEFORE this op
+        # runs, so they must NOT trigger the reconcile path (which on exhaustion quarantines) — only
+        # runtime_busy is positive evidence THIS runtime's op is in flight.
+        self.assertEqual(provisioner.RECONCILE_BUSY_REASONS, frozenset({"runtime_busy"}))
+        self.assertNotIn("agent_busy", provisioner.RECONCILE_BUSY_REASONS)
+        self.assertNotIn("agent_stopping", provisioner.RECONCILE_BUSY_REASONS)
+
+    def test_partial_reasons_cover_the_live_pool_agent_integrity_codes(self):
+        # The codes the deployed SLOT_POOL agent actually emits on MATERIALISE must be fail-closed+quarantined,
+        # else a real containment/integrity refusal is silently retried and ends FAILED-without-quarantine.
+        for code in ("reparse_escape", "slot_integrity_mismatch", "path_escape", "impl_integrity_mismatch",
+                     "stage_copy_precheck_failed", "stage_copy_incomplete", "image_outside_slot",
+                     "audit_chain_corrupt"):
+            self.assertIn(code, provisioner.PARTIAL_REASONS)
 
 
 class ProtocolTtlUntouchedTests(SimpleTestCase):

@@ -53,7 +53,8 @@ See ADR-0023 for the design. Files:
   settings/env override.
 - `provisioner.py` — in-attempt reconcile (`_reconcile`, poll-not-repost); `_step` reclassifies
   `runtime_busy`/timeout as "still running"; `PARTIAL_REASONS` fail-closed + quarantine; `LEASE_TTL_SECONDS`
-  300→1200 + `assert_lease_covers_op_timeouts()`.
+  300→1500 + honest `assert_lease_covers_op_timeouts()` (only `runtime_busy` reconciles; `agent_busy`/
+  `agent_stopping` re-queue; `PARTIAL_REASONS` derived from the pool agent's INTEGRITY codes).
 - `run_beta_provisioning_worker.py` — fail-closed lease/timeout coupling guard at startup.
 - `billing/beta.py` — `BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS` default 120→900.
 
@@ -73,8 +74,8 @@ See ADR-0023 for the design. Files:
 - Override: `settings.BETA_AGENT_OP_TIMEOUTS` or env `BETA_AGENT_OP_TIMEOUTS` (JSON), each value **clamped** to
   `MAX_TRANSPORT_READ_TIMEOUT = 600`.
 - Reconcile budget: `PROVISIONING_MATERIALISE_MAX_WAIT_SECONDS = 300` (backoff 5→30s).
-- Coupling invariant (fail-closed at worker startup + CI): `LEASE_TTL_SECONDS (1200) > materialise_read +
-  reconcile_budget`.
+- Coupling invariant (fail-closed at worker startup + CI): `LEASE_TTL_SECONDS (1500) >` the honest worst-case
+  PROVISION attempt (materialise+start+verify read+reconcile + one trailing full-read overshoot).
 - Heartbeat: `BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS` must stay **≥ MATERIALISE read** (default 900).
 
 ### 3b. Operator runbook — ambiguous long operations

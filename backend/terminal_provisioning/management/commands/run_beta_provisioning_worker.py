@@ -28,7 +28,7 @@ class Command(BaseCommand):
         # backend, and it refuses to claim a single job with a lease that a long MATERIALISE could outlive.
         try:
             assert_lease_covers_op_timeouts()
-        except AssertionError as exc:
+        except (AssertionError, ValueError) as exc:
             raise CommandError(f"refusing to start: {exc}")
         negotiate = not o["no_negotiate"]
         if o["once"]:

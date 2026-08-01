@@ -180,5 +180,54 @@ class BetaWorkerTests(TestCase):
         job = ProvisioningJob.objects.get(runtime=rt)
         self.assertEqual(job.status, ProvisioningJob.Status.FAILED)
         self.assertTrue(rt.quarantined)
-        self.assertEqual(rt.quarantine_reason, "partial_materialise")
+        self.assertEqual(rt.quarantine_reason, "stage_copy_precheck_failed")  # the agent's actual code
         self.assertEqual(rt.state, RuntimeState.FAILED)
+
+    def test_reparse_escape_from_the_pool_agent_is_fail_closed_and_quarantined(self):
+        # A containment/junction escape the LIVE slot_pool agent emits on MATERIALISE must fail closed +
+        # quarantine (it is in PARTIAL_REASONS), not be retried as a generic channel error and end
+        # FAILED-without-quarantine.
+        acct = _admitted_account(8)
+        rt = cap.reserve_beta_slot(acct)
+        ProvisioningJob.objects.create(runtime=rt, op=ProvisioningJob.Op.PROVISION)
+        agent = _good_agent()
+
+        def transport(base, req):
+            if req.get("operation") == "MATERIALISE":
+                return _denied("reparse_escape")
+            return agent.handle(req)
+
+        beta_worker.process_one(_factory(transport))
+        rt.refresh_from_db()
+        job = ProvisioningJob.objects.get(runtime=rt)
+        self.assertEqual(job.status, ProvisioningJob.Status.FAILED)
+        self.assertTrue(rt.quarantined)
+        self.assertEqual(rt.quarantine_reason, "reparse_escape")
+        self.assertEqual(rt.state, RuntimeState.FAILED)
+
+    def test_agent_busy_is_requeued_not_reconciled_or_quarantined(self):
+        # agent_busy (global mutation semaphore saturated by OTHER runtimes) is raised BEFORE this op runs and
+        # mutated nothing — it must re-queue (retryable), never enter the reconcile path and quarantine an op
+        # that never started. On exhaustion it is a plain FAILED, NOT a quarantine.
+        acct = _admitted_account(9)
+        rt = cap.reserve_beta_slot(acct)
+        ProvisioningJob.objects.create(runtime=rt, op=ProvisioningJob.Op.PROVISION)
+        agent = _good_agent()
+
+        def transport(base, req):
+            if req.get("operation") == "MATERIALISE":
+                return _denied("agent_busy")
+            return agent.handle(req)
+
+        factory = _factory(transport)
+        beta_worker.process_one(factory)                 # first attempt
+        rt.refresh_from_db()
+        job = ProvisioningJob.objects.get(runtime=rt)
+        self.assertFalse(rt.quarantined)                 # never entered reconcile→quarantine
+        self.assertEqual(job.status, ProvisioningJob.Status.QUEUED)   # re-queued for a later attempt
+        for _ in range(MAX_ATTEMPTS):                    # exhaust attempts — still agent_busy
+            beta_worker.process_one(factory)
+        rt.refresh_from_db()
+        job = ProvisioningJob.objects.get(runtime=rt)
+        self.assertEqual(job.status, ProvisioningJob.Status.FAILED)
+        self.assertFalse(rt.quarantined)                 # nothing was materialised — plain FAILED, not quarantine

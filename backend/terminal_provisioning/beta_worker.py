@@ -50,14 +50,20 @@ def _op_read_timeout(operation: str, default: int = DEFAULT_TRANSPORT_TIMEOUT) -
         try:
             override = json.loads(raw) if raw else {}
         except ValueError:
+            logger.warning("BETA_AGENT_OP_TIMEOUTS env is not valid JSON; ignoring the override")
             override = {}
+    # The per-op default is the safe fallback for BOTH an absent override AND a malformed override VALUE, so a
+    # botched override for MATERIALISE can never silently reinstate the short scalar timeout the incident used.
+    per_op_default = OP_TRANSPORT_TIMEOUTS.get(operation, default)
     val = override.get(operation) if isinstance(override, dict) else None
     if val is None:
-        val = OP_TRANSPORT_TIMEOUTS.get(operation, default)
+        val = per_op_default
     try:
         val = int(val)
     except (TypeError, ValueError):
-        val = default
+        logger.warning("BETA_AGENT_OP_TIMEOUTS[%s]=%r is not an int; using the per-op default %ss",
+                       operation, val, per_op_default)
+        val = per_op_default
     return max(1, min(val, MAX_TRANSPORT_READ_TIMEOUT))
 
 

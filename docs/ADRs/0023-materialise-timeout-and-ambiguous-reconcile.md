@@ -45,23 +45,29 @@ migration, no agent change**:
    so no configuration produces an unbounded wait. The transport only *reads* the already-signed `operation`
    field — signature, nonce and body are untouched.
 
-2. **In-attempt reconcile — poll-not-repost** (`provisioner._reconcile`). A `ManagementChannelTimeout` **or** a
-   `runtime_busy`/`agent_busy`/`agent_stopping` reply is reconciled *inside the same attempt*: **wait**
-   (exponential backoff 5→30s), fire the liveness heartbeat, then re-send the **same** idempotent `(job_id, op)`.
-   The agent returns its stored result once the op completes. `runtime_busy` is treated as **positive evidence
-   the original op still holds the per-runtime lock**, never a failure — it can no longer exhaust the retry
-   budget. Bounded by `PROVISIONING_MATERIALISE_MAX_WAIT_SECONDS = 300` wall-clock; on exhaustion it raises a
-   single **ambiguous** error → the runtime is **quarantined** (a deterministic terminal outcome, never a "safe
-   to re-launch" `FAILED`).
+2. **In-attempt reconcile — poll-not-repost** (`provisioner._reconcile`). A `ManagementChannelTimeout` **or the
+   same runtime's `runtime_busy`** is reconciled *inside the same attempt*: **wait** (exponential backoff
+   5→30s), fire the liveness heartbeat, then re-send the **same** idempotent `(job_id, op)`. The agent returns
+   its stored result once the op completes. Only `runtime_busy` is **positive evidence the original op still
+   holds the per-runtime lock**, so only it triggers reconcile; `agent_busy` (the agent's *global* mutation
+   semaphore, saturated by *other* runtimes) and `agent_stopping` (drain) are raised *before* this op runs and
+   are ordinary retryable channel errors that **re-queue** (never a reconcile→quarantine of an op that never
+   started). Budget is long for the MATERIALISE copy (`PROVISIONING_MATERIALISE_MAX_WAIT_SECONDS = 300`) and
+   short (60s) for start/verify; on exhaustion it raises a single **ambiguous** error → the runtime is
+   **quarantined** (a deterministic terminal outcome, never a "safe to re-launch" `FAILED`).
 
-3. **Fail-closed on a proven partial** (`PARTIAL_REASONS` in `_step`/`_fail_step`). A `stage_copy_*` /
-   integrity refusal is non-retryable and additionally **quarantines** the runtime (`partial_materialise`), so a
-   half-materialised slot is never silently re-driven as success.
+3. **Fail-closed on a proven partial / containment escape** (`PARTIAL_REASONS` in `_step`/`_fail_step`).
+   Non-retryable + **quarantine**, so a half-materialised or escaped slot is never silently re-driven as
+   success. The set is derived from the SLOT_POOL agent's actual INTEGRITY reason codes reachable on MATERIALISE
+   (`reparse_escape`, `slot_integrity_mismatch`, `image_outside_slot`, `audit_chain_corrupt`, the `stage_copy_*`
+   codes, …) — **not** a hand-picked subset — and a coupling test pins the live codes so it cannot fall behind.
+   `quarantine_reason` carries the agent's actual code (not a fixed label).
 
-4. **Lease/timeout coupling.** `LEASE_TTL_SECONDS` raised 300 → **1200** so a job whose first POST is
-   legitimately in flight is never re-claimed by a second worker (which would fire a concurrent MATERIALISE).
-   `assert_lease_covers_op_timeouts()` fails closed at worker startup (and in CI) if a future change breaks
-   `LEASE > materialise_read + reconcile_budget`.
+4. **Lease/timeout coupling.** `LEASE_TTL_SECONDS` raised 300 → **1500** so a job still legitimately in flight
+   is never re-claimed by a second worker (which would fire a concurrent op). `assert_lease_covers_op_timeouts()`
+   uses an explicit `raise` (survives `python -O`) and computes the **honest** worst case — materialise + start +
+   verify each (read + their reconcile budget) plus one trailing full-read overshoot — failing closed at worker
+   startup (and in CI) if a future change breaks the coupling.
 
 5. **Heartbeat coupling.** `BETA_PROVISIONER_HEARTBEAT_TTL_SECONDS` default raised 120 → **900** (a single
    blocking MATERIALISE POST emits no mid-copy heartbeat; at 120 a healthy long copy would false-trip
@@ -91,8 +97,22 @@ migration, no agent change**:
   LiveUpdate containment, production isolation, DARK-by-default, fail-closed, never-partial-as-success.
 - No database migration; no agent-side change; deployable with a backend recreate.
 
+## Review
+
+An 8-lens adversarial review (timeout / idempotency-race / retry / crash-recovery / partial-copy / security /
+blast-radius / rollback-observability) ran before merge. It found **no blocking defect on the Customer Zero
+path** and confirmed the duplicate-copy race is benign (idempotent `assign` + destination-guarded `stage_copy`;
+`put` is `INSERT OR REPLACE`). Its CONFIRMED findings — all latent for the *multi-user* case the change unblocks —
+were resolved here rather than deferred: `runtime_busy`-only reconcile (was folding in `agent_busy`/`agent_stopping`);
+INTEGRITY-derived `PARTIAL_REASONS` (the deployed pool agent emits `reparse_escape`, not the legacy
+`reparse_escape_after_materialise`); the honest, `-O`-safe lease guard + op-aware reconcile budget; malformed
+per-op override falling to the per-op default (not the 20s scalar) with a warning; guarded `int()`; accurate
+`quarantine_reason`; and reconcile-entry/recovery/exhaustion logging.
+
 ## Evidence
 
 - Incident + host forensics: `docs/POST_INCIDENT_CZ_MATERIALISE_TIMEOUT.md`.
-- Tests: `tests_beta_worker_timeouts.py` (13), `tests_beta_worker.py` reconcile/quarantine/partial cases;
-  full `terminal_provisioning` suite green (858).
+- Tests: `tests_beta_worker_timeouts.py` (per-op timeouts, clamp/override, lease-coupling, reason-set coupling),
+  `tests_beta_worker.py` (incident-recovers-to-RUNNING, budget-exhaustion quarantine, proven-partial +
+  reparse-escape quarantine, `agent_busy` re-queue). Full `terminal_provisioning` suite green (862); `make check`
+  green.

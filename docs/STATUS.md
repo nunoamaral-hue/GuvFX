@@ -14,8 +14,9 @@
   **Remediation (branch `fix/cz-materialise-timeout-idempotency`, client-side only, NO migration, NO agent
   change, deployable via backend recreate):** per-op `(connect,read)` timeout map (MATERIALISE 300s, clamp 600);
   in-attempt reconcile (poll-not-repost) that treats `runtime_busy`/timeout as "still running" and quarantines
-  only on a bounded budget exhaustion; fail-closed quarantine on a proven-partial; `LEASE_TTL` 300→1200 with a
-  startup+CI coupling guard; heartbeat TTL default 120→900. ADR-0023; incident +
+  only on a bounded budget exhaustion; fail-closed quarantine on a proven-partial; `LEASE_TTL` 300→1500 with an
+  honest startup+CI coupling guard; heartbeat TTL default 120→900. Passed an 8-lens adversarial review (no
+  blocking; all confirmed multi-user-latent findings resolved). ADR-0023; incident +
   orphaned-slot + recovery/retry plans in `docs/POST_INCIDENT_CZ_MATERIALISE_TIMEOUT.md`. `make check` green
   (858 backend + frontend). **Not deployed; provisioner DARK; slot 2 orphan left untouched (Sponsor-gated
   cleanup).** Deferred: agent `put`-inside-lock hardening (benign window, needs re-stage) + a backend RELEASE
