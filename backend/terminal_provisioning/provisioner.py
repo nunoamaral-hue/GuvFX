@@ -9,7 +9,9 @@ real provisioner injects over an authenticated channel — never into a command 
 (control 10). Nuno's PRODUCTION runtimes are refused (control 14).
 """
 import contextvars
+import logging
 import os
+import time
 from typing import Protocol
 
 from django.conf import settings
@@ -21,12 +23,98 @@ from core.audit import log_customer_credential_event
 
 from .beta_activation import ActivationDenied, assert_beta_activation_allowed
 from .beta_capacity import CapacityError, _require_beta, reserve_beta_slot
-from .mgmt_client import ManagementChannelTimeout
+from .mgmt_client import ManagementChannelError, ManagementChannelTimeout
 from .models import AccountRuntime, ProvisioningJob, RuntimeState
 from .runtime_state import record_transition
 
+logger = logging.getLogger(__name__)
+
 MAX_ATTEMPTS = 3
-LEASE_TTL_SECONDS = 300
+# Raised from 300 (Customer Zero 2026-08-01): a single PROVISION attempt runs materialise + start + verify,
+# each of which may enter the in-attempt reconcile below, and the lease MUST outlast the whole attempt's
+# worst-case wall-clock so a job still legitimately in flight is never re-claimed by another worker (which
+# would fire a concurrent, colliding op). The honest bound is enforced by ``assert_lease_covers_op_timeouts``
+# (also at worker startup + CI ``tests_beta_worker_timeouts.LeaseCouplingTests``).
+LEASE_TTL_SECONDS = 1500
+
+# ── Ambiguous long-operation reconcile (poll-not-repost) — Customer Zero remediation ──
+# The MATERIALISE golden copy can exceed even a right-sized transport read timeout on a slow host. Rather
+# than blind-re-POSTing (which hammers the still-held per-runtime lock into ``runtime_busy`` and burns the
+# retry budget in milliseconds — the Customer Zero incident), an ambiguous timeout OR the SAME runtime's
+# ``runtime_busy`` is reconciled IN the same attempt: WAIT, then re-send the SAME idempotent (job_id, op);
+# the agent returns its stored result once the op completes. Bounded by a wall-clock budget (long for the big
+# MATERIALISE copy, short for start/verify) — never an indefinite wait.
+PROVISIONING_MATERIALISE_MAX_WAIT_SECONDS = 300
+_RECONCILE_SHORT_WAIT_SECONDS = 60            # non-materialise ops don't do a big copy; keep their wait short
+_RECONCILE_BACKOFF_START = 5
+_RECONCILE_BACKOFF_MAX = 30
+
+#: ONLY ``runtime_busy`` triggers the in-attempt reconcile from ``_step`` — it is the sole reply that is
+#: POSITIVE evidence THIS runtime's op holds the per-runtime lock (genuinely in flight). ``agent_busy`` (the
+#: agent's GLOBAL mutation semaphore, saturated by OTHER runtimes) and ``agent_stopping`` (drain) are raised
+#: BEFORE this op runs — nothing was mutated — so they are ordinary retryable channel errors that re-queue,
+#: never a reconcile→quarantine of an op that never started.
+RECONCILE_BUSY_REASONS = frozenset({"runtime_busy"})
+#: Once already reconciling (this op WAS in flight), a re-probe returning any of these is NOT resolution — the
+#: original op may still be running — so keep waiting within the budget rather than bailing to a false failure.
+_RECONCILE_CONTINUE_REASONS = frozenset({
+    "runtime_busy", "agent_busy", "agent_stopping", "transport_error", "bad_agent_response",
+})
+#: A PROVEN-partial / integrity / containment refusal from the agent on a mutating op. Definitive (a re-drive
+#: won't fix it and the slot may be corrupt/escaped): fail closed AND quarantine — a partial or escaped slot
+#: must never be silently re-materialised as success or blindly re-driven. Derived from the SLOT_POOL agent's
+#: INTEGRITY reason codes (deploy/beta-agent/lifecycle.py) reachable on MATERIALISE — NOT a hand-picked subset;
+#: the live pool agent emits ``reparse_escape`` / ``slot_integrity_mismatch`` (the legacy uuid_dir model emits
+#: ``reparse_escape_after_materialise``). Coupling asserted by tests so it cannot silently fall behind.
+PARTIAL_REASONS = frozenset({
+    # stage-copy partial / refusal
+    "stage_copy_incomplete", "stage_copy_precheck_failed", "stage_copy_refused",
+    # integrity + containment refusals (INTEGRITY category) reachable on the MATERIALISE path
+    "impl_integrity_mismatch", "path_escape",
+    "reparse_escape", "reparse_escape_after_materialise", "reparse_escapes_namespace",
+    "reparse_point_present", "reparse_point_in_tree",
+    "image_outside_slot", "image_not_owned", "slot_integrity_mismatch", "audit_chain_corrupt",
+    "unauthorised_namespace", "capability_violation", "occupancy_binding_mismatch",
+})
+
+# Injectable for tests so the reconcile budget is consumed deterministically with no real sleeping / wall
+# clock: tests replace both with a fake clock (sleep advances the clock the caller reads).
+_reconcile_sleep = time.sleep
+_reconcile_now = time.monotonic
+
+
+def _materialise_max_wait() -> int:
+    """The MATERIALISE reconcile budget (settings-overridable), parsed defensively — a malformed value falls
+    back to the module default rather than raising out of the caller (mirrors ``_op_read_timeout``)."""
+    try:
+        return int(getattr(settings, "PROVISIONING_MATERIALISE_MAX_WAIT_SECONDS",
+                           PROVISIONING_MATERIALISE_MAX_WAIT_SECONDS))
+    except (TypeError, ValueError):
+        return PROVISIONING_MATERIALISE_MAX_WAIT_SECONDS
+
+
+def _reconcile_budget(reason_code: str) -> int:
+    """Wall-clock reconcile budget for the step: the long MATERIALISE budget only for the copy, a short budget
+    for start/verify (which do no big copy). Keeps the worst-case attempt bounded under the lease."""
+    return _materialise_max_wait() if reason_code == "materialise_failed" else _RECONCILE_SHORT_WAIT_SECONDS
+
+
+def assert_lease_covers_op_timeouts() -> None:
+    """Fail-closed coupling guard: the job lease MUST outlast the HONEST worst-case single PROVISION attempt —
+    materialise + start + verify each (read timeout + their reconcile budget), plus one trailing full-read
+    overshoot (a probe may start just under the deadline and block a full read). Else a long-but-healthy
+    attempt lets the lease expire and a second worker re-claims + re-fires an op. Uses an explicit raise (not a
+    bare ``assert``) so it survives ``python -O``; a future timeout bump that breaks the coupling fails here at
+    worker startup and in CI (``tests_beta_worker_timeouts.LeaseCouplingTests``)."""
+    from .beta_worker import _op_read_timeout
+    materialise = _op_read_timeout("MATERIALISE")
+    full, short = _reconcile_budget("materialise_failed"), _reconcile_budget("start_failed")
+    required = ((materialise + full) + (_op_read_timeout("START") + short)
+                + (_op_read_timeout("VERIFY") + short) + materialise)   # + trailing full-read overshoot
+    if LEASE_TTL_SECONDS <= required:
+        raise AssertionError(
+            f"LEASE_TTL_SECONDS ({LEASE_TTL_SECONDS}) must exceed the worst-case PROVISION attempt "
+            f"(materialise+start+verify read+reconcile + overshoot) = {required}")
 
 # ADR-0021 — optional per-step heartbeat. The worker sets this so the durable liveness heartbeat is
 # refreshed after EVERY provisioning side-effect (materialise/start/verify/…), so a genuinely long
@@ -237,13 +325,67 @@ def _step(runtime, fn, reason_code):
     except ProvisionStepError:
         raise
     except ManagementChannelTimeout:
-        # A channel timeout is AMBIGUOUS — the op may have executed. Retryable (the agent's (job_id, op)
-        # idempotency returns the stored result on the resend, so a completed op is never re-launched),
-        # but flagged ambiguous so repeated ambiguity quarantines instead of declaring failure/re-running.
-        raise ProvisionStepError("op_ambiguous_timeout", detail="channel_timeout",
-                                 retryable=True, ambiguous=True)
+        # AMBIGUOUS — the op may still be running on the agent. Reconcile IN-attempt (poll-not-repost)
+        # rather than blind-re-POSTing: the resend returns the agent's stored idempotent result once the op
+        # completes; only a proven-partial or an exhausted wait budget fails. (Customer Zero remediation.)
+        return _reconcile(fn, reason_code)
+    except ManagementChannelError as exc:
+        rc = getattr(exc, "reason_code", "") or ""
+        if rc in RECONCILE_BUSY_REASONS:
+            # runtime_busy ONLY: the ORIGINAL op still holds the per-runtime lock (genuinely in flight).
+            # Reconcile, never re-POST — the exact reply the incident mis-classified as ``materialise_failed``.
+            # (agent_busy / agent_stopping are raised BEFORE this op runs, so they fall through to a plain
+            # retryable re-queue below — never a reconcile→quarantine of an op that never started.)
+            return _reconcile(fn, reason_code)
+        if rc in PARTIAL_REASONS:
+            # PROVEN partial / integrity / containment refusal — fail closed, non-retryable (quarantined).
+            raise ProvisionStepError(rc, detail="proven_partial", retryable=False)
+        # Another channel error (transport_error, agent_busy, agent_stopping, agent_denied, …): retryable,
+        # carrying the agent's own sanitised code so the operator sees what actually happened.
+        raise ProvisionStepError(rc or reason_code, detail="channel_error", retryable=True)
     except Exception as exc:  # noqa: BLE001 — never leak a raw agent string to the user path
         raise ProvisionStepError(reason_code, detail=str(exc)[:2000], retryable=True)
+
+
+def _reconcile(fn, reason_code):
+    """Bounded in-attempt reconcile for a long op that WAS in flight (ambiguous timeout / same-runtime
+    ``runtime_busy``): WAIT, then re-send the SAME idempotent (job_id, op) — the agent returns its stored
+    result once the op completes, or busy/timeout while it is still running. NEVER re-POSTs before waiting;
+    NEVER an indefinite wait (budget is long for MATERIALISE's copy, short for start/verify).
+
+    Returns the agent result on completion. Raises ``ProvisionStepError``: non-retryable on a proven-partial
+    (fail closed, quarantined by ``_fail_step``); retryable on a definitive channel error; ambiguous
+    (→ quarantine) on wall-clock budget exhaustion — a deterministic terminal outcome, never a
+    "safe to re-launch" FAILED."""
+    budget = max(0, _reconcile_budget(reason_code))
+    logger.info("provisioner: reconciling %s (in-attempt poll-not-repost, budget=%ss)", reason_code, budget)
+    deadline = _reconcile_now() + budget
+    backoff = _RECONCILE_BACKOFF_START
+    while _reconcile_now() < deadline:
+        _reconcile_sleep(backoff)          # WAIT before re-probing — never hammer the held lock
+        _fire_step_heartbeat()             # keep the durable liveness heartbeat PROCESSING-fresh across the wait
+        backoff = min(backoff * 2, _RECONCILE_BACKOFF_MAX)
+        try:
+            result = fn()                  # re-send the SAME signed (job_id, op) — fresh nonce, agent dedupes on (job_id, op)
+        except ManagementChannelTimeout:
+            continue                       # still copying → keep waiting
+        except ManagementChannelError as exc:
+            rc = getattr(exc, "reason_code", "") or ""
+            if rc in _RECONCILE_CONTINUE_REASONS:
+                continue                   # not resolution (busy / drain / transient transport) → keep waiting
+            if rc in PARTIAL_REASONS:
+                raise ProvisionStepError(rc, detail="proven_partial", retryable=False)
+            raise ProvisionStepError(rc or reason_code, detail="channel_error", retryable=True)
+        except ProvisionStepError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ProvisionStepError(reason_code, detail=str(exc)[:2000], retryable=True)
+        _fire_step_heartbeat()
+        logger.info("provisioner: reconciled %s → resolved (agent returned a result)", reason_code)
+        return result
+    logger.warning("provisioner: reconcile budget exhausted for %s → ambiguous_timeout (quarantine)", reason_code)
+    raise ProvisionStepError("op_ambiguous_timeout", detail="reconcile_budget_exhausted",
+                             retryable=False, ambiguous=True)
 
 
 def _start_and_verify(rt: AccountRuntime, p: WindowsProvisioner) -> None:
@@ -414,6 +556,20 @@ def _fail_step(job: ProvisioningJob, rt: AccountRuntime, e: ProvisionStepError) 
         rt_q.save(update_fields=["quarantined", "quarantine_reason", "updated_at"])
         record_transition(rt_q, rt_q.state, event_type="FAILURE",
                           reason_code="ambiguous_timeout_quarantined")
+        job.status = ProvisioningJob.Status.FAILED
+        job.finished_at = timezone.now()
+        job.lease_expires_at = None
+    elif e.reason_code in PARTIAL_REASONS:
+        # PROVEN partial / integrity / containment refusal on a mutating op: fail closed AND quarantine so it
+        # is never silently re-driven as success — the reserve gate then refuses the quarantined runtime until
+        # an operator reclaims it via the lifecycle. ``quarantine_reason`` carries the AGENT's actual code
+        # (e.g. stage_copy_precheck_failed vs reparse_escape vs slot_integrity_mismatch) — a fixed label would
+        # mislead an operator about whether a slot is half-copied or a pre-copy containment escape.
+        rt_q = AccountRuntime.objects.get(pk=rt.pk)
+        rt_q.quarantined = True
+        rt_q.quarantine_reason = e.reason_code[:64]
+        rt_q.save(update_fields=["quarantined", "quarantine_reason", "updated_at"])
+        record_transition(rt_q, RuntimeState.FAILED, reason_code=e.reason_code)
         job.status = ProvisioningJob.Status.FAILED
         job.finished_at = timezone.now()
         job.lease_expires_at = None

@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Customer Zero MATERIALISE remediation — engineering-complete (2026-08-01); awaiting merge + Sponsor gate
+Remediation of the CZ MATERIALISE timeout/idempotency/retry defect is engineering-complete on branch
+`fix/cz-materialise-timeout-idempotency` (client-side only, NO migration, NO agent change; `make check` green;
+ADR-0023; `docs/POST_INCIDENT_CZ_MATERIALISE_TIMEOUT.md`). Provisioner is DARK; slot-2 orphan left untouched.
+
+**Bounded next action:** merge the remediation through normal governance, then request the single Sponsor
+decision **"Customer Zero – Orphaned Slot Cleanup and Controlled Retry Preparation"** (build the governed
+RELEASE driver + `reclaim_beta_runtime` command, then STOP-gated reclaim of slot 2 and CZ retry per the recovery
+plan). Do **not** deploy, clean the slot, or retry Customer Zero without that authorisation.
+
 ## ▶ Customer Zero + Trusted Beta — Phase A COMPLETE (2026-07-31); Phase B next
 Programme directive widened Customer Zero to a full **trade-execution → ingestion → analytics** journey and
 made the golden the permanent baseline. Full phased plan (A golden re-stage → B Phase-4 keyring → C execution

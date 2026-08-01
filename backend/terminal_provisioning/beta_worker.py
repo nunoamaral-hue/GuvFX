@@ -10,6 +10,7 @@ Split so the worker LOGIC is unit-testable with an injected client factory (no l
 """
 import logging
 
+from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
@@ -20,7 +21,50 @@ from .provisioner import advance_provisioning_job
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TRANSPORT_TIMEOUT = 20
+DEFAULT_TRANSPORT_TIMEOUT = 20      # fallback READ timeout for an unmapped operation
+CONNECT_TIMEOUT = 10                # bound how long we wait to CONNECT, independent of the (long) read budget
+MAX_TRANSPORT_READ_TIMEOUT = 600    # hard ceiling: no override can produce an unbounded HTTP wait
+
+#: Per-operation READ timeout (seconds). Rationale (Customer Zero 2026-08-01): a single 20s timeout was
+#: applied to EVERY op, but MATERIALISE copies the ~380MB golden into a slot (measured ~41s on the beta host)
+#: and legitimately runs far longer than a handshake — so the client timed out mid-copy, blind-re-POSTed, and
+#: burned the retry budget on ``runtime_busy`` while the copy actually completed. NEGOTIATE/VERIFY stay short
+#: so a hung agent fast-fails; MATERIALISE gets a bounded, generous read budget; CONNECT stays short for every
+#: op (a (connect, read) tuple) so an unreachable agent fails quickly regardless of the read budget. Centrally
+#: governed, overridable via ``settings.BETA_AGENT_OP_TIMEOUTS`` (or the ``BETA_AGENT_OP_TIMEOUTS`` env JSON),
+#: every value CLAMPED to ``MAX_TRANSPORT_READ_TIMEOUT``.
+OP_TRANSPORT_TIMEOUTS = {
+    "NEGOTIATE": 10, "VERIFY": 15, "START": 60, "STOP": 90,
+    "TOMBSTONE": 120, "RELEASE": 30, "MATERIALISE": 300,
+}
+
+
+def _op_read_timeout(operation: str, default: int = DEFAULT_TRANSPORT_TIMEOUT) -> int:
+    """READ timeout for one signed operation: a ``settings``/env override, else the per-op default, else the
+    scalar fallback — ALWAYS clamped to ``MAX_TRANSPORT_READ_TIMEOUT`` so no configuration can wait forever."""
+    override = getattr(settings, "BETA_AGENT_OP_TIMEOUTS", None)
+    if override is None:
+        import json
+        import os
+        raw = os.getenv("BETA_AGENT_OP_TIMEOUTS", "")
+        try:
+            override = json.loads(raw) if raw else {}
+        except ValueError:
+            logger.warning("BETA_AGENT_OP_TIMEOUTS env is not valid JSON; ignoring the override")
+            override = {}
+    # The per-op default is the safe fallback for BOTH an absent override AND a malformed override VALUE, so a
+    # botched override for MATERIALISE can never silently reinstate the short scalar timeout the incident used.
+    per_op_default = OP_TRANSPORT_TIMEOUTS.get(operation, default)
+    val = override.get(operation) if isinstance(override, dict) else None
+    if val is None:
+        val = per_op_default
+    try:
+        val = int(val)
+    except (TypeError, ValueError):
+        logger.warning("BETA_AGENT_OP_TIMEOUTS[%s]=%r is not an int; using the per-op default %ss",
+                       operation, val, per_op_default)
+        val = per_op_default
+    return max(1, min(val, MAX_TRANSPORT_READ_TIMEOUT))
 
 
 def claim_next_beta_job():
@@ -36,16 +80,20 @@ def claim_next_beta_job():
 
 
 def make_http_transport(timeout: int = DEFAULT_TRANSPORT_TIMEOUT):
-    """Real transport: POST the signed request to the private-network agent. A read timeout is AMBIGUOUS
-    → ``ManagementChannelTimeout`` (never treated as failure)."""
+    """Real transport: POST the signed request to the private-network agent. The READ timeout is selected
+    PER OPERATION (see ``OP_TRANSPORT_TIMEOUTS``) from the already-signed ``operation`` field — the transport
+    only READS the request, never re-signs or mutates it — while CONNECT stays short for every op. A read
+    timeout is AMBIGUOUS → ``ManagementChannelTimeout`` (never treated as failure; the driver reconciles)."""
     import requests
 
     def transport(base_url: str, req: dict) -> dict:
         if not base_url:
             raise ManagementChannelError("agent_base_url_unset")
         url = base_url.rstrip("/") + "/provision"
+        op = req.get("operation", "") if isinstance(req, dict) else ""
+        read_timeout = _op_read_timeout(op, default=timeout)
         try:
-            resp = requests.post(url, json=req, timeout=timeout)
+            resp = requests.post(url, json=req, timeout=(CONNECT_TIMEOUT, read_timeout))
         except requests.Timeout:
             raise ManagementChannelTimeout()
         except requests.RequestException:

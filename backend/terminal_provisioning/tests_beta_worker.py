@@ -1,4 +1,6 @@
 """CVM-Inc-3 B1 — beta ProvisioningJob worker + versioned-contract negotiation tests."""
+from contextlib import contextmanager
+
 from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
 
@@ -7,12 +9,32 @@ from trading.models import TradingAccount
 from trading.crypto import encrypt_password
 from terminal_provisioning import beta_capacity as cap
 from terminal_provisioning import beta_worker
-from terminal_provisioning.mgmt_client import AgentWindowsProvisioner, ManagementChannelTimeout
+from terminal_provisioning import provisioner as prov_mod
+from terminal_provisioning.mgmt_client import (
+    AgentWindowsProvisioner, ManagementChannelError, ManagementChannelTimeout)
 from terminal_provisioning.models import AccountRuntime, ProvisioningJob, RuntimeState
 from terminal_provisioning.provisioner import MAX_ATTEMPTS
 from terminal_provisioning.tests_mgmt_channel import KEYRING, _agent
 
 U = get_user_model()
+
+
+@contextmanager
+def _fake_reconcile_clock():
+    """Deterministic in-attempt reconcile time: ``sleep`` advances a fake monotonic clock the loop reads, so
+    the wall-clock budget is consumed with NO real sleeping and NO dependence on the machine clock."""
+    state = {"t": 0.0}
+    saved_now, saved_sleep = prov_mod._reconcile_now, prov_mod._reconcile_sleep
+    prov_mod._reconcile_now = lambda: state["t"]
+    prov_mod._reconcile_sleep = lambda s: state.__setitem__("t", state["t"] + s)
+    try:
+        yield
+    finally:
+        prov_mod._reconcile_now, prov_mod._reconcile_sleep = saved_now, saved_sleep
+
+
+def _denied(reason_code):
+    return {"outcome": "denied", "reason_code": reason_code}
 
 
 def _admitted_account(n=1):
@@ -84,23 +106,128 @@ class BetaWorkerTests(TestCase):
         self.assertNotEqual(rt.state, RuntimeState.RUNNING)   # never launched on an unnegotiated contract
         self.assertEqual(ProvisioningJob.objects.get(runtime=rt).status, ProvisioningJob.Status.QUEUED)
 
-    def test_ambiguous_timeout_quarantines_after_bounded_attempts(self):
+    def test_runtime_busy_during_copy_is_reconciled_then_reaches_running(self):
+        # THE Customer Zero regression. Previously: MATERIALISE times out at 20s while the copy runs, the
+        # driver blind-re-POSTs, the agent (lock held) replies runtime_busy, that was mis-classified as
+        # materialise_failed and burned MAX_ATTEMPTS in ~0.3s -> false FAILED though the copy completed.
+        # Now: the timeout + runtime_busy are reconciled IN-attempt (poll-not-repost) and the runtime
+        # reaches RUNNING on the agent's eventual stored result.
+        acct = _admitted_account(5)
+        rt = cap.reserve_beta_slot(acct)
+        ProvisioningJob.objects.create(runtime=rt, op=ProvisioningJob.Op.PROVISION)
+        agent = _good_agent()
+        calls = {"n": 0}
+
+        def transport(base, req):
+            if req.get("operation") == "MATERIALISE":
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise ManagementChannelTimeout()          # first POST times out (copy > read budget)
+                if calls["n"] in (2, 3):
+                    return _denied("runtime_busy")            # agent still copying under the per-runtime lock
+                return agent.handle(req)                       # copy completed -> stored idempotent ok
+            return agent.handle(req)                           # NEGOTIATE/START/VERIFY
+
+        with _fake_reconcile_clock():
+            status = beta_worker.process_one(_factory(transport))
+        self.assertEqual(status, "advanced")
+        rt.refresh_from_db()
+        self.assertEqual(rt.state, RuntimeState.RUNNING)       # RECOVERED — not the incident's false FAILED
+        self.assertFalse(rt.quarantined)
+        job = ProvisioningJob.objects.get(runtime=rt)
+        self.assertEqual(job.status, ProvisioningJob.Status.DONE)
+        self.assertEqual(job.attempt, 1)                        # reconcile burned NO extra attempts
+        self.assertGreaterEqual(calls["n"], 4)                  # timeout + 2x busy + 1 ok
+
+    def test_reconcile_budget_exhaustion_quarantines_without_relaunch(self):
+        # Genuine unresolvable ambiguity: MATERIALISE never confirms within the wall-clock budget. Bounded
+        # reconcile -> quarantine (never a "safe to re-launch" FAILED, never a 0.3s three-attempt burn).
         acct = _admitted_account(4)
         rt = cap.reserve_beta_slot(acct)
         ProvisioningJob.objects.create(runtime=rt, op=ProvisioningJob.Op.PROVISION)
         agent = _good_agent()
 
         def transport(base, req):
-            if req.get("operation") == "NEGOTIATE":
-                return agent.handle(req)            # negotiation OK
-            raise ManagementChannelTimeout()        # every provisioning op times out (ambiguous)
+            if req.get("operation") == "MATERIALISE":
+                raise ManagementChannelTimeout()               # never confirms
+            return agent.handle(req)
+
+        with _fake_reconcile_clock():
+            beta_worker.process_one(_factory(transport))
+        rt.refresh_from_db()
+        job = ProvisioningJob.objects.get(runtime=rt)
+        self.assertEqual(job.status, ProvisioningJob.Status.FAILED)
+        self.assertTrue(rt.quarantined)                          # quarantined, never re-launched
+        self.assertEqual(rt.quarantine_reason, "ambiguous_timeout")
+        self.assertNotEqual(rt.state, RuntimeState.FAILED)       # state left as-is (a terminal MAY be up)
+        self.assertEqual(job.attempt, 1)                         # ONE attempt reconciled — not a 3-attempt burn
+
+    def test_proven_partial_materialise_is_fail_closed_and_quarantined(self):
+        # A proven-partial / integrity refusal from the agent must fail CLOSED and quarantine — a partial
+        # slot is never silently re-driven as success.
+        acct = _admitted_account(6)
+        rt = cap.reserve_beta_slot(acct)
+        ProvisioningJob.objects.create(runtime=rt, op=ProvisioningJob.Op.PROVISION)
+        agent = _good_agent()
+
+        def transport(base, req):
+            if req.get("operation") == "MATERIALISE":
+                return _denied("stage_copy_precheck_failed")   # proven partial/integrity refusal
+            return agent.handle(req)
+
+        beta_worker.process_one(_factory(transport))
+        rt.refresh_from_db()
+        job = ProvisioningJob.objects.get(runtime=rt)
+        self.assertEqual(job.status, ProvisioningJob.Status.FAILED)
+        self.assertTrue(rt.quarantined)
+        self.assertEqual(rt.quarantine_reason, "stage_copy_precheck_failed")  # the agent's actual code
+        self.assertEqual(rt.state, RuntimeState.FAILED)
+
+    def test_reparse_escape_from_the_pool_agent_is_fail_closed_and_quarantined(self):
+        # A containment/junction escape the LIVE slot_pool agent emits on MATERIALISE must fail closed +
+        # quarantine (it is in PARTIAL_REASONS), not be retried as a generic channel error and end
+        # FAILED-without-quarantine.
+        acct = _admitted_account(8)
+        rt = cap.reserve_beta_slot(acct)
+        ProvisioningJob.objects.create(runtime=rt, op=ProvisioningJob.Op.PROVISION)
+        agent = _good_agent()
+
+        def transport(base, req):
+            if req.get("operation") == "MATERIALISE":
+                return _denied("reparse_escape")
+            return agent.handle(req)
+
+        beta_worker.process_one(_factory(transport))
+        rt.refresh_from_db()
+        job = ProvisioningJob.objects.get(runtime=rt)
+        self.assertEqual(job.status, ProvisioningJob.Status.FAILED)
+        self.assertTrue(rt.quarantined)
+        self.assertEqual(rt.quarantine_reason, "reparse_escape")
+        self.assertEqual(rt.state, RuntimeState.FAILED)
+
+    def test_agent_busy_is_requeued_not_reconciled_or_quarantined(self):
+        # agent_busy (global mutation semaphore saturated by OTHER runtimes) is raised BEFORE this op runs and
+        # mutated nothing — it must re-queue (retryable), never enter the reconcile path and quarantine an op
+        # that never started. On exhaustion it is a plain FAILED, NOT a quarantine.
+        acct = _admitted_account(9)
+        rt = cap.reserve_beta_slot(acct)
+        ProvisioningJob.objects.create(runtime=rt, op=ProvisioningJob.Op.PROVISION)
+        agent = _good_agent()
+
+        def transport(base, req):
+            if req.get("operation") == "MATERIALISE":
+                return _denied("agent_busy")
+            return agent.handle(req)
 
         factory = _factory(transport)
-        for _ in range(MAX_ATTEMPTS):
+        beta_worker.process_one(factory)                 # first attempt
+        rt.refresh_from_db()
+        job = ProvisioningJob.objects.get(runtime=rt)
+        self.assertFalse(rt.quarantined)                 # never entered reconcile→quarantine
+        self.assertEqual(job.status, ProvisioningJob.Status.QUEUED)   # re-queued for a later attempt
+        for _ in range(MAX_ATTEMPTS):                    # exhaust attempts — still agent_busy
             beta_worker.process_one(factory)
         rt.refresh_from_db()
         job = ProvisioningJob.objects.get(runtime=rt)
         self.assertEqual(job.status, ProvisioningJob.Status.FAILED)
-        self.assertTrue(rt.quarantined)                          # quarantined, not re-launched
-        self.assertEqual(rt.quarantine_reason, "ambiguous_timeout")
-        self.assertNotEqual(rt.state, RuntimeState.FAILED)       # state left as-is (a terminal may be up)
+        self.assertFalse(rt.quarantined)                 # nothing was materialised — plain FAILED, not quarantine
