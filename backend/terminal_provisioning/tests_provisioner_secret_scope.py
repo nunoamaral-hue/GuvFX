@@ -58,11 +58,29 @@ class ProvisionerSecretScopeTests(SimpleTestCase):
         self.assertNotIn("environment:", "\n".join(_yaml_code_lines(text)),
                          "overlay must stay env_file-only (an environment: block would shadow the env_file)")
 
-    def test_template_has_the_required_keys_with_empty_secrets(self):
+    def test_template_has_the_four_required_keys_secrets_empty_dark_zero(self):
         text = _read(TEMPLATE)
         self.assertRegex(text, r"(?m)^BETA_AGENT_BASE_URL=\S", "non-secret base_url should be pre-filled")
+        self.assertRegex(text, r"(?m)^BETA_RUNTIMES_ENABLED=0\s*$", "DARK default must be committed as =0")
         for key in SECRET_KEYS:
             self.assertRegex(text, rf"(?m)^{key}=\s*$", f"{key} must be present but EMPTY in the template")
+
+    def test_dark_override_is_provisioner_scoped_and_authoritative(self):
+        # Option A: the provisioner-only file is the AUTHORITATIVE arm control. Its BETA_RUNTIMES_ENABLED=0
+        # overrides the inherited backend value because env_file is additive under `extends` and the
+        # provisioner-only file is appended LAST (last-wins). Repo-side we pin: the template sets =0; the
+        # overlay documents the override + the appended-last mechanism + the provisioner-only arm; and the
+        # overlay never sets the flag itself (so the value comes only from the provisioner-only file). The
+        # live override (inherited =1 -> effective =0 in the provisioner) is proven at deploy by the
+        # PROVISIONER_SCOPED_DARK check in DEPLOY_SECRET_SCOPE.md.
+        self.assertRegex(_read(TEMPLATE), r"(?m)^BETA_RUNTIMES_ENABLED=0\s*$")
+        ov = _read(OVERLAY)
+        self.assertIn("BETA_RUNTIMES_ENABLED=0", ov, "overlay must document the provisioner-only DARK default")
+        self.assertIn("appended LAST", ov, "overlay must document the last-wins override mechanism")
+        self.assertIn("authoritative", ov.lower())
+        # the overlay must NOT itself assign the flag a value (it belongs only in the provisioner-only file);
+        # an `environment:` block would outrank the env_file and defeat the provisioner-only arm control.
+        self.assertNotRegex("\n".join(_yaml_code_lines(ov)), r"BETA_RUNTIMES_ENABLED\s*[:=]\s*[01]")
 
     def test_no_real_secret_value_is_committed_anywhere_in_the_repo(self):
         # Whole-repo scan (not just deploy/): flag a NON-EMPTY BETA_AGENT_KEYRING/KEY_ID assignment at line
@@ -130,11 +148,25 @@ class ProvisionerSecretScopeTests(SimpleTestCase):
         self.assertFalse(os.path.exists(os.path.join(_PROV, "beta-provisioner.secret.env")),
                          "the real secret file must only ever exist on the VPS, never in the repo")
 
-    def test_deploy_runbook_has_the_sponsor_step_no_reveal_checks_and_leak_warning(self):
+    def test_exactly_one_provisioner_template_no_stray_conflict_copies(self):
+        # A macOS/sync conflict copy (e.g. "beta-provisioner.secret.env 2.example") missing the DARK line
+        # is a dark-defeat footgun if an operator ever copies it. Assert exactly ONE template (canonical
+        # name), no stray secret/template variants under the deploy dir, and the template carries =0.
+        import glob
+        variants = sorted(os.path.basename(p) for p in glob.glob(os.path.join(_PROV, "*secret.env*")))
+        self.assertEqual(variants, ["beta-provisioner.secret.env.example"],
+                         f"stray secret/template file(s) under deploy/beta-provisioner/: {variants}")
+        self.assertEqual(len(re.findall(r"(?m)^BETA_RUNTIMES_ENABLED=0\s*$", _read(TEMPLATE))), 1,
+                         "the canonical template must carry exactly one BETA_RUNTIMES_ENABLED=0 line")
+
+    def test_deploy_runbook_has_the_dark_sequence_no_reveal_checks_and_leak_warning(self):
         rb = _read(RUNBOOK)
         self.assertIn("SPONSOR-ONLY STEP", rb)
-        self.assertIn("BACKEND_CLEAN", rb)            # least-privilege verification (backend has no key)
-        self.assertIn("PROVISIONER_SCOPED", rb)       # provisioner-has-it verification (presence only)
-        self.assertIn("CLEARTEXT", rb)                # the docker-compose-config leak warning
-        self.assertIn("compose project directory", rb)   # the corrected env_file path rule
-        self.assertNotIn("grep -A2 -i env_file", rb)  # the broken/misleading discovery command was removed
+        self.assertIn("BACKEND_CLEAN", rb)                # least-privilege verification (backend has no key)
+        self.assertIn("PROVISIONER_SCOPED_DARK", rb)      # provisioner has key AND is dark (=0), presence-only
+        self.assertIn("BACKEND_ENV_INHERITED", rb)        # provisioner still inherits the backend env
+        self.assertIn("CUSTOMER_ZERO_UNCHANGED", rb)      # CZ still QUEUED/attempt 0 after the dark deploy
+        self.assertIn("CLEARTEXT", rb)                    # the docker-compose-config leak warning
+        self.assertIn("compose project", rb)               # the corrected env_file path rule (project-dir)
+        self.assertIn("stop the existing", rb.lower())    # stop the currently-armed/keyless provisioner first
+        self.assertNotIn("grep -A2 -i env_file", rb)      # the broken/misleading discovery command was removed

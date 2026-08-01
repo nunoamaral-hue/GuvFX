@@ -78,6 +78,7 @@ __pycache__/
 wayond_staging.json
 **/wayond_staging*.json
 
-# Provisioner-only secret scope (Phase B): NEVER commit the real HMAC keyring file.
-# The .example template IS committed; the real file (no .example) is secret.
-deploy/beta-provisioner/beta-provisioner.secret.env
+# Provisioner-only secret scope (Phase B): NEVER commit the real HMAC keyring file, its sync/conflict
+# copies (e.g. "... 2"), or backups. Only the canonical .example template is committed.
+deploy/beta-provisioner/beta-provisioner.secret.env*
+!deploy/beta-provisioner/beta-provisioner.secret.env.example

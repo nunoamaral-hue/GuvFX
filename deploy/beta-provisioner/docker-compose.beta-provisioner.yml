@@ -22,10 +22,11 @@
 #     -f /home/ubuntu/guvfx-app/deploy/beta-provisioner/docker-compose.beta-provisioner.yml \
 #     up -d --no-deps guvfx-beta-provisioner
 #
-# Arm (only after the B3P-2 host APPLY + the beta agent are installed and reachable, and after
-# verifying the service is dark): set BETA_RUNTIMES_ENABLED=1 in the backend env_file and recreate
-# this service. Disarm: set BETA_RUNTIMES_ENABLED=0 (or `docker compose stop guvfx-beta-provisioner`);
-# no runtime is torn down by stopping the worker — QUEUED jobs simply wait.
+# Arm (only after the B3P-2 host APPLY + the beta agent are installed and reachable, the keyring is in
+# place, and after verifying the service is dark): set BETA_RUNTIMES_ENABLED=1 in the PROVISIONER-ONLY
+# file (beta-provisioner.secret.env) - NOT the shared backend env_file - and recreate this service.
+# Disarm: set it back to 0 (or `docker compose stop guvfx-beta-provisioner`); no runtime is torn down by
+# stopping the worker - QUEUED jobs simply wait.
 #
 # Rollback: `docker compose ... stop guvfx-beta-provisioner && docker compose ... rm -f guvfx-beta-provisioner`.
 #
@@ -51,10 +52,13 @@ services:
     # (runbook 6). The real file is git-ignored; only the .example template is committed.
     env_file:
       - "${BETA_PROVISIONER_SECRET_ENV:-deploy/beta-provisioner/beta-provisioner.secret.env}"
-    # Long-running claim loop (NOT a one-shot). Reuses the backend image + env. Dark unless
-    # BETA_RUNTIMES_ENABLED (inherited from the backend env_file, EXACTLY like the other workers'
-    # arm flags — do NOT add an `environment:` override here or it would shadow the env_file value
-    # and the documented "set BETA_RUNTIMES_ENABLED=1 in the env_file" arm step would silently no-op).
+    # Long-running claim loop (NOT a one-shot). Reuses the backend image + env. DARK is AUTHORITATIVE in the
+    # provisioner-only env_file: BETA_RUNTIMES_ENABLED=0 there OVERRIDES the inherited backend value
+    # (beta.env sets =1) because env_file is additive under `extends` and the provisioner-only file is
+    # appended LAST (last-wins). The provisioner-only flag is the sole arm control for THIS worker; the shared
+    # backend flag no longer arms it. Arm ONLY by changing the provisioner-only value 0 -> 1 under explicit
+    # Sponsor authorisation. Do NOT add an `environment:` block here - it outranks every env_file and would
+    # make the provisioner-only arm control silently ineffective.
     command: ["python", "manage.py", "run_beta_provisioning_worker"]
     # CRITICAL: this service `extends guvfx-backend`, inheriting the backend's traefik labels (the
     # `guvfx-api` router on Host(`api.guvfx.com`)). This container runs a management command, not a
