@@ -124,3 +124,24 @@ class AgentWindowsProvisioner:
     def teardown(self, runtime) -> None:
         # TOMBSTONE = stop the bound PID + quarantine the runtime dir (NEVER an arbitrary recursive delete).
         self._call("TOMBSTONE", runtime)
+
+    def release(self, runtime) -> dict:
+        """RELEASE (ADR-0014) — the authoritative Released -> Available step: after a TOMBSTONE, free the slot
+        and advance its generation by exactly one. Reuses the SAME signed envelope (HMAC / nonce / timestamp /
+        expiry / key_id / correlation, path-free, per-op read timeout) as every other op; RELEASE is already in
+        ``PROVISIONING_OPERATIONS`` so it signs, and the agent runs ``op_release`` OUTSIDE its per-runtime lock.
+        Never infer success from ``outcome==ok`` alone — require the agent's ``released`` fact, else raise."""
+        r = self._call("RELEASE", runtime)
+        if not bool(r.get("released")):
+            raise ManagementChannelError(r.get("reason_code") or "release_not_confirmed")
+        # allowlisted, non-secret fields only (never a canonical_path)
+        return {k: r.get(k) for k in ("released", "available", "slot", "generation", "occupancy_id")}
+
+    def probe_occupancy(self, runtime) -> dict:
+        """Read-only occupancy probe over the existing VERIFY op — used by the reclaim tool's dry-run report
+        and its UUID/slot/generation guards WITHOUT touching the hot-path ``verify()`` (which deliberately drops
+        occupancy identity). The agent's SlotResolver LOOKS UP the runtime (never assigns), so a probe of an
+        unassigned runtime surfaces as ``runtime_not_assigned`` (already released)."""
+        r = self._call("VERIFY", runtime)
+        return {k: r.get(k) for k in
+                ("running", "slot", "generation", "occupancy_id", "runtime_uuid", "pid", "session_id")}

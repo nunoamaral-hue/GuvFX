@@ -164,6 +164,9 @@ class WindowsProvisioner(Protocol):
     def verify(self, runtime: AccountRuntime) -> dict: ...
     def stop(self, runtime: AccountRuntime) -> None: ...
     def teardown(self, runtime: AccountRuntime) -> None: ...
+    # RELEASE (ADR-0014): free the slot + advance its generation after a TOMBSTONE. Used only by the operator
+    # reclaim path (never the normal PROVISION drive), so it is an OPTIONAL provisioner method.
+    def release(self, runtime: AccountRuntime) -> dict: ...
 
 
 def _expected_login_server(runtime: AccountRuntime):
@@ -588,10 +591,12 @@ def _fail_step(job: ProvisioningJob, rt: AccountRuntime, e: ProvisionStepError) 
 
 class FakeProvisioner:
     """In-memory provisioner for tests: records calls and returns a scriptable ``verify`` result."""
-    def __init__(self, verify_result=None, fail_on=None):
+    def __init__(self, verify_result=None, fail_on=None, release_slot=2, release_generation=5):
         self.calls = []
         self._verify = verify_result or {"running": True, "logged_in": True, "login": None, "server": None}
         self._fail_on = fail_on or {}   # {"materialise": ProvisionStepError(...), ...}
+        self._release_slot = release_slot            # RELEASE reports the freed slot + its advanced generation
+        self._release_generation = release_generation
 
     def _maybe_fail(self, name):
         if name in self._fail_on:
@@ -625,3 +630,8 @@ class FakeProvisioner:
 
     def teardown(self, runtime):
         self.calls.append(("teardown", runtime.runtime_uuid)); self._maybe_fail("teardown")
+
+    def release(self, runtime):
+        self.calls.append(("release", runtime.runtime_uuid)); self._maybe_fail("release")
+        return {"released": True, "available": True, "slot": self._release_slot,
+                "generation": self._release_generation}
