@@ -15,7 +15,11 @@
   `reclaim_beta_runtime` (Phase 1) + `recover_beta_runtime` (Phase 2), **dry-run by default**. Fail-closed
   (BETA-only, DARK-preserved, quarantine-not-REMOVED on failure); no migration; no `deploy/beta-agent` change.
   ADR-0024 + `docs/CZ_RECLAIM_RECOVERY_RUNBOOK.md` (operator runbook + non-executed cleanup/recovery dry-run
-  plans + evidence matrix). `make check` green (884 backend + frontend); 12-lens adversarial review.
+  plans + evidence matrix). 12-lens adversarial review run; **all 6 confirmed findings resolved** (`ff33b65`):
+  probe now uses a fresh single-use job_id (never a memoised VERIFY); a failed reclaim writes an immutable
+  FAILURE RuntimeEvent (never REMOVED); `--force-from-failed` refuses a live/HELD runtime; recover has a DARK
+  guard; a lock-free RELEASE resend (`runtime_not_assigned`) is idempotent success; fake/real RELEASE
+  generation aligned. `make check` green (889 backend + frontend).
   **NOT deployed, NOT executed; provisioner DARK; slot 2 untouched.** Phase 3 (arm + retry) = separate gate.
 
 - **2026-08-01 — Customer Zero controlled provisioning → FAILED at MATERIALISE; remediation engineering-complete. 🟠**
