@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-08-01 — PR #253 reclaim/recovery tooling DEPLOYED to production (DARK). 🟢**
+  Controlled deployment of the ADR-0024 tooling into the running backend image while Customer Zero stayed
+  `FAILED`, slot 2 unchanged, provisioner DARK. Backup `pre-pr253-deploy-20260801T182104Z.sql.gz` (sha256
+  `0eb2ebf6…`, 103 tables, gzip OK); rollback tag `rollback-prePR253-20260801T182127Z` → prior image
+  `d06b13e81078`. Source synced from a pristine `677da61` worktree; **BUILD_TREE_PARITY_PASS_677DA61** (635
+  `*.py`, aggregate sha256 `9123daa8…`, byte-identical, zero deletions). New image **`4c975abf97ad`**
+  (system-check clean, `migrate --check` 0 unapplied, both commands registered + dry-run default, imports have
+  no side effect, PR#252 lease-guard passes, keyring NOT baked). Recreated `guvfx-backend` (default files) +
+  `guvfx-beta-provisioner` (its 2 files, `--no-deps`); no `--remove-orphans`, no migrate. Post-deploy:
+  backend restarts 0 / API 200 / keyring-clean; provisioner armed=0 / keyring present / worker DARK, 0 agent
+  ops; **CUSTOMER_ZERO_FAILED_UNCHANGED** (Job#1 FAILED attempt 3, 6 events, 0 reports/active); **SLOT2_GEN4
+  _UNCHANGED** (stage_copy COMPLETED only, quarantine clear); **PRODUCTION_UNAFFECTED** (terminals 4336/8748,
+  bridge 401, watermarks 430/20647, all other containers untouched). **Commands available, none executed.**
+  Next = separately-authorised Orphaned Slot Cleanup dry-run.
+
 - **2026-08-01 — CZ orphan-reclaim + failed-runtime recovery tooling: engineering-complete (ADR-0024). 🟠**
   Governed, backend-only tooling to reclaim Customer Zero's orphaned agent slot (slot 2/gen 4) and prepare a
   retry — the RELEASE-driver + reclaim-command gap flagged after the MATERIALISE incident. Branch
