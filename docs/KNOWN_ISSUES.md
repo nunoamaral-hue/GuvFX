@@ -10,11 +10,13 @@ List active problems with reproduction steps and workarounds.
   (no process, no broker, no order) and **must be left untouched** until the cleanup authorisation. Reclaim =
   signed **STOP→TOMBSTONE→RELEASE** (never manual `slots.sqlite`/DB edits). Full read-only analysis + plan:
   `docs/POST_INCIDENT_CZ_MATERIALISE_TIMEOUT.md` §4–6.
-- **No backend RELEASE driver (pre-existing pool-leak).** `AgentWindowsProvisioner` has no `release()`;
-  `_drive_deprovision` TOMBSTONEs then goes REMOVED **without** RELEASE, so a deprovisioned slot's generation
-  never advances and it never returns to Available. A governed RELEASE driver + `reclaim_beta_runtime` command
-  must be built under the cleanup authorisation (specified in the recovery plan). `reconcile_beta_provisioning`
-  only re-drives `NOT_PROVISIONED`, not `FAILED`/orphans.
+- **Backend RELEASE driver + reclaim/recovery tooling — engineering-complete (ADR-0024), not deployed.** The
+  missing `mgmt_client.release()` (→ agent `op_release`) + governed `reclaim_beta_runtime` (Phase 1) +
+  `recover_beta_runtime` (Phase 2) commands are built on `feat/cz-orphan-reclaim-recovery` (dry-run by default,
+  fail-closed, provisioner stays DARK). The **stale `win_mutations.precheck_cleanup` docstring** — it claims
+  `no_runtime_handles` "can never hold", but the deployed Restart-Manager `open_handles` answers it — is a
+  **doc-only agent follow-up**, deferred here to avoid manifest drift. (`reconcile_beta_provisioning` still only
+  re-drives `NOT_PROVISIONED`, by design.)
 - **Deferred agent `put`-inside-lock hardening (ADR-0023).** `mgmt_agent_core.handle` stores the idempotency
   result *after* releasing the runtime lock. The post-completion re-execution window is **benign today** (every
   `_MUTATING` op is internally idempotent), but a future non-idempotent op would reopen a real hazard. **Binding

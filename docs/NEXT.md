@@ -5,10 +5,11 @@ Remediation of the CZ MATERIALISE timeout/idempotency/retry defect is engineerin
 `fix/cz-materialise-timeout-idempotency` (client-side only, NO migration, NO agent change; `make check` green;
 ADR-0023; `docs/POST_INCIDENT_CZ_MATERIALISE_TIMEOUT.md`). Provisioner is DARK; slot-2 orphan left untouched.
 
-**Bounded next action:** merge the remediation through normal governance, then request the single Sponsor
-decision **"Customer Zero – Orphaned Slot Cleanup and Controlled Retry Preparation"** (build the governed
-RELEASE driver + `reclaim_beta_runtime` command, then STOP-gated reclaim of slot 2 and CZ retry per the recovery
-plan). Do **not** deploy, clean the slot, or retry Customer Zero without that authorisation.
+**Bounded next action:** the remediation is deployed (PR #252, image `d06b13e`), and the governed cleanup +
+recovery tooling is engineering-complete (ADR-0024, branch `feat/cz-orphan-reclaim-recovery`: `reclaim_beta_runtime`
++ `recover_beta_runtime`, dry-run by default). Merge the tooling through normal governance, then request the
+single Sponsor decision **"Customer Zero – Orphaned Slot Cleanup Dry-Run"** (`reclaim_beta_runtime … --probe-agent`
+read-only, no `--apply`). Do **not** apply cleanup, recover, arm, or retry without that authorisation.
 
 ## ▶ Customer Zero + Trusted Beta — Phase A COMPLETE (2026-07-31); Phase B next
 Programme directive widened Customer Zero to a full **trade-execution → ingestion → analytics** journey and
