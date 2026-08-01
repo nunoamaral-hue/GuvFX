@@ -12,9 +12,13 @@ holds NO MT5/broker credentials of its own and reuses the backend service's imag
 **Provisioner-only secret scope (Phase B).** The HMAC signing keyring (`BETA_AGENT_KEYRING` +
 `BETA_AGENT_KEY_ID`) and the agent URL come from a dedicated `env_file` referenced **only** by this
 service — never the public `api.guvfx.com` backend — so the signing secret never enters the
-internet-facing backend's environment (RULE 3, least privilege). The real secret file is git-ignored and
-created on the VPS by the operator; only the `.example` template is committed. See
-`DEPLOY_SECRET_SCOPE.md` for the exact deploy + the single Sponsor-only secret-insertion step.
+internet-facing backend's environment (RULE 3, least privilege). The same provisioner-only file carries
+**`BETA_RUNTIMES_ENABLED=0`**, the **authoritative DARK arm control** for this worker: appended last under
+`extends`, it overrides the inherited backend value (`beta.env=1`), so the provisioner claims nothing even
+with the keyring present. **Arming = change the provisioner-only value `0 → 1`** under explicit Sponsor
+authorisation — never the shared backend flag. The real secret file is git-ignored and created on the VPS
+by the operator; only the `.example` template (empty secrets, `=0` dark) is committed. See
+`DEPLOY_SECRET_SCOPE.md` for the DARK deploy + the single Sponsor-only secret-insertion step.
 
 ## Files
 - `docker-compose.beta-provisioner.yml` — the service (extends `guvfx-backend`, `traefik.enable=false`,
@@ -38,13 +42,16 @@ docker compose -f docker-compose.yml \
   up -d --no-deps guvfx-beta-provisioner
 ```
 
-1. Bring the service up while `BETA_RUNTIMES_ENABLED` is OFF and run `verify_beta_provisioner.sh` —
-   it must be running and claiming nothing (dark).
+1. DARK is authoritative in the **provisioner-only file** (`BETA_RUNTIMES_ENABLED=0`), which overrides
+   the inherited backend `=1` (env_file appended last wins) — the shared backend flag is NOT off in prod.
+   Bring the service up and confirm dark: `docker exec guvfx-beta-provisioner sh -c 'echo [$BETA_RUNTIMES_ENABLED]'`
+   → `[0]`, and the logs / `verify_beta_provisioner.sh` show it claiming nothing. See `DEPLOY_SECRET_SCOPE.md`.
 2. Companion cron (optional): schedule `python manage.py reconcile_beta_provisioning` to re-enqueue
    any beta runtime left `NOT_PROVISIONED` (e.g. an account created while the flag was OFF). Also
-   dark unless `BETA_RUNTIMES_ENABLED`.
-3. **Arm** (only after the host APPLY + beta agent are reachable): set `BETA_RUNTIMES_ENABLED=1` in
-   the backend env_file and recreate this service.
+   dark unless armed.
+3. **Arm** (only after the host APPLY + beta agent + keyring are in place; separately Sponsor-gated):
+   set `BETA_RUNTIMES_ENABLED=1` in the **provisioner-only file** (`beta-provisioner.secret.env`) —
+   **NOT** the shared backend env_file — and recreate this service.
 
 ## Rollback / disarm
 ```bash
