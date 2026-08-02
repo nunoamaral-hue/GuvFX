@@ -6,6 +6,18 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Session-4 (guvfx-rdp) validation-host experiment: FAIL, but host-wide (not Session-4-specific). 🟡 RULE-11.**
+  Single bounded empirical experiment (read-only + credential-free MT5 IPC only; NO broker login/VALIDATE_LOGIN/CZ/bridge touch). Ran the identical credential-free probe
+  (agent-venv `MetaTrader5 5.0.6090` + isolated validation terminal build 6073, `initialize(path,portable=True,timeout)` — no creds) **in Session 4** (session_id=4 proven) →
+  `initialize=False, (-10005 IPC timeout)`. **RULE-11 positive control:** SAME probe in **active Session 1** (where the prod bridge does MT5 IPC right now) → **also** `-10005`.
+  ⇒ failure is NOT Session-4-specific. Terminal journal: its local MCP listener could not bind `127.0.0.1:22346` (10048 in-use); owner = **Customer Zero PID 316** (golden-derived, Session 0).
+  Prod bridge works via older IS6 build-5833 mechanism (no loopback port). **No positive control obtainable** without stopping CZ (out of scope) ⇒ per RULE-11 no per-session verdict is authoritative;
+  Session-4 standalone suitability UNPROVEN (confounded by CZ co-tenancy). Strongly indicates the earlier "SESSION0_IPC_LIMITATION_CONFIRMED" was the same co-tenancy confound (inference, not re-proven).
+  **Cleanup:** all launched validation terminals path-verified-killed; validation terminal restored to exact 585-file golden baseline (ACL unchanged); tasks + `_probe` scaffolding removed.
+  **All 6 prod processes ALIVE & unchanged** (bridge 14604, IS6 4336/8748, CZ 316, agents 10768/6656); 8788/8791 listening. No trade, no credential, no order. Smallest next step: obtain ONE probe positive
+  (golden terminal with no other golden terminal co-resident) before trusting any session verdict.
+
+
 - **2026-08-02 — Option F selected; drafted the governed provisioning packet (credential-free). 🟢**
   Sponsor selected **Option F (dedicated Windows validation VM)**; do NOT repurpose guvfx-rdp or use either
   Administrator session. Authored `docs/PACKET_VALIDATION_ENV_PROVISIONING.md` — the DRAFT governed packet for
