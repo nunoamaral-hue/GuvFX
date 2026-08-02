@@ -6,6 +6,41 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Repository hygiene & governance closure. 🟢**
+  Read-only inspection + governance reconciliation, no implementation. **main clean** (@ `c2da273`,
+  0 ahead/0 behind origin); no stale background jobs (no `manage.py test` / `make check` / `gh` watchers /
+  orphaned loops running); all recent CI `completed/success`. The reported **"main +77 -0"** was the two
+  untracked backlog docs (42+35 = 77 added lines, 0 tracked-file changes) — recorded in a prior packet,
+  now committed here. **PR reconciliation:** **#255 MERGED** (ADR-0026 broker-connectivity capability —
+  the accepted governance baseline for the capability; clean, additive, adds only
+  `docs/ADRs/0026-…md`); **#256 CLOSED** (ADR-0027 design — superseded by merged #257, which carries
+  ADR-0027 with a §9 As-built on main); **#219 kept OPEN** (Hosted-MVP Phases 0-1 baseline — stale +
+  CONFLICTING, has unique docs but would regress live handoff docs → flagged for a PM rebase-or-close
+  decision); **#58 kept OPEN** (Blueprint-06 PROPOSED live↔packet reconciliation — a genuine pending
+  governance proposal for the deferred E3 live-execution gate). **REPOSITORY_HEALTH_PASS.** No production /
+  Customer Zero / provisioner / broker / Windows-agent / runtime / slot / strategy change.
+
+- **2026-08-02 — Broker-login validation primitive MERGED to main (ADR-0027 Phase 1, engineering-only). 🟢**
+  PR **#257** merged (`main` `bffba3b`→`3f58e56`, merge `8fa3748`). The single non-destructive,
+  runtime-independent broker-login validation mechanism: backend **envelope-encrypts** the customer's MT5
+  password to the agent's public key (backend can encrypt, **cannot** decrypt — ephemeral-static ECIES,
+  X25519+HKDF-SHA256+AES-256-GCM, AAD binds op/runtime/correlation/nonce, keys a distinct scope from the
+  HMAC keyring); the agent opens it at point of use and probes login against a **dedicated ISOLATED
+  validation terminal** (contained-under-dedicated-root AND disjoint from every slot/golden/accounts/
+  beta_root; rejects `..` traversal + bare-drive root; single-flight lock; **always shutdown()**; NO
+  order/symbol API). New signed protocol op `VALIDATE_LOGIN` (credential bound to the signature via a signed
+  `payload_digest`; lifecycle ops sign a byte-identical body — backward compatible); `mgmt_protocol.py` +
+  `mgmt_agent_core.py` mirrored byte-identical; `manifest.json` regenerated (17 modules). Single backend
+  entry `BrokerLoginValidator.validate(account)` → secret-safe `ValidationOutcome`
+  (HEALTHY/NEEDS_ATTENTION/UNAVAILABLE); **backend seal-only invariant code-enforced**. Tests: envelope (9)
+  + validator (12) + agent handler/isolation/taxonomy/no-leak/parity/wiring (40); full `make check` green;
+  3-agent adversarial review (protocol clean; all crypto/isolation MED-and-lower findings fixed). **Opt-in
+  & fail-closed** (absent a configured isolated terminal + envelope key → `validation_unconfigured`).
+  **NOT deployed; no live login; no host/key/Customer-Zero change; `PROVISIONING_REQUIRE_BROKER_LOGIN`
+  OFF.** Host staging, `mt5.last_error()`→reason calibration (RULE-11), and the `cryptography`+`MetaTrader5`
+  host deps (RULE-9 parse-gated install) are deferred to host certification. Next = Broker Login Validation
+  Primitive Production Deployment (separately gated).
+
 - **2026-08-02 — PR #254 broker-server resolver DEPLOYED to production (DARK, no broker login). 🟢**
   Controlled deploy of the ADR-0025 fix while Customer Zero stayed broker-independent RUNNING. Backup
   `pre-pr254-deploy-20260802T085724Z.sql.gz` (sha256 `7a304ed8…`); rollback tag `rollback-prePR254-…` →
