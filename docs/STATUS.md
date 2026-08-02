@@ -6,6 +6,19 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Customer Zero orphaned-slot cleanup APPLIED (first signed mutating agent op). 🟢**
+  Sponsor-gated `reclaim_beta_runtime --expect-slot 2 --expect-generation 4 --apply` (in the DARK provisioner,
+  stable `job_id=1`). Fresh backup `pre-cleanup-apply-20260802T054646Z.sql.gz` (sha256 `c0908c8b…`). Drove
+  signed **STOP → TOMBSTONE → RELEASE** (~29s, rc=0). **Agent:** slot 2 → `[2, NULL, 5, NULL]` = **Available at
+  generation 5**; `slot_generations (2,5,release)`; `slot_audit (10,slot_released,4)`; gen-4 teardown evidence
+  complete (`confirm_terminated`/`tombstone`/`verify_cleanup` COMPLETED); tombstone `379ff98c4149a4b5` created
+  (gen-4 tree preserved). **Backend (exact reviewed marker):** `AccountRuntime pk1` FAILED→**REMOVED** + one
+  `RECLAIM/slot_reclaimed` RuntimeEvent (id 7); **Job #1 unchanged** (FAILED/attempt 3); 0 new/active jobs, 0
+  VR. `STOP_ABSENT_PASS` · `TOMBSTONE_GEN4_PASS` · `RELEASE_SLOT2_GEN5_PASS` · `CUSTOMER_ZERO_NOT_RETRIED` ·
+  `PROVISIONER_REMAINS_DARK` · `PRODUCTION_UNAFFECTED` (slot 1 gen 7 + slots 3/4 unchanged; terminals
+  4336/8748; bridge 401; API/frontend 200). **`CLEANUP_APPLY_PASS`.** Backend recovery (`recover_beta_runtime`)
+  NOT run — separate authorised phase. Next = Backend Recovery dry-run.
+
 - **2026-08-01 — PR #253 reclaim/recovery tooling DEPLOYED to production (DARK). 🟢**
   Controlled deployment of the ADR-0024 tooling into the running backend image while Customer Zero stayed
   `FAILED`, slot 2 unchanged, provisioner DARK. Backup `pre-pr253-deploy-20260801T182104Z.sql.gz` (sha256
