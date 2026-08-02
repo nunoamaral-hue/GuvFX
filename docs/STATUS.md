@@ -6,6 +6,26 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — First live VALIDATE_LOGIN → FAIL (fail-closed at the isolation gate; RULE-11 service-account ACL gap). 🟠**
+  Executed exactly ONE live VALIDATE_LOGIN against Customer Zero's stored demo credentials via the production
+  code path (`BrokerLoginValidator.validate`; agent HMAC keyring moved container-to-container, never through
+  logs; injected 90s transport). Backup `pre-firstlogin-20260802T162842Z.sql.gz` (sha256 `3d014595…`).
+  **Outcome: `UNAVAILABLE / isolation_check_failed`, retryable, is_demo=None, 0.19s** — the agent failed
+  CLOSED at `assert_isolated_validation_terminal` **before any MT5 login**. **Root cause (read-only
+  confirmed):** the validation terminal `C:\GuvFX\beta\validation` was created by robocopy (as
+  administrator) with default ACLs granting only `NT AUTHORITY\SYSTEM` + `BUILTIN\Administrators`; the agent
+  runs as **`NT SERVICE\GuvFXBetaAgent`**, which is **absent** from that ACL (whereas `C:\GuvFX\beta\slots`
+  *includes* it), so `os.path.isfile(terminal64.exe)` returns False under the service identity →
+  `validation_terminal_missing` → `isolation_check_failed`. As administrator the check passes — a **RULE-11
+  gap: host certification proved isolation under `administrator`, never under the service identity that
+  actually runs the probe.** This is a PLATFORM/ACL failure, NOT a credential result; credentials were never
+  tested. **Customer Zero UNCHANGED** (state RUNNING, updated `06:18:55`, blv False, events 13, VR 1, jobs 2,
+  0 queued/running); **provisioner DARK**; no MT5 login, no order, no trade, no lifecycle op; validation
+  terminal still clean (no accounts.dat — login never happened); temp keyring files removed (return to DARK).
+  **VERDICT: BROKER_LOGIN_VALIDATION_FAIL.** Not fixed / not retried (out of scope). Fix belongs to the
+  Failure Investigation packet: grant `NT SERVICE\GuvFXBetaAgent` read+execute on the validation terminal
+  (the ADR-0016 intrinsic-ACL / B3P-2 slot-grant pattern), then re-run the single validation.
+
 - **2026-08-02 — Broker Login Validation Primitive: HOST CERTIFICATION COMPLETE — fully deployed & production-ready (DARK). 🟢**
   Completes the deploy started in the entry below. **Agent host (`WIN-RD8VDS93DK7`):** deployed the `8fa3748`
   bundle to `C:\GuvFX\beta\agent` (backup `agent.bak-preLoginPrimitive`), **on-host integrity_ok=True**,
