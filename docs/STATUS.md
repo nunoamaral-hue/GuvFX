@@ -6,6 +6,22 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Automated broker-server resolution fix: engineering-complete (ADR-0025). 🟠**
+  The provisioning login path read only the normalised `broker_server` FK and ignored the customer-entered
+  free-text `broker_name` (where the frontend "Broker server name" lands), so a beta account like Customer
+  Zero (`broker_name="IS6Technologies-Demo"`, FK null) could not broker-login without manual normalisation.
+  New `resolve_broker_server()` with deterministic precedence: **normalised FK wins → else trimmed
+  `broker_name` → else fail closed (`broker_server_missing`)**. Wired into `_expected_login_server` +
+  `_start_and_verify`. **FK wins unconditionally** (no fail-closed on FK↔broker_name disagreement) because
+  `broker_name` is dual-use free text (often a broker *display* name on a normalised account) — so the change
+  is strictly additive, no normalised account's resolution changes. Tests: new
+  `tests_broker_server_resolution.py` (10 directive scenarios: FK-present, free-text-only, both-absent,
+  whitespace, both-equal, both-differ→FK-wins, Customer-Zero shape resolves `IS6Technologies-Demo`, no
+  credential logged, no plaintext password, production account unchanged) + updated `tests_broker_login.py`.
+  Full `terminal_provisioning`+`trading` (1016) green. **NOT deployed; no production mutation; no broker login
+  performed; provisioner DARK; PROVISIONING_REQUIRE_BROKER_LOGIN still OFF.** Next = deploy under governance,
+  then the (separately-gated) broker-login execution.
+
 - **2026-08-02 — Customer Zero runtime stability VERIFIED (read-only, ~16.5 min). 🟢**
   Read-only observation gate: 16 polls (~1/min) + t0 baseline. **Every poll identical and healthy** — state
   RUNNING, Job #2 DONE, VR 1 (no new), events 13 (no new), read-only VERIFY `running=true / slot 2 / gen 5 /

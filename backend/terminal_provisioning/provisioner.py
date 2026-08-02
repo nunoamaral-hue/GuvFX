@@ -169,16 +169,44 @@ class WindowsProvisioner(Protocol):
     def release(self, runtime: AccountRuntime) -> dict: ...
 
 
+def resolve_broker_server(account) -> tuple:
+    """Resolve the MT5 server string a runtime must authenticate to, from the data the customer submitted
+    through the frontend, with an EXPLICIT, deterministic precedence (ADR-0025):
+
+      1. the normalised ``broker_server`` FK's ``server_name`` (admin-curated / canonical) when non-empty —
+         it WINS unconditionally;
+      2. otherwise the customer-entered free-text ``broker_name`` — the beta "Add Trading Account" form's
+         "Broker server name" field, which for a free-text beta account IS the MT5 server the customer typed;
+      3. otherwise no server on record → ``(None, "broker_server_missing")`` (fail closed; never invent one).
+
+    **Why the FK wins unconditionally (deterministic precedence, not fail-closed on disagreement):**
+    ``broker_name`` is DUAL-USE free text — on a *normalised* account it may legitimately hold a broker
+    *display* name (e.g. "IS6 Technologies LTD"), NOT the MT5 server — so it is genuinely, routinely
+    different from the curated ``server_name`` and comparing the two would false-block every normalised
+    account that carries a display name. The normalised binding is authoritative by design; ``broker_name``
+    is consulted ONLY as the fallback for accounts that were never normalised (the free-text beta journey).
+    This is strictly additive to the prior "FK-only" behaviour — no normalised account changes — and the
+    downstream exact server-identity check (``_start_and_verify`` step (3)) still verifies the connected
+    server against whatever value this returns. Returns ``(server, reason)``: on success ``reason`` is None
+    and ``server`` is the trimmed string; on failure ``server`` is None and ``reason`` is the durable,
+    non-retryable, secret-free code. Pure/read-only — reads only non-secret server identifiers."""
+    fk = getattr(account, "broker_server", None)
+    fk_server = (getattr(fk, "server_name", "") or "").strip() if fk is not None else ""
+    if fk_server:
+        return fk_server, None
+    free = (getattr(account, "broker_name", "") or "").strip()
+    return (free, None) if free else (None, "broker_server_missing")
+
+
 def _expected_login_server(runtime: AccountRuntime):
-    """Return (login, server) the runtime MUST authenticate to. ``login`` (the MT5 account number) is
-    the strong identity and is always verified exactly. ``server`` is the MT5 server string only when a
-    normalised ``broker_server`` is set — free-text ``broker_name`` is NOT the MT5 server name, so we
-    return ``None`` there and skip the (unreliable) server comparison rather than false-block a login."""
+    """Return ``(login, server)`` the runtime MUST authenticate to. ``login`` (the MT5 account number) is
+    the strong identity and is always verified exactly. ``server`` comes from ``resolve_broker_server``
+    (normalised FK, else the customer's free-text ``broker_name`` — ADR-0025) and may be ``None`` when no
+    server is on record — fine in the broker-INDEPENDENT phase, and failed closed under ``require_login``
+    (see ``_start_and_verify``). The downstream identity check still compares the connected server exactly."""
     acct = runtime.trading_account
-    login = str(acct.account_number)
-    if getattr(acct, "broker_server_id", None):
-        return login, (acct.broker_server.server_name or "").strip()
-    return login, None
+    server, _reason = resolve_broker_server(acct)
+    return str(acct.account_number), server
 
 
 # ADR-0021 PR B — broker-login failure taxonomy. The verify result carries a structured ``login_error``
@@ -417,14 +445,16 @@ def _start_and_verify(rt: AccountRuntime, p: WindowsProvisioner) -> None:
                                          detail=str(v.get("init_error"))[:200])
             raise ProvisionStepError("terminal_not_running", retryable=True)
         if require_login:
-            login, server = _expected_login_server(rt)
-            # (0) a genuine MT5 login REQUIRES a real server string. A free-text ``broker_name`` is NOT an
-            # MT5 server, so an account without a normalised ``broker_server`` cannot be broker-login
-            # validated — fail closed with a definitive config error rather than reach RUNNING claiming a
-            # verified login while the server leg was never checked (a per-server login number could
-            # otherwise match the wrong broker's account).
+            login = str(rt.trading_account.account_number)
+            # (0) a genuine MT5 login REQUIRES a real server string. Resolve it from the customer's submitted
+            # data — the normalised ``broker_server`` (authoritative) else the free-text ``broker_name`` the
+            # customer typed into the "Broker server name" field (ADR-0025). No server on record fails closed
+            # with a definitive, non-retryable code (``broker_server_missing``); a login is never routed to an
+            # invented/blank server. Reaching RUNNING with a verified login while the server leg was unchecked
+            # is impossible (the exact server-identity comparison at (3) still runs against this resolved value).
+            server, server_reason = resolve_broker_server(rt.trading_account)
             if not server:
-                raise ProvisionStepError("broker_server_required", retryable=False)
+                raise ProvisionStepError(server_reason or "broker_server_missing", retryable=False)
             # (1) genuine broker session — a failed login carries a structured reason (bad creds vs
             # server-unavailable vs timeout vs init/crash) mapped to a durable code + retry policy.
             if not v.get("logged_in"):

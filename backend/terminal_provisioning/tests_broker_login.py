@@ -138,15 +138,24 @@ class BrokerLoginFailureTaxonomyTests(TestCase):
         self.assertEqual(job.status, ProvisioningJob.Status.FAILED)   # non-retryable
         self.assertEqual(rt.state, RuntimeState.FAILED)
 
-    def test_free_text_account_requires_broker_server(self):
-        # A free-text broker_name (no normalised broker_server) is NOT an MT5 server — under require_login
-        # it cannot be broker-login validated and fails closed with a definitive, non-retryable code
-        # (never reaching RUNNING with an unverified server leg).
+    def test_free_text_broker_name_resolves_as_server(self):
+        # ADR-0025: the customer's free-text broker_name (the frontend "Broker server name" field) IS the
+        # MT5 server for beta accounts. With NO normalised broker_server, provisioning now RESOLVES
+        # broker_name as the server and reaches RUNNING with a genuinely verified login (the exact-server
+        # identity check still runs) — the automated journey needs no operator/customer re-entry.
         acct = _acct(11, with_server=False)   # broker_name="DemoBroker", broker_server=None
-        rt, job = self._fail(acct, {"running": True, "logged_in": True, "login": "88011", "is_demo": True})
-        self.assertEqual(job.last_error, "broker_server_required")
-        self.assertEqual(job.status, ProvisioningJob.Status.FAILED)
-        self.assertEqual(rt.state, RuntimeState.FAILED)
+        rt, job, p = _advance(acct)
+        self.assertEqual(rt.state, RuntimeState.RUNNING)
+        self.assertEqual(job.status, ProvisioningJob.Status.DONE)
+        cfg = next(c for c in p.calls if c[0] == "configure")   # (configure, login, server, bool(pw))
+        self.assertEqual(cfg[2], "DemoBroker")                  # configure received the resolved server
+        self.assertTrue(ProvisioningVerificationReport.objects.get(runtime=rt).broker_login_verified)
+
+    # NOTE: a "no server anywhere" account cannot be persisted (the model strips broker_name and the
+    # ``brokeridentity_present`` DB constraint + create serializer both require a broker_server FK OR a
+    # non-empty broker_name), so the provisioning ``broker_server_missing`` gate is unreachable for a real
+    # account. The resolver's missing-path is covered by tests_broker_server_resolution (in-memory); the
+    # end-to-end fail-closed path is covered by the CONFLICT case there.
 
     def test_null_classification_fails_closed(self):
         # a PRESENT-but-null classification (agent could not determine) must NOT pass via bool() coercion
