@@ -6,6 +6,25 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Session-architecture investigation: `SESSION0_IPC_LIMITATION_CONFIRMED` (read-only, no credential). 🟢**
+  Root cause of the login_timeout is proven, without any broker login. **Session-0 synthetic** MT5
+  `initialize(portable=True)` (as `NT SERVICE\GuvFXBetaAgent`, no login) = `false, (-10005 IPC timeout)`
+  (4th confirmation). **Interactive-session natural experiment:** the PRODUCTION bridge
+  `mt5_signal_bridge.py` (pid 14604) runs in **interactive Session 1** as Administrator and drives MT5 (IS6
+  terminal pid 8748, Session 1) live/daily — same machine, same MetaTrader5 package, differing ONLY in
+  session. → MetaTrader5 Python IPC requires an interactive desktop/window-station; the Session-0 service
+  cannot establish it. Sessions: 1=console/Admin autologon, 3=RDP/Admin, 4=guvfx-rdp(disconnected,no MT5),
+  0=services. I did **not** launch a synthetic MT5 in the live bridge's Session 1 (concurrent-connection
+  risk to live production returned to Sponsor, not tested). **Recommended design = Option A: dedicated
+  low-priv validation identity + auto-logon interactive session + isolated validation terminal + a
+  validation worker that holds the envelope private key and runs the probe; the Session-0 agent relays the
+  SEALED envelope over a local authenticated channel (never decrypts).** Rejected: B/E (reuse Nuno's
+  session/bridge — production risk), D (separate host — disproportionate for Trusted Beta now). Validation
+  terminal restored to exact clean baseline (585==golden, no accounts.dat); CZ pid316 + live bridge
+  unaffected; provisioner DARK; credentials still untested. Next = Interactive Broker Validation Worker
+  Implementation (Phase 1A interactive-IPC proof first).
+
+
 - **2026-08-02 — Writable validation terminal granted; VALIDATE_LOGIN retry → FAIL again `login_timeout`; ROOT CAUSE now isolated = MT5 Python IPC does not work in Session 0. 🟠**
   Backup `pre-writableacl-20260802T165940Z.sql.gz` (sha256 `a0d404c1…`). Granted **`NT SERVICE\GuvFXBetaAgent:
   (OI)(CI)(M)` on the validation-terminal subtree ONLY** (read-back M+RX; no Full/ChangePermissions/
