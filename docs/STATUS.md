@@ -6,6 +6,17 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Customer Zero backend recovery APPLIED (REMOVED → NOT_PROVISIONED + inert job). 🟢**
+  Sponsor-gated `recover_beta_runtime --apply` (in the DARK provisioner container — its `assert_dark_or_allow`
+  guard reads that container's arm flag, and only the provisioner is authoritatively `BETA_RUNTIMES_ENABLED=0`;
+  the backend API container inherits the base `=1`). Fresh backup `pre-recovery-apply-20260802T060814Z.sql.gz`
+  (sha256 `24c855c7…`). Result: `AccountRuntime pk1` **REMOVED → NOT_PROVISIONED**; one new `RECOVER/recover_reset`
+  RuntimeEvent (id 8); **Job #1 preserved** (FAILED/attempt 3); **new Job #2 PROVISION/QUEUED/lease None (inert)**;
+  exactly one active PROVISION job; 0 VR. `BACKEND_RECOVERY_APPLY_PASS` · `CUSTOMER_ZERO_NOT_PROVISIONED` ·
+  `NEW_PROVISION_JOB_CREATED` · `FAILED_JOB_PRESERVED` · `PROVISIONER_REMAINS_DARK` · `NO_AGENT_OPERATION` ·
+  `SLOT2_GEN5_UNCHANGED` · `PRODUCTION_UNAFFECTED`. Job #2 stays inert until a **separate Phase-3 arming**.
+  Next = Controlled Provisioning Attempt.
+
 - **2026-08-02 — Customer Zero orphaned-slot cleanup APPLIED (first signed mutating agent op). 🟢**
   Sponsor-gated `reclaim_beta_runtime --expect-slot 2 --expect-generation 4 --apply` (in the DARK provisioner,
   stable `job_id=1`). Fresh backup `pre-cleanup-apply-20260802T054646Z.sql.gz` (sha256 `c0908c8b…`). Drove
