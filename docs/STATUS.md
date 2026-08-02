@@ -6,6 +6,26 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Broker Login Validation Primitive: BACKEND deployed to production DARK; host certification STOPPED at the envelope-keypair + clean-MT5 boundary. 🟠**
+  Controlled deploy of the ADR-0027 primitive (source `8fa3748`). **Backend half DONE + verified, fully
+  reversible.** Verified backup `pre-loginprimitive-deploy-20260802T153047Z.sql.gz` (sha256 `8ae1b131…`,
+  gzip-OK); rollback tag `guvfx-prod-guvfx-backend:rollback-preLoginPrimitive` → prior `160e3bc6`.
+  `BUILD_TREE_PARITY_PASS_8FA3748` (649 `*.py` byte-identical, 0 deltas); new image **`cf8e3b1801fd`**
+  (throwaway-verified: `VALIDATE_LOGIN` in `SUPPORTED_OPERATIONS`, seal-only guard present, no
+  `unseal_as_sender`, no `BROKER_CRED_ENC_*` baked). Recreated **only** `guvfx-backend` (`--no-deps`,
+  migration-free); post-verify: running `cf8e3b18`, `VALIDATE_LOGIN` advertised, **backend cannot decrypt**
+  (`backend_has_private_keys=False`, `backend_enc_configured=False`, no envelope key in env), `migrate
+  --check` 0, system-check clean, public API 200. **Provisioner UNTOUCHED** (`160e3bc6`, DARK
+  `BETA_RUNTIMES_ENABLED=0`) — it is a standalone (non-compose) container whose config lives only
+  in-container, so its recreate needs its secret-config source (deferred). **Customer Zero pid 316 ALIVE
+  unchanged** (Session 0); prod IS6 terminals 4336/8748 healthy; `GuvFXBetaAgent` :8791 (pid 13228)
+  Running; all containers healthy. **STOPPED before** the Windows-host + agent-key steps: (1) the envelope
+  **private key** (#13) is a customer-credential decryption secret — Sponsor-inserted, never handled by me;
+  (2) the isolated **validation terminal** (#14) needs a CLEAN MT5 source (RULE-10, never a used/production
+  terminal) that I do not hold; (3) the agent-bundle + provisioner restart is a live management-plane
+  mutation awaiting explicit go. `PRODUCTION_UNAFFECTED`. Security finding (pre-existing, redacted): prod
+  `docker-compose.yml` inlines secrets in `environment:` — recommend migration to a secret store + rotation.
+
 - **2026-08-02 — Repository hygiene & governance closure. 🟢**
   Read-only inspection + governance reconciliation, no implementation. **main clean** (@ `c2da273`,
   0 ahead/0 behind origin); no stale background jobs (no `manage.py test` / `make check` / `gh` watchers /
