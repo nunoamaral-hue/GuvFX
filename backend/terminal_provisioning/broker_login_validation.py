@@ -56,6 +56,10 @@ _TAXONOMY = {
     "isolation_check_failed":  (UNAVAILABLE, True),
     "credential_unsealable":   (UNAVAILABLE, True),
     "validation_busy":         (UNAVAILABLE, True),
+    # ADR-0027 task-launch remediation: the GUI-capable runner task could not be triggered or did not answer
+    # in time. Platform conditions (never the customer's credentials) → UNAVAILABLE/retryable.
+    "validation_runner_unavailable": (UNAVAILABLE, True),
+    "validation_runner_timeout":     (UNAVAILABLE, True),
     "impl_integrity_mismatch": (UNAVAILABLE, True),
     "payload_missing":         (UNAVAILABLE, True),
     "payload_digest_mismatch": (UNAVAILABLE, True),
