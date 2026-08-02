@@ -6,6 +6,20 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Customer Zero CONTROLLED PROVISIONING SUCCEEDED → broker-independent RUNNING. 🟢**
+  The culmination: the original MATERIALISE timeout failure is fully resolved. Sponsor-approved. Fresh backup
+  `pre-cz-provision-attempt-20260802T061701Z.sql.gz` (sha256 `ee0efca9…`); Golden STOP-check BEFORE
+  (585 files / 396,694,220 B / aggregate `0af1fd48…`). Armed **only** the provisioner-scoped
+  `BETA_RUNTIMES_ENABLED` `0→1` (in-place, keyring never read) → recreate provisioner → worker claimed **Job #2**
+  → **MATERIALISE (300 s timeout, no false-timeout, attempt 1, ~25 s) → START → VERIFY → RUNNING** →
+  **disarmed** back to DARK (armed window ~90 s). Result: `AccountRuntime pk1 = RUNNING`; Job #2 PROVISION/DONE;
+  Job #1 preserved; **ProvisioningVerificationReport broker_login_verified=False** (broker-independent).
+  Host: slot 2 gen 5 occupied; **MT5 pid 316, Session 0, `C:\GuvFX\beta\slots\2\terminal\terminal64.exe`**
+  (task `GuvFXBetaRuntime-2` lastResult=0). `GOLDEN_BYTE_IDENTICAL_PASS` (AFTER `0af1fd48…` == BEFORE).
+  `PRODUCTION_UNAFFECTED` (prod terminals 4336/8748 on separate IS6 path; bridge 401; watermarks 430/20647;
+  CZ trades 0; **Nuno acct #1 trades 368 unchanged**; API/frontend 200). No broker login/order/trade.
+  Next = Customer Zero – Broker Connectivity (separate gate).
+
 - **2026-08-02 — Customer Zero backend recovery APPLIED (REMOVED → NOT_PROVISIONED + inert job). 🟢**
   Sponsor-gated `recover_beta_runtime --apply` (in the DARK provisioner container — its `assert_dark_or_allow`
   guard reads that container's arm flag, and only the provisioner is authoritatively `BETA_RUNTIMES_ENABLED=0`;
