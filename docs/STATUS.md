@@ -6,6 +6,29 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Writable validation terminal granted; VALIDATE_LOGIN retry → FAIL again `login_timeout`; ROOT CAUSE now isolated = MT5 Python IPC does not work in Session 0. 🟠**
+  Backup `pre-writableacl-20260802T165940Z.sql.gz` (sha256 `a0d404c1…`). Granted **`NT SERVICE\GuvFXBetaAgent:
+  (OI)(CI)(M)` on the validation-terminal subtree ONLY** (read-back M+RX; no Full/ChangePermissions/
+  TakeOwnership; original ACL saved). **Service-identity probe (as `GuvFXBetaAgent`): `write_inside=OK`,
+  `write_golden=DENIED`, isolation code rejects golden/slot2/`..`** — but **MT5 smoke-start FAILED
+  `mt5_smoke_init=false, last_error=(-10005, 'IPC timeout')`** even with write. (`write_slot2=ALLOWED` is the
+  agent's PRE-EXISTING slot-manager permission — it owns slot2's terminal — NOT granted here; the primitive's
+  code independently rejects slot paths.) Restored terminal to clean baseline (585 files == golden). **Final
+  single VALIDATE_LOGIN retry (30s, clean, writable): `UNAVAILABLE / login_timeout` again (34.97s,
+  is_demo=None).** **ROOT CAUSE ISOLATED: MetaTrader5 Python IPC (`initialize`) does not establish when the
+  agent service launches the terminal in Session 0 (services session) — IPC timeout at both the 15s smoke and
+  the 30s probe.** The write-ACL was NECESSARY (prior RX-only failed at MT5's data writes) but NOT sufficient;
+  the deeper blocker is Session-0 IPC (matches known Session-0 MT5 GUI/desktop limitations). Credentials STILL
+  untested (no authentication attempted — IPC never came up). Stray probe terminals (pids 13668/7244) killed;
+  **terminal restored to exact clean baseline (585, no accounts.dat, no logs)**; M ACL retained for the
+  investigation. **Customer Zero UNCHANGED** (RUNNING, updated 06:18:55, blv False, events 13/VR 1/jobs 2, pid
+  316 sess0 started 06:18:54, slot 2 gen 5); watermarks unchanged (trade_max 430, 0 exec); provisioner DARK;
+  prod IS6 4336/8748 alive. **VERDICT: BROKER_LOGIN_VALIDATION_FAIL (platform: Session-0 MT5 IPC).**
+  **Finding for Failure Investigation:** run the isolated MT5 login probe in an INTERACTIVE session (e.g.
+  Session 1 Admin autologon) or connect to a pre-launched interactive validation terminal (as the production
+  bridge does) — the agent launching MT5 in Session 0 cannot establish the Python IPC. Next = Broker Login
+  Failure Investigation.
+
 - **2026-08-02 — Validation-terminal ACL remediated + service-identity certified; VALIDATE_LOGIN retry → FAIL `login_timeout` (RX-only denies MT5 portable writes). 🟠**
   Backup `pre-aclremediation-20260802T164759Z.sql.gz` (sha256 `af75b024…`). Granted **minimum
   `NT SERVICE\GuvFXBetaAgent:(OI)(CI)(RX)`** on `C:\GuvFX\beta\validation` (original ACL saved to
