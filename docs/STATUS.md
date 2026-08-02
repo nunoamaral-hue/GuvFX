@@ -6,6 +6,27 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Validation-terminal ACL remediated + service-identity certified; VALIDATE_LOGIN retry → FAIL `login_timeout` (RX-only denies MT5 portable writes). 🟠**
+  Backup `pre-aclremediation-20260802T164759Z.sql.gz` (sha256 `af75b024…`). Granted **minimum
+  `NT SERVICE\GuvFXBetaAgent:(OI)(CI)(RX)`** on `C:\GuvFX\beta\validation` (original ACL saved to
+  `validation_acl_backup.txt`, restorable via `icacls /restore`; read-back confirms RX only, no
+  write/modify/delete/full). **Service-identity effective probe (ran AS `GuvFXBetaAgent` via a temp
+  scheduled task):** `isfile_exe=true`, `read_exe=OK`, **`write=DENIED`**, `iso_accept=OK`, negative
+  controls reject golden/slot2/`..`/missing → `SERVICE_IDENTITY_VALIDATION_TERMINAL_ACCESS_PASS` (closes the
+  earlier RULE-11 admin-only gap). Terminal re-certified clean (no accounts.dat, 0 EAs). **Single
+  VALIDATE_LOGIN retry: now PASSES the isolation gate and REACHES the MT5 probe (35.19s) → `UNAVAILABLE /
+  login_timeout`, retryable, is_demo=None.** **Root cause (read-only confirmed): MT5 in portable mode
+  (`portable=True`) must write its data dir; the RX-only ACL denies write, so MT5 launched (stray pid 6684)
+  but wrote NOTHING (no accounts.dat, no logs\, 0 files) → login hung → 30s timeout.** Platform failure, NOT
+  a credential result; credentials still untested. Stray pid 6684 (path-verified validation terminal)
+  terminated; RX ACL left in place (correct/minimal-read); **Customer Zero UNCHANGED** (RUNNING, updated
+  06:18:55, blv False, events 13/VR 1/jobs 2, pid 316, slot 2 gen 5); watermarks unchanged (trade_max 430,
+  0 exec); provisioner DARK; no order/trade/lifecycle. **VERDICT: BROKER_LOGIN_VALIDATION_FAIL (platform).**
+  **Finding for Failure Investigation:** a FUNCTIONING probe needs the agent service account to have WRITE
+  to the MT5 data area (config/logs/bases) — the packet's RX-only minimum is insufficient for portable MT5.
+  Options: grant Modify on the isolated validation terminal (still disjoint from golden/slot/prod), or a
+  per-run writable copy, or redirect MT5 data. Next = Broker Login Failure Investigation.
+
 - **2026-08-02 — First live VALIDATE_LOGIN → FAIL (fail-closed at the isolation gate; RULE-11 service-account ACL gap). 🟠**
   Executed exactly ONE live VALIDATE_LOGIN against Customer Zero's stored demo credentials via the production
   code path (`BrokerLoginValidator.validate`; agent HMAC keyring moved container-to-container, never through
