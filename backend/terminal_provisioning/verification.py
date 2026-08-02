@@ -54,11 +54,14 @@ def build_verification_report(runtime: AccountRuntime, verify_evidence: dict, *,
 
     # ``broker_login``/``broker_server`` are the runtime's OWN assigned binding — NOT the box's
     # self-report — so the structured fields can never assert an identity the platform did not check.
-    # ``broker_server`` is the normalised server_name when the account carries one, else blank (free-text
-    # broker_name is not an MT5 server string). The box's raw self-reported login/server remain in
-    # ``evidence`` for forensics.
+    # ``broker_server`` is the RESOLVED server (ADR-0025: normalised FK, else the customer's free-text
+    # broker_name) — i.e. the exact value the login was verified against when ``broker_login_verified`` is
+    # True — so a free-text broker-login account records the real server rather than a misleading blank.
+    # ``broker_login_verified`` states whether the platform actually verified a live login to it. The box's
+    # raw self-reported login/server remain in ``evidence`` for forensics.
+    from .provisioner import resolve_broker_server
     login = str(acct.account_number or "")
-    server = (acct.broker_server.server_name or "").strip() if acct.broker_server_id else ""
+    server = resolve_broker_server(acct)[0] or ""
     evidence = {k: v[k] for k in _SAFE_EVIDENCE_KEYS if k in v}
 
     return ProvisioningVerificationReport.objects.create(

@@ -185,15 +185,17 @@ def resolve_broker_server(account) -> tuple:
     different from the curated ``server_name`` and comparing the two would false-block every normalised
     account that carries a display name. The normalised binding is authoritative by design; ``broker_name``
     is consulted ONLY as the fallback for accounts that were never normalised (the free-text beta journey).
-    This is strictly additive to the prior "FK-only" behaviour — no normalised account changes — and the
-    downstream exact server-identity check (``_start_and_verify`` step (3)) still verifies the connected
-    server against whatever value this returns. Returns ``(server, reason)``: on success ``reason`` is None
-    and ``server`` is the trimmed string; on failure ``server`` is None and ``reason`` is the durable,
+    Branching on FK **presence** (not on a non-empty ``server_name``) keeps this strictly additive to the
+    prior "FK-only" behaviour: an account WITH a ``broker_server`` FK resolves to that FK's ``server_name``
+    exactly as before and never falls through to ``broker_name`` (a blank curated ``server_name`` is a data
+    error → ``broker_server_missing``, the fail-closed equivalent of the old path), so no normalised account
+    changes. The downstream exact server-identity check (``_start_and_verify`` step (3)) still verifies the
+    connected server against whatever value this returns. Returns ``(server, reason)``: on success ``reason``
+    is None and ``server`` is the trimmed string; on failure ``server`` is None and ``reason`` is the durable,
     non-retryable, secret-free code. Pure/read-only — reads only non-secret server identifiers."""
-    fk = getattr(account, "broker_server", None)
-    fk_server = (getattr(fk, "server_name", "") or "").strip() if fk is not None else ""
-    if fk_server:
-        return fk_server, None
+    if getattr(account, "broker_server_id", None):        # FK present → authoritative, never fall back
+        server = (getattr(account.broker_server, "server_name", "") or "").strip()
+        return (server, None) if server else (None, "broker_server_missing")
     free = (getattr(account, "broker_name", "") or "").strip()
     return (free, None) if free else (None, "broker_server_missing")
 

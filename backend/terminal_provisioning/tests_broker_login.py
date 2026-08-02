@@ -153,9 +153,11 @@ class BrokerLoginFailureTaxonomyTests(TestCase):
 
     # NOTE: a "no server anywhere" account cannot be persisted (the model strips broker_name and the
     # ``brokeridentity_present`` DB constraint + create serializer both require a broker_server FK OR a
-    # non-empty broker_name), so the provisioning ``broker_server_missing`` gate is unreachable for a real
-    # account. The resolver's missing-path is covered by tests_broker_server_resolution (in-memory); the
-    # end-to-end fail-closed path is covered by the CONFLICT case there.
+    # non-empty broker_name), so the ``broker_server_missing`` gate cannot be reached via a *persisted*
+    # account. The resolver's missing-path is unit-covered in tests_broker_server_resolution (in-memory), and
+    # the enforcement gate itself is covered end-to-end there via a patched resolver
+    # (test_missing_server_gate_fails_closed_end_to_end). ADR-0025 removed conflict-fail-closed — a normalised
+    # FK wins over free-text — so there is deliberately no "conflict fails closed" test.
 
     def test_null_classification_fails_closed(self):
         # a PRESENT-but-null classification (agent could not determine) must NOT pass via bool() coercion

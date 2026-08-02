@@ -3,13 +3,15 @@
 The provisioning login path now consumes the server the customer ALREADY submitted through the frontend:
 the normalised ``broker_server`` FK when present, else the free-text ``broker_name`` (the "Add Trading
 Account" form's "Broker server name" field). So the beta journey — enter login/server/password once, then
-GuvFX provisions automatically — needs no operator or customer re-entry. Missing / conflicting servers fail
-closed. Credentials are never read, printed, logged, or persisted in plaintext by the resolver.
+GuvFX provisions automatically — needs no operator or customer re-entry. A normalised broker_server FK wins
+deterministically over free-text (no fail-closed on disagreement — see ADR-0025); only a genuinely absent
+server fails closed. Credentials are never read, printed, logged, or persisted in plaintext by the resolver.
 
 No real customer credentials appear here — ``SECRET`` is a synthetic test password.
 """
 import io
 import logging
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -142,7 +144,7 @@ class BrokerServerResolverUnitTests(TestCase):
 @REQUIRE_LOGIN
 class BrokerServerResolutionIntegrationTests(TestCase):
     """End-to-end under PROVISIONING_REQUIRE_BROKER_LOGIN=1: the customer-entered free-text server drives a
-    genuinely verified broker login, with no re-entry — and missing/conflicting servers fail closed."""
+    genuinely verified broker login, with no re-entry; the normalised FK wins over free-text (ADR-0025)."""
 
     def _drive(self, acct, verify_result=None):
         rt = cap.reserve_beta_slot(acct)
@@ -173,3 +175,29 @@ class BrokerServerResolutionIntegrationTests(TestCase):
         cfg = next(c for c in p.calls if c[0] == "configure")
         self.assertEqual(cfg[2], "TradersWay-Demo")            # FK server used, not the free-text
         self.assertTrue(ProvisioningVerificationReport.objects.get(runtime=rt).broker_login_verified)
+
+    def test_verification_report_records_resolved_free_text_server(self):
+        # Audit completeness: the durable report must record the server the login was verified AGAINST — a
+        # free-text account records the resolved server (IS6Technologies-Demo), not a misleading blank.
+        acct = _account(account_number="1302575", broker_name="IS6Technologies-Demo", is_demo=True)
+        rt, job, _p = self._drive(acct)
+        self.assertEqual(rt.state, RuntimeState.RUNNING)
+        rep = ProvisioningVerificationReport.objects.get(runtime=rt)
+        self.assertTrue(rep.broker_login_verified)
+        self.assertEqual(rep.broker_login, "1302575")
+        self.assertEqual(rep.broker_server, "IS6Technologies-Demo")     # resolved server recorded, not ""
+
+    def test_missing_server_gate_fails_closed_end_to_end(self):
+        # Directly guard the provisioning enforcement gate: if no server resolves, the login MUST fail closed
+        # (non-retryable) and never reach RUNNING with a blank/unchecked server leg. A persisted account can't
+        # be both-absent, so the gate is exercised via a patched resolver — a future edit that drops the raise
+        # or routes a blank server into configure can then never pass green.
+        acct = _account(broker_name="IS6Technologies-Demo")
+        with patch("terminal_provisioning.provisioner.resolve_broker_server",
+                   return_value=(None, "broker_server_missing")):
+            rt, job, _p = self._drive(acct, {"running": True, "logged_in": True,
+                                             "login": None, "is_demo": True})
+        self.assertEqual(job.last_error, "broker_server_missing")
+        self.assertEqual(job.status, ProvisioningJob.Status.FAILED)    # non-retryable
+        self.assertEqual(rt.state, RuntimeState.FAILED)
+        self.assertFalse(ProvisioningVerificationReport.objects.filter(runtime=rt).exists())
