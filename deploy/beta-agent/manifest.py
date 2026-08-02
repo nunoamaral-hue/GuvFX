@@ -24,7 +24,7 @@ IMPL_MODULES = (
     # ADR-0027 broker-login validation primitive: the credential envelope crypto + the login handler are
     # the most security-sensitive modules on the box, so both are integrity-covered — a drift in either
     # fails VALIDATE_LOGIN (and every mutating op) closed and refuses start.
-    "broker_cred_envelope.py", "validate_login.py",
+    "broker_cred_envelope.py", "validate_login.py", "validation_handoff.py", "validation_runner.py",
     "lib/mgmt_protocol.py", "lib/mgmt_agent_core.py",
 )
 

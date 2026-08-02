@@ -22,7 +22,11 @@ retryable ``could_not_verify`` — the probe never falsely blames the customer's
 """
 from __future__ import annotations
 
+import os
 import threading
+import time
+
+import validation_handoff as handoff
 
 # ── isolated-terminal contract ─────────────────────────────────────────────────────────────────────────────
 #: The ONE dedicated root the validation terminal must live beneath. A fixed namespace, never request-derived.
@@ -257,3 +261,100 @@ class LoginValidationHandler:
                 probe.shutdown()
             except Exception:        # noqa: BLE001 — shutdown must not mask the outcome or leak
                 pass
+
+
+def build_inprocess_handler(cfg: dict):
+    """Assemble the in-process ``LoginValidationHandler`` (envelope-open + isolated-terminal + MT5 probe).
+    Used BY THE TASK-LAUNCHED RUNNER, which executes in a GUI-capable window station. Returns ``None`` when
+    the validation terminal or the envelope private key is not configured (fail closed at build). Kept here
+    (not in agent.py) so the runner reuses the exact, integrity-pinned probe assembly."""
+    validation_dir = cfg.get("validation_terminal_dir")
+    if not validation_dir:
+        return None
+    import broker_cred_envelope as cred_env                     # noqa: PLC0415 — host-only optional import
+    if not cred_env.agent_enc_configured():
+        return None
+    forbidden = tuple(dict.fromkeys(
+        DEFAULT_FORBIDDEN_ROOTS
+        + (cfg.get("slots_root", ""), cfg.get("golden_dir", ""), cfg.get("beta_root", ""))
+        + tuple(cfg.get("validation_forbidden_roots", ()))))
+    forbidden = tuple(r for r in forbidden if r)
+    return LoginValidationHandler(
+        open_envelope=lambda sealed, aad: cred_env.open_envelope(sealed, aad=aad),
+        bind_aad=cred_env.bind_aad,
+        mt5_probe_factory=RealMt5Probe,
+        path_exists=os.path.isfile,
+        validation_dir=validation_dir,
+        validation_root=cfg.get("validation_root") or DEFAULT_VALIDATION_ROOT,
+        forbidden_roots=forbidden,
+        login_timeout_ms=int(cfg.get("login_timeout_ms", 30000)))
+
+
+class TaskLaunchLoginValidator:
+    """ADR-0027 task-launch remediation. Exposes the SAME ``validate(...) -> {ok, reason_code, is_demo}``
+    interface the agent core expects, but instead of running the MT5 probe IN-PROCESS (a WinSW-service
+    window station where MT5 GUI creation fails — root-caused 2026-08-02), it hands the SEALED request to a
+    pre-approved, task-launched runner (a GUI-capable window station) and returns the runner's secret-safe
+    outcome.
+
+    The delegator NEVER decrypts the credential and NEVER passes a secret via the task command line/args/env
+    — only an ACL-restricted, HMAC-authenticated, single-use handoff FILE carries the (already-sealed)
+    payload. One delegation at a time (process lock); a busy delegator returns ``validation_busy``; a task
+    that will not launch → ``validation_runner_unavailable``; no result in time → ``validation_runner_timeout``.
+    The runner opens the envelope with the machine-scoped private key exactly as the in-process handler did,
+    so the credential's plaintext lifetime is unchanged (point-of-use only, in the runner)."""
+
+    def __init__(self, *, handoff_dir, task_name, trigger_task, timeout_ms,
+                 lock=None, gen_request_id=None, clock=None, sleep=None, result_grace_s=15):
+        self._dir = handoff_dir
+        self._task = task_name
+        self._trigger = trigger_task
+        self._timeout_ms = int(timeout_ms)
+        self._lock = lock or threading.Lock()
+        self._gen = gen_request_id or handoff.new_request_id
+        self._clock = clock or time.time
+        self._sleep = sleep or time.sleep
+        self._grace = float(result_grace_s)
+
+    def _denied(self, reason_code):
+        return {"ok": False, "reason_code": reason_code, "is_demo": None}
+
+    def validate(self, *, operation, runtime_uuid, correlation_id, nonce, payload) -> dict:
+        if not self._task or not self._dir:
+            return self._denied("validation_unconfigured")
+        # one delegation at a time (mirrors the in-process single-flight; the task is also single-instance)
+        if not self._lock.acquire(blocking=False):
+            return self._denied("validation_busy")
+        rid = self._gen()
+        try:
+            try:
+                handoff.sweep_stale(self._dir, max_age_s=max(120.0, self._timeout_ms / 1000.0 + 60),
+                                    now=self._clock())
+            except Exception:            # noqa: BLE001 — housekeeping must never fail the probe
+                pass
+            body = {"operation": operation, "runtime_uuid": str(runtime_uuid),
+                    "correlation_id": correlation_id, "nonce": nonce, "payload": payload}
+            try:
+                handoff.write_request(self._dir, rid, body,
+                                      ttl_seconds=int(self._timeout_ms / 1000) + 30, now=self._clock())
+            except Exception:            # noqa: BLE001 — cannot stage the request → runner is unavailable
+                return self._denied("validation_runner_unavailable")
+            try:
+                triggered = bool(self._trigger(self._task))
+            except Exception:            # noqa: BLE001
+                triggered = False
+            if not triggered:
+                return self._denied("validation_runner_unavailable")
+            res = handoff.read_result(self._dir, rid, timeout_s=self._timeout_ms / 1000.0 + self._grace,
+                                      sleep=self._sleep, clock=self._clock)
+            if res is None:
+                return self._denied("validation_runner_timeout")
+            return {"ok": bool(res.get("ok")),
+                    "reason_code": str(res.get("reason_code") or "could_not_verify"),
+                    "is_demo": res.get("is_demo")}
+        finally:
+            try:
+                handoff.cleanup(self._dir, rid)      # remove req/claim/result regardless of outcome
+            except Exception:            # noqa: BLE001
+                pass
+            self._lock.release()

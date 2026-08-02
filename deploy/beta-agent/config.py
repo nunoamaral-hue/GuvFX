@@ -196,6 +196,13 @@ def load_config(env: dict | None = None) -> dict:
         "validation_root": env.get("BETA_AGENT_VALIDATION_ROOT", r"C:\GuvFX\beta\validation"),
         "validation_forbidden_roots": _json_list(env.get("BETA_AGENT_VALIDATION_FORBIDDEN_ROOTS", "")),
         "login_timeout_ms": int(env.get("BETA_AGENT_LOGIN_TIMEOUT_MS", "30000")),
+        # ── ADR-0027 task-launch remediation (root cause 2026-08-02: MT5 GUI/MDI creation fails when the
+        #    terminal is launched IN-PROCESS by the WinSW service; it succeeds via a scheduled task). With a
+        #    task name configured, the agent DELEGATES the probe to the task-launched runner via the secure
+        #    single-use local handoff dir; without it, the legacy in-process probe is built (GUI-incapable). ──
+        "validation_handoff_dir": env.get("BETA_AGENT_VALIDATION_HANDOFF_DIR",
+                                          state_dir + r"\validation-handoff"),
+        "validation_task_name": env.get("BETA_AGENT_VALIDATION_TASK_NAME", ""),
     }
 
 
