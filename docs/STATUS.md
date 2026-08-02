@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Option F selected; drafted the governed provisioning packet (credential-free). 🟢**
+  Sponsor selected **Option F (dedicated Windows validation VM)**; do NOT repurpose guvfx-rdp or use either
+  Administrator session. Authored `docs/PACKET_VALIDATION_ENV_PROVISIONING.md` — the DRAFT governed packet for
+  *Customer Zero – Dedicated Validation Environment Provisioning and Interactive IPC Proof*: min VM spec
+  (2 vCPU/4 GB/60 GB, Win11 Pro or Server, **no RDS/CALs — single console session**), Tailscale node + ACL'd
+  worker port (:8792), low-priv `guvfx_validation` + auto-logon interactive session + startup task, clean
+  Golden-copy isolated terminal, `validation_worker.py` (reuses envelope/probe/isolation/HMAC), **worker owns
+  the envelope private key on the VM** (backend seal-only; Session-0 agent removed from the credential path),
+  separate backend↔worker HMAC scope, no-trade surface, cleanup-to-baseline, monitoring, reboot recovery,
+  rollback + Session-0 decommission, **cost ~US$20–45/mo**. Execution = P0 provision → P1 credential-free MT5
+  IPC proof → P2 worker + synthetic sealed-payload + exact baseline restore → P3 reboot recovery → **STOP**
+  (first live broker validation separately authorised). Credential-free; no host mutation this turn; CZ/prod
+  unchanged; repo/CI clean (#219/#58 open).
+
+
 - **2026-08-02 — Interactive-session architecture reassessment (read-only): dedicated-session path BLOCKED by concurrent-session limit; recommend a dedicated validation environment. 🟠**
   Sponsor created `guvfx_validation` (enabled, Remote Desktop Users) but Windows refused a 3rd interactive
   session — **"too many users signed in."** Evidence: **Windows Server 2025 Datacenter, RDS role NOT
