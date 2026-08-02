@@ -6,6 +6,28 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Interactive-session architecture reassessment (read-only): dedicated-session path BLOCKED by concurrent-session limit; recommend a dedicated validation environment. 🟠**
+  Sponsor created `guvfx_validation` (enabled, Remote Desktop Users) but Windows refused a 3rd interactive
+  session — **"too many users signed in."** Evidence: **Windows Server 2025 Datacenter, RDS role NOT
+  installed → 2 concurrent admin sessions**; Session 1 (console Admin) + Session 3 (RDP Admin) + Session 4
+  (guvfx-rdp RDP disc) already at the cap, so a dedicated `guvfx_validation` RDP session cannot be added
+  without disconnecting a session (forbidden) or RDS licensing (forbidden). **Options re-scored:** A
+  (dedicated session) BLOCKED; B/E (worker in Session 1/3, which run production MT5) UNSAFE — the MetaTrader5
+  package's "connect to a running terminal" behaviour risks the validation init grabbing/breaking the LIVE
+  bridge's IS6 connection (pid 14604/8748, Session 1), and it **cannot be tested without risking production**;
+  C (agent session-broker) BLOCKED — the agent runs as `NT SERVICE\GuvFXBetaAgent` (virtual account, no
+  SeTcbPrivilege for WTSQueryUserToken/CreateProcessAsUser); G rejected. **Key facts:** Session 4 (guvfx-rdp,
+  disconnected) is the ONLY existing interactive session that is **MT5-free**; the bridge starts via the
+  `GuvFX_SignalBridge` scheduled task in the Admin console session. **Recommendation = Option F: a dedicated
+  low-cost Windows validation host/VM** (own interactive session, own isolated terminal + worker + envelope
+  key, connects to the same demo broker) — the only option that removes the session limit, the MT5
+  coexistence risk AND all production blast radius, and doubles as the SAFE env to prove interactive IPC +
+  coexistence without touching the live bridge. No-procurement fallback = repurpose Session 4 (governance +
+  guvfx-rdp identity + disconnected-session IPC caveats). **Genuine Sponsor decision = procurement.**
+  Read-only only; no host mutation, no credential, CZ/prod/validation-terminal unchanged; guvfx_validation
+  left as-is (not deleted). Next = dedicated validation environment provisioning + credential-free interactive-IPC proof.
+
+
 - **2026-08-02 — Session-architecture investigation: `SESSION0_IPC_LIMITATION_CONFIRMED` (read-only, no credential). 🟢**
   Root cause of the login_timeout is proven, without any broker login. **Session-0 synthetic** MT5
   `initialize(portable=True)` (as `NT SERVICE\GuvFXBetaAgent`, no login) = `false, (-10005 IPC timeout)`
