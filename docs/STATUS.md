@@ -6,6 +6,15 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Customer Zero runtime stability VERIFIED (read-only, ~16.5 min). 🟢**
+  Read-only observation gate: 16 polls (~1/min) + t0 baseline. **Every poll identical and healthy** — state
+  RUNNING, Job #2 DONE, VR 1 (no new), events 13 (no new), read-only VERIFY `running=true / slot 2 / gen 5 /
+  pid 316 / session 0`, provisioner DARK + **0 restarts**, slot 2 gen 5 quarantine/alloc clear, **MT5 pid 316
+  unchanged across the whole window** (started 06:18:54 → ~32 min continuous uptime by window end), prod
+  terminals 4336/8748, bridge 401, watermarks 430/20647, CZ trades 0, Nuno acct #1 368. `STABILITY_DEMONSTRATED`;
+  zero failure conditions. **Conclusively refutes the historical "Session-0 beta MT5 exits after 10–30 s"
+  concern.** Next = Customer Zero – Broker Connectivity (separate gate).
+
 - **2026-08-02 — Customer Zero CONTROLLED PROVISIONING SUCCEEDED → broker-independent RUNNING. 🟢**
   The culmination: the original MATERIALISE timeout failure is fully resolved. Sponsor-approved. Fresh backup
   `pre-cz-provision-attempt-20260802T061701Z.sql.gz` (sha256 `ee0efca9…`); Golden STOP-check BEFORE
