@@ -6,7 +6,28 @@
 
 ## Execution workstream log
 
-- **2026-08-02 — Broker Login Validation Primitive: BACKEND deployed to production DARK; host certification STOPPED at the envelope-keypair + clean-MT5 boundary. 🟠**
+- **2026-08-02 — Broker Login Validation Primitive: HOST CERTIFICATION COMPLETE — fully deployed & production-ready (DARK). 🟢**
+  Completes the deploy started in the entry below. **Agent host (`WIN-RD8VDS93DK7`):** deployed the `8fa3748`
+  bundle to `C:\GuvFX\beta\agent` (backup `agent.bak-preLoginPrimitive`), **on-host integrity_ok=True**,
+  `manifest_version 2026-08-02.1`; installed deps in the agent venv (**cryptography 50.0.0, MetaTrader5
+  5.0.6090**); **RULE-9 parse gate 0 failures**. **Isolated validation terminal** `C:\GuvFX\beta\validation\
+  terminal` created from the CLEAN golden (no `accounts.dat`); **ISOLATION_OK** via the deployed ADR-0027
+  code with negative controls (rejects golden + slot 2 → `validation_terminal_not_isolated`). **Envelope
+  keys** (`key_id beta-cred-v1`): X25519 pair generated **on-host**, private key written to the host secret
+  store (machine env via `winreg`) — **never printed / never left the host**; public key installed on the
+  backend (`beta.env`, `BROKER_CRED_ENC_PUBKEYS`+`KEY_ID`). Agent restarted (WinSW service mechanism), clean
+  start, `:8791` pid 6656; **AGENT_CAN_DECRYPT=True** (synthetic non-credential round-trip); **BACKEND_CANNOT_
+  DECRYPT=True** (`backend_has_private_keys=False`, seals but cannot open). **NEGOTIATE ok** → advertises
+  `VALIDATE_LOGIN`; **replay → `nonce_replayed`**; HMAC channel unchanged; old-image provisioner ↔ new agent
+  backward-compatible. **Customer Zero pid 316 unchanged** (Session 0); prod IS6 terminals 4336/8748 healthy;
+  **provisioner DARK** (`BETA_RUNTIMES_ENABLED=0`); `PROVISIONING_REQUIRE_BROKER_LOGIN` unset; prod API 200.
+  **No broker login performed, VALIDATE_LOGIN never invoked, no order, no strategy, CZ untouched.** Backup
+  `pre-hostcert-20260802T154902Z.sql.gz` (sha256 `d164b0a6…`). Governance reconciled: workstream branches
+  deleted, PRs #254/#255/#257 merged + #256 closed, ADR-0026/0027 on main, CI green. **Least-privilege
+  note:** the envelope private key + the HMAC keyring are machine-scoped env vars — recommend future move to
+  a service-scoped secret store. Next = First Live Broker Login Validation (separately gated).
+
+- **2026-08-02 — Broker Login Validation Primitive: BACKEND deployed to production DARK; host certification STOPPED at the envelope-keypair + clean-MT5 boundary. 🟠 (SUPERSEDED by the entry above — host certification now complete.)**
   Controlled deploy of the ADR-0027 primitive (source `8fa3748`). **Backend half DONE + verified, fully
   reversible.** Verified backup `pre-loginprimitive-deploy-20260802T153047Z.sql.gz` (sha256 `8ae1b131…`,
   gzip-OK); rollback tag `guvfx-prod-guvfx-backend:rollback-preLoginPrimitive` → prior `160e3bc6`.
