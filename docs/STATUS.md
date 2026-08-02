@@ -6,6 +6,84 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — Automated broker-server resolution fix: engineering-complete (ADR-0025). 🟠**
+  The provisioning login path read only the normalised `broker_server` FK and ignored the customer-entered
+  free-text `broker_name` (where the frontend "Broker server name" lands), so a beta account like Customer
+  Zero (`broker_name="IS6Technologies-Demo"`, FK null) could not broker-login without manual normalisation.
+  New `resolve_broker_server()` with deterministic precedence: **normalised FK wins → else trimmed
+  `broker_name` → else fail closed (`broker_server_missing`)**. Wired into `_expected_login_server` +
+  `_start_and_verify`. **FK wins unconditionally** (no fail-closed on FK↔broker_name disagreement) because
+  `broker_name` is dual-use free text (often a broker *display* name on a normalised account) — so the change
+  is strictly additive, no normalised account's resolution changes. Tests: new
+  `tests_broker_server_resolution.py` (10 directive scenarios: FK-present, free-text-only, both-absent,
+  whitespace, both-equal, both-differ→FK-wins, Customer-Zero shape resolves `IS6Technologies-Demo`, no
+  credential logged, no plaintext password, production account unchanged) + updated `tests_broker_login.py`.
+  Full `terminal_provisioning`+`trading` (1016) green. **NOT deployed; no production mutation; no broker login
+  performed; provisioner DARK; PROVISIONING_REQUIRE_BROKER_LOGIN still OFF.** Next = deploy under governance,
+  then the (separately-gated) broker-login execution.
+
+- **2026-08-02 — Customer Zero runtime stability VERIFIED (read-only, ~16.5 min). 🟢**
+  Read-only observation gate: 16 polls (~1/min) + t0 baseline. **Every poll identical and healthy** — state
+  RUNNING, Job #2 DONE, VR 1 (no new), events 13 (no new), read-only VERIFY `running=true / slot 2 / gen 5 /
+  pid 316 / session 0`, provisioner DARK + **0 restarts**, slot 2 gen 5 quarantine/alloc clear, **MT5 pid 316
+  unchanged across the whole window** (started 06:18:54 → ~32 min continuous uptime by window end), prod
+  terminals 4336/8748, bridge 401, watermarks 430/20647, CZ trades 0, Nuno acct #1 368. `STABILITY_DEMONSTRATED`;
+  zero failure conditions. **Conclusively refutes the historical "Session-0 beta MT5 exits after 10–30 s"
+  concern.** Next = Customer Zero – Broker Connectivity (separate gate).
+
+- **2026-08-02 — Customer Zero CONTROLLED PROVISIONING SUCCEEDED → broker-independent RUNNING. 🟢**
+  The culmination: the original MATERIALISE timeout failure is fully resolved. Sponsor-approved. Fresh backup
+  `pre-cz-provision-attempt-20260802T061701Z.sql.gz` (sha256 `ee0efca9…`); Golden STOP-check BEFORE
+  (585 files / 396,694,220 B / aggregate `0af1fd48…`). Armed **only** the provisioner-scoped
+  `BETA_RUNTIMES_ENABLED` `0→1` (in-place, keyring never read) → recreate provisioner → worker claimed **Job #2**
+  → **MATERIALISE (300 s timeout, no false-timeout, attempt 1, ~25 s) → START → VERIFY → RUNNING** →
+  **disarmed** back to DARK (armed window ~90 s). Result: `AccountRuntime pk1 = RUNNING`; Job #2 PROVISION/DONE;
+  Job #1 preserved; **ProvisioningVerificationReport broker_login_verified=False** (broker-independent).
+  Host: slot 2 gen 5 occupied; **MT5 pid 316, Session 0, `C:\GuvFX\beta\slots\2\terminal\terminal64.exe`**
+  (task `GuvFXBetaRuntime-2` lastResult=0). `GOLDEN_BYTE_IDENTICAL_PASS` (AFTER `0af1fd48…` == BEFORE).
+  `PRODUCTION_UNAFFECTED` (prod terminals 4336/8748 on separate IS6 path; bridge 401; watermarks 430/20647;
+  CZ trades 0; **Nuno acct #1 trades 368 unchanged**; API/frontend 200). No broker login/order/trade.
+  Next = Customer Zero – Broker Connectivity (separate gate).
+
+- **2026-08-02 — Customer Zero backend recovery APPLIED (REMOVED → NOT_PROVISIONED + inert job). 🟢**
+  Sponsor-gated `recover_beta_runtime --apply` (in the DARK provisioner container — its `assert_dark_or_allow`
+  guard reads that container's arm flag, and only the provisioner is authoritatively `BETA_RUNTIMES_ENABLED=0`;
+  the backend API container inherits the base `=1`). Fresh backup `pre-recovery-apply-20260802T060814Z.sql.gz`
+  (sha256 `24c855c7…`). Result: `AccountRuntime pk1` **REMOVED → NOT_PROVISIONED**; one new `RECOVER/recover_reset`
+  RuntimeEvent (id 8); **Job #1 preserved** (FAILED/attempt 3); **new Job #2 PROVISION/QUEUED/lease None (inert)**;
+  exactly one active PROVISION job; 0 VR. `BACKEND_RECOVERY_APPLY_PASS` · `CUSTOMER_ZERO_NOT_PROVISIONED` ·
+  `NEW_PROVISION_JOB_CREATED` · `FAILED_JOB_PRESERVED` · `PROVISIONER_REMAINS_DARK` · `NO_AGENT_OPERATION` ·
+  `SLOT2_GEN5_UNCHANGED` · `PRODUCTION_UNAFFECTED`. Job #2 stays inert until a **separate Phase-3 arming**.
+  Next = Controlled Provisioning Attempt.
+
+- **2026-08-02 — Customer Zero orphaned-slot cleanup APPLIED (first signed mutating agent op). 🟢**
+  Sponsor-gated `reclaim_beta_runtime --expect-slot 2 --expect-generation 4 --apply` (in the DARK provisioner,
+  stable `job_id=1`). Fresh backup `pre-cleanup-apply-20260802T054646Z.sql.gz` (sha256 `c0908c8b…`). Drove
+  signed **STOP → TOMBSTONE → RELEASE** (~29s, rc=0). **Agent:** slot 2 → `[2, NULL, 5, NULL]` = **Available at
+  generation 5**; `slot_generations (2,5,release)`; `slot_audit (10,slot_released,4)`; gen-4 teardown evidence
+  complete (`confirm_terminated`/`tombstone`/`verify_cleanup` COMPLETED); tombstone `379ff98c4149a4b5` created
+  (gen-4 tree preserved). **Backend (exact reviewed marker):** `AccountRuntime pk1` FAILED→**REMOVED** + one
+  `RECLAIM/slot_reclaimed` RuntimeEvent (id 7); **Job #1 unchanged** (FAILED/attempt 3); 0 new/active jobs, 0
+  VR. `STOP_ABSENT_PASS` · `TOMBSTONE_GEN4_PASS` · `RELEASE_SLOT2_GEN5_PASS` · `CUSTOMER_ZERO_NOT_RETRIED` ·
+  `PROVISIONER_REMAINS_DARK` · `PRODUCTION_UNAFFECTED` (slot 1 gen 7 + slots 3/4 unchanged; terminals
+  4336/8748; bridge 401; API/frontend 200). **`CLEANUP_APPLY_PASS`.** Backend recovery (`recover_beta_runtime`)
+  NOT run — separate authorised phase. Next = Backend Recovery dry-run.
+
+- **2026-08-01 — PR #253 reclaim/recovery tooling DEPLOYED to production (DARK). 🟢**
+  Controlled deployment of the ADR-0024 tooling into the running backend image while Customer Zero stayed
+  `FAILED`, slot 2 unchanged, provisioner DARK. Backup `pre-pr253-deploy-20260801T182104Z.sql.gz` (sha256
+  `0eb2ebf6…`, 103 tables, gzip OK); rollback tag `rollback-prePR253-20260801T182127Z` → prior image
+  `d06b13e81078`. Source synced from a pristine `677da61` worktree; **BUILD_TREE_PARITY_PASS_677DA61** (635
+  `*.py`, aggregate sha256 `9123daa8…`, byte-identical, zero deletions). New image **`4c975abf97ad`**
+  (system-check clean, `migrate --check` 0 unapplied, both commands registered + dry-run default, imports have
+  no side effect, PR#252 lease-guard passes, keyring NOT baked). Recreated `guvfx-backend` (default files) +
+  `guvfx-beta-provisioner` (its 2 files, `--no-deps`); no `--remove-orphans`, no migrate. Post-deploy:
+  backend restarts 0 / API 200 / keyring-clean; provisioner armed=0 / keyring present / worker DARK, 0 agent
+  ops; **CUSTOMER_ZERO_FAILED_UNCHANGED** (Job#1 FAILED attempt 3, 6 events, 0 reports/active); **SLOT2_GEN4
+  _UNCHANGED** (stage_copy COMPLETED only, quarantine clear); **PRODUCTION_UNAFFECTED** (terminals 4336/8748,
+  bridge 401, watermarks 430/20647, all other containers untouched). **Commands available, none executed.**
+  Next = separately-authorised Orphaned Slot Cleanup dry-run.
+
 - **2026-08-01 — CZ orphan-reclaim + failed-runtime recovery tooling: engineering-complete (ADR-0024). 🟠**
   Governed, backend-only tooling to reclaim Customer Zero's orphaned agent slot (slot 2/gen 4) and prepare a
   retry — the RELEASE-driver + reclaim-command gap flagged after the MATERIALISE incident. Branch
