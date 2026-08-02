@@ -153,3 +153,16 @@ def backend_enc_configured() -> bool:
         return bool(kid) and bool(_load_json_setting("BROKER_CRED_ENC_PUBKEYS").get(kid))
     except EnvelopeError:
         return False
+
+
+def backend_has_private_keys() -> bool:
+    """True iff the backend is (mis)configured with envelope PRIVATE keys. The backend must be SEAL-ONLY —
+    the private keyring belongs ONLY to the Windows agent. This is the code-enforced check behind the
+    "backend cannot decrypt what it sealed" invariant: the seal path refuses to operate (fail closed) and
+    logs loudly if a private key is ever present here (e.g. the agent host's env copied onto the backend),
+    rather than leaving the invariant a silent deployment property. ``open_envelope`` remains in this module
+    only so the crypto self-tests can prove the round-trip; production never calls it here."""
+    try:
+        return bool(_load_json_setting("BROKER_CRED_ENC_PRIVKEYS"))
+    except EnvelopeError:
+        return True          # malformed private keyring present → treat as present, fail closed

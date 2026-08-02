@@ -14,8 +14,8 @@ import time
 import uuid
 
 from .mgmt_protocol import (
-    ALLOWED_OPERATIONS, PROTOCOL_VERSION, PROVISIONING_OPERATIONS, ProtocolError, semantic_digest,
-    verify_request)
+    ALLOWED_OPERATIONS, CREDENTIALED_OPERATIONS, PROTOCOL_VERSION, PROVISIONING_OPERATIONS,
+    SUPPORTED_OPERATIONS, ProtocolError, semantic_digest, verify_request)
 
 # Agent-local canonical beta root (config-overridable at install). The agent derives paths ONLY from the
 # runtime UUID under this root — a request can never supply a path (requirement 1/3).
@@ -37,6 +37,10 @@ EXECUTION_MODELS = (EXECUTION_MODEL_UUID_DIR, EXECUTION_MODEL_SLOT_POOL)
 _RESPONSE_ALLOWLIST = ("operation", "outcome", "runtime_uuid", "provisioning_job_id", "pid",
                        "session_id", "agent_version", "script_version", "duration_ms", "reason_code",
                        "running", "logged_in", "verified_at",
+                       # VALIDATE_LOGIN (ADR-0027): the connected DEMO/CONTEST/REAL classification — a boolean
+                       # FACT, never a credential (the sealed password/ciphertext never reaches a response).
+                       # ``reason_code`` (already allowlisted) carries the login taxonomy code.
+                       "is_demo",
                        "protocol_version", "manifest_version", "supported_operations",
                        # B3P-2: (slot, generation) identifies ONE immutable runtime occupancy and is part
                        # of runtime identity, so it is first-class evidence rather than an internal detail.
@@ -89,7 +93,7 @@ class BetaProvisioningAgent:
                  script_manifest, script_versions, resolve_real_path, runtime_locks,
                  base: str = DEFAULT_BETA_ROOT, now_fn=None, max_skew_seconds: int = 30,
                  manifest_version: str = "", execution_model: str = EXECUTION_MODEL_UUID_DIR,
-                 slot_resolver=None):
+                 slot_resolver=None, login_validator=None):
         # The execution model is EXPLICIT and validated at construction. There is deliberately no silent
         # fallback from the slot pool to the UUID-directory layout: a pool agent missing its resolver fails
         # to start rather than quietly provisioning into the wrong namespace (the same reasoning as
@@ -113,6 +117,11 @@ class BetaProvisioningAgent:
         self.base = base
         self.now_fn = now_fn or (lambda: int(time.time()))
         self.max_skew_seconds = max_skew_seconds
+        # Optional credentialed-login validator (ADR-0027). Injected by ``build_agent`` ONLY when the
+        # dedicated isolated validation terminal + envelope private key are configured; absent it, a
+        # VALIDATE_LOGIN request fails closed (``validation_unconfigured``) — the primitive is opt-in and an
+        # agent that predates it simply cannot validate.
+        self.login_validator = login_validator
 
     def handle(self, request: dict) -> dict:
         """Validate + execute one request; ALWAYS returns a sanitised response dict (never raises to the
@@ -126,12 +135,22 @@ class BetaProvisioningAgent:
 
             # Read-only, runtime-less handshake: report versions + supported ops so the backend can
             # negotiate the contract before any provisioning request. No path/idempotency/lock work.
+            # Advertises SUPPORTED_OPERATIONS (lifecycle + credentialed VALIDATE_LOGIN) — a backend that
+            # predates the credentialed ops still finds its required lifecycle subset (superset check).
             if op == "NEGOTIATE":
                 return self._sanitise(op, job_id, ruuid, "ok", {
                     "protocol_version": PROTOCOL_VERSION,
                     "manifest_version": self.manifest_version,
-                    "supported_operations": list(PROVISIONING_OPERATIONS),
+                    "supported_operations": list(SUPPORTED_OPERATIONS),
                 })
+
+            # Credentialed, runtime-INDEPENDENT broker-login probe (ADR-0027). It touches NO slot, NO
+            # provisioning lifecycle, NO idempotency store (a login check is read-only and must be
+            # repeatable) and NOT the per-runtime mutation lock — it uses its own global single-flight lock
+            # against a DEDICATED isolated validation terminal. verify_request has already bound the sealed
+            # payload to the signature via ``payload_digest``; the handler re-binds it via the envelope AAD.
+            if op in CREDENTIALED_OPERATIONS:
+                return self._handle_validate_login(request, fields)
 
             if op not in ALLOWED_OPERATIONS or op not in self.op_impls:
                 raise AgentError("operation_not_allowed")
@@ -181,6 +200,42 @@ class BetaProvisioningAgent:
         except Exception:  # noqa: BLE001 — never leak a raw exception string (requirement 7)
             return self._sanitise(op, job_id, ruuid, "error", {}, reason_code="agent_internal_error")
 
+    def _handle_validate_login(self, request: dict, fields: dict) -> dict:
+        """Non-destructive broker-login probe (ADR-0027). Delegates the entire credential path — envelope
+        opening, isolated-terminal assertion, single-flight lock, the MT5 probe and guaranteed shutdown — to
+        the injected ``login_validator``. The CORE deliberately knows NONE of that (envelope crypto, MT5
+        semantics, host paths): it only re-affirms implementation integrity, hands the validator the OUTER
+        HMAC-verified request context (so the sealed password binds to THIS request via the envelope AAD)
+        and sanitises an allowlisted, secret-free outcome. Never raises to the caller."""
+        op = "VALIDATE_LOGIN"
+        job_id, ruuid = fields["provisioning_job_id"], fields["runtime_uuid"]
+        try:
+            # Integrity gate (requirement 6): a drift in ANY implementation module — including the validator
+            # and the envelope crypto, once pinned in the manifest — fails the most credential-sensitive op
+            # closed, exactly as it does for the mutating ops.
+            if not self._impl_integrity_ok("op_validate_login"):
+                raise AgentError("impl_integrity_mismatch")
+            if self.login_validator is None:
+                raise AgentError("validation_unconfigured")
+            payload = request.get("payload")
+            if not isinstance(payload, dict):
+                raise AgentError("payload_missing")
+            # The validator returns ONLY {ok: bool, reason_code: str, is_demo: bool|None}. AAD context comes
+            # from the verified fields (never the payload) so a lifted ciphertext cannot be re-bound.
+            result = self.login_validator.validate(
+                operation=op, runtime_uuid=ruuid, correlation_id=fields["correlation_id"],
+                nonce=fields["nonce"], payload=payload)
+            raw = {}
+            if isinstance(result.get("is_demo"), bool):
+                raw["is_demo"] = result["is_demo"]
+            outcome = "ok" if result.get("ok") else "denied"
+            return self._sanitise(op, job_id, ruuid, outcome, raw,
+                                  reason_code=str(result.get("reason_code") or "could_not_verify"))
+        except (ProtocolError, AgentError) as e:
+            return self._sanitise(op, job_id, ruuid, "denied", {}, reason_code=e.reason_code)
+        except Exception:  # noqa: BLE001 — never leak a raw exception string (requirement 7)
+            return self._sanitise(op, job_id, ruuid, "error", {}, reason_code="agent_internal_error")
+
     def _resolve(self, op: str, norm_uuid: str) -> dict:
         """Derive the local path for this operation and prove it is contained. Kept as one step so it can
         run INSIDE the mutation lock and AFTER the integrity gate — in the pool model this is where a slot
@@ -226,7 +281,7 @@ class BetaProvisioningAgent:
             "reason_code": reason_code,
         }
         # copy ONLY allowlisted evidence / handshake fields the impl produced
-        for k in ("pid", "session_id", "duration_ms", "running", "logged_in", "verified_at",
+        for k in ("pid", "session_id", "duration_ms", "running", "logged_in", "verified_at", "is_demo",
                   "protocol_version", "manifest_version", "supported_operations",
                   "slot", "generation", "occupancy_id", "owner_marker_digest", "canonical_path_digest",
                   "path_containment_verified", "executable_containment_verified",

@@ -114,12 +114,13 @@ class BundleIntegrityTests(SimpleTestCase):
 
     def test_manifest_supported_operations_match_the_protocol(self):
         """The drift that would have let RELEASE ship broken: NEGOTIATE advertises the code constant
-        PROVISIONING_OPERATIONS, but build_agent derives each op's integrity entry from
-        manifest.json.supported_operations. If the file omits an advertised op, the real agent denies it
-        with impl_integrity_mismatch — an op the backend believes is available but the host refuses."""
+        SUPPORTED_OPERATIONS (lifecycle + credentialed VALIDATE_LOGIN), but build_agent derives each op's
+        integrity entry from manifest.json.supported_operations. If the file omits an advertised op, the real
+        agent denies it with impl_integrity_mismatch — an op the backend believes is available but the host
+        refuses. The file must therefore list EXACTLY the protocol's SUPPORTED_OPERATIONS."""
         listed = agent_manifest.load_manifest(
             os.path.join(_BUNDLE, "manifest.json")).get("supported_operations", [])
-        self.assertEqual(set(listed), set(proto.PROVISIONING_OPERATIONS))
+        self.assertEqual(set(listed), set(proto.SUPPORTED_OPERATIONS))
 
 
 class AgentServiceTests(SimpleTestCase):
@@ -131,7 +132,8 @@ class AgentServiceTests(SimpleTestCase):
         self.assertEqual(r["outcome"], "ok")
         self.assertEqual(r["protocol_version"], proto.PROTOCOL_VERSION)
         self.assertEqual(r["manifest_version"], expected_version)
-        self.assertEqual(set(r["supported_operations"]), set(proto.PROVISIONING_OPERATIONS))
+        self.assertEqual(set(r["supported_operations"]), set(proto.SUPPORTED_OPERATIONS))
+        self.assertIn("VALIDATE_LOGIN", r["supported_operations"])   # credentialed op is advertised
         self.assertTrue(r["agent_version"])
 
     def test_invalid_uuid_rejected(self):

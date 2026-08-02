@@ -1,10 +1,10 @@
 {
   "agent_version": "beta-agent-1.0.0",
   "checksums": {
-    "agent.py": "8cefd18b1f4f17448b97dcb68d56765068d6d6bc855cf7adf44f13fa1ec92d0f",
-    "config.py": "2b80abd20de6f093f707ca731e198810492cf56dc1f86cd6227cd9f2dc12db23",
+    "agent.py": "014d55a4e2fa332168d2397eede138a970cb0471f8240a923e21abc2186a9897",
+    "config.py": "e1ceaa700e252a5f97face285721153395ee9e00d81ed44a22ac2b48f88e5be8",
     "stores.py": "2225b78bfa23da99578379b715bd8d5233f49ad58bbba3a7373cf1d3a241b5d7",
-    "manifest.py": "d1befea5fd93487a033a0927e0f4c30ffb81bba27bd7405a3ac514aab3c51568",
+    "manifest.py": "b06340d6b66ae9f98daf4ea59819760a1e2b732284847957cadeda672d32778f",
     "op_impls.py": "e4ec790e4f0f6391dc8e40e8d981c0a9dc178689282f8eaca841a4076b5ef5e0",
     "pool_op_impls.py": "3bf2060368ac6744420ee6958f8a713a28f2cbaefb6b02c585538049be0978fc",
     "win_ops.py": "36499a24b000befe144b1352988754e8f38bd15ea035943bef009f369f8e90b8",
@@ -13,11 +13,13 @@
     "occupancy.py": "c944c03592f459be012a5e868b85d6c7acef0ca09ea8472d9579b9e804d96b6e",
     "win_primitives.py": "dcef18836ccf382e45bd5977ab493eb405437ff38077202b8f24c2f518999023",
     "win_mutations.py": "38258c11a89ad4d9251d990d48d2d005a230d24317761844f8f7f81dcae0b626",
-    "lifecycle.py": "f7e87b8be61f8050867604acf9bafd4b021e2c738fb2e62d4b8368b8ac08eb3b",
-    "lib/mgmt_protocol.py": "48fcb8cb20169c56fb4402c76eb05f88f482b41efbe8dc34aacf1ec66f5d783e",
-    "lib/mgmt_agent_core.py": "cd55ec9a6b2a44d40dd42adf8986b2140a0a905690eb03322647923e909e593e"
+    "lifecycle.py": "192b1d0e803fccd54a077a4bba6d67e2fc70bb9e0634b826a24a85445b454fbf",
+    "broker_cred_envelope.py": "a35932c639e2cab83cb3587bf03295d2fd4711e2fb6197ff25aa474bc8c47f28",
+    "validate_login.py": "1868e807a443e8d08aee45e7e8ebefcbd390f88c497db110bd566396d98cb4ec",
+    "lib/mgmt_protocol.py": "d5e59b362c8d34258b53a1844f95a609ba4d8c9d882b17492455e746a2327b3b",
+    "lib/mgmt_agent_core.py": "ea8e037ef287728c8187e528e2eb4d17ed74371ebbee64139d04ca64322a4110"
   },
-  "manifest_version": "2026-07-25.6",
+  "manifest_version": "2026-08-02.1",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",
@@ -25,6 +27,7 @@
     "VERIFY",
     "STOP",
     "TOMBSTONE",
-    "RELEASE"
+    "RELEASE",
+    "VALIDATE_LOGIN"
   ]
 }
