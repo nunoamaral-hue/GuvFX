@@ -186,4 +186,28 @@ def load_config(env: dict | None = None) -> dict:
         "approved_tasks_path": approved_tasks_path,
         "approved_tasks": approved_tasks,
         "approved_tasks_digest": approved_tasks_digest,
+        # ── ADR-0027 in-place broker-login validation (OPTIONAL, opt-in) ──
+        # Absent ``BETA_AGENT_VALIDATION_TERMINAL_DIR``, the agent builds NO login validator and a
+        # VALIDATE_LOGIN request fails closed (``validation_unconfigured``). The dir must be the dedicated,
+        # isolated validation terminal — build_agent asserts it is contained and DISJOINT from every slot /
+        # golden / per-account runtime path before a probe is ever attempted. Envelope PRIVATE keys are a
+        # DISTINCT scope from the HMAC keyring (``BROKER_CRED_ENC_PRIVKEYS``), resolved by the crypto module.
+        "validation_terminal_dir": env.get("BETA_AGENT_VALIDATION_TERMINAL_DIR", ""),
+        "validation_root": env.get("BETA_AGENT_VALIDATION_ROOT", r"C:\GuvFX\beta\validation"),
+        "validation_forbidden_roots": _json_list(env.get("BETA_AGENT_VALIDATION_FORBIDDEN_ROOTS", "")),
+        "login_timeout_ms": int(env.get("BETA_AGENT_LOGIN_TIMEOUT_MS", "30000")),
     }
+
+
+def _json_list(raw: str):
+    """Parse an optional JSON array of extra estate roots the validation terminal must stay disjoint from.
+    A malformed value fails closed (an empty operator override is safer than a silently ignored one)."""
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        raise ConfigError("BETA_AGENT_VALIDATION_FORBIDDEN_ROOTS is not valid JSON")
+    if not isinstance(parsed, list) or not all(isinstance(x, str) for x in parsed):
+        raise ConfigError("BETA_AGENT_VALIDATION_FORBIDDEN_ROOTS must be a JSON array of strings")
+    return tuple(parsed)

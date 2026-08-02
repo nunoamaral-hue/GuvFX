@@ -6,6 +6,23 @@
 
 ## Execution workstream log
 
+- **2026-08-02 — PR #254 broker-server resolver DEPLOYED to production (DARK, no broker login). 🟢**
+  Controlled deploy of the ADR-0025 fix while Customer Zero stayed broker-independent RUNNING. Backup
+  `pre-pr254-deploy-20260802T085724Z.sql.gz` (sha256 `7a304ed8…`); rollback tag `rollback-prePR254-…` →
+  prior `4c975abf`. Source synced from a pristine `3fa48bd` worktree; **BUILD_TREE_PARITY_PASS_3FA48BD**
+  (636 `*.py`, aggregate `368e1eaf…`, byte-identical, 0 deletions). New image **`160e3bc6190c`**
+  (system-check clean, `migrate --check` 0, resolver behaves — free-text→`IS6Technologies-Demo`,
+  FK-wins→`Demo-Srv`, both-absent→`broker_server_missing` — PR#252 lease-guard + PR#253 commands intact, no
+  keyring/`PROVISIONING_REQUIRE_BROKER_LOGIN` baked). Recreated `guvfx-backend` + `guvfx-beta-provisioner`
+  (`--no-deps`, DARK); no `--remove-orphans`, no migrate. **Read-only resolver validation against real
+  `TradingAccount pk 12`:** `resolve_broker_server` → `("IS6Technologies-Demo", None)`,
+  `_expected_login_server` → `("1302575", "IS6Technologies-Demo")` — password never decrypted, login path
+  never invoked. `PR254_BACKEND_RESOLVER_READY` · `PR254_PROVISIONER_DARK_READY` (armed 0, `require_login`
+  False both containers) · `CUSTOMER_ZERO_SERVER_RESOLUTION_PASS` · `CUSTOMER_ZERO_RUNNING_UNCHANGED` (RUNNING,
+  Job#2 DONE, VR `broker_login_verified=False`, events 13, slot 2 gen 5, **MT5 pid 316 same start 06:18:54 —
+  not restarted**) · `PRODUCTION_UNAFFECTED` (terminals 4336/8748, bridge 401, watermarks 430/20647, Nuno
+  acct #1 368, only backend+provisioner recreated). Next = Broker Connectivity Execution Design (separate gate).
+
 - **2026-08-02 — Automated broker-server resolution fix: engineering-complete (ADR-0025). 🟠**
   The provisioning login path read only the normalised `broker_server` FK and ignored the customer-entered
   free-text `broker_name` (where the frontend "Broker server name" lands), so a beta account like Customer

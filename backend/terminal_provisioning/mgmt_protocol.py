@@ -23,11 +23,18 @@ PROTOCOL_VERSION = 1
 # per-runtime mutation lock; it touches no filesystem. Added under protocol_version 1 and advertised via
 # NEGOTIATE's supported_operations, so an agent that predates it simply omits it (backward compatible).
 PROVISIONING_OPERATIONS = ("MATERIALISE", "START", "VERIFY", "STOP", "TOMBSTONE", "RELEASE")
+# CREDENTIALED_OPERATIONS (ADR-0027) carry an envelope-encrypted broker password bound to the signature via
+# ``payload_digest``; additive + advertised in NEGOTIATE, so an agent that predates them simply omits them.
+# VALIDATE_LOGIN is a NON-destructive, runtime-independent login probe against a dedicated isolated
+# validation terminal — it touches no slot and no provisioning lifecycle.
+CREDENTIALED_OPERATIONS = ("VALIDATE_LOGIN",)
 # NEGOTIATE is a read-only, authenticated handshake (no runtime side-effect) the backend MUST perform to
 # agree protocol/agent/manifest versions + supported operations before sending any provisioning request
 # (versioned-contract requirement). It is signed like any request but touches no runtime.
 HANDSHAKE_OPERATIONS = ("NEGOTIATE",)
-ALLOWED_OPERATIONS = PROVISIONING_OPERATIONS + HANDSHAKE_OPERATIONS
+# Operations an agent advertises in NEGOTIATE (lifecycle + credentialed; NEGOTIATE itself is implicit).
+SUPPORTED_OPERATIONS = PROVISIONING_OPERATIONS + CREDENTIALED_OPERATIONS
+ALLOWED_OPERATIONS = PROVISIONING_OPERATIONS + CREDENTIALED_OPERATIONS + HANDSHAKE_OPERATIONS
 
 # runtime_uuid placeholder for the (runtime-less) NEGOTIATE handshake.
 NIL_UUID = "00000000-0000-0000-0000-000000000000"
@@ -56,9 +63,22 @@ _SEMANTIC_FIELDS = ("protocol_version", "provisioning_job_id", "runtime_uuid", "
 
 
 def _canonical_body(fields: dict) -> bytes:
-    """Deterministic canonical serialisation of the signed fields (sorted keys, compact separators)."""
-    return json.dumps({k: fields[k] for k in _SIGNED_FIELDS}, sort_keys=True,
+    """Deterministic canonical serialisation of the signed fields (sorted keys, compact separators). For a
+    credentialed op the ``payload_digest`` (a SHA-256 over the credential payload) is folded in when present,
+    binding the encrypted-password payload to the signature; lifecycle ops (no payload) sign the identical
+    body as before — byte-compatible with the deployed agent."""
+    keys = list(_SIGNED_FIELDS)
+    if "payload_digest" in fields:
+        keys.append("payload_digest")
+    return json.dumps({k: fields[k] for k in keys}, sort_keys=True,
                       separators=(",", ":")).encode("utf-8")
+
+
+def payload_digest_of(payload) -> str:
+    """SHA-256 over the canonical credential payload (login/server/enc_key_id/password envelope). Signed via
+    ``payload_digest`` and re-checked by the agent, so any field substitution/tamper fails the signature."""
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
 
 
 def semantic_digest(fields: dict) -> str:
@@ -70,9 +90,11 @@ def semantic_digest(fields: dict) -> str:
 
 def sign_request(*, provisioning_job_id, runtime_uuid, operation, correlation_id, keyring: dict,
                  key_id: str, now: int, ttl_seconds: int = DEFAULT_TTL_SECONDS,
-                 nonce: str | None = None) -> dict:
+                 nonce: str | None = None, payload: dict | None = None) -> dict:
     """Build a fully-signed request dict. ``now`` is an integer epoch (caller supplies ``timezone``-based
-    time). ``keyring`` maps key_id → secret; ``key_id`` selects the active signing key."""
+    time). ``keyring`` maps key_id → secret; ``key_id`` selects the active signing key. ``payload`` (a
+    credential payload for a credentialed op) is carried verbatim and BOUND to the signature via a signed
+    ``payload_digest`` — the payload itself is never a signed field, so nothing free-form is trusted."""
     if operation not in ALLOWED_OPERATIONS:
         raise ProtocolError("operation_not_allowed")
     if key_id not in keyring:
@@ -88,6 +110,11 @@ def sign_request(*, provisioning_job_id, runtime_uuid, operation, correlation_id
         "correlation_id": str(correlation_id),
         "key_id": str(key_id),
     }
+    if payload is not None:
+        fields["payload_digest"] = payload_digest_of(payload)   # bound to the signature (below)
+        fields["payload"] = payload                              # carried, NOT signed directly
+    elif operation in CREDENTIALED_OPERATIONS:
+        raise ProtocolError("payload_required")
     fields["signature"] = hmac.new(
         keyring[key_id].encode("utf-8"), _canonical_body(fields), hashlib.sha256).hexdigest()
     return fields
@@ -135,6 +162,17 @@ def verify_request(request: dict, *, keyring: dict, now: int, nonce_burn,
                         hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, sig):    # constant-time
         raise ProtocolError("bad_signature")
+
+    # Credentialed op: the carried payload (envelope-encrypted password + login/server + enc_key_id) is bound
+    # to the (now-verified) signature via ``payload_digest``. Require it and recompute — a substituted payload
+    # fails HERE, before the agent ever opens the envelope (whose AAD independently binds the same request
+    # context). Stripping ``payload_digest`` would already have failed the signature above.
+    if op in CREDENTIALED_OPERATIONS or "payload_digest" in request:
+        payload = request.get("payload")
+        if not isinstance(payload, dict) or "payload_digest" not in request:
+            raise ProtocolError("payload_missing")
+        if not hmac.compare_digest(payload_digest_of(payload), str(request["payload_digest"])):
+            raise ProtocolError("payload_digest_mismatch")
 
     # Replay: only AFTER the signature is proven do we atomically burn the durable nonce. A single-call
     # atomic burn (first-use → True, else False) closes the check-then-set race between concurrent

@@ -21,6 +21,10 @@ IMPL_MODULES = (
     "agent.py", "config.py", "stores.py", "manifest.py", "op_impls.py", "pool_op_impls.py",
     "win_ops.py", "win_slot_ops.py", "service.py",
     "occupancy.py", "win_primitives.py", "win_mutations.py", "lifecycle.py",
+    # ADR-0027 broker-login validation primitive: the credential envelope crypto + the login handler are
+    # the most security-sensitive modules on the box, so both are integrity-covered — a drift in either
+    # fails VALIDATE_LOGIN (and every mutating op) closed and refuses start.
+    "broker_cred_envelope.py", "validate_login.py",
     "lib/mgmt_protocol.py", "lib/mgmt_agent_core.py",
 )
 

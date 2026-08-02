@@ -110,6 +110,9 @@ REASON_CATEGORY = {
     "bad_signature": INTEGRITY,
     "job_op_conflict": INTEGRITY,
     "nonce_replayed": INTEGRITY,
+    # ADR-0027 credentialed op: the carried credential payload was substituted/tampered so its signed
+    # SHA-256 no longer matches — a binding/integrity failure exactly like a bad signature.
+    "payload_digest_mismatch": INTEGRITY,
 
     # ── OBSERVATION: we could not see enough to make a claim ──
     "process_observation_unavailable": OBSERVATION,
@@ -176,6 +179,14 @@ REASON_CATEGORY = {
     "task_definition_incomplete": CONFIGURATION,
     "terminal_path_absent": CONFIGURATION,
     "operation_not_allowed": CONFIGURATION,
+    # ADR-0027 credentialed op (VALIDATE_LOGIN): a request-construction / deployment-contract gap — the
+    # backend built a credentialed request with no payload (``payload_required``), the payload body was
+    # absent/not-an-object on arrival (``payload_missing``), or the agent has no configured isolated
+    # validation terminal + envelope key (``validation_unconfigured``). None is corruption; an operator/
+    # caller fixes the configuration, exactly like the other protocol-contract codes here.
+    "payload_required": CONFIGURATION,
+    "payload_missing": CONFIGURATION,
+    "validation_unconfigured": CONFIGURATION,
     "unsupported_protocol_version": CONFIGURATION,
     "unknown_key_id": CONFIGURATION,
     "missing_signature": CONFIGURATION,

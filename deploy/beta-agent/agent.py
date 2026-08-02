@@ -98,7 +98,38 @@ def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: s
         resolve_real_path=win.real_path, runtime_locks=locks,
         base=base, manifest_version=approved.get("manifest_version", ""),
         execution_model=cfg.get("execution_model") or EXECUTION_MODEL_UUID_DIR,
-        slot_resolver=resolver)
+        slot_resolver=resolver, login_validator=_build_login_validator(cfg))
+
+
+def _build_login_validator(cfg: dict):
+    """ADR-0027: assemble the in-place broker-login validator ONLY when the dedicated isolated validation
+    terminal AND an envelope PRIVATE key are both configured. Absent either, returns None → VALIDATE_LOGIN
+    fails closed (``validation_unconfigured``). The validator holds NO backend/business logic: it opens the
+    envelope, asserts the isolated terminal, single-flights, runs the minimal MT5 login probe and always
+    shuts it down. The forbidden set unions the fixed defaults with the ACTUAL configured slot/golden roots
+    (so a non-default layout is still covered) plus any operator estate roots."""
+    validation_dir = cfg.get("validation_terminal_dir")
+    if not validation_dir:
+        return None
+    import broker_cred_envelope as cred_env                     # noqa: PLC0415 — optional feature import
+    from validate_login import DEFAULT_FORBIDDEN_ROOTS, LoginValidationHandler, RealMt5Probe
+    if not cred_env.agent_enc_configured():
+        # A validation terminal without a decryption key can never open a credential — fail closed at build.
+        return None
+    forbidden = tuple(dict.fromkeys(
+        DEFAULT_FORBIDDEN_ROOTS
+        + (cfg.get("slots_root", ""), cfg.get("golden_dir", ""), cfg.get("beta_root", ""))
+        + tuple(cfg.get("validation_forbidden_roots", ()))))
+    forbidden = tuple(r for r in forbidden if r)
+    return LoginValidationHandler(
+        open_envelope=lambda sealed, aad: cred_env.open_envelope(sealed, aad=aad),
+        bind_aad=cred_env.bind_aad,
+        mt5_probe_factory=RealMt5Probe,
+        path_exists=os.path.isfile,
+        validation_dir=validation_dir,
+        validation_root=cfg.get("validation_root") or r"C:\GuvFX\beta\validation",
+        forbidden_roots=forbidden,
+        login_timeout_ms=int(cfg.get("login_timeout_ms", 30000)))
 
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
