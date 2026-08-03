@@ -33,10 +33,32 @@ MAX_TRANSPORT_READ_TIMEOUT = 600    # hard ceiling: no override can produce an u
 #: op (a (connect, read) tuple) so an unreachable agent fails quickly regardless of the read budget. Centrally
 #: governed, overridable via ``settings.BETA_AGENT_OP_TIMEOUTS`` (or the ``BETA_AGENT_OP_TIMEOUTS`` env JSON),
 #: every value CLAMPED to ``MAX_TRANSPORT_READ_TIMEOUT``.
+# ADR-0027 Phase 2 (2026-08-03) — BACKEND half of the validation timeout contract. The VALIDATE_LOGIN read
+# timeout MUST exceed the Agent's wait for the runner result (login window 120s + cleanup grace 45s = 165s),
+# which itself must exceed the runner's MT5 login + cleanup — so the backend receives the runner's REAL result
+# instead of a transport timeout that surfaces as ``validation_runner_timeout`` (the confirmed defect). The
+# Agent owns its half locally (``config.assert_validation_timeout_contract``); this is the same contract stated
+# on the backend side (RULE 3: the two standalone services cannot share code).
+VALIDATE_LOGIN_AGENT_WAIT_FLOOR_S = 165
+
 OP_TRANSPORT_TIMEOUTS = {
     "NEGOTIATE": 10, "VERIFY": 15, "START": 60, "STOP": 90,
     "TOMBSTONE": 120, "RELEASE": 30, "MATERIALISE": 300,
+    "VALIDATE_LOGIN": 175,   # > VALIDATE_LOGIN_AGENT_WAIT_FLOOR_S (165); canonical, no per-invocation override
 }
+
+
+def assert_backend_timeout_contract(validate_login_timeout_s: int) -> None:
+    """Fail closed if the BACKEND VALIDATE_LOGIN read timeout does not exceed the Agent's result-wait floor —
+    otherwise the backend times out mid-validation and returns a transport error instead of the runner result."""
+    if int(validate_login_timeout_s) <= VALIDATE_LOGIN_AGENT_WAIT_FLOOR_S:
+        raise ValueError(
+            f"validation timeout contract: backend VALIDATE_LOGIN timeout {validate_login_timeout_s}s must "
+            f"exceed the Agent result-wait floor {VALIDATE_LOGIN_AGENT_WAIT_FLOOR_S}s")
+
+
+# Validate the canonical default at import (the shipped value must always satisfy the contract).
+assert_backend_timeout_contract(OP_TRANSPORT_TIMEOUTS["VALIDATE_LOGIN"])
 
 
 def _op_read_timeout(operation: str, default: int = DEFAULT_TRANSPORT_TIMEOUT) -> int:
@@ -64,6 +86,13 @@ def _op_read_timeout(operation: str, default: int = DEFAULT_TRANSPORT_TIMEOUT) -
         logger.warning("BETA_AGENT_OP_TIMEOUTS[%s]=%r is not an int; using the per-op default %ss",
                        operation, val, per_op_default)
         val = per_op_default
+    # Contract floor: a runtime override can raise VALIDATE_LOGIN but NEVER lower it below the Agent's result
+    # wait — an unsafe override is refused in favour of the canonical value (fail-safe, logged).
+    if operation == "VALIDATE_LOGIN" and val <= VALIDATE_LOGIN_AGENT_WAIT_FLOOR_S:
+        logger.warning("BETA_AGENT_OP_TIMEOUTS[VALIDATE_LOGIN]=%ss violates the contract floor %ss; using the "
+                       "canonical %ss", val, VALIDATE_LOGIN_AGENT_WAIT_FLOOR_S,
+                       OP_TRANSPORT_TIMEOUTS["VALIDATE_LOGIN"])
+        val = OP_TRANSPORT_TIMEOUTS["VALIDATE_LOGIN"]
     return max(1, min(val, MAX_TRANSPORT_READ_TIMEOUT))
 
 

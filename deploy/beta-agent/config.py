@@ -103,6 +103,32 @@ def _load_approved_tasks(path: str):
     return parsed, hashlib.sha256(raw).hexdigest()[:16]
 
 
+# ── ADR-0027 Phase 2 (2026-08-03): canonical validation TIMEOUT CONTRACT ─────────────────────────────────
+# The runner's MT5 login window, the Agent's wait for the runner result, and the backend's HTTP read timeout
+# form ONE ordered contract:
+#     backend_op_timeout  >  agent_result_wait  >  mt5_login_timeout + max_cleanup_grace
+# The Agent's result wait is ``login_timeout_ms/1000 + cleanup_grace_s``. If it does NOT exceed the login window
+# plus the worst-case cleanup grace, the Agent returns ``validation_runner_timeout`` BEFORE the runner writes
+# its (correct) result — the confirmed 2026-08-03 defect. This module owns the AGENT half of the contract; the
+# backend owns its op timeout (``beta_worker.OP_TRANSPORT_TIMEOUTS['VALIDATE_LOGIN']``) and re-states the same
+# floor locally (RULE 3 pattern: the two standalone services cannot share code, so each states the contract).
+MIN_CLEANUP_GRACE_S = 30            # the runner must ALWAYS be granted >= this to terminate + scrub after login
+DEFAULT_CLEANUP_GRACE_S = 45        # canonical: 30s cleanup floor + 15s margin
+DEFAULT_LOGIN_TIMEOUT_MS = 120000   # canonical MT5 login window (proven 2026-08-03 build-5833 PASS)
+
+
+def assert_validation_timeout_contract(login_timeout_ms: int, cleanup_grace_s: int) -> None:
+    """Fail closed if the AGENT half of the validation timeout contract is unsafe. The Agent's result wait is
+    ``login_timeout_ms/1000 + cleanup_grace_s``; the grace must be at least ``MIN_CLEANUP_GRACE_S`` so a
+    COMPLETED runner result is always received rather than pre-empted by ``validation_runner_timeout``."""
+    if int(login_timeout_ms) <= 0:
+        raise ConfigError("validation timeout contract: login_timeout_ms must be positive")
+    if int(cleanup_grace_s) < MIN_CLEANUP_GRACE_S:
+        raise ConfigError(
+            f"validation timeout contract: cleanup grace {cleanup_grace_s}s < minimum {MIN_CLEANUP_GRACE_S}s "
+            "— the Agent would return validation_runner_timeout before the runner completes cleanup")
+
+
 def load_config(env: dict | None = None) -> dict:
     """Load agent config from the environment. Required: BETA_AGENT_BIND_HOST, BETA_AGENT_BIND_PORT,
     BETA_AGENT_KEYRING (JSON), BETA_AGENT_KEY_ID. Optional base/tombstone/state/manifest paths.
@@ -128,6 +154,10 @@ def load_config(env: dict | None = None) -> dict:
         raise ConfigError(f"unknown execution model {model!r}")
     pool_size = int(env.get("BETA_AGENT_SLOT_POOL_SIZE", "0"))
     golden_digest = env.get("BETA_AGENT_GOLDEN_DIGEST", "")
+    # ADR-0027 Phase 2 timeout contract (AGENT half) — computed + fail-closed BEFORE the config is returned.
+    login_timeout_ms = int(env.get("BETA_AGENT_LOGIN_TIMEOUT_MS", str(DEFAULT_LOGIN_TIMEOUT_MS)))
+    cleanup_grace_s = int(env.get("BETA_AGENT_CLEANUP_GRACE_S", str(DEFAULT_CLEANUP_GRACE_S)))
+    assert_validation_timeout_contract(login_timeout_ms, cleanup_grace_s)
     approved_tasks_path = env.get("BETA_AGENT_APPROVED_TASKS", "")
     approved_tasks, approved_tasks_digest = {}, ""
     if model == EXECUTION_MODEL_SLOT_POOL:
@@ -195,7 +225,9 @@ def load_config(env: dict | None = None) -> dict:
         "validation_terminal_dir": env.get("BETA_AGENT_VALIDATION_TERMINAL_DIR", ""),
         "validation_root": env.get("BETA_AGENT_VALIDATION_ROOT", r"C:\GuvFX\beta\validation"),
         "validation_forbidden_roots": _json_list(env.get("BETA_AGENT_VALIDATION_FORBIDDEN_ROOTS", "")),
-        "login_timeout_ms": int(env.get("BETA_AGENT_LOGIN_TIMEOUT_MS", "30000")),
+        "login_timeout_ms": login_timeout_ms,
+        # ADR-0027 Phase 2: the Agent's wait for the runner result = login_timeout_ms/1000 + cleanup_grace_s.
+        "cleanup_grace_s": cleanup_grace_s,
         # ── ADR-0027 task-launch remediation (root cause 2026-08-02: MT5 GUI/MDI creation fails when the
         #    terminal is launched IN-PROCESS by the WinSW service; it succeeds via a scheduled task). With a
         #    task name configured, the agent DELEGATES the probe to the task-launched runner via the secure

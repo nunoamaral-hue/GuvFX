@@ -1,0 +1,44 @@
+{
+  "_comment": "ADR-0027 Phase 2 governed manifest for the build-5833 broker-login validation image. Drift against this manifest fails closed (validation_image.verify_image / verify_source_hashes). Non-secret.",
+  "schema_version": "2026-08-03.1",
+  "image_version": "5833-validation-2026-08-03.1",
+  "terminal_build": "5.0.0.5833",
+  "metaeditor_build": "5.0.0.6090",
+  "source_hashes": {
+    "terminal64.exe":      "d84fc3d891f66c1d6325c3c2d2ffc6974de1928cfb6086d1bbd11d4e1dd07d20",
+    "metaeditor64.exe":    "64b7335854310bf2f0f84f5e51e12ee28f047de9eefd9f8a70005624f9d1df90",
+    "config/servers.dat":  "16600f67e3c49d38e0bba29d554b0c6ae5af907f34125ef5b2e3fa3c08fb0ed1",
+    "config/terminal.lic": "19a721d3cf93be782e6188ee5c37d52268ad92a7cf90b237c0aa152ec59359e7"
+  },
+  "allow_listed_files": ["terminal64.exe", "metaeditor64.exe", "config/servers.dat", "config/terminal.lic"],
+  "deterministic_file_hashes": {
+    "terminal64.exe":      "d84fc3d891f66c1d6325c3c2d2ffc6974de1928cfb6086d1bbd11d4e1dd07d20",
+    "metaeditor64.exe":    "64b7335854310bf2f0f84f5e51e12ee28f047de9eefd9f8a70005624f9d1df90",
+    "config/servers.dat":  "16600f67e3c49d38e0bba29d554b0c6ae5af907f34125ef5b2e3fa3c08fb0ed1",
+    "config/terminal.lic": "19a721d3cf93be782e6188ee5c37d52268ad92a7cf90b237c0aa152ec59359e7"
+  },
+  "generated_structural_rules": {
+    "run_in_layer": "MQL5 standard library + compiled *.ex5, generated from the isolated image itself (NEVER copied from a production account environment)",
+    "byte_reproducible": false,
+    "structurally_reproducible": true,
+    "min_ex5": 100
+  },
+  "expected_ex5_count": 131,
+  "account_artefact_count": 0,
+  "attached_ea_count": 0,
+  "expected_markers": ["launched with /portable (portable data lives beneath the image root, not %APPDATA%)"],
+  "expected_config_files": ["config/servers.dat", "config/terminal.lic"],
+  "structural_fingerprint": {
+    "definition": "sha256 over sorted (relative-path|size) of all files EXCLUDING logs/*.log (validation_image.structural_fingerprint)"
+  },
+  "validation_root_rules": "the image terminal dir must be BENEATH the configured validation root and disjoint from every forbidden root (validate_login.assert_isolated_validation_terminal)",
+  "forbidden_roots": [
+    "Customer Zero slot 2", "every slot/runtime root", "production IS6 installation",
+    "Golden", "build-6073 rollback validation baseline", "Agent bundle", "traversal", "bare-drive roots"
+  ],
+  "cleanup_procedure": "terminate only path-verified terminal64.exe under the image; remove logs + any accounts.dat; the runner scrubs + (optionally) restores a precompiled baseline after each probe",
+  "restore_procedure": "re-run build_validation_image.ps1 (fresh isolated image); or mirror a certified precompiled baseline into the terminal dir",
+  "rollback_identifier": {
+    "build_6073_validation_baseline": "C:\\GuvFX\\beta\\validation (fingerprint 7173d2cd...) — remains the active image until Phase 2B; becomes rollback-only after Phase 2B deploy"
+  }
+}

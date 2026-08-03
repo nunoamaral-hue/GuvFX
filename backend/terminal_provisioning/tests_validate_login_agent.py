@@ -439,7 +439,8 @@ class BuildWiringTests(SimpleTestCase):
                 "BETA_AGENT_KEYRING": json.dumps({"k1": "s"}), "BETA_AGENT_KEY_ID": "k1"}
         cfg = agent_config.load_config(dict(base, BETA_AGENT_VALIDATION_TERMINAL_DIR=VDIR))
         self.assertEqual(cfg["validation_terminal_dir"], VDIR)
-        self.assertEqual(cfg["login_timeout_ms"], 30000)
+        self.assertEqual(cfg["login_timeout_ms"], 120000)   # ADR-0027 Phase 2 canonical default
+        self.assertEqual(cfg["cleanup_grace_s"], 45)         # ADR-0027 Phase 2 timeout contract
         with self.assertRaises(agent_config.ConfigError):
             agent_config.load_config(dict(base, BETA_AGENT_VALIDATION_FORBIDDEN_ROOTS="{not json"))
 

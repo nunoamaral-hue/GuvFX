@@ -180,3 +180,56 @@ to `provision_beta_venv.ps1` in this packet: a PowerShell install artefact must 
 target parser before first execution (RULE-9), the MT5 build is version-pinned to the golden image, and the
 install runs only under a separate deployment authorisation. They are recorded here so the host-certification
 packet installs them under the parse gate.
+
+---
+
+## Phase 2 amendment (2026-08-03) — build-5833 validation image + timeout/result contract
+
+**Root cause (closed).** A six-shot credentialled investigation eliminated MCP contention, MetaTrader5
+package version, Session-0-vs-interactive context, MDI/GUI failure and launch-vs-attach sequencing, then
+proved the cause: the **golden build-6073 terminal image** does not complete the automated
+`initialize(login, password, server)` broker authorisation in this environment (it launches, connects broker
+TCP, creates its IPC pipe, but never reaches broker-authorised ready-state → `-10004 / No IPC connection`).
+The operator's **IS6 build-5833** terminal completes the identical automated validation flawlessly — HEALTHY /
+`demo_ok` / `is_demo=true` in ~4 s (Customer Zero acct #12 / `1302575` / `IS6Technologies-Demo`, no order
+placed). **Build 5833 is therefore the canonical validation image; build 6073 becomes rollback-only after the
+Phase 2B deploy.**
+
+**Governed build-5833 validation image (Workstream A).**
+- Source: the operator's non-portable IS6 install (`C:\Program Files\IS6 Technologies MT5 Terminal`). Account
+  state lives in `%APPDATA%`, which is never read or copied.
+- Explicit four-file **allow-list** (`terminal64.exe`, `MetaEditor64.exe`, `Config\servers.dat`,
+  `Config\terminal.lic`), hash-pinned to the certified source (`validation_image.SOURCE_HASHES`).
+- The run-in MQL5 library + 131 `.ex5` are generated **from the isolated image itself** (credential-free
+  launch + account-free wizard dismissal), never copied from a production account environment.
+- Determinism: the four allow-listed files are **byte-deterministic**; the run-in layer is **structurally**
+  deterministic (count/structure, not bytes). Committed governance: `validation_image.py` (fail-closed
+  verify), `validation_image_manifest.json`, `validation_image_provenance.json`,
+  `build_validation_image.ps1` (ASCII, RULE-9). Isolation is enforced by the deployed
+  `assert_isolated_validation_terminal` (positive control accepted; every forbidden root rejected).
+
+**Timeout contract (Workstream B).** One ordered invariant, fail-closed at startup:
+`backend_operation_timeout (175s) > agent_result_wait (165s) > mt5_login_timeout (120s) +
+mandatory_cleanup_allowance (30s)`. The Agent result grace is **45 s = 30 s mandatory cleanup + 15 s margin**.
+Ownership: the **runner** owns the MT5 login timeout (machine env, canonical 120000); the **Agent** owns the
+cleanup/result grace and total runner-result wait (`config.cleanup_grace_s`, passed to
+`TaskLaunchLoginValidator.result_grace_s`); the **backend** owns the operation timeout
+(`beta_worker.OP_TRANSPORT_TIMEOUTS['VALIDATE_LOGIN'] = 175`). A runtime override can raise but never lower
+`VALIDATE_LOGIN` below the floor (floor-clamped, logged); an unsafe *configured* grace fails config load
+(startup) closed. Normal operation no longer requires temporary WinSW edits.
+
+**Result ordering + cleanup semantics.** classify → durable diagnostic → shutdown → deterministic terminate →
+scrub credential artefacts → **verify scrub** → write the customer-safe result → slower baseline mirror →
+update the operator artefact with final restore state. Invariants: HEALTHY is never written before a verified
+scrub; a defeated scrub → `credential_scrub_unverified` (UNAVAILABLE, never HEALTHY-with-credential); a
+**post-result** baseline-restore failure preserves the valid broker classification but records an
+operator-critical `cleanup_status = baseline_restore_failed` — and the **next** request fails closed via the
+pre-probe dirty-baseline guard (`validation_baseline_dirty`) rather than probe a dirty terminal. The customer
+contract never carries the operator cleanup detail. Fast-success observability keeps `api_confirmed_authorisation`
+(authoritative: `initialize=True` + `account_info`) separate from `authorisation_observed` (journal),
+`broker_tcp_observed` and `ipc_pipe_observed`; no unobserved network event is inferred.
+
+**Boundary.** The production Golden and the hosted-runtime images are **unchanged** by Phase 2. This amendment
+records repository implementation only; **deployment and host certification are Phase 2B** (DARK deploy of the
+build-5833 image + timeout contract, credential-free certification, rollback proof). Phase 2 is **not** yet
+deployed or live-certified.

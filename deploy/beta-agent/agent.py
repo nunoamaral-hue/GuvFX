@@ -124,7 +124,10 @@ def _build_login_validator(cfg: dict, win=None):
             return None
         return TaskLaunchLoginValidator(
             handoff_dir=handoff_dir, task_name=task_name, trigger_task=win.run_task,
-            timeout_ms=int(cfg.get("login_timeout_ms", 30000)))
+            timeout_ms=int(cfg.get("login_timeout_ms", 120000)),
+            # ADR-0027 Phase 2: the result wait = login_timeout_ms/1000 + result_grace_s. Feed the canonical
+            # cleanup grace (config-owned, contract-validated) so the Agent NEVER pre-empts a completing runner.
+            result_grace_s=int(cfg.get("cleanup_grace_s", 45)))
     return build_inprocess_handler(cfg)              # legacy in-process (GUI-incapable under the service)
 
 

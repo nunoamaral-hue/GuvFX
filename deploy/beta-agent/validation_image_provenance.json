@@ -1,0 +1,32 @@
+{
+  "_comment": "ADR-0027 Phase 2 governed provenance for the build-5833 broker-login validation image. Non-secret. No credential, account state, or %APPDATA% content is recorded or copied.",
+  "schema_version": "2026-08-03.1",
+  "collected_utc": "2026-08-03T15:39:00Z",
+  "source": {
+    "program_directory": "C:\\Program Files\\IS6 Technologies MT5 Terminal",
+    "installation_kind": "non-portable (installed) — account/trading state lives in %APPDATA%\\MetaQuotes\\Terminal, NOT in the program directory",
+    "appdata_accessed": false,
+    "production_account_state_copied": false,
+    "production_credentials_copied": false,
+    "production_process_modified": false,
+    "terminal64.exe":   { "build": "5.0.0.5833", "sha256": "d84fc3d891f66c1d6325c3c2d2ffc6974de1928cfb6086d1bbd11d4e1dd07d20", "size": 109817440 },
+    "MetaEditor64.exe": { "build": "5.0.0.6090", "sha256": "64b7335854310bf2f0f84f5e51e12ee28f047de9eefd9f8a70005624f9d1df90", "size": 116421824 },
+    "Config/servers.dat":  { "sha256": "16600f67e3c49d38e0bba29d554b0c6ae5af907f34125ef5b2e3fa3c08fb0ed1", "size": 3788, "note": "broker server list — non-account, identical for every IS6 user" },
+    "Config/terminal.lic": { "sha256": "19a721d3cf93be782e6188ee5c37d52268ad92a7cf90b237c0aa152ec59359e7", "size": 7289, "note": "MetaTrader platform license — not a broker credential" }
+  },
+  "allowed_files": ["terminal64.exe", "MetaEditor64.exe", "Config/servers.dat", "Config/terminal.lic"],
+  "excluded": [
+    "accounts.dat", "logs", "%APPDATA%", "Bases (price caches / history)", "Profiles (chart layouts)",
+    "MQL5 user content", "Expert Advisors / scripts / indicators", "saved passwords", "DPAPI material",
+    "orders / deals / positions / account history", "bridge files", "production runtime identifiers"
+  ],
+  "determinism": {
+    "byte_deterministic": ["terminal64.exe", "MetaEditor64.exe", "Config/servers.dat", "Config/terminal.lic"],
+    "structurally_deterministic": ["MQL5/** (extracted standard library)", "*.ex5 (131, compiled from the isolated image itself)"]
+  },
+  "evidence": {
+    "terminal_build_is_5833": "terminal64.exe (the login component) is 5.0.0.5833",
+    "metaeditor_build_is_6090": "MetaEditor64.exe (bundled compiler) is 5.0.0.6090 — recorded accurately; not the login component",
+    "proven_result": "2026-08-03 credentialled control on this image: HEALTHY / demo_ok / is_demo=true in ~4s (correlation validate-acct-12-3c8e20cf50b4)"
+  }
+}
