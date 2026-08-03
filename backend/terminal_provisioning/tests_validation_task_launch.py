@@ -219,7 +219,7 @@ class RunnerTests(SimpleTestCase):
         rid = handoff.new_request_id()
         handoff.write_request(self.d, rid, dict(payload=PAYLOAD, **CTX), ttl_seconds=60)
         fake = _FakeHandler({"ok": False, "reason_code": "invalid_password", "is_demo": None})
-        self.assertEqual(runner.run_once(_runner_cfg(self.d), build_handler=lambda cfg: fake), "ok")
+        self.assertEqual(runner.run_once(_runner_cfg(self.d), build_handler=lambda cfg: fake), "cleanup_complete")
         clk = _Clock()
         res = handoff.read_result(self.d, rid, timeout_s=2, sleep=clk.sleep, clock=clk.now)
         self.assertEqual(res["reason_code"], "invalid_password")
@@ -237,16 +237,20 @@ class RunnerTests(SimpleTestCase):
         vdir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, vdir, ignore_errors=True)
         os.makedirs(os.path.join(vdir, "config"))
-        with open(os.path.join(vdir, "config", "accounts.dat"), "w") as fh:
-            fh.write("login+obfuscated-pw")                     # the credential artefact MT5 writes
-        os.makedirs(os.path.join(vdir, "Logs"))
-        with open(os.path.join(vdir, "Logs", "20260101.log"), "w") as fh:
-            fh.write("journal")
         rid = handoff.new_request_id()
         handoff.write_request(self.d, rid, dict(payload=PAYLOAD, **CTX), ttl_seconds=60)
         cfg = {"validation_handoff_dir": self.d, "login_timeout_ms": 5000, "validation_terminal_dir": vdir}
-        runner.run_once(cfg, build_handler=lambda c: _FakeHandler(
-            {"ok": True, "reason_code": "demo_ok", "is_demo": True}))
+
+        class _WritingHandler:                                  # the PROBE writes the artefacts DURING login
+            def validate(self, **_kw):
+                with open(os.path.join(vdir, "config", "accounts.dat"), "w") as fh:
+                    fh.write("login+obfuscated-pw")             # the credential artefact MT5 writes
+                os.makedirs(os.path.join(vdir, "Logs"), exist_ok=True)
+                with open(os.path.join(vdir, "Logs", "20260101.log"), "w") as fh:
+                    fh.write("journal")
+                return {"ok": True, "reason_code": "demo_ok", "is_demo": True}
+
+        runner.run_once(cfg, build_handler=lambda c: _WritingHandler())
         self.assertFalse(os.path.exists(os.path.join(vdir, "config", "accounts.dat")))   # no credential left
         self.assertFalse(os.path.exists(os.path.join(vdir, "Logs")))                     # logs cleared
 

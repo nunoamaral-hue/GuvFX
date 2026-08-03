@@ -17,12 +17,12 @@
     "broker_cred_envelope.py": "a35932c639e2cab83cb3587bf03295d2fd4711e2fb6197ff25aa474bc8c47f28",
     "validate_login.py": "f84f646caa0dc3fa9705cc7a4fe723cb0f9147e29e1cca55108a6757b1bd59db",
     "validation_handoff.py": "ce22673445fe8c13738cfa6bb7da7cedc16b98a2d906f610015541a220c59115",
-    "validation_runner.py": "bc730bb5b9b2de07f9f3c655aead06b4245f7377113d1d11c265ef734e2a1813",
+    "validation_runner.py": "0b29b3fd7ceb783167e8123c34958618f29a729cc2bec4cdbbb6330d17fdb43e",
     "validation_diagnostics.py": "8441b695f89bd93dcbabf83eaf5d61d16b57070215e1c743caccf5b7248bc31d",
     "lib/mgmt_protocol.py": "d5e59b362c8d34258b53a1844f95a609ba4d8c9d882b17492455e746a2327b3b",
     "lib/mgmt_agent_core.py": "ea8e037ef287728c8187e528e2eb4d17ed74371ebbee64139d04ca64322a4110"
   },
-  "manifest_version": "2026-08-03.2",
+  "manifest_version": "2026-08-03.3",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",

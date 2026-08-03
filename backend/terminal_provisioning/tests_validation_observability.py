@@ -23,10 +23,20 @@ import validation_runner as runner            # noqa: E402
 
 # ── fakes ────────────────────────────────────────────────────────────────────────────────────────────────
 class _FakeHandler:
-    def __init__(self, outcome):
+    def __init__(self, outcome, vdir=None, writes=None):
         self._o = outcome
+        self._vdir = vdir
+        self._writes = writes or []          # rel paths the PROBE creates during login (accounts.dat, logs)
 
     def validate(self, **_kw):
+        # simulate the real MT5 probe writing credential/log artefacts DURING the login (a clean terminal on
+        # entry; the pre-probe dirty-baseline guard therefore does not fire, and the post-probe scrub removes
+        # these). Tests that exercise scrub pass ``writes`` instead of pre-creating a dirty baseline.
+        for rel in self._writes:
+            p = os.path.join(self._vdir, *rel.split("/"))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as fh:
+                fh.write("probe-artefact")
         return dict(self._o)
 
 
@@ -336,7 +346,7 @@ class RunnerFlowTests(unittest.TestCase):
             win = _FakeWin(procs=[{"pid": 10804, "session": 0, "path": "x"}], remaining=[])
             cfg, rid, status = self._run(tmp, outcome, win=win,
                                          milestones=["TERMINAL_STARTED", "BROKER_TCP_ESTABLISHED"])
-            self.assertEqual(status, "ok")
+            self.assertEqual(status, "cleanup_complete")
             res = _read_result(cfg["validation_handoff_dir"], rid)
             self.assertEqual(res["reason_code"], "login_timeout")
             self.assertNotIn("_operator", res)                       # customer body has no operator internals
@@ -375,13 +385,11 @@ class RunnerFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = _cfg(tmp)
             adat = os.path.join(cfg["validation_terminal_dir"], "config", "accounts.dat")
-            open(adat, "w").write("secret-credential-blob")
             logs = os.path.join(cfg["validation_terminal_dir"], "logs")
-            os.makedirs(logs, exist_ok=True)
-            open(os.path.join(logs, "x.log"), "w").write("journal")
             rid = _stage_request(cfg["validation_handoff_dir"])
             runner.run_once(cfg, build_handler=lambda _c: _FakeHandler(
-                {"ok": False, "reason_code": "login_timeout", "is_demo": None, "_operator": {}}),
+                {"ok": False, "reason_code": "login_timeout", "is_demo": None, "_operator": {}},
+                vdir=_c["validation_terminal_dir"], writes=["config/accounts.dat", "logs/x.log"]),
                 win=_FakeWin(), clock=lambda: 1.0, read_journal=lambda d: [],
                 mirror_baseline=lambda s, d: "restored")
             self.assertFalse(os.path.exists(adat))                   # credential artefact removed
@@ -391,7 +399,6 @@ class RunnerFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = _cfg(tmp)
             adat = os.path.join(cfg["validation_terminal_dir"], "config", "accounts.dat")
-            open(adat, "w").write("cred")
             rid = _stage_request(cfg["validation_handoff_dir"])
 
             def _boom(*_a, **_k):
@@ -401,7 +408,8 @@ class RunnerFlowTests(unittest.TestCase):
             diag.write_evidence = _boom
             try:
                 status = runner.run_once(cfg, build_handler=lambda _c: _FakeHandler(
-                    {"ok": False, "reason_code": "login_timeout", "is_demo": None, "_operator": {}}),
+                    {"ok": False, "reason_code": "login_timeout", "is_demo": None, "_operator": {}},
+                    vdir=_c["validation_terminal_dir"], writes=["config/accounts.dat"]),
                     win=_FakeWin(), clock=lambda: 1.0, read_journal=lambda d: [],
                     mirror_baseline=lambda s, d: "restored")
             finally:
@@ -484,14 +492,14 @@ class CaptureFailureVerdictTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = _cfg(tmp)
             adat = os.path.join(cfg["validation_terminal_dir"], "config", "accounts.dat")
-            open(adat, "w").write("cred")
             rid = _stage_request(cfg["validation_handoff_dir"])
             orig = diag.write_evidence
             diag.write_evidence = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full"))
             try:
                 status = runner.run_once(cfg, build_handler=lambda _c: _FakeHandler(
                     {"ok": True, "reason_code": "demo_ok", "is_demo": True,
-                     "_operator": {"initialize_result": True, "trade_mode": 0}}),
+                     "_operator": {"initialize_result": True, "trade_mode": 0}},
+                    vdir=_c["validation_terminal_dir"], writes=["config/accounts.dat"]),
                     win=_FakeWin(), clock=lambda: 1.0, read_journal=lambda d: [],
                     mirror_baseline=lambda s, d: "restored")
             finally:

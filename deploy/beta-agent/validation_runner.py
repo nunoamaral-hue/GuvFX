@@ -243,6 +243,30 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
     correlation_id = req.get("correlation_id") or rid
     started = clock()
 
+    # ── ADR-0027 Phase 2 pre-probe DIRTY-BASELINE guard ──────────────────────────────────────────────────
+    # A prior run whose POST-result baseline restore failed can leave the terminal non-baseline (a lingering
+    # accounts.dat or logs). Fail closed BEFORE launching a credentialled login against a dirty terminal — the
+    # operator-critical cleanup state from the previous run is caught here, never silently probed over.
+    vdir = cfg.get("validation_terminal_dir") or ""
+    if vdir:
+        dirty = [c for c in (os.path.join(vdir, "config", "accounts.dat"),
+                             os.path.join(vdir, "Config", "accounts.dat"),
+                             os.path.join(vdir, "logs"), os.path.join(vdir, "Logs")) if os.path.exists(c)]
+        if dirty:
+            handoff.write_result(handoff_dir, rid,
+                                 {"ok": False, "reason_code": "validation_baseline_dirty", "is_demo": None})
+            if diag_dir:
+                try:
+                    diag.write_evidence(diag_dir, correlation_id,
+                                        {"correlation_id": correlation_id, "request_id": rid,
+                                         "reason_code": "validation_baseline_dirty",
+                                         "cleanup_status": "baseline_dirty_preflight",
+                                         "stage_reached": "PREFLIGHT", "first_failing_stage": "BASELINE_DIRTY"},
+                                        now=clock())
+                except Exception:            # noqa: BLE001
+                    pass
+            return "baseline_dirty"
+
     build = build_handler
     if build is None:
         import validate_login                    # noqa: PLC0415 — host-side import
@@ -263,8 +287,7 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
         outcome = {"ok": False, "reason_code": "could_not_verify", "is_demo": None}
     op = outcome.pop("_operator", {}) or {}      # operator diagnostic NEVER travels to the customer path
 
-    vdir = cfg.get("validation_terminal_dir") or ""
-    forbidden = _forbidden_roots(cfg)
+    forbidden = _forbidden_roots(cfg)            # ``vdir`` already resolved by the dirty-baseline guard above
 
     # ── EVIDENCE CAPTURE — durable, BEFORE any scrub (packet §2/§6). A fault here ⇒ diagnostic_capture_failed
     #    but the credential scrub still runs below (fail-safe). ──
@@ -310,7 +333,12 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
             "trade_mode": op.get("trade_mode"), "is_demo": outcome.get("is_demo"),
             "mt5_package_version": op.get("mt5_package_version"), "terminal_build": op.get("terminal_build"),
             "gui_mdi_failed": "GUI_MDI_CREATE_FAILED" in milestones,
-            "authorisation_observed": "BROKER_AUTHORISED" in milestones,
+            # ADR-0027 Phase 2 (B4): SEPARATE the API-confirmed broker authorisation (authoritative on a fast
+            # success — initialize()=True + account_info + classification) from the journal/TCP/pipe polling,
+            # which can miss a short-lived event on a ~4s login. Never infer an unobserved network event.
+            "api_confirmed_authorisation": bool(op.get("initialize_result")
+                                                and op.get("account_info_present")),
+            "authorisation_observed": "BROKER_AUTHORISED" in milestones,   # journal-observed only
             "broker_tcp_observed": bool({"BROKER_TCP_ESTABLISHED", "BROKER_CONNECTED"} & set(milestones)),
             "ipc_pipe_observed": "IPC_PIPE_READY" in milestones,
             "journal_milestones": milestones, "reason_code": outcome.get("reason_code"),
@@ -375,12 +403,24 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
         except Exception:                        # noqa: BLE001
             restore_result = "restore_failed"
 
+    # ADR-0027 Phase 2 (B3): a SINGLE operator-facing cleanup state (NEVER in the customer contract). It is the
+    # defined consumer/return of a post-result cleanup failure — surfaced in the durable artefact + the runner
+    # return (host log / task LastResult). ``baseline_restore_failed`` means the active image is UNAVAILABLE
+    # until re-baselined, which the NEXT request's dirty-baseline guard enforces fail-closed.
+    if not accounts_dat_removed:
+        cleanup_status = "credential_scrub_failed"
+    elif restore_result == "restore_failed":
+        cleanup_status = "baseline_restore_failed"
+    else:
+        cleanup_status = "cleanup_complete"
+
     finished = clock()
     if not capture_failed and diag_dir:
         try:
             evidence.update({
                 "attempt_finish_utc": finished, "elapsed_ms": int((finished - started) * 1000),
                 "cleanup_started": True, "cleanup_finished": True, "shutdown_requested": True,
+                "cleanup_status": cleanup_status,
                 "terminal_exited_after_shutdown": not term_result.get("remaining"),
                 "stray_termination_attempted": bool(term_result.get("targets")),
                 "stray_termination_result": term_result,
@@ -392,15 +432,13 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
         except Exception:                        # noqa: BLE001
             pass
 
-    # Customer result was already written (above) BEFORE this slow restore. The return code carries the final
-    # cleanup status for the operator: a POST-result restore failure is surfaced, never hidden.
+    # The customer result was written BEFORE this slow restore. The runner return is the OPERATOR cleanup state,
+    # never the customer verdict.
+    if capture_failed and not login_succeeded:
+        return "diagnostic_capture_failed"
     if capture_failed:
-        return "capture_degraded_login_ok" if login_succeeded else "diagnostic_capture_failed"
-    if not accounts_dat_removed:
-        return "credential_scrub_unverified"
-    if restore_result == "restore_failed":
-        return "ok_baseline_restore_failed"    # result written; POST-result baseline restore FAILED (operator)
-    return "ok"
+        return "capture_degraded_login_ok"
+    return cleanup_status
 
 
 def main() -> int:
