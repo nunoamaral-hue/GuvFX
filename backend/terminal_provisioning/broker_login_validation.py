@@ -63,6 +63,7 @@ _TAXONOMY = {
     # ADR-0027 observability: the runner could not durably preserve its diagnostic evidence — a platform fault
     # (never a credential verdict). Retryable; the credential scrub still ran, so it is safe to retry.
     "diagnostic_capture_failed":     (UNAVAILABLE, True),
+    "credential_scrub_unverified":   (UNAVAILABLE, True),   # ADR-0027 Phase 2: defeated scrub → never HEALTHY
     "impl_integrity_mismatch": (UNAVAILABLE, True),
     "payload_missing":         (UNAVAILABLE, True),
     "payload_digest_mismatch": (UNAVAILABLE, True),

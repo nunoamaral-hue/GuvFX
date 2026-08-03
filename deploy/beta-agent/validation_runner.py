@@ -344,7 +344,28 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
             if os.path.exists(cand):
                 accounts_dat_removed = False
 
-    # ── restore the certified precompiled baseline ──
+    # ── ADR-0027 Phase 2 RESULT ORDERING ────────────────────────────────────────────────────────────────
+    # The terminal is terminated and the credential is SCRUBBED above, so write the customer-safe result NOW —
+    # BEFORE the (potentially slow) baseline mirror — so the Agent receives the runner's real classification
+    # inside its result-wait window instead of ``validation_runner_timeout``. The baseline restore runs AFTER;
+    # its status rides in the durable artefact + the return code (never hidden, never flips the correct
+    # verdict). A HEALTHY verdict is reachable here only because the scrub already ran; a scrub that could NOT
+    # be verified downgrades the verdict fail-closed (never HEALTHY while a credential artefact lingers).
+    login_succeeded = bool(outcome.get("ok"))
+    if capture_failed and not login_succeeded:
+        customer = {"ok": False, "reason_code": "diagnostic_capture_failed", "is_demo": None}
+    else:
+        customer = {"ok": login_succeeded,
+                    "reason_code": str(outcome.get("reason_code") or "could_not_verify"),
+                    "is_demo": outcome.get("is_demo")}
+    if not accounts_dat_removed:
+        customer = {"ok": False, "reason_code": "credential_scrub_unverified", "is_demo": None}
+        login_succeeded = False
+    op_summary = (diag.operator_summary(diag.build_evidence(evidence))
+                  if not capture_failed else {"evidence_id": correlation_id})
+    handoff.write_result(handoff_dir, rid, customer, operator=op_summary)
+
+    # ── restore the certified precompiled baseline (POST-result cleanup; status is operator-visible) ──
     restore_result = "skipped"
     precompiled = cfg.get("validation_precompiled_dir")
     if precompiled and vdir:
@@ -371,21 +392,15 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
         except Exception:                        # noqa: BLE001
             pass
 
-    # Customer verdict: a diagnostic-capture failure NEVER masks a genuine broker verdict (review 2026-08-03).
-    # It substitutes ``diagnostic_capture_failed`` ONLY for a non-definitive outcome — never a login SUCCESS.
-    login_succeeded = bool(outcome.get("ok"))
-    if capture_failed and not login_succeeded:
-        customer = {"ok": False, "reason_code": "diagnostic_capture_failed", "is_demo": None}
-    else:
-        customer = {"ok": login_succeeded,
-                    "reason_code": str(outcome.get("reason_code") or "could_not_verify"),
-                    "is_demo": outcome.get("is_demo")}
-    op_summary = (diag.operator_summary(diag.build_evidence(evidence))
-                  if not capture_failed else {"evidence_id": correlation_id})
-    handoff.write_result(handoff_dir, rid, customer, operator=op_summary)
-    if not capture_failed:
-        return "ok"
-    return "capture_degraded_login_ok" if login_succeeded else "diagnostic_capture_failed"
+    # Customer result was already written (above) BEFORE this slow restore. The return code carries the final
+    # cleanup status for the operator: a POST-result restore failure is surfaced, never hidden.
+    if capture_failed:
+        return "capture_degraded_login_ok" if login_succeeded else "diagnostic_capture_failed"
+    if not accounts_dat_removed:
+        return "credential_scrub_unverified"
+    if restore_result == "restore_failed":
+        return "ok_baseline_restore_failed"    # result written; POST-result baseline restore FAILED (operator)
+    return "ok"
 
 
 def main() -> int:
