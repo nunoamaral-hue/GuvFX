@@ -70,6 +70,33 @@ class ValidationImageAllowListTests(SimpleTestCase):
                 with self.assertRaises(vi.ValidationImageError):
                     vi.verify_image(d, sha256=_hash_ok)
 
+    def test_legit_library_names_not_flagged(self):
+        # Regression (Phase 2B host build, 2026-08-03): the standard MQL5 library the run-in GENERATES contains
+        # source names such as HistoryOrderInfo.mqh / Dialogs.mqh that CONTAIN "history"/"logs" but are NOT the
+        # account ``/history/`` or ``/logs/`` directories. The anchored ``/history/`` and ``/logs/`` tokens must
+        # match a real path segment only, so these legitimate names never trip the forbidden-artefact guard.
+        with tempfile.TemporaryDirectory() as d:
+            _clean_image(d)
+            for legit in (os.path.join("MQL5", "Include", "Trade", "HistoryOrderInfo.mqh"),
+                          os.path.join("MQL5", "Include", "Trade", "DealInfo.mqh"),
+                          os.path.join("MQL5", "Include", "Controls", "Dialogs.mqh")):
+                _write(os.path.join(d, legit))
+            self.assertEqual(vi.scan_forbidden(d), [])
+            rep = vi.verify_image(d, sha256=_hash_ok)   # must still PASS with the legit library present
+            self.assertTrue(rep["ok"])
+
+    def test_real_nested_history_and_logs_dirs_still_flagged(self):
+        # The fix must NOT weaken detection: a REAL account ``history`` / ``logs`` DIRECTORY — even nested, e.g.
+        # ``MQL5/Logs`` — is still a forbidden segment and must fail closed.
+        for bad in (os.path.join("history", "IS6-Demo", "2026.hst"),
+                    os.path.join("MQL5", "Logs", "20260803.log")):
+            with tempfile.TemporaryDirectory() as d:
+                _clean_image(d)
+                _write(os.path.join(d, bad))
+                self.assertTrue(vi.scan_forbidden(d))   # a real /history/ or /logs/ segment IS flagged
+                with self.assertRaises(vi.ValidationImageError):
+                    vi.verify_image(d, sha256=_hash_ok)
+
     def test_missing_allow_listed_file_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             _clean_image(d)

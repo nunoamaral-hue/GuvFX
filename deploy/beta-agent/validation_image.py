@@ -106,13 +106,26 @@ def verify_source_hashes(source_dir: str, *, sha256=_sha256_file) -> None:
 
 def scan_forbidden(image_dir: str) -> list:
     """Return the (sanitised, path-free) categories of any forbidden account/credential/trading artefact found
-    anywhere in the image. Empty list == clean."""
+    anywhere in the image. Empty list == clean.
+
+    A token written WITH path separators (``\\logs\\``, ``/history/``) is matched as an anchored path SEGMENT,
+    NOT as a bare substring — otherwise it wrongly flags legitimate standard-library source NAMES the run-in
+    generates, e.g. ``MQL5/Include/Trade/HistoryOrderInfo.mqh`` (contains "history" but is not an account
+    ``/history/`` directory). A token written without separators (``accounts.dat``, ``origin.txt``, ``deals``)
+    stays a plain substring. The image path is padded with sentinels so an anchored token matches a real
+    leading/trailing segment too."""
     hits = []
     for p in _walk_files(image_dir):
-        rel = _rel(image_dir, p)
+        rel = _rel(image_dir, p)                     # lowercased, '/'-separated, no leading/trailing '/'
+        padded = "/" + rel + "/"                      # sentinels: an anchored token matches a real segment only
         for bad in FORBIDDEN_SUBSTRINGS:
-            if bad.strip("\\/") and bad.replace("\\", "/").strip("/") in rel:
-                hits.append(bad.strip("\\/"))
+            norm = bad.replace("\\", "/")             # normalise separators; do NOT strip the anchors
+            label = norm.strip("/")
+            if not label:
+                continue                              # skip an all-separator token
+            needle = norm if "/" in norm else label   # anchored tokens keep their '/'; bare tokens stay bare
+            if needle in padded:
+                hits.append(label)
     return sorted(set(hits))
 
 
