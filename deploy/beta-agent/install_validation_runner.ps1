@@ -1,4 +1,4 @@
-# ADR-0027 task-launch remediation — installer for the validation-runner scheduled task + secure handoff.
+# ADR-0027 task-launch remediation - installer for the validation-runner scheduled task + secure handoff.
 #
 # Root cause (2026-08-02): MT5 GUI/MDI creation fails when the terminal is launched IN-PROCESS by the WinSW
 # Agent service (a non-interactive service window station); it succeeds via a scheduled task. This installs
@@ -26,7 +26,7 @@ param(
 )
 
 #: Task Scheduler READ+EXECUTE (open + read definition + run). GENERIC_READ(0x120089)|FILE_EXECUTE(0x20).
-#: Identical mask to install_pool.ps1 — the service may find and run its own task, nothing more (no write,
+#: Identical mask to install_pool.ps1 - the service may find and run its own task, nothing more (no write,
 #: delete or change-permissions). RULE 11: read back and assert EXACTLY this mask, nothing broader.
 $GuvfxTaskReadRunMask = 0x1200a9
 
@@ -76,12 +76,25 @@ if (-not (Test-Path $Runner)) { throw "runner not found: $Runner" }
 Say ("PLAN: task=" + $TaskName + " runAs=" + $RunAs + " handoff=" + $HandoffDir + " timeout=" + $TimeoutMin + "m")
 if (-not $Apply) { Say "DRY RUN (pass -Apply to make changes)"; return }
 
-# 1) handoff directory with a RESTRICTIVE ACL: SYSTEM + Administrators only (inheritance disabled). The
-#    sealed request (ciphertext) crosses here; no other local user may read or write it.
+# Compute the least-privilege Agent service SID ONCE. It is used for BOTH the handoff-dir write grant
+# (so the Agent can STAGE the sealed request) and the task run-ACL grant (so its COM task.Run() runs).
+$svcSid = Get-AgentServiceSid $AgentService
+
+# 1) handoff directory ACL (inheritance disabled). SYSTEM + Administrators get full control (the runner
+#    executes as SYSTEM and reads/writes here). The Agent service gets MODIFY because it STAGES the sealed
+#    request file and reads back the result: without it, write_request() is denied and the trigger never
+#    fires (host-proven 2026-08-03 - handoff was SYSTEM+Administrators-only, so the Agent's write failed
+#    closed and VALIDATE_LOGIN returned validation_runner_unavailable BEFORE ever reaching task.Run). The
+#    request carries the ENVELOPE-SEALED password only - ciphertext the Agent already holds in the op
+#    payload - so this grants the Agent no plaintext it did not already have. No other local user may read
+#    or write here.
 New-Item -ItemType Directory -Force -Path $HandoffDir | Out-Null
 icacls $HandoffDir /inheritance:r /Q | Out-Null
-icacls $HandoffDir /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)(F)" "BUILTIN\Administrators:(OI)(CI)(F)" /Q | Out-Null
+icacls $HandoffDir /grant:r ("*{0}:(OI)(CI)(M)" -f $svcSid) "NT AUTHORITY\SYSTEM:(OI)(CI)(F)" "BUILTIN\Administrators:(OI)(CI)(F)" /Q | Out-Null
 Say ("handoff ACL set; entries: " + ((icacls $HandoffDir | Select-String 'Allow|:\(') -join '; '))
+if (-not ((icacls $HandoffDir | Out-String) -match "GuvFXBetaAgent")) {
+  throw "handoff ACL: agent service (GuvFXBetaAgent) MODIFY grant is not present after icacls - STOP"
+}
 
 # 2) the single-instance, allow-listed scheduled task: runs ONLY the runner, with NO arguments.
 $action = New-ScheduledTaskAction -Execute $Python -Argument $Runner
@@ -98,9 +111,10 @@ $t = Get-ScheduledTask -TaskName $TaskName
 Say ("task registered: state=" + $t.State + " exec=" + $t.Actions[0].Execute + " args=" + $t.Actions[0].Arguments)
 
 # 3) grant the least-privilege Agent service Read+Execute (run) on the task, so its COM task.Run() is not
-#    denied (the defect: default task security allowed only Administrators + SYSTEM to run it, so the Agent's
-#    win.run_task() failed with SCHED_S_TASK_HAS_NOT_RUN). Mirrors install_pool.ps1's slot-task grant exactly.
-$svcSid = Get-AgentServiceSid $AgentService
+#    denied (default task security allows only Administrators + SYSTEM to run it; without this the Agent's
+#    win.run_task() would fail with SCHED_S_TASK_HAS_NOT_RUN). Mirrors install_pool.ps1's slot-task grant.
+#    NECESSARY BUT NOT SUFFICIENT on its own - the handoff MODIFY grant in step 1 is the other half; the
+#    Agent stages the request BEFORE it triggers the task, so both grants are required to reach task.Run.
 $granted = Grant-TaskReadRun $TaskName $svcSid
 Say ("task run-ACL granted to " + $AgentService + " (sid=" + $granted + ", mask=0x{0:X})" -f $GuvfxTaskReadRunMask)
 Say "DONE. Set BETA_AGENT_VALIDATION_TASK_NAME + BETA_AGENT_VALIDATION_HANDOFF_DIR for the Agent, then restart it."
