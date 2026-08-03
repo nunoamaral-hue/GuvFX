@@ -45,6 +45,10 @@ RUNTIME_EXECUTABLE = "terminal64.exe"
 #: (which the ACE deliberately withholds) is never requested. The former PROCESS_QUERY_INFORMATION constant was
 #: removed with the token-based ``_user_sid`` it served.
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+#: ADR-0027 observability: the ONE additional right this adapter may request — used ONLY to terminate a
+#: lingering ISOLATED VALIDATION terminal (never a slot, golden, per-account or production process; the
+#: caller passes a fail-closed path guard). Slots are still terminated via their fixed STOP task, never here.
+PROCESS_TERMINATE = 0x0001
 READ_CONTROL = 0x00020000
 ERROR_ACCESS_DENIED = 5
 ERROR_INVALID_PARAMETER = 87
@@ -303,6 +307,10 @@ class RealSlotWindowsOps(SlotWindowsOps):
         k32.GetProcessTimes.restype = wintypes.BOOL
         k32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, PDWORD]
         k32.ProcessIdToSessionId.restype = wintypes.BOOL
+        # ADR-0027 observability: terminate a lingering ISOLATED validation terminal (guarded by a fail-closed
+        # path check in the caller). UINT exit code.
+        k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        k32.TerminateProcess.restype = wintypes.BOOL
         k32.GetLongPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
         k32.GetLongPathNameW.restype = wintypes.DWORD
         k32.GetVolumePathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
@@ -1102,3 +1110,99 @@ class RealSlotWindowsOps(SlotWindowsOps):
             return needed.value > 0                # >=1 process must close to modify a slot file => held
         finally:
             rm.RmEndSession(session.value)
+
+
+# ── ADR-0027 observability: isolated-VALIDATION-TERMINAL process management ──────────────────────────────
+class ValidationWindowsOps(RealSlotWindowsOps):
+    """A DELIBERATELY SEPARATE adapter for the isolated validation terminal — NOT part of the slot-pool
+    surface. ``RealSlotWindowsOps`` keeps its security property intact (no process-kill: slot runtimes are
+    only ever terminated via their fixed STOP task). The validation terminal, however, has NO stop task and
+    ``mt5.shutdown()`` is proven insufficient (2026-08-03: it lingered), so this subclass adds the ONE narrow,
+    path-guarded termination capability the observability packet (§5) authorises — reusing the base's
+    unprivileged Toolhelp enumeration + per-candidate path resolution.
+
+    The guard is the security property: a process is ever a target ONLY when its CANONICAL image path is
+    provably beneath the one isolated validation terminal dir and beneath NO forbidden root (slots / golden /
+    per-account / production). It can NEVER terminate Customer Zero, a slot runtime or a production terminal.
+    """
+
+    def session_of(self, pid):
+        """Session id of ``pid`` (evidence only; ``None`` when unavailable). Off-host raises via ``_win32``."""
+        return self._session_id(self._win32(), int(pid))
+
+    def find_terminal_processes(self, terminal_dir, forbidden_roots=(), *, image_name="terminal64.exe"):
+        """Read-only: ``[{'pid','session','path'}]`` for every ``image_name`` process whose CANONICAL image
+        path passes the isolation guard. Used to record diagnostic evidence AND to scope termination. A path
+        that cannot be proven is skipped (fail-closed — never a termination target)."""
+        import validation_diagnostics as _diag           # pure-stdlib; no cycle back into the adapter
+        api = self._win32()
+        term = self._long_path(terminal_dir)
+        forbid = tuple(self._long_path(f) for f in forbidden_roots if f)
+        out = []
+        for pid, name, _ppid in self._enumerate_process_entries():
+            if name.lower() != image_name.lower():
+                continue
+            handle, _state = self._open_process(api, pid)
+            if handle is None:
+                continue
+            try:
+                raw = self._image_path(api, handle)
+            finally:
+                api["k32"].CloseHandle(handle)
+            if not raw:
+                continue                                  # cannot prove the path -> never a termination target
+            try:
+                canon = self._long_path(raw)
+            except WindowsOpsError:
+                continue                                  # unresolved short name -> fail closed, skip
+            if _diag.is_terminatable(canon, term, forbid):
+                out.append({"pid": int(pid), "session": self._session_id(api, pid), "path": canon})
+        return out
+
+    def terminate_terminal_processes(self, terminal_dir, forbidden_roots=(), *, image_name="terminal64.exe",
+                                     grace_s=4.0, poll_s=0.4, sleep=None, clock=None):
+        """Deterministically terminate ONLY the isolated validation terminal(s). TOCTOU-SAFE: the image path
+        is re-read from the SAME handle that will be terminated (opened with
+        ``PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION``) and re-checked against the isolation guard
+        immediately before ``TerminateProcess`` — so a PID reused between enumeration and kill can NEVER cause
+        Customer Zero, a slot, golden or a production process to be terminated (review 2026-08-03). Returns
+        ``{'targets','killed','failed','remaining'}`` (lists of pids)."""
+        import time as _time
+        import validation_diagnostics as _diag
+        sleep = sleep or _time.sleep
+        clock = clock or _time.time
+        api = self._win32()
+        k32 = api["k32"]
+        term = self._long_path(terminal_dir)
+        forbid = tuple(self._long_path(f) for f in forbidden_roots if f)
+        targets, killed, failed = [], [], []
+        for pid, name, _ppid in self._enumerate_process_entries():
+            if name.lower() != image_name.lower():
+                continue
+            handle = k32.OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                continue                                 # cannot open to verify → NEVER terminate blind
+            try:
+                raw = self._image_path(api, handle)      # path read from the handle we will terminate on
+                if not raw:
+                    continue
+                try:
+                    canon = self._long_path(raw)
+                except WindowsOpsError:
+                    continue
+                if not _diag.is_terminatable(canon, term, forbid):
+                    continue                             # not the isolated terminal → fail closed, no kill
+                targets.append(pid)
+                (killed if bool(k32.TerminateProcess(handle, 1)) else failed).append(pid)
+            finally:
+                k32.CloseHandle(handle)
+        pending = list(dict.fromkeys(killed + failed))
+        deadline = clock() + float(grace_s)
+        while pending and clock() < deadline:
+            sleep(poll_s)
+            live = {p for p, _n, _pp in self._enumerate_process_entries() if _n.lower() == image_name.lower()}
+            pending = [p for p in pending if p in live]
+        still = {p["pid"] for p in self.find_terminal_processes(
+            terminal_dir, forbidden_roots, image_name=image_name)}
+        remaining = [p for p in pending if p in still]
+        return {"targets": targets, "killed": killed, "failed": failed, "remaining": remaining}

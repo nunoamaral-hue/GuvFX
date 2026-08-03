@@ -125,13 +125,24 @@ def claim_request(handoff_dir: str, request_id: str, *, now: float | None = None
     return body.get("request") if isinstance(body.get("request"), dict) else None
 
 
-def write_result(handoff_dir: str, request_id: str, outcome: dict, *, now: float | None = None) -> None:
-    """Publish the runner's SECRET-SAFE outcome ({ok, reason_code, is_demo} only)."""
+#: The ONLY keys a runner ``operator`` summary may carry back — allow-listed so an operator diagnostic can
+#: never smuggle a raw journal, host path or secret through the result file (ADR-0027 observability §3).
+_OPERATOR_KEYS = ("evidence_id", "stage_reached", "first_failing_stage", "last_error_code",
+                  "last_error_reason", "cleanup_status", "terminal_exit_status")
+
+
+def write_result(handoff_dir: str, request_id: str, outcome: dict, *, operator: dict | None = None,
+                 now: float | None = None) -> None:
+    """Publish the runner's SECRET-SAFE outcome. The customer-safe body is ``{ok, reason_code, is_demo}``;
+    an OPTIONAL ``operator`` summary (allow-listed keys only — stage localisation + sanitised MT5 error, never
+    a password/ciphertext/host path/raw journal) rides alongside for the OPERATOR, not the customer."""
     key = local_key(handoff_dir)
     safe = {"ok": bool(outcome.get("ok")),
             "reason_code": str(outcome.get("reason_code") or "could_not_verify"),
             "is_demo": outcome.get("is_demo"),
             "ts": float(now if now is not None else time.time())}
+    if operator is not None:
+        safe["operator"] = {k: operator.get(k) for k in _OPERATOR_KEYS if k in operator}
     _write_tagged(os.path.join(handoff_dir, request_id + _RES), key, safe)
 
 
