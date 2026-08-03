@@ -112,6 +112,39 @@ class ValidationImageAllowListTests(SimpleTestCase):
                 vi.verify_image(d, sha256=lambda p: "deadbeef")
             self.assertEqual(cm.exception.reason, "allow_listed_file_hash_mismatch")
 
+    def test_runtime_refreshed_servers_dat_not_hash_pinned(self):
+        # Regression (Phase 2B host build, 2026-08-03): the credential-free run-in refreshes the PUBLIC broker
+        # server-list cache (config/servers.dat), so its bytes differ from the pinned SOURCE hash in the BUILT
+        # image. verify_image must accept that (presence only) while STILL pinning the executables + terminal.lic.
+        def _hash_refreshed_servers(path):
+            rel = os.path.relpath(path).replace("\\", "/").lower()
+            if rel.endswith("servers.dat"):
+                return "f" * 64                          # a NON-pinned hash — must be IGNORED (runtime-refreshed)
+            for a in vi.ALLOW_LIST:
+                if rel.endswith(a):
+                    return vi.SOURCE_HASHES[a]
+            return "0" * 64
+        with tempfile.TemporaryDirectory() as d:
+            _clean_image(d)
+            rep = vi.verify_image(d, sha256=_hash_refreshed_servers)   # servers.dat mismatch tolerated
+            self.assertTrue(rep["ok"])
+
+    def test_terminal_exe_still_hash_pinned(self):
+        # The relaxation must NOT extend to the login component: a swapped terminal64.exe still fails closed.
+        def _hash_bad_terminal(path):
+            rel = os.path.relpath(path).replace("\\", "/").lower()
+            if rel.endswith("terminal64.exe"):
+                return "f" * 64
+            for a in vi.ALLOW_LIST:
+                if rel.endswith(a):
+                    return vi.SOURCE_HASHES[a]
+            return "0" * 64
+        with tempfile.TemporaryDirectory() as d:
+            _clean_image(d)
+            with self.assertRaises(vi.ValidationImageError) as cm:
+                vi.verify_image(d, sha256=_hash_bad_terminal)
+            self.assertEqual(cm.exception.reason, "allow_listed_file_hash_mismatch")
+
     def test_run_in_layer_missing_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             for rel in vi.ALLOW_LIST:                        # allow-list present but NO .ex5 run-in
@@ -157,3 +190,14 @@ class ValidationImageFingerprintTests(SimpleTestCase):
             fp2 = vi.structural_fingerprint(d)
             self.assertEqual(fp1, fp2)
             self.assertEqual(len(fp1), 64)
+
+    def test_fingerprint_excludes_runtime_refreshed_servers_dat(self):
+        # The server-list cache is refreshed at run-in (its size grows), so it must be excluded from the
+        # structural fingerprint or the fingerprint would differ on every bake.
+        with tempfile.TemporaryDirectory() as d:
+            _clean_image(d)
+            _write(os.path.join(d, "config", "servers.dat"), b"x" * 3788)
+            fp1 = vi.structural_fingerprint(d)
+            _write(os.path.join(d, "config", "servers.dat"), b"y" * 20796)   # run-in refresh grows the cache
+            fp2 = vi.structural_fingerprint(d)
+            self.assertEqual(fp1, fp2)

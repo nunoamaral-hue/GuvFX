@@ -50,6 +50,14 @@ SOURCE_HASHES = {
     "config/terminal.lic":  "19a721d3cf93be782e6188ee5c37d52268ad92a7cf90b237c0aa152ec59359e7",
 }
 
+#: Allow-listed files the credential-free run-in legitimately REWRITES. On first start the terminal refreshes
+#: the PUBLIC broker server-list cache (``config/servers.dat``) from the broker's own server directory — it
+#: carries NO account/credential content (identical for every IS6 user) and its post-run-in bytes vary
+#: bake-to-bake. The built image is therefore verified for the PRESENCE of these files, not a pinned hash, and
+#: they are excluded from the structural fingerprint. Their PROVENANCE is still pinned at SOURCE (pre-copy) by
+#: ``verify_source_hashes`` / ``SOURCE_HASHES`` — so we still prove the image was built from the certified set.
+RUNTIME_REFRESHED_FILES = ("config/servers.dat",)
+
 #: Any file whose lowercase relative path CONTAINS one of these substrings is a forbidden account/credential/
 #: trading artefact. Its presence in a built image fails closed — it must NEVER have been copied or generated.
 FORBIDDEN_SUBSTRINGS = (
@@ -144,6 +152,8 @@ def verify_image(image_dir: str, *, sha256=_sha256_file) -> dict:
         p = os.path.join(image_dir, rel.replace("/", os.sep))
         if not os.path.isfile(p):
             raise ValidationImageError("allow_listed_file_missing")
+        if rel in RUNTIME_REFRESHED_FILES:
+            continue                                    # runtime-refreshed public cache: presence only (see const)
         if sha256(p) != SOURCE_HASHES[rel]:
             raise ValidationImageError("allow_listed_file_hash_mismatch")
 
@@ -167,11 +177,12 @@ def structural_fingerprint(image_dir: str) -> str:
     """A stable digest over (relative-path -> size) for the NON-volatile image structure — the allow-listed
     program files plus the generated ``.ex5`` layer (deterministic in structure, not bytes). Volatile per-run
     files (logs, generated caches other than the ex5 layer) are excluded so the fingerprint is reproducible."""
+    refreshed = set(RUNTIME_REFRESHED_FILES)
     entries = []
     for p in _walk_files(image_dir):
         rel = _rel(image_dir, p)
-        if "/logs/" in rel or rel.endswith(".log"):
-            continue
+        if "/logs/" in rel or rel.endswith(".log") or rel in refreshed:
+            continue                                    # volatile: logs + the runtime-refreshed server-list cache
         entries.append(f"{rel}|{os.path.getsize(p)}")
     entries.sort()
     return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
