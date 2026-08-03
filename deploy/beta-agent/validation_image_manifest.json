@@ -11,12 +11,13 @@
     "config/terminal.lic": "19a721d3cf93be782e6188ee5c37d52268ad92a7cf90b237c0aa152ec59359e7"
   },
   "allow_listed_files": ["terminal64.exe", "metaeditor64.exe", "config/servers.dat", "config/terminal.lic"],
+  "_deterministic_note": "Files whose hash is INVARIANT across the credential-free run-in (verify_image pins these in the built image). config/servers.dat is NOT here: the terminal refreshes the PUBLIC broker server-list cache on first start, so it is verified for PRESENCE only in the built image; its provenance is pinned at SOURCE by source_hashes.",
   "deterministic_file_hashes": {
     "terminal64.exe":      "d84fc3d891f66c1d6325c3c2d2ffc6974de1928cfb6086d1bbd11d4e1dd07d20",
     "metaeditor64.exe":    "64b7335854310bf2f0f84f5e51e12ee28f047de9eefd9f8a70005624f9d1df90",
-    "config/servers.dat":  "16600f67e3c49d38e0bba29d554b0c6ae5af907f34125ef5b2e3fa3c08fb0ed1",
     "config/terminal.lic": "19a721d3cf93be782e6188ee5c37d52268ad92a7cf90b237c0aa152ec59359e7"
   },
+  "runtime_refreshed_files": ["config/servers.dat"],
   "generated_structural_rules": {
     "run_in_layer": "MQL5 standard library + compiled *.ex5, generated from the isolated image itself (NEVER copied from a production account environment)",
     "byte_reproducible": false,
@@ -29,7 +30,7 @@
   "expected_markers": ["launched with /portable (portable data lives beneath the image root, not %APPDATA%)"],
   "expected_config_files": ["config/servers.dat", "config/terminal.lic"],
   "structural_fingerprint": {
-    "definition": "sha256 over sorted (relative-path|size) of all files EXCLUDING logs/*.log (validation_image.structural_fingerprint)"
+    "definition": "sha256 over sorted (relative-path|size) of all files EXCLUDING logs/*.log AND the runtime-refreshed config/servers.dat (validation_image.structural_fingerprint) — so the fingerprint is reproducible bake-to-bake"
   },
   "validation_root_rules": "the image terminal dir must be BENEATH the configured validation root and disjoint from every forbidden root (validate_login.assert_isolated_validation_terminal)",
   "forbidden_roots": [
