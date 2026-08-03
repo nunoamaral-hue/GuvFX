@@ -1161,27 +1161,41 @@ class ValidationWindowsOps(RealSlotWindowsOps):
 
     def terminate_terminal_processes(self, terminal_dir, forbidden_roots=(), *, image_name="terminal64.exe",
                                      grace_s=4.0, poll_s=0.4, sleep=None, clock=None):
-        """Deterministically terminate ONLY the isolated validation terminal(s). A process is killed ONLY if
-        ``find_terminal_processes`` attributed it to the isolated terminal dir — re-checked before AND after,
-        so a reused pid is never mistaken for a survivor. Returns ``{'targets','killed','failed','remaining'}``
-        (lists of pids)."""
+        """Deterministically terminate ONLY the isolated validation terminal(s). TOCTOU-SAFE: the image path
+        is re-read from the SAME handle that will be terminated (opened with
+        ``PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION``) and re-checked against the isolation guard
+        immediately before ``TerminateProcess`` — so a PID reused between enumeration and kill can NEVER cause
+        Customer Zero, a slot, golden or a production process to be terminated (review 2026-08-03). Returns
+        ``{'targets','killed','failed','remaining'}`` (lists of pids)."""
         import time as _time
+        import validation_diagnostics as _diag
         sleep = sleep or _time.sleep
         clock = clock or _time.time
         api = self._win32()
-        targets = [p["pid"] for p in self.find_terminal_processes(
-            terminal_dir, forbidden_roots, image_name=image_name)]
-        killed, failed = [], []
-        for pid in targets:
-            handle = api["k32"].OpenProcess(PROCESS_TERMINATE, False, pid)
-            if not handle:
-                failed.append(pid)
+        k32 = api["k32"]
+        term = self._long_path(terminal_dir)
+        forbid = tuple(self._long_path(f) for f in forbidden_roots if f)
+        targets, killed, failed = [], [], []
+        for pid, name, _ppid in self._enumerate_process_entries():
+            if name.lower() != image_name.lower():
                 continue
+            handle = k32.OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                continue                                 # cannot open to verify → NEVER terminate blind
             try:
-                ok = bool(api["k32"].TerminateProcess(handle, 1))
+                raw = self._image_path(api, handle)      # path read from the handle we will terminate on
+                if not raw:
+                    continue
+                try:
+                    canon = self._long_path(raw)
+                except WindowsOpsError:
+                    continue
+                if not _diag.is_terminatable(canon, term, forbid):
+                    continue                             # not the isolated terminal → fail closed, no kill
+                targets.append(pid)
+                (killed if bool(k32.TerminateProcess(handle, 1)) else failed).append(pid)
             finally:
-                api["k32"].CloseHandle(handle)
-            (killed if ok else failed).append(pid)
+                k32.CloseHandle(handle)
         pending = list(dict.fromkeys(killed + failed))
         deadline = clock() + float(grace_s)
         while pending and clock() < deadline:

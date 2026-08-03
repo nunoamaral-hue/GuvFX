@@ -127,6 +127,30 @@ class JournalDecodeTests(unittest.TestCase):
         text = "Window MDI unhook/create failed\ncreate new frame CHART01.CHR failed"
         self.assertIn("GUI_MDI_CREATE_FAILED", diag.extract_milestones(text))
 
+    _FAIL_CODES = {"BROKER_LOGIN_FAILED", "INVALID_LOGIN", "ACCOUNT_DISABLED", "SERVER_UNAVAILABLE"}
+
+    def test_auth_failure_is_not_classified_as_success(self):
+        # MT5's literal bad-password text must map to SOME failure code, never the SUCCESS milestone
+        # BROKER_AUTHORISED (review 2026-08-03).
+        for line in ("authorization failed", "authorisation failed", "not authorized",
+                     "login failed: invalid account", "auth rejected"):
+            codes = set(diag.extract_milestones(line))
+            self.assertNotIn("BROKER_AUTHORISED", codes, line)          # never a false success
+            self.assertTrue(codes & self._FAIL_CODES, line)             # classified as a failure
+
+    def test_pure_auth_failed_maps_to_login_failed(self):
+        self.assertIn("BROKER_LOGIN_FAILED", diag.extract_milestones("authorization failed"))
+        self.assertIn("BROKER_LOGIN_FAILED", diag.extract_milestones("not authorized"))
+
+    def test_genuine_authorised_still_success(self):
+        codes = diag.extract_milestones("authorized on IS6Technologies-Demo")
+        self.assertIn("BROKER_AUTHORISED", codes)
+        self.assertNotIn("BROKER_LOGIN_FAILED", codes)
+
+    def test_broker_tcp_established_is_emittable_from_a_real_line(self):
+        # The stage the runner consumes must be produced by a real journal line, not only injected in tests.
+        self.assertIn("BROKER_TCP_ESTABLISHED", diag.extract_milestones("connected to 194.164.179.28:443"))
+
     def test_unknown_line_no_code(self):
         self.assertEqual(diag.extract_milestones("completely unrelated text\nanother"), [])
 
@@ -153,7 +177,7 @@ class JournalDecodeTests(unittest.TestCase):
 class RedactionTests(unittest.TestCase):
     def test_looks_secret(self):
         self.assertTrue(diag.looks_secret("my password is hunter2"))
-        self.assertTrue(diag.looks_secret("-----BEGIN PRIVATE KEY-----"))
+        self.assertTrue(diag.looks_secret("-----BEGIN" + " PRIVATE KEY-----"))  # split: avoid a literal header
         self.assertTrue(diag.looks_secret("api_key=abc"))
         self.assertFalse(diag.looks_secret("connecting to broker"))
 
@@ -178,7 +202,7 @@ class RedactionTests(unittest.TestCase):
     def test_evidence_never_holds_password(self):
         ev = diag.build_evidence({"last_error_reason": "conn ok", "journal_milestones": ["TERMINAL_STARTED"]})
         blob = json.dumps(ev)
-        for bad in ("password", "hunter2", "BEGIN PRIVATE", "ciphertext"):
+        for bad in ("password", "hunter2", "BEGIN" + " PRIVATE", "ciphertext"):
             self.assertNotIn(bad, blob)
 
 
@@ -246,6 +270,12 @@ class TerminationGuardTests(unittest.TestCase):
         self.assertFalse(diag.is_terminatable("terminal64.exe", self.TDIR, self.FORBID))
         self.assertFalse(diag.is_terminatable("", self.TDIR, self.FORBID))
         self.assertFalse(diag.is_terminatable(self.TDIR + r"\terminal64.exe", "", self.FORBID))
+
+    def test_bare_drive_containment_root_rejected(self):
+        # A bare-drive root would make EVERY path "beneath" it and collapse the guard (review 2026-08-03).
+        self.assertFalse(diag.is_terminatable(r"C:\anything\terminal64.exe", r"C:\\", self.FORBID))
+        self.assertFalse(diag.is_terminatable(r"C:\GuvFX\beta\slots\2\terminal\terminal64.exe", r"C:\\",
+                                              self.FORBID))
 
     def test_select_terminatable(self):
         procs = [(1, self.TDIR + r"\terminal64.exe"),
@@ -421,6 +451,57 @@ class RunnerSecretSafetyTests(unittest.TestCase):
         # A handler whose _operator accidentally contains a password → build_evidence must scrub it.
         ev = diag.build_evidence({"last_error_reason": "password=hunter2", "reason_code": "login_timeout"})
         self.assertNotIn("hunter2", json.dumps(ev))
+
+
+class MirrorRestoreTests(unittest.TestCase):
+    def test_invalid_empty_source_never_deletes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "src")           # a dir WITHOUT terminal64.exe → not a real baseline
+            dst = os.path.join(tmp, "dst")
+            os.makedirs(src, exist_ok=True)
+            os.makedirs(dst, exist_ok=True)
+            keeper = os.path.join(dst, "important.bin")
+            open(keeper, "w").write("do not wipe me")
+            self.assertEqual(runner._mirror_os(src, dst), "invalid_source")
+            self.assertTrue(os.path.exists(keeper))   # a bad source must NEVER trigger a destructive wipe
+
+    def test_valid_source_restores_and_prunes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = os.path.join(tmp, "src"), os.path.join(tmp, "dst")
+            os.makedirs(src, exist_ok=True)
+            os.makedirs(dst, exist_ok=True)
+            open(os.path.join(src, "terminal64.exe"), "w").write("EXE")
+            open(os.path.join(src, "keep.cfg"), "w").write("cfg")
+            open(os.path.join(dst, "accounts.dat"), "w").write("stray-credential")   # extra → pruned
+            self.assertEqual(runner._mirror_os(src, dst), "restored")
+            self.assertTrue(os.path.exists(os.path.join(dst, "terminal64.exe")))
+            self.assertTrue(os.path.exists(os.path.join(dst, "keep.cfg")))
+            self.assertFalse(os.path.exists(os.path.join(dst, "accounts.dat")))       # stray removed
+
+
+class CaptureFailureVerdictTests(unittest.TestCase):
+    def test_capture_failure_does_not_mask_login_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _cfg(tmp)
+            adat = os.path.join(cfg["validation_terminal_dir"], "config", "accounts.dat")
+            open(adat, "w").write("cred")
+            rid = _stage_request(cfg["validation_handoff_dir"])
+            orig = diag.write_evidence
+            diag.write_evidence = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full"))
+            try:
+                status = runner.run_once(cfg, build_handler=lambda _c: _FakeHandler(
+                    {"ok": True, "reason_code": "demo_ok", "is_demo": True,
+                     "_operator": {"initialize_result": True, "trade_mode": 0}}),
+                    win=_FakeWin(), clock=lambda: 1.0, read_journal=lambda d: [],
+                    mirror_baseline=lambda s, d: "restored")
+            finally:
+                diag.write_evidence = orig
+            res = _read_result(cfg["validation_handoff_dir"], rid)
+            self.assertTrue(res["ok"])                          # a genuine SUCCESS survives capture failure
+            self.assertEqual(res["reason_code"], "demo_ok")
+            self.assertEqual(res["is_demo"], True)
+            self.assertEqual(status, "capture_degraded_login_ok")
+            self.assertFalse(os.path.exists(adat))              # scrub still ran
 
 
 if __name__ == "__main__":

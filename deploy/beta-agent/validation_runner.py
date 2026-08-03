@@ -70,13 +70,21 @@ def _copy_file_os(src: str, dst: str) -> None:
 
 def _mirror_os(src: str, dst: str) -> str:
     """Mirror ``src`` → ``dst`` using only ``os`` (no shutil/robocopy): copy files that are missing or differ
-    in size, then remove ``dst`` files/dirs absent from ``src``. Returns a short status. Restores the
-    certified precompiled baseline deterministically (packet §6)."""
+    in size, then remove ``dst`` files/dirs absent from ``src``. Restores the certified precompiled baseline
+    deterministically (packet §6). Two safety guards (review 2026-08-03):
+      * refuse an INVALID/EMPTY source — the source must actually contain the terminal executable, so a
+        missing/empty precompiled dir can never trigger a destructive wipe of the terminal dir;
+      * the delete pass removes a file ONLY when its REAL path is still beneath ``dst`` (no ``followlinks``),
+        so a reparse point / junction inside ``dst`` can never redirect a delete OUTSIDE ``dst``.
+    """
     if not os.path.isdir(src):
         return "no_source"
+    if not os.path.isfile(os.path.join(src, "terminal64.exe")):
+        return "invalid_source"                          # not a real baseline → NEVER delete from dst
     os.makedirs(dst, exist_ok=True)
+    dst_real = os.path.realpath(dst)
     keep = set()
-    for dirpath, _dirnames, filenames in os.walk(src):
+    for dirpath, _dirnames, filenames in os.walk(src, followlinks=False):
         rel = os.path.relpath(dirpath, src)
         ddir = dst if rel == "." else os.path.join(dst, rel)
         os.makedirs(ddir, exist_ok=True)
@@ -88,14 +96,18 @@ def _mirror_os(src: str, dst: str) -> str:
                     _copy_file_os(sp, dp)
             except OSError:
                 pass
-    for dirpath, dirnames, filenames in os.walk(dst, topdown=False):
+    for dirpath, dirnames, filenames in os.walk(dst, topdown=False, followlinks=False):
         for f in filenames:
             dp = os.path.join(dirpath, f)
-            if os.path.normcase(os.path.relpath(dp, dst)) not in keep:
-                try:
-                    os.remove(dp)
-                except OSError:
-                    pass
+            if os.path.normcase(os.path.relpath(dp, dst)) in keep:
+                continue
+            real = os.path.realpath(dp)
+            if real != dst_real and not real.startswith(dst_real + os.sep):
+                continue                                 # reparse/junction escapes dst → refuse to delete
+            try:
+                os.remove(dp)
+            except OSError:
+                pass
         for d in dirnames:
             dd = os.path.join(dirpath, d)
             try:
@@ -321,8 +333,16 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
     except Exception:                            # noqa: BLE001
         term_result = {"error": "terminate_unavailable"}
 
-    # ── credential-artefact scrub — ALWAYS (even if capture failed) ──
+    # ── credential-artefact scrub — ALWAYS (even if capture failed). The terminal is terminated ABOVE first,
+    #    so accounts.dat is not held open; then VERIFY it is gone (a lingering terminal that defeated the scrub
+    #    must not be reported as clean). ──
     _scrub_validation_terminal(cfg)
+    accounts_dat_removed = True
+    if vdir:
+        for cand in (os.path.join(vdir, "config", "accounts.dat"),
+                     os.path.join(vdir, "Config", "accounts.dat")):
+            if os.path.exists(cand):
+                accounts_dat_removed = False
 
     # ── restore the certified precompiled baseline ──
     restore_result = "skipped"
@@ -344,22 +364,28 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
                 "stray_termination_attempted": bool(term_result.get("targets")),
                 "stray_termination_result": term_result,
                 "baseline_restore_result": restore_result,
+                "accounts_dat_created": not accounts_dat_removed and evidence.get("accounts_dat_created"),
                 "final_baseline_fingerprint": _light_fingerprint(vdir) if vdir else None,
             })
             diag.write_evidence(diag_dir, correlation_id, evidence, now=clock())
         except Exception:                        # noqa: BLE001
             pass
 
-    customer = {
-        "ok": bool(outcome.get("ok")) if not capture_failed else False,
-        "reason_code": "diagnostic_capture_failed" if capture_failed
-                       else str(outcome.get("reason_code") or "could_not_verify"),
-        "is_demo": outcome.get("is_demo") if not capture_failed else None,
-    }
+    # Customer verdict: a diagnostic-capture failure NEVER masks a genuine broker verdict (review 2026-08-03).
+    # It substitutes ``diagnostic_capture_failed`` ONLY for a non-definitive outcome — never a login SUCCESS.
+    login_succeeded = bool(outcome.get("ok"))
+    if capture_failed and not login_succeeded:
+        customer = {"ok": False, "reason_code": "diagnostic_capture_failed", "is_demo": None}
+    else:
+        customer = {"ok": login_succeeded,
+                    "reason_code": str(outcome.get("reason_code") or "could_not_verify"),
+                    "is_demo": outcome.get("is_demo")}
     op_summary = (diag.operator_summary(diag.build_evidence(evidence))
                   if not capture_failed else {"evidence_id": correlation_id})
     handoff.write_result(handoff_dir, rid, customer, operator=op_summary)
-    return "diagnostic_capture_failed" if capture_failed else "ok"
+    if not capture_failed:
+        return "ok"
+    return "capture_degraded_login_ok" if login_succeeded else "diagnostic_capture_failed"
 
 
 def main() -> int:

@@ -44,22 +44,29 @@ MILESTONE_CODES = frozenset({
     "UNKNOWN_SAFE_MILESTONE",
 })
 
-# Ordered (specific → general): first matching pattern wins per line, so ``authorized`` is classified as
-# BROKER_AUTHORISED rather than the generic BROKER_CONNECTING. Patterns run on a LOWERCASED line; only the
-# resulting CODE is retained — never the matched text.
+# Ordered SPECIFIC-FAILURE → SUCCESS → GENERAL: first matching pattern wins per line. The FAILURE
+# classifications MUST precede the generic ``authoris(ed)`` success token, or a genuine denial such as MT5's
+# literal ``authorization failed`` / ``not authorized`` would be misread as the SUCCESS milestone (review
+# 2026-08-03). Patterns run on a LOWERCASED line; only the resulting CODE is retained — never the matched
+# text. Word boundaries are chosen so real MT5 wordings match: ``fail`` (a prefix, so it catches ``failed``),
+# not ``fail\b`` (which would not).
 _JOURNAL_PATTERNS = (
     (r"\bmetatrader 5 .*\bstarted\b", "TERMINAL_STARTED"),
-    (r"\bmdi\b.*\b(create|unhook)\b.*\bfail", "GUI_MDI_CREATE_FAILED"),
-    (r"\bcreate (new )?frame\b.*\bfail", "GUI_MDI_CREATE_FAILED"),
+    (r"\bmdi\b.*\b(create|unhook)\b.*fail", "GUI_MDI_CREATE_FAILED"),
+    (r"\bcreate (new )?frame\b.*fail", "GUI_MDI_CREATE_FAILED"),
     (r"\bmain window\b|\bchart\b.*\bopened\b", "GUI_MAIN_WINDOW_CREATED"),
     (r"\bbind error\b.*22346|\bmcp\b.*\bbind", "MCP_BIND_CONFLICT"),
     (r"\bnamed pipe\b|\bipc\b.*\bready\b|\bpipe\b.*\bcreated\b", "IPC_PIPE_READY"),
-    (r"\binvalid account\b|\baccount .*not found\b", "INVALID_LOGIN"),
-    (r"\b(account|login).*\b(disabled|blocked|closed)\b", "ACCOUNT_DISABLED"),
+    # ── failure classifications FIRST (specific) ──
+    (r"\binvalid account\b|\baccount .*not found\b|\bno such account\b", "INVALID_LOGIN"),
+    (r"\b(account|login)\b.*(disabled|blocked|closed|suspended)", "ACCOUNT_DISABLED"),
     (r"\bunknown server\b|\bserver .*not found\b", "SERVER_UNAVAILABLE"),
-    (r"\bauthoriz|\bauthoris", "BROKER_AUTHORISED"),
-    (r"\blogin\b.*\b(fail|reject|invalid)\b|\bauth.*\bfail", "BROKER_LOGIN_FAILED"),
-    (r"\bconnected to\b|\bconnection established\b", "BROKER_CONNECTED"),
+    (r"\bnot (auth|logg)|(auth\w*|login|logon)\s*(is\s*)?(fail|reject|denied|error|invalid)|"
+     r"(fail|reject|denied|error)\w*.{0,20}(auth|login|logon)", "BROKER_LOGIN_FAILED"),
+    # ── then the SUCCESS token (only after every failure form is ruled out above) ──
+    (r"\bauthoris(ed|ation)\b|\bauthoriz(ed|ation)\b", "BROKER_AUTHORISED"),
+    (r"\bconnected to\b|\bconnection established\b|socket .*connected", "BROKER_TCP_ESTABLISHED"),
+    (r"\bnetwork\b.*\bconnected\b", "BROKER_CONNECTED"),
     (r"\bconnecting to\b|\bconnect to\b", "BROKER_CONNECTING"),
     (r"\baccount\b.*\b(balance|equity|leverage|trade_mode|company)\b", "ACCOUNT_INFO_READY"),
     (r"\bterminal\b.*\b(stopped|shutdown)\b", "TERMINAL_STOPPED"),
@@ -222,6 +229,10 @@ def is_terminatable(exe_path: str, terminal_dir: str, forbidden_roots=()) -> boo
     if not exe_path or not terminal_dir:
         return False
     if _has_traversal(exe_path) or _has_traversal(terminal_dir):
+        return False
+    # A bare-drive containment root (``C:\``) would make EVERY path "beneath" it and collapse the guard — the
+    # root must be a proper contained directory (review 2026-08-03), mirroring assert_isolated_validation_terminal.
+    if "\\" not in _norm(terminal_dir):
         return False
     if not _beneath(exe_path, terminal_dir):
         return False
