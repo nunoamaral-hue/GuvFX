@@ -12,6 +12,9 @@ param(
   [string]$Python     = "C:\GuvFX\beta\agent-venv\Scripts\python.exe",
   [string]$Runner     = "C:\GuvFX\beta\agent\validation_runner.py",
   [string]$HandoffDir = "C:\GuvFX\beta\agent-state\validation-handoff",
+  # ADR-0027 observability: the runner writes durable, secret-safe diagnostic artefacts here (same ACL as the
+  # handoff dir: SYSTEM + Administrators full, the least-privilege agent service Modify).
+  [string]$DiagnosticsDir = "C:\GuvFX\beta\agent-state\validation-diagnostics",
   # Task identity. SYSTEM is host-PROVEN (Experiment E, 2026-08-02) to give MT5 a GUI-capable window station
   # via a scheduled task, unlike the WinSW service. A dedicated low-privilege account is the least-privilege
   # follow-up; the task command is fixed and takes no arguments, so its blast radius is one validation probe.
@@ -94,6 +97,18 @@ icacls $HandoffDir /grant:r ("*{0}:(OI)(CI)(M)" -f $svcSid) "NT AUTHORITY\SYSTEM
 Say ("handoff ACL set; entries: " + ((icacls $HandoffDir | Select-String 'Allow|:\(') -join '; '))
 if (-not ((icacls $HandoffDir | Out-String) -match "GuvFXBetaAgent")) {
   throw "handoff ACL: agent service (GuvFXBetaAgent) MODIFY grant is not present after icacls - STOP"
+}
+
+# 1b) diagnostics directory ACL (ADR-0027 observability): same restrictive contract as the handoff dir -
+#     SYSTEM + Administrators full control, the least-privilege agent service Modify (it writes the artefacts),
+#     inheritance disabled, no other local user. The artefacts are secret-safe by construction (milestone
+#     codes + allow-listed fields, secret-scanned), but the directory is still locked down as defence in depth.
+New-Item -ItemType Directory -Force -Path $DiagnosticsDir | Out-Null
+icacls $DiagnosticsDir /inheritance:r /Q | Out-Null
+icacls $DiagnosticsDir /grant:r ("*{0}:(OI)(CI)(M)" -f $svcSid) "NT AUTHORITY\SYSTEM:(OI)(CI)(F)" "BUILTIN\Administrators:(OI)(CI)(F)" /Q | Out-Null
+Say ("diagnostics ACL set; entries: " + ((icacls $DiagnosticsDir | Select-String 'Allow|:\(') -join '; '))
+if (-not ((icacls $DiagnosticsDir | Out-String) -match "GuvFXBetaAgent")) {
+  throw "diagnostics ACL: agent service (GuvFXBetaAgent) MODIFY grant is not present after icacls - STOP"
 }
 
 # 2) the single-instance, allow-listed scheduled task: runs ONLY the runner, with NO arguments.

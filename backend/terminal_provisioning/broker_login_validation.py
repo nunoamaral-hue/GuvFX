@@ -60,6 +60,9 @@ _TAXONOMY = {
     # in time. Platform conditions (never the customer's credentials) → UNAVAILABLE/retryable.
     "validation_runner_unavailable": (UNAVAILABLE, True),
     "validation_runner_timeout":     (UNAVAILABLE, True),
+    # ADR-0027 observability: the runner could not durably preserve its diagnostic evidence — a platform fault
+    # (never a credential verdict). Retryable; the credential scrub still ran, so it is safe to retry.
+    "diagnostic_capture_failed":     (UNAVAILABLE, True),
     "impl_integrity_mismatch": (UNAVAILABLE, True),
     "payload_missing":         (UNAVAILABLE, True),
     "payload_digest_mismatch": (UNAVAILABLE, True),

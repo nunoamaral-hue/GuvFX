@@ -203,6 +203,14 @@ def load_config(env: dict | None = None) -> dict:
         "validation_handoff_dir": env.get("BETA_AGENT_VALIDATION_HANDOFF_DIR",
                                           state_dir + r"\validation-handoff"),
         "validation_task_name": env.get("BETA_AGENT_VALIDATION_TASK_NAME", ""),
+        # ── ADR-0027 observability (2026-08-03): the runner preserves a durable, secret-safe diagnostic
+        #    artefact per attempt under this ACL-restricted dir (bounded retention), and — when a precompiled
+        #    reference is configured — restores the certified baseline after each probe. All optional. ──
+        "validation_diagnostics_dir": env.get("BETA_AGENT_VALIDATION_DIAGNOSTICS_DIR",
+                                              state_dir + r"\validation-diagnostics"),
+        "validation_diagnostics_retention_s": int(env.get("BETA_AGENT_VALIDATION_DIAGNOSTICS_RETENTION_S",
+                                                          "259200")),
+        "validation_precompiled_dir": env.get("BETA_AGENT_VALIDATION_PRECOMPILED_DIR", ""),
     }
 
 

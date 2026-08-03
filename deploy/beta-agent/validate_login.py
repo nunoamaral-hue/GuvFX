@@ -130,6 +130,13 @@ def classify_init_error(code, text: str) -> str:
     return "could_not_verify"
 
 
+def _as_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class RealMt5Probe:
     """Production MT5 probe. Lazily imports ``MetaTrader5`` (Windows/terminal-only) and exposes ONLY the four
     calls the login check needs — initialize, last_error, account_info, shutdown. It deliberately provides NO
@@ -149,6 +156,20 @@ class RealMt5Probe:
 
     def account_info(self):
         return self._mt5.account_info() if self._mt5 else None
+
+    def terminal_info(self):
+        """Terminal state (build, connected flag, path). Read-only; ADR-0027 observability. None if absent."""
+        try:
+            return self._mt5.terminal_info() if self._mt5 else None
+        except Exception:            # noqa: BLE001 — an observability read must never fault the probe
+            return None
+
+    def version(self):
+        """MT5 Python package/terminal version tuple. None if unavailable."""
+        try:
+            return self._mt5.version() if self._mt5 else None
+        except Exception:            # noqa: BLE001
+            return None
 
     def shutdown(self) -> None:
         if self._mt5:
@@ -227,34 +248,61 @@ class LoginValidationHandler:
             self._lock.release()
 
     def _probe(self, exe_path, login, server, password) -> dict:
+        # ADR-0027 observability: an ``_operator`` diagnostic rides ALONGSIDE the customer-safe result. It
+        # carries only allow-listed, non-secret fields (never a password/ciphertext/host path); the RUNNER
+        # scrubs every value and adds journal milestones + cleanup results before anything is persisted. The
+        # customer path (mgmt_agent_core / TaskLaunchLoginValidator) reads ONLY {ok, reason_code, is_demo} and
+        # never forwards ``_operator``.
+        op = {"initialize_started": False, "initialize_result": None, "last_error_code": None,
+              "last_error_text": "", "terminal_info_present": False, "account_info_present": False,
+              "trade_mode": None, "is_demo": None, "mt5_package_version": None, "terminal_build": None}
+
+        def _out(result):
+            result["_operator"] = op
+            return result
+
         try:
             login_id = int(login)
         except (TypeError, ValueError):
-            return self._denied("invalid_login")
+            return _out(self._denied("invalid_login"))
         try:
             probe = self._probe_factory()        # bound BEFORE the finally; a factory fault → no terminal
         except Exception:                        # noqa: BLE001 — nothing was launched; nothing to shut down
-            return self._denied("could_not_verify")
+            return _out(self._denied("could_not_verify"))
         try:
+            op["initialize_started"] = True
             ok = probe.initialize(path=exe_path, login=login_id, password=password, server=server,
                                   timeout_ms=self._login_timeout_ms)
+            op["initialize_result"] = bool(ok)
+            ver = probe.version() if hasattr(probe, "version") else None
+            if ver is not None:
+                op["mt5_package_version"] = str(ver)[:64]
+            tinfo = probe.terminal_info() if hasattr(probe, "terminal_info") else None
+            op["terminal_info_present"] = tinfo is not None
+            if tinfo is not None:
+                op["terminal_build"] = _as_int(getattr(tinfo, "build", None))
             if not ok:
                 code, text = probe.last_error()
-                return self._denied(classify_init_error(code, text))
+                op["last_error_code"] = _as_int(code)
+                op["last_error_text"] = (str(text)[:200] if text else "")
+                return _out(self._denied(classify_init_error(code, text)))
             acc = probe.account_info()
+            op["account_info_present"] = acc is not None
             if acc is None:
-                return self._denied("could_not_verify")
+                return _out(self._denied("could_not_verify"))
             trade_mode = getattr(acc, "trade_mode", None)
+            op["trade_mode"] = _as_int(trade_mode)
             if trade_mode is None:
-                return self._denied("could_not_verify")
+                return _out(self._denied("could_not_verify"))
             # trade_mode: 0=DEMO, 1=CONTEST, 2=REAL. is_demo is True ONLY for a genuine demo account; a
             # contest or real account is a connected, correctly-classified session (not a failure) but is
             # NOT demo — the platform treats it as live-detected and never auto-trades it here.
             is_demo = (trade_mode == 0)
-            return {"ok": True, "reason_code": "demo_ok" if is_demo else "live_detected",
-                    "is_demo": is_demo}
+            op["is_demo"] = is_demo
+            return _out({"ok": True, "reason_code": "demo_ok" if is_demo else "live_detected",
+                         "is_demo": is_demo})
         except Exception:            # noqa: BLE001 — a probe-layer fault is retryable, never a raw leak
-            return self._denied("could_not_verify")
+            return _out(self._denied("could_not_verify"))
         finally:
             # ALWAYS shut the terminal down — on success AND on every failure/exception path.
             try:
