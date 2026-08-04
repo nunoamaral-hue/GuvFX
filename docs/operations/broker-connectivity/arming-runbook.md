@@ -125,8 +125,10 @@ the host are **HOST-VERIFIED / OUTSIDE REPOSITORY CONTROL**.
 - **Failure symptoms:** recorder-failure log spike; API 5xx; owner-scoping check fails.
 - **Immediate stop condition:** owner-scoping failure (cross-account visibility) — treat as SEV-1
   ([incident-response.md](incident-response.md)); recorder-failure spike.
-- **Rollback:** set `OPERATIONS_EVENTS_ENABLED` OFF (immediate DARK); redeploy the DARK frontend image. If
-  the projection is corrupt, **truncate and rebuild** it from authoritative sources (it is a cache).
+- **Rollback:** set `OPERATIONS_EVENTS_ENABLED` OFF (immediate DARK); redeploy the DARK frontend image. A
+  corrupt projection is cleared by disabling the flag — the read model re-accretes **forward** once re-armed.
+  **There is no backfill tool:** truncating the `OperationalEvent` table permanently drops historical rows
+  (authoritative state is unaffected), so never truncate expecting reconstruction.
 - **Evidence:** owner-scoping test transcript, recorder-failure log sample (should be empty), API responses.
 - **Sponsor gate:** yes.
 

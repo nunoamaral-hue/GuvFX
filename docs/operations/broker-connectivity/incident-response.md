@@ -69,7 +69,7 @@ Any of:
 | Field | Response |
 |-------|----------|
 | **Detection source** | Single-account validation-attempt row; per-account `get_contract` `STALE`; operational-event `created_at` lag vs the authoritative moment; operator report; a single dedup collision / missing projection. |
-| **Immediate containment** | Usually none platform-wide. Retry the single validation; for the operator UI, redeploy the DARK/armed frontend; for a projection gap, **rebuild the projection** (cache) — authoritative state is unaffected. |
+| **Immediate containment** | Usually none platform-wide. Retry the single validation; for the operator UI, redeploy the DARK/armed frontend; for a projection gap, verify the authoritative action in the model/audit — the projection re-accretes **forward** (no backfill for past rows); authoritative state is unaffected. |
 | **Flag actions** | None required in most cases. |
 | **Evidence capture** | The single affected row(s) + correlation id; recorder-failure log line if a projection failed. |
 | **Communications owner** | Operator (informational). |

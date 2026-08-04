@@ -45,7 +45,9 @@ Legend — **New exposure possible?** = could a *new order* be opened in this st
 - **Safest immediate action:** acceptable — recording without a UI is safe. Watch logger
   `guvfx.operational_events` for recorder failures.
 - **Flag rollback:** set `OPERATIONS_EVENTS_ENABLED` OFF → recording + API return to DARK.
-- **DB rollback:** none needed; if the projection is corrupt, **truncate + rebuild** (it is a cache).
+- **DB rollback:** none. A corrupt projection is cleared by disabling the flag; it re-accretes **forward** on
+  re-arm. **No backfill tool exists** — truncation permanently drops history (authoritative state
+  unaffected), so do not truncate expecting reconstruction.
 - **Evidence:** recorder-failure log sample (should be empty), row counts.
 - **Post-rollback checks:** API `/api/operations/account-events/` returns 404.
 
@@ -63,8 +65,9 @@ Legend — **New exposure possible?** = could a *new order* be opened in this st
   **New exposure:** no.
 - **Safest immediate action:** set `OPERATIONS_EVENTS_ENABLED` OFF; investigate `guvfx.operational_events`
   logs. Authoritative state (`AuditEvent`, WP1A/WP3/WP2 models) is unaffected.
-- **Flag rollback:** set `OPERATIONS_EVENTS_ENABLED` OFF. **DB rollback:** none; rebuild the projection.
-- **Evidence:** recorder-failure log lines, projection row counts before truncation.
+- **Flag rollback:** set `OPERATIONS_EVENTS_ENABLED` OFF. **DB rollback:** none; the projection re-accretes
+  **forward** on re-arm (no backfill tool — truncation loses historical rows).
+- **Evidence:** recorder-failure log lines, projection row counts at the time of the incident.
 - **Post-rollback checks:** authoritative state intact; API 404 after disable.
 
 ### 6. Health enabled without execution gate

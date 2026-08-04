@@ -199,7 +199,8 @@ Each workflow: **See · Authoritative state · Events · Do not infer · Custome
 - **Do not infer:** that nothing happened — an empty projection may mean DARK, a rebuildable cache not yet
   populated, or a recorder failure. Check `guvfx.operational_events` logs and authoritative rows.
 - **Customer wording:** n/a (operator-only surface).
-- **Permitted:** confirm flag state; check recorder logs; rebuild the projection if needed.
+- **Permitted:** confirm flag state; check recorder logs. A missing timeline re-accretes **forward** once
+  recording is healthy — there is no backfill for past rows.
 - **Prohibited:** telling a customer their account "has no history" based on an empty projection.
 - **Escalation:** Engineering if recorder failures are present.
 - **Sponsor approval:** no.
@@ -227,7 +228,8 @@ Each workflow: **See · Authoritative state · Events · Do not infer · Custome
 - **Do not infer:** business impact — the projection is a cache; the authoritative action is recorded in the
   WP1A/WP3/WP2 models + `AuditEvent` regardless.
 - **Customer wording:** n/a.
-- **Permitted:** rebuild the projection from authoritative sources; check recorder-failure logs.
+- **Permitted:** verify the authoritative action in the model/audit; check recorder-failure logs. The
+  projection re-accretes **forward** — there is no backfill for a missed past row.
 - **Prohibited:** treating a projection gap as data loss; editing events by hand.
 - **Escalation:** Engineering if recorder failures correlate.
 - **Sponsor approval:** no.

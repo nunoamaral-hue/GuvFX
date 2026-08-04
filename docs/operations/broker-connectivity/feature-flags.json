@@ -91,7 +91,7 @@
       "effect_when_disabled": "record_event returns None, all projections early-return, mark_resolved returns 0, and the API returns 404. Every projection call site is additionally fail-open so it can never break the authoritative path.",
       "deploy_requirement": "None to toggle (read live). Independent of the broker-connectivity flags. The operator UI additionally requires the separate frontend flag NEXT_PUBLIC_OPERATIONS_ENABLED.",
       "verification": "With flag OFF: API returns 404, no rows written. With flag ON: events project on commit and the API returns {summary, timeline}. Check logger 'guvfx.operational_events' for recorder failures. Tests: operational_events tests (WP5.1/5.2).",
-      "rollback": "Set the flag to a false value; recording and API return to DARK immediately. The read model is a rebuildable projection (a cache) and can be truncated/rebuilt without affecting authoritative state.",
+      "rollback": "Set the flag to a false value; recording and API return to DARK immediately. The read model is a projection (a cache): disabling the flag returns it to DARK and it re-accretes forward on re-arm. There is no backfill tool, so truncating it permanently drops historical rows; authoritative state is unaffected.",
       "risk": "AMBER",
       "sponsor_approval_required": true,
       "adr": "ADR-0032"

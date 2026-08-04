@@ -344,6 +344,8 @@ UI. Repository documentation only; nothing is armed. Full runbook: `docs/operati
   **counter must be added and baselined in WP6** (`monitoring-spec.md` §12).
 - **Projection rebuildability during incidents.** `OperationalEvent` is a **rebuildable projection (a cache)**,
   not a second audit log; no business logic reads it. During any operational-event incident, the safe action
-  is set `OPERATIONS_EVENTS_ENABLED` OFF and, if needed, **truncate and rebuild** the projection from the
-  authoritative sources (`AuditEvent` + the WP1A/WP3/WP2 models) — authoritative state is unaffected
-  (`rollback-matrix.md` §5, `incident-response.md`).
+  is set `OPERATIONS_EVENTS_ENABLED` OFF; the read model re-accretes **forward** once re-armed. **No backfill
+  tool is implemented** (there is no reproject/backfill management command) — truncating the table
+  permanently drops historical rows (authoritative state in `AuditEvent` + the WP1A/WP3/WP2 models is
+  unaffected), so it must not be truncated in expectation of reconstruction (`rollback-matrix.md` §5,
+  `incident-response.md`).

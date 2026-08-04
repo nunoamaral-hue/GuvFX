@@ -72,8 +72,9 @@ REPOSITORY CONTROL**; the repository proves only the defaults (all OFF) and the 
   additionally needs `NEXT_PUBLIC_OPERATIONS_ENABLED`.
 - **Verification:** OFF → API 404, no rows; ON → events project on commit; API returns `{summary, timeline}`.
   Watch logger **`guvfx.operational_events`** for recorder failures (fail-open ⇒ silent to callers).
-- **Rollback:** set OFF; recording + API return to DARK. The read model is a **rebuildable projection**
-  (a cache) and may be truncated/rebuilt without affecting authoritative state.
+- **Rollback:** set OFF; recording + API return to DARK. The read model is a **projection (a cache)**: it
+  re-accretes **forward** on re-arm. **No backfill tool exists** — truncating it permanently drops historical
+  rows (authoritative state is unaffected), so do not truncate expecting reconstruction.
 - **Risk:** AMBER (read-only projection). **Sponsor approval:** required.
 
 ## 4. `NEXT_PUBLIC_OPERATIONS_ENABLED`
