@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { t } from "@/lib/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { brokerConnectivityEnabled } from "@/lib/flags";
 import { useRouter } from "next/navigation";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -46,6 +47,9 @@ type TradingAccount = {
   // (arm rejects non-demo / inactive with `account_not_ready`; arm remains the authority).
   is_demo?: boolean;
   is_active?: boolean;
+  // IPR Area B (C6): canonical dedicated-runtime readiness — gates the arm affordance in the UI
+  // (the backend re-checks it authoritatively).
+  runtime_ready?: boolean;
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -821,6 +825,13 @@ export default function StrategyMarketplacePage() {
                     const busy = !!copyBusy[strategy.id];
                     const arming = !!armBusy[strategy.id];
                     const selAcct = selectedAccount[strategy.id];
+                    // The self-service Enable-Trading (arm) affordance is available ONLY when the
+                    // broker-connectivity journey is intentionally enabled at build time — independent
+                    // of the backend BETA_SELF_SERVE_ARM_ENABLED flag, so a DARK build never surfaces a
+                    // live arming path. It is additionally gated on the selected account's runtime
+                    // readiness (the backend re-checks this authoritatively).
+                    const armUiEnabled = brokerConnectivityEnabled();
+                    const selReady = !!accounts.find((a) => a.id === Number(selAcct))?.runtime_ready;
                     // ON/badge state comes ONLY from the backend-confirmed status — never from a click.
                     const statusLabel = ambiguous
                       ? t(lang, "marketplace.copyAmbiguousShort")
@@ -873,9 +884,11 @@ export default function StrategyMarketplacePage() {
                               {t(lang, "marketplace.preview")}
                             </Button>
                           </div>
-                        ) : (
-                          // Not armed → IPR Area D: choose the demo account and Enable Trading (arm),
-                          // rather than a disabled toggle with no path forward.
+                        ) : armUiEnabled ? (
+                          // Not armed → IPR Area D: choose the demo account and Enable Trading (arm).
+                          // Rendered ONLY when the broker-connectivity journey is enabled at build
+                          // time (see `armUiEnabled`), so a DARK build never exposes a live arm path
+                          // regardless of the backend BETA_SELF_SERVE_ARM_ENABLED flag.
                           <>
                             <select
                               value={selAcct || ""}
@@ -906,9 +919,13 @@ export default function StrategyMarketplacePage() {
                               <Button
                                 variant="primary"
                                 onClick={() =>
-                                  selAcct ? handleSignalCopyArm(strategy.id, Number(selAcct)) : undefined
+                                  selAcct && selReady
+                                    ? handleSignalCopyArm(strategy.id, Number(selAcct))
+                                    : undefined
                                 }
-                                disabled={!isAuthed || !selAcct || arming}
+                                // Additionally gated on the selected account's runtime readiness
+                                // (the backend re-checks it authoritatively and returns runtime_not_ready).
+                                disabled={!isAuthed || !selAcct || !selReady || arming}
                               >
                                 {arming
                                   ? t(lang, "marketplace.armWorking")
@@ -919,9 +936,18 @@ export default function StrategyMarketplacePage() {
                               </Button>
                             </div>
                             <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
-                              {t(lang, "marketplace.armSelectAccountHint")}
+                              {selAcct && !selReady
+                                ? t(lang, "marketplace.armRuntimeNotReady")
+                                : t(lang, "marketplace.armSelectAccountHint")}
                             </p>
                           </>
+                        ) : (
+                          // DARK default (broker-connectivity journey not enabled at build time): NO
+                          // interactive arm affordance — the backend arm endpoint stays unreachable
+                          // from the UI. Passive "not armed" hint only.
+                          <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
+                            {t(lang, "marketplace.copyNotArmedHint")}
+                          </p>
                         )}
                       </div>
                     );

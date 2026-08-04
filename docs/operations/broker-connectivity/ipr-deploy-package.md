@@ -106,8 +106,12 @@ Assert `gitCommit == $SHA` and both `flags` `false`. The `prebuild` emitter bake
 `GIT_COMMIT` build-arg, so it certifies exactly the image that was built.
 
 4.3 **Behaviour smoke (DARK):** `/broker-accounts` 404s; `/accounts` renders the legacy page (no
-redirect); marketplace signal-copy card shows the account selector + Enable Trading but arming returns
-`409 arming_disabled`. All expected while OFF.
+redirect); the marketplace signal-copy card shows **only the passive "not armed" hint** — the account
+selector + Enable-Trading (arm) affordance is **absent**, because it is gated behind the build-time
+`NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED` flag (built OFF). This makes the frontend deterministically
+DARK **regardless of the backend `BETA_SELF_SERVE_ARM_ENABLED` state** — no live arming path is exposed
+from the UI. (When the journey is later armed, the selector + Enable Trading appear, additionally gated
+on account runtime-readiness, and the backend remains the arming authority.)
 
 ## Stage 5 — Golden STOP-check AFTER + sign-off
 

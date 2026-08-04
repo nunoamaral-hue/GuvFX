@@ -7,14 +7,18 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
  * customer-safe wording per the arm response's status slug. */
 
 type Status = { armed: boolean; enabled: boolean; ambiguous?: boolean };
-const state = vi.hoisted(() => ({ status: { armed: false, enabled: false } as Status, statusCalls: 0 }));
+const state = vi.hoisted(() => ({
+  status: { armed: false, enabled: false } as Status,
+  flagOn: true, // NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED — the arm UI is gated behind it
+  runtimeReady: true, // the account's runtime_ready
+}));
 const { arm, toggle, apiFetch } = vi.hoisted(() => {
   const arm = vi.fn();
   const toggle = vi.fn(() => ({ status: "enabled", enabled: true }));
   const apiFetch = vi.fn(async (path: string, opts?: RequestInit) => {
     if (path.startsWith("/api/auth/me")) return {};
     if (path.startsWith("/api/trading/accounts")) {
-      return [{ id: 5, name: "Demo A", is_demo: true, is_active: true }];
+      return [{ id: 5, name: "Demo A", is_demo: true, is_active: true, runtime_ready: state.runtimeReady }];
     }
     if (path.startsWith("/api/strategies/strategies/signal-copy/arm")) return arm(opts);
     if (path.startsWith("/api/strategies/strategies/signal-copy/toggle")) return toggle(opts);
@@ -30,6 +34,7 @@ const statusCalls = () =>
 vi.mock("@/lib/api", () => ({ apiFetch }));
 vi.mock("@/components/AppShell", () => ({ useLang: () => "en" }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }));
+vi.mock("@/lib/flags", () => ({ brokerConnectivityEnabled: () => state.flagOn }));
 
 import Marketplace from "./page";
 
@@ -45,6 +50,8 @@ describe("marketplace signal-copy Enable Trading (arm)", () => {
     toggle.mockClear();
     apiFetch.mockClear();
     state.status = { armed: false, enabled: false };
+    state.flagOn = true;
+    state.runtimeReady = true;
     const store: Record<string, string> = {};
     vi.stubGlobal("localStorage", {
       getItem: (k: string) => store[k] ?? null,
@@ -138,5 +145,38 @@ describe("marketplace signal-copy Enable Trading (arm)", () => {
     );
     // The raw slug is never surfaced.
     expect(screen.queryByText(/runtime_not_ready/)).toBeNull();
+  });
+
+  it("DARK: no arm affordance when the broker-connectivity build flag is OFF (regardless of backend)", async () => {
+    // The load-bearing DARK proof: with NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED OFF, the marketplace
+    // must NOT expose the Enable-Trading (arm) button — even though the backend arm flag may be ON —
+    // so a DARK build can never surface a live self-service arming path.
+    state.flagOn = false;
+    arm.mockImplementation(() => ({ status: "armed", enabled: true }));
+    render(<Marketplace />);
+    // The signal-copy card still renders (its passive not-armed hint), but no arm control appears.
+    await waitFor(() =>
+      expect(screen.getByText("Arming (auto-demo) is a separate, gated step.")).toBeTruthy(),
+    );
+    expect(screen.queryByRole("button", { name: "Enable Trading" })).toBeNull();
+    expect(screen.queryByText("Choose the demo account to copy signals into.")).toBeNull();
+    expect(arm).not.toHaveBeenCalled();
+  });
+
+  it("gates the arm button on runtime readiness (disabled when the account runtime is not ready)", async () => {
+    state.runtimeReady = false; // backend reports the account's runtime as not ready
+    render(<Marketplace />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Enable Trading" })).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByRole("option", { name: /Demo A/ }).length).toBeGreaterThan(0));
+
+    const { btn, select } = armCard();
+    fireEvent.change(select, { target: { value: "5" } });
+    // Not-ready account → the arm button stays disabled and a readiness hint shows; clicking is inert.
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      screen.getByText("Your trading terminal is still starting up. Try again once it's ready."),
+    ).toBeTruthy();
+    fireEvent.click(btn);
+    expect(arm).not.toHaveBeenCalled();
   });
 });
