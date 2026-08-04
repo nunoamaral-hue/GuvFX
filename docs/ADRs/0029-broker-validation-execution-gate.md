@@ -246,3 +246,31 @@ No exposure-opening route bypasses the gate; every scheduler handles refusal saf
 safe + audited; runtime start/recovery are broker-independent (exposure gated at `ExecutionJob.save` +
 dispatch); controlled resume is explicit-only; audit/operational-event ownership is deterministic;
 flag-OFF behaviour is unchanged; inventory drift fails CI. Arming itself remains Sponsor-gated.
+
+---
+
+## WP5.4 — Execution-gate arming dependencies, ownership & stop conditions (2026-08-04)
+
+Amends this ADR with the **operational** arming contract for the execution gate. Repository documentation
+only; nothing is armed. Full runbook: `docs/operations/broker-connectivity/` (arming-runbook, rollback-matrix,
+incident-response), machine-readable `readiness-checklist.json`.
+
+- **Operational arming dependencies.** `BROKER_CONNECTIVITY_EXECUTION_GATE` is arming **stage 6** — the last
+  stage before Trusted-Beta invitation and the **only** flag that changes whether an order is placed. Its
+  preconditions: DARK deployment (stage 1), provisioner + validation image ready (stage 2), customer journey
+  armed so accounts can reach `VALIDATED` (stage 4), and — for health-driven pause/dispatch refusal —
+  `BROKER_CONNECTIVITY_HEALTH_ENABLED` armed (stage 5). Health-driven refusal and pause/resume require
+  **both** flags ON (`broker_gate._health_engine_enabled`, `runtime_pause.pause_processing_enabled`).
+- **WP6 precedes arming.** The execution gate **must not be armed before WP6 multi-tenant certification
+  PASS.** WP6 is not authorised or started by WP5.4. `readiness-checklist.json` `arming_sequence` marks this
+  step `wp6_required: true`; the validation test asserts it.
+- **Arming / rollback ownership.** Arming is **Sponsor-gated** (Sponsor = decision authority). Rollback owner
+  = Operator (may disarm to contain without prior approval); re-arming after any SEV-1 requires the Sponsor.
+  **Rollback = set `BROKER_CONNECTIVITY_EXECUTION_GATE` OFF** — the gate becomes transparent instantly
+  (`GateDecision(True,"gate_disabled")` short-circuits before any DB read). No code-revert or destructive DB
+  rollback exists or is required.
+- **Refusal-spike stop condition.** If `EXECUTION_GATE_REFUSED` / `EXECUTION_DISPATCH_REFUSED` rise for
+  **eligible** accounts (a false-refusal spike), **disarm the gate immediately** and investigate the
+  eligibility/health inputs (SEV-2). **Any execution permitted for an ineligible account is SEV-1** — disarm
+  the gate and open a mandatory PIR. Baselines for the refusal rate are `TO BE BASELINED DURING WP6`
+  (`monitoring-spec.md` §9–11).

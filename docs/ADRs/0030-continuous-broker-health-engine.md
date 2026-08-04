@@ -109,3 +109,33 @@ builds it once, deterministically, so WP1B never re-derives health from scattere
 - Wiring a live validator into the scheduler / any recurring live validation (separate, Sponsor-gated
   arming step).
 - Frontend surfacing of health state (WP4); ops runbooks/monitoring (WP5).
+
+---
+
+## WP5.4 — Health-engine arming dependencies, convergence, rollback (2026-08-04)
+
+Amends this ADR with the **operational** arming contract for the health engine. Repository documentation
+only; nothing is armed. Full runbook: `docs/operations/broker-connectivity/`.
+
+- **Arming dependencies.** `BROKER_CONNECTIVITY_HEALTH_ENABLED` is arming **stage 5**, after the customer
+  journey (stage 4) — health converges on **customer validation evidence**
+  (`trading/broker_connectivity.py:96-98`), not a background poller. Health emits **signals only**; its
+  pause/resume + dispatch-refusal effect is inert unless `BROKER_CONNECTIVITY_EXECUTION_GATE` is **also** ON.
+  The two broker-connectivity flags share one tolerant parser and are armed together deliberately.
+- **Convergence checks (verification at arming).** A validation success moves `UNKNOWN → HEALTHY`; sustained
+  soft/hard failures reach `DEGRADED`/`DISCONNECTED` after `failure_threshold`; recovery needs
+  `success_threshold` consecutive successes; `state_version` increments by **exactly one per net change**,
+  monotonic. Verify a transient dip nets to no change (no version churn/signal).
+- **Scheduler cadence baseline requirement.** The scheduler is an **inert framework** — WP3 wires **no**
+  validator, so no recurring live validation runs (`run_cycle` returns `{ran:false}`; zero non-test callers).
+  If a real validator is ever wired (a separate, Sponsor-gated step), its cadence must be **baselined during
+  WP6** — the framework defaults (`base 300s`, backoff ×2, max 3600s, quota 50/cycle) are configuration, not
+  a measured baseline (`monitoring-spec.md` §5–6; `feature-flags.json` `related_tuning_toggles`).
+- **No automatic resume.** WP3 never pauses, resumes, executes, logs in, or reads a credential. `resume_eligible`
+  is a *signal level*, not an action; resume execution lives in WP1B (`request_broker_runtime_resume`), which
+  is explicit-caller-only, re-checks the live contract, fails closed, and has **zero automatic callers**
+  (`NoAutomaticResumeTests`). Arming health does **not** create any auto-resume path.
+- **Rollback.** Set `BROKER_CONNECTIVITY_HEALTH_ENABLED` OFF — every entry point no-ops instantly (read
+  live); there is no runtime process to stop. Optional schema rollback (`migrate reliability 0003`, drops the
+  additive `BrokerAccountHealth` table) is a defect-cleanup tool only, never a disarm mechanism. If health
+  misbehaves while the gate is armed, **disarm the gate first**, then health (`rollback-matrix.md` §6–7).

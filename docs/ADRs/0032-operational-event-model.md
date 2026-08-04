@@ -318,3 +318,34 @@ A five-lens adversarial review (security/gating, secret-leak, correctness, react
 with per-finding refutation confirmed **4 findings**: 2×HIGH (same root — the event-detail metadata dump)
 and 2×MEDIUM (date-range TZ boundary, pagination Next-on-full-final-page). All four are fixed above and
 covered by new/updated tests. No HIGH/MEDIUM remained.
+
+---
+
+## WP5.4 — Operational-events & operator-UI arming order, visibility, recorder monitoring (2026-08-04)
+
+Amends this ADR with the **operational** arming contract for the operational-event plane and the operator
+UI. Repository documentation only; nothing is armed. Full runbook: `docs/operations/broker-connectivity/`.
+
+- **Arming order (two independent flags).** Operator observability is arming **stage 3** — the first
+  DARK-safe capability, armed *before* customers so onboarding is observable from the first customer. Order:
+  set backend `OPERATIONS_EVENTS_ENABLED` ON (runtime), **then** rebuild + deploy the frontend with
+  `NEXT_PUBLIC_OPERATIONS_ENABLED`. The two are **independent** and **both** must be ON for the viewer to
+  show data; the frontend flag is build-time (arming = a rebuild). Avoid the `operator_frontend_only` /
+  `operational_events_only` mismatch states except as a deliberate transient (`rollback-matrix.md` §3–4).
+- **Visibility verification.** At arming, verify owner-scoping (IDOR-safe): a non-staff owner sees only their
+  own `customer_visible` events; a non-owner gets **404** (not 403); staff see all. The **summary** is scoped
+  by the same `customer_only` flag. A cross-owner read is **SEV-1** cross-account leakage → disarm
+  `OPERATIONS_EVENTS_ENABLED` (`incident-response.md`, `monitoring-spec.md` §15). The operator UI is
+  additionally `useAdminRole`-gated and read-only.
+- **Recorder-failure monitoring.** The recorder + projections are **fail-open and silent to callers** — an
+  operator must confirm "events are recording" from the logger **`guvfx.operational_events`** (record/mark
+  `logger.exception`, projection `logger.warning`) and durable `dedup_key` rows, never from the absence of a
+  caller-side error. The log-metric plane swallows some failures with no log at all — a recorder-failure
+  **counter must be added and baselined in WP6** (`monitoring-spec.md` §12).
+- **Projection rebuildability during incidents.** `OperationalEvent` is a **rebuildable projection (a cache)**,
+  not a second audit log; no business logic reads it. During any operational-event incident, the safe action
+  is set `OPERATIONS_EVENTS_ENABLED` OFF; the read model re-accretes **forward** once re-armed. **No backfill
+  tool is implemented** (there is no reproject/backfill management command) — truncating the table
+  permanently drops historical rows (authoritative state in `AuditEvent` + the WP1A/WP3/WP2 models is
+  unaffected), so it must not be truncated in expectation of reconstruction (`rollback-matrix.md` §5,
+  `incident-response.md`).

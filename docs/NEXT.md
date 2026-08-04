@@ -1,5 +1,16 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Broker Connectivity Trusted Beta — WP5.4 ops package COMPLETE (2026-08-04); DARK, flags OFF
+The full engineering plane (WP1A→WP5.3) is merged DARK, and the operations-readiness package is authored:
+`docs/operations/broker-connectivity/` (arming runbook, rollback matrix, incident/support/monitoring, WP6 +
+Trusted-Beta entry/exit + capacity), machine-readable `feature-flags.json` + `readiness-checklist.json`,
+validation test `backend/operational_events/tests_wp54_readiness.py`.
+
+**Bounded next action:** none in the repository — **WP6 multi-tenant certification is the next increment and
+is NOT authorised/started.** Do **not** arm any flag, deploy, or invite beta users. Arming stage 6 (execution
+gate) and stage 7 (invitation) require **WP6 PASS + explicit Sponsor approval**; every earlier stage is
+Sponsor-gated. When Nuno authorises, execute the arming runbook stage-by-stage (never "enable all").
+
 ## ▶ Customer Zero MATERIALISE remediation — engineering-complete (2026-08-01); awaiting merge + Sponsor gate
 Remediation of the CZ MATERIALISE timeout/idempotency/retry defect is engineering-complete on branch
 `fix/cz-materialise-timeout-idempotency` (client-side only, NO migration, NO agent change; `make check` green;

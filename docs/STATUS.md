@@ -6,6 +6,19 @@
 
 ## Execution workstream log
 
+- **2026-08-04 — WP5.4 Trusted-Beta Operations Readiness & Arming Runbook. Docs + governance only. Flags OFF. 🟢**
+  Repository documentation + operational controls + validation tests only — **nothing armed, nothing
+  deployed, Customer Zero + production untouched.** New package `docs/operations/broker-connectivity/`:
+  README, feature-flags(.md/.json), arming-runbook, rollback-matrix, incident-response, support-playbook,
+  monitoring-spec, trusted-beta-readiness, evidence-pack, readiness-checklist.json. Defines the definitive
+  6-flag inventory (all default OFF), the only permitted arming order (observe → onboard → converge → enforce
+  → invite, execution gate gated on WP6 PASS), rollback for every partial-arming state, SEV-1/2/3 incident
+  model, 17 support workflows, monitoring signal specs (all thresholds `TO BE BASELINED DURING WP6`), and the
+  WP6 / Trusted-Beta entry-exit + capacity framework. Validation test
+  `backend/operational_events/tests_wp54_readiness.py` (17 checks) enforces flag coverage/defaults, checklist
+  fields, arming-step rollbacks, partial-state coverage, doc existence, no-secrets, and that WP6 stays
+  not-authorised. ADR-0029/0030/0032 amended with the operational arming contract. `make check` green.
+
 - **2026-08-04 — WP1B/WP2 Workstream E — Execution-Safety Closure. Flags OFF, DARK, additive. 🟢**
   The final WP1B/WP2 increment: definitive authoritative-route inventory + refusal-handling parity +
   runtime-lifecycle classification, unblocking release certification. All new enforcement behind

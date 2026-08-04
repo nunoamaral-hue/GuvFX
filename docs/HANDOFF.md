@@ -135,3 +135,28 @@
 ### Next steps
 - Investigate the Guacamole mouse issue (logs, VNC flags, focus) so automation clicks can be trusted.
 - Harden `apply-account-config` (per-account JSON flows, secure passwords, optional `SUBMIT=1` gate) and cook it into the `mt5free-desktop` image if that proves stable.
+
+---
+
+## 2026-08-04 — WP5.4 Trusted-Beta Operations Readiness & Arming Runbook (docs + governance only)
+
+> Appended fresh (the pointer above predates the Aug-2026 broker-connectivity / WP5 arc; Notion remains the
+> full-lifecycle source of truth).
+
+- **Status:** PARTIAL is not applicable — this is a documentation + governance + validation-test packet with
+  **no runtime effect**. Delivered on branch `docs/wp5-4-trusted-beta-ops-readiness`.
+- **Scope:** authored `docs/operations/broker-connectivity/` (README, feature-flags.md/.json, arming-runbook,
+  rollback-matrix, incident-response, support-playbook, monitoring-spec, trusted-beta-readiness, evidence-pack,
+  readiness-checklist.json) + validation test `backend/operational_events/tests_wp54_readiness.py`; amended
+  ADR-0029/0030/0032 with the operational arming contract; updated STATUS/NEXT/this file.
+- **Verified fact:** all six broker-connectivity flags default OFF in code (definition sites cited in
+  `feature-flags.json`); the validation test (17 checks) passes; nothing armed/deployed; Customer Zero +
+  production untouched. Execution-gate arming requires WP6 PASS (not authorised/started).
+- **Assumption:** host-side readiness items (validation image, tasks/ACLs, keyring, golden pin) are
+  **HOST-VERIFIED / OUTSIDE REPOSITORY CONTROL** and remain `PENDING` in `readiness-checklist.json`.
+- **Deviations from packet:** none material. The "health app" is the `reliability` app (documented); no `mt5`
+  migration belongs to the broker-connectivity programme (documented).
+- **Out-of-scope access performed:** No. No deployment, no flag change, no credential access, no NEGOTIATE /
+  VALIDATE_LOGIN, no order.
+- **Recommended next packet:** WP6 multi-tenant certification (Sponsor-authorised), consuming this package's
+  entry criteria and arming runbook. Do not arm any flag before WP6 PASS + Sponsor approval.
