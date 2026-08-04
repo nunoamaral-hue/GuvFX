@@ -6,6 +6,28 @@
 
 ## Execution workstream log
 
+- **2026-08-04 — WP5.1 Operational Event Model — repository engineering, DARK, additive. 🟢**
+  Sprint-4 pivot to operational readiness (WP5). Built the authoritative operational-event foundation the
+  future dashboards / support tooling / monitoring will consume — **no UI, no scheduler, no notifications,
+  no background jobs, no deployment, no source wiring, no runtime/validation/execution change**. New
+  `operational_events` Django app (ADR-0032; named to avoid colliding with reliability's admin
+  `operations-summary`) behind `OPERATIONS_EVENTS_ENABLED` (default OFF, read-live tolerant parser). As-built:
+  `OperationalEvent` model = a query-optimised, NON-SECRET, owner-scoped, **derived/rebuildable projection**
+  (a cache per data.md — explicitly NOT a second immutable audit; `core.audit` stays authoritative) with 7
+  categories (VALIDATION/HEALTH/EXECUTION/RUNTIME/CREDENTIAL/CONNECTIVITY/SYSTEM), 4 severities
+  (INFO/WARNING/ERROR/CRITICAL; `normalize_severity` reconciles upstream WARN/DEBUG), composite indexes, and a
+  **partial-unique `dedup_key`** for idempotency. Single **recorder** `record_event` (DARK no-op, fail-open,
+  idempotent via get_or_create, secret-safe metadata sanitiser) + `mark_resolved`; **query service**
+  (timeline/recent/latest/open/customer_visible/operator_visible/summary — DTOs only, never ORM rows);
+  **deterministic hybrid summary** (live authoritative state read READ-ONLY from WP1A/WP3/WP2 + timeline
+  aggregates; fail-open); immutable **frozen-dataclass DTOs**; one read-only **owner-scoped API**
+  `GET /api/operations/account-events/?account_id=` (IsAuthenticated, IDOR-safe 404, staff bypass, **404 while
+  DARK**, returns `{summary, timeline}`; non-staff see customer-visible only). The existing broker emitters are
+  NOT wired to record in this packet (documented as the next increment in ADR-0032). 38 focused tests
+  (ordering/pagination/summary/severity/visibility/reason-codes/empty/multi-account/ownership/DTO-immutability/
+  API/dedup-constraint/DARK-no-op). Footprint = new app + 2 registration lines (INSTALLED_APPS, root urls).
+  Customer Zero / production / prod frontend UNTOUCHED.
+
 - **2026-08-03 — Validation-runner task-trigger PERMISSION FIX → TASK_TRIGGER_PASS (credential-free). 🟢**
   BOUNDED engineering + host remediation. Prior packet's DACL run-grant (#259, `0x1200a9` on GvfxValidationRunner) was applied+verified yet the agent STILL could not trigger the runner (`validation_runner_unavailable`, ~0.2s, `LastResult=0x00041303 SCHED_S_TASK_HAS_NOT_RUN`). **Diagnosed on host (read-only first):** ruled out stale COM handle (agent restart — no change) and `RunLevel=Highest` elevation guard (flip Highest↔Limited — no change; both trigger once staging works). **TRUE ROOT CAUSE = handoff-dir ACL.** `TaskLaunchLoginValidator.validate()` stages the sealed request via `handoff.write_request()` BEFORE `task.Run()` (validate_login.py:338→343); the handoff dir `C:\GuvFX\beta\agent-state\validation-handoff` granted **SYSTEM + Administrators only**, and the least-priv `NT SERVICE\GuvFXBetaAgent` is neither → write failed closed → `validation_runner_unavailable` at line 341, trigger never reached (dir was empty, no `_handoff_hmac.key` — agent had NEVER written there). The #259 task-DACL grant was necessary but not sufficient. **FIX (PR #260, branch fix/validation-runner-handoff-acl, commit 030d0b2):** `install_validation_runner.ps1` computes the agent service SID once and grants it `(OI)(CI)(M)` on the handoff dir alongside SYSTEM/Administrators FC, with a read-back assertion; task principal UNCHANGED (SYSTEM/Highest/ServiceAccount — GUI-proven & trigger-proven); 2 comment em-dashes → ASCII (RULE 9). Sealed ciphertext only (agent already holds it in the op payload) → no new plaintext; all other users denied. **HOST-CERT (credential-free, installer re-run from repo, parse-gate OK, NO ad-hoc ACL, NO agent restart):** synthetic garbage-envelope VALIDATE_LOGIN → `TRIGGER_WORKED=True`, runner returned `credential_unsealable` (expected — fails before terminal launch), task ACTUALLY RAN (`LastRunTime=08/03 06:35:48`, `LastResult=0x00000000`); `handoff_residual=0`, `stray_validation_terminal=0`, no `accounts.dat`. Full chain proven: Agent→write_request→win.run_task→GvfxValidationRunner→runner→result→cleanup. **NO real creds, no broker login, no trade.** CZ pid316 alive, agent Running as NT SERVICE\GuvFXBetaAgent, all 9 prod containers Up/healthy — CZ/slots/prod UNTOUCHED. `make check` GREEN. **VERDICT: TASK_TRIGGER_PASS.** NEXT (separately authorised) = the one credentialed VALIDATE_LOGIN (acct#12) through the now-triggerable task-launched runner.
 

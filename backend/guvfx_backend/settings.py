@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     "wims",  # WP-1 — Educational Content Flow (logically separate per ADR-009)
     "intelligence",  # Phase 7A — GuvFX Signal Intelligence Producer (produces; WIMS consumes)
     "signal_intake",  # EXEC-E0 — Wayond signal -> human PendingSignalApproval (shadow; no execution)
+    "operational_events",  # WP5.1 — Operational Event Model (ADR-0032; owner-scoped ops read model, DARK)
 ]
 
 MIDDLEWARE = [
