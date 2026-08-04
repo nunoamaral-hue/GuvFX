@@ -98,9 +98,12 @@ curl -s https://api.guvfx.com/api/version/ -H "Authorization: Bearer <staff-jwt>
 Assert `git_commit == $SHA` and every entry under `flags` is `false` (DARK). Because the three services
 share the image, this one fingerprint certifies all three.
 
-4.2 **Frontend fingerprint**: confirm the built `src/lib/build-info.ts` (via any admin surface that
-consumes `buildInfo()`, or by inspecting the built bundle) reports `gitCommit == $SHA` and both flags
-`false`.
+4.2 **Frontend fingerprint** (static, always reachable — no flag gate):
+```bash
+curl -s https://guvfx.com/build-info.json | jq
+```
+Assert `gitCommit == $SHA` and both `flags` `false`. The `prebuild` emitter bakes this from the
+`GIT_COMMIT` build-arg, so it certifies exactly the image that was built.
 
 4.3 **Behaviour smoke (DARK):** `/broker-accounts` 404s; `/accounts` renders the legacy page (no
 redirect); marketplace signal-copy card shows the account selector + Enable Trading but arming returns

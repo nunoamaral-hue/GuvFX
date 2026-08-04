@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "verify:parity": "node scripts/verify-frontend-parity.mjs",
-    "prebuild": "node scripts/verify-frontend-parity.mjs",
+    "prebuild": "node scripts/verify-frontend-parity.mjs && node scripts/emit-build-info.mjs",
     "test": "vitest run",
     "prelint": "vitest run"
   },

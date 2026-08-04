@@ -22,8 +22,9 @@ class TradingAccountSerializer(serializers.ModelSerializer):
     # IPR Area B (C6): truthful dedicated-runtime signal. For a beta account ``mt5_instance`` is always
     # ``null`` by design (ADR-0021), so the frontend must gate on runtime readiness — not on the legacy
     # instance FK — to avoid telling a customer "no terminal" while their AccountRuntime is RUNNING.
-    # Both are query-free: the reverse OneToOne is prefetched via ``select_related("runtime")`` and the
-    # readiness predicate only touches the verification report for a BETA/RUNNING runtime.
+    # The runtime lookup is query-free (reverse OneToOne prefetched via ``select_related("runtime")``);
+    # runtime_ready adds ONE verification-report query PER BETA+RUNNING row only (production/non-RUNNING
+    # rows short-circuit before it), which is negligible at beta-list scale.
     runtime_ready = serializers.SerializerMethodField()
     runtime_state = serializers.SerializerMethodField()
 

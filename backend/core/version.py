@@ -13,18 +13,33 @@ reported as ``null`` rather than raising.
 """
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 
 logger = logging.getLogger(__name__)
 
+# (module, accessor) for each backend arming flag. Resolved lazily + fail-open (below) so a later
+# accessor rename — exactly the drift this oracle exists to catch — reports `null` instead of 500ing.
+_FLAG_ACCESSORS = {
+    "BROKER_CONNECTIVITY_ENABLED": ("trading.broker_connectivity", "broker_connectivity_enabled"),
+    "BROKER_CONNECTIVITY_EXECUTION_GATE": ("execution.broker_gate", "execution_gate_enabled"),
+    "BROKER_CONNECTIVITY_HEALTH_ENABLED": ("reliability.constants", "broker_health_enabled"),
+    "OPERATIONS_EVENTS_ENABLED": ("operational_events.constants", "operations_events_enabled"),
+    "BETA_ONBOARDING_ENABLED": ("billing.beta", "beta_onboarding_open"),
+    "BETA_RUNTIMES_ENABLED": ("terminal_provisioning.beta_capacity", "beta_runtimes_enabled"),
+    "BETA_SELF_SERVE_ARM_ENABLED": ("strategies.views", "_beta_self_serve_arm_enabled"),
+}
 
-def _safe(accessor) -> bool | None:
-    """Resolve one flag accessor to a bool; None if it cannot be resolved (fail-open, never raises)."""
+
+def _resolve(module_name: str, attr: str) -> bool | None:
+    """Import + call one flag accessor → bool; None if EITHER the import or the call fails (fail-open,
+    never raises). Guarding the import too is deliberate: a renamed/removed accessor must not 500 the
+    provenance endpoint."""
     try:
-        return bool(accessor())
+        return bool(getattr(importlib.import_module(module_name), attr)())
     except Exception:  # noqa: BLE001 — provenance must never break; report unknown as null
-        logger.warning("version: flag accessor failed", exc_info=True)
+        logger.warning("version: flag accessor %s.%s failed", module_name, attr, exc_info=True)
         return None
 
 
@@ -32,23 +47,7 @@ def resolved_flags() -> dict[str, bool | None]:
     """Live booleans of the backend arming flags (the six broker-connectivity/operational-event flags +
     the three BETA flags). The two NEXT_PUBLIC_* frontend flags are build-time inlined and are reported
     by the frontend build-info, not here."""
-    from trading.broker_connectivity import broker_connectivity_enabled
-    from execution.broker_gate import execution_gate_enabled
-    from reliability.constants import broker_health_enabled
-    from operational_events.constants import operations_events_enabled
-    from billing.beta import beta_onboarding_open
-    from terminal_provisioning.beta_capacity import beta_runtimes_enabled
-    from strategies.views import _beta_self_serve_arm_enabled
-
-    return {
-        "BROKER_CONNECTIVITY_ENABLED": _safe(broker_connectivity_enabled),
-        "BROKER_CONNECTIVITY_EXECUTION_GATE": _safe(execution_gate_enabled),
-        "BROKER_CONNECTIVITY_HEALTH_ENABLED": _safe(broker_health_enabled),
-        "OPERATIONS_EVENTS_ENABLED": _safe(operations_events_enabled),
-        "BETA_ONBOARDING_ENABLED": _safe(beta_onboarding_open),
-        "BETA_RUNTIMES_ENABLED": _safe(beta_runtimes_enabled),
-        "BETA_SELF_SERVE_ARM_ENABLED": _safe(_beta_self_serve_arm_enabled),
-    }
+    return {name: _resolve(mod, attr) for name, (mod, attr) in _FLAG_ACCESSORS.items()}
 
 
 def provenance() -> dict:
