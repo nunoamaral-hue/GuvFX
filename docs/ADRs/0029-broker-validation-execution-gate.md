@@ -139,8 +139,26 @@ provides:
   contract. Pause supported for DEGRADED / STALE / DISCONNECTED / TOMBSTONED; disconnected/tombstoned
   remain permanently ineligible for execution and resume.
 
+### Controlled resume (WP2-owned, ADR-0029)
+Recovery makes a runtime *eligible* for resume; it is never *authority* to resume. The single, explicit
+`execution.runtime_pause.request_broker_runtime_resume(account)` is the SOLE path that clears a
+broker-health pause — **never invoked automatically** (no scheduler, save hook, signal, validation,
+credential replacement, provisioning, restart or periodic task calls it; a source-coupling test proves
+the only caller is the service itself). Immediately before clearing, in ONE transaction under
+`select_for_update` on both the pause row and the account, it reloads and re-verifies: account
+eligibility (`evaluate_execution_gate`: exists / active / not-disconnected / credential / VALIDATED) and
+the **live WP3 contract** (`get_contract`: exists, `eligible`, not `pause_required`) — the pause row's
+`resume_eligible` is **advisory only; the live contract is authoritative**. Idempotency + concurrency are
+keyed on `state_version`: a resume whose current version is older than the pause's `source_state_version`
+fails closed (`BROKER_HEALTH_STALE_RESUME_VERSION_IGNORED`); a newer degradation refuses; duplicate/replay
+callers get an idempotent result (at most one clears the pause — the row lock serialises them); a newer
+pause always wins over an older resume. On success it clears **only** `paused`, records
+`resumed_at`/`resumed_state_version`/latest `last_processed_version`, and audits `BROKER_RUNTIME_RESUMED`
+— it starts no runtime, arms no strategy, creates no job/order, and accesses no credential. Returns a
+deterministic, non-secret `ResumeResult` (`resumed`/`idempotent`/`refused`/`reason_code`/
+`processed_state_version`/`current_state_version`). Inert (no lock, read, write or audit) unless BOTH
+flags are on.
+
 ### Still deferred (before arming)
-Controlled resume on `resume_eligible` (never automatic; final recheck; concurrency + state-version
-idempotency; disconnect/tombstone permanently blocks) — Workstream D; and the full entry-point
-re-inventory + h4 scheduler graceful-refusal parity + runtime start/resume/recovery rechecks —
-Workstream E. Arming remains separately gated.
+Full entry-point re-inventory + h4 scheduler graceful-refusal parity + runtime start/resume/recovery
+rechecks — Workstream E. Arming remains separately gated.

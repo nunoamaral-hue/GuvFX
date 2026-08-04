@@ -1178,6 +1178,8 @@ class BrokerRuntimePause(models.Model):
     # controlled WP2 resume service may clear ``paused``.
     resume_eligible = models.BooleanField(default=False)
     resumed_at = models.DateTimeField(null=True, blank=True)
+    # The health state_version that AUTHORISED the last controlled resume (Workstream D).
+    resumed_state_version = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1196,6 +1198,7 @@ class BrokerRuntimePause(models.Model):
             "source_state_version": self.source_state_version,
             "last_processed_version": self.last_processed_version,
             "resume_eligible": self.resume_eligible,
+            "resumed_state_version": self.resumed_state_version,
             "paused_at": self.paused_at.isoformat() if self.paused_at else None,
             "resumed_at": self.resumed_at.isoformat() if self.resumed_at else None,
         }
