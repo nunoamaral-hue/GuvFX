@@ -183,7 +183,9 @@ def project_credential_rotation(account, *, resulting_status="NEVER", updated_at
         category=CATEGORY_CREDENTIAL, source=SOURCE_CREDENTIAL_LIFECYCLE,
         event_type="broker_credential_replaced",
         severity=SEV_INFO, account=account, status=str(resulting_status or ""),
-        reason_code="credential_replace",
+        # WSE reason-code consolidation: one spelling for the credential-replacement concept
+        # (matches project_credential_invalidation + reliability REASON_CREDENTIAL_REPLACED).
+        reason_code="credential_replaced",
         summary="Broker credentials replaced.",
         customer_visible=True,
         metadata={"resulting_status": str(resulting_status or ""),
