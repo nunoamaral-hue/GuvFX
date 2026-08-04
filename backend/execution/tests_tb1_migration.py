@@ -18,7 +18,6 @@ from django.test import TransactionTestCase
 
 from execution.models import SignalExecutionPlan
 from signal_intake.models import PendingSignalApproval
-from trading.models import TradingAccount
 
 APP = "execution"
 FROM = "0024_protection_stage_db_default"
@@ -32,6 +31,18 @@ class PlanMigration0025Tests(TransactionTestCase):
         executor.migrate([(APP, target)])
         executor.loader.build_graph()
 
+    def _mk_account(self, user_id, number):
+        """Insert the FK-target account via the HISTORICAL trading model matching the currently-applied
+        schema. A single-target migrate to ``execution`` prunes ``trading`` back within execution's
+        dependency closure (0012), so trading columns added by later migrations OUTSIDE that closure — e.g.
+        WP1A ``disconnected_at`` (0014) — are absent. Seeding via the current model would emit them and
+        fail; the historical model emits only the columns that exist, keeping this an execution-only test."""
+        loader = MigrationExecutor(connection).loader
+        state = loader.project_state(nodes=list(loader.applied_migrations.keys()))
+        Hist = state.apps.get_model("trading", "TradingAccount")
+        return Hist.objects.create(
+            user_id=user_id, name="A", account_number=number, is_demo=True, broker_name="DemoBroker")
+
     def tearDown(self):
         # Leave the schema at the latest migrations for the rest of the suite.
         executor = MigrationExecutor(connection)
@@ -40,10 +51,9 @@ class PlanMigration0025Tests(TransactionTestCase):
     def _seed_plan(self, *, suffix="1", account=None):
         u = U.objects.create(username=f"mu{suffix}", email=f"mu{suffix}@x.invalid", password="x")
         appr = PendingSignalApproval.objects.create(source="ti_signals", message_id=f"mm{suffix}")
-        acct = account or TradingAccount.objects.create(
-            user=u, name="A", account_number=f"A{suffix}", is_demo=True, broker_name="DemoBroker")
+        acct = account or self._mk_account(u.pk, f"A{suffix}")
         plan = SignalExecutionPlan.objects.create(
-            approval=appr, account=acct, source="ti_signals", message_id=f"mm{suffix}",
+            approval=appr, account_id=acct.pk, source="ti_signals", message_id=f"mm{suffix}",
             symbol="EURUSD", direction="BUY", is_demo=True)
         return plan, appr, acct
 
@@ -67,10 +77,9 @@ class PlanMigration0025Tests(TransactionTestCase):
                     symbol="EURUSD", direction="BUY", is_demo=True)
 
         # ...but the SAME approval on a DIFFERENT account is now allowed (fan-out).
-        acct2 = TradingAccount.objects.create(
-            user=acct.user, name="B", account_number="A1b", is_demo=True, broker_name="DemoBroker")
+        acct2 = self._mk_account(acct.user_id, "A1b")
         SignalExecutionPlan.objects.create(
-            approval_id=aid, account=acct2, source="ti_signals", message_id="mm1",
+            approval_id=aid, account_id=acct2.pk, source="ti_signals", message_id="mm1",
             symbol="EURUSD", direction="BUY", is_demo=True)
         self.assertEqual(SignalExecutionPlan.objects.filter(approval_id=aid).count(), 2)
 

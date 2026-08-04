@@ -107,6 +107,13 @@ class TradingAccount(models.Model):
         help_text="Durable result of the last MT5 credential validation for this account.")
     validated_at = models.DateTimeField(null=True, blank=True)
 
+    # WP1A (ADR-0028) — broker DISCONNECT is a tombstone: set on disconnect together with
+    # ``is_active=False`` and credential destruction (P3-D). The row is RETAINED (never deleted), so
+    # immutable Trade/execution history and PROTECT relations survive. NULL = never disconnected.
+    disconnected_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="When the broker account was disconnected (tombstoned). The account row is retained.")
+
     # Multicurrency: account denomination (e.g. "USD", "EUR").
     # Nullable for backward compatibility; populated from MT5 account info.
     account_currency = models.CharField(
@@ -185,6 +192,42 @@ class TradingAccount(models.Model):
         if self.public_show_account_number and self.account_number:
             return f"{pub} ({self.account_number})"
         return pub
+
+
+class BrokerAccountValidationAttempt(models.Model):
+    """WP1A (ADR-0028) — append-only, secret-safe audit trail of broker-login validation attempts for a
+    customer account. Mirrors the ADR-0027 ``ValidationOutcome`` allow-list ONLY: no password, ciphertext,
+    envelope, HMAC or host path is ever stored. Per-account (``CASCADE``); accounts are TOMBSTONED rather
+    than row-deleted, so in practice this history is retained for the life of the account row."""
+
+    class Trigger(models.TextChoices):
+        ADD = "add", "Add account"
+        EDIT = "edit", "Edit account"
+        TEST = "test", "Test connection"
+        RETRY = "retry", "Retry validation"
+        REPLACE = "replace", "Replace credentials"
+        HEALTH = "health", "Continuous health"
+
+    account = models.ForeignKey(
+        TradingAccount, on_delete=models.CASCADE, related_name="validation_attempts")
+    trigger = models.CharField(max_length=16, choices=Trigger.choices)
+    status = models.CharField(max_length=20)  # HEALTHY | NEEDS_ATTENTION | UNAVAILABLE
+    reason_code = models.CharField(max_length=64, blank=True)
+    retryable = models.BooleanField(default=False)
+    is_demo = models.BooleanField(null=True, blank=True)
+    # Matches BrokerServer.server_name (max_length=160) so a long-but-valid server name can never overflow
+    # this column (which would raise outside the fail-closed guard). The service also truncates defensively.
+    server = models.CharField(max_length=160, blank=True)
+    login_masked = models.CharField(max_length=32, blank=True)
+    correlation_id = models.CharField(max_length=128, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["account", "-created_at"], name="bcva_account_created_idx")]
+
+    def __str__(self) -> str:
+        return f"validation<{self.account_id}:{self.trigger}:{self.status}>"
 
 
 class Trade(models.Model):
