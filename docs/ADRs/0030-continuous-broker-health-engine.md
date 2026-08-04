@@ -30,28 +30,40 @@ builds it once, deterministically, so WP1B never re-derives health from scattere
    | `HEALTHY` | eligible to execute | first success / recovery | DEGRADED, DISCONNECTED, STALE, TOMBSTONED |
    | `DEGRADED` | sustained auth/attention failures | `failure_threshold` × `NEEDS_ATTENTION` | HEALTHY (recovery) |
    | `DISCONNECTED` | sustained broker-unreachable failures | `failure_threshold` × `UNAVAILABLE` | HEALTHY (recovery) |
-   | `STALE` | HEALTHY but no recent successful validation | time (`stale_timeout_s`) | HEALTHY (recovery) |
+   | `STALE` | HEALTHY but no recent successful validation | time (`stale_timeout_s`) | HEALTHY (recovery), **DEGRADED/DISCONNECTED (sustained failures)** |
    | `TOMBSTONED` | account decommissioned (WP1A `disconnected_at`) | lifecycle | **terminal** |
 
    - **Evidence, not opinion.** The engine *consumes* existing `BrokerAccountValidationAttempt`
      history (ADR-0028) via a monotonic id watermark (`last_consumed_attempt_id`) — each attempt is
      folded exactly once; it never duplicates that history into its own attempt store.
+     `last_success_at` records the successful attempt's **evidence time** (`created_at`), not the
+     consumption time, so folding a backfilled old success does not reset the staleness clock
+     (`.claude/rules/data.md`: preserve source/time semantics).
    - **Fail-safe classification.** `HEALTHY→success`, `UNAVAILABLE→hard failure`,
      `NEEDS_ATTENTION`/anything unexpected→soft failure. An unknown status is never a success.
-   - **Anti-flap latch.** Once adverse, further failures increment the counter but never flip
-     `DEGRADED↔DISCONNECTED`; only a recovery to HEALTHY clears the latch. Recovery requires
-     `success_threshold` consecutive successes (no single-success bounce).
-   - **Net signalling.** A batch fold emits signals for the *net* old→new change, so a transient dip
-     already resolved by the time attempts are processed does not raise a spurious alarm.
-   - **`state_version`** increments by exactly one per real state change (monotonic; never decreases),
+   - **Anti-flap latch.** The two *failure* substates latch against each other: once DEGRADED or
+     DISCONNECTED, further failures increment the counter but never flip `DEGRADED↔DISCONNECTED`. STALE
+     is a distinct, time-driven adverse state and MAY escalate to a failure substate on sustained
+     failures (so a genuine outage after staleness reports the accurate CRITICAL reason, not a stale
+     WARN). Recovery from any adverse state requires `success_threshold` consecutive successes (no
+     single-success bounce).
+   - **Net signalling.** Consuming a batch folds counters + intra-fold state first (no version churn,
+     no signals), then applies exactly **one** net transition (`old_state` → final state). A transient
+     dip already resolved by the time the batch is processed nets to *no change*: no spurious alarm
+     and, symmetrically, no phantom resume.
+   - **`state_version`** increments by exactly one per *net* state change (monotonic; never decreases),
      so WP1B can consume contract changes idempotently.
 
 3. **Convergence contract (consumed by WP1B/WP2).** `BrokerAccountHealth.contract()` returns
    `{account_id, state, eligible, pause_required, resume_eligible, reason_code, state_version,
    updated_at}`. `eligible == (state==HEALTHY)`; `pause_required == state ∈
-   {DEGRADED,STALE,DISCONNECTED,TOMBSTONED}`; `resume_eligible` is set only on a recovery edge
-   (paused→HEALTHY), so WP1B can distinguish "healthy, was paused → may resume" from "healthy from the
-   start → nothing to resume".
+   {DEGRADED,STALE,DISCONNECTED,TOMBSTONED}`. `resume_eligible` is a **level** set true on a genuine
+   net recovery (a *persisted* pause state → HEALTHY) and held — bound to that transition's
+   `state_version` — until the next state transition clears it; a first-time validation
+   (UNKNOWN→HEALTHY) and a transient dip resolved within one fold both leave it false. So WP1B can
+   distinguish "healthy, was paused → may resume" from "healthy from the start → nothing to resume" and
+   consume it idempotently by `state_version`. The matching **edge** is the
+   `BROKER_HEALTH_RESUME_ELIGIBLE` audit event, emitted once on the false→true flip.
 
 4. **WP3 emits signals only — never acts.** It writes `BrokerAccountHealth`, deduplicated
    `AlertEvent` notifications, and `core.audit` events. It **never** pauses/resumes a runtime, places
@@ -60,14 +72,18 @@ builds it once, deterministically, so WP1B never re-derives health from scattere
 
 5. **Deduplicated notifications + audit.** Entering an adverse state opens a single `AlertEvent`
    (dedup_key `BROKER_HEALTH:{account}:{state}`; DISCONNECTED→CRITICAL, DEGRADED/STALE→WARN,
-   TOMBSTONED→INFO); recovery resolves the open alert. Audit events —
+   TOMBSTONED→INFO); recovery to HEALTHY resolves any live (OPEN *or* ACKNOWLEDGED) broker-health
+   alert for the account, so an operator-acknowledged adverse alert clears too. Audit events —
    `BROKER_HEALTH_{VALIDATED,DEGRADED,DISCONNECTED,STALE_DETECTED,RECOVERED,TOMBSTONED,
    PAUSE_REQUIRED,RESUME_ELIGIBLE}` — carry only the secret-free contract.
 
 6. **Scheduler is a *framework*, inert by default** (`reliability/broker_health_scheduler.py`).
-   It provides deterministic cadence/backoff (`base·factor^failures`, clamped), hash-derived
-   deterministic jitter (never a random source), a per-cycle quota, and single-flight due-selection
-   (`select_for_update(skip_locked=True)`; claim-by-advancing-`next_check_at`). But `run_cycle`:
+   It provides deterministic cadence/backoff (`base·factor^failures`, computed as an iterative product
+   with an early clamp so it is overflow-safe for any configured factor), hash-derived deterministic
+   *downward-only* jitter (never a random source; the jittered interval stays within
+   `[interval·(1-jitter_frac), interval]` and so never exceeds `max_interval_s`), a per-cycle quota,
+   and single-flight due-selection (`select_for_update(skip_locked=True)`;
+   claim-by-advancing-`next_check_at`). But `run_cycle`:
    - flag OFF → hard no-op (`disabled`, no DB writes);
    - flag ON, no injected `validator` → inert (`no_validator`, no DB writes).
 

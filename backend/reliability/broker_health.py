@@ -10,6 +10,12 @@ order, logs into a broker, or reads a credential.
 Ships DARK: every public entry point is a no-op unless ``BROKER_CONNECTIVITY_HEALTH_ENABLED`` is
 truthy. Transitions are pure functions of (current state, counters, outcome, thresholds, clock), so
 the same evidence always yields the same state.
+
+**Net-transition semantics.** Consuming a batch of attempts folds the *counters and intra-fold state*
+first (no ``state_version`` churn, no signals), then applies exactly one NET transition
+(``old_state`` → final ``state``): a single version bump, the net reason code, and the net resume
+signal. A transient dip that is already resolved by the time the batch is processed therefore leaves
+no trace — no spurious alarm and, symmetrically, no phantom resume.
 """
 from __future__ import annotations
 
@@ -29,6 +35,9 @@ FAILURE_SOFT = "failure_soft"   # NEEDS_ATTENTION — auth/attention (→ DEGRAD
 FAILURE_HARD = "failure_hard"   # UNAVAILABLE — broker unreachable/technical (→ DISCONNECTED)
 
 _ADVERSE_KIND_STATE = {FAILURE_SOFT: State.DEGRADED, FAILURE_HARD: State.DISCONNECTED}
+# The two *failure* substates latch against each other (anti-flap on mixed failures); STALE is a
+# distinct, time-driven adverse state and MAY escalate to a failure substate on sustained failures.
+_FAILURE_SUBSTATES = frozenset({State.DEGRADED, State.DISCONNECTED})
 
 # Stable, customer-safe reason codes.
 REASON_VALIDATED = "validated"
@@ -37,6 +46,13 @@ REASON_DEGRADED = "degraded_auth"
 REASON_DISCONNECTED = "broker_unreachable"
 REASON_STALE = "stale_no_recent_success"
 REASON_TOMBSTONED = "account_disconnected"
+
+_STATE_REASON = {
+    State.DEGRADED: REASON_DEGRADED,
+    State.DISCONNECTED: REASON_DISCONNECTED,
+    State.STALE: REASON_STALE,
+    State.TOMBSTONED: REASON_TOMBSTONED,
+}
 
 
 def classify_status(status: str) -> str:
@@ -51,64 +67,61 @@ def classify_status(status: str) -> str:
     return FAILURE_SOFT  # NEEDS_ATTENTION and anything unexpected
 
 
-# ── Pure transition helpers (mutate the in-memory model; caller saves) ──
-def _set_state(health: BrokerAccountHealth, new_state, reason: str) -> None:
-    """Set state + reason. Bump ``state_version`` by exactly one iff the state actually changes."""
-    if health.state != new_state:
-        health.state = new_state
-        health.state_version += 1
-    health.reason_code = reason
-
-
-def _apply_success(health: BrokerAccountHealth, now, cfg: dict) -> None:
+# ── Fold helpers (mutate counters + intra-fold state ONLY; no version bump, no signals) ──
+def _fold_outcome(health: BrokerAccountHealth, kind: str, evidence_at, cfg: dict) -> None:
     if health.state == State.TOMBSTONED:
         return  # terminal
-    health.consecutive_successes += 1
-    health.consecutive_failures = 0
-    health.last_success_at = now
-    if health.state in BrokerAccountHealth.RECOVERABLE_STATES:
-        if health.consecutive_successes >= cfg["success_threshold"]:
-            _set_state(health, State.HEALTHY, REASON_RECOVERED)
-            health.resume_eligible = True
-    elif health.state == State.UNKNOWN:
-        _set_state(health, State.HEALTHY, REASON_VALIDATED)
-        # First-ever validation: nothing was paused, so no resume signal.
-    # HEALTHY stays HEALTHY; keep reason authoritative but do not bump version.
-    elif health.state == State.HEALTHY:
-        health.reason_code = REASON_VALIDATED
+    if kind == SUCCESS:
+        health.consecutive_successes += 1
+        health.consecutive_failures = 0
+        # Evidence time, NOT consumption time — folding an *old* success must not reset the staleness
+        # clock (preserve source/time semantics; see .claude/rules/data.md).
+        health.last_success_at = evidence_at
+        if health.state in BrokerAccountHealth.RECOVERABLE_STATES:
+            if health.consecutive_successes >= cfg["success_threshold"]:
+                health.state = State.HEALTHY
+        elif health.state == State.UNKNOWN:
+            health.state = State.HEALTHY
+        # HEALTHY stays HEALTHY.
+    else:
+        health.consecutive_failures += 1
+        health.consecutive_successes = 0
+        # Anti-flap latch: once in a failure substate, keep counting but do not flip DEGRADED↔DISCONNECTED.
+        if health.state in _FAILURE_SUBSTATES:
+            return
+        if health.consecutive_failures >= cfg["failure_threshold"]:
+            health.state = _ADVERSE_KIND_STATE[kind]  # from HEALTHY / UNKNOWN / STALE
 
 
-def _apply_failure(health: BrokerAccountHealth, kind: str, now, cfg: dict) -> None:
-    if health.state == State.TOMBSTONED:
-        return  # terminal
-    health.consecutive_failures += 1
-    health.consecutive_successes = 0
-    # Adverse sub-state is *latched* on the threshold-crossing failure. While already adverse we keep
-    # counting but never flip DEGRADED↔DISCONNECTED (that would flap on mixed failures); only a
-    # recovery to HEALTHY clears the latch and lets a fresh storm re-pick the sub-state.
-    if health.state in BrokerAccountHealth.RECOVERABLE_STATES:
-        return
-    if health.consecutive_failures >= cfg["failure_threshold"]:
-        target = _ADVERSE_KIND_STATE[kind]
-        reason = REASON_DISCONNECTED if target == State.DISCONNECTED else REASON_DEGRADED
-        _set_state(health, target, reason)
-        health.resume_eligible = False
-
-
-def _apply_stale(health: BrokerAccountHealth, now, cfg: dict) -> None:
-    """Time-driven: a HEALTHY account with no recent successful validation becomes STALE."""
+def _fold_stale(health: BrokerAccountHealth, now, cfg: dict) -> None:
+    """Time-driven: a HEALTHY account with no recent successful validation becomes STALE (intra-fold
+    assignment only; the net transition is applied by ``_finalize``)."""
     if health.state != State.HEALTHY:
         return
     last = health.last_success_at
     if last is None or (now - last).total_seconds() > cfg["stale_timeout_s"]:
-        _set_state(health, State.STALE, REASON_STALE)
-        health.resume_eligible = False
+        health.state = State.STALE
 
 
-def _apply_tombstone(health: BrokerAccountHealth) -> None:
-    if health.state != State.TOMBSTONED:
-        _set_state(health, State.TOMBSTONED, REASON_TOMBSTONED)
+def _finalize(health: BrokerAccountHealth, old_state, old_version: int) -> bool:
+    """Apply the single NET transition ``old_state`` → ``health.state``: one version bump, the net
+    reason code, and the net resume signal. Intra-fold churn is invisible here. Returns True iff the
+    net state changed."""
+    new = health.state
+    if new == old_state:
+        return False  # no net change — version / reason / resume_eligible all preserved
+    health.state_version = old_version + 1
+    if new == State.HEALTHY:
+        if old_state in BrokerAccountHealth.PAUSE_STATES:
+            health.reason_code = REASON_RECOVERED
+            health.resume_eligible = True   # genuine recovery edge (was paused → may resume)
+        else:  # UNKNOWN → HEALTHY: first validation, nothing was paused
+            health.reason_code = REASON_VALIDATED
+            health.resume_eligible = False
+    else:
+        health.reason_code = _STATE_REASON[new]
         health.resume_eligible = False
+    return True
 
 
 # ── Signal emission (audit + deduplicated notifications) ──
@@ -136,12 +149,14 @@ def _dedup_key(account_id, state) -> str:
     return f"BROKER_HEALTH:{account_id}:{state}"
 
 
-def _emit_signals(account, health: BrokerAccountHealth, old_state, old_resume: bool) -> None:
+def _emit_signals(account, health: BrokerAccountHealth, old_state, old_resume: bool, changed: bool) -> None:
     """Emit audit events + durable, deduplicated notifications for the NET change of one update.
     Secret-free: only account id, states, reason and counters ever leave here."""
+    if not changed and health.resume_eligible == old_resume:
+        return  # nothing externally observable changed
     meta = health.contract()
     meta["from_state"] = old_state
-    if health.state != old_state:
+    if changed:
         if health.state == State.HEALTHY:
             event = "BROKER_HEALTH_RECOVERED" if old_state != State.UNKNOWN else "BROKER_HEALTH_VALIDATED"
             severity = "INFO"
@@ -152,11 +167,11 @@ def _emit_signals(account, health: BrokerAccountHealth, old_state, old_resume: b
             _open_alert(account, health)
         log_event(None, event, severity=severity, entity_type="trading_account",
                   entity_id=account.pk, metadata=meta)
-        # State entering a pause-state is itself the "pause required" signal for WP1B.
+        # Entering a pause-state IS the "pause required" signal for WP1B.
         if health.pause_required:
             log_event(None, "BROKER_HEALTH_PAUSE_REQUIRED", severity="WARN",
                       entity_type="trading_account", entity_id=account.pk, metadata=meta)
-    # Resume edge can occur even when the *net* state is unchanged (adverse→HEALTHY inside one fold).
+    # Resume edge: only ever set by a genuine net recovery (_finalize), so this is symmetric with pause.
     if health.resume_eligible and not old_resume:
         log_event(None, "BROKER_HEALTH_RESUME_ELIGIBLE", severity="INFO",
                   entity_type="trading_account", entity_id=account.pk, metadata=meta)
@@ -180,11 +195,12 @@ def _open_alert(account, health: BrokerAccountHealth) -> None:
 
 
 def _resolve_open_alerts(account) -> None:
-    """On recovery to HEALTHY, resolve any OPEN broker-health alerts for the account so the adverse
-    notification clears rather than lingering."""
+    """On recovery to HEALTHY, resolve any live (OPEN or ACKNOWLEDGED) broker-health alerts for the
+    account so an operator-acknowledged adverse alert clears too rather than lingering forever."""
     now = timezone.now()
     AlertEvent.objects.filter(
-        trading_account=account, status=AlertEvent.Status.OPEN,
+        trading_account=account,
+        status__in=(AlertEvent.Status.OPEN, AlertEvent.Status.ACKNOWLEDGED),
         dedup_key__startswith=f"BROKER_HEALTH:{account.pk}:",
     ).update(status=AlertEvent.Status.RESOLVED, resolved_at=now)
 
@@ -201,8 +217,9 @@ def get_contract(account) -> dict | None:
 
 def record_validation_outcome(account, *, now=None, config=None) -> dict | None:
     """Fold every not-yet-consumed validation attempt for ``account`` into its health state, then run
-    the staleness check. Idempotent: attempts are consumed exactly once via the id watermark, so a
-    repeat call with no new evidence is a no-op that returns the unchanged contract.
+    the staleness check, then apply exactly one net transition. Idempotent: attempts are consumed
+    exactly once via the id watermark, so a repeat call with no new evidence is a no-op that returns
+    the unchanged contract.
 
     Returns the convergence contract, or None when the engine is DARK. Serialised per-account with
     ``select_for_update`` so concurrent callers cannot double-consume or clobber the version."""
@@ -213,10 +230,10 @@ def record_validation_outcome(account, *, now=None, config=None) -> dict | None:
 
     with transaction.atomic():
         health, _created = BrokerAccountHealth.objects.select_for_update().get_or_create(account=account)
-        old_state, old_resume = health.state, health.resume_eligible
+        old_state, old_version, old_resume = health.state, health.state_version, health.resume_eligible
 
         if account.disconnected_at is not None:
-            _apply_tombstone(health)
+            health.state = State.TOMBSTONED  # lifecycle override; _finalize bumps + sets reason
         elif health.state != State.TOMBSTONED:
             watermark = health.last_consumed_attempt_id or 0
             attempts = list(
@@ -224,16 +241,15 @@ def record_validation_outcome(account, *, now=None, config=None) -> dict | None:
             )
             for attempt in attempts:
                 kind = classify_status(attempt.status)
-                if kind == SUCCESS:
-                    _apply_success(health, now, cfg)
-                else:
-                    _apply_failure(health, kind, now, cfg)
-                health.last_attempt_at = attempt.created_at or now
+                evidence_at = attempt.created_at or now
+                _fold_outcome(health, kind, evidence_at, cfg)
+                health.last_attempt_at = evidence_at
                 health.last_consumed_attempt_id = attempt.id
-            _apply_stale(health, now, cfg)
+            _fold_stale(health, now, cfg)
 
+        changed = _finalize(health, old_state, old_version)
         health.save()
-        _emit_signals(account, health, old_state, old_resume)
+        _emit_signals(account, health, old_state, old_resume, changed)
         return health.contract()
 
 
@@ -246,11 +262,14 @@ def sweep_stale(account, *, now=None, config=None) -> dict | None:
     cfg = config or broker_health_config()
     with transaction.atomic():
         health = BrokerAccountHealth.objects.select_for_update().filter(account=account).first()
-        if health is None or health.state != State.HEALTHY:
-            return health.contract() if health else None
-        old_state, old_resume = health.state, health.resume_eligible
-        _apply_stale(health, now, cfg)
-        if health.state != old_state:
+        if health is None:
+            return None
+        if health.state != State.HEALTHY:
+            return health.contract()
+        old_state, old_version, old_resume = health.state, health.state_version, health.resume_eligible
+        _fold_stale(health, now, cfg)
+        changed = _finalize(health, old_state, old_version)
+        if changed:
             health.save()
-            _emit_signals(account, health, old_state, old_resume)
+            _emit_signals(account, health, old_state, old_resume, changed)
         return health.contract()

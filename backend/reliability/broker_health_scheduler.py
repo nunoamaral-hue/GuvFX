@@ -30,17 +30,20 @@ State = BrokerAccountHealth.State
 
 def next_interval_s(consecutive_failures: int, cfg: dict) -> float:
     """Deterministic exponential backoff clamped to ``max_interval_s``. Zero failures → base interval;
-    each failure multiplies by ``backoff_factor``. The exponent is capped so the arithmetic can never
-    overflow before the clamp."""
+    each failure multiplies by ``backoff_factor``. Computed as an iterative product with an early
+    clamp so it is overflow-safe for *any* configured factor (float multiplication saturates to
+    ``inf``, which the ``>= max_s`` check catches before it can propagate)."""
     base = cfg["base_interval_s"]
     factor = cfg["backoff_factor"]
     max_s = cfg["max_interval_s"]
     n = max(0, int(consecutive_failures))
     if factor <= 1.0 or n == 0:
-        interval = float(base)
-    else:
-        exponent = min(n, 32)  # cap before exponentiation; clamp below handles the rest
-        interval = base * (factor ** exponent)
+        return float(min(base, max_s))
+    interval = float(base)
+    for _ in range(min(n, 64)):  # bounded work; with factor > 1 the clamp fires well before 64
+        interval *= factor
+        if interval >= max_s:
+            return float(max_s)
     return float(min(interval, max_s))
 
 
@@ -52,12 +55,14 @@ def _jitter_fraction(seed: str) -> float:
 
 
 def compute_next_check_at(health: BrokerAccountHealth, now, cfg: dict):
-    """When this account should next be re-validated: now + backoff(failures) + deterministic jitter."""
-    interval = next_interval_s(health.consecutive_failures, cfg)
-    jitter_frac = max(0.0, cfg["jitter_frac"])
+    """When this account should next be re-validated: ``now`` + backoff(failures), spread by a
+    deterministic *downward-only* jitter so the scheduled interval stays within
+    ``[interval·(1-jitter_frac), interval]`` and therefore never exceeds ``max_interval_s``."""
+    interval = next_interval_s(health.consecutive_failures, cfg)  # already ≤ max_interval_s
+    jitter_frac = min(max(0.0, cfg["jitter_frac"]), 1.0)
     if jitter_frac > 0:
         seed = f"{health.account_id}:{health.state_version}:{health.consecutive_failures}"
-        interval += interval * jitter_frac * _jitter_fraction(seed)
+        interval -= interval * jitter_frac * _jitter_fraction(seed)
     return now + timedelta(seconds=interval)
 
 

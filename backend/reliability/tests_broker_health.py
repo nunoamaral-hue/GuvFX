@@ -184,6 +184,29 @@ class TransitionTests(_Base):
         self.assertEqual(c["state"], State.DEGRADED)      # still DEGRADED
         self.assertEqual(c["state_version"], v)           # no transition, no churn
 
+    def test_resume_eligible_is_a_level_tied_to_state_version(self):
+        # After recovery, resume_eligible holds (a level bound to the recovery's state_version) across
+        # subsequent HEALTHY folds — no version churn, no repeated signal — and clears on the next
+        # adverse transition. This is the documented convergence-contract semantics (ADR-0030 §3).
+        self._mk_healthy()
+        for _ in range(3):
+            _attempt(self.acct, "NEEDS_ATTENTION")
+        bh.record_validation_outcome(self.acct)                 # DEGRADED
+        for _ in range(2):
+            _attempt(self.acct, "HEALTHY")
+        c1 = bh.record_validation_outcome(self.acct)            # recover → resume True
+        self.assertTrue(c1["resume_eligible"])
+        v = c1["state_version"]
+        _attempt(self.acct, "HEALTHY")
+        c2 = bh.record_validation_outcome(self.acct)            # still HEALTHY, no transition
+        self.assertTrue(c2["resume_eligible"])                  # level held
+        self.assertEqual(c2["state_version"], v)                # tied to the same version
+        for _ in range(3):
+            _attempt(self.acct, "NEEDS_ATTENTION")
+        c3 = bh.record_validation_outcome(self.acct)            # DEGRADED again
+        self.assertFalse(c3["resume_eligible"])                 # cleared on the adverse transition
+        self.assertGreater(c3["state_version"], v)
+
     def test_version_is_monotonic_across_full_lifecycle(self):
         versions = []
         bh.record_validation_outcome(self.acct)
@@ -202,21 +225,39 @@ class TransitionTests(_Base):
 
 # ─── Batch fold nets to a single signal ───
 class BatchFoldTests(_Base):
-    def test_batch_fail_then_recover_nets_to_healthy(self):
-        self._mk_healthy()  # start HEALTHY (emits VALIDATED)
+    def test_transient_dip_within_one_fold_is_invisible(self):
+        # HEALTHY → (dip) → HEALTHY inside ONE fold nets to no change: no version churn, and —
+        # symmetrically with the suppressed pause — NO phantom resume for a never-(net)-paused account.
+        c0 = self._mk_healthy()  # HEALTHY, state_version 1, resume_eligible False
         for _ in range(3):
             _attempt(self.acct, "NEEDS_ATTENTION")
         for _ in range(2):
             _attempt(self.acct, "HEALTHY")
-        c = bh.record_validation_outcome(self.acct)  # one call folds the whole dip+recovery
+        c = bh.record_validation_outcome(self.acct)  # folds the whole dip+recovery
         self.assertEqual(c["state"], State.HEALTHY)
-        self.assertTrue(c["resume_eligible"])  # the recovery edge still surfaces for WP1B
+        self.assertFalse(c["resume_eligible"])              # no phantom resume
+        self.assertEqual(c["state_version"], c0["state_version"])  # no net transition → no version churn
         events = list(AuditEvent.objects.filter(
             entity_type="trading_account", entity_id=str(self.acct.pk)
         ).values_list("event_type", flat=True))
-        # Anti-churn: a transient dip resolved within one fold must NOT raise a DEGRADED alarm...
-        self.assertNotIn("BROKER_HEALTH_DEGRADED", events)
-        # ...but the resume edge is still signalled so a paused runtime can be released.
+        self.assertNotIn("BROKER_HEALTH_DEGRADED", events)       # dip suppressed...
+        self.assertNotIn("BROKER_HEALTH_RESUME_ELIGIBLE", events)  # ...and so is the resume (symmetric)
+
+    def test_genuine_recovery_across_folds_signals_resume(self):
+        # A pause that PERSISTS across folds (real WP1B-visible pause) recovers with a resume signal.
+        self._mk_healthy()
+        for _ in range(3):
+            _attempt(self.acct, "NEEDS_ATTENTION")
+        cdeg = bh.record_validation_outcome(self.acct)   # persisted DEGRADED
+        self.assertEqual(cdeg["state"], State.DEGRADED)
+        for _ in range(2):
+            _attempt(self.acct, "HEALTHY")
+        c = bh.record_validation_outcome(self.acct)      # recover
+        self.assertEqual(c["state"], State.HEALTHY)
+        self.assertTrue(c["resume_eligible"])
+        events = list(AuditEvent.objects.filter(
+            entity_type="trading_account", entity_id=str(self.acct.pk)
+        ).values_list("event_type", flat=True))
         self.assertIn("BROKER_HEALTH_RESUME_ELIGIBLE", events)
 
 
@@ -253,9 +294,13 @@ class StaleTests(_Base):
         t0 = timezone.now()
         self._mk_healthy(now=t0)
         bh.sweep_stale(self.acct, now=t0 + timedelta(seconds=3601))  # STALE
+        # Fresh successful validations carry evidence time == the recovery moment (as the scheduler's
+        # validator would), so the recovery is not immediately re-flagged stale.
+        t_rec = t0 + timedelta(seconds=3700)
         for _ in range(2):
-            _attempt(self.acct, "HEALTHY")
-        c = bh.record_validation_outcome(self.acct, now=t0 + timedelta(seconds=3700))
+            a = _attempt(self.acct, "HEALTHY")
+            Attempt.objects.filter(pk=a.pk).update(created_at=t_rec)
+        c = bh.record_validation_outcome(self.acct, now=t_rec)
         self.assertEqual(c["state"], State.HEALTHY)
         self.assertTrue(c["resume_eligible"])
 
@@ -265,6 +310,29 @@ class StaleTests(_Base):
         bh.record_validation_outcome(self.acct)  # DISCONNECTED
         c = bh.sweep_stale(self.acct, now=timezone.now() + timedelta(days=1))
         self.assertEqual(c["state"], State.DISCONNECTED)  # stale only applies from HEALTHY
+
+    def test_last_success_uses_evidence_time_not_consumption_time(self):
+        # Folding an OLD successful attempt must clock staleness from the attempt's evidence time,
+        # not from "now" — otherwise a backfilled stale success masks staleness for a full window.
+        t_old = timezone.now() - timedelta(seconds=7200)
+        a = _attempt(self.acct, "HEALTHY")
+        Attempt.objects.filter(pk=a.pk).update(created_at=t_old)  # override auto_now_add
+        bh.record_validation_outcome(self.acct, now=timezone.now())
+        h = self._health()
+        self.assertEqual(h.last_success_at, t_old)  # evidence time, not consumption time
+        # ...and it is therefore already past the 3600s window → a sweep flags STALE immediately.
+        c = bh.sweep_stale(self.acct, now=timezone.now())
+        self.assertEqual(c["state"], State.STALE)
+
+    def test_stale_escalates_to_disconnected_on_hard_failures(self):
+        t0 = timezone.now()
+        self._mk_healthy(now=t0)
+        bh.sweep_stale(self.acct, now=t0 + timedelta(seconds=3601))  # STALE
+        for _ in range(3):
+            _attempt(self.acct, "UNAVAILABLE")
+        c = bh.record_validation_outcome(self.acct, now=t0 + timedelta(seconds=3700))
+        self.assertEqual(c["state"], State.DISCONNECTED)          # STALE → DISCONNECTED escalation
+        self.assertEqual(c["reason_code"], bh.REASON_DISCONNECTED)  # accurate reason, not "stale"
 
 
 # ─── Tombstone terminality ───
@@ -281,7 +349,7 @@ class TombstoneTests(_Base):
         self.assertEqual(c2["state"], State.TOMBSTONED)
 
     def test_healthy_then_tombstoned(self):
-        bh.record_validation_outcome(self.acct)  # HEALTHY
+        self._mk_healthy()  # HEALTHY
         self.acct.disconnected_at = timezone.now()
         self.acct.save(update_fields=["disconnected_at"])
         c = bh.record_validation_outcome(self.acct)
@@ -352,6 +420,21 @@ class NotificationTests(_Base):
         alert = self._open_broker_alerts().first()
         self.assertEqual(alert.severity, AlertEvent.Severity.CRITICAL)
 
+    def test_recovery_resolves_acknowledged_alert_too(self):
+        # An operator-acknowledged adverse alert must also clear on recovery, not linger forever.
+        bh.record_validation_outcome(self.acct)
+        for _ in range(3):
+            _attempt(self.acct, "NEEDS_ATTENTION")
+        bh.record_validation_outcome(self.acct)  # DEGRADED → opens alert
+        AlertEvent.objects.filter(trading_account=self.acct, status=AlertEvent.Status.OPEN).update(
+            status=AlertEvent.Status.ACKNOWLEDGED)
+        for _ in range(2):
+            _attempt(self.acct, "HEALTHY")
+        bh.record_validation_outcome(self.acct)  # recover
+        self.assertFalse(AlertEvent.objects.filter(
+            trading_account=self.acct,
+            status__in=(AlertEvent.Status.OPEN, AlertEvent.Status.ACKNOWLEDGED)).exists())
+
 
 # ─── Audit emission ───
 class AuditTests(_Base):
@@ -417,7 +500,12 @@ class BackoffJitterTests(TestCase):
     def test_backoff_never_overflows(self):
         self.assertEqual(sched.next_interval_s(10_000, self.cfg), 3600.0)
 
-    def test_jitter_is_deterministic_and_bounded(self):
+    def test_backoff_pathological_factor_does_not_raise(self):
+        # A pathological configured factor must saturate to the clamp, never raise OverflowError.
+        cfg = dict(self.cfg, backoff_factor=1e200)
+        self.assertEqual(sched.next_interval_s(5, cfg), float(cfg["max_interval_s"]))
+
+    def test_jitter_is_deterministic_and_within_ceiling(self):
         u = _mk_user("j")
         acct = _acct(u)
         h = BrokerAccountHealth.objects.create(account=acct, consecutive_failures=0, state_version=3)
@@ -426,8 +514,17 @@ class BackoffJitterTests(TestCase):
         b = sched.compute_next_check_at(h, now, self.cfg)
         self.assertEqual(a, b)  # deterministic — no random source
         delta = (a - now).total_seconds()
-        self.assertGreaterEqual(delta, 300.0)             # >= base
-        self.assertLessEqual(delta, 300.0 * (1 + 0.1))    # <= base * (1 + jitter_frac)
+        # Downward-only jitter: interval ∈ [base·(1-frac), base]; never above base (≤ max_interval_s).
+        self.assertGreaterEqual(delta, 300.0 * (1 - 0.1))
+        self.assertLessEqual(delta, 300.0)
+
+    def test_next_check_never_exceeds_max_interval(self):
+        u = _mk_user("mx")
+        acct = _acct(u)
+        h = BrokerAccountHealth.objects.create(account=acct, consecutive_failures=50, state_version=1)
+        now = timezone.now()
+        delta = (sched.compute_next_check_at(h, now, self.cfg) - now).total_seconds()
+        self.assertLessEqual(delta, float(self.cfg["max_interval_s"]))
 
 
 # ─── Scheduler framework ───
