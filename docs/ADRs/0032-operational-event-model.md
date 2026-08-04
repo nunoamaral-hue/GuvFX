@@ -124,7 +124,97 @@ the tolerant `1/true/yes/on` parser shared by `broker_health_enabled` / `executi
   mutable query model) and the recorder never writes into audit.
 
 ## Future work (separate, gated increments)
-1. Wire the existing broker sources to call `record_event` at their emit points (mirroring their audit
-   emissions, secret-free), behind this flag.
+1. ~~Wire the existing broker sources to call `record_event`~~ — **done in WP5.2 (below).**
 2. Ops/support tooling + a monitoring surface consuming the query/summary API (WP5.x / WP6).
 3. Optional retention/compaction for the projection (it is rebuildable, so it may be pruned).
+
+---
+
+# WP5.2 — Operational Event Source Wiring
+
+- **Status:** Accepted (engineering), ships DARK. **Date:** 2026-08-04. Additive; behind
+  `OPERATIONS_EVENTS_ENABLED` (default OFF); no deployment; no runtime/validation/execution behaviour
+  change; Customer Zero + production untouched.
+
+## Decision
+Connect the existing, authoritative broker-connectivity emit points to the WP5.1 projection through ONE
+central mapping module, `operational_events/broker_projection.py`. Call sites pass authoritative FACTS
+only; the module owns category / event_type / severity / customer-visibility / summary / metadata
+allow-list / dedup-key / source. This is a **projection of an already-existing authoritative moment** —
+it creates no new business event, moves no logic, and never becomes a prerequisite for any operation.
+
+### Projection-only invariant (load-bearing)
+`OperationalEvent` never drives a decision, permits/blocks execution, or changes validation / health /
+pause / credential / lifecycle state. Existing behaviour is correct if no event is written, the table is
+empty, the table is deleted and rebuilt, or the recorder fails. **No business logic reads
+`OperationalEvent`** (it is a read model for humans/tooling, not a control input).
+
+### Fail-open + transaction policy (the safety core)
+Every projection is registered via **`transaction.on_commit(lambda: record_event(...))`** at the
+**durable** emission point — **never an inline `record_event` inside an authoritative `atomic()`**. Reason
+(verified): a raised INSERT inside a Postgres transaction aborts the whole transaction even when the
+Python exception is caught, so an inline recorder call could roll back the authoritative operation.
+`on_commit` defers the write past COMMIT (discarded on rollback → **no phantom event**) and runs
+**immediately** when there is no active transaction (durable autocommit re-emit). Each `project_*`:
+(1) early-returns when `operations_events_enabled()` is False (zero extra work when DARK); (2) wraps the
+`on_commit` registration fail-open; (3) binds only pre-computed scalar facts into the closure (never
+re-reads a mutable ORM instance post-commit; the `account` instance is captured for the FK only). The
+recorder is independently fail-open and DARK-gated, and **never writes `core.audit`** — audit remains the
+authoritative, immutable ledger; the operational event is a separate mirror of the same moment.
+
+### Wired sources (each hooked at its durable point)
+| Source | Hook site | tx context | dedup key |
+|--------|-----------|-----------|-----------|
+| Validation | `broker_connectivity.run_broker_validation` (before return) | autocommit | `broker_validation:attempt:{id}` |
+| Health transition | `broker_health._emit_signals` (once per `changed`) | in-atomic → on_commit | `broker_health:{acct}:{state_version}` |
+| Health credential-invalidation | `broker_health.invalidate_for_credential_replacement` | in-atomic → on_commit | `broker_health_invalidated:{acct}:{sv}` |
+| Credential replacement | `broker_connectivity.replace_credentials` (post-commit) | after atomic | `broker_credential_replaced:{acct}:{updated_at}` |
+| Disconnect | `broker_connectivity.disconnect_account` (post-commit) | after atomic | `broker_disconnect:{acct}` |
+| Runtime pause | `runtime_pause._audit` (choke point) | in-atomic → on_commit | `runtime_pause:{rec}:{sv}:{kind}` |
+| Controlled resume | `runtime_pause._resume_audit` (choke point) | in-atomic → on_commit | `runtime_resume:{acct}:{ver}:{kind}` |
+| Execution creation refusal | `broker_gate._audit_refusal` + h1/m5 scheduler re-emit | autocommit / discarded-on-rollback | job/none (mutually exclusive) |
+| Execution dispatch refusal | `broker_gate._audit_dispatch_refusal` | autocommit | `exec:dispatch:{job_id}` |
+| Promotion (broker-gate) rejection | `signal_promotion` (`broker_gate_*` only) | autocommit | `exec:promotion:{plan_id}` |
+
+Creation-refusal correctness: the in-`save()` `_audit_refusal` and the scheduler re-emit are **mutually
+exclusive per logical refusal** (a scheduler wraps the create in `atomic()`, so its in-tx audit + the
+in-tx projection are rolled back and only the autocommit re-emit is durable; a view/service caller is
+autocommit and the in-save projection is the durable one). Result: exactly one event per logical refusal.
+`EXECUTION_GATE_REFUSED` flowing through `runtime_pause._audit` is deliberately **not** projected there
+(it is an execution refusal, covered by the gate/scheduler durable points — avoids a double event).
+
+### Categories / severity / customer-visibility mapping
+- **VALIDATION** (customer-visible): HEALTHY→INFO, NEEDS_ATTENTION→WARNING, UNAVAILABLE→ERROR.
+- **HEALTH** (customer-visible): HEALTHY/RECOVERED→INFO, DEGRADED/STALE→WARNING, **DISCONNECTED→ERROR**
+  (deliberately not inflated to CRITICAL per the severity policy, even though the internal audit severity
+  is CRITICAL — the operational classification is distinct from the audit severity), TOMBSTONED→INFO. One
+  event per net transition; `pause_required`/`resume_eligible` are folded into metadata, not separate events.
+- **CREDENTIAL**: replacement→INFO customer-visible; the health-engine reset (`invalidated`)→WARNING
+  **operator-only** (the customer sees the "replaced" event, not the internal reset).
+- **CONNECTIVITY** (customer-visible): disconnect→INFO; credential-destroyed folded into metadata.
+- **RUNTIME**: paused/pause_requested→WARNING customer-visible; resumed→INFO customer-visible;
+  recovery-detected / idempotent / stale-version / resume-refused→**operator-only**.
+- **EXECUTION** (operator-only, WARNING): creation/dispatch/promotion refusals — the customer-facing cause
+  is already surfaced by VALIDATION/HEALTH/CONNECTIVITY.
+
+### Metadata allow-lists (secret-safety)
+Each projection builds its own fixed, non-secret metadata (status, reason_code, retryable, is_demo,
+trigger, from/to state, state_version, pause flags, credential_destroyed, job_id, phase, plan_id). **No**
+passwords, ciphertext, tokens, keyring/envelope fields, host paths, PIDs/sessions/IPC/TCP endpoints, or
+raw exception strings ever enter the projection. The WP5.1 key-denylist sanitiser remains a backstop, not
+the primary mechanism.
+
+### Deduplication
+Deterministic keys from durable source identifiers (validation attempt id, health state_version, pause
+record id + version, resume version, execution job id, plan id, disconnect-per-account). Where no durable
+id exists (view/service creation refusal, per-bar scheduler refusal) an empty key is used so distinct
+API/bar attempts remain distinct rows. Retries/replays of a keyed event collapse to one row via the
+partial-unique `dedup_key`.
+
+### Out of scope (documented, not synthesized)
+Refusal paths with **no existing durable audit moment to mirror** are NOT wired here (the packet wires
+existing authoritative moments only): the **h4 scheduler** refusal path (no durable refusal audit — this
+is the open WP1B/WP2 Workstream E "h4 parity" item), the **PLACE_TEST_ORDER** demo early-return (emits no
+durable audit), and the **pause-creation-block refusal under a view** (rare; covered under schedulers via
+the re-emit). Adding a durable audit + projection to those belongs to Workstream E / a follow-up, not to a
+projection packet.

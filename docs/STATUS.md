@@ -6,6 +6,28 @@
 
 ## Execution workstream log
 
+- **2026-08-04 — WP5.2 Operational Event Source Wiring — repository engineering, DARK, additive. 🟢**
+  Connected the existing authoritative broker-connectivity emit points to the WP5.1 operational-event
+  projection through ONE central `operational_events/broker_projection.py` (owns category/severity/
+  customer-visibility/summary/metadata-allow-list/dedup/source). **Projection only** — no new business
+  event, no logic moved, no runtime/validation/execution/pause/resume/credential behaviour change; nothing
+  reads OperationalEvent. **Safety core:** every projection is `transaction.on_commit(record_event)` at the
+  DURABLE emission point — NEVER inline in an authoritative `atomic()` (verified Postgres hazard: a caught
+  INSERT error still aborts the surrounding tx). on_commit is discarded on rollback (no phantom) and runs
+  immediately in autocommit (durable); each `project_*` early-returns when `OPERATIONS_EVENTS_ENABLED` is
+  OFF (zero extra work), wraps registration fail-open, and binds pre-computed scalars. Audit stays
+  authoritative — the recorder never writes `core.audit`. **Wired (each at its durable point):** validation
+  (`run_broker_validation`), health net-transition + credential-invalidation (`broker_health`), credential
+  replacement + disconnect (`broker_connectivity`), pause/resume (`runtime_pause._audit`/`_resume_audit`
+  choke points), execution creation refusal (`broker_gate._audit_refusal` + h1/m5 scheduler re-emit —
+  mutually exclusive → one event per logical refusal), dispatch refusal (`_audit_dispatch_refusal`),
+  broker-gate promotion rejection (`signal_promotion`). DISCONNECTED→ERROR (not inflated to CRITICAL);
+  EXECUTION/operator-only; VALIDATION/HEALTH/CREDENTIAL-replaced/CONNECTIVITY/paused/resumed customer-visible.
+  **Documented out-of-scope** (no existing durable audit to mirror): h4 scheduler (= WP1B/WP2-E h4 parity),
+  PLACE_TEST_ORDER, view-pause-block. 30 new projection tests (per-source + dedup + DARK + rollback-no-
+  phantom + autocommit fail-open via TransactionTestCase); source-coupling resume guard kept strict (renamed
+  event-type literals, not weakened). ADR-0032 amended. CZ / production UNTOUCHED.
+
 - **2026-08-04 — WP5.1 Operational Event Model — repository engineering, DARK, additive. 🟢**
   Sprint-4 pivot to operational readiness (WP5). Built the authoritative operational-event foundation the
   future dashboards / support tooling / monitoring will consume — **no UI, no scheduler, no notifications,

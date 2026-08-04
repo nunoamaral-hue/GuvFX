@@ -517,6 +517,11 @@ class Command(BaseCommand):
                     log_event(None, "EXECUTION_GATE_REFUSED", severity="WARN",
                               entity_type="TradingAccount", entity_id=getattr(account, "id", None),
                               metadata={"reason_code": exc.reason_code, "trigger": "scheduler_m5"})
+                    # WP5.2 — project the durable scheduler-creation refusal (operator-only). Autocommit
+                    # here → fires immediately; DARK / fail-open.
+                    from operational_events import broker_projection
+                    broker_projection.project_execution_refusal(
+                        account, reason_code=exc.reason_code, phase="creation", trigger="scheduler_m5")
                 self.stdout.write(
                     f"  [SKIP-EXEC-BLOCKED] execution disabled — no order placed: "
                     f"account={account.id} strategy={strategy.id} symbol={symbol}"

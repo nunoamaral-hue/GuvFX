@@ -74,6 +74,10 @@ def _audit(event, account, *, version=None, rec=None, extra=None):
             meta.update(extra)
         log_event(None, event, severity="WARN", entity_type="TradingAccount",
                   entity_id=getattr(account, "pk", None), metadata=meta)
+        # WP5.2 — project the pause event onto the operational timeline (on-commit / DARK / fail-open).
+        # EXECUTION_GATE_REFUSED is skipped here (projected via the execution-gate durable points).
+        from operational_events import broker_projection
+        broker_projection.project_pause_audit(event, account, version=version, rec=rec)
     except Exception:  # noqa: BLE001 — audit is fail-open; it must never change pause control flow
         logger.warning("broker pause audit failed (event=%s)", event)
 
@@ -195,6 +199,10 @@ def _resume_audit(event, account, *, requested=None, current=None, reason="", re
             meta["pause"] = rec.as_dict()
         log_event(None, event, severity="INFO", entity_type="TradingAccount",
                   entity_id=getattr(account, "pk", None), metadata=meta)
+        # WP5.2 — project the resume event onto the operational timeline (on-commit / DARK / fail-open).
+        from operational_events import broker_projection
+        broker_projection.project_resume_audit(
+            event, account, requested=requested, current=current, reason=reason, rec=rec)
     except Exception:  # noqa: BLE001 — audit is fail-open. A Python-level failure is swallowed here; a
         # DB-level audit failure inside the outer atomic aborts the transaction and rolls the whole
         # operation back — which fails SAFE (the pause is preserved, no partial state), never converting a

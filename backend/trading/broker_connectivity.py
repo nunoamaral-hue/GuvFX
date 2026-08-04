@@ -105,6 +105,14 @@ def run_broker_validation(account, *, trigger, actor="", request=None, validator
         from core.audit import log_event
         log_event(request, "BROKER_HEALTH_INGEST_ERROR", severity="WARN",
                   entity_type="TradingAccount", entity_id=getattr(account, "pk", None), metadata={})
+
+    # WP5.2 — mirror this committed validation outcome onto the operational read model (DARK/fail-open/
+    # on-commit; the attempt row is the authoritative record — this is a projection only).
+    from operational_events import broker_projection
+    broker_projection.project_validation(
+        account, attempt_id=attempt.id, status=attempt.status, reason_code=attempt.reason_code,
+        retryable=attempt.retryable, is_demo=attempt.is_demo, trigger=attempt.trigger,
+        correlation_id=attempt.correlation_id)
     return attempt
 
 
@@ -144,6 +152,13 @@ def replace_credentials(account, new_password, *, actor="", request=None, revali
               entity_type="TradingAccount", entity_id=getattr(account, "pk", None),
               metadata={"trigger": "credential_replace"})
 
+    # WP5.2 — project the committed credential replacement (before any re-validation, which self-projects).
+    from operational_events import broker_projection
+    broker_projection.project_credential_rotation(
+        account, resulting_status=str(account.validation_status),
+        updated_at_iso=account.updated_at.isoformat() if account.updated_at else "",
+        validation_invalidated=True)
+
     result = {"replaced": True, "validation_invalidated": True}
     if revalidate:
         attempt = run_broker_validation(account, trigger="replace", actor=actor, request=request, validator=validator)
@@ -168,6 +183,12 @@ def disconnect_account(account, *, actor="", request=None) -> dict:
         account.disconnected_at = timezone.now()
         account.validation_status = TradingAccount.ValidationStatus.NEVER
         account.save(update_fields=["is_active", "disconnected_at", "validation_status", "updated_at"])
+
+    # WP5.2 — project the committed disconnect/tombstone (credential-destroyed folded into metadata).
+    from operational_events import broker_projection
+    broker_projection.project_disconnect(
+        account, disconnected_at_iso=account.disconnected_at.isoformat() if account.disconnected_at else "",
+        credential_destroyed=bool(evidence.get("had_credential")))
     return {
         "disconnected": True,
         "credential_destroyed": bool(evidence.get("had_credential")),
