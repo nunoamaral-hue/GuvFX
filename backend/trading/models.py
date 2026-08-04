@@ -215,7 +215,9 @@ class BrokerAccountValidationAttempt(models.Model):
     reason_code = models.CharField(max_length=64, blank=True)
     retryable = models.BooleanField(default=False)
     is_demo = models.BooleanField(null=True, blank=True)
-    server = models.CharField(max_length=128, blank=True)
+    # Matches BrokerServer.server_name (max_length=160) so a long-but-valid server name can never overflow
+    # this column (which would raise outside the fail-closed guard). The service also truncates defensively.
+    server = models.CharField(max_length=160, blank=True)
     login_masked = models.CharField(max_length=32, blank=True)
     correlation_id = models.CharField(max_length=128, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

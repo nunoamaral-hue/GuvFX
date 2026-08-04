@@ -143,6 +143,15 @@ class ValidationFlowTests(TestCase):
         self.assertNotIn("password_enc", body)
         self.assertNotIn(self.acct.password_enc.lower(), body)
 
+    def test_over_long_server_is_truncated_not_500(self):
+        # Regression (adversarial review): a server value longer than the column must be truncated, never
+        # raise at insert (which would return 500 and record no attempt — defeating fail-closed).
+        resp = self._run("bc_test_connection", dict(_HEALTHY, server="S" * 200))
+        self.assertEqual(resp.status_code, 200)
+        att = BrokerAccountValidationAttempt.objects.filter(account=self.acct).first()
+        self.assertIsNotNone(att)
+        self.assertLessEqual(len(att.server), 160)
+
 
 class StatusHistoryTests(TestCase):
     def setUp(self):

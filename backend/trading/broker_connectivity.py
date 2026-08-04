@@ -54,26 +54,31 @@ def run_broker_validation(account, *, trigger, actor="", request=None, validator
     ``BrokerAccountValidationAttempt``, and persist the durable ``validation_status``/``validated_at``.
     Returns the created attempt. ``validate`` never raises; a defensive guard maps any unexpected error to
     a fail-closed UNAVAILABLE attempt so the caller always gets a durable record."""
-    v = validator or _make_validator()
-    try:
-        outcome = v.validate(account)
-        d = outcome.as_dict()
-    except Exception:  # noqa: BLE001 — the validator contract is no-raise; stay fail-closed regardless
-        d = {"status": "UNAVAILABLE", "reason": "could_not_verify", "retryable": True,
+    _fail = {"status": "UNAVAILABLE", "reason": "could_not_verify", "retryable": True,
              "server": "", "login_masked": "", "is_demo": None, "correlation_id": ""}
+    try:
+        # Validator CONSTRUCTION is inside the guard too: an import/config breakage must fail closed to a
+        # durable UNAVAILABLE attempt, never a 500.
+        v = validator or _make_validator()
+        got = v.validate(account).as_dict()
+        d = got if isinstance(got, dict) else dict(_fail)
+    except Exception:  # noqa: BLE001 — no-raise contract; stay fail-closed on ANY error
+        d = dict(_fail)
 
     status = str(d.get("status") or "UNAVAILABLE")
     is_demo = d.get("is_demo")
+    # Defensive truncation to the exact column widths — a long-but-valid upstream value (e.g. a 160-char
+    # ``server_name``) must never raise at insert and defeat the fail-closed contract.
     attempt = BrokerAccountValidationAttempt.objects.create(
         account=account,
         trigger=trigger,
-        status=status,
-        reason_code=str(d.get("reason") or ""),
+        status=status[:20],
+        reason_code=str(d.get("reason") or "")[:64],
         retryable=bool(d.get("retryable")),
         is_demo=is_demo if isinstance(is_demo, bool) else None,
-        server=str(d.get("server") or ""),
-        login_masked=str(d.get("login_masked") or ""),
-        correlation_id=str(d.get("correlation_id") or ""),
+        server=str(d.get("server") or "")[:160],
+        login_masked=str(d.get("login_masked") or "")[:32],
+        correlation_id=str(d.get("correlation_id") or "")[:128],
     )
 
     # Durable per-account state — customer-flow only (see module docstring).
@@ -110,13 +115,18 @@ def disconnect_account(account, *, actor="", request=None) -> dict:
     (``is_active=False`` + ``disconnected_at``) + reset ``validation_status``. NEVER row-deletes — the
     account row, its immutable ``Trade``/execution history and PROTECT relations are all retained.
     Idempotent + fail-closed."""
+    from django.db import transaction
+
     from .credential_lifecycle import destroy_customer_credential
 
-    evidence = destroy_customer_credential(account, actor=actor, request=request)
-    account.is_active = False
-    account.disconnected_at = timezone.now()
-    account.validation_status = TradingAccount.ValidationStatus.NEVER
-    account.save(update_fields=["is_active", "disconnected_at", "validation_status", "updated_at"])
+    # Atomic tombstone: the credential destruction + soft-disconnect commit together or not at all, so a
+    # failure can never leave a credential-destroyed-but-still-active account.
+    with transaction.atomic():
+        evidence = destroy_customer_credential(account, actor=actor, request=request)
+        account.is_active = False
+        account.disconnected_at = timezone.now()
+        account.validation_status = TradingAccount.ValidationStatus.NEVER
+        account.save(update_fields=["is_active", "disconnected_at", "validation_status", "updated_at"])
     return {
         "disconnected": True,
         "credential_destroyed": bool(evidence.get("had_credential")),
