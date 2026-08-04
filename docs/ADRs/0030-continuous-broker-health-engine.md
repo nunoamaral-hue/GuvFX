@@ -139,3 +139,11 @@ only; nothing is armed. Full runbook: `docs/operations/broker-connectivity/`.
   live); there is no runtime process to stop. Optional schema rollback (`migrate reliability 0003`, drops the
   additive `BrokerAccountHealth` table) is a defect-cleanup tool only, never a disarm mechanism. If health
   misbehaves while the gate is armed, **disarm the gate first**, then health (`rollback-matrix.md` §6–7).
+
+## WP6 certification gate (2026-08-04)
+
+Health arming (WP5.4 arming stage 5) is certified under WP6 area E: all six states + transition timing +
+convergence + pause generation + resume eligibility + **no automatic resume** + `state_version` monotonicity
+(`docs/operations/broker-connectivity/wp6-health.md`, matrix HEA-1..11). Health convergence latency is a WP6
+capacity measurement (`wp6-capacity.md` CAP-8, `TO BE MEASURED`). Certification is planning + disposable
+testing only; the scheduler stays inert and nothing auto-resumes.

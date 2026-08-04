@@ -6,6 +6,19 @@
 
 ## Execution workstream log
 
+- **2026-08-04 — WP6 Multi-Tenant Certification PLAN. Planning + governance + tests only. Flags OFF, DARK. 🟢**
+  Certification programme **design** (no execution — that needs the disposable environment + Sponsor-gated
+  runs; no arming/deploy/CZ/production/live accounts). New `docs/operations/broker-connectivity/wp6-*`: README
+  + 12 area docs (environment/isolation/concurrency/execution-safety/health/operational-events/operator-workflow/
+  failure-injection/recovery/rollback-rehearsal/capacity/release-recommendation) + machine-readable
+  `wp6-test-matrix.json` (every case PLANNED), `wp6-evidence.json`, `wp6-release-gate.json` (GO/GO-WITH-CONDITIONS/
+  NO-GO decision matrix, `recommendation=null`). Execution-safety (area D) covers **every exposure-opening
+  route** in `execution_entrypoints.json` (15 routes, cross-checked); operator-workflow (area G) covers all
+  **17** support-playbook workflows; capacity (area K) is entirely `TO BE MEASURED` (no invented thresholds).
+  Validation test `backend/operational_events/tests_wp6_certification.py` (16 checks) enforces area/route/
+  workflow/gate completeness, no premature PASS/recommendation, schema validity, no-secrets, DARK invariant.
+  ADR-0029/0030/0032 gained a WP6-gate note. `make check` green. **WP6 execution NOT run; nothing armed.**
+
 - **2026-08-04 — WP5.4 Trusted-Beta Operations Readiness & Arming Runbook. Docs + governance only. Flags OFF. 🟢**
   Repository documentation + operational controls + validation tests only — **nothing armed, nothing
   deployed, Customer Zero + production untouched.** New package `docs/operations/broker-connectivity/`:

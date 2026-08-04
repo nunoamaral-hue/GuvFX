@@ -274,3 +274,13 @@ incident-response), machine-readable `readiness-checklist.json`.
   eligibility/health inputs (SEV-2). **Any execution permitted for an ineligible account is SEV-1** — disarm
   the gate and open a mandatory PIR. Baselines for the refusal rate are `TO BE BASELINED DURING WP6`
   (`monitoring-spec.md` §9–11).
+
+### WP6 certification gate (2026-08-04)
+
+The execution gate's arming (stage 6 of the WP5.4 arming runbook) is gated on **WP6 multi-tenant
+certification PASS**. WP6 certifies execution safety (area D) against the **full authoritative route
+inventory** in `execution_entrypoints.json` — every `opens_exposure=true` route must PASS at creation, claim,
+and final-dispatch, with the drift guard green — plus concurrency (area C) and failure injection/recovery
+(areas H/I). See `docs/operations/broker-connectivity/wp6-execution-safety.md` and `wp6-test-matrix.json`
+(cases EXE-1..10). Any ineligible execution in certification is a NO-GO (SEV-1). Certification is planning +
+disposable-environment testing only; no arming.

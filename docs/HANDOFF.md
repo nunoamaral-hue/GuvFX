@@ -160,3 +160,26 @@
   VALIDATE_LOGIN, no order.
 - **Recommended next packet:** WP6 multi-tenant certification (Sponsor-authorised), consuming this package's
   entry criteria and arming runbook. Do not arm any flag before WP6 PASS + Sponsor approval.
+
+---
+
+## 2026-08-04 — WP6 Multi-Tenant Certification PLAN (planning + governance + tests only)
+
+- **Status:** documentation + validation-test packet with **no runtime effect**; branch
+  `docs/wp6-multi-tenant-certification`. WP6 *planning* authorised + complete; WP6 *execution* NOT run.
+- **Scope:** `docs/operations/broker-connectivity/wp6-*` (README + 12 area docs + `wp6-test-matrix.json`,
+  `wp6-evidence.json`, `wp6-release-gate.json`) + `backend/operational_events/tests_wp6_certification.py`;
+  WP6-gate notes appended to ADR-0029/0030/0032; STATUS/NEXT updated.
+- **Verified fact:** the matrix covers every area A–L; execution-safety covers all 15 exposure-opening routes
+  in `execution_entrypoints.json` (cross-checked by the test); operator-workflow covers all 17
+  support-playbook workflows; the release recommendation is `null`; no case/gate item is PASS; capacity is
+  entirely `TO BE MEASURED`. `make check` green; nothing armed/deployed; CZ + production untouched.
+- **Assumption:** WP6 **execution** requires the disposable environment (Nuno demo account + Windows host) =
+  **HOST-VERIFIED / OUTSIDE REPOSITORY CONTROL**; it is Sponsor-gated and not performed here.
+- **Deviations from packet:** none material. The "health app" is `reliability`; two capacity signals (event
+  lag, operator-API error rate) do not exist and are marked must-be-ADDED, not merely measured.
+- **Out-of-scope access performed:** No. No deployment, flag change, credential access, NEGOTIATE/
+  VALIDATE_LOGIN, order, or production/CZ mutation.
+- **Recommended next packet:** WP6 certification **execution** in a disposable environment (Sponsor-gated),
+  producing the evidence that completes `wp6-release-gate.json`, then a Sponsor GO/NO-GO decision. Do not arm
+  before WP6 PASS + Sponsor approval.
