@@ -96,6 +96,11 @@ def run_broker_validation(account, *, trigger, actor="", request=None, validator
     try:
         from reliability.broker_health import record_validation_outcome
         record_validation_outcome(account)
+        # WP1B/WP2: reconcile the durable broker-pause record with the freshly-folded contract, so a
+        # validation that degrades health persists a pause (and a recovery records resume eligibility) —
+        # never resuming. No-op unless both broker-connectivity flags are on.
+        from execution.runtime_pause import process_broker_health_pause
+        process_broker_health_pause(account)
     except Exception:  # noqa: BLE001 — health ingestion is best-effort; the durable attempt already exists
         from core.audit import log_event
         log_event(request, "BROKER_HEALTH_INGEST_ERROR", severity="WARN",
