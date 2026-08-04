@@ -6,7 +6,6 @@ outcomes, flag-OFF inertness, non-destructive invariants, and the proof that NO 
 it.
 """
 import os
-import re
 from pathlib import Path
 from unittest import mock
 
@@ -220,24 +219,35 @@ class ResumeInertnessTests(TestCase):
 
 
 class NoAutomaticResumeTests(TestCase):
+    @staticmethod
+    def _is_test_or_migration(rel: str) -> bool:
+        # Precise exclusion (NOT a broad `"tests" in rel` substring): a genuine test module is one whose
+        # basename matches test_*/tests_*, or that lives under a directory component exactly named
+        # "tests" — so a production file whose path merely contains the substring "tests" is still scanned.
+        parts = rel.split("/")
+        base = parts[-1]
+        return (base.startswith(("test_", "tests_")) or base == "conftest.py"
+                or "tests" in parts[:-1] or "migrations" in parts[:-1])
+
     def test_resume_service_has_no_automatic_caller(self):
-        # Prove no automatic path invokes the controlled resume: the ONLY files that reference the
-        # service are its definition and the tests. No scheduler / save hook / signal / validation /
-        # credential / provisioning / worker / periodic task calls it.
+        # Prove no automatic path invokes the controlled resume: the ONLY non-test file that references
+        # the service is its own definition. No scheduler / save hook / signal / validation / credential /
+        # provisioning / worker / periodic task / admin references it. Scans for the distinctive
+        # function-name core `broker_runtime_resume`, so a literal call OR a full-string getattr is caught.
         backend = Path(__file__).resolve().parent.parent
-        allowed = {"execution/runtime_pause.py"}
+        definition = "execution/runtime_pause.py"
         offenders = []
         for path in backend.rglob("*.py"):
             rel = path.relative_to(backend).as_posix()
-            if rel in allowed or "tests" in rel or "/migrations/" in rel:
+            if rel == definition or self._is_test_or_migration(rel):
                 continue
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            if re.search(r"request_broker_runtime_resume", text):
+            if "broker_runtime_resume" in text:
                 offenders.append(rel)
-        self.assertEqual(offenders, [], f"unexpected automatic resume caller(s): {offenders}")
+        self.assertEqual(offenders, [], f"unexpected automatic resume reference(s): {offenders}")
 
     def test_process_pause_never_clears_paused(self):
         import inspect

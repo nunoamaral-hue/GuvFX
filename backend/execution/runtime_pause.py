@@ -195,7 +195,10 @@ def _resume_audit(event, account, *, requested=None, current=None, reason="", re
             meta["pause"] = rec.as_dict()
         log_event(None, event, severity="INFO", entity_type="TradingAccount",
                   entity_id=getattr(account, "pk", None), metadata=meta)
-    except Exception:  # noqa: BLE001 — audit is fail-open; never flips the resume decision
+    except Exception:  # noqa: BLE001 — audit is fail-open. A Python-level failure is swallowed here; a
+        # DB-level audit failure inside the outer atomic aborts the transaction and rolls the whole
+        # operation back — which fails SAFE (the pause is preserved, no partial state), never converting a
+        # refusal into a success.
         logger.warning("resume audit failed (event=%s)", event)
 
 
