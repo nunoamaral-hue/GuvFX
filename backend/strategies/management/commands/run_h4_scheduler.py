@@ -34,7 +34,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from billing.enforcement import require_entitlement
-from execution.models import ExecutionJob
+from execution.broker_gate import ExecutionGateRefused
+from execution.models import ExecutionJob, ExecutionKillSwitchEngaged
 from strategies.models import Strategy, StrategyAssignment
 from strategies.signal_engine import run_signal_evaluation
 from strategies.zone_generator import is_zones_stale, resolve_zones
@@ -656,6 +657,28 @@ class Command(BaseCommand):
                                 f"symbol={symbol} reason={result.reason}"
                             )
 
+                except (ExecutionKillSwitchEngaged, ExecutionGateRefused) as exc:
+                    # WSE (ADR-0029) — h1/m5 parity. Kill switch engaged OR broker validation gate refused:
+                    # order creation failed closed at the model boundary (no order placed). Clean skip.
+                    if isinstance(exc, ExecutionGateRefused):
+                        # Durable refusal audit HERE — outside the rolled-back atomic above (the gate's
+                        # in-transaction audit does not survive), so an armed refusal always leaves a record.
+                        from core.audit import log_event
+                        log_event(None, "EXECUTION_GATE_REFUSED", severity="WARN",
+                                  entity_type="TradingAccount", entity_id=getattr(account, "id", None),
+                                  metadata={"reason_code": exc.reason_code, "trigger": "scheduler_h4"})
+                        # WP5.2 — project the durable scheduler-creation refusal (operator-only). Autocommit
+                        # here → fires immediately; DARK / fail-open. bar_close_iso dedups a re-evaluated bar.
+                        from operational_events import broker_projection
+                        broker_projection.project_execution_refusal(
+                            account, reason_code=exc.reason_code, phase="creation",
+                            trigger="scheduler_h4", bar_close_iso=bar_close_iso)
+                    self.stdout.write(
+                        f"  [SKIP-EXEC-BLOCKED] execution disabled — no order placed: "
+                        f"account={account.id} strategy={strategy.id} symbol={symbol}"
+                    )
+                    logger.warning("H4 LIVE: order creation blocked (kill switch or broker gate), skipping")
+                    continue
                 except Exception as e:
                     self.stderr.write(
                         f"  [ERROR] Exception during evaluation: account={account.id} "

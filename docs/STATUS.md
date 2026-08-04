@@ -6,6 +6,30 @@
 
 ## Execution workstream log
 
+- **2026-08-04 — WP1B/WP2 Workstream E — Execution-Safety Closure. Flags OFF, DARK, additive. 🟢**
+  The final WP1B/WP2 increment: definitive authoritative-route inventory + refusal-handling parity +
+  runtime-lifecycle classification, unblocking release certification. All new enforcement behind
+  `BROKER_CONNECTIVITY_EXECUTION_GATE` (+ `_HEALTH_ENABLED`), default OFF, transparent when OFF.
+  **Inventory:** `backend/execution/execution_entrypoints.json` classifies every create/dispatch/retry/
+  start/resume/recover/activate route (no UNKNOWN, no FIX_REQUIRED) + a **drift CI guard**
+  (`tests_execution_entrypoints.py`) that fails on a new un-inventoried `ExecutionJob` creation site or a
+  job-type mismatch. **Central fix — `next_job` claim-boundary dispatch gate:** the final-dispatch gate
+  lived only in the ingest worker, so a direct host-bridge poller bypassed it; WSE enforces
+  `evaluate_dispatch_gate` at the authoritative `next_job` claim boundary (an ineligible exposure-opening
+  job is FAILED under the row lock, audited in autocommit, 204) → **no claimer/transport** (ingest worker,
+  `mt5_signal_bridge`, `mt5_demo_bridge`, or any future executor) can dispatch an ineligible order.
+  **Parity:** h4 scheduler brought to h1/m5 refusal handling (durable `EXECUTION_GATE_REFUSED` re-emit +
+  projection, `bar_close_iso`-deduped; h1/m5 now dedup too); demo test-order (`PLACE_TEST_ORDER`, opens
+  REAL exposure) now uses the enforcing `require_execution_gate` + `require_not_broker_paused` (durable
+  audit + clean 503); promotion `_validate` gained an `is_broker_paused` pre-check (voids the plan → no
+  PLANNED-slot leak). **Runtime-start = broker-INDEPENDENT / opens no exposure → DOCUMENTED exempt** (a
+  runtime-start gate is deliberately NOT added — would break the CZ RUNNING journey; the authoritative gate
+  is `ExecutionJob.save` + dispatch). **Resume-proof hardened** (allowlist + positive control + behavioural
+  pause-never-clears + split-string scan; still no automatic caller). **Reason codes** consolidated on the
+  `SR_*` canonical set (credential verb → `credential_replaced`; no new codes). **Concurrency** verified
+  (deadlock-free in shipped autocommit config; zero reads when OFF; stale resume can't clear a newer
+  pause). 21 new WSE tests. ADR-0029 amended. CZ / production UNTOUCHED.
+
 - **2026-08-04 — WP5.2 Operational Event Source Wiring — repository engineering, DARK, additive. 🟢**
   Connected the existing authoritative broker-connectivity emit points to the WP5.1 operational-event
   projection through ONE central `operational_events/broker_projection.py` (owns category/severity/

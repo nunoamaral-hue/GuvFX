@@ -153,6 +153,15 @@ def _validate(plan: SignalExecutionPlan, *, now,
     if not gate.allowed:
         raise PromotionRejected(f"broker_gate_{gate.reason_code}", "broker validation gate refused execution")
 
+    # WSE (ADR-0029) — pre-check the broker-health PAUSE here too, mirroring the eligibility check above, so
+    # a paused account is rejected as PromotionRejected (which VOIDS the plan and frees the concurrency
+    # slot) rather than passing _validate and raising ExecutionGateRefused later at ExecutionJob.save(),
+    # where the auto-router's generic except would leave the plan PLANNED (a slot leak). Inert when the
+    # flags are OFF (is_broker_paused → False unless BOTH broker-connectivity flags are on).
+    from execution.runtime_pause import is_broker_paused
+    if is_broker_paused(plan.account):
+        raise PromotionRejected("broker_gate_paused", "broker health pause blocks execution")
+
     # Broker/account-aware symbol gate — the symbol must resolve to one the account's broker
     # offers (fail-closed with a specific reason). Provider symbol preserved; broker symbol used
     # for the order (in _order_payload).

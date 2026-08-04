@@ -160,5 +160,89 @@ deterministic, non-secret `ResumeResult` (`resumed`/`idempotent`/`refused`/`reas
 flags are on.
 
 ### Still deferred (before arming)
-Full entry-point re-inventory + h4 scheduler graceful-refusal parity + runtime start/resume/recovery
-rechecks — Workstream E. Arming remains separately gated.
+~~Full entry-point re-inventory + h4 scheduler graceful-refusal parity + runtime start/resume/recovery
+rechecks — Workstream E.~~ **Completed — see below.** Arming remains separately gated.
+
+---
+
+## Workstream E — Execution-safety closure (2026-08-04)
+
+The final WP1B/WP2 repository increment: a definitive authoritative-route inventory, refusal-handling
+parity, and runtime-lifecycle classification. All enforcement stays behind
+`BROKER_CONNECTIVITY_EXECUTION_GATE` (+ `_HEALTH_ENABLED`), default OFF; additive; DARK; transparent when
+OFF.
+
+### 1. Authoritative route inventory (machine-verifiable)
+`backend/execution/execution_entrypoints.json` classifies **every** route that can create exposure /
+dispatch / retry / start / resume / recover / activate execution (FULLY_COVERED / NON_OPENING_EXEMPT /
+DEAD_UNREACHABLE / TEST_ONLY — **no UNKNOWN, no FIX_REQUIRED**). A drift guard
+(`tests_execution_entrypoints.py`) fails CI on an UNKNOWN/FIX_REQUIRED classification, a **new
+un-inventoried backend `ExecutionJob` creation site**, or a mismatch between the inventory's
+exposure-opening job types and `BROKER_GATE_BLOCKED_JOB_TYPES`.
+
+### 2. The authoritative gate boundaries (and why runtime-start is exempt)
+Exposure opens at exactly two boundaries: **creation** (`ExecutionJob.save` → `require_execution_gate` +
+`require_not_broker_paused` for `BROKER_GATE_BLOCKED_JOB_TYPES`) and **dispatch**. **Runtime start /
+restart / recovery / reclaim are broker-INDEPENDENT and open NO exposure** — a beta runtime reaching
+RUNNING is view-only; exposure opens only later via `ExecutionJob.save`. A runtime-start broker gate is
+therefore **deliberately not added** (it would conflict with the working broker-independent RUNNING
+journey / Customer Zero); the authoritative gate is the exposure-creation + dispatch boundary. The
+self-serve "arm" path grants execution *authority* only (orders still pass `ExecutionJob.save`), so it is
+exempt; an optional flag-gated activation-time recheck there is future belt-and-braces, not required.
+
+### 3. `next_job` claim-boundary dispatch gate (the central closure)
+The final-dispatch gate previously lived only in the ingest worker, so a **direct `next_job` poller (a
+host-side bridge) bypassed it**. WSE enforces `evaluate_dispatch_gate` at the authoritative
+`ExecutionJobViewSet.next_job` **claim boundary**: an exposure-opening job for a now-ineligible account is
+**FAILED under the row lock** (audited `EXECUTION_DISPATCH_REFUSED` + projection, in autocommit outside the
+committed claim tx) and never handed out — so **no claimer or transport** (ingest worker, `mt5_signal_
+bridge`, `mt5_demo_bridge`, or any future executor) can dispatch an ineligible order. Transparent + zero
+extra DB read when the gate flag is OFF.
+
+### 4. Refusal-handling parity
+- **h4 scheduler** brought to h1/m5 parity: catches `(ExecutionKillSwitchEngaged, ExecutionGateRefused)`,
+  re-emits the durable `EXECUTION_GATE_REFUSED` audit + projection outside the rolled-back atomic
+  (`trigger="scheduler_h4"`, `bar_close_iso`-deduped). h1/m5 projections now also pass `bar_close_iso` so
+  repeat evaluations of one bar collapse to a single operational event (the WP5.2 dedup intent, now wired).
+- **Demo test-order** (`PLACE_TEST_ORDER`, which opens REAL exposure) now uses the enforcing
+  `require_execution_gate` + `require_not_broker_paused` (durable audit + projection + a clean 503 for both
+  eligibility and pause), closing the pure-evaluator audit gap.
+- **Promotion** `_validate` gained an `is_broker_paused` pre-check, so a paused DEMO account is rejected as
+  `PromotionRejected("broker_gate_paused")` (which voids the plan and frees the concurrency slot) instead
+  of raising at `ExecutionJob.save` and leaking a PLANNED slot.
+
+### 5. Refusal ownership (no duplicate audit/event)
+Rule: **the transaction that commits the refusal owns the durable event.** A funnel that creates the job
+inside its own `atomic()` and swallows `ExecutionGateRefused` re-emits in its catch (the model-gate emit
+is sacrificial/rolled-back); a funnel that refuses in autocommit relies on the gate's `_audit_refusal`; a
+funnel with an independent durable trail (promotion) uses `evaluate_*`, never `require_*`. These are
+mutually exclusive per logical refusal → exactly one durable event.
+
+### 6. Controlled-resume caller proof (hardened)
+`NoAutomaticResumeTests` now: uses an **allowlist** (survives arming when the one sanctioned operator
+caller is wired); a **positive control** (asserts the scanner finds the token in its definition file and
+walked >200 files — RULE 11); a **split-string red-flag** scan; and a **behavioural** guard that
+`process_broker_health_pause` never clears a pause (replacing the brittle source-string assertion). Scope
+boundary documented: scans `backend/**/*.py` only (standalone host services + non-`.py` scheduler manifests
+are out of scope, governed by the arming runbook). Residual dynamic-reflection gap (`dir()`/suffix)
+documented.
+
+### 7. Reason-code vocabulary
+`SR_*` (`execution/broker_gate.py`) is the single canonical customer-safe vocabulary; `R_*` (creation),
+health `REASON_*`, and the promotion `broker_gate_*` prefix are operator/origin detail carried in
+metadata, mapped via the three sanctioned translators (`_ELIGIBILITY_TO_SHARED`, `_HEALTH_STATE_TO_SHARED`,
+`_HEALTH_TO_PAUSE_REASON`). The credential-replacement concept is canonicalised on `credential_replaced`
+(one spelling). No new codes introduced; `SR_ACCOUNT_AMBIGUOUS` remains reserved.
+
+### 8. Concurrency (verified)
+Shipped config is **deadlock-free** (`ATOMIC_REQUESTS` unset → views autocommit; the only pause→account
+holder, the resume service, has no production caller). Stale resume can never clear a newer pause (row
+lock + live-contract recheck + version floor). **Zero** extra DB reads when the gate flag is OFF; O(1) (not
+N+1) when ON; the dispatch recheck remains immediately before the irreversible send. Latent ABBA hazard
+(if resume is ever wired to a view holding an account write-lock) recorded for the arming runbook.
+
+### Repository arming-readiness (all satisfied for the gate/pause/resume plane)
+No exposure-opening route bypasses the gate; every scheduler handles refusal safely; test-order refusal is
+safe + audited; runtime start/recovery are broker-independent (exposure gated at `ExecutionJob.save` +
+dispatch); controlled resume is explicit-only; audit/operational-event ownership is deterministic;
+flag-OFF behaviour is unchanged; inventory drift fails CI. Arming itself remains Sponsor-gated.

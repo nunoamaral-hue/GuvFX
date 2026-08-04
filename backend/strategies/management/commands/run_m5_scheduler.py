@@ -521,7 +521,8 @@ class Command(BaseCommand):
                     # here → fires immediately; DARK / fail-open.
                     from operational_events import broker_projection
                     broker_projection.project_execution_refusal(
-                        account, reason_code=exc.reason_code, phase="creation", trigger="scheduler_m5")
+                        account, reason_code=exc.reason_code, phase="creation", trigger="scheduler_m5",
+                        bar_close_iso=bar_close_iso)
                 self.stdout.write(
                     f"  [SKIP-EXEC-BLOCKED] execution disabled — no order placed: "
                     f"account={account.id} strategy={strategy.id} symbol={symbol}"

@@ -219,6 +219,19 @@ class ResumeInertnessTests(TestCase):
 
 
 class NoAutomaticResumeTests(TestCase):
+    """WSE (ADR-0029) — prove the controlled resume service (``request_broker_runtime_resume``) has NO
+    automatic caller. SCOPE/BOUNDARY: this scans ``backend/**/*.py`` only. The standalone host services
+    (the Windows bridge, ``mt5_validate_worker``, ``mt5_worker/``) live outside ``backend/`` and cannot
+    import Django/execution, so they cannot call it; non-``.py`` invocation surfaces (cron / systemd /
+    compose / periodic-task DB rows referencing a management command) are out of scope and are governed by
+    the arming runbook, not this test."""
+
+    # ALLOWLIST of files permitted to reference the resume service by name. Only its definition today; when
+    # the single sanctioned operator entry point is wired, ADD it here — an allowlist, so the guard
+    # survives arming without being weakened into a bare "offenders == []".
+    _ALLOWED_RESUME_REFERENCES = {"execution/runtime_pause.py"}
+    _RESUME_TOKEN = "broker_runtime_resume"
+
     @staticmethod
     def _is_test_or_migration(rel: str) -> bool:
         # Precise exclusion (NOT a broad `"tests" in rel` substring): a genuine test module is one whose
@@ -226,30 +239,71 @@ class NoAutomaticResumeTests(TestCase):
         # "tests" — so a production file whose path merely contains the substring "tests" is still scanned.
         parts = rel.split("/")
         base = parts[-1]
-        return (base.startswith(("test_", "tests_")) or base == "conftest.py"
+        return (base in ("tests.py", "test.py", "conftest.py")
+                or base.startswith(("test_", "tests_"))
                 or "tests" in parts[:-1] or "migrations" in parts[:-1])
 
     def test_resume_service_has_no_automatic_caller(self):
-        # Prove no automatic path invokes the controlled resume: the ONLY non-test file that references
-        # the service is its own definition. No scheduler / save hook / signal / validation / credential /
-        # provisioning / worker / periodic task / admin references it. Scans for the distinctive
-        # function-name core `broker_runtime_resume`, so a literal call OR a full-string getattr is caught.
+        # No automatic path invokes the controlled resume. Scans for the distinctive function-name core
+        # `broker_runtime_resume`, so a literal call OR a full-string getattr is caught.
         backend = Path(__file__).resolve().parent.parent
-        definition = "execution/runtime_pause.py"
+        offenders = []
+        scanned = 0
+        hits_in_definition = 0
+        for path in backend.rglob("*.py"):
+            rel = path.relative_to(backend).as_posix()
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            scanned += 1
+            has_token = self._RESUME_TOKEN in text
+            if rel == "execution/runtime_pause.py" and has_token:
+                hits_in_definition = text.count(self._RESUME_TOKEN)
+            if self._is_test_or_migration(rel) or rel in self._ALLOWED_RESUME_REFERENCES:
+                continue
+            if has_token:
+                offenders.append(rel)
+        # POSITIVE CONTROL (RULE 11) — a negative result is worthless unless the scanner is shown capable of
+        # a positive: the walk must have found many files, and the definition file MUST contain the token.
+        # A broken/empty walk, wrong root, or mistyped token would otherwise pass green proving nothing.
+        self.assertGreater(scanned, 200, "resume-caller scan walked too few files — the walk is broken")
+        self.assertGreaterEqual(
+            hits_in_definition, 1,
+            "positive control FAILED: the scanner did not find the token in its own definition file")
+        self.assertEqual(
+            offenders, [], f"unexpected non-allowlisted reference(s) to the resume service: {offenders}")
+
+    def test_no_split_string_dispatch_of_resume(self):
+        # Best-effort catch of the split / constructed-string dispatch the plain substring scan misses
+        # (e.g. getattr(rp, "request_broker_runtime_" + "resume")). A residual dynamic-reflection gap
+        # (dir()/suffix matching) remains and is documented in ADR-0029 §resume-caller-proof.
+        backend = Path(__file__).resolve().parent.parent
+        red_flags = ('"request_broker_runtime_"', "'request_broker_runtime_'",
+                     '"broker_runtime_"', "'broker_runtime_'")
         offenders = []
         for path in backend.rglob("*.py"):
             rel = path.relative_to(backend).as_posix()
-            if rel == definition or self._is_test_or_migration(rel):
+            if self._is_test_or_migration(rel) or rel in self._ALLOWED_RESUME_REFERENCES:
                 continue
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            if "broker_runtime_resume" in text:
+            if any(f in text for f in red_flags):
                 offenders.append(rel)
-        self.assertEqual(offenders, [], f"unexpected automatic resume reference(s): {offenders}")
+        self.assertEqual(offenders, [], f"possible split-string resume dispatch: {offenders}")
 
     def test_process_pause_never_clears_paused(self):
-        import inspect
-        src = inspect.getsource(rp.process_broker_health_pause)
-        self.assertNotIn("paused = False", src)  # only the resume service may clear a pause
+        # BEHAVIOURAL guard (replaces the brittle "paused = False" source-string assertion): drive a
+        # recovery contract through process_broker_health_pause and prove it NEVER clears the pause — it
+        # only records resume-eligibility. Only request_broker_runtime_resume may clear a pause.
+        user = U.objects.create_user(username="rp-beh", email="rpb@x.invalid", password="x")
+        acct = _acct(user)
+        _health(acct, "HEALTHY", 11)          # recovered / eligible at a newer version
+        rec = _paused(acct, source_version=10)
+        with mock.patch.dict(os.environ, _ON_BOTH):
+            rp.process_broker_health_pause(acct)
+        rec.refresh_from_db()
+        self.assertTrue(rec.paused, "process_broker_health_pause must NEVER clear a pause")
+        self.assertTrue(rec.resume_eligible, "recovery must record resume-eligibility on the pause record")

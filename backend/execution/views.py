@@ -260,6 +260,12 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         # single type is requested it is that type's set; the priority loop tries each type in order.
         qs = base_qs.filter(job_type__in=types_to_try)
 
+        # WSE (ADR-0029) — server-side final-dispatch gate at the authoritative claim boundary.
+        from execution.broker_gate import (
+            _audit_dispatch_refusal, evaluate_dispatch_gate, execution_gate_enabled)
+        from execution.models import BROKER_GATE_BLOCKED_JOB_TYPES
+        _dispatch_refused = None
+
         # Atomic claim: lock the row so only one worker can claim it. skip_locked=True causes
         # concurrent claimants to skip the locked row. The priority loop claims the highest-priority
         # type that has a PENDING job — in ONE request (one transaction).
@@ -313,25 +319,49 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
                 # 204 No Content – no jobs available (or all locked by other workers)
                 return Response({"detail": "no_jobs"}, status=204)
 
-            from datetime import timedelta as _timedelta
-            _now = timezone.now()
-            job.status = ExecutionJob.Status.RUNNING
-            job.worker_id = worker_id
-            job.started_at = _now
-            # RX-2E: mandatory lease on RUNNING. An expired/absent lease marks the
-            # job an orphan for the reliability supervisor (detection only, Phase 1).
-            _lease_ttl = int(os.getenv("EXECUTION_LEASE_TTL_SECONDS", "300"))
-            # TP-PROTECTION LATENCY: a protection sync (``breakeven_sync``) is idempotent and normally
-            # completes in a couple of snapshot fetches (~≤30s). If the worker hangs/recycles mid-call
-            # (a slow/stalled MT5 snapshot), the full 300s lease leaves position ingestion — and thus
-            # the whole protection ladder — BLIND for minutes, because ``_ensure_position_sync`` will
-            # not enqueue a fresh sync while one is RUNNING. Give protection syncs a much shorter lease
-            # so the (existing, idempotent, lease-based) reclaim frees ingestion within ~a minute.
-            if (job.job_type == ExecutionJob.JobType.SYNC_POSITIONS
-                    and (job.payload or {}).get("breakeven_sync")):
-                _lease_ttl = int(os.getenv("EXECUTION_SYNC_LEASE_TTL_SECONDS", "60"))
-            job.lease_expires_at = _now + _timedelta(seconds=_lease_ttl)
-            job.save(update_fields=["status", "worker_id", "started_at", "lease_expires_at"])
+            # WSE (ADR-0029) — server-side FINAL-DISPATCH gate at the authoritative claim boundary. The
+            # ingest worker rechecks eligibility before order_send, but a direct next_job poller (a host
+            # bridge) would otherwise dispatch having passed only the creation gate. Re-check FRESH here so
+            # NO claimer/transport can bypass it: an exposure-opening job for a now-ineligible account is
+            # FAILED under the row lock (never handed out). Transparent + zero extra DB read when the gate
+            # flag is OFF (execution_gate_enabled() short-circuits before touching job.account).
+            if (execution_gate_enabled()
+                    and job.job_type in BROKER_GATE_BLOCKED_JOB_TYPES):
+                _decision = evaluate_dispatch_gate(job.account)
+                if not _decision.allowed:
+                    _dispatch_refused = _decision
+                    job.status = ExecutionJob.Status.FAILED
+                    job.error_message = f"broker dispatch gate refused at claim: {_decision.reason_code}"
+                    job.finished_at = timezone.now()
+                    job.save(update_fields=["status", "error_message", "finished_at"])
+
+            if _dispatch_refused is None:
+                from datetime import timedelta as _timedelta
+                _now = timezone.now()
+                job.status = ExecutionJob.Status.RUNNING
+                job.worker_id = worker_id
+                job.started_at = _now
+                # RX-2E: mandatory lease on RUNNING. An expired/absent lease marks the
+                # job an orphan for the reliability supervisor (detection only, Phase 1).
+                _lease_ttl = int(os.getenv("EXECUTION_LEASE_TTL_SECONDS", "300"))
+                # TP-PROTECTION LATENCY: a protection sync (``breakeven_sync``) is idempotent and normally
+                # completes in a couple of snapshot fetches (~≤30s). If the worker hangs/recycles mid-call
+                # (a slow/stalled MT5 snapshot), the full 300s lease leaves position ingestion — and thus
+                # the whole protection ladder — BLIND for minutes, because ``_ensure_position_sync`` will
+                # not enqueue a fresh sync while one is RUNNING. Give protection syncs a much shorter lease
+                # so the (existing, idempotent, lease-based) reclaim frees ingestion within ~a minute.
+                if (job.job_type == ExecutionJob.JobType.SYNC_POSITIONS
+                        and (job.payload or {}).get("breakeven_sync")):
+                    _lease_ttl = int(os.getenv("EXECUTION_SYNC_LEASE_TTL_SECONDS", "60"))
+                job.lease_expires_at = _now + _timedelta(seconds=_lease_ttl)
+                job.save(update_fields=["status", "worker_id", "started_at", "lease_expires_at"])
+
+        # WSE — a refused exposure-opening claim: audit + project the durable dispatch refusal in autocommit
+        # (outside the committed claim tx, so a recorder failure cannot abort it), then serve nothing.
+        if _dispatch_refused is not None:
+            _audit_dispatch_refusal(job.account, _dispatch_refused, job_id=job.id,
+                                    actor=worker_id, trigger="claim")
+            return Response({"detail": "no_jobs"}, status=204)
 
         # Audit log — includes routing_mode marker (Fix 2: mixed-mode containment)
         log_execution_job_claimed(
@@ -832,15 +862,25 @@ class CreateDemoTradeJobView(APIView):
         # WP1B/WP2 (ADR-0029): broker-validation execution gate. Transparent while
         # BROKER_CONNECTIVITY_EXECUTION_GATE is OFF; when ON, refuse a non-validated/ineligible account
         # here with a clean 503 (the model-layer gate is the authoritative backstop).
-        from execution.broker_gate import evaluate_execution_gate
-        _gate = evaluate_execution_gate(account)
-        if not _gate.allowed:
+        # WSE (ADR-0029) — use the ENFORCING gate so an armed refusal leaves a durable
+        # EXECUTION_GATE_REFUSED audit + WP5.2 projection (the pure evaluator left no trace). Also enforce
+        # the broker-health pause here so an eligible-but-paused account gets a clean 503, not a 500 from
+        # the model save() backstop. Transparent when the gate flag is OFF (require_* never raises → job
+        # created exactly as today). The model save() gate remains the authoritative backstop.
+        from execution.broker_gate import ExecutionGateRefused, require_execution_gate
+        from execution.runtime_pause import require_not_broker_paused
+        try:
+            require_execution_gate(
+                account, request=request, actor=str(getattr(request, "user", "")),
+                trigger="job:PLACE_TEST_ORDER")
+            require_not_broker_paused(account, request=request, trigger="job:PLACE_TEST_ORDER")
+        except ExecutionGateRefused as refused:
             return Response(
                 {
                     "ok": False,
                     "reason": "execution_disabled",
                     "detail": "Broker validation gate refused this account; no order was placed.",
-                    "gate_reason": _gate.reason_code,
+                    "gate_reason": refused.reason_code,
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
