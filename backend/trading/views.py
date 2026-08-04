@@ -61,6 +61,14 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from .broker_connectivity import (  # WP1A (ADR-0028) — customer broker-connectivity journey
+    broker_connectivity_enabled,
+    disconnect_account,
+    replace_credentials,
+    run_broker_validation,
+)
+from .serializers import BrokerValidationAttemptSerializer
+
 from execution.models import ExecutionJob
 from mt5.models import Mt5Instance
 from .models import TradingAccount, Trade
@@ -450,6 +458,82 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
+
+    # ── WP1A (ADR-0028) Broker Connectivity customer journey ─────────────────────────────────────────
+    # Every action below is gated by BROKER_CONNECTIVITY_ENABLED (default OFF): while dark the whole
+    # surface returns 404. All are user-scoped (``get_object`` uses the user-filtered ``get_queryset``),
+    # secret-safe, fail-closed, and reuse the CERTIFIED validator (ADR-0027) + credential destruction
+    # (P3-D). Disconnect is a TOMBSTONE — it never row-deletes.
+    def _bc_guard(self):
+        if not broker_connectivity_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None
+
+    @action(detail=True, methods=["POST"], url_path="broker/test-connection")
+    def bc_test_connection(self, request, pk=None):
+        guard = self._bc_guard()
+        if guard is not None:
+            return guard
+        account = self.get_object()
+        attempt = run_broker_validation(account, trigger="test", actor=str(request.user), request=request)
+        return Response(BrokerValidationAttemptSerializer(attempt).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["POST"], url_path="broker/retry-validation")
+    def bc_retry_validation(self, request, pk=None):
+        guard = self._bc_guard()
+        if guard is not None:
+            return guard
+        account = self.get_object()
+        attempt = run_broker_validation(account, trigger="retry", actor=str(request.user), request=request)
+        return Response(BrokerValidationAttemptSerializer(attempt).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["POST"], url_path="broker/replace-credentials")
+    def bc_replace_credentials(self, request, pk=None):
+        guard = self._bc_guard()
+        if guard is not None:
+            return guard
+        account = self.get_object()
+        new_password = request.data.get("password") or ""
+        if not new_password:
+            return Response({"detail": "password is required."}, status=status.HTTP_400_BAD_REQUEST)
+        result = replace_credentials(
+            account, new_password, actor=str(request.user), request=request,
+            revalidate=bool(request.data.get("revalidate")))
+        return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["POST"], url_path="broker/disconnect")
+    def bc_disconnect(self, request, pk=None):
+        guard = self._bc_guard()
+        if guard is not None:
+            return guard
+        account = self.get_object()
+        result = disconnect_account(account, actor=str(request.user), request=request)
+        return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["GET"], url_path="broker/status")
+    def bc_status(self, request, pk=None):
+        guard = self._bc_guard()
+        if guard is not None:
+            return guard
+        account = self.get_object()
+        latest = account.validation_attempts.first()
+        return Response({
+            "validation_status": account.validation_status,
+            "validated_at": account.validated_at.isoformat() if account.validated_at else None,
+            "is_active": account.is_active,
+            "disconnected_at": account.disconnected_at.isoformat() if account.disconnected_at else None,
+            "latest_attempt": BrokerValidationAttemptSerializer(latest).data if latest else None,
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["GET"], url_path="broker/validation-history")
+    def bc_validation_history(self, request, pk=None):
+        guard = self._bc_guard()
+        if guard is not None:
+            return guard
+        account = self.get_object()
+        attempts = account.validation_attempts.all()[:50]
+        return Response(BrokerValidationAttemptSerializer(attempts, many=True).data, status=status.HTTP_200_OK)
+
 
 class TradeViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = TradeSerializer

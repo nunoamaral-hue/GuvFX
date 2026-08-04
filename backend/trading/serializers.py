@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import TradingAccount, BrokerServer, Trade
+from .models import TradingAccount, BrokerServer, Trade, BrokerAccountValidationAttempt
 from .crypto import encrypt_password
 from .classification import classification_error
 from core.audit import log_customer_credential_event
@@ -85,6 +85,19 @@ class TradingAccountSerializer(serializers.ModelSerializer):
             log_customer_credential_event(
                 "ROTATED", account=instance, request=self.context.get("request"), purpose="intake-update")
         return instance
+
+
+class BrokerValidationAttemptSerializer(serializers.ModelSerializer):
+    """WP1A (ADR-0028) — secret-safe projection of a broker-login validation attempt. Read-only; the
+    field set is the ADR-0027 allow-list only (no password / ciphertext / envelope / host path)."""
+
+    class Meta:
+        model = BrokerAccountValidationAttempt
+        fields = [
+            "id", "trigger", "status", "reason_code", "retryable", "is_demo",
+            "server", "login_masked", "correlation_id", "created_at",
+        ]
+        read_only_fields = fields
 
 
 class TradeSerializer(serializers.ModelSerializer):
