@@ -1,0 +1,31 @@
+# WP4.1 (ADR-0031) — the Docker build context must contain ONLY the authoritative frontend source.
+# Excludes dependencies/build output (reinstalled/regenerated in-image) and all editor/backup junk, so
+# the image is reproducible from git and cannot absorb a stray manual patch.
+node_modules
+.next
+out
+build
+coverage
+.git
+.gitignore
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+yarn-error.log*
+
+# backup / junk artefacts
+*.bak
+*.bak.*
+*.bak_*
+*.orig
+*.rej
+*.tmp
+._*
+
+# env files (never bake secrets into the image)
+.env
+.env.*
+*.swp
+*.swo
+*~

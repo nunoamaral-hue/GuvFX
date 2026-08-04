@@ -1,9 +1,9 @@
-.PHONY: help check backend-test backend-lint frontend-lint frontend-build secret-scan governance-check research-check research-foundation-check market-data-check require-research-venv
+.PHONY: help check backend-test backend-lint frontend-parity frontend-lint frontend-build secret-scan governance-check research-check research-foundation-check market-data-check require-research-venv
 
 help:
-	@echo "Targets: check backend-test frontend-lint frontend-build secret-scan governance-check research-check market-data-check"
+	@echo "Targets: check backend-test frontend-parity frontend-lint frontend-build secret-scan governance-check research-check market-data-check"
 
-check: governance-check backend-test frontend-lint frontend-build
+check: governance-check backend-test frontend-parity frontend-lint frontend-build
 
 secret-scan:
 	python3 scripts/check_no_secrets.py
@@ -26,6 +26,13 @@ backend-test:
 		fi; \
 	else \
 		echo "Skipping backend-test: backend/manage.py not found"; \
+	fi
+
+frontend-parity:
+	@if [ -f frontend/package.json ]; then \
+		cd frontend && npm run verify:parity; \
+	else \
+		echo "Skipping frontend-parity: frontend/package.json not found"; \
 	fi
 
 frontend-lint:
