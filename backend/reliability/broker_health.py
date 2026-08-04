@@ -163,7 +163,9 @@ def _emit_signals(account, health: BrokerAccountHealth, old_state, old_resume: b
             _resolve_open_alerts(account)
         else:
             event = _ENTER_EVENT.get(health.state, "BROKER_HEALTH_TRANSITION")
-            severity = "CRITICAL" if health.state == State.DISCONNECTED else "WARN"
+            # Derive the audit severity from the same table the notification uses, so a state's audit
+            # line and its AlertEvent never disagree (e.g. TOMBSTONED is INFO on both).
+            severity = _ENTER_SEVERITY.get(health.state, AlertEvent.Severity.WARN)
             _open_alert(account, health)
         log_event(None, event, severity=severity, entity_type="trading_account",
                   entity_id=account.pk, metadata=meta)

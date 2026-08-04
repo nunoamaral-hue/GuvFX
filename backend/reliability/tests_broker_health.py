@@ -207,6 +207,24 @@ class TransitionTests(_Base):
         self.assertFalse(c3["resume_eligible"])                 # cleared on the adverse transition
         self.assertGreater(c3["state_version"], v)
 
+    def test_reason_code_is_a_level_bound_to_state_version(self):
+        # reason_code is set only on a net transition, so it holds (with state_version) across
+        # steady-state HEALTHY folds: a long-healthy account that recovered reports "recovered",
+        # not "validated" — intended level semantics, pinned here to prevent silent regression.
+        self._mk_healthy()
+        for _ in range(3):
+            _attempt(self.acct, "NEEDS_ATTENTION")
+        bh.record_validation_outcome(self.acct)          # DEGRADED
+        for _ in range(2):
+            _attempt(self.acct, "HEALTHY")
+        c1 = bh.record_validation_outcome(self.acct)     # recover
+        self.assertEqual(c1["reason_code"], bh.REASON_RECOVERED)
+        v = c1["state_version"]
+        _attempt(self.acct, "HEALTHY")
+        c2 = bh.record_validation_outcome(self.acct)     # steady-state HEALTHY, no transition
+        self.assertEqual(c2["reason_code"], bh.REASON_RECOVERED)  # sticks with the version
+        self.assertEqual(c2["state_version"], v)
+
     def test_version_is_monotonic_across_full_lifecycle(self):
         versions = []
         bh.record_validation_outcome(self.acct)
