@@ -124,8 +124,12 @@ provides:
   ignored (`BROKER_HEALTH_STALE_PAUSE_VERSION_IGNORED`), a larger one supersedes — an older decision can
   never reverse a newer one. On `pause_required` it persists a pause (`BROKER_RUNTIME_PAUSED` on the
   edge); on recovery it records `resume_eligible` (`BROKER_RECOVERY_DETECTED`) **without resuming** —
-  only the controlled resume service (Workstream D) may clear `paused`. Serialised with
-  `select_for_update`. Pause NEVER deletes/tombstones the runtime, touches credentials, or creates an
+  only the controlled resume service (Workstream D) may clear `paused`. The durable `resume_eligible` is
+  keyed on the **live contract's `eligible` (HEALTHY)**, not WP3's `resume_eligible` edge, so a recovery
+  via a broken edge (credential replace → re-validate → HEALTHY, which WP3 marks `resume_eligible=False`)
+  still marks the paused runtime resumable; the resume service re-checks the live contract, so the flag
+  never authorises a resume alone. Serialised with `select_for_update`. Pause NEVER deletes/tombstones
+  the runtime, touches credentials, or creates an
   order/job. Inert unless BOTH flags are on.
 - **Creation-time block** — `require_not_broker_paused` is enforced at the model boundary
   (`ExecutionJob.save`, alongside the eligibility gate) so a degraded-but-still-VALIDATED account cannot

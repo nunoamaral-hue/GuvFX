@@ -103,6 +103,22 @@ class PauseProcessingTests(TestCase):
         self.assertTrue(d["paused"])            # but STILL paused — no automatic resume
         self.assertTrue(AuditEvent.objects.filter(event_type="BROKER_RECOVERY_DETECTED").exists())
 
+    def test_recovery_via_broken_edge_still_marks_resumable(self):
+        # M1: a paused account recovers to HEALTHY but the contract's resume_eligible is False (e.g. a
+        # credential replace → re-validate produces a "validated", not "recovered", edge). The durable
+        # record must STILL mark resume_eligible (keyed on the live contract's eligible), so the resume
+        # service can recognise it — but must NOT auto-resume.
+        h = _health(self.acct, "DEGRADED", version=5)
+        with mock.patch.dict(os.environ, _ON_BOTH):
+            rp.process_broker_health_pause(self.acct)  # paused
+            h.state = "HEALTHY"
+            h.state_version = 8
+            h.resume_eligible = False  # broken edge — WP3 did NOT flag a recovery
+            h.save(update_fields=["state", "state_version", "resume_eligible"])
+            d = rp.process_broker_health_pause(self.acct)
+        self.assertTrue(d["resume_eligible"])  # durable record recognises it as resumable
+        self.assertTrue(d["paused"])           # still paused — no auto-resume
+
     def test_pause_audited(self):
         _health(self.acct, "DEGRADED", version=3)
         with mock.patch.dict(os.environ, _ON_BOTH):

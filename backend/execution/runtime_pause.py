@@ -82,9 +82,11 @@ def process_broker_health_pause(account, *, now=None) -> dict | None:
         return None
     now = now or timezone.now()
     version = int(contract.get("state_version") or 0)
-    # Fast path: a healthy/eligible account that has never been paused needs no durable row.
-    if not contract.get("pause_required") and not contract.get("resume_eligible"):
-        if not BrokerRuntimePause.objects.filter(account=account).exists():
+    # Fast path: on a non-pause contract, only a currently-PAUSED record needs reconciling. A never-paused
+    # (or already-resumed) account needs no durable row — this also avoids materialising a spurious
+    # paused=False row for a recovered-but-never-tracked account.
+    if not contract.get("pause_required"):
+        if not BrokerRuntimePause.objects.filter(account=account, paused=True).exists():
             return None
     with transaction.atomic():
         rec, created = BrokerRuntimePause.objects.select_for_update().get_or_create(account=account)
@@ -108,9 +110,14 @@ def process_broker_health_pause(account, *, now=None) -> dict | None:
             _audit("BROKER_RUNTIME_PAUSED" if newly else "BROKER_HEALTH_PAUSE_REQUESTED",
                    account, version=version, rec=rec)
         else:
-            # Eligible or recovering. NEVER auto-resume — only record the recovery signal; the controlled
-            # WP2 resume service (Workstream D) is the sole path that clears ``paused``.
-            if rec.paused and contract.get("resume_eligible") and not rec.resume_eligible:
+            # Eligible again. NEVER auto-resume — only record that the paused runtime is now resumable so
+            # the controlled WP2 resume service (Workstream D) can act. Keyed on the live contract's
+            # ``eligible`` (HEALTHY), NOT WP3's ``resume_eligible`` EDGE: a recovery that arrives via a
+            # broken edge (credential replace → re-validate → HEALTHY, which WP3 marks
+            # resume_eligible=False) must still mark the durable pause resumable. The controlled resume
+            # service additionally re-checks the live contract, so this flag never authorises a resume by
+            # itself.
+            if rec.paused and contract.get("eligible") and not rec.resume_eligible:
                 rec.resume_eligible = True
                 rec.save()
                 _audit("BROKER_RECOVERY_DETECTED", account, version=version, rec=rec)
