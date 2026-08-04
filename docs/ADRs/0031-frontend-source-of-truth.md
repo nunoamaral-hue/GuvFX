@@ -45,6 +45,11 @@ Excluding generated artefacts (`node_modules`, `.next`, `*.tsbuildinfo`, `.DS_St
   allow-list `parity/env-allowlist.json` is empty; introducing an env var now fails the guard until
   documented here. *(Future: WP4.2 may introduce `NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED` — it does not
   exist yet.)*
+- **Build-layer var (documented, inert):** `frontend/Dockerfile` declares `ARG/ENV
+  NEXT_PUBLIC_API_BASE_URL`, but **no source file consumes it** (the base is the hardcoded
+  `api.guvfx.com` above). It is a build-layer no-op today; the parity guard scans the *source tree*
+  (where the count is genuinely zero) and does not police Dockerfile ARGs. Left in place (WP4.1 changes
+  no build behaviour); noted here for completeness.
 - **Feature flags: NONE** in the frontend today.
 - **Routes: 37 route files** — 31 `(app)` pages + 4 `(public)` pages (`login`, `register`, `pricing`,
   `how-it-works`) + layouts. Pinned in `parity/routes.json`.
@@ -65,6 +70,9 @@ the reproducibility that matters for source-of-truth.
 - `frontend/README.md` is still the default Next.js template README.
 These are functional-tree hygiene items for a later cleanup packet; WP4.1 removes only source-control
 junk (backups/manual patches), not functional or template files.
+- **Out of scope (noted for a follow-up):** `backend/` and `mt5_worker/` also carry tracked `.bak`
+  files (e.g. `backend/*/views.py.bak*`). WP4.1 is frontend-only; the same source-of-truth discipline
+  and a backend parity guard should be extended there in a later packet.
 
 ## Production discipline (standing rules)
 - The repository is authoritative; production is downstream. **No manual edits to the deployed frontend.**

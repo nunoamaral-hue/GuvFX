@@ -48,3 +48,6 @@ next-env.d.ts
 *.rej
 *.tmp
 ._*
+*.swp
+*.swo
+*~

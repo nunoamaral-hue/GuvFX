@@ -25,7 +25,9 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(fileURLToPath(import.meta.url), "..", "..");
 const SRC = join(ROOT, "src");
 const EXCLUDE_DIRS = new Set(["node_modules", ".next", ".git", "out", "build", "coverage"]);
-const JUNK = /(\.bak(\..*|_.*)?$)|(^\._)|(\.orig$)|(\.rej$)|(\.tmp$)/;
+// Case-insensitive; covers *.bak / *.bak.<x> / *.bak_<x> / *.bak2, AppleDouble ._*, *.orig, *.rej,
+// *.tmp, vim swap *.sw?, and emacs backup foo~.
+const JUNK = /(\.bak\d*(\..*|_.*)?$)|(^\._)|(\.orig$)|(\.rej$)|(\.tmp$)|(\.sw[a-p]$)|(~$)/i;
 const REQUIRED_DOCKERIGNORE = ["node_modules", ".next", "*.bak", "._*", ".git", "*.tsbuildinfo"];
 
 const errors = [];
@@ -77,19 +79,30 @@ if (!existsSync(di)) {
 }
 
 // 3 + 4. Route and component inventories.
-const routeFiles = walk(join(SRC, "app")).map(rel).filter((p) => /\/(page|route|layout)\.tsx?$/.test(p)).sort();
+const ROUTE_SPECIAL = /\/(page|route|layout|loading|error|not-found|template|default|global-error)\.tsx?$/;
+const routeFiles = walk(join(SRC, "app")).map(rel).filter((p) => ROUTE_SPECIAL.test(p)).sort();
 compareSet("parity/routes.json", routeFiles, "route file");
 const componentFiles = walk(join(SRC, "components")).map(rel).sort();
 compareSet("parity/components.json", componentFiles, "component");
 
-// 5. Env allow-list (env + feature-flag validation).
+// 5. Env allow-list (env + feature-flag validation). Scans ALL frontend TS/JS (src + root config),
+//    catching dotted access, bracket access (process.env["X"]), and NEXT_PUBLIC_* anywhere; and it
+//    rejects OPAQUE process.env access (destructure / spread / enumerate) that an allow-list cannot
+//    validate. Excludes this guard itself, whose source contains these patterns as string literals.
 const allow = new Set(readJson("parity/env-allowlist.json") || []);
+const SELF = rel(fileURLToPath(import.meta.url));
 const envRefs = new Set();
 for (const f of allFiles) {
-  if (!rel(f).startsWith("src/") || !/\.(ts|tsx|mjs|cjs|js|jsx)$/.test(f)) continue;
+  const r = rel(f);
+  if (r === SELF || !/\.(ts|tsx|mjs|cjs|js|jsx)$/.test(f)) continue;
   const txt = readFileSync(f, "utf8");
-  for (const m of txt.matchAll(/process\.env\.([A-Z0-9_]+)|(NEXT_PUBLIC_[A-Z0-9_]+)/g)) {
-    envRefs.add(m[1] || m[2]);
+  for (const m of txt.matchAll(/process\.env\.([A-Za-z0-9_]+)/g)) envRefs.add(m[1]);
+  for (const m of txt.matchAll(/process\.env\[\s*['"]([A-Za-z0-9_]+)['"]\s*\]/g)) envRefs.add(m[1]);
+  for (const m of txt.matchAll(/\b(NEXT_PUBLIC_[A-Za-z0-9_]+)\b/g)) envRefs.add(m[1]);
+  // `process.env` NOT immediately followed by `.NAME` or `["NAME"]` is opaque (e.g. destructuring,
+  // spread, Object.keys) — the allow-list can't see the names, so require explicit access.
+  if (/process\.env\b(?!\s*\.[A-Za-z0-9_]|\s*\[\s*['"])/.test(txt)) {
+    errors.push(`opaque process.env access in ${r} — use explicit process.env.NAME so parity can validate it`);
   }
 }
 for (const e of [...envRefs].sort()) {

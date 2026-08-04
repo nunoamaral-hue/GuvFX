@@ -26,3 +26,6 @@ yarn-error.log*
 # env files (never bake secrets into the image)
 .env
 .env.*
+*.swp
+*.swo
+*~
