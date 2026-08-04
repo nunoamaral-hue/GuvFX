@@ -113,8 +113,34 @@ safe direction, but an operational hazard). Arming-runbook note: the two broker-
 share one tolerant parser (`1/true/yes/on`); still, arm the health engine only once it converges rows
 promptly, and arm the execution gate and health engine together deliberately.
 
-### Still deferred to the pause/resume increment (before arming)
-Runtime pause on confirmed degradation (WP2 owns the pause action; WP3 emits `pause_required`), controlled
-resume on `resume_eligible` (never automatic; final recheck; disconnect/tombstone permanently blocks),
-state-version idempotency at the pause/resume layer, and h4 scheduler graceful-refusal parity. Arming
-remains separately gated.
+### Health degradation → runtime pause (WP2-owned, ADR-0029)
+The execution layer owns pause. `execution.BrokerRuntimePause` (OneToOne per account, additive, distinct
+from the provisioning `AccountRuntime.state` so the two lifecycles never overload one field) is the
+durable, secret-free pause record: `paused`, `reason_code`, `source_state_version`,
+`last_processed_version`, `paused_at`, `resume_eligible`, `resumed_at`. `execution/runtime_pause.py`
+provides:
+- **`process_broker_health_pause(account)`** — reconciles the record with the latest WP3 contract,
+  **idempotently keyed on `state_version`**: a version is processed at most once, a smaller version is
+  ignored (`BROKER_HEALTH_STALE_PAUSE_VERSION_IGNORED`), a larger one supersedes — an older decision can
+  never reverse a newer one. On `pause_required` it persists a pause (`BROKER_RUNTIME_PAUSED` on the
+  edge); on recovery it records `resume_eligible` (`BROKER_RECOVERY_DETECTED`) **without resuming** —
+  only the controlled resume service (Workstream D) may clear `paused`. The durable `resume_eligible` is
+  keyed on the **live contract's `eligible` (HEALTHY)**, not WP3's `resume_eligible` edge, so a recovery
+  via a broken edge (credential replace → re-validate → HEALTHY, which WP3 marks `resume_eligible=False`)
+  still marks the paused runtime resumable; the resume service re-checks the live contract, so the flag
+  never authorises a resume alone. Serialised with `select_for_update`. Pause NEVER deletes/tombstones
+  the runtime, touches credentials, or creates an
+  order/job. Inert unless BOTH flags are on.
+- **Creation-time block** — `require_not_broker_paused` is enforced at the model boundary
+  (`ExecutionJob.save`, alongside the eligibility gate) so a degraded-but-still-VALIDATED account cannot
+  create a new exposure-opening job (it refuses on the live contract's `pause_required`, immediate).
+- Triggers: the customer validation flow (`run_broker_validation` → reconcile) and a refused live
+  dispatch both reconcile the durable record; the final-dispatch gate independently refuses on the live
+  contract. Pause supported for DEGRADED / STALE / DISCONNECTED / TOMBSTONED; disconnected/tombstoned
+  remain permanently ineligible for execution and resume.
+
+### Still deferred (before arming)
+Controlled resume on `resume_eligible` (never automatic; final recheck; concurrency + state-version
+idempotency; disconnect/tombstone permanently blocks) — Workstream D; and the full entry-point
+re-inventory + h4 scheduler graceful-refusal parity + runtime start/resume/recovery rechecks —
+Workstream E. Arming remains separately gated.

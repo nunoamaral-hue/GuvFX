@@ -248,6 +248,11 @@ class ExecutionJob(models.Model):
         if self._state.adding and self.job_type in BROKER_GATE_BLOCKED_JOB_TYPES:
             from execution.broker_gate import require_execution_gate
             require_execution_gate(self.account, trigger=f"job:{self.job_type}")
+            # WP1B/WP2 (ADR-0029) pause: additionally refuse creating a new exposure-opening job when the
+            # account is broker-health paused (requires BOTH flags; no-op otherwise). Separate from the
+            # eligibility gate above so a degraded-but-still-VALIDATED account is stopped at creation too.
+            from execution.runtime_pause import require_not_broker_paused
+            require_not_broker_paused(self.account, trigger=f"job:{self.job_type}")
         super().save(*args, **kwargs)
 
     @classmethod
@@ -1146,3 +1151,51 @@ class BrokerInstrument(models.Model):
 
     def __str__(self) -> str:
         return f"{self.broker_symbol} (base={self.base_symbol}) @ acct#{self.account_id}"
+
+
+class BrokerRuntimePause(models.Model):
+    """WP1B/WP2 (ADR-0029) — durable, per-account BROKER-HEALTH pause record, owned by the execution
+    layer. It is the execution-side mirror of the WP3 convergence contract: when broker health becomes
+    ineligible while both broker-connectivity flags are on, the pause processor persists a pause here
+    (idempotently, keyed on the health ``state_version``). It is the object the controlled-resume service
+    clears — never automatically.
+
+    Additive + inert: a runtime with no row, or ``paused=False``, is NOT broker-paused. The record NEVER
+    holds runtime/strategy config or credentials, and pausing NEVER deletes or tombstones the runtime —
+    it only gates execution. Distinct from the provisioning state machine (``AccountRuntime.state``) so
+    the two lifecycles never overload one field."""
+
+    account = models.OneToOneField(
+        "trading.TradingAccount", on_delete=models.CASCADE, related_name="broker_pause")
+    paused = models.BooleanField(default=False, db_index=True)
+    reason_code = models.CharField(max_length=64, blank=True, default="")
+    # The health state_version that caused the current pause.
+    source_state_version = models.PositiveIntegerField(default=0)
+    # Highest health state_version this record has processed — the idempotency + stale-version guard.
+    last_processed_version = models.PositiveIntegerField(default=0)
+    paused_at = models.DateTimeField(null=True, blank=True)
+    # A recovery signal was recorded (WP3 resume_eligible). This is NOT authority to resume — only the
+    # controlled WP2 resume service may clear ``paused``.
+    resume_eligible = models.BooleanField(default=False)
+    resumed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["paused"], name="brokerpause_paused_idx")]
+
+    def __str__(self) -> str:
+        return f"BrokerRuntimePause(acct={self.account_id}, paused={self.paused}, v={self.last_processed_version})"
+
+    def as_dict(self) -> dict:
+        """Secret-free snapshot for reporting/resume (no runtime config, no credentials)."""
+        return {
+            "account_id": self.account_id,
+            "paused": self.paused,
+            "reason_code": self.reason_code,
+            "source_state_version": self.source_state_version,
+            "last_processed_version": self.last_processed_version,
+            "resume_eligible": self.resume_eligible,
+            "paused_at": self.paused_at.isoformat() if self.paused_at else None,
+            "resumed_at": self.resumed_at.isoformat() if self.resumed_at else None,
+        }

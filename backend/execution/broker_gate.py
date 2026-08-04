@@ -209,6 +209,14 @@ def evaluate_job_dispatch(job_id) -> GateDecision:
     decision = evaluate_dispatch_gate(job.account)
     if not decision.allowed:
         _audit_dispatch_refusal(job.account, decision, job_id=job_id)
+        # Converge the durable pause record from a refused live dispatch (best-effort; a failure here
+        # must never change the refusal outcome — the order is already being withheld).
+        try:
+            from execution.runtime_pause import process_broker_health_pause
+            process_broker_health_pause(job.account)
+        except Exception:  # noqa: BLE001
+            logger.warning("dispatch-time pause reconcile failed for account=%s",
+                           getattr(job.account, "pk", None))
     return decision
 
 
