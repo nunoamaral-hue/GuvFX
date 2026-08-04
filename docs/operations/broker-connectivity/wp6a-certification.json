@@ -1,0 +1,98 @@
+{
+  "schema_version": "1.0.0",
+  "packet": "WP6A",
+  "title": "Shared-environment operational certification (Internal Pilot)",
+  "certified_at": "2026-08-04",
+  "certified_commit": "b3e0bba",
+  "authority_note": "Non-destructive certification of engineered correctness in the shared environment. Does NOT authorise Trusted Beta, production arming, or customer invitations. All six flags OFF; nothing armed/deployed; no live accounts; no destructive testing. Multi-tenant isolation under stress (WP6B) is NOT certified here.",
+  "dark_invariant": {
+    "all_flags_off": true,
+    "no_arming": true,
+    "no_deployment": true,
+    "no_destructive_testing": true,
+    "no_failure_injection": true,
+    "no_concurrency_or_load": true,
+    "customer_zero_readonly_only": true,
+    "live_accounts_excluded": true
+  },
+  "verdict_vocabulary": ["PASS", "HOST-VERIFIED", "DEFERRED-WP6B", "PARTIAL", "FAIL"],
+  "verdict_scope_note": "Each area `verdict` is scoped to ENGINEERED correctness proven by the executed repo tests (cited counts). It is NOT a statement of live shared-environment readiness: that is additionally gated by each area's `host_verified_items` and by `pilot_recommendation.conditions`. Most important: area B lists 'live demo VALIDATE_LOGIN on host (not yet succeeded)' as a host_verified item and pilot condition 1 — the engineered lifecycle is PASS, but a live broker login has NOT been proven on the host. Read verdict + host_verified_items + conditions together; a bare PASS is never a readiness claim.",
+  "executed_evidence": {
+    "note": "Executed on 2026-08-04 against main@b3e0bba. Non-destructive: automated tests against fixtures/mocks, no live accounts, no production, no service stops, no flag enablement in production.",
+    "backend_tests_run": 387,
+    "backend_all_passed": true,
+    "frontend_tests_run": 46,
+    "frontend_all_passed": true,
+    "make_check_green": true,
+    "backend_modules": {
+      "terminal_provisioning.tests_validation_image": 16,
+      "terminal_provisioning.tests_phase2_contract": 11,
+      "terminal_provisioning.tests_broker_login_validation": 12,
+      "terminal_provisioning.tests_validate_login_agent": 40,
+      "trading.tests_broker_connectivity": 16,
+      "trading.tests_tb3_validation_state": 9,
+      "trading.tests_credential_invalidation": 10,
+      "trading.tests_credential_destruction": 7,
+      "execution.tests_broker_gate": 19,
+      "execution.tests_dispatch_gate": 14,
+      "execution.tests_wse": 11,
+      "execution.tests_execution_entrypoints": 5,
+      "execution.tests_runtime_pause": 16,
+      "execution.tests_runtime_resume": 17,
+      "execution.tests_e3_demo_promotion": 18,
+      "reliability.tests_broker_health": 59,
+      "operational_events.tests_operational_events": 41,
+      "operational_events.tests_broker_projection": 33,
+      "reliability.tests_operations_summary": 33
+    }
+  },
+  "areas": [
+    { "id": "A", "name": "Environment verification", "verdict": "PASS", "host_verified_items": ["build-5833 active on host", "validation image healthy on host", "deployed prod commit", "governed golden image on host"], "evidence": "tests_validation_image (16 OK) + tests_phase2_contract (11 OK); flags-OFF defs; build-5833 pin validation_image.py:31; parity green; ADR-0026..0032" },
+    { "id": "B", "name": "Single-user lifecycle", "verdict": "PASS", "host_verified_items": ["live demo VALIDATE_LOGIN on host (not yet succeeded — pilot condition 1)"], "evidence": "94 tests OK across broker_connectivity/tb3_validation_state/credential_invalidation/credential_destruction/broker_login_validation/validate_login_agent" },
+    { "id": "C", "name": "Execution safety", "verdict": "PASS", "host_verified_items": [], "evidence": "100 tests OK; route-inventory drift guard green (all 15 exposure routes gated at creation+claim+dispatch). Concurrency/race is DEFERRED-WP6B" },
+    { "id": "D", "name": "Health engine", "verdict": "PASS", "host_verified_items": [], "evidence": "reliability.tests_broker_health 59 OK (6 states, convergence, monotonic version, no auto-resume). Load/stress DEFERRED-WP6B" },
+    { "id": "E", "name": "Operational events", "verdict": "PASS", "host_verified_items": [], "evidence": "74 tests OK (operational_events 41 + broker_projection 33). No rebuild (no rebuild tool exists)" },
+    { "id": "F", "name": "Operations UI", "verdict": "PASS", "host_verified_items": [], "evidence": "46 frontend tests OK: flag-gate (OFF->404+no-API, non-operator->Restricted+no-API), badges/filters/timeline/detail/search/pagination/a11y" },
+    { "id": "G", "name": "Support workflow validation", "verdict": "PASS", "host_verified_items": ["manual operator walk-through against live demo accounts (needs demo host)"], "evidence": "All 17 support-playbook workflows certified via the WS-B/C/D/E/F behaviour tests" },
+    { "id": "H", "name": "Rollback readiness", "verdict": "PASS", "host_verified_items": ["verified DB backup (no automated backup deployed — pilot condition 3)"], "evidence": "Verify-only; flag/agent/backend/validation-image rollback paths defined (rollback-matrix.md, wp6-rollback-rehearsal.md); NO rollback executed" },
+    { "id": "I", "name": "Monitoring verification", "verdict": "PASS", "host_verified_items": [], "evidence": "operations_summary 33 OK; every signal has owner/source/query/evidence (monitoring-spec.md). CAPACITY BASELINES DEFERRED TO WP6B; event-lag + operator-API-error signals must be ADDED" }
+  ],
+  "pilot_recommendation": {
+    "decision": "GO_WITH_CONDITIONS",
+    "conditions": [
+      "Broker-login host certification: close the validation-terminal ACL gap + prove one successful demo VALIDATE_LOGIN on the host (ADR-0027 Phase 2B) before any broker-login-dependent pilot step.",
+      "Operator confirmation of the HOST-VERIFIED environment items (build-5833 active, verify_image PASS on host, golden pin match, deployed commit b3e0bba).",
+      "A verified database backup exists before the pilot (no automated backup is currently deployed).",
+      "All INTERNAL PILOT LIMITS honoured.",
+      "Customer Zero excluded except already-approved read-only validation; no live accounts."
+    ],
+    "internal_pilot_limits": {
+      "max_users": "5-10",
+      "accounts": "demo only",
+      "oversight": "manual operator",
+      "support": "manual",
+      "rollback": "manual",
+      "automatic_arming": false,
+      "unattended_validation": false,
+      "execution_gate": "may remain OFF until Sponsor chooses otherwise"
+    },
+    "does_not_block_internal_pilot": [
+      "Engineered capability (lifecycle, execution-safety gates, health, operational events, operator UI, 17 support workflows) — code-certified",
+      "Broker-login-independent surfaces (operator UI + operational-event observability)",
+      "Execution gate remaining OFF"
+    ],
+    "blocks_trusted_beta": [
+      "WP6B in its entirety (isolation/concurrency/load/failure/capacity)",
+      "Host broker-login certification at scale",
+      "Sponsor arming approval with cohort + capacity limits + stop conditions"
+    ]
+  },
+  "wp6b_deferred": {
+    "complete": false,
+    "note": "WP6B remains OUTSTANDING and must not be claimed complete. Requires a disposable certification environment (never the shared production estate); Sponsor-gated.",
+    "scope": [
+      "multi-user isolation", "concurrency", "load", "capacity", "failure injection",
+      "agent failures", "bridge failures", "worker failures", "database recovery", "stress", "throughput"
+    ]
+  }
+}
