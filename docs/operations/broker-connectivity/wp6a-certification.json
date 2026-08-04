@@ -16,6 +16,7 @@
     "live_accounts_excluded": true
   },
   "verdict_vocabulary": ["PASS", "HOST-VERIFIED", "DEFERRED-WP6B", "PARTIAL", "FAIL"],
+  "verdict_scope_note": "Each area `verdict` is scoped to ENGINEERED correctness proven by the executed repo tests (cited counts). It is NOT a statement of live shared-environment readiness: that is additionally gated by each area's `host_verified_items` and by `pilot_recommendation.conditions`. Most important: area B lists 'live demo VALIDATE_LOGIN on host (not yet succeeded)' as a host_verified item and pilot condition 1 — the engineered lifecycle is PASS, but a live broker login has NOT been proven on the host. Read verdict + host_verified_items + conditions together; a bare PASS is never a readiness claim.",
   "executed_evidence": {
     "note": "Executed on 2026-08-04 against main@b3e0bba. Non-destructive: automated tests against fixtures/mocks, no live accounts, no production, no service stops, no flag enablement in production.",
     "backend_tests_run": 387,

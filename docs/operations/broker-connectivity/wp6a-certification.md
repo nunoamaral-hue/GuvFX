@@ -21,6 +21,13 @@ Evidence was **executed on 2026-08-04** against `main` @ `b3e0bba`:
 the repo but the live-host state cannot be certified from the repository (requires operator confirmation).
 `DEFERRED-WP6B` = belongs to the deferred stress/isolation certification and is **not** claimed here.
 
+> **Scope of a `PASS`.** An area `PASS` certifies **engineered correctness** (the behaviour is proven by the
+> executed tests). It is **not** a live-readiness claim — real shared-environment readiness is additionally
+> gated by that area's HOST-VERIFIED items and the pilot conditions. In particular, **WS-B is `PASS` for the
+> engineered lifecycle but a live demo `VALIDATE_LOGIN` has NOT succeeded on the host** (pilot condition 1).
+> Read each verdict together with its HOST-VERIFIED notes and
+> [wp6a-pilot-recommendation.md](wp6a-pilot-recommendation.md).
+
 ---
 
 ## WS-A — Environment verification
