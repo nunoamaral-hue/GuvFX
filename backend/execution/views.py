@@ -818,6 +818,22 @@ class CreateDemoTradeJobView(APIView):
         # =====================================================================
         # Create the execution job with safety-enforced parameters
         # =====================================================================
+        # WP1B/WP2 (ADR-0029): broker-validation execution gate. Transparent while
+        # BROKER_CONNECTIVITY_EXECUTION_GATE is OFF; when ON, refuse a non-validated/ineligible account
+        # here with a clean 503 (the model-layer gate is the authoritative backstop).
+        from execution.broker_gate import evaluate_execution_gate
+        _gate = evaluate_execution_gate(account)
+        if not _gate.allowed:
+            return Response(
+                {
+                    "ok": False,
+                    "reason": "execution_disabled",
+                    "detail": "Broker validation gate refused this account; no order was placed.",
+                    "gate_reason": _gate.reason_code,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         job = ExecutionJob.objects.create(
             job_type=ExecutionJob.JobType.PLACE_TEST_ORDER,
             account=account,

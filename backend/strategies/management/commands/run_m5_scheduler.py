@@ -41,6 +41,7 @@ from strategies.management.commands.run_h4_scheduler import job_exists_for_bar_c
 from strategies.models import Strategy, StrategyAssignment, StrategyRuntimeEvent
 from strategies.risk_manager import record_signal_event, ORDER_PLACED
 from strategies.signal_engine import create_place_order_job
+from execution.broker_gate import ExecutionGateRefused
 from execution.models import ExecutionKillSwitchEngaged
 from trading.models import TradingAccount
 
@@ -506,9 +507,9 @@ class Command(BaseCommand):
                             f"reason={result.reason}"
                         )
 
-            except ExecutionKillSwitchEngaged:
-                # Kill switch engaged — order creation failed closed (no order
-                # placed). Clean skip rather than a noisy error trace.
+            except (ExecutionKillSwitchEngaged, ExecutionGateRefused):
+                # Kill switch engaged OR broker validation gate refused (ADR-0029) — order creation
+                # failed closed at the model boundary (no order placed). Clean skip.
                 self.stdout.write(
                     f"  [SKIP-KILLSWITCH] execution disabled — no order placed: "
                     f"account={account.id} strategy={strategy.id} symbol={symbol}"

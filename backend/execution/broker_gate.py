@@ -58,6 +58,7 @@ class ExecutionGateRefused(Exception):
 
     def __init__(self, reason_code: str):
         self.reason_code = reason_code
+        self.reason = reason_code  # alias: interoperable with ExecutionKillSwitchEngaged.reason callers
         super().__init__(f"execution refused by broker validation gate: {reason_code}")
 
 
