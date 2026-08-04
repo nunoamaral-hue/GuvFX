@@ -123,6 +123,27 @@ class CredentialInvalidationTests(TestCase):
             d = bg.evaluate_dispatch_gate(self.acct)
         self.assertEqual((d.allowed, d.reason_code), (False, bg.SR_VALIDATION_REQUIRED))
 
+    def test_fresh_validation_converges_health_and_allows_dispatch(self):
+        # M1 fix: a freshly-VALIDATED account must converge to HEALTHY on the customer validation flow
+        # (not only on the inert scheduler), so the final-dispatch gate allows it immediately.
+        class _Outcome:
+            def as_dict(self):
+                return {"status": "HEALTHY", "reason": "demo_ok", "is_demo": True,
+                        "server": "IS6Technologies-Demo", "login_masked": "***", "correlation_id": "c"}
+
+        class _Validator:
+            def validate(self, a):
+                return _Outcome()
+
+        acct = _validated_acct(self.user, number="99001")
+        env = dict(_HEALTH_ON, BROKER_CONNECTIVITY_EXECUTION_GATE="1")
+        with mock.patch.dict(os.environ, env):
+            bc.run_broker_validation(acct, trigger="add", validator=_Validator())
+            c = bh.get_contract(acct)
+            self.assertEqual(c["state"], "HEALTHY")   # converged on the validation flow
+            d = bg.evaluate_dispatch_gate(acct)
+        self.assertTrue(d.allowed)
+
     def test_no_resume_until_fresh_validation(self):
         with mock.patch.dict(os.environ, _HEALTH_ON):
             BrokerAccountHealth.objects.create(account=self.acct, state="HEALTHY", resume_eligible=True)

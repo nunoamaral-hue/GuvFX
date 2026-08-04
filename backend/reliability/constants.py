@@ -209,7 +209,9 @@ RECOVERY_COOLDOWN_S = {
 # is emitted. Default OFF — the whole capability ships DARK. Read LIVE (function, not module
 # constant) so tests and a future arming step can toggle it without a process restart.
 def broker_health_enabled() -> bool:
-    return _flag("BROKER_CONNECTIVITY_HEALTH_ENABLED", "false")
+    # Tolerant parser (1/true/yes/on), matching execution_gate_enabled so the two broker-connectivity
+    # flags cannot silently disagree at arming (e.g. "=1" enabling one but not the other).
+    return os.getenv("BROKER_CONNECTIVITY_HEALTH_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _int_env(name: str, default: int) -> int:

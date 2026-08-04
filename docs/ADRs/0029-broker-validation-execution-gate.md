@@ -104,6 +104,15 @@ does not abort the rotation (the gate already fails closed on `validation_status
 audited `BROKER_HEALTH_INVALIDATION_ERROR`). A failure in the atomic block rolls back completely — no
 partial invalidation.
 
+### Health convergence on the validation flow
+`run_broker_validation` now folds its outcome into the WP3 engine (`record_validation_outcome`, no-op
+when health is DARK, fail-open) so a freshly-validated account converges to HEALTHY *immediately* on the
+customer flow — not only on the next (inert) scheduler cycle. Without this, arming BOTH flags would
+dispatch-refuse a just-validated account (`broker_validation_required`) until the scheduler ran (the
+safe direction, but an operational hazard). Arming-runbook note: the two broker-connectivity flags now
+share one tolerant parser (`1/true/yes/on`); still, arm the health engine only once it converges rows
+promptly, and arm the execution gate and health engine together deliberately.
+
 ### Still deferred to the pause/resume increment (before arming)
 Runtime pause on confirmed degradation (WP2 owns the pause action; WP3 emits `pause_required`), controlled
 resume on `resume_eligible` (never automatic; final recheck; disconnect/tombstone permanently blocks),

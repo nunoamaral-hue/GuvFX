@@ -88,6 +88,18 @@ def run_broker_validation(account, *, trigger, actor="", request=None, validator
         account.validated_at = timezone.now()
         update_fields.append("validated_at")
     account.save(update_fields=update_fields)
+
+    # WP1B/WP2 convergence: fold this fresh outcome into the WP3 health engine so the convergence
+    # contract reflects the latest evidence *immediately* — a freshly-validated account converges to
+    # HEALTHY on the customer flow, not only on the next (inert) scheduler cycle. No-op when the health
+    # engine is DARK. Fail-open: a health-engine error must never break the customer validation flow.
+    try:
+        from reliability.broker_health import record_validation_outcome
+        record_validation_outcome(account)
+    except Exception:  # noqa: BLE001 — health ingestion is best-effort; the durable attempt already exists
+        from core.audit import log_event
+        log_event(request, "BROKER_HEALTH_INGEST_ERROR", severity="WARN",
+                  entity_type="TradingAccount", entity_id=getattr(account, "pk", None), metadata={})
     return attempt
 
 

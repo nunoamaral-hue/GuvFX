@@ -98,9 +98,9 @@ class FeatureFlagOffTests(TestCase):
         self.assertFalse(BrokerAccountHealth.objects.exists())
 
     def test_flag_must_be_exactly_truthy(self):
-        # Defensive: a stray value is treated as OFF (fail-safe), not accidentally ON.
-        with mock.patch.dict(os.environ, {"BROKER_CONNECTIVITY_HEALTH_ENABLED": "1"}):
-            # "1" is not the accepted truthy token ("true") for this flag helper → OFF.
+        # Defensive: a value outside the accepted truthy set (1/true/yes/on) is treated as OFF
+        # (fail-safe), not accidentally ON. "1" IS accepted (parser harmonised with the exec gate).
+        with mock.patch.dict(os.environ, {"BROKER_CONNECTIVITY_HEALTH_ENABLED": "maybe"}):
             self.assertIsNone(bh.record_validation_outcome(self.acct))
 
 
