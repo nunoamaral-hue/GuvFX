@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { StatusBadge } from "@/components/broker/StatusBadge";
 import { createAccount, testConnection } from "@/lib/broker-api";
-import { healthStatusView, reasonMessage } from "@/lib/broker-status";
+import { healthStatusView, reasonMessage, toCustomerError } from "@/lib/broker-status";
 import type { ValidationAttempt } from "@/types/broker";
 
 /** WP4.2 — Add a broker account, then validate it via the existing backend. The password is submitted
@@ -51,7 +51,7 @@ export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded })
       setResult(attempt);
       onAdded();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "We couldn't add the account. Please try again.");
+      setError(toCustomerError(err, "We couldn't add the account. Please try again."));
     } finally {
       setBusy(false);
     }

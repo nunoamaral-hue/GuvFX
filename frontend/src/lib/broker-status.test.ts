@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  connectionView, healthStatusView, maskAccountNumber, reasonMessage, validationStatusView,
+  connectionView, healthStatusView, maskAccountNumber, reasonMessage, toCustomerError, validationStatusView,
 } from "@/lib/broker-status";
 
 describe("validationStatusView", () => {
@@ -50,6 +50,22 @@ describe("connectionView", () => {
     expect(connectionView(true, "2026-08-04T00:00:00Z").label).toBe("Disconnected");
     expect(connectionView(true, null).label).toBe("Connected");
     expect(connectionView(false, null).label).toBe("Inactive");
+  });
+});
+
+describe("toCustomerError", () => {
+  it("returns a plain DRF detail as-is (already customer-safe)", () => {
+    expect(toCustomerError(new Error("password is required."))).toBe("password is required.");
+  });
+  it("flattens a DRF field-error JSON blob into readable text (no raw JSON)", () => {
+    const out = toCustomerError(new Error('{"account_number":["This account number already exists."]}'));
+    expect(out).toBe("This account number already exists.");
+    expect(out).not.toContain("{");
+    expect(out).not.toContain("account_number");
+  });
+  it("falls back to the generic message on empty/unparseable input", () => {
+    expect(toCustomerError(new Error("{bad json"), "fallback")).toBe("fallback");
+    expect(toCustomerError(null, "fallback")).toBe("fallback");
   });
 });
 

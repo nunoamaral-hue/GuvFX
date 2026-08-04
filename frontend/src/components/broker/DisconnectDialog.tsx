@@ -5,6 +5,7 @@ import { Dialog } from "@/components/broker/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { disconnectAccount } from "@/lib/broker-api";
+import { toCustomerError } from "@/lib/broker-status";
 
 /** WP4.2 — disconnect (tombstone) a broker account. Explains the effect clearly and requires an explicit
  * confirmation. Credentials are destroyed and the runtime disconnected, but trade/validation history is
@@ -24,7 +25,7 @@ export const DisconnectDialog: React.FC<Props> = ({ open, accountId, accountLabe
       onDisconnected();
       close();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "We couldn't disconnect the account. Please try again.");
+      setError(toCustomerError(err, "We couldn't disconnect the account. Please try again."));
       setBusy(false);
     }
   };

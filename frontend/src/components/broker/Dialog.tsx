@@ -1,16 +1,17 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useEffect, useRef } from "react";
 
 /** WP4.2 — accessible modal base for the Broker Accounts action dialogs. role=dialog + aria-modal,
  * labelled title, ESC to close, backdrop click to close, focus moved in on open and a simple focus
- * trap (Tab/Shift+Tab cycle within the dialog). No backend calls. */
+ * trap (Tab/Shift+Tab cycle within the dialog). The focus/keydown effect depends ONLY on `open`, so an
+ * in-flight action toggling `busy` never re-steals focus. No backend calls. */
 type DialogProps = {
   open: boolean;
   onClose: () => void;
   title: string;
   children: React.ReactNode;
-  /** Disables ESC/backdrop close (e.g. while an action is in flight). */
+  /** Disables ESC/backdrop/close-button while an action is in flight. */
   busy?: boolean;
   labelId?: string;
 };
@@ -29,19 +30,22 @@ export const Dialog: React.FC<DialogProps> = ({ open, onClose, title, children, 
   const ref = useRef<HTMLDivElement>(null);
   const titleId = labelId || "broker-dialog-title";
 
-  const maybeClose = useCallback(() => { if (!busy) onClose(); }, [busy, onClose]);
+  // Keep the latest busy/onClose in refs (synced in an effect, never during render) so the focus+keydown
+  // effect can depend on `open` alone.
+  const busyRef = useRef(busy);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { busyRef.current = busy; onCloseRef.current = onClose; });
 
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;
-    // Move focus into the dialog.
     const focusables = () =>
       Array.from(ref.current?.querySelectorAll<HTMLElement>(
         'a[href],button:not([disabled]),textarea,input,select,[tabindex]:not([tabindex="-1"])') ?? []);
     (focusables()[0] ?? ref.current)?.focus();
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.stopPropagation(); maybeClose(); return; }
+      if (e.key === "Escape") { e.stopPropagation(); if (!busyRef.current) onCloseRef.current(); return; }
       if (e.key !== "Tab") return;
       const items = focusables();
       if (items.length === 0) { e.preventDefault(); return; }
@@ -52,16 +56,16 @@ export const Dialog: React.FC<DialogProps> = ({ open, onClose, title, children, 
     };
     document.addEventListener("keydown", onKey, true);
     return () => { document.removeEventListener("keydown", onKey, true); prev?.focus?.(); };
-  }, [open, maybeClose]);
+  }, [open]);
 
   if (!open) return null;
   return (
-    <div style={overlay} onMouseDown={(e) => { if (e.target === e.currentTarget) maybeClose(); }}>
+    <div style={overlay} onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
       <div ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} style={panel}
            onMouseDown={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.9rem" }}>
           <h2 id={titleId} style={{ margin: 0, fontSize: "1.15rem", color: "#e9f4ff" }}>{title}</h2>
-          <button type="button" aria-label="Close" onClick={maybeClose} disabled={busy}
+          <button type="button" aria-label="Close" onClick={() => { if (!busy) onClose(); }} disabled={busy}
                   style={{ background: "transparent", border: "none", color: "#8fa0b7", fontSize: "1.4rem",
                            cursor: busy ? "default" : "pointer", lineHeight: 1 }}>×</button>
         </div>

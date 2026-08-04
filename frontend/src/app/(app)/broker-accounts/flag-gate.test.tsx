@@ -20,8 +20,9 @@ let enabled = false;
 vi.mock("@/lib/flags", () => ({ brokerConnectivityEnabled: () => enabled }));
 
 import BrokerAccountsPage from "./page";
+import BrokerAccountDetailPage from "./[id]/page";
 
-describe("broker-accounts flag gate", () => {
+describe("broker-accounts flag gate (list)", () => {
   beforeEach(() => { notFound.mockClear(); listAccounts.mockClear(); });
 
   it("404s and makes NO API call when the flag is OFF", () => {
@@ -36,5 +37,14 @@ describe("broker-accounts flag gate", () => {
     render(<BrokerAccountsPage />);
     await waitFor(() => expect(listAccounts).toHaveBeenCalled());
     expect(notFound).not.toHaveBeenCalled();
+  });
+});
+
+describe("broker-accounts flag gate (detail)", () => {
+  beforeEach(() => { notFound.mockClear(); });
+  it("404s when the flag is OFF", () => {
+    enabled = false;
+    expect(() => render(<BrokerAccountDetailPage />)).toThrow(/NEXT_NOT_FOUND/);
+    expect(notFound).toHaveBeenCalled();
   });
 });

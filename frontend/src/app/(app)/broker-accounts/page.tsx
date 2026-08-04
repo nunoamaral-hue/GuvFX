@@ -7,6 +7,7 @@ import { getBrokerStatus, listAccounts } from "@/lib/broker-api";
 import { AccountCard } from "@/components/broker/AccountCard";
 import { BrokerAccountWizard } from "@/components/broker/BrokerAccountWizard";
 import { EmptyState, ErrorState, LoadingState } from "@/components/broker/States";
+import { toCustomerError } from "@/lib/broker-status";
 import { Button } from "@/components/ui/Button";
 import type { BrokerAccount, BrokerStatus } from "@/types/broker";
 
@@ -35,7 +36,7 @@ export default function BrokerAccountsPage() {
       }));
       setStatuses(Object.fromEntries(entries));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "We couldn't load your broker accounts.");
+      setError(toCustomerError(err, "We couldn't load your broker accounts."));
     } finally {
       setStatusLoading(false);
     }

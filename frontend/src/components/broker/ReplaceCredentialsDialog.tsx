@@ -5,6 +5,7 @@ import { Dialog } from "@/components/broker/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { replaceCredentials } from "@/lib/broker-api";
+import { toCustomerError } from "@/lib/broker-status";
 
 /** WP4.2 — replace the stored password. Explains that existing validation becomes invalid until the
  * account is re-validated. The password is write-only; the stored credential is never shown. */
@@ -32,7 +33,7 @@ export const ReplaceCredentialsDialog: React.FC<Props> = ({ open, accountId, onC
       onReplaced();
       close();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "We couldn't replace the credentials. Please try again.");
+      setError(toCustomerError(err, "We couldn't replace the credentials. Please try again."));
       setBusy(false);
     }
   };

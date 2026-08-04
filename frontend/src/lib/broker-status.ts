@@ -66,6 +66,31 @@ export function maskAccountNumber(n: string | null | undefined): string {
   return "••••" + s.slice(-4);
 }
 
+/** Turn a caught error into customer-safe wording. `apiFetch` throws the DRF `detail` (already
+ * customer-safe) for most errors, but for field-shaped validation errors it throws `JSON.stringify(obj)`
+ * — this flattens that into the plain validation sentences and never shows the customer a raw JSON blob
+ * (or, if extraction yields nothing, a generic fallback). */
+export function toCustomerError(err: unknown, fallback = "Something went wrong. Please try again."): string {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  if (!msg) return fallback;
+  if (msg.startsWith("{") || msg.startsWith("[")) {
+    try {
+      const parts: string[] = [];
+      const collect = (v: unknown): void => {
+        if (typeof v === "string") parts.push(v);
+        else if (Array.isArray(v)) v.forEach(collect);
+        else if (v && typeof v === "object") Object.values(v).forEach(collect);
+      };
+      collect(JSON.parse(msg));
+      const cleaned = parts.map((s) => s.trim()).filter(Boolean).join(" ");
+      return cleaned || fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  return msg;
+}
+
 /** Format an ISO timestamp for display; empty string when absent/invalid. */
 export function formatWhen(iso: string | null | undefined): string {
   if (!iso) return "";

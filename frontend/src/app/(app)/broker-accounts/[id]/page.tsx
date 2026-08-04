@@ -16,7 +16,8 @@ import { ReplaceCredentialsDialog } from "@/components/broker/ReplaceCredentials
 import { DisconnectDialog } from "@/components/broker/DisconnectDialog";
 import { ErrorState, LoadingState } from "@/components/broker/States";
 import {
-  connectionView, formatWhen, healthStatusView, maskAccountNumber, reasonMessage, validationStatusView,
+  connectionView, formatWhen, healthStatusView, maskAccountNumber, reasonMessage, toCustomerError,
+  validationStatusView,
 } from "@/lib/broker-status";
 import type { BrokerAccount, BrokerStatus, ValidationAttempt } from "@/types/broker";
 
@@ -47,7 +48,7 @@ export default function BrokerAccountDetailPage() {
       ]);
       setAccount(acct); setStatus(st); setHistory(hist);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "We couldn't load this account.");
+      setError(toCustomerError(err, "We couldn't load this account."));
     }
   }, [id]);
 
@@ -61,7 +62,7 @@ export default function BrokerAccountDetailPage() {
       const [st, hist] = await Promise.all([getBrokerStatus(id).catch(() => null), getValidationHistory(id).catch(() => history || [])]);
       setStatus(st); setHistory(hist);
     } catch (err) {
-      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Validation failed. Please try again." });
+      setActionMsg({ ok: false, text: toCustomerError(err, "Validation failed. Please try again.") });
     } finally {
       setBusy(null);
     }
