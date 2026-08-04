@@ -28,6 +28,7 @@ const EXCLUDE_DIRS = new Set(["node_modules", ".next", ".git", "out", "build", "
 // Case-insensitive; covers *.bak / *.bak.<x> / *.bak_<x> / *.bak2, AppleDouble ._*, *.orig, *.rej,
 // *.tmp, vim swap *.sw?, and emacs backup foo~.
 const JUNK = /(\.bak\d*(\..*|_.*)?$)|(^\._)|(\.orig$)|(\.rej$)|(\.tmp$)|(\.sw[a-p]$)|(~$)/i;
+const IS_TEST = /\.(test|spec)\.[tj]sx?$/; // co-located tests are not routes/components/source env
 const REQUIRED_DOCKERIGNORE = ["node_modules", ".next", "*.bak", "._*", ".git", "*.tsbuildinfo"];
 
 const errors = [];
@@ -80,9 +81,9 @@ if (!existsSync(di)) {
 
 // 3 + 4. Route and component inventories.
 const ROUTE_SPECIAL = /\/(page|route|layout|loading|error|not-found|template|default|global-error)\.tsx?$/;
-const routeFiles = walk(join(SRC, "app")).map(rel).filter((p) => ROUTE_SPECIAL.test(p)).sort();
+const routeFiles = walk(join(SRC, "app")).map(rel).filter((p) => ROUTE_SPECIAL.test(p) && !IS_TEST.test(p)).sort();
 compareSet("parity/routes.json", routeFiles, "route file");
-const componentFiles = walk(join(SRC, "components")).map(rel).sort();
+const componentFiles = walk(join(SRC, "components")).map(rel).filter((p) => !IS_TEST.test(p)).sort();
 compareSet("parity/components.json", componentFiles, "component");
 
 // 5. Env allow-list (env + feature-flag validation). Scans ALL frontend TS/JS (src + root config),
@@ -94,7 +95,7 @@ const SELF = rel(fileURLToPath(import.meta.url));
 const envRefs = new Set();
 for (const f of allFiles) {
   const r = rel(f);
-  if (r === SELF || !/\.(ts|tsx|mjs|cjs|js|jsx)$/.test(f)) continue;
+  if (r === SELF || IS_TEST.test(r) || !/\.(ts|tsx|mjs|cjs|js|jsx)$/.test(f)) continue;
   const txt = readFileSync(f, "utf8");
   for (const m of txt.matchAll(/process\.env\.([A-Za-z0-9_]+)/g)) envRefs.add(m[1]);
   for (const m of txt.matchAll(/process\.env\[\s*['"]([A-Za-z0-9_]+)['"]\s*\]/g)) envRefs.add(m[1]);

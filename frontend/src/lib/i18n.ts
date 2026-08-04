@@ -143,6 +143,7 @@ const dictionary: Dictionary = {
   "nav.invoices": { en: "Invoices", ja: "請求書" },
   "nav.usage": { en: "Usage", ja: "使用状況" },
   "nav.brokerAccounts": { en: "Broker Accounts", ja: "ブローカー口座" },
+  "nav.brokerConnections": { en: "Broker Connections", ja: "ブローカー接続" },
   "nav.userSettings": { en: "User Settings", ja: "ユーザー設定" },
   "nav.hosting": { en: "Hosting", ja: "ホスティング" },
 

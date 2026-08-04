@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "verify:parity": "node scripts/verify-frontend-parity.mjs",
-    "prebuild": "node scripts/verify-frontend-parity.mjs"
+    "prebuild": "node scripts/verify-frontend-parity.mjs",
+    "test": "vitest run",
+    "prelint": "vitest run"
   },
   "dependencies": {
     "@tabler/icons-webfont": "^3.44.0",
@@ -18,12 +20,18 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4.7.0",
     "eslint": "^9",
     "eslint-config-next": "16.0.8",
+    "jsdom": "^25.0.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.7"
   }
 }
