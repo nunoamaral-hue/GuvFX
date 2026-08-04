@@ -264,3 +264,86 @@ class SoakSnapshot(models.Model):
 
     def __str__(self):
         return f"SoakSnapshot({self.generated_at:%Y-%m-%d %H:%M} w={self.window_hours}h)"
+
+
+class BrokerAccountHealth(models.Model):
+    """WP3 (ADR-0030) — the single authoritative *continuous* broker-health state for one customer
+    TradingAccount. Derived deterministically from validation evidence
+    (``trading.BrokerAccountValidationAttempt`` outcomes) plus time (staleness) and the account's
+    lifecycle (``disconnected_at`` → TOMBSTONED). WP1B/WP2 consume the convergence contract
+    (``eligible`` / ``pause_required`` / ``resume_eligible`` / ``reason_code`` / ``state_version`` /
+    ``updated_at``); WP3 only *emits signals* — it never pauses/resumes a runtime, places an order,
+    logs into a broker, or reads a credential. Ships DARK behind ``BROKER_CONNECTIVITY_HEALTH_ENABLED``."""
+
+    class State(models.TextChoices):
+        UNKNOWN = "UNKNOWN", "Unknown"           # never validated / no evidence yet
+        HEALTHY = "HEALTHY", "Healthy"           # last evidence good; eligible to execute
+        DEGRADED = "DEGRADED", "Degraded"        # sustained auth/attention failures (recoverable)
+        STALE = "STALE", "Stale"                 # HEALTHY but no recent successful validation (recoverable)
+        DISCONNECTED = "DISCONNECTED", "Disconnected"  # sustained broker-unreachable failures (recoverable)
+        TOMBSTONED = "TOMBSTONED", "Tombstoned"  # account decommissioned (WP1A disconnect) — TERMINAL
+
+    # States in which a *running* runtime must be paused, and execution is not eligible.
+    PAUSE_STATES = frozenset({State.DEGRADED, State.STALE, State.DISCONNECTED, State.TOMBSTONED})
+    # Adverse states a SUCCESS can recover *from* (TOMBSTONED is terminal and excluded).
+    RECOVERABLE_STATES = frozenset({State.DEGRADED, State.STALE, State.DISCONNECTED})
+
+    account = models.OneToOneField(
+        "trading.TradingAccount", on_delete=models.CASCADE, related_name="broker_health")
+    state = models.CharField(max_length=16, choices=State.choices, default=State.UNKNOWN)
+    reason_code = models.CharField(max_length=64, blank=True)
+
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    consecutive_successes = models.PositiveIntegerField(default=0)
+    consecutive_failures = models.PositiveIntegerField(default=0)
+    # Monotonic watermark of the last consumed BrokerAccountValidationAttempt (id). Guarantees each
+    # attempt is folded into the state exactly once — history is *consumed*, never duplicated.
+    last_consumed_attempt_id = models.BigIntegerField(null=True, blank=True)
+
+    # Convergence-contract signal: True only after a recovery edge (paused → HEALTHY), so WP1B can
+    # distinguish "healthy, was paused → may resume" from "healthy from the start → nothing to resume".
+    resume_eligible = models.BooleanField(default=False)
+    # Increments by exactly one on every *state* change (not on reason-only refreshes). WP1B uses it to
+    # consume contract changes idempotently.
+    state_version = models.PositiveIntegerField(default=0)
+
+    # Scheduler bookkeeping (framework only; inactive while the flag is OFF).
+    next_check_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["state"], name="brokerhealth_state_idx"),
+            models.Index(fields=["next_check_at"], name="brokerhealth_next_check_idx"),
+        ]
+
+    def __str__(self):
+        return f"broker_health<{self.account_id}:{self.state}:v{self.state_version}>"
+
+    # ── Convergence contract (consumed by WP1B/WP2) ──
+    @property
+    def eligible(self) -> bool:
+        """True only when execution may proceed for this account (state is HEALTHY)."""
+        return self.state == self.State.HEALTHY
+
+    @property
+    def pause_required(self) -> bool:
+        """True when a running runtime for this account must be paused."""
+        return self.state in self.PAUSE_STATES
+
+    def contract(self) -> dict:
+        """The stable, secret-free snapshot WP1B/WP2 consume. ``updated_at`` may be None before the
+        first save (auto_now populates it on write)."""
+        return {
+            "account_id": self.account_id,
+            "state": self.state,
+            "eligible": self.eligible,
+            "pause_required": self.pause_required,
+            "resume_eligible": self.resume_eligible,
+            "reason_code": self.reason_code,
+            "state_version": self.state_version,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }

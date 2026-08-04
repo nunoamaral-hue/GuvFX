@@ -201,3 +201,48 @@ RECOVERY_COOLDOWN_S = {
     "orphan_jobs": 120,
     "stale_telemetry": 120,
 }
+
+
+# ─── WP3 — Continuous Broker Health Engine (ADR-0030) ───
+# Master gate for the broker-health state machine + scheduler. When False the engine is a
+# no-op: no BrokerAccountHealth row is mutated, no scheduler cycle runs, no signal/notification
+# is emitted. Default OFF — the whole capability ships DARK. Read LIVE (function, not module
+# constant) so tests and a future arming step can toggle it without a process restart.
+def broker_health_enabled() -> bool:
+    return _flag("BROKER_CONNECTIVITY_HEALTH_ENABLED", "false")
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return v if v > 0 else default
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        v = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return v if v >= 0 else default
+
+
+def broker_health_config() -> dict:
+    """Deterministic, read-live thresholds/backoff for the health engine + scheduler. All values are
+    tunable via env for tests/operations; none is a secret. See ADR-0030 §Thresholds."""
+    return {
+        # State thresholds (consecutive attempt outcomes).
+        "failure_threshold": _int_env("BROKER_HEALTH_FAILURE_THRESHOLD", 3),
+        "success_threshold": _int_env("BROKER_HEALTH_SUCCESS_THRESHOLD", 2),
+        # Staleness: a HEALTHY account with no successful validation within this window → STALE.
+        "stale_timeout_s": _int_env("BROKER_HEALTH_STALE_TIMEOUT_S", 3600),
+        # Scheduler cadence/backoff (framework only; inactive while the flag is OFF).
+        "base_interval_s": _int_env("BROKER_HEALTH_BASE_INTERVAL_S", 300),
+        "backoff_factor": _float_env("BROKER_HEALTH_BACKOFF_FACTOR", 2.0),
+        "max_interval_s": _int_env("BROKER_HEALTH_MAX_INTERVAL_S", 3600),
+        # Deterministic jitter as a fraction of the interval (0 disables). Never uses a random source.
+        "jitter_frac": _float_env("BROKER_HEALTH_JITTER_FRAC", 0.1),
+        # Max accounts a single scheduler cycle may validate (quota / blast-radius cap).
+        "quota_per_cycle": _int_env("BROKER_HEALTH_QUOTA_PER_CYCLE", 50),
+    }
