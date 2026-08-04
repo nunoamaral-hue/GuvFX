@@ -42,6 +42,10 @@ type TradingAccount = {
   name: string;
   broker_name?: string;
   account_number?: string;
+  // IPR Area D: both serialized by the backend — used to hint eligibility in the arm selector
+  // (arm rejects non-demo / inactive with `account_not_ready`; arm remains the authority).
+  is_demo?: boolean;
+  is_active?: boolean;
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -229,6 +233,8 @@ export default function StrategyMarketplacePage() {
   // Per-card enable/disable state for signal-copy strategies (e.g. Wayond WIM).
   const [copyState, setCopyState] = useState<Record<string, SignalCopyStatus>>({});
   const [copyBusy, setCopyBusy] = useState<Record<string, boolean>>({});
+  // IPR Area D: per-card busy state for the self-service Enable-Trading (arm) action.
+  const [armBusy, setArmBusy] = useState<Record<string, boolean>>({});
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [defaultAccountId, setDefaultAccountId] = useState<number | null>(null);
   const [alert, setAlert] = useState<string | null>(null);
@@ -467,6 +473,48 @@ export default function StrategyMarketplacePage() {
       setAlertType("error");
     } finally {
       setCopyBusy((b) => ({ ...b, [strategyId]: false }));
+    }
+  };
+
+  // IPR Area D — self-service Enable-Trading (arm). Creates the AUTO_DEMO signal-copy authority for the
+  // chosen account (backend `signal_copy_arm`, gated OFF by BETA_SELF_SERVE_ARM_ENABLED and fail-closed).
+  // On success we NEVER trust the optimistic click — we re-read the authoritative status so the card's
+  // ON state comes only from backend-confirmed `enabled`. Failures branch on the machine-readable
+  // `status` slug (not `detail`, which is identical for the two readiness reasons) into customer-safe
+  // wording — raw slugs / detail strings are never shown.
+  const handleSignalCopyArm = async (strategyId: string, accountId: number) => {
+    setArmBusy((b) => ({ ...b, [strategyId]: true }));
+    try {
+      await apiFetch<{ status: string; enabled: boolean }>(
+        "/api/strategies/strategies/signal-copy/arm/",
+        { method: "POST", body: JSON.stringify({ marketplace_strategy_id: strategyId, account_id: accountId }) }
+      );
+      // Refresh-after-arm: authoritative armed/enabled/ambiguous, not the local optimistic state.
+      await refreshCopyStatus(strategyId);
+      setAlert(t(lang, "marketplace.armSuccess"));
+      setAlertType("success");
+    } catch (err) {
+      const e = err as { httpStatus?: number; body?: { status?: string }; message?: string };
+      if ((e?.message || "").toLowerCase().includes("unauthorized")) {
+        setAlert(t(lang, "marketplace.alertSessionExpired"));
+        setAlertType("error");
+        setIsAuthed(false);
+        return;
+      }
+      const slug = e?.body?.status;
+      const key =
+        slug === "arming_disabled" ? "marketplace.armDisabled"
+        : slug === "account_not_ready" ? "marketplace.armAccountNotReady"
+        : slug === "credentials_missing" ? "marketplace.armCredentialsMissing"
+        : slug === "runtime_not_ready" ? "marketplace.armRuntimeNotReady"
+        : slug === "broker_not_connected" ? "marketplace.armBrokerNotConnected"
+        : slug === "source_single_tenant" ? "marketplace.armSingleTenant"
+        : e?.httpStatus === 404 ? "marketplace.armAccountNotFound"
+        : "marketplace.armFailed";
+      setAlert(t(lang, key));
+      setAlertType("error");
+    } finally {
+      setArmBusy((b) => ({ ...b, [strategyId]: false }));
     }
   };
 
@@ -769,13 +817,25 @@ export default function StrategyMarketplacePage() {
                     const st = copyState[strategy.id];
                     const armed = !!st?.armed;
                     const enabled = !!st?.enabled;
+                    const ambiguous = !!st?.ambiguous;
                     const busy = !!copyBusy[strategy.id];
-                    const statusLabel = !armed
-                      ? t(lang, "marketplace.copyNotArmedShort")
-                      : enabled
-                        ? t(lang, "marketplace.copyOn")
-                        : t(lang, "marketplace.copyOff");
-                    const statusColor = !armed ? "#f59e0b" : enabled ? "#22c55e" : "#94a3b8";
+                    const arming = !!armBusy[strategy.id];
+                    const selAcct = selectedAccount[strategy.id];
+                    // ON/badge state comes ONLY from the backend-confirmed status — never from a click.
+                    const statusLabel = ambiguous
+                      ? t(lang, "marketplace.copyAmbiguousShort")
+                      : !armed
+                        ? t(lang, "marketplace.copyNotArmedShort")
+                        : enabled
+                          ? t(lang, "marketplace.copyOn")
+                          : t(lang, "marketplace.copyOff");
+                    const statusColor = ambiguous
+                      ? "#f59e0b"
+                      : !armed
+                        ? "#f59e0b"
+                        : enabled
+                          ? "#22c55e"
+                          : "#94a3b8";
                     return (
                       <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                         <div
@@ -795,26 +855,73 @@ export default function StrategyMarketplacePage() {
                             {statusLabel}
                           </span>
                         </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-                          <Button
-                            variant={enabled ? "secondary" : "primary"}
-                            onClick={() => handleSignalCopyToggle(strategy.id, !enabled)}
-                            disabled={!isAuthed || !armed || busy}
-                          >
-                            {busy
-                              ? t(lang, "marketplace.copyWorking")
-                              : enabled
-                                ? t(lang, "marketplace.copyDisable")
-                                : t(lang, "marketplace.copyEnable")}
-                          </Button>
-                          <Button variant="secondary" onClick={handlePreview}>
-                            {t(lang, "marketplace.preview")}
-                          </Button>
-                        </div>
-                        {!armed && (
-                          <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
-                            {t(lang, "marketplace.copyNotArmedHint")}
-                          </p>
+                        {armed ? (
+                          // Armed → the existing Enable/Disable toggle (resume/pause the copy).
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+                            <Button
+                              variant={enabled ? "secondary" : "primary"}
+                              onClick={() => handleSignalCopyToggle(strategy.id, !enabled)}
+                              disabled={!isAuthed || busy}
+                            >
+                              {busy
+                                ? t(lang, "marketplace.copyWorking")
+                                : enabled
+                                  ? t(lang, "marketplace.copyDisable")
+                                  : t(lang, "marketplace.copyEnable")}
+                            </Button>
+                            <Button variant="secondary" onClick={handlePreview}>
+                              {t(lang, "marketplace.preview")}
+                            </Button>
+                          </div>
+                        ) : (
+                          // Not armed → IPR Area D: choose the demo account and Enable Trading (arm),
+                          // rather than a disabled toggle with no path forward.
+                          <>
+                            <select
+                              value={selAcct || ""}
+                              onChange={(e) => {
+                                const nextVal = e.target.value ? Number(e.target.value) : "";
+                                setSelectedAccount({ ...selectedAccount, [strategy.id]: nextVal });
+                              }}
+                              disabled={loadingAccounts}
+                              style={{
+                                width: "100%",
+                                padding: "0.5rem",
+                                borderRadius: 8,
+                                border: "1px solid rgba(255,255,255,0.15)",
+                                background: "rgba(10,16,35,0.6)",
+                                color: "#e2e8f0",
+                                fontSize: "0.85rem",
+                              }}
+                            >
+                              <option value="">{t(lang, "marketplace.selectAccount")}</option>
+                              {accounts.map((acc) => (
+                                <option key={acc.id} value={acc.id}>
+                                  {acc.name}
+                                  {acc.is_demo === false ? " (live)" : ""}
+                                </option>
+                              ))}
+                            </select>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+                              <Button
+                                variant="primary"
+                                onClick={() =>
+                                  selAcct ? handleSignalCopyArm(strategy.id, Number(selAcct)) : undefined
+                                }
+                                disabled={!isAuthed || !selAcct || arming}
+                              >
+                                {arming
+                                  ? t(lang, "marketplace.armWorking")
+                                  : t(lang, "marketplace.armEnableTrading")}
+                              </Button>
+                              <Button variant="secondary" onClick={handlePreview}>
+                                {t(lang, "marketplace.preview")}
+                              </Button>
+                            </div>
+                            <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
+                              {t(lang, "marketplace.armSelectAccountHint")}
+                            </p>
+                          </>
                         )}
                       </div>
                     );
