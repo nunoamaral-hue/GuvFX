@@ -28,10 +28,18 @@ must be authoritative (backend, never frontend-only), fail-closed, and inert unt
 - **Wired in this increment (PR):** `execution.services.create_open_trade_job` (OPEN_TRADE service funnel);
   `execution.signal_promotion._validate` (auto-execution PLACE_ORDER promotion funnel — via
   `PromotionRejected("broker_gate_<reason>")`, on the existing audit trail).
-- **To wire in follow-on increments (same service, no new logic):** strategy activation; runtime
-  start/resume; provisioning→execution transition; automated recovery/restart; any other API that can cause
-  trading activity. Until all are wired, full "no route bypasses" coverage is not yet claimed — but the flag
-  is OFF so there is no production exposure, and arming is separately gated (WP6 + Sponsor).
+- **To wire in follow-on increments (same service, no new logic) — precise inventory of the remaining
+  NEW-order funnels (verified by adversarial review):**
+  - `strategies/signal_engine.create_place_order_job` (→ PLACE_ORDER) — the **strategy auto-trade
+    scheduler** path (run_h1/m5/h4 schedulers). This is a distinct live auto-execution funnel from the
+    `signal_promotion` one wired above; it is **not** covered by "auto-execution promotion funnel".
+  - `execution/views.py` PLACE_TEST_ORDER — the demo **test-order API endpoint** (entitlement- + daily-
+    limit-gated today, not yet broker-gated).
+  - Plus: strategy activation; runtime start/resume; provisioning→execution transition; automated
+    recovery/restart.
+  Until all are wired, full "no route bypasses" coverage is **not yet claimed** — but the flag is OFF so
+  there is no production exposure, and arming is separately gated (WP6 + Sponsor). Trade-management jobs
+  (SYNC / MODIFY / CLOSE / breakeven) are intentionally out of scope (they never open a new position).
 
 ## Pause / resume (deferred; required before arming)
 Runtime lifecycle semantics — validation degradation while running → pause; restored HEALTHY → controlled

@@ -80,6 +80,21 @@ class DecisionMatrixTests(TestCase):
                 d = evaluate_execution_gate(_acct(self.user, number=f"acc{i}", validated=state))
                 self.assertEqual((d.allowed, d.reason_code), (False, reason), state)
 
+    def test_unknown_validation_status_is_fail_closed(self):
+        # A validation_status outside the enum (data corruption / future value) must fail closed, not allow.
+        acct = _acct(self.user)
+        TradingAccount.objects.filter(pk=acct.pk).update(validation_status="WEIRD_UNEXPECTED")
+        acct.refresh_from_db()
+        with mock.patch.dict(os.environ, _ON):
+            d = evaluate_execution_gate(acct)
+        self.assertEqual((d.allowed, d.reason_code), (False, bg.R_VALIDATION_STATE_UNKNOWN))
+
+    def test_first_disqualifying_condition_wins(self):
+        # An inactive AND unvalidated account reports the FIRST check (inactive), per the documented order.
+        acct = _acct(self.user, active=False, validated=_VS.NEVER)
+        with mock.patch.dict(os.environ, _ON):
+            self.assertEqual(evaluate_execution_gate(acct).reason_code, bg.R_ACCOUNT_INACTIVE)
+
 
 class EnforcementTests(TestCase):
     def setUp(self):
@@ -103,6 +118,14 @@ class EnforcementTests(TestCase):
         acct = _acct(self.user, active=False, validated=_VS.NEVER, cred="")
         d = bg.require_execution_gate(acct)  # flag OFF
         self.assertTrue(d.allowed)
+
+    def test_audit_failure_does_not_weaken_refusal(self):
+        # Audit is fail-open: if log_event throws, the refusal must STILL be raised (safety over telemetry).
+        acct = _acct(self.user, validated=_VS.NEVER)
+        with mock.patch.dict(os.environ, _ON), \
+             mock.patch("core.audit.log_event", side_effect=RuntimeError("audit down")):
+            with self.assertRaises(ExecutionGateRefused):
+                bg.require_execution_gate(acct, trigger="t")
 
 
 class OpenTradeFunnelTests(TestCase):
