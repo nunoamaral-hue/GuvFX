@@ -15,16 +15,24 @@ from __future__ import annotations
 
 import logging
 
+from dataclasses import dataclass
+
 from django.db import transaction
 from django.utils import timezone
 
+from trading.models import TradingAccount
+
 from .broker_gate import (
+    _ELIGIBILITY_TO_SHARED,
     SR_ACCOUNT_TOMBSTONED,
     SR_HEALTH_DEGRADED,
     SR_HEALTH_DISCONNECTED,
     SR_HEALTH_STALE,
     SR_HEALTH_STATE_CHANGED,
+    SR_RESUME_NOT_ELIGIBLE,
+    SR_VALIDATION_REQUIRED,
     ExecutionGateRefused,
+    evaluate_execution_gate,
     execution_gate_enabled,
 )
 from .models import BrokerRuntimePause
@@ -153,3 +161,112 @@ def pause_state(account) -> dict | None:
     """Read-only durable pause snapshot for reporting/UI (WP4/WP5). None when no record exists."""
     rec = BrokerRuntimePause.objects.filter(account=account).first()
     return rec.as_dict() if rec else None
+
+
+# ── WP1B/WP2 Workstream D — CONTROLLED RESUME ────────────────────────────────────────────────────────
+# The SOLE authority that clears a broker-health pause. It NEVER runs automatically — no scheduler, save
+# hook, signal, validation, credential replacement, provisioning, restart or periodic task calls it (a
+# source-coupling test proves this). A successful resume only marks the runtime "no longer broker-paused";
+# it starts no runtime, arms no strategy, creates no job/order, and accesses no credential.
+@dataclass(frozen=True)
+class ResumeResult:
+    resumed: bool
+    idempotent: bool
+    refused: bool
+    reason_code: str
+    processed_state_version: int
+    current_state_version: int
+    account_id: int | None
+
+    def as_dict(self) -> dict:
+        return {
+            "resumed": self.resumed, "idempotent": self.idempotent, "refused": self.refused,
+            "reason_code": self.reason_code, "processed_state_version": self.processed_state_version,
+            "current_state_version": self.current_state_version, "account_id": self.account_id,
+        }
+
+
+def _resume_audit(event, account, *, requested=None, current=None, reason="", rec=None):
+    try:
+        from core.audit import log_event
+        meta = {"requested_state_version": requested, "current_state_version": current,
+                "reason_code": reason}
+        if rec is not None:
+            meta["pause"] = rec.as_dict()
+        log_event(None, event, severity="INFO", entity_type="TradingAccount",
+                  entity_id=getattr(account, "pk", None), metadata=meta)
+    except Exception:  # noqa: BLE001 — audit is fail-open; never flips the resume decision
+        logger.warning("resume audit failed (event=%s)", event)
+
+
+def request_broker_runtime_resume(account, *, actor="", request=None, now=None) -> ResumeResult:
+    """The single, explicit-caller-only controlled resume. Immediately before clearing the pause it
+    reloads and re-verifies — under a row lock, in one transaction — the account eligibility, credential,
+    validation status and the LIVE WP3 health contract (authoritative; the pause row's ``resume_eligible``
+    is advisory only). Idempotent + concurrency-safe on ``state_version``: at most one caller clears the
+    pause; duplicates get a safe idempotent result; a newer pause always wins over an older resume; a
+    current ineligible contract always refuses; nothing partial persists on a failed verification.
+
+    Inert when either flag is OFF (no pause cleared, no write, no audit). Returns a deterministic,
+    non-secret ``ResumeResult``."""
+    acct_id = getattr(account, "pk", None)
+    if not pause_processing_enabled():
+        # DARK: fully inert — no lock, no read, no write, no audit.
+        return ResumeResult(False, False, True, SR_RESUME_NOT_ELIGIBLE, 0, 0, acct_id)
+
+    now = now or timezone.now()
+    with transaction.atomic():
+        # Lock the pause row and the account together for the whole verify+clear (consistent order:
+        # pause row, then account) so a concurrent resume / credential replace / disconnect cannot
+        # interleave between the final recheck and the commit.
+        rec = BrokerRuntimePause.objects.select_for_update().filter(account=account).first()
+        acct = TradingAccount.objects.select_for_update().filter(pk=acct_id).first()
+
+        if rec is None:
+            _resume_audit("BROKER_RUNTIME_RESUME_REFUSED", account, reason=SR_RESUME_NOT_ELIGIBLE)
+            return ResumeResult(False, False, True, SR_RESUME_NOT_ELIGIBLE, 0, 0, acct_id)
+        if not rec.paused:
+            # Already cleared by an earlier/concurrent caller — idempotent success.
+            _resume_audit("BROKER_RUNTIME_RESUME_IDEMPOTENT", account, current=rec.resumed_state_version,
+                          rec=rec)
+            return ResumeResult(False, True, False, "", rec.resumed_state_version,
+                                rec.resumed_state_version, acct_id)
+
+        # 1. Fresh account eligibility (exists / active / not-disconnected / credential / VALIDATED).
+        base = evaluate_execution_gate(acct)
+        if not base.allowed:
+            reason = _ELIGIBILITY_TO_SHARED.get(base.reason_code, SR_VALIDATION_REQUIRED)
+            _resume_audit("BROKER_RUNTIME_RESUME_REFUSED", account, reason=reason, rec=rec)
+            return ResumeResult(False, False, True, reason, rec.source_state_version, 0, acct_id)
+
+        # 2. Fresh LIVE health contract — the authoritative recovery signal.
+        from reliability.broker_health import get_contract
+        contract = get_contract(acct)
+        if contract is None:
+            _resume_audit("BROKER_RUNTIME_RESUME_REFUSED", account, reason=SR_RESUME_NOT_ELIGIBLE, rec=rec)
+            return ResumeResult(False, False, True, SR_RESUME_NOT_ELIGIBLE, rec.source_state_version, 0,
+                                acct_id)
+        cur_version = int(contract.get("state_version") or 0)
+        if contract.get("pause_required") or not contract.get("eligible"):
+            reason = _HEALTH_TO_PAUSE_REASON.get(contract.get("state"), SR_HEALTH_STATE_CHANGED)
+            _resume_audit("BROKER_RUNTIME_RESUME_REFUSED", account, requested=cur_version,
+                          current=cur_version, reason=reason, rec=rec)
+            return ResumeResult(False, False, True, reason, cur_version, cur_version, acct_id)
+        if cur_version < rec.source_state_version:
+            # A newer pause (source_state_version) has superseded this recovery — stale, fail closed.
+            _resume_audit("BROKER_HEALTH_STALE_RESUME_VERSION_IGNORED", account, requested=cur_version,
+                          current=rec.source_state_version, reason=SR_HEALTH_STATE_CHANGED, rec=rec)
+            return ResumeResult(False, False, True, SR_HEALTH_STATE_CHANGED, cur_version,
+                                rec.source_state_version, acct_id)
+
+        # 3. All preconditions hold under the lock → clear ONLY the broker-health pause.
+        rec.paused = False
+        rec.resumed_at = now
+        rec.resumed_state_version = cur_version
+        rec.last_processed_version = max(rec.last_processed_version, cur_version)
+        rec.resume_eligible = False
+        rec.reason_code = ""
+        rec.save()
+        _resume_audit("BROKER_RUNTIME_RESUMED", account, requested=cur_version, current=cur_version,
+                      rec=rec)
+        return ResumeResult(True, False, False, "", cur_version, cur_version, acct_id)
