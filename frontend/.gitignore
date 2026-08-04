@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# WP4.1 (ADR-0031) — source-of-truth hygiene: never track editor/backup/junk artefacts.
+*.bak
+*.bak.*
+*.bak_*
+*.orig
+*.rej
+*.tmp
+._*

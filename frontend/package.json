@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "verify:parity": "node scripts/verify-frontend-parity.mjs",
+    "prebuild": "node scripts/verify-frontend-parity.mjs"
   },
   "dependencies": {
     "@tabler/icons-webfont": "^3.44.0",
