@@ -183,3 +183,26 @@
 - **Recommended next packet:** WP6 certification **execution** in a disposable environment (Sponsor-gated),
   producing the evidence that completes `wp6-release-gate.json`, then a Sponsor GO/NO-GO decision. Do not arm
   before WP6 PASS + Sponsor approval.
+
+---
+
+## 2026-08-04 — WP6A Shared-Environment Operational Certification (non-destructive; DARK)
+
+- **Status:** PASS (engineered correctness) with a **GO WITH CONDITIONS** Internal-Pilot verdict. Branch
+  `docs/wp6a-shared-env-certification`. No arming/deploy/destructive testing; flags OFF; CZ + prod untouched.
+- **Scope:** `docs/operations/broker-connectivity/wp6a-certification.md` (WS A–I), `wp6a-certification.json`,
+  `wp6a-pilot-recommendation.md`; validation test `backend/operational_events/tests_wp6a_certification.py`;
+  STATUS/NEXT updated.
+- **Verified fact (executed 2026-08-04, main@b3e0bba):** 387 backend tests (19 broker-connectivity modules) +
+  46 frontend Operations-UI tests = 433, all OK; full make check green. Module counts sum-checked by the test.
+- **Assumption / conditions:** live broker-login on the HOST is NOT proven (first demo VALIDATE_LOGIN failed
+  at an ACL gap; ADR-0027 Phase 2 not host-certified) — the primary Internal-Pilot condition. build-5833
+  ACTIVE, verify_image on host, golden pin, deployed commit, and a verified DB backup are HOST-VERIFIED /
+  OUTSIDE REPOSITORY CONTROL.
+- **Deviations from packet:** none material. WP6A certifies engineered correctness only; WP6B (isolation/
+  concurrency/load/capacity/failure/recovery) is explicitly deferred and NOT claimed complete.
+- **Out-of-scope access performed:** No. No live accounts, no production/CZ mutation, no service stops, no
+  failure injection, no flag enablement.
+- **Recommended next packet:** WP6B multi-tenant isolation certification in a disposable environment
+  (Sponsor-gated), and — for any Internal Pilot — close the broker-login host ACL gap + prove one demo
+  VALIDATE_LOGIN on the host.

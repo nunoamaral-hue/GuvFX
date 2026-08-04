@@ -6,8 +6,10 @@ multi-tenant certification PLAN** are authored: `docs/operations/broker-connecti
 incident/support/monitoring + WP6 `wp6-*` certification matrix/evidence/release-gate), validation tests
 `tests_wp54_readiness.py` + `tests_wp6_certification.py`.
 
-**Bounded next action:** none in the repository — **WP6 certification EXECUTION is the next activity and needs
-the disposable environment** (a Nuno-provided disposable demo account + the Windows host; task #108) and is
+**WP6A (shared-environment non-destructive certification) DONE (2026-08-04):** 433 tests executed all-pass;
+verdict **GO WITH CONDITIONS** for a tightly-controlled Internal Pilot (docs/operations/broker-connectivity/
+wp6a-*). **Bounded next action:** none in the repository — **WP6B (isolation/concurrency/load/failure/capacity)
+remains OUTSTANDING and needs the disposable environment** (a Nuno-provided disposable demo account + the Windows host; task #108) and is
 Sponsor-gated. Do **not** arm any flag, deploy, or invite beta users. When Nuno authorises WP6 execution, run
 the `wp6-test-matrix.json` cases in the disposable env, capture evidence per `wp6-evidence.json`, complete
 `wp6-release-gate.json`, and only then does the Sponsor decide GO / GO-WITH-CONDITIONS / NO-GO. Execution-gate

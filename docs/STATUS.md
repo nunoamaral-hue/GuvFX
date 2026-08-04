@@ -6,6 +6,21 @@
 
 ## Execution workstream log
 
+- **2026-08-04 — WP6A Shared-Environment Operational Certification. Non-destructive; DARK; flags OFF. 🟢**
+  Certified the engineered broker-connectivity capability BEHAVES CORRECTLY in the shared environment by
+  EXECUTING the merged test suite (no destructive testing / no failure injection / no concurrency / no live
+  accounts / no flag enablement, per the WP6A boundary): **387 backend tests across 19 modules + 46 frontend
+  Operations-UI tests = 433, all OK**; full `make check` green. New `docs/operations/broker-connectivity/`:
+  `wp6a-certification.md` (WS A–I record, per-module counts), `wp6a-certification.json` (machine-readable;
+  module counts sum-checked), `wp6a-pilot-recommendation.md`. Validation test
+  `backend/operational_events/tests_wp6a_certification.py` (10 checks). **Verdict = GO WITH CONDITIONS** for a
+  tightly-controlled Internal Pilot (≤5–10 users, demo-only, manual, execution gate MAY stay OFF) — primary
+  condition = broker-login HOST certification (first live demo VALIDATE_LOGIN failed at an ACL gap; ADR-0027
+  Phase 2 not host-certified) + verified DB backup + operator confirmation of HOST-VERIFIED items. **WP6B
+  (multi-tenant isolation / concurrency / load / capacity / failure injection / recovery) remains
+  OUTSTANDING — NOT claimed complete.** Does NOT authorise Trusted Beta / arming / invitations.
+
+
 - **2026-08-04 — WP6 Multi-Tenant Certification PLAN. Planning + governance + tests only. Flags OFF, DARK. 🟢**
   Certification programme **design** (no execution — that needs the disposable environment + Sponsor-gated
   runs; no arming/deploy/CZ/production/live accounts). New `docs/operations/broker-connectivity/wp6-*`: README
