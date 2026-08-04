@@ -3,6 +3,9 @@
 Inject controlled failures in the disposable environment and prove the capability **fails closed** (or
 **fails open** where that is the design, i.e. the operational-event projection). Matrix cases: `FAIL-1..11`.
 Safety-critical gate: `GATE-H`. **No production failure injection** — disposable environment only.
+**FAIL-2 / FAIL-6 / FAIL-11 stop or interrupt the agent/bridge/host and MUST run against a disposable
+agent/bridge/host, never the shared production Windows agent (`100.79.101.19`)** — see
+[wp6-test-environment.md](wp6-test-environment.md); those cases are BLOCKED until a disposable host exists.
 
 | Case | Injected failure | Expected state | Rollback / recovery | PASS criteria | Repo evidence |
 |------|------------------|----------------|---------------------|---------------|---------------|

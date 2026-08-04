@@ -32,7 +32,9 @@
     { "area": "L", "evidence_type": "Release gate", "capture": "Completed wp6-release-gate.json + Sponsor approval record", "redaction": "None sensitive", "retention": "Permanent (release decision)" },
     { "area": "cross", "evidence_type": "Customer Zero no-drift", "capture": "Golden STOP-check before/after; CZ order-count = 0 throughout", "redaction": "None sensitive", "retention": "Permanent" },
     { "area": "cross", "evidence_type": "Production no-trade", "capture": "No order placed against production during certification", "redaction": "None sensitive", "retention": "Permanent" },
-    { "area": "cross", "evidence_type": "Credential-access audit", "capture": "CREDENTIAL_ACCESSED audit stream (redacted) matched to validation volume", "redaction": "Masked last-4; never the secret", "retention": "Permanent" }
+    { "area": "cross", "evidence_type": "Credential-access audit", "capture": "CREDENTIAL_ACCESSED audit stream (redacted) matched to validation volume", "redaction": "Masked last-4; never the secret", "retention": "Permanent" },
+    { "area": "cross", "evidence_type": "Adversarial-review records (GATE-REV)", "capture": "Certification-results review findings + resolution; zero open HIGH/MEDIUM at sign-off", "redaction": "Redact any sensitive finding to file/path/category", "retention": "Permanent" },
+    { "area": "cross", "evidence_type": "Sponsor approval (GATE-SPON)", "capture": "Sponsor arming decision with cohort + capacity limit + stop conditions + UTC timestamp", "redaction": "None sensitive", "retention": "Permanent" }
   ],
   "what_must_never_be_included": [
     "Any secret or env-var VALUE (passwords, tokens, API keys, Fernet keys, keyring/envelope private keys, session strings)",

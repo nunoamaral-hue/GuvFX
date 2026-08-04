@@ -17,7 +17,7 @@ the operator UI).
 | OPE-5 | Summary correctness (hybrid live-state + aggregates, visibility-scoped) | truthful state + counts; DARK → "not observed"; no operator-only leak | `tests_operational_events.py` |
 | OPE-6 | Rollback (disable → DARK) | recorder no-op, API 404; authoritative state unaffected | `tests_operational_events.py` |
 | OPE-7 | Projection failure (fail-open) | authoritative path unaffected; recorder-failure logged to `guvfx.operational_events` | `tests_operational_events.py` |
-| OPE-8 | Rebuild expectations (**NO rebuild tool**) | no backfill command; recovery = disable + re-accrete forward; truncation loses history | `operational_events/tests_wp54_readiness.py` |
+| OPE-8 | Rebuild expectations (**NO rebuild tool**) | **inspection** confirms no `operational_events/management` reproject/backfill command (sole writer is forward-only `on_commit`); recovery = disable + re-accrete forward; truncation loses history | inspection of `backend/operational_events/` (no `management/`) |
 
 ## Method + PASS
 

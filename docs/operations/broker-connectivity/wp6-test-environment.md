@@ -22,6 +22,14 @@ live accounts. Matrix cases: `ENV-1..4` in [`wp6-test-matrix.json`](wp6-test-mat
 - **Execution path** — the standard pipeline (creation → claim → dispatch), exercised only against demo
   accounts, with flags armed **only inside the disposable environment** for the duration of a certification
   run (never production).
+- **Disposable agent + bridge + worker host** — a **dedicated, isolated** Windows agent, signal/demo bridge
+  and ingest worker, separate from the shared production host. This is **load-bearing for failure injection
+  and recovery**: `FAIL-2` (agent unavailable), `FAIL-6` (bridge unavailable), `FAIL-11` (network
+  interruption) and `REC-2` (agent restart) **stop/interrupt the agent/bridge/host**, so they MUST run
+  against a disposable agent/bridge/host — **never the shared production Windows agent** (`100.79.101.19`),
+  which Customer Zero and production execution depend on. Stopping the shared agent would disrupt Customer
+  Zero's live estate. If a fully separate host is not available, these four cases are **BLOCKED** until one
+  is — they must not be run against production. HOST-VERIFIED / OUTSIDE REPOSITORY CONTROL.
 - **Monitoring** — the log plane (`guvfx.operational_events`, `guvfx.execution.*`), the DB/endpoint plane
   (`operations-summary`, `AuditEvent`, `AlertEvent`), observable in the disposable env (`ENV-4`).
 - **Logging + evidence capture** — every run emits an evidence manifest conforming to
@@ -34,6 +42,10 @@ live accounts. Matrix cases: `ENV-1..4` in [`wp6-test-matrix.json`](wp6-test-mat
 - **Live production accounts excluded** — no live/contest broker account participates.
 - **Production estate excluded** — certification never runs against the production containers or the
   production database; a disposable environment stands in.
+- **Shared production Windows agent/bridge/host excluded from disruptive tests** — agent/bridge/host-stopping
+  cases (`FAIL-2`, `FAIL-6`, `FAIL-11`, `REC-2`) run only against a **disposable agent/bridge/host**, never
+  `100.79.101.19`. Disrupting the shared agent would take down Customer Zero and production execution — a
+  contamination path this environment is designed to prevent.
 
 ## Environment readiness checks (ENV-1..4)
 

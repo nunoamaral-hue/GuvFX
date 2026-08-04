@@ -24,8 +24,11 @@ and the [monitoring-spec.md](monitoring-spec.md) signals (whose thresholds are `
 - **CAP-9 (event lag) and CAP-10 (operator-API error rate/response time) do not exist as metrics** in the
   repo — they must be **added**, not merely measured (consistent with [monitoring-spec.md](monitoring-spec.md)
   §13–14). Adding those metrics is engineering work outside this planning packet.
-- **No numeric baseline** exists anywhere in the repository for any capacity dimension; certification
-  establishes them from measurement.
+- **No measured capacity baseline** exists anywhere in the repository; certification establishes them from
+  measurement. Note the repo does have configured **caps** (policy limits, not measurements) — e.g.
+  `terminal_provisioning/beta_capacity.py:28-29` `BETA_MAX_ACTIVE_RUNTIMES = 5` and
+  `BETA_MAX_ACTIVE_PER_USER = 1`. These are enforced limits, not measured throughput/latency; WP6 measures
+  the actual dimensions and may inform whether those caps are right.
 
 ## Method + PASS
 

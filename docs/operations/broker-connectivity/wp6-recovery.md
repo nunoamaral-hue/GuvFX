@@ -2,7 +2,8 @@
 
 Prove the capability recovers cleanly from every restart/retry without a duplicate or ineligible action, and
 **without any production mutation**. Matrix cases: `REC-1..8`. Safety-critical gate: `GATE-I`. Disposable
-environment only.
+environment only. **REC-2 (agent restart) restarts the Windows agent and MUST use a disposable agent/host,
+never the shared production agent (`100.79.101.19`)** — see [wp6-test-environment.md](wp6-test-environment.md).
 
 | Case | Recovery event | Expected | PASS criteria | Repo evidence |
 |------|----------------|----------|---------------|---------------|
