@@ -98,9 +98,9 @@ class FeatureFlagOffTests(TestCase):
         self.assertFalse(BrokerAccountHealth.objects.exists())
 
     def test_flag_must_be_exactly_truthy(self):
-        # Defensive: a stray value is treated as OFF (fail-safe), not accidentally ON.
-        with mock.patch.dict(os.environ, {"BROKER_CONNECTIVITY_HEALTH_ENABLED": "1"}):
-            # "1" is not the accepted truthy token ("true") for this flag helper → OFF.
+        # Defensive: a value outside the accepted truthy set (1/true/yes/on) is treated as OFF
+        # (fail-safe), not accidentally ON. "1" IS accepted (parser harmonised with the exec gate).
+        with mock.patch.dict(os.environ, {"BROKER_CONNECTIVITY_HEALTH_ENABLED": "maybe"}):
             self.assertIsNone(bh.record_validation_outcome(self.acct))
 
 
@@ -632,6 +632,54 @@ class IsolationInvariantTests(_Base):
         import inspect
         self.assertIn("select_for_update", inspect.getsource(bh))
         self.assertIn("skip_locked", inspect.getsource(sched))
+
+
+# ─── Credential-replacement invalidation (WP1B/WP2) ───
+class CredentialInvalidationTests(_Base):
+    def test_healthy_invalidated_to_unknown(self):
+        self._mk_healthy()
+        c = bh.invalidate_for_credential_replacement(self.acct)
+        self.assertEqual(c["state"], State.UNKNOWN)
+        self.assertEqual(c["reason_code"], bh.REASON_CREDENTIAL_REPLACED)
+        self.assertFalse(c["resume_eligible"])
+        self.assertFalse(c["eligible"])
+        h = self._health()
+        self.assertEqual((h.consecutive_successes, h.consecutive_failures), (0, 0))
+        self.assertIsNone(h.last_success_at)
+        self.assertEqual(c["state_version"], 2)  # HEALTHY(1) → UNKNOWN(2)
+
+    def test_invalidation_clears_resume_and_bumps_version(self):
+        # Recover to HEALTHY (resume_eligible True), then a credential replacement must clear it.
+        for _ in range(3):
+            _attempt(self.acct, "NEEDS_ATTENTION")
+        bh.record_validation_outcome(self.acct)  # DEGRADED
+        for _ in range(2):
+            _attempt(self.acct, "HEALTHY")
+        c1 = bh.record_validation_outcome(self.acct)  # recover → resume True
+        self.assertTrue(c1["resume_eligible"])
+        c2 = bh.invalidate_for_credential_replacement(self.acct)
+        self.assertFalse(c2["resume_eligible"])
+        self.assertGreater(c2["state_version"], c1["state_version"])
+
+    def test_invalidation_noop_when_flag_off(self):
+        with mock.patch.dict(os.environ, {"BROKER_CONNECTIVITY_HEALTH_ENABLED": "false"}):
+            self.assertIsNone(bh.invalidate_for_credential_replacement(self.acct))
+
+    def test_invalidation_noop_without_row(self):
+        self.assertIsNone(bh.invalidate_for_credential_replacement(self.acct))  # no health row yet
+
+    def test_invalidation_terminal_on_tombstoned(self):
+        self.acct.disconnected_at = timezone.now()
+        self.acct.save(update_fields=["disconnected_at"])
+        bh.record_validation_outcome(self.acct)  # TOMBSTONED
+        c = bh.invalidate_for_credential_replacement(self.acct)
+        self.assertEqual(c["state"], State.TOMBSTONED)  # terminal — credential change cannot revive
+
+    def test_invalidation_audited(self):
+        self._mk_healthy()
+        bh.invalidate_for_credential_replacement(self.acct)
+        self.assertTrue(AuditEvent.objects.filter(
+            event_type="BROKER_HEALTH_CREDENTIAL_INVALIDATED", entity_id=str(self.acct.pk)).exists())
 
 
 # ─── get_contract read path ───

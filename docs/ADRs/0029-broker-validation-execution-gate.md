@@ -62,3 +62,59 @@ Per the arming policy, they must be fully implemented and certified before this 
 - Reusable, single-source gate; additive; no schema change; no execution-path change while OFF.
 - Reason codes are customer-safe and suitable for API/frontend surfacing.
 - Refusals are audited (`EXECUTION_GATE_REFUSED`, or the promotion trail) without exposing secrets.
+
+## WP1B/WP2 continuation — final-dispatch safety + credential invalidation (2026-08-04)
+
+### Shared reason-code vocabulary (WP1B/WP2/WP3/WP4/WP5)
+Stable, non-secret, customer-safe codes, defined once in `execution/broker_gate.py`. The final-dispatch
+gate, credential invalidation, pause and resume all speak these; the older creation-gate codes map onto
+them (`_ELIGIBILITY_TO_SHARED`), and WP3 health states map via `_HEALTH_STATE_TO_SHARED`:
+
+`broker_account_missing`, `broker_account_ambiguous`, `broker_account_inactive`,
+`broker_account_disconnected`, `broker_account_tombstoned`, `broker_credential_missing`,
+`broker_validation_required`, `broker_validation_failed`, `broker_validation_unavailable`,
+`broker_health_degraded`, `broker_health_stale`, `broker_health_disconnected`,
+`broker_resume_not_eligible`, `broker_health_state_changed`.
+
+### Final-dispatch gate (TOCTOU)
+The creation gate proves eligibility when a job is *created*; between enqueue and the live `order_send`
+an account can be disconnected, have its credential replaced, or have its broker health degrade. A
+second authoritative recheck runs **immediately before the real dispatch** — `evaluate_dispatch_gate`
+(and the worker helper `evaluate_job_dispatch`, which resolves the job's account FRESH from the DB and
+audits `EXECUTION_DISPATCH_REFUSED`). It:
+- re-evaluates eligibility fresh (never the enqueue-time snapshot);
+- when `BROKER_CONNECTIVITY_HEALTH_ENABLED` is also on, consumes the latest WP3 contract
+  (`broker_health.get_contract`) and refuses an ineligible (adverse or not-yet-healthy) account — a
+  contract that exists and is not `eligible` blocks; no contract adds no constraint;
+- is **fail-closed**: an eligibility failure, or an *error* reading health, refuses (never opens exposure
+  on ambiguity);
+- is **transparent** when `BROKER_CONNECTIVITY_EXECUTION_GATE` is OFF (no DB read, existing behaviour).
+Wired at the sole live exposure-opening dispatch — `mt5_trade_ingest_worker` PLACE_ORDER/PLACE_TEST_ORDER,
+immediately before `agent_order`. Emergency/non-opening operations (SYNC/MODIFY/CLOSE, breakeven) are not
+gated (they reduce or reconcile exposure).
+
+### Credential-replacement invalidation
+`trading.broker_connectivity.replace_credentials` now invalidates prior eligibility **atomically** with the
+rotation: in one transaction it re-encrypts the credential, sets `validation_status = NEVER`, clears
+`validated_at`, and (when the health engine is on) resets WP3 health to UNKNOWN
+(`invalidate_for_credential_replacement`: non-eligible, `resume_eligible` cleared, counters + last-success
+reset, version bumped, `BROKER_HEALTH_CREDENTIAL_INVALIDATED` audited). The append-only validation-attempt
+history is preserved. No resume is possible until a *fresh* successful validation. A health-engine error
+does not abort the rotation (the gate already fails closed on `validation_status = NEVER`; the error is
+audited `BROKER_HEALTH_INVALIDATION_ERROR`). A failure in the atomic block rolls back completely — no
+partial invalidation.
+
+### Health convergence on the validation flow
+`run_broker_validation` now folds its outcome into the WP3 engine (`record_validation_outcome`, no-op
+when health is DARK, fail-open) so a freshly-validated account converges to HEALTHY *immediately* on the
+customer flow — not only on the next (inert) scheduler cycle. Without this, arming BOTH flags would
+dispatch-refuse a just-validated account (`broker_validation_required`) until the scheduler ran (the
+safe direction, but an operational hazard). Arming-runbook note: the two broker-connectivity flags now
+share one tolerant parser (`1/true/yes/on`); still, arm the health engine only once it converges rows
+promptly, and arm the execution gate and health engine together deliberately.
+
+### Still deferred to the pause/resume increment (before arming)
+Runtime pause on confirmed degradation (WP2 owns the pause action; WP3 emits `pause_required`), controlled
+resume on `resume_eligible` (never automatic; final recheck; disconnect/tombstone permanently blocks),
+state-version idempotency at the pause/resume layer, and h4 scheduler graceful-refusal parity. Arming
+remains separately gated.
