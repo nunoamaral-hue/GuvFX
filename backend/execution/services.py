@@ -72,6 +72,12 @@ def create_open_trade_job(params: OpenTradeParams) -> ExecutionJob:
     owner = params.account.user if params.account else params.created_by
     require_entitlement(owner, "can_deploy_automation")
 
+    # WP1B/WP2 (ADR-0029): broker-validation execution gate at the authoritative funnel. Transparent while
+    # BROKER_CONNECTIVITY_EXECUTION_GATE is OFF (existing behaviour unchanged); when ON, a non-validated or
+    # ineligible account is refused here so no direct caller can bypass to a real order.
+    from execution.broker_gate import require_execution_gate
+    require_execution_gate(params.account, actor=str(params.created_by or ""), trigger="create_open_trade_job")
+
     effective_risk_pct = resolve_risk_pct(params=params)
 
     payload = {

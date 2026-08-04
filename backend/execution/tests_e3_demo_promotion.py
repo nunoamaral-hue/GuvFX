@@ -6,8 +6,10 @@ SHADOW); the shadow path refuses under DEMO; the auto-router routes to the demo 
 AUTO_DEMO is fully armed and is a no-op at defaults; and a closed demo trade links back to its
 signal via the correlation comment tag. No real order is placed (the worker is never invoked).
 """
+import os
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -258,6 +260,15 @@ class DemoGateInheritanceTests(E3Base):
     def test_demo_disabled_source_blocks(self):
         SignalSourceConfig.objects.filter(source=self.SRC).update(auto_demo_execution_enabled=False)
         self._assert_demo_rejected(self._direct_plan(mid="k2"), "source_not_enabled")
+
+    def test_demo_execution_gate_blocks_unvalidated(self):
+        # WP1B/WP2 (ADR-0029): the auto-execution promotion funnel is gated. Gate ON + an otherwise-eligible
+        # but NEVER-validated demo account => refused with a broker_gate reason, zero real order jobs.
+        self.demo.password_enc = "x"
+        self.demo.validation_status = TradingAccount.ValidationStatus.NEVER
+        self.demo.save(update_fields=["password_enc", "validation_status"])
+        with mock.patch.dict(os.environ, {"BROKER_CONNECTIVITY_EXECUTION_GATE": "1"}):
+            self._assert_demo_rejected(self._direct_plan(mid="bg1"), "broker_gate_not_validated_never")
 
     def test_demo_stale_signal_blocks(self):
         plan = self._direct_plan(mid="k3", signal_ts=timezone.now() - timedelta(seconds=600))

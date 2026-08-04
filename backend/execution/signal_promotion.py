@@ -145,6 +145,14 @@ def _validate(plan: SignalExecutionPlan, *, now,
         if env.lower() == "live":
             raise PromotionRejected("account_live", "live accounts are not permitted")
 
+    # WP1B/WP2 (ADR-0029): broker-validation execution gate on the auto-execution funnel. Transparent while
+    # BROKER_CONNECTIVITY_EXECUTION_GATE is OFF (existing behaviour unchanged); when ON, a non-validated or
+    # ineligible account refuses promotion here — recorded on the existing PROMOTION_REJECTED audit trail.
+    from execution.broker_gate import evaluate_execution_gate
+    gate = evaluate_execution_gate(plan.account)
+    if not gate.allowed:
+        raise PromotionRejected(f"broker_gate_{gate.reason_code}", "broker validation gate refused execution")
+
     # Broker/account-aware symbol gate — the symbol must resolve to one the account's broker
     # offers (fail-closed with a specific reason). Provider symbol preserved; broker symbol used
     # for the order (in _order_payload).
