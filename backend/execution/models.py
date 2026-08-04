@@ -239,6 +239,15 @@ class ExecutionJob(models.Model):
             reason = order_creation_kill_reason()
             if reason:
                 raise ExecutionKillSwitchEngaged(reason)
+        # WP1B/WP2 (ADR-0029): broker-validation execution gate at the MODEL layer — the single
+        # authoritative boundary NO creation path can bypass (services, promotion, schedulers,
+        # create_place_order_job, PLACE_TEST_ORDER, retry/recovery, future sites). On INSERT of a
+        # real-exposure job, when BROKER_CONNECTIVITY_EXECUTION_GATE is ON, refuse unless the account is
+        # VALIDATED + eligible; transparent (no-op) while the flag is OFF. Shadow/SYNC/MODIFY/CLOSE are
+        # excluded (they open no new exposure).
+        if self._state.adding and self.job_type in BROKER_GATE_BLOCKED_JOB_TYPES:
+            from execution.broker_gate import require_execution_gate
+            require_execution_gate(self.account, trigger=f"job:{self.job_type}")
         super().save(*args, **kwargs)
 
     @classmethod
@@ -307,6 +316,15 @@ KILL_SWITCH_BLOCKED_JOB_TYPES = (
     # job. (Not load-bearing — a shadow job no consumer executes cannot reach a
     # broker regardless — but keeps promotion fail-closed under an engaged kill.)
     ExecutionJob.JobType.PLACE_ORDER_SHADOW,
+)
+
+# WP1B/WP2 (ADR-0029): job types that open REAL market exposure — the broker-validation execution gate
+# refuses these for an ineligible account when armed. Excludes PLACE_ORDER_SHADOW (a dry-run that reaches
+# no broker) and all trade-management types (SYNC/MODIFY/CLOSE — they open no new exposure).
+BROKER_GATE_BLOCKED_JOB_TYPES = (
+    ExecutionJob.JobType.OPEN_TRADE,
+    ExecutionJob.JobType.PLACE_ORDER,
+    ExecutionJob.JobType.PLACE_TEST_ORDER,
 )
 
 

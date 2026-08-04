@@ -24,22 +24,34 @@ must be authoritative (backend, never frontend-only), fail-closed, and inert unt
    refused at the entry point (the gate takes exactly one resolved account).
 4. **Authoritative entry points.** The gate is enforced at execution funnels, not the frontend.
 
-## Entry-point inventory
-- **Wired in this increment (PR):** `execution.services.create_open_trade_job` (OPEN_TRADE service funnel);
-  `execution.signal_promotion._validate` (auto-execution PLACE_ORDER promotion funnel — via
-  `PromotionRejected("broker_gate_<reason>")`, on the existing audit trail).
-- **To wire in follow-on increments (same service, no new logic) — precise inventory of the remaining
-  NEW-order funnels (verified by adversarial review):**
-  - `strategies/signal_engine.create_place_order_job` (→ PLACE_ORDER) — the **strategy auto-trade
-    scheduler** path (run_h1/m5/h4 schedulers). This is a distinct live auto-execution funnel from the
-    `signal_promotion` one wired above; it is **not** covered by "auto-execution promotion funnel".
-  - `execution/views.py` PLACE_TEST_ORDER — the demo **test-order API endpoint** (entitlement- + daily-
-    limit-gated today, not yet broker-gated).
-  - Plus: strategy activation; runtime start/resume; provisioning→execution transition; automated
-    recovery/restart.
-  Until all are wired, full "no route bypasses" coverage is **not yet claimed** — but the flag is OFF so
-  there is no production exposure, and arming is separately gated (WP6 + Sponsor). Trade-management jobs
-  (SYNC / MODIFY / CLOSE / breakeven) are intentionally out of scope (they never open a new position).
+## Entry-point inventory (COMPLETE — enforced at the model boundary)
+The release invariant is enforced at the **single authoritative boundary — `ExecutionJob.save()`** (mirroring
+the existing kill-switch): on INSERT of a `BROKER_GATE_BLOCKED_JOB_TYPES` job (OPEN_TRADE / PLACE_ORDER /
+PLACE_TEST_ORDER) with the flag ON, `require_execution_gate(self.account)` refuses an ineligible account.
+**No creation path can bypass it** — direct ORM create, services, promotion, schedulers,
+`create_place_order_job`, PLACE_TEST_ORDER, retry/recovery, and any future site all pass through `save()`.
+
+Classification of every `ExecutionJob.objects.create` site (verified by adversarial review):
+- **Gated at the model boundary (all exposure-opening):** `services.create_open_trade_job` (OPEN_TRADE),
+  `signal_promotion` (PLACE_ORDER/SHADOW), `signal_engine.create_place_order_job` (PLACE_ORDER),
+  `run_h1/m5/h4_scheduler` direct PLACE_ORDER, `views.py` PLACE_TEST_ORDER.
+- **Earlier-refusal + graceful handling wired here:** `create_open_trade_job` and
+  `signal_promotion._validate` refuse *before* building the payload (their own audit trail); the h1/m5
+  schedulers, the strategy deploy view, the admin job-retry endpoint and the dev `CreateOpenTradeJobView`
+  now catch `ExecutionGateRefused` (skip / clean 503, alongside the kill switch); PLACE_TEST_ORDER
+  pre-checks → 503.
+- **Durable refusal audit.** The gate audits `EXECUTION_GATE_REFUSED` on refusal. Because the h1/m5
+  schedulers wrap creation in `transaction.atomic()` and catch OUTSIDE it, the in-transaction audit would
+  roll back — so those catch sites **re-emit a durable audit** (autocommit) to guarantee an armed refusal
+  always leaves a record. Non-transactional funnels (services) audit at the gate call directly.
+- **Out of scope (open no new exposure):** SYNC_POSITIONS, MODIFY_POSITION, CLOSE_TRADE, breakeven,
+  PLACE_ORDER_SHADOW (dry-run).
+
+**Remaining for the pause/resume increment (not creation bypasses):** re-evaluation at the final dispatch
+boundary (TOCTOU / race); the h4 scheduler's graceful-skip parity (its refusal is currently a clean
+transaction-rolled-back skip logged as an error, no crash); and lifecycle transitions (activation / start /
+resume / provisioning→exec / recovery) that *enable* rather than *create* trading. Arming remains separately
+gated (provisioner rebuild + WP1–WP5 + WP6 + Sponsor).
 
 ## Pause / resume (deferred; required before arming)
 Runtime lifecycle semantics — validation degradation while running → pause; restored HEALTHY → controlled

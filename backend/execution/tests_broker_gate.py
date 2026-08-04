@@ -147,3 +147,63 @@ class OpenTradeFunnelTests(TestCase):
             with self.assertRaises(ExecutionGateRefused):
                 create_open_trade_job(self._params(acct))
         self.assertEqual(ExecutionJob.objects.count(), 0)  # no order job created
+
+
+class ModelBoundaryGateTests(TestCase):
+    """The model-layer gate in ExecutionJob.save() is the authoritative boundary NO creation path can
+    bypass (direct ORM create, schedulers, services, promotion, retry, future sites)."""
+
+    def setUp(self):
+        self.user = U.objects.create_user(username="g4", email="g4@x.invalid", password="x")
+
+    def _mk(self, acct, job_type):
+        return ExecutionJob.objects.create(
+            job_type=job_type, account=acct, status=ExecutionJob.Status.PENDING, payload={})
+
+    def test_blocks_every_exposure_opening_type_when_unvalidated(self):
+        acct = _acct(self.user, validated=_VS.NEVER)
+        for jt in (ExecutionJob.JobType.PLACE_ORDER, ExecutionJob.JobType.OPEN_TRADE,
+                   ExecutionJob.JobType.PLACE_TEST_ORDER):
+            with mock.patch.dict(os.environ, _ON), self.assertRaises(ExecutionGateRefused):
+                self._mk(acct, jt)
+        self.assertEqual(ExecutionJob.objects.count(), 0)
+
+    def test_allows_exposure_opening_when_validated(self):
+        acct = _acct(self.user, validated=_VS.VALIDATED)
+        with mock.patch.dict(os.environ, _ON):
+            job = self._mk(acct, ExecutionJob.JobType.PLACE_ORDER)
+        self.assertIsNotNone(job.pk)
+
+    def test_ignores_non_exposure_opening_types(self):
+        # SYNC / MODIFY / CLOSE / SHADOW open no new exposure — never gated, even for an ineligible account.
+        acct = _acct(self.user, validated=_VS.NEVER)
+        with mock.patch.dict(os.environ, _ON):
+            for jt in (ExecutionJob.JobType.SYNC_POSITIONS, ExecutionJob.JobType.MODIFY_POSITION,
+                       ExecutionJob.JobType.CLOSE_TRADE, ExecutionJob.JobType.PLACE_ORDER_SHADOW):
+                self._mk(acct, jt)
+        self.assertEqual(ExecutionJob.objects.filter(account=acct).count(), 4)
+
+    def test_flag_off_is_noop(self):
+        acct = _acct(self.user, validated=_VS.NEVER)  # ineligible, but flag OFF ⇒ created unchanged
+        job = self._mk(acct, ExecutionJob.JobType.PLACE_ORDER)
+        self.assertIsNotNone(job.pk)
+
+    def test_refusal_audit_survives_transaction_rollback_at_catch_site(self):
+        # Mirrors the scheduler pattern (create inside transaction.atomic(), catch OUTSIDE): the gate's
+        # in-transaction audit is rolled back, so the catch site re-emits a durable one. Asserts the
+        # durable audit persists and NO order row is created.
+        from django.db import transaction
+
+        from core.audit import log_event
+        acct = _acct(self.user, validated=_VS.NEVER)
+        with mock.patch.dict(os.environ, _ON):
+            try:
+                with transaction.atomic():
+                    self._mk(acct, ExecutionJob.JobType.PLACE_ORDER)
+            except ExecutionGateRefused as exc:
+                log_event(None, "EXECUTION_GATE_REFUSED", severity="WARN",
+                          entity_type="TradingAccount", entity_id=acct.id,
+                          metadata={"reason_code": exc.reason_code, "trigger": "test"})
+        self.assertTrue(AuditEvent.objects.filter(
+            event_type="EXECUTION_GATE_REFUSED", entity_id=str(acct.id)).exists())
+        self.assertEqual(ExecutionJob.objects.filter(account=acct).count(), 0)

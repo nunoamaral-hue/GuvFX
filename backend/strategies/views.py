@@ -742,6 +742,7 @@ class StrategyViewSet(viewsets.ModelViewSet):
             }
         """
         from .signal_engine import run_signal_evaluation
+        from execution.broker_gate import ExecutionGateRefused
         from execution.models import ExecutionKillSwitchEngaged
 
         strategy = self.get_object()
@@ -815,12 +816,13 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 user=user,
                 manual_params=manual_params,
             )
-        except ExecutionKillSwitchEngaged as exc:
+        except (ExecutionKillSwitchEngaged, ExecutionGateRefused) as exc:
             return Response(
                 {
                     "ok": False,
                     "reason": "execution_disabled",
-                    "detail": "Execution is currently disabled (kill switch engaged); no order was placed.",
+                    "detail": "Execution is currently disabled (kill switch or broker validation gate); "
+                              "no order was placed.",
                     "kill_reason": exc.reason,
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -558,7 +558,18 @@ class CreateOpenTradeJobView(APIView):
             comment=data.get("comment", ""),
         )
 
-        job = create_open_trade_job(params)
+        # WP1B/WP2 (ADR-0029): create_open_trade_job enforces the broker validation gate at the service
+        # funnel; translate an armed refusal to a clean 503 rather than an unhandled 500 (transparent OFF).
+        from execution.broker_gate import ExecutionGateRefused
+        try:
+            job = create_open_trade_job(params)
+        except ExecutionGateRefused as exc:
+            return Response(
+                {"ok": False, "error": "execution_disabled",
+                 "message": "Broker validation gate refused this account; no order was placed.",
+                 "gate_reason": exc.reason_code},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         response_data = ExecutionJobSerializer(job).data
         return Response(response_data, status=status.HTTP_201_CREATED)
 
@@ -818,6 +829,22 @@ class CreateDemoTradeJobView(APIView):
         # =====================================================================
         # Create the execution job with safety-enforced parameters
         # =====================================================================
+        # WP1B/WP2 (ADR-0029): broker-validation execution gate. Transparent while
+        # BROKER_CONNECTIVITY_EXECUTION_GATE is OFF; when ON, refuse a non-validated/ineligible account
+        # here with a clean 503 (the model-layer gate is the authoritative backstop).
+        from execution.broker_gate import evaluate_execution_gate
+        _gate = evaluate_execution_gate(account)
+        if not _gate.allowed:
+            return Response(
+                {
+                    "ok": False,
+                    "reason": "execution_disabled",
+                    "detail": "Broker validation gate refused this account; no order was placed.",
+                    "gate_reason": _gate.reason_code,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         job = ExecutionJob.objects.create(
             job_type=ExecutionJob.JobType.PLACE_TEST_ORDER,
             account=account,

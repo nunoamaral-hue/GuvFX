@@ -41,6 +41,7 @@ from strategies.management.commands.run_h4_scheduler import job_exists_for_bar_c
 from strategies.models import Strategy, StrategyAssignment, StrategyRuntimeEvent
 from strategies.risk_manager import record_signal_event, ORDER_PLACED
 from strategies.signal_engine import create_place_order_job
+from execution.broker_gate import ExecutionGateRefused
 from execution.models import ExecutionKillSwitchEngaged
 from trading.models import TradingAccount
 
@@ -506,14 +507,21 @@ class Command(BaseCommand):
                             f"reason={result.reason}"
                         )
 
-            except ExecutionKillSwitchEngaged:
-                # Kill switch engaged — order creation failed closed (no order
-                # placed). Clean skip rather than a noisy error trace.
+            except (ExecutionKillSwitchEngaged, ExecutionGateRefused) as exc:
+                # Kill switch engaged OR broker validation gate refused (ADR-0029) — order creation
+                # failed closed at the model boundary (no order placed). Clean skip.
+                if isinstance(exc, ExecutionGateRefused):
+                    # Durable refusal audit HERE — outside the rolled-back atomic block above (the gate's
+                    # in-transaction audit does not survive), so an armed refusal always leaves a record.
+                    from core.audit import log_event
+                    log_event(None, "EXECUTION_GATE_REFUSED", severity="WARN",
+                              entity_type="TradingAccount", entity_id=getattr(account, "id", None),
+                              metadata={"reason_code": exc.reason_code, "trigger": "scheduler_m5"})
                 self.stdout.write(
-                    f"  [SKIP-KILLSWITCH] execution disabled — no order placed: "
+                    f"  [SKIP-EXEC-BLOCKED] execution disabled — no order placed: "
                     f"account={account.id} strategy={strategy.id} symbol={symbol}"
                 )
-                logger.warning("M5 LIVE: kill switch engaged — order creation blocked, skipping")
+                logger.warning("M5 LIVE: order creation blocked (kill switch or broker gate), skipping")
                 continue
             except Exception as e:
                 self.stderr.write(
