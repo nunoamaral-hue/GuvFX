@@ -13,3 +13,13 @@ function truthy(v: string | undefined): boolean {
 export function brokerConnectivityEnabled(): boolean {
   return truthy(process.env.NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED);
 }
+
+/**
+ * WP5.3 (ADR-0032) — gates the internal Operations & Support surface (the read-only viewer over the
+ * WP5.1 operational-event API). BUILD-TIME, default OFF: when OFF there is no nav entry, the
+ * /operations/accounts routes 404, and no API call is made. It is SEPARATE from the backend gate
+ * (OPERATIONS_EVENTS_ENABLED); both default OFF/DARK. Documented in parity/env-allowlist.json + ADR-0032.
+ */
+export function operationsEnabled(): boolean {
+  return truthy(process.env.NEXT_PUBLIC_OPERATIONS_ENABLED);
+}

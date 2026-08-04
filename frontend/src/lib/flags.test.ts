@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { brokerConnectivityEnabled } from "@/lib/flags";
+import { brokerConnectivityEnabled, operationsEnabled } from "@/lib/flags";
 
 const FLAG = "NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED";
+const OPS_FLAG = "NEXT_PUBLIC_OPERATIONS_ENABLED";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -20,6 +21,25 @@ describe("brokerConnectivityEnabled", () => {
     for (const v of ["0", "false", "maybe", "2", " "]) {
       vi.stubEnv(FLAG, v);
       expect(brokerConnectivityEnabled()).toBe(false);
+    }
+  });
+});
+
+describe("operationsEnabled", () => {
+  it("is OFF by default (unset)", () => {
+    vi.stubEnv(OPS_FLAG, "");
+    expect(operationsEnabled()).toBe(false);
+  });
+  it("accepts the truthy tokens", () => {
+    for (const v of ["1", "true", "TRUE", "yes", "on"]) {
+      vi.stubEnv(OPS_FLAG, v);
+      expect(operationsEnabled()).toBe(true);
+    }
+  });
+  it("treats any other value as OFF (fail-safe)", () => {
+    for (const v of ["0", "false", "maybe", "2", " "]) {
+      vi.stubEnv(OPS_FLAG, v);
+      expect(operationsEnabled()).toBe(false);
     }
   });
 });

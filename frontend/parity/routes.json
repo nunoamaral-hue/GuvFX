@@ -21,6 +21,8 @@
   "src/app/(app)/dashboard/page.tsx",
   "src/app/(app)/layout.tsx",
   "src/app/(app)/onboarding/page.tsx",
+  "src/app/(app)/operations/accounts/[id]/page.tsx",
+  "src/app/(app)/operations/accounts/page.tsx",
   "src/app/(app)/operations/page.tsx",
   "src/app/(app)/profile/page.tsx",
   "src/app/(app)/strategies/[id]/edit/page.tsx",
