@@ -218,3 +218,81 @@ is the open WP1B/WP2 Workstream E "h4 parity" item), the **PLACE_TEST_ORDER** de
 durable audit), and the **pause-creation-block refusal under a view** (rare; covered under schedulers via
 the re-emit). Adding a durable audit + projection to those belongs to Workstream E / a follow-up, not to a
 projection packet.
+
+---
+
+# WP5.3 — Operations & Support Surface (frontend)
+
+**Status:** Accepted (repository engineering only; DARK / OFF by default; not deployed, not armed).
+**Amends:** ADR-0032 (adds the read-only frontend consumer of the WP5.1/5.2 Operational Event API).
+**Also governed by:** ADR-0031 (WP4.1 frontend parity guard) — the new routes/components/env var are
+registered in the parity manifests and the guard must stay green.
+
+## Context
+WP5.1 built the operational-event model + query/summary/DTO and the merged read API
+(`GET /api/operations/account-events/`); WP5.2 wired the durable event sources. There was **no operator
+UI** — an operator inspecting an account's validation/health/pause/credential/connection state or its
+event timeline had to read the raw API. WP5.3 adds the first internal Operations & Support surface: a
+read-only viewer over that existing API. No new backend, no new endpoint, no write path.
+
+## Decision
+
+### 1. A build-time DARK flag, separate from the backend gate
+`NEXT_PUBLIC_OPERATIONS_ENABLED` (default OFF) gates the entire surface, mirroring the WP4.2
+`NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED` pattern. When OFF: **no nav entry, the routes `notFound()`
+before any hook/API call, no preload, and the existing UI is byte-identical**. It is *independent* of the
+backend `OPERATIONS_EVENTS_ENABLED` gate; both default OFF/DARK, and arming either is a separate,
+Sponsor-gated step (a rebuild for the frontend flag). Registered in `parity/env-allowlist.json`.
+
+### 2. Two gates, backend is the authority
+The surface is operator-only in the UI via `useAdminRole()` (flag OFF → `notFound`; flag ON + non-operator
+→ a "Restricted" empty state that **makes no API call**; operator → content). This is *defence in depth,
+not enforcement*: the WP5.1 API independently enforces owner-scoping and operator-visibility (non-staff see
+only their own accounts and only `customer_visible` events; staff see all). The frontend never bypasses,
+weakens, or reconstructs that scoping.
+
+### 3. Routes (nested under the existing `operations/` dir — no architecture replacement)
+`/operations/accounts` (list) and `/operations/accounts/[id]` (overview + timeline + detail). The existing
+`/operations` reliability dashboard is **untouched** — WP5.3 adds sibling routes only, it does not replace
+or re-point the established route. Registered in `parity/routes.json`.
+
+### 4. Read-only; server-side vs client-side filtering
+One GET via a thin `operations-api.ts` wrapper (`getAccountEvents`) — no writes, no new URLs elsewhere.
+`category` is the **only** server-side filter the WP5.1 API supports and is the only one sent to the
+backend (a category change also resets pagination). Severity / open-resolved / visibility / date-range /
+free-text search are applied **client-side over the fetched page** by a pure `applyClientFilters` — the API
+is *not* redesigned. Pagination uses the API's own `limit`/`offset` (page size 50).
+
+### 5. One vocabulary→view mapping (`operations-status.ts`), no duplicated colour logic
+Every severity/category/resolution/health/pause/credential/disconnect value is mapped to a `StatusView`
+`{label, color}` in one module, reusing the WP4.2 5-colour `BadgeColor` palette and rendered through the
+shared `StatusBadge`. Components **never render a raw backend enum**; colour lives in exactly one place. A
+unit test asserts every mapper output stays on the 5-colour palette.
+
+### 6. Secret-safety at the view boundary (belt-and-braces with WP5.1/5.2)
+The event-detail view displays only the non-secret projection — summary, reason_code, source, event_type,
+timestamps, resolution, correlation id, and the already-allow-listed `metadata` dict. It **never** renders
+host paths, credentials, ciphertext, stack traces, internal exception text, or internal identifiers
+(runtime UUID, raw status enum, state_version, actor). The WP5.1/5.2 metadata allow-lists remain the
+primary guarantee; this view adds a second boundary by simply not surfacing those fields. Error copy is the
+DRF customer-safe `detail` (via `toCustomerError`) — never operator internals.
+
+## Scope boundary — what WP5.3 deliberately does NOT do
+- No writes, no acknowledge/resolve actions, no new backend or endpoint (read-only surface only).
+- No new server-side filter (severity/visibility/date/search stay client-side over the page).
+- No change to owner-scoping/visibility — enforced by the backend, mirrored (not re-derived) in the UI.
+- Not deployed, not armed: the flag ships OFF; arming is a Sponsor-gated rebuild.
+
+## Consequences
+- Operators get a read-only console the moment the flag is armed, with zero customer-visible change while
+  OFF (proven by the flag-gate test: OFF → `notFound` + zero API calls).
+- Client-side filtering is bounded to one page; filtering across the whole history requires paging or a
+  future server-side filter (documented, not hidden).
+- The parity guard now covers the new routes/components/env var; drift fails CI.
+
+## Tests (frontend, vitest under the `prelint`/`make check` hook)
+Flag gate + operator gate + no-API-bypass (list & detail); `operationsEnabled` truthy/fail-safe; the
+vocabulary mappers + palette invariant; the read-only API client (URL/params, single-arg GET); badges
+(mapped label, never the enum); timeline (render/empty/click/keyboard); `applyClientFilters` per dimension
++ "category is NOT client-side"; event detail (customer-safe projection, no internal identifiers, close);
+account card (link + masked number).

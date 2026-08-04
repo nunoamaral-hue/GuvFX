@@ -150,6 +150,7 @@ const dictionary: Dictionary = {
   // Operations Console
   "nav.operations": { en: "Operations", ja: "運用管理" },
   "nav.opsOverview": { en: "Overview", ja: "概要" },
+  "nav.operationsSupport": { en: "Operations & Support", ja: "運用・サポート" },
   "nav.reconciliation": { en: "Reconciliation", ja: "照合" },
   "nav.payments": { en: "Payments", ja: "決済" },
   "nav.workers": { en: "Workers", ja: "ワーカー" },

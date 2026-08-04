@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useState, useCallback, createContext, useContext } from "react";
 import { apiFetch } from "@/lib/api";
-import { brokerConnectivityEnabled } from "@/lib/flags";
+import { brokerConnectivityEnabled, operationsEnabled } from "@/lib/flags";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
 import { LanguageDropdown } from "@/components/LanguageDropdown";
@@ -109,6 +109,9 @@ const navGroups: NavGroup[] = [
     defaultOpen: false,
     items: [
       { labelKey: "nav.opsOverview", href: "/admin/operations", adminOnly: true },
+      // WP5.3 (ADR-0032): the read-only Operations & Support event viewer — shown ONLY when its build-time
+      // flag is on AND the user is an operator (adminOnly). When OFF there is no nav entry (routes 404).
+      ...(operationsEnabled() ? [{ labelKey: "nav.operationsSupport", href: "/operations/accounts", adminOnly: true }] : []),
       { labelKey: "nav.reconciliation", href: "/admin/operations/reconciliation", adminOnly: true },
       { labelKey: "nav.payments", href: "/admin/operations/payments", adminOnly: true },
       { labelKey: "nav.workers", href: "/admin/operations/workers", adminOnly: true },
