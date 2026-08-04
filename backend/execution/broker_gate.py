@@ -155,6 +155,12 @@ def _audit_refusal(account, decision, *, request=None, actor="", trigger="") -> 
             entity_type="TradingAccount", entity_id=getattr(account, "pk", None),
             metadata={"reason_code": decision.reason_code, "actor": str(actor or ""), "trigger": str(trigger or "")},
         )
+        # WP5.2 — project the creation refusal (operator-only). On-commit: durable for autocommit callers
+        # (view/service); discarded on rollback under a scheduler's atomic (the scheduler re-emit projects
+        # the durable one there). DARK / fail-open.
+        from operational_events import broker_projection
+        broker_projection.project_execution_refusal(
+            account, reason_code=decision.reason_code, phase="creation", trigger=str(trigger or ""))
     except Exception:  # noqa: BLE001 — audit must never break the gate
         logger.warning("execution gate refusal audit failed (reason=%s)", decision.reason_code)
 
@@ -241,5 +247,10 @@ def _audit_dispatch_refusal(account, decision, *, job_id=None, actor="", trigger
             metadata={"reason_code": decision.reason_code, "job_id": job_id,
                       "actor": str(actor or ""), "trigger": str(trigger or "")},
         )
+        # WP5.2 — project the final-dispatch refusal (operator-only; single durable autocommit site).
+        from operational_events import broker_projection
+        broker_projection.project_execution_refusal(
+            account, reason_code=decision.reason_code, phase="dispatch", job_id=job_id,
+            trigger=str(trigger or ""))
     except Exception:  # noqa: BLE001 — audit must never change the gate outcome
         logger.warning("dispatch gate refusal audit failed (reason=%s)", decision.reason_code)

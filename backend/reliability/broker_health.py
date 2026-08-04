@@ -174,6 +174,14 @@ def _emit_signals(account, health: BrokerAccountHealth, old_state, old_resume: b
         if health.pause_required:
             log_event(None, "BROKER_HEALTH_PAUSE_REQUIRED", severity="WARN",
                       entity_type="trading_account", entity_id=account.pk, metadata=meta)
+        # WP5.2 — project this net transition onto the operational timeline ONCE (folding pause_required/
+        # resume_eligible into metadata, not as separate events). On-commit / DARK / fail-open; the
+        # authoritative audits + alerts above are unchanged.
+        from operational_events import broker_projection
+        broker_projection.project_health_transition(
+            account, from_state=old_state, to_state=health.state, reason_code=health.reason_code,
+            state_version=health.state_version, pause_required=health.pause_required,
+            resume_eligible=health.resume_eligible)
     # Resume edge: only ever set by a genuine net recovery (_finalize), so this is symmetric with pause.
     if health.resume_eligible and not old_resume:
         log_event(None, "BROKER_HEALTH_RESUME_ELIGIBLE", severity="INFO",
@@ -246,6 +254,11 @@ def invalidate_for_credential_replacement(account, *, now=None) -> dict | None:
         if old_state != State.UNKNOWN:
             log_event(None, "BROKER_HEALTH_CREDENTIAL_INVALIDATED", severity="WARN",
                       entity_type="trading_account", entity_id=account.pk, metadata=health.contract())
+            # WP5.2 — project the health reset (operator-only; the customer-facing signal is the
+            # CREDENTIAL 'replaced' event). On-commit / DARK / fail-open.
+            from operational_events import broker_projection
+            broker_projection.project_credential_invalidation(
+                account, state_version=health.state_version, reason_code=health.reason_code)
         return health.contract()
 
 

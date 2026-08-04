@@ -215,6 +215,13 @@ def _promote_plan(plan: SignalExecutionPlan, *, expected_mode, job_type, payload
     except PromotionRejected as exc:
         _audit(PromotionAuditEvent.Event.PROMOTION_REJECTED, plan=plan,
                approval=plan.approval, actor=actor, code=exc.code, message=exc.message)
+        # WP5.2 — project ONLY broker-connectivity-gate promotion rejections (operator-only). This
+        # PROMOTION_REJECTED audit is durable (outside the promotion atomic below) → on-commit fires
+        # immediately. DARK / fail-open. Non-broker rejections are out of this packet's scope.
+        if str(exc.code or "").startswith("broker_gate_"):
+            from operational_events import broker_projection
+            broker_projection.project_promotion_rejection(
+                plan.account, plan_id=plan.id, reason_code=str(exc.code or ""))
         raise
 
     legs = list(plan.legs.order_by("leg_index"))
