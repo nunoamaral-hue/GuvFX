@@ -108,6 +108,9 @@ def build_account_status(account) -> dict:
 
     runtime = AccountRuntime.objects.filter(trading_account=account).first()
     rt_state = user_facing_state(runtime) if runtime is not None else NOT_CONFIGURED
+    # "Hosted terminal available" reflects the durable RUNNING state (display-only; the authoritative
+    # arming gate re-checks full ``runtime_ready``). IPR Area B: canonical readiness is
+    # ``account_runtime_ready``; this status read is intentionally left at the optimistic RUNNING check.
     rt_running = runtime is not None and runtime.state == RuntimeState.RUNNING
     rt_last_error = (runtime.last_error if runtime is not None else "") or ""
 

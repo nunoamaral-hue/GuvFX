@@ -90,3 +90,40 @@ def broker_connected(runtime: AccountRuntime) -> bool:
     before ``broker_login_verified`` is true on its report."""
     rep = latest_verification_report(runtime)
     return bool(rep and rep.broker_login_verified)
+
+
+def account_runtime_ready(account) -> bool:
+    """Canonical per-account readiness resolver (IPR Area B). Returns True iff the account owns an
+    ``AccountRuntime`` that is ``runtime_ready`` (BETA, RUNNING, heartbeat-fresh, verified). This is the
+    ONE predicate every customer-facing beta path should consult as the alternative to the legacy
+    ``TradingAccount.mt5_instance`` FK, so a dedicated-runtime customer is never told "no terminal" while
+    their runtime is up. It is broker-INDEPENDENT (says nothing about broker connectivity). Fail-closed:
+    no account / no runtime / not ready → False."""
+    if account is None:
+        return False
+    rt = AccountRuntime.objects.filter(trading_account=account).first()
+    return rt is not None and runtime_ready(rt)
+
+
+def account_terminal_identity(account):
+    """Canonical bridge-routing identity for an account's terminal (IPR Area B, C9 preparation).
+
+    Returns the identity the execution plane should route orders through:
+      * a dedicated BETA runtime that is RUNNING → its ``bridge_identity`` (the dedicated routing
+        identity). ``bridge_identity`` is BLANK while the capability is DARK, so this returns ``None``
+        and routes nothing until the execution-arming packet populates it;
+      * otherwise → the legacy shared instance's ``windows_username`` (Nuno's estate), or ``None``.
+
+    This is the single resolver that closes the "arm passes the readiness gate but the execution plane
+    cannot route" gap (contradiction C9) when execution is later armed. It is intentionally NOT yet
+    wired into the execution-plane call sites (E1–E9) — that migration is deferred to the
+    execution-arming packet and remains behind the OFF flags. Fail-closed: ``None`` when neither
+    identity is resolvable."""
+    if account is None:
+        return None
+    rt = AccountRuntime.objects.filter(trading_account=account).first()
+    if (rt is not None and rt.cohort == AccountRuntime.Cohort.BETA
+            and rt.state == RuntimeState.RUNNING):
+        return rt.bridge_identity or None
+    inst = getattr(account, "mt5_instance", None)
+    return getattr(inst, "windows_username", None) or None

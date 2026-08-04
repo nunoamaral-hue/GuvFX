@@ -206,6 +206,12 @@ def resolve_setup_stage(user) -> dict:
     if not TradingAccount.objects.filter(user=user).exists():
         return {"stage": "connect_broker", "next_route": "/accounts"}
 
+    # Setup-stage routing advances optimistically once a runtime is RUNNING: this drives only which
+    # page the customer lands on, and the authoritative arming gate (``_account_execution_ready`` →
+    # ``runtime_ready``) still re-checks heartbeat-freshness + verification report before any trade
+    # authority is granted. Tightening this to full ``runtime_ready`` here would strand a customer at
+    # "provisioning" during the brief RUNNING-before-first-report window for no safety gain (IPR Area B:
+    # canonical predicate is ``account_runtime_ready``; the weaker read is intentionally left optimistic).
     runtime_ready = AccountRuntime.objects.filter(
         trading_account__user=user, state=RuntimeState.RUNNING).exists()
     if not runtime_ready:
@@ -662,8 +668,10 @@ def check_onboarding_permits_execution(user) -> dict:
     entitlements = resolve_entitlements(sub)
     entitlement_valid = entitlements.can_deploy_automation
 
-    # 5. Terminal node valid → execution.models.TerminalNode (status=ACTIVE)
-    #    Check via TradingAccount.terminal_node linkage
+    # 5. Terminal/runtime valid. Legacy path → execution.models.TerminalNode (status=ACTIVE) via
+    #    TradingAccount.terminal_node. IPR Area B (C7): a dedicated-runtime (beta) account has no
+    #    TerminalNode linkage — it satisfies this dimension via a ``runtime_ready`` AccountRuntime, so a
+    #    beta customer whose runtime is up is not falsely reported "not ready". Either path suffices.
     terminal_node_valid = False
     if has_active_account:
         terminal_node_valid = TradingAccount.objects.filter(
@@ -672,6 +680,11 @@ def check_onboarding_permits_execution(user) -> dict:
             terminal_node__isnull=False,
             terminal_node__status=TerminalNode.Status.ACTIVE,
         ).exists()
+        if not terminal_node_valid:
+            from terminal_provisioning.beta_activation import account_runtime_ready
+            terminal_node_valid = any(
+                account_runtime_ready(a)
+                for a in TradingAccount.objects.filter(user=user, is_active=True))
 
     readiness_checks = {
         "has_active_account": has_active_account,

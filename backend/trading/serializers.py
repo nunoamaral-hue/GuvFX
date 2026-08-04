@@ -1,3 +1,4 @@
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 from .models import TradingAccount, BrokerServer, Trade, BrokerAccountValidationAttempt
 from .crypto import encrypt_password
@@ -18,12 +19,22 @@ class TradingAccountSerializer(serializers.ModelSerializer):
     # Accept plaintext password in request, store encrypted in password_enc
     password = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=False)
     mt5_instance = serializers.PrimaryKeyRelatedField(read_only=True)
+    # IPR Area B (C6): truthful dedicated-runtime signal. For a beta account ``mt5_instance`` is always
+    # ``null`` by design (ADR-0021), so the frontend must gate on runtime readiness — not on the legacy
+    # instance FK — to avoid telling a customer "no terminal" while their AccountRuntime is RUNNING.
+    # Both are query-free: the reverse OneToOne is prefetched via ``select_related("runtime")`` and the
+    # readiness predicate only touches the verification report for a BETA/RUNNING runtime.
+    runtime_ready = serializers.SerializerMethodField()
+    runtime_state = serializers.SerializerMethodField()
+
     class Meta:
         model = TradingAccount
         fields = [
             "id",
             "name",
             "mt5_instance",
+            "runtime_ready",
+            "runtime_state",
             "broker_server",
             "broker_display_name",
             "server_name",
@@ -36,6 +47,22 @@ class TradingAccountSerializer(serializers.ModelSerializer):
             "password",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+    def _runtime(self, obj):
+        """The account's owned AccountRuntime (reverse OneToOne, prefetchable), or None. Never raises."""
+        try:
+            return obj.runtime
+        except ObjectDoesNotExist:
+            return None
+
+    def get_runtime_ready(self, obj):
+        from terminal_provisioning.beta_activation import runtime_ready
+        rt = self._runtime(obj)
+        return bool(rt is not None and runtime_ready(rt))
+
+    def get_runtime_state(self, obj):
+        rt = self._runtime(obj)
+        return rt.state if rt is not None else None
 
     def validate(self, attrs):
         broker_server = attrs.get("broker_server") or getattr(self.instance, "broker_server", None)
