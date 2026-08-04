@@ -269,7 +269,8 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         token = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
 
         if not base or not token:
-            return Response({"ok": False, "detail": "Windows agent is not configured."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.error("test_mt5: windows agent is not configured (missing base URL or token)")
+            return Response({"ok": False, "detail": "This service is temporarily unavailable. Please try again shortly, or contact support if it persists."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         payload = {
             "username": inst.windows_username,
