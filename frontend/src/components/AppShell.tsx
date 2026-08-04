@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useState, useCallback, createContext, useContext } from "react";
 import { apiFetch } from "@/lib/api";
+import { brokerConnectivityEnabled } from "@/lib/flags";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
 import { LanguageDropdown } from "@/components/LanguageDropdown";
@@ -96,6 +97,9 @@ const navGroups: NavGroup[] = [
     defaultOpen: false,
     items: [
       { labelKey: "nav.brokerAccounts", href: "/accounts" },
+      // WP4.2 (ADR-0031): the Broker Connections journey is shown ONLY when its build-time flag is on;
+      // when OFF there is no nav entry (and the routes 404), so the UI does not exist.
+      ...(brokerConnectivityEnabled() ? [{ labelKey: "nav.brokerConnections", href: "/broker-accounts" }] : []),
       { labelKey: "nav.userSettings", href: "/profile" },
       { labelKey: "nav.hosting", href: "/admin/hosting", adminOnly: true },
     ],

@@ -87,3 +87,31 @@ junk (backups/manual patches), not functional or template files.
   parity guard. No functionality, UI, deployment or flag change. Customer Zero and production untouched.
 - Residual (documented, resolves on the next repo-built deploy — out of WP4.1 scope): the cosmetic
   `dashboard/page.tsx` VPS drift and the 12 VPS-only backup files. WP4.1 authorises no deployment.
+
+## WP4.2 — Broker Accounts (Broker Connections) frontend journey (2026-08-04)
+
+The first customer-facing Broker Connectivity UI, on the now-authoritative frontend. UI integration only
+against the merged WP1A backend (`trading.views` `bc_*` actions on TradingAccountViewSet); **no backend
+change, no new endpoint**. Flag-OFF / DARK; no deployment.
+
+- **Feature flag `NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED` (default OFF, build-time, `lib/flags.ts`).**
+  When OFF the UI does not exist: no nav entry (`AppShell` shows the "Broker Connections" item only when
+  on), the routes `/broker-accounts` and `/broker-accounts/[id]` call `notFound()` **before any fetch**,
+  and no API call is made. Existing behaviour is byte-identical. Arming = a rebuild with the flag on (a
+  separate, Sponsor-gated step). The flag is the sole entry in `parity/env-allowlist.json` and is
+  policed by the WP4.1 guard.
+- **UI/backend contract.** List `/api/trading/accounts/` + per-account `broker/status/`; details +
+  `broker/validation-history/`; actions `broker/{test-connection,retry-validation,replace-credentials,
+  disconnect}`. One client (`lib/broker-api.ts`) owns every URL; one mapping (`lib/broker-status.ts`)
+  turns backend enums/reason codes into customer-safe views — components never hardcode a backend string,
+  and unknown reason codes fall back to a generic message (no operator diagnostics). Passwords are
+  write-only (submitted, never stored/echoed); the account number is masked to the last 4.
+- **Component ownership (`components/broker/`):** `StatusBadge`, `AccountCard`, `ValidationHistoryTable`,
+  `Dialog` (accessible base: role=dialog, aria-modal, ESC/backdrop close, focus trap), `BrokerAccountWizard`
+  (Add + validate), `ReplaceCredentialsDialog`, `DisconnectDialog`, `States` (Loading/Empty/Error). Types
+  in `types/broker.ts`.
+- **Tests.** vitest + @testing-library (jsdom) added as devDeps; run via the `prelint` npm hook (so CI's
+  frontend lint job and `make check frontend-lint` execute them; the Docker image build runs only
+  `next build`, so tests stay out of the image). 27 tests: status/reason mapping, flag semantics,
+  component render + a11y (dialog roles/ESC), and the load-bearing flag-gate test (OFF → `notFound` +
+  **zero** API calls; ON → renders + fetches).
