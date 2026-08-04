@@ -129,6 +129,62 @@
       "BROKER_HEALTH_QUOTA_PER_CYCLE": 50
     }
   },
+  "beta_arming_flags": {
+    "note": "IPR Area E — the three BETA arming flags that gate the self-service dedicated-runtime journey. They are a SEPARATE domain from the six broker-connectivity/operational-event flags above (which is why they are not in `flags[]`), but they are genuine arming gates and are inventoried here so operators do not treat them as untracked. All read live at runtime (no rebuild), all default OFF/fail-closed, and NONE carries a secret VALUE. Whether any is armed in a running environment is HOST-VERIFIED / OUTSIDE REPOSITORY CONTROL.",
+    "truthy_tokens": ["1", "true", "yes", "on"],
+    "all_defaults_off": true,
+    "parser_divergence_note": "Each of the three re-implements the same tolerant parser locally (a deliberate NON-fix under the no-drive-by-refactor rule): the six broker-connectivity flags share one tolerant parser 'so they cannot silently disagree', but these three do not. Documented, not consolidated.",
+    "flags": [
+      {
+        "name": "BETA_ONBOARDING_ENABLED",
+        "owner": "Backend / billing (legacy back-compat)",
+        "scope": "backend",
+        "layer": "runtime",
+        "default": "OFF",
+        "timing": "runtime",
+        "definition_site": "backend/billing/beta.py:42-53 (beta_onboarding_open)",
+        "resolution": "getattr(settings, 'BETA_ONBOARDING_ENABLED', None) wins, else os.getenv('BETA_ONBOARDING_ENABLED', ''); falsey default.",
+        "effect_when_enabled": "Legacy master switch that opens beta onboarding. Marked legacy/back-compat: ADR-0021 supersedes it with stage-specific predicates (registration_allowed() etc. via billing/beta.py:56-60). Referenced (comment only) at billing/entitlements.py:131.",
+        "effect_when_disabled": "Beta onboarding is CLOSED via this gate (the ADR-0021 stage predicates are the live path).",
+        "deploy_requirement": "None to toggle (read live).",
+        "risk": "AMBER",
+        "sponsor_approval_required": true,
+        "note": "Legacy gate, NOT the ADR-0021 predicate path — do not arm expecting it to govern the live journey."
+      },
+      {
+        "name": "BETA_RUNTIMES_ENABLED",
+        "owner": "Backend / terminal_provisioning (control-16 kill switch)",
+        "scope": "backend",
+        "layer": "runtime",
+        "default": "OFF",
+        "timing": "runtime",
+        "definition_site": "backend/terminal_provisioning/beta_capacity.py:48-55 (beta_runtimes_enabled)",
+        "resolution": "getattr(settings, ..., None) then os.getenv(..., ''); falsey default.",
+        "effect_when_enabled": "Master beta-runtime switch. Permits BETA-cohort runtime provisioning within the caps (BETA_MAX_ACTIVE_RUNTIMES=5, BETA_MAX_ACTIVE_PER_USER=1; beta_capacity.py:28-29). NECESSARY but NOT SUFFICIENT — additional per-runtime gates apply downstream (beta_activation.py:3; assert_beta_activation_allowed).",
+        "effect_when_disabled": "No BETA-cohort runtime may be reserved/provisioned. Structurally cannot affect PRODUCTION runtimes.",
+        "deploy_requirement": "None to toggle (read live).",
+        "risk": "RED",
+        "sponsor_approval_required": true,
+        "note": "Necessary-but-not-sufficient; the narrow activation gate re-verifies every condition before any box side-effect."
+      },
+      {
+        "name": "BETA_SELF_SERVE_ARM_ENABLED",
+        "owner": "Backend / strategies TB-2 (self-service Enable-Trading)",
+        "scope": "backend",
+        "layer": "runtime",
+        "default": "OFF",
+        "timing": "runtime",
+        "definition_site": "backend/strategies/views.py:360-369 (_beta_self_serve_arm_enabled)",
+        "resolution": "getattr(settings, ..., None) then os.getenv(..., ''); additionally short-circuits on isinstance(val, bool). Fail-closed.",
+        "effect_when_enabled": "Ungated the self-service Enable-Trading authority transition: StrategyViewSet.signal_copy_arm / signal_copy_toggle create/resume the AUTO_DEMO signal-copy assignment. Classified NON_OPENING_EXEMPT in execution/execution_entrypoints.json:39 — grants authority only; resulting orders still pass the ExecutionJob creation + final-dispatch gates. IPR Area D wires the frontend Enable-Trading action to this endpoint.",
+        "effect_when_disabled": "signal_copy_arm returns 409 status=arming_disabled; no self-service authority can be created. This is the flag that keeps the Telegram journey unarmed today.",
+        "deploy_requirement": "None to toggle (read live).",
+        "risk": "RED",
+        "sponsor_approval_required": true,
+        "note": "Grants authority, does NOT open exposure by itself (NON_OPENING_EXEMPT). Master AUTO_DEMO levers + the execution gate still apply."
+      }
+    ]
+  },
   "adjacent_flags_not_in_scope": {
     "note": "Present in the repo and broker-adjacent, but NOT part of the broker-connectivity / operational-event / execution-gate / health arming domain. Listed so operators do not conflate them. Values here are repo DEFAULTS only.",
     "flags": {
