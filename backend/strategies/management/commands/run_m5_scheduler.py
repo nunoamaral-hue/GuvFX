@@ -507,14 +507,21 @@ class Command(BaseCommand):
                             f"reason={result.reason}"
                         )
 
-            except (ExecutionKillSwitchEngaged, ExecutionGateRefused):
+            except (ExecutionKillSwitchEngaged, ExecutionGateRefused) as exc:
                 # Kill switch engaged OR broker validation gate refused (ADR-0029) — order creation
                 # failed closed at the model boundary (no order placed). Clean skip.
+                if isinstance(exc, ExecutionGateRefused):
+                    # Durable refusal audit HERE — outside the rolled-back atomic block above (the gate's
+                    # in-transaction audit does not survive), so an armed refusal always leaves a record.
+                    from core.audit import log_event
+                    log_event(None, "EXECUTION_GATE_REFUSED", severity="WARN",
+                              entity_type="TradingAccount", entity_id=getattr(account, "id", None),
+                              metadata={"reason_code": exc.reason_code, "trigger": "scheduler_m5"})
                 self.stdout.write(
-                    f"  [SKIP-KILLSWITCH] execution disabled — no order placed: "
+                    f"  [SKIP-EXEC-BLOCKED] execution disabled — no order placed: "
                     f"account={account.id} strategy={strategy.id} symbol={symbol}"
                 )
-                logger.warning("M5 LIVE: kill switch engaged — order creation blocked, skipping")
+                logger.warning("M5 LIVE: order creation blocked (kill switch or broker gate), skipping")
                 continue
             except Exception as e:
                 self.stderr.write(

@@ -187,3 +187,23 @@ class ModelBoundaryGateTests(TestCase):
         acct = _acct(self.user, validated=_VS.NEVER)  # ineligible, but flag OFF ⇒ created unchanged
         job = self._mk(acct, ExecutionJob.JobType.PLACE_ORDER)
         self.assertIsNotNone(job.pk)
+
+    def test_refusal_audit_survives_transaction_rollback_at_catch_site(self):
+        # Mirrors the scheduler pattern (create inside transaction.atomic(), catch OUTSIDE): the gate's
+        # in-transaction audit is rolled back, so the catch site re-emits a durable one. Asserts the
+        # durable audit persists and NO order row is created.
+        from django.db import transaction
+
+        from core.audit import log_event
+        acct = _acct(self.user, validated=_VS.NEVER)
+        with mock.patch.dict(os.environ, _ON):
+            try:
+                with transaction.atomic():
+                    self._mk(acct, ExecutionJob.JobType.PLACE_ORDER)
+            except ExecutionGateRefused as exc:
+                log_event(None, "EXECUTION_GATE_REFUSED", severity="WARN",
+                          entity_type="TradingAccount", entity_id=acct.id,
+                          metadata={"reason_code": exc.reason_code, "trigger": "test"})
+        self.assertTrue(AuditEvent.objects.filter(
+            event_type="EXECUTION_GATE_REFUSED", entity_id=str(acct.id)).exists())
+        self.assertEqual(ExecutionJob.objects.filter(account=acct).count(), 0)

@@ -22,6 +22,7 @@ from rest_framework.views import APIView
 from billing.entitlements import resolve_entitlements
 from billing.models import PaymentEvent, UserSubscriptionState
 from core.audit import log_admin_override, log_event
+from execution.broker_gate import ExecutionGateRefused
 from execution.models import ExecutionJob, ExecutionKillSwitchEngaged, WorkerIdentity
 from reconciliation.reconciliation_models import ReconciliationEvent
 
@@ -636,10 +637,11 @@ class AdminExecutionJobViewSet(viewsets.ReadOnlyModelViewSet):
                 status=ExecutionJob.Status.PENDING,
                 created_by=request.user,
             )
-        except ExecutionKillSwitchEngaged as exc:
+        except (ExecutionKillSwitchEngaged, ExecutionGateRefused) as exc:
             return Response(
                 {
-                    "detail": "Execution is currently disabled (kill switch engaged); no order was placed.",
+                    "detail": "Execution is currently disabled (kill switch or broker validation gate); "
+                              "no order was placed.",
                     "kill_reason": exc.reason,
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -35,17 +35,23 @@ Classification of every `ExecutionJob.objects.create` site (verified by adversar
 - **Gated at the model boundary (all exposure-opening):** `services.create_open_trade_job` (OPEN_TRADE),
   `signal_promotion` (PLACE_ORDER/SHADOW), `signal_engine.create_place_order_job` (PLACE_ORDER),
   `run_h1/m5/h4_scheduler` direct PLACE_ORDER, `views.py` PLACE_TEST_ORDER.
-- **Additional earlier-refusal + graceful handling wired here:** `create_open_trade_job` and
+- **Earlier-refusal + graceful handling wired here:** `create_open_trade_job` and
   `signal_promotion._validate` refuse *before* building the payload (their own audit trail); the h1/m5
-  schedulers and the strategy deploy view now catch `ExecutionGateRefused` (skip / 503, alongside the kill
-  switch); PLACE_TEST_ORDER pre-checks and returns a clean 503.
+  schedulers, the strategy deploy view, the admin job-retry endpoint and the dev `CreateOpenTradeJobView`
+  now catch `ExecutionGateRefused` (skip / clean 503, alongside the kill switch); PLACE_TEST_ORDER
+  pre-checks → 503.
+- **Durable refusal audit.** The gate audits `EXECUTION_GATE_REFUSED` on refusal. Because the h1/m5
+  schedulers wrap creation in `transaction.atomic()` and catch OUTSIDE it, the in-transaction audit would
+  roll back — so those catch sites **re-emit a durable audit** (autocommit) to guarantee an armed refusal
+  always leaves a record. Non-transactional funnels (services) audit at the gate call directly.
 - **Out of scope (open no new exposure):** SYNC_POSITIONS, MODIFY_POSITION, CLOSE_TRADE, breakeven,
   PLACE_ORDER_SHADOW (dry-run).
 
 **Remaining for the pause/resume increment (not creation bypasses):** re-evaluation at the final dispatch
-boundary (TOCTOU / race), the h4 scheduler's own graceful-skip parity, and lifecycle transitions
-(activation / start / resume / provisioning→exec / recovery) that *enable* rather than *create* trading.
-Arming remains separately gated (provisioner rebuild + WP1–WP5 + WP6 + Sponsor).
+boundary (TOCTOU / race); the h4 scheduler's graceful-skip parity (its refusal is currently a clean
+transaction-rolled-back skip logged as an error, no crash); and lifecycle transitions (activation / start /
+resume / provisioning→exec / recovery) that *enable* rather than *create* trading. Arming remains separately
+gated (provisioner rebuild + WP1–WP5 + WP6 + Sponsor).
 
 ## Pause / resume (deferred; required before arming)
 Runtime lifecycle semantics — validation degradation while running → pause; restored HEALTHY → controlled

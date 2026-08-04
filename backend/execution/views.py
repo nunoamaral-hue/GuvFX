@@ -558,7 +558,18 @@ class CreateOpenTradeJobView(APIView):
             comment=data.get("comment", ""),
         )
 
-        job = create_open_trade_job(params)
+        # WP1B/WP2 (ADR-0029): create_open_trade_job enforces the broker validation gate at the service
+        # funnel; translate an armed refusal to a clean 503 rather than an unhandled 500 (transparent OFF).
+        from execution.broker_gate import ExecutionGateRefused
+        try:
+            job = create_open_trade_job(params)
+        except ExecutionGateRefused as exc:
+            return Response(
+                {"ok": False, "error": "execution_disabled",
+                 "message": "Broker validation gate refused this account; no order was placed.",
+                 "gate_reason": exc.reason_code},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         response_data = ExecutionJobSerializer(job).data
         return Response(response_data, status=status.HTTP_201_CREATED)
 
