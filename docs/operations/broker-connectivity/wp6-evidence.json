@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0.0",
+  "packet": "WP6",
+  "title": "Broker-connectivity certification evidence requirements",
+  "authority_note": "Evidence PLAN only. No evidence is collected by this artefact. Every certification run must emit a manifest conforming to the existing evidence schema. No secret or env-var VALUES anywhere.",
+  "evidence_manifest_schema": "evidence/schema/evidence-manifest.schema.json",
+  "manifest_required_fields": [
+    "schema_version", "handoff_id", "packet_id", "created_at_utc", "branch", "base_commit",
+    "head_commit", "commands", "expected_results", "actual_results", "status", "limitations",
+    "artefact_locations", "checksums", "reviewer"
+  ],
+  "status_enum": ["PASS", "PARTIAL", "FAIL"],
+  "principles": [
+    "Machine-readable: capture in the manifest schema, not only prose.",
+    "Exact commands + actual results: record what happened, never a 'should pass'.",
+    "State limitations: every record lists what was not covered / skipped / assumed.",
+    "Checksums where integrity matters (images, manifests, backups).",
+    "PASS only when the applicable acceptance criteria actually ran; else PARTIAL/FAIL with reason."
+  ],
+  "requirements": [
+    { "area": "A", "evidence_type": "Environment readiness", "capture": "Disposable account/user list; demo classification; verify_image output; monitoring/log samples", "redaction": "Mask account numbers/logins; no credentials", "retention": "Life of certification + until the broader-beta decision" },
+    { "area": "B", "evidence_type": "Isolation transcripts", "capture": "Owner-scoping API responses; slot identity/dir/ACL read-backs; validation-isolation asserts; per-account credential audit", "redaction": "Redact host paths; masked last-4 only", "retention": "Life of certification" },
+    { "area": "C", "evidence_type": "Concurrency transcripts", "capture": "Lock-contention/lease/row-lock ordering; state_version series; claim-gate-under-load results", "redaction": "None sensitive; no secrets", "retention": "Life of certification" },
+    { "area": "D", "evidence_type": "Execution-safety proofs", "capture": "Refusal audits at creation/claim/dispatch; drift-guard output; route-coverage cross-check vs execution_entrypoints.json", "redaction": "None sensitive", "retention": "Life of certification" },
+    { "area": "E", "evidence_type": "Health transitions", "capture": "get_contract series across the 6 states; threshold/convergence/state_version transcripts; no-auto-resume proof", "redaction": "None sensitive", "retention": "Life of certification" },
+    { "area": "F", "evidence_type": "Operational-event proofs", "capture": "Projected rows per source; dedup counts; visibility-scoped timeline/summary; recorder-failure logs; on_commit-discard-on-rollback", "redaction": "Confirm no forbidden metadata (state_version/ids/raw enums/secrets)", "retention": "Life of certification" },
+    { "area": "G", "evidence_type": "Operator-workflow transcripts", "capture": "Per-workflow steps + expected UI + events + audit + operator actions", "redaction": "Customer-safe wording; no operator internals in customer-facing artefacts", "retention": "Life of certification" },
+    { "area": "H", "evidence_type": "Failure-injection results", "capture": "Injected fault -> expected fail-closed/fail-open state + events + rollback per case", "redaction": "None sensitive", "retention": "Life of certification" },
+    { "area": "I", "evidence_type": "Recovery transcripts", "capture": "Restart/retry/convergence continuity; no duplicate/ineligible action on resume", "redaction": "None sensitive", "retention": "Life of certification" },
+    { "area": "J", "evidence_type": "Rollback rehearsal", "capture": "Flag/image/agent/validation-image rollback + disposable DB restore verification", "redaction": "None sensitive; backup checksums", "retention": "Life of certification" },
+    { "area": "K", "evidence_type": "Capacity measurements", "capture": "Throughput/depth/latency/response-time measurements (TO BE MEASURED)", "redaction": "None sensitive", "retention": "Life of certification" },
+    { "area": "L", "evidence_type": "Release gate", "capture": "Completed wp6-release-gate.json + Sponsor approval record", "redaction": "None sensitive", "retention": "Permanent (release decision)" },
+    { "area": "cross", "evidence_type": "Customer Zero no-drift", "capture": "Golden STOP-check before/after; CZ order-count = 0 throughout", "redaction": "None sensitive", "retention": "Permanent" },
+    { "area": "cross", "evidence_type": "Production no-trade", "capture": "No order placed against production during certification", "redaction": "None sensitive", "retention": "Permanent" },
+    { "area": "cross", "evidence_type": "Credential-access audit", "capture": "CREDENTIAL_ACCESSED audit stream (redacted) matched to validation volume", "redaction": "Masked last-4; never the secret", "retention": "Permanent" },
+    { "area": "cross", "evidence_type": "Adversarial-review records (GATE-REV)", "capture": "Certification-results review findings + resolution; zero open HIGH/MEDIUM at sign-off", "redaction": "Redact any sensitive finding to file/path/category", "retention": "Permanent" },
+    { "area": "cross", "evidence_type": "Sponsor approval (GATE-SPON)", "capture": "Sponsor arming decision with cohort + capacity limit + stop conditions + UTC timestamp", "redaction": "None sensitive", "retention": "Permanent" }
+  ],
+  "what_must_never_be_included": [
+    "Any secret or env-var VALUE (passwords, tokens, API keys, Fernet keys, keyring/envelope private keys, session strings)",
+    "Plaintext customer credentials in any field",
+    "Ciphertext, DPAPI blobs, accounts.dat, broker history/deals/orders/positions files",
+    "Customer Zero live credentials or any live-account credential",
+    "Bulk/raw data or binaries committed into Git",
+    "Cross-tenant data in any artefact (even operator artefacts)",
+    "Host paths / PIDs / IPC-TCP endpoints / raw exception strings in customer-facing artefacts"
+  ],
+  "location": "Repo-verifiable manifests -> evidence/manifests/*.json (+ evidence/ artefacts); bulk/host artefacts live OUTSIDE Git, referenced by location + checksum.",
+  "owner": "Engineering owns repo-verifiable manifests + checksums; Operator owns host-collected evidence; Sponsor owns approvals + final sign-off.",
+  "status": "PLANNED"
+}

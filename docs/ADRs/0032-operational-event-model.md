@@ -349,3 +349,14 @@ UI. Repository documentation only; nothing is armed. Full runbook: `docs/operati
   permanently drops historical rows (authoritative state in `AuditEvent` + the WP1A/WP3/WP2 models is
   unaffected), so it must not be truncated in expectation of reconstruction (`rollback-matrix.md` §5,
   `incident-response.md`).
+
+---
+
+## WP6 certification gate (2026-08-04)
+
+Operational-event + operator-UI arming (WP5.4 arming stage 3) is certified under WP6 area F: projection
+correctness, deduplication, visibility/owner-scoping, timeline completeness, summary correctness, rollback,
+fail-open, and the **no-rebuild-tool** reality (`docs/operations/broker-connectivity/wp6-operational-events.md`,
+matrix OPE-1..8). Event isolation is certified under area B (ISO-4). Recorder-failure counting and event-lag
+are signals WP6 must **add** and baseline (`wp6-capacity.md` CAP-9, `monitoring-spec.md` §12–13). Certification
+is planning + disposable testing only; no arming.

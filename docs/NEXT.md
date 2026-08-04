@@ -1,15 +1,17 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Broker Connectivity Trusted Beta — WP5.4 ops package COMPLETE (2026-08-04); DARK, flags OFF
-The full engineering plane (WP1A→WP5.3) is merged DARK, and the operations-readiness package is authored:
-`docs/operations/broker-connectivity/` (arming runbook, rollback matrix, incident/support/monitoring, WP6 +
-Trusted-Beta entry/exit + capacity), machine-readable `feature-flags.json` + `readiness-checklist.json`,
-validation test `backend/operational_events/tests_wp54_readiness.py`.
+## ▶ Broker Connectivity Trusted Beta — WP5.4 ops package + WP6 certification PLAN COMPLETE (2026-08-04); DARK
+The full engineering plane (WP1A→WP5.3) is merged DARK; the WP5.4 operations-readiness package and the **WP6
+multi-tenant certification PLAN** are authored: `docs/operations/broker-connectivity/` (WP5.4 arming/rollback/
+incident/support/monitoring + WP6 `wp6-*` certification matrix/evidence/release-gate), validation tests
+`tests_wp54_readiness.py` + `tests_wp6_certification.py`.
 
-**Bounded next action:** none in the repository — **WP6 multi-tenant certification is the next increment and
-is NOT authorised/started.** Do **not** arm any flag, deploy, or invite beta users. Arming stage 6 (execution
-gate) and stage 7 (invitation) require **WP6 PASS + explicit Sponsor approval**; every earlier stage is
-Sponsor-gated. When Nuno authorises, execute the arming runbook stage-by-stage (never "enable all").
+**Bounded next action:** none in the repository — **WP6 certification EXECUTION is the next activity and needs
+the disposable environment** (a Nuno-provided disposable demo account + the Windows host; task #108) and is
+Sponsor-gated. Do **not** arm any flag, deploy, or invite beta users. When Nuno authorises WP6 execution, run
+the `wp6-test-matrix.json` cases in the disposable env, capture evidence per `wp6-evidence.json`, complete
+`wp6-release-gate.json`, and only then does the Sponsor decide GO / GO-WITH-CONDITIONS / NO-GO. Execution-gate
+arming (arming stage 6) + invitation (stage 7) require **WP6 PASS + explicit Sponsor approval**.
 
 ## ▶ Customer Zero MATERIALISE remediation — engineering-complete (2026-08-01); awaiting merge + Sponsor gate
 Remediation of the CZ MATERIALISE timeout/idempotency/retry defect is engineering-complete on branch
