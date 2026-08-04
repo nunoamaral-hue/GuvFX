@@ -150,8 +150,29 @@ Present in the repo, broker-adjacent, but **not** part of this arming domain (`f
 
 Also present but out of this domain entirely (listed so they are not conflated): `BREAKEVEN_ENABLED`,
 `PROVIDER_COMMANDS_ENABLED`, `TP_WATCHER_ENABLED`, `MULTI_ACCOUNT_ROUTING_ENABLED`, `RISK_MARGIN_GUARD_ENABLED`,
-`RISK_REQUIRE_TERMINAL_NODE`, `BETA_SELF_SERVE_ARM_ENABLED`, `BETA_RUNTIMES_ENABLED`, `BETA_ONBOARDING_ENABLED`,
-`PROVISIONING_REQUIRE_BROKER_LOGIN`.
+`RISK_REQUIRE_TERMINAL_NODE`, `PROVISIONING_REQUIRE_BROKER_LOGIN`. (The three `BETA_*` arming flags moved
+into their own section below — see **Beta arming flags**.)
+
+## Beta arming flags
+
+IPR Area E. These three gate the **self-service dedicated-runtime (beta) journey**. They are a **separate
+arming domain** from the six flags above — which is why they live in `feature-flags.json` →
+`beta_arming_flags`, not `flags[]` — but they are genuine arming gates and are inventoried here so an
+operator never treats them as untracked toggles. All read **live** at runtime (no rebuild), all default
+**OFF / fail-closed**, and **none carries a secret value**. Whether any is armed in a running environment
+is **HOST-VERIFIED / OUTSIDE REPOSITORY CONTROL**. Each re-implements the same tolerant parser locally (a
+documented, deliberate non-fix under the no-drive-by-refactor rule — the six broker-connectivity flags
+share one parser "so they cannot silently disagree"; these three do not).
+
+| Flag | Definition site | Default | Effect when ON | Deploy req. | Risk |
+|------|-----------------|---------|----------------|-------------|------|
+| `BETA_ONBOARDING_ENABLED` | `backend/billing/beta.py:42-53` (`beta_onboarding_open`) | OFF | Legacy master switch opening beta onboarding. **Legacy/back-compat**: ADR-0021 supersedes it with stage predicates (`registration_allowed()` etc., `beta.py:56-60`). | None (read live) | AMBER |
+| `BETA_RUNTIMES_ENABLED` | `backend/terminal_provisioning/beta_capacity.py:48-55` (`beta_runtimes_enabled`) | OFF | Master beta-runtime switch (control-16 kill switch). Permits BETA-cohort provisioning within caps (5 total / 1 per user). **Necessary-but-not-sufficient** — `assert_beta_activation_allowed` re-verifies every condition. Cannot affect PRODUCTION runtimes. | None (read live) | RED |
+| `BETA_SELF_SERVE_ARM_ENABLED` | `backend/strategies/views.py:360-369` (`_beta_self_serve_arm_enabled`) | OFF | Ungates `signal_copy_arm`/`signal_copy_toggle` — the AUTO_DEMO "Enable-Trading" authority transition the IPR Area D frontend calls. Classified `NON_OPENING_EXEMPT` (`execution/execution_entrypoints.json:39`): grants **authority only**, does not open exposure; orders still pass the creation + final-dispatch gates. OFF ⇒ arm returns `409 status=arming_disabled` (this is why the Telegram journey is unarmed today). | None (read live) | RED |
+
+**Arming note:** these are armed under explicit, separate Sponsor authorisation, never "enable all". Arming
+`BETA_SELF_SERVE_ARM_ENABLED` grants authority but fires nothing on its own — the master AUTO_DEMO levers
+and (when armed) the execution gate still apply.
 
 ## Coverage guarantee
 

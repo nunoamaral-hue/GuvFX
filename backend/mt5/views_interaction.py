@@ -64,11 +64,10 @@ class SessionLaunchView(APIView):
                 "Session launch failed: user=%s binding=%s error=%s",
                 request.user.id, binding_id, error_msg,
             )
-            # Map known service exceptions to appropriate HTTP status
-            status_code = _map_service_error(e)
+            # Map to HTTP status + a customer-safe message BY TYPE — never echo the raw str(e).
             return Response(
-                {"detail": error_msg},
-                status=status_code,
+                {"detail": _safe_service_message(e)},
+                status=_map_service_error(e),
             )
 
         # Invoke adapter to obtain embed credentials (service-layer only)
@@ -158,10 +157,9 @@ class SessionResumeView(APIView):
                 "Session resume validation failed: user=%s session=%s error=%s",
                 request.user.id, pk, error_msg,
             )
-            status_code = _map_service_error(e)
             return Response(
-                {"detail": error_msg},
-                status=status_code,
+                {"detail": _safe_service_message(e)},
+                status=_map_service_error(e),
             )
 
         # Invoke adapter to obtain fresh embed credentials (service-layer only)
@@ -225,10 +223,9 @@ class SessionTerminateView(APIView):
                 "Session terminate failed: user=%s session=%s error=%s",
                 request.user.id, pk, error_msg,
             )
-            status_code = _map_service_error(e)
             return Response(
-                {"detail": error_msg},
-                status=status_code,
+                {"detail": _safe_service_message(e)},
+                status=_map_service_error(e),
             )
 
         # Re-fetch via service to return post-termination state
@@ -360,3 +357,29 @@ def _map_service_error(exc: Exception) -> int:
     if isinstance(exc, (LaunchError, ResumeError, TerminateError)):
         return status.HTTP_409_CONFLICT
     return status.HTTP_400_BAD_REQUEST
+
+
+def _safe_service_message(exc: Exception) -> str:
+    """Customer-safe message per service-layer exception TYPE (IPR Area A). The raw ``str(exc)`` may
+    carry internal service detail — it is logged, never returned. Unknown exceptions get a generic
+    message."""
+    from mt5.services.binding_resolution_service import BindingResolutionError
+    from mt5.services.authorization_validation_service import AuthorizationDenied
+    from mt5.services.binding_occupancy_enforcement_service import OccupancyError
+    from mt5.services.session_launch_orchestration_service import LaunchError
+    from mt5.services.session_resume_service import ResumeError
+    from mt5.services.session_terminate_service import TerminateError
+
+    if isinstance(exc, AuthorizationDenied):
+        return "You don't have access to this terminal session."
+    if isinstance(exc, BindingResolutionError):
+        return "That terminal session wasn't found."
+    if isinstance(exc, OccupancyError):
+        return "This terminal is currently in use. Please try again shortly."
+    if isinstance(exc, LaunchError):
+        return "The terminal session couldn't be started right now. Please try again."
+    if isinstance(exc, ResumeError):
+        return "The terminal session couldn't be resumed right now. Please try again."
+    if isinstance(exc, TerminateError):
+        return "The terminal session couldn't be closed right now. Please try again."
+    return "Something went wrong with the terminal session. Please try again."

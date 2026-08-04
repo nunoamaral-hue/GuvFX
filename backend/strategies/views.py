@@ -1545,13 +1545,13 @@ class WindowsStrategyAssignView(APIView):
         try:
             strategy = Strategy.objects.get(id=strategy_id)
         except Strategy.DoesNotExist:
-            raise NotFound(f"Strategy with id {strategy_id} not found.")
+            raise NotFound("Strategy not found.")
 
         # Fetch account
         try:
             account = TradingAccount.objects.get(id=account_id)
         except TradingAccount.DoesNotExist:
-            raise NotFound(f"TradingAccount with id {account_id} not found.")
+            raise NotFound("Account not found.")
 
         # Ownership check (non-staff must own both)
         if not user.is_staff:
@@ -1587,12 +1587,14 @@ class WindowsStrategyAssignView(APIView):
             },
         }
 
-        # Call agent
+        # Call agent. On every failure path, log the internal detail (env var names, host, raw agent
+        # text) server-side only and return a customer-safe message — never the infra detail (IPR Area A).
         try:
             headers = _get_agent_headers()
         except ValueError as e:
+            logger.error("Windows agent assign misconfigured: %s", e)
             return Response(
-                {"ok": False, "error": str(e)},
+                {"ok": False, "error": "This service is temporarily unavailable. Please try again shortly, or contact support if it persists."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -1601,29 +1603,32 @@ class WindowsStrategyAssignView(APIView):
         try:
             resp = requests.post(agent_url, json=agent_payload, headers=headers, timeout=10)
         except requests.RequestException as e:
-            logger.error(f"Windows agent assign request failed: {e}")
+            logger.error("Windows agent assign request failed: %s", e)
             return Response(
-                {"ok": False, "error": f"Agent connection failed: {e}"},
+                {"ok": False, "error": "The trading service could not be reached. Please try again."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
         if resp.status_code != 200:
+            logger.error("Windows agent assign returned %s: %s", resp.status_code, resp.text)
             return Response(
-                {"ok": False, "error": f"Agent returned status {resp.status_code}", "detail": resp.text},
+                {"ok": False, "error": "The trading service returned an unexpected response. Please try again."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
         try:
             agent_resp = resp.json()
         except ValueError:
+            logger.error("Windows agent assign returned invalid JSON: %s", resp.text[:500])
             return Response(
-                {"ok": False, "error": "Agent returned invalid JSON"},
+                {"ok": False, "error": "The trading service returned an unexpected response. Please try again."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
         if not agent_resp.get("ok"):
+            logger.warning("Windows agent assign rejected: %s", agent_resp.get("error"))
             return Response(
-                {"ok": False, "error": agent_resp.get("error", "Unknown agent error")},
+                {"ok": False, "error": "The strategy could not be assigned right now. Please try again, or contact support if it persists."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

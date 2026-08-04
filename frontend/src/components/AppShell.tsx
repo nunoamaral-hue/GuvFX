@@ -96,10 +96,11 @@ const navGroups: NavGroup[] = [
     labelKey: "nav.settings",
     defaultOpen: false,
     items: [
-      { labelKey: "nav.brokerAccounts", href: "/accounts" },
-      // WP4.2 (ADR-0031): the Broker Connections journey is shown ONLY when its build-time flag is on;
-      // when OFF there is no nav entry (and the routes 404), so the UI does not exist.
-      ...(brokerConnectivityEnabled() ? [{ labelKey: "nav.brokerConnections", href: "/broker-accounts" }] : []),
+      // AREA C (ADR-0031): when the broker-connectivity journey is armed, /accounts redirects to
+      // /broker-accounts — so point the single "Broker Accounts" entry straight at the canonical route
+      // to avoid two nav entries resolving to the same page. OFF (default) keeps the legacy /accounts
+      // target unchanged.
+      { labelKey: "nav.brokerAccounts", href: brokerConnectivityEnabled() ? "/broker-accounts" : "/accounts" },
       { labelKey: "nav.userSettings", href: "/profile" },
       { labelKey: "nav.hosting", href: "/admin/hosting", adminOnly: true },
     ],

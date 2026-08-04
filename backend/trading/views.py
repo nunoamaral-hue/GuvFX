@@ -226,6 +226,20 @@ def _find_existing_account(user, acct_no, broker_server, broker_name):
     return None
 
 
+def _account_runtime_ready(account) -> bool:
+    """Beta dedicated-runtime readiness (IPR Area B): True iff the account owns a ``runtime_ready``
+    ``AccountRuntime``. Used to branch the legacy shared-instance gates so a dedicated-runtime (beta)
+    customer is never told "no terminal" while their runtime is up. Lazy import avoids an app-load
+    import cycle; fail-closed on any resolution error (treated as not-ready, legacy path taken)."""
+    try:
+        from terminal_provisioning.beta_activation import account_runtime_ready
+        return account_runtime_ready(account)
+    except Exception:  # noqa: BLE001 — never let a readiness probe break the legacy gate
+        logger.warning("account_runtime_ready probe failed for account=%s",
+                       getattr(account, "id", None), exc_info=True)
+        return False
+
+
 class TradingAccountViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["POST"], url_path="test-mt5")
@@ -237,17 +251,26 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         acc = self.get_object()
 
         if not acc.mt5_instance_id:
-            return Response({"ok": False, "detail": "Account has no mt5_instance assigned."}, status=status.HTTP_409_CONFLICT)
+            # IPR Area B (C1): a dedicated-runtime (beta) account has no shared MT5 instance by design.
+            # If its runtime is up, report truthfully instead of the legacy "not connected" 409. During
+            # the broker-independent walk there is no live broker login to EA-check yet.
+            if _account_runtime_ready(acc):
+                return Response(
+                    {"ok": True, "valid": False, "reason": "broker_login_deferred",
+                     "detail": "Your trading terminal is ready. Broker connection is validated separately."},
+                    status=status.HTTP_200_OK)
+            return Response({"ok": False, "detail": "This account isn't connected to a trading terminal yet. Add and validate your broker credentials to continue."}, status=status.HTTP_409_CONFLICT)
 
         inst = acc.mt5_instance
         if not inst or not getattr(inst, "windows_username", None):
-            return Response({"ok": False, "detail": "MT5 instance is missing windows_username."}, status=status.HTTP_409_CONFLICT)
+            return Response({"ok": False, "detail": "This account's trading terminal isn't fully set up yet. Please try again shortly, or contact support if it persists."}, status=status.HTTP_409_CONFLICT)
 
         base = (os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
         token = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
 
         if not base or not token:
-            return Response({"ok": False, "detail": "Windows agent is not configured."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.error("test_mt5: windows agent is not configured (missing base URL or token)")
+            return Response({"ok": False, "detail": "This service is temporarily unavailable. Please try again shortly, or contact support if it persists."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         payload = {
             "username": inst.windows_username,
@@ -290,7 +313,10 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = TradingAccount.objects.select_related("user", "broker_server", "mt5_instance").all()
+        # ``runtime`` (reverse OneToOne AccountRuntime) is prefetched so the serializer's
+        # runtime_ready/runtime_state fields (IPR Area B / C6) add no per-row query.
+        qs = TradingAccount.objects.select_related(
+            "user", "broker_server", "mt5_instance", "runtime").all()
         if not user.is_staff:
             qs = qs.filter(user=user)
         return qs.order_by("-created_at")
@@ -345,7 +371,18 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             is_active = bool(raw)
 
         if not acc.mt5_instance_id:
-            return Response({"detail": "Account has no mt5_instance assigned."}, status=status.HTTP_409_CONFLICT)
+            # IPR Area B (C2): a dedicated-runtime (beta) account has no shared MT5 instance — the
+            # runtime IS its terminal. When the runtime is ready, the active flip is a plain state
+            # change: there is no EA-login precondition and no "one-active-per-instance" sibling rule
+            # (the runtime is 1:1 with the account). Self-service arming requires the account be active,
+            # so this flip must succeed instead of the legacy 409. Legacy shared-instance accounts fall
+            # through to the unchanged path below.
+            if _account_runtime_ready(acc):
+                acc.is_active = is_active
+                acc.save(update_fields=["is_active", "updated_at"])
+                return Response({"ok": True, "id": acc.id, "is_active": acc.is_active},
+                                status=status.HTTP_200_OK)
+            return Response({"detail": "This account isn't connected to a trading terminal yet. Add and validate your broker credentials to continue."}, status=status.HTTP_409_CONFLICT)
 
         # Block turning off the last active account for this instance
         if (not is_active) and acc.is_active:
@@ -356,7 +393,7 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             ).count()
             if active_count <= 1:
                 return Response(
-                    {"detail": "At least one trading account must remain active for this MT5 instance."},
+                    {"detail": "At least one trading account must remain active for this trading terminal."},
                     status=status.HTTP_409_CONFLICT,
                 )
 
@@ -419,8 +456,17 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         acc = self.get_object()
 
         if not acc.mt5_instance_id:
+            # IPR Area B (C3): dedicated-runtime (beta) account — no shared MT5 instance to EA-check.
+            # Report the runtime as ready (broker connection is validated on a separate path) rather
+            # than the legacy "not connected" 409.
+            if _account_runtime_ready(acc):
+                return Response(
+                    {"ok": True, "valid": False, "reason": "broker_login_deferred",
+                     "detail": "Your trading terminal is ready. Broker connection is validated separately."},
+                    status=status.HTTP_200_OK,
+                )
             return Response(
-                {"ok": False, "detail": "Account has no mt5_instance assigned."},
+                {"ok": False, "detail": "This account isn't connected to a trading terminal yet. Add and validate your broker credentials to continue."},
                 status=status.HTTP_409_CONFLICT,
             )
 
@@ -428,7 +474,7 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         win_user = getattr(inst, "windows_username", "") or ""
         if not win_user:
             return Response(
-                {"ok": False, "detail": "MT5 instance has no windows_username set."},
+                {"ok": False, "detail": "This account's trading terminal isn't fully set up yet. Please try again shortly, or contact support if it persists."},
                 status=status.HTTP_409_CONFLICT,
             )
 

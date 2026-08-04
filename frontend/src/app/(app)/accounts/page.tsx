@@ -7,13 +7,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useRouter } from "next/navigation";
+import { redirect, useRouter } from "next/navigation";
 import React, { useEffect, useMemo, useState } from "react";
 import { useLang } from "@/components/AppShell";
 import { Card } from "@/components/ui/Card";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
+import { brokerConnectivityEnabled } from "@/lib/flags";
 import { t } from "@/lib/i18n";
 import type {
   StrategyAssignment,
@@ -1039,5 +1040,11 @@ return (
  * Page component — rendered inside AppShell via (app)/layout.tsx.
  */
 export default function AccountsPage() {
+  // AREA C (ADR-0031): when the broker-connectivity journey is armed at build time, /accounts is
+  // superseded by the canonical /broker-accounts journey — redirect during render (before any legacy
+  // fetch or the onboarding panel's polling runs). OFF (default) makes this branch dead, so /accounts
+  // renders byte-identically to today. Loop-safe: /broker-accounts reads the same inlined constant and
+  // notFound()s only when OFF, so it never bounces back here.
+  if (brokerConnectivityEnabled()) redirect("/broker-accounts");
   return <AccountsContent />;
 }

@@ -957,6 +957,60 @@ const dictionary: Dictionary = {
     en: "Could not change the strategy state. Please try again.",
     ja: "戦略の状態を変更できませんでした。もう一度お試しください。",
   },
+  // IPR Area D — self-service Enable-Trading (arm). Customer-safe wording keyed off the arm
+  // response's machine-readable status (never the raw detail/slug).
+  "marketplace.armEnableTrading": {
+    en: "Enable Trading",
+    ja: "取引を有効化",
+  },
+  "marketplace.armWorking": {
+    en: "Enabling…",
+    ja: "有効化しています…",
+  },
+  "marketplace.armSuccess": {
+    en: "Trading enabled for this account.",
+    ja: "このアカウントで取引を有効化しました。",
+  },
+  "marketplace.armSelectAccountHint": {
+    en: "Choose the demo account to copy signals into.",
+    ja: "シグナルをコピーするデモアカウントを選択してください。",
+  },
+  "marketplace.copyAmbiguousShort": {
+    en: "Needs attention",
+    ja: "要確認",
+  },
+  "marketplace.armDisabled": {
+    en: "Self-service trading isn't available yet. Please contact support.",
+    ja: "セルフサービスの取引はまだ利用できません。サポートにお問い合わせください。",
+  },
+  "marketplace.armAccountNotReady": {
+    en: "This account must be a demo account and active before you can enable trading.",
+    ja: "取引を有効化する前に、このアカウントはデモかつ有効である必要があります。",
+  },
+  "marketplace.armCredentialsMissing": {
+    en: "Add and validate your MT5 login for this account first.",
+    ja: "先にこのアカウントのMT5ログインを追加して検証してください。",
+  },
+  "marketplace.armRuntimeNotReady": {
+    en: "Your trading terminal is still starting up. Try again once it's ready.",
+    ja: "取引ターミナルはまだ起動中です。準備ができたら再度お試しください。",
+  },
+  "marketplace.armBrokerNotConnected": {
+    en: "Your terminal isn't connected to the broker yet. Reconnect, then try again.",
+    ja: "ターミナルはまだブローカーに接続されていません。再接続してから再度お試しください。",
+  },
+  "marketplace.armSingleTenant": {
+    en: "Another account is already enabled for this signal. Only one can run at a time.",
+    ja: "別のアカウントがこのシグナルで既に有効化されています。同時に実行できるのは1つだけです。",
+  },
+  "marketplace.armAccountNotFound": {
+    en: "That account wasn't found. Refresh and try again.",
+    ja: "そのアカウントが見つかりませんでした。更新して再度お試しください。",
+  },
+  "marketplace.armFailed": {
+    en: "Couldn't enable trading. Please try again.",
+    ja: "取引を有効化できませんでした。もう一度お試しください。",
+  },
   "marketplace.unauthMessage": {
     en: "You are not authenticated. Please log in again to assign marketplace templates.",
     ja: "認証されていません。マーケットプレイスのテンプレートを割り当てるには再ログインしてください。",

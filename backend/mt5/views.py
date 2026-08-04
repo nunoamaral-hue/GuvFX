@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from pathlib import Path
 from django.utils import timezone
 from rest_framework.views import APIView
@@ -12,6 +13,7 @@ from .crypto import encrypt_password
 from trading.models import TradingAccount
 from trading.crypto import decrypt_password as trading_decrypt_password
 from core.audit import log_customer_credential_event
+logger = logging.getLogger(__name__)
 HANDOFF_VALIDATE = Path("/app/.guvfx_handoff_validate")
 HANDOFF = Path("/app/.guvfx_handoff")
 POOL_ROOT = Path("/srv/guvfx/mt5_pool")
@@ -160,11 +162,6 @@ class Mt5DesktopLinkView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        base_url = os.getenv("GUAC_BASE_URL", "https://guac.guvfx.com/guacamole").rstrip("/")
-        secret_hex = os.getenv("GUAC_JSON_SECRET_KEY_HEX", "").strip()
-        if not secret_hex:
-            return Response({"detail": "GUAC_JSON_SECRET_KEY_HEX not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
         user_label = f"user-{request.user.id}"
 
         # ── HARD GATE 1: user must have an active TradingAccount ──
@@ -181,10 +178,33 @@ class Mt5DesktopLinkView(APIView):
             )
 
         if not account.mt5_instance_id:
+            # IPR Area B (C4): dedicated-runtime (beta) accounts are not served by the shared Guacamole
+            # desktop viewer and must never lease a shared instance. Resolved BEFORE the GUAC-secret
+            # check so a beta user never hits a shared-viewer misconfiguration. Return a customer-safe,
+            # non-error explanation instead of the legacy internal "not bound to an MT5 instance".
+            from terminal_provisioning.beta_activation import account_runtime_ready
+            if account_runtime_ready(account):
+                return Response(
+                    {"url": None, "available": False,
+                     "detail": "The hosted terminal viewer isn't part of the beta yet. Your dedicated "
+                               "trading runtime is managed for you."},
+                    status=status.HTTP_200_OK,
+                )
             return Response(
-                {"detail": "Trading account is not bound to an MT5 instance."},
+                {"detail": "This account isn't connected to a trading terminal yet. Add and validate "
+                           "your broker credentials to continue."},
                 status=status.HTTP_409_CONFLICT,
             )
+
+        # ── Legacy shared-instance Guacamole path (requires the GUAC signing secret) ──
+        base_url = os.getenv("GUAC_BASE_URL", "https://guac.guvfx.com/guacamole").rstrip("/")
+        secret_hex = os.getenv("GUAC_JSON_SECRET_KEY_HEX", "").strip()
+        if not secret_hex:
+            logger.error("Mt5DesktopLinkView: GUAC signing secret is not configured")
+            return Response(
+                {"detail": "The terminal viewer is temporarily unavailable. Please try again shortly, "
+                           "or contact support if it persists."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         # ── Lease instance ──
         inst = lease_instance_for_user(request.user)
@@ -248,7 +268,22 @@ class Mt5LaunchApplyView(APIView):
 
         inst = _get_user_mt5_instance(request.user)
         if not inst:
-            return Response({"detail": "No MT5 instance assigned"}, status=status.HTTP_409_CONFLICT)
+            # IPR Area B (C5): a dedicated-runtime (beta) account has no shared instance to launch into
+            # and is managed by the provisioner — return a customer-safe explanation, not the legacy
+            # internal "No MT5 instance assigned" message. No shared instance is ever leased for beta.
+            from terminal_provisioning.beta_activation import account_runtime_ready
+            if account_runtime_ready(account):
+                return Response(
+                    {"queued": False, "available": False,
+                     "detail": "Your dedicated trading runtime is managed for you during the beta; "
+                               "no manual launch is required."},
+                    status=status.HTTP_200_OK,
+                )
+            return Response(
+                {"detail": "This account isn't connected to a trading terminal yet. Add and validate "
+                           "your broker credentials to continue."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         server_name = _server_name_for_account(account)
         pw = trading_decrypt_password(account.password_enc)

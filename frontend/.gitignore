@@ -51,3 +51,6 @@ next-env.d.ts
 *.swp
 *.swo
 *~
+
+# IPR Area G — generated at build
+public/build-info.json

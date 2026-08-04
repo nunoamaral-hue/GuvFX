@@ -82,32 +82,43 @@ export async function apiFetch<T>(
     throw new Error("Unauthorized");
   }
 
-  // IMPORTANT: propagate backend error messages (incl. DRF field errors)
+  // IMPORTANT: propagate backend error messages (incl. DRF field errors) AND the machine-readable
+  // parts (HTTP status + parsed body) so callers can branch on a reason code rather than string
+  // matching (IPR Area D). The parsed body is exposed as `err.body`; the numeric HTTP status as both
+  // `err.status` (fixes the pre-existing `e?.status` checks that were always undefined) and the
+  // explicit alias `err.httpStatus`. The display `message` is the cleanest available string.
   if (!res.ok) {
     const text = await res.text();
 
-    // Try JSON first (DRF often returns JSON on errors)
+    let body: unknown = undefined;
     try {
-      const data = JSON.parse(text) as unknown;
-
-      if (data && typeof data === "object") {
-        const obj = data as Record<string, unknown>;
-
-        // Common DRF shapes
-        if (typeof obj.detail === "string") throw new Error(obj.detail);
-        if (typeof obj.error === "string") throw new Error(obj.error);
-
-        // Field errors (e.g. { magic_number: ["..."] })
-        // Preserve full JSON so the UI can extract the right field.
-        throw new Error(JSON.stringify(obj));
-      }
-
-      // If JSON parses but isn't an object, fall back
-      throw new Error(text || `Request failed: ${res.status}`);
+      body = JSON.parse(text); // DRF often returns JSON on errors
     } catch {
-      // Not JSON — return raw text
-      throw new Error(text || `Request failed: ${res.status}`);
+      body = undefined; // not JSON — leave undefined, fall back to raw text below
     }
+
+    let message: string;
+    if (body && typeof body === "object") {
+      const obj = body as Record<string, unknown>;
+      // Common DRF shapes
+      if (typeof obj.detail === "string") message = obj.detail;
+      else if (typeof obj.error === "string") message = obj.error;
+      // Field errors (e.g. { magic_number: ["..."] }) — preserve full JSON so the UI can extract
+      // the right field (unchanged behaviour for those callers).
+      else message = JSON.stringify(obj);
+    } else {
+      message = text || `Request failed: ${res.status}`;
+    }
+
+    const err = new Error(message) as Error & {
+      status?: number;
+      httpStatus?: number;
+      body?: unknown;
+    };
+    err.status = res.status;
+    err.httpStatus = res.status;
+    err.body = body;
+    throw err;
   }
 
   // Some endpoints (e.g. DELETE) return 204 No Content (empty body).
