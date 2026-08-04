@@ -261,7 +261,10 @@ One GET via a thin `operations-api.ts` wrapper (`getAccountEvents`) — no write
 `category` is the **only** server-side filter the WP5.1 API supports and is the only one sent to the
 backend (a category change also resets pagination). Severity / open-resolved / visibility / date-range /
 free-text search are applied **client-side over the fetched page** by a pure `applyClientFilters` — the API
-is *not* redesigned. Pagination uses the API's own `limit`/`offset` (page size 50).
+is *not* redesigned. Pagination uses the API's own `limit`/`offset` (page size 50); it peeks `PAGE+1` rows
+and shows only `PAGE`, so "Next" is enabled only when a further row genuinely exists (an exactly-full final
+page never lands the operator on an empty page). Client-side date-range boundaries are parsed at **local**
+midnight to match the locally-rendered timestamps (`toLocaleString`).
 
 ### 5. One vocabulary→view mapping (`operations-status.ts`), no duplicated colour logic
 Every severity/category/resolution/health/pause/credential/disconnect value is mapped to a `StatusView`
@@ -271,11 +274,22 @@ unit test asserts every mapper output stays on the 5-colour palette.
 
 ### 6. Secret-safety at the view boundary (belt-and-braces with WP5.1/5.2)
 The event-detail view displays only the non-secret projection — summary, reason_code, source, event_type,
-timestamps, resolution, correlation id, and the already-allow-listed `metadata` dict. It **never** renders
-host paths, credentials, ciphertext, stack traces, internal exception text, or internal identifiers
-(runtime UUID, raw status enum, state_version, actor). The WP5.1/5.2 metadata allow-lists remain the
-primary guarantee; this view adds a second boundary by simply not surfacing those fields. Error copy is the
-DRF customer-safe `detail` (via `toCustomerError`) — never operator internals.
+timestamps, resolution, and correlation id. For `metadata` it does **not** dump the dict: it renders only a
+strict, fail-closed **frontend allow-list** of human-facing scalar keys (`is_demo`, `retryable`, `trigger`,
+`pause_required`, `resume_eligible`, `validation_invalidated`, `credential_destroyed`, `disconnected_at`),
+each with a label and boolean/timestamp formatting. Every other key is dropped — in particular raw backend
+state enums (`from_state`/`to_state`/`status`/`resulting_status`/`phase`), internal version counters
+(`state_version`/`requested_state_version`/`current_state_version`) and internal identifiers
+(`job_id`/`plan_id`/`pause_record_id`/`runtime_uuid`). Because it is an allow-list, a *new* backend metadata
+key can never leak through this surface. It **never** renders host paths, credentials, ciphertext, stack
+traces or internal exception text. The WP5.1/5.2 backend metadata allow-lists remain the primary guarantee;
+this view is a second, independent boundary. Error copy is the DRF customer-safe `detail` (via
+`toCustomerError`) — never operator internals.
+
+*(Adversarial-review fix, WP5.3-D: an earlier revision dumped the entire `metadata` dict verbatim, which
+leaked `state_version`/`from_state`/`to_state`/`job_id`/`plan_id` etc. into the DOM — the strict allow-list
+above replaced it; the EventDetailDialog test now asserts a realistic projection-shaped dict drops all
+forbidden keys.)*
 
 ## Scope boundary — what WP5.3 deliberately does NOT do
 - No writes, no acknowledge/resolve actions, no new backend or endpoint (read-only surface only).
@@ -294,5 +308,13 @@ DRF customer-safe `detail` (via `toCustomerError`) — never operator internals.
 Flag gate + operator gate + no-API-bypass (list & detail); `operationsEnabled` truthy/fail-safe; the
 vocabulary mappers + palette invariant; the read-only API client (URL/params, single-arg GET); badges
 (mapped label, never the enum); timeline (render/empty/click/keyboard); `applyClientFilters` per dimension
-+ "category is NOT client-side"; event detail (customer-safe projection, no internal identifiers, close);
-account card (link + masked number).
++ "category is NOT client-side" + TZ-agnostic local date-range (incl. late-evening regression); event
+detail (customer-safe projection, allow-listed metadata, **forbidden internal keys dropped**, close);
+pagination boundary (peek `PAGE+1`, Next disabled on an exactly-full final page); account card (link +
+masked number).
+
+## Adversarial review (WP5.3-D) — outcome
+A five-lens adversarial review (security/gating, secret-leak, correctness, react-perf, a11y/test-quality)
+with per-finding refutation confirmed **4 findings**: 2×HIGH (same root — the event-detail metadata dump)
+and 2×MEDIUM (date-range TZ boundary, pagination Next-on-full-final-page). All four are fixed above and
+covered by new/updated tests. No HIGH/MEDIUM remained.

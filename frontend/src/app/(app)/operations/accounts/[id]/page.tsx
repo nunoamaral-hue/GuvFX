@@ -34,6 +34,7 @@ export default function OperationsAccountDetailPage() {
   const [data, setData] = useState<OperationsResponse | null>(null);
   const [error, setError] = useState("");
   const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [filters, setFilters] = useState<OpsFilterState>(EMPTY_FILTERS);
   const [selected, setSelected] = useState<OperationalEvent | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -46,8 +47,14 @@ export default function OperationsAccountDetailPage() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await getAccountEvents(id, { limit: PAGE, offset, category: category || null });
-        if (!cancelled) { setData(res); setError(""); }
+        // Peek one extra row (PAGE + 1) to know deterministically whether a next page exists, then show
+        // only PAGE rows. Without this, an exactly-full final page (length === PAGE) leaves "Next" enabled
+        // and clicking it lands on an empty page.
+        const res = await getAccountEvents(id, { limit: PAGE + 1, offset, category: category || null });
+        if (cancelled) return;
+        setData({ summary: res.summary, timeline: res.timeline.slice(0, PAGE) });
+        setHasMore(res.timeline.length > PAGE);
+        setError("");
       } catch (err) {
         if (!cancelled) setError(toCustomerError(err, "We couldn't load this account's operations data."));
       }
@@ -109,7 +116,7 @@ export default function OperationsAccountDetailPage() {
             <div style={{ display: "flex", gap: 8 }}>
               <Button variant="secondary" disabled={offset === 0}
                       onClick={() => goToPage(Math.max(0, offset - PAGE))}>Previous</Button>
-              <Button variant="secondary" disabled={!data || data.timeline.length < PAGE}
+              <Button variant="secondary" disabled={!data || !hasMore}
                       onClick={() => goToPage(offset + PAGE)}>Next</Button>
             </div>
           </div>

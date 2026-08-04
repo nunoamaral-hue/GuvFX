@@ -96,8 +96,11 @@ export const OpsFilters: React.FC<{
  * drops straight into the timeline table. Exported for reuse + unit testing. */
 export function applyClientFilters<E extends OpsEventLike>(events: E[], f: OpsFilterState): E[] {
   const q = f.search.trim().toLowerCase();
-  const fromMs = f.from ? Date.parse(f.from) : null;
-  const toMs = f.to ? Date.parse(f.to) + 86_400_000 : null; // inclusive end-of-day
+  // Parse the YYYY-MM-DD bounds as LOCAL midnight (not UTC) so day boundaries align with the timestamps
+  // the operator sees — formatWhen renders via toLocaleString (viewer-local TZ). `${d}T00:00:00` (no "Z")
+  // is parsed in local time; a bare Date.parse("YYYY-MM-DD") would be UTC and drift by the TZ offset.
+  const fromMs = f.from ? new Date(`${f.from}T00:00:00`).getTime() : null;
+  const toMs = f.to ? new Date(`${f.to}T00:00:00`).getTime() + 86_400_000 : null; // inclusive end-of-day
   return events.filter((e) => {
     if (f.severity && (e.severity || "").toUpperCase() !== f.severity) return false;
     if (f.resolution === "open" && e.resolved) return false;
