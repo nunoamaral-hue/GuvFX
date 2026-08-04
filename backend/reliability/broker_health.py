@@ -46,6 +46,7 @@ REASON_DEGRADED = "degraded_auth"
 REASON_DISCONNECTED = "broker_unreachable"
 REASON_STALE = "stale_no_recent_success"
 REASON_TOMBSTONED = "account_disconnected"
+REASON_CREDENTIAL_REPLACED = "credential_replaced"
 
 _STATE_REASON = {
     State.DEGRADED: REASON_DEGRADED,
@@ -215,6 +216,37 @@ def get_contract(account) -> dict | None:
         return None
     health = BrokerAccountHealth.objects.filter(account=account).first()
     return health.contract() if health else None
+
+
+def invalidate_for_credential_replacement(account, *, now=None) -> dict | None:
+    """WP1B/WP2 (ADR-0029) — a credential replacement invalidates prior broker health: the account's
+    health returns to UNKNOWN (non-eligible; ``resume_eligible`` cleared) until a *fresh* successful
+    validation. Counters and ``last_success_at`` are reset; the append-only attempt history and the id
+    watermark are preserved. TOMBSTONED is terminal (a credential change cannot revive a decommissioned
+    account). No-op when the health engine is DARK or no row exists. Safe to call inside an outer
+    transaction — serialised per-account with ``select_for_update``."""
+    if not broker_health_enabled():
+        return None
+    with transaction.atomic():
+        health = BrokerAccountHealth.objects.select_for_update().filter(account=account).first()
+        if health is None:
+            return None  # no row → a subsequent validation will create a fresh HEALTHY one
+        if health.state == State.TOMBSTONED:
+            return health.contract()  # terminal
+        old_state = health.state
+        if old_state != State.UNKNOWN:
+            health.state = State.UNKNOWN
+            health.state_version += 1
+        health.reason_code = REASON_CREDENTIAL_REPLACED
+        health.consecutive_successes = 0
+        health.consecutive_failures = 0
+        health.last_success_at = None
+        health.resume_eligible = False
+        health.save()
+        if old_state != State.UNKNOWN:
+            log_event(None, "BROKER_HEALTH_CREDENTIAL_INVALIDATED", severity="WARN",
+                      entity_type="trading_account", entity_id=account.pk, metadata=health.contract())
+        return health.contract()
 
 
 def record_validation_outcome(account, *, now=None, config=None) -> dict | None:

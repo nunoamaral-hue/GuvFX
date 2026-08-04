@@ -804,6 +804,20 @@ def main():
                 if payload.get("signal_source"):
                     agent_payload["signal_source"] = payload["signal_source"]
 
+                # WP1B/WP2 FINAL-DISPATCH GATE (ADR-0029): re-evaluate the account's eligibility + broker
+                # health FRESH, immediately before the live order_send — never trusting the eligibility
+                # captured when the job was enqueued. Transparent (no DB read) when the gate flag is OFF,
+                # so existing production behaviour is unchanged. A refusal completes the job FAILED with a
+                # stable, non-secret reason code and never places the order.
+                from execution.broker_gate import evaluate_job_dispatch
+                _dispatch = evaluate_job_dispatch(job_id)
+                if not _dispatch.allowed:
+                    print(f"[{label}] DISPATCH-REFUSED job_id={job_id}: {_dispatch.reason_code}")
+                    complete_job(job_id, "FAILED",
+                                 {"ok": False, "dispatch_refused": True, "reason": _dispatch.reason_code},
+                                 f"final-dispatch gate refused: {_dispatch.reason_code}")
+                    continue
+
                 order_result = agent_order(agent_payload)
 
                 if order_result.get("ok"):

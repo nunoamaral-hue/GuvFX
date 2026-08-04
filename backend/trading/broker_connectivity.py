@@ -92,18 +92,42 @@ def run_broker_validation(account, *, trigger, actor="", request=None, validator
 
 
 def replace_credentials(account, new_password, *, actor="", request=None, revalidate=False, validator=None) -> dict:
-    """Replace the stored broker credential (re-encrypt at rest; plaintext dropped immediately) and audit
-    the rotation. Optionally re-validate. Returns a secret-safe result — never the password or ciphertext."""
-    from core.audit import log_customer_credential_event
+    """Replace the stored broker credential (re-encrypt at rest; plaintext dropped immediately) and
+    **atomically invalidate prior broker eligibility** (WP1B/WP2, ADR-0029): the old credential's
+    validation can no longer authorise execution. In one transaction the credential is rotated,
+    ``validation_status`` returns to NEVER, ``validated_at`` is cleared, and — when the WP3 health engine
+    is enabled — health is reset to UNKNOWN (non-eligible, no resume) until a fresh successful validation.
+    The append-only validation-attempt history is preserved. Returns a secret-safe result — never the
+    password or ciphertext. Any optional re-validation runs *after* the atomic invalidation (its network
+    I/O must not hold the transaction open)."""
+    from django.db import transaction
+
+    from core.audit import log_customer_credential_event, log_event
 
     from .crypto import encrypt_password
 
-    account.password_enc = encrypt_password(new_password)
-    account.broker_password = ""
-    account.save(update_fields=["password_enc", "broker_password", "updated_at"])
+    # Atomic: rotate + invalidate together, so a failure can never leave a new credential paired with a
+    # stale VALIDATED status (which would let the gate authorise execution on unverified credentials).
+    with transaction.atomic():
+        account.password_enc = encrypt_password(new_password)
+        account.broker_password = ""
+        account.validation_status = TradingAccount.ValidationStatus.NEVER
+        account.validated_at = None
+        account.save(update_fields=[
+            "password_enc", "broker_password", "validation_status", "validated_at", "updated_at"])
+        try:
+            from reliability.broker_health import invalidate_for_credential_replacement
+            invalidate_for_credential_replacement(account)  # no-op when the health engine is DARK
+        except Exception:  # noqa: BLE001 — health invalidation must not abort the credential rotation;
+            # the execution gate already fails closed on validation_status=NEVER regardless of health.
+            log_event(request, "BROKER_HEALTH_INVALIDATION_ERROR", severity="WARN",
+                      entity_type="TradingAccount", entity_id=getattr(account, "pk", None), metadata={})
     log_customer_credential_event("ROTATED", account=account, actor=actor, request=request, purpose="replace")
+    log_event(request, "BROKER_VALIDATION_INVALIDATED", severity="INFO",
+              entity_type="TradingAccount", entity_id=getattr(account, "pk", None),
+              metadata={"trigger": "credential_replace"})
 
-    result = {"replaced": True}
+    result = {"replaced": True, "validation_invalidated": True}
     if revalidate:
         attempt = run_broker_validation(account, trigger="replace", actor=actor, request=request, validator=validator)
         result["validation"] = attempt_public(attempt)
