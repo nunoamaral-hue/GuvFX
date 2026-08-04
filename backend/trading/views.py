@@ -237,11 +237,11 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         acc = self.get_object()
 
         if not acc.mt5_instance_id:
-            return Response({"ok": False, "detail": "Account has no mt5_instance assigned."}, status=status.HTTP_409_CONFLICT)
+            return Response({"ok": False, "detail": "This account isn't connected to a trading terminal yet. Add and validate your broker credentials to continue."}, status=status.HTTP_409_CONFLICT)
 
         inst = acc.mt5_instance
         if not inst or not getattr(inst, "windows_username", None):
-            return Response({"ok": False, "detail": "MT5 instance is missing windows_username."}, status=status.HTTP_409_CONFLICT)
+            return Response({"ok": False, "detail": "This account's trading terminal isn't fully set up yet. Please try again shortly, or contact support if it persists."}, status=status.HTTP_409_CONFLICT)
 
         base = (os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
         token = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
@@ -345,7 +345,7 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             is_active = bool(raw)
 
         if not acc.mt5_instance_id:
-            return Response({"detail": "Account has no mt5_instance assigned."}, status=status.HTTP_409_CONFLICT)
+            return Response({"detail": "This account isn't connected to a trading terminal yet. Add and validate your broker credentials to continue."}, status=status.HTTP_409_CONFLICT)
 
         # Block turning off the last active account for this instance
         if (not is_active) and acc.is_active:
@@ -356,7 +356,7 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             ).count()
             if active_count <= 1:
                 return Response(
-                    {"detail": "At least one trading account must remain active for this MT5 instance."},
+                    {"detail": "At least one trading account must remain active for this trading terminal."},
                     status=status.HTTP_409_CONFLICT,
                 )
 
@@ -420,7 +420,7 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
 
         if not acc.mt5_instance_id:
             return Response(
-                {"ok": False, "detail": "Account has no mt5_instance assigned."},
+                {"ok": False, "detail": "This account isn't connected to a trading terminal yet. Add and validate your broker credentials to continue."},
                 status=status.HTTP_409_CONFLICT,
             )
 
@@ -428,7 +428,7 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         win_user = getattr(inst, "windows_username", "") or ""
         if not win_user:
             return Response(
-                {"ok": False, "detail": "MT5 instance has no windows_username set."},
+                {"ok": False, "detail": "This account's trading terminal isn't fully set up yet. Please try again shortly, or contact support if it persists."},
                 status=status.HTTP_409_CONFLICT,
             )
 
