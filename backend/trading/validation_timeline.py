@@ -74,8 +74,13 @@ _REASON_FURTHEST_OK = {
     "credential_scrub_unverified": _STAGE_INDEX["broker_response"],
     # backend-side config / credential failures → never signed / never reached the agent
     "validation_unconfigured": _STAGE_INDEX["envelope_sealed"],
+    # credential_missing fails at the decrypt step (there is no saved credential to prepare) → api_received ok,
+    # credential_decrypted failed.
     "credential_missing": _STAGE_INDEX["api_received"],
-    "broker_server_missing": _STAGE_INDEX["api_received"],
+    # broker_server_missing fails BEFORE decryption (broker-server resolution, ahead of credential prep) — so
+    # the request couldn't be started at all. -1 = nothing fully reached; the failing stage is api_received
+    # itself (review WS-P3: don't blame credential preparation, which never ran).
+    "broker_server_missing": -1,
 }
 _SUCCESS_REASONS = {"demo_ok", "is_demo", "verified", "live_detected"}
 
@@ -93,6 +98,8 @@ class TimelineStage:
 class ValidationTimeline:
     correlation_id: str
     found: bool
+    attempt_id: object = None        # the resolved BrokerAccountValidationAttempt id (for the UI to link)
+    account_id: object = None
     status: str = ""                 # attempt status (HEALTHY / NEEDS_ATTENTION / UNAVAILABLE)
     reason_code: str = ""
     is_demo: object = None
@@ -188,20 +195,60 @@ def build_timeline(correlation_id: str) -> ValidationTimeline:
         except Exception:  # noqa: BLE001
             duration_ms = None
 
+    # WS-B fidelity: corroborate the persisted marker with the committed OperationalEvent projection for this
+    # correlation id (WP5.2). Best-effort, read-only; adds an operator confirmation without any host access.
+    op_event_at = _operational_event_time(cid)
+
     failing = next((s for s in stages if s.state == "failed"), None)
     if succeeded:
         op_summary = "Validation succeeded (broker connection verified)."
     elif failing is not None:
-        op_summary = (f"Furthest stage reached: {STAGES[ok_idx][1]}. First failing stage: "
+        furthest = STAGES[ok_idx][1] if ok_idx >= 0 else "none (the request could not be started)"
+        op_summary = (f"Furthest stage reached: {furthest}. First failing stage: "
                       f"{failing.operator_label} (reason: {reason or 'unknown'}).")
     else:
         op_summary = f"Login pipeline completed but the outcome was not healthy (reason: {reason or 'unknown'})."
     return ValidationTimeline(
-        correlation_id=cid, found=True, status=status, reason_code=reason,
+        correlation_id=cid, found=True, attempt_id=attempt.id,
+        account_id=getattr(attempt, "account_id", None), status=status, reason_code=reason,
         is_demo=attempt.is_demo, server=str(attempt.server or ""), login_masked=str(attempt.login_masked or ""),
-        trigger=str(attempt.trigger or ""), started_at=started, finished_at=finished, duration_ms=duration_ms,
+        trigger=str(attempt.trigger or ""), started_at=started,
+        finished_at=finished or op_event_at, duration_ms=duration_ms,
         stages=[asdict(s) for s in stages],
         customer_summary=_customer_summary(status, reason), operator_summary=op_summary)
+
+
+def _operational_event_time(correlation_id: str) -> str:
+    """The committed VALIDATION OperationalEvent (WP5.2 projection) time for this correlation id, when the
+    ops-events subsystem recorded one. Best-effort corroboration; '' when absent/dark. Never raises."""
+    try:
+        from operational_events.models import OperationalEvent
+        ev = (OperationalEvent.objects.filter(correlation_id=str(correlation_id or ""), category="VALIDATION")
+              .order_by("-created_at").first())
+        return ev.created_at.isoformat() if ev else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def resolve_correlation_id(*, correlation_id="", account_id=None, attempt_id=None) -> str:
+    """WS-A search: resolve a correlation id from ANY of correlation id / attempt id / account id (latest
+    attempt for the account). Read-only; never raises; returns '' when nothing matches."""
+    if correlation_id:
+        return str(correlation_id).strip()
+    try:
+        from trading.models import BrokerAccountValidationAttempt
+        if attempt_id not in (None, ""):
+            a = BrokerAccountValidationAttempt.objects.filter(id=int(attempt_id)).first()
+            return str(a.correlation_id) if a and a.correlation_id else ""
+        if account_id not in (None, ""):
+            a = (BrokerAccountValidationAttempt.objects.filter(account_id=int(account_id))
+                 .order_by("-id").first())
+            return str(a.correlation_id) if a and a.correlation_id else ""
+    except (TypeError, ValueError):
+        return ""
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
 
 
 def _credential_access_time(attempt) -> str:
@@ -212,9 +259,16 @@ def _credential_access_time(attempt) -> str:
         acct_id = getattr(attempt, "account_id", None)
         if not acct_id or not getattr(attempt, "created_at", None):
             return ""
+        # WS-P3 finding: bound the lookup to a sane validation window before this attempt. Reasons that fail
+        # BEFORE decryption (broker_server_missing / credential_missing / pre-seal validation_unconfigured)
+        # write NO audit for this attempt, so an unbounded query would fall back to a PRIOR attempt's
+        # CREDENTIAL_ACCESSED and compute a wildly-stale duration. A real validation runs well under ~300s, so
+        # any audit older than that is from a different attempt and is ignored (no start marker → no duration).
+        from datetime import timedelta
+        floor = attempt.created_at - timedelta(seconds=300)
         ev = (AuditEvent.objects
               .filter(event_type="CREDENTIAL_ACCESSED", entity_type="TradingAccount",
-                      entity_id=str(acct_id), created_at__lte=attempt.created_at)
+                      entity_id=str(acct_id), created_at__lte=attempt.created_at, created_at__gte=floor)
               .order_by("-created_at").first())
         return ev.created_at.isoformat() if ev else ""
     except Exception:  # noqa: BLE001

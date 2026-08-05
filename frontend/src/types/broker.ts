@@ -29,7 +29,9 @@ export type ValidationAttempt = {
   is_demo: boolean | null;
   server: string;
   login_masked: string;
-  correlation_id: string;
+  // WS-P3: NOT sent on the customer-facing serializer (operator diagnostic only). Present only where a
+  // staff-scoped source provides it (e.g. mocked staff views / the timeline endpoint).
+  correlation_id?: string;
   created_at: string;
 };
 
@@ -47,6 +49,33 @@ export type ReplaceCredentialsResult = {
   replaced: boolean;
   validation_invalidated: boolean;
   validation?: ValidationAttempt;
+};
+
+/** WS-D/Phase-3 — staff-only validation timeline (GET .../validation-timeline/). Operator/admin only. */
+export type ValidationTimelineStage = {
+  key: string;
+  operator_label: string;
+  customer_label: string;
+  state: "ok" | "failed" | "not_reached";
+  reason: string;
+};
+export type ValidationTimeline = {
+  correlation_id: string;
+  found: boolean;
+  attempt_id: number | null;
+  account_id: number | null;
+  status: string;
+  reason_code: string;
+  is_demo: boolean | null;
+  server: string;
+  login_masked: string;
+  trigger: string;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number | null;
+  stages: ValidationTimelineStage[];
+  customer_summary: string;
+  operator_summary: string;
 };
 
 /** POST .../{id}/broker/disconnect/ */

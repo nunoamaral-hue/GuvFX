@@ -14,6 +14,21 @@
 
 ## Execution workstream log
 
+- **2026-08-05 — Validation Reliability PHASE 3 (support timeline UI + history + consistency + plan). Repo eng; NOT deployed. 🟢**
+  Same branch/PR #289. **Authoritative reliability recommendation = OPTION C (evidence insufficient)** — this
+  supersedes any earlier log phrasing (e.g. the 2026-08-02 entry's "next = run in an interactive session / VM"):
+  Session 0 both succeeded (#12) and failed (#13), the success/failure **rate is unmeasured**, so no
+  architecture change (no dedicated VM) is recommended until the controlled reliability test fails the §7
+  threshold. **WS-A** staff **Operations → Validation Timeline** page (`admin/operations/validation-timeline`,
+  `useAdminRole`-gated) + `ValidationTimelinePanel`, searchable by correlation / account / attempt id (backend
+  `resolve_correlation_id` + extended `GET /api/trading/validation-timeline/`). **WS-B** timeline enriched with
+  the committed OperationalEvent projection (read-only, no host access). **WS-C** dual-state (Current /
+  Latest-attempt / Last-successful) now also on `AccountCard`. **WS-D** `ValidationHistoryTable` redesigned
+  (status icon / time / outcome / summary; correlation-id column staff-only). **WS-E** `VALIDATION_IPC_RELIABILITY_INVESTIGATION.md`
+  restructured into Facts / Evidence / Hypotheses / Unknowns / Recommendations, each citing evidence, with an
+  executable test plan (pass/fail/evidence/sample/abort/recovery/threshold). make check green. NOT deployed;
+  no Windows-host change; no new live validations; #12/#1 untouched.
+
 - **2026-08-05 — Validation IPC misclassification + status-integrity split remediation (WS-A/B/C). Repo eng; NOT deployed. 🟢**
   Branch `fix/validation-ipc-classification` (base `main`). **Root cause (primary host evidence):** the beta
   validation for #13 failed with MT5 **`-10004 "No IPC connection"`** — the MetaTrader5 Python↔terminal *local*

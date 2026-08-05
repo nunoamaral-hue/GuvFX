@@ -171,6 +171,10 @@ class StatusHistoryTests(TestCase):
         self.assertEqual(len(hist_resp.data), 2)
         # newest first
         self.assertEqual(hist_resp.data[0]["trigger"], "retry")
+        # review WS-P3 finding 3: correlation_id is an operator diagnostic and must NOT appear on the
+        # customer-facing attempt projection (status.latest_attempt or the history rows).
+        self.assertNotIn("correlation_id", status_resp.data["latest_attempt"])
+        self.assertNotIn("correlation_id", hist_resp.data[0])
 
 
 class ReplaceCredentialsTests(TestCase):

@@ -27,6 +27,7 @@
   "src/components/broker/States.tsx",
   "src/components/broker/StatusBadge.tsx",
   "src/components/broker/ValidationHistoryTable.tsx",
+  "src/components/broker/ValidationTimelinePanel.tsx",
   "src/components/marketplace/SignalCopyReadiness.tsx",
   "src/components/onboarding/OnboardingProgress.tsx",
   "src/components/onboarding/OnboardingShell.tsx",

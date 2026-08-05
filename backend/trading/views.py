@@ -1234,10 +1234,15 @@ class ValidationTimelineView(APIView):
     def get(self, request):
         if not broker_connectivity_enabled():
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        correlation_id = str(request.query_params.get("correlation_id") or "").strip()
-        if not correlation_id:
-            return Response({"detail": "correlation_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        q = request.query_params
+        correlation_id = str(q.get("correlation_id") or "").strip()
+        account_id = q.get("account_id") or None
+        attempt_id = q.get("attempt_id") or None
+        if not (correlation_id or account_id or attempt_id):
+            return Response({"detail": "one of correlation_id / account_id / attempt_id is required."},
+                            status=status.HTTP_400_BAD_REQUEST)
         from dataclasses import asdict
-        from .validation_timeline import build_timeline
-        tl = build_timeline(correlation_id)
+        from .validation_timeline import build_timeline, resolve_correlation_id
+        cid = resolve_correlation_id(correlation_id=correlation_id, account_id=account_id, attempt_id=attempt_id)
+        tl = build_timeline(cid)
         return Response(asdict(tl), status=status.HTTP_200_OK)

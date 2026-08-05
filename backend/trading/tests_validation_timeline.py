@@ -102,6 +102,51 @@ class TimelineBuilderTests(TestCase):
         self.assertEqual(_state(tl, "broker_login"), "ok")
         self.assertIn("not healthy", tl.operator_summary.lower())
 
+    def test_broker_server_missing_fails_at_api_received(self):
+        # review WS-P3 finding 1: broker_server_missing fails BEFORE credential prep (broker-server
+        # resolution), so the failing stage is api_received itself — never blame credential_decrypted,
+        # which never ran. ok_idx = -1 → the op summary must say the request could not be started.
+        _attempt(self.acct, reason="broker_server_missing", status="UNAVAILABLE", corr="c-nosrv")
+        tl = build_timeline("c-nosrv")
+        self.assertEqual(_state(tl, "api_received"), "failed")
+        self.assertEqual(_state(tl, "credential_decrypted"), "not_reached")
+        self.assertEqual(_state(tl, "broker_login"), "not_reached")
+        self.assertEqual(_state(tl, "persisted"), "ok")           # result still recorded + shown
+        self.assertEqual(_state(tl, "browser_response"), "ok")
+        self.assertIn("could not be started", tl.operator_summary.lower())
+
+    def _credential_audit_at(self, when):
+        """Create a CREDENTIAL_ACCESSED audit for the account with a specific created_at. The model is
+        append-only (immutable save + auto_now_add), so the timestamp is backdated via raw SQL."""
+        from django.db import connection
+        from core.models import AuditEvent
+        ev = AuditEvent.objects.create(
+            event_type="CREDENTIAL_ACCESSED", entity_type="TradingAccount", entity_id=str(self.acct.id))
+        with connection.cursor() as cur:
+            cur.execute(f"UPDATE {AuditEvent._meta.db_table} SET created_at=%s WHERE id=%s", [when, str(ev.id)])
+        return ev
+
+    def test_stale_credential_audit_is_ignored_no_duration(self):
+        # review WS-P3 finding 2: a CREDENTIAL_ACCESSED audit older than the ~300s validation window belongs
+        # to a PRIOR attempt; using it as the start marker would report a wildly-stale duration. It must be
+        # ignored (no start marker → no duration), NOT fall back to the prior attempt's decrypt time.
+        from datetime import timedelta
+        att = _attempt(self.acct, reason="broker_server_missing", status="UNAVAILABLE", corr="c-stale")
+        self._credential_audit_at(att.created_at - timedelta(seconds=400))   # older than the 300s floor
+        tl = build_timeline("c-stale")
+        self.assertEqual(tl.started_at, "")                        # stale audit ignored
+        self.assertIsNone(tl.duration_ms)                          # → no spurious duration
+
+    def test_recent_credential_audit_yields_duration(self):
+        # positive control for the 300s bound: an audit WITHIN the window IS used as the start marker.
+        from datetime import timedelta
+        att = _attempt(self.acct, reason="invalid_password", status="NEEDS_ATTENTION", corr="c-dur")
+        self._credential_audit_at(att.created_at - timedelta(seconds=5))
+        tl = build_timeline("c-dur")
+        self.assertNotEqual(tl.started_at, "")
+        self.assertIsNotNone(tl.duration_ms)
+        self.assertGreaterEqual(tl.duration_ms, 4000)
+
     def test_output_is_secret_safe(self):
         _attempt(self.acct, reason="validation_ipc_unavailable", status="UNAVAILABLE", corr="c-sec")
         tl = build_timeline("c-sec")
@@ -146,3 +191,23 @@ class TimelineEndpointTests(TestCase):
         self.assertTrue(resp.data["found"])
         self.assertEqual(resp.data["correlation_id"], "c-ep")
         self.assertTrue(any(s["state"] == "failed" for s in resp.data["stages"]))
+
+    def test_search_by_attempt_id(self):
+        att = self.acct.validation_attempts.first()
+        with mock.patch.dict(os.environ, _ON):
+            resp = self._get(self.staff, f"?attempt_id={att.id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["correlation_id"], "c-ep")
+        self.assertEqual(resp.data["attempt_id"], att.id)
+
+    def test_search_by_account_id_uses_latest(self):
+        _attempt(self.acct, reason="demo_ok", status="HEALTHY", corr="c-newer", is_demo=True)
+        with mock.patch.dict(os.environ, _ON):
+            resp = self._get(self.staff, f"?account_id={self.acct.id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["correlation_id"], "c-newer")   # latest attempt for the account
+
+    def test_no_search_key_is_400(self):
+        with mock.patch.dict(os.environ, _ON):
+            resp = self._get(self.staff, "")
+        self.assertEqual(resp.status_code, 400)

@@ -1,140 +1,145 @@
-# Validation-host MT5 IPC reliability — investigation & controlled test plan (WS-B)
+# Validation-host MT5 IPC reliability — investigation & controlled test plan
 
-**Status:** DIAGNOSIS ONLY. No infrastructure was mutated. This document is the evidence review, ranked
-hypotheses, and a controlled test plan for review before any host change. 2026-08-05.
+**Status:** DIAGNOSIS ONLY. No infrastructure was mutated; no host was accessed to produce this document
+beyond read-only diagnostic-artefact reads already captured. Phase-3 structure (2026-08-05): observed facts,
+evidence, hypotheses, unknowns, and recommendations are kept **strictly separate**. Every hypothesis and
+every recommendation cites its evidence. The document states clearly **where the evidence ends**.
 
-## 1. What failed
+---
 
-Two consecutive credentialed `VALIDATE_LOGIN` attempts for beta account #13 (browser Test connection +
-Retry) failed. Primary evidence — the agent's durable diagnostic artefacts on the Windows host
-(`C:\GuvFX\beta\agent-state\validation-diagnostics\<correlation>.diag.json`):
+## 1. Observed facts (not interpretation)
 
-| field | #13 attempt #7 (`a252c05b0463`) | #13 retry (`df493ffcfc0c`) | **#12 SUCCESS (`7e3eca08465d`)** |
+- F1. The operator manually logged into IS6Technologies-Demo (account 1302561) in MetaTrader 5 and placed +
+  closed a trade successfully.
+- F2. Beta account #13 (login 1302587) failed two consecutive credentialed `VALIDATE_LOGIN` attempts (browser
+  Test connection + Retry).
+- F3. Customer Zero #12 (login 1302575) succeeded a `VALIDATE_LOGIN` earlier the same day (`demo_ok`).
+- F4. The validation runner and the validation MT5 terminal ran in **Session 0** on the shared Windows host
+  for all three attempts.
+
+## 2. Evidence (the durable records the facts rest on)
+
+Agent diagnostic artefacts on the host: `C:\GuvFX\beta\agent-state\validation-diagnostics\<correlation>.diag.json`.
+
+| field | #13 #7 (`a252c05b0463`) | #13 retry (`df493ffcfc0c`) | #12 SUCCESS (`7e3eca08465d`) |
 |---|---|---|---|
-| `last_error_code` | **-10004** | **-10004** | `null` |
-| `last_error_reason` | **"No IPC connection"** | **"No IPC connection"** | `""` |
-| `initialize_result` | false | false | **true** |
-| `mt5_package_version` | **`(0, 0, '')`** | **`(0, 0, '')`** | **`(500, 5833, '25 Apr 2026')`** |
-| `terminal_info_present` | false | false | **true** |
-| `account_info_present` | false | false | **true** |
-| `stage_reached` | TERMINAL_LAUNCHED | TERMINAL_LAUNCHED | **CLASSIFIED** |
-| `first_failing_stage` | GUI_READY | GUI_READY | `null` |
-| `journal_milestones` | `["DATA_PATH_READY"]` | `["DATA_PATH_READY"]` | `[]` (fast success) |
+| `last_error_code` | -10004 | -10004 | null |
+| `last_error_reason` | "No IPC connection" | "No IPC connection" | "" |
+| `initialize_result` | false | false | true |
+| `mt5_package_version` | `(0, 0, '')` | `(0, 0, '')` | `(500, 5833, '25 Apr 2026')` |
+| `terminal_info_present` | false | false | true |
+| `account_info_present` | false | false | true |
+| `stage_reached` | TERMINAL_LAUNCHED | TERMINAL_LAUNCHED | CLASSIFIED |
+| `first_failing_stage` | GUI_READY | GUI_READY | null |
+| `journal_milestones` | `["DATA_PATH_READY"]` | `["DATA_PATH_READY"]` | `[]` |
 | `broker_tcp_observed` | false | false | false |
+| `elapsed_ms` | 135819 | 134021 | 13322 |
+| `terminal_session_id` / `runner_session_id` | 0 / 0 | 0 / 0 | 0 / 0 |
+| `terminal_pid` | 14184 | 9704 | 15956 |
 | `gui_mdi_failed` | false | false | false |
-| `elapsed_ms` | 135819 (~136 s) | 134021 | **13322 (~13 s)** |
-| `terminal_pid` / `session` | 14184 / **0** | 9704 / **0** | 15956 / **0** |
-| `runner_session_id` | **0** | **0** | **0** |
-| `stray_termination` | killed [14184] | killed [9704] | killed [15956] |
+| `stray_termination` (force-killed) | killed [14184] | killed [9704] | killed [15956] |
 | `baseline_restore_result` | restored | restored | restored |
 | `reason_code` | server_unavailable* | server_unavailable* | demo_ok |
 
-*misclassified — corrected in WS-A to `validation_ipc_unavailable`.
+*mis-classified at capture time; corrected to `validation_ipc_unavailable` in the WS-A remediation. Note
+`gui_mdi_failed=false` while `first_failing_stage=GUI_READY`: the runner journalled `DATA_PATH_READY` but no
+GUI/MDI-created **or** MDI-failed milestone — the terminal hung before either, consistent with H1 (GUI/IPC
+never initialised) rather than an explicit MDI-create failure.
 
-MT5 error **-10004 "No IPC connection"** is the MetaTrader5 Python package failing to establish its **local**
-IPC channel to **its own terminal process** — *before* any broker login. Corroboration: `mt5_package_version`
-is `(0,0,'')` (the package never talked to a terminal), no terminal/account info, no broker TCP, and the run
-consumed the **full ~136 s** login-timeout window then failed. The terminal process *did* launch (a pid
-exists, reached `DATA_PATH_READY`) but never created its GUI main window / IPC pipe, and had to be
-force-killed (`mt5.shutdown()` alone did not exit it).
+- E1 (→F1): the broker server accepted a live login and order — it is operational and reachable from the host.
+- E2 (→F2): `-10004 "No IPC connection"` is the MetaTrader5 **Python↔terminal local IPC** failing; `broker_tcp_observed=false`
+  and `mt5_package_version=(0,0,'')` prove the broker was never contacted and the package never reached a terminal.
+- E3 (→F3): #12 reached `CLASSIFIED` with a real terminal build (5833) and `initialize_result=true` — the same
+  harness, same session type, produced a clean 13 s success.
+- E4 (→F4): `runner_session_id=0` and `terminal_session_id=0` on every artefact.
 
-## 2. Why #12 reached CLASSIFIED while #13 reached only DATA_PATH_READY
+## 3. Hypotheses (each cites evidence; ranked)
 
-The **same** task-launched runner path, the **same Session 0**, produced a clean 13 s success for #12 at
-13:37 and a 136 s `-10004` failure for #13 (twice) at 17:18 / 17:21. The differentiator is **whether
-`mt5.initialize()` establishes the local Python↔terminal IPC**: for #12 it did (real package version
-`500/5833`, `initialize_result=true`); for #13 it did not (`(0,0,'')`, "No IPC connection"). Both ran in
-Session 0. **Session 0 can work but is not reliably working** — the failure is intermittent, not
-deterministic, and is independent of the IS6 broker (which the operator separately proved is up by trading
-on it manually). The account login (1302587 vs 1302575) is irrelevant: `-10004` occurs at IPC establishment,
-*before* credentials are used.
+- H1 — **Intermittent Session-0 GUI/window-station → IPC readiness (STRONGEST).** Evidence: E2+E3+E4 — the
+  terminal launched (a pid exists, reached `DATA_PATH_READY`) but never created its GUI/IPC (`first_failing_stage=GUI_READY`,
+  no `GUI_MAIN_WINDOW_CREATED`/`IPC_PIPE_READY`), the Python package never connected, and the identical
+  Session-0 harness *succeeded* for #12. This is the documented ADR-0027 Session-0 MT5 behaviour.
+- H2 — **Concurrent interactive/operator activity aggravating Session-0 readiness (PLAUSIBLE).** Evidence:
+  read-only `quser` showed active interactive sessions on the host, and the #13 failures fell in the same time
+  window as operator activity. *Weaker: the manual MT5 was confirmed only ~10 min after the failures — not
+  during them* (see Unknowns U2).
+- H3 — **Stale/hung terminal from the prior run impairing the next (POSSIBLE).** Evidence: each failing
+  artefact shows `stray_termination` force-killed a terminal that survived `mt5.shutdown()`. Mitigated by the
+  dirty-baseline guard + `baseline_restore_result=restored`, so a *persisted* contaminant is unlikely.
+- H4 — **Build/package mismatch (WEAK).** `terminal_build=null` for #13 is a *symptom* of E2 (IPC never up so
+  no build could be read), not a demonstrated cause; #12 read build 5833 from the same baseline.
 
-Host session facts (read-only, `quser` at investigation time): the runner + terminal run in **Session 0**
-(the non-interactive services session) while interactive sessions exist (console session 1; RDP session 3).
-MT5's terminal needs a GUI-capable window station / message pump to bring up its IPC pipe; Session 0 provides
-this unreliably (documented ADR-0027 root cause: MT5 GUI/MDI creation is unreliable when not in a GUI-capable
-window station).
+## 4. Unknowns (where the evidence ends)
 
-## 3. IPC-failure hypotheses, ranked by evidence
+- U1. The **rate** of Session-0 IPC success vs failure is unmeasured. Three data points (1 success, 2 failures)
+  are not a reliability rate.
+- U2. Whether an interactive session/MT5 was **concurrently running during** the #13 failures (17:18 / 17:21)
+  is not established — only that one existed ~17:28 (H2 is therefore not confirmable from current evidence).
+- U3. The **per-stage agent-internal timings** (terminal-launch → GUI → IPC → broker-TCP) are not in the
+  backend; they live only in the host artefact, and the fine sub-second sequence is not captured.
+- U4. Whether the failure is deterministic under any specific condition (load, time-of-day, prior run) is
+  unknown — by definition, until the controlled test (§6) runs.
 
-1. **H1 — Intermittent Session-0 GUI/window-station readiness (STRONGEST).** The terminal launches but hangs
-   before GUI/IPC-ready (`DATA_PATH_READY` only, no `GUI_MAIN_WINDOW_CREATED`/`IPC_PIPE_READY`), the Python
-   package never connects (`(0,0,'')`), and the run burns the full timeout then force-kills a hung terminal.
-   Directly matches the documented Session-0 MT5 behaviour; reproduced twice; contradicted by no evidence.
-   *Evidence: the three artefacts above; `runner_session_id=0`/`terminal_session_id=0`; `first_failing_stage=GUI_READY`.*
-2. **H2 — Concurrent interactive/operator activity on the host aggravating Session-0 readiness (PLAUSIBLE,
-   timing-adjacent).** The #13 failures (17:18, 17:21) coincided with the operator's active app sessions and a
-   manual interactive MT5 login on the host (screenshot ~17:28). An interactive session competing for GUI /
-   window-station resources could tip the intermittent Session-0 IPC into failure. *Evidence: timing overlap;
-   an active RDP session present. NOT conclusive — the manual MT5 is confirmed at 17:28, after the failures.*
-3. **H3 — Stale/hung terminal from the prior run impairing the next (POSSIBLE, partly mitigated).** Each
-   failing run left a terminal that survived `mt5.shutdown()` and was force-killed; a lingering terminal or
-   held IPC namespace could impair a subsequent launch. Mitigated by the dirty-baseline guard + verified
-   baseline restore (`baseline_restore_result=restored`), so a *persisted* contaminant is unlikely, but a
-   transient in-flight overlap is not excluded. *Evidence: `stray_termination` killed a terminal on every
-   failing run.*
-4. **H4 — Build/package mismatch (WEAK).** `terminal_build=null` for #13 is a **symptom** (IPC never came up,
-   so no build could be read), not a demonstrated cause; #12 read `build 5833` from the same baseline.
-5. **H5 — Closely-spaced attempts / concurrency (WEAK for the IPC failure itself; PROVEN for the #12 status
-   flip).** The #13 attempts were ~3 min apart (not tight). Separately, the ~136 s hangs *widened* the
-   single-flight window and directly caused the #12 `validation_busy` collision (see WS-C).
+## 5. Recommendation (cites evidence)
 
-## 4. Controlled test plan (diagnosis, NOT customer clicks)
+**OPTION C — evidence insufficient.** Evidence: E3 proves Session 0 *can* succeed; E2 proves it *can* fail;
+U1 states the rate is unmeasured. Replacing the architecture (a dedicated validation VM, Option B) on three
+data points would violate the no-assumption rule.
 
-To be run only after this plan is reviewed and explicitly approved, on a **disposable** validation workspace.
-No Customer Zero (#12) mutation, no live account #1 mutation, no orders.
+- **Option A** (existing host, bounded remediation): open, unproven.
+- **Option B** (dedicated interactive validation session/VM): **do NOT recommend yet.** Recommend B **only if**
+  the controlled reliability test (§6) **fails** the §7 threshold — i.e. Session 0 cannot meet the
+  consecutive-success bar even when isolated.
+- **Option C** (current): the honest status; the next step is the controlled test, **not** an infrastructure
+  decision. Only its result can move the recommendation off C.
 
-1. **Credential-free startup/IPC probes FIRST.** Launch the isolated validation terminal and call
-   `mt5.initialize(path=…, portable=True)` with **no login/password/server** (or a deliberately bogus login),
-   asserting only whether the **local IPC** comes up (`initialize()` return + `mt5.version()` non-zero +
-   `terminal_info()` present). This isolates the IPC-readiness question from any broker/credential concern.
-   Capture an evidence artefact for every run (reuse the existing diagnostics writer).
-2. **One attempt at a time.** Serialize via the existing single-flight lock; never overlap probes. Record
-   `runner_session_id` / `terminal_session_id` for each.
-3. **Deterministic cleanup between runs.** After each probe: terminate the terminal (path-guarded), verify no
-   `terminal64.exe` remains for the workspace, restore the precompiled baseline, and assert a clean baseline
-   fingerprint before the next run. Fail the run if a terminal survives or the baseline is dirty.
-4. **Two arms, same workspace:**
-   - **Arm A — Session 0 only** (current path): N consecutive credential-free IPC probes with the host
-     otherwise idle (no interactive MT5, no RDP-driven MT5).
-   - **Arm B — interactive session**: the runner launched inside a GUI-capable interactive session
-     (auto-logon console session / dedicated interactive account), N consecutive probes.
-   Compare IPC-establishment success rate and `elapsed_ms` distributions between arms. This directly tests H1
-   (Session 0 unreliable) and, by contrast, whether an interactive session is reliable.
-5. **Concurrency sub-test (H2/H3):** with Arm B established as the baseline, run one probe while an interactive
-   MT5 is deliberately open, to measure interference.
-6. **Evidence artefact for every run** (already emitted): `initialize_result`, `mt5_package_version`,
-   `last_error_code/reason`, `stage_reached`, `first_failing_stage`, `elapsed_ms`, session ids, cleanup +
-   baseline-restore results.
+---
 
-## 5. Reliability threshold (accept the existing host only if ALL hold)
+## 6. Controlled reliability test plan (executable; NOT executed here)
 
-- **≥ 20 consecutive** credential-free IPC probes with `initialize()` success + non-zero `mt5_package_version`
-  + `terminal_info_present`, **zero** `-10004`/"No IPC connection".
-- **Zero** stale-process or cleanup/baseline-restore failures across the run.
-- A bounded, stable `elapsed_ms` (no runs approaching the login-timeout window — a ~136 s run is a failure
-  signature, not a slow success).
-- Clear isolation + rollback evidence (each run leaves the workspace baseline-clean; the guard never trips on
-  the next run).
-- The same threshold re-met **after** at least one host reboot (readiness must survive a cold start).
+Runs only after this plan is approved, on a **disposable** validation workspace. No Customer Zero (#12), no
+live account (#1), no orders, no host modification beyond running the probe in the disposable workspace.
 
-## 6. Recommendation — **OPTION C: evidence insufficient** (2026-08-05, Sponsor-directed)
+**Procedure**
+1. **Credential-free startup/IPC probes FIRST.** `mt5.initialize(path=…, portable=True)` with no
+   login/password/server (or a deliberately bogus login), asserting only local IPC readiness. This isolates
+   IPC readiness from any broker/credential concern.
+2. **One attempt at a time,** serialized via the existing single-flight lock; never overlap probes.
+3. **Deterministic cleanup between runs:** terminate the terminal (path-guarded), verify no `terminal64.exe`
+   remains for the workspace, restore the precompiled baseline, assert a clean baseline fingerprint before the
+   next run.
+4. **Two arms:** Arm A = Session 0, host otherwise idle; Arm B = the runner in a GUI-capable interactive
+   session (auto-logon console). Compare IPC-success rate and `elapsed_ms` distributions (tests H1).
+5. **Concurrency sub-test (H2/H3):** with Arm B as baseline, run one probe while an interactive MT5 is
+   deliberately open, to measure interference.
 
-**The current recommendation is C — the evidence is insufficient to justify any architecture change, and a
-dedicated validation VM is explicitly NOT recommended at this time.**
+**Pass criteria (per arm):** every probe has `initialize()==true`, non-zero `mt5_package_version`,
+`terminal_info_present==true`, `last_error_code==null`, and `elapsed_ms` far below the login-timeout window.
 
-The decisive fact is symmetric: **Session 0 CAN succeed** (Customer Zero #12 validated in 13 s in Session 0)
-and **Session 0 CAN fail** (#13 failed twice with `-10004`). Two failures + one success is not a measured
-reliability rate — it is an unquantified intermittent signal. Recommending a VM (Option B) now would be
-replacing the architecture on **three data points**, which the no-assumption rule forbids.
+**Fail criteria (per arm):** any `-10004`/"No IPC connection", any run whose `elapsed_ms` approaches the
+timeout window (~120 s+), any `mt5_package_version==(0,0,'')`, or any stale-process / baseline-restore failure.
 
-- **Option A — existing host made reliable with bounded remediation:** open, but unproven.
-- **Option B — dedicated interactive validation session/VM:** **do NOT recommend yet.** Recommend B **only if**
-  the controlled reliability test in §4 **fails** the §5 threshold (i.e. Session 0 cannot achieve the
-  consecutive-success bar even when isolated). Until that evidence exists, B is premature.
-- **Option C — evidence insufficient (CURRENT):** the honest status. The next step is the controlled,
-  credential-free, one-at-a-time reliability test (§4) against the §5 threshold — **not** an infrastructure
-  decision.
+**Evidence required (every run):** a diagnostic artefact with `initialize_result`, `mt5_package_version`,
+`last_error_code/reason`, `stage_reached`, `first_failing_stage`, `elapsed_ms`, session ids, cleanup +
+baseline-restore results. Runs are numbered; the full sequence is retained (successes AND failures).
 
-No host change is proposed. No architecture is replaced. The controlled test is the next gated step and must
-be approved before execution; only its result can move the recommendation off C.
+**Sample size:** ≥ 20 consecutive probes per arm; repeat the full ≥20 run **after at least one host reboot**.
+
+**Abort conditions:** stop immediately (and do NOT continue the sequence) on: any Customer-Zero / live-account
+/ production-terminal process appearing as a termination target; a baseline-restore failure that the
+dirty-baseline guard does not catch; or any sign the probe touched a non-disposable path.
+
+**Recovery procedure:** on abort or any dirty state — terminate only path-guarded disposable-workspace
+terminals, restore the precompiled baseline, verify the fingerprint, and DO NOT run the next probe until the
+workspace is baseline-clean. If recovery cannot be verified, stop and escalate (no further probes).
+
+## 7. Success threshold (accept the existing host only if ALL hold)
+
+- **≥ 20 consecutive** clean IPC probes (per Pass criteria), **zero** `-10004`, in Arm A (Session 0, idle host).
+- **Zero** stale-process / cleanup / baseline-restore failures across the sequence.
+- Bounded, stable `elapsed_ms` (no run approaching the timeout window).
+- Clear isolation + rollback evidence each run (the guard never trips on the next run).
+- The threshold re-met **after a host reboot** (readiness survives a cold start).
+
+Only if Arm A clears this threshold is **Option A** viable. If Arm A fails it but Arm B clears it, that is the
+evidence that would justify **Option B**. Until the test runs, the recommendation remains **Option C**.

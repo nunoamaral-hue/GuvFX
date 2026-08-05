@@ -18,11 +18,13 @@ host. Operator/admin only; **no customer exposure**. 2026-08-05.
     stage reached — a broker rejection means the broker was reached; `validation_ipc_unavailable` means the
     local IPC never came up and the broker was never reached; the terminal `persisted` / `browser_response`
     stages always complete because the result is recorded and returned regardless of outcome).
-- **Staff API** — `GET /api/trading/validation-timeline/?correlation_id=<id>` (`ValidationTimelineView`,
-  `IsAdminUser`). Dark (404) whenever the broker-connectivity surface is dark; 400 without a correlation id.
-  Returns `{correlation_id, found, status, reason_code, is_demo, server, login_masked, trigger, started_at,
-  finished_at, duration_ms, stages:[{key,operator_label,customer_label,state,reason}], customer_summary,
-  operator_summary}`.
+- **Staff API** — `GET /api/trading/validation-timeline/?correlation_id=<id>` **or** `?account_id=<id>` (latest
+  attempt for the account) **or** `?attempt_id=<id>` (`ValidationTimelineView`, `IsAdminUser`;
+  `resolve_correlation_id` resolves any of the three to a correlation id). Dark (404) whenever the
+  broker-connectivity surface is dark; **400 only when NONE of the three is supplied**. Returns
+  `{correlation_id, found, attempt_id, account_id, status, reason_code, is_demo, server, login_masked, trigger,
+  started_at, finished_at, duration_ms, stages:[{key,operator_label,customer_label,state,reason}],
+  customer_summary, operator_summary}`.
 - **Secret-safe by construction** — only allow-listed, already-masked fields (masked login, non-secret server,
   reason code) are returned; never a password / ciphertext / host path / session id / pid. The customer
   summary never claims a broker outage for a host/agent failure and never leaks IPC / Session 0 / MT5 / error
@@ -54,9 +56,20 @@ host change (gated, not in this packet's scope — "no host modification")**; th
 enrich automatically once those fields are present. Until then the derived stages + the WS-A reason code
 already localise a failure to the correct region (host/agent vs broker vs credential) **without SSH**.
 
-## Bounded next step — staff timeline UI
+## Staff timeline UI (Phase-3 — BUILT)
 
-The staff/admin **visual** timeline page (a correlation-id lookup rendering the stage rail with ✓/✕,
-timestamps, durations, the reason, the operator diagnostics, and the customer-safe summary) is **API-ready**:
-it consumes the tested `GET /api/trading/validation-timeline/` endpoint. It is a thin presentation layer over
-the built, tested backend and is the single bounded follow-up. No customer exposure; staff-only route.
+**Operations → Validation Timeline** (`src/app/(app)/admin/operations/validation-timeline/page.tsx`,
+`useAdminRole`-gated) — searchable by **Correlation ID / Account ID / Validation Attempt ID** (the backend
+`resolve_correlation_id` resolves any of the three; the endpoint accepts all three query params). It renders
+`ValidationTimelinePanel`: the stage rail with ✓ / ✕ / ○ per stage, the customer-safe label + operator label +
+reason, the customer-safe summary and the operator summary, plus the correlation / attempt / account / server /
+masked-login / duration header. No customer exposure; the whole route is admin-gated and the backend enforces
+`IsAdminUser` + darkness.
+
+The customer-facing **validation history** table (`ValidationHistoryTable`) is redesigned for support: status
+icon, time, concise outcome, customer-safe summary — with a **correlation-id column shown ONLY to staff**
+(`staff` prop). Customers never see the correlation id or any raw reason code / operator diagnostic.
+
+**WS-B fidelity note:** the builder also corroborates the persisted marker with the committed VALIDATION
+`OperationalEvent` (WP5.2 projection) for the correlation id — read-only, no host access. Fine-grained
+agent-internal per-stage timings still require the (gated) agent-forward change described above.
