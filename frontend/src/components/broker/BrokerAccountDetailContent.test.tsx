@@ -61,11 +61,16 @@ describe("BrokerAccountDetailContent — honest validation status (WS-G/H/K)", (
     expect(screen.queryByText(/Never validated/i)).toBeNull();
   });
 
-  it("Test connection creates a fresh attempt and shows a SERVICE-SIDE message (not 'check your details')", async () => {
-    api.testConnection.mockResolvedValue(attempt());               // fresh validation_unconfigured outcome
+  it("Test connection opens a modal with a spinner, then shows a SERVICE-SIDE result (not 'check your details')", async () => {
+    // Hold the request open so the spinner (running phase) is observable before the result renders.
+    let resolveTest: (v: unknown) => void = () => {};
+    api.testConnection.mockReturnValue(new Promise((r) => { resolveTest = r; }));
     render(<BrokerAccountDetailContent />);
     const btn = await screen.findByRole("button", { name: /Test connection/i });
     fireEvent.click(btn);
+    // modal opens immediately with a spinner — the page never hangs inline
+    expect(await screen.findByRole("status", { name: /Testing/i })).toBeInTheDocument();
+    resolveTest(attempt());                                        // fresh validation_unconfigured outcome
     await waitFor(() => expect(api.testConnection).toHaveBeenCalledWith(12));
     // status + history are re-fetched after the attempt (fresh, not cached)
     await waitFor(() => expect(api.getValidationHistory).toHaveBeenCalledTimes(2));
@@ -73,5 +78,15 @@ describe("BrokerAccountDetailContent — honest validation status (WS-G/H/K)", (
       expect(document.body.textContent).toMatch(/broker validation isn't available for your account/i));
     expect(document.body.textContent).toMatch(/weren't changed/i);
     expect(document.body.textContent).not.toMatch(/check your details/i);
+  });
+
+  it("shows a customer-safe message on a transport failure — NEVER 'Failed to fetch'", async () => {
+    // The gunicorn-killed request surfaces as a tagged network error; the modal must stay customer-safe.
+    api.testConnection.mockRejectedValue(Object.assign(new Error("network_unreachable"), { kind: "network" }));
+    render(<BrokerAccountDetailContent />);
+    fireEvent.click(await screen.findByRole("button", { name: /Test connection/i }));
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/couldn't reach the validation service/i));
+    expect(document.body.textContent).not.toMatch(/Failed to fetch|TypeError|network_unreachable/i);
   });
 });

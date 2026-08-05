@@ -59,7 +59,18 @@ export async function apiFetch<T>(
     });
   };
 
-  let res = await doFetch();
+  // A transport-level failure (dropped/reset connection, DNS, CORS, an aborted or gunicorn-killed request)
+  // rejects with a raw `TypeError: "Failed to fetch"`. Tag it as `kind: "network"` with a non-leaky code so
+  // no caller (or `toCustomerError`) can ever surface the raw exception text to a customer.
+  let res: Response;
+  try {
+    res = await doFetch();
+  } catch (e) {
+    const err = new Error("network_unreachable") as Error & { kind?: string; cause?: unknown };
+    err.kind = "network";
+    err.cause = e;
+    throw err;
+  }
 
   // If access cookie expired, refresh once then retry
   if (res.status === 401) {
@@ -67,7 +78,7 @@ export async function apiFetch<T>(
       await refreshCookiesOnce();
       res = await doFetch();
     } catch {
-      // fall through
+      // fall through (network/refresh failure) — the 401 handling below still applies
     }
   }
 

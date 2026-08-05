@@ -109,6 +109,24 @@ describe("toCustomerError", () => {
     expect(toCustomerError(new Error("{bad json"), "fallback")).toBe("fallback");
     expect(toCustomerError(null, "fallback")).toBe("fallback");
   });
+  it("maps a tagged network error to a safe message — NEVER the raw transport text", () => {
+    const netErr = Object.assign(new Error("network_unreachable"), { kind: "network" });
+    const out = toCustomerError(netErr, "fallback");
+    expect(out).toMatch(/couldn't reach the validation service/i);
+    expect(out).toMatch(/weren't changed/i);
+    expect(out).not.toMatch(/network_unreachable|Failed to fetch|TypeError/i);
+  });
+  it("never surfaces a raw fetch/exception string, even if it reaches here untagged", () => {
+    // Regression for the customer-visible "Failed to fetch" (gunicorn-killed request).
+    for (const raw of ["Failed to fetch", "NetworkError when attempting to fetch resource.",
+                       "TypeError: Failed to fetch", "Load failed", "network_unreachable",
+                       "The operation was aborted", "Request failed: 502",
+                       "Unexpected token < in JSON", "boom\n    at foo (app.js:12)"]) {
+      const out = toCustomerError(new Error(raw), "safe fallback");
+      expect(out).toBe("safe fallback");
+      expect(out).not.toContain("fetch");
+    }
+  });
 });
 
 describe("maskAccountNumber", () => {

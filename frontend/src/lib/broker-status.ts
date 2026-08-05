@@ -96,8 +96,19 @@ export function maskAccountNumber(n: string | null | undefined): string {
  * — this flattens that into the plain validation sentences and never shows the customer a raw JSON blob
  * (or, if extraction yields nothing, a generic fallback). */
 export function toCustomerError(err: unknown, fallback = "Something went wrong. Please try again."): string {
+  // Transport-level failures (dropped/reset/aborted connection, DNS, CORS, a gunicorn-killed request) are
+  // tagged `kind: "network"` by apiFetch. NEVER show the raw "Failed to fetch"/TypeError text to a customer.
+  if ((err as { kind?: string } | null)?.kind === "network") {
+    return "We couldn't reach the validation service. Your details weren't changed — please check your connection and try again shortly.";
+  }
   const msg = err instanceof Error ? err.message : String(err ?? "");
   if (!msg) return fallback;
+  // Belt-and-braces: if a raw JS/transport exception reaches here untagged, do NOT surface it. DRF `detail`
+  // strings are full sentences and pass through; these exception shapes never do.
+  if (/^(network_unreachable|Failed to fetch|NetworkError|TypeError|Load failed|AbortError|The user aborted|The operation was aborted|Unexpected token|JSON\.parse|Request failed: \d)/i.test(msg)
+      || /(\.tsx?:\d+|\.js:\d+|\n\s+at\s)/.test(msg)) {
+    return fallback;
+  }
   if (msg.startsWith("{") || msg.startsWith("[")) {
     try {
       const parts: string[] = [];
