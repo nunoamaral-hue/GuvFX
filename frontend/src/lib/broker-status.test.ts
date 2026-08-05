@@ -79,6 +79,43 @@ describe("reasonMessage", () => {
   });
 });
 
+describe("Phase-4 WS-C — reliability terminology (broker vs validation-infra distinction)", () => {
+  it("login_timeout is transport-ambiguous — NEVER attributes the failure to the broker", () => {
+    // S1: login_timeout can come from a backend->agent transport timeout (agent maybe never reached) — it
+    // must not say/imply "the broker didn't respond / is at fault".
+    expect(reasonMessage("login_timeout")).not.toMatch(/broker/i);
+    expect(reasonMessage("login_timeout")).toMatch(/didn't complete in time/i);
+    expect(reasonShort("login_timeout")).not.toMatch(/broker/i);
+  });
+  it("validation_busy is a DISTINCT, retryable service condition — not a broker fault, not the credentials", () => {
+    // S3: validation_busy is agent-single-flight busy. It must have its own wording (not the generic
+    // fallback), never blame the broker, and never blame the customer's details.
+    const msg = reasonMessage("validation_busy");
+    expect(msg).toMatch(/busy/i);
+    expect(msg).not.toMatch(/broker/i);
+    expect(msg).not.toMatch(/check (your )?(details|password)/i);
+    expect(msg).not.toBe(reasonMessage("some_unknown_code_zzz"));   // distinct from the generic fallback
+    expect(reasonShort("validation_busy")).toMatch(/busy/i);
+  });
+  it("the 'validation service unavailable' family has a distinct SHORT outcome (not the generic fallback)", () => {
+    // S14: mt5_/bridge_/runtime_unavailable had long-form messages but no reasonShort → generic fallback.
+    for (const c of ["mt5_unavailable", "bridge_unavailable", "runtime_unavailable"]) {
+      expect(reasonShort(c)).toMatch(/validation temporarily unavailable/i);
+      expect(reasonShort(c)).not.toMatch(/couldn't complete the check/i);   // no longer the generic fallback
+      expect(reasonShort(c)).not.toMatch(/broker/i);
+    }
+  });
+  it("only genuinely broker-reached reasons mention the broker being unavailable", () => {
+    // server_unavailable is preserved ONLY for broker-reached evidence — it MAY mention the broker.
+    expect(reasonMessage("server_unavailable")).toMatch(/broker server is temporarily unavailable/i);
+    // ...but the validation-infra reasons must NOT.
+    for (const c of ["validation_ipc_unavailable", "validation_busy", "mt5_unavailable", "bridge_unavailable",
+                     "runtime_unavailable", "login_timeout"]) {
+      expect(reasonMessage(c)).not.toMatch(/broker (server )?is (temporarily )?unavailable/i);
+    }
+  });
+});
+
 describe("lastValidatedLine", () => {
   const T1 = "2026-08-01T10:00:00Z";
   it("shows the timestamp only when currently validated", () => {

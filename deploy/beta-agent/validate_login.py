@@ -116,7 +116,11 @@ def classify_init_error(code, text: str) -> str:
     # Python↔terminal IPC connect, ALWAYS local); its canonical texts are "No IPC connection"/"IPC timeout"/
     # "IPC initialize failed"/"IPC recv failed". Kept FIRST so a generic "connection"/"network" token can never
     # mis-route a local IPC failure to a broker reason (the exact defect this replaces).
-    if c == -10004 or "no ipc" in t or "ipc connection" in t or "ipc timeout" in t \
+    # -10004 = RES_E_INTERNAL_FAIL_CONNECT and -10005 = RES_E_INTERNAL_FAIL_TIMEOUT are BOTH members of the
+    # local RES_E_INTERNAL_FAIL_* IPC family (the Python↔terminal channel connecting / timing out) — an
+    # INTERNAL timeout, never a broker/login timeout. Both handled here, FIRST — before the generic text
+    # "timeout" rule below — so a local IPC timeout can never be mis-routed to ``login_timeout`` (Phase-4 WS-C).
+    if c == -10004 or c == -10005 or "no ipc" in t or "ipc connection" in t or "ipc timeout" in t \
             or "ipc initialize" in t or "ipc recv" in t or "ipc send" in t:
         return "validation_ipc_unavailable"
     if "invalid account" in t or ("account" in t and "not found" in t):
@@ -137,8 +141,8 @@ def classify_init_error(code, text: str) -> str:
         return "server_unavailable"
     if c == -6:                      # RES_E_AUTH_FAILED with no clearer text — an auth-layer rejection
         return "invalid_password"
-    if c == -10005:                  # RES_E_INTERNAL_FAIL_TIMEOUT
-        return "login_timeout"
+    # (-10005 RES_E_INTERNAL_FAIL_TIMEOUT is handled at the TOP as a local IPC-family failure, not here — it
+    #  is an internal IPC timeout, never a broker/login timeout; Phase-4 WS-C.)
     # A bare "connection"/"network" token with no IPC marker and no broker-server evidence is ambiguous — stay
     # conservative (retryable, blames neither the broker nor the customer) rather than assert a broker outage.
     return "could_not_verify"

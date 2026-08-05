@@ -5,9 +5,9 @@ import { AdminSectionHeader, LoadingState } from "@/components/admin/AdminShared
 import { useAdminRole } from "@/components/admin/useAdminRole";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
 import { ValidationTimelinePanel } from "@/components/broker/ValidationTimelinePanel";
 import { getValidationTimeline } from "@/lib/broker-api";
-import { toCustomerError } from "@/lib/broker-status";
 import type { ValidationTimeline } from "@/types/broker";
 
 /** WS-D/Phase-3 — Operations → Validation Timeline. Staff-only support tool: look up one broker-validation by
@@ -42,7 +42,10 @@ export default function ValidationTimelinePage() {
         : mode === "account" ? { accountId: v } : { attemptId: v };
       setTimeline(await getValidationTimeline(params));
     } catch (err) {
-      setError(toCustomerError(err, "We couldn't load that validation timeline."));
+      // Phase-4 WS-A (S4): this is a STAFF diagnostic tool (IsAdminUser-gated) — surface the REAL error
+      // (DRF detail / status), NOT the customer-sanitised wording, so the one person allowed to see the
+      // underlying failure actually does. "Not found" is handled separately via timeline.found === false.
+      setError(err instanceof Error ? err.message : "Failed to load validation timeline.");
     } finally {
       setLoading(false);
     }
@@ -56,7 +59,7 @@ export default function ValidationTimelinePage() {
   }
 
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto", padding: "1.5rem 1rem" }}>
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "1.5rem 1rem" }}>
       <AdminSectionHeader title="Validation Timeline" subtitle="Trace a broker-validation end to end — no SSH required. Staff only." />
       <form onSubmit={(e) => { e.preventDefault(); void search(); }}
             style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", margin: "1rem 0" }}>
@@ -72,10 +75,9 @@ export default function ValidationTimelinePage() {
       {error && <Alert type="error">{error}</Alert>}
       {loading && <LoadingState message="Loading timeline…" />}
       {timeline && !loading && (
-        <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.08)",
-                      borderRadius: 12, padding: "1rem 1.1rem" }}>
+        <Card>
           <ValidationTimelinePanel timeline={timeline} />
-        </div>
+        </Card>
       )}
     </div>
   );

@@ -22,6 +22,16 @@ function fmtDuration(ms: number | null): string {
 }
 
 export const ValidationTimelinePanel: React.FC<{ timeline: ValidationTimeline }> = ({ timeline: t }) => {
+  // Phase-4 WS-A (S21): the correlation id is the field support pastes into logs/searches — give it a copy
+  // affordance (it stays selectable regardless). Guarded for non-clipboard environments (tests / http).
+  const [copied, setCopied] = React.useState(false);
+  const copyCorrelation = () => {
+    try {
+      navigator.clipboard?.writeText(t.correlation_id);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard unavailable — the value is still selectable */ }
+  };
   if (!t.found) {
     return (
       <div style={{ color: "#8fa0b7", fontSize: "0.9rem", padding: "0.75rem 0" }}>
@@ -32,7 +42,14 @@ export const ValidationTimelinePanel: React.FC<{ timeline: ValidationTimeline }>
   return (
     <div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 14, fontSize: "0.82rem", color: "#9fb0c8" }}>
-        <span>Correlation: <code style={{ color: "#cbd5f5" }}>{t.correlation_id}</code></span>
+        <span>
+          Correlation: <code style={{ color: "#cbd5f5" }}>{t.correlation_id}</code>
+          <button type="button" onClick={copyCorrelation} aria-label="Copy correlation ID"
+                  style={{ marginLeft: 6, background: "transparent", border: "1px solid rgba(255,255,255,0.18)",
+                           borderRadius: 6, color: "#9fb0c8", fontSize: "0.72rem", padding: "1px 6px", cursor: "pointer" }}>
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </span>
         {t.attempt_id != null && <span>Attempt #{t.attempt_id}</span>}
         {t.account_id != null && <span>Account #{t.account_id}</span>}
         {t.server && <span>Server: {t.server}</span>}
@@ -41,19 +58,29 @@ export const ValidationTimelinePanel: React.FC<{ timeline: ValidationTimeline }>
         {t.duration_ms != null && <span>Total: {fmtDuration(t.duration_ms)}</span>}
       </div>
 
+      {/* Phase-4 WS-A (S19): legend — an amber ✕ is easily read as a "warning"; state plainly that it means
+          the stage did NOT complete, so the rail is unambiguous at a glance. */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 8, fontSize: "0.75rem", color: "#9fb0c8" }}>
+        <span><span style={{ color: ICON.ok.color }}>✓</span> done</span>
+        <span><span style={{ color: ICON.failed.color }}>✕</span> did not complete</span>
+        <span><span style={{ color: ICON.not_reached.color }}>○</span> not reached</span>
+      </div>
+
       <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
         {t.stages.map((s) => {
           const icon = ICON[s.state] || ICON.not_reached;
           return (
-            <li key={s.key} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "0.35rem 0",
-                                     opacity: s.state === "not_reached" ? 0.6 : 1 }}>
+            // Phase-4 WS-A (S5): NO row-level opacity — dimming the whole <li> pushed the (already muted,
+            // ~12px) operator label below WCAG AA contrast on the dark panel. The ○ glyph + muted icon colour
+            // already signal "not reached"; text stays at full-contrast colours.
+            <li key={s.key} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "0.35rem 0" }}>
               <span aria-label={icon.label} style={{ color: icon.color, fontSize: "1.05rem", lineHeight: 1.3, width: 16, flexShrink: 0 }}>
                 {icon.ch}
               </span>
               <div>
                 <div style={{ color: "#e2e8f0", fontSize: "0.9rem" }}>{s.customer_label}</div>
                 {/* operator detail — staff-only surface (this whole page is admin-gated) */}
-                <div style={{ color: "#8fa0b7", fontSize: "0.76rem" }}>
+                <div style={{ color: "#9fb0c8", fontSize: "0.8rem" }}>
                   {s.operator_label}{s.state === "failed" && s.reason ? ` — ${s.reason}` : ""}
                 </div>
               </div>
@@ -70,7 +97,7 @@ export const ValidationTimelinePanel: React.FC<{ timeline: ValidationTimeline }>
           <strong style={{ color: "#8fa0b7" }}>Operator:</strong> {t.operator_summary}
         </div>
         {(t.started_at || t.finished_at) && (
-          <div style={{ color: "#64748b", fontSize: "0.75rem", marginTop: 4 }}>
+          <div style={{ color: "#9fb0c8", fontSize: "0.8rem", marginTop: 4 }}>
             {t.started_at ? `Started ${formatWhen(t.started_at)}` : ""}
             {t.started_at && t.finished_at ? " · " : ""}
             {t.finished_at ? `Finished ${formatWhen(t.finished_at)}` : ""}

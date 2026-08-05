@@ -73,6 +73,28 @@ class TimelineBuilderTests(TestCase):
         self.assertEqual(_state(tl, "broker_response"), "failed")  # ...and rejected the credential
         self.assertIn("not accepted", tl.customer_summary.lower())
 
+    def test_validation_busy_reaches_agent_but_not_broker(self):
+        # Phase-4 WS-B (S3): validation_busy is the AGENT's single-flight lock — the agent WAS reached, but the
+        # MT5 probe never launched and the broker was never contacted. Explicit mapping (not the default).
+        _attempt(self.acct, reason="validation_busy", status="UNAVAILABLE", corr="c-busy")
+        tl = build_timeline("c-busy")
+        self.assertEqual(_state(tl, "agent_received"), "ok")       # agent reached (its lock refused)
+        self.assertEqual(_state(tl, "mt5_launched"), "failed")     # probe never launched
+        self.assertEqual(_state(tl, "broker_login"), "not_reached")
+        self.assertEqual(_state(tl, "broker_response"), "not_reached")
+        self.assertEqual(_state(tl, "persisted"), "ok")
+        self.assertIn("busy", tl.customer_summary.lower())
+        self.assertNotIn("broker server is temporarily unavailable", tl.customer_summary.lower())
+
+    def test_browser_response_label_claims_only_return_not_render(self):
+        # Phase-4 WS-B (S7): the backend can only evidence that it RETURNED the response, not that the browser
+        # rendered it. The customer label must not over-claim ("Showed you the result").
+        _attempt(self.acct, reason="demo_ok", status="HEALTHY", corr="c-br", is_demo=True)
+        tl = build_timeline("c-br")
+        br = next(s for s in tl.stages if s["key"] == "browser_response")
+        self.assertNotIn("showed you", br["customer_label"].lower())
+        self.assertIn("returned the result", br["customer_label"].lower())
+
     def test_credential_unsealable_is_agent_origin_not_backend_signing(self):
         # review WS-P2 finding 1: credential_unsealable is emitted ONLY by the agent (after it received the
         # signed request) → the agent WAS reached; never render request_signed as the failing stage.

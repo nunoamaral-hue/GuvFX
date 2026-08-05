@@ -182,7 +182,10 @@ class TaxonomyTests(SimpleTestCase):
         (None, "Invalid account"): "invalid_login",
         (None, "Account disabled"): "account_disabled",
         (-6, ""): "invalid_password",
-        (-10005, ""): "login_timeout",
+        # Phase-4 WS-C: -10005 is RES_E_INTERNAL_FAIL_TIMEOUT — the LOCAL IPC call timing out, the sibling of
+        # -10004. It is an INTERNAL timeout, never a broker/login timeout, so it maps to validation_ipc_
+        # unavailable (was mislabelled login_timeout, which renders as a broker outage).
+        (-10005, ""): "validation_ipc_unavailable",
         # WS-A (2026-08-05): -10004 is RES_E_INTERNAL_FAIL_CONNECT — the LOCAL Python↔terminal IPC connect,
         # BEFORE any broker contact. It must never be reported as a broker outage (was "server_unavailable").
         (-10004, ""): "validation_ipc_unavailable",
@@ -561,8 +564,18 @@ class TestClassifyInitErrorIpc(SimpleTestCase):
         self.assertEqual(vl.classify_init_error(None, "Invalid account"), "invalid_login")
         self.assertEqual(vl.classify_init_error(None, "account disabled"), "account_disabled")
         self.assertEqual(vl.classify_init_error(None, "Unknown server"), "server_not_found")
-        self.assertEqual(vl.classify_init_error(-10005, ""), "login_timeout")
+        # Phase-4 WS-C: a GENERIC text timeout (no IPC marker, no code) remains login_timeout — the ambiguous
+        # bucket (its customer wording is now broker-neutral). The CODE -10005 is handled separately below.
         self.assertEqual(vl.classify_init_error(None, "connection timed out"), "login_timeout")
+
+    def test_code_minus_10005_is_local_ipc_not_broker_timeout(self):
+        # Phase-4 WS-C: -10005 (RES_E_INTERNAL_FAIL_TIMEOUT) is the internal-IPC-timeout sibling of -10004 —
+        # a LOCAL timeout, never a broker/login timeout. It must classify as validation_ipc_unavailable
+        # (previously mislabelled login_timeout, which renders to the customer as a broker outage), regardless
+        # of accompanying text, and must NEVER become a broker reason.
+        for text in ("", "timeout", "connection timed out", "network"):
+            self.assertEqual(vl.classify_init_error(-10005, text), "validation_ipc_unavailable", text)
+            self.assertNotIn(vl.classify_init_error(-10005, text), {"login_timeout", "server_unavailable"}, text)
 
     def test_ambiguous_connection_text_is_conservative_not_broker_blame(self):
         # A bare connection/network token, no IPC marker and no broker-server evidence → could_not_verify

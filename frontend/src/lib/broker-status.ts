@@ -43,7 +43,14 @@ const REASON: Record<string, string> = {
   classification_mismatch: "The account type did not match what was expected.",
   invalid_password: "The password was not accepted. Please check it and try again.",
   invalid_login: "The login was not accepted. Please check your account number.",
-  login_timeout: "The broker did not respond in time. Please try again.",
+  // Phase-4 WS-C: login_timeout is TRANSPORT-ambiguous — it comes from a backend->agent channel timeout (the
+  // request may never have reached the agent, let alone the broker) or an MT5-side timeout with no IPC/broker
+  // evidence. It must NOT be attributed to the broker ("the broker didn't respond" wrongly implies the broker
+  // was reached and is at fault). Neutral, broker-agnostic wording only.
+  login_timeout: "The connection check didn't complete in time. Please try again.",
+  // Phase-4 WS-C: the validation service was momentarily busy handling another check (agent single-flight
+  // lock). Not a broker fault, not the customer's details — a brief, retryable service condition.
+  validation_busy: "The validation service is busy right now. Please try again in a moment.",
   server_not_found: "That server could not be found. Please check the server name.",
   server_unavailable: "The broker server is temporarily unavailable. Please try again shortly.",
   account_disabled: "This account appears to be disabled at the broker.",
@@ -115,7 +122,14 @@ const REASON_SHORT: Record<string, string> = {
   demo_ok: "Verified", is_demo: "Verified", verified: "Verified",
   live_detected: "Live account (demo required)",
   validation_ipc_unavailable: "Couldn't start the validation session",
+  validation_busy: "Validation busy — try again shortly",           // Phase-4 WS-C (concept 6)
   validation_unconfigured: "Validation not available yet",
+  // Phase-4 WS-C (S14): the "validation service temporarily unavailable" family had long-form messages but
+  // no short outcome, so the compact "Latest attempt" line / history column fell back to the generic label.
+  mt5_unavailable: "Validation temporarily unavailable",
+  bridge_unavailable: "Validation temporarily unavailable",
+  runtime_unavailable: "Validation temporarily unavailable",
+  could_not_verify: "Couldn't verify — try again",
   credential_missing: "No saved password",
   broker_server_missing: "No broker server set",
   invalid_password: "Password not accepted",
@@ -123,7 +137,8 @@ const REASON_SHORT: Record<string, string> = {
   account_disabled: "Account disabled at broker",
   server_not_found: "Server not found",
   server_unavailable: "Broker temporarily unavailable",
-  login_timeout: "Broker didn't respond in time",
+  // Phase-4 WS-C: neutral — login_timeout is transport-ambiguous, never a proven broker fault.
+  login_timeout: "Didn't complete in time",
   classification_mismatch: "Account type mismatch",
 };
 export function reasonShort(code: string | null | undefined): string {

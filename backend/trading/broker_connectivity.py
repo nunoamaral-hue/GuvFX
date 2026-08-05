@@ -225,7 +225,11 @@ def disconnect_account(account, *, actor="", request=None) -> dict:
 
 
 def attempt_public(attempt) -> dict:
-    """The secret-safe public projection of a validation attempt (no account internals)."""
+    """The secret-safe, CUSTOMER-facing public projection of a validation attempt (no account internals).
+    Phase-4 WS-C (S2): ``correlation_id`` is an operator diagnostic and is deliberately NOT included — this
+    dict is returned to the customer on the replace-credentials flow, and it must match the customer-facing
+    ``BrokerValidationAttemptSerializer`` allow-list (which dropped correlation_id in WS-P3). The staff
+    validation-timeline endpoint reads the correlation id from the model directly (staff-gated)."""
     return {
         "id": attempt.id,
         "trigger": attempt.trigger,
@@ -235,6 +239,5 @@ def attempt_public(attempt) -> dict:
         "is_demo": attempt.is_demo,
         "server": attempt.server,
         "login_masked": attempt.login_masked,
-        "correlation_id": attempt.correlation_id,
         "created_at": attempt.created_at.isoformat() if attempt.created_at else None,
     }

@@ -33,7 +33,9 @@ STAGES = (
     ("broker_login", "Broker login attempted", "Contacted your broker"),
     ("broker_response", "Broker responded", "Your broker responded"),
     ("persisted", "Result persisted", "Recorded the result"),
-    ("browser_response", "Response returned to the browser", "Showed you the result"),
+    # Phase-4 WS-B (S7): the backend RETURNS the response; it has no signal the browser actually rendered it
+    # (a client that dropped after persist never saw it). Claim only what the backend can evidence.
+    ("browser_response", "Response returned to the browser", "Returned the result to you"),
 )
 _STAGE_KEYS = [k for k, _o, _c in STAGES]
 _STAGE_INDEX = {k: i for i, k in enumerate(_STAGE_KEYS)}
@@ -52,6 +54,11 @@ _REASON_FURTHEST_OK = {
     "classification_mismatch": _STAGE_INDEX["broker_login"], "server_unavailable": _STAGE_INDEX["broker_login"],
     # local validation-host / MT5 IPC failure → terminal launched, IPC never ready; broker NOT reached
     "validation_ipc_unavailable": _STAGE_INDEX["agent_received"],
+    # validation_busy is emitted by the AGENT's single-flight/process lock (it received the request, then
+    # refused because another check held the lock) — the agent WAS reached, but the MT5 probe never launched.
+    # Explicit (not the default) so the mapping is deliberate and cannot drift: fail at mt5_launched, broker
+    # NOT reached (Phase-4 WS-B).
+    "validation_busy": _STAGE_INDEX["agent_received"],
     # TRANSPORT ambiguity (review WS-P2): login_timeout AND bridge_unavailable both come from the SAME
     # backend transport(base,req) call — a no-response timeout (possibly a bare connect timeout) can NEVER
     # confirm the agent received the request, so both stop conservatively at request_signed (fail at
@@ -124,6 +131,8 @@ def _furthest_ok(reason: str) -> int:
 _CUSTOMER_SUMMARY = {
     "validation_ipc_unavailable": "We couldn't start the secure broker-validation session; your details "
                                   "weren't rejected — please try again later.",
+    "validation_busy": "The validation service was busy; your details weren't rejected — please try again "
+                       "in a moment.",
     "validation_unconfigured": "Broker validation isn't available for this account yet.",
     "invalid_password": "The password was not accepted.",
     "invalid_login": "The login was not accepted.",

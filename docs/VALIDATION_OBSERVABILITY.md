@@ -73,3 +73,45 @@ icon, time, concise outcome, customer-safe summary — with a **correlation-id c
 **WS-B fidelity note:** the builder also corroborates the persisted marker with the committed VALIDATION
 `OperationalEvent` (WP5.2 projection) for the correlation id — read-only, no host access. Fine-grained
 agent-internal per-stage timings still require the (gated) agent-forward change described above.
+
+## Per-stage fidelity audit (Phase-4 WS-B — derived vs directly evidenced)
+
+Be explicit about which stages are **directly evidenced** by a durable record and which are **derived** from
+the outcome `reason_code`. Almost all per-stage ✓/✕ are **derived** (a dictionary lookup on the classifier's
+reason via `_REASON_FURTHEST_OK`), NOT independently observed — so the timeline is exactly as honest as the
+reason code, and no more. This is by design (no host access, no hot-path instrumentation), and it localises a
+failure to the correct **region**; it does not pinpoint a node.
+
+| Stage | Evidence source | Derived or direct? | Confidence |
+|---|---|---|---|
+| api_received | The attempt row exists (build only runs if it does) → the request WAS processed. State (ok/failed) derived from reason. | **Derived** (existence weakly corroborates) | Medium |
+| credential_decrypted | `CREDENTIAL_ACCESSED` `AuditEvent` — a **direct** decrypt record — but used only for `started_at`/duration, not to set the stage state. | **Derived** state; **direct** timing | Medium–High |
+| envelope_sealed | none | **Derived** | Medium |
+| request_signed | none | **Derived** | Medium |
+| agent_received | none (transport-ambiguous reasons stop here conservatively) | **Derived** | Medium |
+| mt5_launched | none | **Derived** | Medium |
+| broker_login | none | **Derived** | Medium |
+| broker_response | none | **Derived** | Medium |
+| persisted | The `BrokerAccountValidationAttempt` row **is** the persistence; corroborated by the committed WP5.2 VALIDATION `OperationalEvent`. | **Direct** | High |
+| browser_response | The backend **returned** the response; there is **no** signal the browser rendered it (a client that dropped after persist never saw it). | **Assumed ok** (weakest) | Low — see label wording |
+
+Consequences honestly stated: (a) `browser_response` is always ✓ and its customer label is deliberately
+"Returned the result to you" (what the backend can evidence), **not** "Showed you the result" (which it
+cannot). (b) Several distinct host/agent reasons (`validation_ipc_unavailable`, `validation_busy`,
+`mt5_unavailable`, `runtime_unavailable`, `isolation_check_failed`, `could_not_verify`) all localise to the
+same `mt5_launched` region — the **reason code shown on the failing stage** is what distinguishes them, not
+the rail position.
+
+## Known limitation — historical (pre-WS-A) attempts (Phase-4 S6)
+
+The per-stage state is derived from the **persisted** `reason_code`, and `reason_code` is immutable raw
+evidence (`.claude/rules/data.md` — never rewritten in place). Attempts recorded **before** the WS-A
+classifier fix persisted `server_unavailable` for what were actually **local Session-0 IPC** failures
+(`broker_tcp_observed=false`, e.g. #12/#13). For those historical rows the timeline will faithfully render
+`server_unavailable`'s mapping — "Contacted your broker" ✓ / "Your broker responded" ✕ — which is **wrong for
+that attempt** but is an accurate rendering of a now-known-defective stored reason. This is a **data
+artefact, not a code defect**, and must NOT be "fixed" by rewriting immutable reason codes. **Going forward**
+the agent emits `validation_ipc_unavailable` for local IPC failures, which the timeline renders correctly
+(host/agent region, broker not reached). When triaging a **pre-2026-08-05** attempt whose reason is
+`server_unavailable`, cross-check the agent diagnostic artefact's `broker_tcp_observed` before believing the
+"broker reached" rail.

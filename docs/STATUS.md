@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-08-05 — Validation Reliability PHASE 4 (repository completion + terminology + honesty hardening). Repo eng; NOT deployed. 🟢**
+  Same branch/PR #289. Sponsor-approved audit + adversarial review (9-agent workflow). **OPTION C UPHELD** — an
+  adversarial lens mandated to overturn it on evidence alone could not: Option A is disconfirmed (2× `-10004` on
+  the shared host), Option B unsupported (#12 proves Session 0 *can* succeed), and the deciding **rate is still
+  unmeasured**; §7 threshold refined to also require the shared-load/concurrency sub-test before Option A.
+  **Terminology (WS-C):** `login_timeout` copy no longer says "the broker didn't respond" (it is transport-
+  ambiguous — neutral wording now); `validation_busy` given distinct customer wording + short outcome + explicit
+  timeline mapping (agent reached, broker not); `mt5_/bridge_/runtime_unavailable` given a proper short outcome.
+  **Classification (WS-C/agent):** `-10005` (RES_E_INTERNAL_FAIL_TIMEOUT — the internal-IPC-timeout sibling of
+  `-10004`) now classifies as `validation_ipc_unavailable`, not `login_timeout` (a broker over-attribution);
+  agent `manifest.json` regenerated (`2026-08-05.2`). **Consistency (WS-G):** `attempt_public()` no longer
+  leaks `correlation_id` to the customer (matches the Phase-3 serializer decision). All other `server_unavailable`
+  occurrences audited **Correct** (broker-reached). **Fidelity (WS-B):** per-stage state is DERIVED from
+  `reason_code` — documented, incl. the known limitation that pre-WS-A historical rows persisted as
+  `server_unavailable` will mis-render (immutable data; not rewritten). **Honesty (WS-B):** `browser_response`
+  label now "Returned the result to you" (the backend cannot evidence render). **UI (WS-A):** timeline page
+  surfaces the real error to staff (not the customer-sanitised wording), a11y contrast fixes, a ✓/✕/○ legend, a
+  correlation-id copy button, shared `Card`. **New docs:** `VALIDATION_RELIABILITY_EVIDENCE_MATRIX.md` (WS-E,
+  single source of truth), `operations/broker-connectivity/validation-failure-triage.md` (WS-D, locus diagnosis
+  without SSH). make check green. NOT deployed; no Windows-host change; no signing change; no live validations;
+  #12/#1 untouched.
+
 - **2026-08-05 — Validation Reliability PHASE 3 (support timeline UI + history + consistency + plan). Repo eng; NOT deployed. 🟢**
   Same branch/PR #289. **Authoritative reliability recommendation = OPTION C (evidence insufficient)** — this
   supersedes any earlier log phrasing (e.g. the 2026-08-02 entry's "next = run in an interactive session / VM"):

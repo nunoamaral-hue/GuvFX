@@ -140,6 +140,20 @@ workspace is baseline-clean. If recovery cannot be verified, stop and escalate (
 - Bounded, stable `elapsed_ms` (no run approaching the timeout window).
 - Clear isolation + rollback evidence each run (the guard never trips on the next run).
 - The threshold re-met **after a host reboot** (readiness survives a cold start).
+- **Shared-load representativeness (Phase-4 refinement).** Option A retains the real **shared** host, where
+  operator/interactive activity co-occurs — and the two observed failures happened on a **non-idle** host, not
+  an idle one. An idle-only Arm A pass is therefore **necessary but not sufficient**: the §6 step-5 concurrency
+  sub-test (a probe while an interactive MT5/session is deliberately active) must ALSO meet the same
+  zero-`-10004` bar before Option A can be accepted. If IPC readiness holds when idle but fails under
+  realistic concurrency, that is evidence for **Option B** (an isolated interactive session), not Option A.
 
-Only if Arm A clears this threshold is **Option A** viable. If Arm A fails it but Arm B clears it, that is the
+Only if Arm A clears this threshold **and the concurrency sub-test holds** is **Option A** viable. If Arm A
+fails it — or passes idle but fails under concurrency — while the interactive Arm B clears it, that is the
 evidence that would justify **Option B**. Until the test runs, the recommendation remains **Option C**.
+
+> **Adversarial note (Phase-4).** An adversarial reviewer, mandated to overturn Option C on evidence alone,
+> could not: Option A is actively **disconfirmed** by the two `-10004` failures on the exact shared host (it
+> comes nowhere near this bar), and Option B is **unsupported** because attempt #12 proves Session 0 *can*
+> succeed on the same harness — so a VM would be an architecture change decided on an unmeasured rate (U1),
+> which the no-assumption rule forbids. The single decisive missing quantity remains the **rate** measured by
+> §6 Arm A (+ the concurrency sub-test), repeated across a reboot.

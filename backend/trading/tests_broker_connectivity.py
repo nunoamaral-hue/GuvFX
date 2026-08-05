@@ -198,6 +198,22 @@ class ReplaceCredentialsTests(TestCase):
             resp = _call("post", "bc_replace_credentials", self.user, self.acct.pk, {})
         self.assertEqual(resp.status_code, 400)
 
+    def test_attempt_public_excludes_correlation_id(self):
+        # Phase-4 WS-C (S2): attempt_public() is the CUSTOMER-facing projection returned on the
+        # replace-credentials flow — it must match the customer serializer's allow-list and NOT leak the
+        # operator-only correlation id (the Phase-3 decision that removed it from BrokerValidationAttemptSerializer).
+        from trading.broker_connectivity import attempt_public
+        att = BrokerAccountValidationAttempt.objects.create(
+            account=self.acct, trigger="replace", status="UNAVAILABLE", reason_code="validation_ipc_unavailable",
+            retryable=True, is_demo=None, server="IS6Technologies-Demo", login_masked="***344",
+            correlation_id="corr-should-not-leak")
+        pub = attempt_public(att)
+        self.assertNotIn("correlation_id", pub)
+        self.assertNotIn("corr-should-not-leak", str(pub))
+        # the customer-safe fields ARE present
+        self.assertEqual(pub["reason_code"], "validation_ipc_unavailable")
+        self.assertEqual(pub["login_masked"], "***344")
+
 
 class DisconnectTombstoneTests(TestCase):
     def setUp(self):
