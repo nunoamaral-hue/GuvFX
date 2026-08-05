@@ -52,6 +52,17 @@ describe("reasonMessage", () => {
     expect(out).toMatch(/nothing to fix on your side/i);
     expect(out).not.toMatch(/check your details/i);
   });
+  it("classifies a validation-host/IPC failure as a start failure — NEVER a broker outage, no internals", () => {
+    // WS-A: the local MT5 IPC failure must not read as "the broker is down", and must not leak IPC/session/
+    // MT5/error-code/host detail.
+    const out = reasonMessage("validation_ipc_unavailable");
+    expect(out).toMatch(/couldn't start the secure broker-validation session/i);
+    expect(out).toMatch(/weren't rejected/i);
+    expect(out).not.toMatch(/unavailable/i);          // no broker-outage claim
+    // internal leaks forbidden — but the ordinary word "session" ("validation session") is customer-safe.
+    expect(out).not.toMatch(/\bIPC\b|Session\s*0|MetaTrader|\bMT5\b|10004|process id|window station/i);
+    expect(out).not.toMatch(/check your details/i);
+  });
   it("maps credential_missing / broker_server_missing to their own actionable wording", () => {
     expect(reasonMessage("credential_missing")).toMatch(/saved password/i);
     expect(reasonMessage("broker_server_missing")).toMatch(/broker server is set/i);
@@ -105,6 +116,11 @@ describe("validationActions", () => {
                      "broker_server_missing", "server_not_found", "invalid_login"]) {
       expect(validationActions(c)).toEqual([]);
     }
+  });
+  it("offers NO immediate retry for a validation-host/IPC failure (prevents retry storms)", () => {
+    // WS-A: this failure is slow and holds the single-flight validator; an immediate Try again would just
+    // queue another self-colliding attempt. Guidance ("try again later") lives in the message; Close only.
+    expect(validationActions("validation_ipc_unavailable")).toEqual([]);
   });
   it("never offers Replace for a service-side reason (no false 'fix your password' affordance)", () => {
     for (const c of ["validation_unconfigured", "login_timeout", "bridge_unavailable", "account_disabled"]) {

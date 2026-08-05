@@ -57,6 +57,12 @@ const REASON: Record<string, string> = {
   validation_unconfigured:
     "We couldn't test the connection because broker validation isn't available for your account yet. " +
     "Your account details weren't changed — there's nothing to fix on your side. Please check back later.",
+  // WS-A (2026-08-05): the validation host couldn't start the secure check (a local/host condition that never
+  // reached the broker). It is NOT a broker outage and NOT a credential rejection. Customer-safe wording only —
+  // no IPC / session / MT5 / error-code / host detail — and it must not read as "the broker is down".
+  validation_ipc_unavailable:
+    "We couldn't start the secure broker-validation session. Your broker details weren't rejected. " +
+    "Please try again later, or contact support if this continues.",
   credential_missing:
     "We don't have a saved password for this account. Add or replace your credentials, then try again.",
   broker_server_missing: "No broker server is set for this account. Please reconnect the account.",
@@ -87,6 +93,10 @@ const REPLACE_CODES = new Set(["invalid_password", "credential_missing"]);
 const SUPPORT_ONLY_CODES = new Set([
   "validation_unconfigured", "broker_server_missing", "server_not_found", "account_disabled",
   "live_detected", "classification_mismatch", "invalid_login",
+  // WS-A (2026-08-05): a validation-host/IPC failure takes a long time and holds the single-flight validator;
+  // an immediate "Try again" would just queue another slow, self-colliding attempt (a retry storm). Offer
+  // Close + "try again later"/support guidance instead — no in-modal retry button.
+  "validation_ipc_unavailable",
 ]);
 
 export function validationActions(reasonCode: string | null | undefined): ValidationActionKind[] {

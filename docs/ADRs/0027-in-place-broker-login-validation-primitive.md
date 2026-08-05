@@ -233,3 +233,40 @@ contract never carries the operator cleanup detail. Fast-success observability k
 records repository implementation only; **deployment and host certification are Phase 2B** (DARK deploy of the
 build-5833 image + timeout contract, credential-free certification, rollback proof). Phase 2 is **not** yet
 deployed or live-certified.
+
+---
+
+## Amendment — WS-A/C: IPC misclassification + validation-status integrity (2026-08-05)
+
+**Context.** The first browser-driven credentialed `VALIDATE_LOGIN` for a beta account failed with MT5
+`-10004 "No IPC connection"` (the MetaTrader5 Python↔terminal **local** IPC never established, in Session 0,
+before any broker contact). Two defects surfaced:
+
+1. **Misclassification.** `validate_login.classify_init_error` mapped the local IPC failure to
+   `server_unavailable` — a *broker outage* — via an over-broad `connect`/`network` text rule and a blanket
+   `-10004 → server_unavailable` code rule. The broker was independently proven available.
+2. **Status downgrade.** `run_broker_validation` overwrote a durable `VALIDATED` status with `TECHNICAL_ERROR`
+   whenever *any* non-HEALTHY attempt ran — so a transient `validation_busy` retry flipped Customer Zero from
+   VALIDATED to TECHNICAL_ERROR.
+
+**Decision.**
+
+- **Dedicated local reason.** `-10004` (RES_E_INTERNAL_FAIL_CONNECT — always the local Python↔terminal IPC
+  connect) and IPC-marker text now classify to **`validation_ipc_unavailable`** (a platform condition:
+  UNAVAILABLE / retryable in `_TAXONOMY`). `server_unavailable` is **preserved only** for evidence that a
+  *named broker server was reached and reported unavailable*; ambiguous connection/network text is the
+  conservative `could_not_verify` (never a false broker outage, never a credential blame).
+- **Customer message** (frontend): a start-failure message that does **not** claim a broker outage and leaks
+  no IPC/session/MT5/error-code/host detail, with **no immediate-retry** affordance (the failure is slow and
+  holds the single-flight validator — an immediate retry is a self-colliding storm).
+- **Status integrity.** A **non-authoritative** outcome (the UNAVAILABLE `_TAXONOMY` bucket — busy / host-IPC /
+  transient / platform) must **not** downgrade a durable prior success. A previously-VALIDATED account keeps
+  `VALIDATED` + `validated_at`; the failed attempt is still recorded in the append-only history and shown as
+  the latest attempt. Authoritative verdicts (HEALTHY, or a real credential/broker rejection) still update the
+  durable status. A drift-guard test keeps the non-authoritative set equal to the UNAVAILABLE taxonomy bucket.
+- **Integrity manifest** regenerated for the edited agent module; `manifest_version → 2026-08-05.1`.
+
+**Boundary.** Repository implementation + tests only. **Not deployed.** The agent code change requires a
+separate, gated host re-stage (Phase 2B). The underlying Session-0 IPC *reliability* is a distinct host/
+environment problem tracked in `docs/VALIDATION_IPC_RELIABILITY_INVESTIGATION.md` (diagnosis + controlled test
+plan; no host change made).

@@ -56,6 +56,11 @@ _TAXONOMY = {
     "isolation_check_failed":  (UNAVAILABLE, True),
     "credential_unsealable":   (UNAVAILABLE, True),
     "validation_busy":         (UNAVAILABLE, True),
+    # WS-A (2026-08-05): the validation host's MT5 Python↔terminal IPC could not be established (MT5 -10004
+    # "No IPC connection"), BEFORE any broker contact. A PLATFORM condition (Session-0 GUI/IPC readiness),
+    # never a broker outage and never the customer's credentials → UNAVAILABLE/retryable. This is the reason
+    # the agent now returns instead of mis-labelling a local IPC failure as ``server_unavailable``.
+    "validation_ipc_unavailable": (UNAVAILABLE, True),
     # ADR-0027 task-launch remediation: the GUI-capable runner task could not be triggered or did not answer
     # in time. Platform conditions (never the customer's credentials) → UNAVAILABLE/retryable.
     "validation_runner_unavailable": (UNAVAILABLE, True),

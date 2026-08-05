@@ -151,4 +151,18 @@ describe("BrokerAccountDetailContent — honest validation status (WS-G/H/K)", (
     expect(api.testConnection).toHaveBeenCalledTimes(1);
     resolveTest(attempt());
   });
+
+  it("validation-host/IPC failure: safe message, NO broker-outage claim, NO Try again (no retry storm)", async () => {
+    api.testConnection.mockResolvedValue(attempt({ status: "UNAVAILABLE", reason_code: "validation_ipc_unavailable" }));
+    render(<BrokerAccountDetailContent />);
+    fireEvent.click(await screen.findByRole("button", { name: /Test connection/i }));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(within(dialog).getByText(/couldn't start the secure broker-validation session/i)).toBeInTheDocument());
+    // never a broker-outage claim, never a raw internal, and no immediate-retry affordance
+    expect(dialog.textContent).not.toMatch(/unavailable|\bIPC\b|Session\s*0|\bMT5\b|10004/i);
+    expect(within(dialog).queryByRole("button", { name: /Try again/i })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: /Replace credentials/i })).toBeNull();
+    expect(within(dialog).getByText("Close")).toBeInTheDocument();
+  });
 });

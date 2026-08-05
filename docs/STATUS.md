@@ -14,6 +14,26 @@
 
 ## Execution workstream log
 
+- **2026-08-05 — Validation IPC misclassification + status-integrity split remediation (WS-A/B/C). Repo eng; NOT deployed. 🟢**
+  Branch `fix/validation-ipc-classification` (base `main`). **Root cause (primary host evidence):** the beta
+  validation for #13 failed with MT5 **`-10004 "No IPC connection"`** — the MetaTrader5 Python↔terminal *local*
+  IPC never came up (Session-0 GUI/window-station readiness), **before any broker contact**; the IS6 broker is
+  demonstrably up (operator traded on it manually). The agent then **mis-mapped** that local IPC failure to
+  `server_unavailable` (a broker outage). **WS-A (code):** agent `validate_login.classify_init_error` now routes
+  `-10004`/IPC-text to a dedicated `validation_ipc_unavailable`, narrows `server_unavailable` to genuine
+  broker-server-reached evidence, and sends ambiguous connection text to `could_not_verify`; backend `_TAXONOMY`
+  registers the new reason (UNAVAILABLE/retryable); frontend shows a customer-safe *"couldn't start the secure
+  broker-validation session … details weren't rejected … try again later / contact support"* with **no
+  immediate-retry** button (retry-storm prevention); agent integrity `manifest.json` regenerated (version
+  `2026-08-05.1`). **WS-C (code):** `run_broker_validation` no longer downgrades a durable **VALIDATED** status
+  on a NON-authoritative outcome (busy/host-IPC/transient) — this fixes the #12 flip (a `validation_busy` retry
+  had flipped Customer Zero VALIDATED→TECHNICAL_ERROR); the failed attempt is still recorded/shown as the latest.
+  **WS-B (diagnosis only, NO host change):** `docs/VALIDATION_IPC_RELIABILITY_INVESTIGATION.md` — #12-vs-#13
+  artefact comparison, ranked IPC hypotheses (Session-0 intermittency strongest), a credential-free controlled
+  test plan + reliability threshold, recommending a dedicated interactive validation session/VM pending the test.
+  `make check` green (backend 2652 / frontend 126 / lint 0-err). **NOT deployed; no Windows-host change; #12/#1
+  untouched.**
+
 - **2026-08-05 — Validation-UX packet (Sponsor-directed). Repository engineering; NOT deployed. 🟢**
   Branch `fix/validation-ux-timeout` (base `main`), PR #288 — extends the earlier "Failed to fetch" fix into a
   complete validation interaction. **(1) Root cause** of the customer-visible `Failed to fetch` = gunicorn
