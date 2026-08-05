@@ -147,6 +147,24 @@ class ReadinessStateTests(TestCase):
         self.assertEqual(data["state"], "TRADING_ON")
         self.assertEqual(data["next_action"], "trading_on")
 
+    @override_settings(INTERNAL_PILOT_ARM_APPROVED_EMAILS=APPROVED, BETA_SELF_SERVE_ARM_ENABLED=True)
+    def test_single_tenant_slot_taken_blocks_can_arm(self):
+        # DIVERGENCE GUARD: another account already holds the ti_signals router slot (fan-out OFF). Even a
+        # fully-ready, approved pilot account must NOT show can_arm — arm would 409 source_single_tenant.
+        incumbent = _user("incumbent@x.invalid")
+        inc_acct = _acct(incumbent, number="990900")
+        inc_strat = Strategy.objects.create(owner=incumbent, name="Wayond WIM Strategy")
+        StrategyAssignment.objects.create(
+            strategy=inc_strat, account=inc_acct, execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+            signal_source=SRC, is_active=True, stage=StrategyAssignment.STAGE_LIVE)
+        # A different, fully-ready, approved pilot account.
+        user, acct = self._ready_account(APPROVED)
+        data = _client(user).get(URL, {"marketplace_strategy_id": MP, "account_id": acct.id}).json()
+        self.assertTrue(all(_checks(data).values()))     # technically everything is ✓ …
+        self.assertFalse(data["can_arm"])                # … but the router slot is taken
+        self.assertEqual(data["state"], "NEEDS_ATTENTION")
+        self.assertEqual(data["next_action"], "single_tenant")
+
     def test_validation_failure_is_needs_attention(self):
         u, acct = self._ready_account("v@x.invalid")
         acct.validation_status = TradingAccount.ValidationStatus.CONNECTION_FAILED

@@ -46,6 +46,7 @@ const NEXT_KEY: Record<string, string> = {
   add_credentials: "marketplace.armCredentialsMissing",
   preparing: "marketplace.armRuntimeNotReady",
   connecting: "marketplace.armBrokerNotConnected",
+  single_tenant: "marketplace.armSingleTenant",
   trading_on: "marketplace.readinessNextTradingOn",
   request_access: "marketplace.armNotPilotApproved",
   enable_to_resume: "marketplace.readinessNextResume",

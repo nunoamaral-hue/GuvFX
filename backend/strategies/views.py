@@ -535,6 +535,14 @@ def _signal_copy_readiness(user, account, source):
     armed = bool(arms)
     enabled = any(a.is_active for a in arms)
 
+    # Single-tenant router slot: while fan-out is OFF, arm refuses a SECOND routable arm on this source
+    # (source_single_tenant). Mirror it here — otherwise the panel would show "ready, enable" for a pilot
+    # account while Nuno's account already holds the ti_signals slot, and the click would 409. Excludes
+    # this account's own arms (idempotent re-arm of the incumbent is allowed).
+    from execution.auto_router import _multi_account_routing_enabled
+    slot_taken = bool(not _multi_account_routing_enabled()
+                      and _routable_sibling_exists(source, exclude_account=account))
+
     # State (E) + next-action, by strict precedence: the FIRST blocking condition wins, so the customer
     # never sees two conflicting labels. CLOSED > NEEDS_ATTENTION > SETUP_INCOMPLETE > PREPARING/
     # CONNECTING > TRADING_ON > READY.
@@ -557,6 +565,8 @@ def _signal_copy_readiness(user, account, source):
             else ("PREPARING", "preparing")
     elif enabled:
         state, next_action = "TRADING_ON", "trading_on"
+    elif slot_taken:
+        state, next_action = "NEEDS_ATTENTION", "single_tenant"
     elif not pilot:
         state, next_action = "READY", "request_access"
     elif armed:
@@ -565,7 +575,7 @@ def _signal_copy_readiness(user, account, source):
         state, next_action = "READY", "ready_enable"
 
     can_arm = bool(is_demo and is_active and has_creds and ready and pilot
-                   and extra is None and _beta_self_serve_arm_enabled())
+                   and extra is None and not slot_taken and _beta_self_serve_arm_enabled())
 
     return {
         "signal_source": source, "account_id": account.id, "state": state,
