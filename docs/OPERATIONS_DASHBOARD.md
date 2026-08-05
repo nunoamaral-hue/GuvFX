@@ -111,6 +111,7 @@ undefined; restore never tested.**
 | 🔴 | missing_alerts | No alert delivery anywhere (no Slack/email/PagerDuty/Sentry). RX-2 detection runs but the sink is unconfirmed. No cert-expiry, backup-failure, bridge-down, or disk alerts. |
 | 🔴 | security | Exposed secrets un-rotated + password reuse (Guac admin == guac-db). Plaintext on-disk, no secret manager. **Nuno-held.** |
 | 🔴 | SPOF | MT5 execution path = one Windows box + one terminal + one bridge, manually started, autologon-dependent; worker calls one endpoint with no failover/circuit-breaker. |
+| 🔴 | SPOF | **Beta validation agent** (`GuvFXBetaAgent`, `:8791`) — the customer broker-validation dependency — is a single WinSW service on the same Windows box, **Manual-start with `recovery=none` (no auto-restart) and no liveness probe/alert**. On 2026-08-05 it was served by a non-service process that exited, leaving `:8791` dark for hours until a customer validation surfaced it. Production lifecycle: `docs/VALIDATION_AGENT_PRODUCTION_HARDENING.md`. |
 | 🟡 | operational_debt | No image tags/registry; shared `:latest` backend image (patch hits shadow path too); manual migrations, no startup gate; standalone listener outside compose. |
 | 🟡 | maintenance_debt | Dormant `terminal_provisioning.SessionAssignment`; `wayond-listener.env` snapshot fragility; `MT5_SHADOW_WORKER_TOKEN` recreate fragility; temp personal Telegram account pending GFX swap; Guacamole auth-JAR can be lost on restart. |
 
