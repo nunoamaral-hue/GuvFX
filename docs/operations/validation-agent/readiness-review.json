@@ -1,0 +1,104 @@
+{
+  "schema_version": "2026-08-05.1",
+  "component": "validation-agent",
+  "description": "Operational Readiness Review (WS-G). Everything that prevents calling the validation agent production-ready, classified by severity, each with evidence and the MINIMUM remediation. 'minimum_for_beta' marks the small set required before trusted-beta users — deliberately minimal (do not over-engineer). DESIGN assessment only; no code/host changes here.",
+  "items": [
+    {
+      "id": "RR-1-no-supervision",
+      "title": "No auto-restart / supervision — the agent stays DOWN after any exit",
+      "severity": "Critical",
+      "minimum_for_beta": true,
+      "evidence": "install_service.ps1 + winsw/GuvFXBetaAgent.xml: startmode Manual, recovery=none, registered STOPPED; host forensics: after the Aug 5 non-service process exited ~17:23, :8791 stayed dark until discovery. Nothing restarts it.",
+      "recommendation": "Run the agent under a supervisor that auto-restarts on exit (WinSW <onfailure>restart</> or SCM recovery). Use a BOUNDED-BACKOFF restart FLOOR that never permanently gives up (adversarial: the inherited 'subsequent -> no action' after 2 restarts strands the agent on any persistent condition). PAIR restart with startup reconciliation (RR-11a): on an unexpected/unsupervised restart, VERIFY credential purge + baseline restore before serving — a crash mid-VALIDATE_LOGIN leaves a decrypted credential + dirty baseline that the runner's in-process cleanup may not have completed."
+    },
+    {
+      "id": "RR-2-no-agent-health-alert",
+      "title": "No liveness probe or alert on agent-down — outages are discovered only via a failed customer validation",
+      "severity": "Critical",
+      "minimum_for_beta": true,
+      "evidence": "The agent exposes only signed POST /provision (no /health). Nothing periodically probes :8791; the Aug 5 outage surfaced only as a customer login_timeout hours later. ProvisionerHeartbeat goes DEGRADED only when a provisioning job happens to run.",
+      "recommendation": "Add the agent_readiness probe (signed NEGOTIATE on a cadence) feeding the agent_down / agent_negotiate_failing alerts (monitoring-catalogue). Reuse ProvisionerHeartbeat + OperationalEvent."
+    },
+    {
+      "id": "RR-3-no-lifecycle-logging",
+      "title": "No durable agent lifecycle logging for the non-service path — start/exit are not recorded",
+      "severity": "High",
+      "minimum_for_beta": true,
+      "evidence": "Forensics could not determine the Aug 5 launcher/exit: 4688 auditing off, no Sysmon, WinSW logs idle since Aug 3, and agent.py writes no durable start/stop lifecycle line of its own for a non-service launch.",
+      "recommendation": "agent.py emits a durable, secret-safe start/bind and shutdown log line (pid, bind, version) independent of WinSW; and the supported launch path is the ONLY sanctioned one."
+    },
+    {
+      "id": "RR-4-launch-path-not-enforced",
+      "title": "Supported (supervised) launch path is not enforced — a non-service manual launch is possible and unmonitored",
+      "severity": "High",
+      "minimum_for_beta": true,
+      "evidence": "The sanctioned WinSW service was Stopped while a non-service process served Aug 5 (RULE-1 pattern). Nothing prevents or detects an ad-hoc python agent.py. ADVERSARIAL CORRECTION: a bare python agent.py answers NEGOTIATE byte-identically to the supervised child, so the readiness probe alone CANNOT distinguish supervised from unsupervised — the exact Aug-5 vector reads HEALTHY while it serves.",
+      "recommendation": "REAL enforcement, not documentation: (1) a listener single-instance guard so a second bind on :8791 FAILS LOUDLY (named Windows mutex, or allow_reuse_address=False) — prevents a silent ad-hoc process; (2) the agent refuses to start unless launched by the service (checks a WinSW-injected parent/env start-token a bare launch cannot forge) OR the bare `python agent.py` entrypoint is removed from the production bundle; (3) monitoring adds agent_supervised (0|1) with an agent_unsupervised_listener alert (agent_up==1 while agent_supervised==0). The probe alone is NOT sufficient."
+    },
+    {
+      "id": "RR-5-health-model-unimplemented",
+      "title": "No computed agent health state / degraded distinction",
+      "severity": "High",
+      "minimum_for_beta": false,
+      "evidence": "There is no agent-listener health state today (only per-account broker health WP3 and per-validation timeline). Operators cannot see HEALTHY/DEGRADED/UNAVAILABLE for the agent. ADVERSARIAL (lens 4, over-engineering): the FULL 6-state machine surfaced on the Operations timeline exceeds a <=5-10-user manual demo — downgraded to fast-follow so effort goes to the real blocker (RR-11 alert delivery).",
+      "recommendation": "Fast-follow: implement the health-model.json state machine fed by the readiness probe + failure-rate window and surface it. For the beta minimum, the binary agent_up + agent_supervised + the agent-down/unsupervised/wedged alerts (RR-2/RR-4/RR-12) suffice; the full DEGRADED/RECOVERY band UI is not a beta blocker."
+    },
+    {
+      "id": "RR-6-single-point-of-failure",
+      "title": "Single agent / single host / single validation environment (SPOF), co-located with production",
+      "severity": "Medium",
+      "minimum_for_beta": false,
+      "evidence": "One GuvFXBetaAgent on one Windows host (100.79.101.19) with one Session-0 validation environment, CO-LOCATED with the live :8788 trade bridge and Nuno's production terminal; no redundancy.",
+      "recommendation": "Acceptable for a small trusted beta IF RR-1/RR-2 are in place. Isolation from the live bridge/terminal is already enforced by path-guards; HA/redundancy is a later increment, not a beta blocker."
+    },
+    {
+      "id": "RR-10-keyring-lifecycle",
+      "title": "Signing-keyring lifecycle at start — plaintext machine env var, no rotation runbook",
+      "severity": "Medium",
+      "minimum_for_beta": false,
+      "evidence": "The HMAC signing keyring is supplied to the agent as a machine environment variable on the shared production host; there is no documented rotation procedure and the start-time bundle-integrity gate makes in-place patching fail-closed.",
+      "recommendation": "Document a keyring rotation runbook (rotate + restart under the supported service path); keep the fail-closed integrity gate. Not a beta blocker, but a named security-ops gap. See security RULE 4 (rotate from the canonical inventory)."
+    },
+    {
+      "id": "RR-7-host-process-auditing-off",
+      "title": "Host has no process-creation/exit auditing (forensics blind)",
+      "severity": "Medium",
+      "minimum_for_beta": false,
+      "evidence": "auditpol: Process Creation = No Auditing; no Sysmon; Prefetch empty — parent/command/exit not recoverable.",
+      "recommendation": "Operator (host, out of repo scope): enable Audit Process Creation (4688) with command-line, or install Sysmon. Improves future forensics; not a beta blocker once RR-3 lifecycle logging exists."
+    },
+    {
+      "id": "RR-8-version-upgrade-informal",
+      "title": "No documented version-upgrade / rollback lifecycle for the agent bundle",
+      "severity": "Medium",
+      "minimum_for_beta": false,
+      "evidence": "Bundle re-stage is operator-gated + integrity-pinned (manifest.json) but there is no upgrade runbook/drill; RULE 9 parse-gate is per-install ad hoc.",
+      "recommendation": "Document the upgrade + rollback runbook (this packet adds restart/rollback runbooks); add an upgrade drill before the first version bump under beta."
+    },
+    {
+      "id": "RR-9-startup-keyring-readiness-opaque",
+      "title": "Start-time keyring/config readiness is fail-closed but not surfaced to operators",
+      "severity": "Low",
+      "minimum_for_beta": false,
+      "evidence": "Absent keyring => validation_unconfigured (correct fail-closed), but there is no start-time readiness signal telling ops the agent is up-but-unarmed vs fully ready.",
+      "recommendation": "The validate_login_available probe (monitoring-catalogue) distinguishes up-but-unarmed from ready; surface it."
+    },
+    {
+      "id": "RR-11-alert-delivery",
+      "title": "No alert DELIVERY path — computed alerts reach no human, so the silent-outage failure recurs",
+      "severity": "Critical",
+      "minimum_for_beta": true,
+      "evidence": "ADVERSARIAL (lens 4, Critical): RR-2 closes alert COMPUTATION but not DELIVERY. The estate has no alert delivery anywhere (OPERATIONS_DASHBOARD missing_alerts is a red finding — no Slack/email/PagerDuty/Sentry). An agent_down metric that pages nobody reproduces the exact Aug-5 outcome (dark for hours, discovered by a customer).",
+      "recommendation": "Add an alert-DELIVERY path (on-call notification sink) as its own beta blocker — OR, minimally, an explicitly scheduled human dashboard-poll cadence with a NAMED owner. RR-2's alert must terminate at a human, not a metric."
+    },
+    {
+      "id": "RR-12-wedge-detection",
+      "title": "Shallow readiness — a wedged-but-alive agent (NEGOTIATE green, validations hung) reads HEALTHY",
+      "severity": "High",
+      "minimum_for_beta": false,
+      "evidence": "ADVERSARIAL (lens 2/3): NEGOTIATE proves only HTTP+auth+manifest, not that a validation can complete. A validation holding the single-flight lock forever leaves the agent HEALTHY while no new validation runs.",
+      "recommendation": "Add the oldest_inflight_validation_seconds + validation_busy_rate metrics with a validation_wedged alert (monitoring-catalogue); optionally a periodic synthetic end-to-end validation heartbeat. Fast-follow for the beta (the alert catches the common case); the agent-wedged runbook covers triage."
+    }
+  ],
+  "minimum_for_beta_summary": "RR-1 (supervised auto-restart WITH bounded-backoff floor + startup credential/baseline reconciliation), RR-2 (agent-down probe + alert), RR-3 (lifecycle logging), RR-4 (REAL launch enforcement: single-instance guard + service-launch token, NOT just docs — the probe cannot detect an unsupervised listener), RR-11 (alert DELIVERY to a named human). RR-5 (full computed-health UI), RR-12 (wedge detection), SPOF/HA, host auditing, upgrade lifecycle and keyring rotation are fast-follow / NOT beta blockers."
+}

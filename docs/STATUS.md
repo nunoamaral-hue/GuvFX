@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-08-05 — Validation Agent Production Hardening (design + docs + tests). Repo eng; NOT deployed. 🟢**
+  Branch `docs/validation-agent-hardening` (base `main` `ba22df8`). Transition from forensics to operational
+  engineering — DESIGN ONLY, no host/config/deploy/validation. New authoritative doc
+  `docs/VALIDATION_AGENT_PRODUCTION_HARDENING.md` (lifecycle state diagram; startup-mechanism comparison →
+  **WinSW service + armed supervision** recommended; health model; monitoring; five-plane logging; readiness
+  review). Machine-readable + test-guarded artefacts under `docs/operations/validation-agent/`
+  (health-model / monitoring-catalogue / readiness-review / runbook-index + `runbooks.md`) and an executable
+  design spec `backend/terminal_provisioning/validation_agent_spec.py` (imported only by tests). Health states:
+  STARTING/HEALTHY/DEGRADED/UNAVAILABLE/STOPPING/RECOVERY — a downstream (MT5/broker/IPC) failure is DEGRADED,
+  never agent-UNAVAILABLE. Readiness = a signed NEGOTIATE (no unauthenticated /health). **Readiness gaps** RR-1
+  no supervision, RR-2 no agent-down alert, RR-3 no lifecycle logging, RR-4 unenforced launch path, RR-5 no
+  health state = the minimum-for-beta set; SPOF/host-auditing/upgrade-lifecycle/keyring-rotation = later.
+  **WS-I** corrected outdated manual-start assumptions (RUNBOOK "never executed on a host" → commissioned;
+  agent.py docstring: production=WinSW not ad-hoc `python agent.py`, manifest `2026-08-05.3`;
+  OPERATIONS_DASHBOARD gained the `:8791` SPOF row) and flagged ADR-0013's auto-restart-RED classification as
+  needing a superseding addendum (governance, NOT edited). 10-agent grounding + adversarial-review workflows.
+  make check green. NOT deployed; no host/config/service/flag change; no live validation; #12/#1 untouched.
+
 - **2026-08-05 — Validation Reliability PHASE 4 (repository completion + terminology + honesty hardening). Repo eng; NOT deployed. 🟢**
   Same branch/PR #289. Sponsor-approved audit + adversarial review (9-agent workflow). **OPTION C UPHELD** — an
   adversarial lens mandated to overturn it on evidence alone could not: Option A is disconfirmed (2× `-10004` on

@@ -1,0 +1,20 @@
+{
+  "schema_version": "2026-08-05.1",
+  "component": "validation-agent",
+  "description": "Index of production runbooks for the validation agent. Every runbook MUST begin with an 'Evidence' section (gather before acting) and end with 'Escalation'. The prose runbooks live in runbooks.md; this index is the machine-checkable contract the tests validate.",
+  "required_sections": ["Evidence", "Diagnosis", "Permitted", "Prohibited", "Verify", "Escalation"],
+  "first_section_must_be": "Evidence",
+  "runbooks": [
+    {"id": "agent-unavailable", "title": "Agent unavailable", "detects_state": "UNAVAILABLE", "alert": "agent_down"},
+    {"id": "agent-unhealthy", "title": "Agent unhealthy (degraded)", "detects_state": "DEGRADED", "alert": "validate_login_unavailable"},
+    {"id": "agent-wedged", "title": "Agent wedged (up but not completing validations)", "detects_state": "DEGRADED", "alert": "validation_wedged"},
+    {"id": "negotiate-failed", "title": "NEGOTIATE failed", "detects_state": "UNAVAILABLE", "alert": "agent_negotiate_failing"},
+    {"id": "validate-login-failed", "title": "VALIDATE_LOGIN failed", "detects_state": "DEGRADED", "alert": "validate_login_unavailable"},
+    {"id": "repeated-ipc-failures", "title": "Repeated IPC failures", "detects_state": "DEGRADED", "alert": "mt5_ipc_failure_rate_high"},
+    {"id": "repeated-broker-failures", "title": "Repeated broker failures", "detects_state": "DEGRADED", "alert": "broker_failure_rate_high"},
+    {"id": "repeated-mt5-failures", "title": "Repeated MT5 failures", "detects_state": "DEGRADED", "alert": "mt5_ipc_failure_rate_high"},
+    {"id": "restart-procedure", "title": "Restart procedure", "detects_state": "RECOVERY", "alert": "agent_crash_loop"},
+    {"id": "rollback-procedure", "title": "Rollback procedure", "detects_state": "RECOVERY", "alert": null},
+    {"id": "escalation-criteria", "title": "Escalation criteria", "detects_state": null, "alert": null}
+  ]
+}

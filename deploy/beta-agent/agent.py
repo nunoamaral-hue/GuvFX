@@ -14,9 +14,13 @@ B3P-1 hardening (verification):
  - B-6 drain: ``AgentServer.stop`` stops accepting new work, then waits for in-flight mutating ops to finish
    before closing — so ``sc stop`` cannot kill a mutation mid-flight.
 
-Run:  python agent.py     (config from the environment; see config.example.json + RUNBOOK.md)
-The SCM-managed form is ``service.py`` (pywin32). This file is a DARK artefact — never started, firewalled or
-scheduled until the controlled B3 install.
+Run (production): ONLY under the ``GuvFXBetaAgent`` WinSW service (ADR-0013 — venv python -> agent.py, with
+SCM start/stop, drain, recovery and rolling logs). A bare ``python agent.py`` is for OFFLINE/dev only and must
+NEVER be used to run the production listener: an ad-hoc/interactive process is session-bound, has no
+supervision/restart/logging, and dies when its launcher ends (security RULE 1) — this is exactly the
+2026-08-05 dark-:8791 incident. The production lifecycle (supervised restart, health probe, lifecycle logging)
+is defined in ``docs/VALIDATION_AGENT_PRODUCTION_HARDENING.md``. (``service.py`` is a pywin32 wrapper kept for
+reference; ADR-0013 selected WinSW as the service host, not pywin32.)
 """
 import itertools
 import json

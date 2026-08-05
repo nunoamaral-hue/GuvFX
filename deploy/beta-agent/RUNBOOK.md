@@ -4,10 +4,14 @@ A small, private-network Windows service that performs **only** allowlisted, UUI
 provisioning operations for the GuvFX backend, over a signed, replay-resistant protocol. It **never**
 accepts a command, script, path, argument, executable or environment value from the network.
 
-> **Still a dark artefact.** Reviewed, CI-tested and merged; **nothing here has ever executed on a Windows
-> host.** The controlled install is gated behind the Install Authorisation packet
-> (`docs/B3P2_INSTALL_AUTHORISATION_PACKET.md`), the first service start behind a further approval, and the
-> bounded MT5 viability trial behind that.
+> **Commissioned (no longer a dark artefact).** The controlled install was completed under the Install
+> Authorisation packet (`docs/B3P2_INSTALL_AUTHORISATION_PACKET.md`); the agent HAS run on the Windows host and
+> served broker-validation requests on `:8791` (see the 2026-08-05 forensics + `docs/VALIDATION_OBSERVABILITY.md`).
+> It is **not** yet supervised for production: the `GuvFXBetaAgent` WinSW service is Manual-start with
+> `recovery=none`, so nothing auto-restarts it, and on 2026-08-05 a **non-service** process served requests then
+> exited, leaving `:8791` dark until discovery. The production lifecycle (supervised restart, health probe,
+> lifecycle logging) is defined in **`docs/VALIDATION_AGENT_PRODUCTION_HARDENING.md`**. NB: no **live
+> credentialed** broker login has been certified (see `docs/VALIDATION_TRUTH_CORRECTION.md`).
 
 ## Execution model (B3P-2 — read this first)
 A runtime occupies one **pre-provisioned slot**: a fixed non-admin identity `guvfx_b_slot<n>`, a fixed

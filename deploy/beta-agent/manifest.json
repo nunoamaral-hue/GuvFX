@@ -1,7 +1,7 @@
 {
   "agent_version": "beta-agent-1.0.0",
   "checksums": {
-    "agent.py": "87c408c289120c8aa15ff30c93684d041a1b076c0eb814064c094143dc530a9d",
+    "agent.py": "fe17b4a725fec8ad0c6d77b1e38e74fb2c0df99076f53de322602ee3ebcf7a7c",
     "config.py": "f6d49ade52d7593c39c4901b4710e83cfd5c8f92ac770451e0820c598583d845",
     "stores.py": "2225b78bfa23da99578379b715bd8d5233f49ad58bbba3a7373cf1d3a241b5d7",
     "manifest.py": "e6d7179f323e9d68cbc36e7e0da0ef3a519bbfe16f9fd536a64560ede84b23e4",
@@ -22,7 +22,7 @@
     "lib/mgmt_protocol.py": "d5e59b362c8d34258b53a1844f95a609ba4d8c9d882b17492455e746a2327b3b",
     "lib/mgmt_agent_core.py": "ea8e037ef287728c8187e528e2eb4d17ed74371ebbee64139d04ca64322a4110"
   },
-  "manifest_version": "2026-08-05.2",
+  "manifest_version": "2026-08-05.3",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",
