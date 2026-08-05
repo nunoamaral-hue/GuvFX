@@ -5,6 +5,8 @@ Key safety property: the toggle PAUSES/RESUMES an already-armed AUTO_DEMO assign
 It NEVER creates an assignment and NEVER changes execution_mode/stage — so "enable" can never
 grant new trading authority (arming stays a separate, human-gated step).
 """
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -19,6 +21,10 @@ TOGGLE_URL = "/api/strategies/strategies/signal-copy/toggle/"
 WIM = "mp-010"
 
 
+# The toggle ENABLE path is cohort-gated (Sponsor 2026-08-05 containment); these tests exercise the
+# OTHER toggle gates, so the cohort is mocked approved. The cohort refusal is proven in
+# tests_arm_containment.py.
+@mock.patch("strategies.views._arm_cohort_approved", new=lambda user: True)
 class SignalCopyToggleTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="u", email="u@x.invalid", password="x")
