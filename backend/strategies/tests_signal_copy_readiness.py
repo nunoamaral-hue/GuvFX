@@ -21,6 +21,7 @@ from trading.models import TradingAccount
 
 User = get_user_model()
 URL = "/api/strategies/strategies/signal-copy/readiness/"
+ARM_URL = "/api/strategies/strategies/signal-copy/arm/"
 MP = "mp-010"          # Wayond WIM → signal_source ti_signals
 SRC = "ti_signals"
 BASE = dict(BETA_RUNTIMES_ENABLED=True, BETA_MAX_TESTERS=1000)
@@ -180,3 +181,56 @@ class ReadinessStateTests(TestCase):
         r = _client(u).get(URL, {"marketplace_strategy_id": MP, "account_id": acct.id})
         self.assertEqual(r.status_code, 200)
         self.assertFalse(r.json()["can_arm"])          # default-deny cohort → cannot arm, but state is visible
+
+
+@override_settings(**BASE, INTERNAL_PILOT_ARM_APPROVED_EMAILS=APPROVED, BETA_SELF_SERVE_ARM_ENABLED=True)
+class ReadinessArmEquivalenceTests(TestCase):
+    """The load-bearing WS-D property: readiness.can_arm ⟺ the REAL arm endpoint succeeds, on the SAME
+    fixture. Unlike the state tests (which assert readiness' own output), this drives BOTH endpoints so a
+    future change to an arm gate can't silently re-introduce a "panel says ready, arm refuses" over-promise.
+    """
+
+    def _assert_equiv(self, user, acct, *, expect_can_arm):
+        c = _client(user)
+        rd = c.get(URL, {"marketplace_strategy_id": MP, "account_id": acct.id}).json()
+        self.assertEqual(rd["can_arm"], expect_can_arm, rd)
+        # readiness is read-only + is queried BEFORE arm, so the arm below sees the same pre-arm state.
+        self.assertFalse(StrategyAssignment.objects.filter(account=acct).exists())
+        arm = c.post(ARM_URL, {"marketplace_strategy_id": MP, "account_id": acct.id}, format="json")
+        armed_ok = arm.status_code == 200
+        self.assertEqual(
+            rd["can_arm"], armed_ok,
+            f"DIVERGENCE: readiness.can_arm={rd['can_arm']} but arm status={arm.status_code} {arm.content}")
+
+    def _ready_acct(self, email):
+        user = _user(email)
+        acct = _acct(user)
+        _ready_runtime(acct)
+        acct.refresh_from_db()
+        return user, acct
+
+    def test_ready_approved_no_incumbent__can_arm_and_arm_succeeds(self):
+        user, acct = self._ready_acct(APPROVED)
+        self._assert_equiv(user, acct, expect_can_arm=True)
+
+    def test_incumbent_on_another_account__blocks_both(self):
+        # Another account already holds the ti_signals slot (fan-out OFF): readiness must say can_arm=false
+        # AND arm must 409 source_single_tenant — the exact divergence the review flagged.
+        inc = _user("inc@x.invalid")
+        inc_a = _acct(inc, number="991000")
+        s = Strategy.objects.create(owner=inc, name="Wayond WIM Strategy")
+        StrategyAssignment.objects.create(
+            strategy=s, account=inc_a, execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+            signal_source=SRC, is_active=True, stage=StrategyAssignment.STAGE_LIVE)
+        user, acct = self._ready_acct(APPROVED)
+        self._assert_equiv(user, acct, expect_can_arm=False)
+
+    def test_no_runtime__blocks_both(self):
+        user = _user(APPROVED)
+        acct = _acct(user)  # no runtime provisioned
+        self._assert_equiv(user, acct, expect_can_arm=False)
+
+    @override_settings(INTERNAL_PILOT_ARM_APPROVED_EMAILS="")   # not on the allowlist
+    def test_not_pilot_approved__blocks_both(self):
+        user, acct = self._ready_acct("nope@x.invalid")
+        self._assert_equiv(user, acct, expect_can_arm=False)

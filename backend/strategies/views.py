@@ -491,7 +491,7 @@ def _audit_arm(request, *, account, reason_code, approved):
 _READINESS_CHECK_KEYS = ("demo", "active", "credentials", "runtime_ready", "pilot_access")
 
 
-def _signal_copy_readiness(user, account, source):
+def _signal_copy_readiness(user, account, source, template_name):
     """Customer-facing readiness for enabling a signal-copy strategy on ``account`` (packet WS-D/E).
 
     A truthful, machine-readable projection of the SAME fail-closed gates ``signal_copy_arm`` enforces —
@@ -537,11 +537,14 @@ def _signal_copy_readiness(user, account, source):
 
     # Single-tenant router slot: while fan-out is OFF, arm refuses a SECOND routable arm on this source
     # (source_single_tenant). Mirror it here — otherwise the panel would show "ready, enable" for a pilot
-    # account while Nuno's account already holds the ti_signals slot, and the click would 409. Excludes
-    # this account's own arms (idempotent re-arm of the incumbent is allowed).
+    # account while Nuno's account already holds the ti_signals slot, and the click would 409. Exclude the
+    # SAME (would-be strategy, this account) pair arm excludes — the template-named strategy arm creates or
+    # reuses — so can_arm is a true mirror even in the pathological same-account/different-strategy config.
     from execution.auto_router import _multi_account_routing_enabled
+    would_be = Strategy.objects.filter(owner=user, name=template_name).order_by("-id").first()
     slot_taken = bool(not _multi_account_routing_enabled()
-                      and _routable_sibling_exists(source, exclude_account=account))
+                      and _routable_sibling_exists(
+                          source, exclude_strategy=would_be, exclude_account=account))
 
     # State (E) + next-action, by strict precedence: the FIRST blocking condition wins, so the customer
     # never sees two conflicting labels. CLOSED > NEEDS_ATTENTION > SETUP_INCOMPLETE > PREPARING/
@@ -1223,13 +1226,17 @@ class StrategyViewSet(viewsets.ModelViewSet):
             return Response({"detail": "not a signal-copy strategy"}, status=status.HTTP_400_BAD_REQUEST)
         if not account_id:
             return Response({"detail": "account_id is required"}, status=status.HTTP_400_BAD_REQUEST)
-        acc_qs = TradingAccount.objects.filter(id=account_id)
+        try:
+            account_pk = int(account_id)  # a non-numeric query param is a bad id, not a 500
+        except (TypeError, ValueError):
+            return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
+        acc_qs = TradingAccount.objects.filter(id=account_pk)
         if not request.user.is_staff:
             acc_qs = acc_qs.filter(user=request.user)
         account = acc_qs.first()
         if not account:
             return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
-        data = _signal_copy_readiness(request.user, account, source)
+        data = _signal_copy_readiness(request.user, account, source, tpl.get("name") or "Signal Copy")
         data["marketplace_strategy_id"] = marketplace_strategy_id
         return Response(data, status=status.HTTP_200_OK)
 
