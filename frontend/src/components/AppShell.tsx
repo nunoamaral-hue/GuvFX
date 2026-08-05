@@ -52,22 +52,32 @@ export const useLang = () => useContext(LangContext);
 // =============================================================================
 
 const navGroups: NavGroup[] = [
+  // WS-F (Nuno-directed) — the PRIMARY journey group tells one coherent story, in order:
+  // Accounts → Marketplace → Running (Live Trading). Default-open and first. Each of these destinations
+  // is removed from its old thematic group below so it appears exactly once (no duplication).
+  {
+    labelKey: "nav.getStarted",
+    defaultOpen: true,
+    items: [
+      { labelKey: "nav.brokerAccounts", href: "/accounts" },
+      { labelKey: "nav.marketplace", href: "/strategies/marketplace" },
+      { labelKey: "nav.liveTrading", href: "/trading/live-trading" },
+    ],
+  },
   {
     labelKey: "nav.strategy",
     defaultOpen: true,
     items: [
       { labelKey: "nav.myStrategies", href: "/strategies" },
-      { labelKey: "nav.marketplace", href: "/strategies/marketplace" },
       { labelKey: "nav.createStrategy", href: "/strategies/create" },
       { labelKey: "nav.strategyAdvisor", href: "/ai/strategy-advisor", soon: true },
     ],
   },
   {
     labelKey: "nav.run",
-    defaultOpen: true,
+    defaultOpen: false,
     items: [
       { labelKey: "nav.backtests", href: "/backtests" },
-      { labelKey: "nav.liveTrading", href: "/trading/live-trading" },
       { labelKey: "nav.terminalAccess", href: "/trading/terminal-access" },
       { labelKey: "nav.tradeHistory", href: "/trading/trade-history" },
     ],
@@ -96,10 +106,8 @@ const navGroups: NavGroup[] = [
     labelKey: "nav.settings",
     defaultOpen: false,
     items: [
-      // WS-A (packet: Customer Journey Consolidation): /accounts is the single canonical broker-account
-      // page in BOTH flag states (broker journey when ON, legacy content when OFF), and /broker-accounts
-      // permanently redirects there. One nav entry, one destination, no duplicate route.
-      { labelKey: "nav.brokerAccounts", href: "/accounts" },
+      // Accounts moved to the primary "Get started" journey group above — one nav entry for /accounts,
+      // the single canonical broker-account page (/broker-accounts permanently redirects there).
       { labelKey: "nav.userSettings", href: "/profile" },
       { labelKey: "nav.hosting", href: "/admin/hosting", adminOnly: true },
     ],

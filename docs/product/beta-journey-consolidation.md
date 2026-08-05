@@ -6,6 +6,17 @@ consolidated journey (WS-A), the customer account status model (WS-E), the Teleg
 tree (WS-C/D), the canonical acceptance journey (WS-H), and the navigation / marketplace / product review
 (WS-B/F/G/I) with a clear **Fixed vs Deferred** split.
 
+**The browser is the product specification.** §4 is authoritative: the intended customer experience is
+defined by what the browser does at each step — screen, API, customer message, backend state — not by any
+separate design artefact. Any code change that alters a step must update §4.
+
+**2026-08-05 — browser-product feedback (Sponsor-directed) incorporated.** The previously-deferred product
+items are now implemented: `/broker-accounts` is removed as a journey (redirect only); navigation tells one
+ordered story (Broker Accounts → Marketplace → Live Trading) via a default-open primary group with each
+destination de-duplicated; every marketplace blocked state explains what's missing and the next action, and
+the dead affordances (Preview no-op, placeholder metrics strip, empty "Structure" filter) are removed. §5–§7
+below reflect this.
+
 Grounded against `main @ dcea807` (the deployed DARK runtime) plus the changes on
 `feat/ipr-journey-consolidation`. Verified facts are marked; inferences are called out.
 
@@ -119,11 +130,16 @@ needed; the Enable-Trading button appears only when the journey is built **and**
 
 ---
 
-## 4. Canonical browser acceptance journey (WS-H)
+## 4. Canonical browser acceptance journey (WS-H) — the product specification
 
-The single acceptance path a certified pilot user would walk once the environment is armed (a **separate,
-Sponsor-gated** step — not part of this DARK packet). Per step: expected screen · API · customer message ·
-backend state.
+**This section IS the product specification.** It defines the one coherent story the navigation now tells —
+**Login → Broker Accounts → Marketplace → Running** — and the single acceptance path a certified pilot user
+walks once the environment is armed (a **separate, Sponsor-gated** step — not part of this DARK packet). Per
+step: expected screen · API · customer message · backend state.
+
+Navigation reflects this order directly: the primary, default-open **"Get started"** group lists
+**Broker Accounts** (`/accounts`) → **Marketplace** (`/strategies/marketplace`) → **Live Trading**
+(`/trading/live-trading`), each appearing exactly once (removed from its old thematic group).
 
 | # | Step | Screen | API | Customer message | Backend state |
 |---|---|---|---|---|---|
@@ -149,40 +165,49 @@ re-Enable is cohort-gated and refused honestly.
 
 ## 5. Navigation review (WS-F)
 
-**Fixed:** one canonical destination (`/accounts`) with a single nav entry; the deprecated route redirects
-in; the Telegram card no longer dead-ends (readiness panel).
+**Fixed (2026-08-05):**
+- One canonical destination (`/accounts`) with a single nav entry; the deprecated `/broker-accounts` route
+  redirects in; the Telegram card no longer dead-ends (readiness panel).
+- **One coherent ordered story.** A new default-open, first **"Get started"** group presents the journey in
+  dependency order — **Broker Accounts → Marketplace → Live Trading** — and each destination is removed from
+  its old thematic group so it appears exactly once (no duplication). "Broker Accounts" was previously buried
+  in a collapsed "Settings" group.
+- **Label coherence.** The nav entry, the `/accounts` page H1, and the WP4 broker page all read
+  **"Broker Accounts"** (the legacy H1 was "Trading Accounts") — one term for one destination, distinct from
+  the billing "Account" group.
 
-**Deferred (product decisions — recommended, not done here):**
-- No top-level Home/Dashboard entry (Overview is under a collapsed Analytics group).
-- Step 1 (add broker account) is buried in a collapsed "Settings" group — recommend a top-level
-  "Connect broker" / getting-started path in dependency order.
-- Nav label "Broker Accounts" vs the legacy page H1 "Trading Accounts" — align on one noun.
-- "Live Trading" is demo-only and self-declares it executes nothing — rename or fold into a status page.
-- "Terminal Access" empty state has no next action for beta users — gate it or add a CTA.
-- No single canonical "is it running?" destination — designate one and route arm-success there.
+**Deferred (still recommended):**
+- No top-level Home/Dashboard entry (the logo links to `/dashboard`; Overview is under a collapsed group).
+- "Live Trading" is demo-only and self-declares it executes nothing — its page copy vs demo-trade buttons is
+  a separate content fix; "Terminal Access" empty state still has no CTA for beta users.
 
 ---
 
 ## 6. Marketplace behaviour (WS-G)
 
-**Fixed:** the readiness panel (Status + guidance always meaningful); the four arm rejections that
+**Fixed:** the readiness panel (Status + guidance always meaningful); the five arm rejections that
 collapsed to a generic "try again" (`not_pilot_approved`, `broker_validation_unhealthy`, `runtime_paused`,
-`duplicate_active_assignment`) now map to their own customer-safe copy; a still-armed Enable refused by the
-cohort gate is explained honestly; the account selector offers **only demo accounts** (matching the
-backend's demo-only rule); the raw `ENTITLEMENT_RESTRICTED` slug is no longer shown on Assign; operator
-jargon (armed / auto-demo / gated / terminal) removed from card copy; the signal-copy card summary no
-longer leaks the execution pipeline.
+`duplicate_active_assignment`, `source_single_tenant`) now map to their own customer-safe copy; a
+still-armed Enable refused by the cohort gate is explained honestly; the account selector offers **only demo
+accounts**; the raw `ENTITLEMENT_RESTRICTED` slug is no longer shown on Assign; operator jargon removed from
+card copy; the signal-copy card summary no longer leaks the execution pipeline.
 
-**Deferred (product decisions — recommended, not done here):**
-- Preview is a permanent no-op on every card + a hardcoded "Preview metrics unavailable" strip — hide or
-  build a real preview.
-- "Structure" category filter matches zero seed strategies — remove or populate.
+**Fixed (2026-08-05 — every blocked state explains what's missing + the next action):**
+- **Generic template cards.** When the customer has no eligible account, the card now says *"You'll need a
+  trading account first"* with a **Go to Accounts** link, instead of a silently-disabled Assign button; when
+  accounts exist but none is selected, a hint explains the block. The plan/entitlement denial shows plain
+  guidance (no raw slug).
+- **Dead affordances removed.** The permanent-no-op **Preview** button (every card) and the hardcoded
+  **"Preview metrics unavailable"** strip are gone; the empty **"Structure"** category filter (zero seed
+  members → forced empty state) is removed.
+
+**Deferred (still recommended):**
 - Timeframes rendered twice per card — show once.
-- Seed strategy identities leak internal shorthand/personal names (Wayond, Ali, ALTS, SCE, TBP, TC1) —
-  curate customer-facing names. The `mp-010` card name is intentionally left (the arm flow keys the created
-  Strategy off it; renaming needs a coordinated migration + Sponsor sign-off).
-- Status fetch failure renders identically to a true "Not armed" on the *badge* — the new readiness panel
-  distinguishes loading / unavailable, but the top badge still defaults; recommend the same treatment.
+- Seed strategy identities leak internal shorthand/personal names (Wayond, Ali, ALTS, SCE, TBP, TC1). The
+  `mp-010` card name is intentionally left (the arm flow keys the created Strategy off it; renaming needs a
+  coordinated migration + Sponsor sign-off).
+- The signal-copy *badge* still defaults to "Not set up" on a status-fetch error (the new readiness panel
+  already distinguishes loading / unavailable) — recommend the same treatment for the badge.
 
 ---
 
@@ -200,8 +225,11 @@ longer leaks the execution pipeline.
 | Medium | "dedicated runtime"/"trading terminal is up" in setup panel | **Fixed** |
 | Medium | Signal-copy operator status words ("Not armed", "arming", "auto-demo", "gated") | **Fixed** |
 | Medium | Assign failure "endpoint"/"server" developer wording | **Fixed** |
-| Medium | Dead Preview button + placeholder metrics strip | **Deferred** (product) |
-| Medium | Timeframes duplicated; "Structure" dead filter; three names for one destination | **Deferred** (product) |
+| Medium | Dead Preview button + placeholder metrics strip | **Fixed** (removed) |
+| Medium | "Structure" dead filter; three names for one destination | **Fixed** (filter removed; nav/H1 aligned to "Broker Accounts") |
+| Medium | Silently-disabled Assign with no explanation | **Fixed** (blocked-state message + link) |
+| Medium | Navigation tells no coherent story | **Fixed** (ordered "Get started" group; de-duplicated) |
+| Medium | Timeframes rendered twice per card | **Deferred** (product) |
 | Low | Broad nav exposes non-functional areas; single-account deactivate tooltip; emoji | **Deferred** (emoji removed from the reworded strings) |
 
 ---

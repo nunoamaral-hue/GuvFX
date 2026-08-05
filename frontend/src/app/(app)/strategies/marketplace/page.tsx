@@ -7,12 +7,13 @@ import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { brokerConnectivityEnabled } from "@/lib/flags";
 import { SignalCopyReadiness } from "@/components/marketplace/SignalCopyReadiness";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────
-type MarketCategory = "Trend" | "Breakout" | "Reversion" | "Structure" | "Patterns" | "System-grade";
+type MarketCategory = "Trend" | "Breakout" | "Reversion" | "Patterns" | "System-grade";
 
 type Accent = "blue" | "green" | "purple" | "yellow" | "cyan";
 
@@ -273,12 +274,17 @@ export default function StrategyMarketplacePage() {
   // Fetch Accounts
   // ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!authChecked || !isAuthed) {
+    if (!authChecked) return;   // auth not resolved yet — stay in the loading state (don't flash "no account")
+    if (!isAuthed) {            // definitively unauthenticated — there are no accounts to load
       setLoadingAccounts(false);
       return;
     }
 
     const fetchAccounts = async () => {
+      // The pre-auth run of this effect already set loadingAccounts=false; mark it true again for the
+      // duration of the real fetch so the blocked-state guard (`!loadingAccounts && …`) never flashes a
+      // false "no account" while accounts are still loading.
+      setLoadingAccounts(true);
       try {
         // Try primary endpoint
         const data = await apiFetch<TradingAccount[]>("/api/trading/accounts/");
@@ -550,10 +556,6 @@ export default function StrategyMarketplacePage() {
     }
   };
 
-  const handlePreview = () => {
-    setAlert(t(lang, "marketplace.alertPreviewSoon"));
-    setAlertType("info");
-  };
 
   // ─────────────────────────────────────────────────────────────────────
   // Render
@@ -700,7 +702,7 @@ export default function StrategyMarketplacePage() {
           />
 
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-            {(["All", "Trend", "Breakout", "Reversion", "Structure", "Patterns", "System-grade"] as const).map((cat) => {
+            {(["All", "Trend", "Breakout", "Reversion", "Patterns", "System-grade"] as const).map((cat) => {
               const isActive = activeFilter === cat;
               const filterKey = `marketplace.filter${cat}` as const;
               return (
@@ -787,21 +789,6 @@ export default function StrategyMarketplacePage() {
                 <div style={{ fontSize: "0.8rem", color: "#cbd5e1" }}>{strategy.timeframes.join(", ")}</div>
               </div>
 
-              {/* ── Zone 3 — Preview metrics strip ── */}
-              <div
-                style={{
-                  padding: "0.45rem 0.75rem",
-                  borderRadius: 6,
-                  background: "rgba(100,116,139,0.08)",
-                  border: "1px solid rgba(100,116,139,0.15)",
-                  fontSize: "0.72rem",
-                  color: "#64748b",
-                  textAlign: "center",
-                  marginBottom: "0.75rem",
-                }}
-              >
-                Preview metrics unavailable
-              </div>
 
               {/* ── Zone 4 — Footer / Actions (bottom-anchored) ── */}
               <div style={{ marginTop: "auto" }}>
@@ -894,23 +881,19 @@ export default function StrategyMarketplacePage() {
                           </span>
                         </div>
                         {armed ? (
-                          // Armed → the existing Enable/Disable toggle (resume/pause the copy).
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-                            <Button
-                              variant={enabled ? "secondary" : "primary"}
-                              onClick={() => handleSignalCopyToggle(strategy.id, !enabled)}
-                              disabled={!isAuthed || busy}
-                            >
-                              {busy
-                                ? t(lang, "marketplace.copyWorking")
-                                : enabled
-                                  ? t(lang, "marketplace.copyDisable")
-                                  : t(lang, "marketplace.copyEnable")}
-                            </Button>
-                            <Button variant="secondary" onClick={handlePreview}>
-                              {t(lang, "marketplace.preview")}
-                            </Button>
-                          </div>
+                          // Armed → the Enable/Disable toggle (resume/pause the copy) — full width, no
+                          // dead Preview affordance.
+                          <Button
+                            variant={enabled ? "secondary" : "primary"}
+                            onClick={() => handleSignalCopyToggle(strategy.id, !enabled)}
+                            disabled={!isAuthed || busy}
+                          >
+                            {busy
+                              ? t(lang, "marketplace.copyWorking")
+                              : enabled
+                                ? t(lang, "marketplace.copyDisable")
+                                : t(lang, "marketplace.copyEnable")}
+                          </Button>
                         ) : (
                           // Not armed → WS-D: the readiness panel replaces the opaque "not armed" hint.
                           // It ALWAYS renders (customer sees exactly what's needed via a ✓/✕ checklist +
@@ -935,9 +918,19 @@ export default function StrategyMarketplacePage() {
                       </div>
                     );
                   })()
+                ) : authChecked && isAuthed && !loadingAccounts && accounts.length === 0 ? (
+                  // BLOCKED (WS-G redesign): no account to assign into — shown ONLY once auth is resolved AND
+                  // the accounts fetch has completed empty, so we never flash a false "no account" during the
+                  // pre-auth window or the fetch. Say exactly what's missing and the next action, instead of a
+                  // silently-disabled Assign button with no explanation.
+                  <div style={{ fontSize: "0.72rem", color: "#94a3b8" }}>
+                    <p style={{ margin: "0 0 6px" }}>{t(lang, "marketplace.assignNeedsAccount")}</p>
+                    <Link href="/accounts" style={{ color: "#93c5fd", textDecoration: "none" }}>
+                      {t(lang, "marketplace.readinessAddAccount")} →
+                    </Link>
+                  </div>
                 ) : (
-                <>
-                {/* CTA — two-line: dropdown full-width, then buttons */}
+                // CTA — dropdown full-width, then a single Assign action (no dead Preview).
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                   <select
                     value={selectedAccount[strategy.id] || ""}
@@ -976,20 +969,19 @@ export default function StrategyMarketplacePage() {
                       </option>
                     ))}
                   </select>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-                    <Button
-                      variant="primary"
-                      onClick={() => handleAssign(strategy.id)}
-                      disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
-                    >
-                      {assigning[strategy.id] ? t(lang, "marketplace.assigning") : t(lang, "marketplace.assign")}
-                    </Button>
-                    <Button variant="secondary" onClick={handlePreview}>
-                      {t(lang, "marketplace.preview")}
-                    </Button>
-                  </div>
+                  <Button
+                    variant="primary"
+                    onClick={() => handleAssign(strategy.id)}
+                    disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
+                  >
+                    {assigning[strategy.id] ? t(lang, "marketplace.assigning") : t(lang, "marketplace.assign")}
+                  </Button>
+                  {!selectedAccount[strategy.id] && (
+                    <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
+                      {t(lang, "marketplace.assignSelectAccountHint")}
+                    </p>
+                  )}
                 </div>
-                </>
                 )}
               </div>
             </div>

@@ -45,7 +45,7 @@ describe("SignalCopyReadiness (WS-D)", () => {
       accounts: [{ id: 9, name: "Live", is_demo: false }], selectedAccountId: undefined,
     })} />);
     expect(screen.getByText(/demo account first/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Go to Accounts/i })).toHaveAttribute("href", "/accounts");
+    expect(screen.getByRole("link", { name: /Go to Broker Accounts/i })).toHaveAttribute("href", "/accounts");
     expect(apiFetch).not.toHaveBeenCalled();
   });
 

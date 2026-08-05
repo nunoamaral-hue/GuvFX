@@ -6,6 +6,16 @@
 
 ## Execution workstream log
 
+- **2026-08-05 (later) — Browser-product feedback incorporated (Sponsor-directed), still DARK. 🟢** On the same
+  branch: `/broker-accounts` removed as a journey (redirect only); navigation now tells ONE ordered story via a
+  default-open "Get started" group (**Broker Accounts → Marketplace → Live Trading**), each destination
+  de-duplicated; the account label/page-H1 unified to "Broker Accounts"; every marketplace blocked state
+  explains what's missing + the next action (generic cards: "add a trading account" + link; entitlement denial
+  plain), and the dead affordances (Preview no-op, "Preview metrics unavailable" strip, empty "Structure"
+  filter) removed. `docs/product/beta-journey-consolidation.md` reframed so **the browser is the product
+  specification** (§4 authoritative). New `marketplace/blocked-states.test.tsx` (2). Re-validated green + a
+  second adversarial review; still NOT merged/deployed, no flag armed.
+
 - **2026-08-05 — Customer Journey Consolidation & Telegram Readiness. Repository engineering; DARK; flags OFF. 🟢**
   Branch `feat/ipr-journey-consolidation` (base main `dcea807`, 6 commits; NOT merged). **(A)** `/accounts` is
   now the SINGLE canonical broker-account page (WP4 broker journey when the build flag is ON, legacy content

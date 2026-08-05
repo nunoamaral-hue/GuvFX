@@ -116,6 +116,7 @@ const dictionary: Dictionary = {
   // -----------------------------------------------------------------------------
   // AppShell - Navigation Groups
   // -----------------------------------------------------------------------------
+  "nav.getStarted": { en: "Get started", ja: "はじめに" },
   "nav.strategy": { en: "Strategy", ja: "戦略" },
   "nav.run": { en: "Run", ja: "実行" },
   "nav.analytics": { en: "Analytics", ja: "分析" },
@@ -258,7 +259,7 @@ const dictionary: Dictionary = {
   // -----------------------------------------------------------------------------
   // Accounts - Page Header
   // -----------------------------------------------------------------------------
-  "accounts.title": { en: "Trading Accounts", ja: "取引口座" },
+  "accounts.title": { en: "Broker Accounts", ja: "ブローカー口座" },
   "accounts.subtitle": {
     en: "Link your broker / MT5 accounts so GuvFX can map strategies and trades.",
     ja: "ブローカー/MT5口座を連携し、GuvFXで戦略と取引を紐付けます。",
@@ -877,10 +878,6 @@ const dictionary: Dictionary = {
     en: "Reversion",
     ja: "リバージョン",
   },
-  "marketplace.filterStructure": {
-    en: "Structure",
-    ja: "ストラクチャー",
-  },
   "marketplace.filterPatterns": {
     en: "Patterns",
     ja: "パターン",
@@ -897,13 +894,18 @@ const dictionary: Dictionary = {
     en: "Assign",
     ja: "割当",
   },
+  // WS-G — generic-card blocked states: say exactly what's missing + the next action.
+  "marketplace.assignNeedsAccount": {
+    en: "You'll need a broker account first. Add one to assign this strategy.",
+    ja: "まずブローカー口座が必要です。この戦略を割り当てるには口座を追加してください。",
+  },
+  "marketplace.assignSelectAccountHint": {
+    en: "Choose the account to assign this strategy to.",
+    ja: "この戦略を割り当てる口座を選択してください。",
+  },
   "marketplace.assigning": {
     en: "Assigning\u2026",
     ja: "割当中\u2026",
-  },
-  "marketplace.preview": {
-    en: "Preview",
-    ja: "プレビュー",
   },
   "marketplace.copyStatusLabel": {
     en: "Status",
@@ -1048,8 +1050,8 @@ const dictionary: Dictionary = {
     ja: "まずデモ口座が必要です。アカウントページで追加してください。",
   },
   "marketplace.readinessAddAccount": {
-    en: "Go to Accounts",
-    ja: "アカウントへ移動",
+    en: "Go to Broker Accounts",
+    ja: "ブローカー口座へ移動",
   },
   "marketplace.readinessCheckDemo": {
     en: "Demo account",
@@ -1134,10 +1136,6 @@ const dictionary: Dictionary = {
   "marketplace.alertPlanRestricted": {
     en: "Your plan doesn't include assigning strategies. Upgrade your plan to continue.",
     ja: "現在のプランには戦略の割り当てが含まれていません。続行するにはプランをアップグレードしてください。",
-  },
-  "marketplace.alertPreviewSoon": {
-    en: "Preview coming soon.",
-    ja: "プレビューは近日公開予定です。",
   },
   "marketplace.emptyTitle": {
     en: "No templates match your filters.",

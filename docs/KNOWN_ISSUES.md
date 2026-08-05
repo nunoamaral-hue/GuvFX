@@ -18,12 +18,13 @@ in the DARK consolidation:
 - **Seed strategy identity leaks** (`mp-010` name "Wayond WIM Strategy"; tags/authors Ali / ALTS / SCE / TBP /
   TC1). Customer-facing names need curation; `mp-010`'s name is coupled to the arm flow (it keys the created
   `Strategy`), so a rename needs a coordinated migration + Sponsor sign-off.
-- **Marketplace dead affordances**: Preview is a permanent no-op on every card + a hardcoded "Preview metrics
-  unavailable" strip; the "Structure" category filter matches zero seed strategies; Timeframes render twice
-  per card. Hide/build, remove, or de-dup — product decision.
-- **Navigation**: no top-level Home/Dashboard entry; "add broker account" buried in a collapsed Settings group;
-  "Live Trading" is demo-only but named as live; "Terminal Access" empty state has no next action; the account
-  destination carries three names (Broker Accounts / Trading Accounts / Link account). Product decision.
+- **Marketplace — Timeframes rendered twice per card** (cosmetic). The Preview no-op button, the hardcoded
+  "Preview metrics unavailable" strip, and the empty "Structure" category filter were **REMOVED 2026-08-05**
+  (Sponsor-directed), and every blocked state now explains what's missing + the next action.
+- **Navigation — partially closed 2026-08-05** (Sponsor-directed). DONE: the ordered "Get started" story
+  (Broker Accounts → Marketplace → Live Trading), destination de-duplication, and the single "Broker Accounts"
+  label/page-H1 alignment. Still open: no top-level Home/Dashboard entry; "Live Trading" page copy is demo-only
+  but named as live; "Terminal Access" empty state has no CTA.
 - **Onboarding gate**: email verification is genuine for every user (ADR-0021 retired the beta auto-flip); if
   SMTP is not configured for the pilot cohort a tester can be stranded. Environment/Sponsor decision.
 
