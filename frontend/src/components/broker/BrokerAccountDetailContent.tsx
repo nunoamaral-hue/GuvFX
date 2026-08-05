@@ -15,7 +15,7 @@ import { ReplaceCredentialsDialog } from "@/components/broker/ReplaceCredentials
 import { DisconnectDialog } from "@/components/broker/DisconnectDialog";
 import { ErrorState, LoadingState } from "@/components/broker/States";
 import {
-  connectionView, formatWhen, healthStatusView, maskAccountNumber, reasonMessage, toCustomerError,
+  connectionView, lastValidatedLine, maskAccountNumber, reasonMessage, toCustomerError,
   validationStatusView,
 } from "@/lib/broker-status";
 import type { BrokerAccount, BrokerStatus, ValidationAttempt } from "@/types/broker";
@@ -84,13 +84,25 @@ export function BrokerAccountDetailContent() {
       </div>
 
       <Card title="Status">
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-          <StatusBadge view={validationStatusView(status?.validation_status)} title="Validation status" />
-          {status?.latest_attempt && <StatusBadge view={healthStatusView(status.latest_attempt.status)} title="Broker health" />}
-          <StatusBadge view={connectionView(status ? status.is_active : account.is_active, status?.disconnected_at)} title="Connection" />
+        {/* WS-G — two clearly-labelled, non-overlapping concepts. The former layout showed three unlabelled
+            badges where "validation status" and "broker health" both derived from the same latest attempt
+            and read as the same thing (e.g. "Temporarily unavailable" + "Unavailable"); the redundant
+            health badge is removed and each remaining concept now carries its own label. */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ minWidth: 140, color: "#8fa0b7", fontSize: "0.8rem" }}>Broker connection</span>
+            <StatusBadge view={validationStatusView(status?.validation_status)} title="Broker connection" />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ minWidth: 140, color: "#8fa0b7", fontSize: "0.8rem" }}>Trading account</span>
+            <StatusBadge view={connectionView(status ? status.is_active : account.is_active, status?.disconnected_at)} title="Trading account" />
+          </div>
         </div>
         <div style={{ color: "#8fa0b7", fontSize: "0.85rem" }}>
-          {formatWhen(status?.validated_at) ? `Last validated ${formatWhen(status?.validated_at)}` : "Never validated"}
+          {/* "Never validated" was shown even after several failed attempts (packet WS-G). lastValidatedLine
+              distinguishes a real prior success from "no successful validation yet" AND cross-checks the
+              timestamp against validation_status so it can't contradict the badge (e.g. after disconnect). */}
+          {lastValidatedLine(status?.validation_status, status?.validated_at)}
         </div>
         {actionMsg && <div style={{ marginTop: 12 }}><Alert type={actionMsg.ok ? "success" : "error"}>{actionMsg.text}</Alert></div>}
         {!disconnected && (

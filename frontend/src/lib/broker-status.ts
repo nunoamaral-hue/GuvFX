@@ -51,11 +51,36 @@ const REASON: Record<string, string> = {
   mt5_unavailable: "The validation service is temporarily unavailable. Please try again shortly.",
   bridge_unavailable: "The validation service is temporarily unavailable. Please try again shortly.",
   runtime_unavailable: "The validation service is temporarily unavailable. Please try again shortly.",
+  // Service-side / not-yet-provisioned checks — the check never reached the broker, so the customer's
+  // details are NOT implicated. Say so, and confirm nothing was changed (packet WS-H). ``verified`` is the
+  // agent's success taxonomy alongside ``demo_ok``.
+  validation_unconfigured:
+    "We couldn't test the connection because broker validation isn't available for your account yet. " +
+    "Your account details weren't changed — there's nothing to fix on your side. Please check back later.",
+  credential_missing:
+    "We don't have a saved password for this account. Add or replace your credentials, then try again.",
+  broker_server_missing: "No broker server is set for this account. Please reconnect the account.",
+  verified: "Connection verified.",
 };
 export function reasonMessage(code: string | null | undefined): string {
   const c = String(code ?? "").trim();
   if (!c) return "";
-  return REASON[c] ?? "Please check your details and try again.";
+  // Unknown code → a NEUTRAL line. Never the accusatory "check your details": an unmapped code is almost
+  // always a technical/service reason, and blaming the customer's details for a server-side failure is the
+  // exact defect this replaces (packet WS-H). Known user-fixable codes carry their own "check …" wording.
+  return REASON[c] ?? "We couldn't complete the connection check. Please try again shortly.";
+}
+
+/** The "last validated" line, cross-checked against validation_status. A stale validated_at can outlive
+ * the status that produced it — e.g. disconnect resets validation_status to NEVER but does not clear
+ * validated_at — which would otherwise render "Last validated <T1>" directly under a "Not validated"
+ * badge. Suppress the timestamp whenever the account is in the explicit never-validated state. */
+export function lastValidatedLine(
+  validationStatus: string | null | undefined, validatedAtIso: string | null | undefined,
+): string {
+  const when = formatWhen(validatedAtIso);
+  if (when && String(validationStatus ?? "") !== "NEVER") return `Last validated ${when}`;
+  return "No successful validation yet";
 }
 
 /** Mask an account number to the last 4 digits. */
