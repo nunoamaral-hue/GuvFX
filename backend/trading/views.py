@@ -58,7 +58,7 @@ from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 
 from .broker_connectivity import (  # WP1A (ADR-0028) — customer broker-connectivity journey
@@ -1221,3 +1221,23 @@ class SetIngestCutoverView(APIView):
             "account_id": account.id,
             "ingest_cutover_time": account.ingest_cutover_time.isoformat(),
         })
+
+
+# ── WS-D (ADR-0027) — operator/admin validation TIMELINE (staff-only, read-only) ─────────────────────────
+class ValidationTimelineView(APIView):
+    """Support-grade broker-validation timeline for one correlation id. STAFF ONLY. Read-only: assembles the
+    stage timeline from durable records (see trading.validation_timeline) — no host access, no SSH, no new
+    validation. Dark (404) whenever the broker-connectivity surface is dark, so it never appears before the
+    journey is armed. Secret-safe: only allow-listed masked fields are returned."""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        if not broker_connectivity_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        correlation_id = str(request.query_params.get("correlation_id") or "").strip()
+        if not correlation_id:
+            return Response({"detail": "correlation_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        from dataclasses import asdict
+        from .validation_timeline import build_timeline
+        tl = build_timeline(correlation_id)
+        return Response(asdict(tl), status=status.HTTP_200_OK)

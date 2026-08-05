@@ -152,6 +152,22 @@ describe("BrokerAccountDetailContent — honest validation status (WS-G/H/K)", (
     resolveTest(attempt());
   });
 
+  it("shows Current validation state AND Latest attempt as distinct lines (WS-C dual state)", async () => {
+    // A durable VALIDATED state (last success 13:37) with a LATER failed attempt (17:23, host IPC): the
+    // failure must NOT erase the validated state — both are shown separately.
+    api.getBrokerStatus.mockResolvedValue({
+      validation_status: "VALIDATED", validated_at: "2026-08-05T13:37:00Z",
+      is_active: false, disconnected_at: null,
+      latest_attempt: attempt({ id: 9, status: "UNAVAILABLE", reason_code: "validation_ipc_unavailable",
+                                created_at: "2026-08-05T17:23:00Z" }),
+    });
+    render(<BrokerAccountDetailContent />);
+    await waitFor(() => expect(screen.getByText("Validated")).toBeInTheDocument());  // current state preserved
+    expect(screen.getByText(/^Last validated /)).toBeInTheDocument();                // last success
+    expect(screen.getByText(/Latest attempt:.*couldn't start the validation session/i)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\bIPC\b|Session\s*0|\bMT5\b|10004/i);
+  });
+
   it("validation-host/IPC failure: safe message, NO broker-outage claim, NO Try again (no retry storm)", async () => {
     api.testConnection.mockResolvedValue(attempt({ status: "UNAVAILABLE", reason_code: "validation_ipc_unavailable" }));
     render(<BrokerAccountDetailContent />);

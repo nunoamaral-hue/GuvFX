@@ -107,6 +107,48 @@ export function validationActions(reasonCode: string | null | undefined): Valida
   return ["retry"];
 }
 
+/** WS-C (2026-08-05) — "Current validation state" and "Latest validation attempt" are DIFFERENT concepts and
+ * must be shown separately: a durable VALIDATED state (last success) is preserved even when a later attempt
+ * fails for a transient/host reason. `latestAttemptLine` renders the most-recent attempt as its own line with
+ * a CONCISE, customer-safe outcome — never a broker-outage claim for a host/agent failure, never internals. */
+const REASON_SHORT: Record<string, string> = {
+  demo_ok: "Verified", is_demo: "Verified", verified: "Verified",
+  live_detected: "Live account (demo required)",
+  validation_ipc_unavailable: "Couldn't start the validation session",
+  validation_unconfigured: "Validation not available yet",
+  credential_missing: "No saved password",
+  broker_server_missing: "No broker server set",
+  invalid_password: "Password not accepted",
+  invalid_login: "Login not accepted",
+  account_disabled: "Account disabled at broker",
+  server_not_found: "Server not found",
+  server_unavailable: "Broker temporarily unavailable",
+  login_timeout: "Broker didn't respond in time",
+  classification_mismatch: "Account type mismatch",
+};
+export function reasonShort(code: string | null | undefined): string {
+  const c = String(code ?? "").trim();
+  if (!c) return "Couldn't complete the check";
+  return REASON_SHORT[c] ?? "Couldn't complete the check";
+}
+
+/** The most-recent attempt as a distinct one-liner: "Latest attempt: <when> — <outcome>". Empty when there
+ * is no attempt yet. HEALTHY reads "Verified"; every other outcome uses the concise, safe `reasonShort`.
+ * Cross-checked against the current validation_status (like `lastValidatedLine`): a stale prior-success
+ * attempt must NOT render "Latest attempt: … — Verified" under a "Not validated" badge (e.g. after a
+ * disconnect resets validation_status to NEVER while the old HEALTHY attempt row remains the latest). */
+export function latestAttemptLine(
+  attempt: { status?: string; reason_code?: string; created_at?: string } | null | undefined,
+  validationStatus?: string | null,
+): string {
+  if (!attempt || !attempt.created_at) return "";
+  const healthy = attempt.status === "HEALTHY";
+  if (healthy && String(validationStatus ?? "") === "NEVER") return "";  // would contradict the badge
+  const when = formatWhen(attempt.created_at);
+  const outcome = healthy ? "Verified" : reasonShort(attempt.reason_code);
+  return `Latest attempt: ${when} — ${outcome}`;
+}
+
 /** The "last validated" line, cross-checked against validation_status. A stale validated_at can outlive
  * the status that produced it — e.g. disconnect resets validation_status to NEVER but does not clear
  * validated_at — which would otherwise render "Last validated <T1>" directly under a "Not validated"

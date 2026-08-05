@@ -30,7 +30,9 @@
   had flipped Customer Zero VALIDATED→TECHNICAL_ERROR); the failed attempt is still recorded/shown as the latest.
   **WS-B (diagnosis only, NO host change):** `docs/VALIDATION_IPC_RELIABILITY_INVESTIGATION.md` — #12-vs-#13
   artefact comparison, ranked IPC hypotheses (Session-0 intermittency strongest), a credential-free controlled
-  test plan + reliability threshold, recommending a dedicated interactive validation session/VM pending the test.
+  test plan + reliability threshold. **Recommendation = OPTION C (evidence insufficient): a dedicated validation
+  VM is NOT recommended yet** — Session 0 both succeeded (#12) and failed (#13), so the reliability rate is
+  unquantified; recommend a VM only if the controlled test fails the threshold.
   `make check` green (backend 2652 / frontend 126 / lint 0-err). **NOT deployed; no Windows-host change; #12/#1
   untouched.**
 

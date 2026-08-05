@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  connectionView, healthStatusView, lastValidatedLine, maskAccountNumber, reasonMessage, toCustomerError,
-  validationActions, validationStatusView,
+  connectionView, healthStatusView, lastValidatedLine, latestAttemptLine, maskAccountNumber, reasonMessage,
+  reasonShort, toCustomerError, validationActions, validationStatusView,
 } from "@/lib/broker-status";
 
 describe("validationStatusView", () => {
@@ -126,6 +126,38 @@ describe("validationActions", () => {
     for (const c of ["validation_unconfigured", "login_timeout", "bridge_unavailable", "account_disabled"]) {
       expect(validationActions(c)).not.toContain("replace");
     }
+  });
+});
+
+describe("reasonShort + latestAttemptLine (WS-C dual state)", () => {
+  it("reasonShort is concise, safe, never leaks internals", () => {
+    expect(reasonShort("demo_ok")).toBe("Verified");
+    expect(reasonShort("validation_ipc_unavailable")).toMatch(/couldn't start the validation session/i);
+    expect(reasonShort("some_unknown")).toMatch(/couldn't complete the check/i);
+    expect(reasonShort("")).toMatch(/couldn't complete the check/i);
+    for (const c of ["validation_ipc_unavailable", "login_timeout", "server_unavailable"]) {
+      expect(reasonShort(c)).not.toMatch(/\bIPC\b|Session\s*0|\bMT5\b|10004/i);
+    }
+  });
+  it("latestAttemptLine renders the most recent attempt as its own line, distinct from last success", () => {
+    const T = "2026-08-05T17:23:00Z";
+    expect(latestAttemptLine({ status: "HEALTHY", created_at: T })).toMatch(/^Latest attempt: .* — Verified$/);
+    const ipc = latestAttemptLine({ status: "UNAVAILABLE", reason_code: "validation_ipc_unavailable", created_at: T });
+    expect(ipc).toMatch(/^Latest attempt: /);
+    expect(ipc).toMatch(/couldn't start the validation session/i);
+    expect(ipc).not.toMatch(/unavailable|\bIPC\b|\bMT5\b/i);   // not a broker-outage claim, no internals
+    expect(latestAttemptLine(null)).toBe("");
+    expect(latestAttemptLine({ status: "UNAVAILABLE" })).toBe("");  // no timestamp → no line
+  });
+  it("suppresses a stale HEALTHY 'latest attempt' under a NEVER badge (no contradiction after disconnect)", () => {
+    const T = "2026-08-05T13:37:00Z";
+    // disconnect resets validation_status to NEVER but keeps the old HEALTHY attempt as the latest.
+    expect(latestAttemptLine({ status: "HEALTHY", created_at: T }, "NEVER")).toBe("");
+    // a FAILED latest under NEVER is consistent → still shown.
+    expect(latestAttemptLine({ status: "UNAVAILABLE", reason_code: "validation_ipc_unavailable", created_at: T }, "NEVER"))
+      .toMatch(/^Latest attempt: /);
+    // HEALTHY latest under a VALIDATED badge is consistent → shown.
+    expect(latestAttemptLine({ status: "HEALTHY", created_at: T }, "VALIDATED")).toMatch(/Verified$/);
   });
 });
 

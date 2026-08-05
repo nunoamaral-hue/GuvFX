@@ -118,14 +118,23 @@ No Customer Zero (#12) mutation, no live account #1 mutation, no orders.
   the next run).
 - The same threshold re-met **after** at least one host reboot (readiness must survive a cold start).
 
-## 6. Recommendation (evidence-based, pending the controlled test)
+## 6. Recommendation — **OPTION C: evidence insufficient** (2026-08-05, Sponsor-directed)
 
-On the evidence to date (H1 strongest; Session 0 demonstrably intermittent; the documented ADR-0027 root
-cause is that MT5 needs a GUI-capable window station), the leading recommendation is **B — a dedicated
-interactive validation session/VM is required** for reliable IPC, i.e. run the validation runner in an
-auto-logon interactive console session (or a dedicated validation VM), not Session 0. **A — the existing host
-made reliable with bounded remediation** remains open *iff* Arm A of the controlled test clears the §5
-threshold; the current evidence (2/2 recent failures, intermittent success) does not yet support A. **C —
-insufficient evidence** is the honest status for the *quantified* reliability rate until the controlled test
-runs. No host change is proposed here; the controlled test (credential-free, disposable, one-at-a-time) is the
-next gated step and must be approved before execution.
+**The current recommendation is C — the evidence is insufficient to justify any architecture change, and a
+dedicated validation VM is explicitly NOT recommended at this time.**
+
+The decisive fact is symmetric: **Session 0 CAN succeed** (Customer Zero #12 validated in 13 s in Session 0)
+and **Session 0 CAN fail** (#13 failed twice with `-10004`). Two failures + one success is not a measured
+reliability rate — it is an unquantified intermittent signal. Recommending a VM (Option B) now would be
+replacing the architecture on **three data points**, which the no-assumption rule forbids.
+
+- **Option A — existing host made reliable with bounded remediation:** open, but unproven.
+- **Option B — dedicated interactive validation session/VM:** **do NOT recommend yet.** Recommend B **only if**
+  the controlled reliability test in §4 **fails** the §5 threshold (i.e. Session 0 cannot achieve the
+  consecutive-success bar even when isolated). Until that evidence exists, B is premature.
+- **Option C — evidence insufficient (CURRENT):** the honest status. The next step is the controlled,
+  credential-free, one-at-a-time reliability test (§4) against the §5 threshold — **not** an infrastructure
+  decision.
+
+No host change is proposed. No architecture is replaced. The controlled test is the next gated step and must
+be approved before execution; only its result can move the recommendation off C.

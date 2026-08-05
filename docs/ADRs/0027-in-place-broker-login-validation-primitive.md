@@ -270,3 +270,18 @@ before any broker contact). Two defects surfaced:
 separate, gated host re-stage (Phase 2B). The underlying Session-0 IPC *reliability* is a distinct host/
 environment problem tracked in `docs/VALIDATION_IPC_RELIABILITY_INVESTIGATION.md` (diagnosis + controlled test
 plan; no host change made).
+
+### Phase-2 addenda (2026-08-05)
+
+- **Reliability stance = OPTION C (evidence insufficient).** Session 0 has BOTH succeeded (#12) and failed
+  (#13); that is not a measured reliability rate. A dedicated validation VM (Option B) is **not** recommended
+  until the controlled, credential-free reliability test (`docs/VALIDATION_IPC_RELIABILITY_INVESTIGATION.md`
+  §4) **fails** the §5 threshold. No architecture change is proposed.
+- **State integrity model.** "Current validation state" (durable, last success) and "Latest validation
+  attempt" are permanently distinct; the customer UI shows both, so a transient/host failure never erases a
+  prior success (WS-C).
+- **Observability (WS-D).** A staff-only, read-only support timeline — `GET /api/trading/validation-timeline/`
+  + `trading.validation_timeline.build_timeline` — localises a failure to the correct pipeline region without
+  SSH, from durable records only (`docs/VALIDATION_OBSERVABILITY.md`). Fine-grained agent-internal per-stage
+  timings require the agent to forward its sanitised operator summary (an additive, gated agent+host change,
+  out of scope here).

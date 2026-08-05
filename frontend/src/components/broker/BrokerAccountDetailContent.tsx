@@ -27,7 +27,7 @@ const Spinner: React.FC = () => (
   </svg>
 );
 import {
-  connectionView, lastValidatedLine, maskAccountNumber, reasonMessage, toCustomerError,
+  connectionView, lastValidatedLine, latestAttemptLine, maskAccountNumber, reasonMessage, toCustomerError,
   validationActions, validationStatusView, type ValidationActionKind,
 } from "@/lib/broker-status";
 import type { BrokerAccount, BrokerStatus, ValidationAttempt } from "@/types/broker";
@@ -161,12 +161,18 @@ export function BrokerAccountDetailContent() {
             <StatusBadge view={connectionView(status ? status.is_active : account.is_active, status?.disconnected_at)} title="Trading account" />
           </div>
         </div>
+        {/* WS-C — "Current validation state" (the badge above) and "Latest validation attempt" are DIFFERENT
+            concepts and are shown as separate lines, so a transient/host failure never visually erases a
+            previously-successful validation. Last successful validation is the durable success; Latest attempt
+            is the most recent try (which may differ). */}
         <div style={{ color: "#8fa0b7", fontSize: "0.85rem" }}>
-          {/* "Never validated" was shown even after several failed attempts (packet WS-G). lastValidatedLine
-              distinguishes a real prior success from "no successful validation yet" AND cross-checks the
-              timestamp against validation_status so it can't contradict the badge (e.g. after disconnect). */}
           {lastValidatedLine(status?.validation_status, status?.validated_at)}
         </div>
+        {latestAttemptLine(status?.latest_attempt, status?.validation_status) && (
+          <div style={{ color: "#8fa0b7", fontSize: "0.85rem", marginTop: 2 }}>
+            {latestAttemptLine(status?.latest_attempt, status?.validation_status)}
+          </div>
+        )}
         {!disconnected && (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
             <Button onClick={() => void runValidation("test")} disabled={running}>Test connection</Button>
