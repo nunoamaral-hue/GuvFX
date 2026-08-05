@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Validation-UX packet — engineering-complete (2026-08-05); PR #288 OPEN; NOT deployed
+Branch `fix/validation-ux-timeout` (base `main`) turns broker validation into a modal interaction with a
+contextual next action, customer-safe errors on every path, a duplicate-click guard, graceful reconnect after
+a dropped connection, and the backend gunicorn timeout raised (120→190s) above the 175s VALIDATE_LOGIN budget.
+Full timeout chain audited in `docs/VALIDATION_TIMEOUT_CHAIN.md` (reverse proxy needs no change). `make check`
+green (backend 2638 OK / frontend 123 / lint 0-err / build). **Bounded next action:** obtain Sponsor
+authorisation to deploy — a **backend image rebuild** (for gunicorn 190) **+ frontend rebuild** — after which
+Nuno re-runs the browser Test connection on disposable account #13. Do NOT deploy before that authorisation;
+Customer Zero #12 and live account #1 stay untouched.
+
 ## ▶ Customer Journey Consolidation & Telegram Readiness — engineering-complete (2026-08-05); DARK; awaiting Sponsor gate
 Branch `feat/ipr-journey-consolidation` (base `dcea807`) makes `/accounts` the single canonical broker-account
 page, adds the read-only signal-copy readiness endpoint + `SignalCopyReadiness` panel (replacing "Not armed"),

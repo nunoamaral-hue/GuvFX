@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   connectionView, healthStatusView, lastValidatedLine, maskAccountNumber, reasonMessage, toCustomerError,
-  validationStatusView,
+  validationActions, validationStatusView,
 } from "@/lib/broker-status";
 
 describe("validationStatusView", () => {
@@ -87,6 +87,32 @@ describe("lastValidatedLine", () => {
   });
 });
 
+describe("validationActions", () => {
+  it("offers Replace credentials for a fixable credential problem", () => {
+    expect(validationActions("invalid_password")).toEqual(["replace"]);
+    expect(validationActions("credential_missing")).toEqual(["replace"]);
+  });
+  it("offers Try again for transient / service hiccups and for any unknown code", () => {
+    for (const c of ["login_timeout", "server_unavailable", "could_not_verify", "mt5_unavailable",
+                     "bridge_unavailable", "runtime_unavailable", "some_new_code_x1", ""]) {
+      expect(validationActions(c)).toEqual(["retry"]);
+    }
+  });
+  it("offers NO in-modal action when the customer can't fix it (guidance only, never a misleading button)", () => {
+    // validation_unconfigured / disabled / live-in-demo-beta / wrong account number with no in-place edit:
+    // the message carries the guidance; no button pretends the customer can change these.
+    for (const c of ["validation_unconfigured", "account_disabled", "live_detected", "classification_mismatch",
+                     "broker_server_missing", "server_not_found", "invalid_login"]) {
+      expect(validationActions(c)).toEqual([]);
+    }
+  });
+  it("never offers Replace for a service-side reason (no false 'fix your password' affordance)", () => {
+    for (const c of ["validation_unconfigured", "login_timeout", "bridge_unavailable", "account_disabled"]) {
+      expect(validationActions(c)).not.toContain("replace");
+    }
+  });
+});
+
 describe("connectionView", () => {
   it("disconnected wins over active", () => {
     expect(connectionView(true, "2026-08-04T00:00:00Z").label).toBe("Disconnected");
@@ -108,6 +134,24 @@ describe("toCustomerError", () => {
   it("falls back to the generic message on empty/unparseable input", () => {
     expect(toCustomerError(new Error("{bad json"), "fallback")).toBe("fallback");
     expect(toCustomerError(null, "fallback")).toBe("fallback");
+  });
+  it("maps a tagged network error to a safe message — NEVER the raw transport text", () => {
+    const netErr = Object.assign(new Error("network_unreachable"), { kind: "network" });
+    const out = toCustomerError(netErr, "fallback");
+    expect(out).toMatch(/couldn't reach the validation service/i);
+    expect(out).toMatch(/weren't changed/i);
+    expect(out).not.toMatch(/network_unreachable|Failed to fetch|TypeError/i);
+  });
+  it("never surfaces a raw fetch/exception string, even if it reaches here untagged", () => {
+    // Regression for the customer-visible "Failed to fetch" (gunicorn-killed request).
+    for (const raw of ["Failed to fetch", "NetworkError when attempting to fetch resource.",
+                       "TypeError: Failed to fetch", "Load failed", "network_unreachable",
+                       "The operation was aborted", "Request failed: 502",
+                       "Unexpected token < in JSON", "boom\n    at foo (app.js:12)"]) {
+      const out = toCustomerError(new Error(raw), "safe fallback");
+      expect(out).toBe("safe fallback");
+      expect(out).not.toContain("fetch");
+    }
   });
 });
 

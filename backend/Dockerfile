@@ -39,5 +39,9 @@ USER appuser
 
 EXPOSE 8000
 
-# Run Django via gunicorn
-CMD ["gunicorn", "guvfx_backend.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]
+# Run Django via gunicorn.
+# --timeout MUST exceed the synchronous VALIDATE_LOGIN budget, or gunicorn kills the worker mid-request and
+# the browser's fetch() rejects with a raw "Failed to fetch". The backend VALIDATE_LOGIN read timeout is 175s
+# (terminal_provisioning.beta_worker.OP_TIMEOUTS), which itself exceeds the Agent's 165s result-wait floor
+# (login 120s + cleanup 45s). 190s > 175s leaves margin for connect + response handling.
+CMD ["gunicorn", "guvfx_backend.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "190"]

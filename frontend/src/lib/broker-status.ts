@@ -71,6 +71,32 @@ export function reasonMessage(code: string | null | undefined): string {
   return REASON[c] ?? "We couldn't complete the connection check. Please try again shortly.";
 }
 
+/** The next action a customer can take after a FAILED validation, so the result modal is never a dead end
+ * (never "just dismiss"). Only genuinely-actionable, non-misleading affordances are returned — the modal
+ * always offers Close in addition:
+ *   - "replace" — a credential the customer can fix here (wrong/absent password).
+ *   - "retry"   — a transient / service-side hiccup where trying again is reasonable (also the unknown-code
+ *                 default, and the transport-failure default).
+ *   - support-only outcomes (nothing the customer can change: not provisioned, disabled at the broker,
+ *     wrong account number with no in-place edit, live account in a demo beta) return [] — the message
+ *     itself carries the "please contact support / check back later" guidance, and no button pretends the
+ *     customer can fix it. */
+export type ValidationActionKind = "retry" | "replace";
+
+const REPLACE_CODES = new Set(["invalid_password", "credential_missing"]);
+const SUPPORT_ONLY_CODES = new Set([
+  "validation_unconfigured", "broker_server_missing", "server_not_found", "account_disabled",
+  "live_detected", "classification_mismatch", "invalid_login",
+]);
+
+export function validationActions(reasonCode: string | null | undefined): ValidationActionKind[] {
+  const c = String(reasonCode ?? "").trim();
+  if (REPLACE_CODES.has(c)) return ["replace"];
+  if (SUPPORT_ONLY_CODES.has(c)) return [];
+  // Transient (login_timeout / *_unavailable / could_not_verify) AND any unknown code → retrying is safe.
+  return ["retry"];
+}
+
 /** The "last validated" line, cross-checked against validation_status. A stale validated_at can outlive
  * the status that produced it — e.g. disconnect resets validation_status to NEVER but does not clear
  * validated_at — which would otherwise render "Last validated <T1>" directly under a "Not validated"
@@ -96,8 +122,19 @@ export function maskAccountNumber(n: string | null | undefined): string {
  * — this flattens that into the plain validation sentences and never shows the customer a raw JSON blob
  * (or, if extraction yields nothing, a generic fallback). */
 export function toCustomerError(err: unknown, fallback = "Something went wrong. Please try again."): string {
+  // Transport-level failures (dropped/reset/aborted connection, DNS, CORS, a gunicorn-killed request) are
+  // tagged `kind: "network"` by apiFetch. NEVER show the raw "Failed to fetch"/TypeError text to a customer.
+  if ((err as { kind?: string } | null)?.kind === "network") {
+    return "We couldn't reach the validation service. Your details weren't changed — please check your connection and try again shortly.";
+  }
   const msg = err instanceof Error ? err.message : String(err ?? "");
   if (!msg) return fallback;
+  // Belt-and-braces: if a raw JS/transport exception reaches here untagged, do NOT surface it. DRF `detail`
+  // strings are full sentences and pass through; these exception shapes never do.
+  if (/^(network_unreachable|Failed to fetch|NetworkError|TypeError|Load failed|AbortError|The user aborted|The operation was aborted|Unexpected token|JSON\.parse|Request failed: \d)/i.test(msg)
+      || /(\.tsx?:\d+|\.js:\d+|\n\s+at\s)/.test(msg)) {
+    return fallback;
+  }
   if (msg.startsWith("{") || msg.startsWith("[")) {
     try {
       const parts: string[] = [];

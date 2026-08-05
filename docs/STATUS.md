@@ -14,6 +14,25 @@
 
 ## Execution workstream log
 
+- **2026-08-05 — Validation-UX packet (Sponsor-directed). Repository engineering; NOT deployed. 🟢**
+  Branch `fix/validation-ux-timeout` (base `main`), PR #288 — extends the earlier "Failed to fetch" fix into a
+  complete validation interaction. **(1) Root cause** of the customer-visible `Failed to fetch` = gunicorn
+  `--timeout 120` < the synchronous `VALIDATE_LOGIN` budget (backend read 175s > agent floor 165s > MT5
+  120+45): the worker was killed mid-request, the connection reset, and the browser surfaced the raw
+  `TypeError`. **(2) Backend** — `Dockerfile` gunicorn `--timeout 190` (> 175) + import-time contract assert +
+  `tests_gunicorn_timeout_contract.py`. **(3) Frontend** — validation now runs in a **modal** (spinner + "up
+  to two minutes", background disabled by the overlay, page never hangs); the result shows a customer-safe
+  message with a **contextual next action** (Try again / Replace credentials) or guidance — never a dead-end
+  dismiss, never a raw transport/DRF/model string (`api.ts` tags fetch-rejections `kind:"network"`;
+  `toCustomerError` maps + deny-lists). **(4) Duplicate-click guard** (in-flight ref → one attempt per click).
+  **(5) Graceful reconnect** — on a dropped connection, `recoverAttemptAfterTransportFailure` re-fetches
+  history and shows the REAL committed result instead of a transport error. **(6) Timeout-chain audit** —
+  `docs/VALIDATION_TIMEOUT_CHAIN.md`: browser→Traefik→gunicorn→Django→agent→MT5 verified consistent; **Traefik
+  needs no change** (writeTimeout/responseHeaderTimeout unlimited; the request empirically survived past any
+  shorter proxy bound to gunicorn's 120s kill). `make check` green. **NOT deployed** — deploy = a separately
+  gated backend image rebuild (gunicorn 190) + frontend rebuild; Customer Zero #12 and live account #1
+  untouched.
+
 - **2026-08-05 (later) — Browser-product feedback incorporated (Sponsor-directed), still DARK. 🟢** On the same
   branch: `/broker-accounts` removed as a journey (redirect only); navigation now tells ONE ordered story via a
   default-open "Get started" group (**Broker Accounts → Marketplace → Live Trading**), each destination

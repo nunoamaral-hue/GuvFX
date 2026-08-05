@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { notFound, useParams } from "next/navigation";
 import {
-  getAccount, getBrokerStatus, getValidationHistory, retryValidation, testConnection,
+  getAccount, getBrokerStatus, getValidationHistory, recoverAttemptAfterTransportFailure,
+  retryValidation, testConnection,
 } from "@/lib/broker-api";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -13,10 +14,21 @@ import { StatusBadge } from "@/components/broker/StatusBadge";
 import { ValidationHistoryTable } from "@/components/broker/ValidationHistoryTable";
 import { ReplaceCredentialsDialog } from "@/components/broker/ReplaceCredentialsDialog";
 import { DisconnectDialog } from "@/components/broker/DisconnectDialog";
+import { Dialog } from "@/components/broker/Dialog";
 import { ErrorState, LoadingState } from "@/components/broker/States";
+
+/** Self-contained SVG spinner (SMIL animation — no global CSS keyframes needed). */
+const Spinner: React.FC = () => (
+  <svg width="30" height="30" viewBox="0 0 50 50" role="status" aria-label="Testing" style={{ flexShrink: 0 }}>
+    <circle cx="25" cy="25" r="20" fill="none" stroke="rgba(147,197,253,0.2)" strokeWidth="5" />
+    <path d="M25 5 A20 20 0 0 1 45 25" fill="none" stroke="#93c5fd" strokeWidth="5" strokeLinecap="round">
+      <animateTransform attributeName="transform" type="rotate" dur="0.9s" from="0 25 25" to="360 25 25" repeatCount="indefinite" />
+    </path>
+  </svg>
+);
 import {
   connectionView, lastValidatedLine, maskAccountNumber, reasonMessage, toCustomerError,
-  validationStatusView,
+  validationActions, validationStatusView, type ValidationActionKind,
 } from "@/lib/broker-status";
 import type { BrokerAccount, BrokerStatus, ValidationAttempt } from "@/types/broker";
 
@@ -32,8 +44,18 @@ export function BrokerAccountDetailContent() {
   const [status, setStatus] = useState<BrokerStatus | null>(null);
   const [history, setHistory] = useState<ValidationAttempt[] | null>(null);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState<"test" | "retry" | null>(null);
-  const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // Validation runs in a modal (never an inline hang): opens immediately with a spinner, then shows a
+  // success/failure result WITH a contextual next action (never a dead-end "dismiss"). Every failure path
+  // is customer-safe (no raw "Failed to fetch"/exception text, no DRF/model internals).
+  type ValModal =
+    | { open: false }
+    | { open: true; phase: "running"; kind: "test" | "retry" }
+    | { open: true; phase: "done"; kind: "test" | "retry"; ok: boolean; text: string; actions: ValidationActionKind[] };
+  const [valModal, setValModal] = useState<ValModal>({ open: false });
+  const running = valModal.open && valModal.phase === "running";
+  // Duplicate-click guard: blocks a second validation firing in the same tick (before `running` disables the
+  // buttons on re-render), so one click can only ever create one attempt.
+  const inFlightRef = useRef(false);
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [disconnectOpen, setDisconnectOpen] = useState(false);
 
@@ -51,19 +73,60 @@ export function BrokerAccountDetailContent() {
     }
   }, [id]);
 
+  // Standard load-on-mount/reload: load() resets to a loading state then fetches (intended data-fetch pattern).
   useEffect(() => { if (Number.isFinite(id)) void load(); }, [id, load]);
 
+  // Refresh the durable status + history so the page reflects the persisted attempt.
+  const refreshStatusAndHistory = async () => {
+    const [st, hist] = await Promise.all([
+      getBrokerStatus(id).catch(() => null),
+      getValidationHistory(id).catch(() => history || []),
+    ]);
+    setStatus(st); setHistory(hist);
+  };
+
+  // Render a completed attempt as the modal's result, with a contextual next action.
+  const presentAttempt = (kind: "test" | "retry", attempt: ValidationAttempt) => {
+    const ok = attempt.status === "HEALTHY";
+    setValModal({
+      open: true, phase: "done", kind, ok,
+      text: ok
+        ? "Your broker connection is verified."
+        : (reasonMessage(attempt.reason_code) || "We couldn't verify the connection. Please try again shortly."),
+      actions: ok ? [] : validationActions(attempt.reason_code),
+    });
+  };
+
   const runValidation = async (kind: "test" | "retry") => {
-    setBusy(kind); setActionMsg(null);
+    if (inFlightRef.current) return;                         // duplicate-click guard (pre-render)
+    inFlightRef.current = true;
+    // Newest attempt id BEFORE the call — lets a graceful reconnect tell a genuinely-new completed attempt
+    // apart from the ones already on screen.
+    const beforeMaxId = (history || []).reduce((m, a) => Math.max(m, a.id), 0);
+    setValModal({ open: true, phase: "running", kind });     // modal opens immediately with the spinner
     try {
       const attempt = kind === "test" ? await testConnection(id) : await retryValidation(id);
-      setActionMsg({ ok: attempt.status === "HEALTHY", text: reasonMessage(attempt.reason_code) || "Validation complete." });
-      const [st, hist] = await Promise.all([getBrokerStatus(id).catch(() => null), getValidationHistory(id).catch(() => history || [])]);
-      setStatus(st); setHistory(hist);
+      await refreshStatusAndHistory();
+      presentAttempt(kind, attempt);
     } catch (err) {
-      setActionMsg({ ok: false, text: toCustomerError(err, "Validation failed. Please try again.") });
+      // Transport failure (dropped/reset/timed-out connection). The backend may have COMPLETED and committed
+      // the attempt anyway — try to recover the real result before falling back to a transient message.
+      if ((err as { kind?: string } | null)?.kind === "network") {
+        const recovered = await recoverAttemptAfterTransportFailure(id, beforeMaxId);
+        if (recovered) {
+          await refreshStatusAndHistory();
+          presentAttempt(kind, recovered);
+          return;
+        }
+      }
+      // Not recoverable → customer-safe wording + a retry affordance (never a raw error, never a dead end).
+      setValModal({
+        open: true, phase: "done", kind, ok: false,
+        text: toCustomerError(err, "We couldn't complete the connection check. Please try again shortly."),
+        actions: ["retry"],
+      });
     } finally {
-      setBusy(null);
+      inFlightRef.current = false;
     }
   };
 
@@ -104,13 +167,12 @@ export function BrokerAccountDetailContent() {
               timestamp against validation_status so it can't contradict the badge (e.g. after disconnect). */}
           {lastValidatedLine(status?.validation_status, status?.validated_at)}
         </div>
-        {actionMsg && <div style={{ marginTop: 12 }}><Alert type={actionMsg.ok ? "success" : "error"}>{actionMsg.text}</Alert></div>}
         {!disconnected && (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
-            <Button onClick={() => void runValidation("test")} disabled={busy !== null}>{busy === "test" ? "Testing…" : "Test connection"}</Button>
-            <Button variant="secondary" onClick={() => void runValidation("retry")} disabled={busy !== null}>{busy === "retry" ? "Retrying…" : "Retry validation"}</Button>
-            <Button variant="secondary" onClick={() => setReplaceOpen(true)} disabled={busy !== null}>Replace credentials</Button>
-            <Button variant="secondary" onClick={() => setDisconnectOpen(true)} disabled={busy !== null}>Disconnect</Button>
+            <Button onClick={() => void runValidation("test")} disabled={running}>Test connection</Button>
+            <Button variant="secondary" onClick={() => void runValidation("retry")} disabled={running}>Retry validation</Button>
+            <Button variant="secondary" onClick={() => setReplaceOpen(true)} disabled={running}>Replace credentials</Button>
+            <Button variant="secondary" onClick={() => setDisconnectOpen(true)} disabled={running}>Disconnect</Button>
           </div>
         )}
         {disconnected && <div style={{ marginTop: 14 }}><Alert type="info">This account is disconnected. Its history is preserved below.</Alert></div>}
@@ -121,6 +183,43 @@ export function BrokerAccountDetailContent() {
           {history === null ? <LoadingState label="Loading history…" /> : <ValidationHistoryTable attempts={history} />}
         </Card>
       </div>
+
+      {/* Validation runs in a modal so the page never appears to hang; every result path is customer-safe. */}
+      <Dialog
+        open={valModal.open}
+        busy={running}
+        title={valModal.open && valModal.kind === "retry" ? "Retry validation" : "Test connection"}
+        onClose={() => setValModal({ open: false })}
+      >
+        {valModal.open && valModal.phase === "running" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "0.35rem 0 0.6rem" }}>
+            <Spinner />
+            <div style={{ color: "#cbd5f5", fontSize: "0.92rem" }}>
+              Testing your broker connection… This can take up to two minutes. Please keep this window open.
+            </div>
+          </div>
+        )}
+        {valModal.open && valModal.phase === "done" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <span aria-hidden style={{ fontSize: "1.3rem", lineHeight: 1.2, color: valModal.ok ? "#22c55e" : "#f59e0b" }}>{valModal.ok ? "✓" : "○"}</span>
+              <div style={{ color: "#e2e8f0", fontSize: "0.95rem" }}>{valModal.text}</div>
+            </div>
+            {/* Never a dead-end dismiss: offer the appropriate next action (Try again / Replace credentials)
+                alongside Close. Support-only / success outcomes carry their guidance in the message above. */}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <Button variant={valModal.actions.length ? "secondary" : undefined}
+                      onClick={() => setValModal({ open: false })}>Close</Button>
+              {valModal.actions.includes("replace") && (
+                <Button onClick={() => { setValModal({ open: false }); setReplaceOpen(true); }}>Replace credentials</Button>
+              )}
+              {valModal.actions.includes("retry") && (
+                <Button onClick={() => void runValidation(valModal.kind)}>Try again</Button>
+              )}
+            </div>
+          </div>
+        )}
+      </Dialog>
 
       <ReplaceCredentialsDialog open={replaceOpen} accountId={id} onClose={() => setReplaceOpen(false)} onReplaced={() => void load()} />
       <DisconnectDialog open={disconnectOpen} accountId={id} accountLabel={label} onClose={() => setDisconnectOpen(false)} onDisconnected={() => void load()} />

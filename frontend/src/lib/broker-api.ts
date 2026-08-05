@@ -33,6 +33,28 @@ export function retryValidation(id: number): Promise<ValidationAttempt> {
   return apiFetch<ValidationAttempt>(`${BASE}/${id}/broker/retry-validation/`, { method: "POST" });
 }
 
+/** Graceful reconnect after a transport failure. `run_broker_validation` COMMITS the attempt row (and the
+ * durable status) BEFORE the HTTP response is sent, so if the connection drops on the way back — a proxy
+ * read timeout, a browser network blip, a laptop lid — the validation may have completed successfully on
+ * the backend while the browser only saw "Failed to fetch". Best-effort: re-fetch the (newest-first)
+ * history a couple of times and return the newest attempt created AFTER `afterId` (ids are monotonic), so
+ * the customer sees the REAL completed result instead of a transport error. Returns null when nothing new
+ * appeared (e.g. the worker really died mid-validate before committing) — the caller then shows a safe
+ * transient message. */
+export async function recoverAttemptAfterTransportFailure(
+  id: number, afterId: number, opts: { tries?: number; delayMs?: number } = {},
+): Promise<ValidationAttempt | null> {
+  const tries = Math.max(1, opts.tries ?? 2);
+  const delayMs = opts.delayMs ?? 400;
+  for (let i = 0; i < tries; i++) {
+    const hist = await getValidationHistory(id).catch(() => [] as ValidationAttempt[]);
+    const fresh = hist.filter((a) => a.id > afterId).sort((a, b) => b.id - a.id)[0];
+    if (fresh) return fresh;
+    if (i < tries - 1) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return null;
+}
+
 export function replaceCredentials(
   id: number, password: string, revalidate = true,
 ): Promise<ReplaceCredentialsResult> {
