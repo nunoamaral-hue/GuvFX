@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { apiFetch } from "@/lib/api";
@@ -114,9 +115,9 @@ export function BrokerStep() {
       >
         <p style={{ color: "#b7c5dd", fontSize: "0.85rem", margin: 0 }}>
           Already have a broker account?{" "}
-          <a href="/accounts" style={{ color: "#4ab3ff", textDecoration: "none" }}>
+          <Link href="/accounts" style={{ color: "#4ab3ff", textDecoration: "none" }}>
             Connect it on the Accounts page
-          </a>{" "}
+          </Link>{" "}
           then return here to confirm below.
         </p>
       </div>

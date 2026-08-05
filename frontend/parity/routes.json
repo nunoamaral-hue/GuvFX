@@ -3,6 +3,7 @@
   "src/app/(app)/account/hosting/page.tsx",
   "src/app/(app)/account/invoices/page.tsx",
   "src/app/(app)/account/usage/page.tsx",
+  "src/app/(app)/accounts/[id]/page.tsx",
   "src/app/(app)/accounts/page.tsx",
   "src/app/(app)/admin/hosting/page.tsx",
   "src/app/(app)/admin/operations/entitlements/page.tsx",

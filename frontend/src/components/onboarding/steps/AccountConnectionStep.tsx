@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
@@ -257,9 +258,9 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
       {tone === "pending" && (
         <p style={{ color: "#b7c5dd", fontSize: "0.85rem", lineHeight: 1.6 }}>
           Haven’t added your account yet? Do it on the{" "}
-          <a href="/accounts" style={{ color: "#4ab3ff", textDecoration: "none" }}>
+          <Link href="/accounts" style={{ color: "#4ab3ff", textDecoration: "none" }}>
             Broker Accounts
-          </a>{" "}
+          </Link>{" "}
           page — setup starts automatically.
         </p>
       )}

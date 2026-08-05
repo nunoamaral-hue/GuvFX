@@ -6,12 +6,14 @@ import { t } from "@/lib/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { brokerConnectivityEnabled } from "@/lib/flags";
+import { SignalCopyReadiness } from "@/components/marketplace/SignalCopyReadiness";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────
-type MarketCategory = "Trend" | "Breakout" | "Reversion" | "Structure" | "Patterns" | "System-grade";
+type MarketCategory = "Trend" | "Breakout" | "Reversion" | "Patterns" | "System-grade";
 
 type Accent = "blue" | "green" | "purple" | "yellow" | "cyan";
 
@@ -206,12 +208,15 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
   },
   {
     id: "mp-010",
+    // NOTE: `name` is an internal codename shown to customers — a product/marketing rename is
+    // recommended (see product review WS-I) but deferred because the arm flow keys the created Strategy
+    // off this name; the `execution`/`summary` below are display-only and are made customer-safe here.
     name: "Wayond WIM Strategy",
     category: "System-grade",
     accent: "green",
     style: "Telegram signal copy",
-    execution: "Auto — demo (gated)",
-    summary: "Auto-copies TI Signals (Telegram) into demo trades: parse → broker-symbol check → per-TP legs. Human-gated arming; demo only.",
+    execution: "Automated · demo",
+    summary: "Automatically mirrors a curated Telegram signal provider into your demo account.",
     timeframes: ["M15"],
     pairs: ["XAUUSD"],
     tags: ["Signal copy", "Demo"],
@@ -269,12 +274,17 @@ export default function StrategyMarketplacePage() {
   // Fetch Accounts
   // ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!authChecked || !isAuthed) {
+    if (!authChecked) return;   // auth not resolved yet — stay in the loading state (don't flash "no account")
+    if (!isAuthed) {            // definitively unauthenticated — there are no accounts to load
       setLoadingAccounts(false);
       return;
     }
 
     const fetchAccounts = async () => {
+      // The pre-auth run of this effect already set loadingAccounts=false; mark it true again for the
+      // duration of the real fetch so the blocked-state guard (`!loadingAccounts && …`) never flashes a
+      // false "no account" while accounts are still loading.
+      setLoadingAccounts(true);
       try {
         // Try primary endpoint
         const data = await apiFetch<TradingAccount[]>("/api/trading/accounts/");
@@ -408,6 +418,14 @@ export default function StrategyMarketplacePage() {
         return;
       }
 
+      // WS-I: a plan/entitlement denial (403) must show plain guidance, never the raw backend slug
+      // (e.g. ENTITLEMENT_RESTRICTED) that apiFetch surfaces as the error message.
+      if (e?.status === 403 || msg.toUpperCase().includes("ENTITLEMENT")) {
+        setAlert(t(lang, "marketplace.alertPlanRestricted"));
+        setAlertType("error");
+        return;
+      }
+
       if (e?.status === 404 || msg.includes("404")) {
         setAlert(t(lang, "marketplace.alertEndpointNotFound"));
         setAlertType("error");
@@ -420,7 +438,8 @@ export default function StrategyMarketplacePage() {
         return;
       }
 
-      setAlert(msg || t(lang, "marketplace.alertAssignFailed"));
+      // WS-I: never dump a raw backend message/slug to the customer — fall back to generic safe copy.
+      setAlert(t(lang, "marketplace.alertAssignFailed"));
       setAlertType("error");
     } finally {
       setAssigning({ ...assigning, [strategyId]: false });
@@ -462,6 +481,15 @@ export default function StrategyMarketplacePage() {
         setAlert(t(lang, "marketplace.alertSessionExpired"));
         setAlertType("error");
         setIsAuthed(false);
+        return;
+      }
+      // WS-G: a still-armed ENABLE (resume) refused by the cohort gate is a PERMANENT denial — the
+      // safety-stop Disable stays allowed, but re-enabling needs approval. Say so plainly instead of
+      // the generic retriable "try again".
+      const slug = (err as { body?: { status?: string } })?.body?.status;
+      if (slug === "not_pilot_approved") {
+        setAlert(t(lang, "marketplace.armNotPilotApproved"));
+        setAlertType("error");
         return;
       }
       // Refetch the authoritative status so the card reflects reality (armed / ambiguous /
@@ -508,6 +536,12 @@ export default function StrategyMarketplacePage() {
       const slug = e?.body?.status;
       const key =
         slug === "arming_disabled" ? "marketplace.armDisabled"
+        // WS-G: permanent / attention denials must map to their OWN customer-safe copy, never the
+        // generic retriable "try again" — a default-deny cohort or a failed validation is not transient.
+        : slug === "not_pilot_approved" ? "marketplace.armNotPilotApproved"
+        : slug === "broker_validation_unhealthy" ? "marketplace.armValidationUnhealthy"
+        : slug === "runtime_paused" ? "marketplace.armPaused"
+        : slug === "duplicate_active_assignment" ? "marketplace.armDuplicate"
         : slug === "account_not_ready" ? "marketplace.armAccountNotReady"
         : slug === "credentials_missing" ? "marketplace.armCredentialsMissing"
         : slug === "runtime_not_ready" ? "marketplace.armRuntimeNotReady"
@@ -522,10 +556,6 @@ export default function StrategyMarketplacePage() {
     }
   };
 
-  const handlePreview = () => {
-    setAlert(t(lang, "marketplace.alertPreviewSoon"));
-    setAlertType("info");
-  };
 
   // ─────────────────────────────────────────────────────────────────────
   // Render
@@ -672,7 +702,7 @@ export default function StrategyMarketplacePage() {
           />
 
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-            {(["All", "Trend", "Breakout", "Reversion", "Structure", "Patterns", "System-grade"] as const).map((cat) => {
+            {(["All", "Trend", "Breakout", "Reversion", "Patterns", "System-grade"] as const).map((cat) => {
               const isActive = activeFilter === cat;
               const filterKey = `marketplace.filter${cat}` as const;
               return (
@@ -759,21 +789,6 @@ export default function StrategyMarketplacePage() {
                 <div style={{ fontSize: "0.8rem", color: "#cbd5e1" }}>{strategy.timeframes.join(", ")}</div>
               </div>
 
-              {/* ── Zone 3 — Preview metrics strip ── */}
-              <div
-                style={{
-                  padding: "0.45rem 0.75rem",
-                  borderRadius: 6,
-                  background: "rgba(100,116,139,0.08)",
-                  border: "1px solid rgba(100,116,139,0.15)",
-                  fontSize: "0.72rem",
-                  color: "#64748b",
-                  textAlign: "center",
-                  marginBottom: "0.75rem",
-                }}
-              >
-                Preview metrics unavailable
-              </div>
 
               {/* ── Zone 4 — Footer / Actions (bottom-anchored) ── */}
               <div style={{ marginTop: "auto" }}>
@@ -825,13 +840,12 @@ export default function StrategyMarketplacePage() {
                     const busy = !!copyBusy[strategy.id];
                     const arming = !!armBusy[strategy.id];
                     const selAcct = selectedAccount[strategy.id];
-                    // The self-service Enable-Trading (arm) affordance is available ONLY when the
-                    // broker-connectivity journey is intentionally enabled at build time — independent
-                    // of the backend BETA_SELF_SERVE_ARM_ENABLED flag, so a DARK build never surfaces a
-                    // live arming path. It is additionally gated on the selected account's runtime
-                    // readiness (the backend re-checks this authoritatively).
+                    // The self-service Enable-Trading (arm) button is surfaced ONLY when the broker-
+                    // connectivity journey is intentionally built (armUiEnabled) — independent of the
+                    // backend BETA_SELF_SERVE_ARM_ENABLED flag, so a DARK build never shows a live arm
+                    // control. The readiness PANEL (checklist + next action) always renders so the customer
+                    // understands where they are; can_arm from the backend gates the actual button.
                     const armUiEnabled = brokerConnectivityEnabled();
-                    const selReady = !!accounts.find((a) => a.id === Number(selAcct))?.runtime_ready;
                     // ON/badge state comes ONLY from the backend-confirmed status — never from a click.
                     const statusLabel = ambiguous
                       ? t(lang, "marketplace.copyAmbiguousShort")
@@ -867,94 +881,56 @@ export default function StrategyMarketplacePage() {
                           </span>
                         </div>
                         {armed ? (
-                          // Armed → the existing Enable/Disable toggle (resume/pause the copy).
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-                            <Button
-                              variant={enabled ? "secondary" : "primary"}
-                              onClick={() => handleSignalCopyToggle(strategy.id, !enabled)}
-                              disabled={!isAuthed || busy}
-                            >
-                              {busy
-                                ? t(lang, "marketplace.copyWorking")
-                                : enabled
-                                  ? t(lang, "marketplace.copyDisable")
-                                  : t(lang, "marketplace.copyEnable")}
-                            </Button>
-                            <Button variant="secondary" onClick={handlePreview}>
-                              {t(lang, "marketplace.preview")}
-                            </Button>
-                          </div>
-                        ) : armUiEnabled ? (
-                          // Not armed → IPR Area D: choose the demo account and Enable Trading (arm).
-                          // Rendered ONLY when the broker-connectivity journey is enabled at build
-                          // time (see `armUiEnabled`), so a DARK build never exposes a live arm path
-                          // regardless of the backend BETA_SELF_SERVE_ARM_ENABLED flag.
-                          <>
-                            <select
-                              value={selAcct || ""}
-                              onChange={(e) => {
-                                const nextVal = e.target.value ? Number(e.target.value) : "";
-                                setSelectedAccount({ ...selectedAccount, [strategy.id]: nextVal });
-                              }}
-                              disabled={loadingAccounts}
-                              style={{
-                                width: "100%",
-                                padding: "0.5rem",
-                                borderRadius: 8,
-                                border: "1px solid rgba(255,255,255,0.15)",
-                                background: "rgba(10,16,35,0.6)",
-                                color: "#e2e8f0",
-                                fontSize: "0.85rem",
-                              }}
-                            >
-                              <option value="">{t(lang, "marketplace.selectAccount")}</option>
-                              {accounts.map((acc) => (
-                                <option key={acc.id} value={acc.id}>
-                                  {acc.name}
-                                  {acc.is_demo === false ? " (live)" : ""}
-                                </option>
-                              ))}
-                            </select>
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-                              <Button
-                                variant="primary"
-                                onClick={() =>
-                                  selAcct && selReady
-                                    ? handleSignalCopyArm(strategy.id, Number(selAcct))
-                                    : undefined
-                                }
-                                // Additionally gated on the selected account's runtime readiness
-                                // (the backend re-checks it authoritatively and returns runtime_not_ready).
-                                disabled={!isAuthed || !selAcct || !selReady || arming}
-                              >
-                                {arming
-                                  ? t(lang, "marketplace.armWorking")
-                                  : t(lang, "marketplace.armEnableTrading")}
-                              </Button>
-                              <Button variant="secondary" onClick={handlePreview}>
-                                {t(lang, "marketplace.preview")}
-                              </Button>
-                            </div>
-                            <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
-                              {selAcct && !selReady
-                                ? t(lang, "marketplace.armRuntimeNotReady")
-                                : t(lang, "marketplace.armSelectAccountHint")}
-                            </p>
-                          </>
+                          // Armed → the Enable/Disable toggle (resume/pause the copy) — full width, no
+                          // dead Preview affordance.
+                          <Button
+                            variant={enabled ? "secondary" : "primary"}
+                            onClick={() => handleSignalCopyToggle(strategy.id, !enabled)}
+                            disabled={!isAuthed || busy}
+                          >
+                            {busy
+                              ? t(lang, "marketplace.copyWorking")
+                              : enabled
+                                ? t(lang, "marketplace.copyDisable")
+                                : t(lang, "marketplace.copyEnable")}
+                          </Button>
                         ) : (
-                          // DARK default (broker-connectivity journey not enabled at build time): NO
-                          // interactive arm affordance — the backend arm endpoint stays unreachable
-                          // from the UI. Passive "not armed" hint only.
-                          <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
-                            {t(lang, "marketplace.copyNotArmedHint")}
-                          </p>
+                          // Not armed → WS-D: the readiness panel replaces the opaque "not armed" hint.
+                          // It ALWAYS renders (customer sees exactly what's needed via a ✓/✕ checklist +
+                          // one next action), backed by the read-only readiness endpoint. The Enable-
+                          // Trading button inside it appears only when the broker-connectivity journey is
+                          // built (armUiEnabled) AND the backend reports can_arm — so a DARK build shows
+                          // the guidance but never a live arm control.
+                          <SignalCopyReadiness
+                            lang={lang}
+                            marketplaceStrategyId={strategy.id}
+                            accounts={accounts}
+                            selectedAccountId={selAcct}
+                            onSelectAccount={(v) =>
+                              setSelectedAccount({ ...selectedAccount, [strategy.id]: v })
+                            }
+                            armUiEnabled={armUiEnabled}
+                            isAuthed={isAuthed}
+                            arming={arming}
+                            onArm={(id) => handleSignalCopyArm(strategy.id, id)}
+                          />
                         )}
                       </div>
                     );
                   })()
+                ) : authChecked && isAuthed && !loadingAccounts && accounts.length === 0 ? (
+                  // BLOCKED (WS-G redesign): no account to assign into — shown ONLY once auth is resolved AND
+                  // the accounts fetch has completed empty, so we never flash a false "no account" during the
+                  // pre-auth window or the fetch. Say exactly what's missing and the next action, instead of a
+                  // silently-disabled Assign button with no explanation.
+                  <div style={{ fontSize: "0.72rem", color: "#94a3b8" }}>
+                    <p style={{ margin: "0 0 6px" }}>{t(lang, "marketplace.assignNeedsAccount")}</p>
+                    <Link href="/accounts" style={{ color: "#93c5fd", textDecoration: "none" }}>
+                      {t(lang, "marketplace.readinessAddAccount")} →
+                    </Link>
+                  </div>
                 ) : (
-                <>
-                {/* CTA — two-line: dropdown full-width, then buttons */}
+                // CTA — dropdown full-width, then a single Assign action (no dead Preview).
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                   <select
                     value={selectedAccount[strategy.id] || ""}
@@ -993,20 +969,19 @@ export default function StrategyMarketplacePage() {
                       </option>
                     ))}
                   </select>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-                    <Button
-                      variant="primary"
-                      onClick={() => handleAssign(strategy.id)}
-                      disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
-                    >
-                      {assigning[strategy.id] ? t(lang, "marketplace.assigning") : t(lang, "marketplace.assign")}
-                    </Button>
-                    <Button variant="secondary" onClick={handlePreview}>
-                      {t(lang, "marketplace.preview")}
-                    </Button>
-                  </div>
+                  <Button
+                    variant="primary"
+                    onClick={() => handleAssign(strategy.id)}
+                    disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
+                  >
+                    {assigning[strategy.id] ? t(lang, "marketplace.assigning") : t(lang, "marketplace.assign")}
+                  </Button>
+                  {!selectedAccount[strategy.id] && (
+                    <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
+                      {t(lang, "marketplace.assignSelectAccountHint")}
+                    </p>
+                  )}
                 </div>
-                </>
                 )}
               </div>
             </div>

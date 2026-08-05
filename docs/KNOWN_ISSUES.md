@@ -2,6 +2,32 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 DEFERRED (2026-08-05) — Customer-journey product items NOT changed in the consolidation packet
+
+Recorded from the journey review (`docs/product/beta-journey-consolidation.md` §5–7). These are product /
+marketing decisions or larger refactors, deliberately left for a Sponsor-owned follow-up rather than changed
+in the DARK consolidation:
+
+- **Optimistic RUNNING vs strict `runtime_ready` divergence.** `account_status.rt_running` /
+  `resolve_setup_stage` render "terminal available / ready" on `state==RUNNING` alone, while the marketplace
+  (and the new readiness endpoint) use the strict `account_runtime_ready` predicate (RUNNING + fresh heartbeat
+  + verification report). A RUNNING-but-stale runtime can read "ready" on the account page yet be blocked at
+  arm. **Left optimistic on purpose** (tightening broke existing tests + strands the RUNNING-before-first-
+  report window); the arm gate is the authority. Recommended follow-up: converge both surfaces on
+  `account_runtime_ready`.
+- **Seed strategy identity leaks** (`mp-010` name "Wayond WIM Strategy"; tags/authors Ali / ALTS / SCE / TBP /
+  TC1). Customer-facing names need curation; `mp-010`'s name is coupled to the arm flow (it keys the created
+  `Strategy`), so a rename needs a coordinated migration + Sponsor sign-off.
+- **Marketplace — Timeframes rendered twice per card** (cosmetic). The Preview no-op button, the hardcoded
+  "Preview metrics unavailable" strip, and the empty "Structure" category filter were **REMOVED 2026-08-05**
+  (Sponsor-directed), and every blocked state now explains what's missing + the next action.
+- **Navigation — partially closed 2026-08-05** (Sponsor-directed). DONE: the ordered "Get started" story
+  (Broker Accounts → Marketplace → Live Trading), destination de-duplication, and the single "Broker Accounts"
+  label/page-H1 alignment. Still open: no top-level Home/Dashboard entry; "Live Trading" page copy is demo-only
+  but named as live; "Terminal Access" empty state has no CTA.
+- **Onboarding gate**: email verification is genuine for every user (ADR-0021 retired the beta auto-flip); if
+  SMTP is not configured for the pilot cohort a tester can be stranded. Environment/Sponsor decision.
+
 ## 🟠 ACTIVE (2026-08-01) — Customer Zero slot-2 orphan + deferred provisioning hardening
 
 - **Orphaned slot-2 occupancy (Sponsor-gated cleanup).** After the CZ MATERIALISE incident the agent slot store
