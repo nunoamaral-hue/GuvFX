@@ -48,6 +48,7 @@ def _client(user):
 
 
 @override_settings(**BASE)
+@mock.patch("strategies.views._arm_cohort_approved", new=lambda user: True)
 class ArmGateTests(TestCase):
     def setUp(self):
         self.user = _admitted("g1")
@@ -75,10 +76,11 @@ class ArmGateTests(TestCase):
         other = _demo_acct(_admitted("g2"), "G2")
         self.assertEqual(self._post(account_id=other.id).status_code, 404)
 
-    def test_plain_user_can_arm_admission_removed(self):
-        # ADR-0021 removed per-user admission from Enable Trading: a plain (non-allowlisted) owner whose
-        # owned runtime is ready can arm — governed by ownership + validation + runtime-ready, NOT
-        # membership. (Arming only creates authority; nothing fires until the Class-B master levers.)
+    def test_owner_with_ready_runtime_can_arm(self):
+        # An owner whose account is demo+active with a ready runtime can arm the DOWNSTREAM path.
+        # NOTE: the fail-closed approved-cohort gate (Sponsor 2026-08-05) is the real authorisation
+        # boundary and is mocked approved for this class; its refusal path is proven in
+        # tests_arm_containment.py. This test covers ownership + readiness only.
         plain = User.objects.create_user(username="plain", email="plain@x.invalid", password="x")
         acct = _demo_acct(plain, "PL1")
         with mock.patch(READY[0], return_value=(True, "ready")):
@@ -110,6 +112,7 @@ class ArmGateTests(TestCase):
 
 
 @override_settings(**BASE)
+@mock.patch("strategies.views._arm_cohort_approved", new=lambda user: True)
 class ArmSuccessTests(TestCase):
     def setUp(self):
         self.user = _admitted("s1")
@@ -157,6 +160,7 @@ class ArmSuccessTests(TestCase):
 
 
 @override_settings(**BASE)
+@mock.patch("strategies.views._arm_cohort_approved", new=lambda user: True)
 class ArmSingleTenantProtectionTests(TestCase):
     def setUp(self):
         self.user = _admitted("t1")
@@ -209,6 +213,7 @@ class ArmSingleTenantProtectionTests(TestCase):
 
 
 @override_settings(**BASE)
+@mock.patch("strategies.views._arm_cohort_approved", new=lambda user: True)
 class ToggleResumeSingleTenantTests(TestCase):
     """The resume (enable) path must ALSO refuse to activate a 2nd routable arm on a source while
     fan-out is OFF — source-global, not owner-scoped (a non-staff user could otherwise resume theirs

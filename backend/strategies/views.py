@@ -404,6 +404,87 @@ def _account_execution_ready(account):
     return True, "ready"
 
 
+def _arm_cohort_approved(user) -> bool:
+    """CONTAINMENT (Sponsor 2026-08-05) — fail-closed internal-pilot ARM approval.
+
+    Even while ``BETA_SELF_SERVE_ARM_ENABLED`` is ON globally, ONLY an explicitly-approved
+    internal-pilot identity may arm. Approval is a DEDICATED allowlist
+    (``INTERNAL_PILOT_ARM_APPROVED_EMAILS``; Django setting wins, else env var), **DEFAULT EMPTY = deny
+    everyone**. It is deliberately DISTINCT from the ``BetaTester`` onboarding-admission allowlist, so
+    Customer Zero — an admitted ``BetaTester`` — is NOT implicitly arm-approved. There is NO staff
+    bypass. Frontend visibility is never an authorisation boundary; this is the boundary. Supersedes the
+    ADR-0021 "no admission" note for the arm path specifically (documented in ADR-0029/0031 handoff).
+    """
+    import os
+    email = (getattr(user, "email", "") or "").strip().lower()
+    if not email:
+        return False
+    raw = getattr(settings, "INTERNAL_PILOT_ARM_APPROVED_EMAILS", None)
+    if raw is None:
+        raw = os.getenv("INTERNAL_PILOT_ARM_APPROVED_EMAILS", "")
+    approved = {e.strip().lower() for e in str(raw).split(",") if e.strip()}
+    return email in approved
+
+
+def _arm_extra_containment(account, source):
+    """Additional fail-closed arm gates (Sponsor 2026-08-05). Returns a ``(reason_code, detail)`` refusal
+    or ``None``. Ownership / demo+active / credentials / runtime-ready are enforced by the caller; these
+    add: broker validation not KNOWN-BAD; no active broker-health runtime pause; no duplicate active
+    armed assignment on a DIFFERENT source (idempotent re-arm of the same source is allowed). Each probe
+    fails closed — an error never opens the gate."""
+    from trading.models import TradingAccount
+    if account.validation_status in (
+            TradingAccount.ValidationStatus.CONNECTION_FAILED,
+            TradingAccount.ValidationStatus.TECHNICAL_ERROR):
+        return ("broker_validation_unhealthy",
+                "Validate your broker connection before enabling trading.")
+    try:
+        from reliability.models import BrokerAccountHealth
+        h = BrokerAccountHealth.objects.filter(account=account).first()
+        if h is not None and h.state != BrokerAccountHealth.State.HEALTHY:
+            return ("broker_validation_unhealthy",
+                    "Your broker connection needs attention before you can enable trading.")
+    except Exception:  # noqa: BLE001 — a health-probe error must never open the gate
+        logger.warning("arm containment: broker-health probe failed for account=%s",
+                       getattr(account, "id", None), exc_info=True)
+    try:
+        from execution.models import BrokerRuntimePause
+        if BrokerRuntimePause.objects.filter(account=account, paused=True).exists():
+            return ("runtime_paused",
+                    "Trading is paused for this account. It will resume once the account is healthy.")
+    except Exception:  # noqa: BLE001
+        logger.warning("arm containment: runtime-pause probe failed for account=%s",
+                       getattr(account, "id", None), exc_info=True)
+    dup = (StrategyAssignment.objects
+           .filter(account=account, execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+                   stage=StrategyAssignment.STAGE_LIVE, is_active=True)
+           .exclude(signal_source=source).exists())
+    if dup:
+        return ("duplicate_active_assignment",
+                "This account already has trading enabled for another signal.")
+    return None
+
+
+def _audit_arm(request, *, account, reason_code, approved):
+    """Durable audit (always) + operational event (DARK-safe, fail-open) for an arm attempt/refusal."""
+    from core.audit import log_event
+    log_event(request,
+              event_type=("SIGNAL_COPY_ARMED" if approved else "SIGNAL_COPY_ARM_REFUSED"),
+              severity=("INFO" if approved else "WARN"),
+              entity_type="account", entity_id=getattr(account, "id", None),
+              metadata={"reason_code": reason_code, "outcome": ("armed" if approved else "refused")})
+    try:
+        from operational_events.events import record_event
+        record_event(category="EXECUTION", event_type="signal_copy_arm",
+                     severity=("INFO" if approved else "WARNING"), account=account,
+                     reason_code=reason_code, status=("armed" if approved else "refused"),
+                     summary=("Self-service trading enabled" if approved
+                              else "Self-service arm refused"),
+                     actor=str(getattr(getattr(request, "user", None), "email", "") or ""))
+    except Exception:  # noqa: BLE001 — operational-event recording is best-effort/fail-open
+        pass
+
+
 class StrategyViewSet(viewsets.ModelViewSet):
     queryset = Strategy.objects.all()
     serializer_class = StrategySerializer
@@ -1057,6 +1138,17 @@ class StrategyViewSet(viewsets.ModelViewSet):
                  "detail": "Self-service Enable Trading is not enabled for this environment."},
                 status=status.HTTP_409_CONFLICT)
 
+        # CONTAINMENT (Sponsor 2026-08-05): fail-closed approved-cohort gate. Even while the global
+        # arm flag is ON, ONLY an explicitly-approved internal-pilot identity may arm — default deny,
+        # no staff bypass, Customer Zero not implicitly approved. This is the authorisation boundary;
+        # the frontend flag-gate is only visibility. Checked BEFORE any account/strategy probe.
+        if not _arm_cohort_approved(request.user):
+            _audit_arm(request, account=None, reason_code="not_pilot_approved", approved=False)
+            return Response(
+                {"status": "not_pilot_approved",
+                 "detail": "Self-service trading isn't available for your account yet. Please contact support."},
+                status=status.HTTP_403_FORBIDDEN)
+
         tpl, source = self._signal_copy_source(marketplace_strategy_id)
         if not tpl:
             return Response({"detail": "Unknown marketplace_strategy_id"}, status=status.HTTP_400_BAD_REQUEST)
@@ -1090,8 +1182,17 @@ class StrategyViewSet(viewsets.ModelViewSet):
         # Technical readiness of the OWNED runtime.
         ready, why = _account_execution_ready(account)
         if not ready:
+            _audit_arm(request, account=account, reason_code=why, approved=False)
             return Response({"status": why, "detail": "Account runtime is not ready to trade yet."},
                             status=status.HTTP_409_CONFLICT)
+
+        # CONTAINMENT extra gates: broker validation not KNOWN-BAD, no active runtime pause, no
+        # duplicate active armed assignment on another source. Fail-closed.
+        extra = _arm_extra_containment(account, source)
+        if extra:
+            reason_code, detail = extra
+            _audit_arm(request, account=account, reason_code=reason_code, approved=False)
+            return Response({"status": reason_code, "detail": detail}, status=status.HTTP_409_CONFLICT)
 
         # Single-tenant protection + arm, in ONE transaction serialized per-source (advisory lock) so
         # the sibling check and the create are ATOMIC (no TOCTOU, H-1) and a PAUSED incumbent is never
@@ -1143,6 +1244,7 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT)
 
         log_assignment_created(request, assignment)
+        _audit_arm(request, account=account, reason_code="armed", approved=True)
         return Response({
             "status": "armed", "marketplace_strategy_id": marketplace_strategy_id,
             "signal_source": source, "assignment_id": assignment.id, "account_id": account.id,
@@ -1185,6 +1287,16 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 "status": "disabled", "marketplace_strategy_id": marketplace_strategy_id,
                 "signal_source": source, "paused_count": paused, "enabled": False,
             })
+
+        # CONTAINMENT (Sponsor 2026-08-05): ENABLE (resume) re-grants active trading authority, so it
+        # is gated by the same fail-closed approved-cohort check as arm — default deny, no staff bypass.
+        # DISABLE above is always allowed (a safety stop is never gated).
+        if not _arm_cohort_approved(request.user):
+            _audit_arm(request, account=None, reason_code="not_pilot_approved", approved=False)
+            return Response(
+                {"status": "not_pilot_approved",
+                 "detail": "Self-service trading isn't available for your account yet. Please contact support."},
+                status=status.HTTP_403_FORBIDDEN)
 
         # ENABLE (resume) is conservative — refuse to arm into an ambiguous config the router
         # would itself fail closed on, and never activate onto an inactive account.

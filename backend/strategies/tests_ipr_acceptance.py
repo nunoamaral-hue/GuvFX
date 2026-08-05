@@ -29,7 +29,10 @@ ARM_URL = "/api/strategies/strategies/signal-copy/arm/"
 TOGGLE_URL = "/api/strategies/strategies/signal-copy/toggle/"
 
 # BETA_RUNTIMES_ENABLED is needed to build a ready runtime; the arm flag stays OFF until the DARK step.
-BASE = dict(BETA_RUNTIMES_ENABLED=True, BETA_MAX_TESTERS=1000)
+# The pilot user is on the approved-cohort allowlist (Sponsor 2026-08-05 containment) so the flag-ON
+# arm step can reach the arm service; the DARK step (flag OFF) refuses before the cohort check anyway.
+BASE = dict(BETA_RUNTIMES_ENABLED=True, BETA_MAX_TESTERS=1000,
+            INTERNAL_PILOT_ARM_APPROVED_EMAILS="pilot@x.invalid")
 
 
 @override_settings(**BASE)
