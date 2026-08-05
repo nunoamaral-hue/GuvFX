@@ -219,10 +219,10 @@ function PostOnboardingSetupPanel() {
     return (
       <Card style={{ borderColor: "rgba(34, 197, 94, 0.35)" }}>
         <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: "0 0 0.4rem" }}>
-          Your dedicated runtime is ready
+          Your account is ready
         </h2>
         <p style={{ color: "#86efac", fontSize: "0.9rem", lineHeight: 1.6, margin: "0 0 1rem" }}>
-          Your trading terminal is up. Choose a strategy to continue.
+          Your broker connection is set up. Choose a strategy to continue.
         </p>
         <Button type="button" onClick={() => router.push("/strategies/marketplace")}>
           Choose a strategy
@@ -510,7 +510,8 @@ function AccountsContent() {
       });
 
       if (!res.ok) {
-        throw new Error("Windows agent/backend error while validating MT5 login.");
+        // WS-I: customer-safe — no "Windows agent"/"backend" runtime terminology in the shown error.
+        throw new Error("We couldn't verify your broker login. Please check your details and try again.");
       }
 
       if (!res.valid) {

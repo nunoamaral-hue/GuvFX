@@ -207,12 +207,15 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
   },
   {
     id: "mp-010",
+    // NOTE: `name` is an internal codename shown to customers — a product/marketing rename is
+    // recommended (see product review WS-I) but deferred because the arm flow keys the created Strategy
+    // off this name; the `execution`/`summary` below are display-only and are made customer-safe here.
     name: "Wayond WIM Strategy",
     category: "System-grade",
     accent: "green",
     style: "Telegram signal copy",
-    execution: "Auto — demo (gated)",
-    summary: "Auto-copies TI Signals (Telegram) into demo trades: parse → broker-symbol check → per-TP legs. Human-gated arming; demo only.",
+    execution: "Automated · demo",
+    summary: "Automatically mirrors a curated Telegram signal provider into your demo account.",
     timeframes: ["M15"],
     pairs: ["XAUUSD"],
     tags: ["Signal copy", "Demo"],
@@ -409,6 +412,14 @@ export default function StrategyMarketplacePage() {
         return;
       }
 
+      // WS-I: a plan/entitlement denial (403) must show plain guidance, never the raw backend slug
+      // (e.g. ENTITLEMENT_RESTRICTED) that apiFetch surfaces as the error message.
+      if (e?.status === 403 || msg.toUpperCase().includes("ENTITLEMENT")) {
+        setAlert(t(lang, "marketplace.alertPlanRestricted"));
+        setAlertType("error");
+        return;
+      }
+
       if (e?.status === 404 || msg.includes("404")) {
         setAlert(t(lang, "marketplace.alertEndpointNotFound"));
         setAlertType("error");
@@ -421,7 +432,8 @@ export default function StrategyMarketplacePage() {
         return;
       }
 
-      setAlert(msg || t(lang, "marketplace.alertAssignFailed"));
+      // WS-I: never dump a raw backend message/slug to the customer — fall back to generic safe copy.
+      setAlert(t(lang, "marketplace.alertAssignFailed"));
       setAlertType("error");
     } finally {
       setAssigning({ ...assigning, [strategyId]: false });

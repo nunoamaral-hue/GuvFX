@@ -341,9 +341,9 @@ const dictionary: Dictionary = {
   // Accounts - Messages
   // -----------------------------------------------------------------------------
   "accounts.failedToLoad": { en: "Failed to load trading accounts", ja: "取引口座の読み込みに失敗しました" },
-  "accounts.accountAdded": { en: "✅ Account added / MT5 login successful.", ja: "✅ 口座追加 / MT5ログイン成功" },
-  "accounts.testSuccess": { en: "✅ MT5 session matches this account (EA validation OK).", ja: "✅ MT5セッションがこの口座と一致（EA検証OK）" },
-  "accounts.testFailed": { en: "❌ Not matched:", ja: "❌ 不一致:" },
+  "accounts.accountAdded": { en: "Account connected successfully.", ja: "口座を接続しました。" },
+  "accounts.testSuccess": { en: "Connection verified.", ja: "接続を確認しました。" },
+  "accounts.testFailed": { en: "Connection not verified:", ja: "接続を確認できませんでした:" },
   "accounts.setActive": { en: "Account set to ACTIVE.", ja: "口座を有効に設定しました。" },
   "accounts.setInactive": { en: "Account set to INACTIVE.", ja: "口座を無効に設定しました。" },
   "accounts.failedActiveStatus": { en: "Failed to change active status", ja: "有効/無効の切り替えに失敗しました" },
@@ -1120,16 +1120,20 @@ const dictionary: Dictionary = {
     ja: "セッションが切れました。再ログインしてください。",
   },
   "marketplace.alertEndpointNotFound": {
-    en: "Assign endpoint not found. The server may not yet support this feature.",
-    ja: "割当エンドポイントが見つかりません。サーバーがこの機能に未対応の可能性があります。",
+    en: "We couldn't add this template right now. Please try again shortly.",
+    ja: "現在このテンプレートを追加できませんでした。しばらくしてから再度お試しください。",
   },
   "marketplace.alertUnexpectedResponse": {
-    en: "Assignment failed (unexpected server response). Please refresh and try again.",
-    ja: "割り当てに失敗しました（予期しないサーバー応答）。ページを更新して再度お試しください。",
+    en: "We couldn't add this template right now. Please refresh and try again.",
+    ja: "現在このテンプレートを追加できませんでした。ページを更新して再度お試しください。",
   },
   "marketplace.alertAssignFailed": {
-    en: "Assignment failed.",
-    ja: "割り当てに失敗しました。",
+    en: "We couldn't add this template. Please try again.",
+    ja: "このテンプレートを追加できませんでした。もう一度お試しください。",
+  },
+  "marketplace.alertPlanRestricted": {
+    en: "Your plan doesn't include assigning strategies. Upgrade your plan to continue.",
+    ja: "現在のプランには戦略の割り当てが含まれていません。続行するにはプランをアップグレードしてください。",
   },
   "marketplace.alertPreviewSoon": {
     en: "Preview coming soon.",
