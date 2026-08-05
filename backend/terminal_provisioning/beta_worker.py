@@ -15,7 +15,8 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .beta_capacity import beta_runtimes_enabled
-from .mgmt_client import AgentWindowsProvisioner, ManagementChannelError, ManagementChannelTimeout
+from .mgmt_client import (
+    AgentWindowsProvisioner, ManagementChannelError, ManagementChannelTimeout, ManagementChannelUnreachable)
 from .models import AccountRuntime, ProvisioningJob
 from .provisioner import advance_provisioning_job
 
@@ -121,9 +122,23 @@ def make_http_transport(timeout: int = DEFAULT_TRANSPORT_TIMEOUT):
         url = base_url.rstrip("/") + "/provision"
         op = req.get("operation", "") if isinstance(req, dict) else ""
         read_timeout = _op_read_timeout(op, default=timeout)
+        # INVARIANT (adversarial review 2026-08-05): this MUST stay a SINGLE-attempt request (bare
+        # ``requests.post`` → default adapter ``Retry(total=0)``). The "a ConnectTimeout means nothing
+        # downstream ran" guarantee below depends on it — with a retrying adapter, one attempt could connect,
+        # deliver the op, run it, and a LATER attempt could still surface a terminal ConnectTimeout, breaking
+        # the validation_agent_unreachable = "never sent" contract. Do NOT mount a retrying HTTPAdapter here.
         try:
             resp = requests.post(url, json=req, timeout=(CONNECT_TIMEOUT, read_timeout))
+        except requests.ConnectTimeout:
+            # CONNECT phase timed out: NO TCP session to the agent was established, so the request was never
+            # sent and nothing downstream ran. This is positive evidence of unreachability, NOT ambiguity —
+            # raise the specific ``ManagementChannelUnreachable`` (a ManagementChannelTimeout subclass, so
+            # provisioning handlers are unchanged). Must be caught BEFORE ``requests.Timeout`` (ConnectTimeout
+            # is a subclass of Timeout).
+            raise ManagementChannelUnreachable()
         except requests.Timeout:
+            # A READ timeout (connect succeeded, agent accepted the request, no response body in time) — the
+            # only genuinely AMBIGUOUS case (the op may or may not have executed). Keep ManagementChannelTimeout.
             raise ManagementChannelTimeout()
         except requests.RequestException:
             raise ManagementChannelError("transport_error")

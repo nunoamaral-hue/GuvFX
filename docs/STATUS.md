@@ -14,6 +14,26 @@
 
 ## Execution workstream log
 
+- **2026-08-05 — Validation transport-timeout taxonomy (connect vs read; kill the `login_timeout` mislabel). Repo eng; NOT deployed. 🟢**
+  Branch `fix/transport-timeout-taxonomy` (base `main` `ba22df8`). **Forensic root cause (primary evidence, read-only):**
+  account #13's latest `login_timeout` (correlation `validate-acct-13-d4079267879e`) failed at the **backend→agent
+  TCP connect** — decrypt audit 21:09:58.577 → attempt 21:10:08.602 = **10.02s** = the `CONNECT_TIMEOUT=10`;
+  reproduced live (backend socket connect to the configured agent `100.79.101.19:8791` fails with TimeoutError in
+  10.02s; `:8788` open, `:8791`/`:8787` closed). MT5 was never invoked, the broker never contacted. **Defect:**
+  `beta_worker.make_http_transport` collapsed `requests.ConnectTimeout` + `requests.ReadTimeout` into one
+  `ManagementChannelTimeout` → `broker_login_validation` mapped it to `login_timeout`. **Fix (repo, DARK):** split —
+  connect → new `ManagementChannelUnreachable` (a `ManagementChannelTimeout` subclass so provisioning/reclaim are
+  unchanged) → `validation_agent_unreachable`; read → `ManagementChannelTimeout` → `validation_agent_timeout`;
+  `login_timeout` reserved for a genuine agent/MT5 login-phase timeout (timeline now places it at `mt5_launched`,
+  fail at `broker_login`). New taxonomy in `_TAXONOMY` + `_NON_AUTHORITATIVE_REASONS` + timeline `_REASON_FURTHEST_OK`
+  (unreachable → fail at agent_received, never implies MT5 launched; timeout → agent reached, MT5 unknown) +
+  customer wording (names neither broker/login/server) + operator hint ("Transport failed BEFORE the validation
+  agent"). Docs: **Transport timeout taxonomy** (layer diagram) in `VALIDATION_OBSERVABILITY.md`; evidence rows 12–13
+  in `VALIDATION_RELIABILITY_EVIDENCE_MATRIX.md`. Tests: connect→unreachable / read→timeout / neither→login_timeout;
+  timeline stops before MT5; customer wording never says broker. Adversarial review (WS-I) could not overturn the
+  taxonomy. make check green. NOT deployed; no Windows-host change; no env change (the `:8791` port fix is an
+  operator action, flagged as evidence only); #12/#1 untouched.
+
 - **2026-08-05 — Validation Reliability PHASE 4 (repository completion + terminology + honesty hardening). Repo eng; NOT deployed. 🟢**
   Same branch/PR #289. Sponsor-approved audit + adversarial review (9-agent workflow). **OPTION C UPHELD** — an
   adversarial lens mandated to overturn it on evidence alone could not: Option A is disconfirmed (2× `-10004` on

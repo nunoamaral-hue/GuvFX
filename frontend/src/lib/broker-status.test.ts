@@ -105,6 +105,31 @@ describe("Phase-4 WS-C — reliability terminology (broker vs validation-infra d
       expect(reasonShort(c)).not.toMatch(/broker/i);
     }
   });
+  it("transport-layer timeouts name NEITHER broker, login, nor server (nothing reached that stage)", () => {
+    // WS-C (2026-08-05): validation_agent_unreachable (connect) / validation_agent_timeout (read) never
+    // reached the broker or a login, so the customer wording must not mention broker/login/server.
+    const unreach = reasonMessage("validation_agent_unreachable");
+    const atimeout = reasonMessage("validation_agent_timeout");
+    expect(unreach).toMatch(/couldn't be reached/i);
+    expect(atimeout).toMatch(/took too long to respond/i);
+    for (const msg of [unreach, atimeout]) {
+      expect(msg).not.toMatch(/broker/i);
+      expect(msg).not.toMatch(/\blogin\b/i);
+      expect(msg).not.toMatch(/\bserver\b/i);
+      expect(msg).toMatch(/weren't rejected/i);            // reassure: details not the problem
+    }
+    // distinct short outcomes, not the generic fallback
+    expect(reasonShort("validation_agent_unreachable")).toMatch(/unreachable/i);
+    expect(reasonShort("validation_agent_timeout")).toMatch(/didn't respond/i);
+    for (const c of ["validation_agent_unreachable", "validation_agent_timeout"]) {
+      expect(reasonShort(c)).not.toMatch(/couldn't complete the check/i);
+      expect(reasonShort(c)).not.toMatch(/broker/i);
+    }
+    // transient → a retry is offered (consistent with the rest of the *_unavailable family)
+    expect(validationActions("validation_agent_unreachable")).toEqual(["retry"]);
+    expect(validationActions("validation_agent_timeout")).toEqual(["retry"]);
+  });
+
   it("only genuinely broker-reached reasons mention the broker being unavailable", () => {
     // server_unavailable is preserved ONLY for broker-reached evidence — it MAY mention the broker.
     expect(reasonMessage("server_unavailable")).toMatch(/broker server is temporarily unavailable/i);

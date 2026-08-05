@@ -74,6 +74,59 @@ icon, time, concise outcome, customer-safe summary — with a **correlation-id c
 `OperationalEvent` (WP5.2 projection) for the correlation id — read-only, no host access. Fine-grained
 agent-internal per-stage timings still require the (gated) agent-forward change described above.
 
+## Transport timeout taxonomy (2026-08-05)
+
+A timeout can occur at several layers, and each has a DIFFERENT meaning. The layers, and which timeout /
+reason belongs to each:
+
+```
+Browser
+  │  (browser → backend HTTP; a failure HERE is client/network — shown as a network error, never persisted)
+  ▼
+Backend  ── requests.post(timeout=(connect=10s, read=175s for VALIDATE_LOGIN))
+  │        ├─ CONNECT timeout (~10s): TCP session never opened → request NEVER SENT
+  │        │      → ManagementChannelUnreachable → reason = validation_agent_unreachable
+  │        └─ READ timeout (~175s): connection accepted, no response body in time (op status UNKNOWN)
+  │               → ManagementChannelTimeout     → reason = validation_agent_timeout
+  ▼
+Validation agent  (single-flight lock; delegates to the GUI-capable runner)
+  │        ├─ another check holds the lock            → validation_busy
+  │        ├─ runner task won't launch                → validation_runner_unavailable
+  │        └─ runner launched, no result in time      → validation_runner_timeout
+  ▼
+MT5  ── initialize(login,server,timeout≤120s): local IPC + terminal + broker connect + authorise
+  │        ├─ local Python↔terminal IPC never up (-10004 / -10005) → validation_ipc_unavailable
+  │        └─ MT5 reported a login-phase timeout                   → login_timeout  ◀ the ONLY legit login_timeout
+  ▼
+Broker
+           ├─ reached, credential rejected  → invalid_password / invalid_login / account_disabled / server_not_found
+           └─ reached, server unavailable   → server_unavailable
+```
+
+| Layer | Timeout | Reason code | Evidence of a login attempt? |
+|---|---|---|---|
+| Browser → Backend | client/network | (network error — not a validation reason) | no |
+| Backend → Agent (connect) | ~10s (`CONNECT_TIMEOUT`) | `validation_agent_unreachable` | **no — request never sent** |
+| Backend → Agent (read) | ~175s (VALIDATE_LOGIN read budget) | `validation_agent_timeout` | no — MT5 status unknown |
+| Agent → MT5 (login) | ~120s (MT5 login window) | `login_timeout` (MT5-reported) | **yes — MT5 reached the login phase** |
+| MT5 → Broker | broker-side | `server_unavailable` | yes — broker reached |
+
+**Root cause of the reclassification (2026-08-05).** Account #13's `login_timeout` (correlation
+`validate-acct-13-d4079267879e`, elapsed ≈10.0s) was a **backend→agent CONNECT timeout** to a down agent
+port — the request never left the backend, MT5 was never invoked, the broker was never contacted. The
+backend collapsed `requests.ConnectTimeout` and `requests.ReadTimeout` into one `ManagementChannelTimeout` →
+`login_timeout`. They are now split: connect → `validation_agent_unreachable`, read → `validation_agent_timeout`,
+and `login_timeout` is reserved for a genuine MT5-reported login-phase timeout.
+
+**Known limitation — historical (pre-fix) `login_timeout` rows.** `reason_code` is immutable raw evidence
+(`.claude/rules/data.md`), so pre-fix rows that persisted a *transport connect timeout* as `login_timeout`
+(including account #13's `validate-acct-13-d4079267879e`) are NOT rewritten. Under the go-forward timeline
+mapping (`login_timeout` → `mt5_launched`) those historical rows now render as if MT5 was launched — wrong for
+that attempt, which was a connect timeout. This is a data artefact of the old classifier, not a code defect;
+**going forward** a connect timeout persists `validation_agent_unreachable` (MT5 never implied). When triaging a
+**pre-2026-08-05** `login_timeout`, check the elapsed: ~10 s (≈ the connect budget) is the old connect-timeout
+mislabel, not an MT5 login timeout.
+
 ## Per-stage fidelity audit (Phase-4 WS-B — derived vs directly evidenced)
 
 Be explicit about which stages are **directly evidenced** by a durable record and which are **derived** from

@@ -59,13 +59,23 @@ _REASON_FURTHEST_OK = {
     # Explicit (not the default) so the mapping is deliberate and cannot drift: fail at mt5_launched, broker
     # NOT reached (Phase-4 WS-B).
     "validation_busy": _STAGE_INDEX["agent_received"],
-    # TRANSPORT ambiguity (review WS-P2): login_timeout AND bridge_unavailable both come from the SAME
-    # backend transport(base,req) call — a no-response timeout (possibly a bare connect timeout) can NEVER
-    # confirm the agent received the request, so both stop conservatively at request_signed (fail at
-    # agent_received). Never claim the agent/broker was reached from a black-box transport failure.
-    "login_timeout": _STAGE_INDEX["request_signed"], "bridge_unavailable": _STAGE_INDEX["request_signed"],
+    # TRANSPORT layer (2026-08-05, WS-D) — three DISTINCT stops, no longer collapsed:
+    #   * validation_agent_unreachable = CONNECT timeout: the request was NEVER SENT. The agent was NOT reached
+    #     → fail at agent_received (furthest = request_signed). Timeline must never imply MT5 launched.
+    #   * validation_agent_timeout     = READ timeout: the agent ACCEPTED the connection (request sent) but did
+    #     not answer → the agent WAS reached; MT5 status unknown → fail at mt5_launched (furthest = agent_received).
+    #   * bridge_unavailable           = a non-timeout transport error (connection refused/reset/DNS): the agent
+    #     was NOT reached → fail at agent_received (furthest = request_signed), same region as unreachable.
+    "validation_agent_unreachable": _STAGE_INDEX["request_signed"],
+    "validation_agent_timeout": _STAGE_INDEX["agent_received"],
+    "bridge_unavailable": _STAGE_INDEX["request_signed"],
     "validation_runner_unavailable": _STAGE_INDEX["request_signed"],
     "validation_runner_timeout": _STAGE_INDEX["request_signed"],
+    # login_timeout NOW comes ONLY from the agent's classify_init_error (the backend transport no longer emits
+    # it — that is validation_agent_* above). It means the agent reached the MT5 login phase and MT5 reported a
+    # timeout (initialize() with credentials): the terminal came up (local IPC ok — an IPC error would be a
+    # distinct reason) and the broker-login step did not complete → furthest = mt5_launched, fail at broker_login.
+    "login_timeout": _STAGE_INDEX["mt5_launched"],
     # agent/host platform conditions that PROVE the agent processed the request (agent-origin reasons)
     "mt5_unavailable": _STAGE_INDEX["agent_received"], "runtime_unavailable": _STAGE_INDEX["agent_received"],
     "validation_baseline_dirty": _STAGE_INDEX["agent_received"],
@@ -140,7 +150,25 @@ _CUSTOMER_SUMMARY = {
     "server_unavailable": "The broker server is temporarily unavailable.",
     # neutral — a transport timeout can't confirm the broker was reached (must not contradict the stages).
     "login_timeout": "The validation didn't complete in time. Please try again.",
+    # WS-C (2026-08-05) — transport-layer failures: the check never reached the broker/login, so the wording
+    # names neither. unreachable = we couldn't reach the validation service; timeout = it didn't answer.
+    "validation_agent_unreachable": "The validation service couldn't be reached; your details weren't "
+                                    "rejected — please try again later.",
+    "validation_agent_timeout": "The validation service took too long to respond; your details weren't "
+                                "rejected — please try again later.",
     "credential_missing": "No saved password for this account.",
+}
+
+# WS-E (2026-08-05) — a precise operator-facing phrase for the transport-layer failures, appended to the
+# operator summary so support sees "Transport failed before the validation agent" rather than a broker claim.
+_OPERATOR_HINT = {
+    "validation_agent_unreachable": "Transport failed BEFORE the validation agent — the backend could not open "
+                                    "a connection to the agent (connect timeout); the request was never sent, "
+                                    "so MT5 and the broker were never contacted.",
+    "validation_agent_timeout": "The validation agent accepted the connection but did not answer in time "
+                                "(read timeout) — the request was sent; MT5/broker status is UNKNOWN.",
+    "login_timeout": "The agent reached the MT5 login phase and MT5 reported a timeout (not a transport "
+                     "failure).",
 }
 
 
@@ -217,6 +245,11 @@ def build_timeline(correlation_id: str) -> ValidationTimeline:
                       f"{failing.operator_label} (reason: {reason or 'unknown'}).")
     else:
         op_summary = f"Login pipeline completed but the outcome was not healthy (reason: {reason or 'unknown'})."
+    # WS-E: append the precise transport-layer phrase so support never reads a transport failure as a broker
+    # timeout (e.g. "Transport failed BEFORE the validation agent" for a connect timeout).
+    hint = _OPERATOR_HINT.get(reason)
+    if hint:
+        op_summary = f"{op_summary} {hint}"
     return ValidationTimeline(
         correlation_id=cid, found=True, attempt_id=attempt.id,
         account_id=getattr(attempt, "account_id", None), status=status, reason_code=reason,

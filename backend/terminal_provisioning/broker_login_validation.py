@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from django.utils import timezone
 
 from . import broker_cred_envelope as envelope
-from .mgmt_client import ManagementChannelError, ManagementChannelTimeout
+from .mgmt_client import ManagementChannelError, ManagementChannelTimeout, ManagementChannelUnreachable
 from .mgmt_protocol import NIL_UUID
 from .provisioner import resolve_broker_server
 
@@ -40,6 +40,16 @@ _TAXONOMY = {
     "classification_mismatch": (NEEDS_ATTENTION, False),
     "server_unavailable":      (UNAVAILABLE, True),
     "login_timeout":           (UNAVAILABLE, True),
+    # Transport-layer timeouts (2026-08-05, WS-A/B) — THREE distinct failure modes, never merged:
+    #   * validation_agent_unreachable = backend could not open a TCP connection to the validation agent
+    #     (CONNECT timeout); the request was NEVER SENT, so no agent/MT5/broker activity occurred.
+    #   * validation_agent_timeout     = the agent accepted the connection (request sent) but did not answer
+    #     in time (READ timeout); MT5 status is UNKNOWN.
+    #   * login_timeout (above)        = the agent actually reached the MT5 login phase and MT5 reported a
+    #     timeout. Only THIS one is evidence a login was attempted.
+    # All platform/transient → UNAVAILABLE/retryable; none is the customer's credentials.
+    "validation_agent_unreachable": (UNAVAILABLE, True),
+    "validation_agent_timeout":     (UNAVAILABLE, True),
     "mt5_unavailable":         (UNAVAILABLE, True),
     "bridge_unavailable":      (UNAVAILABLE, True),
     "runtime_unavailable":     (UNAVAILABLE, True),
@@ -187,8 +197,16 @@ class BrokerLoginValidator:
 
         try:
             resp = transport(base, req)
+        except ManagementChannelUnreachable:
+            # CONNECT timeout: the backend never opened a connection to the agent, so the request was NEVER
+            # SENT and NOTHING downstream ran (no agent handler, no runner, no MT5, no broker). This is NOT a
+            # login timeout — no login was attempted. Must be caught BEFORE ManagementChannelTimeout (subclass).
+            return _outcome("validation_agent_unreachable", server=server, login_masked=masked, correlation_id=corr)
         except ManagementChannelTimeout:
-            return _outcome("login_timeout", server=server, login_masked=masked, correlation_id=corr)
+            # READ timeout: the agent accepted the connection (request sent) but did not answer in time. The op
+            # may or may not have executed — MT5 status is UNKNOWN. Distinct from a login timeout and from
+            # unreachable. NEVER ``login_timeout`` — the backend has no evidence a broker login was attempted.
+            return _outcome("validation_agent_timeout", server=server, login_masked=masked, correlation_id=corr)
         except (ManagementChannelError, OSError):
             return _outcome("bridge_unavailable", server=server, login_masked=masked, correlation_id=corr)
 

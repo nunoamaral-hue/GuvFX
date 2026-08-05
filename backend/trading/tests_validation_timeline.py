@@ -86,6 +86,41 @@ class TimelineBuilderTests(TestCase):
         self.assertIn("busy", tl.customer_summary.lower())
         self.assertNotIn("broker server is temporarily unavailable", tl.customer_summary.lower())
 
+    def test_validation_agent_unreachable_stops_before_the_agent(self):
+        # WS-D (2026-08-05): a CONNECT timeout — the agent was never reached. The timeline must fail at
+        # agent_received and NEVER imply MT5 launched or the broker was contacted.
+        _attempt(self.acct, reason="validation_agent_unreachable", status="UNAVAILABLE", corr="c-unreach")
+        tl = build_timeline("c-unreach")
+        self.assertEqual(_state(tl, "request_signed"), "ok")
+        self.assertEqual(_state(tl, "agent_received"), "failed")     # agent NOT reached
+        self.assertEqual(_state(tl, "mt5_launched"), "not_reached")  # MT5 never launched
+        self.assertEqual(_state(tl, "broker_login"), "not_reached")
+        self.assertEqual(_state(tl, "broker_response"), "not_reached")
+        # customer + operator wording never claim a broker/login problem
+        for bad in ("broker", "login was", "broker server"):
+            self.assertNotIn(bad, tl.customer_summary.lower())
+        self.assertIn("before the validation agent", tl.operator_summary.lower())
+
+    def test_validation_agent_timeout_reaches_agent_but_not_mt5(self):
+        # WS-D: a READ timeout — the agent accepted the connection but didn't answer. agent_received is ok
+        # (reached), but MT5 status is unknown → mt5_launched failed, broker never reached. Never imply MT5 ran.
+        _attempt(self.acct, reason="validation_agent_timeout", status="UNAVAILABLE", corr="c-atimeout")
+        tl = build_timeline("c-atimeout")
+        self.assertEqual(_state(tl, "agent_received"), "ok")          # connection accepted
+        self.assertEqual(_state(tl, "mt5_launched"), "failed")
+        self.assertEqual(_state(tl, "broker_login"), "not_reached")
+        self.assertEqual(_state(tl, "broker_response"), "not_reached")
+        self.assertNotIn("broker server is temporarily unavailable", tl.customer_summary.lower())
+
+    def test_login_timeout_now_reaches_mt5_login_phase(self):
+        # WS-D: login_timeout now comes ONLY from the agent (MT5 reported a login-phase timeout), so the
+        # timeline places it DEEPER than a transport failure: MT5 launched, broker_login the failing stage.
+        _attempt(self.acct, reason="login_timeout", status="UNAVAILABLE", corr="c-lt")
+        tl = build_timeline("c-lt")
+        self.assertEqual(_state(tl, "mt5_launched"), "ok")           # local IPC/terminal came up
+        self.assertEqual(_state(tl, "broker_login"), "failed")       # the login step did not complete
+        self.assertEqual(_state(tl, "broker_response"), "not_reached")
+
     def test_browser_response_label_claims_only_return_not_render(self):
         # Phase-4 WS-B (S7): the backend can only evidence that it RETURNED the response, not that the browser
         # rendered it. The customer label must not over-claim ("Showed you the result").
@@ -104,16 +139,16 @@ class TimelineBuilderTests(TestCase):
         self.assertEqual(_state(tl, "agent_received"), "ok")
         self.assertEqual(_state(tl, "mt5_launched"), "failed")
 
-    def test_login_timeout_is_conservative_and_not_broker_reached(self):
-        # review WS-P2 finding 2: a black-box transport timeout can't confirm the agent was reached, and the
-        # summary must not claim the broker responded while the stages say broker not_reached.
+    def test_login_timeout_reaches_login_but_never_claims_broker_responded(self):
+        # 2026-08-05 (transport-taxonomy): login_timeout no longer comes from a black-box backend transport
+        # timeout (that is now validation_agent_unreachable / validation_agent_timeout). It comes ONLY from the
+        # agent (MT5 login-phase timeout), so the login IS reached (broker_login = failing stage) — but the
+        # broker must still NEVER be shown as having RESPONDED, and the summary stays neutral.
         _attempt(self.acct, reason="login_timeout", status="UNAVAILABLE", corr="c-to")
         tl = build_timeline("c-to")
-        self.assertEqual(_state(tl, "request_signed"), "ok")
-        self.assertEqual(_state(tl, "agent_received"), "failed")   # conservative — like bridge_unavailable
-        self.assertEqual(_state(tl, "broker_login"), "not_reached")
-        self.assertEqual(_state(tl, "broker_response"), "not_reached")
-        self.assertNotIn("broker didn't respond", tl.customer_summary.lower())   # no broker-reached claim
+        self.assertEqual(_state(tl, "broker_login"), "failed")
+        self.assertEqual(_state(tl, "broker_response"), "not_reached")   # broker never confirmed responding
+        self.assertNotIn("broker didn't respond", tl.customer_summary.lower())
 
     def test_post_probe_failure_marks_no_pipeline_stage_failed(self):
         # review WS-P2 finding 3: diagnostic_capture_failed is a POST-login fault — never render "Contacted
