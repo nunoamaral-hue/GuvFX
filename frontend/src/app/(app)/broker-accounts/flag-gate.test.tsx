@@ -1,50 +1,41 @@
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render } from "@testing-library/react";
 
-/** WP4.2 — the load-bearing security test: with the flag OFF the page must 404 BEFORE any API call, and
- * with it ON the page must render and fetch. */
-const { notFound, listAccounts } = vi.hoisted(() => ({
-  notFound: vi.fn(() => { throw new Error("NEXT_NOT_FOUND"); }),
+/** WS-A (packet: Customer Journey Consolidation) — /broker-accounts is deprecated: it no longer renders
+ * broker content or fetches anything, it PERMANENTLY redirects into the canonical /accounts tree. This is
+ * the successor to the old flag-gate security test (which asserted a 404 when OFF): the load-bearing
+ * property is now "the deprecated route serves NO broker content and makes NO broker API call — it only
+ * redirects", regardless of the build flag. The canonical page's own flag behaviour is covered in
+ * ../accounts/redirect.test.tsx. */
+const { redirect, listAccounts, getAccount } = vi.hoisted(() => ({
+  redirect: vi.fn(() => { throw new Error("NEXT_REDIRECT"); }),
   listAccounts: vi.fn().mockResolvedValue([]),
+  getAccount: vi.fn().mockResolvedValue({}),
 }));
-vi.mock("next/navigation", () => ({ notFound, useParams: () => ({ id: "1" }) }));
+vi.mock("next/navigation", () => ({ redirect, useParams: () => ({ id: "1" }) }));
 vi.mock("next/link", () => ({ default: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 vi.mock("@/lib/broker-api", () => ({
-  listAccounts, getBrokerStatus: vi.fn(), getAccount: vi.fn(), getValidationHistory: vi.fn(),
+  listAccounts, getAccount, getBrokerStatus: vi.fn(), getValidationHistory: vi.fn(),
   testConnection: vi.fn(), retryValidation: vi.fn(), replaceCredentials: vi.fn(),
   disconnectAccount: vi.fn(), createAccount: vi.fn(),
 }));
 
-let enabled = false;
-vi.mock("@/lib/flags", () => ({ brokerConnectivityEnabled: () => enabled }));
-
 import BrokerAccountsPage from "./page";
 import BrokerAccountDetailPage from "./[id]/page";
 
-describe("broker-accounts flag gate (list)", () => {
-  beforeEach(() => { notFound.mockClear(); listAccounts.mockClear(); });
+describe("/broker-accounts is a deprecated redirect (WS-A)", () => {
+  beforeEach(() => { redirect.mockClear(); listAccounts.mockClear(); getAccount.mockClear(); });
 
-  it("404s and makes NO API call when the flag is OFF", () => {
-    enabled = false;
-    expect(() => render(<BrokerAccountsPage />)).toThrow(/NEXT_NOT_FOUND/);
-    expect(notFound).toHaveBeenCalled();
+  it("list route redirects to /accounts and makes NO broker API call", () => {
+    expect(() => render(<BrokerAccountsPage />)).toThrow(/NEXT_REDIRECT/);
+    expect(redirect).toHaveBeenCalledWith("/accounts");
     expect(listAccounts).not.toHaveBeenCalled();
   });
 
-  it("renders and fetches when the flag is ON", async () => {
-    enabled = true;
-    render(<BrokerAccountsPage />);
-    await waitFor(() => expect(listAccounts).toHaveBeenCalled());
-    expect(notFound).not.toHaveBeenCalled();
-  });
-});
-
-describe("broker-accounts flag gate (detail)", () => {
-  beforeEach(() => { notFound.mockClear(); });
-  it("404s when the flag is OFF", () => {
-    enabled = false;
-    expect(() => render(<BrokerAccountDetailPage />)).toThrow(/NEXT_NOT_FOUND/);
-    expect(notFound).toHaveBeenCalled();
+  it("detail route redirects to /accounts/[id] and makes NO broker API call", () => {
+    expect(() => render(<BrokerAccountDetailPage />)).toThrow(/NEXT_REDIRECT/);
+    expect(redirect).toHaveBeenCalledWith("/accounts/1");
+    expect(getAccount).not.toHaveBeenCalled();
   });
 });

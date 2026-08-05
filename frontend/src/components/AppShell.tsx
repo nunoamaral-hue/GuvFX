@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useState, useCallback, createContext, useContext } from "react";
 import { apiFetch } from "@/lib/api";
-import { brokerConnectivityEnabled, operationsEnabled } from "@/lib/flags";
+import { operationsEnabled } from "@/lib/flags";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
 import { LanguageDropdown } from "@/components/LanguageDropdown";
@@ -96,11 +96,10 @@ const navGroups: NavGroup[] = [
     labelKey: "nav.settings",
     defaultOpen: false,
     items: [
-      // AREA C (ADR-0031): when the broker-connectivity journey is armed, /accounts redirects to
-      // /broker-accounts — so point the single "Broker Accounts" entry straight at the canonical route
-      // to avoid two nav entries resolving to the same page. OFF (default) keeps the legacy /accounts
-      // target unchanged.
-      { labelKey: "nav.brokerAccounts", href: brokerConnectivityEnabled() ? "/broker-accounts" : "/accounts" },
+      // WS-A (packet: Customer Journey Consolidation): /accounts is the single canonical broker-account
+      // page in BOTH flag states (broker journey when ON, legacy content when OFF), and /broker-accounts
+      // permanently redirects there. One nav entry, one destination, no duplicate route.
+      { labelKey: "nav.brokerAccounts", href: "/accounts" },
       { labelKey: "nav.userSettings", href: "/profile" },
       { labelKey: "nav.hosting", href: "/admin/hosting", adminOnly: true },
     ],

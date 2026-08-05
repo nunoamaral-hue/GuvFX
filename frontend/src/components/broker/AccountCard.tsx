@@ -53,7 +53,7 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading })
 
       <div style={{ ...row, justifyContent: "space-between" }}>
         <span style={meta}>{validatedAt ? `Last validated ${validatedAt}` : "Never validated"}</span>
-        <Link href={`/broker-accounts/${account.id}`}
+        <Link href={`/accounts/${account.id}`}
               style={{ color: "#93c5fd", fontSize: "0.85rem", textDecoration: "none" }}
               aria-label={`Manage ${account.name || broker}`}>Manage →</Link>
       </div>

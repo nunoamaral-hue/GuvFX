@@ -7,7 +7,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { redirect, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import React, { useEffect, useMemo, useState } from "react";
 import { useLang } from "@/components/AppShell";
 import { Card } from "@/components/ui/Card";
@@ -15,6 +15,7 @@ import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import { brokerConnectivityEnabled } from "@/lib/flags";
+import { BrokerAccountsContent } from "@/components/broker/BrokerAccountsContent";
 import { t } from "@/lib/i18n";
 import type {
   StrategyAssignment,
@@ -1040,11 +1041,12 @@ return (
  * Page component — rendered inside AppShell via (app)/layout.tsx.
  */
 export default function AccountsPage() {
-  // AREA C (ADR-0031): when the broker-connectivity journey is armed at build time, /accounts is
-  // superseded by the canonical /broker-accounts journey — redirect during render (before any legacy
-  // fetch or the onboarding panel's polling runs). OFF (default) makes this branch dead, so /accounts
-  // renders byte-identically to today. Loop-safe: /broker-accounts reads the same inlined constant and
-  // notFound()s only when OFF, so it never bounces back here.
-  if (brokerConnectivityEnabled()) redirect("/broker-accounts");
+  // WS-A (packet: Customer Journey Consolidation) — /accounts is now the SINGLE canonical customer-facing
+  // broker-account page. When the broker-connectivity journey is built (flag ON) /accounts renders the WP4
+  // experience IN PLACE (route/bookmarks/nav preserved); when OFF (default) it renders the legacy content
+  // byte-identically to before. This REVERSES the earlier ADR-0031 AREA C redirect (which sent /accounts →
+  // /broker-accounts); /broker-accounts now permanently redirects HERE, so there is exactly one journey and
+  // no redirect loop.
+  if (brokerConnectivityEnabled()) return <BrokerAccountsContent />;
   return <AccountsContent />;
 }
