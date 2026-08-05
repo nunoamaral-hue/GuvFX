@@ -15,7 +15,7 @@ import { ReplaceCredentialsDialog } from "@/components/broker/ReplaceCredentials
 import { DisconnectDialog } from "@/components/broker/DisconnectDialog";
 import { ErrorState, LoadingState } from "@/components/broker/States";
 import {
-  connectionView, formatWhen, maskAccountNumber, reasonMessage, toCustomerError,
+  connectionView, lastValidatedLine, maskAccountNumber, reasonMessage, toCustomerError,
   validationStatusView,
 } from "@/lib/broker-status";
 import type { BrokerAccount, BrokerStatus, ValidationAttempt } from "@/types/broker";
@@ -99,9 +99,10 @@ export function BrokerAccountDetailContent() {
           </div>
         </div>
         <div style={{ color: "#8fa0b7", fontSize: "0.85rem" }}>
-          {/* "Never validated" was shown even after several failed attempts (packet WS-G). Distinguish
-              "no successful validation yet" from a real prior success. */}
-          {formatWhen(status?.validated_at) ? `Last validated ${formatWhen(status?.validated_at)}` : "No successful validation yet"}
+          {/* "Never validated" was shown even after several failed attempts (packet WS-G). lastValidatedLine
+              distinguishes a real prior success from "no successful validation yet" AND cross-checks the
+              timestamp against validation_status so it can't contradict the badge (e.g. after disconnect). */}
+          {lastValidatedLine(status?.validation_status, status?.validated_at)}
         </div>
         {actionMsg && <div style={{ marginTop: 12 }}><Alert type={actionMsg.ok ? "success" : "error"}>{actionMsg.text}</Alert></div>}
         {!disconnected && (

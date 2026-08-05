@@ -70,7 +70,7 @@ describe("BrokerAccountDetailContent — honest validation status (WS-G/H/K)", (
     // status + history are re-fetched after the attempt (fresh, not cached)
     await waitFor(() => expect(api.getValidationHistory).toHaveBeenCalledTimes(2));
     await waitFor(() =>
-      expect(document.body.textContent).toMatch(/validation service isn't available yet/i));
+      expect(document.body.textContent).toMatch(/broker validation isn't available for your account/i));
     expect(document.body.textContent).toMatch(/weren't changed/i);
     expect(document.body.textContent).not.toMatch(/check your details/i);
   });

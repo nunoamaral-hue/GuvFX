@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  connectionView, healthStatusView, maskAccountNumber, reasonMessage, toCustomerError, validationStatusView,
+  connectionView, healthStatusView, lastValidatedLine, maskAccountNumber, reasonMessage, toCustomerError,
+  validationStatusView,
 } from "@/lib/broker-status";
 
 describe("validationStatusView", () => {
@@ -42,11 +43,13 @@ describe("reasonMessage", () => {
     expect(out).toMatch(/couldn't complete the connection check/i);
   });
   it("classifies validation_unconfigured as a service-side issue — never the customer's details", () => {
-    // Root cause of the beta failure: the validation service isn't provisioned yet. The message must say
-    // so, confirm nothing changed, and NOT ask the user to re-check details they cannot fix.
+    // Root cause of the beta failure: broker validation isn't provisioned yet. The message must say so,
+    // confirm nothing changed, tell the user there is nothing to fix on their side, and NOT invite a
+    // futile retry of details they cannot change.
     const out = reasonMessage("validation_unconfigured");
-    expect(out).toMatch(/validation service isn't available/i);
+    expect(out).toMatch(/broker validation isn't available/i);
     expect(out).toMatch(/weren't changed/i);
+    expect(out).toMatch(/nothing to fix on your side/i);
     expect(out).not.toMatch(/check your details/i);
   });
   it("maps credential_missing / broker_server_missing to their own actionable wording", () => {
@@ -62,6 +65,25 @@ describe("reasonMessage", () => {
   it("returns empty for no code", () => {
     expect(reasonMessage("")).toBe("");
     expect(reasonMessage(null)).toBe("");
+  });
+});
+
+describe("lastValidatedLine", () => {
+  const T1 = "2026-08-01T10:00:00Z";
+  it("shows the timestamp only when currently validated", () => {
+    expect(lastValidatedLine("VALIDATED", T1)).toMatch(/^Last validated /);
+    // was validated then degraded — still a real prior success, keep the timestamp
+    expect(lastValidatedLine("TECHNICAL_ERROR", T1)).toMatch(/^Last validated /);
+  });
+  it("suppresses a stale timestamp under a never-validated status (no contradiction after disconnect)", () => {
+    // disconnect resets validation_status to NEVER but does not null validated_at — the timestamp must
+    // NOT render as "Last validated" under a "Not validated" badge.
+    expect(lastValidatedLine("NEVER", T1)).toBe("No successful validation yet");
+  });
+  it("reads 'No successful validation yet' when there is no timestamp", () => {
+    expect(lastValidatedLine("TECHNICAL_ERROR", null)).toBe("No successful validation yet");
+    expect(lastValidatedLine("NEVER", null)).toBe("No successful validation yet");
+    expect(lastValidatedLine(undefined, undefined)).toBe("No successful validation yet");
   });
 });
 
