@@ -14,6 +14,14 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ARG NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+# Build-time capability flags. Next inlines NEXT_PUBLIC_* at `npm run build` from the build env, and
+# flags.ts / emit-build-info.mjs read them. DEFAULT UNSET ⇒ DARK (broker journey + operations UI hidden);
+# pass e.g. --build-arg NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED=1 to arm. Making these build-args (rather
+# than hard-coded) keeps the DARK build reproducible and the armed build a deliberate, explicit input.
+ARG NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED
+ENV NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED=$NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED
+ARG NEXT_PUBLIC_OPERATIONS_ENABLED
+ENV NEXT_PUBLIC_OPERATIONS_ENABLED=$NEXT_PUBLIC_OPERATIONS_ENABLED
 # Build provenance (IPR Area G). .git is dockerignored, so the commit comes from a build-arg. The
 # `prebuild` emitter (scripts/emit-build-info.mjs) reads these from the env and bakes a static,
 # self-surfacing public/build-info.json (served at /build-info.json). Both NON-SECRET, default
