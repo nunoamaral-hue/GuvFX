@@ -325,22 +325,32 @@ export default function StrategyMarketplacePage() {
     });
   }, [authChecked, isAuthed]);
 
-  // Load saved default account for marketplace dropdowns
+  // Load saved default account for marketplace dropdowns — but only one the CURRENT user owns.
+  // localStorage is per-browser, not per-user: a default persisted by a previous session/user (e.g.
+  // account #1 on a shared machine) must never leak into this session. Applying an unowned id makes the
+  // read-only signal-copy readiness endpoint 404 ("We couldn't check your account status right now") and
+  // would aim Assign at a foreign account. So we wait for the owned-accounts list to load and apply the
+  // saved default only when it is actually owned; otherwise we ignore it and let each card pick its own
+  // owned account (the signal-copy panel auto-selects the first demo account; generic cards prompt).
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (loadingAccounts) return;                       // wait until we know what this user owns
 
     const raw = window.localStorage.getItem(LS_DEFAULT_ACCOUNT_KEY);
     if (!raw) return;
 
     const n = Number(raw);
-    if (Number.isFinite(n) && n > 0) {
-      setDefaultAccountId(n);
-      // Preselect this account for all seed strategies
-      const map: Record<string, number> = {};
+    if (!(Number.isFinite(n) && n > 0)) return;
+    if (!accounts.some((a) => a.id === n)) return;     // stale / foreign default → do not apply
+
+    setDefaultAccountId(n);
+    // Preselect this account for all seed strategies, without clobbering an in-session pick.
+    setSelectedAccount((prev) => {
+      const map: Record<string, number | ""> = {};
       for (const s of MARKETPLACE_SEED) map[s.id] = n;
-      setSelectedAccount(map);
-    }
-  }, []);
+      return { ...map, ...prev };
+    });
+  }, [accounts, loadingAccounts]);
 
   // ─────────────────────────────────────────────────────────────────────
   // Filtered Strategies
