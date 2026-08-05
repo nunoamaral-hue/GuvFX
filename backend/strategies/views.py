@@ -485,6 +485,95 @@ def _audit_arm(request, *, account, reason_code, approved):
         pass
 
 
+# Ordered checklist keys for the signal-copy readiness panel (packet WS-D). The FE maps each key to a
+# customer-safe, translated label; the backend never emits customer copy — only these machine keys + a
+# next-action CODE + a customer-facing state — so there is nothing here to leak or mistranslate.
+_READINESS_CHECK_KEYS = ("demo", "active", "credentials", "runtime_ready", "pilot_access")
+
+
+def _signal_copy_readiness(user, account, source):
+    """Customer-facing readiness for enabling a signal-copy strategy on ``account`` (packet WS-D/E).
+
+    A truthful, machine-readable projection of the SAME fail-closed gates ``signal_copy_arm`` enforces —
+    reusing ``_account_execution_ready`` / ``_arm_cohort_approved`` / ``_arm_extra_containment`` — so the
+    readiness panel can never claim "ready" where arm would refuse, and vice-versa (ONE source of truth,
+    the whole point of the status model). Read-only: it computes, never mutates, never arms. It returns
+    ONLY machine values (a per-account ``state``, a ``checklist`` of key/ok booleans, a ``next_action``
+    code); every customer-visible string is chosen by the frontend from i18n, so no runtime/model/backend
+    terminology can leak here.
+    """
+    from trading.models import TradingAccount  # noqa: F401 — kept parallel to the arm path's imports
+
+    is_demo = bool(account.is_demo)
+    is_active = bool(account.is_active)
+    has_creds = bool((getattr(account, "password_enc", "") or "").strip())
+    ready, why = _account_execution_ready(account)  # runtime_ready (+ broker_connected if required)
+    pilot = _arm_cohort_approved(user)
+    disconnected = bool(getattr(account, "disconnected_at", None))
+    # NEEDS-ATTENTION probes (validation KNOWN-BAD / health / pause / duplicate) — only meaningful for a
+    # demo account; each fails closed inside the helper. Same call the arm endpoint makes.
+    extra = _arm_extra_containment(account, source) if is_demo else None
+    extra_reason = extra[0] if extra else None
+
+    checklist = [
+        {"key": "demo", "ok": is_demo},
+        {"key": "active", "ok": is_active},
+        {"key": "credentials", "ok": has_creds},
+        {"key": "runtime_ready", "ok": bool(ready)},
+        {"key": "pilot_access", "ok": bool(pilot)},
+    ]
+
+    # Current armed/enabled state — the routable arm on this source that THIS user controls (mirrors
+    # _armed_assignments' predicate, scoped to this one account).
+    arm_qs = StrategyAssignment.objects.filter(
+        execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO, signal_source=source,
+        stage=StrategyAssignment.STAGE_LIVE, account=account,
+        account__is_demo=True, account__is_active=True)
+    if not getattr(user, "is_staff", False):
+        arm_qs = arm_qs.filter(strategy__owner=user, account__user=user)
+    arms = list(arm_qs)
+    armed = bool(arms)
+    enabled = any(a.is_active for a in arms)
+
+    # State (E) + next-action, by strict precedence: the FIRST blocking condition wins, so the customer
+    # never sees two conflicting labels. CLOSED > NEEDS_ATTENTION > SETUP_INCOMPLETE > PREPARING/
+    # CONNECTING > TRADING_ON > READY.
+    if disconnected:
+        state, next_action = "CLOSED", "closed"
+    elif extra_reason == "broker_validation_unhealthy":
+        state, next_action = "NEEDS_ATTENTION", "attention_validation"
+    elif extra_reason == "runtime_paused":
+        state, next_action = "NEEDS_ATTENTION", "attention_paused"
+    elif extra_reason == "duplicate_active_assignment":
+        state, next_action = "NEEDS_ATTENTION", "attention_duplicate"
+    elif not is_demo:
+        state, next_action = "SETUP_INCOMPLETE", "add_demo_account"
+    elif not is_active:
+        state, next_action = "SETUP_INCOMPLETE", "activate_account"
+    elif not has_creds:
+        state, next_action = "SETUP_INCOMPLETE", "add_credentials"
+    elif not ready:
+        state, next_action = ("CONNECTING", "connecting") if why == "broker_not_connected" \
+            else ("PREPARING", "preparing")
+    elif enabled:
+        state, next_action = "TRADING_ON", "trading_on"
+    elif not pilot:
+        state, next_action = "READY", "request_access"
+    elif armed:
+        state, next_action = "READY", "enable_to_resume"
+    else:
+        state, next_action = "READY", "ready_enable"
+
+    can_arm = bool(is_demo and is_active and has_creds and ready and pilot
+                   and extra is None and _beta_self_serve_arm_enabled())
+
+    return {
+        "signal_source": source, "account_id": account.id, "state": state,
+        "armed": armed, "enabled": enabled, "can_arm": can_arm,
+        "checklist": checklist, "next_action": next_action,
+    }
+
+
 class StrategyViewSet(viewsets.ModelViewSet):
     queryset = Strategy.objects.all()
     serializer_class = StrategySerializer
@@ -1107,6 +1196,32 @@ class StrategyViewSet(viewsets.ModelViewSet):
             "assignment_id": (hits[0].id if len(hits) == 1 else None),
             "ambiguous": len(hits) > 1,          # >1 armed assignment → config error, fail-closed
         })
+
+    @action(detail=False, methods=["get"], url_path="signal-copy/readiness")
+    def signal_copy_readiness(self, request):
+        """WS-D/E — customer-facing readiness for the signal-copy "Enable Trading" journey on ONE of the
+        caller's OWN accounts. Read-only and un-gated (like status): it never arms and never mutates. It
+        returns the SAME truth the arm endpoint enforces (via ``_signal_copy_readiness``), so the panel and
+        the arm action can never disagree. Ownership-scoped: a non-staff caller can only see their own
+        account, else 404."""
+        marketplace_strategy_id = request.query_params.get("marketplace_strategy_id")
+        account_id = request.query_params.get("account_id")
+        tpl, source = self._signal_copy_source(marketplace_strategy_id)
+        if not tpl:
+            return Response({"detail": "Unknown marketplace_strategy_id"}, status=status.HTTP_400_BAD_REQUEST)
+        if not source:
+            return Response({"detail": "not a signal-copy strategy"}, status=status.HTTP_400_BAD_REQUEST)
+        if not account_id:
+            return Response({"detail": "account_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        acc_qs = TradingAccount.objects.filter(id=account_id)
+        if not request.user.is_staff:
+            acc_qs = acc_qs.filter(user=request.user)
+        account = acc_qs.first()
+        if not account:
+            return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
+        data = _signal_copy_readiness(request.user, account, source)
+        data["marketplace_strategy_id"] = marketplace_strategy_id
+        return Response(data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="signal-copy/arm")
     def signal_copy_arm(self, request):

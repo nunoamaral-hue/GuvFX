@@ -918,8 +918,8 @@ const dictionary: Dictionary = {
     ja: "無効",
   },
   "marketplace.copyNotArmedShort": {
-    en: "Not armed",
-    ja: "未アーム",
+    en: "Not set up",
+    ja: "未設定",
   },
   "marketplace.copyEnable": {
     en: "Enable",
@@ -942,16 +942,16 @@ const dictionary: Dictionary = {
     ja: "戦略を無効化しました。",
   },
   "marketplace.copyNotArmed": {
-    en: "This strategy isn't armed for auto-demo yet — arming is a separate, gated step.",
-    ja: "この戦略はまだ自動デモ用にアームされていません（アームは別途承認が必要な手順です）。",
+    en: "This strategy isn't set up for your account yet.",
+    ja: "この戦略はまだお客様の口座に設定されていません。",
   },
   "marketplace.copyAmbiguous": {
-    en: "Auto-copy config needs attention: more than one armed assignment is bound to this source.",
-    ja: "自動コピー設定に注意が必要です。このソースに複数のアーム済み割り当てが紐付いています。",
+    en: "This copy strategy needs attention. Please contact support.",
+    ja: "このコピー戦略は確認が必要です。サポートにお問い合わせください。",
   },
   "marketplace.copyNotArmedHint": {
-    en: "Arming (auto-demo) is a separate, gated step.",
-    ja: "アーム（自動デモ）は別途承認が必要な手順です。",
+    en: "Set up your account to enable automatic copying.",
+    ja: "自動コピーを有効にするには口座を設定してください。",
   },
   "marketplace.copyToggleFailed": {
     en: "Could not change the strategy state. Please try again.",
@@ -992,12 +992,12 @@ const dictionary: Dictionary = {
     ja: "先にこのアカウントのMT5ログインを追加して検証してください。",
   },
   "marketplace.armRuntimeNotReady": {
-    en: "Your trading terminal is still starting up. Try again once it's ready.",
-    ja: "取引ターミナルはまだ起動中です。準備ができたら再度お試しください。",
+    en: "Your account is still getting ready to trade. Try again shortly.",
+    ja: "口座はまだ取引の準備中です。しばらくしてから再度お試しください。",
   },
   "marketplace.armBrokerNotConnected": {
-    en: "Your terminal isn't connected to the broker yet. Reconnect, then try again.",
-    ja: "ターミナルはまだブローカーに接続されていません。再接続してから再度お試しください。",
+    en: "We're still connecting to your broker. Try again shortly.",
+    ja: "ブローカーへの接続を行っています。しばらくしてから再度お試しください。",
   },
   "marketplace.armSingleTenant": {
     en: "Another account is already enabled for this signal. Only one can run at a time.",
@@ -1010,6 +1010,90 @@ const dictionary: Dictionary = {
   "marketplace.armFailed": {
     en: "Couldn't enable trading. Please try again.",
     ja: "取引を有効化できませんでした。もう一度お試しください。",
+  },
+  // WS-G — the arm rejections that were previously collapsed into the generic "try again" toast. These
+  // are permanent / attention states, so they must NOT read as retriable.
+  "marketplace.armNotPilotApproved": {
+    en: "Automatic trading isn't available for your account yet. Please contact support to request access.",
+    ja: "自動取引はまだご利用いただけません。ご希望の場合はサポートにお問い合わせください。",
+  },
+  "marketplace.armValidationUnhealthy": {
+    en: "We couldn't verify your broker connection. Please re-check your login and try again.",
+    ja: "ブローカー接続を確認できませんでした。ログイン情報を確認して再度お試しください。",
+  },
+  "marketplace.armPaused": {
+    en: "Trading is paused while we check your connection. It will resume automatically.",
+    ja: "接続を確認する間、取引は一時停止しています。自動的に再開されます。",
+  },
+  "marketplace.armDuplicate": {
+    en: "This account already has trading enabled for another signal.",
+    ja: "このアカウントは既に別のシグナルで取引が有効になっています。",
+  },
+  // WS-D — the readiness panel that replaces the opaque "Not armed" hint: a ✓/✕ checklist + one clear
+  // next action, all customer-safe (the backend returns only machine keys/codes; the copy lives here).
+  "marketplace.readinessTitle": {
+    en: "What's needed",
+    ja: "必要な手順",
+  },
+  "marketplace.readinessLoading": {
+    en: "Checking your account…",
+    ja: "口座を確認しています…",
+  },
+  "marketplace.readinessUnavailable": {
+    en: "We couldn't check your account status right now.",
+    ja: "現在、口座の状態を確認できませんでした。",
+  },
+  "marketplace.readinessNoDemo": {
+    en: "You'll need a demo account first. Add one on your Accounts page.",
+    ja: "まずデモ口座が必要です。アカウントページで追加してください。",
+  },
+  "marketplace.readinessAddAccount": {
+    en: "Go to Accounts",
+    ja: "アカウントへ移動",
+  },
+  "marketplace.readinessCheckDemo": {
+    en: "Demo account",
+    ja: "デモ口座",
+  },
+  "marketplace.readinessCheckActive": {
+    en: "Account active",
+    ja: "口座が有効",
+  },
+  "marketplace.readinessCheckCredentials": {
+    en: "Broker login added",
+    ja: "ブローカーのログインを追加済み",
+  },
+  "marketplace.readinessCheckRuntime": {
+    en: "Account ready to trade",
+    ja: "取引の準備完了",
+  },
+  "marketplace.readinessCheckAccess": {
+    en: "Trading access enabled",
+    ja: "取引アクセスが有効",
+  },
+  "marketplace.readinessNextClosed": {
+    en: "This account is disconnected. Its history is preserved.",
+    ja: "この口座は切断されています。履歴は保持されます。",
+  },
+  "marketplace.readinessNextAddDemo": {
+    en: "This strategy runs on a demo account. Add a demo account to continue.",
+    ja: "この戦略はデモ口座で動作します。続行するにはデモ口座を追加してください。",
+  },
+  "marketplace.readinessNextActivate": {
+    en: "This account isn't active. Activate it on your Accounts page to continue.",
+    ja: "この口座は有効ではありません。アカウントページで有効化してください。",
+  },
+  "marketplace.readinessNextTradingOn": {
+    en: "Trading is on for this account.",
+    ja: "この口座で取引が有効です。",
+  },
+  "marketplace.readinessNextResume": {
+    en: "Trading is set up but paused. Enable it to resume copying.",
+    ja: "取引は設定済みですが一時停止中です。有効化するとコピーを再開します。",
+  },
+  "marketplace.readinessNextReady": {
+    en: "Your account is ready. Enable trading to start copying.",
+    ja: "口座の準備ができました。取引を有効化してコピーを開始してください。",
   },
   "marketplace.unauthMessage": {
     en: "You are not authenticated. Please log in again to assign marketplace templates.",

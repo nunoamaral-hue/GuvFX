@@ -6,6 +6,7 @@ import { t } from "@/lib/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { brokerConnectivityEnabled } from "@/lib/flags";
+import { SignalCopyReadiness } from "@/components/marketplace/SignalCopyReadiness";
 import { useRouter } from "next/navigation";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -464,6 +465,15 @@ export default function StrategyMarketplacePage() {
         setIsAuthed(false);
         return;
       }
+      // WS-G: a still-armed ENABLE (resume) refused by the cohort gate is a PERMANENT denial — the
+      // safety-stop Disable stays allowed, but re-enabling needs approval. Say so plainly instead of
+      // the generic retriable "try again".
+      const slug = (err as { body?: { status?: string } })?.body?.status;
+      if (slug === "not_pilot_approved") {
+        setAlert(t(lang, "marketplace.armNotPilotApproved"));
+        setAlertType("error");
+        return;
+      }
       // Refetch the authoritative status so the card reflects reality (armed / ambiguous /
       // not-armed) instead of guessing from an opaque error.
       const st = await refreshCopyStatus(strategyId);
@@ -508,6 +518,12 @@ export default function StrategyMarketplacePage() {
       const slug = e?.body?.status;
       const key =
         slug === "arming_disabled" ? "marketplace.armDisabled"
+        // WS-G: permanent / attention denials must map to their OWN customer-safe copy, never the
+        // generic retriable "try again" — a default-deny cohort or a failed validation is not transient.
+        : slug === "not_pilot_approved" ? "marketplace.armNotPilotApproved"
+        : slug === "broker_validation_unhealthy" ? "marketplace.armValidationUnhealthy"
+        : slug === "runtime_paused" ? "marketplace.armPaused"
+        : slug === "duplicate_active_assignment" ? "marketplace.armDuplicate"
         : slug === "account_not_ready" ? "marketplace.armAccountNotReady"
         : slug === "credentials_missing" ? "marketplace.armCredentialsMissing"
         : slug === "runtime_not_ready" ? "marketplace.armRuntimeNotReady"
@@ -825,13 +841,12 @@ export default function StrategyMarketplacePage() {
                     const busy = !!copyBusy[strategy.id];
                     const arming = !!armBusy[strategy.id];
                     const selAcct = selectedAccount[strategy.id];
-                    // The self-service Enable-Trading (arm) affordance is available ONLY when the
-                    // broker-connectivity journey is intentionally enabled at build time — independent
-                    // of the backend BETA_SELF_SERVE_ARM_ENABLED flag, so a DARK build never surfaces a
-                    // live arming path. It is additionally gated on the selected account's runtime
-                    // readiness (the backend re-checks this authoritatively).
+                    // The self-service Enable-Trading (arm) button is surfaced ONLY when the broker-
+                    // connectivity journey is intentionally built (armUiEnabled) — independent of the
+                    // backend BETA_SELF_SERVE_ARM_ENABLED flag, so a DARK build never shows a live arm
+                    // control. The readiness PANEL (checklist + next action) always renders so the customer
+                    // understands where they are; can_arm from the backend gates the actual button.
                     const armUiEnabled = brokerConnectivityEnabled();
-                    const selReady = !!accounts.find((a) => a.id === Number(selAcct))?.runtime_ready;
                     // ON/badge state comes ONLY from the backend-confirmed status — never from a click.
                     const statusLabel = ambiguous
                       ? t(lang, "marketplace.copyAmbiguousShort")
@@ -884,70 +899,26 @@ export default function StrategyMarketplacePage() {
                               {t(lang, "marketplace.preview")}
                             </Button>
                           </div>
-                        ) : armUiEnabled ? (
-                          // Not armed → IPR Area D: choose the demo account and Enable Trading (arm).
-                          // Rendered ONLY when the broker-connectivity journey is enabled at build
-                          // time (see `armUiEnabled`), so a DARK build never exposes a live arm path
-                          // regardless of the backend BETA_SELF_SERVE_ARM_ENABLED flag.
-                          <>
-                            <select
-                              value={selAcct || ""}
-                              onChange={(e) => {
-                                const nextVal = e.target.value ? Number(e.target.value) : "";
-                                setSelectedAccount({ ...selectedAccount, [strategy.id]: nextVal });
-                              }}
-                              disabled={loadingAccounts}
-                              style={{
-                                width: "100%",
-                                padding: "0.5rem",
-                                borderRadius: 8,
-                                border: "1px solid rgba(255,255,255,0.15)",
-                                background: "rgba(10,16,35,0.6)",
-                                color: "#e2e8f0",
-                                fontSize: "0.85rem",
-                              }}
-                            >
-                              <option value="">{t(lang, "marketplace.selectAccount")}</option>
-                              {accounts.map((acc) => (
-                                <option key={acc.id} value={acc.id}>
-                                  {acc.name}
-                                  {acc.is_demo === false ? " (live)" : ""}
-                                </option>
-                              ))}
-                            </select>
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-                              <Button
-                                variant="primary"
-                                onClick={() =>
-                                  selAcct && selReady
-                                    ? handleSignalCopyArm(strategy.id, Number(selAcct))
-                                    : undefined
-                                }
-                                // Additionally gated on the selected account's runtime readiness
-                                // (the backend re-checks it authoritatively and returns runtime_not_ready).
-                                disabled={!isAuthed || !selAcct || !selReady || arming}
-                              >
-                                {arming
-                                  ? t(lang, "marketplace.armWorking")
-                                  : t(lang, "marketplace.armEnableTrading")}
-                              </Button>
-                              <Button variant="secondary" onClick={handlePreview}>
-                                {t(lang, "marketplace.preview")}
-                              </Button>
-                            </div>
-                            <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
-                              {selAcct && !selReady
-                                ? t(lang, "marketplace.armRuntimeNotReady")
-                                : t(lang, "marketplace.armSelectAccountHint")}
-                            </p>
-                          </>
                         ) : (
-                          // DARK default (broker-connectivity journey not enabled at build time): NO
-                          // interactive arm affordance — the backend arm endpoint stays unreachable
-                          // from the UI. Passive "not armed" hint only.
-                          <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
-                            {t(lang, "marketplace.copyNotArmedHint")}
-                          </p>
+                          // Not armed → WS-D: the readiness panel replaces the opaque "not armed" hint.
+                          // It ALWAYS renders (customer sees exactly what's needed via a ✓/✕ checklist +
+                          // one next action), backed by the read-only readiness endpoint. The Enable-
+                          // Trading button inside it appears only when the broker-connectivity journey is
+                          // built (armUiEnabled) AND the backend reports can_arm — so a DARK build shows
+                          // the guidance but never a live arm control.
+                          <SignalCopyReadiness
+                            lang={lang}
+                            marketplaceStrategyId={strategy.id}
+                            accounts={accounts}
+                            selectedAccountId={selAcct}
+                            onSelectAccount={(v) =>
+                              setSelectedAccount({ ...selectedAccount, [strategy.id]: v })
+                            }
+                            armUiEnabled={armUiEnabled}
+                            isAuthed={isAuthed}
+                            arming={arming}
+                            onArm={(id) => handleSignalCopyArm(strategy.id, id)}
+                          />
                         )}
                       </div>
                     );
