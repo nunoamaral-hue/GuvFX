@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Customer Journey Consolidation & Telegram Readiness — engineering-complete (2026-08-05); DARK; awaiting Sponsor gate
+Branch `feat/ipr-journey-consolidation` (base `dcea807`) makes `/accounts` the single canonical broker-account
+page, adds the read-only signal-copy readiness endpoint + `SignalCopyReadiness` panel (replacing "Not armed"),
+maps every arm refusal to customer-safe copy, and removes operator/backend terminology from customer copy —
+all behind default-OFF flags. `make check` green; adversarial review no-HIGH. **Bounded next action:** obtain
+the Sponsor decision to **merge this DARK** (on CI green) — nothing else. Browser acceptance with a disposable
+user is a SEPARATE, Sponsor-authorised packet and additionally depends on the still-outstanding environment
+gates (WP6B multi-tenant execution, `BETA_RUNTIMES_ENABLED` on a certified host + broker-login ACL,
+`BETA_SELF_SERVE_ARM_ENABLED` + `INTERNAL_PILOT_ARM_APPROVED_EMAILS`). Do NOT arm any flag or deploy here.
+
 ## ▶ Broker Connectivity Trusted Beta — WP5.4 ops package + WP6 certification PLAN COMPLETE (2026-08-04); DARK
 The full engineering plane (WP1A→WP5.3) is merged DARK; the WP5.4 operations-readiness package and the **WP6
 multi-tenant certification PLAN** are authored: `docs/operations/broker-connectivity/` (WP5.4 arming/rollback/

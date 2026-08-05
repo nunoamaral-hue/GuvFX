@@ -6,6 +6,22 @@
 
 ## Execution workstream log
 
+- **2026-08-05 — Customer Journey Consolidation & Telegram Readiness. Repository engineering; DARK; flags OFF. 🟢**
+  Branch `feat/ipr-journey-consolidation` (base main `dcea807`, 6 commits; NOT merged). **(A)** `/accounts` is
+  now the SINGLE canonical broker-account page (WP4 broker journey when the build flag is ON, legacy content
+  when OFF); `/broker-accounts` + `/broker-accounts/[id]` **permanently redirect** to `/accounts` + the new
+  `/accounts/[id]`; one nav entry; loop-safe (reverses the ADR-0031 AREA-C redirect). **(D/E)** new read-only,
+  ownership-scoped `GET /api/strategies/strategies/signal-copy/readiness/` (`_signal_copy_readiness`, reuses the
+  EXACT arm gates incl. cohort + single-tenant, so the panel can never over-promise) + `SignalCopyReadiness`
+  panel replacing the opaque "Not armed" with a ✓/✕ checklist + one customer-safe next action; the 7-state
+  customer account status model + full backend→state map + acceptance journey documented in
+  `docs/product/beta-journey-consolidation.md`. **(G)** five arm/toggle refusals that collapsed to a generic
+  "try again" now map to their own customer-safe copy. **(I)** removed operator/backend terminology + raw slugs
+  from the marketplace + accounts copy. `make check` green (backend **2633**, frontend **96** vitest, parity 42
+  routes/49 components, build OK). Independent adversarial review found ONE readiness/arm divergence
+  (single-tenant) which was fixed + test-pinned; no HIGH remaining. **Nothing deployed, no flag armed, no order
+  path; legacy/Nuno behaviour byte-identical with flags OFF.**
+
 - **2026-08-04 — WP6A Shared-Environment Operational Certification. Non-destructive; DARK; flags OFF. 🟢**
   Certified the engineered broker-connectivity capability BEHAVES CORRECTLY in the shared environment by
   EXECUTING the merged test suite (no destructive testing / no failure injection / no concurrency / no live
