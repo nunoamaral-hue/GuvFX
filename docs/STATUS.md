@@ -4,6 +4,14 @@
 > snapshot; deeper operational detail lives in `docs/RUNBOOK.md` and the handoff
 > docs.
 
+> **⚠ TRUTH CORRECTION (2026-08-05) — broker-login validation.** Some entries below (notably the
+> 2026-08-02 *"Broker Login Validation Primitive: HOST CERTIFICATION COMPLETE — production-ready"* line)
+> read as if a **live** broker login was certified. It was **not**: only the **credential-free** validation
+> path is host-certified; **no live credentialed `VALIDATE_LOGIN` has ever succeeded** (prod DB: 0
+> `HEALTHY`/`demo_ok`; every live attempt failed with `login_timeout`/`validation_runner_unavailable`). The
+> `demo_ok`/`HEALTHY` success appears only in **mocked** tests. Historical entries are retained as written;
+> for the corrected, authoritative wording see **`docs/VALIDATION_TRUTH_CORRECTION.md`**.
+
 ## Execution workstream log
 
 - **2026-08-05 (later) — Browser-product feedback incorporated (Sponsor-directed), still DARK. 🟢** On the same
