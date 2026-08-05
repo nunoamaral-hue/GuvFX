@@ -19,4 +19,19 @@ describe("ValidationHistoryTable", () => {
     render(<ValidationHistoryTable attempts={[]} />);
     expect(screen.getByText(/no validation attempts yet/i)).toBeInTheDocument();
   });
+
+  it("customer view hides the correlation ID; a concise outcome is shown", () => {
+    render(<ValidationHistoryTable attempts={[attempt({ correlation_id: "validate-acct-13-abc",
+      reason_code: "validation_ipc_unavailable", status: "UNAVAILABLE" })]} />);
+    expect(screen.queryByText("Correlation ID")).toBeNull();          // header not shown to customers
+    expect(screen.queryByText("validate-acct-13-abc")).toBeNull();    // correlation id never shown
+    expect(screen.getByText(/couldn't start the validation session/i)).toBeInTheDocument();  // concise outcome
+  });
+
+  it("staff view shows the correlation ID column", () => {
+    render(<ValidationHistoryTable staff attempts={[attempt({ correlation_id: "validate-acct-13-abc" })]} />);
+    expect(screen.getByText("Correlation ID")).toBeInTheDocument();
+    expect(screen.getByText("validate-acct-13-abc")).toBeInTheDocument();
+    expect(screen.getByText("Verified")).toBeInTheDocument();          // HEALTHY → "Verified" outcome
+  });
 });

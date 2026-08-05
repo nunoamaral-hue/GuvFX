@@ -14,6 +14,65 @@
 
 ## Execution workstream log
 
+- **2026-08-05 — Validation Reliability PHASE 4 (repository completion + terminology + honesty hardening). Repo eng; NOT deployed. 🟢**
+  Same branch/PR #289. Sponsor-approved audit + adversarial review (9-agent workflow). **OPTION C UPHELD** — an
+  adversarial lens mandated to overturn it on evidence alone could not: Option A is disconfirmed (2× `-10004` on
+  the shared host), Option B unsupported (#12 proves Session 0 *can* succeed), and the deciding **rate is still
+  unmeasured**; §7 threshold refined to also require the shared-load/concurrency sub-test before Option A.
+  **Terminology (WS-C):** `login_timeout` copy no longer says "the broker didn't respond" (it is transport-
+  ambiguous — neutral wording now); `validation_busy` given distinct customer wording + short outcome + explicit
+  timeline mapping (agent reached, broker not); `mt5_/bridge_/runtime_unavailable` given a proper short outcome.
+  **Classification (WS-C/agent):** `-10005` (RES_E_INTERNAL_FAIL_TIMEOUT — the internal-IPC-timeout sibling of
+  `-10004`) now classifies as `validation_ipc_unavailable`, not `login_timeout` (a broker over-attribution);
+  agent `manifest.json` regenerated (`2026-08-05.2`). **Consistency (WS-G):** `attempt_public()` no longer
+  leaks `correlation_id` to the customer (matches the Phase-3 serializer decision). All other `server_unavailable`
+  occurrences audited **Correct** (broker-reached). **Fidelity (WS-B):** per-stage state is DERIVED from
+  `reason_code` — documented, incl. the known limitation that pre-WS-A historical rows persisted as
+  `server_unavailable` will mis-render (immutable data; not rewritten). **Honesty (WS-B):** `browser_response`
+  label now "Returned the result to you" (the backend cannot evidence render). **UI (WS-A):** timeline page
+  surfaces the real error to staff (not the customer-sanitised wording), a11y contrast fixes, a ✓/✕/○ legend, a
+  correlation-id copy button, shared `Card`. **New docs:** `VALIDATION_RELIABILITY_EVIDENCE_MATRIX.md` (WS-E,
+  single source of truth), `operations/broker-connectivity/validation-failure-triage.md` (WS-D, locus diagnosis
+  without SSH). make check green. NOT deployed; no Windows-host change; no signing change; no live validations;
+  #12/#1 untouched.
+
+- **2026-08-05 — Validation Reliability PHASE 3 (support timeline UI + history + consistency + plan). Repo eng; NOT deployed. 🟢**
+  Same branch/PR #289. **Authoritative reliability recommendation = OPTION C (evidence insufficient)** — this
+  supersedes any earlier log phrasing (e.g. the 2026-08-02 entry's "next = run in an interactive session / VM"):
+  Session 0 both succeeded (#12) and failed (#13), the success/failure **rate is unmeasured**, so no
+  architecture change (no dedicated VM) is recommended until the controlled reliability test fails the §7
+  threshold. **WS-A** staff **Operations → Validation Timeline** page (`admin/operations/validation-timeline`,
+  `useAdminRole`-gated) + `ValidationTimelinePanel`, searchable by correlation / account / attempt id (backend
+  `resolve_correlation_id` + extended `GET /api/trading/validation-timeline/`). **WS-B** timeline enriched with
+  the committed OperationalEvent projection (read-only, no host access). **WS-C** dual-state (Current /
+  Latest-attempt / Last-successful) now also on `AccountCard`. **WS-D** `ValidationHistoryTable` redesigned
+  (status icon / time / outcome / summary; correlation-id column staff-only). **WS-E** `VALIDATION_IPC_RELIABILITY_INVESTIGATION.md`
+  restructured into Facts / Evidence / Hypotheses / Unknowns / Recommendations, each citing evidence, with an
+  executable test plan (pass/fail/evidence/sample/abort/recovery/threshold). make check green. NOT deployed;
+  no Windows-host change; no new live validations; #12/#1 untouched.
+
+- **2026-08-05 — Validation IPC misclassification + status-integrity split remediation (WS-A/B/C). Repo eng; NOT deployed. 🟢**
+  Branch `fix/validation-ipc-classification` (base `main`). **Root cause (primary host evidence):** the beta
+  validation for #13 failed with MT5 **`-10004 "No IPC connection"`** — the MetaTrader5 Python↔terminal *local*
+  IPC never came up (Session-0 GUI/window-station readiness), **before any broker contact**; the IS6 broker is
+  demonstrably up (operator traded on it manually). The agent then **mis-mapped** that local IPC failure to
+  `server_unavailable` (a broker outage). **WS-A (code):** agent `validate_login.classify_init_error` now routes
+  `-10004`/IPC-text to a dedicated `validation_ipc_unavailable`, narrows `server_unavailable` to genuine
+  broker-server-reached evidence, and sends ambiguous connection text to `could_not_verify`; backend `_TAXONOMY`
+  registers the new reason (UNAVAILABLE/retryable); frontend shows a customer-safe *"couldn't start the secure
+  broker-validation session … details weren't rejected … try again later / contact support"* with **no
+  immediate-retry** button (retry-storm prevention); agent integrity `manifest.json` regenerated (version
+  `2026-08-05.1`). **WS-C (code):** `run_broker_validation` no longer downgrades a durable **VALIDATED** status
+  on a NON-authoritative outcome (busy/host-IPC/transient) — this fixes the #12 flip (a `validation_busy` retry
+  had flipped Customer Zero VALIDATED→TECHNICAL_ERROR); the failed attempt is still recorded/shown as the latest.
+  **WS-B (diagnosis only, NO host change):** `docs/VALIDATION_IPC_RELIABILITY_INVESTIGATION.md` — #12-vs-#13
+  artefact comparison, ranked IPC hypotheses (Session-0 intermittency strongest), a credential-free controlled
+  test plan + reliability threshold. **Recommendation = OPTION C (evidence insufficient): a dedicated validation
+  VM is NOT recommended yet** — Session 0 both succeeded (#12) and failed (#13), so the reliability rate is
+  unquantified; recommend a VM only if the controlled test fails the threshold.
+  `make check` green (backend 2652 / frontend 126 / lint 0-err). **NOT deployed; no Windows-host change; #12/#1
+  untouched.**
+
 - **2026-08-05 — Validation-UX packet (Sponsor-directed). Repository engineering; NOT deployed. 🟢**
   Branch `fix/validation-ux-timeout` (base `main`), PR #288 — extends the earlier "Failed to fetch" fix into a
   complete validation interaction. **(1) Root cause** of the customer-visible `Failed to fetch` = gunicorn

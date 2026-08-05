@@ -38,6 +38,25 @@ _STATUS_MAP = {
     "UNAVAILABLE": TradingAccount.ValidationStatus.TECHNICAL_ERROR,
 }
 
+# WS-C (2026-08-05) — outcomes that are NOT a verdict on the customer's credential or on the broker: they mean
+# "the check could not be completed" (host/platform/transient — the validation host's MT5 IPC was unavailable,
+# the single-flight validator was busy, a runner/agent platform fault, etc.). Such an outcome must NEVER
+# downgrade a previously-successful validation — a busy / host-IPC-unavailable / could-not-verify attempt is
+# not evidence the credential went bad. A prior VALIDATED account keeps VALIDATED (and its ``validated_at``);
+# the failed attempt is still recorded in the append-only history and shown as the latest attempt. This is the
+# exact set of UNAVAILABLE-bucket reasons in ``terminal_provisioning.broker_login_validation._TAXONOMY`` (a
+# consistency test guards the two from drifting). Authoritative verdicts — HEALTHY, or a real credential/broker
+# rejection (invalid_password/invalid_login/account_disabled/server_not_found/classification_mismatch/
+# credential_missing/broker_server_missing) — are deliberately EXCLUDED, so they still update the durable status.
+_NON_AUTHORITATIVE_REASONS = frozenset({
+    "validation_ipc_unavailable", "validation_busy", "validation_unconfigured", "could_not_verify",
+    "login_timeout", "server_unavailable", "bridge_unavailable", "mt5_unavailable", "runtime_unavailable",
+    "validation_runner_unavailable", "validation_runner_timeout", "diagnostic_capture_failed",
+    "credential_scrub_unverified", "validation_baseline_dirty", "isolation_check_failed",
+    "credential_unsealable", "impl_integrity_mismatch", "payload_missing", "payload_digest_mismatch",
+    "agent_internal_error",
+})
+
 
 def _make_validator():
     """Production validator resolves its signed channel + agent base URL from settings/env, exactly like
@@ -82,7 +101,16 @@ def run_broker_validation(account, *, trigger, actor="", request=None, validator
     )
 
     # Durable per-account state — customer-flow only (see module docstring).
-    account.validation_status = _STATUS_MAP.get(status, TradingAccount.ValidationStatus.TECHNICAL_ERROR)
+    reason = str(d.get("reason") or "")
+    new_status = _STATUS_MAP.get(status, TradingAccount.ValidationStatus.TECHNICAL_ERROR)
+    # WS-C: preserve the last successful validation. A non-authoritative outcome (see _NON_AUTHORITATIVE_REASONS)
+    # against an already-VALIDATED account must not overwrite the durable VALIDATED status — the attempt is still
+    # persisted above (so the history / latest-attempt view reflects it), but the badge stays "Validated".
+    was_validated = (account.validation_status == TradingAccount.ValidationStatus.VALIDATED
+                     and account.validated_at is not None)
+    if status != "HEALTHY" and was_validated and reason in _NON_AUTHORITATIVE_REASONS:
+        new_status = TradingAccount.ValidationStatus.VALIDATED
+    account.validation_status = new_status
     update_fields = ["validation_status", "updated_at"]
     if status == "HEALTHY":
         account.validated_at = timezone.now()
@@ -197,7 +225,11 @@ def disconnect_account(account, *, actor="", request=None) -> dict:
 
 
 def attempt_public(attempt) -> dict:
-    """The secret-safe public projection of a validation attempt (no account internals)."""
+    """The secret-safe, CUSTOMER-facing public projection of a validation attempt (no account internals).
+    Phase-4 WS-C (S2): ``correlation_id`` is an operator diagnostic and is deliberately NOT included — this
+    dict is returned to the customer on the replace-credentials flow, and it must match the customer-facing
+    ``BrokerValidationAttemptSerializer`` allow-list (which dropped correlation_id in WS-P3). The staff
+    validation-timeline endpoint reads the correlation id from the model directly (staff-gated)."""
     return {
         "id": attempt.id,
         "trigger": attempt.trigger,
@@ -207,6 +239,5 @@ def attempt_public(attempt) -> dict:
         "is_demo": attempt.is_demo,
         "server": attempt.server,
         "login_masked": attempt.login_masked,
-        "correlation_id": attempt.correlation_id,
         "created_at": attempt.created_at.isoformat() if attempt.created_at else None,
     }

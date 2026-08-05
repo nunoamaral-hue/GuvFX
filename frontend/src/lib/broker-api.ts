@@ -5,6 +5,7 @@
 import { apiFetch } from "@/lib/api";
 import type {
   BrokerAccount, BrokerStatus, DisconnectResult, ReplaceCredentialsResult, ValidationAttempt,
+  ValidationTimeline,
 } from "@/types/broker";
 
 const BASE = "/api/trading/accounts";
@@ -65,6 +66,18 @@ export function replaceCredentials(
 
 export function disconnectAccount(id: number): Promise<DisconnectResult> {
   return apiFetch<DisconnectResult>(`${BASE}/${id}/broker/disconnect/`, { method: "POST" });
+}
+
+/** WS-D/Phase-3 — staff-only validation timeline. Search by ONE of correlation id / account id / attempt id.
+ * The backend enforces IsAdminUser + darkness; this is a thin client. */
+export function getValidationTimeline(
+  params: { correlationId?: string; accountId?: string; attemptId?: string },
+): Promise<ValidationTimeline> {
+  const q = new URLSearchParams();
+  if (params.correlationId) q.set("correlation_id", params.correlationId.trim());
+  if (params.accountId) q.set("account_id", params.accountId.trim());
+  if (params.attemptId) q.set("attempt_id", params.attemptId.trim());
+  return apiFetch<ValidationTimeline>(`${BASE}/validation-timeline/?${q.toString()}`);
 }
 
 export function createAccount(input: {

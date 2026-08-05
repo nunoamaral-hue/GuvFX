@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { StatusBadge } from "@/components/broker/StatusBadge";
 import type { BrokerAccount, BrokerStatus } from "@/types/broker";
 import {
-  connectionView, lastValidatedLine, maskAccountNumber, validationStatusView,
+  connectionView, lastValidatedLine, latestAttemptLine, maskAccountNumber, validationStatusView,
 } from "@/lib/broker-status";
 
 /** WP4.2 — one broker account summary. `status` (from broker/status) is optional: while it loads, or if
@@ -50,8 +50,11 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading })
             </>}
       </div>
 
-      <div style={{ ...row, justifyContent: "space-between" }}>
-        <span style={meta}>{lastValidatedLine(status?.validation_status, status?.validated_at)}</span>
+      {/* WS-C — Current validation state (badge above), Last successful validation, and Latest attempt are
+          three DISTINCT concepts; the card keeps them separate (never merged). */}
+      <div style={meta}>{lastValidatedLine(status?.validation_status, status?.validated_at)}</div>
+      <div style={{ ...row, justifyContent: "space-between", marginTop: 2 }}>
+        <span style={meta}>{latestAttemptLine(status?.latest_attempt, status?.validation_status) || " "}</span>
         <Link href={`/accounts/${account.id}`}
               style={{ color: "#93c5fd", fontSize: "0.85rem", textDecoration: "none" }}
               aria-label={`Manage ${account.name || broker}`}>Manage →</Link>

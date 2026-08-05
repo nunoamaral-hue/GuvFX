@@ -11,6 +11,7 @@
   "src/app/(app)/admin/operations/page.tsx",
   "src/app/(app)/admin/operations/payments/page.tsx",
   "src/app/(app)/admin/operations/reconciliation/page.tsx",
+  "src/app/(app)/admin/operations/validation-timeline/page.tsx",
   "src/app/(app)/admin/operations/workers/page.tsx",
   "src/app/(app)/analytics/strategy-lab/page.tsx",
   "src/app/(app)/analytics/strategy-metrics/page.tsx",

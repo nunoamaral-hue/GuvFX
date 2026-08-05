@@ -109,6 +109,20 @@ def classify_init_error(code, text: str) -> str:
         c = int(code)
     except (TypeError, ValueError):
         c = None
+    # LOCAL validation-host / MT5-terminal IPC failure (2026-08-05 incident, WS-A). The MetaTrader5 Python
+    # package could not establish its IPC channel to ITS OWN terminal process — this happens BEFORE any broker
+    # is contacted (a Session-0 GUI/window-station readiness condition), so it is a PLATFORM/host fault, never
+    # a broker outage and never the customer's credentials. MT5 code -10004 is RES_E_INTERNAL_FAIL_CONNECT (the
+    # Python↔terminal IPC connect, ALWAYS local); its canonical texts are "No IPC connection"/"IPC timeout"/
+    # "IPC initialize failed"/"IPC recv failed". Kept FIRST so a generic "connection"/"network" token can never
+    # mis-route a local IPC failure to a broker reason (the exact defect this replaces).
+    # -10004 = RES_E_INTERNAL_FAIL_CONNECT and -10005 = RES_E_INTERNAL_FAIL_TIMEOUT are BOTH members of the
+    # local RES_E_INTERNAL_FAIL_* IPC family (the Python↔terminal channel connecting / timing out) — an
+    # INTERNAL timeout, never a broker/login timeout. Both handled here, FIRST — before the generic text
+    # "timeout" rule below — so a local IPC timeout can never be mis-routed to ``login_timeout`` (Phase-4 WS-C).
+    if c == -10004 or c == -10005 or "no ipc" in t or "ipc connection" in t or "ipc timeout" in t \
+            or "ipc initialize" in t or "ipc recv" in t or "ipc send" in t:
+        return "validation_ipc_unavailable"
     if "invalid account" in t or ("account" in t and "not found" in t):
         return "invalid_login"
     if "disabled" in t or "blocked" in t or "closed" in t:
@@ -119,14 +133,18 @@ def classify_init_error(code, text: str) -> str:
         return "login_timeout"
     if "unknown server" in t or "server not found" in t or ("server" in t and "not found" in t):
         return "server_not_found"
-    if "no connection" in t or "no ipc" in t or "connect" in t or "network" in t or "connection" in t:
+    # BROKER server reached and reported unavailable — REQUIRE broker-server-specific evidence (the server is
+    # named AND an availability failure), NOT a bare "connect"/"network" token (which more often reflects a
+    # local/host problem and must never be blamed on the broker). ``server_unavailable`` is preserved ONLY here.
+    if "server" in t and ("unavailable" in t or "not responding" in t or "is busy" in t
+                          or "no connection to" in t or "connection to trade server" in t):
         return "server_unavailable"
     if c == -6:                      # RES_E_AUTH_FAILED with no clearer text — an auth-layer rejection
         return "invalid_password"
-    if c == -10005:                  # RES_E_INTERNAL_FAIL_TIMEOUT
-        return "login_timeout"
-    if c == -10004:                  # RES_E_INTERNAL_FAIL_CONNECT
-        return "server_unavailable"
+    # (-10005 RES_E_INTERNAL_FAIL_TIMEOUT is handled at the TOP as a local IPC-family failure, not here — it
+    #  is an internal IPC timeout, never a broker/login timeout; Phase-4 WS-C.)
+    # A bare "connection"/"network" token with no IPC marker and no broker-server evidence is ambiguous — stay
+    # conservative (retryable, blames neither the broker nor the customer) rather than assert a broker outage.
     return "could_not_verify"
 
 

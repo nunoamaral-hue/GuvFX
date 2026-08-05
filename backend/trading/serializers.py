@@ -117,13 +117,16 @@ class TradingAccountSerializer(serializers.ModelSerializer):
 
 class BrokerValidationAttemptSerializer(serializers.ModelSerializer):
     """WP1A (ADR-0028) — secret-safe projection of a broker-login validation attempt. Read-only; the
-    field set is the ADR-0027 allow-list only (no password / ciphertext / envelope / host path)."""
+    field set is the ADR-0027 allow-list only (no password / ciphertext / envelope / host path).
+    WS-P3: ``correlation_id`` is NOT exposed on this customer-facing serializer — it is an operator diagnostic
+    identifier of no customer use, and shipping it in the customer's JSON contradicts the customer-safety
+    guarantee. The staff validation-timeline endpoint reads it from the model directly (staff-gated)."""
 
     class Meta:
         model = BrokerAccountValidationAttempt
         fields = [
             "id", "trigger", "status", "reason_code", "retryable", "is_demo",
-            "server", "login_masked", "correlation_id", "created_at",
+            "server", "login_masked", "created_at",
         ]
         read_only_fields = fields
 

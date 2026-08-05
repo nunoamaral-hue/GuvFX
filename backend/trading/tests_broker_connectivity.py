@@ -171,6 +171,10 @@ class StatusHistoryTests(TestCase):
         self.assertEqual(len(hist_resp.data), 2)
         # newest first
         self.assertEqual(hist_resp.data[0]["trigger"], "retry")
+        # review WS-P3 finding 3: correlation_id is an operator diagnostic and must NOT appear on the
+        # customer-facing attempt projection (status.latest_attempt or the history rows).
+        self.assertNotIn("correlation_id", status_resp.data["latest_attempt"])
+        self.assertNotIn("correlation_id", hist_resp.data[0])
 
 
 class ReplaceCredentialsTests(TestCase):
@@ -193,6 +197,22 @@ class ReplaceCredentialsTests(TestCase):
         with mock.patch.dict(os.environ, _ON):
             resp = _call("post", "bc_replace_credentials", self.user, self.acct.pk, {})
         self.assertEqual(resp.status_code, 400)
+
+    def test_attempt_public_excludes_correlation_id(self):
+        # Phase-4 WS-C (S2): attempt_public() is the CUSTOMER-facing projection returned on the
+        # replace-credentials flow — it must match the customer serializer's allow-list and NOT leak the
+        # operator-only correlation id (the Phase-3 decision that removed it from BrokerValidationAttemptSerializer).
+        from trading.broker_connectivity import attempt_public
+        att = BrokerAccountValidationAttempt.objects.create(
+            account=self.acct, trigger="replace", status="UNAVAILABLE", reason_code="validation_ipc_unavailable",
+            retryable=True, is_demo=None, server="IS6Technologies-Demo", login_masked="***344",
+            correlation_id="corr-should-not-leak")
+        pub = attempt_public(att)
+        self.assertNotIn("correlation_id", pub)
+        self.assertNotIn("corr-should-not-leak", str(pub))
+        # the customer-safe fields ARE present
+        self.assertEqual(pub["reason_code"], "validation_ipc_unavailable")
+        self.assertEqual(pub["login_masked"], "***344")
 
 
 class DisconnectTombstoneTests(TestCase):
@@ -248,3 +268,86 @@ class ServiceUnitTests(TestCase):
         result = bc.disconnect_account(self.acct)
         self.assertTrue(result["disconnected"])
         self.assertFalse(result["credential_destroyed"])  # already cleared
+
+
+_BUSY = {"status": "UNAVAILABLE", "reason": "validation_busy", "retryable": True,
+         "server": "IS6Technologies-Demo", "login_masked": "***344", "is_demo": None, "correlation_id": "corr-busy"}
+_IPC = {"status": "UNAVAILABLE", "reason": "validation_ipc_unavailable", "retryable": True,
+        "server": "IS6Technologies-Demo", "login_masked": "***344", "is_demo": None, "correlation_id": "corr-ipc"}
+
+
+class StatusPreservationTests(TestCase):
+    """WS-C (2026-08-05): a NON-authoritative outcome (busy / host-IPC-unavailable / could-not-verify) must not
+    downgrade a durable prior success. This is the exact #12 defect — a validation_busy retry flipped a
+    previously VALIDATED account to TECHNICAL_ERROR."""
+
+    def setUp(self):
+        self.user = U.objects.create_user(username="wsc", email="wsc@x.invalid", password="x")
+        self.acct = _acct(self.user)
+
+    def _validate(self, outcome):
+        return bc.run_broker_validation(self.acct, trigger="retry", validator=_FakeValidator(outcome))
+
+    def _make_validated(self):
+        self._validate(_HEALTHY)
+        self.acct.refresh_from_db()
+        self.assertEqual(self.acct.validation_status, TradingAccount.ValidationStatus.VALIDATED)
+        self.assertIsNotNone(self.acct.validated_at)
+        return self.acct.validated_at
+
+    def test_validation_busy_does_not_downgrade_validated(self):
+        prior = self._make_validated()
+        attempt = self._validate(_BUSY)
+        self.acct.refresh_from_db()
+        self.assertEqual(self.acct.validation_status, TradingAccount.ValidationStatus.VALIDATED)  # preserved
+        self.assertEqual(self.acct.validated_at, prior)                                            # unchanged
+        self.assertEqual(attempt.reason_code, "validation_busy")                                   # still recorded
+        self.assertEqual(attempt.status, "UNAVAILABLE")
+
+    def test_ipc_unavailable_does_not_downgrade_validated(self):
+        prior = self._make_validated()
+        self._validate(_IPC)
+        self.acct.refresh_from_db()
+        self.assertEqual(self.acct.validation_status, TradingAccount.ValidationStatus.VALIDATED)
+        self.assertEqual(self.acct.validated_at, prior)
+
+    def test_credential_rejection_still_downgrades_validated(self):
+        self._make_validated()
+        self._validate(_REJECT)  # invalid_password — an AUTHORITATIVE verdict on the credential
+        self.acct.refresh_from_db()
+        self.assertEqual(self.acct.validation_status, TradingAccount.ValidationStatus.CONNECTION_FAILED)
+
+    def test_never_account_ipc_unavailable_is_technical_error(self):
+        # No prior success to preserve → an infra failure records TECHNICAL_ERROR (unchanged behaviour).
+        self.assertEqual(self.acct.validation_status, TradingAccount.ValidationStatus.NEVER)
+        self._validate(_IPC)
+        self.acct.refresh_from_db()
+        self.assertEqual(self.acct.validation_status, TradingAccount.ValidationStatus.TECHNICAL_ERROR)
+        self.assertIsNone(self.acct.validated_at)
+
+    def test_latest_attempt_recorded_even_when_status_preserved(self):
+        self._make_validated()
+        self._validate(_BUSY)
+        attempts = list(self.acct.validation_attempts.all())   # newest-first
+        self.assertEqual(attempts[0].reason_code, "validation_busy")
+        self.assertEqual(attempts[-1].reason_code, "demo_ok")
+
+    def test_non_authoritative_set_covers_every_unavailable_taxonomy_reason(self):
+        # Drift guard: every platform (UNAVAILABLE) reason the agent can return must be non-authoritative, else a
+        # transient platform failure could silently downgrade a durable VALIDATED state.
+        from terminal_provisioning.broker_login_validation import UNAVAILABLE, _TAXONOMY
+        unavailable = {r for r, (st, _rt) in _TAXONOMY.items() if st == UNAVAILABLE}
+        missing = unavailable - bc._NON_AUTHORITATIVE_REASONS
+        self.assertEqual(missing, set(), f"UNAVAILABLE taxonomy reasons not marked non-authoritative: {missing}")
+        # AND the SAFETY-CRITICAL reverse: the non-authoritative set must contain NOTHING outside the UNAVAILABLE
+        # bucket. An AUTHORITATIVE reason (invalid_password/invalid_login/account_disabled/server_not_found/
+        # classification_mismatch/credential_missing/broker_server_missing) sneaking in here would PRESERVE
+        # VALIDATED on a genuine credential/broker REJECTION — leaving the account execution-eligible with a
+        # just-rejected credential (evaluate_execution_gate treats VALIDATED as GATE_OK). Enforce EXACT equality.
+        extra = bc._NON_AUTHORITATIVE_REASONS - unavailable
+        self.assertEqual(extra, set(), f"non-authoritative reasons outside the UNAVAILABLE bucket: {extra}")
+
+    def test_validation_ipc_unavailable_registered_in_taxonomy(self):
+        from terminal_provisioning.broker_login_validation import UNAVAILABLE, _TAXONOMY
+        self.assertIn("validation_ipc_unavailable", _TAXONOMY)
+        self.assertEqual(_TAXONOMY["validation_ipc_unavailable"], (UNAVAILABLE, True))

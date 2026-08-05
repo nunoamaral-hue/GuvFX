@@ -15,14 +15,14 @@
     "win_mutations.py": "38258c11a89ad4d9251d990d48d2d005a230d24317761844f8f7f81dcae0b626",
     "lifecycle.py": "192b1d0e803fccd54a077a4bba6d67e2fc70bb9e0634b826a24a85445b454fbf",
     "broker_cred_envelope.py": "a35932c639e2cab83cb3587bf03295d2fd4711e2fb6197ff25aa474bc8c47f28",
-    "validate_login.py": "f84f646caa0dc3fa9705cc7a4fe723cb0f9147e29e1cca55108a6757b1bd59db",
+    "validate_login.py": "f8d9cd5f84801f1702e1bef7c822b6c69d42f19d8c9bf00d80dd771b3e8ce735",
     "validation_handoff.py": "ce22673445fe8c13738cfa6bb7da7cedc16b98a2d906f610015541a220c59115",
     "validation_runner.py": "0b29b3fd7ceb783167e8123c34958618f29a729cc2bec4cdbbb6330d17fdb43e",
     "validation_diagnostics.py": "8441b695f89bd93dcbabf83eaf5d61d16b57070215e1c743caccf5b7248bc31d",
     "lib/mgmt_protocol.py": "d5e59b362c8d34258b53a1844f95a609ba4d8c9d882b17492455e746a2327b3b",
     "lib/mgmt_agent_core.py": "ea8e037ef287728c8187e528e2eb4d17ed74371ebbee64139d04ca64322a4110"
   },
-  "manifest_version": "2026-08-03.3",
+  "manifest_version": "2026-08-05.2",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",

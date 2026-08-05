@@ -182,8 +182,14 @@ class TaxonomyTests(SimpleTestCase):
         (None, "Invalid account"): "invalid_login",
         (None, "Account disabled"): "account_disabled",
         (-6, ""): "invalid_password",
-        (-10005, ""): "login_timeout",
-        (-10004, ""): "server_unavailable",
+        # Phase-4 WS-C: -10005 is RES_E_INTERNAL_FAIL_TIMEOUT — the LOCAL IPC call timing out, the sibling of
+        # -10004. It is an INTERNAL timeout, never a broker/login timeout, so it maps to validation_ipc_
+        # unavailable (was mislabelled login_timeout, which renders as a broker outage).
+        (-10005, ""): "validation_ipc_unavailable",
+        # WS-A (2026-08-05): -10004 is RES_E_INTERNAL_FAIL_CONNECT — the LOCAL Python↔terminal IPC connect,
+        # BEFORE any broker contact. It must never be reported as a broker outage (was "server_unavailable").
+        (-10004, ""): "validation_ipc_unavailable",
+        # A NAMED broker server that is unreachable IS a genuine broker-server-unavailable result (preserved).
         (None, "No connection to trade server"): "server_unavailable",
         (None, "unknown server"): "server_not_found",
         (999, "some brand-new text"): "could_not_verify",
@@ -526,3 +532,60 @@ class CrossSideParityTests(SimpleTestCase):
                                    recipient_public_key=_PRIV.public_key())
         self.assertEqual(cred.open_envelope(sealed, aad=aad, recipient_private_key=_PRIV),
                          SECRET.encode())
+
+
+class TestClassifyInitErrorIpc(SimpleTestCase):
+    """WS-A (2026-08-05) — a LOCAL MT5 IPC failure (Python↔terminal, pre-broker) must never be reported as a
+    broker outage. ``server_unavailable`` is preserved ONLY for genuine broker-server-reached evidence."""
+
+    def test_no_ipc_connection_is_never_server_unavailable(self):
+        # The exact attempt #7 evidence: MT5 initialize failed with (-10004, "No IPC connection").
+        self.assertEqual(vl.classify_init_error(-10004, "No IPC connection"), "validation_ipc_unavailable")
+
+    def test_code_minus_10004_always_local_ipc_regardless_of_text(self):
+        for text in ("", "No IPC connection", "connection to server lost", "something unexpected"):
+            self.assertEqual(vl.classify_init_error(-10004, text), "validation_ipc_unavailable")
+            self.assertNotEqual(vl.classify_init_error(-10004, text), "server_unavailable")
+
+    def test_ipc_text_markers_map_local_even_without_code(self):
+        for text in ("No IPC connection", "IPC timeout", "IPC initialize failed", "IPC recv failed",
+                     "no ipc connection"):
+            self.assertEqual(vl.classify_init_error(None, text), "validation_ipc_unavailable")
+
+    def test_genuine_broker_server_unavailable_is_preserved(self):
+        # Broker-server-reached-and-unavailable evidence still maps to server_unavailable.
+        for text in ("Trade server is unavailable", "No connection to trade server",
+                     "Trade server is busy", "Server is not responding"):
+            self.assertEqual(vl.classify_init_error(None, text), "server_unavailable")
+
+    def test_credential_and_config_reasons_unchanged(self):
+        self.assertEqual(vl.classify_init_error(None, "Invalid password"), "invalid_password")
+        self.assertEqual(vl.classify_init_error(-6, ""), "invalid_password")
+        self.assertEqual(vl.classify_init_error(None, "Invalid account"), "invalid_login")
+        self.assertEqual(vl.classify_init_error(None, "account disabled"), "account_disabled")
+        self.assertEqual(vl.classify_init_error(None, "Unknown server"), "server_not_found")
+        # Phase-4 WS-C: a GENERIC text timeout (no IPC marker, no code) remains login_timeout — the ambiguous
+        # bucket (its customer wording is now broker-neutral). The CODE -10005 is handled separately below.
+        self.assertEqual(vl.classify_init_error(None, "connection timed out"), "login_timeout")
+
+    def test_code_minus_10005_is_local_ipc_not_broker_timeout(self):
+        # Phase-4 WS-C: -10005 (RES_E_INTERNAL_FAIL_TIMEOUT) is the internal-IPC-timeout sibling of -10004 —
+        # a LOCAL timeout, never a broker/login timeout. It must classify as validation_ipc_unavailable
+        # (previously mislabelled login_timeout, which renders to the customer as a broker outage), regardless
+        # of accompanying text, and must NEVER become a broker reason.
+        for text in ("", "timeout", "connection timed out", "network"):
+            self.assertEqual(vl.classify_init_error(-10005, text), "validation_ipc_unavailable", text)
+            self.assertNotIn(vl.classify_init_error(-10005, text), {"login_timeout", "server_unavailable"}, text)
+
+    def test_ambiguous_connection_text_is_conservative_not_broker_blame(self):
+        # A bare connection/network token, no IPC marker and no broker-server evidence → could_not_verify
+        # (never a false broker outage, never a credential blame).
+        for text in ("connection reset", "network error", "connect failed"):
+            self.assertEqual(vl.classify_init_error(None, text), "could_not_verify")
+            self.assertNotEqual(vl.classify_init_error(None, text), "server_unavailable")
+
+    def test_local_ipc_inputs_never_yield_server_unavailable(self):
+        # Regression sweep: no local-IPC evidence may ever be classified as a broker outage.
+        for code, text in [(-10004, "No IPC connection"), (-10004, ""), (None, "IPC timeout"),
+                           (None, "no ipc connection"), (-10004, "network")]:
+            self.assertNotEqual(vl.classify_init_error(code, text), "server_unavailable")
