@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { notFound, useParams } from "next/navigation";
 import {
-  getAccount, getBrokerStatus, getValidationHistory, retryValidation, testConnection,
+  getAccount, getBrokerStatus, getValidationHistory, recoverAttemptAfterTransportFailure,
+  retryValidation, testConnection,
 } from "@/lib/broker-api";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -27,7 +28,7 @@ const Spinner: React.FC = () => (
 );
 import {
   connectionView, lastValidatedLine, maskAccountNumber, reasonMessage, toCustomerError,
-  validationStatusView,
+  validationActions, validationStatusView, type ValidationActionKind,
 } from "@/lib/broker-status";
 import type { BrokerAccount, BrokerStatus, ValidationAttempt } from "@/types/broker";
 
@@ -44,13 +45,17 @@ export function BrokerAccountDetailContent() {
   const [history, setHistory] = useState<ValidationAttempt[] | null>(null);
   const [error, setError] = useState("");
   // Validation runs in a modal (never an inline hang): opens immediately with a spinner, then shows a
-  // success/failure result. Every failure path is customer-safe (no raw "Failed to fetch"/exception text).
+  // success/failure result WITH a contextual next action (never a dead-end "dismiss"). Every failure path
+  // is customer-safe (no raw "Failed to fetch"/exception text, no DRF/model internals).
   type ValModal =
     | { open: false }
     | { open: true; phase: "running"; kind: "test" | "retry" }
-    | { open: true; phase: "done"; kind: "test" | "retry"; ok: boolean; text: string };
+    | { open: true; phase: "done"; kind: "test" | "retry"; ok: boolean; text: string; actions: ValidationActionKind[] };
   const [valModal, setValModal] = useState<ValModal>({ open: false });
   const running = valModal.open && valModal.phase === "running";
+  // Duplicate-click guard: blocks a second validation firing in the same tick (before `running` disables the
+  // buttons on re-render), so one click can only ever create one attempt.
+  const inFlightRef = useRef(false);
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [disconnectOpen, setDisconnectOpen] = useState(false);
 
@@ -69,23 +74,59 @@ export function BrokerAccountDetailContent() {
   }, [id]);
 
   // Standard load-on-mount/reload: load() resets to a loading state then fetches (intended data-fetch pattern).
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (Number.isFinite(id)) void load(); }, [id, load]);
 
+  // Refresh the durable status + history so the page reflects the persisted attempt.
+  const refreshStatusAndHistory = async () => {
+    const [st, hist] = await Promise.all([
+      getBrokerStatus(id).catch(() => null),
+      getValidationHistory(id).catch(() => history || []),
+    ]);
+    setStatus(st); setHistory(hist);
+  };
+
+  // Render a completed attempt as the modal's result, with a contextual next action.
+  const presentAttempt = (kind: "test" | "retry", attempt: ValidationAttempt) => {
+    const ok = attempt.status === "HEALTHY";
+    setValModal({
+      open: true, phase: "done", kind, ok,
+      text: ok
+        ? "Your broker connection is verified."
+        : (reasonMessage(attempt.reason_code) || "We couldn't verify the connection. Please try again shortly."),
+      actions: ok ? [] : validationActions(attempt.reason_code),
+    });
+  };
+
   const runValidation = async (kind: "test" | "retry") => {
-    setValModal({ open: true, phase: "running", kind });   // modal opens immediately with the spinner
+    if (inFlightRef.current) return;                         // duplicate-click guard (pre-render)
+    inFlightRef.current = true;
+    // Newest attempt id BEFORE the call — lets a graceful reconnect tell a genuinely-new completed attempt
+    // apart from the ones already on screen.
+    const beforeMaxId = (history || []).reduce((m, a) => Math.max(m, a.id), 0);
+    setValModal({ open: true, phase: "running", kind });     // modal opens immediately with the spinner
     try {
       const attempt = kind === "test" ? await testConnection(id) : await retryValidation(id);
-      // refresh the durable status + history so the page reflects the persisted attempt
-      const [st, hist] = await Promise.all([getBrokerStatus(id).catch(() => null), getValidationHistory(id).catch(() => history || [])]);
-      setStatus(st); setHistory(hist);
-      const ok = attempt.status === "HEALTHY";
-      setValModal({ open: true, phase: "done", kind, ok,
-        text: ok ? "Your broker connection is verified." : (reasonMessage(attempt.reason_code) || "We couldn't verify the connection. Please try again shortly.") });
+      await refreshStatusAndHistory();
+      presentAttempt(kind, attempt);
     } catch (err) {
-      // Any transport/timeout/exception path — customer-safe only (toCustomerError never leaks raw errors).
-      setValModal({ open: true, phase: "done", kind, ok: false,
-        text: toCustomerError(err, "We couldn't complete the connection check. Please try again shortly.") });
+      // Transport failure (dropped/reset/timed-out connection). The backend may have COMPLETED and committed
+      // the attempt anyway — try to recover the real result before falling back to a transient message.
+      if ((err as { kind?: string } | null)?.kind === "network") {
+        const recovered = await recoverAttemptAfterTransportFailure(id, beforeMaxId);
+        if (recovered) {
+          await refreshStatusAndHistory();
+          presentAttempt(kind, recovered);
+          return;
+        }
+      }
+      // Not recoverable → customer-safe wording + a retry affordance (never a raw error, never a dead end).
+      setValModal({
+        open: true, phase: "done", kind, ok: false,
+        text: toCustomerError(err, "We couldn't complete the connection check. Please try again shortly."),
+        actions: ["retry"],
+      });
+    } finally {
+      inFlightRef.current = false;
     }
   };
 
@@ -164,8 +205,17 @@ export function BrokerAccountDetailContent() {
               <span aria-hidden style={{ fontSize: "1.3rem", lineHeight: 1.2, color: valModal.ok ? "#22c55e" : "#f59e0b" }}>{valModal.ok ? "✓" : "○"}</span>
               <div style={{ color: "#e2e8f0", fontSize: "0.95rem" }}>{valModal.text}</div>
             </div>
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <Button onClick={() => setValModal({ open: false })}>Dismiss</Button>
+            {/* Never a dead-end dismiss: offer the appropriate next action (Try again / Replace credentials)
+                alongside Close. Support-only / success outcomes carry their guidance in the message above. */}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <Button variant={valModal.actions.length ? "secondary" : undefined}
+                      onClick={() => setValModal({ open: false })}>Close</Button>
+              {valModal.actions.includes("replace") && (
+                <Button onClick={() => { setValModal({ open: false }); setReplaceOpen(true); }}>Replace credentials</Button>
+              )}
+              {valModal.actions.includes("retry") && (
+                <Button onClick={() => void runValidation(valModal.kind)}>Try again</Button>
+              )}
             </div>
           </div>
         )}

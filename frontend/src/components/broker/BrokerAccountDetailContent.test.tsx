@@ -1,6 +1,6 @@
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 
 /** Internal-pilot broker-validation remediation (packet WS-G/H/K).
  *
@@ -13,7 +13,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
  */
 const api = vi.hoisted(() => ({
   getAccount: vi.fn(), getBrokerStatus: vi.fn(), getValidationHistory: vi.fn(),
-  testConnection: vi.fn(), retryValidation: vi.fn(),
+  testConnection: vi.fn(), retryValidation: vi.fn(), recoverAttemptAfterTransportFailure: vi.fn(),
 }));
 vi.mock("@/lib/broker-api", () => api);
 vi.mock("next/navigation", () => ({
@@ -78,15 +78,77 @@ describe("BrokerAccountDetailContent — honest validation status (WS-G/H/K)", (
       expect(document.body.textContent).toMatch(/broker validation isn't available for your account/i));
     expect(document.body.textContent).toMatch(/weren't changed/i);
     expect(document.body.textContent).not.toMatch(/check your details/i);
+    // Support-only outcome: guidance is in the message; NO misleading in-modal action, and never a dead end.
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByRole("button", { name: /Try again/i })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: /Replace credentials/i })).toBeNull();
+    // The footer Close button (distinct from the header "×", whose accessible name is also "Close").
+    expect(within(dialog).getByText("Close")).toBeInTheDocument();
   });
 
-  it("shows a customer-safe message on a transport failure — NEVER 'Failed to fetch'", async () => {
-    // The gunicorn-killed request surfaces as a tagged network error; the modal must stay customer-safe.
+  it("recovers-or-safe-messages on transport failure — NEVER 'Failed to fetch', offers Try again", async () => {
+    // The gunicorn-killed / dropped request surfaces as a tagged network error. Here the backend committed
+    // no newer attempt, so recovery finds nothing and the modal shows a customer-safe transient message with
+    // a retry affordance — never the raw transport text.
     api.testConnection.mockRejectedValue(Object.assign(new Error("network_unreachable"), { kind: "network" }));
+    api.recoverAttemptAfterTransportFailure.mockResolvedValue(null);
     render(<BrokerAccountDetailContent />);
     fireEvent.click(await screen.findByRole("button", { name: /Test connection/i }));
-    await waitFor(() =>
-      expect(document.body.textContent).toMatch(/couldn't reach the validation service/i));
+    await waitFor(
+      () => expect(document.body.textContent).toMatch(/couldn't reach the validation service/i),
+      { timeout: 3000 });
     expect(document.body.textContent).not.toMatch(/Failed to fetch|TypeError|network_unreachable/i);
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: /Try again/i })).toBeInTheDocument();
+  });
+
+  it("graceful reconnect: if the backend completed despite a dropped connection, shows the REAL result", async () => {
+    // Transport failure on the POST, but the backend committed a fresh HEALTHY attempt. Recovery returns it,
+    // and the modal presents the completed success — not a transport error. (The recovery function's own
+    // history-polling logic is unit-tested in broker-api.test.ts.)
+    api.testConnection.mockRejectedValue(Object.assign(new Error("network_unreachable"), { kind: "network" }));
+    api.recoverAttemptAfterTransportFailure.mockResolvedValue(
+      attempt({ id: 9, status: "HEALTHY", reason_code: "demo_ok" }));
+    render(<BrokerAccountDetailContent />);
+    fireEvent.click(await screen.findByRole("button", { name: /Test connection/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/Your broker connection is verified/i));
+    expect(document.body.textContent).not.toMatch(/Failed to fetch|couldn't reach the validation service/i);
+  });
+
+  it("credential failure offers Replace credentials (not Try again) and the action fires", async () => {
+    api.testConnection.mockResolvedValue(attempt({ status: "UNAVAILABLE", reason_code: "invalid_password" }));
+    render(<BrokerAccountDetailContent />);
+    fireEvent.click(await screen.findByRole("button", { name: /Test connection/i }));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: /Replace credentials/i })).toBeInTheDocument());
+    expect(within(dialog).queryByRole("button", { name: /Try again/i })).toBeNull();
+    // The next-step action closes the result modal (opening the replace flow).
+    fireEvent.click(within(dialog).getByRole("button", { name: /Replace credentials/i }));
+    await waitFor(() => expect(screen.queryByText(/password was not accepted/i)).toBeNull());
+  });
+
+  it("transient failure offers Try again, which runs another validation", async () => {
+    api.testConnection.mockResolvedValue(attempt({ status: "UNAVAILABLE", reason_code: "login_timeout" }));
+    render(<BrokerAccountDetailContent />);
+    fireEvent.click(await screen.findByRole("button", { name: /Test connection/i }));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: /Try again/i })).toBeInTheDocument());
+    expect(within(dialog).queryByRole("button", { name: /Replace credentials/i })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: /Try again/i }));
+    await waitFor(() => expect(api.testConnection).toHaveBeenCalledTimes(2));
+  });
+
+  it("duplicate clicks create only ONE validation attempt", async () => {
+    let resolveTest: (v: unknown) => void = () => {};
+    api.testConnection.mockReturnValue(new Promise((r) => { resolveTest = r; }));
+    render(<BrokerAccountDetailContent />);
+    const btn = await screen.findByRole("button", { name: /Test connection/i });
+    fireEvent.click(btn);
+    fireEvent.click(btn);                       // second click: in-flight guard + disabled button
+    expect(await screen.findByRole("status", { name: /Testing/i })).toBeInTheDocument();
+    expect(btn).toBeDisabled();
+    expect(api.testConnection).toHaveBeenCalledTimes(1);
+    resolveTest(attempt());
   });
 });
