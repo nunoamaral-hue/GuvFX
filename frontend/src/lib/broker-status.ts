@@ -51,11 +51,24 @@ const REASON: Record<string, string> = {
   mt5_unavailable: "The validation service is temporarily unavailable. Please try again shortly.",
   bridge_unavailable: "The validation service is temporarily unavailable. Please try again shortly.",
   runtime_unavailable: "The validation service is temporarily unavailable. Please try again shortly.",
+  // Service-side / not-yet-provisioned checks — the check never reached the broker, so the customer's
+  // details are NOT implicated. Say so, and confirm nothing was changed (packet WS-H). ``verified`` is the
+  // agent's success taxonomy alongside ``demo_ok``.
+  validation_unconfigured:
+    "We couldn't test the connection because the validation service isn't available yet. " +
+    "Your account details weren't changed. Please try again later.",
+  credential_missing:
+    "We don't have a saved password for this account. Add or replace your credentials, then try again.",
+  broker_server_missing: "No broker server is set for this account. Please reconnect the account.",
+  verified: "Connection verified.",
 };
 export function reasonMessage(code: string | null | undefined): string {
   const c = String(code ?? "").trim();
   if (!c) return "";
-  return REASON[c] ?? "Please check your details and try again.";
+  // Unknown code → a NEUTRAL line. Never the accusatory "check your details": an unmapped code is almost
+  // always a technical/service reason, and blaming the customer's details for a server-side failure is the
+  // exact defect this replaces (packet WS-H). Known user-fixable codes carry their own "check …" wording.
+  return REASON[c] ?? "We couldn't complete the connection check. Please try again shortly.";
 }
 
 /** Mask an account number to the last 4 digits. */

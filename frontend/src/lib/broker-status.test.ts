@@ -34,10 +34,30 @@ describe("reasonMessage", () => {
     expect(reasonMessage("invalid_password")).toMatch(/password was not accepted/i);
     expect(reasonMessage("demo_ok")).toMatch(/demo account verified/i);
   });
-  it("never surfaces an unknown raw code — returns a generic message", () => {
+  it("never surfaces an unknown raw code — returns a NEUTRAL generic message (not 'check your details')", () => {
     const out = reasonMessage("internal_stacktrace_x99");
     expect(out).not.toContain("internal_stacktrace_x99");
-    expect(out).toMatch(/check your details/i);
+    // Regression (packet WS-H): an unknown/technical code must NOT blame the customer's details.
+    expect(out).not.toMatch(/check your details/i);
+    expect(out).toMatch(/couldn't complete the connection check/i);
+  });
+  it("classifies validation_unconfigured as a service-side issue — never the customer's details", () => {
+    // Root cause of the beta failure: the validation service isn't provisioned yet. The message must say
+    // so, confirm nothing changed, and NOT ask the user to re-check details they cannot fix.
+    const out = reasonMessage("validation_unconfigured");
+    expect(out).toMatch(/validation service isn't available/i);
+    expect(out).toMatch(/weren't changed/i);
+    expect(out).not.toMatch(/check your details/i);
+  });
+  it("maps credential_missing / broker_server_missing to their own actionable wording", () => {
+    expect(reasonMessage("credential_missing")).toMatch(/saved password/i);
+    expect(reasonMessage("broker_server_missing")).toMatch(/broker server is set/i);
+  });
+  it("no service-side reason code is presented as a user-credential error", () => {
+    for (const code of ["validation_unconfigured", "bridge_unavailable", "mt5_unavailable",
+                        "runtime_unavailable", "login_timeout", "could_not_verify"]) {
+      expect(reasonMessage(code)).not.toMatch(/check (your )?(details|password|account number)/i);
+    }
   });
   it("returns empty for no code", () => {
     expect(reasonMessage("")).toBe("");
