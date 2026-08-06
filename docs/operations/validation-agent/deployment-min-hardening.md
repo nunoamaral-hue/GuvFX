@@ -54,41 +54,52 @@ the backend image only makes the probe/monitoring/presenter **available**; nothi
   local, inert sink). Any EXTERNAL channel is a further Sponsor-gated step (no approved sink exists yet).
 - Wiring the probe on a cadence (management command / scheduler) is a **separate** change, not in this packet.
 
-## 4. Windows-host deploy (Sponsor-gated) — the supervised switch
+> **Install via the SANCTIONED INSTALLER ONLY (2026-08-06).** The 2026-08-06 deploy attempt proved a bare
+> `winsw install` regresses the identity to `LocalSystem` on WinSW v2.12. `install_service.ps1` now supports
+> both profiles via `-InstallProfile Dark|Supervised`: it does the post-install `sc config obj=` identity assignment
+> + `SeServiceLogonRight` grant, verifies `SERVICE_START_NAME == NT SERVICE\GuvFXBetaAgent` (rejecting
+> LocalSystem), and **auto-rolls-back** on any verification failure. **WinSW / `sc config` / `secedit` are
+> never called by hand.** Contract: [installer-contract.json](installer-contract.json).
+
+## 4. Windows-host deploy (Sponsor-gated) — via the SANCTIONED INSTALLER ONLY
 
 Order (reversible at every step):
-1. Re-stage the bundle (integrity-pinned): copy the new bundle to host; run the RULE-9 parse gate on all
-   `.ps1`/config; verify on-host `manifest.json` checksums match `compute_checksums` (fresh-disk check).
-2. Set the launch markers as service env in the WinSW config: `BETA_AGENT_SERVICE_IDENTITY=GuvFXBetaAgent`,
-   `BETA_AGENT_SUPERVISED_TOKEN=<install value>`, `BETA_AGENT_REFUSE_UNSUPERVISED_LAUNCH=0` (keep OFF first).
-3. Install the supervised profile: replace the running WinSW XML with `GuvFXBetaAgent.supervised.xml`
-   (`winsw uninstall` → `winsw install` OR `winsw reload` per the host's WinSW version). Confirm
-   `stoptimeout > BETA_AGENT_DRAIN_TIMEOUT_S` (install asserts this).
+1. Re-stage the bundle (integrity-pinned): copy the new bundle to host; verify on-host `manifest.json`
+   checksums match `compute_checksums` (fresh-disk check). The installer runs the RULE-9 interpreter/XML gates.
+2. **PLAN first (no mutation):** `install_service.ps1 -InstallProfile Supervised` (no `-Apply`). It parses/validates
+   the supervised XML contract (Automatic+delayed, restart tiers, launch markers, `stoptimeout > drain`) and
+   the interpreter/wrapper pins. RULE-9 on-host parse gate = this PLAN run must succeed.
+3. **APPLY (install-only, STOPPED):** `install_service.ps1 -InstallProfile Supervised -Apply`. The installer stages
+   the supervised XML (substituting a NON-SECRET launch token), registers WinSW, **assigns the virtual account
+   + grants the logon right**, and verifies `StartName == NT SERVICE\GuvFXBetaAgent`, `StartMode = Auto`,
+   restart tiers present, no global DLL write. On ANY failure it **auto-rolls-back** to the prior service and
+   raises. `BETA_AGENT_REFUSE_UNSUPERVISED_LAUNCH` ships `0` (do not brick manual recovery pre-proof).
 4. **Start via the service ONLY** (never SSH/`python agent.py` — RULE 1): `Start-Service GuvFXBetaAgent`.
 5. **Verify (health):** the backend readiness probe returns **HEALTHY** with `agent_supervised == true`; one
    signed NEGOTIATE succeeds; `agent_lifecycle.jsonl` shows `AGENT_STARTING`→`AGENT_LISTENING`→`AGENT_READY`
    with `supervised=true`.
-6. **Verify (alert path):** force a benign DEGRADED (e.g. probe with VALIDATE_LOGIN unarmed on a disposable
-   config) and confirm the `LoggingAlertSink` emits one line to `guvfx.validation_agent.alerts` reaching the
-   named owner. Do NOT test with #12/#1.
+6. **Verify (alert path):** confirm delivery reaches the approved internal route (Telegram ops → `support@`
+   fallback). Do NOT test with #12/#1.
 7. Only after 5–6 are green and stable for the confirm window, OPTIONALLY flip
    `BETA_AGENT_REFUSE_UNSUPERVISED_LAUNCH=1` (hard refuse) and restart the service.
 
 ## 5. Expected interruption
 
-Steps 3–4 restart the listener → `:8791` is briefly unavailable (seconds). During that window a customer
-validation would return a transport failure (retry-able, no credential implication). Schedule outside any
-active demo. `:8788` and all trading are unaffected.
+The installer registers STOPPED; step 4 starts the listener → `:8791` becomes available. Re-installing over an
+existing service briefly deregisters/reregisters it (seconds) while it is already Stopped, so no live listener
+is interrupted. `:8788` and all trading are unaffected.
 
-## 6. Rollback commands (reversible, no data change)
+## 6. Rollback (reversible, no data change)
 
-1. `Stop-Service GuvFXBetaAgent`.
-2. Reinstall the DARK profile: restore `winsw\GuvFXBetaAgent.xml` (Manual / `onfailure=none`) and
-   `winsw install` (or reload). Remove the added service env markers.
-3. Re-stage the previous bundle from the §2 backup; verify `manifest_version` reverts.
-4. Backend: redeploy the rollback-anchor image (no migration to reverse). Set `AGENT_ALERT_SINK` back to
-   `null` (or unset).
-5. Verify: service back to Manual/STOPPED (or started under the old bundle), one NEGOTIATE succeeds.
+- **Automatic (install-time):** any verification failure during `-Apply` triggers the installer's built-in
+  rollback (restore prior XML + re-register + reassign `NT SERVICE\GuvFXBetaAgent` + prior StartMode; or clean
+  uninstall if there was no prior service). It fails LOUD ("ROLLBACK INCOMPLETE") if the identity cannot be
+  restored — never leaves a wrong identity.
+- **Manual (post-start):** `Stop-Service GuvFXBetaAgent`, then `install_service.ps1 -InstallProfile Dark -Apply` to
+  restore the DARK profile (Manual / recovery=none / NT SERVICE identity — verified by the installer), then
+  re-stage the previous bundle from the §2 backup and verify `manifest_version` reverts.
+- Backend: redeploy the rollback-anchor image (no migration to reverse); set `AGENT_ALERT_SINK` back to `null`.
+- Verify: service back to Manual/STOPPED under `NT SERVICE\GuvFXBetaAgent`; one NEGOTIATE succeeds.
 
 ## 7. STOP conditions (abort + escalate, do not improvise)
 

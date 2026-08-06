@@ -248,3 +248,16 @@ unrouted. Full reversal procedure: `docs/operations/validation-agent/deployment-
 Repository engineering + docs + tests: **APPROVED** (Sponsor, this packet). Applying the supervised WinSW
 profile, starting/restarting the service, and any Windows-host/backend deployment remain **separately
 Sponsor-gated** and are **not** performed by this packet. PM owns lifecycle status.
+
+### Addendum 2026-08-06b — single sanctioned installer for BOTH profiles
+
+The 2026-08-06 supervised deploy attempt proved a bare `winsw install` regresses the identity to **LocalSystem**
+on WinSW v2.12 (virtual-account support is a WinSW v3 feature), and that the then-installer was hard-gated to
+the DARK profile. **Resolution (repository):** `install_service.ps1` now takes an explicit, mandatory
+`-Profile Dark|Supervised` and is the **single sanctioned install/reconfigure mechanism** — WinSW / `sc config`
+/ `secedit` are never called by hand. For BOTH profiles it performs the post-install `sc config obj=` virtual-
+account assignment + LSA `SeServiceLogonRight` grant, then **fails closed + auto-rolls-back** unless
+`SERVICE_START_NAME == NT SERVICE\GuvFXBetaAgent`. Profile-specific verification: DARK ⇒ Manual + recovery
+none; SUPERVISED ⇒ Automatic(delayed) + bounded restart tiers + launch-proof env markers. Both install
+**STOPPED** (install-only; first start stays gated). Contract:
+`docs/operations/validation-agent/installer-contract.json`; tests: `tests_supervised_installer.py`.
