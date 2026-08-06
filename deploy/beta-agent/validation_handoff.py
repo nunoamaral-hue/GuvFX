@@ -127,8 +127,11 @@ def claim_request(handoff_dir: str, request_id: str, *, now: float | None = None
 
 #: The ONLY keys a runner ``operator`` summary may carry back — allow-listed so an operator diagnostic can
 #: never smuggle a raw journal, host path or secret through the result file (ADR-0027 observability §3).
+# ``isolation_sub_reason`` is a fixed enum LABEL (e.g. validation_terminal_not_isolated) — never a path/secret,
+# so it may ride back to the operator. The matched forbidden ROOT and the effective validation dir are PATHS
+# and therefore stay in the on-host artefact only (this ride-back must not carry a host path).
 _OPERATOR_KEYS = ("evidence_id", "stage_reached", "first_failing_stage", "last_error_code",
-                  "last_error_reason", "cleanup_status", "terminal_exit_status")
+                  "last_error_reason", "cleanup_status", "terminal_exit_status", "isolation_sub_reason")
 
 
 def write_result(handoff_dir: str, request_id: str, outcome: dict, *, operator: dict | None = None,

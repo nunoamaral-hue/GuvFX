@@ -161,6 +161,21 @@ def _forbidden_roots(cfg: dict) -> tuple:
     return tuple(r for r in dict.fromkeys(roots) if r)
 
 
+def _config_source(cfg: dict) -> dict:
+    """SECRET-SAFE provenance of the PATH-related validation config the RUNNER resolved: whether each value came
+    from the runner's process environment or a code default. Emits the source LABEL only — never the value, and
+    never the full environment (allow-list of path-config names). Lets an operator see that the scheduled-task
+    runner's effective config came from ``env`` vs ``default`` when its effective terminal dir differs from a
+    service-level/manual value (the discrepancy class that produced ``isolation_check_failed``)."""
+    names = {
+        "validation_terminal_dir": "BETA_AGENT_VALIDATION_TERMINAL_DIR",
+        "validation_root": "BETA_AGENT_VALIDATION_ROOT",
+        "validation_forbidden_roots": "BETA_AGENT_VALIDATION_FORBIDDEN_ROOTS",
+        "validation_precompiled_dir": "BETA_AGENT_VALIDATION_PRECOMPILED_DIR",
+    }
+    return {k: ("env" if os.environ.get(env) else "default") for k, env in names.items()}
+
+
 def _default_win(cfg: dict):
     """Build the real Windows adapter for process discovery/termination. Off-host every method raises
     WindowsApiUnavailable — the runner catches that and records the capture as unavailable."""
@@ -286,6 +301,7 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
     if not isinstance(outcome, dict):
         outcome = {"ok": False, "reason_code": "could_not_verify", "is_demo": None}
     op = outcome.pop("_operator", {}) or {}      # operator diagnostic NEVER travels to the customer path
+    iso = outcome.pop("_isolation", None)        # structured isolation diagnostic (isolation_check_failed only)
 
     forbidden = _forbidden_roots(cfg)            # ``vdir`` already resolved by the dirty-baseline guard above
 
@@ -322,7 +338,14 @@ def run_once(cfg: dict, *, build_handler=None, win=None, clock=None,
         last_ok, first_fail = diag.stage_localisation(stages)
         if outcome.get("ok"):
             first_fail = None        # the login pipeline fully succeeded; remaining stages are cleanup, not failures
+        # An isolation failure stops at STEP 1 (before envelope-open / MT5 launch). Label it explicitly so the
+        # artefact localises to the isolation contract rather than the generic next stage.
+        if isinstance(iso, dict) and iso.get("result") == "fail":
+            last_ok, first_fail = "RUNNER_STARTED", "ISOLATION"
         evidence.update({
+            "isolation": iso if isinstance(iso, dict) else None,
+            "config_source": _config_source(cfg),
+            "runner_executable": sys.executable,
             "attempt_start_utc": started, "runner_pid": runner_pid, "runner_session_id": runner_session,
             "terminal_pid": term.get("pid"), "terminal_session_id": term.get("session"),
             "terminal_path_classification": "isolated_validation" if term else "not_found",
