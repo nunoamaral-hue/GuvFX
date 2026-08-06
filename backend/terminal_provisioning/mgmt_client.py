@@ -37,6 +37,21 @@ class ManagementChannelUnreachable(ManagementChannelTimeout):
     ``login_timeout``."""
 
 
+PROVISION_PATH = "/provision"
+
+
+def provision_url(base_url: str) -> str:
+    """The validation agent's endpoint URL for an origin ``base_url``. The agent (``agent.py``) serves EXACTLY
+    ``POST /provision`` and answers any other path with ``unknown_route`` (404); ``base_url`` is the agent
+    ORIGIN (scheme://host:port) and carries no path in production config. EVERY backend→agent transport MUST
+    derive its URL from this ONE helper so the readiness-probe transport and the provisioning transport cannot
+    drift — the exact drift that route-rejected the readiness probe (it posted to the bare ``base_url``). The
+    append is idempotent on a trailing slash. It lives on the CLIENT side (this module) — the agent is a
+    server and never builds outbound URLs — so it is NOT part of the bundle-shared protocol module.
+    Callers guarantee ``base_url`` is non-empty."""
+    return base_url.rstrip("/") + PROVISION_PATH
+
+
 def _load_keyring() -> tuple[dict, str]:
     """Load the signing keyring + active key id from settings/env (never hard-coded, never logged)."""
     import json

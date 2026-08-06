@@ -13,12 +13,13 @@ import tempfile
 import time as _time
 from unittest import mock
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from . import agent_alert_sink as sink_mod
 from . import agent_health_probe as probe
 from . import agent_monitoring as mon
 from . import agent_status_presenter as presenter
+from .mgmt_client import provision_url
 from .mgmt_protocol import PROTOCOL_VERSION, SUPPORTED_OPERATIONS
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -595,3 +596,130 @@ class ArtefactTests(SimpleTestCase):
         ids = {r["id"] for r in idx["runbooks"]}
         self.assertIn("unsupervised-listener", ids)
         self.assertGreaterEqual(len(idx["runbooks"]), 12)
+
+
+# ──────────── WORKSTREAM C (2026-08-06) — readiness-probe /provision route contract + drift guard ────────────
+# Regression cover for the runtime-certification GATE-10 defect: the readiness probe's default transport
+# posted to the BARE base_url, so the agent (which serves ONLY ``POST /provision``) answered ``unknown_route``
+# (404) and the probe could never reach HEALTHY. The provisioning transport was correct all along. These tests
+# pin the corrected route on the probe transport and guard the two transports against ever drifting again.
+def _capture_transport_url(transport_fn, base_url, *, exc=None, handshake=None):
+    """Invoke a REAL transport (probe or provisioning) with ``requests.post`` mocked; return a dict with the
+    ``url`` it POSTed to, the ``payload`` sent, and any exception ``raised`` (the transport's own timeout
+    classification). ``exc`` makes the mocked post raise; ``handshake`` overrides the returned NEGOTIATE dict.
+    """
+    captured = {"url": None, "payload": None, "timeout": None, "raised": None, "result": None}
+
+    class _Resp:
+        def json(self):
+            return handshake if handshake is not None else _handshake()
+
+    def fake_post(url, json=None, timeout=None):
+        captured["url"] = url
+        captured["payload"] = json
+        captured["timeout"] = timeout
+        if exc is not None:
+            raise exc
+        return _Resp()
+
+    with mock.patch("requests.post", fake_post):
+        try:
+            captured["result"] = transport_fn(base_url, {"operation": "NEGOTIATE"})
+        except Exception as e:                       # noqa: BLE001 — classification is asserted by callers
+            captured["raised"] = e
+    return captured
+
+
+class ProbeRouteContractTests(SimpleTestCase):
+    """The readiness-probe default transport MUST target the agent's single ``/provision`` route."""
+
+    def test_bare_base_url_targets_provision(self):
+        cap = _capture_transport_url(probe._default_transport, "http://host:8791")
+        self.assertEqual(cap["url"], "http://host:8791/provision")
+
+    def test_trailing_slash_appends_provision_once(self):
+        cap = _capture_transport_url(probe._default_transport, "http://host:8791/")
+        self.assertEqual(cap["url"], "http://host:8791/provision")
+        self.assertEqual(cap["url"].count("/provision"), 1)
+
+    def test_provision_appended_exactly_once_for_any_trailing_slashes(self):
+        for base in ("http://host:8791", "http://host:8791/", "http://host:8791///"):
+            url = _capture_transport_url(probe._default_transport, base)["url"]
+            self.assertTrue(url.endswith("/provision"), base)
+            self.assertEqual(url.count("/provision"), 1, base)
+
+    def test_connect_error_classifies_unreachable_at_provision_route(self):
+        import requests
+        cap = _capture_transport_url(probe._default_transport, "http://host:8791",
+                                     exc=requests.exceptions.ConnectionError())
+        self.assertIsInstance(cap["raised"], probe._ProbeUnreachable)      # PR#290 classification unchanged
+        self.assertEqual(cap["url"], "http://host:8791/provision")
+
+    def test_read_timeout_classifies_no_negotiate_at_provision_route(self):
+        import requests
+        cap = _capture_transport_url(probe._default_transport, "http://host:8791",
+                                     exc=requests.exceptions.ReadTimeout())
+        self.assertIsInstance(cap["raised"], probe._ProbeReadTimeout)      # PR#290 classification unchanged
+        self.assertEqual(cap["url"], "http://host:8791/provision")
+
+    @override_settings(BETA_AGENT_BASE_URL="http://10.0.0.2:8791", BETA_AGENT_KEYRING=json.dumps(KEYRING), BETA_AGENT_KEY_ID="k1")  # noqa: E501
+    def test_probe_completes_signed_negotiate_via_real_route_and_is_healthy(self):
+        captured = {}
+
+        class _Resp:
+            def json(self):
+                return _handshake(supervised=True)
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            captured["payload"] = json
+            return _Resp()
+
+        with mock.patch("requests.post", fake_post):
+            r = probe.probe_agent_readiness(now_fn=lambda: 1000.0, clock=iter([0.0, 0.05]).__next__)
+        self.assertEqual(r.state, probe.HEALTHY)
+        self.assertEqual(captured["url"], "http://10.0.0.2:8791/provision")
+        # The probe issues ONLY a signed NEGOTIATE handshake — never a credentialed / broker-login op, so it
+        # cannot perform broker validation, launch MT5, or create a validation attempt.
+        self.assertEqual(captured["payload"]["operation"], "NEGOTIATE")
+        self.assertNotIn(captured["payload"]["operation"], ("VALIDATE_LOGIN",))
+        self.assertIn("signature", captured["payload"])
+
+
+class TransportRouteDriftGuardTests(SimpleTestCase):
+    """Guard: the readiness-probe transport and the provisioning transport can never build a different agent
+    URL again — both derive from ``provision_url``."""
+
+    def test_probe_and_provisioning_transports_build_identical_url(self):
+        from . import beta_worker
+        prov_transport = beta_worker.make_http_transport()
+        for base in ("http://10.0.0.2:8791", "http://10.0.0.2:8791/", "http://h:1///"):
+            probe_url = _capture_transport_url(probe._default_transport, base)["url"]
+            prov_url = _capture_transport_url(prov_transport, base)["url"]
+            self.assertEqual(probe_url, prov_url, base)
+            self.assertEqual(probe_url, provision_url(base), base)
+
+    def test_provision_url_helper_is_idempotent_on_trailing_slash(self):
+        self.assertEqual(provision_url("http://h:1"), "http://h:1/provision")
+        self.assertEqual(provision_url("http://h:1/"), "http://h:1/provision")
+        self.assertEqual(provision_url("http://h:1///"), "http://h:1/provision")
+
+
+class ProbeCreatesNoValidationAttemptTests(TestCase):
+    """Explicit DB-backed proof (WORKSTREAM C items 6-8): a full readiness probe creates NO
+    ``BrokerAccountValidationAttempt`` — it never touches the broker-validation path, launches no MT5, and
+    contacts no broker."""
+
+    @override_settings(BETA_AGENT_BASE_URL="http://10.0.0.2:8791", BETA_AGENT_KEYRING=json.dumps(KEYRING), BETA_AGENT_KEY_ID="k1")  # noqa: E501
+    def test_probe_creates_no_broker_validation_attempt(self):
+        from trading.models import BrokerAccountValidationAttempt
+        before = BrokerAccountValidationAttempt.objects.count()
+
+        class _Resp:
+            def json(self):
+                return _handshake(supervised=True)
+
+        with mock.patch("requests.post", lambda url, json=None, timeout=None: _Resp()):
+            r = probe.probe_agent_readiness(now_fn=lambda: 1000.0, clock=iter([0.0, 0.05]).__next__)
+        self.assertEqual(r.state, probe.HEALTHY)
+        self.assertEqual(BrokerAccountValidationAttempt.objects.count(), before)
