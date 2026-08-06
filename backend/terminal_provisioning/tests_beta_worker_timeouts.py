@@ -11,6 +11,7 @@ from unittest import mock
 from django.test import SimpleTestCase, override_settings
 
 from terminal_provisioning import beta_worker, provisioner
+from terminal_provisioning.mgmt_client import ManagementChannelTimeout, ManagementChannelUnreachable
 from terminal_provisioning.mgmt_protocol import DEFAULT_TTL_SECONDS
 
 
@@ -95,6 +96,42 @@ class TransportTimeoutTupleTests(SimpleTestCase):
 
     def test_connect_timeout_is_bounded_and_short(self):
         self.assertLessEqual(beta_worker.CONNECT_TIMEOUT, 15)
+
+
+class TransportTimeoutClassificationTests(SimpleTestCase):
+    """WS-A (2026-08-05): a CONNECT timeout and a READ timeout are DISTINCT failure modes. The transport must
+    raise ManagementChannelUnreachable for a connect timeout (the request was NEVER SENT) and the plain
+    ManagementChannelTimeout for a read timeout (sent, no answer). Root-caused from a connect timeout to a
+    down agent port that had been mislabelled ``login_timeout``."""
+
+    def _run_transport_raising(self, exc):
+        def fake_post(url, json=None, timeout=None):
+            raise exc
+        transport = beta_worker.make_http_transport()
+        with mock.patch("requests.post", fake_post):
+            transport("http://agent.invalid:8791", {"operation": "VALIDATE_LOGIN"})
+
+    def test_connect_timeout_becomes_unreachable(self):
+        import requests
+        with self.assertRaises(ManagementChannelUnreachable):
+            self._run_transport_raising(requests.ConnectTimeout("connect timed out"))
+
+    def test_read_timeout_becomes_channel_timeout_not_unreachable(self):
+        import requests
+        # a read timeout is the ambiguous ManagementChannelTimeout — and specifically NOT the unreachable subclass.
+        with self.assertRaises(ManagementChannelTimeout):
+            self._run_transport_raising(requests.ReadTimeout("read timed out"))
+        try:
+            self._run_transport_raising(requests.ReadTimeout("read timed out"))
+        except ManagementChannelUnreachable:
+            self.fail("a READ timeout must NOT be classified as unreachable (that is the connect case)")
+        except ManagementChannelTimeout:
+            pass
+
+    def test_unreachable_is_a_timeout_subclass_so_provisioning_is_unchanged(self):
+        # The provisioning driver/reclaim/provisioner all `except ManagementChannelTimeout` — the subclass
+        # keeps them catching a connect timeout exactly as before (behaviour-preserving).
+        self.assertTrue(issubclass(ManagementChannelUnreachable, ManagementChannelTimeout))
 
 
 class LeaseCouplingTests(SimpleTestCase):

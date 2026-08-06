@@ -21,7 +21,8 @@ from trading.models import TradingAccount
 from terminal_provisioning import broker_cred_envelope as envelope
 from terminal_provisioning.broker_login_validation import (
     BrokerLoginValidator, HEALTHY, NEEDS_ATTENTION, UNAVAILABLE)
-from terminal_provisioning.mgmt_client import ManagementChannelError, ManagementChannelTimeout
+from terminal_provisioning.mgmt_client import (
+    ManagementChannelError, ManagementChannelTimeout, ManagementChannelUnreachable)
 
 U = get_user_model()
 SECRET = "s3cret-broker-pw!never-real"
@@ -91,11 +92,31 @@ class BrokerLoginValidatorTests(TestCase):
             self.assertEqual((out.status, out.retryable), (status, retryable), reason)
             self.assertEqual(out.reason, reason)
 
-    def test_timeout_maps_to_login_timeout(self):
+    def test_connect_timeout_maps_to_agent_unreachable_not_login_timeout(self):
+        # WS-B (2026-08-05): a CONNECT timeout means the request was never sent — no login was attempted.
+        # It must classify as validation_agent_unreachable, NEVER login_timeout.
+        def t(base, req):
+            raise ManagementChannelUnreachable()
+        out, _ = self._validate(_account(), transport=t)
+        self.assertEqual((out.status, out.reason, out.retryable),
+                         (UNAVAILABLE, "validation_agent_unreachable", True))
+        self.assertNotEqual(out.reason, "login_timeout")
+
+    def test_read_timeout_maps_to_agent_timeout_not_login_timeout(self):
+        # WS-B: a READ timeout means the agent was reached but didn't answer — MT5 status unknown. It must
+        # classify as validation_agent_timeout, NEVER login_timeout (the backend has no login evidence).
         def t(base, req):
             raise ManagementChannelTimeout()
         out, _ = self._validate(_account(), transport=t)
-        self.assertEqual((out.status, out.reason, out.retryable), (UNAVAILABLE, "login_timeout", True))
+        self.assertEqual((out.status, out.reason, out.retryable),
+                         (UNAVAILABLE, "validation_agent_timeout", True))
+        self.assertNotEqual(out.reason, "login_timeout")
+
+    def test_login_timeout_only_from_agent_reason(self):
+        # login_timeout is now ONLY legitimate when the AGENT itself returns it (MT5 reported a login-phase
+        # timeout) — never synthesised by the backend transport layer.
+        out, _ = self._validate(_account(), {"outcome": "denied", "reason_code": "login_timeout"})
+        self.assertEqual((out.status, out.reason), (UNAVAILABLE, "login_timeout"))
 
     def test_transport_error_maps_safely(self):
         def t(base, req):

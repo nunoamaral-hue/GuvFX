@@ -36,6 +36,19 @@ or is explicitly marked as an unknown. No inference is presented as fact.
 | 10 | **The Session-0 IPC success/failure RATE is unmeasured.** | Only 3 data points exist (1 success, 2 failures). No controlled series was run. | **HIGH** (that it is unknown) | The actual reliability rate; whether isolation (interactive/GUI session) changes it. | The WS-G controlled reliability test: ≥20 consecutive credential-free IPC probes per arm (Session-0-idle vs interactive), repeated after a reboot, on a **disposable** workspace. |
 | 11 | Concurrent interactive/operator activity *may* aggravate Session-0 readiness (hypothesis only). | Read-only `quser` showed active sessions ~17:28; the #13 failures were ~17:18/17:21 — **near but not proven concurrent**. | **LOW** — correlation, not causation; timing not aligned. | Whether interactive activity was concurrent *during* the failures. | The controlled test's concurrency sub-test. |
 
+## Transport-layer finding (2026-08-05) — a `login_timeout` that never reached MT5
+
+| # | Known fact | Evidence | Confidence | Unknown | Next evidence required |
+|---|------------|----------|------------|---------|------------------------|
+| 12 | Account #13's latest `login_timeout` (correlation `validate-acct-13-d4079267879e`) failed at the **backend→agent TCP connect**, ~10.0s. MT5 was never invoked; the broker was never contacted. | DB attempt id 10 persisted 21:10:08.602; `CREDENTIAL_ACCESSED` audit 21:09:58.577 → elapsed **10.02s** = the `CONNECT_TIMEOUT=10`. Reproduced live: a socket connect from `guvfx-backend` to the configured agent `100.79.101.19:8791` **failed with TimeoutError in 10.02s**. | **HIGH** — DB + audit + reproduced connect. | — | — |
+| 13 | The proximate operational cause is a **port/agent-availability mismatch**: the backend's `BETA_AGENT_BASE_URL` targets `:8791`, which is not listening; `:8788` is open. | Read-only port probe from the backend: `:8788` OPEN (0.03s), `:8787` + `:8791` TimeoutError. | **HIGH** — reproduced. | Whether `:8791` should be corrected or the agent restarted (an operator/config decision, out of repo scope). | Operator action on the host (NOT part of this repository packet). |
+
+**Code defect (now fixed in the repository, DARK):** the backend collapsed `requests.ConnectTimeout` and
+`requests.ReadTimeout` into one `ManagementChannelTimeout` → `login_timeout`. A connect timeout is positive
+evidence **no login occurred**. Split into `validation_agent_unreachable` (connect) / `validation_agent_timeout`
+(read); `login_timeout` is reserved for a genuine MT5-reported login-phase timeout. See the **Transport timeout
+taxonomy** in [VALIDATION_OBSERVABILITY.md](VALIDATION_OBSERVABILITY.md).
+
 ## What this matrix rules IN and OUT
 
 - **Ruled OUT (HIGH confidence):** "the broker is unavailable" (facts 1,4); "the customer's credentials are

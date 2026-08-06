@@ -21,8 +21,20 @@ class ManagementChannelError(Exception):
 
 
 class ManagementChannelTimeout(Exception):
-    """The call did not return in time — AMBIGUOUS (the op may or may not have executed). The worker must
+    """A READ timeout: the TCP connection to the agent was established and the request was SENT, but the agent
+    did not return a response body in time — AMBIGUOUS (the op may or may not have executed). The worker must
     reconcile (e.g. VERIFY) before any retry; it must NOT be interpreted as failure."""
+
+
+class ManagementChannelUnreachable(ManagementChannelTimeout):
+    """A CONNECT timeout: the backend could not even open a TCP connection to the agent within the connect
+    budget, so the signed request was NEVER SENT and the agent NEVER received it. Unlike a read timeout this
+    is NOT ambiguous — nothing downstream (agent handler, validation runner, MT5, broker) ran. Subclasses
+    ``ManagementChannelTimeout`` so every existing provisioning handler keeps treating it exactly as before
+    (reconcile-then-retry is still safe for a never-executed op); the broker-login validation path catches
+    this MORE SPECIFIC type first to classify it precisely (``validation_agent_unreachable``) rather than as a
+    login/broker timeout. Root-caused 2026-08-05: a connect timeout to a down agent port was mislabelled
+    ``login_timeout``."""
 
 
 def _load_keyring() -> tuple[dict, str]:

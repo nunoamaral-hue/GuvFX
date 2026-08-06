@@ -50,6 +50,8 @@ _STATUS_MAP = {
 # credential_missing/broker_server_missing) — are deliberately EXCLUDED, so they still update the durable status.
 _NON_AUTHORITATIVE_REASONS = frozenset({
     "validation_ipc_unavailable", "validation_busy", "validation_unconfigured", "could_not_verify",
+    # transport-layer timeouts (2026-08-05) — never a verdict on the credential or the broker.
+    "validation_agent_unreachable", "validation_agent_timeout",
     "login_timeout", "server_unavailable", "bridge_unavailable", "mt5_unavailable", "runtime_unavailable",
     "validation_runner_unavailable", "validation_runner_timeout", "diagnostic_capture_failed",
     "credential_scrub_unverified", "validation_baseline_dirty", "isolation_check_failed",

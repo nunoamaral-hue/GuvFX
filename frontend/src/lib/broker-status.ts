@@ -58,6 +58,13 @@ const REASON: Record<string, string> = {
   mt5_unavailable: "The validation service is temporarily unavailable. Please try again shortly.",
   bridge_unavailable: "The validation service is temporarily unavailable. Please try again shortly.",
   runtime_unavailable: "The validation service is temporarily unavailable. Please try again shortly.",
+  // WS-C (2026-08-05) — transport-layer timeouts. The check never reached the broker or a login, so the
+  // wording names NEITHER (no "broker", "login" or "server"). unreachable = couldn't open a connection to the
+  // validation service; timeout = the service accepted the connection but didn't answer in time.
+  validation_agent_unreachable:
+    "The validation service couldn't be reached. Your details weren't rejected. Please try again later.",
+  validation_agent_timeout:
+    "The validation service took too long to respond. Your details weren't rejected. Please try again later.",
   // Service-side / not-yet-provisioned checks — the check never reached the broker, so the customer's
   // details are NOT implicated. Say so, and confirm nothing was changed (packet WS-H). ``verified`` is the
   // agent's success taxonomy alongside ``demo_ok``.
@@ -129,6 +136,8 @@ const REASON_SHORT: Record<string, string> = {
   mt5_unavailable: "Validation temporarily unavailable",
   bridge_unavailable: "Validation temporarily unavailable",
   runtime_unavailable: "Validation temporarily unavailable",
+  validation_agent_unreachable: "Validation service unreachable",   // WS-C: transport connect timeout
+  validation_agent_timeout: "Validation service didn't respond",    // WS-C: transport read timeout
   could_not_verify: "Couldn't verify — try again",
   credential_missing: "No saved password",
   broker_server_missing: "No broker server set",
