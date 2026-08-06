@@ -54,7 +54,30 @@ the backend image only makes the probe/monitoring/presenter **available**; nothi
   local, inert sink). Any EXTERNAL channel is a further Sponsor-gated step (no approved sink exists yet).
 - Wiring the probe on a cadence (management command / scheduler) is a **separate** change, not in this packet.
 
-## 4. Windows-host deploy (Sponsor-gated) — the supervised switch
+## 4-BLOCKER (found 2026-08-06 during the sanctioned deploy attempt — MUST fix in repo before any retry)
+
+The install steps below (`winsw install`) are **INSUFFICIENT and were proven wrong on the host**. A sanctioned
+deploy attempt hit a hard blocker and was **rolled back to baseline** (no harm; service never started):
+
+1. **WinSW v2.12 installs `LocalSystem` regardless of the `<serviceaccount>` block.** A bare
+   `GuvFXBetaAgent.exe install` registered the service as `LocalSystem` (over-privileged), not
+   `NT SERVICE\GuvFXBetaAgent`. Virtual-account support is a WinSW **v3** feature. On v2.12 the identity MUST
+   be assigned **after** install via `sc.exe config GuvFXBetaAgent obj= "NT SERVICE\GuvFXBetaAgent"` (verify
+   `ChangeServiceConfig SUCCESS`) **plus** an LSA `SeServiceLogonRight` grant — exactly what `install_service.ps1`
+   does and a bare `winsw install` does not.
+2. **`install_service.ps1` — the only sanctioned installer that assigns the identity — is HARD-GATED to the
+   DARK profile.** It `throw`s unless `<startmode>` is `Manual` (line ~134) and recovery is "a single
+   `onfailure action=none`" (line ~123). It will **reject the supervised profile** (Automatic + 3× restart).
+
+**Consequence:** there is **no sanctioned install path for the supervised profile yet.** A retry requires a
+REVIEWED repository change (own packet) — either a supervised variant of `install_service.ps1`, or a new
+sanctioned installer — that: accepts the supervised invariants (Automatic+delayed, bounded 3-tier
+`onfailure=restart`, `resetfailure`, env markers, `stoptimeout > drain`); performs the post-install
+`sc config obj=` identity assignment + `SeServiceLogonRight` grant; and keeps the fail-closed **StartName ==
+`NT SERVICE\GuvFXBetaAgent`** verify (reject LocalSystem/LocalService/NetworkService) before allowing a start.
+Do NOT retry the host deploy until that installer is merged and reviewed.
+
+## 4. Windows-host deploy (Sponsor-gated) — the supervised switch  ⚠️ SUPERSEDED by §4-BLOCKER
 
 Order (reversible at every step):
 1. Re-stage the bundle (integrity-pinned): copy the new bundle to host; run the RULE-9 parse gate on all
