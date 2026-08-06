@@ -270,6 +270,12 @@ ALLOWED_EVIDENCE_KEYS = frozenset({
     # the effective isolated-terminal contract inputs and the exact failing rule — paths + booleans only, no
     # secret. ``config_source``/``runner_executable`` show HOW the task-launched runner resolved its config.
     "isolation", "config_source", "runner_executable",
+    # IN-PROCESS isolation diagnostics (2026-08-06, in-process-capture packet): the SAME schema also serves the
+    # in-process ``LoginValidationHandler`` (production selects it when ``validation_task_name`` is unset), so a
+    # browser validation on that path also persists one artefact. ``execution_mode`` distinguishes the two modes;
+    # the process/identity fields describe the AGENT service process (never a runner task). Coarse liveness /
+    # provenance labels only — never a secret.
+    "execution_mode", "process_id", "process_session_id", "service_identity", "supervised", "manifest_version",
 })
 
 # Keys inside the nested ``isolation`` object (allow-list applied recursively in build_evidence). Paths + a
@@ -282,6 +288,29 @@ _ALLOWED_ISOLATION_KEYS = frozenset({
 _ALLOWED_ISOLATION_CHECK_KEYS = frozenset({
     "absolute", "no_traversal", "beneath_root", "disjoint", "terminal_present",
 })
+
+# The PATH-config keys whose provenance (env vs code default) is meaningful to an isolation failure, mapped to
+# the environment variable ``config.load_config`` reads for each. Shared by BOTH execution modes so the
+# provenance is identical and schema drift is test-detectable. Only these FIXED names are ever consulted — the
+# full process environment is never inspected or logged.
+_CONFIG_SOURCE_ENV = {
+    "validation_terminal_dir":     "BETA_AGENT_VALIDATION_TERMINAL_DIR",
+    "validation_root":             "BETA_AGENT_VALIDATION_ROOT",
+    "validation_forbidden_roots":  "BETA_AGENT_VALIDATION_FORBIDDEN_ROOTS",
+    "validation_precompiled_dir":  "BETA_AGENT_VALIDATION_PRECOMPILED_DIR",
+    "slots_root":                  "BETA_AGENT_SLOTS_ROOT",
+    "golden_dir":                  "BETA_AGENT_GOLDEN_DIR",
+    "beta_root":                   "BETA_AGENT_ROOT",
+}
+
+
+def config_source(cfg=None, *, env) -> dict:
+    """Secret-safe provenance of the isolation PATH-config: whether each value came from the runner/agent's
+    process ``env`` or a code ``default``. Returns the source LABEL ONLY (never the value, never the full
+    environment — a fixed allow-list of names). ``cfg`` is accepted for symmetry but not required; the label is
+    a pure function of whether the specific environment variable is set. Used by the in-process handler (labels
+    captured when the handler is constructed) and by the task-launched runner (labels captured per request)."""
+    return {key: ("env" if env.get(name) else "default") for key, name in _CONFIG_SOURCE_ENV.items()}
 
 
 def stage_localisation(stages_reached) -> tuple:
@@ -358,10 +387,53 @@ def write_evidence(diag_dir: str, correlation_id: str, evidence: dict, *, now: f
     cid = re.sub(r"[^A-Za-z0-9._-]", "_", str(correlation_id or "unknown"))[:120]
     path = os.path.join(diag_dir, cid + _EVIDENCE_SUFFIX)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(safe, fh, sort_keys=True)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(safe, fh, sort_keys=True)
+        os.replace(tmp, path)                        # atomic publish; a reader never sees a partial FINAL file
+    except Exception:
+        # A failed write must never leave a partial artefact that a later reader could mistake for a real one.
+        # The FINAL path is only created by the atomic replace (all-or-nothing); clean up the temp on failure and
+        # re-raise so the caller falls back to ``diagnostic_capture_failed``.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     return path
+
+
+def write_isolation_diagnostic(diag_dir: str, *, correlation_id, reason_code, isolation, config_source,
+                               execution_mode, process_meta=None, stage_reached, first_failing_stage,
+                               started=None, finished, now) -> str:
+    """ONE shared persistence entry-point for an isolation-failure artefact, used by BOTH execution modes (the
+    in-process ``LoginValidationHandler`` and the task-launched runner). All request-scoped values are passed
+    EXPLICITLY — no mutable global is read here. Assembles the fields, then delegates to the SAME
+    ``build_evidence`` (allow-list + nested isolation allow-list + scrub) and ``write_evidence`` (atomic,
+    ``<correlation_id>.diag.json``) as every other artefact, so there is exactly one evidence schema and drift is
+    test-detectable. Raises on I/O failure so the caller can fall back to ``diagnostic_capture_failed`` (never
+    converting the fail-closed validation result to success)."""
+    pm = process_meta or {}
+    fields = {
+        "correlation_id": correlation_id,
+        "reason_code": reason_code,
+        "execution_mode": execution_mode,
+        "process_id": pm.get("process_id"),
+        "process_session_id": pm.get("process_session_id"),
+        "runner_executable": pm.get("executable"),          # the CURRENT executable (runner concept N/A in-process)
+        "service_identity": pm.get("service_identity"),
+        "supervised": pm.get("supervised"),
+        "manifest_version": pm.get("manifest_version"),
+        "stage_reached": stage_reached,
+        "first_failing_stage": first_failing_stage,
+        "isolation": isolation,
+        "config_source": config_source,
+        "attempt_finish_utc": float(finished),
+    }
+    if started is not None:
+        fields["attempt_start_utc"] = float(started)
+        fields["elapsed_ms"] = max(0.0, (float(finished) - float(started)) * 1000.0)
+    return write_evidence(diag_dir, correlation_id, fields, now=now)
 
 
 def sweep_expired(diag_dir: str, *, max_age_s: float, now: float) -> int:

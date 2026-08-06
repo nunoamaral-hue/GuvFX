@@ -147,11 +147,14 @@ def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: s
         resolve_real_path=win.real_path, runtime_locks=locks,
         base=base, manifest_version=approved.get("manifest_version", ""),
         execution_model=cfg.get("execution_model") or EXECUTION_MODEL_UUID_DIR,
-        slot_resolver=resolver, login_validator=_build_login_validator(cfg, win),
+        slot_resolver=resolver,
+        login_validator=_build_login_validator(
+            cfg, win, agent_meta={"supervised": agent_supervised,
+                                  "manifest_version": approved.get("manifest_version", "")}),
         agent_supervised=agent_supervised)
 
 
-def _build_login_validator(cfg: dict, win=None):
+def _build_login_validator(cfg: dict, win=None, *, agent_meta=None):
     """ADR-0027: return the login validator the agent CORE injects.
 
     Task-launch remediation (root cause 2026-08-02: MT5 GUI/MDI creation fails when the terminal is launched
@@ -178,7 +181,10 @@ def _build_login_validator(cfg: dict, win=None):
             # ADR-0027 Phase 2: the result wait = login_timeout_ms/1000 + result_grace_s. Feed the canonical
             # cleanup grace (config-owned, contract-validated) so the Agent NEVER pre-empts a completing runner.
             result_grace_s=int(cfg.get("cleanup_grace_s", 45)))
-    return build_inprocess_handler(cfg)              # legacy in-process (GUI-incapable under the service)
+    # In-process validator (GUI-incapable under the service, but the isolation check runs BEFORE any MT5 launch).
+    # This is the ACTIVE production path while ``validation_task_name`` is unset, so it persists the isolation
+    # diagnostic artefact itself (the runner path persists its own) — ``enable_diagnostics=True``.
+    return build_inprocess_handler(cfg, agent_meta=agent_meta, enable_diagnostics=True)
 
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
