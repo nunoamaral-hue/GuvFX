@@ -14,6 +14,61 @@
 
 ## Execution workstream log
 
+- **2026-08-06 — Validation-Agent Monitoring Runner + Scheduler + Telegram Alert Delivery (IMPLEMENTATION + docs + tests). Repo eng; NOT deployed. 🟢**
+  Branch `feat/agent-monitoring-runner` (base `main` `49cef11`, the merged PR #294). Completes the missing backend operations
+  layer the two prior deploy attempts STOPPED on (merged monitoring was inert). **Durable state:**
+  `AgentMonitorState` (migration `0011`, singleton pk=1) so hysteresis + per-alert cooldown survive a backend
+  restart. **Runner:** `agent_monitor_runner.run_once` — probe → durable hysteresis → alert policy (cooldown,
+  one-shot recovery, flap-counter decay) → delivery; only side effects are the signed-NEGOTIATE probe, the
+  singleton row write, and an alert message. **Commands:** `run_agent_readiness_probe` (single-flight
+  `select_for_update(nowait)` lock, exit codes 0/10/20/30/40/50, `--dry-run`, `--synthetic-state`),
+  `test_agent_alert_delivery` (pre-arm synthetic-alert gate; no state/broker/customer), `agent_monitor_status`
+  (read-only, secret-free ops evidence). **External delivery:** `TelegramAlertSink` (DEDICATED ops chat + its
+  OWN token; factory refuses if ops chat == customer channel or token missing; failed send surfaced, never
+  raised/suppressed) + `EmailAlertSink` fallback. **Scheduler:** `deploy/validation-agent-monitor/` cron
+  installer (idempotent, dark, disableable). **Config:** 8 `settings.py` vars, all OFF/NULL by default
+  (`VALIDATION_AGENT_MONITORING_ENABLED=false`, `AGENT_ALERT_SINK=null`, no Telegram/email destination); no
+  secret committed. Contract `monitoring-runner-contract.json`; deploy package `monitoring-runner-deployment.md`;
+  ADR-0013 addendum 2026-08-06c. Tests `tests_agent_monitor_runner.py` + `tests_agent_alert_sink_delivery.py`.
+  `#12`/`#1`/`:8788`/host untouched. **STOP: deployment, flag-arming, and selecting a live destination remain
+  separately Sponsor-gated.**
+
+- **2026-08-06 — Validation Agent MINIMUM Production Hardening (IMPLEMENTATION + docs + tests). Repo eng; NOT deployed. 🟢**
+  Branch `feat/validation-agent-min-hardening` (base `main` `f5d8389`, the merged PR #291). Turns the #291
+  DESIGN into repository ENGINEERING for the minimum-for-beta set (RR-1/2/3/4/11). **Agent side:**
+  `deploy/beta-agent/agent_lifecycle.py` (secret-safe lifecycle events, single-instance guard, launch
+  classification) wired into `agent.py` (durable `agent_lifecycle.jsonl`; guard; optional hard refuse-to-bind
+  `BETA_AGENT_REFUSE_UNSUPERVISED_LAUNCH`, default OFF; supervised launch markers); NEGOTIATE now advertises
+  `agent_supervised` (bundle + byte-identical backend copy; manifest re-pinned `2026-08-06.1`, covers
+  `agent_lifecycle.py`). **Backend (inert until scheduled):** `agent_health_probe.py` (signed-NEGOTIATE
+  readiness probe, OWN connect/read split, 8 states, cadence + consecutive-success recovery),
+  `agent_monitoring.py` (metric/alert computation), `agent_alert_sink.py` (Null/Logging sinks, named-owner
+  required, no live external send — RR-11), `agent_status_presenter.py` (customer-safe vs operator-safe).
+  **WinSW:** `winsw/GuvFXBetaAgent.supervised.xml` = TARGET supervised profile (Automatic+delayed, bounded-
+  backoff restart FLOOR, launch markers) — NOT applied; DARK install-only XML preserved. **Frontend:**
+  read-only `AgentStatusPanel` + `agent-status.ts` (unrouted). **Docs:** ADR-0013 addendum (supersede not
+  rewrite), unsupervised-listener runbook (12th), WS-J repo audit, WS-L deployment/rollback package. No DB
+  migration. `#12`/`#1`/`:8788` untouched. **STOP: all host/backend/service/firewall/live-validation actions
+  remain separately Sponsor-gated.**
+
+- **2026-08-05 — Validation Agent Production Hardening (design + docs + tests). Repo eng; NOT deployed. 🟢**
+  Branch `docs/validation-agent-hardening` (base `main` `ba22df8`). Transition from forensics to operational
+  engineering — DESIGN ONLY, no host/config/deploy/validation. New authoritative doc
+  `docs/VALIDATION_AGENT_PRODUCTION_HARDENING.md` (lifecycle state diagram; startup-mechanism comparison →
+  **WinSW service + armed supervision** recommended; health model; monitoring; five-plane logging; readiness
+  review). Machine-readable + test-guarded artefacts under `docs/operations/validation-agent/`
+  (health-model / monitoring-catalogue / readiness-review / runbook-index + `runbooks.md`) and an executable
+  design spec `backend/terminal_provisioning/validation_agent_spec.py` (imported only by tests). Health states:
+  STARTING/HEALTHY/DEGRADED/UNAVAILABLE/STOPPING/RECOVERY — a downstream (MT5/broker/IPC) failure is DEGRADED,
+  never agent-UNAVAILABLE. Readiness = a signed NEGOTIATE (no unauthenticated /health). **Readiness gaps** RR-1
+  no supervision, RR-2 no agent-down alert, RR-3 no lifecycle logging, RR-4 unenforced launch path, RR-5 no
+  health state = the minimum-for-beta set; SPOF/host-auditing/upgrade-lifecycle/keyring-rotation = later.
+  **WS-I** corrected outdated manual-start assumptions (RUNBOOK "never executed on a host" → commissioned;
+  agent.py docstring: production=WinSW not ad-hoc `python agent.py`, manifest `2026-08-05.3`;
+  OPERATIONS_DASHBOARD gained the `:8791` SPOF row) and flagged ADR-0013's auto-restart-RED classification as
+  needing a superseding addendum (governance, NOT edited). 10-agent grounding + adversarial-review workflows.
+  make check green. NOT deployed; no host/config/service/flag change; no live validation; #12/#1 untouched.
+
 - **2026-08-05 — Validation transport-timeout taxonomy (connect vs read; kill the `login_timeout` mislabel). Repo eng; NOT deployed. 🟢**
   Branch `fix/transport-timeout-taxonomy` (base `main` `ba22df8`). **Forensic root cause (primary evidence, read-only):**
   account #13's latest `login_timeout` (correlation `validate-acct-13-d4079267879e`) failed at the **backend→agent

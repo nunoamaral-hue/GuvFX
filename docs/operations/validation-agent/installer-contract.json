@@ -1,0 +1,99 @@
+{
+  "schema_version": "2026-08-06.1",
+  "component": "validation-agent",
+  "artefact": "install_service.ps1",
+  "description": "Contract for the SINGLE sanctioned validation-agent installer. It supports two EXPLICIT deployment profiles (no inference) and is the only mechanism that may install/reconfigure the GuvFXBetaAgent service. WinSW / sc config / secedit must never be called by hand. Validated by tests_supervised_installer.py.",
+  "single_sanctioned_mechanism": true,
+  "profile_parameter": {
+    "name": "InstallProfile",
+    "mandatory": true,
+    "values": [
+      "Dark",
+      "Supervised"
+    ],
+    "inference": false
+  },
+  "common_gates": [
+    "interpreter identity by PE metadata before execution",
+    "interpreter runtime import check (agent bundle imports) under -Apply",
+    "WinSW wrapper pinned by SHA-256",
+    "XML <executable> == validated venv python",
+    "XML <arguments> runs agent.py under AgentDir",
+    "XML <stoptimeout> exceeds BETA_AGENT_DRAIN_TIMEOUT_S",
+    "scoped NTFS ACLs (Modify on state/tombstones/slots; ReadAndExecute on code/golden/winsw/venv)",
+    "post-install identity assignment: sc config obj= NT SERVICE\\GuvFXBetaAgent (verify ChangeServiceConfig SUCCESS)",
+    "SeServiceLogonRight granted to the service SID (LSA), preserving all other rights",
+    "VERIFY: SERVICE_START_NAME == NT SERVICE\\GuvFXBetaAgent (reject LocalSystem/LocalService/NetworkService)",
+    "VERIFY: state Stopped, ProcessId 0 (install-only; no start, both profiles)",
+    "VERIFY: PathName == WinSW wrapper",
+    "VERIFY: no pywin32 DLL created/modified in System32 or the base interpreter (measured before/after)",
+    "VERIFY: DACL ACE present for the service SID on every granted dir",
+    "automatic rollback to the pre-install snapshot on ANY verification failure"
+  ],
+  "profiles": {
+    "Dark": {
+      "xml_source": "winsw/GuvFXBetaAgent.xml",
+      "startmode": "Manual",
+      "recovery": "none (single onfailure action=none)",
+      "supervision": false,
+      "note": "exactly the historical install-only behaviour; nothing changes"
+    },
+    "Supervised": {
+      "xml_source": "winsw/GuvFXBetaAgent.supervised.xml",
+      "startmode": "Automatic",
+      "delayed_auto_start": true,
+      "recovery": ">=3 onfailure action=restart tiers (bounded-backoff floor) + resetfailure",
+      "launch_markers": [
+        "BETA_AGENT_SERVICE_IDENTITY",
+        "BETA_AGENT_SUPERVISED_TOKEN",
+        "BETA_AGENT_REFUSE_UNSUPERVISED_LAUNCH"
+      ],
+      "token_substitution": "__SET_AT_INSTALL__ replaced with a NON-SECRET per-install marker at stage; value never logged; staged XML must be ASCII and placeholder-free",
+      "supervision": true,
+      "note": "min-hardening PR #292 target; STILL installs STOPPED (first start is a separate gated action; Automatic means start on next boot)"
+    }
+  },
+  "identity_guarantee": "WinSW v2.12 installs LocalSystem regardless of <serviceaccount>; the installer ALWAYS assigns the virtual account post-install and FAILS CLOSED + ROLLS BACK unless SERVICE_START_NAME == NT SERVICE\\GuvFXBetaAgent before returning success.",
+  "rollback": {
+    "trigger": "any throw during stage/install/identity/verify under -Apply",
+    "restores": [
+      "previous WinSW XML",
+      "previous service registration",
+      "previous identity (NT SERVICE)",
+      "previous StartMode"
+    ],
+    "no_prior_service": "cleanly uninstalls the service the run created",
+    "bundle_scope": "the Python bundle backup/restore is the paired operator step (deploy package section 2); the installer owns the SERVICE, not the code bundle",
+    "incomplete_rollback": "if StartName != NT SERVICE after restore, the installer raises a MANUAL-OPERATOR-INTERVENTION error (never silently leaves a wrong identity)"
+  },
+  "logging": {
+    "steps": [
+      "START",
+      "BACKUP",
+      "PRECHECK",
+      "STAGE",
+      "INSTALL",
+      "IDENTITY",
+      "ACL",
+      "VERIFY",
+      "ROLLBACK",
+      "SUCCESS",
+      "FAIL"
+    ],
+    "fields": [
+      "ts",
+      "profile",
+      "step",
+      "result",
+      "duration_ms",
+      "detail"
+    ],
+    "never_logs": [
+      "credentials",
+      "keys",
+      "tokens",
+      "broker information",
+      "the supervised token VALUE"
+    ]
+  }
+}

@@ -42,6 +42,13 @@ _RESPONSE_ALLOWLIST = ("operation", "outcome", "runtime_uuid", "provisioning_job
                        # ``reason_code`` (already allowlisted) carries the login taxonomy code.
                        "is_demo",
                        "protocol_version", "manifest_version", "supported_operations",
+                       # Minimum-hardening (WS-D): a NON-secret liveness fact — whether THIS listener was
+                       # started by the sanctioned supervised service. A bare ad-hoc ``python agent.py``
+                       # answers NEGOTIATE byte-identically to the supervised child, so ``agent_up`` alone
+                       # cannot tell them apart (the Aug-5 vector). Surfacing supervised here lets the backend
+                       # health probe distinguish a sanctioned listener from an unsupervised one. It is a
+                       # boolean fact, never a token/secret.
+                       "agent_supervised",
                        # B3P-2: (slot, generation) identifies ONE immutable runtime occupancy and is part
                        # of runtime identity, so it is first-class evidence rather than an internal detail.
                        #
@@ -93,7 +100,7 @@ class BetaProvisioningAgent:
                  script_manifest, script_versions, resolve_real_path, runtime_locks,
                  base: str = DEFAULT_BETA_ROOT, now_fn=None, max_skew_seconds: int = 30,
                  manifest_version: str = "", execution_model: str = EXECUTION_MODEL_UUID_DIR,
-                 slot_resolver=None, login_validator=None):
+                 slot_resolver=None, login_validator=None, agent_supervised=None):
         # The execution model is EXPLICIT and validated at construction. There is deliberately no silent
         # fallback from the slot pool to the UUID-directory layout: a pool agent missing its resolver fails
         # to start rather than quietly provisioning into the wrong namespace (the same reasoning as
@@ -122,6 +129,11 @@ class BetaProvisioningAgent:
         # VALIDATE_LOGIN request fails closed (``validation_unconfigured``) — the primitive is opt-in and an
         # agent that predates it simply cannot validate.
         self.login_validator = login_validator
+        # Minimum-hardening (WS-D): whether this listener was started by the sanctioned supervised service
+        # (a non-secret liveness fact), or ``None`` when the launch context was not classified (older bundle).
+        # Only ``True``/``False`` is advertised in NEGOTIATE; ``None`` is omitted so an un-instrumented agent
+        # never falsely claims supervision.
+        self.agent_supervised = agent_supervised
 
     def handle(self, request: dict) -> dict:
         """Validate + execute one request; ALWAYS returns a sanitised response dict (never raises to the
@@ -138,11 +150,17 @@ class BetaProvisioningAgent:
             # Advertises SUPPORTED_OPERATIONS (lifecycle + credentialed VALIDATE_LOGIN) — a backend that
             # predates the credentialed ops still finds its required lifecycle subset (superset check).
             if op == "NEGOTIATE":
-                return self._sanitise(op, job_id, ruuid, "ok", {
+                handshake = {
                     "protocol_version": PROTOCOL_VERSION,
                     "manifest_version": self.manifest_version,
                     "supported_operations": list(SUPPORTED_OPERATIONS),
-                })
+                }
+                # WS-D: advertise the supervised-launch fact so the backend health probe can tell a
+                # sanctioned listener from a bare ``python agent.py`` (which reports False). Omitted entirely
+                # when unclassified (older bundle / None) so an un-instrumented agent never claims supervision.
+                if self.agent_supervised is not None:
+                    handshake["agent_supervised"] = bool(self.agent_supervised)
+                return self._sanitise(op, job_id, ruuid, "ok", handshake)
 
             # Credentialed, runtime-INDEPENDENT broker-login probe (ADR-0027). It touches NO slot, NO
             # provisioning lifecycle, NO idempotency store (a login check is read-only and must be
@@ -282,7 +300,7 @@ class BetaProvisioningAgent:
         }
         # copy ONLY allowlisted evidence / handshake fields the impl produced
         for k in ("pid", "session_id", "duration_ms", "running", "logged_in", "verified_at", "is_demo",
-                  "protocol_version", "manifest_version", "supported_operations",
+                  "protocol_version", "manifest_version", "supported_operations", "agent_supervised",
                   "slot", "generation", "occupancy_id", "owner_marker_digest", "canonical_path_digest",
                   "path_containment_verified", "executable_containment_verified",
                   "released", "release_pending", "available"):

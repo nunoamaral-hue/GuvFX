@@ -171,3 +171,123 @@ box.
 Nuno, 2026-07-24 (RED: production access / service host migration) — "prefer WinSW over NSSM; fall back to
 native pywin32 only if a wrapper demonstrably cannot satisfy a requirement," and the FINAL COMMISSIONING
 packet authorising this ADR. PM owns lifecycle status.
+
+---
+
+## Addendum 2026-08-06 — Supervised lifecycle, launch enforcement & health monitoring (minimum production hardening)
+
+- Date: 2026-08-06
+- Status: Accepted (additive) — **supersedes the DARK install-only lifecycle** (`startmode Manual`,
+  `onfailure=none`) for the moment the agent transitions from install-only to a **supervised production
+  service**. It does **not** change the WinSW-vs-pywin32 host decision above, the least-privilege identity,
+  the bind pin (`:8791`), the drain contract, or the integrity gate — all of those remain in force. The
+  original record is preserved verbatim; this addendum only adds the supervision layer.
+
+### Why (the paid-for reason)
+The 2026-08-05 incident: the sanctioned `GuvFXBetaAgent` service was **Stopped** while a non-service
+`python agent.py` served `:8791`, then exited un-restarted and un-logged, leaving the socket dark for hours —
+discovered only by a customer's failed validation (`login_timeout`, later root-caused to a backend→agent
+**connect** timeout). Manual/interactive launch is session-bound (security RULE 1), has no supervision,
+restart or durable lifecycle log, and — critically — answers a signed NEGOTIATE **byte-identically** to the
+supervised child, so a liveness probe alone cannot tell them apart.
+
+### Decision
+1. **Supervised auto-restart (RR-1).** The production profile
+   (`deploy/beta-agent/winsw/GuvFXBetaAgent.supervised.xml`) runs `startmode Automatic` + `delayedAutoStart`
+   with a **bounded-backoff restart FLOOR that never permanently gives up**: three `onfailure action=restart`
+   tiers (10s → 60s → 300s; the last governs all subsequent failures) plus `resetfailure=1 hour`. Crash-loop
+   **detection + paging** is the backend's job (`agent_crash_loop`, computed from probe up→down→up
+   transitions) so the supervisor keeps trying (availability) while a human is brought in (RR-11) — the two
+   are deliberately separated (the old "subsequent → none" stranded the agent on any persistent condition).
+2. **Signed readiness probe + alert delivery (RR-2/RR-11).** A backend signed-NEGOTIATE probe
+   (`terminal_provisioning/agent_health_probe.py`) on a cadence (Healthy 60s / Degraded 30s / Unavailable
+   exp-backoff cap 5 min, consecutive-success recovery) feeds monitoring
+   (`agent_monitoring.py`) whose alerts terminate at a **named human** via a delivery sink
+   (`agent_alert_sink.py`). A computed alert that pages nobody reproduces the incident, so delivery is a
+   first-class deliverable, not an afterthought.
+3. **Durable lifecycle logging (RR-3).** `agent_lifecycle.py` writes a secret-safe, allow-listed
+   `agent_lifecycle.jsonl` (start/listen/ready/stopping/stopped/rejected, with pid/ppid/version/supervised/
+   bind) **independent of the WinSW wrapper log**, so a start/exit is never invisible again.
+4. **Launch enforcement, REAL not documentary (RR-4).** (a) a single-instance guard (lock file + PID
+   liveness; the OS bind is the hard backstop); (b) launch classification — the supervised service injects
+   non-secret markers (`BETA_AGENT_SERVICE_IDENTITY` + `BETA_AGENT_SUPERVISED_TOKEN`); a bare
+   `python agent.py` lacks them, so it advertises `agent_supervised=false` in NEGOTIATE and the probe pages
+   `agent_unsupervised_listener` **and never reads HEALTHY**; (c) an optional **hard refuse-to-bind**
+   (`BETA_AGENT_REFUSE_UNSUPERVISED_LAUNCH=1`), default OFF, to be enabled ONLY after the supervised service
+   is proven in place (enabling it before then would brick the manual recovery path — RULE-1 care). A
+   documented maintenance override (`BETA_AGENT_LAUNCH_OVERRIDE=1`) permits a sanctioned manual start while
+   still reporting `supervised=false`.
+
+### Honest scope (RULE 7)
+The launch proof defends the **accidental** unsanctioned launch (the actual incident), not a privileged
+adversary who could edit the bundle or read the marker off the host. Stronger proof — parent-process =
+WinSW, or a per-start nonce written to an ACL'd file — is a **named fast-follow**, not claimed here. The
+single-instance **hard** guarantee is the EXCLUSIVE OS bind (see the fold-in below); the lock file is
+**advisory** — durable identity + clean detection — and never vetoes a start.
+
+### Adversarial-review fold-in (2026-08-06)
+A 6-lens review corrected three real defects before this addendum was accepted:
+- **Exclusive bind.** `BoundedThreadingHTTPServer` inherited `allow_reuse_address=True` → `SO_REUSEADDR`,
+  which on **Windows** lets a second process bind the same `:8791` and hijack it. Fixed to
+  `allow_reuse_address=False` + `SO_EXCLUSIVEADDRUSE`, so a second bind FAILS at the OS — the bind is now the
+  genuine hard single-instance guard.
+- **Advisory lock.** The lock guard previously *raised* on a live-holder conflict **before** the bind, so a
+  crash + PID reuse could turn one crash into a persistent dark-`:8791` outage on a free port. The conflict
+  is now logged (`AGENT_DEGRADED`) and startup proceeds; the exclusive bind arbitrates.
+- **Crash visibility + restart.** An abnormal serve-thread death used to let `main()` exit **0** (no WinSW
+  restart, no lifecycle event). It now emits `AGENT_CRASHED` and exits **non-zero** so `onfailure=restart`
+  fires. Crash-loop *paging* (`agent_crash_loop`) is produced by `evaluate_alerts` from the readiness
+  tracker's up→down→up count — making the paging claim above real, not aspirational.
+
+### Rollback
+Revert to the DARK install-only `GuvFXBetaAgent.xml` (Manual / `onfailure=none`) and stop the service — no
+data or schema change is involved. Backend probe/monitoring are inert unless scheduled; the frontend panel is
+unrouted. Full reversal procedure: `docs/operations/validation-agent/deployment-min-hardening.md`.
+
+### Approval
+Repository engineering + docs + tests: **APPROVED** (Sponsor, this packet). Applying the supervised WinSW
+profile, starting/restarting the service, and any Windows-host/backend deployment remain **separately
+Sponsor-gated** and are **not** performed by this packet. PM owns lifecycle status.
+
+### Addendum 2026-08-06b — single sanctioned installer for BOTH profiles
+
+The 2026-08-06 supervised deploy attempt proved a bare `winsw install` regresses the identity to **LocalSystem**
+on WinSW v2.12 (virtual-account support is a WinSW v3 feature), and that the then-installer was hard-gated to
+the DARK profile. **Resolution (repository):** `install_service.ps1` now takes an explicit, mandatory
+`-Profile Dark|Supervised` and is the **single sanctioned install/reconfigure mechanism** — WinSW / `sc config`
+/ `secedit` are never called by hand. For BOTH profiles it performs the post-install `sc config obj=` virtual-
+account assignment + LSA `SeServiceLogonRight` grant, then **fails closed + auto-rolls-back** unless
+`SERVICE_START_NAME == NT SERVICE\GuvFXBetaAgent`. Profile-specific verification: DARK ⇒ Manual + recovery
+none; SUPERVISED ⇒ Automatic(delayed) + bounded restart tiers + launch-proof env markers. Both install
+**STOPPED** (install-only; first start stays gated). Contract:
+`docs/operations/validation-agent/installer-contract.json`; tests: `tests_supervised_installer.py`.
+
+### Addendum 2026-08-06c — monitoring runner, scheduler, and external alert delivery
+
+The "crash-loop paging is real, not aspirational" claim above depended on a runner + scheduler + delivery
+channel that did **not** exist: the merged `agent_health_probe` / `agent_monitoring` / `agent_alert_sink`
+were **inert** (no runner, no cron, sinks Null/Logging only). Two deployment attempts STOPPED on exactly
+this. **Resolution (repository):** the operations layer that actually runs them.
+
+- **Runner** — `agent_monitor_runner.run_once` executes one pass: signed-NEGOTIATE probe → durable hysteresis
+  → alert policy (per-alert cooldown, one-shot recovery, flap decay) → delivery. Its ONLY side effects are
+  the probe, a write to the singleton `AgentMonitorState` row, and an alert message. It performs no broker
+  validation, no credential read, no attempt creation, no MT5 start, and touches no customer account or
+  `:8788`.
+- **Durable state** — `AgentMonitorState` (migration `0011`, singleton pk=1) so hysteresis + cooldown survive
+  a backend restart. Operational metadata only.
+- **Command + scheduler** — `manage.py run_agent_readiness_probe` (single-flight `select_for_update(nowait)`
+  lock; deterministic exit codes 0/10/20/30/40/50; `--dry-run`, `--synthetic-state`), scheduled by
+  `deploy/validation-agent-monitor/` cron. `manage.py test_agent_alert_delivery` is the pre-arm delivery gate
+  the Aug-5 outage lacked; `manage.py agent_monitor_status` is the read-only, secret-free ops evidence.
+- **External delivery** — `TelegramAlertSink` (a DEDICATED ops chat, its OWN bot token; the factory refuses
+  to build if the ops chat_id equals the customer channel or the token is missing) + `EmailAlertSink`
+  fallback. DARK by default: `VALIDATION_AGENT_MONITORING_ENABLED=false`, `AGENT_ALERT_SINK=null`, no
+  destination configured.
+
+Rollback is flag-OFF (`VALIDATION_AGENT_MONITORING_ENABLED=false` / `AGENT_ALERT_SINK=null`) plus
+`install_agent_monitor_cron.sh --remove`; migration `0011` reverses cleanly; no destructive step. Contract:
+`docs/operations/validation-agent/monitoring-runner-contract.json`; deployment package:
+`docs/operations/validation-agent/monitoring-runner-deployment.md`; tests: `tests_agent_monitor_runner.py`,
+`tests_agent_alert_sink_delivery.py`. **APPROVED for repository engineering (Sponsor, this packet).**
+Deployment, flag-arming, and selecting a live destination remain **separately Sponsor-gated**.

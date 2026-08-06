@@ -1,0 +1,90 @@
+{
+  "schema_version": "2026-08-05.1",
+  "component": "validation-agent",
+  "description": "Production health model for the beta validation agent (deploy/beta-agent/agent.py, the signed POST /provision listener on :8791). DESIGN ONLY — not wired to any runtime. This models the AGENT LISTENER's health, which is distinct from (a) per-account broker health (reliability/broker_health, WP3) and (b) per-validation pipeline stages (trading/validation_timeline). The agent can be HEALTHY while individual validations fail at the host/MT5/broker layer (that is DEGRADED, not agent-unavailable).",
+  "probe_chain": [
+    {"layer": "process_running", "signal": "the agent OS process exists", "source": "supervisor/service manager (WinSW/SCM) or process list", "unauthenticated": true},
+    {"layer": "socket_listening", "signal": ":8791 is in LISTEN on the expected private bind", "source": "OS TCP table / connect probe from the backend (the only firewall-allowed source)", "unauthenticated": true},
+    {"layer": "negotiate_ok", "signal": "a signed NEGOTIATE handshake returns a compatible contract", "source": "backend mgmt_client.assert_compatible() — the ONLY health probe the agent exposes (no unauthenticated /health by design)", "unauthenticated": false},
+    {"layer": "validate_login_available", "signal": "VALIDATE_LOGIN is advertised in supported_operations and the signing keyring is provisioned", "source": "NEGOTIATE response + backend keyring presence", "unauthenticated": false},
+    {"layer": "mt5_initialise", "signal": "the task-launched runner can bring up MT5 local IPC (validation_ipc_unavailable rate low)", "source": "validation attempt outcomes / diagnostics — exercised, not continuously probed", "unauthenticated": false},
+    {"layer": "broker_login", "signal": "broker login completes when reached (server_unavailable/login_timeout rate low)", "source": "validation attempt outcomes", "unauthenticated": false},
+    {"layer": "response_returned", "signal": "the backend receives a structured result (not a transport unreachable/timeout)", "source": "backend transport (validation_agent_unreachable / validation_agent_timeout rate)", "unauthenticated": false}
+  ],
+  "states": [
+    {
+      "name": "STARTING",
+      "meaning": "process launched; binding + first readiness not yet confirmed",
+      "entry": "supervisor/operator starts the agent process",
+      "exit": "socket_listening AND negotiate_ok  ->  HEALTHY;  bind/config failure  ->  UNAVAILABLE",
+      "transitions": [
+        {"to": "HEALTHY", "when": "readiness probe (through negotiate_ok) passes within start-timeout"},
+        {"to": "UNAVAILABLE", "when": "bind fails (wrong/public address), config/keyring missing, or start-timeout exceeded"}
+      ],
+      "operator_action": "none while within start-timeout; if exceeded, gather evidence (bind address, config, WinSW/agent log) per the restart runbook"
+    },
+    {
+      "name": "HEALTHY",
+      "meaning": "process running, socket listening, NEGOTIATE compatible, VALIDATE_LOGIN available; validations succeed or fail only at expected low rates",
+      "entry": "readiness probe passes (process_running..validate_login_available)",
+      "exit": "any readiness layer fails, elevated downstream failure rate, or an operator stop",
+      "transitions": [
+        {"to": "DEGRADED", "when": "downstream failure rate (IPC/MT5/broker) breaches threshold over the window while NEGOTIATE still succeeds"},
+        {"to": "UNAVAILABLE", "when": "process exits, socket stops listening, or NEGOTIATE/transport fails (connect timeout / no response)"},
+        {"to": "STOPPING", "when": "an operator/supervisor initiates a controlled stop"}
+      ],
+      "operator_action": "none"
+    },
+    {
+      "name": "DEGRADED",
+      "meaning": "agent is UP and answering NEGOTIATE, but validations are failing at an elevated rate at a downstream layer (host IPC, MT5, or broker). NOT an agent-down condition.",
+      "entry": "failure-rate threshold breached over the rolling window with negotiate_ok still true",
+      "exit": "failure rate recovers to healthy band, or the agent itself stops answering",
+      "transitions": [
+        {"to": "HEALTHY", "when": "downstream failure rate returns below the recovery threshold over the window"},
+        {"to": "UNAVAILABLE", "when": "the agent stops answering NEGOTIATE / socket down"}
+      ],
+      "operator_action": "triage the dominant failure reason via the matching runbook (repeated IPC / repeated MT5 / repeated broker); DO NOT restart on downstream failures alone — a restart does not fix a broker/host-IPC condition and destroys in-flight evidence"
+    },
+    {
+      "name": "UNAVAILABLE",
+      "meaning": "process not running, OR socket not listening, OR NEGOTIATE/transport fails. Customers see validation_agent_unreachable/validation_agent_timeout.",
+      "entry": "readiness probe fails at process_running/socket_listening/negotiate_ok",
+      "exit": "an operator (re)starts the agent via the supported mechanism",
+      "transitions": [
+        {"to": "RECOVERY", "when": "an operator starts a controlled restart after an UNEXPECTED unavailable"},
+        {"to": "STARTING", "when": "a supervised auto-restart or planned start begins"}
+      ],
+      "operator_action": "run the 'Agent unavailable' runbook: gather evidence FIRST (service state, listener, last logs, last diagnostics), then start via the supported service mechanism (never an interactive-SSH launch — security RULE 1)"
+    },
+    {
+      "name": "STOPPING",
+      "meaning": "controlled stop/drain in progress (operator or supervisor)",
+      "entry": "a stop is requested",
+      "exit": "in-flight MUTATING ops drain (RuntimeLockManager); the process then exits",
+      "drain_boundary": "IMPORTANT (adversarial lens 1): the current agent drain (AgentServer.stop -> _await_drain) waits ONLY on the per-runtime mutation lock. The credentialed VALIDATE_LOGIN uses its OWN global single-flight lock and is NOT covered by that drain — a stop mid-login FORCE-CUTS a ~165s (login_timeout_ms + cleanup_grace) credentialed login; the runner destroys the decrypted credential out-of-band (its own finally/cleanup), but the agent-level 'clean drain' does NOT apply to it. Hardening (RR-1a): wire the login validator into the drain (deny new logins during drain; wait out the in-flight login up to a stoptimeout that exceeds login_timeout_ms+grace).",
+      "transitions": [
+        {"to": "UNAVAILABLE", "when": "the process has exited (intended unavailable)"}
+      ],
+      "operator_action": "verify the mutation drain completed; be aware an in-flight VALIDATE_LOGIN is force-cut on stop (credential cleanup is runner-side, not an agent drain) until RR-1a lands"
+    },
+    {
+      "name": "RECOVERY",
+      "meaning": "post-unexpected-unavailable controlled restart + verification",
+      "entry": "an operator starts the agent after an unexpected exit",
+      "exit": "NEGOTIATE succeeds -> HEALTHY; fails again -> UNAVAILABLE (escalate)",
+      "transitions": [
+        {"to": "HEALTHY", "when": "readiness passes after restart and stays stable for the confirm window"},
+        {"to": "UNAVAILABLE", "when": "readiness fails again within the confirm window (crash loop -> escalate)"}
+      ],
+      "operator_action": "follow the restart runbook; capture the exit evidence BEFORE restart; if it re-fails within the confirm window, escalate (do not loop restarts)"
+    }
+  ],
+  "invariants": [
+    "Every non-terminal state defines at least one transition.",
+    "Every transition target is a defined state.",
+    "A downstream (MT5/broker/IPC) failure moves HEALTHY->DEGRADED, never HEALTHY->UNAVAILABLE (the agent is still up).",
+    "UNAVAILABLE is only entered from a readiness-layer failure (process/socket/negotiate) or an intended STOPPING exit.",
+    "No state auto-restarts without an explicit supervised policy (today: none; see readiness-review)."
+  ]
+}

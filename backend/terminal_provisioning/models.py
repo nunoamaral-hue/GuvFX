@@ -399,3 +399,48 @@ class ProvisionerHeartbeat(models.Model):
 
     def __str__(self):
         return f"ProvisionerHeartbeat({self.status}, updated_at={self.updated_at})"
+
+
+class AgentMonitorState(models.Model):
+    """Durable hysteresis + alert-suppression state for the validation-agent readiness monitor (the operations
+    layer over ``agent_health_probe``/``agent_monitoring``/``agent_alert_sink``). A single row (pk=1) the probe
+    runner refreshes every tick, so cadence, recovery-hysteresis and alert cooldown SURVIVE a backend restart
+    (an in-process tracker would silently re-alert / reset after a redeploy).
+
+    Operational metadata ONLY — never a customer, broker, credential or account value. Everything here is a
+    coarse liveness fact (state/band/counters/timestamps/sanitised reason) already safe to log."""
+
+    SINGLETON_ID = 1
+    # coarse probe outcome (agent_health_probe.STATES / bands) — sanitised enums, never a raw agent string
+    current_state = models.CharField(max_length=32, blank=True, default="")
+    previous_state = models.CharField(max_length=32, blank=True, default="")
+    current_band = models.CharField(max_length=16, blank=True, default="")
+    # True / False / None(unknown) — stored as a nullable bool (older agent bundles report None)
+    supervised = models.BooleanField(null=True, blank=True)
+    # recovery hysteresis + flap/crash-loop detection (mirrors agent_health_probe.ReadinessTracker)
+    consecutive_healthy = models.PositiveIntegerField(default=0)
+    consecutive_unavailable = models.PositiveIntegerField(default=0)
+    flap_count = models.PositiveIntegerField(default=0)          # up->down->up transitions in the window
+    alerting = models.BooleanField(default=False)               # an outage alert is currently active (open)
+    last_reason = models.CharField(max_length=64, blank=True, default="")   # sanitised code only
+    # per-alert cooldown/dedup: {alert_name: {"ts": epoch, "fingerprint": "..."}}
+    last_alerts = models.JSONField(default=dict, blank=True)
+    last_delivery = models.CharField(max_length=64, blank=True, default="")  # sanitised delivery result code
+    # scheduler evidence
+    last_probe_at = models.DateTimeField(null=True, blank=True)
+    last_healthy_at = models.DateTimeField(null=True, blank=True)
+    last_transition_at = models.DateTimeField(null=True, blank=True)
+    run_count = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        self.pk = self.SINGLETON_ID
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls):
+        obj, _ = cls.objects.get_or_create(pk=cls.SINGLETON_ID)
+        return obj
+
+    def __str__(self):
+        return f"AgentMonitorState({self.current_state or 'UNKNOWN'}, alerting={self.alerting})"

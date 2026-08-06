@@ -39,6 +39,7 @@
   "src/components/onboarding/steps/RiskAcceptanceStep.tsx",
   "src/components/onboarding/steps/StrategyAssignmentStep.tsx",
   "src/components/onboarding/steps/TwoFactorStep.tsx",
+  "src/components/operations/AgentStatusPanel.tsx",
   "src/components/operations/EventDetailDialog.tsx",
   "src/components/operations/OpsAccountCard.tsx",
   "src/components/operations/OpsBadges.tsx",

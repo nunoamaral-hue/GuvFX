@@ -1,0 +1,53 @@
+{
+  "schema_version": "2026-08-05.1",
+  "component": "validation-agent",
+  "description": "Production monitoring design for the validation agent. DESIGN ONLY. Every health-model probe layer has at least one metric and one alert. Metrics are computable from durable sources the platform ALREADY holds (BrokerAccountValidationAttempt, OperationalEvent, ProvisionerHeartbeat) plus a lightweight readiness probe — no new host agent required.",
+  "probes": [
+    {"name": "agent_readiness", "cadence_seconds": 60, "layers": ["process_running", "socket_listening", "negotiate_ok"], "source": "backend-side signed NEGOTIATE (mgmt_client.assert_compatible) to :8791 with a bounded connect timeout", "notes": "the ONLY sanctioned health probe — the agent exposes no unauthenticated /health; a connect timeout => UNAVAILABLE (validation_agent_unreachable region)"},
+    {"name": "validate_login_available", "cadence_seconds": 300, "layers": ["validate_login_available"], "source": "NEGOTIATE supported_operations includes VALIDATE_LOGIN AND backend keyring provisioned"}
+  ],
+  "metrics": [
+    {"name": "agent_up", "type": "gauge", "layer": "process_running", "unit": "0|1", "source": "agent_readiness probe", "alert": "agent_down"},
+    {"name": "agent_socket_listening", "type": "gauge", "layer": "socket_listening", "unit": "0|1", "source": "agent_readiness probe / ProvisionerHeartbeat DEGRADED", "alert": "agent_down"},
+    {"name": "agent_negotiate_success", "type": "gauge", "layer": "negotiate_ok", "unit": "0|1", "source": "agent_readiness probe", "alert": "agent_negotiate_failing"},
+    {"name": "validate_login_available", "type": "gauge", "layer": "validate_login_available", "unit": "0|1", "source": "validate_login_available probe", "alert": "validate_login_unavailable"},
+    {"name": "validation_ipc_unavailable_rate", "type": "gauge", "layer": "mt5_initialise", "unit": "ratio_over_window", "source": "BrokerAccountValidationAttempt.reason_code over the rolling window", "alert": "mt5_ipc_failure_rate_high"},
+    {"name": "broker_reject_or_unavailable_rate", "type": "gauge", "layer": "broker_login", "unit": "ratio_over_window", "source": "BrokerAccountValidationAttempt.reason_code (server_unavailable/login_timeout/invalid_*) over window", "alert": "broker_failure_rate_high"},
+    {"name": "agent_transport_unreachable_rate", "type": "gauge", "layer": "response_returned", "unit": "ratio_over_window", "source": "BrokerAccountValidationAttempt.reason_code (validation_agent_unreachable/validation_agent_timeout)", "alert": "agent_transport_failing"},
+    {"name": "validation_attempts_total", "type": "counter", "layer": "response_returned", "unit": "count", "source": "BrokerAccountValidationAttempt rows"},
+    {"name": "validation_failures_total", "type": "counter", "layer": "response_returned", "unit": "count", "source": "BrokerAccountValidationAttempt non-HEALTHY rows"},
+    {"name": "agent_restart_total", "type": "counter", "layer": "process_running", "unit": "count", "source": "supervisor/service restart events (once supervised)", "alert": "agent_crash_loop"},
+    {"name": "agent_uptime_seconds", "type": "gauge", "layer": "process_running", "unit": "seconds", "source": "readiness probe transitions (up since)"},
+    {"name": "validation_queue_depth", "type": "gauge", "layer": "validate_login_available", "unit": "count", "source": "single-flight: 0 or 1 in-flight + waiters (agent is single-flight); backend-side pending validations", "notes": "the agent processes one validation at a time; queue depth is really 'are requests waiting on the single-flight lock'"},
+    {"name": "agent_supervised", "type": "gauge", "layer": "process_running", "unit": "0|1", "source": "corroborate agent_up with the GuvFXBetaAgent SCM service in Running state owning the :8791 PID (or a WinSW-injected start-marker in the NEGOTIATE response a bare launch cannot forge)", "alert": "agent_unsupervised_listener", "notes": "adversarial (lens 1/2): a bare 'python agent.py' answers NEGOTIATE byte-identically to the supervised child, so agent_up alone CANNOT tell a supervised from an unsupervised listener — the exact Aug-5 vector. This distinguishes them."},
+    {"name": "agent_readiness_freshness_seconds", "type": "gauge", "layer": "negotiate_ok", "unit": "seconds", "source": "age of the most recent agent_readiness probe RESULT (timestamp), computed by the scheduler, not by the probe value", "alert": "readiness_probe_stale", "notes": "dead-man's-switch (lens 3): every agent-down signal is conditioned on the probe running; if the probe itself dies, nothing updates agent_up. This detects a stalled probe."},
+    {"name": "oldest_inflight_validation_seconds", "type": "gauge", "layer": "mt5_initialise", "unit": "seconds", "source": "single-flight lock-held duration / oldest in-flight VALIDATE_LOGIN age", "alert": "validation_wedged", "notes": "wedge detection (lens 2/3): a validation that holds the single-flight lock and never completes leaves NEGOTIATE green (HEALTHY) while no validation can run. NEGOTIATE is a shallow probe (HTTP+auth+manifest), not proof a validation completes."},
+    {"name": "validation_total_latency_p95_ms", "type": "histogram", "layer": "response_returned", "unit": "ms_p95", "source": "validation_timeline duration_ms distribution over the window", "alert": "validation_latency_creep", "notes": "latency-creep SLO (lens 3): agent_transport drifting toward the 10s connect timeout or MT5-init drift is caught BEFORE it becomes a hard timeout."},
+    {"name": "validation_busy_rate", "type": "gauge", "layer": "validate_login_available", "unit": "ratio_over_window", "source": "BrokerAccountValidationAttempt.reason_code == validation_busy over the window", "alert": "validation_wedged", "notes": "lens 3: validation_busy is the single-flight-busy symptom of a wedge; it must map to a metric so a busy-dominated window pages."}
+  ],
+  "latency_breakdown": [
+    {"segment": "browser_to_backend", "attributed_to": "browser/network", "source": "frontend timing (not a validation reason)"},
+    {"segment": "backend_queue", "attributed_to": "backend", "source": "decrypt-start to transport-start"},
+    {"segment": "agent_transport", "attributed_to": "backend<->agent channel", "source": "transport round-trip; a ~10s value == the connect timeout (agent unreachable)"},
+    {"segment": "mt5_initialise", "attributed_to": "validation host / MT5 local IPC", "source": "agent diagnostic artefact (host-only; forwardable, gated)"},
+    {"segment": "broker_login", "attributed_to": "broker", "source": "agent diagnostic artefact (host-only; forwardable, gated)"},
+    {"segment": "total", "attributed_to": "end-to-end", "source": "validation_timeline duration_ms (decrypt-start to attempt persisted)"}
+  ],
+  "alerts": [
+    {"name": "agent_down", "condition": "agent_up == 0 for >= 2 consecutive readiness probes", "severity": "HIGH", "detects_state": "UNAVAILABLE", "runbook": "agent-unavailable"},
+    {"name": "agent_negotiate_failing", "condition": "agent_negotiate_success == 0 while socket_listening == 1", "severity": "HIGH", "detects_state": "UNAVAILABLE", "runbook": "negotiate-failed"},
+    {"name": "validate_login_unavailable", "condition": "validate_login_available == 0 (keyring/op missing)", "severity": "MEDIUM", "detects_state": "DEGRADED", "runbook": "validate-login-failed"},
+    {"name": "mt5_ipc_failure_rate_high", "condition": "validation_ipc_unavailable_rate > threshold over window", "severity": "MEDIUM", "detects_state": "DEGRADED", "runbook": "repeated-ipc-failures"},
+    {"name": "broker_failure_rate_high", "condition": "broker_reject_or_unavailable_rate > threshold over window", "severity": "MEDIUM", "detects_state": "DEGRADED", "runbook": "repeated-broker-failures"},
+    {"name": "agent_transport_failing", "condition": "agent_transport_unreachable_rate > threshold over window", "severity": "HIGH", "detects_state": "UNAVAILABLE", "runbook": "agent-unavailable"},
+    {"name": "agent_crash_loop", "condition": "agent_restart_total increments >= N within M minutes (source: supervisor restart telemetry AND/OR readiness probe up->down->up transitions — the latter is backend-computable and catches sub-cadence loops)", "severity": "HIGH", "detects_state": "RECOVERY", "runbook": "restart-procedure"},
+    {"name": "agent_unsupervised_listener", "condition": "agent_up == 1 while agent_supervised == 0 (something answers :8791 but it is NOT the supervised service)", "severity": "HIGH", "detects_state": "UNAVAILABLE", "runbook": "unsupervised-listener"},
+    {"name": "readiness_probe_stale", "condition": "agent_readiness_freshness_seconds > K x probe_cadence (the prober itself has stalled — treat as agent-down)", "severity": "HIGH", "detects_state": "UNAVAILABLE", "runbook": "agent-unavailable"},
+    {"name": "validation_wedged", "condition": "oldest_inflight_validation_seconds > max_expected (~login_timeout_ms+grace) OR validation_busy_rate high while NEGOTIATE green", "severity": "HIGH", "detects_state": "DEGRADED", "runbook": "agent-wedged"},
+    {"name": "validation_latency_creep", "condition": "validation_total_latency_p95_ms breaches the SLO before a hard timeout", "severity": "MEDIUM", "detects_state": "DEGRADED", "runbook": "agent-unhealthy"}
+  ],
+  "support_timeline_integration": {
+    "reuse": "trading/validation_timeline (the support timeline UI, stages + operator summary) and operational_events (WP5 VALIDATION projection)",
+    "note": "a validation_agent_unreachable/timeout attempt already localises to the transport layer in the timeline; the monitoring alerts link to the same correlation ids so an alert opens directly onto the support timeline for that attempt"
+  }
+}

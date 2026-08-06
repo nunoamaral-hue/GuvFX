@@ -1,0 +1,66 @@
+<service>
+  <!-- SUPERVISED production profile for the GuvFX beta validation/provisioning agent (WS-A, minimum
+       production hardening). This is the TARGET config the deployment package installs to close RR-1
+       (no supervision) and RR-4 (unenforced launch path). It SUPERSEDES the DARK install-only
+       GuvFXBetaAgent.xml (startmode Manual, onfailure=none) - see docs/adr/ADR-0013-*-addendum.
+
+       Applying this file is a Windows-host mutation and is Sponsor-gated: it is NOT applied by this packet.
+       Left in the repo as the reviewable target + the source of the exact diff in
+       docs/operations/validation-agent/deployment-min-hardening.md. Bind stays :8791; :8788 is never touched. -->
+  <id>GuvFXBetaAgent</id>
+  <name>GuvFX Beta Provisioning Agent</name>
+  <description>GuvFX beta per-slot provisioning + broker-login validation agent. Supervised, auto-restart, least-privilege virtual account.</description>
+
+  <executable>C:\GuvFX\beta\agent-venv\Scripts\python.exe</executable>
+  <arguments>-u C:\GuvFX\beta\agent\agent.py</arguments>
+  <workingdirectory>C:\GuvFX\beta\agent</workingdirectory>
+
+  <!-- Least privilege: unchanged from the DARK profile. allowservicelogon REQUIRED (host-proven). -->
+  <serviceaccount>
+    <username>NT SERVICE\GuvFXBetaAgent</username>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+
+  <!-- SUPERVISED lifecycle. Automatic + delayed so the agent comes up after boot dependencies (network,
+       Tailscale) without racing them. This is the change from Manual. -->
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+
+  <!-- WS-D launch proof: the sanctioned service INJECTS these markers. A bare `python agent.py` started by
+       an operator during maintenance will NOT have them, so classify_launch() reports supervised=false, the
+       agent advertises agent_supervised=false in NEGOTIATE, and the backend readiness probe pages
+       (agent_unsupervised_listener). These are NON-secret liveness markers, not credentials.
+       BETA_AGENT_SUPERVISED_TOKEN is a per-deployment value the installer sets (documented; not a secret).
+       Threat scope (honest): this defends the ACCIDENTAL unsanctioned launch (the Aug-5 vector), not a
+       privileged adversary who could edit the bundle - parent-process/nonce proof is a documented fast-follow. -->
+  <env name="BETA_AGENT_SERVICE_IDENTITY" value="GuvFXBetaAgent" />
+  <env name="BETA_AGENT_SUPERVISED_TOKEN" value="__SET_AT_INSTALL__" />
+  <!-- Hard refuse-to-bind for an unsupervised launch. Enable ONLY once this supervised service is proven in
+       place; before then it must stay 0 or the manual recovery path is bricked (RULE-1 care). Default is to
+       REPORT (supervised=false -> not HEALTHY) without refusing; flip to 1 after the first supervised start
+       is confirmed healthy. -->
+  <env name="BETA_AGENT_REFUSE_UNSUPERVISED_LAUNCH" value="0" />
+
+  <logpath>C:\GuvFX\beta\agent-state\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <!-- Graceful stop: unchanged. stoptimeout MUST exceed BETA_AGENT_DRAIN_TIMEOUT_S (install-time assert). -->
+  <stoptimeout>300 sec</stoptimeout>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+
+  <!-- BOUNDED-BACKOFF auto-restart that NEVER permanently gives up (RR-1 adversarial correction: the old
+       "subsequent -> none" stranded the agent on any persistent condition). All THREE tiers restart; the
+       LAST entry governs every subsequent failure, so there is a permanent restart FLOOR. Delays grow
+       (10s -> 60s -> 300s) so a genuine crash-loop backs off instead of hot-looping. resetfailure=1 hour:
+       after an hour of clean uptime the failure counter resets, so a single transient restart tomorrow
+       starts again at the short delay rather than the long one. Crash-loop DETECTION + paging is done by the
+       backend (agent_crash_loop, computed from up->down->up probe transitions) - the supervisor keeps trying
+       (availability) while the alert brings a human (RR-11). -->
+  <resetfailure>1 hour</resetfailure>
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="60 sec" />
+  <onfailure action="restart" delay="300 sec" />
+</service>
