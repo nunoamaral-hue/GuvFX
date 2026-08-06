@@ -169,6 +169,17 @@ _OPERATOR_HINT = {
                                 "(read timeout) — the request was sent; MT5/broker status is UNKNOWN.",
     "login_timeout": "The agent reached the MT5 login phase and MT5 reported a timeout (not a transport "
                      "failure).",
+    # ADR-0027 runner-isolation packet (2026-08-06): isolation_check_failed stops at the validation runner's
+    # isolated-terminal contract — BEFORE MT5 is launched, so the broker is never contacted (already mapped to
+    # ``agent_received`` above: broker stages are 'not reached'). The EXACT effective terminal path + failing
+    # rule now live in the agent's on-host diagnostic artefact (the ``isolation`` section). Forwarding that
+    # detail onto THIS backend timeline needs the agent to return its sanitised operator summary in the
+    # VALIDATE_LOGIN response — a separate, gated agent+host change (documented follow-up; this module stays
+    # backend-record-only and never instruments the hot path).
+    "isolation_check_failed": "The validation runner's isolated-terminal contract failed BEFORE MT5 launched; "
+                              "the broker was never contacted. Exact effective path + failing rule are in the "
+                              "agent's on-host isolation diagnostic (surfacing them here is a documented "
+                              "follow-up: the agent must forward its operator summary).",
 }
 
 

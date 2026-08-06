@@ -512,5 +512,81 @@ class CaptureFailureVerdictTests(unittest.TestCase):
             self.assertFalse(os.path.exists(adat))              # scrub still ran
 
 
+class RunnerIsolationEvidenceTests(unittest.TestCase):
+    """Runner-isolation diagnostics packet (2026-08-06): an ``isolation_check_failed`` outcome now carries a
+    structured, operator-only ``_isolation`` report; the runner writes it into the durable artefact (keyed by
+    correlation id, BEFORE returning), keeps the customer contract, and surfaces the sub-reason in the operator
+    summary — no MT5 launched, no secret persisted."""
+    def _iso(self, **over):
+        iso = {"result": "fail", "sub_reason": "validation_terminal_not_isolated",
+               "validation_dir": r"C:\GuvFX\beta\validation-5833\terminal",
+               "validation_root": r"C:\GuvFX\beta\validation-5833",
+               "validation_dir_canonical": r"c:\guvfx\beta\validation-5833\terminal",
+               "validation_root_canonical": r"c:\guvfx\beta\validation-5833",
+               "forbidden_roots": [r"C:\GuvFX\beta"], "matched_forbidden_root": r"C:\GuvFX\beta",
+               "terminal_path": r"C:\GuvFX\beta\validation-5833\terminal\terminal64.exe", "terminal_exists": True,
+               "checks": {"absolute": True, "no_traversal": True, "beneath_root": True,
+                          "disjoint": False, "terminal_present": True}}
+        iso.update(over)
+        return {"ok": False, "reason_code": "isolation_check_failed", "is_demo": None, "_isolation": iso}
+
+    def _run(self, tmp, outcome):
+        cfg = _cfg(tmp)
+        rid = _stage_request(cfg["validation_handoff_dir"])
+        status = runner.run_once(cfg, build_handler=lambda _c: _FakeHandler(outcome), win=_FakeWin(),
+                                 clock=lambda: 1000.0, read_journal=lambda d: [],
+                                 mirror_baseline=lambda s, d: "restored")
+        return cfg, rid, status
+
+    def test_isolation_section_captured_localised_and_contract_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, rid, _status = self._run(tmp, self._iso())
+            # customer body: contract only, NO operator/isolation internals leaked
+            res = _read_result(cfg["validation_handoff_dir"], rid)
+            self.assertEqual((res["ok"], res["reason_code"], res["is_demo"]),
+                             (False, "isolation_check_failed", None))
+            self.assertNotIn("_isolation", res)
+            self.assertNotIn("_operator", res)
+            # operator summary (staff-only) surfaces the sub-reason LABEL; the matched-root PATH is filtered
+            # from the ride-back (host paths stay in the on-host artefact only).
+            self.assertEqual(res["operator"]["isolation_sub_reason"], "validation_terminal_not_isolated")
+            self.assertNotIn("isolation_matched_forbidden_root", res["operator"])
+            # durable artefact: full structured isolation section, keyed by correlation id, localised to ISOLATION
+            ev = _read_evidence(cfg["validation_diagnostics_dir"], "corr-1")
+            self.assertEqual(ev["correlation_id"], "corr-1")
+            self.assertEqual(ev["reason_code"], "isolation_check_failed")
+            self.assertEqual(ev["isolation"]["sub_reason"], "validation_terminal_not_isolated")
+            self.assertEqual(ev["isolation"]["matched_forbidden_root"], r"C:\GuvFX\beta")
+            self.assertEqual(ev["isolation"]["validation_dir"], r"C:\GuvFX\beta\validation-5833\terminal")
+            self.assertFalse(ev["isolation"]["checks"]["disjoint"])
+            self.assertEqual((ev["stage_reached"], ev["first_failing_stage"]), ("RUNNER_STARTED", "ISOLATION"))
+            self.assertIn("config_source", ev)                  # WS-E provenance present
+
+    def test_isolation_artefact_carries_no_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, _rid, _ = self._run(tmp, self._iso(sub_reason="validation_terminal_missing"))
+            blob = json.dumps(_read_evidence(cfg["validation_diagnostics_dir"], "corr-1")).lower()
+            for bad in ("password", "secret", "token", "-----begin", "bearer "):
+                self.assertNotIn(bad, blob)
+
+    def test_unknown_isolation_nested_key_is_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, _rid, _ = self._run(tmp, self._iso(EVIL="leak"))
+            ev = _read_evidence(cfg["validation_diagnostics_dir"], "corr-1")
+            self.assertNotIn("EVIL", ev["isolation"])           # nested allow-list drops the unknown key
+
+    def test_success_path_has_null_isolation_and_is_unaffected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome = {"ok": True, "reason_code": "demo_ok", "is_demo": True,
+                       "_operator": {"initialize_started": True, "initialize_result": True,
+                                     "account_info_present": True, "trade_mode": 0}}
+            cfg, rid, _ = self._run(tmp, outcome)
+            res = _read_result(cfg["validation_handoff_dir"], rid)
+            self.assertTrue(res["ok"])
+            ev = _read_evidence(cfg["validation_diagnostics_dir"], "corr-1")
+            self.assertIsNone(ev["isolation"])                  # additive/backward-compatible on the success path
+            self.assertEqual(ev["stage_reached"], "CLASSIFIED")
+
+
 if __name__ == "__main__":
     unittest.main()

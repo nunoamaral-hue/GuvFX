@@ -99,6 +99,72 @@ def assert_isolated_validation_terminal(validation_dir, *, validation_root=DEFAU
     return exe_path
 
 
+def isolation_report(validation_dir, *, validation_root=DEFAULT_VALIDATION_ROOT,
+                     forbidden_roots=DEFAULT_FORBIDDEN_ROOTS, exe_name=VALIDATION_EXE_NAME,
+                     path_exists) -> dict:
+    """SECRET-SAFE structured evaluation of the isolated-terminal contract, for the on-host operator diagnostic
+    (ADR-0027 §2). Unlike ``assert_isolated_validation_terminal`` — which short-circuits and raises the FIRST
+    ``IsolationError`` — this evaluates EVERY rule independently and returns which rule fails, on what EFFECTIVE
+    path, and against which forbidden root, so an ``isolation_check_failed`` can be localised without host access.
+
+    It is DIAGNOSTICS ONLY: it performs no mutation, carries only paths + booleans (never a credential/token/
+    key), and NEVER changes the fail-closed decision or the customer reason code — the authoritative gate stays
+    ``assert_isolated_validation_terminal`` and the customer reason stays ``isolation_check_failed``. ``sub_reason``
+    is one of the reasons the code actually enforces (or ``None`` on pass). Never raises."""
+    vdir = validation_dir or ""
+    vroot = validation_root or ""
+    absolute = bool(vdir) and _is_absolute_windows(vdir)
+    root_valid = ("\\" in _norm(vroot)) and not _has_traversal(vroot)
+    no_traversal = not _has_traversal(vdir)
+    beneath_root = _beneath(vdir, vroot)
+    matched = None
+    for f in forbidden_roots:
+        if f and (_beneath(vdir, f) or _beneath(f, vdir)):
+            matched = f
+            break
+    disjoint = matched is None
+    terminal_path = (vdir.replace("/", "\\").rstrip("\\") + "\\" + exe_name) if vdir else ""
+    try:
+        terminal_present = bool(terminal_path) and bool(path_exists(terminal_path))
+    except Exception:            # noqa: BLE001 — a path check must never crash diagnostics
+        terminal_present = False
+    # sub_reason precedence MIRRORS the order assert_isolated_validation_terminal enforces its rules, so the
+    # diagnostic names the same rule the gate would fail on (just more granularly than the collapsed raises).
+    if not absolute:
+        sub_reason = "validation_terminal_unconfigured"
+    elif not root_valid:
+        sub_reason = "validation_root_invalid"
+    elif not no_traversal:
+        sub_reason = "validation_terminal_traversal"
+    elif not beneath_root:
+        sub_reason = "validation_terminal_outside_root"
+    elif not disjoint:
+        sub_reason = "validation_terminal_not_isolated"
+    elif not terminal_present:
+        sub_reason = "validation_terminal_missing"
+    else:
+        sub_reason = None
+    return {
+        "result": "pass" if sub_reason is None else "fail",
+        "sub_reason": sub_reason,
+        "validation_dir": vdir,
+        "validation_dir_canonical": _norm(vdir),
+        "validation_root": vroot,
+        "validation_root_canonical": _norm(vroot),
+        "forbidden_roots": [f for f in forbidden_roots if f],
+        "matched_forbidden_root": matched,
+        "terminal_path": terminal_path,
+        "terminal_exists": terminal_present,
+        "checks": {
+            "absolute": absolute,
+            "no_traversal": no_traversal,
+            "beneath_root": beneath_root,
+            "disjoint": disjoint,
+            "terminal_present": terminal_present,
+        },
+    }
+
+
 # ── MT5 error → customer-safe taxonomy (calibrated under host certification; RULE 11) ────────────────────────
 def classify_init_error(code, text: str) -> str:
     """Map an MT5 ``initialize`` failure ``(code, text)`` to a taxonomy reason. Text-first, then code; an
@@ -220,8 +286,14 @@ class LoginValidationHandler:
         self._lock = lock or threading.Lock()
         self._login_timeout_ms = int(login_timeout_ms)
 
-    def _denied(self, reason_code):
-        return {"ok": False, "reason_code": reason_code, "is_demo": None}
+    def _denied(self, reason_code, *, isolation=None):
+        out = {"ok": False, "reason_code": reason_code, "is_demo": None}
+        if isolation is not None:
+            # OPERATOR-ONLY structured isolation diagnostic. Carried under a DISTINCT ``_isolation`` key (never
+            # ``_operator``, so the runner's stage derivation is unaffected) and stripped before the customer
+            # result — the customer contract is ``{ok, reason_code, is_demo}`` only.
+            out["_isolation"] = isolation
+        return out
 
     def validate(self, *, operation, runtime_uuid, correlation_id, nonce, payload) -> dict:
         # 1) isolated-terminal contract FIRST — never attempt a probe against an unproven path.
@@ -230,7 +302,12 @@ class LoginValidationHandler:
                 self._validation_dir, validation_root=self._validation_root,
                 forbidden_roots=self._forbidden_roots, path_exists=self._path_exists)
         except IsolationError:
-            return self._denied("isolation_check_failed")
+            # Fail-closed decision unchanged; ALSO build a secret-safe structured diagnostic so the on-host
+            # artefact can localise WHICH rule/path failed (the customer reason stays ``isolation_check_failed``).
+            report = isolation_report(
+                self._validation_dir, validation_root=self._validation_root,
+                forbidden_roots=self._forbidden_roots, path_exists=self._path_exists)
+            return self._denied("isolation_check_failed", isolation=report)
 
         # 2) login / server come from the payload, which the outer signature already bound via payload_digest.
         login = str((payload or {}).get("login") or "").strip()

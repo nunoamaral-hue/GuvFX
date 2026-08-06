@@ -266,6 +266,21 @@ ALLOWED_EVIDENCE_KEYS = frozenset({
     "shutdown_requested", "terminal_exited_after_shutdown", "stray_termination_attempted",
     "stray_termination_result", "baseline_restore_result", "final_baseline_fingerprint",
     "handoff_cleanup_result",
+    # ISOLATION diagnostics (ADR-0027 runner-isolation packet, 2026-08-06): a structured, secret-safe record of
+    # the effective isolated-terminal contract inputs and the exact failing rule — paths + booleans only, no
+    # secret. ``config_source``/``runner_executable`` show HOW the task-launched runner resolved its config.
+    "isolation", "config_source", "runner_executable",
+})
+
+# Keys inside the nested ``isolation`` object (allow-list applied recursively in build_evidence). Paths + a
+# fixed set of booleans/labels — never a secret. An unknown nested key is dropped, same as the top level.
+_ALLOWED_ISOLATION_KEYS = frozenset({
+    "result", "sub_reason", "validation_dir", "validation_dir_canonical", "validation_root",
+    "validation_root_canonical", "forbidden_roots", "matched_forbidden_root", "terminal_path",
+    "terminal_exists", "checks",
+})
+_ALLOWED_ISOLATION_CHECK_KEYS = frozenset({
+    "absolute", "no_traversal", "beneath_root", "disjoint", "terminal_present",
 })
 
 
@@ -284,13 +299,28 @@ def stage_localisation(stages_reached) -> tuple:
     return last_ok, first_fail
 
 
+def _filter_isolation(iso):
+    """Restrict the (already-scrubbed) isolation object to its allow-listed nested keys — an unknown nested key
+    is dropped, mirroring the top-level allow-list, so nothing unexpected can ever be persisted inside the
+    isolation section. A non-dict becomes ``None``."""
+    if not isinstance(iso, dict):
+        return None
+    out = {k: v for k, v in iso.items() if k in _ALLOWED_ISOLATION_KEYS}
+    if isinstance(out.get("checks"), dict):
+        out["checks"] = {k: v for k, v in out["checks"].items() if k in _ALLOWED_ISOLATION_CHECK_KEYS}
+    elif "checks" in out:
+        out["checks"] = None
+    return out
+
+
 def build_evidence(fields: dict) -> dict:
     """Filter to the allow-list and scrub every value. An unknown key is dropped (never persisted); every
-    value passes the secret scan. Always stamps the schema version."""
+    value passes the secret scan. The nested ``isolation`` object is additionally restricted to its own
+    allow-list. Always stamps the schema version."""
     out = {"schema_version": SCHEMA_VERSION}
     for k, v in (fields or {}).items():
         if k in ALLOWED_EVIDENCE_KEYS:
-            out[k] = scrub(v)
+            out[k] = _filter_isolation(scrub(v)) if k == "isolation" else scrub(v)
     return out
 
 
@@ -298,6 +328,7 @@ def operator_summary(evidence: dict) -> dict:
     """The compact operator-diagnostic result (packet §3) — a small, secret-safe subset that can travel back
     with the outcome. Never includes raw journal text or host secrets."""
     e = evidence or {}
+    iso = e.get("isolation") if isinstance(e.get("isolation"), dict) else {}
     return {
         "evidence_id": e.get("correlation_id"),
         "stage_reached": e.get("stage_reached"),
@@ -306,6 +337,10 @@ def operator_summary(evidence: dict) -> dict:
         "last_error_reason": e.get("last_error_reason"),
         "cleanup_status": e.get("baseline_restore_result"),
         "terminal_exit_status": e.get("terminal_exited_after_shutdown"),
+        # ISOLATION localisation (present only when the isolated-terminal contract failed) — sub-reason + the
+        # forbidden root that matched (if any). Secret-safe: labels/paths only.
+        "isolation_sub_reason": iso.get("sub_reason"),
+        "isolation_matched_forbidden_root": iso.get("matched_forbidden_root"),
     }
 
 

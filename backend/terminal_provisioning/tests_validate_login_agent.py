@@ -291,6 +291,103 @@ class IsolationContractUnitTests(SimpleTestCase):
                          validation_root=r"C:\GuvFX\beta\..\beta\validation")
 
 
+class IsolationReportTests(SimpleTestCase):
+    """Runner-isolation diagnostics packet (2026-08-06): the structured, secret-safe ``isolation_report`` and
+    its wiring into the handler denial. The authoritative fail-closed decision and the customer reason
+    (``isolation_check_failed``) are UNCHANGED; the report is operator-only (carried under ``_isolation``, never
+    ``_operator``, so the runner's stage derivation is unaffected)."""
+    def _rep(self, d, **kw):
+        kw.setdefault("path_exists", lambda p: True)
+        return vl.isolation_report(d, **kw)
+
+    def test_missing_dir_is_unconfigured(self):
+        r = self._rep("")
+        self.assertEqual((r["result"], r["sub_reason"]), ("fail", "validation_terminal_unconfigured"))
+        self.assertFalse(r["checks"]["absolute"])
+
+    def test_relative_dir_is_unconfigured(self):
+        self.assertEqual(self._rep(r"relative\vt")["sub_reason"], "validation_terminal_unconfigured")
+
+    def test_root_invalid(self):
+        self.assertEqual(self._rep(r"C:\anything\vt", validation_root="C:\\")["sub_reason"],
+                         "validation_root_invalid")
+
+    def test_traversal(self):
+        r = self._rep(r"C:\GuvFX\beta\validation\..\slots\1", validation_root=r"C:\GuvFX\beta\validation")
+        self.assertEqual(r["sub_reason"], "validation_terminal_traversal")
+        self.assertFalse(r["checks"]["no_traversal"])
+
+    def test_outside_root(self):
+        r = self._rep(r"C:\Other\vt", validation_root=r"C:\GuvFX\beta\validation")
+        self.assertEqual(r["sub_reason"], "validation_terminal_outside_root")
+        self.assertFalse(r["checks"]["beneath_root"])
+
+    def test_beneath_forbidden_root_records_match(self):
+        r = self._rep(r"C:\GuvFX\beta\validation-5833\terminal",
+                      validation_root=r"C:\GuvFX\beta\validation-5833", forbidden_roots=(r"C:\GuvFX\beta",))
+        self.assertEqual((r["sub_reason"], r["matched_forbidden_root"]),
+                         ("validation_terminal_not_isolated", r"C:\GuvFX\beta"))
+        self.assertFalse(r["checks"]["disjoint"])
+
+    def test_missing_exe(self):
+        r = self._rep(VDIR, path_exists=lambda p: False)
+        self.assertEqual(r["sub_reason"], "validation_terminal_missing")
+        self.assertFalse(r["checks"]["terminal_present"])
+
+    def test_valid_passes(self):
+        r = self._rep(VDIR)
+        self.assertEqual((r["result"], r["sub_reason"], r["matched_forbidden_root"]), ("pass", None, None))
+        self.assertTrue(all(r["checks"].values()))
+
+    def test_canonical_paths_recorded(self):
+        r = self._rep(r"C:/GuvFX/BETA/validation/VT/")
+        self.assertEqual(r["validation_dir_canonical"], r"c:\guvfx\beta\validation\vt")
+
+    def test_report_carries_no_secret_and_is_json_safe(self):
+        blob = json.dumps(self._rep(VDIR)).lower()
+        for bad in ("password", "secret", "token", "-----begin", "bearer "):
+            self.assertNotIn(bad, blob)
+
+    def test_never_raises_on_bad_path_exists(self):
+        def boom(_p):
+            raise OSError("io")
+        self.assertFalse(vl.isolation_report(VDIR, path_exists=boom)["checks"]["terminal_present"])
+
+    def _iso_handler(self, vdir, root, forbidden):
+        def _no_probe():
+            raise AssertionError("the MT5 probe must never be built on an isolation failure")
+        return vl.LoginValidationHandler(
+            open_envelope=lambda s, a: b"pw", bind_aad=lambda **k: b"aad", mt5_probe_factory=_no_probe,
+            path_exists=lambda p: True, validation_dir=vdir, validation_root=root, forbidden_roots=forbidden)
+
+    def test_handler_attaches_operator_isolation_and_keeps_customer_contract(self):
+        h = self._iso_handler(r"C:\GuvFX\beta\slots\1\terminal", r"C:\GuvFX\beta\slots\1",
+                              (r"C:\GuvFX\beta\slots",))
+        out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid="u", correlation_id="c", nonce="n",
+                         payload={"login": "1", "server": "s", "password_env": {}})
+        # customer contract UNCHANGED (no MT5 launched — probe factory would have raised)
+        self.assertEqual((out["ok"], out["reason_code"], out["is_demo"]),
+                         (False, "isolation_check_failed", None))
+        self.assertNotIn("_operator", out)                       # not the probe path → stage model intact
+        self.assertEqual(out["_isolation"]["result"], "fail")
+        self.assertEqual(out["_isolation"]["sub_reason"], "validation_terminal_not_isolated")
+        self.assertEqual(out["_isolation"]["matched_forbidden_root"], r"C:\GuvFX\beta\slots")
+
+    def test_regression_service_valid_but_runner_forbidden_differs(self):
+        # The discrepancy class that produced the incident: a validation_dir that PASSES with the default
+        # forbidden set but FAILS once the runner's richer forbidden set (beta_root) is applied. The report
+        # localises the ACTUAL failing rule + offending root even though a manual/default check looked clean.
+        vdir, vroot = r"C:\GuvFX\beta\validation-5833\terminal", r"C:\GuvFX\beta\validation-5833"
+        default_ok = vl.isolation_report(vdir, validation_root=vroot,
+                                         forbidden_roots=vl.DEFAULT_FORBIDDEN_ROOTS, path_exists=lambda p: True)
+        with_beta = vl.isolation_report(vdir, validation_root=vroot,
+                                        forbidden_roots=vl.DEFAULT_FORBIDDEN_ROOTS + (r"C:\GuvFX\beta",),
+                                        path_exists=lambda p: True)
+        self.assertEqual(default_ok["result"], "pass")
+        self.assertEqual((with_beta["result"], with_beta["sub_reason"], with_beta["matched_forbidden_root"]),
+                         ("fail", "validation_terminal_not_isolated", r"C:\GuvFX\beta"))
+
+
 class LockTests(SimpleTestCase):
     def test_single_flight_busy_when_lock_held(self):
         lock = threading.Lock()
