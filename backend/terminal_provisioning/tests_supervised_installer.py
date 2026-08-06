@@ -171,6 +171,16 @@ class InstallerReviewHardeningTests(SimpleTestCase):
     def test_rollback_reinstall_checks_exit_code(self):
         self.assertIn("reinstall of the baseline service failed", self.t)
 
+    def test_plan_mode_gates_all_service_mutations(self):
+        # The backup + whole install/identity/rollback flow only runs under -Apply (PLAN mutates nothing).
+        self.assertIn("if ($Apply) {\n  $Snapshot = Backup-GuvfxServiceState", self.t)
+        # rollback (Restore) is invoked only inside the catch, under an -Apply guard
+        tail = self.t[self.t.rindex("catch {"):]
+        self.assertIn("if ($Apply) {", tail)
+        self.assertLess(tail.index("if ($Apply)"), tail.index("Restore-GuvfxServiceFromSnapshot"))
+        # the register-time WinSW install is wrapped in DoIt (gated), never a bare top-level statement
+        self.assertNotRegex(self.t, r"(?m)^& \$ServiceExe install\b")
+
 
 class InstallerContractTests(SimpleTestCase):
     def setUp(self):

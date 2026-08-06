@@ -109,6 +109,39 @@ is interrupted. `:8788` and all trading are unaffected.
 - The `:8791` owner is a process you did NOT start → the unsupervised-listener runbook, not a restart.
 - Any temptation to touch `:8788`, #12, or #1 → STOP; that is out of blast radius.
 
+## 7a. Verified host + VPS baseline (read-only, 2026-08-06 — merge/cert packet)
+
+Captured read-only at merged `main` `be7f215`; every value confirms the deployment assumptions and the DARK state.
+
+**Windows host `WIN-RD8VDS93DK7` (100.79.101.19), boot 2026-06-10 (no reboot):**
+- `GuvFXBetaAgent`: **Stopped / Manual / recovery=none** (RESET_PERIOD 86400, no failure actions); identity `NT SERVICE\GuvFXBetaAgent`; WinSW exe `C:\GuvFX\beta\agent-winsw\GuvFXBetaAgent.exe` (sha16 `923111C7…`), DARK XML `GuvFXBetaAgent.xml` (sha16 `DCDB8DFD…`).
+- **`:8791` NO LISTENER** (agent down); **`:8788` LISTEN pid=15396** (trade bridge — DO NOT TOUCH).
+- Firewall: `GuvFX-Beta-Agent-In` (Allow, backend) + `GuvFX-Beta-Agent-Block-NonBackend` (Block) **both Enabled**.
+- Deployed bundle `C:\GuvFX\beta\agent`: **manifest `2026-08-03.3`**, `agent_lifecycle.py` **ABSENT**, `agent_lifecycle.jsonl` **ABSENT** (min-hardening not deployed — EXPECTED_STALE vs repo `2026-08-06.1`).
+- Tasks: `GvfxValidationRunner` **Ready**; `GuvFXBetaRuntime-1..4` + `…Stop-1..4` Ready.
+- ACLs: `NT SERVICE\GuvFXBetaAgent` = ReadAndExecute on `agent` + `agent-winsw`; **Modify** on `agent-state` and `agent-state\logs` (⇒ lifecycle log + single-instance lock writable under the service identity — **no permission change required**). C: free 414.8 GB.
+
+**VPS (100.119.23.29):** `guvfx-backend` container `d108e18a…` image `c096e83b…` (provenance commit `6b0fdf96`, **pre-merge** — backend hardening NOT deployed), restarts 0; `guvfx-frontend` `d01a914c…` image `2310ad62…`. Signing keyring `BETA_AGENT_KEYRING`/`KEY_ID`/`BASE_URL` **SET**; `AGENT_ALERT_SINK`/`AGENT_ALERT_OWNER` **NOT SET** (⇒ alert sink defaults to safe `NullAlertSink`). Latest DB backup `guvfx-pre288-20260805T165413Z.sql.gz`. Rollback images incl. `guvfx-prod-guvfx-backend:latest` (`c096e83b`) + `rollback-pre288-…`. `:8788` bridge + wayond listener + shadow worker all up and untouched.
+
+**Path corrections for §4:** the WinSW profile lives under `C:\GuvFX\beta\agent-winsw\` (not the bundle dir); back up + swap `GuvFXBetaAgent.xml` there. The lifecycle log/lock resolve to `C:\GuvFX\beta\agent-state\logs\` (service has Modify).
+
+## 7b. Adversarial pre-deployment review — folded-in refinements (2026-08-06)
+
+Six lenses against the captured host evidence. Repo/doc refinements applied here; host-only uncertainties are **deployment-day STOP checks**.
+
+- **Minimise blast radius — Windows-host-ONLY first deploy.** The backend hardening modules are **inert until a probe schedule is wired** (§3), so the backend recreate is **optional and deferrable**. The strictly-needed change is the Windows-host supervised switch. **Recommendation:** first deploy = host-only (supervised profile); defer the `guvfx-backend` recreate until the probe schedule + alert owner are decided — this avoids any API/orchestration interruption on the VPS entirely.
+- **Maintenance = `Stop-Service`, never `taskkill`.** A graceful `Stop-Service` exits 0 → WinSW treats it as a clean stop → **no restart**. A `taskkill`/kill is a non-zero/abnormal exit → WinSW **would** restart. For any planned maintenance, use `Stop-Service GuvFXBetaAgent` only.
+- **Rollback must revert `StartType` to Manual.** Restoring the DARK `GuvFXBetaAgent.xml` reverts StartType; verify `Get-Service … StartType = Manual` after rollback so the old bundle cannot auto-start.
+- **Alert delivery is NOT real until owner + schedule exist (RR-11).** `AGENT_ALERT_SINK`/`OWNER` are unset on prod ⇒ `NullAlertSink` (delivers nowhere). The interim `LoggingAlertSink` only writes a local log; a **named human + a scheduled poll cadence** (or an approved external channel) is required or the silent-outage risk recurs. **This is the GATE-4 Sponsor decision.**
+- **Wedge detection is partial (RR-12, fast-follow).** `validation_wedged` fires from customer `validation_busy` rate; `oldest_inflight_validation_seconds` is not agent-exposed yet, so a wedge with no concurrent customer traffic may not page until a customer hits it. Acceptable for a ≤5–10-user manual demo; named as fast-follow.
+
+### Deployment-day STOP checks (host-only — prove live, post-deploy)
+1. **Exclusive bind proven live:** after `Start-Service`, a 2nd `python agent.py` FAILS to bind `:8791` (WSAEADDRINUSE) and logs `AGENT_LAUNCH_REJECTED`; the service keeps serving; `:8788` unaffected.
+2. **`SO_EXCLUSIVEADDRUSE` + rebind:** simulate an abnormal exit and confirm the supervised restart **re-binds** `:8791` within the restart window (no lingering-socket lockout).
+3. **WinSW failure tiers valid:** RULE-9 parse the supervised XML on-host and confirm the host's WinSW version honours the 3 `onfailure=restart` tiers before install.
+4. **Supervised proof live:** WinSW-launched agent reports `agent_supervised=true`; manual launch reports `false` and never HEALTHY.
+5. **Maintenance-stop-no-restart:** `Stop-Service` produces `AGENT_STOPPING`/`AGENT_STOPPED` and does NOT trigger an `onfailure` restart.
+
 ## 8. Post-deploy verification checklist
 
 - [ ] `Get-Service GuvFXBetaAgent` = Running, StartType Automatic (Delayed).
