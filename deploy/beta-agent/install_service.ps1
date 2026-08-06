@@ -1,19 +1,32 @@
-# CVM-Inc-3 B3P - install the beta provisioning agent as a real Windows service via a WinSW WRAPPER.
-# DARK ARTEFACT: RUN ONLY on the host, as Administrator, AFTER merge. INSTALL-ONLY: it does NOT start the
-# service, does NOT touch Session 3 / the prod terminal / the bridge / port 8788 / autologon / startup tasks.
-# Dry-run by default; pass -Apply to perform the install. The first manual start waits for explicit approval.
+# CVM-Inc-3 B3P / min-hardening 2026-08-06 - install the beta provisioning agent as a real Windows service
+# via a WinSW WRAPPER. THE SINGLE SANCTIONED INSTALL MECHANISM. It supports TWO explicit deployment profiles
+# and NEVER requires calling WinSW / sc config / secedit by hand:
+#
+#   -InstallProfile Dark        the historical install-only profile: Manual start, recovery=none, no supervision.
+#                        Exactly today's behaviour. Nothing changes.
+#   -InstallProfile Supervised  the min-hardening profile (PR #292): Automatic + delayed start, bounded 3-tier
+#                        onfailure=restart, launch-proof env markers, lifecycle logging, exclusive bind.
+#
+# The profile is EXPLICIT and MANDATORY - no inference, no auto-detection.
+#
+# DARK ARTEFACT: RUN ONLY on the host, as Administrator, AFTER merge. INSTALL-ONLY for BOTH profiles: it does
+# NOT start the service, does NOT touch Session 3 / the prod terminal / the bridge / port 8788 / autologon /
+# startup tasks. Dry-run by default; pass -Apply to perform the install. The first manual start waits for
+# explicit approval.
+#
+# IDENTITY (host-proven 2026-07-24 AND re-proven 2026-08-06): WinSW v2.12.0 installs the service as
+# LocalSystem regardless of the <serviceaccount> block (virtual-account support is a WinSW v3 feature). This
+# installer therefore ALWAYS assigns NT SERVICE\GuvFXBetaAgent AFTER install via `sc config obj=` + grants
+# SeServiceLogonRight, then VERIFIES SERVICE_START_NAME == the virtual account before returning success and
+# ROLLS BACK if it is anything else. A bare `winsw install` must NEVER be used directly (it leaves
+# LocalSystem - the 2026-08-06 blocker).
 #
 # WHY WINSW, NOT a pywin32 SERVICE HOST (see docs/B3P_SERVICE_HARNESS_COMPARISON.md and the 2026-07-24 STOP).
-# The pywin32 service HOST (pythonservice.exe) (a) writes helper DLLs to System32 and next to the BASE
-# interpreter (the live bridge's Python) - the venv does not isolate them - and (b) failed to assign the
-# NT SERVICE virtual account via `sc config obj=`, leaving the service as over-privileged LocalSystem.
-# WinSW is a standalone .NET wrapper that runs the VENV python as a child and assigns the virtual account
-# from its XML, so THIS install writes nothing global and needs no pywin32 for the service host.
-# NOTE: the agent's own slot-mutation code (win_slot_ops) still imports pywin32 LAZILY at runtime; that
-# pywin32 lives in the venv and its DLLs load from the venv's pywin32_system32 via the pip bootstrap - it
-# is NOT a dependency of the service host, and provisioning the venv must not run pywin32_postinstall (which
-# is the OTHER global write). See provision_beta_venv.ps1.
+# The pywin32 service HOST (pythonservice.exe) writes helper DLLs to System32 and next to the BASE interpreter
+# (the live bridge's Python) - the venv does not isolate them. WinSW is a standalone .NET wrapper that runs the
+# VENV python as a child, so THIS install writes nothing global and needs no pywin32 for the service host.
 param(
+  [Parameter(Mandatory=$true)][ValidateSet("Dark","Supervised")][string]$InstallProfile,
   [string]$ServiceName = "GuvFXBetaAgent",
   [string]$AgentDir    = "C:\GuvFX\beta\agent",
   [string]$StateDir    = "C:\GuvFX\beta\agent-state",
@@ -22,6 +35,9 @@ param(
   [string]$SlotsRoot   = "C:\GuvFX\beta\slots",
   [string]$BetaTombstones = "C:\GuvFX\beta\tombstones",
   [string]$GoldenDir   = "C:\GuvFX\golden\newMT5",
+  # SUPERVISED launch-proof marker (NON-SECRET). Substituted into the staged XML's __SET_AT_INSTALL__ token.
+  # Empty => generated at runtime. It is never a credential; its VALUE is never logged.
+  [string]$SupervisedToken = "",
   # The WinSW wrapper. The operator PLACES the pinned release here (a new executable on the production host
   # is operator-gated); this script REFUSES any binary whose SHA-256 does not match the pin below.
   [string]$WinSwSource = "C:\GuvFX\beta\winsw-src\WinSW.NET4.exe",
@@ -33,16 +49,38 @@ param(
 $ErrorActionPreference = "Stop"
 $ServiceExe = Join-Path $WinSwDir "$ServiceName.exe"      # WinSW config pairs by basename: <name>.exe + <name>.xml
 $ServiceXml = Join-Path $WinSwDir "$ServiceName.xml"
-$XmlSource  = Join-Path $AgentDir "winsw\$ServiceName.xml"
+# Profile selects the reviewed source XML. Dark = the install-only XML; Supervised = the min-hardening target.
+$XmlSourceName = if ($InstallProfile -eq "Supervised") { "$ServiceName.supervised.xml" } else { "$ServiceName.xml" }
+$XmlSource  = Join-Path $AgentDir "winsw\$XmlSourceName"
 $VenvDir    = Split-Path (Split-Path $Python)             # ...\agent-venv\Scripts\python.exe -> ...\agent-venv
+$PlaceholderToken = "__SET_AT_INSTALL__"
+# Pin the run-as identity to the least-privilege virtual account (same discipline as the $ServiceName SID
+# guard). This closes the drift where -RunAsUser could name a different principal than the SID that receives
+# the ACLs + SeServiceLogonRight while VERIFY (which compares StartName to $RunAsUser) still passes.
+if ($RunAsUser -ne "NT SERVICE\GuvFXBetaAgent") {
+  throw "refusing: -RunAsUser '$RunAsUser' must be exactly 'NT SERVICE\GuvFXBetaAgent' (least-privilege virtual account)"
+}
+
+# ---- structured, SECRET-SAFE installer logging (WORKSTREAM F) --------------------------------------------
+# Emits one machine-parseable line per lifecycle step. Never receives a credential/key/token VALUE.
+function Write-GuvfxInstallLog {
+  param([Parameter(Mandatory)][ValidateSet("START","BACKUP","PRECHECK","STAGE","INSTALL","IDENTITY","ACL",
+                    "VERIFY","ROLLBACK","SUCCESS","FAIL")][string]$InstStep,
+        [Parameter(Mandatory)][string]$Result, [int]$DurationMs = -1, [string]$Detail = "")
+  $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  $d  = if ($DurationMs -ge 0) { " duration_ms=$DurationMs" } else { "" }
+  $x  = if ($Detail) { " detail=$Detail" } else { "" }
+  Write-Host "install_evidence ts=$ts profile=$InstallProfile step=$InstStep result=$Result$d$x"
+}
 function Step($m) { Write-Host "==> $m" }
 function DoIt($desc, [scriptblock]$block) {
   if ($Apply) { Step "APPLY: $desc"; & $block } else { Step "PLAN:  $desc" }
 }
+Write-GuvfxInstallLog -InstStep START -Result begin -Detail "apply=$([bool]$Apply)"
 
 # 0. Preconditions (both dry-run and apply)
 if (-not (Test-Path (Join-Path $AgentDir "agent.py"))) { throw "agent.py not found under $AgentDir" }
-if (-not (Test-Path $XmlSource))                       { throw "WinSW config not found: $XmlSource (bundle incomplete)" }
+if (-not (Test-Path $XmlSource))                       { throw "WinSW config not found: $XmlSource (profile $InstallProfile bundle incomplete)" }
 
 # INTERPRETER IDENTITY BY METADATA, BEFORE THE BINARY IS EVER EXECUTED. Pointed at the Python INSTALLER
 # (C:\GuvFX\python311.exe), executing it launches an installer; so identity is proven from PE metadata,
@@ -98,14 +136,19 @@ function Test-GuvfxWinSw {
 }
 Test-GuvfxWinSw -Path $WinSwSource -ExpectSha256 $WinSwSha256
 Write-Host "ok   preconditions: agent.py + WinSW config present; interpreter + wrapper verified"
+Write-GuvfxInstallLog -InstStep PRECHECK -Result ok -Detail "xml=$XmlSourceName"
 
-# XML CONTRACT VALIDATION. The identity/runtime guard validates $Python, but the SERVICE runs whatever the
-# XML's <executable> says. Bind them: refuse unless the XML runs exactly the interpreter we validated and the
-# agent under $AgentDir. Also enforce, from the reviewed XML, the two install-only invariants (no auto-restart
-# recovery; a stop timeout that exceeds the configured drain so a stop cannot force-kill a mutation mid-drain).
+# XML CONTRACT VALIDATION - PROFILE-AWARE. The identity/runtime guard validates $Python, but the SERVICE runs
+# whatever the XML's <executable> says. Bind them for BOTH profiles: refuse unless the XML runs exactly the
+# interpreter we validated and the agent under $AgentDir, with a stop timeout that exceeds the drain. Then the
+# recovery + startmode invariants DIFFER by profile:
+#   Dark:       exactly one <onfailure action=none>; <startmode>Manual.
+#   Supervised: <startmode>Automatic + <delayedAutoStart>true; >=3 <onfailure action=restart> (no 'none');
+#               <resetfailure> present; the three launch-proof env markers present.
 function Test-GuvfxWinSwXmlContract {
   param([Parameter(Mandatory)][string]$XmlPath, [Parameter(Mandatory)][string]$Python,
-        [Parameter(Mandatory)][string]$AgentDir)
+        [Parameter(Mandatory)][string]$AgentDir, [Parameter(Mandatory)][string]$InstallProfile,
+        [switch]$Staged)
   [xml]$doc = Get-Content -Raw -Path $XmlPath
   $svc = $doc.service
   # (F4/F8) the interpreter the service will actually launch must be the one the guard just validated
@@ -116,13 +159,7 @@ function Test-GuvfxWinSwXmlContract {
   if ("$($svc.arguments)" -notmatch [regex]::Escape($agentPy)) {
     throw "XML <arguments> '$($svc.arguments)' does not run '$agentPy' under -AgentDir"
   }
-  # (F5/F9) exactly one recovery entry and it must be 'none' - a second <onfailure> makes .onfailure an array
-  $of = @($svc.onfailure)
-  $ofActions = (@($of | ForEach-Object { [string]$_.action })) -join ','
-  if ($of.Count -ne 1 -or "$($of[0].action)" -ne "none") {
-    throw "XML recovery must be a single onfailure action=none entry; found $($of.Count) (actions: $ofActions)"
-  }
-  # (F7) stoptimeout must exceed the configured drain (machine env, else config.example default 45)
+  # (F7) stoptimeout must exceed the configured drain (machine env, else config.example default 45) - BOTH profiles
   $stopRaw = "$($svc.stoptimeout)"
   if ($stopRaw -match '^\s*(\d+)\s*sec\s*$') { $stopS = [int]$Matches[1] }
   else { throw "XML <stoptimeout> '$stopRaw' is not '<N> sec'" }
@@ -131,16 +168,40 @@ function Test-GuvfxWinSwXmlContract {
   if ($stopS -le $drainS) {
     throw "XML <stoptimeout> ${stopS}s must EXCEED BETA_AGENT_DRAIN_TIMEOUT_S (${drainS}s) or a stop force-kills a mutation mid-drain (B-6)"
   }
-  if ("$($svc.startmode)" -ne "Manual") { throw "XML <startmode> is '$($svc.startmode)', expected Manual (no autostart)" }
-  Write-Host "ok   XML contract: runs '$Python' on agent.py; recovery=none; stoptimeout ${stopS}s > drain ${drainS}s; startmode Manual"
+  $of = @($svc.onfailure)
+  $ofActions = (@($of | ForEach-Object { [string]$_.action })) -join ','
+  if ($InstallProfile -eq "Dark") {
+    # (F5/F9) exactly one recovery entry and it must be 'none' - a second <onfailure> makes .onfailure an array
+    if ($of.Count -ne 1 -or "$($of[0].action)" -ne "none") {
+      throw "DARK XML recovery must be a single onfailure action=none entry; found $($of.Count) (actions: $ofActions)"
+    }
+    if ("$($svc.startmode)" -ne "Manual") { throw "DARK XML <startmode> is '$($svc.startmode)', expected Manual (no autostart)" }
+    Write-Host "ok   DARK XML contract: runs '$Python' on agent.py; recovery=none; stoptimeout ${stopS}s > drain ${drainS}s; startmode Manual"
+  } else {
+    # SUPERVISED recovery/startmode invariants.
+    if ("$($svc.startmode)" -ne "Automatic") { throw "SUPERVISED XML <startmode> is '$($svc.startmode)', expected Automatic" }
+    if ("$($svc.delayedAutoStart)" -ne "true") { throw "SUPERVISED XML <delayedAutoStart> is '$($svc.delayedAutoStart)', expected true" }
+    if ($of.Count -lt 3) { throw "SUPERVISED XML needs >=3 <onfailure> tiers (bounded-backoff restart FLOOR); found $($of.Count)" }
+    foreach ($o in $of) { if ("$($o.action)" -ne "restart") { throw "SUPERVISED XML <onfailure> action '$($o.action)' must be restart (all tiers); actions: $ofActions" } }
+    if (-not "$($svc.resetfailure)") { throw "SUPERVISED XML missing <resetfailure> (the restart counter never resets)" }
+    # launch-proof env markers must be present (values validated separately post-stage)
+    $envNames = @(@($svc.env) | ForEach-Object { [string]$_.name })
+    foreach ($need in @("BETA_AGENT_SERVICE_IDENTITY","BETA_AGENT_SUPERVISED_TOKEN","BETA_AGENT_REFUSE_UNSUPERVISED_LAUNCH")) {
+      if ($envNames -notcontains $need) { throw "SUPERVISED XML missing required <env name='$need'>" }
+    }
+    if ($Staged) {
+      # post-stage: the token placeholder must be substituted with a concrete non-empty value
+      $tok = ""; foreach ($e in @($svc.env)) { if ("$($e.name)" -eq "BETA_AGENT_SUPERVISED_TOKEN") { $tok = "$($e.value)" } }
+      if (-not $tok -or $tok -eq $PlaceholderToken) { throw "STAGED SUPERVISED XML still has an unsubstituted/empty BETA_AGENT_SUPERVISED_TOKEN" }
+      if ((Get-Content -Raw -Path $XmlPath) -match [regex]::Escape($PlaceholderToken)) { throw "STAGED SUPERVISED XML still contains the '$PlaceholderToken' placeholder" }
+    }
+    Write-Host "ok   SUPERVISED XML contract: runs '$Python' on agent.py; startmode Automatic+delayed; $($of.Count) restart tiers; resetfailure present; launch markers present; stoptimeout ${stopS}s > drain ${drainS}s"
+  }
 }
-Test-GuvfxWinSwXmlContract -XmlPath $XmlSource -Python $Python -AgentDir $AgentDir
+Test-GuvfxWinSwXmlContract -XmlPath $XmlSource -Python $Python -AgentDir $AgentDir -InstallProfile $InstallProfile
 
-# GLOBAL-WRITE MEASUREMENT (RULE 11 / evidence.md). The whole point of WinSW is that this install writes no
-# pywin32 helper DLL to System32 or the base interpreter (the 2026-07-24 regression). We MEASURE that instead
-# of asserting it: snapshot the two DLL names in both locations BEFORE any mutation, and at VERIFY assert this
-# run created or modified neither. A DLL that already exists (from a prior postinstall) with an unchanged
-# timestamp is reported as pre-existing - it is NOT evidence that THIS run wrote it.
+# GLOBAL-WRITE MEASUREMENT (RULE 11 / evidence.md). Snapshot the two DLL names in both locations BEFORE any
+# mutation, and at VERIFY assert this run created or modified neither.
 $GlobalDllPaths = @(
   (Join-Path $env:SystemRoot "System32\pywintypes311.dll"),
   (Join-Path $env:SystemRoot "System32\pythoncom311.dll"),
@@ -206,12 +267,11 @@ foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot)) {
 foreach ($d in @($AgentDir, $GoldenDir, $WinSwDir, $VenvDir)) {
   DoIt "grant '$RunAsUser' ReadAndExecute on $d (inherit)" { Grant-GuvfxServiceAcl -Path $d -Rights ReadAndExecute -ServiceSid $ServiceSid }
 }
+if ($Apply) { Write-GuvfxInstallLog -InstStep ACL -Result ok }
 
-# LSA interop for the SERVICE-LOGON right. HOST-PROVEN 2026-07-24: WinSW v2.12.0 does NOT apply
-# <serviceaccount> (virtual-account support is a WinSW v3 feature; it installs LocalSystem), so identity is
-# assigned AFTER install by `sc config obj=` and the SERVICE account is granted SeServiceLogonRight here (it
-# is NOT auto-granted by sc config - secedit-verified). Same LSA policy API install_pool.ps1 uses for
-# SeBatchLogonRight, but addressed by the DERIVED SID because a virtual account has no Get-LocalUser entry.
+# LSA interop for the SERVICE-LOGON right. HOST-PROVEN: WinSW v2.12.0 does NOT apply <serviceaccount>, so
+# identity is assigned AFTER install by `sc config obj=` and the SERVICE account is granted SeServiceLogonRight
+# here (NOT auto-granted by sc config - secedit-verified), addressed by the DERIVED SID.
 try {
   Add-Type -TypeDefinition @'
 using System;
@@ -238,7 +298,7 @@ public static class GuvfxLsaSvc {
 $SvcLogonRight = "SeServiceLogonRight"
 $LSA_READ_SVC  = 0x00000801   # POLICY_VIEW_LOCAL_INFORMATION | POLICY_LOOKUP_NAMES
 $LSA_WRITE_SVC = 0x00000811   # POLICY_CREATE_ACCOUNT          | POLICY_LOOKUP_NAMES
-$STATUS_NAME_NOT_FOUND_SVC = [uint32]3221225524   # 0xC0000034 STATUS_OBJECT_NAME_NOT_FOUND (decimal: an 8-hex literal wraps to Int32)
+$STATUS_NAME_NOT_FOUND_SVC = [uint32]3221225524   # 0xC0000034 STATUS_OBJECT_NAME_NOT_FOUND
 function Get-GuvfxServiceSidBytes {
   param([Parameter(Mandatory)][string]$ServiceSid)
   $s = New-Object System.Security.Principal.SecurityIdentifier($ServiceSid)
@@ -298,28 +358,31 @@ function Grant-GuvfxServiceLogonRight {
   Write-Host "evidence right=$SvcLogonRight sid=$ServiceSid op=add result=granted other_rights_preserved=$($before.Count)"
 }
 
-# 3. Lay down the WinSW wrapper (renamed to the service id) + its reviewed XML config. Copies only - no
-#    global writes, no pywin32.
-DoIt "stage WinSW wrapper -> $ServiceExe and config -> $ServiceXml" {
-  Copy-Item -Path $WinSwSource -Destination $ServiceExe -Force
-  Copy-Item -Path $XmlSource   -Destination $ServiceXml -Force
-  $exeHash = (Get-FileHash $ServiceExe -Algorithm SHA256).Hash.ToLower()
-  if ($exeHash -ne $WinSwSha256.ToLower()) { throw "staged WinSW exe hash changed after copy - aborting" }
+# ---- BACKUP / ROLLBACK (WORKSTREAM E) --------------------------------------------------------------------
+# Snapshot the CURRENT service (identity, startmode, XML) before mutating, so a verification failure restores
+# EXACTLY the pre-install service state. Bundle backup/restore is the paired operator step (deploy package
+# section 2); this installer owns the SERVICE (registration + identity + startmode + recovery + XML).
+function Backup-GuvfxServiceState {
+  param([Parameter(Mandatory)][string]$ServiceName, [Parameter(Mandatory)][string]$ServiceXml)
+  $ci = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+  $snap = @{ Existed = [bool]$ci; StartName = $null; StartMode = $null; XmlBackup = $null }
+  if ($ci) {
+    $snap.StartName = "$($ci.StartName)"; $snap.StartMode = "$($ci.StartMode)"
+    if (Test-Path $ServiceXml) {
+      $bkDir = Join-Path (Split-Path $ServiceXml) "_installer_rollback"
+      New-Item -ItemType Directory -Force -Path $bkDir | Out-Null
+      $snap.XmlBackup = Join-Path $bkDir "GuvFXBetaAgent.xml.prev"
+      Copy-Item $ServiceXml $snap.XmlBackup -Force
+    }
+  }
+  Write-GuvfxInstallLog -InstStep BACKUP -Result ok -Detail "existed=$($snap.Existed) start_mode=$($snap.StartMode)"
+  return $snap
 }
-
-# 4. Register the service FROM the WinSW config (manual start, recovery none, STOPPED). WinSW writes no
-#    global DLL. NOTE (host-proven 2026-07-24): WinSW v2.12.0 installs the service as LocalSystem regardless
-#    of <serviceaccount>; the least-privilege identity is assigned in step 4a, not by the XML alone.
-DoIt "register service '$ServiceName' via WinSW (manual start, STOPPED)" {
-  & $ServiceExe install
-  if ($LASTEXITCODE -ne 0) { throw "WinSW install failed (exit $LASTEXITCODE)" }
-}
-
-# 4a. Assign the NT SERVICE virtual account via the supported post-install mechanism (sc config obj=,
-#     host-proven to take for a WinSW-created service), then grant it SeServiceLogonRight (NOT auto-granted).
-#     The native sc.exe result is CAPTURED and VALIDATED (exit code + text) - never piped to Out-Null - and
-#     any unexpected result is a STOP.
-DoIt "assign identity: sc config obj= '$RunAsUser' + grant SeServiceLogonRight" {
+function Assign-GuvfxIdentity {
+  # THE fix for the WinSW-v2.12-LocalSystem blocker: assign the virtual account post-install + grant the
+  # logon right + return the OBSERVED StartName. Never bypassed.
+  param([Parameter(Mandatory)][string]$ServiceName, [Parameter(Mandatory)][string]$RunAsUser,
+        [Parameter(Mandatory)][string]$ServiceSid)
   $scOut  = & sc.exe config $ServiceName obj= "$RunAsUser" 2>&1
   $scRc   = $LASTEXITCODE
   $scText = ($scOut | Out-String).Trim()
@@ -328,51 +391,183 @@ DoIt "assign identity: sc config obj= '$RunAsUser' + grant SeServiceLogonRight" 
     throw "sc config obj= failed (exit=$scRc): $scText - do NOT start"
   }
   Grant-GuvfxServiceLogonRight -ServiceSid $ServiceSid
+  return "$((Get-CimInstance Win32_Service -Filter "Name='$ServiceName'").StartName)"
+}
+function Wait-GuvfxServiceRemoved {
+  # Bounded poll until the service is truly gone from the SCM (WinSW uninstall can leave it 'marked for
+  # deletion' with a handle open). Returns $true if removed, $false if still present after the timeout.
+  param([Parameter(Mandatory)][string]$ServiceName, [int]$TimeoutSeconds = 20)
+  for ($i = 0; $i -lt $TimeoutSeconds; $i++) {
+    if (-not (Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue)) { return $true }
+    Start-Sleep -Seconds 1
+  }
+  return (-not (Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue))
+}
+function Uninstall-GuvfxServiceVerified {
+  # Uninstall via WinSW and CONFIRM removal; a failure here is loud, never swallowed (adversarial review).
+  param([Parameter(Mandatory)][string]$ServiceName, [Parameter(Mandatory)][string]$ServiceExe)
+  & $ServiceExe uninstall 2>&1 | Write-Host
+  $rc = $LASTEXITCODE
+  if (-not (Wait-GuvfxServiceRemoved -ServiceName $ServiceName)) {
+    throw "service '$ServiceName' still registered after uninstall (winsw exit=$rc; possibly marked-for-deletion / open handle)"
+  }
+}
+function Restore-GuvfxServiceFromSnapshot {
+  # Automatic rollback on verification failure. Restores the service to the snapshot; if there was no prior
+  # service, removes the one we created (VERIFIED). Re-asserts NT SERVICE identity + StartMode of the baseline.
+  # Every step is checked; an unverifiable restore raises ROLLBACK INCOMPLETE - it never logs a false success.
+  param([Parameter(Mandatory)]$Snapshot, [Parameter(Mandatory)][string]$ServiceName,
+        [Parameter(Mandatory)][string]$ServiceExe, [Parameter(Mandatory)][string]$ServiceXml,
+        [Parameter(Mandatory)][string]$RunAsUser, [Parameter(Mandatory)][string]$ServiceSid)
+  Write-GuvfxInstallLog -InstStep ROLLBACK -Result begin
+  if (-not $Snapshot.Existed) {
+    # No prior service: remove the one we created and CONFIRM it is gone (else fail loud).
+    try { Uninstall-GuvfxServiceVerified -ServiceName $ServiceName -ServiceExe $ServiceExe }
+    catch {
+      Write-GuvfxInstallLog -InstStep ROLLBACK -Result FAILED -Detail "removal_unconfirmed"
+      throw "ROLLBACK INCOMPLETE: could not confirm removal of the freshly-created '$ServiceName' - a LocalSystem/Automatic service may remain - MANUAL OPERATOR INTERVENTION REQUIRED"
+    }
+    Write-GuvfxInstallLog -InstStep ROLLBACK -Result ok -Detail "no_prior_service_removed_confirmed"
+    return
+  }
+  # Prior service existed: the early guard guarantees XmlBackup is present, so we can restore the baseline XML
+  # (NOT whatever staged XML is on disk). Remove-then-reinstall from the baseline, then re-assert identity.
+  Uninstall-GuvfxServiceVerified -ServiceName $ServiceName -ServiceExe $ServiceExe
+  if (-not ($Snapshot.XmlBackup -and (Test-Path $Snapshot.XmlBackup))) {
+    Write-GuvfxInstallLog -InstStep ROLLBACK -Result FAILED -Detail "baseline_xml_missing"
+    throw "ROLLBACK INCOMPLETE: baseline WinSW XML backup is missing; cannot restore the prior service safely - MANUAL OPERATOR INTERVENTION REQUIRED"
+  }
+  Copy-Item $Snapshot.XmlBackup $ServiceXml -Force
+  & $ServiceExe install 2>&1 | Write-Host
+  if ($LASTEXITCODE -ne 0) {
+    Write-GuvfxInstallLog -InstStep ROLLBACK -Result FAILED -Detail "reinstall_exit=$LASTEXITCODE"
+    throw "ROLLBACK INCOMPLETE: reinstall of the baseline service failed (exit $LASTEXITCODE) - MANUAL OPERATOR INTERVENTION REQUIRED"
+  }
+  Start-Sleep -Seconds 1
+  [void](Assign-GuvfxIdentity -ServiceName $ServiceName -RunAsUser $RunAsUser -ServiceSid $ServiceSid)
+  if ($Snapshot.StartMode -match '(?i)manual') {
+    $scStart = (& sc.exe config $ServiceName start= demand 2>&1 | Out-String).Trim()
+    if ($scStart -notmatch 'ChangeServiceConfig SUCCESS') { Write-GuvfxInstallLog -InstStep ROLLBACK -Result warn -Detail "start_mode_restore_unconfirmed" }
+  }
+  $ci = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+  if ("$($ci.StartName)" -ne $RunAsUser) {
+    Write-GuvfxInstallLog -InstStep ROLLBACK -Result FAILED -Detail "identity=$($ci.StartName)"
+    throw "ROLLBACK INCOMPLETE: after restore StartName='$($ci.StartName)' != '$RunAsUser' - MANUAL OPERATOR INTERVENTION REQUIRED"
+  }
+  Write-GuvfxInstallLog -InstStep ROLLBACK -Result ok -Detail "restored_identity=$($ci.StartName) start_mode=$($ci.StartMode)"
 }
 
-# 5. Verify (no start).
+# ---- INSTALL + IDENTITY + VERIFY (wrapped so any failure rolls back) -------------------------------------
+if ($Apply -and (-not $SupervisedToken) -and $InstallProfile -eq "Supervised") {
+  $SupervisedToken = "guvfxbeta-" + ([guid]::NewGuid().ToString("N").Substring(0,12))   # NON-SECRET; value never logged
+}
+$Snapshot = $null
 if ($Apply) {
-  Step "VERIFY service configuration (expect STOPPED, ProcessId 0, NT SERVICE identity + SeServiceLogonRight, Manual, recovery none, no global DLL)"
-  $svc = Get-Service $ServiceName -ErrorAction Stop
-  if ($svc.Status -ne "Stopped") { throw "service is $($svc.Status); expected Stopped (install-only)" }
-  $ci = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
-  # Identity must be EXACTLY the virtual account - reject LocalSystem/LocalService/NetworkService explicitly.
-  if ("$($ci.StartName)" -ne $RunAsUser) {
-    throw "service identity is '$($ci.StartName)', expected exactly '$RunAsUser' - no LocalSystem fallback; do NOT start"
+  $Snapshot = Backup-GuvfxServiceState -ServiceName $ServiceName -ServiceXml $ServiceXml
+  # Refuse BEFORE mutating if a prior service is registered but its baseline XML is not captured: a
+  # remove-then-reinstall (below) would then have no baseline to roll back to, and reinstalling from the
+  # staged new-profile XML would leave a worse-than-baseline service (adversarial review). Operator must
+  # restore the baseline XML at $ServiceXml first.
+  if ($Snapshot.Existed -and (-not ($Snapshot.XmlBackup -and (Test-Path $Snapshot.XmlBackup)))) {
+    throw "refusing: '$ServiceName' is registered but its baseline WinSW XML is absent at $ServiceXml - cannot guarantee a safe rollback; restore the baseline XML first, then re-run"
   }
-  if ($ci.ProcessId -ne 0) { throw "service ProcessId is $($ci.ProcessId), expected 0 (not running) - do NOT start" }
-  if ($ci.StartMode -notin @("Manual","Disabled")) { throw "service StartMode is '$($ci.StartMode)', expected Manual - do NOT start" }
-  if ("$($ci.PathName)" -notmatch [regex]::Escape($ServiceExe)) { throw "service binary is '$($ci.PathName)', expected the WinSW wrapper $ServiceExe" }
-  # SeServiceLogonRight must be present or the (later, gated) first start fails 1069.
-  $svcRights = Get-GuvfxSidRights -ServiceSid $ServiceSid
-  if ($svcRights -notcontains 'SeServiceLogonRight') { throw "service account lacks SeServiceLogonRight - it cannot start; do NOT start" }
-  Write-Host "ok   service: identity=$($ci.StartName)  pid=$($ci.ProcessId)  startmode=$($ci.StartMode)  state=$($svc.Status)  SeServiceLogonRight=present  bin=$($ci.PathName)"
-  # (F9) recovery must be NONE - PARSE sc.exe qfailure, do not merely print it. sc.exe is a native exe, so its
-  # output is text, not objects; a restart/reboot/run action anywhere in it fails the install-only gate.
-  $qf = (& sc.exe qfailure $ServiceName) -join "`n"
-  Write-Host $qf
-  if ($qf -match '(?im)^\s*(RESTART|RUN PROCESS|REBOOT)\b' -or $qf -match '(?i)FAILURE_ACTIONS.*(RESTART|REBOOT|RUN)') {
-    throw "service has SCM recovery actions configured; expected none (install-only) - do NOT start"
+}
+
+try {
+  # 3. Stage the WinSW wrapper + its reviewed XML. DARK copies the XML verbatim; SUPERVISED substitutes the
+  #    non-secret launch token into a fresh ASCII copy and REFUSES any non-ASCII (RULE 9 corollary).
+  DoIt "stage WinSW wrapper -> $ServiceExe and $InstallProfile config -> $ServiceXml" {
+    Copy-Item -Path $WinSwSource -Destination $ServiceExe -Force
+    $exeHash = (Get-FileHash $ServiceExe -Algorithm SHA256).Hash.ToLower()
+    if ($exeHash -ne $WinSwSha256.ToLower()) { throw "staged WinSW exe hash changed after copy - aborting" }
+    if ($InstallProfile -eq "Supervised") {
+      $raw = Get-Content -Raw -Path $XmlSource
+      $raw = $raw.Replace($PlaceholderToken, $SupervisedToken)
+      if ($raw.ToCharArray() | Where-Object { [int]$_ -gt 127 }) { throw "SUPERVISED staged XML contains non-ASCII (RULE 9) - refuse" }
+      [System.IO.File]::WriteAllText($ServiceXml, $raw, (New-Object System.Text.ASCIIEncoding))
+      Test-GuvfxWinSwXmlContract -XmlPath $ServiceXml -Python $Python -AgentDir $AgentDir -InstallProfile $InstallProfile -Staged
+    } else {
+      Copy-Item -Path $XmlSource -Destination $ServiceXml -Force
+    }
+    Write-GuvfxInstallLog -InstStep STAGE -Result ok
   }
-  Write-Host "ok   SCM recovery is none (sc qfailure parsed, no RESTART/REBOOT/RUN action)"
-  # (F10) MEASURED, not asserted: prove THIS run created/modified no pywin32 helper DLL globally.
-  $after = Get-GuvfxGlobalDllState -Paths $GlobalDllPaths
-  foreach ($p in $GlobalDllPaths) {
-    $b = $GlobalDllBaseline[$p]; $a = $after[$p]
-    if ((-not $b.exists) -and $a.exists) { throw "GLOBAL WRITE: this install created '$p' - the isolation guarantee is broken; do NOT start" }
-    if ($b.exists -and $a.exists -and ($b.mtime -ne $a.mtime)) { throw "GLOBAL WRITE: this install modified '$p'; do NOT start" }
-    $note = if ($a.exists) { "pre-existing, unchanged by this run" } else { "absent" }
-    Write-Host "ok   global DLL $p : $note"
+
+  # 4. Register the service FROM the WinSW config (STOPPED). WinSW installs LocalSystem (v2.12); the identity
+  #    is corrected in 4a. NOTE: a bare `winsw install` alone is NEVER the sanctioned path.
+  #    RE-INSTALL SAFETY: WinSW v2.12 `install` does NOT update an already-registered service in place, so the
+  #    new profile's startmode/recovery/env-markers would be silently ignored over an existing registration.
+  #    When a prior service exists we therefore UNINSTALL-FIRST (verified) so `install` applies the new XML.
+  #    The prior XML is already backed up (early guard), so a later failure still rolls back to baseline.
+  DoIt "register service '$ServiceName' via WinSW ($InstallProfile, STOPPED)" {
+    if ($Snapshot.Existed) { Uninstall-GuvfxServiceVerified -ServiceName $ServiceName -ServiceExe $ServiceExe }
+    & $ServiceExe install
+    if ($LASTEXITCODE -ne 0) { throw "WinSW install failed (exit $LASTEXITCODE)" }
+    Write-GuvfxInstallLog -InstStep INSTALL -Result ok
   }
-  Write-Host "ok   WinSW install created/modified NO pywin32 DLL in System32 or the base interpreter (measured before/after)"
-  foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot, $AgentDir, $GoldenDir, $WinSwDir, $VenvDir)) {
-    $sids = @((Get-Acl -Path $d).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })
-    if ($sids -notcontains $ServiceSid) { throw "no ACE for '$RunAsUser' ($ServiceSid) on $d - the grant did not take; do NOT start" }
-    Write-Host "ok   DACL on $d carries an ACE for $RunAsUser"
+
+  # 4a. Assign the NT SERVICE virtual account + grant SeServiceLogonRight (the LocalSystem fix), for BOTH
+  #     profiles. This is the mandatory post-install identity step a bare winsw install cannot do.
+  DoIt "assign identity: sc config obj= '$RunAsUser' + grant SeServiceLogonRight" {
+    $observed = Assign-GuvfxIdentity -ServiceName $ServiceName -RunAsUser $RunAsUser -ServiceSid $ServiceSid
+    if ($observed -ne $RunAsUser) { throw "identity assignment did not take: StartName='$observed' != '$RunAsUser' - do NOT start" }
+    Write-GuvfxInstallLog -InstStep IDENTITY -Result ok -Detail "start_name=$observed"
   }
-  Write-Host ""
-  Write-Host "ok   service installed STOPPED via WinSW. Next: firewall.ps1 -Apply, then the FIRST-START gate."
-  Write-Host "     The signing keyring (BETA_AGENT_KEYRING / _KEY_ID) must be provisioned by the operator before first start."
-} else {
-  Write-Host "PLAN complete. Re-run with -Apply on the host to perform the install (install-only, no start)."
+
+  # 5. Verify (no start) - PROFILE-AWARE.
+  if ($Apply) {
+    Step "VERIFY service configuration (STOPPED, ProcessId 0, NT SERVICE identity + SeServiceLogonRight, $InstallProfile startmode+recovery, no global DLL)"
+    $svc = Get-Service $ServiceName -ErrorAction Stop
+    if ($svc.Status -ne "Stopped") { throw "service is $($svc.Status); expected Stopped (install-only, both profiles)" }
+    $ci = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+    # Identity must be EXACTLY the virtual account - reject LocalSystem/LocalService/NetworkService (the 2026-08-06 blocker).
+    if ("$($ci.StartName)" -ne $RunAsUser) {
+      throw "service identity is '$($ci.StartName)', expected exactly '$RunAsUser' - no LocalSystem fallback; do NOT start"
+    }
+    if ($ci.ProcessId -ne 0) { throw "service ProcessId is $($ci.ProcessId), expected 0 (not running) - do NOT start" }
+    if ("$($ci.PathName)" -notmatch [regex]::Escape($ServiceExe)) { throw "service binary is '$($ci.PathName)', expected the WinSW wrapper $ServiceExe" }
+    $svcRights = Get-GuvfxSidRights -ServiceSid $ServiceSid
+    if ($svcRights -notcontains 'SeServiceLogonRight') { throw "service account lacks SeServiceLogonRight - it cannot start; do NOT start" }
+    # Profile-specific startmode + recovery.
+    $qf = (& sc.exe qfailure $ServiceName) -join "`n"
+    Write-Host $qf
+    $hasRestart = ($qf -match '(?im)^\s*(RESTART|RUN PROCESS|REBOOT)\b' -or $qf -match '(?i)FAILURE_ACTIONS.*(RESTART|REBOOT|RUN)')
+    if ($InstallProfile -eq "Dark") {
+      if ($ci.StartMode -notin @("Manual","Disabled")) { throw "DARK service StartMode is '$($ci.StartMode)', expected Manual - do NOT start" }
+      if ($hasRestart) { throw "DARK service has SCM recovery actions configured; expected none (install-only) - do NOT start" }
+      Write-Host "ok   DARK service: identity=$($ci.StartName) startmode=$($ci.StartMode) recovery=none state=$($svc.Status)"
+    } else {
+      if ($ci.StartMode -ne "Auto") { throw "SUPERVISED service StartMode is '$($ci.StartMode)', expected Auto - do NOT start" }
+      if (-not $hasRestart) { throw "SUPERVISED service has NO SCM restart actions; expected bounded restart tiers - do NOT start" }
+      Write-Host "ok   SUPERVISED service: identity=$($ci.StartName) startmode=$($ci.StartMode) recovery=restart-tiers state=$($svc.Status)"
+    }
+    # (F10) MEASURED: prove THIS run created/modified no pywin32 helper DLL globally.
+    $after = Get-GuvfxGlobalDllState -Paths $GlobalDllPaths
+    foreach ($p in $GlobalDllPaths) {
+      $b = $GlobalDllBaseline[$p]; $a = $after[$p]
+      if ((-not $b.exists) -and $a.exists) { throw "GLOBAL WRITE: this install created '$p'; do NOT start" }
+      if ($b.exists -and $a.exists -and ($b.mtime -ne $a.mtime)) { throw "GLOBAL WRITE: this install modified '$p'; do NOT start" }
+    }
+    Write-Host "ok   WinSW install created/modified NO pywin32 DLL in System32 or the base interpreter (measured before/after)"
+    foreach ($d in @($StateDir, $BetaTombstones, $SlotsRoot, $AgentDir, $GoldenDir, $WinSwDir, $VenvDir)) {
+      $sids = @((Get-Acl -Path $d).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })
+      if ($sids -notcontains $ServiceSid) { throw "no ACE for '$RunAsUser' ($ServiceSid) on $d - the grant did not take; do NOT start" }
+    }
+    Write-GuvfxInstallLog -InstStep VERIFY -Result ok -Detail "identity=$($ci.StartName) start_mode=$($ci.StartMode)"
+    Write-Host ""
+    Write-Host "ok   $InstallProfile service installed STOPPED via the sanctioned installer. Next: firewall.ps1 -Apply, then the FIRST-START gate."
+    Write-Host "     The signing keyring (BETA_AGENT_KEYRING / _KEY_ID) must be provisioned by the operator before first start."
+  }
+  Write-GuvfxInstallLog -InstStep SUCCESS -Result ok
+}
+catch {
+  Write-GuvfxInstallLog -InstStep FAIL -Result error -Detail "$($_.Exception.Message)"
+  if ($Apply) {
+    Restore-GuvfxServiceFromSnapshot -Snapshot $Snapshot -ServiceName $ServiceName -ServiceExe $ServiceExe `
+      -ServiceXml $ServiceXml -RunAsUser $RunAsUser -ServiceSid $ServiceSid
+  }
+  throw
+}
+
+if (-not $Apply) {
+  Write-Host "PLAN complete ($InstallProfile). Re-run with -Apply -InstallProfile $InstallProfile on the host to perform the install (install-only, no start)."
 }

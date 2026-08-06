@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Supervised installer — engineering-complete (2026-08-06); NOT deployed; awaiting Sponsor gate
+Branch `feat/supervised-installer` (base `main` `be7f215`). Resolves the 2026-08-06 host-deploy blocker:
+`install_service.ps1` now takes a mandatory `-InstallProfile Dark|Supervised` and is the **single sanctioned
+install mechanism** — it does the post-install `sc config obj=` virtual-account assignment + `SeServiceLogonRight`
+grant, verifies `SERVICE_START_NAME == NT SERVICE\GuvFXBetaAgent` (rejecting LocalSystem), uninstalls-first on
+re-install (WinSW v2.12 has no in-place update), and **auto-rolls-back (verified)** on any failure. A 7-lens
+adversarial review folded in 6 fixes (verified uninstall/removal, refuse-when-baseline-XML-unknown, `$RunAsUser`
+pin, exit-code checks). `make check` green; 26 installer tests + contract JSON + ADR-0013 addendum. **Bounded
+next action:** obtain Sponsor authorisation to re-attempt the Windows-host-only supervised deploy using the
+installer (PLAN then `-Apply`), per `docs/operations/validation-agent/deployment-min-hardening.md §4`. No
+host mutation until then; `:8788`/#12/#1 untouched.
+
+
 ## ▶ Validation Agent MINIMUM Production Hardening — engineering-complete (2026-08-06); NOT deployed; awaiting Sponsor gate
 Branch `feat/validation-agent-min-hardening` (base `main` `f5d8389`). Implements RR-1/2/3/4/11 as repository
 engineering: supervised WinSW target profile, signed-NEGOTIATE readiness probe, durable lifecycle logging,
