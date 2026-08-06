@@ -104,8 +104,14 @@ def _default_transport(base_url: str, req: dict):
     """Real signed-NEGOTIATE transport with a SPLIT connect/read timeout, classifying the failure mode.
     Imported lazily so the module loads without ``requests`` in pure-logic tests."""
     import requests
+
+    from .mgmt_client import provision_url
     try:
-        resp = requests.post(base_url, json=req, timeout=(PROBE_CONNECT_TIMEOUT, PROBE_READ_TIMEOUT))
+        # Target the agent's SINGLE route via the shared helper — the agent serves ONLY ``POST /provision``
+        # and 404s (``unknown_route``) any other path. Posting to the bare ``base_url`` was the defect that
+        # route-rejected every probe; this now derives the URL identically to the provisioning transport.
+        resp = requests.post(provision_url(base_url), json=req,
+                             timeout=(PROBE_CONNECT_TIMEOUT, PROBE_READ_TIMEOUT))
     except requests.exceptions.ConnectionError as exc:        # incl. ConnectTimeout — connect phase failed
         raise _ProbeUnreachable() from exc
     except requests.exceptions.ReadTimeout as exc:            # connected, no answer in the read budget

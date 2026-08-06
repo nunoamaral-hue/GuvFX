@@ -16,7 +16,8 @@ from django.utils import timezone
 
 from .beta_capacity import beta_runtimes_enabled
 from .mgmt_client import (
-    AgentWindowsProvisioner, ManagementChannelError, ManagementChannelTimeout, ManagementChannelUnreachable)
+    AgentWindowsProvisioner, ManagementChannelError, ManagementChannelTimeout, ManagementChannelUnreachable,
+    provision_url)
 from .models import AccountRuntime, ProvisioningJob
 from .provisioner import advance_provisioning_job
 
@@ -119,7 +120,7 @@ def make_http_transport(timeout: int = DEFAULT_TRANSPORT_TIMEOUT):
     def transport(base_url: str, req: dict) -> dict:
         if not base_url:
             raise ManagementChannelError("agent_base_url_unset")
-        url = base_url.rstrip("/") + "/provision"
+        url = provision_url(base_url)
         op = req.get("operation", "") if isinstance(req, dict) else ""
         read_timeout = _op_read_timeout(op, default=timeout)
         # INVARIANT (adversarial review 2026-08-05): this MUST stay a SINGLE-attempt request (bare
