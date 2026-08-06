@@ -89,11 +89,14 @@ def _has_traversal(path: str) -> bool:
     return any(seg in ("..", ".") for seg in _norm(path).split("\\"))
 
 
-def assert_isolated_validation_terminal(validation_dir, *, validation_root=DEFAULT_VALIDATION_ROOT,
-                                        forbidden_roots=DEFAULT_FORBIDDEN_ROOTS,
-                                        exe_name=VALIDATION_EXE_NAME, path_exists) -> str:
-    """Prove the validation terminal is the dedicated, isolated one and return its executable path. Every
-    failure raises ``IsolationError`` (fail-closed) — a probe is NEVER attempted against an unproven path."""
+def _assert_isolated_dir(validation_dir, *, validation_root=DEFAULT_VALIDATION_ROOT,
+                         forbidden_roots=DEFAULT_FORBIDDEN_ROOTS) -> None:
+    """The PATH-CONTRACT portion of the isolated-terminal check (rules 1-4: absolute, valid root, no traversal,
+    beneath root, disjoint from every forbidden root). Fail-closed: raises ``IsolationError`` with the SAME
+    sub-reasons as the full check. It does NOT require the executable to EXIST — that ``terminal_present`` rule
+    is checked only by ``assert_isolated_validation_terminal``. Reused as the containment guard for BOTH the
+    destination and the precompiled SOURCE before any materialisation, so a copy can never write into a
+    non-isolated dest nor read FROM a forbidden/golden/live/slot source (ONE source of truth for the rules)."""
     if not validation_dir or not _is_absolute_windows(validation_dir):
         raise IsolationError("validation_terminal_unconfigured")
     # A bare-drive validation ROOT (``C:\``) would make EVERY absolute path pass the prefix test, collapsing
@@ -110,11 +113,50 @@ def assert_isolated_validation_terminal(validation_dir, *, validation_root=DEFAU
         # guarantees a probe cannot reach a running slot, the golden image or a per-account runtime.
         if _beneath(validation_dir, forbidden) or _beneath(forbidden, validation_dir):
             raise IsolationError("validation_terminal_not_isolated")
+
+
+def assert_isolated_validation_terminal(validation_dir, *, validation_root=DEFAULT_VALIDATION_ROOT,
+                                        forbidden_roots=DEFAULT_FORBIDDEN_ROOTS,
+                                        exe_name=VALIDATION_EXE_NAME, path_exists) -> str:
+    """Prove the validation terminal is the dedicated, isolated one and return its executable path. Every
+    failure raises ``IsolationError`` (fail-closed) — a probe is NEVER attempted against an unproven path. The
+    path-contract rules are UNCHANGED (delegated to ``_assert_isolated_dir``); this then requires the terminal
+    executable to actually exist (``terminal_present``)."""
+    _assert_isolated_dir(validation_dir, validation_root=validation_root, forbidden_roots=forbidden_roots)
     # containment already proven on the normalised form; build the launch path in original case
     exe_path = validation_dir.replace("/", "\\").rstrip("\\") + "\\" + exe_name
     if not path_exists(exe_path):
         raise IsolationError("validation_terminal_missing")
     return exe_path
+
+
+def prepare_validation_terminal(validation_dir, *, validation_root, forbidden_roots, precompiled_dir, mirror) -> str:
+    """Deterministically MATERIALISE/restore the isolated validation terminal from the certified precompiled
+    baseline BEFORE the isolation gate runs, so ``terminal_present`` holds on the active in-process path (whose
+    proven blocker was ``validation_terminal_missing``). REUSES the runner's already-proven mirror primitive
+    (source-validated + reparse-safe + deletes-extras) — no parallel copy design.
+
+    NEVER raises and NEVER weakens the isolation gate. It refuses to copy unless BOTH the destination AND the
+    precompiled SOURCE independently satisfy the isolated-path contract (so it can neither write into a
+    non-isolated dest nor read FROM a forbidden/golden/live/slot source); if either fails the contract, or the
+    source is not configured/valid, it SKIPS the copy and lets the authoritative isolation gate report the exact
+    failing rule with its full diagnostic. Returns a fixed, secret-safe status LABEL:
+      * ``restored`` — the baseline was mirrored in (terminal now present);
+      * ``precompiled_unconfigured`` — no precompiled dir configured;
+      * ``path_contract_unmet`` — dest or source is not an isolated path (isolation gate will report the rule);
+      * ``no_source`` / ``invalid_source`` — the precompiled source is missing or lacks ``terminal64.exe``.
+    """
+    if not precompiled_dir:
+        return "precompiled_unconfigured"
+    try:
+        _assert_isolated_dir(validation_dir, validation_root=validation_root, forbidden_roots=forbidden_roots)
+        _assert_isolated_dir(precompiled_dir, validation_root=validation_root, forbidden_roots=forbidden_roots)
+    except IsolationError:
+        return "path_contract_unmet"                     # do NOT copy; the isolation gate reports the exact rule
+    try:
+        return mirror(precompiled_dir, validation_dir)   # runner primitive: "restored"|"no_source"|"invalid_source"
+    except Exception:                                    # noqa: BLE001 — materialisation must never break validate
+        return "mirror_failed"
 
 
 def isolation_report(validation_dir, *, validation_root=DEFAULT_VALIDATION_ROOT,
@@ -294,7 +336,7 @@ class LoginValidationHandler:
     def __init__(self, *, open_envelope, bind_aad, mt5_probe_factory, path_exists,
                  validation_dir, validation_root=DEFAULT_VALIDATION_ROOT,
                  forbidden_roots=DEFAULT_FORBIDDEN_ROOTS, lock=None, login_timeout_ms=30000,
-                 persist_isolation_diagnostic=None, clock=None):
+                 persist_isolation_diagnostic=None, clock=None, prepare_terminal=None):
         self._open_envelope = open_envelope
         self._bind_aad = bind_aad
         self._probe_factory = mt5_probe_factory
@@ -312,6 +354,12 @@ class LoginValidationHandler:
         # out of ``validate``).
         self._persist_isolation_diagnostic = persist_isolation_diagnostic
         self._clock = clock or time.time
+        # OPTIONAL in-process terminal PREPARATION (2026-08-07 materialisation packet). A zero-arg callable that
+        # deterministically materialises/restores the isolated validation terminal from the certified precompiled
+        # baseline and returns a fixed status label. Set ONLY on the in-process (agent) path — the task-launched
+        # runner restores its OWN baseline post-probe, so it leaves this None. It runs UNDER the single-flight
+        # lock, BEFORE the isolation gate, and NEVER raises / NEVER weakens the gate.
+        self._prepare_terminal = prepare_terminal
 
     def _denied(self, reason_code, *, isolation=None):
         out = {"ok": False, "reason_code": reason_code, "is_demo": None}
@@ -324,61 +372,72 @@ class LoginValidationHandler:
 
     def validate(self, *, operation, runtime_uuid, correlation_id, nonce, payload) -> dict:
         started = self._clock()
-        # 1) isolated-terminal contract FIRST — never attempt a probe against an unproven path.
-        try:
-            exe_path = assert_isolated_validation_terminal(
-                self._validation_dir, validation_root=self._validation_root,
-                forbidden_roots=self._forbidden_roots, path_exists=self._path_exists)
-        except IsolationError:
-            # Fail-closed decision unchanged; ALSO build a secret-safe structured diagnostic so the on-host
-            # artefact can localise WHICH rule/path failed (the customer reason stays ``isolation_check_failed``).
-            report = isolation_report(
-                self._validation_dir, validation_root=self._validation_root,
-                forbidden_roots=self._forbidden_roots, path_exists=self._path_exists)
-            # In-process capture: persist the artefact BEFORE returning. FAIL-OPEN — a persistence fault degrades
-            # to a secret-safe ``diagnostic_capture_failed`` log line and NEVER alters the fail-closed result, the
-            # reason code, or customer messaging. Task-launched runner leaves this None (it persists its own).
-            if self._persist_isolation_diagnostic is not None:
-                try:
-                    self._persist_isolation_diagnostic(
-                        correlation_id, report, started=started, finished=self._clock())
-                except Exception:            # noqa: BLE001 — capture must never break the probe or leak detail
-                    _log.warning("diagnostic_capture_failed correlation=%s component=in_process_isolation "
-                                 "stage=ISOLATION error_class=write_failed",
-                                 _safe_corr(correlation_id))
-            return self._denied(ISOLATION_CHECK_FAILED, isolation=report)
-
-        # 2) login / server come from the payload, which the outer signature already bound via payload_digest.
-        login = str((payload or {}).get("login") or "").strip()
-        server = str((payload or {}).get("server") or "").strip()
-        sealed = (payload or {}).get("password_env")
-        if not login:
-            return self._denied("invalid_login")
-        if not server:
-            return self._denied("broker_server_missing")
-        if not isinstance(sealed, dict):
-            return self._denied("credential_missing")
-
-        # 3) open the envelope under THIS request's AAD (op/runtime/correlation/nonce). Any tamper/rebind/
-        #    wrong-key/missing-key fails closed here, before any terminal is touched.
-        try:
-            aad = self._bind_aad(operation=operation, runtime_uuid=runtime_uuid,
-                                 correlation_id=correlation_id, nonce=nonce)
-            pw_bytes = self._open_envelope(sealed, aad)
-            password = pw_bytes.decode("utf-8")
-        except Exception:            # noqa: BLE001 — EnvelopeError et al.; never leak detail
-            return self._denied("credential_unsealable")
-
-        # 4) single-flight: one probe at a time within this agent process (the terminal dir is a single-
-        #    instance resource; the agent is deployed single-process — see the class docstring).
+        # Single-flight FIRST: PREPARE (materialise) + the isolation read + the probe form ONE atomic critical
+        # section over the shared validation-terminal dir, so a concurrent validation can neither materialise the
+        # terminal underneath this one nor probe it. A busy validator returns an honest ``validation_busy`` and
+        # never touches the terminal. (Moved ahead of the isolation read from its former probe-only position so
+        # the new preparation step is covered by the same lock — WS-D concurrency safety.)
         if not self._lock.acquire(blocking=False):
-            del password
             return self._denied("validation_busy")
         try:
-            return self._probe(exe_path, login, server, password)
+            # 0) PREPARE: deterministically materialise/restore the isolated validation terminal from the
+            #    certified precompiled baseline BEFORE the isolation gate (the proven in-process blocker was
+            #    ``validation_terminal_missing``). In-process path only; NEVER raises, NEVER weakens the gate. A
+            #    non-``restored`` label leaves the terminal as-is and the authoritative gate reports the rule.
+            prepare_result = self._prepare_terminal() if self._prepare_terminal is not None else None
+
+            # 1) isolated-terminal contract — never attempt a probe against an unproven path.
+            try:
+                exe_path = assert_isolated_validation_terminal(
+                    self._validation_dir, validation_root=self._validation_root,
+                    forbidden_roots=self._forbidden_roots, path_exists=self._path_exists)
+            except IsolationError:
+                # Fail-closed decision unchanged; ALSO build a secret-safe structured diagnostic so the on-host
+                # artefact localises WHICH rule/path failed AND whether preparation ran (customer reason stays
+                # ``isolation_check_failed``). FAIL-OPEN persistence — a fault degrades to a secret-safe
+                # ``diagnostic_capture_failed`` log line and never alters the result. Runner leaves this None.
+                report = isolation_report(
+                    self._validation_dir, validation_root=self._validation_root,
+                    forbidden_roots=self._forbidden_roots, path_exists=self._path_exists)
+                if self._persist_isolation_diagnostic is not None:
+                    try:
+                        self._persist_isolation_diagnostic(
+                            correlation_id, report, started=started, finished=self._clock(),
+                            prepare_result=prepare_result)
+                    except Exception:            # noqa: BLE001 — capture must never break the probe or leak detail
+                        _log.warning("diagnostic_capture_failed correlation=%s component=in_process_isolation "
+                                     "stage=ISOLATION error_class=write_failed", _safe_corr(correlation_id))
+                return self._denied(ISOLATION_CHECK_FAILED, isolation=report)
+
+            # 2) login / server come from the payload, which the outer signature already bound via payload_digest.
+            login = str((payload or {}).get("login") or "").strip()
+            server = str((payload or {}).get("server") or "").strip()
+            sealed = (payload or {}).get("password_env")
+            if not login:
+                return self._denied("invalid_login")
+            if not server:
+                return self._denied("broker_server_missing")
+            if not isinstance(sealed, dict):
+                return self._denied("credential_missing")
+
+            # 3) open the envelope under THIS request's AAD (op/runtime/correlation/nonce). Any tamper/rebind/
+            #    wrong-key/missing-key fails closed here, before any terminal is touched.
+            try:
+                aad = self._bind_aad(operation=operation, runtime_uuid=runtime_uuid,
+                                     correlation_id=correlation_id, nonce=nonce)
+                pw_bytes = self._open_envelope(sealed, aad)
+                password = pw_bytes.decode("utf-8")
+            except Exception:            # noqa: BLE001 — EnvelopeError et al.; never leak detail
+                return self._denied("credential_unsealable")
+
+            # 4) probe — the single-flight lock is ALREADY held (acquired above), so it covers the full
+            #    prepare → isolate → probe critical section.
+            try:
+                return self._probe(exe_path, login, server, password)
+            finally:
+                password = None          # drop the plaintext reference asap
+                del password
         finally:
-            password = None          # drop the plaintext reference asap
-            del password
             self._lock.release()
 
     def _probe(self, exe_path, login, server, password) -> dict:
@@ -461,7 +520,7 @@ def _build_isolation_persister(cfg: dict, agent_meta):
     supervised = meta.get("supervised")
     manifest_version = meta.get("manifest_version")
 
-    def _persist(correlation_id, isolation_report, *, started, finished):
+    def _persist(correlation_id, isolation_report, *, started, finished, prepare_result=None):
         diag.write_isolation_diagnostic(
             diag_dir, correlation_id=correlation_id, reason_code=ISOLATION_CHECK_FAILED,
             isolation=isolation_report, config_source=cfg_source, execution_mode="in_process",
@@ -469,21 +528,43 @@ def _build_isolation_persister(cfg: dict, agent_meta):
                           "executable": sys.executable, "service_identity": service_identity,
                           "supervised": supervised, "manifest_version": manifest_version},
             stage_reached="AGENT_RECEIVED", first_failing_stage="ISOLATION",
+            prepare_result=prepare_result,               # secret-safe label: did materialisation run/succeed?
             started=started, finished=finished, now=finished)
 
     return _persist
 
 
-def build_inprocess_handler(cfg: dict, *, agent_meta=None, enable_diagnostics=False):
+def _build_terminal_preparer(cfg: dict, forbidden):
+    """Build the in-process terminal-preparation closure (or ``None`` when no precompiled source is configured).
+    REUSES the runner's proven mirror primitive (``validation_runner.mirror_validation_baseline`` → ``_mirror_os``)
+    so there is ONE materialisation mechanism, not a parallel copy design. The closure takes no arguments, never
+    raises, and returns a fixed status label."""
+    precompiled_dir = cfg.get("validation_precompiled_dir")
+    if not precompiled_dir:
+        return None
+    validation_dir = cfg.get("validation_terminal_dir")
+    validation_root = cfg.get("validation_root") or DEFAULT_VALIDATION_ROOT
+
+    def _prepare():
+        import validation_runner                                # noqa: PLC0415 — host-side; reuse the mirror
+        return prepare_validation_terminal(
+            validation_dir, validation_root=validation_root, forbidden_roots=forbidden,
+            precompiled_dir=precompiled_dir, mirror=validation_runner.mirror_validation_baseline)
+
+    return _prepare
+
+
+def build_inprocess_handler(cfg: dict, *, agent_meta=None, enable_diagnostics=False, prepare_terminal=False):
     """Assemble the ``LoginValidationHandler`` (envelope-open + isolated-terminal + MT5 probe). Used BOTH by the
     task-launched runner (GUI-capable window station) AND, when ``validation_task_name`` is unset, DIRECTLY by
     the agent as the in-process validator. Returns ``None`` when the validation terminal or the envelope private
     key is not configured (fail closed at build). Kept here (not in agent.py) so both callers reuse the exact,
     integrity-pinned probe assembly.
 
-    ``enable_diagnostics`` wires the in-process isolation-diagnostic persister and MUST be set ONLY by the agent
-    in-process path — the runner leaves it False and persists its OWN artefact via ``validation_runner.run_once``,
-    so exactly one artefact is written per attempt in either mode (no double write)."""
+    ``enable_diagnostics`` wires the in-process isolation-diagnostic persister and ``prepare_terminal`` wires the
+    in-process terminal-materialisation step. Both MUST be set ONLY by the agent in-process path — the runner
+    leaves them False (it persists its OWN artefact and restores its OWN baseline post-probe via
+    ``validation_runner.run_once``), so there is no double write and no change to runner behaviour."""
     validation_dir = cfg.get("validation_terminal_dir")
     if not validation_dir:
         return None
@@ -496,6 +577,7 @@ def build_inprocess_handler(cfg: dict, *, agent_meta=None, enable_diagnostics=Fa
         + tuple(cfg.get("validation_forbidden_roots", ()))))
     forbidden = tuple(r for r in forbidden if r)
     persist = _build_isolation_persister(cfg, agent_meta) if enable_diagnostics else None
+    prepare = _build_terminal_preparer(cfg, forbidden) if prepare_terminal else None
     return LoginValidationHandler(
         open_envelope=lambda sealed, aad: cred_env.open_envelope(sealed, aad=aad),
         bind_aad=cred_env.bind_aad,
@@ -505,7 +587,8 @@ def build_inprocess_handler(cfg: dict, *, agent_meta=None, enable_diagnostics=Fa
         validation_root=cfg.get("validation_root") or DEFAULT_VALIDATION_ROOT,
         forbidden_roots=forbidden,
         login_timeout_ms=int(cfg.get("login_timeout_ms", 30000)),
-        persist_isolation_diagnostic=persist)
+        persist_isolation_diagnostic=persist,
+        prepare_terminal=prepare)
 
 
 class TaskLaunchLoginValidator:

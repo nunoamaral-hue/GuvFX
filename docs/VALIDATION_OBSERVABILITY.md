@@ -204,3 +204,30 @@ is **not** forwarded to the backend in this change.
 **Next authorised browser test is evidence-gathering only** — a single `Test connection` on the disposable
 demo account, after this instrumentation is deployed, will write one `<id>.diag.json` recording the exact
 failing isolation rule. It does not remediate the isolation configuration.
+
+## In-process terminal materialisation (2026-08-07, P0)
+
+The captured artefact above proved the exact blocker: `isolation.sub_reason = validation_terminal_missing`
+— every path/containment rule passed but the validation terminal executable
+(`…\validation-5833\terminal\terminal64.exe`) was **absent at validation time**. The isolation policy and
+configuration are correct; the certified baseline was simply not present when the in-process validator ran
+(the runner restores its baseline *after* each probe; nothing restored it on the in-process path).
+
+**Fix:** the in-process validator now **materialises/restores** the isolated validation terminal from the
+certified precompiled baseline **before** the isolation gate, under the single-flight lock, reusing the
+runner's own mirror primitive (`validation_runner.mirror_validation_baseline` → `_mirror_os`). Order is now
+**prepare → assert isolation → launch MT5** (never MT5 before isolation). The step:
+
+- refuses to copy into a non-isolated destination or **from** a forbidden/golden/live/slot source (both are
+  path-contract-checked; ONE rule source of truth via `_assert_isolated_dir`);
+- reuses the source-validated, reparse-safe, deletes-extras mirror (an invalid/empty source never wipes the
+  terminal dir — fail-closed);
+- **never raises and never weakens the isolation gate** — a non-`restored` outcome leaves the terminal
+  as-is and the authoritative gate still reports the exact rule;
+- records a fixed, secret-safe `prepare_result` label in the isolation artefact, so any residual isolation
+  failure shows whether the baseline was restored.
+
+It does **not** change the execution mode (`validation_task_name` stays unset), the isolation rules, or the
+customer contract. Restoring the baseline before every validation also removes any prior run's credential
+artefact/logs. Once the terminal is present, the in-process MT5 launch is expected to advance to the
+Session-0 GUI/IPC stage (the historical `-10004` IPC blocker) — that later stage is a **separate** follow-up.

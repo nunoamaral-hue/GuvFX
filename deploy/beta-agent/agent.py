@@ -182,9 +182,11 @@ def _build_login_validator(cfg: dict, win=None, *, agent_meta=None):
             # cleanup grace (config-owned, contract-validated) so the Agent NEVER pre-empts a completing runner.
             result_grace_s=int(cfg.get("cleanup_grace_s", 45)))
     # In-process validator (GUI-incapable under the service, but the isolation check runs BEFORE any MT5 launch).
-    # This is the ACTIVE production path while ``validation_task_name`` is unset, so it persists the isolation
-    # diagnostic artefact itself (the runner path persists its own) — ``enable_diagnostics=True``.
-    return build_inprocess_handler(cfg, agent_meta=agent_meta, enable_diagnostics=True)
+    # This is the ACTIVE production path while ``validation_task_name`` is unset, so it (a) MATERIALISES the
+    # isolated validation terminal from the certified precompiled baseline before the isolation gate
+    # (``prepare_terminal=True`` — remediates the proven ``validation_terminal_missing`` blocker) and (b) persists
+    # the isolation diagnostic artefact itself (``enable_diagnostics=True``; the runner path does both on its own).
+    return build_inprocess_handler(cfg, agent_meta=agent_meta, enable_diagnostics=True, prepare_terminal=True)
 
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):

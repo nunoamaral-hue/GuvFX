@@ -719,7 +719,8 @@ class InProcessIsolationHandlerTests(SimpleTestCase):
 
     def test_persist_called_once_on_isolation_failure_result_unchanged(self):
         calls = []
-        h = self._handler(lambda cid, rep, *, started, finished: calls.append((cid, rep, started, finished)))
+        h = self._handler(lambda cid, rep, *, started, finished, prepare_result=None:
+                          calls.append((cid, rep, started, finished)))
         out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="cid-x",
                          nonce="n", payload={})
         self.assertEqual(out["ok"], False)
@@ -748,7 +749,7 @@ class InProcessIsolationHandlerTests(SimpleTestCase):
         self.assertEqual(calls, [])
 
     def test_persist_failure_is_fail_open_and_logged(self):
-        def boom(cid, rep, *, started, finished):
+        def boom(cid, rep, *, started, finished, prepare_result=None):
             raise IOError("disk full: C:\\GuvFX\\beta\\validation\\vt")     # note: contains a path
         h = self._handler(boom)
         with self.assertLogs("guvfx.beta.validate_login", level="WARNING") as cm:
@@ -763,7 +764,8 @@ class InProcessIsolationHandlerTests(SimpleTestCase):
         self.assertNotIn("C:\\GuvFX", joined)                              # no host path in the operator event
 
     def test_malformed_correlation_id_is_sanitised_in_log(self):
-        h = self._handler(lambda cid, rep, *, started, finished: (_ for _ in ()).throw(IOError("x")))
+        h = self._handler(lambda cid, rep, *, started, finished, prepare_result=None:
+                          (_ for _ in ()).throw(IOError("x")))
         with self.assertLogs("guvfx.beta.validate_login", level="WARNING") as cm:
             h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID,
                        correlation_id="a\nb c/..\\d", nonce="n", payload={})
@@ -925,3 +927,221 @@ class InProcessIsolationWiringTests(SimpleTestCase):
         self.assertEqual(files, ["prod-1.diag.json"])
         ev = json.load(open(os.path.join(d, files[0])))
         self.assertEqual(ev["execution_mode"], "in_process")
+
+
+# ── IN-PROCESS terminal MATERIALISATION (2026-08-07 P0 remediation) ─────────────────────────────────────────
+_MROOT = r"C:\GuvFX\beta\validation-5833"
+_MVDIR = _MROOT + r"\terminal"
+_MPC = _MROOT + r"\_precompiled"
+_MFORB = vl.DEFAULT_FORBIDDEN_ROOTS + (r"C:\GuvFX\golden\newMT5",)
+
+
+class PrepareValidationTerminalUnitTests(SimpleTestCase):
+    """The pure ``prepare_validation_terminal`` primitive — never raises, never weakens the gate, refuses to copy
+    into a non-isolated dest or FROM a forbidden/golden/live/slot source, and reuses the runner's mirror."""
+
+    def _prep(self, *, vdir=_MVDIR, pc=_MPC, mirror=lambda a, b: "restored"):
+        return vl.prepare_validation_terminal(vdir, validation_root=_MROOT, forbidden_roots=_MFORB,
+                                              precompiled_dir=pc, mirror=mirror)
+
+    def test_unconfigured_source(self):
+        self.assertEqual(self._prep(pc=None), "precompiled_unconfigured")
+
+    def test_non_isolated_destination_skips_copy(self):
+        calls = []
+        self.assertEqual(self._prep(vdir=r"C:\GuvFX\beta\slots\1\terminal",
+                                    mirror=lambda a, b: calls.append(1) or "restored"), "path_contract_unmet")
+        self.assertEqual(calls, [])                       # NEVER copied into a non-isolated dest
+
+    def test_forbidden_source_skips_copy(self):
+        calls = []
+        self.assertEqual(self._prep(pc=r"C:\GuvFX\golden\newMT5\pc",
+                                    mirror=lambda a, b: calls.append(1) or "restored"), "path_contract_unmet")
+        self.assertEqual(calls, [])                       # NEVER copies FROM golden/live/slot
+
+    def test_restored_passes_exact_paths(self):
+        seen = []
+        self.assertEqual(self._prep(mirror=lambda a, b: (seen.append((a, b)) or "restored")), "restored")
+        self.assertEqual(seen, [(_MPC, _MVDIR)])          # exactly precompiled -> terminal
+
+    def test_mirror_fault_is_swallowed(self):
+        def boom(a, b):
+            raise IOError("disk")
+        self.assertEqual(self._prep(mirror=boom), "mirror_failed")   # never raises out of validate
+
+
+class MirrorReuseTests(SimpleTestCase):
+    """The in-process path reuses the runner's mirror (``mirror_validation_baseline`` -> ``_mirror_os``): ONE
+    materialisation mechanism, source-validated and non-destructive on an invalid source."""
+
+    def test_mirror_restores_and_invalid_source_is_non_destructive(self):
+        import tempfile
+        import validation_runner as runner
+        s, d = tempfile.mkdtemp(), tempfile.mkdtemp()
+        with open(os.path.join(s, "terminal64.exe"), "wb") as fh:
+            fh.write(b"MZ" * 8)
+        with open(os.path.join(s, "config.ini"), "w") as fh:
+            fh.write("x")
+        self.assertEqual(runner.mirror_validation_baseline(s, d), "restored")
+        self.assertTrue(os.path.isfile(os.path.join(d, "terminal64.exe")))
+        # a prior run's credential artefact is REMOVED by the restore (baseline cleanup)
+        with open(os.path.join(d, "leftover_accounts.dat"), "w") as fh:
+            fh.write("cred")
+        self.assertEqual(runner.mirror_validation_baseline(s, d), "restored")
+        self.assertFalse(os.path.exists(os.path.join(d, "leftover_accounts.dat")))
+        # an INVALID source (no terminal64.exe) never deletes from dst — fail-closed
+        s2 = tempfile.mkdtemp()
+        self.assertEqual(runner.mirror_validation_baseline(s2, d), "invalid_source")
+        self.assertTrue(os.path.isfile(os.path.join(d, "terminal64.exe")))
+
+
+class _RecProbe:
+    def __init__(self):
+        self.init_called = False
+        self.shutdown_called = False
+
+    def initialize(self, **k):
+        self.init_called = True
+        return True
+
+    def terminal_info(self):
+        return {}
+
+    def account_info(self):
+        return None
+
+    def shutdown(self):
+        self.shutdown_called = True
+
+
+class InProcessTerminalMaterialisationTests(SimpleTestCase):
+    """The wired in-process handler: prepare (materialise) runs UNDER the single-flight lock, BEFORE the
+    isolation gate, so ``validation_terminal_missing`` is remediated and the validation advances to the probe."""
+
+    def _handler(self, *, present0=False, prepare="restored", lock=None, persist=None, probe=None):
+        # path_exists returns state["present"]; the prepare closure flips it (simulating materialisation).
+        state = {"present": present0}
+        rec = probe or _RecProbe()
+
+        def prep():
+            if prepare == "restored":
+                state["present"] = True
+            return prepare
+        h = vl.LoginValidationHandler(
+            open_envelope=lambda s, a: b"pw", bind_aad=lambda **k: b"",
+            mt5_probe_factory=lambda: rec, path_exists=lambda p: state["present"],
+            validation_dir=_MVDIR, validation_root=_MROOT, forbidden_roots=_MFORB,
+            lock=lock, prepare_terminal=prep, persist_isolation_diagnostic=persist)
+        return h, state, rec
+
+    def _payload(self):
+        return {"login": "1302587", "server": "S", "password_env": {"x": 1}}
+
+    def test_materialisation_lets_isolation_pass_and_probe_run(self):
+        h, state, rec = self._handler(present0=False, prepare="restored")
+        out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                         payload=self._payload())
+        self.assertNotEqual(out["reason_code"], "isolation_check_failed")   # terminal was materialised
+        self.assertTrue(state["present"])
+        self.assertTrue(rec.init_called)                                    # advanced to MT5 initialize
+        self.assertTrue(rec.shutdown_called)                               # guaranteed shutdown
+
+    def test_ordering_prepare_before_isolation_before_mt5(self):
+        order = []
+        state = {"present": False}
+
+        class OProbe(_RecProbe):
+            def initialize(self, **k):
+                order.append("mt5_initialize")
+                return True
+        rec = OProbe()
+
+        def prep():
+            order.append("prepare")
+            state["present"] = True
+            return "restored"
+
+        def px(p):
+            order.append("isolation_read")
+            return state["present"]
+        h = vl.LoginValidationHandler(open_envelope=lambda s, a: b"pw", bind_aad=lambda **k: b"",
+                                      mt5_probe_factory=lambda: rec, path_exists=px, validation_dir=_MVDIR,
+                                      validation_root=_MROOT, forbidden_roots=_MFORB, prepare_terminal=prep)
+        h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                   payload=self._payload())
+        self.assertEqual(order[0], "prepare")
+        self.assertIn("isolation_read", order)
+        self.assertLess(order.index("prepare"), order.index("isolation_read"))
+        self.assertLess(order.index("isolation_read"), order.index("mt5_initialize"))
+
+    def test_source_missing_fails_closed_no_probe(self):
+        h, state, rec = self._handler(present0=False, prepare="no_source")   # mirror did not materialise
+        out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                         payload=self._payload())
+        self.assertEqual(out["reason_code"], "isolation_check_failed")       # still fail-closed (terminal missing)
+        self.assertFalse(rec.init_called)                                    # NO MT5, NO broker contact
+
+    def test_prepare_result_recorded_on_residual_isolation_failure(self):
+        captured = {}
+
+        def persist(cid, rep, *, started, finished, prepare_result=None):
+            captured.update(pr=prepare_result, sub=rep["sub_reason"])
+        h, _s, rec = self._handler(present0=False, prepare="invalid_source", persist=persist)
+        out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                         payload=self._payload())
+        self.assertEqual(out["reason_code"], "isolation_check_failed")
+        self.assertEqual(captured, {"pr": "invalid_source", "sub": "validation_terminal_missing"})
+
+    def test_idempotent_when_already_present(self):
+        h, state, rec = self._handler(present0=True, prepare="restored")     # terminal already there
+        out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                         payload=self._payload())
+        self.assertNotEqual(out["reason_code"], "isolation_check_failed")
+        self.assertTrue(rec.init_called)
+
+    def test_single_flight_busy_does_not_prepare(self):
+        lock = threading.Lock()
+        lock.acquire()
+        calls = []
+        h, _s, _r = self._handler(prepare="restored", lock=lock)
+        h2 = vl.LoginValidationHandler(open_envelope=lambda s, a: b"", bind_aad=lambda **k: b"",
+                                       mt5_probe_factory=lambda: _RecProbe(), path_exists=lambda p: True,
+                                       validation_dir=_MVDIR, validation_root=_MROOT, forbidden_roots=_MFORB,
+                                       lock=lock, prepare_terminal=lambda: calls.append(1) or "restored")
+        try:
+            out = h2.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                              payload=self._payload())
+        finally:
+            lock.release()
+        self.assertEqual(out["reason_code"], "validation_busy")
+        self.assertEqual(calls, [])                                         # prepare NEVER ran while busy
+
+    def test_lock_released_after_prepare_failure_recovers(self):
+        lock = threading.Lock()
+        h, _s, _r = self._handler(present0=False, prepare="no_source", lock=lock)
+        h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                   payload=self._payload())
+        self.assertTrue(lock.acquire(blocking=False))                       # lock freed even after a prepare-miss
+        lock.release()
+
+    def test_runner_build_has_no_preparer_no_regression(self):
+        # build_inprocess_handler WITHOUT prepare_terminal (the runner's call) must NOT wire a preparer — the
+        # runner restores its OWN baseline post-probe; adding a preparer here would change runner behaviour.
+        priv_b64 = _b64(_PRIV.private_bytes_raw())
+        with _set_env("BROKER_CRED_ENC_PRIVKEYS", json.dumps({"k1": priv_b64})):
+            h = vl.build_inprocess_handler({"validation_terminal_dir": _MVDIR, "validation_root": _MROOT,
+                                            "validation_precompiled_dir": _MPC, "login_timeout_ms": 30000})
+        self.assertIsNone(h._prepare_terminal)
+
+    def test_agent_inprocess_path_wires_preparer(self):
+        import agent as agent_mod
+        priv_b64 = _b64(_PRIV.private_bytes_raw())
+        with _set_env("BROKER_CRED_ENC_PRIVKEYS", json.dumps({"k1": priv_b64})):
+            with _set_env("BETA_AGENT_VALIDATION_PRECOMPILED_DIR", _MPC):
+                v = agent_mod._build_login_validator({
+                    "validation_terminal_dir": _MVDIR, "validation_root": _MROOT,
+                    "validation_precompiled_dir": _MPC, "slots_root": r"C:\GuvFX\beta\slots",
+                    "golden_dir": r"C:\GuvFX\golden", "validation_forbidden_roots": (),
+                    "login_timeout_ms": 30000})
+        self.assertIsInstance(v, vl.LoginValidationHandler)
+        self.assertIsNotNone(v._prepare_terminal)                          # in-process path materialises
