@@ -98,6 +98,22 @@ active demo. `:8788` and all trading are unaffected.
 - The `:8791` owner is a process you did NOT start → the unsupervised-listener runbook, not a restart.
 - Any temptation to touch `:8788`, #12, or #1 → STOP; that is out of blast radius.
 
+## 7a. Verified host + VPS baseline (read-only, 2026-08-06 — merge/cert packet)
+
+Captured read-only at merged `main` `be7f215`; every value confirms the deployment assumptions and the DARK state.
+
+**Windows host `WIN-RD8VDS93DK7` (100.79.101.19), boot 2026-06-10 (no reboot):**
+- `GuvFXBetaAgent`: **Stopped / Manual / recovery=none** (RESET_PERIOD 86400, no failure actions); identity `NT SERVICE\GuvFXBetaAgent`; WinSW exe `C:\GuvFX\beta\agent-winsw\GuvFXBetaAgent.exe` (sha16 `923111C7…`), DARK XML `GuvFXBetaAgent.xml` (sha16 `DCDB8DFD…`).
+- **`:8791` NO LISTENER** (agent down); **`:8788` LISTEN pid=15396** (trade bridge — DO NOT TOUCH).
+- Firewall: `GuvFX-Beta-Agent-In` (Allow, backend) + `GuvFX-Beta-Agent-Block-NonBackend` (Block) **both Enabled**.
+- Deployed bundle `C:\GuvFX\beta\agent`: **manifest `2026-08-03.3`**, `agent_lifecycle.py` **ABSENT**, `agent_lifecycle.jsonl` **ABSENT** (min-hardening not deployed — EXPECTED_STALE vs repo `2026-08-06.1`).
+- Tasks: `GvfxValidationRunner` **Ready**; `GuvFXBetaRuntime-1..4` + `…Stop-1..4` Ready.
+- ACLs: `NT SERVICE\GuvFXBetaAgent` = ReadAndExecute on `agent` + `agent-winsw`; **Modify** on `agent-state` and `agent-state\logs` (⇒ lifecycle log + single-instance lock writable under the service identity — **no permission change required**). C: free 414.8 GB.
+
+**VPS (100.119.23.29):** `guvfx-backend` container `d108e18a…` image `c096e83b…` (provenance commit `6b0fdf96`, **pre-merge** — backend hardening NOT deployed), restarts 0; `guvfx-frontend` `d01a914c…` image `2310ad62…`. Signing keyring `BETA_AGENT_KEYRING`/`KEY_ID`/`BASE_URL` **SET**; `AGENT_ALERT_SINK`/`AGENT_ALERT_OWNER` **NOT SET** (⇒ alert sink defaults to safe `NullAlertSink`). Latest DB backup `guvfx-pre288-20260805T165413Z.sql.gz`. Rollback images incl. `guvfx-prod-guvfx-backend:latest` (`c096e83b`) + `rollback-pre288-…`. `:8788` bridge + wayond listener + shadow worker all up and untouched.
+
+**Path corrections for §4:** the WinSW profile lives under `C:\GuvFX\beta\agent-winsw\` (not the bundle dir); back up + swap `GuvFXBetaAgent.xml` there. The lifecycle log/lock resolve to `C:\GuvFX\beta\agent-state\logs\` (service has Modify).
+
 ## 8. Post-deploy verification checklist
 
 - [ ] `Get-Service GuvFXBetaAgent` = Running, StartType Automatic (Delayed).
