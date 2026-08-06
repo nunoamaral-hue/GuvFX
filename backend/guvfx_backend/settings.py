@@ -347,6 +347,32 @@ LOGGING = {
 BACKTEST_ARTIFACT_ROOT = env("BACKTEST_ARTIFACT_ROOT", str(BASE_DIR / "backtest_artifacts"))
 BACKTEST_ARTIFACT_MAX_BYTES = int(env("BACKTEST_ARTIFACT_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB
 
+# --- Validation-agent monitoring pipeline (Monitoring-Runner packet) ---
+# The whole pipeline is DARK by default: monitoring OFF, alert sink NULL, and NO Telegram/email destination
+# configured. Enabling it (and, separately, selecting an external delivery channel) is a Sponsor-gated deploy
+# step — never a repository default. NO SECRET is committed here; every value comes from the environment.
+#
+#   VALIDATION_AGENT_MONITORING_ENABLED  master switch for run_agent_readiness_probe (default OFF)
+#   VALIDATION_AGENT_PROBE_INTERVAL_SECONDS  nominal scheduler tick; drives stale (coverage-gap) detection
+#   VALIDATION_AGENT_ALERT_COOLDOWN_SECONDS  durable per-alert suppression window (RR-11 storm guard)
+#   VALIDATION_AGENT_STALE_DETECTION_ENABLED  page when a scheduled run was missed (default OFF — a paused
+#                                             scheduler would otherwise page; opt in only with continuous cron)
+#   AGENT_ALERT_SINK                    '' | 'null' (default) | 'logging' | 'telegram'
+#   AGENT_ALERT_OWNER                   NAMED human/rota an alert terminates at (required for a live sink)
+#   VALIDATION_AGENT_TELEGRAM_CHAT_ID   DEDICATED ops chat id (MUST differ from the customer TELEGRAM_CHAT_ID)
+#   VALIDATION_AGENT_TELEGRAM_BOT_TOKEN ops bot token (its OWN secret — never the customer TELEGRAM_BOT_TOKEN)
+#   VALIDATION_AGENT_ALERT_FALLBACK_EMAIL  optional mailbox used only if the primary external sink fails
+VALIDATION_AGENT_MONITORING_ENABLED: bool = env("VALIDATION_AGENT_MONITORING_ENABLED", "false").lower() == "true"
+VALIDATION_AGENT_PROBE_INTERVAL_SECONDS: int = int(env("VALIDATION_AGENT_PROBE_INTERVAL_SECONDS", "60"))
+VALIDATION_AGENT_ALERT_COOLDOWN_SECONDS: int = int(env("VALIDATION_AGENT_ALERT_COOLDOWN_SECONDS", "900"))
+VALIDATION_AGENT_STALE_DETECTION_ENABLED: bool = env(
+    "VALIDATION_AGENT_STALE_DETECTION_ENABLED", "false").lower() == "true"
+AGENT_ALERT_SINK: str = env("AGENT_ALERT_SINK", "null")
+AGENT_ALERT_OWNER: str = env("AGENT_ALERT_OWNER", "")
+VALIDATION_AGENT_TELEGRAM_CHAT_ID: str = env("VALIDATION_AGENT_TELEGRAM_CHAT_ID", "")
+VALIDATION_AGENT_TELEGRAM_BOT_TOKEN: str = env("VALIDATION_AGENT_TELEGRAM_BOT_TOKEN", "")
+VALIDATION_AGENT_ALERT_FALLBACK_EMAIL: str = env("VALIDATION_AGENT_ALERT_FALLBACK_EMAIL", "")
+
 # --- Behind Traefik (TLS terminated upstream) ---
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True

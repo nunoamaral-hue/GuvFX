@@ -1,0 +1,74 @@
+{
+  "schema_version": "2026-08-06.1",
+  "component": "validation-agent",
+  "artefact": "agent_monitor_runner + run_agent_readiness_probe + agent alert sinks",
+  "description": "Contract for the backend operations layer that turns the DARK validation-agent monitoring capabilities into a running pipeline: probe -> durable hysteresis -> alert policy -> delivery. Repository default is fully DARK. Validated by tests_agent_monitor_runner.py + tests_agent_alert_sink_delivery.py.",
+  "default_posture": "DARK: VALIDATION_AGENT_MONITORING_ENABLED=false, AGENT_ALERT_SINK=null, no Telegram/email destination configured. The cron may be installed while dark; every run is inert until the flag is armed.",
+  "runner": {
+    "command": "python manage.py run_agent_readiness_probe",
+    "single_flight": "exclusive select_for_update(nowait=True) row lock on the AgentMonitorState singleton; a concurrent run refuses immediately (exit 50).",
+    "side_effects_permitted": [
+      "one signed-NEGOTIATE readiness probe to :8791 (read-only)",
+      "write the singleton AgentMonitorState row (operational metadata only)",
+      "deliver a fired alert to the configured ops alert sink"
+    ],
+    "side_effects_forbidden": [
+      "broker validation of any kind",
+      "reading a broker credential",
+      "creating a BrokerAccountValidationAttempt",
+      "starting MT5 / contacting a broker",
+      "reading or writing any customer account, trade, or plan",
+      "touching port 8788, the trade bridge, or live MT5"
+    ],
+    "exit_codes": {
+      "0": "healthy OR monitoring disabled (inert)",
+      "10": "agent-unhealthy-but-ran (monitoring worked; agent not HEALTHY)",
+      "20": "config-error (monitor unconfigured: no base_url/keyring)",
+      "30": "probe-failure (unexpected orchestration error)",
+      "40": "alert-delivery-failure (an alert fired but could not be delivered)",
+      "50": "overlap-refused (another run holds the lock)"
+    },
+    "flags": {
+      "--dry-run": "evaluate + persist state but route delivery to the NULL sink (send nothing)",
+      "--synthetic-state": "test-only: inject a readiness STATE, skip the network probe (never performs a broker/customer action)",
+      "--json": "emit the machine-readable RunOutcome"
+    }
+  },
+  "durable_state": {
+    "model": "terminal_provisioning.AgentMonitorState",
+    "cardinality": "singleton (pk=1)",
+    "purpose": "hysteresis + per-alert cooldown survive a backend restart (an in-memory tracker would re-page a still-open outage after a redeploy).",
+    "fields": "current/previous state, current band, supervised, consecutive healthy/unavailable, flap_count, alerting, last_reason, last_alerts (per-name cooldown map), last_delivery, last_probe_at, last_healthy_at, last_transition_at, run_count",
+    "data_classification": "operational metadata ONLY — never a customer, broker, credential, or account value."
+  },
+  "config": {
+    "VALIDATION_AGENT_MONITORING_ENABLED": {"type": "bool", "default": "false", "meaning": "master switch for the runner; default OFF"},
+    "VALIDATION_AGENT_PROBE_INTERVAL_SECONDS": {"type": "int", "default": "60", "meaning": "nominal scheduler tick; drives stale (coverage-gap) detection"},
+    "VALIDATION_AGENT_ALERT_COOLDOWN_SECONDS": {"type": "int", "default": "900", "meaning": "durable per-alert suppression window (storm guard)"},
+    "VALIDATION_AGENT_STALE_DETECTION_ENABLED": {"type": "bool", "default": "false", "meaning": "page when a scheduled run was missed; default OFF so a deliberately-paused scheduler does not page"},
+    "AGENT_ALERT_SINK": {"type": "enum", "default": "null", "values": ["null", "logging", "telegram"], "meaning": "delivery channel"},
+    "AGENT_ALERT_OWNER": {"type": "str", "default": "", "meaning": "NAMED human/rota an alert terminates at; required for any live sink"},
+    "VALIDATION_AGENT_TELEGRAM_CHAT_ID": {"type": "str", "default": "", "secret": false, "meaning": "DEDICATED ops chat id; MUST differ from the customer TELEGRAM_CHAT_ID or the sink refuses to build"},
+    "VALIDATION_AGENT_TELEGRAM_BOT_TOKEN": {"type": "secret", "default": "", "meaning": "ops bot token; its OWN secret — never the customer TELEGRAM_BOT_TOKEN (security RULE 3)"},
+    "VALIDATION_AGENT_ALERT_FALLBACK_EMAIL": {"type": "str", "default": "", "meaning": "optional mailbox used only if the primary external sink fails; unset => fallback explicitly not configured"}
+  },
+  "alert_sinks": {
+    "null": "sends nothing; the SAFE default that makes the absence of delivery explicit",
+    "logging": "durable local WARNING/ERROR log line; requires AGENT_ALERT_OWNER; no external call",
+    "telegram": "EXTERNAL: RealTelegramTransport._send text to the DEDICATED ops chat; requires owner + ops chat_id + ops token; refuses to build if the ops chat_id equals the customer chat_id; token never logged; bounded retry+backoff; a failed send is surfaced, never raised, and is NOT debounced",
+    "email": "fail-closed fallback via Django send_mail to VALIDATION_AGENT_ALERT_FALLBACK_EMAIL; None when unset"
+  },
+  "secret_safety": {
+    "never_logged": ["bot token", "chat id", "keyring", "key id", "any credential", "raw agent/exception body"],
+    "failure_detail": "an alert delivery failure carries only an HTTP status code / api error_code / exception TYPE",
+    "ops_evidence": "agent_monitor_status prints only sanitised enums/counters/timestamps; it omits every destination (chat id / recipient / token)"
+  },
+  "scheduler": {
+    "installer": "deploy/validation-agent-monitor/install_agent_monitor_cron.sh",
+    "cron": "* * * * * ... run_agent_readiness_probe  # guvfx-agent-monitor",
+    "granularity": "1 minute (finest cron supports); <= the 60s HEALTHY cadence; single-flight + durable cooldown provide the DEGRADED/UNAVAILABLE cadence intent",
+    "survives_restart": true,
+    "disable": "install_agent_monitor_cron.sh --remove, or set VALIDATION_AGENT_MONITORING_ENABLED=false",
+    "request_path": false
+  }
+}

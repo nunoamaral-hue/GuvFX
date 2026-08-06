@@ -14,6 +14,25 @@
 
 ## Execution workstream log
 
+- **2026-08-06 — Validation-Agent Monitoring Runner + Scheduler + Telegram Alert Delivery (IMPLEMENTATION + docs + tests). Repo eng; NOT deployed. 🟢**
+  Branch `feat/agent-monitoring-runner` (base `main` `49cef11`, the merged PR #294). Completes the missing backend operations
+  layer the two prior deploy attempts STOPPED on (merged monitoring was inert). **Durable state:**
+  `AgentMonitorState` (migration `0011`, singleton pk=1) so hysteresis + per-alert cooldown survive a backend
+  restart. **Runner:** `agent_monitor_runner.run_once` — probe → durable hysteresis → alert policy (cooldown,
+  one-shot recovery, flap-counter decay) → delivery; only side effects are the signed-NEGOTIATE probe, the
+  singleton row write, and an alert message. **Commands:** `run_agent_readiness_probe` (single-flight
+  `select_for_update(nowait)` lock, exit codes 0/10/20/30/40/50, `--dry-run`, `--synthetic-state`),
+  `test_agent_alert_delivery` (pre-arm synthetic-alert gate; no state/broker/customer), `agent_monitor_status`
+  (read-only, secret-free ops evidence). **External delivery:** `TelegramAlertSink` (DEDICATED ops chat + its
+  OWN token; factory refuses if ops chat == customer channel or token missing; failed send surfaced, never
+  raised/suppressed) + `EmailAlertSink` fallback. **Scheduler:** `deploy/validation-agent-monitor/` cron
+  installer (idempotent, dark, disableable). **Config:** 8 `settings.py` vars, all OFF/NULL by default
+  (`VALIDATION_AGENT_MONITORING_ENABLED=false`, `AGENT_ALERT_SINK=null`, no Telegram/email destination); no
+  secret committed. Contract `monitoring-runner-contract.json`; deploy package `monitoring-runner-deployment.md`;
+  ADR-0013 addendum 2026-08-06c. Tests `tests_agent_monitor_runner.py` + `tests_agent_alert_sink_delivery.py`.
+  `#12`/`#1`/`:8788`/host untouched. **STOP: deployment, flag-arming, and selecting a live destination remain
+  separately Sponsor-gated.**
+
 - **2026-08-06 — Validation Agent MINIMUM Production Hardening (IMPLEMENTATION + docs + tests). Repo eng; NOT deployed. 🟢**
   Branch `feat/validation-agent-min-hardening` (base `main` `f5d8389`, the merged PR #291). Turns the #291
   DESIGN into repository ENGINEERING for the minimum-for-beta set (RR-1/2/3/4/11). **Agent side:**

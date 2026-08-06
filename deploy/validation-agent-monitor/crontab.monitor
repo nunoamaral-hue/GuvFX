@@ -1,0 +1,19 @@
+# VALIDATION-AGENT-MONITOR — readiness-probe scheduler cron snippet.
+#
+# Schedules ONE validation-agent readiness monitor pass (probe -> durable hysteresis -> alert delivery)
+# every minute. SAFE AT CURRENT DEFAULTS: the pass is DARK unless VALIDATION_AGENT_MONITORING_ENABLED is on;
+# it performs a single signed-NEGOTIATE probe to :8791, writes only the singleton AgentMonitorState row, and
+# — only when an alert fires AND an external sink is configured (AGENT_ALERT_SINK, default 'null') — delivers
+# one message to the DEDICATED ops channel. It performs NO broker validation, touches NO credential, creates
+# NO validation attempt, starts NO MT5, contacts NO broker, and reads/writes NO customer account.
+#
+# Cron granularity is 1 minute (the finest it supports). That is <= the 60s HEALTHY cadence; the command's
+# single-flight row lock prevents overlap and the durable cooldown/hysteresis provide the rest of the
+# intended DEGRADED/UNAVAILABLE cadence. A run that would overlap a still-running one refuses (exit 50).
+#
+# Managed by deploy/validation-agent-monitor/install_agent_monitor_cron.sh (identified by the marker below).
+# Install:  deploy/validation-agent-monitor/install_agent_monitor_cron.sh
+# Remove:   deploy/validation-agent-monitor/install_agent_monitor_cron.sh --remove
+# Verify:   deploy/validation-agent-monitor/verify_agent_monitor.sh
+#
+* * * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py run_agent_readiness_probe >> /var/log/guvfx/agent_monitor.log 2>&1 # guvfx-agent-monitor
