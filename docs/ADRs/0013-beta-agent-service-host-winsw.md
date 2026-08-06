@@ -261,3 +261,33 @@ account assignment + LSA `SeServiceLogonRight` grant, then **fails closed + auto
 none; SUPERVISED ⇒ Automatic(delayed) + bounded restart tiers + launch-proof env markers. Both install
 **STOPPED** (install-only; first start stays gated). Contract:
 `docs/operations/validation-agent/installer-contract.json`; tests: `tests_supervised_installer.py`.
+
+### Addendum 2026-08-06c — monitoring runner, scheduler, and external alert delivery
+
+The "crash-loop paging is real, not aspirational" claim above depended on a runner + scheduler + delivery
+channel that did **not** exist: the merged `agent_health_probe` / `agent_monitoring` / `agent_alert_sink`
+were **inert** (no runner, no cron, sinks Null/Logging only). Two deployment attempts STOPPED on exactly
+this. **Resolution (repository):** the operations layer that actually runs them.
+
+- **Runner** — `agent_monitor_runner.run_once` executes one pass: signed-NEGOTIATE probe → durable hysteresis
+  → alert policy (per-alert cooldown, one-shot recovery, flap decay) → delivery. Its ONLY side effects are
+  the probe, a write to the singleton `AgentMonitorState` row, and an alert message. It performs no broker
+  validation, no credential read, no attempt creation, no MT5 start, and touches no customer account or
+  `:8788`.
+- **Durable state** — `AgentMonitorState` (migration `0011`, singleton pk=1) so hysteresis + cooldown survive
+  a backend restart. Operational metadata only.
+- **Command + scheduler** — `manage.py run_agent_readiness_probe` (single-flight `select_for_update(nowait)`
+  lock; deterministic exit codes 0/10/20/30/40/50; `--dry-run`, `--synthetic-state`), scheduled by
+  `deploy/validation-agent-monitor/` cron. `manage.py test_agent_alert_delivery` is the pre-arm delivery gate
+  the Aug-5 outage lacked; `manage.py agent_monitor_status` is the read-only, secret-free ops evidence.
+- **External delivery** — `TelegramAlertSink` (a DEDICATED ops chat, its OWN bot token; the factory refuses
+  to build if the ops chat_id equals the customer channel or the token is missing) + `EmailAlertSink`
+  fallback. DARK by default: `VALIDATION_AGENT_MONITORING_ENABLED=false`, `AGENT_ALERT_SINK=null`, no
+  destination configured.
+
+Rollback is flag-OFF (`VALIDATION_AGENT_MONITORING_ENABLED=false` / `AGENT_ALERT_SINK=null`) plus
+`install_agent_monitor_cron.sh --remove`; migration `0011` reverses cleanly; no destructive step. Contract:
+`docs/operations/validation-agent/monitoring-runner-contract.json`; deployment package:
+`docs/operations/validation-agent/monitoring-runner-deployment.md`; tests: `tests_agent_monitor_runner.py`,
+`tests_agent_alert_sink_delivery.py`. **APPROVED for repository engineering (Sponsor, this packet).**
+Deployment, flag-arming, and selecting a live destination remain **separately Sponsor-gated**.
