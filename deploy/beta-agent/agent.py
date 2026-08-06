@@ -27,6 +27,7 @@ import json
 import logging
 import logging.handlers
 import os
+import socket
 import sys
 import threading
 import time
@@ -45,12 +46,56 @@ from pool_op_impls import PoolOpImplementations, SlotResolver   # noqa: E402
 from stores import RuntimeLockManager, SlotStore, SqliteStore   # noqa: E402
 from win_ops import RealWindowsOps                        # noqa: E402
 from win_slot_ops import RealSlotWindowsOps               # noqa: E402
+import agent_lifecycle                                    # noqa: E402  WS-C/WS-D min-hardening primitives
 
 AGENT_VERSION = "beta-agent-1.0.0"
 
 
+def _pid_alive(pid: int) -> bool:
+    """Read-only liveness probe for the single-instance guard, STDLIB-ONLY (no ctypes/win32 — this module is
+    NOT a Windows adapter; the primitive-layer boundary invariant forbids Windows API here). Positively alive
+    => True; positively dead OR INDETERMINATE => False, so an indeterminate lock is RECLAIMED. That is safe
+    because the OS socket bind is the HARD single-instance enforcement (two live listeners on the exact
+    host:port cannot coexist; the guard runs BEFORE bind, so a real conflict still fails at bind); this lock
+    only adds durable identity + clean detection. On Windows ``os.kill`` cannot probe liveness with signal 0
+    (it maps to a console-event / TerminateProcess), so we do NOT call it there — Windows liveness defers to
+    the bind backstop by design (documented in the deployment package + ADR-0013 addendum)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "posix":
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True          # exists but owned by another user
+        except OSError:
+            return False
+    # non-posix (Windows): indeterminate => reclaim; the OS bind is the authoritative single-instance guard.
+    return False
+
+
+def _os_open_excl(path: str) -> bool:
+    """Atomic exclusive create (O_CREAT|O_EXCL). True iff THIS call created the file; False if it already
+    exists. A missing parent dir raises (the caller makes the dir best-effort first)."""
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+
+
 def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: str = "",
-                enforce_integrity: bool = False, slot_store_override=None) -> BetaProvisioningAgent:
+                enforce_integrity: bool = False, slot_store_override=None,
+                agent_supervised=None) -> BetaProvisioningAgent:
     """Assemble the boundary-enforcing agent from config + the approved manifest. Injectable (win/store/
     locks) for tests; defaults to the real Windows ops + the SQLite state store. ``enforce_integrity``
     (used by the live service) hashes every implementation module on disk NOW and refuses to build if ANY
@@ -102,7 +147,8 @@ def build_agent(cfg: dict, *, win=None, store=None, locks=None, manifest_path: s
         resolve_real_path=win.real_path, runtime_locks=locks,
         base=base, manifest_version=approved.get("manifest_version", ""),
         execution_model=cfg.get("execution_model") or EXECUTION_MODEL_UUID_DIR,
-        slot_resolver=resolver, login_validator=_build_login_validator(cfg, win))
+        slot_resolver=resolver, login_validator=_build_login_validator(cfg, win),
+        agent_supervised=agent_supervised)
 
 
 def _build_login_validator(cfg: dict, win=None):
@@ -138,8 +184,28 @@ def _build_login_validator(cfg: dict, win=None):
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """A threading HTTP server that BOUNDS concurrent connections (refuses, never queues, past the cap) and
     carries the per-request body/timeout limits. Prevents an unauthenticated flood from spawning unbounded
-    threads on the shared live host (verification: pre-auth resource exhaustion)."""
+    threads on the shared live host (verification: pre-auth resource exhaustion).
+
+    Single-instance: ``allow_reuse_address`` is FORCED False (the base ``HTTPServer`` defaults it True → the
+    socket would carry ``SO_REUSEADDR``, which on WINDOWS lets a second process bind the EXACT same
+    host:port and hijack delivery — an ad-hoc ``python agent.py`` could silently steal :8791 from the
+    supervised service). With it off, and ``SO_EXCLUSIVEADDRUSE`` set on Windows, a second bind to :8791
+    FAILS at the OS — making the exclusive bind the genuine hard single-instance guard the lock only
+    advises (adversarial review, 2026-08-06). :8788 is never touched here."""
     daemon_threads = True
+    allow_reuse_address = False        # do NOT set SO_REUSEADDR — it enables the Windows bind-hijack
+
+    def server_bind(self):
+        # On Windows, additionally request EXCLUSIVE ownership so even a SO_REUSEADDR peer cannot steal the
+        # port. getattr-guarded: SO_EXCLUSIVEADDRUSE exists only on Windows Python; a no-op elsewhere. This
+        # is stdlib ``socket`` only (no ctypes/win32 — the primitive-layer boundary is preserved).
+        excl = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if excl is not None:
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, excl, 1)
+            except OSError:
+                pass
+        super().server_bind()
 
     def __init__(self, addr, handler, *, max_body_bytes: int, request_timeout_s: float,
                  max_connections: int):
@@ -273,14 +339,84 @@ class AgentServer:
     cannot kill a MATERIALISE/TOMBSTONE mid-flight (verification B-6). The pywin32 SCM wrapper (``service.py``)
     is a thin delegate to this."""
 
-    def __init__(self, cfg: dict, *, win=None, store=None, locks=None, enforce_integrity: bool = True):
+    def __init__(self, cfg: dict, *, win=None, store=None, locks=None, enforce_integrity: bool = True,
+                 env=None, now_fn=None):
         self.cfg = cfg
         self._locks = locks if locks is not None else RuntimeLockManager()
+        # WS-D launch classification — decided ONCE, from the environment the process was started in. A bare
+        # ``python agent.py`` (the Aug-5 vector) is NOT supervised, so it advertises ``agent_supervised=false``
+        # in NEGOTIATE and the backend health probe treats it as not-HEALTHY (never mistaken for the service).
+        self._env = os.environ if env is None else env
+        self._now = now_fn or time.time
+        self._launch = agent_lifecycle.classify_launch(self._env)
+        self.supervised = bool(self._launch["supervised"])
+        # Hard refuse-to-bind switch (default OFF). cfg wins (tests); else read the env directly (no config.py
+        # change needed) so the WinSW supervised profile can flip it on ONLY after the service is in place.
+        cfg_refuse = self.cfg.get("refuse_unsupervised_launch")
+        self._refuse_unsupervised = bool(cfg_refuse) if cfg_refuse is not None else \
+            str(self._env.get("BETA_AGENT_REFUSE_UNSUPERVISED_LAUNCH", "")).strip().lower() in \
+            ("1", "true", "yes", "on")
         self._agent = build_agent(cfg, win=win, store=store, locks=self._locks,
-                                  enforce_integrity=enforce_integrity)
+                                  enforce_integrity=enforce_integrity, agent_supervised=self.supervised)
         self._log = _make_logger(cfg.get("log_dir"))
         self._httpd = None
         self._thread = None
+        self._started_at = None
+        self._stopping = False          # set True by stop(): a serve-thread exit while stopping is EXPECTED
+        self._crashed = False           # set True by the serve guard on an ABNORMAL serve-thread exit
+        self._lock_path = self._resolve_lifecycle_path("instance_lock_path", "agent_instance.lock", port=True)
+        self._lifecycle_log = self._resolve_lifecycle_path("lifecycle_log_path", "agent_lifecycle.jsonl")
+
+    def _resolve_lifecycle_path(self, cfg_key: str, default_name: str, *, port: bool = False) -> str | None:
+        """Resolve a durable lifecycle path from config, else derive it next to the state db / log dir. The
+        lock name carries the bind PORT so two DIFFERENT sanctioned ports never share one lock."""
+        explicit = self.cfg.get(cfg_key)
+        if explicit:
+            return explicit
+        base = self.cfg.get("log_dir") or os.path.dirname(self.cfg.get("state_db") or "") or None
+        if not base:
+            return None
+        if port:
+            default_name = f"agent_instance_{self.cfg.get('bind_port', 'x')}.lock"
+        return os.path.join(base, default_name)
+
+    def _emit(self, event: str, **fields) -> None:
+        """Emit ONE durable, secret-safe lifecycle event (independent of the WinSW wrapper log — RR-3). Never
+        raises; always stamps the common identity fields so a start/exit is never invisible again."""
+        base = {
+            "agent_version": AGENT_VERSION, "manifest_version": self._agent.manifest_version,
+            "pid": os.getpid(), "parent_pid": (os.getppid() if hasattr(os, "getppid") else None),
+            "supervised": self.supervised, "startup_reason": self._launch.get("startup_reason"),
+            "service_identity": self._launch.get("service_identity"),
+            "bind_host": self.cfg.get("bind_host"), "bind_port": self.cfg.get("bind_port"),
+        }
+        base.update({k: v for k, v in fields.items() if v is not None})
+        ev = agent_lifecycle.build_event(event, now=self._now(), fields=base)
+        if self._lifecycle_log:
+            agent_lifecycle.append_event(self._lifecycle_log, ev)
+        self._log.info("lifecycle %s", event)
+
+    def _acquire_instance(self) -> None:
+        """Acquire the single-instance lock (defence-in-depth). The OS bind is the HARD single-instance
+        enforcement (two active listeners on the exact host:port cannot coexist); this lock adds a durable,
+        inspectable owner record and a clean, logged detection. Raises InstanceGuardError only on a positively
+        LIVE conflicting holder; indeterminate/dead locks reclaim (the bind is the backstop)."""
+        if not self._lock_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self._lock_path), exist_ok=True)
+        except OSError:
+            return              # cannot store the lock — rely on the OS bind; do not block startup
+        agent_lifecycle.acquire_single_instance(
+            self._lock_path, pid=os.getpid(), now=self._now(), pid_alive=_pid_alive, open_excl=_os_open_excl)
+
+    def _release_instance(self) -> None:
+        if not self._lock_path:
+            return
+        try:
+            os.remove(self._lock_path)
+        except OSError:
+            pass
 
     def make_server(self) -> BoundedThreadingHTTPServer:
         agent_config.assert_exact_bind(
@@ -294,11 +430,69 @@ class AgentServer:
     def start(self) -> None:
         if self._httpd is not None:
             return
-        self._httpd = self.make_server()
-        self._thread = threading.Thread(target=self._httpd.serve_forever, name="beta-agent-http",
-                                        daemon=True)
+        self._emit("AGENT_STARTING")
+        # WS-D launch enforcement. ALWAYS-ON: an unsupervised launch already advertises supervised=false
+        # (backend => not HEALTHY). The HARD refuse-to-bind is a documented, config-gated switch
+        # (``refuse_unsupervised_launch``, default OFF) so it can be enabled ONLY after the supervised WinSW
+        # service is in place — flipping it on before then would brick the manual recovery path (RULE-1 care).
+        if self._refuse_unsupervised and not agent_lifecycle.launch_permitted(self._launch):
+            self._emit("AGENT_LAUNCH_REJECTED", result="refused_unsupervised",
+                       shutdown_reason="unsanctioned_launch")
+            raise RuntimeError("refusing to bind: unsupervised launch and no operator override "
+                               "(start via the GuvFXBetaAgent service)")
+        # Single-instance: the lock is ADVISORY (durable identity + clean detection), NOT the arbiter. A
+        # detected conflict is LOGGED and we PROCEED — the EXCLUSIVE OS bind below is the hard guard: a real
+        # duplicate fails at bind (loud), while a stale/reused-pid lock must never veto a start on a free port
+        # (adversarial review 2026-08-06: raising here turned one crash into a persistent dark-:8791 outage).
+        try:
+            self._acquire_instance()
+        except agent_lifecycle.InstanceGuardError as exc:
+            self._emit("AGENT_DEGRADED", result="instance_lock_conflict",
+                       detail=f"advisory single-instance lock conflict; letting the exclusive bind arbitrate: {exc}")
+        self._stopping = False
+        self._crashed = False
+        try:
+            self._httpd = self.make_server()      # exclusive bind — a second listener on :8791 FAILS here
+        except OSError as exc:
+            # A real duplicate (or a taken port) fails the exclusive bind LOUDLY. Record it durably before it
+            # propagates (main() has no handler → non-zero exit → WinSW restarts), so the crash is not invisible.
+            self._emit("AGENT_LAUNCH_REJECTED", result="bind_failed",
+                       shutdown_reason="address_in_use", detail=type(exc).__name__)
+            raise
+        self._started_at = self._now()
+        self._thread = threading.Thread(target=self._serve_guarded, name="beta-agent-http", daemon=True)
         self._thread.start()
         self._log.info("agent started bind=%s:%s", self.cfg["bind_host"], self.cfg["bind_port"])
+        self._emit("AGENT_LISTENING")
+        # NEGOTIATE-ready the instant the socket is up: the agent has no separate warm-up (VALIDATE_LOGIN
+        # readiness is a downstream/keyring concern the backend probe distinguishes, not an agent state here).
+        self._emit("AGENT_READY", result="ok" if self.supervised else "ok_unsupervised")
+
+    def _serve_guarded(self) -> None:
+        """Run serve_forever with a crash guard. serve_forever returns cleanly ONLY when ``stop()`` calls
+        ``shutdown()`` (``_stopping`` is then True). Any other exit — an exception, or serve_forever returning
+        while NOT stopping — is an ABNORMAL death: record it as AGENT_CRASHED so a crash is never invisible,
+        and ``main()`` can exit non-zero so the supervisor restarts (WinSW ``onfailure=restart`` fires only on
+        a non-zero exit; a silent exit 0 would leave :8791 dark, the Aug-5 failure class)."""
+        try:
+            self._httpd.serve_forever()
+        except BaseException as exc:                 # noqa: BLE001 — ANY serve-loop failure is a crash signal
+            self._note_crash(f"serve_forever raised: {type(exc).__name__}")
+            return
+        if not self._stopping:
+            self._note_crash("serve_forever returned without a stop")
+
+    def _note_crash(self, detail: str) -> None:
+        if self._stopping or self._crashed:
+            return
+        self._crashed = True
+        uptime = None if self._started_at is None else round(self._now() - self._started_at, 3)
+        self._emit("AGENT_CRASHED", result="abnormal_exit", exit_classification="crash",
+                   uptime_s=uptime, detail=detail)
+
+    @property
+    def crashed(self) -> bool:
+        return self._crashed
 
     def stop(self, drain_timeout_s: float | None = None) -> bool:
         """Stop accepting new work, drain in-flight mutating ops (bounded), then shut down. Returns True if
@@ -307,6 +501,8 @@ class AgentServer:
         Order matters (verification B-6): begin_drain() refuses any mutation that has not yet committed, and
         shutdown() exits the accept loop, BEFORE we wait — so no new mutation can start during the drain
         window and then be killed at teardown."""
+        self._stopping = True                         # a serve-thread exit from here on is EXPECTED, not a crash
+        self._emit("AGENT_STOPPING")
         self._locks.begin_drain()                     # refuse new mutations (denied, not killed)
         if self._httpd is not None:
             self._httpd.shutdown()                    # stop accepting; serve_forever thread returns
@@ -318,6 +514,11 @@ class AgentServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+        self._release_instance()
+        uptime = None if self._started_at is None else round(self._now() - self._started_at, 3)
+        self._emit("AGENT_STOPPED", result="drained" if drained else "drain_timeout",
+                   exit_classification="operator_stop", uptime_s=uptime)
+        self._started_at = None
         (self._log.warning if not drained else self._log.info)(
             "agent stopped%s", "" if drained else " (drain timed out — forced)")
         for h in list(self._log.handlers):          # release the rotating-file handle; do not leak across restarts
@@ -345,6 +546,11 @@ def main():
             server._thread.join(timeout=1)
     except KeyboardInterrupt:
         server.stop()
+        return
+    # The serve thread ended without a KeyboardInterrupt. If it CRASHED (abnormal exit), exit NON-ZERO so the
+    # supervisor (WinSW onfailure=restart) restarts it — a silent exit 0 here is the Aug-5 dark-:8791 failure.
+    if server.crashed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

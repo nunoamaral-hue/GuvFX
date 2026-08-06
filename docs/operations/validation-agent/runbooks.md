@@ -6,10 +6,21 @@ index: [runbook-index.json](runbook-index.json). Design context:
 [VALIDATION_AGENT_PRODUCTION_HARDENING.md](../../VALIDATION_AGENT_PRODUCTION_HARDENING.md). Section contract
 per runbook: **Evidence → Diagnosis → Permitted → Prohibited → Verify → Escalation.**
 
-> **Standing rules.** Never start the agent from an interactive SSH session (security RULE 1 — it dies with
-> the session); use only its supported service mechanism. Never restart on a *downstream* (broker/MT5/IPC)
-> failure alone — a restart cannot fix a broker/host condition and destroys in-flight evidence. Read-only
-> evidence first, always. #12 and #1 are never touched by these procedures.
+> **Standing rules (PROHIBITED — these are never a fix).**
+> - **Never start the agent from an interactive SSH session** (security RULE 1 — it dies with the session);
+>   use ONLY the `GuvFXBetaAgent` service mechanism. A manual `python agent.py` is NEVER a production fix — it
+>   is unsupervised, unlogged-as-a-service, and is the exact Aug-5 vector; it now advertises
+>   `agent_supervised=false` and pages `agent_unsupervised_listener`.
+> - **Never repoint `BETA_AGENT_BASE_URL` to `:8788`** (the live trade bridge) or to any other port to "make it
+>   respond" — the config is proven correct; a non-response is the agent being down, not the URL being wrong.
+> - **Never disable or widen the firewall boundary** (`GuvFX-Beta-Agent-*` rules / default-inbound-Block) to
+>   reach the agent. The boundary is load-bearing least-privilege on the shared live host.
+> - **Never retry-storm.** Do not loop restarts (crash-loop) or auto-retry customer credentials — back off and
+>   escalate.
+> - **Never restart on a *downstream* (broker/MT5/IPC) failure alone** — a restart cannot fix a broker/host
+>   condition and destroys in-flight evidence.
+> - **Never test with Customer Zero #12 or live trading account #1.** Use a disposable account only.
+> - Read-only evidence first, always.
 
 ---
 
@@ -74,6 +85,32 @@ a wedge); interactive-SSH launch.
 `oldest_inflight_validation_seconds` returns to normal; a fresh validation completes with a structured result.
 #### Escalation
 Repeated wedges → Engineering/Operator (host/runner); reference the IPC reliability investigation.
+
+---
+
+### Unsupervised listener (unsupervised-listener)
+#### Evidence
+The `agent_readiness` probe reports `agent_supervised == false` while `agent_up == 1` — something answers a
+signed NEGOTIATE on `:8791` but it is NOT the `GuvFXBetaAgent` service. Confirm (read-only): the SCM service
+state (`Get-Service GuvFXBetaAgent`); which process owns the `:8791` PID; the durable `agent_lifecycle.jsonl`
+`AGENT_STARTING`/`AGENT_LISTENING` lines and their `supervised`/`startup_reason` fields; whether any
+interactive/SSH session bracketed the process start.
+#### Diagnosis
+A bare `python agent.py` (or any non-service launch) is serving. It answers NEGOTIATE byte-identically to the
+supervised child, so `agent_up` alone cannot see it — the supervision flag is what distinguishes them. This
+is the Aug-5 failure mode: an unsupervised, unrestarted, session-bound listener.
+#### Permitted
+Capture the lifecycle evidence; identify + stop the ad-hoc process via its OWN launcher (not a kill-storm);
+start/repair the supervised `GuvFXBetaAgent` service; confirm `agent_supervised == true` after.
+#### Prohibited
+Leaving the unsupervised process serving because "it works"; starting a replacement via SSH/`python agent.py`;
+forging the supervision markers by hand to silence the alert.
+#### Verify
+`Get-Service GuvFXBetaAgent` = Running, it owns the `:8791` PID, and a signed NEGOTIATE returns
+`agent_supervised == true`.
+#### Escalation
+If the unsupervised process cannot be attributed to a known operator action → Engineering/Security (unexpected
+listener on the shared live host); preserve `agent_lifecycle.jsonl`.
 
 ---
 

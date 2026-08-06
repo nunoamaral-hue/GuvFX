@@ -1,5 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Validation Agent MINIMUM Production Hardening — engineering-complete (2026-08-06); NOT deployed; awaiting Sponsor gate
+Branch `feat/validation-agent-min-hardening` (base `main` `f5d8389`). Implements RR-1/2/3/4/11 as repository
+engineering: supervised WinSW target profile, signed-NEGOTIATE readiness probe, durable lifecycle logging,
+single-instance + launch enforcement (`agent_supervised`), monitoring + named alert delivery, read-only Ops
+surface. A 6-lens adversarial review folded in an **exclusive OS bind** (`allow_reuse_address=False` +
+`SO_EXCLUSIVEADDRUSE` — SO_REUSEADDR let a 2nd process hijack `:8791` on Windows), an **advisory lock** (never
+vetoes a start), **crash detection** (`AGENT_CRASHED` + non-zero exit so WinSW restarts), and a real
+`agent_crash_loop` alert. `make check` green; no DB migration. **Bounded next action:** obtain Sponsor
+authorisation for the separately gated Windows-host + backend deployment (`docs/operations/validation-agent/
+deployment-min-hardening.md`) — install the supervised profile + provision the readiness probe/alert owner.
+Do NOT apply any host/service/firewall change before that authorisation; `:8788`, Customer Zero #12 and live
+account #1 stay untouched.
+
+
 ## ▶ Validation-UX packet — engineering-complete (2026-08-05); PR #288 OPEN; NOT deployed
 Branch `fix/validation-ux-timeout` (base `main`) turns broker validation into a modal interaction with a
 contextual next action, customer-safe errors on every path, a duplicate-click guard, graceful reconnect after
