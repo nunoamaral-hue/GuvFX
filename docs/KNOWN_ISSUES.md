@@ -2,6 +2,17 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 TEST FLAKE (found 2026-08-06) — `reliability.tests_operations_summary` fails within ~10 min after UTC midnight
+
+`SignalExecutionBlockTests` (e.g. `test_stuck_pending_flips_all_accounted`, and the sibling tests indexing
+`_signal_execution_block(...)["ti_signals"]`) back-date a plan by `now - 600s` and expect it inside today's
+window. `_signal_execution_block` filters `created_at__gte=_today_start(now)` (UTC midnight), so when the test
+runs between 00:00–00:10 UTC the back-dated plan falls into *yesterday*, the source is omitted, and indexing
+`["ti_signals"]` raises `KeyError`. **Not a production bug** (the today-window is intentional) and unrelated to
+the validation-agent hardening (that code isn't imported here). Repro: run near UTC midnight. Workaround: run
+`make check` outside the 00:00–00:10 UTC window. Fix (spawned task): freeze time in the tests, or shrink the
+back-date delta so it can't cross midnight.
+
 ## 🟡 DEFERRED (2026-08-05) — Customer-journey product items NOT changed in the consolidation packet
 
 Recorded from the journey review (`docs/product/beta-journey-consolidation.md` §5–7). These are product /

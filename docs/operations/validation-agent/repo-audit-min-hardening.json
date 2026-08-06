@@ -1,0 +1,31 @@
+{
+  "schema_version": "2026-08-06.1",
+  "component": "validation-agent",
+  "workstream": "WS-J",
+  "description": "Repository audit for the minimum-production-hardening packet. Every place that assumed a manual/detached-python start, no auto-restart, no health probe, an optional :8791, or that an unsupervised listener reads healthy — classified Correct / Outdated-fix / Historical-preserve / Needs-governance. This is a DESIGN audit; no host or config is changed.",
+  "classes": {
+    "Correct": "the statement is accurate under this packet — no change needed",
+    "Outdated-fix": "the statement was wrong/stale and was corrected in THIS packet",
+    "Historical-preserve": "an accurate record of a PAST state (e.g. the DARK install-only profile) — kept verbatim, superseded not rewritten (RULE 5)",
+    "Needs-governance": "correct engineering but the LIVE change is Sponsor-gated (host/backend deploy) — flagged, not applied"
+  },
+  "findings": [
+    {"site": "deploy/beta-agent/agent.py (module docstring)", "assumption": "production runs ONLY under the GuvFXBetaAgent WinSW service; a bare `python agent.py` is OFFLINE/dev only and is the 2026-08-05 vector", "class": "Correct", "note": "corrected in PR #291 WS-I; this packet ADDS the runtime enforcement (classify_launch + agent_supervised + optional refuse-to-bind) that makes the docstring's rule mechanically true, not just documented."},
+    {"site": "deploy/beta-agent/winsw/GuvFXBetaAgent.xml", "assumption": "startmode Manual, onfailure=none, registered STOPPED (nothing auto-restarts)", "class": "Historical-preserve", "note": "accurate record of the DARK install-only state. NOT edited. Superseded by GuvFXBetaAgent.supervised.xml (the target); the switch is a Sponsor-gated deploy step."},
+    {"site": "deploy/beta-agent/winsw/GuvFXBetaAgent.supervised.xml", "assumption": "(new) Automatic+delayed, bounded-backoff restart floor, launch markers, refuse-switch default OFF", "class": "Needs-governance", "note": "the reviewable TARGET config. Applying it is a Windows-host mutation — NOT done here."},
+    {"site": "deploy/beta-agent/lib/mgmt_agent_core.py (NEGOTIATE)", "assumption": "NEGOTIATE reports only protocol/manifest/supported_operations", "class": "Outdated-fix", "note": "extended to advertise agent_supervised (bool) so a probe can distinguish a supervised listener from a bare launch. Byte-identical backend copy re-synced; manifest re-pinned."},
+    {"site": "terminal_provisioning/mgmt_client.py (probe absence)", "assumption": "the only management call is per-job provisioning; there is no periodic liveness probe", "class": "Outdated-fix", "note": "agent_health_probe.py adds a signed-NEGOTIATE readiness probe (read-only, no mutation) reusing this client. The probe is code+tests only; SCHEDULING it is a backend-deploy step (Needs-governance)."},
+    {"site": "terminal_provisioning/beta_worker.py (CONNECT_TIMEOUT collapse)", "assumption": "a transport timeout is AMBIGUOUS and mapped to ManagementChannelTimeout (connect and read indistinguishable)", "class": "Needs-governance", "note": "the probe implements its OWN connect/read split locally (main lacks PR #290's transport-taxonomy split). The provisioning path is untouched. If #290 merges, reconcile the two split implementations."},
+    {"site": "docs/operations/validation-agent/readiness-review.json (RR-1..RR-4, RR-11)", "assumption": "no supervision / no probe / no lifecycle log / unenforced launch / no alert delivery", "class": "Correct", "note": "this packet IMPLEMENTS the minimum-for-beta set (RR-1/2/3/4/11) as repository engineering. The review remains the authoritative gap list; items stay open until the Sponsor-gated deploy."},
+    {"site": "docs/operations/validation-agent/monitoring-catalogue.json (agent_supervised, agent_unsupervised_listener)", "assumption": "these were DESIGN entries only", "class": "Outdated-fix", "note": "now backed by real code (probe surfaces supervised; evaluate_alerts fires agent_unsupervised_listener → unsupervised-listener runbook)."},
+    {"site": "deploy/beta-agent/RUNBOOK.md / docs/OPERATIONS_DASHBOARD.md", "assumption": "operational text describing the agent lifecycle", "class": "Correct", "note": "PR #291 WS-I corrected the ':8791 SPOF' and 'never executed on a host' statements; this packet does not re-open them."},
+    {"site": "config.py (no refuse/probe env)", "assumption": "config.load_config maps only the existing env set", "class": "Correct", "note": "deliberately NOT edited. The refuse switch + launch markers are read from os.environ directly by AgentServer/classify_launch, and lifecycle paths are derived from log_dir/state_db — so the integrity-pinned bind-guard config is untouched."},
+    {"site": "deploy/beta-agent/agent.py BoundedThreadingHTTPServer", "assumption": "the OS bind is the hard single-instance backstop", "class": "Outdated-fix", "note": "ADVERSARIAL fold-in 2026-08-06: the server inherited allow_reuse_address=True (SO_REUSEADDR), which on Windows permits a 2nd process to hijack :8791 — so the claim was FALSE on the target OS. Fixed to allow_reuse_address=False + SO_EXCLUSIVEADDRUSE (exclusive bind); the single-instance lock is now advisory and never vetoes a start; an abnormal serve-thread death emits AGENT_CRASHED + non-zero exit so WinSW restarts."}
+  ],
+  "not_changed": [
+    "config.py (bind guard / load_config)",
+    "the DARK install-only GuvFXBetaAgent.xml",
+    "the provisioning transport (beta_worker make_http_transport / mgmt_client provisioning ops)",
+    ":8788 trade bridge, wayond listener, shadow worker, Customer Zero #12, live account #1"
+  ]
+}

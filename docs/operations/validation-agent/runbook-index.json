@@ -8,6 +8,7 @@
     {"id": "agent-unavailable", "title": "Agent unavailable", "detects_state": "UNAVAILABLE", "alert": "agent_down"},
     {"id": "agent-unhealthy", "title": "Agent unhealthy (degraded)", "detects_state": "DEGRADED", "alert": "validate_login_unavailable"},
     {"id": "agent-wedged", "title": "Agent wedged (up but not completing validations)", "detects_state": "DEGRADED", "alert": "validation_wedged"},
+    {"id": "unsupervised-listener", "title": "Unsupervised listener", "detects_state": "UNAVAILABLE", "alert": "agent_unsupervised_listener"},
     {"id": "negotiate-failed", "title": "NEGOTIATE failed", "detects_state": "UNAVAILABLE", "alert": "agent_negotiate_failing"},
     {"id": "validate-login-failed", "title": "VALIDATE_LOGIN failed", "detects_state": "DEGRADED", "alert": "validate_login_unavailable"},
     {"id": "repeated-ipc-failures", "title": "Repeated IPC failures", "detects_state": "DEGRADED", "alert": "mt5_ipc_failure_rate_high"},

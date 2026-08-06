@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-08-06 — Validation Agent MINIMUM Production Hardening (IMPLEMENTATION + docs + tests). Repo eng; NOT deployed. 🟢**
+  Branch `feat/validation-agent-min-hardening` (base `main` `f5d8389`, the merged PR #291). Turns the #291
+  DESIGN into repository ENGINEERING for the minimum-for-beta set (RR-1/2/3/4/11). **Agent side:**
+  `deploy/beta-agent/agent_lifecycle.py` (secret-safe lifecycle events, single-instance guard, launch
+  classification) wired into `agent.py` (durable `agent_lifecycle.jsonl`; guard; optional hard refuse-to-bind
+  `BETA_AGENT_REFUSE_UNSUPERVISED_LAUNCH`, default OFF; supervised launch markers); NEGOTIATE now advertises
+  `agent_supervised` (bundle + byte-identical backend copy; manifest re-pinned `2026-08-06.1`, covers
+  `agent_lifecycle.py`). **Backend (inert until scheduled):** `agent_health_probe.py` (signed-NEGOTIATE
+  readiness probe, OWN connect/read split, 8 states, cadence + consecutive-success recovery),
+  `agent_monitoring.py` (metric/alert computation), `agent_alert_sink.py` (Null/Logging sinks, named-owner
+  required, no live external send — RR-11), `agent_status_presenter.py` (customer-safe vs operator-safe).
+  **WinSW:** `winsw/GuvFXBetaAgent.supervised.xml` = TARGET supervised profile (Automatic+delayed, bounded-
+  backoff restart FLOOR, launch markers) — NOT applied; DARK install-only XML preserved. **Frontend:**
+  read-only `AgentStatusPanel` + `agent-status.ts` (unrouted). **Docs:** ADR-0013 addendum (supersede not
+  rewrite), unsupervised-listener runbook (12th), WS-J repo audit, WS-L deployment/rollback package. No DB
+  migration. `#12`/`#1`/`:8788` untouched. **STOP: all host/backend/service/firewall/live-validation actions
+  remain separately Sponsor-gated.**
+
 - **2026-08-05 — Validation Agent Production Hardening (design + docs + tests). Repo eng; NOT deployed. 🟢**
   Branch `docs/validation-agent-hardening` (base `main` `ba22df8`). Transition from forensics to operational
   engineering — DESIGN ONLY, no host/config/deploy/validation. New authoritative doc
