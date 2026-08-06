@@ -163,17 +163,11 @@ def _forbidden_roots(cfg: dict) -> tuple:
 
 def _config_source(cfg: dict) -> dict:
     """SECRET-SAFE provenance of the PATH-related validation config the RUNNER resolved: whether each value came
-    from the runner's process environment or a code default. Emits the source LABEL only — never the value, and
-    never the full environment (allow-list of path-config names). Lets an operator see that the scheduled-task
-    runner's effective config came from ``env`` vs ``default`` when its effective terminal dir differs from a
-    service-level/manual value (the discrepancy class that produced ``isolation_check_failed``)."""
-    names = {
-        "validation_terminal_dir": "BETA_AGENT_VALIDATION_TERMINAL_DIR",
-        "validation_root": "BETA_AGENT_VALIDATION_ROOT",
-        "validation_forbidden_roots": "BETA_AGENT_VALIDATION_FORBIDDEN_ROOTS",
-        "validation_precompiled_dir": "BETA_AGENT_VALIDATION_PRECOMPILED_DIR",
-    }
-    return {k: ("env" if os.environ.get(env) else "default") for k, env in names.items()}
+    from the process environment or a code default. Delegates to the SHARED
+    ``validation_diagnostics.config_source`` so the task-launched runner and the in-process handler emit IDENTICAL
+    provenance labels (one source of truth; schema drift is test-detectable). Emits the source LABEL only — never
+    the value, and never the full environment (a fixed allow-list of path-config names)."""
+    return diag.config_source(cfg, env=os.environ)
 
 
 def _default_win(cfg: dict):

@@ -686,3 +686,242 @@ class TestClassifyInitErrorIpc(SimpleTestCase):
         for code, text in [(-10004, "No IPC connection"), (-10004, ""), (None, "IPC timeout"),
                            (None, "no ipc connection"), (-10004, "network")]:
             self.assertNotEqual(vl.classify_init_error(code, text), "server_unavailable")
+
+
+# ── IN-PROCESS isolation-diagnostic capture (2026-08-06 in-process-capture packet) ──────────────────────────
+_SLOT_DIR = r"C:\GuvFX\beta\slots\1\terminal"          # a SLOT → the isolation contract must REJECT it
+
+
+def _recording_probe():
+    """A probe factory that records if it is ever constructed — proves no MT5 launch before an isolation fail."""
+    calls = []
+
+    def factory():
+        calls.append(1)
+        raise AssertionError("probe factory must NOT be built before the isolation check")
+    factory.calls = calls
+    return factory
+
+
+class InProcessIsolationHandlerTests(SimpleTestCase):
+    """The in-process ``LoginValidationHandler`` persistence hook, driven directly (no agent/Windows). Proves the
+    fail-closed decision is unchanged, the artefact is written exactly on the isolation-failure path, and a
+    persistence fault is fail-open."""
+
+    def _handler(self, persist, *, valid=False):
+        # valid=False → a relative dir → assert raises IsolationError; valid=True → isolation PASSES (so the
+        # persister must NOT fire on a later failure).
+        return vl.LoginValidationHandler(
+            open_envelope=lambda s, a: b"", bind_aad=lambda **k: b"",
+            mt5_probe_factory=_recording_probe(), path_exists=lambda p: bool(valid),
+            validation_dir=(r"C:\GuvFX\beta\validation\vt" if valid else "relative\\bad"),
+            persist_isolation_diagnostic=persist, clock=lambda: 5.0)
+
+    def test_persist_called_once_on_isolation_failure_result_unchanged(self):
+        calls = []
+        h = self._handler(lambda cid, rep, *, started, finished: calls.append((cid, rep, started, finished)))
+        out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="cid-x",
+                         nonce="n", payload={})
+        self.assertEqual(out["ok"], False)
+        self.assertEqual(out["reason_code"], "isolation_check_failed")
+        self.assertIsNone(out["is_demo"])
+        self.assertIn("_isolation", out)                          # operator ride-along (stripped by the core)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "cid-x")
+        self.assertEqual(calls[0][1]["result"], "fail")
+
+    def test_no_probe_built_before_isolation_failure(self):
+        # The probe factory raises if ever called; the isolation failure returns first → it must never be built.
+        h = self._handler(lambda *a, **k: None)
+        out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                         payload=_payload())
+        self.assertEqual(out["reason_code"], "isolation_check_failed")   # not could_not_verify → probe not reached
+
+    def test_no_persist_when_isolation_passes(self):
+        calls = []
+        h = self._handler(lambda *a, **k: calls.append(1), valid=True)
+        # isolation PASSES (path_exists True, absolute dir); a LATER failure (empty payload → invalid_login) must
+        # NOT trigger the isolation persister — the artefact is written ONLY on an isolation failure.
+        out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                         payload={"login": "", "server": ""})
+        self.assertEqual(out["reason_code"], "invalid_login")
+        self.assertEqual(calls, [])
+
+    def test_persist_failure_is_fail_open_and_logged(self):
+        def boom(cid, rep, *, started, finished):
+            raise IOError("disk full: C:\\GuvFX\\beta\\validation\\vt")     # note: contains a path
+        h = self._handler(boom)
+        with self.assertLogs("guvfx.beta.validate_login", level="WARNING") as cm:
+            out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="cid-9",
+                             nonce="n", payload={})
+        self.assertEqual(out["reason_code"], "isolation_check_failed")     # decision unchanged
+        joined = "\n".join(cm.output)
+        self.assertIn("diagnostic_capture_failed", joined)
+        self.assertIn("correlation=cid-9", joined)
+        self.assertIn("error_class=write_failed", joined)
+        self.assertNotIn("disk full", joined)                              # raw exception text never logged
+        self.assertNotIn("C:\\GuvFX", joined)                              # no host path in the operator event
+
+    def test_malformed_correlation_id_is_sanitised_in_log(self):
+        h = self._handler(lambda cid, rep, *, started, finished: (_ for _ in ()).throw(IOError("x")))
+        with self.assertLogs("guvfx.beta.validate_login", level="WARNING") as cm:
+            h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID,
+                       correlation_id="a\nb c/..\\d", nonce="n", payload={})
+        joined = "\n".join(cm.output)
+        self.assertIn("correlation=a_b_c_.._d", joined)                    # control chars / separators neutralised
+        self.assertNotIn("\n", joined.split("correlation=")[1].split(" ")[0])   # no raw newline in the id token
+
+
+class InProcessIsolationWiringTests(SimpleTestCase):
+    """End-to-end through ``agent._build_login_validator`` with a real diagnostics directory: the production
+    in-process path (``validation_task_name`` unset) writes exactly one correlation-keyed artefact."""
+
+    def _build(self, diag_dir, *, vdir=_SLOT_DIR, env=None, agent_meta=None):
+        import agent as agent_mod
+        cfg = {"validation_terminal_dir": vdir, "validation_root": r"C:\GuvFX\beta\slots\1",
+               "slots_root": r"C:\GuvFX\beta\slots", "golden_dir": r"C:\GuvFX\beta\golden",
+               "beta_root": r"C:\GuvFX\beta\accounts", "validation_forbidden_roots": (),
+               "login_timeout_ms": 30000, "validation_diagnostics_dir": diag_dir}
+        priv_b64 = _b64(_PRIV.private_bytes_raw())
+        with _set_env("BROKER_CRED_ENC_PRIVKEYS", json.dumps({"k1": priv_b64})):
+            for k, v in (env or {}).items():
+                os.environ[k] = v
+            try:
+                return agent_mod._build_login_validator(cfg, None, agent_meta=agent_meta)
+            finally:
+                for k in (env or {}):
+                    os.environ.pop(k, None)
+
+    def _run(self, diag_dir, *, corr="validate-acct-13-abc", **kw):
+        v = self._build(diag_dir, **kw)
+        self.assertIsInstance(v, vl.LoginValidationHandler)         # in-process selected (no task_name)
+        self.assertNotIsInstance(v, vl.TaskLaunchLoginValidator)
+        out = v.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id=corr, nonce="n",
+                         payload=_payload(corr=corr, nonce="n"))
+        files = sorted(f for f in os.listdir(diag_dir) if f.endswith(".diag.json"))
+        return out, files
+
+    def test_single_artefact_full_contents(self):
+        import tempfile
+        import time
+        d = tempfile.mkdtemp()
+        before = time.time()
+        out, files = self._run(d, corr="validate-acct-13-63cbcd3ea4da",
+                               env={"BETA_AGENT_VALIDATION_ROOT": r"C:\x",
+                                    "BETA_AGENT_SERVICE_IDENTITY": "GuvFXBetaAgent"},
+                               agent_meta={"supervised": True, "manifest_version": "2026-08-06.3"})
+        after = time.time()
+        self.assertEqual(out["reason_code"], "isolation_check_failed")
+        self.assertEqual(files, ["validate-acct-13-63cbcd3ea4da.diag.json"])   # exactly one, filename == corr
+        ev = json.load(open(os.path.join(d, files[0])))
+        # provenance / mode / process
+        self.assertEqual(ev["correlation_id"], "validate-acct-13-63cbcd3ea4da")  # payload corr == filename corr
+        self.assertEqual(ev["reason_code"], "isolation_check_failed")
+        self.assertEqual(ev["execution_mode"], "in_process")
+        self.assertEqual(ev["process_id"], os.getpid())            # the CURRENT (agent) process
+        self.assertIsNone(ev["process_session_id"])                # win32-free → explicitly null
+        self.assertEqual(ev["service_identity"], "GuvFXBetaAgent")
+        self.assertIs(ev["supervised"], True)
+        self.assertEqual(ev["manifest_version"], "2026-08-06.3")
+        self.assertEqual(ev["stage_reached"], "AGENT_RECEIVED")
+        self.assertEqual(ev["first_failing_stage"], "ISOLATION")
+        self.assertTrue(ev.get("runner_executable"))               # current executable recorded
+        # request-scoped timestamp
+        self.assertGreaterEqual(ev["_written_utc"], before - 1)
+        self.assertLessEqual(ev["_written_utc"], after + 1)
+        # isolation localisation (exact failing rule)
+        iso = ev["isolation"]
+        self.assertEqual(iso["result"], "fail")
+        self.assertEqual(iso["sub_reason"], "validation_terminal_not_isolated")
+        self.assertEqual(iso["validation_dir"], _SLOT_DIR)
+        self.assertIn("validation_dir_canonical", iso)
+        self.assertIn(r"C:\GuvFX\beta\slots", iso["forbidden_roots"])   # combined forbidden roots as used
+        self.assertTrue(iso["matched_forbidden_root"])                 # a forbidden root matched
+        self.assertIn("terminal_exists", iso)
+        self.assertEqual(set(iso["checks"]),
+                         {"absolute", "no_traversal", "beneath_root", "disjoint", "terminal_present"})
+        self.assertIs(iso["checks"]["disjoint"], False)                # the exact rule that failed
+        # config-source labels (env vs default), captured at construction
+        self.assertEqual(ev["config_source"]["validation_root"], "env")
+        self.assertEqual(ev["config_source"]["validation_terminal_dir"], "default")
+        self.assertEqual(set(ev["config_source"]),
+                         {"validation_terminal_dir", "validation_root", "validation_forbidden_roots",
+                          "validation_precompiled_dir", "slots_root", "golden_dir", "beta_root"})
+
+    def test_customer_result_is_path_free_and_contract_shaped(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        out, files = self._run(d)
+        customer = {k: v for k, v in out.items() if k != "_isolation"}   # the core forwards only this
+        self.assertEqual(customer, {"ok": False, "reason_code": "isolation_check_failed", "is_demo": None})
+        self.assertNotIn("GuvFX", json.dumps(customer))                 # no host path in the customer body
+        # the artefact (operator-only) DOES carry the path — that is the whole point.
+        self.assertIn("GuvFX", open(os.path.join(d, files[0])).read())
+
+    def test_concurrent_correlations_do_not_cross(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        self._run(d, corr="corr-A")
+        self._run(d, corr="corr-B")
+        files = sorted(f for f in os.listdir(d) if f.endswith(".diag.json"))
+        self.assertEqual(files, ["corr-A.diag.json", "corr-B.diag.json"])
+        a = json.load(open(os.path.join(d, "corr-A.diag.json")))
+        b = json.load(open(os.path.join(d, "corr-B.diag.json")))
+        self.assertEqual(a["correlation_id"], "corr-A")
+        self.assertEqual(b["correlation_id"], "corr-B")
+
+    def test_no_diag_dir_disables_capture_without_error(self):
+        import agent as agent_mod
+        cfg = {"validation_terminal_dir": _SLOT_DIR, "validation_root": r"C:\GuvFX\beta\slots\1",
+               "slots_root": r"C:\GuvFX\beta\slots", "golden_dir": r"C:\GuvFX\beta\golden",
+               "beta_root": r"C:\GuvFX\beta\accounts", "validation_forbidden_roots": (),
+               "login_timeout_ms": 30000}                            # NO validation_diagnostics_dir
+        priv_b64 = _b64(_PRIV.private_bytes_raw())
+        with _set_env("BROKER_CRED_ENC_PRIVKEYS", json.dumps({"k1": priv_b64})):
+            v = agent_mod._build_login_validator(cfg, None)
+        out = v.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                         payload=_payload(corr="c", nonce="n"))
+        self.assertEqual(out["reason_code"], "isolation_check_failed")   # still fail-closed, just no artefact
+
+    def test_runner_build_does_not_self_write_no_double_artefact(self):
+        # build_inprocess_handler WITHOUT enable_diagnostics (the runner's call) must NOT wire a persister — the
+        # runner persists its own artefact via run_once; a self-write here would double-write.
+        import tempfile
+        d = tempfile.mkdtemp()
+        cfg = {"validation_terminal_dir": _SLOT_DIR, "validation_root": r"C:\GuvFX\beta\slots\1",
+               "slots_root": r"C:\GuvFX\beta\slots", "golden_dir": r"C:\GuvFX\beta\golden",
+               "validation_forbidden_roots": (), "login_timeout_ms": 30000,
+               "validation_diagnostics_dir": d}
+        priv_b64 = _b64(_PRIV.private_bytes_raw())
+        with _set_env("BROKER_CRED_ENC_PRIVKEYS", json.dumps({"k1": priv_b64})):
+            h = vl.build_inprocess_handler(cfg)                      # default enable_diagnostics=False (runner)
+        self.assertIsNone(h._persist_isolation_diagnostic)
+        h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                   payload=_payload(corr="c", nonce="n"))
+        self.assertEqual([f for f in os.listdir(d) if f.endswith(".diag.json")], [])   # no self-write
+
+    def test_production_regression_task_name_unset_end_to_end(self):
+        # The EXACT live configuration: validation_task_name unset → in-process handler → isolation failure →
+        # one customer-safe response + one artefact, no task launch, no MT5.
+        import tempfile
+        import agent as agent_mod
+        d = tempfile.mkdtemp()
+        cfg = {"validation_terminal_dir": _SLOT_DIR, "validation_root": r"C:\GuvFX\beta\slots\1",
+               "slots_root": r"C:\GuvFX\beta\slots", "golden_dir": r"C:\GuvFX\beta\golden",
+               "beta_root": r"C:\GuvFX\beta\accounts", "validation_forbidden_roots": (),
+               "login_timeout_ms": 30000, "validation_diagnostics_dir": d,
+               "validation_task_name": "", "validation_handoff_dir": ""}   # task-launch UNSET → in-process
+        priv_b64 = _b64(_PRIV.private_bytes_raw())
+        with _set_env("BROKER_CRED_ENC_PRIVKEYS", json.dumps({"k1": priv_b64})):
+            v = agent_mod._build_login_validator(cfg, None, agent_meta={"supervised": True,
+                                                                        "manifest_version": "2026-08-06.3"})
+        self.assertIsInstance(v, vl.LoginValidationHandler)
+        self.assertNotIsInstance(v, vl.TaskLaunchLoginValidator)         # NOT task-launch
+        out = v.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="prod-1", nonce="n",
+                         payload=_payload(corr="prod-1", nonce="n"))
+        self.assertEqual({k: v for k, v in out.items() if k != "_isolation"},
+                         {"ok": False, "reason_code": "isolation_check_failed", "is_demo": None})
+        files = [f for f in os.listdir(d) if f.endswith(".diag.json")]
+        self.assertEqual(files, ["prod-1.diag.json"])
+        ev = json.load(open(os.path.join(d, files[0])))
+        self.assertEqual(ev["execution_mode"], "in_process")

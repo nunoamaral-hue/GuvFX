@@ -168,3 +168,39 @@ the agent emits `validation_ipc_unavailable` for local IPC failures, which the t
 (host/agent region, broker not reached). When triaging a **pre-2026-08-05** attempt whose reason is
 `server_unavailable`, cross-check the agent diagnostic artefact's `broker_tcp_observed` before believing the
 "broker reached" rail.
+
+## In-process isolation diagnostic capture (2026-08-06)
+
+There are exactly **two** validation execution modes, selected in `agent._build_login_validator`:
+
+- **task-launched runner** — used when `BETA_AGENT_VALIDATION_TASK_NAME` is set; the runner
+  (`validation_runner.run_once`) persists the per-correlation `<id>.diag.json` artefact.
+- **in-process handler** — used when `validation_task_name` is **unset**; `LoginValidationHandler.validate`
+  runs directly inside the supervised agent service process.
+
+**Production currently runs the in-process mode** (`validation_task_name` unset). The earlier runner-only
+isolation instrumentation therefore produced **no artefact** for a browser validation that failed
+`isolation_check_failed`, because the runner never executed — see the deployment finding of 2026-08-06.
+
+**What changed (in-process-capture packet):** the in-process handler now persists the **same** structured
+isolation artefact on an `isolation_check_failed`, using the **one shared** evidence schema
+(`validation_diagnostics.write_isolation_diagnostic` → `build_evidence`/`write_evidence`, same nested
+`isolation` allow-list). The artefact carries `execution_mode: "in_process"`, the agent `process_id`
+(session id is `null` — the agent is win32-free), `stage_reached: "AGENT_RECEIVED"`,
+`first_failing_stage: "ISOLATION"`, the full `isolation` report (effective + canonical paths, the combined
+forbidden roots, the matched root, and the five rule booleans), and the `config_source` provenance (env vs
+default) for every path input. `config_source` is **shared** by both modes (one source of truth), so schema
+drift is test-detectable.
+
+**Invariants (unchanged):** this is **instrumentation only** — it does not fix or weaken the isolation
+contract, does not change execution-model selection, and does not change the customer reason code
+(`isolation_check_failed`), wording, or retryability. Diagnostic evidence remains **host-side** only; the
+customer response stays `{ok, reason_code, is_demo}` and carries no host path. A diagnostic-write fault is
+**fail-open**: the fail-closed result is unchanged and a secret-safe `diagnostic_capture_failed` operator log
+line is emitted (correlation id + component + stage + fixed error class — never a path or exception text).
+The staff timeline may note that host-side diagnostic evidence exists for the correlation id; the host path
+is **not** forwarded to the backend in this change.
+
+**Next authorised browser test is evidence-gathering only** — a single `Test connection` on the disposable
+demo account, after this instrumentation is deployed, will write one `<id>.diag.json` recording the exact
+failing isolation rule. It does not remediate the isolation configuration.

@@ -22,11 +22,29 @@ retryable ``could_not_verify`` — the probe never falsely blames the customer's
 """
 from __future__ import annotations
 
+import logging
 import os
+import sys
 import threading
 import time
 
 import validation_handoff as handoff
+
+_log = logging.getLogger("guvfx.beta.validate_login")
+
+
+def _safe_corr(correlation_id) -> str:
+    """Bounded, character-safe correlation id for a log line — never a path/secret, and a malformed id can never
+    inject control characters into the operator log."""
+    s = str(correlation_id or "unknown")
+    return "".join(c if (c.isalnum() or c in "._-") else "_" for c in s)[:120]
+
+
+# The VALIDATE_LOGIN customer reason for an isolated-terminal contract failure. Named (not an inline literal) so
+# it is defined ONCE and referenced by both the fail-closed result and the diagnostic write; it is a
+# VALIDATE-taxonomy code (classified by the backend broker-login taxonomy), NOT an agent-lifecycle op reason —
+# exactly like its sibling ``_denied`` reasons (invalid_login, credential_unsealable, ...).
+ISOLATION_CHECK_FAILED = "isolation_check_failed"
 
 # ── isolated-terminal contract ─────────────────────────────────────────────────────────────────────────────
 #: The ONE dedicated root the validation terminal must live beneath. A fixed namespace, never request-derived.
@@ -275,7 +293,8 @@ class LoginValidationHandler:
 
     def __init__(self, *, open_envelope, bind_aad, mt5_probe_factory, path_exists,
                  validation_dir, validation_root=DEFAULT_VALIDATION_ROOT,
-                 forbidden_roots=DEFAULT_FORBIDDEN_ROOTS, lock=None, login_timeout_ms=30000):
+                 forbidden_roots=DEFAULT_FORBIDDEN_ROOTS, lock=None, login_timeout_ms=30000,
+                 persist_isolation_diagnostic=None, clock=None):
         self._open_envelope = open_envelope
         self._bind_aad = bind_aad
         self._probe_factory = mt5_probe_factory
@@ -285,6 +304,14 @@ class LoginValidationHandler:
         self._forbidden_roots = tuple(forbidden_roots)
         self._lock = lock or threading.Lock()
         self._login_timeout_ms = int(login_timeout_ms)
+        # OPTIONAL in-process isolation-diagnostic persistence (2026-08-06 in-process-capture packet). Set ONLY
+        # when this handler runs on the in-process (agent) path — the task-launched runner persists its OWN
+        # artefact via ``validation_runner.run_once``, so it leaves this None to avoid a double write. The
+        # callable ``persist(correlation_id, isolation_report, *, started, finished)`` is fail-open: it MUST NOT
+        # change the fail-closed decision and any fault degrades to ``diagnostic_capture_failed`` (never raises
+        # out of ``validate``).
+        self._persist_isolation_diagnostic = persist_isolation_diagnostic
+        self._clock = clock or time.time
 
     def _denied(self, reason_code, *, isolation=None):
         out = {"ok": False, "reason_code": reason_code, "is_demo": None}
@@ -296,6 +323,7 @@ class LoginValidationHandler:
         return out
 
     def validate(self, *, operation, runtime_uuid, correlation_id, nonce, payload) -> dict:
+        started = self._clock()
         # 1) isolated-terminal contract FIRST — never attempt a probe against an unproven path.
         try:
             exe_path = assert_isolated_validation_terminal(
@@ -307,7 +335,18 @@ class LoginValidationHandler:
             report = isolation_report(
                 self._validation_dir, validation_root=self._validation_root,
                 forbidden_roots=self._forbidden_roots, path_exists=self._path_exists)
-            return self._denied("isolation_check_failed", isolation=report)
+            # In-process capture: persist the artefact BEFORE returning. FAIL-OPEN — a persistence fault degrades
+            # to a secret-safe ``diagnostic_capture_failed`` log line and NEVER alters the fail-closed result, the
+            # reason code, or customer messaging. Task-launched runner leaves this None (it persists its own).
+            if self._persist_isolation_diagnostic is not None:
+                try:
+                    self._persist_isolation_diagnostic(
+                        correlation_id, report, started=started, finished=self._clock())
+                except Exception:            # noqa: BLE001 — capture must never break the probe or leak detail
+                    _log.warning("diagnostic_capture_failed correlation=%s component=in_process_isolation "
+                                 "stage=ISOLATION error_class=write_failed",
+                                 _safe_corr(correlation_id))
+            return self._denied(ISOLATION_CHECK_FAILED, isolation=report)
 
         # 2) login / server come from the payload, which the outer signature already bound via payload_digest.
         login = str((payload or {}).get("login") or "").strip()
@@ -406,11 +445,45 @@ class LoginValidationHandler:
                 pass
 
 
-def build_inprocess_handler(cfg: dict):
-    """Assemble the in-process ``LoginValidationHandler`` (envelope-open + isolated-terminal + MT5 probe).
-    Used BY THE TASK-LAUNCHED RUNNER, which executes in a GUI-capable window station. Returns ``None`` when
-    the validation terminal or the envelope private key is not configured (fail closed at build). Kept here
-    (not in agent.py) so the runner reuses the exact, integrity-pinned probe assembly."""
+def _build_isolation_persister(cfg: dict, agent_meta):
+    """Build the in-process isolation-diagnostic persister closure (or ``None`` when no diagnostics directory is
+    configured). Captures the config-source PROVENANCE at construction time (not reconstructed after the request)
+    and delegates persistence to the SHARED ``validation_diagnostics.write_isolation_diagnostic`` so the
+    in-process and runner artefacts use one schema. The closure raises on I/O failure; ``validate`` catches it
+    and degrades to ``diagnostic_capture_failed`` (fail-open)."""
+    import validation_diagnostics as diag                       # noqa: PLC0415 — host-side import (pure stdlib)
+    diag_dir = cfg.get("validation_diagnostics_dir")
+    if not diag_dir:
+        return None
+    meta = agent_meta or {}
+    cfg_source = diag.config_source(cfg, env=os.environ)         # provenance captured at construction (WS-D)
+    service_identity = os.environ.get("BETA_AGENT_SERVICE_IDENTITY") or meta.get("service_identity")
+    supervised = meta.get("supervised")
+    manifest_version = meta.get("manifest_version")
+
+    def _persist(correlation_id, isolation_report, *, started, finished):
+        diag.write_isolation_diagnostic(
+            diag_dir, correlation_id=correlation_id, reason_code=ISOLATION_CHECK_FAILED,
+            isolation=isolation_report, config_source=cfg_source, execution_mode="in_process",
+            process_meta={"process_id": os.getpid(), "process_session_id": None,
+                          "executable": sys.executable, "service_identity": service_identity,
+                          "supervised": supervised, "manifest_version": manifest_version},
+            stage_reached="AGENT_RECEIVED", first_failing_stage="ISOLATION",
+            started=started, finished=finished, now=finished)
+
+    return _persist
+
+
+def build_inprocess_handler(cfg: dict, *, agent_meta=None, enable_diagnostics=False):
+    """Assemble the ``LoginValidationHandler`` (envelope-open + isolated-terminal + MT5 probe). Used BOTH by the
+    task-launched runner (GUI-capable window station) AND, when ``validation_task_name`` is unset, DIRECTLY by
+    the agent as the in-process validator. Returns ``None`` when the validation terminal or the envelope private
+    key is not configured (fail closed at build). Kept here (not in agent.py) so both callers reuse the exact,
+    integrity-pinned probe assembly.
+
+    ``enable_diagnostics`` wires the in-process isolation-diagnostic persister and MUST be set ONLY by the agent
+    in-process path — the runner leaves it False and persists its OWN artefact via ``validation_runner.run_once``,
+    so exactly one artefact is written per attempt in either mode (no double write)."""
     validation_dir = cfg.get("validation_terminal_dir")
     if not validation_dir:
         return None
@@ -422,6 +495,7 @@ def build_inprocess_handler(cfg: dict):
         + (cfg.get("slots_root", ""), cfg.get("golden_dir", ""), cfg.get("beta_root", ""))
         + tuple(cfg.get("validation_forbidden_roots", ()))))
     forbidden = tuple(r for r in forbidden if r)
+    persist = _build_isolation_persister(cfg, agent_meta) if enable_diagnostics else None
     return LoginValidationHandler(
         open_envelope=lambda sealed, aad: cred_env.open_envelope(sealed, aad=aad),
         bind_aad=cred_env.bind_aad,
@@ -430,7 +504,8 @@ def build_inprocess_handler(cfg: dict):
         validation_dir=validation_dir,
         validation_root=cfg.get("validation_root") or DEFAULT_VALIDATION_ROOT,
         forbidden_roots=forbidden,
-        login_timeout_ms=int(cfg.get("login_timeout_ms", 30000)))
+        login_timeout_ms=int(cfg.get("login_timeout_ms", 30000)),
+        persist_isolation_diagnostic=persist)
 
 
 class TaskLaunchLoginValidator:

@@ -588,5 +588,84 @@ class RunnerIsolationEvidenceTests(unittest.TestCase):
             self.assertEqual(ev["stage_reached"], "CLASSIFIED")
 
 
+class SharedIsolationPersistenceTests(unittest.TestCase):
+    """The SHARED persistence primitives (2026-08-06 in-process-capture packet): ``config_source`` and
+    ``write_isolation_diagnostic`` are used by BOTH execution modes so there is one evidence schema and drift is
+    test-detectable."""
+
+    def test_config_source_labels_env_vs_default_seven_keys(self):
+        keys = {"validation_terminal_dir", "validation_root", "validation_forbidden_roots",
+                "validation_precompiled_dir", "slots_root", "golden_dir", "beta_root"}
+        d = diag.config_source({}, env={})
+        self.assertEqual(set(d), keys)
+        self.assertTrue(all(v == "default" for v in d.values()))
+        e = diag.config_source({}, env={"BETA_AGENT_SLOTS_ROOT": "x", "BETA_AGENT_VALIDATION_ROOT": "y"})
+        self.assertEqual(e["slots_root"], "env")
+        self.assertEqual(e["validation_root"], "env")
+        self.assertEqual(e["golden_dir"], "default")
+
+    def test_runner_config_source_delegates_to_shared(self):
+        # the runner's _config_source is now the SAME function (one source of truth) — identical output.
+        env_backup = os.environ.get("BETA_AGENT_GOLDEN_DIR")
+        os.environ["BETA_AGENT_GOLDEN_DIR"] = r"C:\g"
+        try:
+            self.assertEqual(runner._config_source({}), diag.config_source({}, env=os.environ))
+            self.assertEqual(runner._config_source({})["golden_dir"], "env")
+        finally:
+            if env_backup is None:
+                os.environ.pop("BETA_AGENT_GOLDEN_DIR", None)
+            else:
+                os.environ["BETA_AGENT_GOLDEN_DIR"] = env_backup
+
+    def _iso(self):
+        return {"result": "fail", "sub_reason": "validation_terminal_not_isolated",
+                "matched_forbidden_root": r"C:\GuvFX\beta", "EVIL": "leak",
+                "checks": {"disjoint": False, "absolute": True, "SNEAK": 1}}
+
+    def test_write_isolation_diagnostic_schema_and_nested_allowlist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = diag.write_isolation_diagnostic(
+                tmp, correlation_id="corr-Z", reason_code="isolation_check_failed", isolation=self._iso(),
+                config_source=diag.config_source({}, env={}), execution_mode="in_process",
+                process_meta={"process_id": 99, "process_session_id": None, "executable": "py",
+                              "service_identity": "svc", "supervised": True, "manifest_version": "mv"},
+                stage_reached="AGENT_RECEIVED", first_failing_stage="ISOLATION",
+                started=10.0, finished=10.5, now=10.5)
+            self.assertTrue(p.endswith("corr-Z.diag.json"))
+            ev = json.load(open(p))
+            self.assertEqual(ev["execution_mode"], "in_process")
+            self.assertEqual(ev["process_id"], 99)
+            self.assertEqual(ev["stage_reached"], "AGENT_RECEIVED")
+            self.assertEqual(ev["first_failing_stage"], "ISOLATION")
+            self.assertAlmostEqual(ev["elapsed_ms"], 500.0)
+            # the SAME nested isolation allow-list applies — unknown nested keys dropped in BOTH modes
+            self.assertNotIn("EVIL", ev["isolation"])
+            self.assertNotIn("SNEAK", ev["isolation"]["checks"])
+            self.assertEqual(ev["isolation"]["sub_reason"], "validation_terminal_not_isolated")
+
+    def test_write_isolation_diagnostic_carries_no_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            iso = dict(self._iso()); iso["validation_dir"] = "password=hunter2"     # smuggled secret-looking value
+            p = diag.write_isolation_diagnostic(
+                tmp, correlation_id="c", reason_code="isolation_check_failed", isolation=iso,
+                config_source={}, execution_mode="in_process", process_meta={},
+                stage_reached="AGENT_RECEIVED", first_failing_stage="ISOLATION", finished=1.0, now=1.0)
+            self.assertNotIn("hunter2", open(p).read())              # scrub redacts secret-looking values
+
+    def test_failed_write_leaves_no_final_and_cleans_tmp(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(diag.os, "replace", side_effect=OSError("boom")):
+                with self.assertRaises(OSError):
+                    diag.write_isolation_diagnostic(
+                        tmp, correlation_id="c-fail", reason_code="isolation_check_failed",
+                        isolation=self._iso(), config_source={}, execution_mode="in_process",
+                        process_meta={}, stage_reached="AGENT_RECEIVED", first_failing_stage="ISOLATION",
+                        finished=1.0, now=1.0)
+            names = os.listdir(tmp)
+            self.assertNotIn("c-fail.diag.json", names)              # no partial FINAL artefact
+            self.assertEqual([n for n in names if n.endswith(".tmp")], [])   # tmp cleaned up
+
+
 if __name__ == "__main__":
     unittest.main()
