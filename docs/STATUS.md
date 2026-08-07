@@ -14,6 +14,19 @@
 
 ## Execution workstream log
 
+- **2026-08-07 — Programme Architecture Reset (Sponsor-APPROVED): Hosted Workspace becomes the primary architecture. ADR-0034 draft + roadmap v2. Docs only; NOT armed. 🟢**
+  Product pivots from *"a backend that validates broker credentials"* to *"a hosted persistent MT5 workspace
+  platform"*; the **Workspace** is the primary entity, the broker account a child resource. New source of
+  truth **`docs/ADRs/0034-hosted-workspace-operating-model.md`** (Proposed): domain model, canonical 9-state
+  Workspace state machine (every subsystem consumes it), Hosted Workspace Agent (evolution of the Validation
+  Agent — validation = one capability), mandatory `workspace.*` telemetry, security boundaries, temporary-
+  validation retirement plan. Roadmap **v2** (`HOSTED_WORKSPACE_ROADMAP.md`) re-sequences: WS3 guarded-attach
+  first (Inc4), then state-machine + telemetry foundations, then Workspace Manager, **RemoteApp EARLY**
+  (parallel), Provider-B execution, MVP = M6 (dedicated-host-per-user, demo, incl. RemoteApp). Multi-user
+  isolation + licensing-cost optimisation + advanced recovery → V2. Reset tension surfaced: RemoteApp-in-MVP
+  pulls RDS/SPLA licensing into the MVP. On branch `docs/adr0033-hosted-workspace-roadmap` (PR #304). No
+  refactor; bounded DARK increments; Customer Zero + execution gates unchanged.
+
 - **2026-08-07 — Hosted Persistent MT5 Workspace: MT5 IPC investigation CLOSED (A–I) + implementation roadmap (proposed). Docs only; NOT armed. 🟢**
   Experiments A–I (host-executed, disposable demo, zero blast radius, full cleanup) technically validated the
   persistent attach-only (never-login, never-own-credentials) model: attach to a user-logged-in

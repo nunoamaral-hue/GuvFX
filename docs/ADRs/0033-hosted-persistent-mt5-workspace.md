@@ -134,8 +134,11 @@ taken in this increment.
 
 ## Transition Amendment (PROPOSED — 2026-08-07) — persistent workspace as the readiness authority
 
-Status: **Proposed. Pending Sponsor (PM) acceptance.** No behaviour change, no flags armed. Companion:
-[Hosted Workspace Implementation Roadmap](../architecture/HOSTED_WORKSPACE_ROADMAP.md).
+Status: **Proposed. Pending Sponsor (PM) acceptance.** No behaviour change, no flags armed. Companions:
+[Hosted Workspace Roadmap](../architecture/HOSTED_WORKSPACE_ROADMAP.md) and — after the 2026-08-07 Programme
+Architecture Reset — **[ADR-0034 Hosted Workspace Operating Model](0034-hosted-workspace-operating-model.md)**,
+which becomes the architectural source of truth for the Hosted Workspace platform (this ADR-0033 remains the
+DARK foundation + eligibility-transition decision it builds on).
 
 **Context.** The MT5 IPC investigation is closed. Experiments A–I technically validated the persistent,
 attach-only (never-login, never-own-credentials) workspace: attach to a user-logged-in broker-connected

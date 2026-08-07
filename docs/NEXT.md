@@ -1,19 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Hosted Persistent MT5 Workspace — investigation CLOSED (A–I); roadmap proposed (2026-08-07)
-MT5 IPC investigation is **closed**: Experiments A–I technically validated the persistent attach-only
-(never-login, never-own-credentials) workspace (attach same-+cross-session, survives RDP disconnect, requires
-connection, `initialize(path=)` dual-mode ⟹ mandatory never-launch guarded-attach, `order_check` retcode 0 +
-full lifecycle observed via attach; zero blast radius). Programme pivots PoC → implementation. Roadmap on
-branch `docs/adr0033-hosted-workspace-roadmap` (base `main` `c83e041`, docs-only/DARK):
-`docs/architecture/HOSTED_WORKSPACE_ROADMAP.md` + ADR-0033 **Transition Amendment (PROPOSED)** — 6 workstreams,
-dependency graph, M1–M7 (acceptance + Green/Amber/Red gates), temporary-validation obsolescence trigger,
-reuse/retire inventory, **MVP = M6** (single-tenant dedicated-host-per-user, demo-only, attach-only).
-**Bounded next action:** Sponsor approves the roadmap → then begin **M1 WS3 Guarded-Attach primitive**
-(never-launch, assert-connected, additive/DARK, mutation-tested) as the first engineering increment, after
-**PR #303** (Inc3 CLOSE/MODIFY identity gate) merges. Hard blockers carried forward: per-user NTFS-ACL
-(TX-1 applies none), RDS/SPLA licensing (Red/Sponsor), atomic `last_observed_at` writer. No host mutation, no
-execution enablement, nothing armed until approval.
+## ▶ Hosted Workspace Platform — Programme Architecture Reset APPROVED (2026-08-07); ADR-0034 + roadmap v2 proposed
+MT5 IPC investigation **closed** (Experiments A–I). Sponsor approved the pivot: product is now *"a hosted
+persistent MT5 workspace platform"* — the **Workspace** is the primary entity, the broker account a child
+resource. Planning on branch `docs/adr0033-hosted-workspace-roadmap` (PR #304, docs-only/DARK): new
+architectural source of truth **`docs/ADRs/0034-hosted-workspace-operating-model.md`** (domain model,
+canonical 9-state Workspace state machine, Hosted Workspace Agent, mandatory `workspace.*` telemetry, security
+boundaries, temporary-validation retirement) + roadmap **v2** (`HOSTED_WORKSPACE_ROADMAP.md`): WS3 guarded-
+attach first, then state-machine+telemetry foundations, Workspace Manager, **RemoteApp EARLY** (parallel),
+Provider-B execution; **MVP = M6** (dedicated-host-per-user, demo, incl. RemoteApp). Multi-user isolation +
+licensing-cost optimisation + advanced recovery → **V2**. **Bounded next action:** Sponsor approves ADR-0034 +
+roadmap v2 → then begin **Increment 4 = M1 WS3 Guarded-Attach primitive** (never-launch, assert-connected,
+additive/DARK, mutation-tested), after **PR #303** merges. Reset tension: RemoteApp-in-MVP pulls RDS/SPLA
+licensing into the MVP. Hard blockers carried: per-user NTFS-ACL (TX-1 applies none; V2), atomic
+`last_observed_at` writer. No refactor; nothing armed until approval.
 
 ## ▶ Supervised installer — engineering-complete (2026-08-06); NOT deployed; awaiting Sponsor gate
 Branch `feat/supervised-installer` (base `main` `be7f215`). Resolves the 2026-08-06 host-deploy blocker:
