@@ -332,6 +332,69 @@ def verify_execution_binding(mt5, payload):
         return False, "binding_error_%s" % type(exc).__name__, {}
 
 
+# ── ADR-0033 Increment 3 — IDENTITY gate for account-mutating operations (close / modify) ──────────
+# Opening orders are protected by evaluate_binding/verify_execution_binding (which also enforce demo/live
+# classification + trade_allowed). CLOSE and MODIFY are account-mutating too: the position ticket alone
+# does NOT authorise the mutation — the terminal's ACTIVE account must be EXACTLY the intended
+# (login, server) before the mutation lands, or a terminal that drifted to a different account could have
+# the WRONG account's position closed/modified. This gate deliberately does NOT require trade_allowed (a
+# risk-reducing close/modify must not be blocked by a transient trading halt — packet E2 "where
+# appropriate") and does NOT re-check demo/live classification (close/modify are demo-guarded by callers).
+# The pin is MANDATORY on the persistent-workspace path (payload require_identity_pin, or the terminal-level
+# MT5_REQUIRE_IDENTITY_PIN); for legacy it matches the opening-order behaviour (process-env pins, enforced
+# only when set).
+def evaluate_mutation_identity(acc, term, expected):
+    """Pure, fail-closed IDENTITY decision for a trade mutation. Returns (ok, reason). ok is True ONLY
+    when the terminal is connected, the account is present, and the active (login, server) matches every
+    pin that is SET. A None pin is not enforced here — verify_mutation_identity decides mandatory-ness."""
+    if term is None:
+        return False, "terminal_info_unavailable"
+    if not term.get("connected"):
+        return False, "terminal_not_connected"
+    if acc is None:
+        return False, "account_info_unavailable"
+    exp_login = expected.get("expected_login")
+    if exp_login and str(acc.get("login")) != str(exp_login):
+        return False, "account_login_mismatch"
+    exp_server = expected.get("expected_server")
+    if exp_server and str(acc.get("server")) != str(exp_server):
+        return False, "broker_server_mismatch"
+    return True, "ok"
+
+
+def verify_mutation_identity(mt5, identity):
+    """Live-read IDENTITY gate for close/modify. ``identity`` (from the request body / job-bound account)
+    may carry require_identity_pin + expected_login + expected_server. When the pin is required (the job
+    declares it OR MT5_REQUIRE_IDENTITY_PIN is set on this bridge) the expected (login, server) MUST come
+    from ``identity`` (never env) and both are mandatory (fail-closed). Otherwise legacy process-env pins
+    are used (enforced only when set). Returns (ok, reason, details) with the login redacted; any read
+    error fails closed."""
+    try:
+        acc = _acc_snapshot(mt5.account_info())
+        term = _term_snapshot(mt5.terminal_info())
+        idobj = identity or {}
+        if idobj.get("require_identity_pin") or _require_identity_pin():
+            exp_login = str(idobj.get("expected_login") or "").strip()
+            exp_server = str(idobj.get("expected_server") or "").strip()
+            if not exp_login or not exp_server:
+                return False, "identity_pin_required", {}
+        else:
+            exp_login = (os.getenv("MT5_EXPECTED_LOGIN", "").strip() or None)
+            exp_server = (os.getenv("MT5_EXPECTED_SERVER", "").strip() or None)
+        ok, reason = evaluate_mutation_identity(
+            acc, term, {"expected_login": exp_login, "expected_server": exp_server})
+        details = {}
+        if acc is not None:
+            login = acc.get("login")
+            details = {
+                "account_suffix": ("****" + str(login)[-4:]) if login is not None else None,
+                "server": acc.get("server"),
+            }
+        return ok, reason, details
+    except Exception as exc:
+        return False, "mutation_identity_error_%s" % type(exc).__name__, {}
+
+
 # --- Open-position idempotency guard (Phase 2, Control 4) ------------------------------------------
 # A re-delivered / retried PLACE_ORDER (worker retry, job redelivery, agent restart, backend timeout)
 # must NOT open a duplicate position. The order comment (e.g. "WAY{plan}L{leg}") is the intent's
@@ -1503,8 +1566,10 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
         mt5.shutdown()
 
 
-def close_position(ticket: int) -> Dict[str, Any]:
-    """Close an open position by ticket. Demo accounts only."""
+def close_position(ticket: int, identity: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Close an open position by ticket. Demo accounts only. ADR-0033 Inc3: ``identity`` (from the
+    request body / job-bound account) drives the pre-send IDENTITY gate so a drifted terminal cannot
+    close the WRONG account's position; legacy callers pass None ⇒ process-env pins."""
     try:
         import MetaTrader5 as mt5
     except ImportError:
@@ -1573,6 +1638,13 @@ def close_position(ticket: int) -> Dict[str, Any]:
                 "type_filling": _filling_for(pos.symbol),
             }
 
+            # ADR-0033 Inc3 — IDENTITY gate immediately before the close order_send (TOCTOU-narrowed): the
+            # ticket alone is not authorisation; the terminal's ACTIVE account must be the intended one.
+            _idok, _idreason, _iddetails = verify_mutation_identity(mt5, identity)
+            if not _idok:
+                logger.error(f"[close] ticket={ticket} IDENTITY REJECTED: {_idreason} {_iddetails}")
+                return {"ok": False, "error": "identity_rejected", "reason": _idreason, **_iddetails, "ticket": ticket}
+
             result = mt5.order_send(request)
             if result is None:
                 # lost ACK — the close MAY have landed; re-check the position next iteration
@@ -1604,7 +1676,7 @@ def close_position(ticket: int) -> Dict[str, Any]:
         mt5.shutdown()
 
 
-def modify_position(ticket: int, sl: float, tp: float = None) -> Dict[str, Any]:
+def modify_position(ticket: int, sl: float, tp: float = None, identity: Dict[str, Any] = None) -> Dict[str, Any]:
     """WS-B AUTO-BREAKEVEN — move an OPEN position's stop-loss (and optionally keep its
     take-profit) via ``TRADE_ACTION_SLTP``. Demo accounts only. Never opens/closes a position:
     ``TRADE_ACTION_SLTP`` only edits SL/TP on an existing position.
@@ -1701,6 +1773,12 @@ def modify_position(ticket: int, sl: float, tp: float = None) -> Dict[str, Any]:
             "tp": req_tp,
             "magic": pos.magic,
         }
+
+        # ADR-0033 Inc3 — IDENTITY gate immediately before the modify order_send (TOCTOU-narrowed).
+        _idok, _idreason, _iddetails = verify_mutation_identity(mt5, identity)
+        if not _idok:
+            logger.error(f"[modify] ticket={ticket} IDENTITY REJECTED: {_idreason} {_iddetails}")
+            return {"ok": False, "error": "identity_rejected", "reason": _idreason, **_iddetails, "ticket": ticket}
 
         result = mt5.order_send(request)
         if result is None:
@@ -2002,7 +2080,8 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response({"ok": False, "error": "missing_ticket"}, 400)
             return
 
-        result = close_position(int(ticket))
+        identity = {k: body.get(k) for k in ("require_identity_pin", "expected_login", "expected_server")}
+        result = close_position(int(ticket), identity=identity)
         status_code = 200 if result.get("ok") else 400
         self._send_json_response(result, status_code)
 
@@ -2027,7 +2106,8 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
             return
 
         tp = body.get("tp")
-        result = modify_position(int(ticket), float(sl), None if tp is None else float(tp))
+        identity = {k: body.get(k) for k in ("require_identity_pin", "expected_login", "expected_server")}
+        result = modify_position(int(ticket), float(sl), None if tp is None else float(tp), identity=identity)
         status_code = 200 if result.get("ok") else 400
         self._send_json_response(result, status_code)
 
