@@ -14,6 +14,20 @@
 
 ## Execution workstream log
 
+- **2026-08-07 — ADR-0033 Increment 3: complete trade-operation identity safety (CLOSE/MODIFY). Repo eng; NOT deployed. 🟢**
+  Branch `feat/adr0033-inc3-pilot-plumbing` (base `main` `c83e041` = merged PR #302). Extends the Inc2
+  opening-order identity invariant to EVERY account-mutating op. New bridge gate
+  `evaluate_mutation_identity`/`verify_mutation_identity` (connected + active login/server match; pin
+  mandatory on the persistent-workspace path / `MT5_REQUIRE_IDENTITY_PIN`, env-optional legacy; NOT
+  trade_allowed per E2 "where appropriate") wired as a pre-send check immediately before `order_send` in
+  `close_position` + `modify_position`, with identity threaded from the `/mt5/close-position` +
+  `/mt5/modify-position` bodies. E4 inventory: all 4 `order_send` sites now identity-gated (PLACE×2 Inc2,
+  CLOSE+MODIFY Inc3); no other MT5 mutation primitive exists. Legacy account-#1 demo close/modify unchanged
+  (no pin → connected check only). Tests: `tests_bridge_mutation_identity.py` (oracle + AST mutation
+  adequacy + enforcement guard). **SCOPE:** this increment = complete trade-operation identity safety only.
+  DEFERRED to a follow-up (NOT pilot-ready yet): durable routing wiring + server-side producer
+  pin-derivation (B/C/D), observer pause/resume (G), host attach probe (I), read-only API (J), observability (K).
+
 - **2026-08-07 — ADR-0033 Increment 2: execution-readiness abstraction + hardened order-time gate (DARK). Repo eng; NOT deployed. 🟢**
   Branch `feat/adr0033-inc2-readiness-abstraction` (base `main` `ac5a26b` = merged PR #301). Two-provider
   readiness abstraction (`execution/readiness.py`): Provider A (`temporary_validation`, default)

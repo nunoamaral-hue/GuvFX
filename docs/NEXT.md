@@ -1,6 +1,16 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Hosted Persistent MT5 Workspace — Increment 2 shipped (2026-08-07, DARK); awaiting Sponsor
+## ▶ Hosted Persistent MT5 Workspace — Increment 3 shipped (2026-08-07, DARK); awaiting Sponsor
+ADR-0033 accepted-with-conditions. PR #301 (foundation) + #302 (readiness abstraction + hardened opening
+gate) MERGED. Increment 3 (branch `feat/adr0033-inc3-pilot-plumbing`) = **complete trade-operation
+identity safety**: CLOSE + MODIFY now carry the same identity invariant as PLACE (pre-send
+`verify_mutation_identity` before every `order_send`; all 4 mutation sites gated). **Bounded next action:**
+the remaining pilot-plumbing (durable routing wiring + server-side producer pin-derivation, observer
+pause/resume, host attach probe, read-only API, staff observability) is a SEPARATE follow-up increment —
+the repository is NOT yet full-pilot-ready. Then Sponsor approval to open the disposable-host pilot (16
+checks) + RULE-11 NTFS-ACL cert + the RDS/licensing decision. No host mutation, no execution enablement.
+
+## ▶ (superseded) Hosted Persistent MT5 Workspace — Increment 2 shipped (2026-08-07, DARK); awaiting Sponsor
 ADR-0033 accepted-with-conditions. Increment 1 (PR #301, foundation) MERGED. Increment 2 (branch
 `feat/adr0033-inc2-readiness-abstraction`) done DARK: two-provider readiness abstraction + hardened
 order-time gate (mandatory identity pin + TOCTOU narrowing), Provider A regression-identical, migration
