@@ -969,6 +969,39 @@ class PrepareValidationTerminalUnitTests(SimpleTestCase):
             raise IOError("disk")
         self.assertEqual(self._prep(mirror=boom), "mirror_failed")   # never raises out of validate
 
+    def test_mirror_incomplete_when_executable_absent_after_restore(self):
+        # The mirror reports "restored" but verify_present says terminal64.exe did NOT reach the dest (a swallowed
+        # per-file copy fault or a locked destination): DECLINE to overclaim — return a truthful label instead.
+        out = vl.prepare_validation_terminal(_MVDIR, validation_root=_MROOT, forbidden_roots=_MFORB,
+                                             precompiled_dir=_MPC, mirror=lambda a, b: "restored",
+                                             verify_present=lambda vdir: False)
+        self.assertEqual(out, "mirror_incomplete")
+
+    def test_restored_confirmed_when_verify_present_true(self):
+        seen = []
+        out = vl.prepare_validation_terminal(_MVDIR, validation_root=_MROOT, forbidden_roots=_MFORB,
+                                             precompiled_dir=_MPC, mirror=lambda a, b: "restored",
+                                             verify_present=lambda vdir: seen.append(vdir) or True)
+        self.assertEqual(out, "restored")
+        self.assertEqual(seen, [_MVDIR])                  # verified the exact dest that was mirrored
+
+    def test_verify_present_fault_is_incomplete_not_raised(self):
+        def boom_verify(vdir):
+            raise OSError("stat")
+        out = vl.prepare_validation_terminal(_MVDIR, validation_root=_MROOT, forbidden_roots=_MFORB,
+                                             precompiled_dir=_MPC, mirror=lambda a, b: "restored",
+                                             verify_present=boom_verify)
+        self.assertEqual(out, "mirror_incomplete")        # a verify fault degrades truthfully, never raises
+
+    def test_verify_present_not_consulted_when_mirror_not_restored(self):
+        # An invalid/empty source is reported verbatim; verify_present is only a truthfulness guard on "restored".
+        seen = []
+        out = vl.prepare_validation_terminal(_MVDIR, validation_root=_MROOT, forbidden_roots=_MFORB,
+                                             precompiled_dir=_MPC, mirror=lambda a, b: "invalid_source",
+                                             verify_present=lambda vdir: seen.append(vdir) or True)
+        self.assertEqual(out, "invalid_source")
+        self.assertEqual(seen, [])
+
 
 class MirrorReuseTests(SimpleTestCase):
     """The in-process path reuses the runner's mirror (``mirror_validation_baseline`` -> ``_mirror_os``): ONE
@@ -1091,6 +1124,29 @@ class InProcessTerminalMaterialisationTests(SimpleTestCase):
                          payload=self._payload())
         self.assertEqual(out["reason_code"], "isolation_check_failed")
         self.assertEqual(captured, {"pr": "invalid_source", "sub": "validation_terminal_missing"})
+
+    def test_prepare_closure_fault_degrades_and_still_gates(self):
+        # A pathological prepare fault (e.g. a lazy ``import validation_runner`` failure) must NOT escape validate:
+        # it degrades to a secret-safe ``prepare_unavailable`` label, the isolation gate STILL runs, and exactly
+        # one diagnostic artefact is written (no generic agent_internal_error, no probe, no skipped gate).
+        calls = []
+
+        def persist(cid, rep, *, started, finished, prepare_result=None):
+            calls.append((prepare_result, rep["sub_reason"]))
+        rec = _RecProbe()
+
+        def boom():
+            raise RuntimeError("import validation_runner failed")
+        h = vl.LoginValidationHandler(
+            open_envelope=lambda s, a: b"pw", bind_aad=lambda **k: b"",
+            mt5_probe_factory=lambda: rec, path_exists=lambda p: False,
+            validation_dir=_MVDIR, validation_root=_MROOT, forbidden_roots=_MFORB,
+            prepare_terminal=boom, persist_isolation_diagnostic=persist)
+        out = h.validate(operation="VALIDATE_LOGIN", runtime_uuid=RUUID, correlation_id="c", nonce="n",
+                         payload=self._payload())
+        self.assertEqual(out["reason_code"], "isolation_check_failed")        # gate STILL ran + failed closed
+        self.assertFalse(rec.init_called)                                    # NO MT5, NO broker contact
+        self.assertEqual(calls, [("prepare_unavailable", "validation_terminal_missing")])  # exactly one artefact
 
     def test_idempotent_when_already_present(self):
         h, state, rec = self._handler(present0=True, prepare="restored")     # terminal already there

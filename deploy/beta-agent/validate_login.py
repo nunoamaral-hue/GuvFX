@@ -130,7 +130,8 @@ def assert_isolated_validation_terminal(validation_dir, *, validation_root=DEFAU
     return exe_path
 
 
-def prepare_validation_terminal(validation_dir, *, validation_root, forbidden_roots, precompiled_dir, mirror) -> str:
+def prepare_validation_terminal(validation_dir, *, validation_root, forbidden_roots, precompiled_dir, mirror,
+                                verify_present=None) -> str:
     """Deterministically MATERIALISE/restore the isolated validation terminal from the certified precompiled
     baseline BEFORE the isolation gate runs, so ``terminal_present`` holds on the active in-process path (whose
     proven blocker was ``validation_terminal_missing``). REUSES the runner's already-proven mirror primitive
@@ -141,10 +142,14 @@ def prepare_validation_terminal(validation_dir, *, validation_root, forbidden_ro
     non-isolated dest nor read FROM a forbidden/golden/live/slot source); if either fails the contract, or the
     source is not configured/valid, it SKIPS the copy and lets the authoritative isolation gate report the exact
     failing rule with its full diagnostic. Returns a fixed, secret-safe status LABEL:
-      * ``restored`` — the baseline was mirrored in (terminal now present);
+      * ``restored`` — the baseline was mirrored in AND ``terminal64.exe`` is present at the destination;
       * ``precompiled_unconfigured`` — no precompiled dir configured;
       * ``path_contract_unmet`` — dest or source is not an isolated path (isolation gate will report the rule);
-      * ``no_source`` / ``invalid_source`` — the precompiled source is missing or lacks ``terminal64.exe``.
+      * ``no_source`` / ``invalid_source`` — the precompiled source is missing or lacks ``terminal64.exe``;
+      * ``mirror_incomplete`` — the mirror reported restored but the executable is NOT actually present at the
+        destination (a per-file copy fault or a destination lock the delete/copy pass swallowed). We DECLINE to
+        overclaim ``restored``: the operator artefact stays truthful and the authoritative isolation gate — which
+        independently re-checks presence — still fails closed with the exact rule (``validation_terminal_missing``).
     """
     if not precompiled_dir:
         return "precompiled_unconfigured"
@@ -154,9 +159,19 @@ def prepare_validation_terminal(validation_dir, *, validation_root, forbidden_ro
     except IsolationError:
         return "path_contract_unmet"                     # do NOT copy; the isolation gate reports the exact rule
     try:
-        return mirror(precompiled_dir, validation_dir)   # runner primitive: "restored"|"no_source"|"invalid_source"
+        result = mirror(precompiled_dir, validation_dir)  # runner primitive: "restored"|"no_source"|"invalid_source"
     except Exception:                                    # noqa: BLE001 — materialisation must never break validate
         return "mirror_failed"
+    # The mirror primitive returns "restored" unconditionally after its passes (it validates only the SOURCE and
+    # swallows per-file copy/delete OSError). Independently CONFIRM the executable actually reached the dest, so a
+    # silent copy fault or a locked destination can never be reported as a successful materialisation.
+    if result == "restored" and verify_present is not None:
+        try:
+            if not verify_present(validation_dir):
+                return "mirror_incomplete"
+        except Exception:                                # noqa: BLE001 — a verify fault must not break validate
+            return "mirror_incomplete"
+    return result
 
 
 def isolation_report(validation_dir, *, validation_root=DEFAULT_VALIDATION_ROOT,
@@ -382,9 +397,20 @@ class LoginValidationHandler:
         try:
             # 0) PREPARE: deterministically materialise/restore the isolated validation terminal from the
             #    certified precompiled baseline BEFORE the isolation gate (the proven in-process blocker was
-            #    ``validation_terminal_missing``). In-process path only; NEVER raises, NEVER weakens the gate. A
-            #    non-``restored`` label leaves the terminal as-is and the authoritative gate reports the rule.
-            prepare_result = self._prepare_terminal() if self._prepare_terminal is not None else None
+            #    ``validation_terminal_missing``). In-process path only; NEVER weakens the gate. A non-``restored``
+            #    label leaves the terminal as-is and the authoritative gate reports the rule. ``prepare_validation_
+            #    terminal`` itself never raises, but the wired closure does a lazy ``import validation_runner`` —
+            #    a pathological import fault must NOT escape ``validate`` (it would skip the isolation gate + its
+            #    diagnostic and surface as a generic ``agent_internal_error``). Degrade any such fault to a
+            #    secret-safe label so ``prepare → isolate → probe`` stays intact and exactly one artefact is written.
+            prepare_result = None
+            if self._prepare_terminal is not None:
+                try:
+                    prepare_result = self._prepare_terminal()
+                except Exception:            # noqa: BLE001 — materialisation must never break validate
+                    prepare_result = "prepare_unavailable"
+                    _log.warning("terminal_prepare_failed correlation=%s component=in_process_prepare "
+                                 "stage=PREPARE error_class=unavailable", _safe_corr(correlation_id))
 
             # 1) isolated-terminal contract — never attempt a probe against an unproven path.
             try:
@@ -545,11 +571,16 @@ def _build_terminal_preparer(cfg: dict, forbidden):
     validation_dir = cfg.get("validation_terminal_dir")
     validation_root = cfg.get("validation_root") or DEFAULT_VALIDATION_ROOT
 
+    def _verify_present(vdir):
+        # Truthfulness guard for the "restored" label: confirm terminal64.exe actually reached the dest.
+        return os.path.isfile(vdir.replace("/", "\\").rstrip("\\") + "\\" + VALIDATION_EXE_NAME)
+
     def _prepare():
         import validation_runner                                # noqa: PLC0415 — host-side; reuse the mirror
         return prepare_validation_terminal(
             validation_dir, validation_root=validation_root, forbidden_roots=forbidden,
-            precompiled_dir=precompiled_dir, mirror=validation_runner.mirror_validation_baseline)
+            precompiled_dir=precompiled_dir, mirror=validation_runner.mirror_validation_baseline,
+            verify_present=_verify_present)
 
     return _prepare
 
