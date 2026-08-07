@@ -13,6 +13,16 @@ the validation-agent hardening (that code isn't imported here). Repro: run near 
 `make check` outside the 00:00–00:10 UTC window. Fix (spawned task): freeze time in the tests, or shrink the
 back-date delta so it can't cross midnight.
 
+## 🟡 PRE-EXISTING MIGRATION DRIFT (observed 2026-08-07) — `strategies` index-name rename not migrated
+
+`manage.py makemigrations --check` reports pending changes in **`strategies`** (rename several
+auto-generated indexes on `strategyruntimeevent` / `strategyruntimestate`, e.g.
+`strategies_ev_assignm_key_sym` → `strategies__assignm_367366_idx`). Verified **pre-existing on pristine
+`main`** (present with all local work stashed), i.e. the model `Meta.indexes` and the committed migrations
+disagree on generated names. **Not a runtime bug** and **not** touched by the hosted-workspace work; `make
+check` does not run `makemigrations --check`, so CI is unaffected. Left as-is (no drive-by). Fix when
+`strategies` is next edited: run `makemigrations strategies` and commit the rename migration.
+
 ## 🟡 DEFERRED (2026-08-05) — Customer-journey product items NOT changed in the consolidation packet
 
 Recorded from the journey review (`docs/product/beta-journey-consolidation.md` §5–7). These are product /

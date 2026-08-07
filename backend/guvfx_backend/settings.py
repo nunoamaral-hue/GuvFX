@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     "onboarding",
     "reliability",  # RX-2 Reliability Core (Phase 1: detection/visibility/alerting)
     "terminal_provisioning",  # TX-1A/TX-1B Terminal Isolation foundation (additive)
+    "hosted_workspace",  # ADR-0033 Hosted Persistent MT5 Workspace foundation (additive, DARK)
     "wims",  # WP-1 — Educational Content Flow (logically separate per ADR-009)
     "intelligence",  # Phase 7A — GuvFX Signal Intelligence Producer (produces; WIMS consumes)
     "signal_intake",  # EXEC-E0 — Wayond signal -> human PendingSignalApproval (shadow; no execution)
