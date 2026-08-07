@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-08-07 — Hosted Persistent MT5 Workspace: MT5 IPC investigation CLOSED (A–I) + implementation roadmap (proposed). Docs only; NOT armed. 🟢**
+  Experiments A–I (host-executed, disposable demo, zero blast radius, full cleanup) technically validated the
+  persistent attach-only (never-login, never-own-credentials) model: attach to a user-logged-in
+  broker-connected terminal (same- + cross-session), survives RDP disconnect, requires connection (cold →
+  `-10005`), `initialize(path=)` is **dual-mode** (relaunch + auto-login from cached `accounts.dat` if down —
+  ⟹ a never-launch **guarded-attach** primitive is mandatory), `order_check` retcode 0 via attach + full
+  manual lifecycle observed. Branch `docs/adr0033-hosted-workspace-roadmap` (base `main` `c83e041`):
+  `docs/architecture/HOSTED_WORKSPACE_ROADMAP.md` (6 workstreams, dependency graph, M1–M7 + acceptance +
+  gates, obsolescence trigger, reuse/retire, MVP=M6 dedicated-host-per-user demo-only) + ADR-0033 **Transition
+  Amendment (PROPOSED)**. **Bounded next action:** Sponsor approves the roadmap → then WS3 Guarded-Attach
+  (M1) after PR #303 merges. Nothing armed; temporary-validation path intact.
+
 - **2026-08-07 — ADR-0033 Increment 2: execution-readiness abstraction + hardened order-time gate (DARK). Repo eng; NOT deployed. 🟢**
   Branch `feat/adr0033-inc2-readiness-abstraction` (base `main` `ac5a26b` = merged PR #301). Two-provider
   readiness abstraction (`execution/readiness.py`): Provider A (`temporary_validation`, default)
