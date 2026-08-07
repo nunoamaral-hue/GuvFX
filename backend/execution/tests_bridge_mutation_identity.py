@@ -51,6 +51,7 @@ CASES = [
     ("term_none", _acc(), None, {}, False, "terminal_info_unavailable"),
     ("not_connected", _acc(), _term(connected=False), {}, False, "terminal_not_connected"),
     ("acc_none", None, _term(), {}, False, "account_info_unavailable"),
+    ("real_account_at_send", _acc(trade_mode=2), _term(), {}, False, "account_not_demo"),
     ("login_mismatch", _acc(), _term(), {"expected_login": "999", "expected_server": _DEMO["server"]},
      False, "account_login_mismatch"),
     ("server_mismatch", _acc(), _term(),
@@ -213,6 +214,9 @@ class MutationEnforcementSourceTests(SimpleTestCase):
         self.assertGreater(pre, -1, f"{func_name}: no verify_mutation_identity before order_send")
         between = body[pre:send]
         self.assertIn("identity_rejected", between, f"{func_name}: identity result not enforced")
+        # Guard POLARITY: rejection must be gated on `not _idok` — an inversion (`if _idok:`) would
+        # otherwise pass a structural "call exists" check while executing the mutation on a mismatch.
+        self.assertIn("not _idok", between, f"{func_name}: rejection not guarded by `not _idok`")
         self.assertNotIn("mt5.login(", between)
         self.assertNotIn("mt5.initialize(", between)
 

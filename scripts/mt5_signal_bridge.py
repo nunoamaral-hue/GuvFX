@@ -353,6 +353,12 @@ def evaluate_mutation_identity(acc, term, expected):
         return False, "terminal_not_connected"
     if acc is None:
         return False, "account_info_unavailable"
+    # Re-assert demo AT SEND TIME (close/modify are demo-only): the top-of-function trade_mode check is
+    # single-shot, so a terminal that drifted demo→REAL between it and order_send would otherwise mutate a
+    # LIVE position. trade_mode: 0=DEMO, 1=CONTEST, 2=REAL — anything but demo fails closed here (parity
+    # with the opening-order gate, which re-checks classification before every send).
+    if acc.get("trade_mode") != 0:
+        return False, "account_not_demo"
     exp_login = expected.get("expected_login")
     if exp_login and str(acc.get("login")) != str(exp_login):
         return False, "account_login_mismatch"
@@ -1642,8 +1648,18 @@ def close_position(ticket: int, identity: Dict[str, Any] = None) -> Dict[str, An
             # ticket alone is not authorisation; the terminal's ACTIVE account must be the intended one.
             _idok, _idreason, _iddetails = verify_mutation_identity(mt5, identity)
             if not _idok:
-                logger.error(f"[close] ticket={ticket} IDENTITY REJECTED: {_idreason} {_iddetails}")
-                return {"ok": False, "error": "identity_rejected", "reason": _idreason, **_iddetails, "ticket": ticket}
+                # A HARD mismatch (wrong/real account, or a missing mandatory pin) is a non-retryable
+                # REJECT — never close the wrong account's position. A TRANSIENT failure (not connected /
+                # info unavailable / read error) is retried like the loop's other transient errors, so a
+                # single flap does not abort the close and, on exhaustion, surfaces the explicit
+                # residual_exposure marker rather than a misleading authorization error.
+                if _idreason in ("account_login_mismatch", "broker_server_mismatch",
+                                 "identity_pin_required", "account_not_demo"):
+                    logger.error(f"[close] ticket={ticket} IDENTITY REJECTED: {_idreason} {_iddetails}")
+                    return {"ok": False, "error": "identity_rejected", "reason": _idreason,
+                            **_iddetails, "ticket": ticket}
+                last_err, last_rc, last_detail = f"identity_{_idreason}", None, None
+                continue
 
             result = mt5.order_send(request)
             if result is None:
