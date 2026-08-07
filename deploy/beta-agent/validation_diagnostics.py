@@ -276,6 +276,11 @@ ALLOWED_EVIDENCE_KEYS = frozenset({
     # the process/identity fields describe the AGENT service process (never a runner task). Coarse liveness /
     # provenance labels only — never a secret.
     "execution_mode", "process_id", "process_session_id", "service_identity", "supervised", "manifest_version",
+    # PREPARE outcome (2026-08-07 materialisation packet): a fixed, secret-safe LABEL recording whether the
+    # in-process terminal materialisation ran and its result (restored / no_source / invalid_source /
+    # path_contract_unmet / precompiled_unconfigured / mirror_failed / None). Lets an operator see, on any
+    # residual isolation failure, whether the certified baseline was restored before the gate.
+    "prepare_result",
 })
 
 # Keys inside the nested ``isolation`` object (allow-list applied recursively in build_evidence). Paths + a
@@ -405,7 +410,7 @@ def write_evidence(diag_dir: str, correlation_id: str, evidence: dict, *, now: f
 
 def write_isolation_diagnostic(diag_dir: str, *, correlation_id, reason_code, isolation, config_source,
                                execution_mode, process_meta=None, stage_reached, first_failing_stage,
-                               started=None, finished, now) -> str:
+                               prepare_result=None, started=None, finished, now) -> str:
     """ONE shared persistence entry-point for an isolation-failure artefact, used by BOTH execution modes (the
     in-process ``LoginValidationHandler`` and the task-launched runner). All request-scoped values are passed
     EXPLICITLY — no mutable global is read here. Assembles the fields, then delegates to the SAME
@@ -426,6 +431,7 @@ def write_isolation_diagnostic(diag_dir: str, *, correlation_id, reason_code, is
         "manifest_version": pm.get("manifest_version"),
         "stage_reached": stage_reached,
         "first_failing_stage": first_failing_stage,
+        "prepare_result": prepare_result,
         "isolation": isolation,
         "config_source": config_source,
         "attempt_finish_utc": float(finished),

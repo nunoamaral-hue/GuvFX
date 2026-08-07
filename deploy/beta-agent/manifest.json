@@ -1,7 +1,7 @@
 {
   "agent_version": "beta-agent-1.0.0",
   "checksums": {
-    "agent.py": "a3616c57600f376f5bf9c41649926a40ceb8132d024b47e9756506d8c2af021f",
+    "agent.py": "6ffa8283cf244c29705961b43591a7abe329a1df84c02ef0e65d43f8f2b38c35",
     "agent_lifecycle.py": "a92e8a16d1025d2d497df417af30f704753238476796fa9dbf1e44e1fe41d31f",
     "broker_cred_envelope.py": "a35932c639e2cab83cb3587bf03295d2fd4711e2fb6197ff25aa474bc8c47f28",
     "config.py": "f6d49ade52d7593c39c4901b4710e83cfd5c8f92ac770451e0820c598583d845",
@@ -14,16 +14,16 @@
     "pool_op_impls.py": "3bf2060368ac6744420ee6958f8a713a28f2cbaefb6b02c585538049be0978fc",
     "service.py": "f6afd0bd9c8c989cdac912a063a6cdeacb6bd0c1f70a60434b96be447c4ef8d6",
     "stores.py": "2225b78bfa23da99578379b715bd8d5233f49ad58bbba3a7373cf1d3a241b5d7",
-    "validate_login.py": "ba417751c1fa0f0e7693977a522a916330995f00abce9c006ae69448cc435466",
-    "validation_diagnostics.py": "20233678c8bb3934ee872de6e29f72b5a99b36090e8665990075c4b1edfafd96",
+    "validate_login.py": "f856ba053d046211064877b54f4bf9dbab91439d54982f502ef330f1208de12d",
+    "validation_diagnostics.py": "506732e741103c4fa68a55f81de69cf203512872e097ef00a4c4573ddb025c85",
     "validation_handoff.py": "97fac09d0c9b9a0db3bad795aefce03a76c60851e1da608b5e9e3d8369d89279",
-    "validation_runner.py": "bdba24f05b6b249cf35f26004a802d70f661a7e2f2ef1ec051805233f2c2756d",
+    "validation_runner.py": "83bf8ea2833eb5cbc8e217dedcc99308b5c59efb1bbbdceb3279bf29dd4b0682",
     "win_mutations.py": "38258c11a89ad4d9251d990d48d2d005a230d24317761844f8f7f81dcae0b626",
     "win_ops.py": "36499a24b000befe144b1352988754e8f38bd15ea035943bef009f369f8e90b8",
     "win_primitives.py": "dcef18836ccf382e45bd5977ab493eb405437ff38077202b8f24c2f518999023",
     "win_slot_ops.py": "8f54a1f1759f0e494c306724fdffee1ade5143c1ad0b2b83e216a1e6aa6abf21"
   },
-  "manifest_version": "2026-08-06.3",
+  "manifest_version": "2026-08-06.5",
   "protocol_version": 1,
   "supported_operations": [
     "MATERIALISE",

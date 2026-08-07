@@ -118,6 +118,15 @@ def _mirror_os(src: str, dst: str) -> str:
     return "restored"
 
 
+def mirror_validation_baseline(precompiled_dir: str, validation_dir: str) -> str:
+    """PUBLIC re-export of the source-validated, reparse-safe baseline mirror (``_mirror_os``). The runner uses
+    ``_mirror_os`` directly for its POST-probe restore; the in-process validator reuses THIS wrapper to
+    MATERIALISE the certified baseline BEFORE its isolation check — one materialisation primitive, no parallel
+    copy design (behaviour is byte-for-byte the runner's restore). Returns ``restored``/``no_source``/
+    ``invalid_source``."""
+    return _mirror_os(precompiled_dir, validation_dir)
+
+
 def _light_fingerprint(root: str) -> str:
     """A cheap parity signature (file count + total bytes) recorded after restore — the FULL SHA parity is the
     ops host-certification check, this only flags gross drift without hashing every file each run."""

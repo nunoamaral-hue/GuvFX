@@ -204,3 +204,72 @@ is **not** forwarded to the backend in this change.
 **Next authorised browser test is evidence-gathering only** — a single `Test connection` on the disposable
 demo account, after this instrumentation is deployed, will write one `<id>.diag.json` recording the exact
 failing isolation rule. It does not remediate the isolation configuration.
+
+## In-process terminal materialisation (2026-08-07, P0)
+
+The captured artefact above proved the exact blocker: `isolation.sub_reason = validation_terminal_missing`
+— every path/containment rule passed but the validation terminal executable
+(`…\validation-5833\terminal\terminal64.exe`) was **absent at validation time**. The isolation policy and
+configuration are correct; the certified baseline was simply not present when the in-process validator ran
+(the runner restores its baseline *after* each probe; nothing restored it on the in-process path).
+
+**Fix:** the in-process validator now **materialises/restores** the isolated validation terminal from the
+certified precompiled baseline **before** the isolation gate, under the single-flight lock, reusing the
+runner's own mirror primitive (`validation_runner.mirror_validation_baseline` → `_mirror_os`). Order is now
+**prepare → assert isolation → launch MT5** (never MT5 before isolation). The step:
+
+- refuses to copy into a non-isolated destination or **from** a forbidden/golden/live/slot source (both are
+  path-contract-checked; ONE rule source of truth via `_assert_isolated_dir`);
+- reuses the source-validated, reparse-safe, deletes-extras mirror (an invalid/empty source never wipes the
+  terminal dir — fail-closed);
+- **never raises and never weakens the isolation gate** — a non-`restored` outcome leaves the terminal
+  as-is and the authoritative gate still reports the exact rule;
+- records a fixed, secret-safe `prepare_result` label in the isolation artefact, so any residual isolation
+  failure shows whether the baseline was restored.
+
+It does **not** change the execution mode (`validation_task_name` stays unset), the isolation rules, or the
+customer contract. Restoring the baseline before every validation also removes any prior run's credential
+artefact/logs. Once the terminal is present, the in-process MT5 launch is expected to advance to the
+Session-0 GUI/IPC stage (the historical `-10004` IPC blocker) — that later stage is a **separate** follow-up.
+
+### `prepare_result` label vocabulary
+
+The label is fixed and secret-safe (paths/credentials never appear):
+
+| label | meaning |
+|-------|---------|
+| `restored` | baseline mirrored in **and** `terminal64.exe` confirmed present at the destination |
+| `precompiled_unconfigured` | no precompiled dir configured → materialisation is a no-op (see efficacy note) |
+| `path_contract_unmet` | destination **or** source is not an isolated path; the isolation gate reports the exact rule |
+| `no_source` / `invalid_source` | the precompiled source is missing or lacks `terminal64.exe` |
+| `mirror_incomplete` | the mirror reported restored but `terminal64.exe` did **not** actually reach the destination (a swallowed per-file copy fault or a locked destination) — we decline to overclaim `restored`; the gate re-checks presence and still fails closed |
+| `mirror_failed` / `prepare_unavailable` | the mirror raised, or the preparation step itself faulted (e.g. a lazy import failure); degraded so `validate` never raises and still runs the isolation gate + writes exactly one artefact |
+
+### Deployment-config requirement (efficacy)
+
+Materialisation is only **effective** when `BETA_AGENT_VALIDATION_PRECOMPILED_DIR` is set and the precompiled
+baseline is placed so it satisfies the in-process path contract, i.e. it must be:
+
+- an **absolute** path **beneath** the configured `BETA_AGENT_VALIDATION_ROOT` (default `C:\GuvFX\beta\validation`),
+  e.g. `C:\GuvFX\beta\validation\_precompiled`;
+- **disjoint** from every forbidden root (`…\slots`, both `…\golden` locations, `…\accounts`) — the guard
+  deliberately refuses a golden/live/slot source, so the certified baseline must be its **own** copy under the
+  validation root, never a pointer at the golden image.
+
+If the source is unset or fails the contract, preparation no-ops (`precompiled_unconfigured` / `path_contract_unmet`)
+and the original `validation_terminal_missing` blocker is **not** remediated — visible in the artefact via
+`prepare_result`. The deployment phase must configure this and confirm a `restored` label before certifying.
+
+### Known limitation — post-probe credential hygiene (in-process path)
+
+The runner path performs deterministic post-probe **terminate + credential-scrub + removal-verify**
+(`validation_runner.run_once`). The in-process path relies solely on **restore-before** (the next validation's
+mirror deletes the prior run's artefacts) plus `mt5.shutdown()`. That closes the common case, but if a probe
+leaves a **lingering** terminal that holds `accounts.dat` open, the next mirror's delete pass cannot remove it,
+so a prior run's credential artefact can survive until the lock clears. (The `mirror_incomplete` label keys on
+`terminal64.exe` presence, not on `accounts.dat`, so it does **not** by itself detect a surviving credential
+file — it only prevents a false `restored` when the executable itself failed to materialise.) Bringing the
+in-process path to full parity with the runner's post-probe terminate+scrub+verify is a **separate,
+host-certified follow-up** (it terminates processes on the live host — outside this "materialise **before** the
+isolation check" packet). Currently latent: the active Session-0 `-10004` IPC blocker fails the login before
+any broker `accounts.dat` is persisted.
