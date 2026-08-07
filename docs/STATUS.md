@@ -14,6 +14,31 @@
 
 ## Execution workstream log
 
+- **2026-08-07 — Programme Architecture Reset (Sponsor-APPROVED): Hosted Workspace becomes the primary architecture. ADR-0034 draft + roadmap v2. Docs only; NOT armed. 🟢**
+  Product pivots from *"a backend that validates broker credentials"* to *"a hosted persistent MT5 workspace
+  platform"*; the **Workspace** is the primary entity, the broker account a child resource. New source of
+  truth **`docs/ADRs/0034-hosted-workspace-operating-model.md`** (Proposed): domain model, canonical 9-state
+  Workspace state machine (every subsystem consumes it), Hosted Workspace Agent (evolution of the Validation
+  Agent — validation = one capability), mandatory `workspace.*` telemetry, security boundaries, temporary-
+  validation retirement plan. Roadmap **v2** (`HOSTED_WORKSPACE_ROADMAP.md`) re-sequences: WS3 guarded-attach
+  first (Inc4), then state-machine + telemetry foundations, then Workspace Manager, **RemoteApp EARLY**
+  (parallel), Provider-B execution, MVP = M6 (dedicated-host-per-user, demo, incl. RemoteApp). Multi-user
+  isolation + licensing-cost optimisation + advanced recovery → V2. Reset tension surfaced: RemoteApp-in-MVP
+  pulls RDS/SPLA licensing into the MVP. On branch `docs/adr0033-hosted-workspace-roadmap` (PR #304). No
+  refactor; bounded DARK increments; Customer Zero + execution gates unchanged.
+
+- **2026-08-07 — Hosted Persistent MT5 Workspace: MT5 IPC investigation CLOSED (A–I) + implementation roadmap (proposed). Docs only; NOT armed. 🟢**
+  Experiments A–I (host-executed, disposable demo, zero blast radius, full cleanup) technically validated the
+  persistent attach-only (never-login, never-own-credentials) model: attach to a user-logged-in
+  broker-connected terminal (same- + cross-session), survives RDP disconnect, requires connection (cold →
+  `-10005`), `initialize(path=)` is **dual-mode** (relaunch + auto-login from cached `accounts.dat` if down —
+  ⟹ a never-launch **guarded-attach** primitive is mandatory), `order_check` retcode 0 via attach + full
+  manual lifecycle observed. Branch `docs/adr0033-hosted-workspace-roadmap` (base `main` `c83e041`):
+  `docs/architecture/HOSTED_WORKSPACE_ROADMAP.md` (6 workstreams, dependency graph, M1–M7 + acceptance +
+  gates, obsolescence trigger, reuse/retire, MVP=M6 dedicated-host-per-user demo-only) + ADR-0033 **Transition
+  Amendment (PROPOSED)**. **Bounded next action:** Sponsor approves the roadmap → then WS3 Guarded-Attach
+  (M1) after PR #303 merges. Nothing armed; temporary-validation path intact.
+
 - **2026-08-07 — ADR-0033 Increment 2: execution-readiness abstraction + hardened order-time gate (DARK). Repo eng; NOT deployed. 🟢**
   Branch `feat/adr0033-inc2-readiness-abstraction` (base `main` `ac5a26b` = merged PR #301). Two-provider
   readiness abstraction (`execution/readiness.py`): Provider A (`temporary_validation`, default)

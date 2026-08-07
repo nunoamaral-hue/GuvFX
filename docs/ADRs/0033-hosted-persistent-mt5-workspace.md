@@ -129,3 +129,56 @@ attach) failing to reproduce the bridge's positive control.
 PM owns lifecycle status. **Amber** (new app/migration) proceeds as additive-DARK. The **Red** items
 (execution-gate wiring, host ACL/RemoteApp, licensing) require explicit Sponsor approval and are NOT
 taken in this increment.
+
+---
+
+## Transition Amendment (PROPOSED — 2026-08-07) — persistent workspace as the readiness authority
+
+Status: **Proposed. Pending Sponsor (PM) acceptance.** No behaviour change, no flags armed. Companions:
+[Hosted Workspace Roadmap](../architecture/HOSTED_WORKSPACE_ROADMAP.md) and — after the 2026-08-07 Programme
+Architecture Reset — **[ADR-0034 Hosted Workspace Operating Model](0034-hosted-workspace-operating-model.md)**,
+which becomes the architectural source of truth for the Hosted Workspace platform (this ADR-0033 remains the
+DARK foundation + eligibility-transition decision it builds on).
+
+**Context.** The MT5 IPC investigation is closed. Experiments A–I technically validated the persistent,
+attach-only (never-login, never-own-credentials) workspace: attach to a user-logged-in broker-connected
+terminal (same- and cross-session), survives RDP disconnect, requires a broker connection (cold → `-10005`),
+and — decisively — `initialize(path=)` is **dual-mode** (it *relaunches + auto-logs-in from cached
+`accounts.dat`* if the terminal is down). The attached session ran `order_check` (retcode 0) and observed a
+full manual trade lifecycle without GuvFX holding credentials; `order_send`-via-attach already runs in the
+production `:8788` bridge.
+
+**Decision (proposed).** Adopt the six-workstream transition roadmap that moves hosted accounts from the
+ADR-0027 temporary broker-login validation model to the **persistent attach-only workspace** as the
+*readiness authority*. The **WS3 guarded-attach primitive** — a never-launch, assert-connected attach that
+neutralises the proven dual-mode relaunch/auto-login hazard — is mandated as the **first** engineering
+increment.
+
+**What it supersedes.** For accounts on `readiness_provider='persistent_workspace'` it supersedes ADR-0027's
+login-based *eligibility* (`password_enc` + `validation_status==VALIDATED`) **only** — replaced by a fresh
+(≤`WORKSPACE_OBSERVATION_FRESH_SECONDS`=300 s) positive attach observation ANDed with
+`is_active`/`disconnected_at` (binding condition 1).
+
+**What it does NOT supersede.** The order-time `evaluate_binding` gate (strengthened with the mandatory
+`MT5_REQUIRE_IDENTITY_PIN`), the central `broker_gate`, and the lifecycle/health/pause checks remain for
+*both* providers; `observed_*` stays a **cache** that can never alone authorise an order. Retirement is
+**per-account and never automatic** (`readiness_provider` is never auto-converted); Provider A + the ADR-0027
+stack stay live for every un-migrated account. Append-only `BrokerAccountValidationAttempt` history and
+disconnect TOMBSTONE rows are **retained**.
+
+**Conditions that remain open** (unchanged authority; carried into the roadmap gates):
+- **Condition 3** — per-user dedicated routing + authenticated owner-bound observations + server-side pin
+  derivation (Tension 2, still contract-only/unwired).
+- **Condition 4** — the 16-item disposable-host pilot + RULE-11 per-user NTFS-ACL/AppLocker positive+negative
+  certification (**TX-1 `Provision-GuvfxAccount.ps1` currently applies NO ACL — the hard security blocker**).
+- **Condition 5** — the commercial RDS/SPLA licensing gate.
+- New correctness requirement: `last_observed_at` must be written **atomically** with the `observed_*`
+  snapshot (else a stale snapshot rides a fresh timestamp through the freshness bound).
+
+**MVP boundary (proposed).** Milestone M6 — single-tenant, **dedicated-host-per-user**, demo-only,
+attach-only. Dedicated hosting has no cross-tenant filesystem surface, so the MVP does **not** depend on the
+still-missing multi-user NTFS ACL (deferred to M7). Reversal path unchanged: unset the flags (immediate) +
+drop the additive `hosted_workspace 0001` table.
+
+**Approval.** PM owns lifecycle status; this amendment stays **Proposed** until Sponsor acceptance. Arming any
+hosted-workspace flag and every host/execution/licensing step remains **Red**.
