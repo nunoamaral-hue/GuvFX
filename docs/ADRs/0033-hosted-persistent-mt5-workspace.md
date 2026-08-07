@@ -1,7 +1,26 @@
 # 0033 — Hosted Persistent MT5 Workspace
 
 - Date: 2026-08-07
-- Status: Proposed
+- Status: Accepted with conditions
+
+## Acceptance (2026-08-07)
+
+Accepted with conditions after an independent red-team of the Model-B readiness contract. Binding
+conditions:
+
+1. Attach-verified readiness replaces **only** `password_enc` + `VALIDATED`, and is **ANDed with** (never
+   substituted for) the lifecycle checks. *Implemented — Increment 2, `execution/readiness.py`.*
+2. The order-time bridge gate is **strengthened**: a **mandatory identity pin** (payload-sourced, demo +
+   live; enforceable as a terminal property via `MT5_REQUIRE_IDENTITY_PIN`) and the fresh re-verify
+   relocated to **immediately before `order_send`** (TOCTOU narrowing). *Implemented — Increment 2,
+   `scripts/mt5_signal_bridge.py`.*
+3. Per-user dedicated routing + authenticated owner-bound observations + server-side pin derivation.
+   *Contract specified (Increment 2 docs); wiring is a later increment — Tension 2.*
+4. DARK until the 16-item disposable-host pilot + RULE-11 NTFS-ACL certification pass.
+5. Commercial RDS/licensing gate resolved before any customer rollout.
+
+Increment 1 (PR #301, merged) = the DARK foundation. Increment 2 = the readiness abstraction + hardened
+order-time gate (this repository, DARK). See `docs/architecture/EXECUTION_READINESS.md`.
 
 ## Context
 

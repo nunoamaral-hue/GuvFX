@@ -14,6 +14,22 @@
 
 ## Execution workstream log
 
+- **2026-08-07 — ADR-0033 Increment 2: execution-readiness abstraction + hardened order-time gate (DARK). Repo eng; NOT deployed. 🟢**
+  Branch `feat/adr0033-inc2-readiness-abstraction` (base `main` `ac5a26b` = merged PR #301). Two-provider
+  readiness abstraction (`execution/readiness.py`): Provider A (`temporary_validation`, default)
+  reproduces the pre-ADR checks IDENTICALLY (regression proven: existing gate/dispatch/binding suites
+  unchanged); Provider B (`persistent_workspace`) replaces ONLY `password_enc`+`VALIDATED` with
+  attach-verified readiness, ANDed with is_active/disconnected + (at dispatch) health/pause; a wrong active
+  account reports the specific `active_account_mismatch`. Order-time gate HARDENED
+  (`scripts/mt5_signal_bridge.py`, additive, legacy-identical): mandatory identity pin (payload-sourced;
+  enforceable as a terminal property via `MT5_REQUIRE_IDENTITY_PIN`; demo+live; fail-closed) + TOCTOU
+  narrowing (authoritative re-verify immediately before `order_send` in both opening paths). Migration
+  `trading 0015` (readiness_provider default temporary_validation for ALL existing rows +
+  workspace_confirmed_at). Triple-dark; no new flag. Adversarial review (6 lenses) = 0 HIGH; 1 MEDIUM + 3
+  LOW folded in. Docs: `docs/architecture/EXECUTION_READINESS.md`; ADR-0033 → Accepted-with-conditions.
+  DEFERRED (additive, non-safety): observer pause/resume wiring, read-only workspace API, observability
+  projection, routing implementation + producer pin-plumbing, host attach probe.
+
 - **2026-08-07 — Hosted Persistent MT5 Workspace: Phase-1 foundation increment (DARK, additive). Repo eng; NOT deployed. 🟢**
   Branch `feat/hosted-mt5-workspace-foundation` (base `main` `1989b5f`). New app `backend/hosted_workspace/`
   (ADR-0033): `HostedMt5Workspace` sibling model (OneToOne TradingAccount, immutable-binding guard,

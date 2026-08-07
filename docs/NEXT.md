@@ -1,15 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Hosted Persistent MT5 Workspace — Phase-1 foundation shipped (2026-08-07, DARK); awaiting Sponsor decision
-Branch `feat/hosted-mt5-workspace-foundation` (base `main` `1989b5f`, ADR-0033). The inert backend
-foundation is done (`hosted_workspace` app: sibling model + pure mutation-tested active-account matcher +
-3 DARK flags + tests). **Bounded next action:** obtain a Sponsor/PM decision on the four ADR-0033 design
-tensions — (1) how the attach model reconciles with the `password_enc`+`VALIDATED` execution-gate
-preconditions; (2) single-tenant routing for a multi-user beta; (3) per-job account pin vs the
-process-level bridge env; (4) `accounts.dat` vs the RULE-10 golden refusal — **before** the execution-facing
-increment wires the live active-account-match gate. Separately, the Windows host tooling
-(per-user NTFS ACL + RemoteApp/AppLocker + supervision) needs a Sponsor-gated disposable-host pilot
-(RULE-11 pos/neg ACL cert; EXP-1 manual-login attach; reboot auto-reconnect) — no host mutation until then.
+## ▶ Hosted Persistent MT5 Workspace — Increment 2 shipped (2026-08-07, DARK); awaiting Sponsor
+ADR-0033 accepted-with-conditions. Increment 1 (PR #301, foundation) MERGED. Increment 2 (branch
+`feat/adr0033-inc2-readiness-abstraction`) done DARK: two-provider readiness abstraction + hardened
+order-time gate (mandatory identity pin + TOCTOU narrowing), Provider A regression-identical, migration
+`trading 0015`. **Bounded next action:** obtain Sponsor approval to open the disposable-host pilot (16
+checks) — the single gate that unblocks everything downstream: RULE-11 per-user NTFS-ACL certification,
+EXP-1 manual-login attach → IPC, wrong-account order-time rejection, reboot auto-reconnect — plus the
+commercial RDS/licensing decision. Repository follow-ups (additive, non-safety, deferred): observer
+pause/resume wiring, read-only workspace API, observability projection, routing implementation + producer
+pin-plumbing (Tension 2), the host attach probe. No host mutation, no execution enablement until then.
 
 ## ▶ Supervised installer — engineering-complete (2026-08-06); NOT deployed; awaiting Sponsor gate
 Branch `feat/supervised-installer` (base `main` `be7f215`). Resolves the 2026-08-06 host-deploy blocker:
