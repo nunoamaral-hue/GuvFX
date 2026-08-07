@@ -48,7 +48,11 @@ FUNC = '''def _rx2_supervision_snapshot():
         init_kwargs = {}
         if MT5_TERMINAL_PATH:
             init_kwargs["path"] = MT5_TERMINAL_PATH
-        if not mt5.initialize(**init_kwargs):
+        # ADR-0034 WS3: route this injected attach through the bridge's guarded_initialize when present
+        # (never-launch guard on a guarded bridge); fall back to raw initialize on older bridges that
+        # predate the primitive. DARK-safe: guarded_initialize is a passthrough when MT5_GUARDED_ATTACH is off.
+        _attach = globals().get("guarded_initialize")
+        if not (_attach(mt5, init_kwargs) if _attach else mt5.initialize(**init_kwargs)):
             out["error"] = "mt5_init_failed:%s" % str(mt5.last_error())
             return out
         out["mt5_initialized"] = True
