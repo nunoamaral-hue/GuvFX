@@ -1,5 +1,16 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Hosted Persistent MT5 Workspace — Phase-1 foundation shipped (2026-08-07, DARK); awaiting Sponsor decision
+Branch `feat/hosted-mt5-workspace-foundation` (base `main` `1989b5f`, ADR-0033). The inert backend
+foundation is done (`hosted_workspace` app: sibling model + pure mutation-tested active-account matcher +
+3 DARK flags + tests). **Bounded next action:** obtain a Sponsor/PM decision on the four ADR-0033 design
+tensions — (1) how the attach model reconciles with the `password_enc`+`VALIDATED` execution-gate
+preconditions; (2) single-tenant routing for a multi-user beta; (3) per-job account pin vs the
+process-level bridge env; (4) `accounts.dat` vs the RULE-10 golden refusal — **before** the execution-facing
+increment wires the live active-account-match gate. Separately, the Windows host tooling
+(per-user NTFS ACL + RemoteApp/AppLocker + supervision) needs a Sponsor-gated disposable-host pilot
+(RULE-11 pos/neg ACL cert; EXP-1 manual-login attach; reboot auto-reconnect) — no host mutation until then.
+
 ## ▶ Supervised installer — engineering-complete (2026-08-06); NOT deployed; awaiting Sponsor gate
 Branch `feat/supervised-installer` (base `main` `be7f215`). Resolves the 2026-08-06 host-deploy blocker:
 `install_service.ps1` now takes a mandatory `-InstallProfile Dark|Supervised` and is the **single sanctioned

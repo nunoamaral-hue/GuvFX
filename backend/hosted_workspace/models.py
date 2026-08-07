@@ -1,0 +1,131 @@
+"""hosted_workspace.models — durable per-account Hosted Persistent MT5 Workspace record (ADR-0033).
+
+A ``HostedMt5Workspace`` is the SIBLING of ``AccountRuntime`` (both OneToOne on
+``trading.TradingAccount`` — the 'runtime is owned by the broker account' invariant), NOT an extension
+of it. ``AccountRuntime`` models a GuvFX-OWNED, headless, GuvFX-provisioned beta runtime
+(``guvfx_u_<id>``, GuvFX logs in). This model instead records a USER-OWNED persistent terminal that the
+CUSTOMER logs into themselves, and which GuvFX only ATTACHES to (``initialize(path=...)``, never login)
+to observe which broker account is currently active.
+
+Following the ``BrokerRuntimePause`` precedent (a distinct per-account concern gets its own model
+rather than overloading ``AccountRuntime.state``), this keeps the two very different lifecycles cleanly
+separate and out of the integrity-pinned ``terminal_provisioning`` app.
+
+Ships DARK: nothing in the execution / onboarding / delivery path reads or writes this model. This
+increment adds NO such wiring — the model and the pure matcher (``matching.py``) are inert foundation.
+
+SECURITY: this model stores NO credential. ``currently_attached_login`` / ``currently_attached_server``
+are broker IDENTIFIERS (like ``TradingAccount.account_number`` / ``BrokerServer.server_name``), never
+secrets; there is deliberately no password / accounts.dat / windows-password column. The whole point of
+the attach model is that GuvFX never receives, stores, or transports the broker password.
+"""
+import uuid
+
+from django.db import models
+
+
+class WorkspaceState(models.TextChoices):
+    """User-owned attach lifecycle. Distinct from ``terminal_provisioning.RuntimeState`` (which assumes
+    GuvFX-driven provisioning). 'process running' != 'broker connected' != 'safe to execute' — these
+    are represented independently (state + observed_connected + active_account_match)."""
+    NOT_PROVISIONED = "NOT_PROVISIONED", "Not provisioned"
+    PROVISIONING = "PROVISIONING", "Provisioning"
+    AWAITING_USER_LOGIN = "AWAITING_USER_LOGIN", "Awaiting user login"
+    CONNECTED = "CONNECTED", "Connected"
+    ACTIVE_ACCOUNT_MISMATCH = "ACTIVE_ACCOUNT_MISMATCH", "Active account mismatch"
+    DISCONNECTED = "DISCONNECTED", "Disconnected"
+    DEGRADED = "DEGRADED", "Degraded"
+    STOPPED = "STOPPED", "Stopped"
+    ERROR = "ERROR", "Error"
+
+
+class HostedMt5Workspace(models.Model):
+    class SupervisionState(models.TextChoices):
+        UNKNOWN = "UNKNOWN", "Unknown"
+        SUPERVISED = "SUPERVISED", "Supervised"
+        UNSUPERVISED = "UNSUPERVISED", "Unsupervised"
+
+    trading_account = models.OneToOneField(
+        "trading.TradingAccount", on_delete=models.CASCADE, related_name="hosted_workspace")
+    #: Immutable per-workspace identity (server-generated; never client-supplied).
+    workspace_uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    # Indexed via the named Meta.indexes entry below (not db_index=True) to avoid a duplicate index.
+    state = models.CharField(max_length=32, choices=WorkspaceState.choices,
+                             default=WorkspaceState.NOT_PROVISIONED)
+
+    #: Portable-MT5 directory GuvFX attaches to (``initialize(path=...)``). Server-set only.
+    attach_path = models.CharField(max_length=255, blank=True, default="")
+
+    # Last OBSERVED active-account identity (broker identifiers, NOT secrets). Mutable — updated on each
+    # attach observation; the customer may switch the active Navigator account at any time.
+    currently_attached_login = models.CharField(max_length=64, blank=True, default="")
+    currently_attached_server = models.CharField(max_length=128, blank=True, default="")
+
+    # Last observation snapshot (a CACHE; authoritative truth is always a fresh attach). Null = unknown.
+    observed_connected = models.BooleanField(null=True, blank=True)
+    observed_trade_allowed = models.BooleanField(null=True, blank=True)
+    observed_is_demo = models.BooleanField(null=True, blank=True)
+    #: Result of the last ``evaluate_active_account_match`` — display/readiness ONLY, NOT the order gate.
+    active_account_match = models.BooleanField(null=True, blank=True)
+    last_reason = models.CharField(max_length=64, blank=True, default="")  # stable, secret-free code
+
+    supervision_state = models.CharField(max_length=16, choices=SupervisionState.choices,
+                                         default=SupervisionState.UNKNOWN)
+    remoteapp_ready = models.BooleanField(default=False)
+
+    last_observed_at = models.DateTimeField(null=True, blank=True)
+    last_switch_at = models.DateTimeField(null=True, blank=True)
+    attach_verified_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    _IMMUTABLE_BINDING = ("workspace_uuid", "trading_account_id")
+
+    class Meta:
+        indexes = [models.Index(fields=["state"], name="hostedws_state_idx")]
+
+    def save(self, *args, **kwargs):
+        """Enforce the immutable workspace-uuid / owner binding after creation (mirrors
+        ``AccountRuntime.save``). The guard's extra fetch runs only when a bound field is touched."""
+        if not self._state.adding:
+            uf = kwargs.get("update_fields")
+            touches_binding = uf is None or any(
+                f in uf for f in ("workspace_uuid", "trading_account", "trading_account_id"))
+            if touches_binding:
+                old = type(self).objects.filter(pk=self.pk).values(
+                    "workspace_uuid", "trading_account_id").first()
+                if old and (str(old["workspace_uuid"]) != str(self.workspace_uuid)
+                            or old["trading_account_id"] != self.trading_account_id):
+                    raise ValueError(
+                        "HostedMt5Workspace workspace_uuid/owner binding is immutable after creation")
+        super().save(*args, **kwargs)
+
+    @property
+    def is_execution_ready(self) -> bool:
+        """Display / readiness signal ONLY — True iff the last observation left the workspace CONNECTED
+        with a positive active-account match. This is NOT the order-time safety boundary: the
+        authoritative gate before every ``order_send`` remains ``evaluate_binding`` in the bridge
+        (ADR-0033). A stale readiness flag can never authorise an order on its own."""
+        return self.state == WorkspaceState.CONNECTED and self.active_account_match is True
+
+    def contract(self) -> dict:
+        """Stable, secret-free snapshot for readiness / observability consumers. The active login is
+        MASKED (never emit a full broker login) — parity with ``login_masked`` / agent_status_presenter."""
+        login = self.currently_attached_login or ""
+        return {
+            "account_id": self.trading_account_id,
+            "workspace_uuid": str(self.workspace_uuid),
+            "state": self.state,
+            "active_account_match": self.active_account_match,
+            "active_login_masked": ("***" + login[-3:]) if login else "",
+            "server": self.currently_attached_server or "",
+            "is_execution_ready": self.is_execution_ready,
+            "supervision_state": self.supervision_state,
+            "remoteapp_ready": self.remoteapp_ready,
+            "last_reason": self.last_reason,
+            "last_observed_at": self.last_observed_at.isoformat() if self.last_observed_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+    def __str__(self):
+        return f"HostedMt5Workspace(acct={self.trading_account_id}, {self.state})"

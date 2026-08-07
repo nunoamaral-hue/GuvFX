@@ -185,6 +185,67 @@
       }
     ]
   },
+  "hosted_workspace_flags": {
+    "note": "ADR-0033 — the Hosted Persistent MT5 Workspace arming flags. A SEPARATE domain from the six broker-connectivity/operational-event flags and the three BETA_* gates (which is why they are not in `flags[]`). In the CURRENT increment nothing in the execution / onboarding / delivery path reads them — the workspace model + the pure active-account matcher are inert foundation, so these flags gate FUTURE increments only. All read live at runtime (Idiom B: settings-then-env, tolerant parser), all default OFF/fail-closed, and NONE carries a secret VALUE. Whether any is armed in a running environment is HOST-VERIFIED / OUTSIDE REPOSITORY CONTROL.",
+    "truthy_tokens": ["1", "true", "yes", "on"],
+    "all_defaults_off": true,
+    "flags": [
+      {
+        "name": "HOSTED_PERSISTENT_MT5_ENABLED",
+        "owner": "Backend / hosted_workspace (ADR-0033)",
+        "scope": "backend",
+        "layer": "runtime",
+        "default": "OFF",
+        "timing": "runtime",
+        "definition_site": "backend/hosted_workspace/flags.py (hosted_persistent_mt5_enabled)",
+        "depends_on": [],
+        "effect_when_enabled": "Master gate for the Hosted Persistent MT5 Workspace subsystem (user-owned persistent terminal + GuvFX attach-and-observe). NECESSARY-BUT-NOT-SUFFICIENT: it must never on its own authorise an order — the authoritative order-time boundary remains scripts/mt5_signal_bridge.py::evaluate_binding, and any future backend active-account-match gate ships fail-closed behind this flag.",
+        "effect_when_disabled": "Inert. In this increment nothing reads it (the model + pure matcher have no runtime consumer); future increments must no-op when it is OFF.",
+        "deploy_requirement": "None to toggle (read live). Arming is gated on ADR-0033 acceptance and a Sponsor-gated disposable-host pilot (per-user NTFS ACL certification, RemoteApp/AppLocker, RDS licensing).",
+        "verification": "With flag OFF: no execution/onboarding/delivery behaviour change; the workspace model is unread. Tests: backend/hosted_workspace/tests_flags.py, tests_flag_inventory.py.",
+        "rollback": "Set the flag to a false value (unset / 0); read live, so disarming is immediate with no schema change. The HostedMt5Workspace table is additive and unread while OFF.",
+        "risk": "RED",
+        "sponsor_approval_required": true,
+        "adr": "ADR-0033"
+      },
+      {
+        "name": "HOSTED_MT5_REMOTEAPP_ENABLED",
+        "owner": "Backend / hosted_workspace (ADR-0033)",
+        "scope": "backend",
+        "layer": "runtime",
+        "default": "OFF",
+        "timing": "runtime",
+        "definition_site": "backend/hosted_workspace/flags.py (hosted_mt5_remoteapp_enabled)",
+        "depends_on": ["HOSTED_PERSISTENT_MT5_ENABLED"],
+        "effect_when_enabled": "Gates the RemoteApp / seamless-window delivery path for a workspace (a distinct deploy concern from the observe/gate logic). No delivery code consumes it yet.",
+        "effect_when_disabled": "Inert; no RemoteApp delivery abstraction is wired in this increment.",
+        "deploy_requirement": "None to toggle (read live). True RemoteApp additionally requires a Windows Server RD Session Host + RDS licensing (Sponsor / commercial decision) — outside repository control.",
+        "verification": "With flag OFF: unread. Tests: backend/hosted_workspace/tests_flags.py.",
+        "rollback": "Set the flag to a false value; read live.",
+        "risk": "AMBER",
+        "sponsor_approval_required": true,
+        "adr": "ADR-0033"
+      },
+      {
+        "name": "HOSTED_MT5_ACTIVE_ACCOUNT_POLLING_ENABLED",
+        "owner": "Backend / hosted_workspace (ADR-0033)",
+        "scope": "backend",
+        "layer": "runtime",
+        "default": "OFF",
+        "timing": "runtime",
+        "definition_site": "backend/hosted_workspace/flags.py (hosted_mt5_active_account_polling_enabled)",
+        "depends_on": ["HOSTED_PERSISTENT_MT5_ENABLED"],
+        "effect_when_enabled": "Gates periodic active-account attach polling (a cadence concern, kept independent so a high-frequency global scheduler is never armed implicitly with the master gate). No poller is wired in this increment.",
+        "effect_when_disabled": "Inert; no polling scheduler exists yet.",
+        "deploy_requirement": "None to toggle (read live). A per-account poller, when built, must be operator-provisioned (cron), not repository-enforced.",
+        "verification": "With flag OFF: unread. Tests: backend/hosted_workspace/tests_flags.py.",
+        "rollback": "Set the flag to a false value; read live.",
+        "risk": "AMBER",
+        "sponsor_approval_required": true,
+        "adr": "ADR-0033"
+      }
+    ]
+  },
   "adjacent_flags_not_in_scope": {
     "note": "Present in the repo and broker-adjacent, but NOT part of the broker-connectivity / operational-event / execution-gate / health arming domain. Listed so operators do not conflate them. Values here are repo DEFAULTS only.",
     "flags": {

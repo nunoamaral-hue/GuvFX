@@ -14,6 +14,20 @@
 
 ## Execution workstream log
 
+- **2026-08-07 — Hosted Persistent MT5 Workspace: Phase-1 foundation increment (DARK, additive). Repo eng; NOT deployed. 🟢**
+  Branch `feat/hosted-mt5-workspace-foundation` (base `main` `1989b5f`). New app `backend/hosted_workspace/`
+  (ADR-0033): `HostedMt5Workspace` sibling model (OneToOne TradingAccount, immutable-binding guard,
+  secret-free `contract()`, `is_execution_ready` = display-only), a **pure fail-closed**
+  `evaluate_active_account_match` (+ `WorkspaceObservation`/`normalize_observation`) mirroring the certified
+  `evaluate_binding`, and three DARK Idiom-B flags (`HOSTED_PERSISTENT_MT5_ENABLED`,
+  `HOSTED_MT5_REMOTEAPP_ENABLED`, `HOSTED_MT5_ACTIVE_ACCOUNT_POLLING_ENABLED`) + `feature-flags.json`
+  inventory. **Inert:** nothing in execution/onboarding/delivery reads any of it; NO gate wiring, NO host
+  script, NO API, NO frontend. 22 app tests pass incl. an AST operator-mutation adequacy proof on the matcher.
+  This is a deliberate decomposition of the packet's full Phase 1 — the execution-facing wiring, Windows
+  host tooling (ACL/RemoteApp/supervision), API, onboarding and observability are DEFERRED pending ADR-0033
+  acceptance (4 design tensions) + a Sponsor-gated disposable-host pilot. Stores NO broker credential. Design
+  + repo-truth note: `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md`; ADR `docs/ADRs/0033-...`.
+
 - **2026-08-06 — Validation-Agent Monitoring Runner + Scheduler + Telegram Alert Delivery (IMPLEMENTATION + docs + tests). Repo eng; NOT deployed. 🟢**
   Branch `feat/agent-monitoring-runner` (base `main` `49cef11`, the merged PR #294). Completes the missing backend operations
   layer the two prior deploy attempts STOPPED on (merged monitoring was inert). **Durable state:**
