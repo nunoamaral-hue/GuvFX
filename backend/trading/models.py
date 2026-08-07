@@ -107,6 +107,24 @@ class TradingAccount(models.Model):
         help_text="Durable result of the last MT5 credential validation for this account.")
     validated_at = models.DateTimeField(null=True, blank=True)
 
+    # ADR-0033 — which readiness MODEL proves this account is execution-ready. DEFAULT
+    # temporary_validation (every existing account, set by the migration). persistent_workspace =
+    # attach-verified readiness (GuvFX never holds the broker password); selected per account, NEVER
+    # auto-converted. The provider only replaces the password_enc + VALIDATED eligibility layer; the
+    # order-time bridge gate remains the authoritative live check. See backend/execution/readiness.py.
+    class ReadinessProvider(models.TextChoices):
+        TEMPORARY_VALIDATION = "temporary_validation", "Temporary validation"
+        PERSISTENT_WORKSPACE = "persistent_workspace", "Persistent workspace"
+
+    readiness_provider = models.CharField(
+        max_length=32, choices=ReadinessProvider.choices,
+        default=ReadinessProvider.TEMPORARY_VALIDATION,
+        help_text="ADR-0033 readiness model used to prove execution eligibility for this account.")
+    # Durable onboarding acknowledgement for the persistent path ("this is my account"). NOT an
+    # execution authority — execution uses continuous runtime truth (the order-time gate). NULL = not
+    # confirmed.
+    workspace_confirmed_at = models.DateTimeField(null=True, blank=True)
+
     # WP1A (ADR-0028) — broker DISCONNECT is a tombstone: set on disconnect together with
     # ``is_active=False`` and credential destruction (P3-D). The row is RETAINED (never deleted), so
     # immutable Trade/execution history and PROTECT relations survive. NULL = never disconnected.

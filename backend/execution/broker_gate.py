@@ -55,6 +55,10 @@ SR_HEALTH_STALE = "broker_health_stale"
 SR_HEALTH_DISCONNECTED = "broker_health_disconnected"
 SR_RESUME_NOT_ELIGIBLE = "broker_resume_not_eligible"
 SR_HEALTH_STATE_CHANGED = "broker_health_state_changed"
+# ADR-0033 — persistent-workspace (Provider B) shared codes, so a workspace-path refusal keeps fidelity
+# at the final-dispatch gate instead of collapsing to a generic re-validate code.
+SR_ACTIVE_ACCOUNT_MISMATCH = "broker_active_account_mismatch"
+SR_WORKSPACE_NOT_READY = "broker_workspace_not_ready"
 DISPATCH_OK = "dispatch_ok"
 
 # Creation-gate eligibility code → shared vocabulary.
@@ -68,6 +72,14 @@ _ELIGIBILITY_TO_SHARED = {
     R_NOT_VALIDATED_CONNECTION_FAILED: SR_VALIDATION_FAILED,
     R_NOT_VALIDATED_TECHNICAL_ERROR: SR_VALIDATION_UNAVAILABLE,
     R_VALIDATION_STATE_UNKNOWN: SR_VALIDATION_REQUIRED,
+    # ADR-0033 Provider-B (persistent_workspace) reason codes (string literals to avoid an import cycle
+    # with execution/readiness.py) → shared vocabulary, so dispatch-time refusals stay faithful.
+    "workspace_subsystem_disabled": SR_VALIDATION_REQUIRED,
+    "workspace_missing": SR_VALIDATION_REQUIRED,
+    "workspace_not_execution_ready": SR_WORKSPACE_NOT_READY,
+    "workspace_not_connected": SR_HEALTH_DISCONNECTED,
+    "active_account_mismatch": SR_ACTIVE_ACCOUNT_MISMATCH,
+    "workspace_observation_stale": SR_HEALTH_STALE,
 }
 
 # WP3 health state → shared vocabulary (for an adverse/non-eligible contract at dispatch).
@@ -123,16 +135,14 @@ def evaluate_execution_gate(account) -> GateDecision:
         return GateDecision(True, GATE_DISABLED)
     if account is None or getattr(account, "pk", None) is None:
         return GateDecision(False, R_ACCOUNT_MISSING)
-    if not getattr(account, "is_active", False):
-        return GateDecision(False, R_ACCOUNT_INACTIVE)
-    if getattr(account, "disconnected_at", None) is not None:
-        return GateDecision(False, R_ACCOUNT_DISCONNECTED)
-    if not (getattr(account, "password_enc", "") or ""):
-        return GateDecision(False, R_CREDENTIAL_MISSING)
-    status = getattr(account, "validation_status", None)
-    if status == _VS.VALIDATED:
-        return GateDecision(True, GATE_OK)
-    return GateDecision(False, _NOT_VALIDATED.get(status, R_VALIDATION_STATE_UNKNOWN))
+    # ADR-0033 — delegate the eligibility layer to the account's readiness provider. Provider A
+    # (``temporary_validation``, default for every existing account) reproduces the exact checks that
+    # lived here (is_active → disconnected → password_enc → VALIDATED) with identical reason codes.
+    # Provider B (``persistent_workspace``) replaces ONLY password_enc + VALIDATED with attach-verified
+    # readiness, ANDed with the same is_active/disconnected checks. Import-local to break the cycle.
+    from execution.readiness import evaluate_readiness
+    decision = evaluate_readiness(account)
+    return GateDecision(decision.eligible, decision.reason_code)
 
 
 def require_execution_gate(account, *, request=None, actor="", trigger="") -> GateDecision:
