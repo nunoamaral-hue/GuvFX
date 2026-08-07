@@ -95,6 +95,38 @@ is a bridge-deployment env (default off = legacy behaviour).
 Switch-observer → pause/resume **wiring**; read-only workspace-readiness **API**; workspace/connection
 **observability** projection; the **routing** implementation + producer pin-plumbing (Tension 2); the host
 attach probe + authenticated observation; and — Sponsor-gated — the disposable-host pilot (16 checks) +
-RULE-11 NTFS-ACL certification + the commercial RDS/licensing decision. Also pre-existing and out of scope:
-`close_position` / `modify_position` are not yet identity-pinned (documented follow-up). Nothing here is
-enabled in production.
+RULE-11 NTFS-ACL certification + the commercial RDS/licensing decision. Nothing here is enabled in
+production.
+
+## 8. Increment 3 — complete trade-operation identity safety (CLOSE / MODIFY)
+
+Increment 2 identity-hardened opening orders. Increment 3 extends the **same invariant to every
+account-mutating operation**, closing the gap the ADR red-team flagged (close/modify were ungated).
+
+**MT5 mutation call-site inventory (E4)** — every `order_send` in `scripts/mt5_signal_bridge.py`:
+
+| Function | Purpose | Pre-send identity check | Status |
+|---|---|---|---|
+| `execute_mt5_trade` | PLACE (poller) | `verify_execution_binding` | ✅ Inc2 |
+| `execute_demo_order` | PLACE (HTTP `/mt5/order`) | `verify_execution_binding` | ✅ Inc2 |
+| `close_position` | CLOSE (`/mt5/close-position`) | `verify_mutation_identity` | ✅ Inc3 |
+| `modify_position` | MODIFY SL/TP (`/mt5/modify-position`) | `verify_mutation_identity` | ✅ Inc3 |
+| shadow dry-run | validation only | n/a (no `order_send`) | n/a |
+
+No other MT5 state-mutating primitive exists (grep-verified: `order_send` is the only mutation call; no
+`positions_modify`/`Close`). Every customer-account mutation now carries the identity invariant.
+
+**Mutation identity gate** (`evaluate_mutation_identity` / `verify_mutation_identity`): connected + active
+`(login, server)` match, pin **mandatory on the persistent-workspace path** (payload `require_identity_pin`
+or terminal `MT5_REQUIRE_IDENTITY_PIN`), env-optional for legacy. It deliberately does **not** require
+`trade_allowed` (a risk-reducing close/modify must not be blocked by a transient trading halt — packet E2
+"where appropriate") and does not re-check demo/live (close/modify are demo-guarded upstream). Identity is
+threaded from the request body to `close_position(ticket, identity)` / `modify_position(ticket, sl, tp,
+identity)` and re-verified **immediately before** each `order_send`. Legacy account-#1 demo close/modify
+are unchanged (no pin → connected check only). Proven by `execution/tests_bridge_mutation_identity.py`
+(oracle + AST mutation adequacy + enforcement structural guard).
+
+**Increment 3 scope note:** this increment delivers the complete trade-operation identity safety (E/F/O)
++ the E4 inventory. The remaining pilot-plumbing — durable routing wiring + server-side producer
+pin-derivation (B/C/D), observer pause/resume (G), host attach probe (I), read-only API (J), staff
+observability (K) — is **deferred** to a follow-up increment; the repository is **not** yet full-pilot-ready.
