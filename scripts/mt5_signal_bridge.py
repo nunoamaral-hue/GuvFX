@@ -222,6 +222,15 @@ def _bridge_allow_live() -> bool:
     return os.getenv("MT5_ALLOW_LIVE", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _require_identity_pin() -> bool:
+    """ADR-0033 Increment 2 (review MEDIUM). When set — on a persistent-workspace bridge — EVERY order
+    must carry a per-job identity pin and the process-env pin fallback is REFUSED. This makes identity
+    binding a property of the DEPLOYMENT (the terminal), not merely a self-declared payload flag, so a
+    shared multi-account persistent bridge cannot execute a job that omits its (login, server). Legacy
+    bridges leave it unset ⇒ exact prior behaviour."""
+    return os.getenv("MT5_REQUIRE_IDENTITY_PIN", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def evaluate_binding(acc, term, expected):
     """Pure broker-truth binding decision — no MT5, no I/O, fully unit/mutation-testable.
 
@@ -286,11 +295,26 @@ def verify_execution_binding(mt5, payload):
     try:
         acc = _acc_snapshot(mt5.account_info())
         term = _term_snapshot(mt5.terminal_info())
+        # ADR-0033 (Tension 3) — a persistent-workspace job carries a MANDATORY per-job identity pin.
+        # It is enforced when the JOB declares it (payload["require_identity_pin"]) OR when this
+        # bridge/terminal is configured to require it (MT5_REQUIRE_IDENTITY_PIN — a deployment property
+        # of a persistent-workspace bridge). In that case the expected (login, server) MUST come from the
+        # PAYLOAD (never the process env), are MANDATORY for BOTH demo and live, and a missing/half pin
+        # fails closed. Legacy jobs/bridges (neither set) keep the EXACT prior behaviour: process-env
+        # pins, optional on the demo default. Additive; never weakens the legacy path.
+        if payload.get("require_identity_pin") or _require_identity_pin():
+            exp_login = str(payload.get("expected_login") or "").strip()
+            exp_server = str(payload.get("expected_server") or "").strip()
+            if not exp_login or not exp_server:
+                return False, "identity_pin_required", {}
+        else:
+            exp_login = (os.getenv("MT5_EXPECTED_LOGIN", "").strip() or None)
+            exp_server = (os.getenv("MT5_EXPECTED_SERVER", "").strip() or None)
         expected = {
             "is_demo": bool(payload.get("is_demo", False)),
             "allow_live": _bridge_allow_live(),
-            "expected_login": (os.getenv("MT5_EXPECTED_LOGIN", "").strip() or None),
-            "expected_server": (os.getenv("MT5_EXPECTED_SERVER", "").strip() or None),
+            "expected_login": exp_login,
+            "expected_server": exp_server,
         }
         ok, reason = evaluate_binding(acc, term, expected)
         details = {}
@@ -852,6 +876,15 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
 
         logger.info(f"Sending order: {symbol} {side} {lots} @ {price}, SL={final_sl}, TP={final_tp}")
 
+        # ADR-0033 (Tension 3) — TOCTOU close: re-verify the binding as the LAST check IMMEDIATELY before
+        # order_send. The pre-flight check at function entry can have gone stale by now (a user can switch
+        # the active Navigator account mid-flow); this pre-send verification is AUTHORITATIVE. Additive
+        # strengthening only — it re-runs the same fail-closed binding gate and never weakens legacy.
+        _psok, _psreason, _psdetails = verify_execution_binding(mt5, payload)
+        if not _psok:
+            logger.error(f"Job {job_id}: PRE-SEND BINDING REJECTED: {_psreason} {_psdetails}")
+            return False, {"error": "binding_rejected", "reason": _psreason, **_psdetails}, f"binding_rejected: {_psreason}"
+
         # Send order
         result = mt5.order_send(request)
 
@@ -1168,6 +1201,13 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
             return {"ok": False, "error": "order_check_failed", "retcode": getattr(_chk, "retcode", None), "comment": getattr(_chk, "comment", "")}
 
         logger.info(f"[/mt5/order] Sending: {symbol} {side} {lots} @ {price}{sl_str}{tp_str}{prov_str} comment='{comment[:31]}'")
+
+        # ADR-0033 (Tension 3) — TOCTOU close: authoritative pre-send re-verification immediately before
+        # order_send (the pre-flight check above can be stale). Additive strengthening; never weakens legacy.
+        _psok, _psreason, _psdetails = verify_execution_binding(mt5, params)
+        if not _psok:
+            logger.error(f"[/mt5/order] PRE-SEND BINDING REJECTED: {_psreason} {_psdetails}")
+            return {"ok": False, "error": "binding_rejected", "reason": _psreason, **_psdetails}
         result = mt5.order_send(request)
 
         if result is None:
