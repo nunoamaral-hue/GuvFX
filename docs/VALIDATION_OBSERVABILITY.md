@@ -265,9 +265,11 @@ and the original `validation_terminal_missing` blocker is **not** remediated —
 The runner path performs deterministic post-probe **terminate + credential-scrub + removal-verify**
 (`validation_runner.run_once`). The in-process path relies solely on **restore-before** (the next validation's
 mirror deletes the prior run's artefacts) plus `mt5.shutdown()`. That closes the common case, but if a probe
-leaves a **lingering** terminal that holds `accounts.dat` open, the next mirror's delete pass cannot remove it
-(the label then reports `mirror_incomplete` rather than a false `restored`). Bringing the in-process path to
-full parity with the runner's post-probe terminate+scrub+verify is a **separate, host-certified follow-up**
-(it terminates processes on the live host — outside this "materialise **before** the isolation check" packet).
-Currently latent: the active Session-0 `-10004` IPC blocker fails the login before any broker `accounts.dat`
-is persisted.
+leaves a **lingering** terminal that holds `accounts.dat` open, the next mirror's delete pass cannot remove it,
+so a prior run's credential artefact can survive until the lock clears. (The `mirror_incomplete` label keys on
+`terminal64.exe` presence, not on `accounts.dat`, so it does **not** by itself detect a surviving credential
+file — it only prevents a false `restored` when the executable itself failed to materialise.) Bringing the
+in-process path to full parity with the runner's post-probe terminate+scrub+verify is a **separate,
+host-certified follow-up** (it terminates processes on the live host — outside this "materialise **before** the
+isolation check" packet). Currently latent: the active Session-0 `-10004` IPC blocker fails the login before
+any broker `accounts.dat` is persisted.
