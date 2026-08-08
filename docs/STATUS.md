@@ -14,6 +14,23 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 M-series MERGED to main + M3b-2 integration-cert entrypoint (Amber, DARK). Repo eng; NOT deployed. 🟡**
+  Sponsor-authorised merge sequencing: PRs **#305→#306→#307→#308→#309→#310** merged to `main` in dependency
+  order (M1 Guarded Attach, M2a state machine, M2b telemetry, M3a Manager, M3b-1 producer, M3b-2 agent) — each
+  genuinely CI-green + CLEAN; **zero file overlap** between M1 (bridge) and the `hosted_workspace/*` stack.
+  `main` now carries the whole certified observation chain (`make check` green; no hosted_workspace migration).
+  New integration-cert branch `feat/adr0034-m3b2-integration-cert` (off merged `main`) adds the **operator-only
+  disposable-host certification entrypoint**: `certification.py` (`classify_target_path` +
+  `run_certification` — composes M1→M3b-2→M3b-1→M3a in a **single guarded attach**, emits a SECRET-FREE
+  allow-list dict) + `management/commands/certify_workspace_observation.py` (refuses any non-disposable path
+  BEFORE touching the host; accepts NO password; not a daemon/loop/service). Tests `tests_certification.py`:
+  composition + single-attach + allow-list-only/secret-free + path classification + repo-level negative
+  controls E (wrong binding→not ready) / F (wrong path→refused) / G (missing→fail-closed, no launch) / H
+  (ambiguous→fail-closed). 166 hosted_workspace tests OK. **Empirical disposable-HOST certification (TESTs
+  A–H on the live host, never-launch/never-login/blast-radius) is PREPARED, NOT RUN** — needs Nuno's manual
+  broker login (HARD STOP) + a disposable broker-connected MT5 + host execution
+  (`docs/operations/hosted-workspace/M3B2_HOST_CERTIFICATION.md`). Nothing deployed; production untouched.
+
 - **2026-08-08 — ADR-0034 M3b-2: Hosted Workspace Agent — read-only observation pipeline (Amber, DARK). Repo eng; NOT deployed. 🟡**
   Branch `feat/adr0034-m3b2-workspace-agent` (stacked on M3b-1). First increment that touches the live
   Workspace Agent — **execution-adjacent + host-touching → Amber**. New pure orchestration

@@ -1,6 +1,20 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ ADR-0034 Hosted Workspace — implementation-led M-series; M3b-2 repo-half done (2026-08-08, DARK)
+## ▶ ADR-0034 Hosted Workspace — M-series MERGED to main; disposable-HOST cert is the gate (2026-08-08, DARK)
+M1→M3b-2 (PRs #305–#310) MERGED to `main` in dependency order; the whole observation chain
+(M1 guarded attach → M3b-2 agent → M3b-1 producer → M3a Manager) is on `main`, `make check` green, nothing
+deployed. The M3b-2 **integration-cert entrypoint** (branch `feat/adr0034-m3b2-integration-cert`:
+`certification.py` + `manage.py certify_workspace_observation`) composes the chain in a single guarded
+attach, secret-free, refusing non-disposable paths — repo-certified (166 tests + adversarial review).
+**Bounded next action (yours, HARD STOP):** run the **disposable-host certification** — on a disposable,
+broker-connected demo MT5 you have **manually logged in** (Claude never enters credentials), execute
+`manage.py certify_workspace_observation` per `docs/operations/hosted-workspace/M3B2_HOST_CERTIFICATION.md`
+and capture TESTs A–H + never-launch/never-login/blast-radius before/during/after. Success →
+`M3B2_HOST_CERTIFIED — OBSERVATION_CHAIN_PROVEN`. Do NOT begin M4 (telemetry emission). Recommended
+milestone after cert: the **Workspace Manager persistence/consumer layer** (persist decisions, drive
+transitions) BEFORE telemetry emission. No host mutation, no execution, no production enablement.
+
+## ▶ (superseded) ADR-0034 Hosted Workspace — implementation-led M-series; M3b-2 repo-half done (2026-08-08, DARK)
 Implementation-led development (Sponsor-authorised). Bounded, independently-certifiable, DARK increments on
 stacked branches: M1 Guarded-Attach (PR #305) → M2a state machine (#306) → M2b telemetry (#307) → M3a
 Workspace Manager (#308) → M3b-1 Workspace Observation Producer (#309, CERTIFIED) → **M3b-2 Hosted
