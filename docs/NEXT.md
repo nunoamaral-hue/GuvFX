@@ -1,17 +1,20 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ ADR-0034 Hosted Workspace — implementation-led M-series; M3b-1 CERTIFIED (2026-08-08, DARK)
+## ▶ ADR-0034 Hosted Workspace — implementation-led M-series; M3b-2 repo-half done (2026-08-08, DARK)
 Implementation-led development (Sponsor-authorised). Bounded, independently-certifiable, DARK increments on
 stacked branches: M1 Guarded-Attach (PR #305) → M2a state machine (#306) → M2b telemetry (#307) → M3a
-Workspace Manager (#308) → **M3b-1 Workspace Observation Producer** (branch
-`feat/adr0034-m3b1-observation-producer`, stacked on M3a). M3b-1 = the pure fail-closed boundary raw facts →
-canonical `WorkspaceObservation`, reusing the certified account matcher; REQUIRED 8-lens adversarial review
-passed (**CERTIFY**, 0 HIGH/MEDIUM); 99 hosted_workspace tests + AST mutation adequacy green. **Bounded next
-action:** open the single focused M3b-1 PR (base = M3a branch), confirm genuine CI green, and **STOP** —
-M3b-2 (Workspace Agent host process: enumerate/attach/observe on the live host, produce the snapshot) is
-execution-adjacent and requires its OWN Sponsor packet + adversarial review + host certification, and is NOT
-to be started until M3b-1 is certified and the Sponsor authorises it. No consumer wiring, no migration, no
-flag, no host mutation, no execution.
+Workspace Manager (#308) → M3b-1 Workspace Observation Producer (#309, CERTIFIED) → **M3b-2 Hosted
+Workspace Agent** (branch `feat/adr0034-m3b2-workspace-agent`, stacked on M3b-1). M3b-2 = the read-only
+observation pipeline (`agent.py` + reference adapter `agent_host.py`): locate → M1 guarded attach →
+read-only reads → `RawWorkspaceSnapshot` → producer → `WorkspaceObservation`. Observe-only, fail-closed,
+uses ONLY M1 (injected), never launch/login/order. 145 hosted_workspace tests + AST mutation + 10-lens
+adversarial review. **Bounded next action:** open the single focused M3b-2 PR (base = M3b-1 branch), confirm
+genuine CI green, and **STOP**. Two Sponsor-owned items block full closure: (1) **disposable-host
+certification** — needs a broker-connected disposable MT5 (Nuno; credentialed login is prohibited for the
+agent) + live-host execution, per `docs/operations/hosted-workspace/M3B2_HOST_CERTIFICATION.md`; (2)
+**merge-sequencing** of M1 #305 + the M3b-1 stack onto one integration base (disjoint unmerged branches). Do
+NOT begin M4 (telemetry emission) until M3b-2 is certified and the Sponsor authorises it. No consumer wiring,
+no migration, no flag, no host mutation, no execution.
 
 ## ▶ Hosted Persistent MT5 Workspace — Increment 3 shipped (2026-08-07, DARK); awaiting Sponsor
 ADR-0033 accepted-with-conditions. PR #301 (foundation) + #302 (readiness abstraction + hardened opening
