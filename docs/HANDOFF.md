@@ -44,6 +44,15 @@
   `next_job` guard touches the shared claim hot path — it is additive and behaviour-preserving (a no-op for
   the legacy row's normal empty-perms state; only restricts a mis-provisioned shared row). Focused 56/56, full
   `execution` 908/908, `make check` green. DARK/flags-OFF; no migration; no order placed. Pushed to #317.
+- **Open — capstone round-2/3 completeness (7 items, DARK).** A full-boundary audit (7 lenses) confirmed the
+  production code is behaviorally complete and closed 7 remaining items: completion endpoint provenance
+  positive control; a hosted completion-side node-**membership** entitlement gate in `views.complete` (Amber:
+  shared complete path, DARK-gated additive); `workspace.execution_ambiguous` added to the taxonomy + a
+  code-derived emit-surface test; idempotency docstring corrected; fail-safe raise-injection tests; readiness
+  split-disjunct + freshness future/None mutation tests. Two adversarial reviews returned 0 surviving
+  HIGH/MEDIUM; two self-introduced LOW defects (completion gate node-liveness bug; hand-written emit literal)
+  were corrected. Focused 90/90, full `execution`+`hosted_workspace` 1128, `make check` green (backend 3323).
+  A round-3 convergence audit is the final gate. DARK/flags-OFF; no migration; no order placed.
 - **Verified fact vs assumption.** VERIFIED: repository-complete for the full subsystem boundary (binding,
   routing, claim, worker contract, persistence, idempotency, retries, reconciliation, concurrency, telemetry,
   API contract, cert harness, tests, mutation, review, docs); all flags OFF; no migration arms; legacy

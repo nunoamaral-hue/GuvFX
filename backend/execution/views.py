@@ -457,6 +457,38 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
                 status=409,
             )
 
+        # ADR-0034 capstone (completion-half isolation): a hosted (Provider-B, node-bound) job may be
+        # COMPLETED only by a worker entitled to its node — mirroring the claim seam so the "one authorised
+        # worker" invariant holds across the WHOLE job lifecycle, not just claim. Otherwise a claim-forbidden
+        # worker (incl. the shared legacy-worker) could write a forged FINISHED provenance row + telemetry to
+        # the hosted read-model. DARK/zero-query: the flag check short-circuits before any DB access, and a
+        # non-hosted job / non-worker (staff) request is unaffected. Read-model integrity only — the live
+        # bridge gate remains the sole order authority; this places/refuses no order.
+        _wi = getattr(request, "_worker_identity", None)
+        if _wi is not None:
+            from execution.hosted_pin import is_hosted_workspace_account, pin_subsystem_enabled
+            if (pin_subsystem_enabled() and job.terminal_node_id is not None
+                    and is_hosted_workspace_account(job.account)):
+                from execution.auth import LEGACY_WORKER_ID
+                from execution.hosted_routing import ER_WORKER_NOT_ENTITLED
+                from execution.models import TerminalNode
+                _perms = _wi.worker_permissions or {}
+                _legacy = getattr(_wi, "worker_id", None) == LEGACY_WORKER_ID
+                # `or []` is null-safe against worker_permissions={"authorized_nodes": null}.
+                _nodes = set() if _legacy else set(_perms.get("authorized_nodes") or [])
+                # Entitlement here is a worker-MEMBERSHIP property, NOT node liveness: a worker may report the
+                # outcome of a job it already holds RUNNING even if its node has since entered maintenance
+                # (draining/offline/disabled). So resolve the job's node hostname WITHOUT a status filter and
+                # check authorized-node membership — otherwise a node drained mid-flight would 403 a
+                # legitimate completion and strand the already-placed order. (Claim gates on ACTIVE because it
+                # STARTS work; completion only REPORTS already-started work.)
+                _job_node = TerminalNode.objects.filter(
+                    pk=job.terminal_node_id).values_list("hostname", flat=True).first()
+                if _job_node is None or _job_node not in _nodes:
+                    return Response(
+                        {"detail": f"hosted completion not entitled: {ER_WORKER_NOT_ENTITLED}"},
+                        status=403)
+
         job.status = status_value
         job.result = result
         job.error_message = error_message

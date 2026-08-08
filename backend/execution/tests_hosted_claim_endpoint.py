@@ -7,6 +7,9 @@ DARK — with the subsystem OFF the very same hosted job claims exactly like a l
 """
 from __future__ import annotations
 
+import os
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
@@ -174,3 +177,68 @@ class HostedClaimEndpointPositiveControlTests(TestCase):
         self.assertEqual(r.status_code, 204)     # legacy identity forced non-node-aware → node-L job excluded
         job.refresh_from_db()
         self.assertEqual(job.status, "PENDING")
+
+    def _complete(self, client, job_id, worker_id, secret, **body):
+        return client.post(f"/api/execution/jobs/{job_id}/complete/", body, format="json",
+                           HTTP_X_WORKER_ID=worker_id, HTTP_X_WORKER_SECRET=secret)
+
+    def test_complete_endpoint_drives_finished_provenance_and_telemetry(self):
+        # RULE-11 positive control for the COMPLETION half (symmetric with the STARTED control): the real
+        # POST /complete/ drives record_hosted_completion → FINISHED provenance row + execution_finished event.
+        from operational_events.models import OperationalEvent
+        node, job = self._armed_hosted_job("node-comp", "700555")
+        WorkerIdentity.objects.create(
+            worker_id="cw", worker_secret_hash=WorkerIdentity.hash_secret("sc"),
+            status=WorkerIdentity.Status.ACTIVE, worker_permissions={"authorized_nodes": ["node-comp"]})
+        client = APIClient()
+        with mock.patch.dict(os.environ, {"OPERATIONS_EVENTS_ENABLED": "1"}, clear=False):
+            rc = client.get(NEXT + "?worker_id=cw&job_types=CLOSE_TRADE",
+                            HTTP_X_WORKER_ID="cw", HTTP_X_WORKER_SECRET="sc")
+            self.assertEqual(rc.status_code, 200, rc.content)      # claimed → RUNNING + STARTED
+            rr = self._complete(client, job.id, "cw", "sc", status="SUCCESS", result={})
+        self.assertEqual(rr.status_code, 200, rr.content)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "SUCCESS")
+        self.assertEqual(HostedWorkspaceExecution.objects.filter(job=job, phase="FINISHED").count(), 1)
+        self.assertTrue(OperationalEvent.objects.filter(
+            event_type="workspace.execution_finished").exists())
+
+    def test_complete_endpoint_refuses_unentitled_worker(self):
+        # Completion-half isolation: a worker NOT entitled to the job's node cannot complete a hosted job —
+        # the job is left RUNNING and no FINISHED provenance is written (mirrors the claim seam).
+        node, job = self._armed_hosted_job("node-x", "700666")
+        WorkerIdentity.objects.create(
+            worker_id="owner", worker_secret_hash=WorkerIdentity.hash_secret("so"),
+            status=WorkerIdentity.Status.ACTIVE, worker_permissions={"authorized_nodes": ["node-x"]})
+        WorkerIdentity.objects.create(
+            worker_id="intruder", worker_secret_hash=WorkerIdentity.hash_secret("si"),
+            status=WorkerIdentity.Status.ACTIVE, worker_permissions={})  # no authorized_nodes
+        client = APIClient()
+        rc = client.get(NEXT + "?worker_id=owner&job_types=CLOSE_TRADE",
+                        HTTP_X_WORKER_ID="owner", HTTP_X_WORKER_SECRET="so")
+        self.assertEqual(rc.status_code, 200, rc.content)          # entitled worker claims → RUNNING
+        rr = self._complete(client, job.id, "intruder", "si", status="FAILED", error_message="x")
+        self.assertEqual(rr.status_code, 403, rr.content)          # unentitled completer refused
+        job.refresh_from_db()
+        self.assertEqual(job.status, "RUNNING")                    # not mutated
+        self.assertFalse(HostedWorkspaceExecution.objects.filter(job=job, phase="FINISHED").exists())
+
+    def test_complete_succeeds_even_if_node_drains_after_claim(self):
+        # Entitlement is worker MEMBERSHIP, not node liveness: a worker that legitimately claimed a job while
+        # its node was ACTIVE must still be able to REPORT the outcome after the node enters maintenance —
+        # otherwise the already-placed order's result is stranded. Node drains between claim and complete.
+        node, job = self._armed_hosted_job("node-drain", "700777")
+        WorkerIdentity.objects.create(
+            worker_id="dw", worker_secret_hash=WorkerIdentity.hash_secret("sd"),
+            status=WorkerIdentity.Status.ACTIVE, worker_permissions={"authorized_nodes": ["node-drain"]})
+        client = APIClient()
+        rc = client.get(NEXT + "?worker_id=dw&job_types=CLOSE_TRADE",
+                        HTTP_X_WORKER_ID="dw", HTTP_X_WORKER_SECRET="sd")
+        self.assertEqual(rc.status_code, 200, rc.content)          # claimed while ACTIVE → RUNNING
+        node.status = TerminalNode.Status.DRAINING                 # operator drains the node mid-flight
+        node.save(update_fields=["status"])
+        rr = self._complete(client, job.id, "dw", "sd", status="SUCCESS", result={})
+        self.assertEqual(rr.status_code, 200, rr.content)          # completion still entitled (membership)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "SUCCESS")
+        self.assertEqual(HostedWorkspaceExecution.objects.filter(job=job, phase="FINISHED").count(), 1)

@@ -30,6 +30,7 @@ class WorkspaceEvent(models.TextChoices):
     EXECUTION_PAUSED = "workspace.execution_paused", "Execution paused"
     EXECUTION_STARTED = "workspace.execution_started", "Execution started"
     EXECUTION_FINISHED = "workspace.execution_finished", "Execution finished"
+    EXECUTION_AMBIGUOUS = "workspace.execution_ambiguous", "Execution ambiguous (quarantined)"
     RECOVERING = "workspace.recovering", "Recovering"
     RECOVERED = "workspace.recovered", "Recovered"
     REMOTEAPP_CONNECTED = "workspace.remoteapp_connected", "RemoteApp connected"
@@ -53,6 +54,9 @@ EVENT_META = {
     WorkspaceEvent.EXECUTION_PAUSED: (OE.Category.EXECUTION, OE.Severity.WARNING, S.SUSPENDED),
     WorkspaceEvent.EXECUTION_STARTED: (OE.Category.EXECUTION, OE.Severity.INFO, S.EXECUTING),
     WorkspaceEvent.EXECUTION_FINISHED: (OE.Category.EXECUTION, OE.Severity.INFO, S.EXECUTION_READY),
+    # Ambiguous order_send outcome quarantined pending human resolution (never resend). A supervision edge
+    # fact, not itself a lifecycle state → canonical None.
+    WorkspaceEvent.EXECUTION_AMBIGUOUS: (OE.Category.EXECUTION, OE.Severity.WARNING, None),
     WorkspaceEvent.RECOVERING: (OE.Category.RUNTIME, OE.Severity.WARNING, S.RECOVERING),
     WorkspaceEvent.RECOVERED: (OE.Category.RUNTIME, OE.Severity.INFO, S.CONNECTED),
     WorkspaceEvent.REMOTEAPP_CONNECTED: (OE.Category.CONNECTIVITY, OE.Severity.INFO, None),

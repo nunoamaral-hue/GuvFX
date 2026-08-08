@@ -206,3 +206,30 @@ survivors were then **closed as hardening**:
 Verification: focused 56/56; full `execution` 908/908; `execution`+`hosted_workspace` green; `make check`
 green. Still DARK/flags-OFF; no migration; no order placed; the live bridge gate remains the sole order
 authority.
+
+### 7b. Round-2/3 completeness remediation (full-boundary audit)
+
+A comprehensive full-boundary audit (7 lenses → refute → synthesize) confirmed the production code is
+behaviorally complete and closed 7 remaining test/doc/pre-arming items — all DARK, no order:
+
+- **Completion provenance (was MEDIUM)** — an endpoint-level positive control now proves `POST /complete/`
+  drives `record_hosted_completion` → the FINISHED `HostedWorkspaceExecution` row + `execution_finished`
+  emission (was direct-call only; symmetric with the STARTED control).
+- **Completion-half isolation** — `views.complete` now enforces hosted node entitlement by worker
+  **membership** of the job's node (a claim-forbidden or wrong-node worker is refused 403 without mutating;
+  the shared `legacy-worker` is forced non-node-aware). Entitlement is membership, **not** node liveness — a
+  worker may still report the outcome of a job it holds after its node enters maintenance (drain-mid-flight
+  test). DARK/zero-query while off; non-hosted/legacy completion unchanged.
+- **Ambiguous telemetry** — `workspace.execution_ambiguous` is now a `WorkspaceEvent` member routed through
+  `build_workspace_event`; a code-DERIVED emit-surface test detects any future emit drifting out of the enum.
+- **Idempotency docstring** — corrected to state the key is provenance/audit only (not the order-time dedup)
+  and name the real guards (single-claim + never-re-enqueue + bridge comment guard + `(job,phase)` unique).
+- **Fail-safe** — raise-injection tests prove the provenance/telemetry try/except swallows a raising recorder
+  or DB write without propagating (never 500s an already-committed claim/completion).
+- **Readiness mutation adequacy** — the dispatch-path `RW_WORKSPACE_NOT_READY` compound is split into two
+  single-disjunct tests; freshness future(`age<0`)/`None` branches independently covered.
+
+Two adversarial reviews of the fixes (round-2 fixes + the completion gate) returned **0 surviving HIGH / 0
+MEDIUM**; both self-introduced LOW defects (the completion gate's node-liveness bug + a hand-written
+emit-surface literal) were then corrected. Verification: focused 90/90; full `execution`+`hosted_workspace`
+1128; `make check` green (backend 3323).

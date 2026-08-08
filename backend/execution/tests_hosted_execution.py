@@ -240,3 +240,44 @@ class RetryStanceTests(TestCase):
         }
         unexpected = [p for p in out if p not in allowed]
         self.assertEqual(unexpected, [], f"unexpected may_retry consumer(s): {unexpected}")
+
+
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True)
+class FailSafeTests(TestCase):
+    """Failure-matrix row 'completion callback / telemetry / DB failure -> fail-safe': the provenance/telemetry
+    seam is called post-commit from the hot claim/complete paths, so a raising recorder or DB write MUST be
+    swallowed (return False) and NEVER propagate — otherwise an already-committed RUNNING/completed job would
+    500 the worker. These prove the documented fail-safe instead of trusting the try/except by inspection."""
+
+    def test_dispatch_swallows_raising_telemetry(self):
+        acct, _ = _account()
+        job = _close_job(acct)
+        with _ops_on(), mock.patch("execution.hosted_execution.record_event",
+                                   side_effect=RuntimeError("boom")):
+            self.assertFalse(HE.record_hosted_dispatch(job))   # returns False, does NOT raise
+        # the STARTED provenance row was still written (get_or_create runs before the emit)
+        self.assertTrue(HostedWorkspaceExecution.objects.filter(job=job, phase="STARTED").exists())
+
+    def test_dispatch_swallows_raising_db_write(self):
+        acct, _ = _account()
+        job = _close_job(acct)
+        with _ops_on(), mock.patch(
+                "execution.models.HostedWorkspaceExecution.objects.get_or_create",
+                side_effect=RuntimeError("db boom")):
+            self.assertFalse(HE.record_hosted_dispatch(job))   # swallowed, no propagation
+
+    def test_completion_swallows_raising_telemetry(self):
+        acct, _ = _account()
+        job = _close_job(acct)
+        job.status = ExecutionJob.Status.SUCCESS
+        job.save(update_fields=["status"])
+        with _ops_on(), mock.patch("execution.hosted_execution.record_event",
+                                   side_effect=RuntimeError("boom")):
+            self.assertFalse(HE.record_hosted_completion(job))
+
+    def test_stamp_key_swallows_raising_save(self):
+        acct, _ = _account()
+        job = _close_job(acct)
+        with mock.patch.object(job, "save", side_effect=RuntimeError("save boom")):
+            key = HE.stamp_hosted_idempotency_key(job)         # computes key, save fails, no propagation
+        self.assertTrue(key.startswith("HWX-"))

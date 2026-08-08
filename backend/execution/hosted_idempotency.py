@@ -2,11 +2,16 @@
 
 Two safety-critical, side-effect-free pieces:
 
-1. ``hosted_idempotency_key`` — a deterministic identity that binds an execution attempt to its FULL intended
-   context (workspace + broker login/server + job + operation + strategy). It cannot collide across users,
-   workspaces, broker accounts, strategies, execution jobs, operation types, or routes, so the same logical
-   order can never be placed twice. Secret-free: the broker login is an identifier folded into a SHA-256
-   digest, never exposed in customer-visible output.
+1. ``hosted_idempotency_key`` — a deterministic PROVENANCE/AUDIT identity that binds one execution attempt to
+   its full intended context (workspace + broker login/server + job + operation + strategy). It is injective
+   (any differing component → a different key) and secret-free (the broker login is an identifier folded into
+   a SHA-256 digest, never exposed in customer-visible output). It is **provenance only**: it is stamped onto
+   the ``ExecutionJob`` + the ``HostedWorkspaceExecution`` rows and read by NOTHING at the order boundary
+   (the bridge never consults it). Because ``job_id`` is a component, two ExecutionJobs for the same logical
+   intent get two DIFFERENT keys — so the key is NOT the duplicate-order guard. The actual order-time
+   duplicate prevention is: single-claim (``select_for_update(skip_locked)`` in ``views.next_job``) + the
+   backend never re-enqueuing a resolved job + the bridge's per-job COMMENT open-position guard
+   (``find_existing_execution``) + the ``(job, phase)`` uniqueness on ``HostedWorkspaceExecution``.
 
 2. ``classify_ambiguous_result`` — after an ambiguous ``order_send`` (timeout / crash / unknown response),
    the outcome is decided from reconciled broker/terminal TRUTH, never re-sent blindly. Only

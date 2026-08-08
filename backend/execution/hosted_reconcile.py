@@ -99,14 +99,21 @@ def _alert_if_ambiguous(job, wuuid, classification, quarantined, correlation_id)
         return False
     try:
         from operational_events.events import record_event
-        from operational_events.models import OperationalEvent as OE
+
+        from hosted_workspace.telemetry import WorkspaceEvent, build_workspace_event
+        # Route through the workspace.* taxonomy (like the started/finished emits) so this safety event gets a
+        # consistent category/severity + the taxonomy's secret-free redaction, and is a real member of the
+        # WorkspaceEvent enum rather than a hand-rolled string. Preserves event_type + WARNING severity.
+        kwargs = build_workspace_event(
+            WorkspaceEvent.EXECUTION_AMBIGUOUS, wuuid, account_id=getattr(job, "account_id", None),
+            correlation_id=str(correlation_id or ""),
+            summary="hosted ambiguous send — quarantined, human resolution required",
+            detail={"job_id": job.pk, "classification": classification})
+        kwargs.pop("account_id", None)
+        metadata = kwargs.pop("detail", None)
         dto = record_event(
-            category=str(OE.Category.EXECUTION), event_type="workspace.execution_ambiguous",
-            severity=str(OE.Severity.WARNING), account=getattr(job, "account", None),
-            source=SOURCE, summary="hosted ambiguous send — quarantined, human resolution required",
-            reason_code=str(classification), correlation_id=str(correlation_id or ""),
-            customer_visible=False,
-            metadata={"workspace_uuid": wuuid, "job_id": job.pk, "classification": classification},
+            **kwargs, account=getattr(job, "account", None), metadata=metadata, source=SOURCE,
+            correlation_id=str(correlation_id or ""),
             dedup_key=f"{wuuid}:workspace.execution_ambiguous:{job.pk}"[:200])
         return dto is not None
     except Exception:  # noqa: BLE001

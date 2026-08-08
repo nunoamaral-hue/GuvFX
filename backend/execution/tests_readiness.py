@@ -140,6 +140,35 @@ class ProviderBTests(TestCase):
         self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
                          R.RW_OBSERVATION_STALE)
 
+    def test_not_ready_trade_disjunct_only(self):
+        # Mutation adequacy for the compound RW_WORKSPACE_NOT_READY (readiness.py:150) — disjunct 1 ONLY:
+        # broker trading halted, canonical stays EXECUTION_READY. Kills a mutant dropping the
+        # `proj_trade_allowed is not True` sub-check. (The arm twin is split in tests_hosted_capstone; this is
+        # the parallel — more safety-critical — dispatch-path copy.)
+        self._ready_ws(proj_trade_allowed=False)
+        self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                         R.RW_WORKSPACE_NOT_READY)
+
+    def test_not_ready_canonical_disjunct_only(self):
+        # disjunct 2 ONLY: canonical not EXECUTION_READY, trading stays allowed. Kills a mutant dropping the
+        # `not canonical_execution_ready` sub-check — the exact "persisted cache is not authority" fail-open.
+        self._ready_ws(canonical_state=WorkspaceLifecycleState.CONNECTED)
+        self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                         R.RW_WORKSPACE_NOT_READY)
+
+    def test_future_decision_timestamp_is_stale(self):
+        # Freshness lower-bound guard (`0 <= age`): a FUTURE last_decision_at (clock skew / bad stamp) must
+        # NOT be treated as fresh. Kills a mutant dropping the `0 <=` future guard.
+        self._ready_ws(last_decision_at=timezone.now() + timezone.timedelta(seconds=120))
+        self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                         R.RW_OBSERVATION_STALE)
+
+    def test_none_decision_timestamp_is_stale(self):
+        # No decision timestamp ⇒ not fresh (fail-closed). Kills a mutant dropping the `if ts is None` branch.
+        self._ready_ws(last_decision_at=None)
+        self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                         R.RW_OBSERVATION_STALE)
+
     def test_lifecycle_checks_are_anded(self):
         self._ready_ws()
         self.acct.is_active = False
