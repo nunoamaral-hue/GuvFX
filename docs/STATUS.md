@@ -14,6 +14,23 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 Execution Engine — Provider-B enablement (readiness on canonical state + per-job pin, DARK, demo-only). NOT deployed. 🟢**
+  Branch `feat/adr0034-execution-engine` (base = fresh main `059b448` after #314 merged). A full 7-mapper
+  inventory established that the **order-safety spine already exists + is certified** (bridge order-time
+  identity authority + per-job pin + idempotency = 114 tests; central `broker_gate` + `evaluate_dispatch_gate`;
+  Provider-B readiness skeleton) — so Provider B is *wiring*, not a new engine. Closed the two backend gaps:
+  **G1** repointed `PersistentWorkspaceProvider` from the legacy `observed_*`/`state`/`last_observed_at` cache
+  (which the M3c writer does NOT maintain → would fail-close forever) to the M3c **canonical** projection
+  (`proj_*` + `canonical_execution_ready` + `last_decision_at`); **G3** added `execution/hosted_pin.py`
+  deriving the per-job identity pin (`expected_login`/`expected_server`/`is_demo`) SERVER-SIDE from durable
+  bindings, injected centrally in `ExecutionJob.save()` for every mutation type (PLACE/OPEN/CLOSE/MODIFY),
+  fail-closed. DARK + regression-safe (no-op for Provider A / Customer Zero / while flag OFF — flag checked
+  before any account access). Order authority stays the live bridge gate; persisted readiness is read-model
+  only; no order placed/closed/modified. 27 focused tests + pin mutation adequacy; `make check` green
+  (backend 3186). **GATED on Sponsor/RED decisions B (real accounts), C (isolation topology), D (per-workspace
+  arming)** before completion/arming — see `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8 +
+  `docs/operations/hosted-workspace/EXECUTION_ENGINE_HOST_CERTIFICATION.md` (prepared, not run).
+
 - **2026-08-08 — ADR-0034 M3c Workspace Core — authoritative persistence + read model (DARK). NOT deployed. 🟢**
   Branch `feat/adr0034-m3c-workspace-core` (base = the M3b-2 host-cert docs commit). Closes the observation
   chain with the one seam that *persists* the M3a manager decision, records provenance, and emits telemetry —

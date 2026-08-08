@@ -248,3 +248,81 @@ mutation-adequacy harness for the writer's novel pure predicates (`_coerce_versi
 
 **Still out of scope (unchanged):** strategy execution, `order_send`, RemoteApp/RDS, multi-user pooling,
 AppLocker, broker-credential ownership, production deployment, onboarding UI.
+
+---
+
+## 8. Execution Engine — Provider-B enablement (DARK, demo-only, 2026-08-08)
+
+A full read-only inventory of the execution surface (7 parallel mappers + synthesis) established the
+decisive fact: **the entire order-safety spine already exists and is certified** — the bridge's order-time
+identity authority (`verify_execution_binding`→`evaluate_binding` for opens; `verify_mutation_identity`→
+`evaluate_mutation_identity` for close/modify — live `account_info()`/`terminal_info()` re-read + demo/live
++ `trade_allowed` + login + server; a two-tier per-job pin; idempotency/lost-ACK), the central fail-closed
+gate (`broker_gate` creation + `evaluate_dispatch_gate` fresh at claim), and result/pause/reconcile — with
+114 bridge tests + 12 readiness tests. The Hosted Workspace (Provider B) is therefore a **binding-and-wiring**
+job, **not** a new engine. This increment closes the two backend gaps that made that spine *unreachable* for
+a hosted account.
+
+**Order-authority invariant (restated).** Persisted `canonical_execution_ready` / readiness eligibility is a
+READ-MODEL projection, never permission to trade. The authority immediately before every mutation stays the
+live bridge gate: **live broker truth + mandatory expected-account pin + order-time identity gate**. Nothing
+here replaces it with database state.
+
+### 8.1 Delivered
+
+- **G1 — Provider-B readiness on the M3c canonical projection** (`execution/readiness.py`). Latent BLOCKER:
+  `PersistentWorkspaceProvider` read the legacy `observed_*`/`state`/`last_observed_at` cache that the M3c
+  single writer deliberately does **not** maintain, so a hosted account would fail-close forever in
+  production (the readiness tests passed only because fixtures set the legacy fields directly). Repointed at
+  `proj_connected`/`proj_account_match`/`proj_trade_allowed` + `canonical_execution_ready` + `last_decision_at`
+  freshness — the fields the certified writer maintains. Every reason code preserved; fixtures updated.
+- **G3 — server-derived per-job identity pin** (`execution/hosted_pin.py` + central injection in
+  `ExecutionJob.save()`). The bridge already enforces the pin; the backend never populated it (it relied on
+  the process-global env pin). `identity_pin_for(account)` derives `expected_login` (account number),
+  `expected_server` (broker server name) and `is_demo` from the account's durable bindings, and
+  `inject_identity_pin` merges them into the payload at the single creation boundary for every mutation job
+  type (PLACE/OPEN/CLOSE/MODIFY) — so a wrong-account close/modify fails closed at the bridge's
+  mutation-identity gate (PARTS I/J). Fail-closed (pin required even if a binding value is missing); never
+  clobbers a caller-supplied pin.
+
+**DARK + regression-safe.** Both are no-ops (`{}` / `False`) for a non-Provider-B account and while
+`HOSTED_PERSISTENT_MT5_ENABLED` is OFF — the flag is checked *before* any account access, so the legacy
+Provider-A / Customer-Zero path is byte-for-byte unchanged with zero added overhead. No order is placed,
+closed, or modified by this change. Persists / emits no credential (login/server are identifiers).
+
+### 8.2 Decision A — RESOLVED (Amber, per packet PART D)
+
+Provider-B readiness must read exactly one field set. Chosen: the M3c **canonical** projection (the certified,
+row-locked, single-writer output), not the legacy cache. The legacy `observed_*` fields become vestigial for
+the execution path (still present for the inert ADR-0033 foundation). This is the direct implementation of
+"the persistent-workspace path uses Workspace Core."
+
+### 8.3 Genuine decisions that GATE the remainder (surfaced, not forced)
+
+These block full engine completion and any arming; each is a STOP condition (new architecture decision /
+production-arming / RED authority). None is taken in this increment.
+
+- **Decision B — real (customer-logged-in) accounts: RED.** The whole hosted stack is demo-pinned
+  (`is_demo=True`; bridge close/modify refuse `trade_mode != 0`; the certified matcher hard-codes
+  demo/allow_live=False). The product framing implies real accounts, which needs live authorisation across
+  the match layer + bridge close/modify. Per the governance overlay this is **RED — requires Nuno's explicit
+  approval**. This increment stays demo-only.
+- **Decision C — isolation topology: Sponsor/deployment.** One bridge per workspace (pinned by `attach_path`)
+  vs a shared worker with strict `TerminalNode`/account entitlement + the mandatory per-job pin. Determines
+  routing (G4), provisioning (G5) and the host/cost model. The per-job pin (delivered) is belt-and-braces
+  for either; the topology commitment is deferred to host certification.
+- **Decision D — per-workspace execution mode: Amber-to-RED.** Real orders on the auto path require the
+  GLOBAL `ExecutionControl.signal_execution_mode=DEMO` lever; there is no per-workspace scope. Arming one
+  hosted workspace today would flip the global gate for every source. Per-workspace scoping touches the
+  AND-gate SSOT and is required *before any arming* — out of scope for this DARK increment.
+- **PART M — workspace-level `EXECUTING` is not a faithful model** of N concurrent per-strategy jobs on one
+  account (it would oscillate/corrupt). Per PART M's own guidance this is surfaced as an architecture finding
+  rather than forced: in-flight execution is a per-`ExecutionJob` fact, not a workspace lifecycle flip.
+
+### 8.4 Remaining repository work (unblocked once B/C decided), for a follow-up increment
+
+G2 scheduled observation→persist runner (so `last_decision_at` freshness advances — needs the host agent /
+Decision C); G4 fail-closed account↔worker entitlement at claim (topology-dependent, Decision C); G5 gated
+provisioning/opt-in seam; G6 bridge deploy asserting `MT5_GUARDED_ATTACH` + `MT5_REQUIRE_IDENTITY_PIN`;
+G9 workspace-degradation→pause producer + resume caller; G10 hosted idempotency/comment-key contract. Each is
+DARK and demo-only until B/C/D are decided; none arms production.

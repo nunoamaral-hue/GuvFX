@@ -1,6 +1,22 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ ADR-0034 Hosted Workspace — M3c Workspace Core DELIVERED (DARK); Sponsor picks next subsystem (2026-08-08)
+## ▶ ADR-0034 Execution Engine — Provider-B enablement DELIVERED (DARK, demo-only); GATED on decisions B/C/D (2026-08-08)
+Branch `feat/adr0034-execution-engine` (base fresh main `059b448`, NOT merged). Inventory proved the
+order-safety spine already exists + is certified (bridge order-time identity authority + per-job pin +
+idempotency = 114 tests; central gate; Provider-B readiness skeleton) — Provider B is *wiring*, not a new
+engine. Delivered the two backend gaps: **G1** repointed Provider-B readiness from the legacy cache (which the
+M3c writer doesn't maintain → would fail-close forever) to the M3c **canonical** projection; **G3** added the
+server-derived per-job identity pin, injected centrally in `ExecutionJob.save()` for every mutation type,
+fail-closed. DARK + regression-safe (Provider A / Customer Zero / dark = no-op); order authority stays the
+live bridge gate; no order placed/closed/modified. 27 tests + pin mutation; `make check` green (backend 3186).
+**Bounded next action (Sponsor decision):** decide **B** (real vs demo-only accounts — RED), **C** (isolation
+topology: one-bridge-per-workspace vs shared+entitlement), **D** (per-workspace execution-mode scoping before
+any arming). Those unblock the remaining repository work (G2 observation runner, G4 entitlement, G5
+provisioning, G9 pause/resume producer, G10 hosted idempotency-key) and the demo-only host certification
+(`docs/operations/hosted-workspace/EXECUTION_ENGINE_HOST_CERTIFICATION.md`, prepared/not run). Do NOT arm.
+See `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.
+
+## ▶ (superseded) ADR-0034 Hosted Workspace — M3c Workspace Core DELIVERED (DARK); Sponsor picks next subsystem (2026-08-08)
 The **Workspace Core** subsystem is complete on branch `feat/adr0034-m3c-workspace-core` (DARK, not merged):
 the observation chain now flows Agent→Snapshot→Observation→Manager→Decision → **authoritative persistence**
 (single `select_for_update` writer, stale-observation + stale-decision protection, idempotent replay, version

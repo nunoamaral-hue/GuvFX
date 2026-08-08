@@ -79,6 +79,13 @@ def inject_identity_pin(job) -> bool:
         return False
     payload = dict(getattr(job, "payload", None) or {})
     for key, value in pin.items():
-        payload.setdefault(key, value)  # never clobber an explicit caller-supplied pin
+        # The EXPECTED identity values (login/server/is_demo) respect an explicit caller-supplied value
+        # (setdefault); but ``require_identity_pin`` is the safety-critical ENABLE flag — it is FORCED on for
+        # a Provider-B mutation and can never be disabled by a payload, so a hosted order can never go
+        # unpinned even if a future caller mistakenly set it False.
+        if key == "require_identity_pin":
+            payload[key] = True
+        else:
+            payload.setdefault(key, value)
     job.payload = payload
     return True

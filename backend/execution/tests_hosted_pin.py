@@ -131,6 +131,15 @@ class InjectPinTests(TestCase):
         self.assertEqual(job.payload["expected_login"], "CALLER_SET")  # setdefault preserves the caller's
         self.assertTrue(job.payload["require_identity_pin"])           # but fills the missing keys
 
+    @override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True)
+    def test_require_pin_enable_flag_cannot_be_disabled_by_payload(self):
+        # The ENABLE flag is safety-critical: a payload can never turn the pin OFF for a hosted mutation.
+        acct = _account(provider=PERSISTENT_WORKSPACE, login="700900")
+        job = self._job(acct, payload={"require_identity_pin": False, "ticket": 3})
+        inject_identity_pin(job)
+        self.assertTrue(job.payload["require_identity_pin"])   # forced on, not setdefault
+        self.assertEqual(job.payload["expected_login"], "700900")
+
     def test_inject_returns_false_when_dark(self):
         acct = _account(provider=PERSISTENT_WORKSPACE)
         job = self._job(acct)
