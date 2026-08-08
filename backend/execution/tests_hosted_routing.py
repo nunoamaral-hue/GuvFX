@@ -151,6 +151,20 @@ class ClaimEntitlementTests(TestCase):
         self.assertTrue(HR.authorize_hosted_claim(self._job(acct), worker_is_node_aware=False).ok)
 
 
+class ClaimDarkOverheadTests(TestCase):
+    """The claim authorizer must add ZERO queries while the subsystem is dark (flag checked before any
+    account access) — the regression the subsystem review flagged."""
+
+    def test_dark_claim_issues_no_query(self):
+        acct = _armed_account(provider=PERSISTENT_WORKSPACE)  # a Provider-B-shaped account, but dark (no flag)
+        job = ExecutionJob.objects.create(job_type=ExecutionJob.JobType.CLOSE_TRADE, account=acct,
+                                          payload={"ticket": 1})
+        job = ExecutionJob.objects.get(pk=job.pk)  # fresh ⇒ job.account is a LAZY FK (uncached)
+        with self.assertNumQueries(0):              # dark short-circuit must never dereference job.account
+            d = HR.authorize_hosted_claim(job, worker_is_node_aware=True)
+        self.assertTrue(d.ok)  # pass-through while dark
+
+
 class MutationSurfaceStructuralTests(TestCase):
     """PART 6/19 — a machine-checkable guard so a new MT5 mutation job type cannot be added without also
     being pinned. If someone adds a new order/close/modify JobType, this test forces them to decide whether

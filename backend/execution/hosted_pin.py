@@ -33,6 +33,12 @@ def _provider_b_pin_enabled() -> bool:
         return False
 
 
+def pin_subsystem_enabled() -> bool:
+    """Public, cheap flag check (no account access) — the DARK master gate. Callers use this to short-circuit
+    BEFORE dereferencing ``job.account``, so a dark subsystem adds zero queries/overhead."""
+    return _provider_b_pin_enabled()
+
+
 def is_hosted_workspace_account(account) -> bool:
     """True iff this account executes via the Hosted Workspace (Provider B) path AND the subsystem is on."""
     if account is None or not _provider_b_pin_enabled():

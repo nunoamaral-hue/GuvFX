@@ -109,11 +109,13 @@ def authorize_hosted_claim(job, *, worker_is_node_aware: bool) -> RouteDecision:
     NULL route) AND is being claimed by a node-aware, non-legacy/non-shared worker (no shared-worker
     entitlement). One workspace → one process → one route → one authorised worker.
 
-    DARK/zero-overhead: while the subsystem is dark ``is_hosted_workspace_account`` short-circuits on the flag
-    before touching the account, so legacy claims are byte-for-byte unchanged.
+    DARK/zero-overhead: the master flag is checked FIRST (``pin_subsystem_enabled``), before ``job.account``
+    is ever dereferenced, so a dark subsystem adds no query and legacy claims are byte-for-byte unchanged.
     """
+    from execution.hosted_pin import is_hosted_workspace_account, pin_subsystem_enabled
+    if not pin_subsystem_enabled():
+        return RouteDecision(True, ER_ROUTE_OK)  # dark ⇒ no account access, zero extra query
     account = getattr(job, "account", None)
-    from execution.hosted_pin import is_hosted_workspace_account
     if not is_hosted_workspace_account(account):
         return RouteDecision(True, ER_ROUTE_OK)  # not a hosted job — existing behaviour, untouched
     route = resolve_hosted_route(account)         # owner-bound + armed + server-derived identity

@@ -275,9 +275,10 @@ class WriterTelemetryTests(_Base):
         self.assertEqual(ws.state, WorkspaceState.NOT_PROVISIONED)
         self.assertIsNone(ws.observed_connected)
         self.assertIsNone(ws.active_account_match)
-        # CRITICAL: the writer must NOT stamp the legacy ``last_observed_at`` — it is the freshness key of
-        # the LIVE execution gate (execution.readiness._observation_fresh); stamping it without the
-        # ``observed_*`` snapshot it dates would fail-OPEN that gate. M3c owns ``last_decision_at`` instead.
+        # CRITICAL: the writer stamps ``last_decision_at`` (the freshness key execution.readiness.
+        # _observation_fresh reads — ADR-0034 G1) and leaves the LEGACY, now-vestigial ``last_observed_at``
+        # untouched. Re-pointing readiness back to ``last_observed_at`` (which the writer never advances)
+        # would fail readiness CLOSED forever — do not.
         self.assertIsNone(ws.last_observed_at)
         self.assertIsNotNone(ws.last_decision_at)
 
