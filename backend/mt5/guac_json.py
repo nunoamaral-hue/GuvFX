@@ -79,6 +79,29 @@ def build_guac_data_url(
     return f"{base_url}/#/client/{client_id}?data={data_q}"
 
 
+def _dedicated_rdp_base_parameters(*, host, port, windows_username, windows_password) -> dict:
+    """The shared, restricted RDP parameter block used by BOTH the full-desktop dedicated session
+    (``build_dedicated_rdp_payload``) and the RemoteApp/seamless-window delivery variant
+    (``build_remoteapp_rdp_payload``). Extracted so the two payload builders can never DRIFT apart on the
+    redirect/isolation hardening (no client drive, no clipboard copy/paste, no audio) — the architecture
+    rule requires one canonical delivery pipeline, not two forks. The output for the dedicated builder is
+    byte-identical to its previous inline dict."""
+    return {
+        "hostname": host,
+        "port": str(port),
+        "username": windows_username,
+        "password": windows_password,
+        "security": "any",
+        "ignore-cert": "true",
+        "color-depth": "24",
+        "resize-method": "display-update",
+        "enable-drive": "false",
+        "enable-audio": "false",
+        "disable-copy": "true",
+        "disable-paste": "true",
+    }
+
+
 def build_dedicated_rdp_payload(
     *,
     username: str,
@@ -106,20 +129,72 @@ def build_dedicated_rdp_payload(
         "connections": {
             conn_id: {
                 "protocol": "rdp",
-                "parameters": {
-                    "hostname": host,
-                    "port": str(port),
-                    "username": windows_username,
-                    "password": windows_password,
-                    "security": "any",
-                    "ignore-cert": "true",
-                    "color-depth": "24",
-                    "resize-method": "display-update",
-                    "enable-drive": "false",
-                    "enable-audio": "false",
-                    "disable-copy": "true",
-                    "disable-paste": "true",
-                },
+                "parameters": _dedicated_rdp_base_parameters(
+                    host=host, port=port,
+                    windows_username=windows_username, windows_password=windows_password),
+            }
+        },
+    }
+
+
+def normalize_remote_app(remote_app: str) -> str:
+    """FreeRDP requires the RemoteApp program alias to be prefixed with ``||`` (the ``||<alias>`` form
+    names an application published on the RD Session Host's RemoteApp allow-list). Idempotent: an alias
+    that already carries the prefix is returned unchanged. Rejects an empty alias fail-closed — a
+    RemoteApp connection with no program would fall back to a full desktop, defeating single-app lockdown."""
+    app = (remote_app or "").strip()
+    if not app:
+        raise ValueError("remote_app alias is required for a RemoteApp payload (single-app lockdown)")
+    return app if app.startswith("||") else f"||{app}"
+
+
+def build_remoteapp_rdp_payload(
+    *,
+    username: str,
+    windows_username: str,
+    windows_password: str,
+    host: str,
+    remote_app: str,
+    remote_app_dir: str = "",
+    remote_app_args: str = "",
+    port: str = "3389",
+    conn_id: str = "mt5-workspace",
+) -> dict:
+    """
+    ADR-0034 Workspace Delivery — the RemoteApp (seamless-window) variant of the dedicated RDP payload.
+
+    Identical isolation posture to ``build_dedicated_rdp_payload`` (non-admin ``windows_username``, no drive
+    redirection, no clipboard copy/paste, no audio; the Windows password rides ONLY inside the AES-encrypted
+    guacamole-auth-json token) PLUS the FreeRDP RemoteApp parameters so the session publishes exactly ONE
+    application (MT5) as a seamless window instead of a full desktop:
+
+    - ``remote-app``      — ``||<alias>`` of the app published on the host's RemoteApp allow-list.
+    - ``remote-app-dir``  — working directory (the account's portable-MT5 ``terminal`` dir).
+    - ``remote-app-args`` — command line (``/portable``).
+
+    This is the EXACT payload a future RDS/RemoteApp deployment will consume; it is generated independently
+    of whether the host RemoteApp role is installed yet (repository completion is host-independent, ADR-0034
+    Delivery). Printing redirection is additionally disabled here — a RemoteApp window must not open a print
+    path back to the client. Every value is SERVER-DERIVED by the caller; nothing here is client-supplied.
+    """
+    expires_ms = int(time.time() * 1000) + 3_600_000
+    unique_username = f"{username}-{uuid.uuid4().hex[:12]}"
+    parameters = _dedicated_rdp_base_parameters(
+        host=host, port=port,
+        windows_username=windows_username, windows_password=windows_password)
+    parameters["remote-app"] = normalize_remote_app(remote_app)
+    parameters["enable-printing"] = "false"
+    if remote_app_dir:
+        parameters["remote-app-dir"] = remote_app_dir
+    if remote_app_args:
+        parameters["remote-app-args"] = remote_app_args
+    return {
+        "username": unique_username,
+        "expires": expires_ms,
+        "connections": {
+            conn_id: {
+                "protocol": "rdp",
+                "parameters": parameters,
             }
         },
     }

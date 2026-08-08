@@ -248,3 +248,105 @@ mutation-adequacy harness for the writer's novel pure predicates (`_coerce_versi
 
 **Still out of scope (unchanged):** strategy execution, `order_send`, RemoteApp/RDS, multi-user pooling,
 AppLocker, broker-credential ownership, production deployment, onboarding UI.
+
+## 8. Workspace Delivery — owner-authorised RemoteApp seam (DARK, 2026-08-08)
+
+The delivery subsystem builds the path by which a GuvFX user opens **their own** persistent MT5 as a
+Guacamole **RDP RemoteApp** (a single seamless window, not a full desktop) and reconnects to the **same
+persistent Windows session**. It is entirely repository-side and DARK: no production caller mints a
+delivery, both flags are OFF, and the Windows host has **no RDS/RemoteApp role installed yet** — the seam
+generates the *exact* payload a future RDS deployment will consume (§9 STOP boundary).
+
+The machinery is 90% reuse: the AES-signed `guacamole-auth-json` token, the `#/client/<id>?data=` deep
+link, the 4-field `SafeLaunchDescriptor`, and the non-admin per-account Windows identity
+(`AccountProvisioning.windows_username = guvfx_u_<id>`) already exist. "Client overrides nothing" is
+already **structural** — the browser receives only `embed_url`; host/username/credential all ride inside
+the server-minted AES blob. Delivery adds one payload variant, one owner-authorisation join, and one
+delivery-state writer.
+
+### 8.1 RemoteApp descriptor (`mt5/guac_json.py`, additive)
+
+- `build_remoteapp_rdp_payload(...)` — the RemoteApp variant of the certified dedicated RDP payload. It
+  reuses the shared `_dedicated_rdp_base_parameters` (no drive redirection, no clipboard copy/paste, no
+  audio — **so the two builders can never drift on the hardening**) and adds the FreeRDP RemoteApp params
+  `remote-app` (`||<alias>`), `remote-app-dir`, `remote-app-args`, plus `enable-printing=false`. Publishing
+  a single app (`||terminal64`) is the seamless-window + single-app-lockdown mechanism. `normalize_remote_app`
+  enforces the `||` prefix and **fails closed on an empty alias** (an empty RemoteApp would fall back to a
+  full desktop). The extraction leaves `build_dedicated_rdp_payload`'s output **byte-identical** (tested).
+
+### 8.2 Owner-authorised delivery service (`hosted_workspace/delivery.py`) — the security linchpin
+
+`authorize_workspace_delivery(user, workspace_id)` decides whether `user` may deliver a workspace and, if
+so, mints the signed descriptor. Two hard, fail-closed properties:
+
+- **Owner-bound, no mint bypass.** The workspace is resolved by its unguessable `workspace_uuid` (not a
+  sequential PK), then `trading_account.user_id` must **equal** the caller. There is **deliberately no
+  staff/superuser bypass for minting** — minting embeds the Windows credential and opens a live session, so
+  it requires actual ownership (least privilege). A non-owner receives `DA_NOT_OWNER` with **no
+  `workspace_pk`**, so nothing downstream can write their row. (Staff keep a READ-only bypass on the
+  delivery-*state* API only.)
+- **Everything server-derived.** The only client input is the workspace id. host (`workspace_node.hostname`),
+  windows-username, RemoteApp program (`terminal64`), working dir (`runtime_root\terminal`), args
+  (`/portable`), and connection id (`mt5-workspace-<uuid>`, stable → reconnect lands on the SAME session)
+  are all derived server-side. The Windows password is decrypted into a local, embedded ONLY in the AES
+  token, and never returned/logged/persisted. The caller receives only `{transport_type, embed_url,
+  session_token='', expiry}`.
+
+DARK gate is checked **first** (both `hosted_persistent_mt5_enabled()` AND `hosted_mt5_remoteapp_enabled()`
+must be ON) before any DB read — `assertNumQueries(0)` while dark. Fail-closed matrix, each a stable reason
+code: `DA_SUBSYSTEM_DISABLED`, `DA_INVALID_REQUEST`, `DA_WORKSPACE_MISSING`, `DA_NOT_OWNER`,
+`DA_NODE_UNASSIGNED`, `DA_IDENTITY_MISSING`, `DA_IDENTITY_ADMIN` (a delivered identity must be
+non-administrator — an invariant), `DA_IDENTITY_NOT_PROVISIONED`, `DA_RUNTIME_MISSING`,
+`DA_GUAC_UNCONFIGURED`, `DA_ERROR` (the `except` logs the exception **type only**, never `str(e)`).
+
+### 8.3 Delivery state, writer, read model, API (DARK)
+
+- **Model** (`HostedMt5Workspace`, additive migration `0003`): `workspace_node` (FK →
+  `execution.TerminalNode`, `SET_NULL`, nullable — server-assigned delivery host), `delivery_state`
+  (`DeliveryState`: NONE/AUTHORIZED/CONNECTED/DISCONNECTED/FAILED), `delivery_reason`,
+  `last_delivery_attempt`, `last_delivery_success`; reuses existing `remoteapp_ready`/`supervision_state`.
+  Optional `MT5Session.hosted_workspace` FK (mt5 migration `0009`, nullable) links a delivery session for
+  reconnect-reuse. Migrations are additive/reversible; deps `mt5 0009 → hosted_workspace 0003 → execution`.
+- **Single writer** (`delivery_persistence.py`): the ONLY path that mutates delivery fields or emits
+  `workspace.remoteapp_*` telemetry. Row-locked `select_for_update`; **scoped `update_fields`** touch only
+  delivery fields, so the immutable-binding guard never trips and the canonical M3c / legacy attach state
+  are untouched. `record_delivery_attempt` (AUTHORIZED/FAILED); `record_remoteapp_connected`
+  (→CONNECTED + `remoteapp_ready` + `last_delivery_success`, emits REMOTEAPP_CONNECTED);
+  `record_remoteapp_disconnected` (→DISCONNECTED + clears ready, **retains** the persistent session, emits
+  REMOTEAPP_DISCONNECTED); `assign_workspace_node` (idempotent, fail-closed on None);
+  `reusable_delivery_session` (excludes ended/failed). Telemetry is fail-open (ADR-0032) and secret-free.
+- **Read model** (`delivery_read_model.delivery_state_projection`): allow-listed, secret-free. Customer
+  view = delivery_state/reason/`remoteapp_ready`/`node_assigned`(bool)/timestamps. `staff=True` adds an
+  operator block — the delivery **host is operator-only**, never customer-facing; never a credential,
+  username, or path.
+- **API** (`delivery_views.HostedWorkspaceDeliveryStateView`): `GET
+  /api/hosted-workspace/delivery-state/?account_id=<id>`. **Read-only — no mutation endpoint** (minting is
+  the future onboarding wiring, gated). DARK 404 unless BOTH flags ON; IDOR-safe owner scoping; staff read
+  bypass; 400 on missing id; out-of-range id → 404.
+
+### 8.4 Order-authority boundary (unchanged, restated)
+
+`remoteapp_ready`/`delivery_state` mean "the window is up", **never** "an order may be sent". Nothing in
+the delivery subsystem places, sizes, or approves an order; no execution path reads these fields; the
+order-time authority remains `evaluate_binding` in the bridge. The delivery flag cannot arm execution.
+
+### 8.5 Tests + review
+
+`mt5/tests_guac_remoteapp.py` (payload restrictions inherited, `||` contract, dedicated-payload
+byte-identical, `normalize_remote_app` mutation-adequacy harness), `hosted_workspace/tests_delivery.py`
+(owner/IDOR matrix, no-mint-bypass for staff, server-derivation with a token-decrypt proof that the
+credential is inside the AES blob but absent from the return, fail-closed matrix, DARK zero-query, read
+model + API), `hosted_workspace/tests_delivery_persistence.py` (attempt/connect/disconnect semantics,
+secret-free telemetry, host-node assignment, real `MT5Session` session-reuse filter). Multi-lens
+adversarial review recorded in the PR. `make check` green.
+
+## 9. STOP boundary — the Windows RDS / RemoteApp host change (Sponsor / host)
+
+The repository subsystem is complete and testable **without** the host. What it CANNOT do — and what is a
+genuine Sponsor/production-host boundary — is make the descriptor *functional*: publishing `||terminal64`
+requires the **RD Session Host role installed** and the app on the host's **RemoteApp allow-list**, plus a
+resolved **SPLA / RDS-CAL licensing mode**, host **AppLocker/SRP** single-app lockdown, and the missing
+**TX-1 NTFS-ACL** step (the per-user runtime tree is not yet locked to `guvfx_u_<id>`). These are captured
+in the dedicated **Host Change packet** (`docs/operations/hosted-workspace/WORKSPACE_DELIVERY_HOST_CERTIFICATION.md`)
+and are NOT begun here. Any new PowerShell install artefact is bound by RULE-9/RULE-11 (ASCII-only, AST
+parse, positive+negative ACL read-back) before first host execution.

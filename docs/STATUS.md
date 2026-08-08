@@ -14,6 +14,29 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 Workspace Delivery / RemoteApp subsystem — repository-complete (DARK). NOT deployed. 🟢**
+  Branch `feat/adr0034-workspace-delivery` (base = M3c-merged `main` `059b448`). Builds the seam by which a
+  GuvFX user opens **their own** persistent MT5 as a Guacamole **RDP RemoteApp** and reconnects to the
+  **same persistent Windows session** — entirely DARK behind two OFF flags, no production caller, and with
+  **no RDS role on the host** (the seam generates the exact payload a future RDS deploy will consume).
+  **New:** `mt5/guac_json.build_remoteapp_rdp_payload` (+ shared `_dedicated_rdp_base_parameters` extraction
+  leaving the certified dedicated payload byte-identical; `normalize_remote_app` enforces `||` + empty
+  fail-closed); `hosted_workspace/delivery.authorize_workspace_delivery` — the **security linchpin**:
+  owner-bound (resolve by unguessable `workspace_uuid`, strict owner equality, **no staff mint bypass**),
+  everything server-derived (host/username/program/args/credential; client overrides nothing; password rides
+  ONLY inside the AES token), DARK-first (zero DB queries while OFF), fail-closed matrix of stable `DA_*`
+  reason codes; `delivery_persistence` single delivery-state writer (row-locked, scoped `update_fields`,
+  canonical/legacy state untouched, REMOTEAPP_CONNECTED/DISCONNECTED telemetry, host-node assignment,
+  session-reuse); `delivery_read_model` (secret-free; host operator-only) + `delivery_views`
+  `GET /api/hosted-workspace/delivery-state/` (read-only, DARK 404 unless BOTH flags ON, IDOR-safe).
+  Additive migrations `hosted_workspace 0003` + `mt5 0009` (deps clean, reversible). 50 focused delivery
+  tests (owner/IDOR, no-secret token-decrypt proof, fail-closed matrix, mutation-adequacy) + real
+  `MT5Session` reuse; `make check` green; multi-lens adversarial review. `remoteapp_ready`/`delivery_state`
+  are read-model only — order authority stays `evaluate_binding`; the flag cannot arm execution.
+  **STOP boundary:** the Windows RDS/RemoteApp install + SPLA licensing + AppLocker + TX-1 NTFS-ACL are a
+  Sponsor/host change — see `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8/§9 and the Host Change
+  packet `docs/operations/hosted-workspace/WORKSPACE_DELIVERY_HOST_CERTIFICATION.md`.
+
 - **2026-08-08 — ADR-0034 M3c Workspace Core — authoritative persistence + read model (DARK). NOT deployed. 🟢**
   Branch `feat/adr0034-m3c-workspace-core` (base = the M3b-2 host-cert docs commit). Closes the observation
   chain with the one seam that *persists* the M3a manager decision, records provenance, and emits telemetry —
