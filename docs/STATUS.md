@@ -14,6 +14,20 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 M3a: Workspace Manager decision engine (pure, DARK). Repo eng; NOT deployed. 🟢**
+  Branch `feat/adr0034-m3a-manager` (stacked on M2b). New pure/side-effect-free
+  `backend/hosted_workspace/manager.py`: `WorkspaceObservation` + `WorkspaceDecision` dataclasses +
+  `derive_workspace_decision(obs)` — the ONE authoritative deriver of canonical workspace state (no Windows/
+  MT5/persistence/telemetry-emit/execution). Answers only "given the observation, what should the state
+  become?". **EXECUTION_READY derived ONLY when all of {attached, connected, account_match, fresh,
+  trade_allowed}** (`_all_execution_conditions`); every transition validated by the M2 graph, illegal/unknown
+  → fail-closed (hold previous, ERROR). Returns which telemetry event *should* occur (no emit). Tests
+  `tests_manager.py`: oracle + illegal-transition + stale + execution-ready negatives + unknown-observation +
+  **dual AST mutation adequacy** (gate + engine, every mutant killed) + a **576-case exhaustive graph-fidelity
+  sweep** proving `execution_ready ⟹ all conditions`. 60 hosted_workspace tests OK. **No consumer, no
+  migration, no wiring** (grep-proven DARK). M3b (Workspace Agent skeleton, execution-adjacent → adversarial
+  review) next.
+
 - **2026-08-08 — ADR-0034 M2b: Workspace telemetry taxonomy (DARK foundation). Repo eng; NOT deployed. 🟢**
   Branch `feat/adr0034-m2b-telemetry` (stacked on M2a — real code dependency on the state machine). New
   pure/inert `backend/hosted_workspace/telemetry.py`: `WorkspaceEvent` taxonomy (18 `workspace.*` events,
