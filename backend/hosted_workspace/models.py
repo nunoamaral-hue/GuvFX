@@ -23,6 +23,8 @@ import uuid
 
 from django.db import models
 
+from hosted_workspace.state_machine import WorkspaceLifecycleState, WorkspaceReason
+
 
 class WorkspaceState(models.TextChoices):
     """User-owned attach lifecycle. Distinct from ``terminal_provisioning.RuntimeState`` (which assumes
@@ -79,10 +81,42 @@ class HostedMt5Workspace(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # --- ADR-0034 / M3c: authoritative canonical persisted state (ADR-0034 §3/§4) ---------------------
+    # The M2a canonical lifecycle is the state every hosted-workspace subsystem consumes. It is DISTINCT
+    # from the legacy ``state`` (WorkspaceState) above, which is the inert ADR-0033 foundation and is left
+    # untouched by the M3c writer. Written EXCLUSIVELY by ``persistence.persist_workspace_decision`` (the
+    # single authoritative state writer); no other code path mutates these fields. Still display/read-model
+    # only — the order-time authority remains ``evaluate_binding`` in the bridge.
+    canonical_state = models.CharField(
+        max_length=32, choices=WorkspaceLifecycleState.choices,
+        default=WorkspaceLifecycleState.PROVISIONING)
+    canonical_reason = models.CharField(
+        max_length=32, choices=WorkspaceReason.choices, default=WorkspaceReason.NONE)
+    # Caller-supplied strictly-increasing per-workspace observation sequence LAST APPLIED. Stale-observation
+    # protection: the writer rejects any observation whose version is <= this. 0 = never observed.
+    observation_version = models.PositiveBigIntegerField(default=0)
+    # Monotonic count of MATERIAL decisions applied (== number of WorkspaceTransition rows). Incremented by
+    # exactly one per accepted material decision; never decreases. Used as the OperationalEvent state_version.
+    decision_version = models.PositiveBigIntegerField(default=0)
+    last_decision_at = models.DateTimeField(null=True, blank=True)  # any accepted decision (incl. no-op)
+    last_transition_at = models.DateTimeField(null=True, blank=True)  # canonical-state change only
+    # Latest-observation health projection (a derived CACHE of the last applied observation; null = unknown).
+    # NOT the order gate — parity with the ``observed_*`` legacy cache but keyed to the canonical writer.
+    proj_process_running = models.BooleanField(null=True, blank=True)
+    proj_ipc_available = models.BooleanField(null=True, blank=True)
+    proj_connected = models.BooleanField(null=True, blank=True)
+    proj_account_match = models.BooleanField(null=True, blank=True)
+    proj_trade_allowed = models.BooleanField(null=True, blank=True)
+    proj_execution_ready = models.BooleanField(null=True, blank=True)
+    last_correlation_id = models.CharField(max_length=128, blank=True, default="")
+
     _IMMUTABLE_BINDING = ("workspace_uuid", "trading_account_id")
 
     class Meta:
-        indexes = [models.Index(fields=["state"], name="hostedws_state_idx")]
+        indexes = [
+            models.Index(fields=["state"], name="hostedws_state_idx"),
+            models.Index(fields=["canonical_state"], name="hostedws_canon_state_idx"),
+        ]
 
     def save(self, *args, **kwargs):
         """Enforce the immutable workspace-uuid / owner binding after creation (mirrors
@@ -127,5 +161,53 @@ class HostedMt5Workspace(models.Model):
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
+    @property
+    def canonical_execution_ready(self) -> bool:
+        """Read-model execution-readiness derived from the CANONICAL M3c state (not the legacy
+        ``is_execution_ready``). True iff the last applied decision left the workspace EXECUTION_READY.
+        Display/read-model ONLY — never the order-time gate (that remains ``evaluate_binding``)."""
+        return self.canonical_state == WorkspaceLifecycleState.EXECUTION_READY
+
     def __str__(self):
-        return f"HostedMt5Workspace(acct={self.trading_account_id}, {self.state})"
+        return f"HostedMt5Workspace(acct={self.trading_account_id}, {self.state}/{self.canonical_state})"
+
+
+class WorkspaceTransition(models.Model):
+    """ADR-0034 / M3c — append-only provenance of every MATERIAL canonical-state decision applied by the
+    single authoritative writer (``persistence.persist_workspace_decision``).
+
+    One row per material change (canonical-state change, reason change, or execution-readiness change). It
+    is the audit trail behind ``HostedMt5Workspace.canonical_state`` AND the idempotency/dedupe source for
+    the matching ``workspace.*`` operational event: ``dedupe_key`` is reused verbatim as the event's
+    ``dedup_key``, so a replayed observation can never double-append a transition OR double-emit an event.
+
+    Immutable by contract: rows are only ever created, never updated (no field mutation path exists). Carries
+    NO credential — ``from_state``/``to_state``/``reason`` are canonical enum values; identifiers only.
+    """
+    workspace = models.ForeignKey(
+        HostedMt5Workspace, on_delete=models.CASCADE, related_name="transitions")
+    from_state = models.CharField(max_length=32)
+    to_state = models.CharField(max_length=32)
+    reason = models.CharField(max_length=32, blank=True, default="")
+    # The observation sequence + resulting decision sequence that produced this transition (provenance).
+    observation_version = models.PositiveBigIntegerField()
+    decision_version = models.PositiveBigIntegerField()
+    state_changed = models.BooleanField(default=False)  # canonical_state actually moved
+    execution_ready_changed = models.BooleanField(default=False)
+    telemetry_event = models.CharField(max_length=64, blank=True, default="")  # emitted workspace.* type
+    source = models.CharField(max_length=64, blank=True, default="")
+    correlation_id = models.CharField(max_length=128, blank=True, default="")
+    # Idempotency handle: unique per (workspace, observation_version, to_state, reason). A replay collides.
+    dedupe_key = models.CharField(max_length=200, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["workspace", "-created_at"], name="hostedws_tr_ws_created_idx"),
+            models.Index(fields=["correlation_id"], name="hostedws_tr_corr_idx"),
+        ]
+
+    def __str__(self):
+        return (f"WorkspaceTransition(ws={self.workspace_id}, {self.from_state}->{self.to_state}, "
+                f"obs={self.observation_version}, dec={self.decision_version})")

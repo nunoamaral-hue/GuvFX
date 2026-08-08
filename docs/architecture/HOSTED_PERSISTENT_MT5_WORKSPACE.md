@@ -162,3 +162,89 @@ Multi-user concurrency needs the RDS role (currently forbidden) + 1 RDS CAL/user
 software for external paying customers is commercial hosting → **SPLA** *or* **Windows Server + RDS
 CALs with Software Assurance** *or* **AVD** — a Sponsor/commercial decision with a licensing specialist.
 Implementation stays licensing-provider-agnostic where practical. **No purchase, no RDS install.**
+
+---
+
+## 7. M3c — Workspace Core: authoritative persistence + read model (DARK, 2026-08-08)
+
+The M-series (ADR-0034) built the pure observation chain: **M1** guarded attach → **M3b-2** agent →
+**M3b-1** producer → **M3a** manager decision. Every piece is pure/deterministic and, until now, wrote
+nothing. **M3c** closes the loop by adding the one seam that *persists* the manager's decision, records
+its provenance, and emits its telemetry — while remaining fully DARK (no production caller, flag-gated
+API/telemetry). It is the Workspace **Core** subsystem: `Agent → RawSnapshot → Observation → Manager →
+Decision → **Authoritative Persistence** → **Telemetry** → **Read Model / API**`.
+
+### 7.1 Model (`models.py`, additive)
+
+- `HostedMt5Workspace` gains the **canonical** M3c fields (distinct from, and additive to, the inert
+  legacy `WorkspaceState` block): `canonical_state` (M2a `WorkspaceLifecycleState`), `canonical_reason`
+  (M2a `WorkspaceReason`), `observation_version` (last-applied caller sequence), `decision_version`
+  (count of material decisions), `last_decision_at`, `last_transition_at`, a latest-observation health
+  projection cache (`proj_process_running/ipc_available/connected/account_match/trade_allowed/
+  execution_ready`, nullable), and `last_correlation_id`. Property `canonical_execution_ready` is the
+  read-model readiness flag — **display only, never the order gate**.
+- New append-only **`WorkspaceTransition`** — one row per *material* decision (state change, reason
+  change, or execution-readiness change): `from_state`/`to_state`/`reason`, `observation_version`/
+  `decision_version`, `state_changed`/`execution_ready_changed`, `telemetry_event`, `source`,
+  `correlation_id`, and a **unique `dedupe_key`** (`{uuid}:{obs_version}:{to_state}:{reason}`). The
+  dedupe key is reused verbatim as the emitted `OperationalEvent.dedup_key`, so a replay double-appends
+  neither a transition nor an event. Rows are only ever created, never updated. Stores no credential.
+- Migration `0002` is **additive / deterministic / reversible / legacy-safe** — `CreateModel` +
+  `AddField`(defaults) + `AddIndex` only; no data migration, no backfill. Proven by apply → reverse to
+  `0001` → re-apply → `makemigrations --check` clean.
+
+### 7.2 Single authoritative writer (`persistence.persist_workspace_decision`)
+
+The **only** code path that mutates the canonical fields, appends provenance, or emits `workspace.*`
+telemetry. Guarantees (all fail-closed):
+
+1. **Row-level serialisation** — `transaction.atomic` + `select_for_update` on the workspace row for the
+   whole decision; concurrent observations cannot interleave a read-modify-write.
+2. **Stale-observation protection** — caller supplies a strictly-increasing per-workspace
+   `observation_version`; `<= stored` ⇒ `REJECTED_STALE` (no mutation); non-positive/non-int (incl.
+   `bool`) ⇒ `REJECTED_INVALID`.
+3. **Stale-decision protection** — the transition legality is **re-validated against the LOCKED
+   `canonical_state`** (`evaluate_workspace_transition`), never the decision's own premise; an illegal
+   non-idempotent move ⇒ `REJECTED_ILLEGAL`, holds the stored state. (A decision derived against an
+   out-of-date view is rejected even at a higher version.)
+4. **Idempotency** — a material decision writes exactly one `WorkspaceTransition` via `get_or_create`
+   on `dedupe_key`; the same key reuses the same `OperationalEvent.dedup_key`.
+5. **Atomic state + event** — state update, transition row, and telemetry all commit in one
+   transaction. Telemetry (`record_event`) is fail-open (ADR-0032) with its own savepoint, so a
+   telemetry hiccup can never roll back a committed state change; a rolled-back state change emits no
+   event. **Telemetry is emitted ONLY here, ONLY on a real canonical-state change, ONLY when the
+   transition row was freshly created.** The builder's `account_id`/`detail` are mapped to the
+   recorder's `account`/`metadata`; `state_version = decision_version`.
+
+Persists / emits **no** credential. Performs no attach, launch, login, or order.
+
+### 7.3 Consumer, read model, API (DARK)
+
+- `consumer.ingest_observation` — thin orchestration: reads the stored canonical premise, overrides the
+  observation's `previous_state`, asks the **M3a manager** for the decision, hands it to the writer. It
+  is a **no-op returning `None`** while `HOSTED_PERSISTENT_MT5_ENABLED` is OFF, and **is wired by no
+  production caller** in this increment. Never attaches/launches/logs in/orders.
+- `read_model.workspace_state_projection` — an allow-listed, secret-free projection (canonical state +
+  reason, health cache, timestamps). `staff=True` adds an operator block (versions, correlation id,
+  supervision, **masked** login, bounded recent transitions). Never emits a full login / attach path /
+  credential.
+- `views.HostedWorkspaceStateView` — `GET /api/hosted-workspace/workspace-state/?account_id=<id>`.
+  DARK gate FIRST (404 while OFF, before any DB read); IDOR-safe owner scoping (non-staff resolve only
+  their own account; staff bypass); 400 on missing `account_id`; 404 for an owned account with no
+  workspace. Mounted at `api/hosted-workspace/` in `guvfx_backend/urls.py`.
+
+### 7.4 Order-authority boundary (unchanged, restated)
+
+Persisted `canonical_execution_ready` / `proj_execution_ready` are **read-model/operational** signals.
+The order-time authority remains `evaluate_binding` in the bridge (ADR-0033). Nothing in M3c can place,
+size, or approve an order, and no execution path reads these fields.
+
+### 7.5 Tests + review
+
+`tests_persistence.py` — 29 focused tests across the 24-point bar (stale/illegal/idempotent/versioning/
+material-vs-no-op/telemetry-only-on-state-change/secret-free/DARK/IDOR/legacy-safety) plus a runnable
+mutation-adequacy harness for the writer's novel pure predicates (`_coerce_version`, `_as_bool`).
+`make check` green (backend 3167). Multi-lens adversarial review recorded in the PR.
+
+**Still out of scope (unchanged):** strategy execution, `order_send`, RemoteApp/RDS, multi-user pooling,
+AppLocker, broker-credential ownership, production deployment, onboarding UI.
