@@ -248,14 +248,6 @@ def _guarded_attach_enabled() -> bool:
     return os.getenv("MT5_GUARDED_ATTACH", "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _hosted_execution_mode() -> bool:
-    """ADR-0034 Execution Engine (G6). When set, this bridge is a HOSTED WORKSPACE execution bridge and
-    ``validate_config`` enforces the full hosted safety configuration at startup (guarded attach + mandatory
-    per-job identity pin + demo-only + no credential-login path). DEFAULT OFF ⇒ legacy/production bridges are
-    entirely unaffected."""
-    return os.getenv("MT5_HOSTED_EXECUTION", "").strip().lower() in ("1", "true", "yes", "on")
-
-
 def evaluate_hosted_startup_config(env) -> list:
     """Pure, fail-closed G6 assertion: given an env mapping, return the list of hosted-execution config
     errors (empty ⇒ safe). A HOSTED WORKSPACE execution bridge must NEVER silently downgrade to legacy,

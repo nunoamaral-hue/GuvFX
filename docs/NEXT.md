@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ ADR-0034 Execution Engine — G12 completion DELIVERED (provenance/telemetry/reconcile, DARK); capstone is Sponsor-gated (2026-08-08)
+The Execution Engine subsystem is repository-complete on PR #315: the authority spine (routing/arming/
+active-broker/authority/pause-resume) plus the G12 provenance layer — job↔workspace + HWX-key persistence,
+append-only `HostedWorkspaceExecution` occupancy, `workspace.execution_started/finished` telemetry at
+dispatch/complete, the ambiguous-send reconcile driver (alert+quarantine, never re-sends), and the explicit
+no-auto-resend retry stance. DARK/demo-only/default-OFF; the live bridge stays sole order-time gate; the M3c
+canonical `EXECUTING` enum is deliberately NOT driven (deferred ADR-level change). 1070 tests green.
+**Bounded next action (Sponsor, HARD STOP):** authorise the **capstone** — bind a workspace to a
+`TerminalNode` at provisioning and run a **node-aware hosted worker** (+ the reconcile driver's live broker
+evidence source). The *code* is DARK-safe to build; **arming/running it on a host is the execution-plane
+"make it real" step and requires explicit Sponsor authority — it must never be armed on merge.** Do not begin
+it without that authorisation. See `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.1.
+
 ## ▶ ADR-0034 Execution Engine — decisions B/C/D RESOLVED; arming + owner-bound routing DELIVERED (DARK, demo-only) (2026-08-08)
 Sponsor resolved the gating decisions (still DARK/demo-only/no-arming): **B** demo-only (real=RED, deferred);
 **C** one-workspace→one-process→one-account→one-route, owner-bound; **D** layered explicit arming, every

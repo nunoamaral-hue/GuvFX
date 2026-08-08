@@ -26,7 +26,6 @@ ER_ROUTE_OK = "execution_route_ok"
 ER_ACCOUNT_MISSING = "workspace_account_missing"
 ER_WORKSPACE_NOT_FOUND = "workspace_not_found"
 ER_WORKSPACE_OWNER_MISMATCH = "workspace_owner_mismatch"
-ER_WORKSPACE_ROUTE_AMBIGUOUS = "workspace_route_ambiguous"
 ER_BINDING_MISMATCH = "binding_mismatch"
 ER_NOT_ARMED = "workspace_execution_not_armed"
 ER_ROUTE_MISSING = "workspace_route_missing"        # a hosted job with a NULL/shared node — Decision C

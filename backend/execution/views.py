@@ -389,6 +389,13 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
             terminal_node_id=job.terminal_node_id,
         )
 
+        # ADR-0034 Execution Engine (G12) — Hosted Workspace execution telemetry + provenance at dispatch.
+        # DARK / fail-safe / no-op for a non-hosted job or a dark subsystem; a hiccup can never break the
+        # claim (the job is already RUNNING and committed). Records the STARTED occupancy + HWX key and emits
+        # workspace.execution_started. NEVER an order.
+        from execution.hosted_execution import record_hosted_dispatch
+        record_hosted_dispatch(job, correlation_id=str((job.payload or {}).get("correlation_id", "")))
+
         # OPS-OBSERVABILITY (stage 5): shadow-execution lifecycle + claim metrics.
         # Fail-open, additive; no effect on the claim result above.
         if job.job_type == ExecutionJob.JobType.PLACE_ORDER_SHADOW:
@@ -456,6 +463,12 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
             result=result if status_value == ExecutionJob.Status.SUCCESS else None,
             error_message=error_message if status_value == ExecutionJob.Status.FAILED else None,
         )
+
+        # ADR-0034 Execution Engine (G12) — Hosted Workspace execution telemetry + provenance at completion.
+        # DARK / fail-safe / no-op for a non-hosted job or a dark subsystem. Records the FINISHED occupancy
+        # (with the sanitised SUCCESS/FAILED outcome) + emits workspace.execution_finished. NEVER an order.
+        from execution.hosted_execution import record_hosted_completion
+        record_hosted_completion(job, correlation_id=str((job.payload or {}).get("correlation_id", "")))
 
         # =================================================================
         # Auto-sync: Queue SYNC_POSITIONS job after successful trade placement

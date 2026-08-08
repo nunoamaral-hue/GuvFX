@@ -355,3 +355,52 @@ no-bypass test pins `IDENTITY_PIN_JOB_TYPES` so a new MT5 mutation type cannot b
   after an ambiguous send. Mutation-tested.
 
 All default OFF; nothing armed; nothing deployed. The demo-only host certification remains prepared/not run.
+
+### 8.1 G12 — execution provenance + telemetry + reconcile (DARK, 2026-08-08)
+
+The authority spine above is complete; this increment closes the **provenance / observability / failure**
+gaps a repository-truth inventory of the whole subsystem surfaced (the two literally "defined-only/absent"
+scope items — execution telemetry + execution persistence — plus the failure/reconcile driver). All
+additive, DARK, read-model/alert-only, and preserving every invariant (bridge is sole order-time gate; no
+order authority; demo-only; default-OFF).
+
+- **Execution persistence (item 12)** — `execution/models.py`: `ExecutionJob` gains
+  `hosted_workspace_uuid` + `hosted_idempotency_key` (empty for every legacy/Provider-A job; stamped only for
+  a hosted job while ON). New **append-only `HostedWorkspaceExecution`** record — one row per (job, phase)
+  (unique constraint) capturing the EXECUTING occupancy: STARTED at dispatch, FINISHED at completion (with
+  the sanitised SUCCESS/FAILED outcome), RECONCILED for an ambiguous-send verdict. Migration `0028`
+  (additive/reversible). The workspace uuid is stamped in the single `inject_identity_pin` seam; the HWX key
+  (needs the job pk) is stamped at dispatch.
+- **Execution telemetry (item 11)** — `execution/hosted_execution.py`: `record_hosted_dispatch` /
+  `record_hosted_completion`, wired into `views.next_job` (post-claim) and `views.complete` (post-completion),
+  emit `workspace.execution_started` / `workspace.execution_finished`. **DARK** (flag-first, zero overhead),
+  **fail-SAFE** (post-commit + swallow errors — a provenance/telemetry hiccup can never break a claim or a
+  completion), **idempotent** ((job,phase) unique + seq-keyed telemetry dedup), secret-free.
+- **Failure / reconcile (items 8, 10)** — `execution/hosted_reconcile.py`:
+  `reconcile_hosted_execution(job, evidence)` runs the certified `classify_ambiguous_result` over **injected**
+  authoritative broker/terminal evidence (the live evidence source is the Sponsor-gated host consumer —
+  mirroring the inert-by-design producer/agent pattern), persists a RECONCILED provenance row, and on
+  `STILL_AMBIGUOUS` emits a WARNING `workspace.execution_ambiguous` (quarantine — a human must resolve). It
+  **never re-sends** an order.
+- **Retry stance (item 9), adopted explicitly** — `may_retry_after_ambiguous` is **advisory only**. The
+  hosted path adopts the legacy PLACE_ORDER discipline: **no auto-resend**, not even for
+  `CONFIRMED_NOT_EXECUTED`; a retry is only ever a human-gated re-submission. A guard test asserts no
+  production code turns the predicate into a job-creation/re-send.
+
+**Deliberate design boundary (documented Amber).** This is the ORDER-DRIVEN execution family. It does **not**
+drive the M3c canonical `HostedMt5Workspace.canonical_state` enum to EXECUTING — the canonical state stays
+OBSERVATION-owned by the single M3c writer (`persistence.persist_workspace_decision`), so the M3c
+single-writer invariant, the observation-version staleness sequencing, and the certified readiness gate are
+all untouched (the M3a manager already excludes EXECUTING from observation derivation). The EXECUTING
+lifecycle is captured here as durable provenance + telemetry. Driving the canonical enum to EXECUTING (with
+its readiness single-flight coupling) is a genuine ADR-level change and is **deferred**, not taken in passing.
+
+**Still open by design (not defects).** The produce→claim→execute loop stays deliberately open at the
+Sponsor-gated capstone: binding a workspace to a `TerminalNode` at provisioning and running a **node-aware
+hosted worker** are the execution-plane "make it real" step — the code is DARK-safe to build but its
+**arming requires explicit Sponsor authority and must never be armed on merge**. The reconcile driver's live
+evidence source is part of that same host consumer topology.
+
+Tests: `execution/tests_hosted_execution.py` (provenance/telemetry/reconcile + retry-stance guard),
+`execution/tests_hosted_claim_endpoint.py` (the real `next_job` endpoint fails a hosted claim closed under
+the row lock, and is byte-for-byte dark while OFF). `make check` green.

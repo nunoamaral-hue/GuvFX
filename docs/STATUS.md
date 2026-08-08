@@ -14,6 +14,25 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 Execution Engine — G12 completion: provenance + telemetry + reconcile (DARK, demo-only). NOT deployed. 🟢**
+  On PR #315 (branch `feat/adr0034-execution-engine`). A repository-truth inventory of the whole subsystem
+  vs the Sponsor 18-item scope found the authority spine COMPLETE (routing/arming/active-broker/authority/
+  pause-resume/CI/PR) and closed the remaining additive **provenance/observability/failure** gaps:
+  **execution persistence** — `ExecutionJob.hosted_workspace_uuid`/`hosted_idempotency_key` + append-only
+  `HostedWorkspaceExecution` occupancy record (STARTED/FINISHED/RECONCILED, unique per (job,phase)),
+  migration `0028`; **execution telemetry** — `hosted_execution.record_hosted_dispatch/completion` wired into
+  `next_job`/`complete` emitting `workspace.execution_started/finished` (DARK, fail-SAFE post-commit,
+  idempotent, secret-free); **failure/reconcile** — `hosted_reconcile.reconcile_hosted_execution` runs the
+  certified `classify_ambiguous_result` over injected broker evidence, persists a RECONCILED row, alerts +
+  quarantines `STILL_AMBIGUOUS`, and NEVER re-sends; **retry stance** — explicit no-auto-resend (may_retry is
+  advisory; guard test). **Deliberate boundary:** does NOT drive the M3c canonical `EXECUTING` enum (canonical
+  state stays observation-owned — single-writer + readiness gate untouched); an ADR-level change, deferred.
+  **Still open by design (Sponsor-gated capstone):** workspace→node binding + a node-aware hosted worker —
+  DARK-safe to build, must never be ARMED on merge. +18 focused tests (endpoint claim-seam fail-closed +
+  provenance/telemetry/reconcile + retry-stance guard); 1070 execution+hosted_workspace tests green; dead
+  symbols `_hosted_execution_mode`/`ER_WORKSPACE_ROUTE_AMBIGUOUS` removed. Design:
+  `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.1.
+
 - **2026-08-08 — ADR-0034 Execution Engine — subsystem repository-complete (G1/G2/G3/G4/G5/G6/G9/G10 + C/D, DARK, demo-only). NOT deployed. 🟢**
   On PR #315 (branch `feat/adr0034-execution-engine`, base fresh main). After G1/G3 + Decisions C/D, delivered
   the remaining workstreams: **G4** claim-seam entitlement (owner-bound route + non-NULL node + node-aware

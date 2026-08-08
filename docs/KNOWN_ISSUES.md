@@ -572,3 +572,21 @@ believing a negative result. Full write-up: `evidence/b3p2-install/baseline_2026
   - Resolution: `docker compose down --remove-orphans && docker compose up -d` from `/home/ubuntu/guvfx-prod`.
   - Operational rule added to `docs/RUNBOOK.md`: if intermittent 502s occur with no backend errors, suspect stale Traefik routing and run the above command before investigating application-level issues.
   - Status: RESOLVED — no architecture or infrastructure changes required.
+
+## 🟢 DEFERRED BY DESIGN (2026-08-08) — ADR-0034 Execution Engine: canonical EXECUTING + capstone consumer
+
+Two intentional non-defects, recorded so the next reader does not mistake them for gaps:
+
+1. **Canonical `EXECUTING` enum is not driven from the execution path.** The G12 completion records the
+   EXECUTING lifecycle as durable provenance (`execution.HostedWorkspaceExecution`) + order-driven telemetry
+   (`workspace.execution_started/finished`), but deliberately does NOT mutate
+   `HostedMt5Workspace.canonical_state` to `EXECUTING`. Canonical state stays OBSERVATION-owned by the single
+   M3c writer, so the M3c single-writer invariant, the observation-version staleness sequencing, and the
+   certified readiness gate are untouched (the M3a manager already excludes EXECUTING from observation
+   derivation). Driving the canonical enum (with its readiness single-flight coupling) is an ADR-level change,
+   deferred — not a defect.
+2. **The produce→claim→execute loop is intentionally open at the capstone.** Binding a workspace to a
+   `TerminalNode` at provisioning + running a node-aware hosted worker (and the reconcile driver's live broker
+   evidence source) are the execution-plane "make it real" step. The code is DARK-safe to build; **arming it
+   requires explicit Sponsor authority and must never be armed on merge.** Until then a hosted mutation job is
+   created + pinned but FAILS closed at the claim seam (`ER_ROUTE_MISSING`/`ER_WORKER_NOT_ENTITLED`) — safe.

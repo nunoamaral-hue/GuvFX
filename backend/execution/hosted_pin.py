@@ -94,4 +94,17 @@ def inject_identity_pin(job) -> bool:
         else:
             payload.setdefault(key, value)
     job.payload = payload
+    # G10/G12 provenance — stamp the owning workspace uuid on the job (read-model only; the HWX idempotency
+    # key needs the job pk, so it is stamped later at dispatch, hosted_execution.stamp_hosted_idempotency_key).
+    if hasattr(job, "hosted_workspace_uuid") and not getattr(job, "hosted_workspace_uuid", ""):
+        job.hosted_workspace_uuid = hosted_workspace_uuid_for(getattr(job, "account", None))
     return True
+
+
+def hosted_workspace_uuid_for(account) -> str:
+    """The owning Hosted Workspace's uuid for a Provider-B ``account`` (empty for non-hosted / no workspace /
+    dark). An identifier, never a secret. Read via the OneToOne back-ref without assuming it is loaded."""
+    if not is_hosted_workspace_account(account):
+        return ""
+    ws = getattr(account, "hosted_workspace", None)
+    return str(getattr(ws, "workspace_uuid", "") or "") if ws is not None else ""
