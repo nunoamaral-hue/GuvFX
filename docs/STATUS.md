@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 M3b-2 HOST CERTIFIED — observation chain PROVEN on the live host (Amber). NOT deployed. 🟢**
+  `M3B2_HOST_CERTIFIED — OBSERVATION_CHAIN_PROVEN`. Empirical disposable-host certification executed on
+  WIN-RD8VDS93DK7 under an isolated, Sponsor-authorised `C:\GuvFX\cert\` footprint (repo staged byte-identical
+  to `main` `c81ac06`; isolated venv Django 5.1.2 + MetaTrader5 5.0.6090 + requests + psutil; `cert_settings`;
+  #305–#312 all merged to main). GATES 0–14 all PASS: **never-launch** (absent/missing target → guarded attach
+  refuses, `initialize` never invoked, no terminal spawned; `MT5_GUARDED_ATTACH` code-enforced), **never-login
+  / no-credential-replay** (attach is path-only; disposable `accounts.dat` from Nuno's manual login *predates*
+  every GuvFX attach), **cross-session guarded attach** (SSH session-0 harness → session-3 build-**5.0.0.6073**
+  demo terminal, per Experiment H) → `account_match=true` on `****2587 / IS6Technologies-Demo / DEMO` →
+  canonical `CONNECTED`, `execution_ready=false` **correctly gated** by `trade_allowed=false` (AutoTrading
+  off); **wrong-binding** → `SUSPENDED / ACCOUNT_MISMATCH`; **wrong/missing target** → fail-closed, no launch,
+  live terminal untouched; **broker liveness** = BTCUSD two nonzero strictly-increasing ticks; IPC
+  `terminal_info().path` pin proves the disposable install (not the IS6 sibling). Adversarial review (12-lens)
+  → FIX_REQUIRED (2 MEDIUM = the GATE-7 liveness *evidence* overstated a stale weekend XAUUSD first-tick;
+  certified **code sound**) → sound BTCUSD re-run + `fresh` reframed as observation-record recency → re-verify
+  **CERTIFY, 0 surviving HIGH/MEDIUM**. **Production blast radius ZERO** (IS6 4336/8748 + beta 316 never
+  restarted; `:8788`/`:8791` owners intact). Cleanup: disposable terminal + workspace + `accounts.dat` +
+  helpers removed; `cert/repo` + `cert/venv` PRESERVED (credential-free) as retained cert infra. Build-6073
+  attach-fidelity gap CLOSED. **The Hosted-Workspace observation model is no longer hypothetical.** NEXT =
+  M3c (Workspace Decision Persistence / authoritative consumer, DARK) — awaiting Sponsor packet; do NOT
+  auto-start; M4 telemetry follows M3c.
+
 - **2026-08-08 — ADR-0034 M-series MERGED to main + M3b-2 integration-cert entrypoint (Amber, DARK). Repo eng; NOT deployed. 🟡**
   Sponsor-authorised merge sequencing: PRs **#305→#306→#307→#308→#309→#310** merged to `main` in dependency
   order (M1 Guarded Attach, M2a state machine, M2b telemetry, M3a Manager, M3b-1 producer, M3b-2 agent) — each

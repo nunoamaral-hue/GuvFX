@@ -1,6 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ ADR-0034 Hosted Workspace — M-series MERGED to main; disposable-HOST cert is the gate (2026-08-08, DARK)
+## ▶ ADR-0034 Hosted Workspace — M3b-2 HOST CERTIFIED; M3c is next (2026-08-08)
+`M3B2_HOST_CERTIFIED — OBSERVATION_CHAIN_PROVEN`. The full observation chain (M1 guarded attach → M3b-2 agent
+→ M3b-1 producer → M3a Manager) is empirically proven on the live host against build 5.0.0.6073: cross-session
+guarded attach (no launch, no login, no credential replay), correct account observed, canonical state derived,
+wrong-binding + missing-target fail closed, broker liveness confirmed, **zero production blast radius**.
+PRs #305–#312 merged to `main` (`c81ac06`). Retained isolated cert infra on the host: `C:\GuvFX\cert\repo` +
+`C:\GuvFX\cert\venv` (credential-free). **Bounded next action:** await the Sponsor **M3c** packet — *Workspace
+Decision Persistence / Authoritative Consumer* (DARK; no execution, no telemetry): Agent→Snapshot→Observation
+→Manager→Decision → **one authoritative persistence seam** (idempotent state writes, transition provenance,
+stale-decision protection, single writer for canonical Hosted-Workspace lifecycle state). Do NOT auto-start
+M3c; M4 telemetry follows M3c. Optional LOW hardening (future): hard PID-pin in the host adapter; expected
+binding from the DB `TradingAccount`; retire the diagnostic-only `_tick_present` presence-check.
+
+## ▶ (superseded) ADR-0034 Hosted Workspace — M-series MERGED to main; disposable-HOST cert is the gate (2026-08-08, DARK)
 M1→M3b-2 (PRs #305–#310) MERGED to `main` in dependency order; the whole observation chain
 (M1 guarded attach → M3b-2 agent → M3b-1 producer → M3a Manager) is on `main`, `make check` green, nothing
 deployed. The M3b-2 **integration-cert entrypoint** (branch `feat/adr0034-m3b2-integration-cert`:
