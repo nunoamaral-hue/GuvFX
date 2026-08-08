@@ -248,6 +248,44 @@ def _guarded_attach_enabled() -> bool:
     return os.getenv("MT5_GUARDED_ATTACH", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _hosted_execution_mode() -> bool:
+    """ADR-0034 Execution Engine (G6). When set, this bridge is a HOSTED WORKSPACE execution bridge and
+    ``validate_config`` enforces the full hosted safety configuration at startup (guarded attach + mandatory
+    per-job identity pin + demo-only + no credential-login path). DEFAULT OFF ⇒ legacy/production bridges are
+    entirely unaffected."""
+    return os.getenv("MT5_HOSTED_EXECUTION", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def evaluate_hosted_startup_config(env) -> list:
+    """Pure, fail-closed G6 assertion: given an env mapping, return the list of hosted-execution config
+    errors (empty ⇒ safe). A HOSTED WORKSPACE execution bridge must NEVER silently downgrade to legacy,
+    shared/NULL-node, credential-login, unguarded, or un-pinned execution. Testable without MT5/process I/O.
+
+    Required when ``MT5_HOSTED_EXECUTION`` is truthy: guarded attach ON, per-job identity pin required ON,
+    live/real execution OFF (Phase-1 demo-only), and NO broker credential-login env configured for attach
+    (login/password/server), because a hosted attach is path-only + never calls ``mt5.login()``.
+    """
+    def _truthy(name):
+        return str(env.get(name, "")).strip().lower() in ("1", "true", "yes", "on")
+
+    if not _truthy("MT5_HOSTED_EXECUTION"):
+        return []  # not a hosted bridge — legacy behaviour, no assertions
+    errors = []
+    if not _truthy("MT5_GUARDED_ATTACH"):
+        errors.append("MT5_HOSTED_EXECUTION requires MT5_GUARDED_ATTACH=1 (never-launch attach); refusing "
+                      "to downgrade to an unguarded initialize that could launch/auto-login the terminal")
+    if not _truthy("MT5_REQUIRE_IDENTITY_PIN"):
+        errors.append("MT5_HOSTED_EXECUTION requires MT5_REQUIRE_IDENTITY_PIN=1 (mandatory per-job "
+                      "login/server identity pin); refusing to allow un-pinned hosted execution")
+    if _truthy("MT5_ALLOW_LIVE"):
+        errors.append("MT5_HOSTED_EXECUTION is DEMO-ONLY in Phase 1: MT5_ALLOW_LIVE must not be set")
+    for cred in ("MT5_LOGIN", "MT5_PASSWORD", "MT5_SERVER"):
+        if str(env.get(cred, "")).strip():
+            errors.append(f"MT5_HOSTED_EXECUTION forbids a credential-login attach path: {cred} must be "
+                          "unset (a hosted workspace is attached path-only; GuvFX never calls mt5.login())")
+    return errors
+
+
 def evaluate_guarded_attach(path, process_running, init_ok, terminal_connected, account_present):
     """Pure, fail-closed decision for the GUARDED (never-launch) attach — no MT5, no I/O, fully
     unit/mutation-testable. Reports the most specific failure first. Returns (ok: bool, reason: str).
@@ -649,6 +687,11 @@ def validate_config() -> bool:
             "MT5_ALLOW_LIVE is enabled but MT5_EXPECTED_LOGIN is not set: live execution requires an "
             "exact-account binding pin (set MT5_EXPECTED_LOGIN to the intended broker login)"
         )
+
+    # ADR-0034 Execution Engine (G6) — a HOSTED WORKSPACE execution bridge must refuse to start unless its
+    # full safety configuration is present (guarded attach + mandatory pin + demo-only + no credential login).
+    # No-op for legacy bridges (MT5_HOSTED_EXECUTION unset). Fail closed: any hosted-config error aborts start.
+    errors.extend(evaluate_hosted_startup_config(os.environ))
 
     if errors:
         for err in errors:
