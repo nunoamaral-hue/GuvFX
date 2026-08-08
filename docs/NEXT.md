@@ -1,17 +1,20 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ ADR-0034 Hosted Workspace — M3b-2 HOST CERTIFIED; M3c is next (2026-08-08)
-`M3B2_HOST_CERTIFIED — OBSERVATION_CHAIN_PROVEN`. The full observation chain (M1 guarded attach → M3b-2 agent
-→ M3b-1 producer → M3a Manager) is empirically proven on the live host against build 5.0.0.6073: cross-session
-guarded attach (no launch, no login, no credential replay), correct account observed, canonical state derived,
-wrong-binding + missing-target fail closed, broker liveness confirmed, **zero production blast radius**.
-PRs #305–#312 merged to `main` (`c81ac06`). Retained isolated cert infra on the host: `C:\GuvFX\cert\repo` +
-`C:\GuvFX\cert\venv` (credential-free). **Bounded next action:** await the Sponsor **M3c** packet — *Workspace
-Decision Persistence / Authoritative Consumer* (DARK; no execution, no telemetry): Agent→Snapshot→Observation
-→Manager→Decision → **one authoritative persistence seam** (idempotent state writes, transition provenance,
-stale-decision protection, single writer for canonical Hosted-Workspace lifecycle state). Do NOT auto-start
-M3c; M4 telemetry follows M3c. Optional LOW hardening (future): hard PID-pin in the host adapter; expected
-binding from the DB `TradingAccount`; retire the diagnostic-only `_tick_present` presence-check.
+## ▶ ADR-0034 Hosted Workspace — M3c Workspace Core DELIVERED (DARK); Sponsor picks next subsystem (2026-08-08)
+The **Workspace Core** subsystem is complete on branch `feat/adr0034-m3c-workspace-core` (DARK, not merged):
+the observation chain now flows Agent→Snapshot→Observation→Manager→Decision → **authoritative persistence**
+(single `select_for_update` writer, stale-observation + stale-decision protection, idempotent replay, version
+monotonicity, append-only `WorkspaceTransition` provenance) → **telemetry** (emitted only from the write seam,
+only on a real state change, secret-free, idempotent via the shared dedup key) → **read model + DARK IDOR-safe
+API**. Additive/reversible migration `0002`. 29 focused tests + writer mutation-adequacy; `make check` green
+(backend 3167); multi-lens adversarial review in the PR. No production caller wires the consumer/writer; API
+404s and telemetry no-ops while flags OFF. Persisted `execution_ready` is read-model only — order authority
+stays `evaluate_binding`. See `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §7.
+**Bounded next action (Sponsor decision):** choose the next subsystem per the stated preference order —
+**Execution Engine** (the human-gated control path that would *read* canonical `EXECUTION_READY` and drive
+`EXECUTING`, still never letting an LLM place/size/approve an order) → then Workspace Delivery/RemoteApp →
+Onboarding → multi-user. Do **not** auto-start the next subsystem. Optional LOW hardening carried forward:
+hard PID-pin + DB-sourced expected binding in the host adapter; retire the diagnostic `_tick_present` check.
 
 ## ▶ (superseded) ADR-0034 Hosted Workspace — M-series MERGED to main; disposable-HOST cert is the gate (2026-08-08, DARK)
 M1→M3b-2 (PRs #305–#310) MERGED to `main` in dependency order; the whole observation chain

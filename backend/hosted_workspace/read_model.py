@@ -40,7 +40,9 @@ def workspace_state_projection(workspace: HostedMt5Workspace, *, staff: bool = F
             "trade_allowed": workspace.proj_trade_allowed,
             "execution_ready": workspace.proj_execution_ready,
         },
-        "last_observed_at": _iso(workspace.last_observed_at),
+        # M3c-owned timing only. The legacy ``last_observed_at`` is intentionally NOT projected here — the
+        # M3c writer does not maintain it (see persistence.py), so ``last_decision_at`` is the authoritative
+        # "when did we last apply an observation" for this subsystem.
         "last_decision_at": _iso(workspace.last_decision_at),
         "last_transition_at": _iso(workspace.last_transition_at),
         "updated_at": _iso(workspace.updated_at),

@@ -77,12 +77,18 @@ def _as_bool(value) -> bool:
     return value is True
 
 
+# PositiveBigIntegerField ceiling. A larger value would overflow the column at ``save()`` and raise out of
+# the writer; we reject it up front so the writer stays fail-closed (a PersistResult, never an exception).
+_MAX_VERSION = (1 << 63) - 1
+
+
 def _coerce_version(value) -> Optional[int]:
-    """A usable observation version is a strictly-positive integer. bool is rejected (``True``/``False`` are
-    ints in Python but never a valid sequence). Anything else -> None (caller maps to REJECTED_INVALID)."""
+    """A usable observation version is an integer in ``[1, _MAX_VERSION]``. bool is rejected (``True``/
+    ``False`` are ints in Python but never a valid sequence); an out-of-range or non-int value -> None so the
+    caller maps it to REJECTED_INVALID rather than overflowing the column."""
     if isinstance(value, bool) or not isinstance(value, int):
         return None
-    return value if value >= 1 else None
+    return value if 1 <= value <= _MAX_VERSION else None
 
 
 def persist_workspace_decision(
@@ -165,12 +171,16 @@ def persist_workspace_decision(
         locked.proj_execution_ready = exec_ready
         locked.last_correlation_id = corr
         locked.last_decision_at = now
-        locked.last_observed_at = now
+        # NB: the M3c writer deliberately does NOT touch the legacy ``last_observed_at``. That field is the
+        # freshness key of the LIVE execution-readiness gate (``execution.readiness._observation_fresh``)
+        # and must only ever be stamped ATOMICALLY with the legacy ``observed_*`` snapshot it dates
+        # (readiness.py explicitly warns of this). Stamping it here — without updating that snapshot — would
+        # fail-OPEN the live gate's staleness protection. M3c owns ``last_decision_at`` for its own timing.
 
         update_fields = [
             "observation_version", "proj_process_running", "proj_ipc_available", "proj_connected",
             "proj_account_match", "proj_trade_allowed", "proj_execution_ready", "last_correlation_id",
-            "last_decision_at", "last_observed_at", "updated_at",
+            "last_decision_at", "updated_at",
         ]
 
         transition_created = False

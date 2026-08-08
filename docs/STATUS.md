@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 M3c Workspace Core — authoritative persistence + read model (DARK). NOT deployed. 🟢**
+  Branch `feat/adr0034-m3c-workspace-core` (base = the M3b-2 host-cert docs commit). Closes the observation
+  chain with the one seam that *persists* the M3a manager decision, records provenance, and emits telemetry —
+  all DARK. **New:** `HostedMt5Workspace` canonical M3c fields (`canonical_state`/`canonical_reason`,
+  `observation_version`/`decision_version`, latest-observation projection cache, `last_decision_at`/
+  `last_transition_at`, `last_correlation_id`); append-only `WorkspaceTransition` (unique `dedupe_key`
+  reused as the `OperationalEvent.dedup_key`); additive/reversible migration `0002` (apply→reverse→re-apply
+  proven). **Writer** `persistence.persist_workspace_decision` — the SINGLE canonical-state writer:
+  `select_for_update` row lock, stale-observation + stale-decision (illegal-transition vs the LOCKED state)
+  rejection, version monotonicity, idempotent replay, atomic state+event, telemetry emitted ONLY from this
+  seam ONLY on a real state change. **Consumer** `consumer.ingest_observation` (DARK no-op when flag OFF;
+  wired by no production caller; never attaches/launches/logs in/orders). **Read model + DARK API**
+  `GET /api/hosted-workspace/workspace-state/` (404 while `HOSTED_PERSISTENT_MT5_ENABLED` OFF, IDOR-safe).
+  Persisted `execution_ready` is read-model ONLY — the order authority remains `evaluate_binding` in the
+  bridge. 29 focused tests + writer mutation-adequacy; `make check` green (backend 3167). Multi-lens
+  adversarial review recorded in the PR. Legacy `WorkspaceState` fields untouched; Provider-A accounts
+  (no workspace row) unaffected. See `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §7.
+
 - **2026-08-08 — ADR-0034 M3b-2 HOST CERTIFIED — observation chain PROVEN on the live host (Amber). NOT deployed. 🟢**
   `M3B2_HOST_CERTIFIED — OBSERVATION_CHAIN_PROVEN`. Empirical disposable-host certification executed on
   WIN-RD8VDS93DK7 under an isolated, Sponsor-authorised `C:\GuvFX\cert\` footprint (repo staged byte-identical

@@ -10,8 +10,14 @@ The thin orchestration seam between an observation and the authoritative writer.
 It does NOT attach, launch, login, place/size/approve any order, poll a host, or emit telemetry itself. It
 is DARK: gated behind the master ``hosted_persistent_mt5_enabled()`` flag and — critically — WIRED BY NO
 PRODUCTION CALLER in this increment. When the flag is OFF it is a no-op returning ``None`` (mirrors
-``operational_events.record_event``'s dark contract). The writer re-validates everything under a row lock, so
-the small read-then-derive window here can never corrupt state — a raced decision is rejected there.
+``operational_events.record_event``'s dark contract).
+
+On the small unlocked read-then-derive window here: the writer re-validates the transition's LEGALITY against
+the row it LOCKS, so a raced decision that would be ILLEGAL from the true current state is rejected
+(REJECTED_ILLEGAL, stored state held), and the observation-version guard rejects an out-of-order one
+(REJECTED_STALE). A raced decision whose target happens to remain LEGAL from the true state may still apply;
+because canonical state is display-only (never the order gate), that at worst records a neighbouring-state
+transition which the next observation corrects — it can never corrupt the order path.
 """
 from __future__ import annotations
 

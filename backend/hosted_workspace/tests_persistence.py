@@ -15,6 +15,7 @@ from __future__ import annotations
 import inspect
 import os
 import textwrap
+from typing import Optional
 from unittest import mock
 
 from django.contrib.auth import get_user_model
@@ -126,12 +127,21 @@ class WriterRejectionTests(_Base):
     def test_invalid_versions_are_rejected(self):
         ws = self._ws(canonical_state=S.CONNECTED)
         d = derive_workspace_decision(_obs(previous_state=str(S.CONNECTED)))
-        for bad in (0, -1, True, "3", 1.5, None):
+        # Oversized (> PositiveBigIntegerField max) must fail closed as INVALID, never overflow at save().
+        for bad in (0, -1, True, "3", 1.5, None, (1 << 63), (1 << 70)):
             r = persist_workspace_decision(ws, _obs(), d, observation_version=bad)
             self.assertEqual(r.status, PersistStatus.REJECTED_INVALID, bad)
         ws.refresh_from_db()
         self.assertEqual(ws.observation_version, 0)
         self.assertEqual(ws.transitions.count(), 0)
+
+    def test_max_version_boundary_is_accepted(self):
+        ws = self._ws(canonical_state=S.CONNECTED)
+        d = derive_workspace_decision(_obs(previous_state=str(S.CONNECTED)))
+        r = persist_workspace_decision(ws, _obs(), d, observation_version=P._MAX_VERSION)
+        self.assertEqual(r.status, PersistStatus.APPLIED)  # exactly the ceiling is valid
+        ws.refresh_from_db()
+        self.assertEqual(ws.observation_version, P._MAX_VERSION)
 
     def test_unsaved_workspace_is_rejected(self):
         ws = HostedMt5Workspace(trading_account=self.account)  # not saved -> pk is None
@@ -265,6 +275,11 @@ class WriterTelemetryTests(_Base):
         self.assertEqual(ws.state, WorkspaceState.NOT_PROVISIONED)
         self.assertIsNone(ws.observed_connected)
         self.assertIsNone(ws.active_account_match)
+        # CRITICAL: the writer must NOT stamp the legacy ``last_observed_at`` — it is the freshness key of
+        # the LIVE execution gate (execution.readiness._observation_fresh); stamping it without the
+        # ``observed_*`` snapshot it dates would fail-OPEN that gate. M3c owns ``last_decision_at`` instead.
+        self.assertIsNone(ws.last_observed_at)
+        self.assertIsNotNone(ws.last_decision_at)
 
 
 class ConsumerTests(_Base):
@@ -291,14 +306,40 @@ class ConsumerTests(_Base):
         self.assertEqual(ws.canonical_state, str(S.EXECUTION_READY))
 
     @override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True)
-    def test_enabled_consumer_no_execution_action(self):
-        # Sanity: the consumer never launches/attaches/orders — it only reads + derives + persists. Proven by
-        # there being no such collaborator; here we assert it is pure w.r.t. host state (no exception, no
-        # attribute access beyond the model) for a fully-healthy observation.
+    def test_enabled_consumer_persists_derived_state_only(self):
+        # A CONCRETE outcome (not "either APPLIED or IDEMPOTENT"): a fully-healthy observation from CONNECTED
+        # deterministically yields EXECUTION_READY, decision_version 1, one transition — persistence only.
         ws = self._ws(canonical_state=S.CONNECTED)
         with _ops_on():
             r = ingest_observation(ws, _obs(), observation_version=1)
-        self.assertIn(r.status, (PersistStatus.APPLIED, PersistStatus.IDEMPOTENT))
+        self.assertEqual(r.status, PersistStatus.APPLIED)
+        ws.refresh_from_db()
+        self.assertEqual(ws.canonical_state, str(S.EXECUTION_READY))
+        self.assertEqual(ws.decision_version, 1)
+        self.assertEqual(ws.transitions.count(), 1)
+
+    def test_consumer_has_no_execution_collaborator(self):
+        # STRUCTURAL proof of "no execution action": the consumer must not IMPORT any order/attach/launch/
+        # host collaborator (checked on the import graph via AST, so the module's own prose — which mentions
+        # what it does NOT do — cannot false-trigger). The property the previous test's name only claimed.
+        import ast
+        import inspect
+        from hosted_workspace import consumer as _c
+        tree = ast.parse(inspect.getsource(_c))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(a.name for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add(node.module or "")
+                imported.update(f"{node.module or ''}.{a.name}" for a in node.names)
+        forbidden_modules = ("MetaTrader5", "subprocess", "execution", "mt5",
+                             "hosted_workspace.agent", "hosted_workspace.agent_host",
+                             "scripts.mt5_signal_bridge")
+        for mod in imported:
+            for bad in forbidden_modules:
+                self.assertFalse(mod == bad or mod.startswith(bad + "."),
+                                 f"consumer must not import {mod}")
 
 
 class ReadModelTests(_Base):
@@ -381,6 +422,18 @@ class ApiTests(_Base):
         self.assertIn("operator", resp.data)
 
     @override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True)
+    def test_out_of_range_account_id_is_404_not_500(self):
+        # An oversized / non-positive id fails closed as 404 (never reaches the ORM to raise a 500).
+        for bad in ((1 << 63), (1 << 90), 0, -5):
+            resp = self._get(self.user, f"?account_id={bad}")
+            self.assertEqual(resp.status_code, 404, bad)
+
+    @override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True)
+    def test_non_integer_account_id_is_404(self):
+        resp = self._get(self.user, "?account_id=abc")
+        self.assertEqual(resp.status_code, 404)
+
+    @override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True)
     def test_unauthenticated_is_denied(self):
         resp = self._get(None, f"?account_id={self.account.id}")
         self.assertIn(resp.status_code, (401, 403))
@@ -395,7 +448,11 @@ class MutationAdequacyTests(SimpleTestCase):
         mutated = src.replace(replacement[0], replacement[1], 1)
         self.assertIn(replacement[1], mutated, f"mutation {replacement} did not apply")
         ns = {}
-        exec(compile(mutated, "<mutant>", "exec"), {"isinstance": isinstance}, ns)
+        # Provide EVERY free name the mutated source could reference (Optional in the return annotation,
+        # _MAX_VERSION in the bound check) so the harness does not silently depend on the module's
+        # ``from __future__ import annotations`` deferring the annotation.
+        exec(compile(mutated, "<mutant>", "exec"),
+             {"isinstance": isinstance, "Optional": Optional, "_MAX_VERSION": P._MAX_VERSION}, ns)
         return ns[func.__name__]
 
     def test_coerce_version_boundary_oracle(self):
@@ -409,14 +466,16 @@ class MutationAdequacyTests(SimpleTestCase):
         self.assertIsNone(f("3"))
         self.assertIsNone(f(1.5))
         self.assertIsNone(f(None))
+        self.assertEqual(f(P._MAX_VERSION), P._MAX_VERSION)  # ceiling accepted
+        self.assertIsNone(f(P._MAX_VERSION + 1))             # one past ceiling rejected (no overflow)
 
     def test_coerce_version_mutants_are_killed(self):
-        # `>= 1` -> `> 1`  : input 1 distinguishes (orig 1, mutant None)
-        m1 = self._fn_from_source(P._coerce_version, (">= 1", "> 1"))
+        # lower bound `1 <= value` -> `1 < value` : input 1 distinguishes (orig 1, mutant None)
+        m1 = self._fn_from_source(P._coerce_version, ("1 <= value", "1 < value"))
         self.assertNotEqual(m1(1), P._coerce_version(1))
-        # `value >= 1` -> `value <= 1` : input 2 distinguishes (orig 2, mutant None)
-        m2 = self._fn_from_source(P._coerce_version, (">= 1", "<= 1"))
-        self.assertNotEqual(m2(2), P._coerce_version(2))
+        # upper bound `value <= _MAX_VERSION` -> `value < _MAX_VERSION` : input _MAX_VERSION distinguishes
+        m2 = self._fn_from_source(P._coerce_version, ("value <= _MAX_VERSION", "value < _MAX_VERSION"))
+        self.assertNotEqual(m2(P._MAX_VERSION), P._coerce_version(P._MAX_VERSION))
         # drop the bool guard : `isinstance(value, bool)` -> `isinstance(value, str)` : input True distinguishes
         m3 = self._fn_from_source(P._coerce_version, ("isinstance(value, bool)", "isinstance(value, str)"))
         self.assertNotEqual(m3(True), P._coerce_version(True))

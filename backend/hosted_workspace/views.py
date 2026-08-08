@@ -37,6 +37,9 @@ class HostedWorkspaceStateView(APIView):
             account_id = int(account_id)
         except (TypeError, ValueError):
             return Response({"detail": "Not found."}, status=http.HTTP_404_NOT_FOUND)
+        # Out-of-range PK -> not found (fail closed): never let an oversized id reach the ORM lookup.
+        if not (0 < account_id <= (1 << 63) - 1):
+            return Response({"detail": "Not found."}, status=http.HTTP_404_NOT_FOUND)
 
         is_staff = bool(getattr(request.user, "is_staff", False))
         # IDOR-safe owner scoping: a non-staff user may resolve only their OWN account.
