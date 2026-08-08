@@ -36,3 +36,12 @@ def hosted_mt5_remoteapp_enabled() -> bool:
 def hosted_mt5_active_account_polling_enabled() -> bool:
     """Gate for periodic active-account attach polling (a cadence concern, kept independent). DEFAULT OFF."""
     return _flag("HOSTED_MT5_ACTIVE_ACCOUNT_POLLING_ENABLED")
+
+
+def hosted_mt5_execution_enabled() -> bool:
+    """ADR-0034 Execution Engine (Decision D, condition 2) — the SUBSYSTEM-LEVEL gate that must be on before
+    ANY Hosted Workspace (Provider B) account may execute. DEFAULT OFF. This is distinct from — and ANDed
+    with — the master ``HOSTED_PERSISTENT_MT5_ENABLED`` (condition 1) and the per-workspace
+    ``execution_enabled`` arm (condition 4): the master flag may be on for observation while execution stays
+    dark. Never authorises an order by itself; the live order-time bridge gate remains authoritative."""
+    return _flag("HOSTED_MT5_EXECUTION_ENABLED")

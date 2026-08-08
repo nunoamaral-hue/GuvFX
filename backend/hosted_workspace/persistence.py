@@ -171,11 +171,12 @@ def persist_workspace_decision(
         locked.proj_execution_ready = exec_ready
         locked.last_correlation_id = corr
         locked.last_decision_at = now
-        # NB: the M3c writer deliberately does NOT touch the legacy ``last_observed_at``. That field is the
-        # freshness key of the LIVE execution-readiness gate (``execution.readiness._observation_fresh``)
-        # and must only ever be stamped ATOMICALLY with the legacy ``observed_*`` snapshot it dates
-        # (readiness.py explicitly warns of this). Stamping it here — without updating that snapshot — would
-        # fail-OPEN the live gate's staleness protection. M3c owns ``last_decision_at`` for its own timing.
+        # NB: ``last_decision_at`` (stamped here, atomically with ``proj_*`` under the row lock) is the
+        # freshness key the execution-readiness gate reads — ``execution.readiness._observation_fresh`` gates
+        # on ``last_decision_at`` (ADR-0034 Execution Engine G1). The M3c writer deliberately does NOT touch
+        # the LEGACY ``last_observed_at`` (now vestigial for execution — no gate reads it); leaving it untouched
+        # is correct. Do NOT re-point readiness back to ``last_observed_at`` (the writer never advances it, so
+        # readiness would fail closed forever), and do NOT start stamping ``last_observed_at`` here.
 
         update_fields = [
             "observation_version", "proj_process_running", "proj_ipc_available", "proj_connected",

@@ -17,11 +17,11 @@ and trade-allowed, within a freshness bound. It requires **NO** ``password_enc``
 ``is_active`` / ``disconnected_at`` (and, at dispatch, ``BrokerAccountHealth`` / ``BrokerRuntimePause``,
 which ``broker_gate`` continues to apply to BOTH providers) — ADR-0033 Tension 1 / red-team finding #1.
 
-Cache-is-not-authority (red-team finding on stale observation): the workspace's observed_* fields are a
-CACHE. They gate ELIGIBILITY here (analogous to how ``VALIDATED`` is a historical eligibility fact); the
-LIVE order-time bridge gate is the authority. Provider B therefore requires the last observation to be
-FRESH, and ``HostedMt5Workspace.is_execution_ready`` / observer state can never by itself authorise an
-order.
+Cache-is-not-authority (red-team finding on stale observation): the workspace's M3c canonical projection
+(``canonical_state`` / ``proj_*`` / ``last_decision_at`` — ADR-0034 M3c) is a CACHE. It gates ELIGIBILITY
+here (analogous to how ``VALIDATED`` is a historical eligibility fact); the LIVE order-time bridge gate is
+the authority. Provider B therefore requires the last canonical decision to be FRESH, and no persisted
+projection / observer state can by itself authorise an order.
 """
 from __future__ import annotations
 
@@ -38,13 +38,14 @@ RW_WORKSPACE_NOT_READY = "workspace_not_execution_ready"
 RW_WORKSPACE_NOT_CONNECTED = "workspace_not_connected"
 RW_ACTIVE_ACCOUNT_MISMATCH = "active_account_mismatch"
 RW_OBSERVATION_STALE = "workspace_observation_stale"
+# ── ADR-0034 Execution Engine arming reason codes (Decision D conditions 2 / 4 / 11) ──
+RW_EXECUTION_FEATURE_DISABLED = "workspace_execution_feature_disabled"  # condition 2 (subsystem-level flag)
+RW_EXECUTION_DISABLED = "workspace_execution_disabled"                  # condition 4 (per-workspace arm)
+RW_REAL_ACCOUNT_NOT_ENABLED = "real_account_not_enabled"               # condition 11 (demo-only, fail-closed)
 
 # The last attach observation must be no older than this to gate eligibility (mirrors the runtime
 # heartbeat freshness). It is an ELIGIBILITY bound only — the authority is the live order-time gate.
 WORKSPACE_OBSERVATION_FRESH_SECONDS = 300
-
-# WorkspaceState.CONNECTED value (kept as a literal to avoid importing the model app at module load).
-_STATE_CONNECTED = "CONNECTED"
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,16 @@ def _hosted_persistent_mt5_enabled() -> bool:
         from hosted_workspace.flags import hosted_persistent_mt5_enabled
         return hosted_persistent_mt5_enabled()
     except Exception:  # noqa: BLE001 — absence of the subsystem means it is disabled
+        return False
+
+
+def _hosted_mt5_execution_enabled() -> bool:
+    """DARK subsystem-level EXECUTION gate (ADR-0034 Decision D condition 2; import-local; fail-closed).
+    Distinct from the master flag: observation may be on while execution stays dark."""
+    try:
+        from hosted_workspace.flags import hosted_mt5_execution_enabled
+        return hosted_mt5_execution_enabled()
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -103,23 +114,40 @@ class PersistentWorkspaceProvider:
 
     def evaluate(self, account) -> ReadinessDecision:
         from execution import broker_gate as g
-        if not _hosted_persistent_mt5_enabled():
+        # ADR-0034 Execution Engine — LAYERED ARMING (Decision D). Every condition below is ANDed and
+        # fail-closed; each field/flag defaults FALSE. This backend gate covers conditions 1-5 + 11; the
+        # LIVE conditions 6-10 (guarded attach / live identity / connected / trade_allowed / health+pause)
+        # remain the authority of the certified bridge gate immediately before every mutation.
+        if not _hosted_persistent_mt5_enabled():          # condition 1 — global subsystem flag
             return ReadinessDecision(False, RW_SUBSYSTEM_DISABLED, self.key)
+        if not _hosted_mt5_execution_enabled():           # condition 2 — subsystem execution flag
+            return ReadinessDecision(False, RW_EXECUTION_FEATURE_DISABLED, self.key)
         # Shared lifecycle checks — ANDed, never dropped (red-team finding #1).
         if not getattr(account, "is_active", False):
             return ReadinessDecision(False, g.R_ACCOUNT_INACTIVE, self.key)
         if getattr(account, "disconnected_at", None) is not None:
             return ReadinessDecision(False, g.R_ACCOUNT_DISCONNECTED, self.key)
+        if getattr(account, "is_demo", False) is not True:  # condition 11 — DEMO-ONLY subsystem, fail-closed
+            return ReadinessDecision(False, RW_REAL_ACCOUNT_NOT_ENABLED, self.key)
         ws = getattr(account, "hosted_workspace", None)
         if ws is None:
             return ReadinessDecision(False, RW_WORKSPACE_MISSING, self.key)
-        # Attach truth from the LAST observation (a cache; the live gate is the authority). Fail-closed,
-        # most-specific-first so each reason code is reachable.
-        if ws.observed_connected is not True or ws.observed_trade_allowed is not True:
+        if getattr(ws, "execution_enabled", False) is not True:  # condition 4 — explicit per-workspace ARM
+            return ReadinessDecision(False, RW_EXECUTION_DISABLED, self.key)
+        # Attach truth from the M3c CANONICAL projection (ADR-0034 M3c) — the fields the ONE certified,
+        # row-locked, single writer ``persist_workspace_decision`` actually maintains. (The legacy
+        # ``observed_*``/``state``/``last_observed_at`` cache is deliberately NOT written by that writer and
+        # must not be read here, or Provider B fail-closes forever — ADR-0034 Decision A.) This projection is
+        # still a CACHE; the live order-time bridge gate (``evaluate_binding``) remains the authority.
+        # Fail-closed, most-specific-first so each reason code stays reachable.
+        if ws.proj_connected is not True:
             return ReadinessDecision(False, RW_WORKSPACE_NOT_CONNECTED, self.key)
-        if ws.active_account_match is not True:
+        if ws.proj_account_match is not True:
             return ReadinessDecision(False, RW_ACTIVE_ACCOUNT_MISMATCH, self.key)
-        if getattr(ws, "state", "") != _STATE_CONNECTED:
+        # Connected + matched but not canonically EXECUTION_READY (e.g. trading halted, or any non-ready
+        # canonical state): not ready. ``canonical_execution_ready`` == (canonical_state == EXECUTION_READY),
+        # which the M3a manager derives only when trade_allowed + fresh + the full conjunction held.
+        if ws.proj_trade_allowed is not True or not ws.canonical_execution_ready:
             return ReadinessDecision(False, RW_WORKSPACE_NOT_READY, self.key)
         if not _observation_fresh(ws):
             return ReadinessDecision(False, RW_OBSERVATION_STALE, self.key)
@@ -127,12 +155,13 @@ class PersistentWorkspaceProvider:
 
 
 def _observation_fresh(ws) -> bool:
-    """True only when the workspace's last attach observation is recent enough to gate eligibility.
+    """True only when the workspace's last CANONICAL decision is recent enough to gate eligibility.
 
-    NOTE for the future writer (deferred increment): ``last_observed_at`` MUST be updated atomically with
-    the ``observed_*`` snapshot it dates, or a stale snapshot could ride a fresh timestamp."""
+    Uses ``last_decision_at`` — the timestamp the M3c writer stamps atomically with the canonical state +
+    projection it dates (ADR-0034 M3c ``persist_workspace_decision``), so a stale projection can never ride a
+    fresh timestamp. (This supersedes the legacy ``last_observed_at``, which the M3c writer does not touch.)"""
     from django.utils import timezone
-    ts = getattr(ws, "last_observed_at", None)
+    ts = getattr(ws, "last_decision_at", None)
     if ts is None:
         return False
     age = (timezone.now() - ts).total_seconds()

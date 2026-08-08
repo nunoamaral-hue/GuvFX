@@ -80,6 +80,11 @@ _ELIGIBILITY_TO_SHARED = {
     "workspace_not_connected": SR_HEALTH_DISCONNECTED,
     "active_account_mismatch": SR_ACTIVE_ACCOUNT_MISMATCH,
     "workspace_observation_stale": SR_HEALTH_STALE,
+    # ADR-0034 Execution Engine arming codes (Decision D 2/4/11) → shared vocabulary, so a not-armed /
+    # real-account dispatch refusal stays faithful rather than collapsing to the misleading re-validate code.
+    "workspace_execution_feature_disabled": SR_WORKSPACE_NOT_READY,
+    "workspace_execution_disabled": SR_WORKSPACE_NOT_READY,
+    "real_account_not_enabled": SR_WORKSPACE_NOT_READY,
 }
 
 # WP3 health state → shared vocabulary (for an adverse/non-eligible contract at dispatch).

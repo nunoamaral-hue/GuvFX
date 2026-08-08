@@ -14,6 +14,57 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 Execution Engine — G12 completion: provenance + telemetry + reconcile (DARK, demo-only). NOT deployed. 🟢**
+  On PR #315 (branch `feat/adr0034-execution-engine`). A repository-truth inventory of the whole subsystem
+  vs the Sponsor 18-item scope found the authority spine COMPLETE (routing/arming/active-broker/authority/
+  pause-resume/CI/PR) and closed the remaining additive **provenance/observability/failure** gaps:
+  **execution persistence** — `ExecutionJob.hosted_workspace_uuid`/`hosted_idempotency_key` + append-only
+  `HostedWorkspaceExecution` occupancy record (STARTED/FINISHED/RECONCILED, unique per (job,phase)),
+  migration `0028`; **execution telemetry** — `hosted_execution.record_hosted_dispatch/completion` wired into
+  `next_job`/`complete` emitting `workspace.execution_started/finished` (DARK, fail-SAFE post-commit,
+  idempotent, secret-free); **failure/reconcile** — `hosted_reconcile.reconcile_hosted_execution` runs the
+  certified `classify_ambiguous_result` over injected broker evidence, persists a RECONCILED row, alerts +
+  quarantines `STILL_AMBIGUOUS`, and NEVER re-sends; **retry stance** — explicit no-auto-resend (may_retry is
+  advisory; guard test). **Deliberate boundary:** does NOT drive the M3c canonical `EXECUTING` enum (canonical
+  state stays observation-owned — single-writer + readiness gate untouched); an ADR-level change, deferred.
+  **Still open by design (Sponsor-gated capstone):** workspace→node binding + a node-aware hosted worker —
+  DARK-safe to build, must never be ARMED on merge. +18 focused tests (endpoint claim-seam fail-closed +
+  provenance/telemetry/reconcile + retry-stance guard); 1070 execution+hosted_workspace tests green; dead
+  symbols `_hosted_execution_mode`/`ER_WORKSPACE_ROUTE_AMBIGUOUS` removed. Design:
+  `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.1.
+
+- **2026-08-08 — ADR-0034 Execution Engine — subsystem repository-complete (G1/G2/G3/G4/G5/G6/G9/G10 + C/D, DARK, demo-only). NOT deployed. 🟢**
+  On PR #315 (branch `feat/adr0034-execution-engine`, base fresh main). After G1/G3 + Decisions C/D, delivered
+  the remaining workstreams: **G4** claim-seam entitlement (owner-bound route + non-NULL node + node-aware
+  non-legacy worker at `next_job` under the row lock); **G6** bridge startup safety assertions
+  (`MT5_HOSTED_EXECUTION` ⇒ guarded-attach + mandatory pin + demo-only + no-credential-login, no silent
+  downgrade); **G5** provision-vs-arm (`hosted_provisioning.py`: provision never arms; explicit
+  fully-preconditioned audited arm/disarm; no auto-arm); **G9** readiness-driven switch pause/safe-resume +
+  drop-not-queue (`hosted_switch_policy.py`); **G2** observation→persist driver (`observation_runner.py`,
+  advances `last_decision_at`); **G10** deterministic hosted idempotency key + fail-closed ambiguous-result
+  classifier (`hosted_idempotency.py`, mutation-tested). The live order-time bridge gate remains the sole
+  order authority; persisted state is context only; no order placed/closed/modified. ~90 focused tests total;
+  `make check` green (backend 3246). Subsystem-wide adversarial review recorded in the PR. All flags default
+  OFF; `execution_enabled` default False; no auto-arm; nothing deployed. Demo-only host cert prepared/not run.
+  See `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.
+
+- **2026-08-08 — ADR-0034 Execution Engine — Provider-B enablement (readiness on canonical state + per-job pin, DARK, demo-only). NOT deployed. 🟢**
+  Branch `feat/adr0034-execution-engine` (base = fresh main `059b448` after #314 merged). A full 7-mapper
+  inventory established that the **order-safety spine already exists + is certified** (bridge order-time
+  identity authority + per-job pin + idempotency = 114 tests; central `broker_gate` + `evaluate_dispatch_gate`;
+  Provider-B readiness skeleton) — so Provider B is *wiring*, not a new engine. Closed the two backend gaps:
+  **G1** repointed `PersistentWorkspaceProvider` from the legacy `observed_*`/`state`/`last_observed_at` cache
+  (which the M3c writer does NOT maintain → would fail-close forever) to the M3c **canonical** projection
+  (`proj_*` + `canonical_execution_ready` + `last_decision_at`); **G3** added `execution/hosted_pin.py`
+  deriving the per-job identity pin (`expected_login`/`expected_server`/`is_demo`) SERVER-SIDE from durable
+  bindings, injected centrally in `ExecutionJob.save()` for every mutation type (PLACE/OPEN/CLOSE/MODIFY),
+  fail-closed. DARK + regression-safe (no-op for Provider A / Customer Zero / while flag OFF — flag checked
+  before any account access). Order authority stays the live bridge gate; persisted readiness is read-model
+  only; no order placed/closed/modified. 27 focused tests + pin mutation adequacy; `make check` green
+  (backend 3186). **GATED on Sponsor/RED decisions B (real accounts), C (isolation topology), D (per-workspace
+  arming)** before completion/arming — see `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8 +
+  `docs/operations/hosted-workspace/EXECUTION_ENGINE_HOST_CERTIFICATION.md` (prepared, not run).
+
 - **2026-08-08 — ADR-0034 M3c Workspace Core — authoritative persistence + read model (DARK). NOT deployed. 🟢**
   Branch `feat/adr0034-m3c-workspace-core` (base = the M3b-2 host-cert docs commit). Closes the observation
   chain with the one seam that *persists* the M3a manager decision, records provenance, and emits telemetry —
