@@ -17,7 +17,8 @@ from django.utils import timezone
 
 from execution import broker_gate as g
 from execution import readiness as R
-from hosted_workspace.models import HostedMt5Workspace, WorkspaceState
+from hosted_workspace.models import HostedMt5Workspace
+from hosted_workspace.state_machine import WorkspaceLifecycleState
 from trading.models import TradingAccount
 
 U = get_user_model()
@@ -92,7 +93,7 @@ class ProviderARegressionTests(TestCase):
             self.assertEqual(dec.reason_code, g.R_NOT_VALIDATED_NEVER)
 
 
-@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1")
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_MT5_EXECUTION_ENABLED="1")
 class ProviderBTests(TestCase):
     def setUp(self):
         self.user = U.objects.create_user(username="rb", email="rb@x.invalid", password="x")
@@ -101,9 +102,12 @@ class ProviderBTests(TestCase):
             readiness_provider=_RP.PERSISTENT_WORKSPACE)  # NOTE: no password_enc, NOT VALIDATED
 
     def _ready_ws(self, **kw):
-        base = dict(state=WorkspaceState.CONNECTED, active_account_match=True,
-                    observed_connected=True, observed_trade_allowed=True,
-                    last_observed_at=timezone.now())
+        # Set the M3c CANONICAL projection — the fields the certified single writer maintains and the
+        # fields Provider-B readiness now reads (ADR-0034 Execution Engine G1 / Decision A).
+        base = dict(canonical_state=WorkspaceLifecycleState.EXECUTION_READY,
+                    proj_connected=True, proj_trade_allowed=True, proj_account_match=True,
+                    proj_execution_ready=True, last_decision_at=timezone.now(),
+                    execution_enabled=True)  # ADR-0034 Execution Engine — the explicit per-workspace ARM
         base.update(kw)
         return HostedMt5Workspace.objects.create(trading_account=self.acct, **base)
 
@@ -121,16 +125,16 @@ class ProviderBTests(TestCase):
     def test_wrong_account_reports_specific_mismatch(self):
         # A connected, trade-allowed workspace whose active account != bound account reports the
         # SPECIFIC active_account_mismatch (not a generic not-ready).
-        self._ready_ws(active_account_match=False)
+        self._ready_ws(proj_account_match=False)
         self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
                          R.RW_ACTIVE_ACCOUNT_MISMATCH)
 
     def test_not_connected_and_stale_fail_closed(self):
-        ws = self._ready_ws(observed_connected=False)
+        ws = self._ready_ws(proj_connected=False)
         self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
                          R.RW_WORKSPACE_NOT_CONNECTED)
-        ws.observed_connected = True
-        ws.last_observed_at = timezone.now() - timezone.timedelta(
+        ws.proj_connected = True
+        ws.last_decision_at = timezone.now() - timezone.timedelta(
             seconds=R.WORKSPACE_OBSERVATION_FRESH_SECONDS + 60)
         ws.save()
         self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
@@ -146,6 +150,27 @@ class ProviderBTests(TestCase):
         self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
                          g.R_ACCOUNT_DISCONNECTED)
 
+    def test_execution_feature_flag_disabled_fails_closed(self):
+        # ADR-0034 Decision D condition 2 — the subsystem execution flag must be ON (master may be on for
+        # observation while execution stays dark).
+        self._ready_ws()
+        with override_settings(HOSTED_MT5_EXECUTION_ENABLED="0"):
+            self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                             R.RW_EXECUTION_FEATURE_DISABLED)
+
+    def test_unarmed_workspace_fails_closed(self):
+        # ADR-0034 Decision D condition 4 — the explicit per-workspace arm must be True.
+        self._ready_ws(execution_enabled=False)
+        self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                         R.RW_EXECUTION_DISABLED)
+
+    def test_real_account_hard_rejected_demo_only(self):
+        # ADR-0034 Decision D condition 11 — this subsystem is DEMO ONLY; a real account never executes.
+        self._ready_ws()
+        self.acct.is_demo = False
+        self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                         R.RW_REAL_ACCOUNT_NOT_ENABLED)
+
     def test_gate_substitution_end_to_end(self):
         self._ready_ws()
         with _gate_on():
@@ -159,8 +184,9 @@ class ProviderBDarknessTests(TestCase):
             user=user, name="a", broker_name="B", account_number="500", is_demo=True,
             readiness_provider=_RP.PERSISTENT_WORKSPACE)
         HostedMt5Workspace.objects.create(
-            trading_account=acct, state=WorkspaceState.CONNECTED, active_account_match=True,
-            observed_connected=True, observed_trade_allowed=True, last_observed_at=timezone.now())
+            trading_account=acct, canonical_state=WorkspaceLifecycleState.EXECUTION_READY,
+            proj_connected=True, proj_trade_allowed=True, proj_account_match=True,
+            proj_execution_ready=True, last_decision_at=timezone.now())
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HOSTED_PERSISTENT_MT5_ENABLED", None)
             self.assertEqual(R.PersistentWorkspaceProvider().evaluate(acct).reason_code,

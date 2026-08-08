@@ -213,6 +213,16 @@ class ExecutionJob(models.Model):
     recovered = models.BooleanField(default=False)
     recovery_reason = models.TextField(blank=True)
 
+    # ADR-0034 Execution Engine (G10/G12) — Hosted Workspace (Provider B) execution PROVENANCE. Both are
+    # empty for every legacy/Provider-A job (stamped only for a hosted job, and only while the subsystem is
+    # ON — see hosted_pin.inject_identity_pin / hosted_execution). Read-model provenance ONLY: they record
+    # WHICH workspace occupancy a job ran on and its deterministic idempotency identity, so 'which jobs
+    # executed on workspace X' and 'has this exact attempt already run' are queryable rather than inferred
+    # from account + payload. Neither is a credential (the uuid + the HWX-<digest> key are identifiers), and
+    # neither is order authority (the live bridge gate remains sole).
+    hosted_workspace_uuid = models.CharField(max_length=36, blank=True, default="", db_index=True)
+    hosted_idempotency_key = models.CharField(max_length=48, blank=True, default="", db_index=True)
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -253,6 +263,13 @@ class ExecutionJob(models.Model):
             # eligibility gate above so a degraded-but-still-VALIDATED account is stopped at creation too.
             from execution.runtime_pause import require_not_broker_paused
             require_not_broker_paused(self.account, trigger=f"job:{self.job_type}")
+        # ADR-0034 Execution Engine (G3) — inject the server-derived Hosted Workspace (Provider B) per-job
+        # identity pin here, at the single creation boundary, so EVERY mutation-creating seam is covered and
+        # a future seam inherits it. Flag-checked first ⇒ zero overhead / no payload change while the
+        # subsystem is dark (Provider A / Customer Zero regression-identical). Never a live order itself.
+        if self._state.adding and self.job_type in IDENTITY_PIN_JOB_TYPES:
+            from execution.hosted_pin import inject_identity_pin
+            inject_identity_pin(self)
         super().save(*args, **kwargs)
 
     @classmethod
@@ -330,6 +347,19 @@ BROKER_GATE_BLOCKED_JOB_TYPES = (
     ExecutionJob.JobType.OPEN_TRADE,
     ExecutionJob.JobType.PLACE_ORDER,
     ExecutionJob.JobType.PLACE_TEST_ORDER,
+)
+
+# ADR-0034 Execution Engine (G3): job types that reach a real MT5 mutation (order_send / position
+# close / position modify) and therefore carry the Hosted Workspace (Provider B) per-job identity pin
+# when the account uses that path. Includes the trade-management types (CLOSE/MODIFY) — a wrong-account
+# close/modify must fail closed at the bridge's mutation-identity gate (ADR-0034 PARTS I/J). Excludes
+# PLACE_ORDER_SHADOW (reaches no broker), SYNC_POSITIONS and TEST_CONNECTION (no mutation).
+IDENTITY_PIN_JOB_TYPES = (
+    ExecutionJob.JobType.OPEN_TRADE,
+    ExecutionJob.JobType.PLACE_ORDER,
+    ExecutionJob.JobType.PLACE_TEST_ORDER,
+    ExecutionJob.JobType.CLOSE_TRADE,
+    ExecutionJob.JobType.MODIFY_POSITION,
 )
 
 
@@ -1202,3 +1232,59 @@ class BrokerRuntimePause(models.Model):
             "paused_at": self.paused_at.isoformat() if self.paused_at else None,
             "resumed_at": self.resumed_at.isoformat() if self.resumed_at else None,
         }
+
+
+class HostedWorkspaceExecution(models.Model):
+    """ADR-0034 Execution Engine (G12) — durable, append-only PROVENANCE of a Hosted Workspace (Provider B)
+    execution occupancy: which ``ExecutionJob`` ran on which workspace occupancy, its phase (STARTED at
+    dispatch / FINISHED at completion), its outcome, and its deterministic idempotency key.
+
+    This is the durable EXECUTING-lifecycle record for a hosted workspace. It is DELIBERATELY separate from
+    the M3c canonical ``HostedMt5Workspace.canonical_state`` (which stays OBSERVATION-owned by the single M3c
+    writer): the canonical enum is never driven to EXECUTING from the execution path, so the M3c
+    single-writer + single-emit-site invariants and the certified readiness gate are untouched (the manager
+    already excludes EXECUTING from observation derivation). Read-model / provenance ONLY — it is NEVER order
+    authority; the live bridge gate remains the sole order-time authority. Carries NO credential (the
+    workspace uuid + the HWX key are identifiers; outcome/phase are enums).
+    """
+
+    class Phase(models.TextChoices):
+        STARTED = "STARTED", "Started"        # recorded at dispatch (job → RUNNING)
+        FINISHED = "FINISHED", "Finished"      # recorded at completion (job → SUCCESS/FAILED)
+        RECONCILED = "RECONCILED", "Reconciled"  # ambiguous-send outcome decided from broker/terminal truth
+
+    job = models.ForeignKey(
+        "execution.ExecutionJob", on_delete=models.CASCADE, related_name="hosted_executions")
+    workspace_uuid = models.CharField(max_length=36, db_index=True)
+    phase = models.CharField(max_length=12, choices=Phase.choices)
+    # Outcome code: the job status (SUCCESS/FAILED) at FINISHED, or the ambiguous-send classification
+    # (confirmed_executed / confirmed_not_executed / still_ambiguous — up to 22 chars) at RECONCILED; blank
+    # at STARTED. A sanitised, secret-free code — wide enough to hold the full classification untruncated.
+    outcome = models.CharField(max_length=24, blank=True, default="")
+    hosted_idempotency_key = models.CharField(max_length=48, blank=True, default="")
+    # Per-job monotonic phase sequence (1 = STARTED, 2 = FINISHED) — makes replay idempotent + orders phases.
+    seq = models.PositiveSmallIntegerField(default=0)
+    correlation_id = models.CharField(max_length=128, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            # Exactly one row per (job, phase) — a replayed dispatch/completion can never double-append.
+            models.UniqueConstraint(fields=["job", "phase"], name="uniq_hostedexec_job_phase"),
+        ]
+        indexes = [
+            models.Index(fields=["workspace_uuid", "-id"], name="hostedexec_ws_idx"),
+            models.Index(fields=["hosted_idempotency_key"], name="hostedexec_hwx_idx"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("HostedWorkspaceExecution is append-only; updates are not allowed")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("HostedWorkspaceExecution is append-only; deletes are not allowed")
+
+    def __str__(self) -> str:
+        return f"HostedWorkspaceExecution(job={self.job_id}, {self.phase}, ws={self.workspace_uuid})"

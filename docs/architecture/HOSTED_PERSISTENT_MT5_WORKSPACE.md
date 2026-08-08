@@ -248,3 +248,159 @@ mutation-adequacy harness for the writer's novel pure predicates (`_coerce_versi
 
 **Still out of scope (unchanged):** strategy execution, `order_send`, RemoteApp/RDS, multi-user pooling,
 AppLocker, broker-credential ownership, production deployment, onboarding UI.
+
+---
+
+## 8. Execution Engine — Provider-B enablement (DARK, demo-only, 2026-08-08)
+
+A full read-only inventory of the execution surface (7 parallel mappers + synthesis) established the
+decisive fact: **the entire order-safety spine already exists and is certified** — the bridge's order-time
+identity authority (`verify_execution_binding`→`evaluate_binding` for opens; `verify_mutation_identity`→
+`evaluate_mutation_identity` for close/modify — live `account_info()`/`terminal_info()` re-read + demo/live
++ `trade_allowed` + login + server; a two-tier per-job pin; idempotency/lost-ACK), the central fail-closed
+gate (`broker_gate` creation + `evaluate_dispatch_gate` fresh at claim), and result/pause/reconcile — with
+114 bridge tests + 12 readiness tests. The Hosted Workspace (Provider B) is therefore a **binding-and-wiring**
+job, **not** a new engine. This increment closes the two backend gaps that made that spine *unreachable* for
+a hosted account.
+
+**Order-authority invariant (restated).** Persisted `canonical_execution_ready` / readiness eligibility is a
+READ-MODEL projection, never permission to trade. The authority immediately before every mutation stays the
+live bridge gate: **live broker truth + mandatory expected-account pin + order-time identity gate**. Nothing
+here replaces it with database state.
+
+### 8.1 Delivered
+
+- **G1 — Provider-B readiness on the M3c canonical projection** (`execution/readiness.py`). Latent BLOCKER:
+  `PersistentWorkspaceProvider` read the legacy `observed_*`/`state`/`last_observed_at` cache that the M3c
+  single writer deliberately does **not** maintain, so a hosted account would fail-close forever in
+  production (the readiness tests passed only because fixtures set the legacy fields directly). Repointed at
+  `proj_connected`/`proj_account_match`/`proj_trade_allowed` + `canonical_execution_ready` + `last_decision_at`
+  freshness — the fields the certified writer maintains. Every reason code preserved; fixtures updated.
+- **G3 — server-derived per-job identity pin** (`execution/hosted_pin.py` + central injection in
+  `ExecutionJob.save()`). The bridge already enforces the pin; the backend never populated it (it relied on
+  the process-global env pin). `identity_pin_for(account)` derives `expected_login` (account number),
+  `expected_server` (broker server name) and `is_demo` from the account's durable bindings, and
+  `inject_identity_pin` merges them into the payload at the single creation boundary for every mutation job
+  type (PLACE/OPEN/CLOSE/MODIFY) — so a wrong-account close/modify fails closed at the bridge's
+  mutation-identity gate (PARTS I/J). Fail-closed (pin required even if a binding value is missing); never
+  clobbers a caller-supplied pin.
+
+**DARK + regression-safe.** Both are no-ops (`{}` / `False`) for a non-Provider-B account and while
+`HOSTED_PERSISTENT_MT5_ENABLED` is OFF — the flag is checked *before* any account access, so the legacy
+Provider-A / Customer-Zero path is byte-for-byte unchanged with zero added overhead. No order is placed,
+closed, or modified by this change. Persists / emits no credential (login/server are identifiers).
+
+### 8.2 Decision A — RESOLVED (Amber, per packet PART D)
+
+Provider-B readiness must read exactly one field set. Chosen: the M3c **canonical** projection (the certified,
+row-locked, single-writer output), not the legacy cache. The legacy `observed_*` fields become vestigial for
+the execution path (still present for the inert ADR-0033 foundation). This is the direct implementation of
+"the persistent-workspace path uses Workspace Core."
+
+### 8.3 Sponsor decisions B / C / D — RESOLVED (2026-08-08), and how they are implemented
+
+The Sponsor resolved the three gating decisions for this engineering subsystem (still DARK, demo-only, no
+production arming):
+
+- **Decision B — demo-only.** Real-money enablement stays RED / deferred to a future Sponsor gate. Enforced
+  live and fail-closed: Provider-B readiness hard-rejects a non-demo account (`RW_REAL_ACCOUNT_NOT_ENABLED`),
+  and the bridge independently refuses `trade_mode != 0`. No production override added.
+- **Decision C — Phase-1 isolation: one authorised workspace → one MT5 process → one active broker account →
+  one route.** No shared/NULL route, no opportunistic "any attached terminal." Implemented by
+  `execution/hosted_routing.resolve_hosted_route`, which resolves an account to its ONE owner-bound
+  `HostedMt5Workspace` (OneToOne + defensive owner/`trading_account_id` checks) and derives the server-side
+  expected login/server; fail-closed on missing / owner-mismatch / ambiguous / unarmed / no-binding.
+- **Decision D — layered explicit arming; every flag/field defaults FALSE; no migration auto-arms.** The
+  backend arm (conditions 1-5 + 11) is enforced in the single readiness authority: global flag
+  (`HOSTED_PERSISTENT_MT5_ENABLED`) ∧ execution flag (`HOSTED_MT5_EXECUTION_ENABLED`, new, default OFF) ∧
+  provider == persistent_workspace ∧ lifecycle (`is_active`/`disconnected`) ∧ demo-only ∧ workspace present ∧
+  per-workspace `execution_enabled` (new field, default False) ∧ canonical `EXECUTION_READY` + fresh
+  projection. The LIVE conditions 6-10 (guarded attach / live identity / connected / `trade_allowed` /
+  health+pause) remain the certified bridge gate's authority, immediately before every mutation.
+
+**PART M — workspace-level `EXECUTING` is not a faithful model** of N concurrent per-strategy jobs on one
+account; per PART M's own guidance this stays an architecture finding, not a forced (oscillating) model —
+in-flight execution is a per-`ExecutionJob` fact, not a workspace lifecycle flip.
+
+### 8.4 Delivered in the arming+routing increment (on PR #315's branch)
+
+`hosted_workspace`: `execution_enabled` field (migration `0003`, additive/reversible) +
+`hosted_mt5_execution_enabled()` flag (default OFF). `execution/readiness.py`: the layered arm + three
+fail-closed reason codes, mapped into `broker_gate._ELIGIBILITY_TO_SHARED`. `execution/hosted_routing.py`:
+owner-bound route resolver + `hosted_execution_armed` + the execution result taxonomy. A structural
+no-bypass test pins `IDENTITY_PIN_JOB_TYPES` so a new MT5 mutation type cannot be added unpinned.
+
+### 8.5 Workstreams G2 / G4 / G5 / G6 / G9 / G10 — DELIVERED (DARK/demo-only, no arming)
+
+- **G4** — claim-seam entitlement: `hosted_routing.authorize_hosted_claim` wired into `next_job` under the
+  row lock (owner-bound route + non-NULL node + node-aware non-legacy worker; else the hosted job is FAILED
+  under lock). Complements the creation/dispatch gates. One workspace → one process → one route → one worker.
+- **G6** — bridge startup safety: `evaluate_hosted_startup_config` in `scripts/mt5_signal_bridge.py`; when
+  `MT5_HOSTED_EXECUTION` is set, `validate_config` refuses to start unless guarded-attach + mandatory pin are
+  on, live is off (demo-only), and no credential-login env is configured — no silent downgrade. Legacy
+  bridges unaffected.
+- **G5** — provision vs arm: `execution/hosted_provisioning.py` — `provision_hosted_workspace` (sets
+  Provider-B, never arms) + `arm_hosted_workspace_execution` (the ONE explicit, fully-preconditioned, audited
+  arm) + immediate `disarm`. No lifecycle event auto-arms.
+- **G9** — account-switch pause/resume: `execution/hosted_switch_policy.py` — readiness-driven pause (mismatch
+  /disconnect/stale ⇒ effectively paused, fail-closed at every dispatch), stale-signal DROP (no queue), and
+  safe resume as automatic re-eligibility only when the expected account returns + connected + trade_allowed
+  + fresh + armed. Reuses the one gate; no parallel pause system; never auto-logs-in/switches.
+- **G2** — observation→persist driver: `hosted_workspace/observation_runner.py` — thin scheduled runner over
+  the certified chain into the single M3c writer (advancing `last_decision_at`); derives no state, executes
+  nothing; DARK no-op while off.
+- **G10** — hosted idempotency + ambiguous result: `execution/hosted_idempotency.py` — deterministic key
+  (workspace+login+server+job+op+strategy, collision-free, secret-free) + `classify_ambiguous_result` (only
+  `CONFIRMED_NOT_EXECUTED` may retry; `STILL_AMBIGUOUS` fails closed) — the hard rule against a duplicate order
+  after an ambiguous send. Mutation-tested.
+
+All default OFF; nothing armed; nothing deployed. The demo-only host certification remains prepared/not run.
+
+### 8.1 G12 — execution provenance + telemetry + reconcile (DARK, 2026-08-08)
+
+The authority spine above is complete; this increment closes the **provenance / observability / failure**
+gaps a repository-truth inventory of the whole subsystem surfaced (the two literally "defined-only/absent"
+scope items — execution telemetry + execution persistence — plus the failure/reconcile driver). All
+additive, DARK, read-model/alert-only, and preserving every invariant (bridge is sole order-time gate; no
+order authority; demo-only; default-OFF).
+
+- **Execution persistence (item 12)** — `execution/models.py`: `ExecutionJob` gains
+  `hosted_workspace_uuid` + `hosted_idempotency_key` (empty for every legacy/Provider-A job; stamped only for
+  a hosted job while ON). New **append-only `HostedWorkspaceExecution`** record — one row per (job, phase)
+  (unique constraint) capturing the EXECUTING occupancy: STARTED at dispatch, FINISHED at completion (with
+  the sanitised SUCCESS/FAILED outcome), RECONCILED for an ambiguous-send verdict. Migration `0028`
+  (additive/reversible). The workspace uuid is stamped in the single `inject_identity_pin` seam; the HWX key
+  (needs the job pk) is stamped at dispatch.
+- **Execution telemetry (item 11)** — `execution/hosted_execution.py`: `record_hosted_dispatch` /
+  `record_hosted_completion`, wired into `views.next_job` (post-claim) and `views.complete` (post-completion),
+  emit `workspace.execution_started` / `workspace.execution_finished`. **DARK** (flag-first, zero overhead),
+  **fail-SAFE** (post-commit + swallow errors — a provenance/telemetry hiccup can never break a claim or a
+  completion), **idempotent** ((job,phase) unique + seq-keyed telemetry dedup), secret-free.
+- **Failure / reconcile (items 8, 10)** — `execution/hosted_reconcile.py`:
+  `reconcile_hosted_execution(job, evidence)` runs the certified `classify_ambiguous_result` over **injected**
+  authoritative broker/terminal evidence (the live evidence source is the Sponsor-gated host consumer —
+  mirroring the inert-by-design producer/agent pattern), persists a RECONCILED provenance row, and on
+  `STILL_AMBIGUOUS` emits a WARNING `workspace.execution_ambiguous` (quarantine — a human must resolve). It
+  **never re-sends** an order.
+- **Retry stance (item 9), adopted explicitly** — `may_retry_after_ambiguous` is **advisory only**. The
+  hosted path adopts the legacy PLACE_ORDER discipline: **no auto-resend**, not even for
+  `CONFIRMED_NOT_EXECUTED`; a retry is only ever a human-gated re-submission. A guard test asserts no
+  production code turns the predicate into a job-creation/re-send.
+
+**Deliberate design boundary (documented Amber).** This is the ORDER-DRIVEN execution family. It does **not**
+drive the M3c canonical `HostedMt5Workspace.canonical_state` enum to EXECUTING — the canonical state stays
+OBSERVATION-owned by the single M3c writer (`persistence.persist_workspace_decision`), so the M3c
+single-writer invariant, the observation-version staleness sequencing, and the certified readiness gate are
+all untouched (the M3a manager already excludes EXECUTING from observation derivation). The EXECUTING
+lifecycle is captured here as durable provenance + telemetry. Driving the canonical enum to EXECUTING (with
+its readiness single-flight coupling) is a genuine ADR-level change and is **deferred**, not taken in passing.
+
+**Still open by design (not defects).** The produce→claim→execute loop stays deliberately open at the
+Sponsor-gated capstone: binding a workspace to a `TerminalNode` at provisioning and running a **node-aware
+hosted worker** are the execution-plane "make it real" step — the code is DARK-safe to build but its
+**arming requires explicit Sponsor authority and must never be armed on merge**. The reconcile driver's live
+evidence source is part of that same host consumer topology.
+
+Tests: `execution/tests_hosted_execution.py` (provenance/telemetry/reconcile + retry-stance guard),
+`execution/tests_hosted_claim_endpoint.py` (the real `next_job` endpoint fails a hosted claim closed under
+the row lock, and is byte-for-byte dark while OFF). `make check` green.

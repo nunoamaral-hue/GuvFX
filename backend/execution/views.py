@@ -263,7 +263,7 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         # WSE (ADR-0029) — server-side final-dispatch gate at the authoritative claim boundary.
         from execution.broker_gate import (
             _audit_dispatch_refusal, evaluate_dispatch_gate, execution_gate_enabled)
-        from execution.models import BROKER_GATE_BLOCKED_JOB_TYPES
+        from execution.models import BROKER_GATE_BLOCKED_JOB_TYPES, IDENTITY_PIN_JOB_TYPES  # noqa: F401
         _dispatch_refused = None
 
         # Atomic claim: lock the row so only one worker can claim it. skip_locked=True causes
@@ -335,6 +335,22 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
                     job.finished_at = timezone.now()
                     job.save(update_fields=["status", "error_message", "finished_at"])
 
+            # ADR-0034 Execution Engine (G4) — claim-seam entitlement for a Hosted Workspace (Provider B)
+            # mutation job: prove owner-bound single route + non-NULL node + node-aware (non-legacy) worker
+            # under the same row lock. Non-hosted jobs / a dark subsystem pass through unchanged. A hosted
+            # job that fails (NULL/shared route or a legacy/shared worker) is a routing violation and is
+            # FAILED under lock rather than handed to an unentitled worker.
+            if _dispatch_refused is None and job.job_type in IDENTITY_PIN_JOB_TYPES:
+                from execution.broker_gate import GateDecision
+                from execution.hosted_routing import authorize_hosted_claim
+                _claim = authorize_hosted_claim(job, worker_is_node_aware=bool(authorized_nodes))
+                if not _claim.ok:
+                    _dispatch_refused = GateDecision(False, _claim.reason_code)
+                    job.status = ExecutionJob.Status.FAILED
+                    job.error_message = f"hosted claim entitlement refused: {_claim.reason_code}"
+                    job.finished_at = timezone.now()
+                    job.save(update_fields=["status", "error_message", "finished_at"])
+
             if _dispatch_refused is None:
                 from datetime import timedelta as _timedelta
                 _now = timezone.now()
@@ -372,6 +388,13 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
             routing_mode=routing_mode,
             terminal_node_id=job.terminal_node_id,
         )
+
+        # ADR-0034 Execution Engine (G12) — Hosted Workspace execution telemetry + provenance at dispatch.
+        # DARK / fail-safe / no-op for a non-hosted job or a dark subsystem; a hiccup can never break the
+        # claim (the job is already RUNNING and committed). Records the STARTED occupancy + HWX key and emits
+        # workspace.execution_started. NEVER an order.
+        from execution.hosted_execution import record_hosted_dispatch
+        record_hosted_dispatch(job, correlation_id=str((job.payload or {}).get("correlation_id", "")))
 
         # OPS-OBSERVABILITY (stage 5): shadow-execution lifecycle + claim metrics.
         # Fail-open, additive; no effect on the claim result above.
@@ -440,6 +463,12 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
             result=result if status_value == ExecutionJob.Status.SUCCESS else None,
             error_message=error_message if status_value == ExecutionJob.Status.FAILED else None,
         )
+
+        # ADR-0034 Execution Engine (G12) — Hosted Workspace execution telemetry + provenance at completion.
+        # DARK / fail-safe / no-op for a non-hosted job or a dark subsystem. Records the FINISHED occupancy
+        # (with the sanitised SUCCESS/FAILED outcome) + emits workspace.execution_finished. NEVER an order.
+        from execution.hosted_execution import record_hosted_completion
+        record_hosted_completion(job, correlation_id=str((job.payload or {}).get("correlation_id", "")))
 
         # =================================================================
         # Auto-sync: Queue SYNC_POSITIONS job after successful trade placement

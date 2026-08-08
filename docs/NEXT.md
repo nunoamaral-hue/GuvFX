@@ -1,6 +1,50 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ ADR-0034 Hosted Workspace — M3c Workspace Core DELIVERED (DARK); Sponsor picks next subsystem (2026-08-08)
+## ▶ ADR-0034 Execution Engine — G12 completion DELIVERED (provenance/telemetry/reconcile, DARK); capstone is Sponsor-gated (2026-08-08)
+The Execution Engine subsystem is repository-complete on PR #315: the authority spine (routing/arming/
+active-broker/authority/pause-resume) plus the G12 provenance layer — job↔workspace + HWX-key persistence,
+append-only `HostedWorkspaceExecution` occupancy, `workspace.execution_started/finished` telemetry at
+dispatch/complete, the ambiguous-send reconcile driver (alert+quarantine, never re-sends), and the explicit
+no-auto-resend retry stance. DARK/demo-only/default-OFF; the live bridge stays sole order-time gate; the M3c
+canonical `EXECUTING` enum is deliberately NOT driven (deferred ADR-level change). 1070 tests green.
+**Bounded next action (Sponsor, HARD STOP):** authorise the **capstone** — bind a workspace to a
+`TerminalNode` at provisioning and run a **node-aware hosted worker** (+ the reconcile driver's live broker
+evidence source). The *code* is DARK-safe to build; **arming/running it on a host is the execution-plane
+"make it real" step and requires explicit Sponsor authority — it must never be armed on merge.** Do not begin
+it without that authorisation. See `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.1.
+
+## ▶ ADR-0034 Execution Engine — decisions B/C/D RESOLVED; arming + owner-bound routing DELIVERED (DARK, demo-only) (2026-08-08)
+Sponsor resolved the gating decisions (still DARK/demo-only/no-arming): **B** demo-only (real=RED, deferred);
+**C** one-workspace→one-process→one-account→one-route, owner-bound; **D** layered explicit arming, every
+flag/field defaults FALSE, no auto-arm. Implemented on PR #315's branch: new `HOSTED_MT5_EXECUTION_ENABLED`
+flag (OFF) + per-workspace `execution_enabled` field (default False, migration `0003` additive/reversible);
+Provider-B readiness now ANDs the full backend arm (+ demo-only hard-reject) with distinct fail-closed reason
+codes; new `execution/hosted_routing.py` owner-bound route resolver + server-derived identity + result
+taxonomy; a structural no-bypass test pins the mutation-job set. Live order-time bridge gate stays the sole
+order authority; no order placed/closed/modified. 20 new tests; `make check` green (backend 3203).
+**Bounded next action:** the remaining DARK repository work (a follow-up increment, no arming) — G2 scheduled
+observation→persist runner (freshness), G4 account↔worker entitlement at the claim seam, G5 gated provisioning
+opt-in, G6 bridge-flag startup assertion, G9 pause/resume producer, G10 hosted idempotency-key — then the
+demo-only host certification (`docs/operations/hosted-workspace/EXECUTION_ENGINE_HOST_CERTIFICATION.md`).
+See `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.
+
+## ▶ (superseded) ADR-0034 Execution Engine — Provider-B enablement DELIVERED (DARK, demo-only); GATED on decisions B/C/D (2026-08-08)
+Branch `feat/adr0034-execution-engine` (base fresh main `059b448`, NOT merged). Inventory proved the
+order-safety spine already exists + is certified (bridge order-time identity authority + per-job pin +
+idempotency = 114 tests; central gate; Provider-B readiness skeleton) — Provider B is *wiring*, not a new
+engine. Delivered the two backend gaps: **G1** repointed Provider-B readiness from the legacy cache (which the
+M3c writer doesn't maintain → would fail-close forever) to the M3c **canonical** projection; **G3** added the
+server-derived per-job identity pin, injected centrally in `ExecutionJob.save()` for every mutation type,
+fail-closed. DARK + regression-safe (Provider A / Customer Zero / dark = no-op); order authority stays the
+live bridge gate; no order placed/closed/modified. 27 tests + pin mutation; `make check` green (backend 3186).
+**Bounded next action (Sponsor decision):** decide **B** (real vs demo-only accounts — RED), **C** (isolation
+topology: one-bridge-per-workspace vs shared+entitlement), **D** (per-workspace execution-mode scoping before
+any arming). Those unblock the remaining repository work (G2 observation runner, G4 entitlement, G5
+provisioning, G9 pause/resume producer, G10 hosted idempotency-key) and the demo-only host certification
+(`docs/operations/hosted-workspace/EXECUTION_ENGINE_HOST_CERTIFICATION.md`, prepared/not run). Do NOT arm.
+See `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.
+
+## ▶ (superseded) ADR-0034 Hosted Workspace — M3c Workspace Core DELIVERED (DARK); Sponsor picks next subsystem (2026-08-08)
 The **Workspace Core** subsystem is complete on branch `feat/adr0034-m3c-workspace-core` (DARK, not merged):
 the observation chain now flows Agent→Snapshot→Observation→Manager→Decision → **authoritative persistence**
 (single `select_for_update` writer, stale-observation + stale-decision protection, idempotent replay, version

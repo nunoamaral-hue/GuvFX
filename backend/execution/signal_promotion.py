@@ -73,6 +73,10 @@ def _order_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg, *,
     acct = plan.account
     if getattr(acct, "mt5_instance_id", None):
         windows_username = getattr(acct.mt5_instance, "windows_username", None)
+    # NB: the Hosted Workspace (Provider B) per-job identity pin is injected CENTRALLY at the single
+    # creation boundary ``ExecutionJob.save()`` (ADR-0034 Execution Engine G3), so every mutation-creating
+    # seam — this one, OPEN_TRADE, CLOSE, MODIFY — is covered without per-seam edits and a future seam
+    # inherits it automatically. It is a no-op for non-Provider-B accounts / a dark subsystem.
     return {
         "symbol": broker_symbol or plan.symbol,   # the BROKER symbol used for order placement
         "provider_symbol": plan.symbol,           # the Wayond signal symbol (audit/reporting)
