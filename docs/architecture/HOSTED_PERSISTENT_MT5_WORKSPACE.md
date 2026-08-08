@@ -297,32 +297,44 @@ row-locked, single-writer output), not the legacy cache. The legacy `observed_*`
 the execution path (still present for the inert ADR-0033 foundation). This is the direct implementation of
 "the persistent-workspace path uses Workspace Core."
 
-### 8.3 Genuine decisions that GATE the remainder (surfaced, not forced)
+### 8.3 Sponsor decisions B / C / D — RESOLVED (2026-08-08), and how they are implemented
 
-These block full engine completion and any arming; each is a STOP condition (new architecture decision /
-production-arming / RED authority). None is taken in this increment.
+The Sponsor resolved the three gating decisions for this engineering subsystem (still DARK, demo-only, no
+production arming):
 
-- **Decision B — real (customer-logged-in) accounts: RED.** The whole hosted stack is demo-pinned
-  (`is_demo=True`; bridge close/modify refuse `trade_mode != 0`; the certified matcher hard-codes
-  demo/allow_live=False). The product framing implies real accounts, which needs live authorisation across
-  the match layer + bridge close/modify. Per the governance overlay this is **RED — requires Nuno's explicit
-  approval**. This increment stays demo-only.
-- **Decision C — isolation topology: Sponsor/deployment.** One bridge per workspace (pinned by `attach_path`)
-  vs a shared worker with strict `TerminalNode`/account entitlement + the mandatory per-job pin. Determines
-  routing (G4), provisioning (G5) and the host/cost model. The per-job pin (delivered) is belt-and-braces
-  for either; the topology commitment is deferred to host certification.
-- **Decision D — per-workspace execution mode: Amber-to-RED.** Real orders on the auto path require the
-  GLOBAL `ExecutionControl.signal_execution_mode=DEMO` lever; there is no per-workspace scope. Arming one
-  hosted workspace today would flip the global gate for every source. Per-workspace scoping touches the
-  AND-gate SSOT and is required *before any arming* — out of scope for this DARK increment.
-- **PART M — workspace-level `EXECUTING` is not a faithful model** of N concurrent per-strategy jobs on one
-  account (it would oscillate/corrupt). Per PART M's own guidance this is surfaced as an architecture finding
-  rather than forced: in-flight execution is a per-`ExecutionJob` fact, not a workspace lifecycle flip.
+- **Decision B — demo-only.** Real-money enablement stays RED / deferred to a future Sponsor gate. Enforced
+  live and fail-closed: Provider-B readiness hard-rejects a non-demo account (`RW_REAL_ACCOUNT_NOT_ENABLED`),
+  and the bridge independently refuses `trade_mode != 0`. No production override added.
+- **Decision C — Phase-1 isolation: one authorised workspace → one MT5 process → one active broker account →
+  one route.** No shared/NULL route, no opportunistic "any attached terminal." Implemented by
+  `execution/hosted_routing.resolve_hosted_route`, which resolves an account to its ONE owner-bound
+  `HostedMt5Workspace` (OneToOne + defensive owner/`trading_account_id` checks) and derives the server-side
+  expected login/server; fail-closed on missing / owner-mismatch / ambiguous / unarmed / no-binding.
+- **Decision D — layered explicit arming; every flag/field defaults FALSE; no migration auto-arms.** The
+  backend arm (conditions 1-5 + 11) is enforced in the single readiness authority: global flag
+  (`HOSTED_PERSISTENT_MT5_ENABLED`) ∧ execution flag (`HOSTED_MT5_EXECUTION_ENABLED`, new, default OFF) ∧
+  provider == persistent_workspace ∧ lifecycle (`is_active`/`disconnected`) ∧ demo-only ∧ workspace present ∧
+  per-workspace `execution_enabled` (new field, default False) ∧ canonical `EXECUTION_READY` + fresh
+  projection. The LIVE conditions 6-10 (guarded attach / live identity / connected / `trade_allowed` /
+  health+pause) remain the certified bridge gate's authority, immediately before every mutation.
 
-### 8.4 Remaining repository work (unblocked once B/C decided), for a follow-up increment
+**PART M — workspace-level `EXECUTING` is not a faithful model** of N concurrent per-strategy jobs on one
+account; per PART M's own guidance this stays an architecture finding, not a forced (oscillating) model —
+in-flight execution is a per-`ExecutionJob` fact, not a workspace lifecycle flip.
 
-G2 scheduled observation→persist runner (so `last_decision_at` freshness advances — needs the host agent /
-Decision C); G4 fail-closed account↔worker entitlement at claim (topology-dependent, Decision C); G5 gated
-provisioning/opt-in seam; G6 bridge deploy asserting `MT5_GUARDED_ATTACH` + `MT5_REQUIRE_IDENTITY_PIN`;
-G9 workspace-degradation→pause producer + resume caller; G10 hosted idempotency/comment-key contract. Each is
-DARK and demo-only until B/C/D are decided; none arms production.
+### 8.4 Delivered in the arming+routing increment (on PR #315's branch)
+
+`hosted_workspace`: `execution_enabled` field (migration `0003`, additive/reversible) +
+`hosted_mt5_execution_enabled()` flag (default OFF). `execution/readiness.py`: the layered arm + three
+fail-closed reason codes, mapped into `broker_gate._ELIGIBILITY_TO_SHARED`. `execution/hosted_routing.py`:
+owner-bound route resolver + `hosted_execution_armed` + the execution result taxonomy. A structural
+no-bypass test pins `IDENTITY_PIN_JOB_TYPES` so a new MT5 mutation type cannot be added unpinned.
+
+### 8.5 Remaining repository work (a follow-up increment; DARK/demo-only, no arming)
+
+G2 scheduled observation→persist runner (so `last_decision_at` freshness advances — needs the host agent);
+G4 fail-closed account↔worker entitlement at the *claim* seam (`next_job` currently scopes by node only);
+G5 gated provisioning/opt-in seam (sets `readiness_provider`/`execution_enabled`, captures
+`workspace_confirmed_at`); G6 bridge deploy asserting `MT5_GUARDED_ATTACH` + `MT5_REQUIRE_IDENTITY_PIN` at
+startup; G9 workspace-degradation→pause producer + resume caller; G10 hosted idempotency/comment-key
+contract for the reconciler. None arms production; all default OFF.

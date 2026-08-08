@@ -1,6 +1,21 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ ADR-0034 Execution Engine — Provider-B enablement DELIVERED (DARK, demo-only); GATED on decisions B/C/D (2026-08-08)
+## ▶ ADR-0034 Execution Engine — decisions B/C/D RESOLVED; arming + owner-bound routing DELIVERED (DARK, demo-only) (2026-08-08)
+Sponsor resolved the gating decisions (still DARK/demo-only/no-arming): **B** demo-only (real=RED, deferred);
+**C** one-workspace→one-process→one-account→one-route, owner-bound; **D** layered explicit arming, every
+flag/field defaults FALSE, no auto-arm. Implemented on PR #315's branch: new `HOSTED_MT5_EXECUTION_ENABLED`
+flag (OFF) + per-workspace `execution_enabled` field (default False, migration `0003` additive/reversible);
+Provider-B readiness now ANDs the full backend arm (+ demo-only hard-reject) with distinct fail-closed reason
+codes; new `execution/hosted_routing.py` owner-bound route resolver + server-derived identity + result
+taxonomy; a structural no-bypass test pins the mutation-job set. Live order-time bridge gate stays the sole
+order authority; no order placed/closed/modified. 20 new tests; `make check` green (backend 3203).
+**Bounded next action:** the remaining DARK repository work (a follow-up increment, no arming) — G2 scheduled
+observation→persist runner (freshness), G4 account↔worker entitlement at the claim seam, G5 gated provisioning
+opt-in, G6 bridge-flag startup assertion, G9 pause/resume producer, G10 hosted idempotency-key — then the
+demo-only host certification (`docs/operations/hosted-workspace/EXECUTION_ENGINE_HOST_CERTIFICATION.md`).
+See `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.
+
+## ▶ (superseded) ADR-0034 Execution Engine — Provider-B enablement DELIVERED (DARK, demo-only); GATED on decisions B/C/D (2026-08-08)
 Branch `feat/adr0034-execution-engine` (base fresh main `059b448`, NOT merged). Inventory proved the
 order-safety spine already exists + is certified (bridge order-time identity authority + per-job pin +
 idempotency = 114 tests; central gate; Provider-B readiness skeleton) — Provider B is *wiring*, not a new
