@@ -14,6 +14,21 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 Execution Engine — subsystem repository-complete (G1/G2/G3/G4/G5/G6/G9/G10 + C/D, DARK, demo-only). NOT deployed. 🟢**
+  On PR #315 (branch `feat/adr0034-execution-engine`, base fresh main). After G1/G3 + Decisions C/D, delivered
+  the remaining workstreams: **G4** claim-seam entitlement (owner-bound route + non-NULL node + node-aware
+  non-legacy worker at `next_job` under the row lock); **G6** bridge startup safety assertions
+  (`MT5_HOSTED_EXECUTION` ⇒ guarded-attach + mandatory pin + demo-only + no-credential-login, no silent
+  downgrade); **G5** provision-vs-arm (`hosted_provisioning.py`: provision never arms; explicit
+  fully-preconditioned audited arm/disarm; no auto-arm); **G9** readiness-driven switch pause/safe-resume +
+  drop-not-queue (`hosted_switch_policy.py`); **G2** observation→persist driver (`observation_runner.py`,
+  advances `last_decision_at`); **G10** deterministic hosted idempotency key + fail-closed ambiguous-result
+  classifier (`hosted_idempotency.py`, mutation-tested). The live order-time bridge gate remains the sole
+  order authority; persisted state is context only; no order placed/closed/modified. ~90 focused tests total;
+  `make check` green (backend 3246). Subsystem-wide adversarial review recorded in the PR. All flags default
+  OFF; `execution_enabled` default False; no auto-arm; nothing deployed. Demo-only host cert prepared/not run.
+  See `docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.
+
 - **2026-08-08 — ADR-0034 Execution Engine — Provider-B enablement (readiness on canonical state + per-job pin, DARK, demo-only). NOT deployed. 🟢**
   Branch `feat/adr0034-execution-engine` (base = fresh main `059b448` after #314 merged). A full 7-mapper
   inventory established that the **order-safety spine already exists + is certified** (bridge order-time

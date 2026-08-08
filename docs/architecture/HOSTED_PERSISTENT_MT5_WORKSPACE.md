@@ -330,11 +330,28 @@ fail-closed reason codes, mapped into `broker_gate._ELIGIBILITY_TO_SHARED`. `exe
 owner-bound route resolver + `hosted_execution_armed` + the execution result taxonomy. A structural
 no-bypass test pins `IDENTITY_PIN_JOB_TYPES` so a new MT5 mutation type cannot be added unpinned.
 
-### 8.5 Remaining repository work (a follow-up increment; DARK/demo-only, no arming)
+### 8.5 Workstreams G2 / G4 / G5 / G6 / G9 / G10 — DELIVERED (DARK/demo-only, no arming)
 
-G2 scheduled observation→persist runner (so `last_decision_at` freshness advances — needs the host agent);
-G4 fail-closed account↔worker entitlement at the *claim* seam (`next_job` currently scopes by node only);
-G5 gated provisioning/opt-in seam (sets `readiness_provider`/`execution_enabled`, captures
-`workspace_confirmed_at`); G6 bridge deploy asserting `MT5_GUARDED_ATTACH` + `MT5_REQUIRE_IDENTITY_PIN` at
-startup; G9 workspace-degradation→pause producer + resume caller; G10 hosted idempotency/comment-key
-contract for the reconciler. None arms production; all default OFF.
+- **G4** — claim-seam entitlement: `hosted_routing.authorize_hosted_claim` wired into `next_job` under the
+  row lock (owner-bound route + non-NULL node + node-aware non-legacy worker; else the hosted job is FAILED
+  under lock). Complements the creation/dispatch gates. One workspace → one process → one route → one worker.
+- **G6** — bridge startup safety: `evaluate_hosted_startup_config` in `scripts/mt5_signal_bridge.py`; when
+  `MT5_HOSTED_EXECUTION` is set, `validate_config` refuses to start unless guarded-attach + mandatory pin are
+  on, live is off (demo-only), and no credential-login env is configured — no silent downgrade. Legacy
+  bridges unaffected.
+- **G5** — provision vs arm: `execution/hosted_provisioning.py` — `provision_hosted_workspace` (sets
+  Provider-B, never arms) + `arm_hosted_workspace_execution` (the ONE explicit, fully-preconditioned, audited
+  arm) + immediate `disarm`. No lifecycle event auto-arms.
+- **G9** — account-switch pause/resume: `execution/hosted_switch_policy.py` — readiness-driven pause (mismatch
+  /disconnect/stale ⇒ effectively paused, fail-closed at every dispatch), stale-signal DROP (no queue), and
+  safe resume as automatic re-eligibility only when the expected account returns + connected + trade_allowed
+  + fresh + armed. Reuses the one gate; no parallel pause system; never auto-logs-in/switches.
+- **G2** — observation→persist driver: `hosted_workspace/observation_runner.py` — thin scheduled runner over
+  the certified chain into the single M3c writer (advancing `last_decision_at`); derives no state, executes
+  nothing; DARK no-op while off.
+- **G10** — hosted idempotency + ambiguous result: `execution/hosted_idempotency.py` — deterministic key
+  (workspace+login+server+job+op+strategy, collision-free, secret-free) + `classify_ambiguous_result` (only
+  `CONFIRMED_NOT_EXECUTED` may retry; `STILL_AMBIGUOUS` fails closed) — the hard rule against a duplicate order
+  after an ambiguous send. Mutation-tested.
+
+All default OFF; nothing armed; nothing deployed. The demo-only host certification remains prepared/not run.

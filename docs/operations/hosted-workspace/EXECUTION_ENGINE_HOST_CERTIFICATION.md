@@ -1,8 +1,13 @@
 # Hosted Workspace Execution Engine — Host Certification Runbook (PREPARED, NOT RUN)
 
-- Status: **PREPARED — NOT AUTHORISED TO RUN.** Repository engineering is complete for the DARK Provider-B
-  execution enablement (ADR-0034 Execution Engine G1+G3). This runbook is written for a *future* certification
-  and must not be executed until the gating decisions below are made by Nuno.
+- Status: **PREPARED — NOT AUTHORISED TO RUN.** Repository engineering for the DARK Provider-B Execution
+  Engine is complete (ADR-0034 G1/G2/G3/G4/G5/G6/G9/G10 + Decisions C/D). This runbook is written for a
+  *future* certification and must not be executed until a disposable DEMO workspace + Nuno's manual broker
+  login are available. Decisions B/C/D are resolved (demo-only / owner-bound single route / explicit layered
+  arming). The harness now also proves: explicit arm (G5 `arm_hosted_workspace_execution`), bridge startup
+  assertions (G6 `MT5_HOSTED_EXECUTION`), claim-seam entitlement (G4), account-switch pause + safe resume
+  (G9), and duplicate/ambiguous-result reconciliation (G10 `classify_ambiguous_result`) — all before the one
+  tiny demo PLACE, which is performed manually by Nuno (Claude never places/closes/modifies an order).
 - Scope of the eventual certification: prove, on a **disposable DEMO** workspace only, that a Hosted Workspace
   (Provider B) account can execute safely through the *already-certified* order-safety spine, with zero
   production blast radius. **Demo only. No live money. No production account.**
