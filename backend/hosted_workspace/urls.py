@@ -5,10 +5,12 @@ Mounted under ``/api/hosted-workspace/`` (see ``guvfx_backend/urls.py``). Every 
 """
 from django.urls import path
 
+from hosted_workspace.delivery_views import HostedWorkspaceDeliveryStateView
 from hosted_workspace.views import HostedWorkspaceStateView
 
 app_name = "hosted_workspace"
 
 urlpatterns = [
     path("workspace-state/", HostedWorkspaceStateView.as_view(), name="workspace-state"),
+    path("delivery-state/", HostedWorkspaceDeliveryStateView.as_view(), name="delivery-state"),
 ]

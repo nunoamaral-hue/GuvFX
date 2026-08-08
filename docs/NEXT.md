@@ -1,5 +1,23 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ ADR-0034 Workspace Delivery / RemoteApp — repository subsystem COMPLETE (DARK); host change is the gate (2026-08-08)
+The **Workspace Delivery** subsystem is complete on branch `feat/adr0034-workspace-delivery` (DARK, not
+merged): RemoteApp descriptor (`build_remoteapp_rdp_payload`), the owner-authorised delivery service
+(`authorize_workspace_delivery` — owner-bound, no staff mint bypass, everything server-derived, credential
+only inside the AES token, DARK zero-query, fail-closed `DA_*` matrix), the delivery state model + single
+writer (row-locked, canonical/legacy state untouched, REMOTEAPP_* telemetry, host-node assignment,
+session-reuse), the secret-free read model + read-only DARK API. Additive migrations `hosted_workspace 0003`
++ `mt5 0009`. 50 focused tests + mutation-adequacy + a token-decrypt no-secret proof; `make check` green;
+multi-lens adversarial review. `remoteapp_ready`/`delivery_state` are read-model only — order authority
+stays `evaluate_binding`; the flag cannot arm execution. See
+`docs/architecture/HOSTED_PERSISTENT_MT5_WORKSPACE.md` §8.
+**Bounded next action (Sponsor, HARD STOP):** authorise the **Host Change packet**
+(`docs/operations/hosted-workspace/WORKSPACE_DELIVERY_HOST_CERTIFICATION.md`) — install RD Session Host,
+publish `terminal64.exe` as the sole RemoteApp, resolve SPLA/RDS-CAL licensing, add host AppLocker/SRP, and
+add the missing TX-1 NTFS-ACL — on a **disposable** host only. Do not begin host work without that
+authorisation. (Repository-side, the only carried-forward item is wiring `authorize_workspace_delivery` into
+a future gated onboarding action — itself another Sponsor packet.)
+
 ## ▶ ADR-0034 Hosted Workspace — M3c Workspace Core DELIVERED (DARK); Sponsor picks next subsystem (2026-08-08)
 The **Workspace Core** subsystem is complete on branch `feat/adr0034-m3c-workspace-core` (DARK, not merged):
 the observation chain now flows Agent→Snapshot→Observation→Manager→Decision → **authoritative persistence**
