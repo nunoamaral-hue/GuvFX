@@ -14,6 +14,16 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 M2b: Workspace telemetry taxonomy (DARK foundation). Repo eng; NOT deployed. 🟢**
+  Branch `feat/adr0034-m2b-telemetry` (stacked on M2a — real code dependency on the state machine). New
+  pure/inert `backend/hosted_workspace/telemetry.py`: `WorkspaceEvent` taxonomy (18 `workspace.*` events,
+  ADR-0034 §6) + `EVENT_META` (each event → category/severity/canonical M2a state) + secret-free
+  `build_workspace_event` builder (fail-closed to SYSTEM/ERROR `workspace.unknown_event`; redacts
+  credentials, masks login) producing ADR-0032 `OperationalEvent` kwargs. **No emit sites, no model change,
+  no migration, no consumer** (grep-proven DARK). Tests `tests_telemetry.py`: taxonomy completeness + meta
+  validity + builder correctness + fail-closed + `_redact` **AST mutation adequacy** (secret-free = security
+  property; every mutant killed). 46 hosted_workspace tests OK. M3 (Workspace Manager/Agent) next.
+
 - **2026-08-08 — ADR-0034 M2a: canonical Workspace state machine (DARK foundation). Repo eng; NOT deployed. 🟢**
   Implementation-led development (Sponsor-authorised). Branch `feat/adr0034-m2a-state-machine` (base `main`
   `309db68`). New pure/inert `backend/hosted_workspace/state_machine.py`: canonical 9-state
