@@ -253,6 +253,13 @@ class ExecutionJob(models.Model):
             # eligibility gate above so a degraded-but-still-VALIDATED account is stopped at creation too.
             from execution.runtime_pause import require_not_broker_paused
             require_not_broker_paused(self.account, trigger=f"job:{self.job_type}")
+        # ADR-0034 Execution Engine (G3) — inject the server-derived Hosted Workspace (Provider B) per-job
+        # identity pin here, at the single creation boundary, so EVERY mutation-creating seam is covered and
+        # a future seam inherits it. Flag-checked first ⇒ zero overhead / no payload change while the
+        # subsystem is dark (Provider A / Customer Zero regression-identical). Never a live order itself.
+        if self._state.adding and self.job_type in IDENTITY_PIN_JOB_TYPES:
+            from execution.hosted_pin import inject_identity_pin
+            inject_identity_pin(self)
         super().save(*args, **kwargs)
 
     @classmethod
@@ -330,6 +337,19 @@ BROKER_GATE_BLOCKED_JOB_TYPES = (
     ExecutionJob.JobType.OPEN_TRADE,
     ExecutionJob.JobType.PLACE_ORDER,
     ExecutionJob.JobType.PLACE_TEST_ORDER,
+)
+
+# ADR-0034 Execution Engine (G3): job types that reach a real MT5 mutation (order_send / position
+# close / position modify) and therefore carry the Hosted Workspace (Provider B) per-job identity pin
+# when the account uses that path. Includes the trade-management types (CLOSE/MODIFY) — a wrong-account
+# close/modify must fail closed at the bridge's mutation-identity gate (ADR-0034 PARTS I/J). Excludes
+# PLACE_ORDER_SHADOW (reaches no broker), SYNC_POSITIONS and TEST_CONNECTION (no mutation).
+IDENTITY_PIN_JOB_TYPES = (
+    ExecutionJob.JobType.OPEN_TRADE,
+    ExecutionJob.JobType.PLACE_ORDER,
+    ExecutionJob.JobType.PLACE_TEST_ORDER,
+    ExecutionJob.JobType.CLOSE_TRADE,
+    ExecutionJob.JobType.MODIFY_POSITION,
 )
 
 
