@@ -36,6 +36,9 @@ from hosted_workspace.certification import classify_target_path, run_certificati
 class Command(BaseCommand):
     help = ("Disposable-host certification of the ADR-0034 observation chain (M1 -> M3b-2 -> M3b-1 -> M3a). "
             "Operator-only, read-only, secret-free; refuses non-disposable paths.")
+    # Read-only + DB-free: it makes no query and validates no model graph, so it skips Django system checks.
+    # This lets it run under a minimal isolated cert settings (no need to install the full FK-closed app set).
+    requires_system_checks: list = []
 
     def add_arguments(self, parser):
         parser.add_argument("--workspace-id", default="disposable")

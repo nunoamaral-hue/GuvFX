@@ -180,3 +180,36 @@ class CommandTests(SimpleTestCase):
         result = json.loads(out.getvalue())
         self.assertFalse(result["account_match"])
         self.assertFalse(result["execution_ready"])
+
+    def test_command_skips_system_checks(self):  # lets it run under the minimal isolated cert settings
+        self.assertEqual(Command.requires_system_checks, [])
+
+
+class CertSettingsTests(SimpleTestCase):
+    """The cert-only Django settings must be ISOLATED (no production web/API stack, no production DB/secret)
+    yet sufficient to import the certified chain — GATE 2D."""
+
+    def _cs(self):
+        from guvfx_backend import cert_settings
+        return cert_settings
+
+    def test_no_production_web_api_stack(self):
+        cs = self._cs()
+        for forbidden in ("rest_framework", "corsheaders", "django.contrib.admin", "django.contrib.sessions",
+                          "django.contrib.staticfiles"):
+            self.assertNotIn(forbidden, cs.INSTALLED_APPS, forbidden)
+
+    def test_sqlite_in_memory_never_production_db(self):
+        cs = self._cs()
+        self.assertEqual(cs.DATABASES["default"]["ENGINE"], "django.db.backends.sqlite3")
+        self.assertEqual(cs.DATABASES["default"]["NAME"], ":memory:")
+
+    def test_disposable_secret_not_from_environment(self):
+        cs = self._cs()
+        self.assertTrue(cs.SECRET_KEY.startswith("cert-only"))  # a literal disposable value, never env/prod
+        self.assertFalse(cs.DEBUG)
+
+    def test_apps_needed_to_import_the_chain_present(self):
+        cs = self._cs()
+        for needed in ("users", "operational_events", "hosted_workspace"):
+            self.assertIn(needed, cs.INSTALLED_APPS, needed)
