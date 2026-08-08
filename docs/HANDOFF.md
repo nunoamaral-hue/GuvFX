@@ -26,8 +26,24 @@
   green). The order-safety spine + provenance/observability are on main, DARK.
 - **Open — capstone.** PR **#317** (`feat/adr0034-execution-capstone`, commit range on branch head) adds the
   durable workspace→node binding + provisioning contract + routing/claim enforcement + operator command +
-  contract/arming/failure-matrix/cert docs. 1086 execution+hosted_workspace tests green; `make check` green;
+  contract/arming/failure-matrix/cert docs. execution+hosted_workspace tests green; `make check` green;
   6-lens adversarial review 0 HIGH/0 MEDIUM (1 LOW fixed).
+- **Open — capstone completeness remediation (P1-P5, DARK).** A final in-boundary completeness audit found
+  the demo order was NOT actually reachable: **P1 (HIGH)** — the certified bridge only ever sent
+  `X-Worker-Token` → shared `legacy-worker` (no `authorized_nodes`), so a hosted node-bound job was
+  unclaimable. Fixed by giving the SAME bridge a HOSTED-mode modern-auth path (`X-Worker-Id`/`X-Worker-Secret`
+  from `GUVFX_WORKER_ID`/`GUVFX_WORKER_SECRET`; fail-closed at startup if missing; legacy mode unchanged).
+  **P2** RULE-11 positive control at the claim endpoint; **P3** structural single-path sweep (replaces a hand
+  list whose "no MetaTrader5 import" claim was false); **P4** provision grant-block test; **P5** 8 arm
+  reason-code + disarm assertions. A fresh 5-lens adversarial review returned **0 surviving HIGH/0 MEDIUM**
+  (one HIGH candidate calibrated to LOW); the 5 LOW survivors were then **closed as hardening**: (a) the
+  shared `legacy-worker` identity can never be node-aware — `provision_hosted_execution` refuses to grant it a
+  node AND `views.next_job` forces it non-node-aware at the claim path; (b) cross-node regression test
+  (node-A worker refused a node-B job); (c) import-surface positive control in the single-path sweep;
+  (d) the compound arm branch split into two single-disjunct tests. **Amber decision (flagged):** the
+  `next_job` guard touches the shared claim hot path — it is additive and behaviour-preserving (a no-op for
+  the legacy row's normal empty-perms state; only restricts a mis-provisioned shared row). Focused 56/56, full
+  `execution` 908/908, `make check` green. DARK/flags-OFF; no migration; no order placed. Pushed to #317.
 - **Verified fact vs assumption.** VERIFIED: repository-complete for the full subsystem boundary (binding,
   routing, claim, worker contract, persistence, idempotency, retries, reconciliation, concurrency, telemetry,
   API contract, cert harness, tests, mutation, review, docs); all flags OFF; no migration arms; legacy

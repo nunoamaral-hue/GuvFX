@@ -227,6 +227,15 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         perms = (worker_identity.worker_permissions or {}) if worker_identity else {}
         authorized_nodes = perms.get("authorized_nodes", [])
 
+        # ADR-0034 capstone isolation invariant (defence-in-depth): the SHARED ``legacy-worker`` identity —
+        # to which every legacy X-Worker-Token bridge resolves — must NEVER be treated as node-aware, or a
+        # shared/legacy bridge could claim a hosted (node-bound) job. Normally its row carries no
+        # ``authorized_nodes`` (this is a no-op); force it empty regardless so a mis-provisioned grant cannot
+        # make it node-aware. A dedicated per-node bridge uses its OWN worker_id and is unaffected.
+        from execution.auth import LEGACY_WORKER_ID
+        if worker_identity is not None and getattr(worker_identity, "worker_id", None) == LEGACY_WORKER_ID:
+            authorized_nodes = []
+
         # EXEC-E2a endpoint guard: order-bearing SHADOW jobs are served ONLY to a
         # caller carrying an explicit ``shadow_worker`` worker-permission. Every
         # other caller — including a validated worker that explicitly requests

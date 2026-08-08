@@ -18,13 +18,18 @@ _SYNTH_AGENT = "synthetic-agent-" + "token"
 _SYNTH_WORKER = "synthetic-worker-" + "token"
 
 
-def _load_bridge():
+def _load_bridge(extra_env=None):
+    """Import a fresh bridge module instance under a controlled env. Module-level globals (HOSTED_EXECUTION,
+    HOSTED_WORKER_ID/SECRET, WORKER_TOKEN) are computed at import, so tests that exercise get_headers load
+    with the env they need. MT5_HOSTED_EXECUTION is explicitly neutralised unless *extra_env* sets it, so an
+    ambient hosted flag in the runner cannot leak into the legacy-mode assertions."""
+    env = {"GUVFX_AGENT_TOKEN": _SYNTH_AGENT, "GUVFX_WORKER_TOKEN": _SYNTH_WORKER, "MT5_HOSTED_EXECUTION": ""}
+    env.update(extra_env or {})
     prev = os.getcwd()
     with tempfile.TemporaryDirectory() as tmp:
         os.chdir(tmp)
         try:
-            with mock.patch.dict(os.environ, {"GUVFX_AGENT_TOKEN": _SYNTH_AGENT,
-                                              "GUVFX_WORKER_TOKEN": _SYNTH_WORKER}, clear=False):
+            with mock.patch.dict(os.environ, env, clear=False):
                 spec = importlib.util.spec_from_file_location("mt5_bridge_hosted_startup_under_test",
                                                               _BRIDGE_PATH)
                 mod = importlib.util.module_from_spec(spec)
@@ -40,6 +45,8 @@ _VALID_HOSTED = {
     "MT5_HOSTED_EXECUTION": "1",
     "MT5_GUARDED_ATTACH": "1",
     "MT5_REQUIRE_IDENTITY_PIN": "1",
+    "GUVFX_WORKER_ID": "hosted-node-worker",     # node-aware modern-auth identity (capstone P1)
+    "GUVFX_WORKER_SECRET": "synthetic-" + "secret",
     # MT5_ALLOW_LIVE unset; no MT5_LOGIN/PASSWORD/SERVER
 }
 
@@ -74,11 +81,46 @@ class HostedStartupConfigTests(SimpleTestCase):
             errs = _BR.evaluate_hosted_startup_config(env)
             self.assertTrue(any(cred in e for e in errs), cred)
 
+    def test_missing_worker_id_rejected(self):
+        env = dict(_VALID_HOSTED); env.pop("GUVFX_WORKER_ID")
+        errs = _BR.evaluate_hosted_startup_config(env)
+        self.assertTrue(any("GUVFX_WORKER_ID" in e for e in errs))
+
+    def test_missing_worker_secret_rejected(self):
+        env = dict(_VALID_HOSTED); env.pop("GUVFX_WORKER_SECRET")
+        errs = _BR.evaluate_hosted_startup_config(env)
+        self.assertTrue(any("GUVFX_WORKER_SECRET" in e for e in errs))
+
+    def test_no_worker_secret_value_in_error_text(self):
+        env = dict(_VALID_HOSTED); env["GUVFX_WORKER_ID"] = ""; env["GUVFX_WORKER_SECRET"] = "TOPSECRETWORKER"
+        errs = _BR.evaluate_hosted_startup_config(env)
+        self.assertTrue(errs)
+        self.assertNotIn("TOPSECRETWORKER", " ".join(errs))  # names the KEY, never the value
+
     def test_completely_unsafe_hosted_config_aggregates_errors(self):
         env = {"MT5_HOSTED_EXECUTION": "1", "MT5_ALLOW_LIVE": "1", "MT5_LOGIN": "x", "MT5_PASSWORD": "y",
-               "MT5_SERVER": "z"}  # hosted on, but guarded off + pin off + live + full creds
+               "MT5_SERVER": "z"}  # hosted on, but guarded off + pin off + live + full creds + no worker id/secret
         errs = _BR.evaluate_hosted_startup_config(env)
-        self.assertGreaterEqual(len(errs), 5)  # guarded + pin + live + 3 creds
+        self.assertGreaterEqual(len(errs), 6)  # guarded + pin + live + 3 creds + worker-identity
+
+
+class GetHeadersModeTests(SimpleTestCase):
+    """P1: the SAME bridge selects its auth headers by mode. Legacy ⇒ X-Worker-Token only (byte-for-byte
+    unchanged). Hosted ⇒ the modern node-aware X-Worker-Id/X-Worker-Secret only, never the legacy token —
+    so the backend resolves a dedicated node-aware WorkerIdentity and a hosted node-bound job is claimable."""
+
+    def test_legacy_headers_use_worker_token_only(self):
+        h = _load_bridge().get_headers()   # MT5_HOSTED_EXECUTION neutralised in the loader
+        self.assertIn("X-Worker-Token", h)
+        self.assertNotIn("X-Worker-Id", h)
+        self.assertNotIn("X-Worker-Secret", h)
+
+    def test_hosted_headers_use_worker_id_secret_only(self):
+        h = _load_bridge({"MT5_HOSTED_EXECUTION": "1", "GUVFX_WORKER_ID": "hosted-node-worker",
+                          "GUVFX_WORKER_SECRET": "synthetic-" + "secret"}).get_headers()
+        self.assertEqual(h.get("X-Worker-Id"), "hosted-node-worker")
+        self.assertEqual(h.get("X-Worker-Secret"), "synthetic-" + "secret")
+        self.assertNotIn("X-Worker-Token", h)   # the two credentials never couple (RULE 3)
 
     def test_validate_config_wires_the_hosted_assertion(self):
         # Structural: validate_config must call the hosted assertion so a hosted bridge cannot start unsafe

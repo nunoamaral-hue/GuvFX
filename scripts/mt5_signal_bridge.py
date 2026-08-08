@@ -183,6 +183,23 @@ AGENT_TOKEN = os.getenv("GUVFX_AGENT_TOKEN", "").strip()     # inbound HTTP endp
 # fallback is removed: inbound auth uses the agent token and nothing else. Whitespace-only normalises to ""
 # above, so missing/empty is treated as NOT CONFIGURED and the bridge fails closed.
 HTTP_AUTH_TOKEN = AGENT_TOKEN
+# ADR-0034 Execution Engine (capstone) — HOSTED-mode node-aware worker identity.
+#
+# The hosted execution loop routes a job to ONE authorised TerminalNode (Decision C: hosted jobs carry a
+# non-NULL node). ``views.next_job`` only hands such a job to — and ``authorize_hosted_claim`` only entitles —
+# a worker whose resolved ``WorkerIdentity.worker_permissions.authorized_nodes`` is non-empty. That requires
+# the MODERN auth path (X-Worker-Id + X-Worker-Secret → a dedicated WorkerIdentity); the legacy X-Worker-Token
+# resolves to the SHARED ``legacy-worker`` row, which carries no authorized_nodes (and must not — granting it
+# nodes would defeat the per-node isolation the ER_WORKER_NOT_ENTITLED check exists to enforce). So when this
+# same bridge runs in HOSTED mode it authenticates as its own node-aware worker via id+secret. No second
+# worker is forked — only the auth header selection differs by mode.
+#
+# RULE 3 (no silent credential substitution): hosted mode REQUIRES its own id + secret; if either is missing
+# the bridge fails closed at startup (evaluate_hosted_startup_config) rather than falling back to the legacy
+# token. The legacy path is byte-for-byte unchanged whenever MT5_HOSTED_EXECUTION is unset.
+HOSTED_EXECUTION = str(os.getenv("MT5_HOSTED_EXECUTION", "")).strip().lower() in ("1", "true", "yes", "on")
+HOSTED_WORKER_ID = os.getenv("GUVFX_WORKER_ID", "").strip()          # hosted -> backend (X-Worker-Id)
+HOSTED_WORKER_SECRET = os.getenv("GUVFX_WORKER_SECRET", "").strip()  # hosted -> backend (X-Worker-Secret)
 ACCOUNT_ID = os.getenv("MT5_ACCOUNT_ID", "")
 MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
@@ -271,6 +288,14 @@ def evaluate_hosted_startup_config(env) -> list:
                       "login/server identity pin); refusing to allow un-pinned hosted execution")
     if _truthy("MT5_ALLOW_LIVE"):
         errors.append("MT5_HOSTED_EXECUTION is DEMO-ONLY in Phase 1: MT5_ALLOW_LIVE must not be set")
+    # Node-aware worker identity (capstone P1): hosted mode authenticates via the modern X-Worker-Id/Secret
+    # path so the backend can resolve authorized_nodes. RULE 3: require BOTH — never silently fall back to the
+    # shared legacy X-Worker-Token (which carries no authorized_nodes ⇒ a hosted job would be unclaimable, or
+    # granting the shared row nodes would break per-node isolation).
+    if not str(env.get("GUVFX_WORKER_ID", "")).strip() or not str(env.get("GUVFX_WORKER_SECRET", "")).strip():
+        errors.append("MT5_HOSTED_EXECUTION requires GUVFX_WORKER_ID and GUVFX_WORKER_SECRET (dedicated "
+                      "node-aware worker identity via the modern X-Worker-Id/X-Worker-Secret auth path); "
+                      "refusing to fall back to the shared legacy X-Worker-Token")
     for cred in ("MT5_LOGIN", "MT5_PASSWORD", "MT5_SERVER"):
         if str(env.get(cred, "")).strip():
             errors.append(f"MT5_HOSTED_EXECUTION forbids a credential-login attach path: {cred} must be "
@@ -695,10 +720,17 @@ def validate_config() -> bool:
 
 
 def get_headers() -> Dict[str, str]:
-    return {
-        "X-Worker-Token": WORKER_TOKEN,
-        "Content-Type": "application/json",
-    }
+    # HOSTED mode authenticates as a dedicated node-aware WorkerIdentity via the modern X-Worker-Id/Secret
+    # path (so a hosted, node-bound job is claimable + entitled). Legacy mode is unchanged: X-Worker-Token
+    # only. Never both — the two credentials are unrelated and must not couple (RULE 3). Fail-closed on a
+    # mis-provisioned hosted bridge is enforced at startup; get_headers stays a pure selector.
+    headers = {"Content-Type": "application/json"}
+    if HOSTED_EXECUTION:
+        headers["X-Worker-Id"] = HOSTED_WORKER_ID
+        headers["X-Worker-Secret"] = HOSTED_WORKER_SECRET
+    else:
+        headers["X-Worker-Token"] = WORKER_TOKEN
+    return headers
 
 
 def fetch_next_job() -> Optional[Dict[str, Any]]:

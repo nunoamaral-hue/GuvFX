@@ -24,13 +24,35 @@
   (`ER_/ARM_NODE_UNBOUND`/`NODE_MISMATCH`; binding re-checked after arm so an armed-then-cleared binding
   still fails closed); `manage.py provision_hosted_execution` (DARK operator setup — bind/grant-worker/arm;
   places NO order). **The node-aware hosted worker = the certified bridge in HOSTED mode (G6) with a
-  node-aware `WorkerIdentity`** — no fork; single-path proof (test) asserts no hosted backend module imports
-  MetaTrader5. +15 capstone tests (binding/routing/claim/arm/server-identity/stale-resolution/single-path) +
-  existing arm/route fixtures updated to the new invariant. Contract + arming + failure matrix + disposable-
+  node-aware `WorkerIdentity`** — no fork; single-path proof (test) STRUCTURALLY sweeps the hosted backend
+  tree: no module calls `order_send`/`order_check` and the only broker-API importer is a sanctioned read-only
+  observer. +15 capstone tests + existing arm/route fixtures updated to the new invariant. Contract + arming + failure matrix + disposable-
   demo cert runbook: `docs/operations/hosted-workspace/EXECUTION_ENGINE_CAPSTONE.md`. **HARD STOP:** the
   empirical demo trade (PART 16/17) is a human action — **Nuno places+closes the demo order** (Claude never
   trades, even demo); marker `EXECUTION_ENGINE_REPOSITORY_COMPLETE — HOST_CERT_PENDING`. All flags OFF; no
   migration arms; legacy Provider-A unchanged.
+
+- **2026-08-08 — CAPSTONE completeness-audit remediation (5-dimension audit → P1-P5, DARK). NOT deployed. 🟢**
+  A final in-boundary completeness audit found the "only the demo order remains" framing was FALSE:
+  **P1 (HIGH) — the certified bridge could not present a node-aware identity** (`get_headers()` sent only
+  `X-Worker-Token` → shared `legacy-worker`, no `authorized_nodes`), so a hosted node-bound job was
+  unclaimable (204 / `ER_WORKER_NOT_ENTITLED`) — the demo order could not even have been claimed. **Fix:**
+  the SAME bridge, in HOSTED mode, authenticates via the modern `X-Worker-Id`/`X-Worker-Secret` path
+  (`GUVFX_WORKER_ID`/`GUVFX_WORKER_SECRET`) as its own dedicated node-aware `WorkerIdentity`; fail-closed at
+  startup if either is missing (RULE 3 — never falls back to the shared token); legacy mode byte-for-byte
+  unchanged. **P2** — RULE-11 positive control at `/api/execution/jobs/next/` (provisioned+armed+node-bound
+  hosted job IS served 200/RUNNING to a node-aware worker + STARTED provenance row) + companion negative.
+  **P3** — single-path proof is now a STRUCTURAL tree sweep (no backend `order_send`/`order_check`; only
+  broker-API importer is a sanctioned read-only observer) with its own positive control — replacing the
+  hand-listed 15-module allow-list whose "no MetaTrader5 import" claim was already false. **P4** — provision-
+  command grant block tested (append node, preserve perms, idempotent, fail-closed). **P5** — the 8 unasserted
+  arm reason codes + disarm branch asserted. A fresh 5-lens adversarial review returned **0 surviving HIGH/0
+  MEDIUM**; the 5 LOW survivors were closed as hardening: the shared `legacy-worker` identity can never be
+  node-aware (`provision_hosted_execution` refuses to grant it a node + `next_job` forces it non-node-aware —
+  Amber: touches the shared claim path, additive/behaviour-preserving), a cross-node regression test, an
+  import-surface positive control, and the compound arm branch split into two single-disjunct tests. Focused
+  56/56 + full `execution` 908/908 green; `make check` green. Still DARK/flags-OFF; no migration; no order
+  placed.
 
 - **2026-08-08 — ADR-0034 Execution Engine — G12 completion: provenance + telemetry + reconcile (DARK, demo-only). NOT deployed. 🟢**
   On PR #315 (branch `feat/adr0034-execution-engine`). A repository-truth inventory of the whole subsystem

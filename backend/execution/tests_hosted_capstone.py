@@ -9,6 +9,8 @@ durable server-side truth (no stale identity leaks from a previous job).
 """
 from __future__ import annotations
 
+import os
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -17,6 +19,7 @@ from trading.models import BrokerServer, TradingAccount
 
 from execution import hosted_provisioning as P
 from execution import hosted_routing as HR
+from execution import readiness as R
 from execution.models import TerminalNode
 from execution.readiness import PERSISTENT_WORKSPACE
 from hosted_workspace.models import HostedMt5Workspace
@@ -160,26 +163,89 @@ class ServerSideIdentityTests(TestCase):
 
 
 class SinglePathProofTests(TestCase):
-    def test_no_broker_api_import_in_hosted_backend(self):
-        """PART 15: there is NO alternative hosted execution path. The hosted BACKEND modules route / gate /
-        record only — none of them imports the broker API (``MetaTrader5``), so none can call
-        ``order_send``/``login``. The SINGLE order path is the certified bridge
-        (``scripts/mt5_signal_bridge.py``), which alone imports MetaTrader5 and performs the gate + send."""
-        import subprocess
-        hosted_backend = [
-            "execution/hosted_routing.py", "execution/hosted_pin.py", "execution/hosted_provisioning.py",
-            "execution/hosted_execution.py", "execution/hosted_reconcile.py",
-            "execution/hosted_switch_policy.py", "execution/hosted_idempotency.py",
-            "execution/readiness.py", "execution/broker_gate.py",
-            "hosted_workspace/persistence.py", "hosted_workspace/manager.py",
-            "hosted_workspace/consumer.py", "hosted_workspace/observation_runner.py",
-            "hosted_workspace/agent.py", "hosted_workspace/producer.py",
-        ]
-        # Match an actual import STATEMENT (line-start import/from), not a docstring mention.
-        out = subprocess.run(
-            ["grep", "-rElE", r"^[[:space:]]*(import|from)[[:space:]]+MetaTrader5", *hosted_backend],
-            capture_output=True, text=True).stdout.split()
-        self.assertEqual(out, [], f"hosted backend must not import the broker API: {out}")
+    """PART 15 (STRUCTURAL): the certified bridge (``scripts/mt5_signal_bridge.py``) is the SOLE order path.
+
+    Proven by SWEEPING the hosted backend TREE — a structural glob, not a hand-maintained module list — so a
+    NEW hosted backend module cannot silently open a second order path and still pass. Two invariants hold
+    over the whole swept set: (1) no module calls the broker order-mutation surface (``order_send`` /
+    ``order_check``); (2) the ONLY broker-API (``MetaTrader5``) importers are a small SANCTIONED, host-only,
+    READ-ONLY allow-list, each separately proven to touch no order surface. The earlier proof asserted over a
+    curated 15-module subset, whose blanket ``no MetaTrader5 import`` predicate was already false for the
+    read-only observer command — this replaces it with the true, tree-wide invariant."""
+
+    # backend/ root, from backend/execution/tests_hosted_capstone.py
+    _BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    # MAY import MetaTrader5: sanctioned, HOST-ONLY, READ-ONLY observers (lazy import; guarded_initialize +
+    # terminal/account/positions observation only, never order_send/order_check/login). Each is re-proven
+    # order-free by invariant (1). An importer NOT on this list fails the sweep — it must be justified here.
+    _SANCTIONED_MT5_IMPORTERS = {
+        "hosted_workspace/management/commands/certify_workspace_observation.py",
+    }
+
+    def _hosted_backend_py_files(self):
+        """Structural glob of the hosted backend surface: the whole ``hosted_workspace`` app + the
+        ``execution`` hosted seam modules + the readiness/gate authorities. Excludes tests and migrations.
+        Returns a set of repo-relative POSIX paths."""
+        import glob
+        pats = ["execution/hosted_*.py", "execution/readiness.py", "execution/broker_gate.py",
+                "hosted_workspace/**/*.py"]
+        files = set()
+        for pat in pats:
+            for f in glob.glob(os.path.join(self._BACKEND, pat), recursive=True):
+                rel = os.path.relpath(f, self._BACKEND).replace(os.sep, "/")
+                base = rel.rsplit("/", 1)[-1]
+                if "/migrations/" in rel or "/tests/" in rel or base.startswith(("test_", "tests_")):
+                    continue
+                files.add(rel)
+        return files
+
+    def test_bridge_is_sole_order_path_structural_sweep(self):
+        import re
+        files = self._hosted_backend_py_files()
+        # sanity: the glob actually resolved the seam (guards against an empty/mis-scoped sweep, RULE 11)
+        self.assertIn("execution/hosted_routing.py", files)
+        self.assertIn("hosted_workspace/manager.py", files)
+        self.assertIn("hosted_workspace/management/commands/certify_workspace_observation.py", files)
+
+        import_re = re.compile(r"^[ \t]*(?:import|from)[ \t]+MetaTrader5\b", re.M)
+        order_re = re.compile(r"\border_send[ \t]*\(|\border_check[ \t]*\(")
+        importers, order_callers = [], []
+        for rel in sorted(files):
+            with open(os.path.join(self._BACKEND, rel), encoding="utf-8") as fh:
+                src = fh.read()
+            if import_re.search(src):
+                importers.append(rel)
+            if order_re.search(src):
+                order_callers.append(rel)
+
+        # (1) NO hosted backend module invokes the order-mutation surface — the bridge alone does.
+        self.assertEqual(order_callers, [],
+                         f"hosted backend must not call order_send/order_check: {order_callers}")
+        # RULE 11 — prove the import detector is NON-VACUOUS: the known sanctioned importer MUST be found, so
+        # `unexpected == []` below means "searched and verified", not "the regex matched nothing" (a broken
+        # `import_re` or a relocated import would otherwise make invariant (2) pass for the wrong reason).
+        self.assertIn("hosted_workspace/management/commands/certify_workspace_observation.py", importers,
+                      "import_re failed to detect the known MetaTrader5 importer — the sweep would be vacuous")
+        # (2) The ONLY broker-API importers are the sanctioned read-only observers.
+        unexpected = sorted(set(importers) - self._SANCTIONED_MT5_IMPORTERS)
+        self.assertEqual(unexpected, [],
+                         f"unsanctioned hosted-backend broker-API import(s) — a possible 2nd order path: "
+                         f"{unexpected}")
+
+    def test_positive_control_the_sweep_can_detect_an_order_caller(self):
+        """RULE 11 positive controls for BOTH measurement surfaces: the order-surface regex DOES fire on a
+        real call form, and the import-surface regex DOES fire on a real import — so an empty result means
+        'searched and found none', not 'the search is broken'."""
+        import re
+        order_re = re.compile(r"\border_send[ \t]*\(|\border_check[ \t]*\(")
+        self.assertTrue(order_re.search("result = mt5.order_send(request)"))
+        self.assertTrue(order_re.search("mt5.order_check (req)"))
+        self.assertFalse(order_re.search("# this module performs no order and never sends one"))
+        import_re = re.compile(r"^[ \t]*(?:import|from)[ \t]+MetaTrader5\b", re.M)
+        self.assertTrue(import_re.search("    import MetaTrader5 as mt5"))
+        self.assertTrue(import_re.search("from MetaTrader5 import order_send"))
+        self.assertFalse(import_re.search("# imports MetaTrader5 lazily on the host"))
 
 
 class IdempotencyKeyCollisionTests(TestCase):
@@ -223,3 +289,91 @@ class FailClosedBranchTests(TestCase):
         r = HR.resolve_hosted_route(TradingAccount.objects.get(pk=acct.pk))
         self.assertFalse(r.ok)
         self.assertEqual(r.reason_code, HR.ER_BINDING_MISMATCH)
+
+
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_MT5_EXECUTION_ENABLED="1")
+class ArmFailClosedBranchTests(TestCase):
+    """Decision D: EVERY arm precondition fails closed with a SPECIFIC reason code (most-specific-first).
+    ``_arm_preconditions`` is a standalone conjunction; each branch is asserted ACROSS THIS SUITE (this class
+    + ``ArmBindingPreconditionTests`` + ``tests_hosted_provisioning``) — a mutation that dropped one (silently
+    arming when it should refuse) must fail a test, not slip through. The compound ``RW_WORKSPACE_NOT_READY``
+    branch is split into its two independent disjuncts below so a mutant dropping either sub-check dies."""
+
+    def _ready_unarmed(self):
+        return _account(armed=False, bind=True)  # passes every precondition; each test breaks exactly one
+
+    def test_account_missing(self):
+        self.assertEqual(P.arm_hosted_workspace_execution(None).reason_code, "broker_account_missing")
+
+    def test_subsystem_disabled_for_non_persistent_provider(self):
+        acct = self._ready_unarmed()
+        acct.readiness_provider = "mt5_native"
+        acct.save(update_fields=["readiness_provider"])
+        self.assertEqual(P.arm_hosted_workspace_execution(acct).reason_code, R.RW_SUBSYSTEM_DISABLED)
+
+    def test_account_inactive(self):
+        acct = self._ready_unarmed()
+        acct.is_active = False
+        acct.save(update_fields=["is_active"])
+        self.assertEqual(P.arm_hosted_workspace_execution(acct).reason_code, "broker_account_inactive")
+
+    def test_account_disconnected(self):
+        acct = self._ready_unarmed()
+        acct.disconnected_at = timezone.now()
+        acct.save(update_fields=["disconnected_at"])
+        self.assertEqual(P.arm_hosted_workspace_execution(acct).reason_code, "broker_account_disconnected")
+
+    def test_real_account_not_enabled(self):
+        acct = self._ready_unarmed()
+        acct.is_demo = False
+        acct.save(update_fields=["is_demo"])
+        self.assertEqual(P.arm_hosted_workspace_execution(acct).reason_code, R.RW_REAL_ACCOUNT_NOT_ENABLED)
+
+    def test_no_workspace(self):
+        acct = _account(armed=False, ws=False)
+        self.assertEqual(P.arm_hosted_workspace_execution(acct).reason_code, P.ARM_NO_WORKSPACE)
+
+    def test_workspace_owner_mismatch(self):
+        # Defensive branch unreachable via the reverse OneToOne (a workspace always belongs to its account),
+        # so it is asserted with a duck-typed account whose workspace claims a different owner.
+        class _WS:
+            trading_account_id = 999999
+        class _Acct:
+            pk = 4242
+            readiness_provider = PERSISTENT_WORKSPACE
+            is_active = True
+            disconnected_at = None
+            is_demo = True
+            hosted_workspace = _WS()
+        self.assertEqual(P.arm_hosted_workspace_execution(_Acct()).reason_code, "workspace_owner_mismatch")
+
+    def test_workspace_not_connected(self):
+        acct = self._ready_unarmed()
+        ws = acct.hosted_workspace
+        ws.proj_connected = False
+        ws.save(update_fields=["proj_connected"])
+        self.assertEqual(P.arm_hosted_workspace_execution(acct).reason_code, R.RW_WORKSPACE_NOT_CONNECTED)
+
+    def test_workspace_not_ready_trade_disjunct_only(self):
+        # disjunct 1 ONLY: broker trading halted, but canonical still EXECUTION_READY. Kills a mutant that
+        # dropped the `proj_trade_allowed is not True` sub-check (the fresher, safety-relevant one).
+        acct = self._ready_unarmed()
+        ws = acct.hosted_workspace
+        ws.proj_trade_allowed = False           # canonical_state stays EXECUTION_READY
+        ws.save(update_fields=["proj_trade_allowed"])
+        self.assertEqual(P.arm_hosted_workspace_execution(acct).reason_code, R.RW_WORKSPACE_NOT_READY)
+
+    def test_workspace_not_ready_canonical_disjunct_only(self):
+        # disjunct 2 ONLY: canonical not EXECUTION_READY, but trading still allowed. Kills a mutant that
+        # dropped the `not canonical_execution_ready` sub-check.
+        acct = self._ready_unarmed()
+        ws = acct.hosted_workspace
+        ws.canonical_state = S.CONNECTED        # proj_trade_allowed stays True
+        ws.save(update_fields=["canonical_state"])
+        self.assertEqual(P.arm_hosted_workspace_execution(acct).reason_code, R.RW_WORKSPACE_NOT_READY)
+
+
+class DisarmFailClosedTests(TestCase):
+    def test_disarm_without_workspace_reports_no_workspace(self):
+        acct = _account(armed=False, ws=False)
+        self.assertEqual(P.disarm_hosted_workspace_execution(acct).reason_code, P.ARM_NO_WORKSPACE)

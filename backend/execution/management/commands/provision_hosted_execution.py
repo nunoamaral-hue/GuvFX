@@ -53,6 +53,16 @@ class Command(BaseCommand):
                 f"(gen={acct.hosted_workspace.execution_binding_generation})"))
 
         if opts["grant_worker"] and opts["node_hostname"]:
+            from execution.auth import LEGACY_WORKER_ID
+            if opts["grant_worker"] == LEGACY_WORKER_ID:
+                # Per-node isolation invariant: the SHARED legacy-worker row must NEVER be granted
+                # authorized_nodes — every legacy X-Worker-Token bridge resolves to it, so granting it a node
+                # would make all of them node-aware and let a shared/legacy bridge claim hosted jobs (and
+                # would push legacy NULL-node prod jobs off the claimable path). Register a DEDICATED
+                # WorkerIdentity for the bridge instead. Fail closed. (Enforced again at the claim seam.)
+                raise CommandError(
+                    f"refusing to grant a node to the shared '{LEGACY_WORKER_ID}' identity — it would defeat "
+                    f"per-node isolation; register a dedicated WorkerIdentity for the bridge and grant that")
             wi = WorkerIdentity.objects.filter(worker_id=opts["grant_worker"]).first()
             if wi is None:
                 raise CommandError(f"worker {opts['grant_worker']} not found (register it + its secret first)")

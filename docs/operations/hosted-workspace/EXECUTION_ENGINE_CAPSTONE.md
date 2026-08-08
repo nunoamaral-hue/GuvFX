@@ -29,12 +29,29 @@ Strategy Signal
 
 **The worker is the certified bridge (`scripts/mt5_signal_bridge.py`) running in HOSTED mode** (`G6:
 MT5_HOSTED_EXECUTION` → `evaluate_hosted_startup_config` refuses to start unless guarded-attach + mandatory
-pin + demo-only + no-credential-login all hold) with a **node-aware `WorkerIdentity`**
-(`worker_permissions.authorized_nodes = [node hostname]`). We do NOT fork a second worker.
+pin + demo-only + no-credential-login + **a node-aware worker identity** all hold) with a **node-aware
+`WorkerIdentity`** (`worker_permissions.authorized_nodes = [node hostname]`). We do NOT fork a second worker
+— the SAME bridge only selects its auth headers by mode:
 
-**Single-path proof (test):** `tests_hosted_capstone.SinglePathProofTests` asserts no hosted BACKEND module
-imports the broker API (`MetaTrader5`) — so none can call `order_send`/`login`. The bridge is the sole
-importer + sole order-time gate + sole sender. There is no alternative hosted execution path.
+- **Legacy mode** (flag unset): `get_headers()` sends `X-Worker-Token` → the shared `legacy-worker` identity
+  (no `authorized_nodes`). Byte-for-byte unchanged.
+- **Hosted mode** (`MT5_HOSTED_EXECUTION` set): `get_headers()` sends `X-Worker-Id` + `X-Worker-Secret`
+  (`GUVFX_WORKER_ID` / `GUVFX_WORKER_SECRET`) → the bridge's own **dedicated node-aware `WorkerIdentity`**.
+  This is required because `views.next_job` only routes a hosted (non-NULL node) job to — and
+  `authorize_hosted_claim` only entitles — a worker whose resolved `authorized_nodes` is non-empty, and only
+  the modern id/secret path resolves such an identity. **RULE 3 (no silent substitution):** hosted mode
+  requires BOTH `GUVFX_WORKER_ID` and `GUVFX_WORKER_SECRET`; if either is missing the bridge fails closed at
+  startup rather than falling back to the shared legacy token (granting the shared `legacy-worker` row nodes
+  would defeat the per-node isolation the `ER_WORKER_NOT_ENTITLED` check exists to enforce).
+
+**Single-path proof (test):** `tests_hosted_capstone.SinglePathProofTests` structurally SWEEPS the hosted
+backend tree (a glob of the whole `hosted_workspace` app + the `execution` hosted seam + readiness/gate — not
+a hand-maintained module list) and asserts two invariants: (1) **no** backend module calls the order-mutation
+surface (`order_send`/`order_check`); (2) the ONLY broker-API (`MetaTrader5`) importers are a small
+**sanctioned, host-only, READ-ONLY** allow-list (the observation-certification command), each re-proven
+order-free by (1). The bridge is the sole `order_send` caller + sole order-time gate. A new hosted module
+that imported the broker API or called `order_send` would fail the sweep. There is no alternative hosted
+execution path.
 
 ## 2. Arming hierarchy (PART 14) — all must be true; default OFF
 
@@ -48,7 +65,9 @@ anything**:
    sets it, fully preconditioned + audited)
 5. durable `HostedMt5Workspace.execution_node` binding present AND equal to `account.terminal_node`
    (capstone) AND equal to the job's snapshotted node
-6. node-aware, entitled `WorkerIdentity` claims it (claim-seam)
+6. node-aware, entitled `WorkerIdentity` claims it (claim-seam) — the bridge presents it via the modern
+   `X-Worker-Id`/`X-Worker-Secret` path in HOSTED mode; a shared/legacy-token worker is refused
+   (`ER_WORKER_NOT_ENTITLED`)
 7. demo-only (`account.is_demo`; the bridge refuses `trade_mode != 0`)
 8. the LIVE order-time gates (guarded attach ∧ live identity match ∧ connected ∧ trade_allowed ∧ fresh ∧
    not paused) — re-proven by the bridge immediately before every `order_send`
@@ -89,9 +108,12 @@ human-gated re-submission.
 
 ### 4a. DARK setup (Claude / backend — no order)
 1. Create a disposable demo `TradingAccount` (Provider-B, `is_demo=True`) + a disposable `TerminalNode`.
-2. Register a node-aware `WorkerIdentity` (the bridge) + its secret (operator).
+2. Register the bridge's own `WorkerIdentity` (`worker_id` + a fresh secret) (operator). This is the identity
+   the bridge presents in HOSTED mode via `X-Worker-Id`/`X-Worker-Secret` — dedicated, never the shared
+   `legacy-worker`.
 3. `manage.py provision_hosted_execution --account-id N --node-hostname H --grant-worker WID` — binds the
-   workspace→node, sets the account node, grants the worker node-awareness. **Places no order.**
+   workspace→node, sets the account node, grants that worker node-awareness (`authorized_nodes += [H]`).
+   **Places no order.**
 4. Nuno stands up the disposable demo MT5 + **logs into the demo broker** (the only broker-login step) and
    the observation chain drives the workspace to `EXECUTION_READY` (connected + account_match + trade_allowed
    + fresh).
@@ -105,7 +127,9 @@ current broker identity (masked) · production blast-radius fence (prod MT5, `:8
 account #1 untouched).
 
 ### 4c. PLACE + CLOSE (Nuno — the human-gated order)
-Nuno starts the bridge in HOSTED mode as the node-aware worker; a **single minimum-volume DEMO** market
+Nuno starts the bridge in HOSTED mode (`MT5_HOSTED_EXECUTION=1`, `MT5_GUARDED_ATTACH=1`,
+`MT5_REQUIRE_IDENTITY_PIN=1`, and the bridge's own `GUVFX_WORKER_ID`/`GUVFX_WORKER_SECRET` — the bridge
+refuses to start if any is missing) as the node-aware worker; a **single minimum-volume DEMO** market
 order flows through the loop (clear experiment comment/magic). Then a deterministic **close** through the
 same loop. If any result is ambiguous: **STOP, do not resend, run reconciliation.**
 
@@ -133,6 +157,52 @@ race → non-monotonic counter under concurrent (re)assignment); fixed by wrappi
 execution_node` in `transaction.atomic()` + `select_for_update()` so the version is computed from the LOCKED
 row (same pattern as the M3c writer). A second finding (SET_NULL node-delete bypasses the generation bump)
 was REFUTED to NONE — the fail-closed NULL route gate is fully preserved and the counter gates no decision
-path. Invariants confirmed intact: bridge is sole order-time gate; no order/attach/login; no MetaTrader5
-import in the hosted backend; DARK/default-OFF; no migration arms; one workspace → one node; legacy
-Provider-A unchanged.
+path. Invariants confirmed intact: bridge is sole order-time gate; no order/attach/login; DARK/default-OFF;
+no migration arms; one workspace → one node; legacy Provider-A unchanged.
+
+### 7a. Completeness-audit remediation (P1–P5)
+
+A final in-boundary completeness audit (5 boundary dimensions → per-finding refutation → synthesis) found the
+"only the manual demo order remains" framing was **false** and produced five additive DARK fixes:
+
+- **P1 (HIGH) — the certified bridge could not present a node-aware identity.** `get_headers()` sent only
+  `X-Worker-Token` → the shared `legacy-worker` row (no `authorized_nodes`), so a hosted (non-NULL node) job
+  was either excluded from the bridge's claimable set (legacy branch filters `terminal_node__isnull=True` →
+  204) or refused (`ER_WORKER_NOT_ENTITLED`). The documented demo order was therefore **not claimable**.
+  **Fix:** the SAME bridge, in HOSTED mode, authenticates via the modern `X-Worker-Id`/`X-Worker-Secret` path
+  (`GUVFX_WORKER_ID`/`GUVFX_WORKER_SECRET`) as its own **dedicated** node-aware `WorkerIdentity`; RULE 3
+  fail-closed at startup if either is missing (never falls back to the shared token — granting the shared row
+  `authorized_nodes` would defeat per-node isolation). Legacy mode byte-for-byte unchanged. No fork.
+- **P2 (MED) — RULE-11 positive control.** The claim endpoint was only proven in the refusal/dark directions.
+  Added a subsystem-ON positive control: a provisioned+armed+node-bound hosted job IS served (200/RUNNING) to
+  a node-aware worker and records the STARTED provenance row; plus a companion negative (a worker with no
+  `authorized_nodes` gets 204, job left PENDING).
+- **P3 (MED) — structural single-path proof.** The proof was a hand-maintained 15-module allow-list whose
+  "no `MetaTrader5` import in the hosted backend" predicate was already false (the read-only observation
+  command imports it). Replaced with a STRUCTURAL tree sweep: (1) no hosted backend module calls
+  `order_send`/`order_check`; (2) the only broker-API importers are a sanctioned host-only READ-ONLY
+  allow-list — with a positive control that the order-surface regex actually fires.
+- **P4 (LOW) — provision-command grant block tested** (append the correct node, preserve existing perms,
+  idempotent, fail-closed on unknown worker).
+- **P5 (LOW) — arm fail-closed coverage.** Asserted the 8 previously-unasserted `_arm_preconditions` reason
+  codes + the disarm no-workspace branch.
+
+A fresh 5-lens adversarial review of P1–P5 (find → refute → synthesize) returned **0 surviving HIGH / 0
+MEDIUM** — the one HIGH candidate (a `--grant-worker legacy-worker` misuse) was verified and calibrated to
+LOW (operator-misuse-only of a DARK command; bridge remains sole order gate; loud + reversible). All five LOW
+survivors were then **closed as hardening**:
+
+- **Grant-block isolation guard** — `provision_hosted_execution --grant-worker` now refuses the reserved
+  `legacy-worker` id (`CommandError`), AND `views.next_job` forces the shared `legacy-worker` identity
+  non-node-aware at the claim path (defence-in-depth; a no-op for its normal empty-perms row). So the shared
+  identity can never be treated as node-aware however its perms were set. + tests.
+- **Cross-node regression test** — a worker authorised for node-A is refused a correctly-provisioned node-B
+  hosted job (204, job PENDING) — proving per-worker node scoping, not merely node-aware-vs-legacy.
+- **Import-surface positive control** — the single-path sweep now asserts the sanctioned importer IS detected
+  (`assertIn`) plus a standalone `import_re` positive/negative control, so invariant (2) can't pass vacuously.
+- **Arm mutation adequacy** — the compound `RW_WORKSPACE_NOT_READY` branch is split into two single-disjunct
+  tests so a mutant dropping either sub-check dies.
+
+Verification: focused 56/56; full `execution` 908/908; `execution`+`hosted_workspace` green; `make check`
+green. Still DARK/flags-OFF; no migration; no order placed; the live bridge gate remains the sole order
+authority.
