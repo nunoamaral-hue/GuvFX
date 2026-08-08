@@ -14,6 +14,16 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 M2a: canonical Workspace state machine (DARK foundation). Repo eng; NOT deployed. 🟢**
+  Implementation-led development (Sponsor-authorised). Branch `feat/adr0034-m2a-state-machine` (base `main`
+  `309db68`). New pure/inert `backend/hosted_workspace/state_machine.py`: canonical 9-state
+  `WorkspaceLifecycleState` + `WorkspaceReason` codes + fail-closed `evaluate_workspace_transition` (ADR-0034
+  §3 graph verbatim) + `to_canonical` legacy→canonical mapping (fail-closed to SUSPENDED/ERROR; never an
+  execution state). **No model change, no migration, no consumer wired** (`makemigrations --check` clean;
+  grep-proven DARK). Tests `tests_state_machine.py`: oracle + AST mutation adequacy (incl. in/not-in; every
+  mutant killed) + graph fidelity + mapping completeness. 35 hosted_workspace tests OK. Adversarial review
+  not required (no execution-path wiring). M1 (Guarded Attach, PR #305) precedes; M2b (telemetry) next.
+
 - **2026-08-07 — ADR-0033 Increment 3: complete trade-operation identity safety (CLOSE/MODIFY). Repo eng; NOT deployed. 🟢**
   Branch `feat/adr0033-inc3-pilot-plumbing` (base `main` `c83e041` = merged PR #302). Extends the Inc2
   opening-order identity invariant to EVERY account-mutating op. New bridge gate
