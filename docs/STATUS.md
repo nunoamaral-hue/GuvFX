@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 M3b-1: Workspace Observation Producer (pure, DARK). Repo eng; NOT deployed. 🟢**
+  Branch `feat/adr0034-m3b1-observation-producer` (stacked on M3a — real code dependency on
+  `manager.WorkspaceObservation`). New pure/side-effect-free `backend/hosted_workspace/producer.py`: the
+  trusted boundary that converts an untrusted `RawWorkspaceSnapshot` (raw host/MT5/attach facts) into the
+  canonical M3a `WorkspaceObservation` and NOTHING else. `now` is **supplied** (no wall-clock);
+  `previous_state` is **carried through**, never derived. **Reuses the certified
+  `matching.evaluate_active_account_match`** (unchanged) via a readiness-neutral observation so only identity
+  decides. Fail-closed throughout: `_is_true` (only literal `True`); `_is_number` (int/float, non-bool, and
+  **finite** — NaN/inf rejected at the type gate); `_clean_identity` (blank/whitespace → None so the matcher
+  denies); `_clean_trade_mode` (rejects bool so `False == DEMO(0)` cannot classify); `_compute_freshness`
+  (deterministic; non-finite `tolerance` defaults to zero tolerance, never disabling the future guard); a
+  top-level try/except collapses all six facts to False on any exception. Secret-free output (no
+  login/server/password/token). **Derives NO lifecycle state, performs NO actions** (grep-proven DARK; no
+  consumer, migration, wiring, flag, host, or execution). **REQUIRED 8-lens adversarial review** (execution-
+  adjacent): first pass FIX_REQUIRED (3 HIGH NaN/inf freshness fail-open + 3 MEDIUM bool/whitespace identity);
+  fixed producer-locally; **re-verification verdict CERTIFY** (all 8 lenses `broken=false`, 0 HIGH/MEDIUM
+  surviving or introduced). Tests `tests_producer.py`: oracle A–S + account-match matrix + freshness
+  boundary/stale/future/malformed + NaN/inf + bool/whitespace regressions + secret-free + no-state-derivation
+  grep proof + exception safety + **AST mutation adequacy** on `_compute_freshness` and `_is_number` (every
+  mutant killed). 99 hosted_workspace tests OK. M3b-2 (Workspace Agent host process — execution-adjacent,
+  requires its own packet + adversarial + host certification) DEFERRED, not started.
+
 - **2026-08-08 — ADR-0034 M3a: Workspace Manager decision engine (pure, DARK). Repo eng; NOT deployed. 🟢**
   Branch `feat/adr0034-m3a-manager` (stacked on M2b). New pure/side-effect-free
   `backend/hosted_workspace/manager.py`: `WorkspaceObservation` + `WorkspaceDecision` dataclasses +
