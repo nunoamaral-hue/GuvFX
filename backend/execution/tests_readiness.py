@@ -93,7 +93,7 @@ class ProviderARegressionTests(TestCase):
             self.assertEqual(dec.reason_code, g.R_NOT_VALIDATED_NEVER)
 
 
-@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1")
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_MT5_EXECUTION_ENABLED="1")
 class ProviderBTests(TestCase):
     def setUp(self):
         self.user = U.objects.create_user(username="rb", email="rb@x.invalid", password="x")
@@ -106,7 +106,8 @@ class ProviderBTests(TestCase):
         # fields Provider-B readiness now reads (ADR-0034 Execution Engine G1 / Decision A).
         base = dict(canonical_state=WorkspaceLifecycleState.EXECUTION_READY,
                     proj_connected=True, proj_trade_allowed=True, proj_account_match=True,
-                    proj_execution_ready=True, last_decision_at=timezone.now())
+                    proj_execution_ready=True, last_decision_at=timezone.now(),
+                    execution_enabled=True)  # ADR-0034 Execution Engine — the explicit per-workspace ARM
         base.update(kw)
         return HostedMt5Workspace.objects.create(trading_account=self.acct, **base)
 
@@ -148,6 +149,27 @@ class ProviderBTests(TestCase):
         self.acct.disconnected_at = timezone.now()
         self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
                          g.R_ACCOUNT_DISCONNECTED)
+
+    def test_execution_feature_flag_disabled_fails_closed(self):
+        # ADR-0034 Decision D condition 2 — the subsystem execution flag must be ON (master may be on for
+        # observation while execution stays dark).
+        self._ready_ws()
+        with override_settings(HOSTED_MT5_EXECUTION_ENABLED="0"):
+            self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                             R.RW_EXECUTION_FEATURE_DISABLED)
+
+    def test_unarmed_workspace_fails_closed(self):
+        # ADR-0034 Decision D condition 4 — the explicit per-workspace arm must be True.
+        self._ready_ws(execution_enabled=False)
+        self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                         R.RW_EXECUTION_DISABLED)
+
+    def test_real_account_hard_rejected_demo_only(self):
+        # ADR-0034 Decision D condition 11 — this subsystem is DEMO ONLY; a real account never executes.
+        self._ready_ws()
+        self.acct.is_demo = False
+        self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                         R.RW_REAL_ACCOUNT_NOT_ENABLED)
 
     def test_gate_substitution_end_to_end(self):
         self._ready_ws()

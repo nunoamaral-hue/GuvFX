@@ -38,6 +38,10 @@ RW_WORKSPACE_NOT_READY = "workspace_not_execution_ready"
 RW_WORKSPACE_NOT_CONNECTED = "workspace_not_connected"
 RW_ACTIVE_ACCOUNT_MISMATCH = "active_account_mismatch"
 RW_OBSERVATION_STALE = "workspace_observation_stale"
+# ── ADR-0034 Execution Engine arming reason codes (Decision D conditions 2 / 4 / 11) ──
+RW_EXECUTION_FEATURE_DISABLED = "workspace_execution_feature_disabled"  # condition 2 (subsystem-level flag)
+RW_EXECUTION_DISABLED = "workspace_execution_disabled"                  # condition 4 (per-workspace arm)
+RW_REAL_ACCOUNT_NOT_ENABLED = "real_account_not_enabled"               # condition 11 (demo-only, fail-closed)
 
 # The last attach observation must be no older than this to gate eligibility (mirrors the runtime
 # heartbeat freshness). It is an ELIGIBILITY bound only — the authority is the live order-time gate.
@@ -61,6 +65,16 @@ def _hosted_persistent_mt5_enabled() -> bool:
         from hosted_workspace.flags import hosted_persistent_mt5_enabled
         return hosted_persistent_mt5_enabled()
     except Exception:  # noqa: BLE001 — absence of the subsystem means it is disabled
+        return False
+
+
+def _hosted_mt5_execution_enabled() -> bool:
+    """DARK subsystem-level EXECUTION gate (ADR-0034 Decision D condition 2; import-local; fail-closed).
+    Distinct from the master flag: observation may be on while execution stays dark."""
+    try:
+        from hosted_workspace.flags import hosted_mt5_execution_enabled
+        return hosted_mt5_execution_enabled()
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -100,16 +114,26 @@ class PersistentWorkspaceProvider:
 
     def evaluate(self, account) -> ReadinessDecision:
         from execution import broker_gate as g
-        if not _hosted_persistent_mt5_enabled():
+        # ADR-0034 Execution Engine — LAYERED ARMING (Decision D). Every condition below is ANDed and
+        # fail-closed; each field/flag defaults FALSE. This backend gate covers conditions 1-5 + 11; the
+        # LIVE conditions 6-10 (guarded attach / live identity / connected / trade_allowed / health+pause)
+        # remain the authority of the certified bridge gate immediately before every mutation.
+        if not _hosted_persistent_mt5_enabled():          # condition 1 — global subsystem flag
             return ReadinessDecision(False, RW_SUBSYSTEM_DISABLED, self.key)
+        if not _hosted_mt5_execution_enabled():           # condition 2 — subsystem execution flag
+            return ReadinessDecision(False, RW_EXECUTION_FEATURE_DISABLED, self.key)
         # Shared lifecycle checks — ANDed, never dropped (red-team finding #1).
         if not getattr(account, "is_active", False):
             return ReadinessDecision(False, g.R_ACCOUNT_INACTIVE, self.key)
         if getattr(account, "disconnected_at", None) is not None:
             return ReadinessDecision(False, g.R_ACCOUNT_DISCONNECTED, self.key)
+        if getattr(account, "is_demo", False) is not True:  # condition 11 — DEMO-ONLY subsystem, fail-closed
+            return ReadinessDecision(False, RW_REAL_ACCOUNT_NOT_ENABLED, self.key)
         ws = getattr(account, "hosted_workspace", None)
         if ws is None:
             return ReadinessDecision(False, RW_WORKSPACE_MISSING, self.key)
+        if getattr(ws, "execution_enabled", False) is not True:  # condition 4 — explicit per-workspace ARM
+            return ReadinessDecision(False, RW_EXECUTION_DISABLED, self.key)
         # Attach truth from the M3c CANONICAL projection (ADR-0034 M3c) — the fields the ONE certified,
         # row-locked, single writer ``persist_workspace_decision`` actually maintains. (The legacy
         # ``observed_*``/``state``/``last_observed_at`` cache is deliberately NOT written by that writer and

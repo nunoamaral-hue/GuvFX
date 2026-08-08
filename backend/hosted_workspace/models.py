@@ -110,6 +110,13 @@ class HostedMt5Workspace(models.Model):
     proj_execution_ready = models.BooleanField(null=True, blank=True)
     last_correlation_id = models.CharField(max_length=128, blank=True, default="")
 
+    # --- ADR-0034 Execution Engine: explicit per-workspace ARM (Decision D, condition 4) ---------------
+    # The durable, per-workspace switch that must be True before this workspace may execute. DEFAULT FALSE.
+    # No migration ever sets it True; nothing auto-arms. It is one AND-term among the layered arming gate
+    # (global flag + execution feature flag + provider + this + canonical state + demo-only + the LIVE
+    # order-time gates) — never sufficient on its own, and NEVER the order authority.
+    execution_enabled = models.BooleanField(default=False)
+
     _IMMUTABLE_BINDING = ("workspace_uuid", "trading_account_id")
 
     class Meta:
