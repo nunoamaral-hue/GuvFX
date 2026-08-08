@@ -20,6 +20,28 @@
 
 ---
 
+# HANDOFF (2026-08-08) — ADR-0034 Execution Engine subsystem
+
+- **Merged.** PR #315 (Execution Engine incl. G12 provenance/telemetry/reconcile) → `main` `cc84117` (CI
+  green). The order-safety spine + provenance/observability are on main, DARK.
+- **Open — capstone.** PR **#317** (`feat/adr0034-execution-capstone`, commit range on branch head) adds the
+  durable workspace→node binding + provisioning contract + routing/claim enforcement + operator command +
+  contract/arming/failure-matrix/cert docs. 1086 execution+hosted_workspace tests green; `make check` green;
+  6-lens adversarial review 0 HIGH/0 MEDIUM (1 LOW fixed).
+- **Verified fact vs assumption.** VERIFIED: repository-complete for the full subsystem boundary (binding,
+  routing, claim, worker contract, persistence, idempotency, retries, reconciliation, concurrency, telemetry,
+  API contract, cert harness, tests, mutation, review, docs); all flags OFF; no migration arms; legacy
+  Provider-A unchanged. ASSUMED/UNPROVEN: the empirical end-to-end demo trade (blocked on the human action).
+- **Exact stop / next action.** The ONLY remaining step is the **disposable-demo order**, which is a manual
+  human action — **Nuno places+closes it** (Claude never trades, even demo). Runbook:
+  `docs/operations/hosted-workspace/EXECUTION_ENGINE_CAPSTONE.md` §4. Marker:
+  `EXECUTION_ENGINE_REPOSITORY_COMPLETE — HOST_CERT_PENDING`.
+- **Parked, do not touch.** PR #316 (Workspace Delivery / RemoteApp) — separate subsystem; host RDS/SPLA is a
+  Sponsor decision; it rebases its `HostedMt5Workspace` migration onto the new main later.
+- **PM gate.** New live-order/credential/promotion authorizations remain Nuno's explicit gate.
+
+---
+
 # HANDOFF (2025-12-16)
 
 > Outgoing coder updates this at the end of **every** session.

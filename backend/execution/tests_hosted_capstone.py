@@ -180,3 +180,46 @@ class SinglePathProofTests(TestCase):
             ["grep", "-rElE", r"^[[:space:]]*(import|from)[[:space:]]+MetaTrader5", *hosted_backend],
             capture_output=True, text=True).stdout.split()
         self.assertEqual(out, [], f"hosted backend must not import the broker API: {out}")
+
+
+class IdempotencyKeyCollisionTests(TestCase):
+    """Mutation-adequacy for the pure ``hosted_idempotency_key``: it is deterministic AND every intended
+    component (workspace / login / server / job / operation / strategy) genuinely participates — changing any
+    one yields a different key, so the same logical order can never collide across users/workspaces/jobs/ops."""
+
+    def test_deterministic_and_every_component_matters(self):
+        from execution.hosted_idempotency import hosted_idempotency_key as K
+        base = dict(workspace_uuid="ws-1", expected_login="700111", expected_server="Srv-A",
+                    job_id=1, operation="PLACE_ORDER", strategy_id="5")
+        baseline = K(**base)
+        self.assertTrue(baseline.startswith("HWX-"))
+        self.assertEqual(K(**base), baseline)  # deterministic
+        for field, alt in [("workspace_uuid", "ws-2"), ("expected_login", "800222"),
+                           ("expected_server", "Srv-B"), ("job_id", 2),
+                           ("operation", "CLOSE_TRADE"), ("strategy_id", "6")]:
+            mut = dict(base); mut[field] = alt
+            self.assertNotEqual(K(**mut), baseline, f"key MUST change when {field} changes (collision risk)")
+
+
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_MT5_EXECUTION_ENABLED="1")
+class FailClosedBranchTests(TestCase):
+    def test_readiness_not_ready_when_trade_not_allowed(self):
+        from execution.readiness import RW_WORKSPACE_NOT_READY, PersistentWorkspaceProvider
+        acct = _account()  # armed + bound + connected + matched
+        ws = acct.hosted_workspace
+        ws.proj_trade_allowed = False       # connected+matched but trading halted → not ready
+        ws.canonical_state = S.CONNECTED    # so canonical_execution_ready is False too
+        ws.save(update_fields=["proj_trade_allowed", "canonical_state"])
+        d = PersistentWorkspaceProvider().evaluate(TradingAccount.objects.get(pk=acct.pk))
+        self.assertFalse(d.eligible)
+        self.assertEqual(d.reason_code, RW_WORKSPACE_NOT_READY)
+
+    def test_route_binding_mismatch_on_empty_login(self):
+        # Armed + node-bound + agree, but the account carries no bound login → the route cannot be safely
+        # pinned → ER_BINDING_MISMATCH (fail closed rather than route an unpinnable order).
+        acct = _account(login="700900")
+        acct.account_number = ""            # no bound broker login
+        acct.save(update_fields=["account_number"])
+        r = HR.resolve_hosted_route(TradingAccount.objects.get(pk=acct.pk))
+        self.assertFalse(r.ok)
+        self.assertEqual(r.reason_code, HR.ER_BINDING_MISMATCH)
