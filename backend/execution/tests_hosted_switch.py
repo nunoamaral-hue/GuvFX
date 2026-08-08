@@ -16,17 +16,20 @@ U = get_user_model()
 
 
 def _acct(login="700900"):
+    from execution.models import TerminalNode
     user = U.objects.create_user(username=f"s{login}", email=f"{login}@x.invalid", password="x")
     srv, _ = BrokerServer.objects.get_or_create(server_name="IS6-Demo")
+    node = TerminalNode.objects.create(hostname=f"node-{login}")
     return TradingAccount.objects.create(user=user, name="a", broker_name="B", account_number=login,
                                          is_demo=True, broker_server=srv,
-                                         readiness_provider=PERSISTENT_WORKSPACE)
+                                         readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node)
 
 
 def _ws(acct, **kw):
+    # Capstone: a routable workspace is bound to its account's execution node (route now requires it).
     base = dict(canonical_state=S.EXECUTION_READY, proj_connected=True, proj_trade_allowed=True,
                 proj_account_match=True, proj_execution_ready=True, last_decision_at=timezone.now(),
-                execution_enabled=True)
+                execution_enabled=True, execution_node=acct.terminal_node)
     base.update(kw)
     return HostedMt5Workspace.objects.create(trading_account=acct, **base)
 

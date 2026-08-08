@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 Execution Engine CAPSTONE — workspace→node binding + routing/claim enforcement (DARK). NOT deployed/armed. 🟢**
+  Branch `feat/adr0034-execution-capstone` off main `cc84117` (after #315 merged). Closes the produce→claim→
+  execute routing capstone so a hosted workspace resolves to EXACTLY ONE authorised execution node.
+  **New:** `HostedMt5Workspace.execution_node` FK + `execution_binding_generation` (versioned durable
+  binding; migration `0004`); `hosted_provisioning.assign/clear_workspace_execution_node` (provisioning
+  contract — versioned, idempotent, fail-closed, reversible-while-DARK, audited); `_arm_preconditions` +
+  `resolve_hosted_route` + `authorize_hosted_claim` now enforce workspace↔account↔job node AGREEMENT
+  (`ER_/ARM_NODE_UNBOUND`/`NODE_MISMATCH`; binding re-checked after arm so an armed-then-cleared binding
+  still fails closed); `manage.py provision_hosted_execution` (DARK operator setup — bind/grant-worker/arm;
+  places NO order). **The node-aware hosted worker = the certified bridge in HOSTED mode (G6) with a
+  node-aware `WorkerIdentity`** — no fork; single-path proof (test) asserts no hosted backend module imports
+  MetaTrader5. +15 capstone tests (binding/routing/claim/arm/server-identity/stale-resolution/single-path) +
+  existing arm/route fixtures updated to the new invariant. Contract + arming + failure matrix + disposable-
+  demo cert runbook: `docs/operations/hosted-workspace/EXECUTION_ENGINE_CAPSTONE.md`. **HARD STOP:** the
+  empirical demo trade (PART 16/17) is a human action — **Nuno places+closes the demo order** (Claude never
+  trades, even demo); marker `EXECUTION_ENGINE_REPOSITORY_COMPLETE — HOST_CERT_PENDING`. All flags OFF; no
+  migration arms; legacy Provider-A unchanged.
+
 - **2026-08-08 — ADR-0034 Execution Engine — G12 completion: provenance + telemetry + reconcile (DARK, demo-only). NOT deployed. 🟢**
   On PR #315 (branch `feat/adr0034-execution-engine`). A repository-truth inventory of the whole subsystem
   vs the Sponsor 18-item scope found the authority spine COMPLETE (routing/arming/active-broker/authority/

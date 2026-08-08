@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ ADR-0034 Execution Engine CAPSTONE — repository-complete (DARK); disposable-demo trade is Nuno's (2026-08-08)
+On branch `feat/adr0034-execution-capstone` (off main `cc84117`; #315 merged): the durable workspace→node
+binding + provisioning contract + routing/claim enforcement close the produce→claim→execute routing capstone
+(one workspace → one authorised node; node drift/unbound/mismatch fail closed). The node-aware hosted worker
+= the certified bridge in HOSTED mode + a node-aware `WorkerIdentity` (no fork; single-path proof). DARK,
+demo-only, default-OFF; the live bridge stays sole order-time gate. +15 capstone tests; contract/arming/
+failure-matrix/cert runbook in `docs/operations/hosted-workspace/EXECUTION_ENGINE_CAPSTONE.md`.
+**Bounded next action (Nuno, HARD STOP — human trade):** run the disposable-demo certification — DARK setup
+via `manage.py provision_hosted_execution`, Nuno logs into a disposable demo broker + **places the single
+minimum-volume demo order + deterministic close through the loop** (Claude never trades, even demo), then
+Claude verifies provenance/telemetry/blast-radius. Marker until then: `EXECUTION_ENGINE_REPOSITORY_COMPLETE —
+HOST_CERT_PENDING`. Then recommend next subsystem (Delivery/RemoteApp vs Onboarding).
+
 ## ▶ ADR-0034 Execution Engine — G12 completion DELIVERED (provenance/telemetry/reconcile, DARK); capstone is Sponsor-gated (2026-08-08)
 The Execution Engine subsystem is repository-complete on PR #315: the authority spine (routing/arming/
 active-broker/authority/pause-resume) plus the G12 provenance layer — job↔workspace + HWX-key persistence,

@@ -30,6 +30,8 @@ ER_BINDING_MISMATCH = "binding_mismatch"
 ER_NOT_ARMED = "workspace_execution_not_armed"
 ER_ROUTE_MISSING = "workspace_route_missing"        # a hosted job with a NULL/shared node — Decision C
 ER_WORKER_NOT_ENTITLED = "worker_not_entitled"      # a legacy/shared worker tried to claim a hosted job
+ER_NODE_UNBOUND = "workspace_execution_node_unbound"    # capstone: no durable workspace->node binding
+ER_NODE_MISMATCH = "workspace_execution_node_mismatch"  # capstone: binding/account/job node disagree
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,16 @@ def resolve_hosted_route(account) -> RouteDecision:
     # Layered arm (Decision D) — delegated to the single readiness authority.
     if not hosted_execution_armed(account):
         return RouteDecision(False, ER_NOT_ARMED)
+    # Capstone (PART 2, invariants 1/2/3/6): the durable workspace->node binding must exist AND agree with
+    # the account's node — so workspace, account, and job all resolve to exactly ONE authorised node. A
+    # workspace can only be ARMED while bound (``_arm_preconditions``); this re-checks at route time so a
+    # binding CLEARED after arming (``clear_workspace_execution_node``, which does not disarm) still fails
+    # closed. A NULL binding or one that disagrees with the account's node is NOT execution-routable.
+    if getattr(ws, "execution_node_id", None) is None:
+        return RouteDecision(False, ER_NODE_UNBOUND)
+    if (getattr(account, "terminal_node_id", None) is None
+            or ws.execution_node_id != account.terminal_node_id):
+        return RouteDecision(False, ER_NODE_MISMATCH)
     # Server-derived identity pin (never client-supplied). Reuses the certified G3 derivation.
     from execution.hosted_pin import identity_pin_for
     pin = identity_pin_for(account)
@@ -122,6 +134,11 @@ def authorize_hosted_claim(job, *, worker_is_node_aware: bool) -> RouteDecision:
         return route
     if getattr(job, "terminal_node_id", None) is None:   # Decision C — no shared/NULL route for a hosted job
         return RouteDecision(False, ER_ROUTE_MISSING)
+    # Capstone: the JOB's snapshotted node must still equal the account's current node (which
+    # resolve_hosted_route already proved equals the durable workspace binding). A job whose node drifted
+    # from the account's authorised node is not routable — fail closed rather than claim on a stale node.
+    if job.terminal_node_id != getattr(account, "terminal_node_id", None):
+        return RouteDecision(False, ER_NODE_MISMATCH)
     if not worker_is_node_aware:                          # Decision C — no legacy/shared-worker entitlement
         return RouteDecision(False, ER_WORKER_NOT_ENTITLED)
     return route
