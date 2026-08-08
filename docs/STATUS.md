@@ -14,6 +14,29 @@
 
 ## Execution workstream log
 
+- **2026-08-08 — ADR-0034 M3b-2: Hosted Workspace Agent — read-only observation pipeline (Amber, DARK). Repo eng; NOT deployed. 🟡**
+  Branch `feat/adr0034-m3b2-workspace-agent` (stacked on M3b-1). First increment that touches the live
+  Workspace Agent — **execution-adjacent + host-touching → Amber**. New pure orchestration
+  `backend/hosted_workspace/agent.py` (`build_agent_snapshot` / `observe_workspace`): locate the EXPECTED
+  terminal → **M1 Guarded Attach** → READ-ONLY `terminal_info`/`account_info`/`positions`/`orders`/`tick` →
+  `RawWorkspaceSnapshot` → M3b-1 producer → `WorkspaceObservation`. **Observe only:** NEVER launches,
+  NEVER `mt5.login()`, NEVER authenticates, NEVER places/modifies/closes an order; NO persistence, NO
+  telemetry, NO recovery, NO state derivation. Fail-closed at every step (every host failure → an
+  observation, never an exception, never a default positive); `clock` injected (deterministic). Reference
+  adapter `agent_host.py` (`Mt5WorkspaceHost`) binds the pipeline to M1 + a live `mt5` by **injection** (no
+  `MetaTrader5` import; passes ONLY `{path}` to the guarded attach — no credential replay). Tests
+  `tests_agent.py` (mock host: oracle + AST mutation adequacy on the control flow + missing/duplicate/wrong
+  process + attach failure/raise + account-unavailable + wrong login/server + trade-mode variants +
+  empty/open positions + pending orders + tick present/absent + clock failure + never-launch/no-read-on-fail
+  + AST no-login/no-launch/no-mt5-import proof + secret-free + exception safety) and `tests_agent_host.py`
+  (spy mt5 + fake M1: M1-only, no login/order calls, read-only, release-once). **145 hosted_workspace tests
+  OK.** No consumer wiring, no model, no migration, no flag (inherits M1's `MT5_GUARDED_ATTACH` at the attach
+  boundary), grep-proven DARK. **Disposable-host certification is PREPARED, NOT RUN** — needs a
+  broker-connected disposable MT5 (Nuno; credentialed login is prohibited for the agent) + live-host
+  execution; runbook `docs/operations/hosted-workspace/M3B2_HOST_CERTIFICATION.md`. **Merge-sequencing of
+  M1 #305 + the M3b-1 stack onto one base is a Sponsor Amber decision** (they are disjoint unmerged
+  branches). M4 (telemetry emission) NOT started.
+
 - **2026-08-08 — ADR-0034 M3b-1: Workspace Observation Producer (pure, DARK). Repo eng; NOT deployed. 🟢**
   Branch `feat/adr0034-m3b1-observation-producer` (stacked on M3a — real code dependency on
   `manager.WorkspaceObservation`). New pure/side-effect-free `backend/hosted_workspace/producer.py`: the
