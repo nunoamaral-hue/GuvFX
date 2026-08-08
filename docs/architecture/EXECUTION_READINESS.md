@@ -130,3 +130,48 @@ are unchanged (no pin → connected check only). Proven by `execution/tests_brid
 + the E4 inventory. The remaining pilot-plumbing — durable routing wiring + server-side producer
 pin-derivation (B/C/D), observer pause/resume (G), host attach probe (I), read-only API (J), staff
 observability (K) — is **deferred** to a follow-up increment; the repository is **not** yet full-pilot-ready.
+
+## 9. ADR-0034 WS3 (M1) — Guarded Attach primitive (DARK)
+
+The persistent-workspace attach must never manufacture a broker connection. Experiment H proved
+`mt5.initialize(path=)` is **dual-mode**: it attaches to an already-running terminal, but if the terminal
+is **down** it *launches* it and the launched terminal *auto-logs-in from cached `config\accounts.dat`* —
+silently replaying the customer's saved credentials. The Guarded Attach primitive
+(`scripts/mt5_signal_bridge.py`) makes the **never-launch** invariant explicit and is the M1 foundation of
+the ADR-0034 workspace operating model.
+
+- **`guarded_initialize(mt5, init_kwargs, *, probe=None)`** wraps every `mt5.initialize(**init_kwargs)` site
+  in the bridge (all 10). **DARK by default:** when `MT5_GUARDED_ATTACH` is unset it is **byte-identical** to
+  `mt5.initialize(**init_kwargs)` — the legacy/production bridge behaviour (which may launch) is unchanged.
+  When enabled it: probes the process **before** calling `initialize` (so a down terminal is **never
+  launched**), requires the terminal to report **connected** with an **account identity** after attach, reads
+  and records the **masked** identity, **never** calls `mt5.login()`, and **releases** (shutdown) any attach
+  it opened on failure — else fail-closed.
+- **`evaluate_guarded_attach(...)`** is the pure, fail-closed decision (ordering: `no_path` →
+  `terminal_not_running` → `initialize_failed` → `not_connected` → `no_account` → `ok`) — no MT5, no I/O.
+- Proven by `execution/tests_bridge_guarded_attach.py`: oracle truth-table + **AST mutation adequacy** (every
+  mutant killed) + wrapper fail-closed + **never-launch** (probe False ⇒ `initialize` never called) +
+  **behaviour-preserving passthrough** (flag off ⇒ single passthrough call) + a **structural** invariant
+  (probe precedes attach, attach guarded by `running`, no `mt5.login` in the guarded path, all 10 sites
+  routed). No execution enablement, no host mutation; the order-time `evaluate_binding` authority is unchanged.
+
+**Adversarial-review hardening (6-lens; 3 HIGH + 1 MEDIUM folded in before merge):**
+- **Attach-only (never authenticate):** `initialize(login,password,server)` performs a broker login, so the
+  guarded path **rejects credential-bearing `init_kwargs`** (`login`/`password`/`server`) and fails closed —
+  `initialize` may only ATTACH by path. This fails closed at the legacy `/mt5/login-and-validate` site (a
+  temporary-validation path, retired under ADR-0034), not a workspace attach. Legacy (flag-off) is unchanged.
+- **Path-scoped probe:** `_terminal_process_running` matches strictly by the target **install directory**
+  (`_running_terminal_dirs` via psutil, then wmic `ExecutablePath`), never image-name alone — a foreign
+  `terminal64.exe` on a multi-install host can no longer green-light launching a down target; unresolvable ⇒
+  False (fail-closed).
+- **Fail-closed on raise:** the post-attach `terminal_info()`/`account_info()` IPC calls are wrapped; a raise
+  (broken pipe — the degraded state the guard exists for) returns False (no propagation) and **releases** the
+  attach via `shutdown()`.
+- **All 11 attach sites routed:** the 10 in-file sites plus the injected `_rx2_supervision_snapshot` in
+  `mt5_worker/bridge_supervision_patch.py` route through `guarded_initialize` (defensive `globals()` lookup so
+  it degrades to raw `initialize` on a pre-primitive bridge; DARK-safe).
+
+**Accepted caveat (documented, not a defect):** a sub-millisecond **probe→attach TOCTOU** window remains — if
+the pre-existing terminal exits in the gap, `initialize(path=)` could launch it. This is acceptable because
+its worst outcome **equals the legacy path** (launch + cached-cred auto-login) and is never worse; a later
+hardening can capture the pre-existing PID set and verify the connected terminal is a member post-attach.

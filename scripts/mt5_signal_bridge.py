@@ -231,6 +231,152 @@ def _require_identity_pin() -> bool:
     return os.getenv("MT5_REQUIRE_IDENTITY_PIN", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+# --- ADR-0034 / WS3 — Guarded Attach primitive (M1, DARK by default) --------------------------------
+# Experiment H proved mt5.initialize(path=) is DUAL-MODE: it ATTACHES to an already-running terminal, but
+# if the terminal is DOWN it LAUNCHES it and the launched terminal AUTO-LOGS-IN from cached config\accounts.dat.
+# On the persistent, never-own-credentials workspace that auto-login would silently replay the customer's
+# saved credentials. The guarded attach makes the never-launch invariant explicit: the target terminal MUST
+# already be running (probed BEFORE initialize, so initialize can only ATTACH) and MUST be broker-connected
+# with an account identity after attach — else fail closed. It NEVER calls mt5.login() and NEVER relaunches.
+# DARK by default: when MT5_GUARDED_ATTACH is unset, guarded_initialize() is byte-identical to
+# mt5.initialize(**init_kwargs) — the legacy/production bridge is unchanged.
+
+def _guarded_attach_enabled() -> bool:
+    """ADR-0034 WS3. When set — on a persistent-workspace bridge — the attach primitive enforces the
+    never-launch invariant (target already running + connected + identity, or fail closed). Legacy/
+    production bridges leave it unset ⇒ exact prior mt5.initialize() behaviour (may launch)."""
+    return os.getenv("MT5_GUARDED_ATTACH", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def evaluate_guarded_attach(path, process_running, init_ok, terminal_connected, account_present):
+    """Pure, fail-closed decision for the GUARDED (never-launch) attach — no MT5, no I/O, fully
+    unit/mutation-testable. Reports the most specific failure first. Returns (ok: bool, reason: str).
+
+    Inputs are gathered by guarded_initialize() in the ONLY safe order: `process_running` is probed
+    BEFORE mt5.initialize() is ever called, so a not-running terminal is rejected here and never launched;
+    `init_ok`/`terminal_connected`/`account_present` reflect the attach that followed a positive probe."""
+    if not path:
+        return False, "guarded_attach_no_path"
+    if not process_running:
+        return False, "guarded_attach_terminal_not_running"  # never launch a down terminal
+    if not init_ok:
+        return False, "guarded_attach_initialize_failed"
+    if not terminal_connected:
+        return False, "guarded_attach_not_connected"  # attached but no live broker link
+    if not account_present:
+        return False, "guarded_attach_no_account"
+    return True, "ok"
+
+
+def _running_terminal_dirs():
+    """Install directories (lowercased) of every currently-running terminal64.exe. FAIL-CLOSED: a directory
+    is included ONLY when its executable path is confirmed, so a foreign / image-name-only match can never
+    stand in for the target. Tries psutil (precise), then wmic ExecutablePath; any failure yields a partial/
+    empty set rather than a false positive."""
+    dirs = set()
+    try:
+        import psutil
+        for proc in psutil.process_iter(["exe"]):
+            try:
+                exe = proc.info.get("exe") or ""
+                if exe and os.path.basename(exe).lower() == "terminal64.exe":
+                    dirs.add(os.path.dirname(os.path.abspath(exe)).lower())
+            except Exception:
+                continue
+        return dirs
+    except Exception:
+        pass
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["wmic", "process", "where", "name='terminal64.exe'", "get", "ExecutablePath", "/format:csv"],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in (out.stdout or "").splitlines():
+            for field in line.split(","):
+                f = field.strip()
+                if f.lower().endswith("terminal64.exe"):
+                    dirs.add(os.path.dirname(os.path.abspath(f)).lower())
+    except Exception:
+        pass
+    return dirs
+
+
+def _terminal_process_running(path) -> bool:
+    """Is a terminal64.exe already running from `path`'s INSTALL DIRECTORY? Used ONLY to guarantee
+    guarded_initialize() never launches MT5. Matches strictly by install directory (never image-name alone),
+    so a foreign terminal on a multi-install host can never green-light launching a down target.
+    FAIL-CLOSED: no path, an unresolvable path, or an unconfirmable process set ⇒ False."""
+    if not path:
+        return False
+    try:
+        target_dir = os.path.dirname(os.path.abspath(path)).lower()
+    except Exception:
+        return False
+    return target_dir in _running_terminal_dirs()
+
+
+def guarded_initialize(mt5, init_kwargs, *, probe=None) -> bool:
+    """Attach to MT5. DARK by default — when MT5_GUARDED_ATTACH is unset this is byte-identical to
+    `mt5.initialize(**init_kwargs)` (behaviour-preserving for the legacy/production bridge). When enabled,
+    enforce the never-launch invariant via evaluate_guarded_attach(): probe the process BEFORE initialize
+    so a down terminal is never launched, require broker-connected + an account identity, else fail closed
+    (releasing any attach we opened). NEVER calls mt5.login(); NEVER relaunches."""
+    if not _guarded_attach_enabled():
+        return bool(mt5.initialize(**init_kwargs))  # legacy passthrough — unchanged
+
+    # Attach-only: the guarded path must NEVER authenticate. mt5.initialize(login=,password=,server=)
+    # performs a broker login (it re-authorises the terminal), so credential keys are FORBIDDEN here —
+    # initialize may only ATTACH by path. (This fails closed at the legacy /mt5/login-and-validate site,
+    # which is a temporary-validation path retired under ADR-0034, not a persistent-workspace attach.)
+    if any(k in init_kwargs for k in ("login", "password", "server")):
+        logger.warning("guarded_attach rejected: guarded_attach_credentials_forbidden")
+        return False
+
+    path = init_kwargs.get("path")
+    probe = probe or _terminal_process_running
+    # Probe FIRST — the attach below is reached only when a terminal is already running, so it can
+    # only ATTACH, never launch. (A sub-millisecond probe→attach TOCTOU window remains: if the terminal
+    # exits in the gap, initialize(path=) could launch it — but that worst case equals the legacy path,
+    # never worse. See ADR-0034 / EXECUTION_READINESS §9 caveats.)
+    running = bool(path) and bool(probe(path))
+    init_ok = False
+    connected = False
+    account = None
+    identity = None
+    if running:
+        try:
+            init_ok = bool(mt5.initialize(**init_kwargs))
+            if init_ok:
+                term = mt5.terminal_info()
+                connected = bool(term.connected) if term is not None else False
+                account = mt5.account_info()
+                if account is not None:
+                    login = getattr(account, "login", None)
+                    identity = {
+                        "login_masked": ("****" + str(login)[-4:]) if login is not None else None,
+                        "server": getattr(account, "server", None),
+                        "trade_mode": getattr(account, "trade_mode", None),
+                    }
+        except Exception:
+            # A raising initialize/terminal_info/account_info IS the degraded state the guard exists for —
+            # fail closed. Any attach opened (init_ok True) is released by the `if not ok` shutdown below.
+            connected = False
+            account = None
+
+    ok, reason = evaluate_guarded_attach(path, running, init_ok, connected, account is not None)
+    if not ok:
+        if init_ok:
+            try:
+                mt5.shutdown()  # release the attach we opened; leave no dangling connection
+            except Exception:
+                pass
+        logger.warning(f"guarded_attach rejected: {reason}")
+        return False
+    logger.info(f"guarded_attach ok: {identity}")  # masked identity read + recorded; never login
+    return True
+
+
 def evaluate_binding(acc, term, expected):
     """Pure broker-truth binding decision — no MT5, no I/O, fully unit/mutation-testable.
 
@@ -713,7 +859,7 @@ def execute_mt5_trade(job: Dict) -> tuple[bool, Dict, str]:
     if MT5_TERMINAL_PATH:
         init_kwargs["path"] = MT5_TERMINAL_PATH
 
-    if not mt5.initialize(**init_kwargs):
+    if not guarded_initialize(mt5, init_kwargs):
         error = mt5.last_error()
         return False, {}, f"MT5 initialization failed: {error}"
 
@@ -1099,7 +1245,7 @@ def fetch_ohlc_rates(symbol: str, timeframe: str, count: int, start_pos: int = 0
     if MT5_TERMINAL_PATH:
         init_kwargs["path"] = MT5_TERMINAL_PATH
 
-    if not mt5.initialize(**init_kwargs):
+    if not guarded_initialize(mt5, init_kwargs):
         error = mt5.last_error()
         return {"ok": False, "error": f"MT5 initialization failed: {error}"}
 
@@ -1189,7 +1335,7 @@ def execute_demo_order(params: Dict[str, Any]) -> Dict[str, Any]:
     if MT5_TERMINAL_PATH:
         init_kwargs["path"] = MT5_TERMINAL_PATH
 
-    if not mt5.initialize(**init_kwargs):
+    if not guarded_initialize(mt5, init_kwargs):
         error = mt5.last_error()
         return {"ok": False, "error": "mt5_init_failed", "detail": str(error)}
 
@@ -1367,7 +1513,7 @@ def shadow_order_check(params: Dict[str, Any]) -> Dict[str, Any]:
     if MT5_TERMINAL_PATH:
         init_kwargs["path"] = MT5_TERMINAL_PATH
 
-    if not mt5.initialize(**init_kwargs):
+    if not guarded_initialize(mt5, init_kwargs):
         return {"ok": False, "shadow": True, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
 
     try:
@@ -1468,7 +1614,7 @@ def fetch_deals_snapshot(username: str) -> Dict[str, Any]:
     if MT5_TERMINAL_PATH:
         init_kwargs["path"] = MT5_TERMINAL_PATH
 
-    if not mt5.initialize(**init_kwargs):
+    if not guarded_initialize(mt5, init_kwargs):
         return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
 
     try:
@@ -1531,7 +1677,7 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
     if MT5_TERMINAL_PATH:
         init_kwargs["path"] = MT5_TERMINAL_PATH
 
-    if not mt5.initialize(**init_kwargs):
+    if not guarded_initialize(mt5, init_kwargs):
         return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
 
     try:
@@ -1585,7 +1731,7 @@ def close_position(ticket: int, identity: Dict[str, Any] = None) -> Dict[str, An
     if MT5_TERMINAL_PATH:
         init_kwargs["path"] = MT5_TERMINAL_PATH
 
-    if not mt5.initialize(**init_kwargs):
+    if not guarded_initialize(mt5, init_kwargs):
         return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
 
     try:
@@ -1712,7 +1858,7 @@ def modify_position(ticket: int, sl: float, tp: float = None, identity: Dict[str
     if MT5_TERMINAL_PATH:
         init_kwargs["path"] = MT5_TERMINAL_PATH
 
-    if not mt5.initialize(**init_kwargs):
+    if not guarded_initialize(mt5, init_kwargs):
         return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
 
     try:
@@ -1873,7 +2019,7 @@ def login_and_validate(params: Dict[str, Any]) -> Dict[str, Any]:
         init_kwargs["path"] = MT5_TERMINAL_PATH
 
     # Initialize and login in one step — handles terminals with no saved session
-    if not mt5.initialize(**init_kwargs):
+    if not guarded_initialize(mt5, init_kwargs):
         err = mt5.last_error()
         # Distinguish init failure from auth failure
         err_code = err[0] if isinstance(err, tuple) else 0
@@ -2163,7 +2309,7 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
         if MT5_TERMINAL_PATH:
             init_kwargs["path"] = MT5_TERMINAL_PATH
 
-        if not mt5.initialize(**init_kwargs):
+        if not guarded_initialize(mt5, init_kwargs):
             return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
 
         try:
