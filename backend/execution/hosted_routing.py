@@ -29,6 +29,8 @@ ER_WORKSPACE_OWNER_MISMATCH = "workspace_owner_mismatch"
 ER_WORKSPACE_ROUTE_AMBIGUOUS = "workspace_route_ambiguous"
 ER_BINDING_MISMATCH = "binding_mismatch"
 ER_NOT_ARMED = "workspace_execution_not_armed"
+ER_ROUTE_MISSING = "workspace_route_missing"        # a hosted job with a NULL/shared node — Decision C
+ER_WORKER_NOT_ENTITLED = "worker_not_entitled"      # a legacy/shared worker tried to claim a hosted job
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,32 @@ def resolve_hosted_route(account) -> RouteDecision:
         return RouteDecision(False, ER_BINDING_MISMATCH)
     return RouteDecision(True, ER_ROUTE_OK, workspace_uuid=str(getattr(ws, "workspace_uuid", "") or ""),
                          expected_login=login, expected_server=server)
+
+
+def authorize_hosted_claim(job, *, worker_is_node_aware: bool) -> RouteDecision:
+    """G4 claim-seam entitlement (Decision C) — the extra gate at the authoritative claim boundary.
+
+    A NON-hosted job passes through unchanged (``ER_ROUTE_OK``) so legacy dispatch is untouched. For a Hosted
+    Workspace (Provider B) job it proves, at claim time and fail-closed, that the job resolves to ONE
+    owner-bound, armed workspace (``resolve_hosted_route``) AND has a durable NON-NULL node route (no shared /
+    NULL route) AND is being claimed by a node-aware, non-legacy/non-shared worker (no shared-worker
+    entitlement). One workspace → one process → one route → one authorised worker.
+
+    DARK/zero-overhead: while the subsystem is dark ``is_hosted_workspace_account`` short-circuits on the flag
+    before touching the account, so legacy claims are byte-for-byte unchanged.
+    """
+    account = getattr(job, "account", None)
+    from execution.hosted_pin import is_hosted_workspace_account
+    if not is_hosted_workspace_account(account):
+        return RouteDecision(True, ER_ROUTE_OK)  # not a hosted job — existing behaviour, untouched
+    route = resolve_hosted_route(account)         # owner-bound + armed + server-derived identity
+    if not route.ok:
+        return route
+    if getattr(job, "terminal_node_id", None) is None:   # Decision C — no shared/NULL route for a hosted job
+        return RouteDecision(False, ER_ROUTE_MISSING)
+    if not worker_is_node_aware:                          # Decision C — no legacy/shared-worker entitlement
+        return RouteDecision(False, ER_WORKER_NOT_ENTITLED)
+    return route
 
 
 def _workspace_owner_id(ws, account) -> Optional[int]:

@@ -110,6 +110,47 @@ class ArmingTests(TestCase):
         self.assertFalse(hosted_execution_armed(_armed_account(provider=TEMPORARY_VALIDATION)))
 
 
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_MT5_EXECUTION_ENABLED="1")
+class ClaimEntitlementTests(TestCase):
+    """G4 claim-seam entitlement (Decision C) — a hosted mutation job may be claimed only via a non-NULL
+    owner-bound route by a node-aware (non-legacy/non-shared) worker."""
+
+    class _Job:
+        def __init__(self, account, terminal_node_id, job_type):
+            self.account = account
+            self.terminal_node_id = terminal_node_id
+            self.job_type = job_type
+
+    def _job(self, account, node_id=7):
+        return self._Job(account, node_id, ExecutionJob.JobType.PLACE_ORDER)
+
+    def test_armed_hosted_job_node_aware_worker_ok(self):
+        acct = _armed_account()
+        self.assertTrue(HR.authorize_hosted_claim(self._job(acct), worker_is_node_aware=True).ok)
+
+    def test_null_route_hosted_job_rejected(self):
+        acct = _armed_account()
+        d = HR.authorize_hosted_claim(self._job(acct, node_id=None), worker_is_node_aware=True)
+        self.assertFalse(d.ok)
+        self.assertEqual(d.reason_code, HR.ER_ROUTE_MISSING)  # no shared/NULL route for a hosted job
+
+    def test_legacy_worker_cannot_claim_hosted_job(self):
+        acct = _armed_account()
+        d = HR.authorize_hosted_claim(self._job(acct), worker_is_node_aware=False)
+        self.assertFalse(d.ok)
+        self.assertEqual(d.reason_code, HR.ER_WORKER_NOT_ENTITLED)  # no shared/legacy-worker entitlement
+
+    def test_unarmed_hosted_job_rejected_at_claim(self):
+        acct = _armed_account(execution_enabled=False)
+        self.assertEqual(HR.authorize_hosted_claim(self._job(acct), worker_is_node_aware=True).reason_code,
+                         HR.ER_NOT_ARMED)
+
+    def test_non_hosted_job_passes_through(self):
+        acct = _armed_account(provider=TEMPORARY_VALIDATION)
+        # Provider A / non-hosted → unchanged behaviour (ER_ROUTE_OK), even from a legacy worker.
+        self.assertTrue(HR.authorize_hosted_claim(self._job(acct), worker_is_node_aware=False).ok)
+
+
 class MutationSurfaceStructuralTests(TestCase):
     """PART 6/19 — a machine-checkable guard so a new MT5 mutation job type cannot be added without also
     being pinned. If someone adds a new order/close/modify JobType, this test forces them to decide whether
