@@ -17,29 +17,26 @@
   the host runner used for certification. **Merge sequencing is a Sponsor decision** (see §5).
 - `MT5_GUARDED_ATTACH=1` in the host environment (M1's DARK gate) so the guarded attach is enforced.
 
-## 1. Wiring (reference)
+## 1. Wiring (reference) — the merged operator command under the isolated cert settings
 
-```python
-from scripts import mt5_signal_bridge as bridge      # M1 (#305)
-from hosted_workspace.agent import WorkspaceSpec, observe_workspace
-from hosted_workspace.agent_host import Mt5WorkspaceHost
-import MetaTrader5 as mt5, time
+Run the merged `certify_workspace_observation` command from the **isolated cert environment**
+(`C:\GuvFX\cert\repo` + `C:\GuvFX\cert\venv`), never the production/agent runtime:
 
-host = Mt5WorkspaceHost(
-    mt5,
-    guarded_initialize=bridge.guarded_initialize,          # M1 — never launch, never login
-    terminal_process_running=bridge._terminal_process_running,
-)
-spec = WorkspaceSpec(
-    workspace_id="disposable-1",
-    expected_login="<DISPOSABLE_DEMO_LOGIN>",              # non-secret
-    expected_server="<DISPOSABLE_DEMO_SERVER>",
-    target_path=r"C:\path\to\disposable\terminal64.exe",
-    freshness_limit_seconds=60.0,
-    tick_symbol="EURUSD",
-)
-obs = observe_workspace(host, spec, clock=time.time, previous_state="CONNECTED")
+```powershell
+$env:DJANGO_SETTINGS_MODULE = "guvfx_backend.cert_settings"   # minimal isolated settings (sqlite, no prod DB)
+$env:DJANGO_SECRET_KEY = "cert-only-disposable"               # disposable; never the production secret
+$env:MT5_GUARDED_ATTACH = "1"                                 # M1 never-launch guard (code-enforced)
+C:\GuvFX\cert\venv\Scripts\python.exe C:\GuvFX\cert\repo\backend\manage.py certify_workspace_observation `
+    --workspace-id disposable-1 `
+    --expected-login <DEMO_LOGIN> --expected-server <DEMO_SERVER> `      # non-secret; NO password
+    --target-path "C:\GuvFX\cert\workspace\...\terminal64.exe" `
+    --disposable-prefix "C:\GuvFX\cert\workspace" `
+    --tick-symbol EURUSD --previous-state CONNECTED
 ```
+
+The cert venv needs only **Django + MetaTrader5** (the command runs under `guvfx_backend.cert_settings`, a
+minimal isolated settings that lists only the apps needed to import the certified chain, uses in-memory
+sqlite, makes no DB query, and skips Django system checks). It prints a SECRET-FREE JSON result.
 
 ## 2. Blast-radius protocol — capture BEFORE / DURING / AFTER for every run
 
