@@ -578,11 +578,19 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
         );
         for (const a of ordered) {
           try {
-            await apiFetch(`/api/hosted-workspace/delivery-state/?account_id=${a.id}`, {});
+            const state = await apiFetch<{ is_owner?: boolean }>(
+              `/api/hosted-workspace/delivery-state/?account_id=${a.id}`,
+              {}
+            );
             if (cancelled) return;
-            setAccount({ id: a.id, label: a.name || a.account_number || `Account ${a.id}` });
-            onActiveChange(true);
-            return;
+            // Activate ONLY for an account the caller actually owns. `is_owner` is false when the state
+            // endpoint answered via its staff read-bypass, so a staff viewer never binds this card to
+            // another customer's workspace (and connect/mint is owner-only regardless).
+            if (state?.is_owner) {
+              setAccount({ id: a.id, label: a.name || a.account_number || `Account ${a.id}` });
+              onActiveChange(true);
+              return;
+            }
           } catch {
             /* not this account — try the next */
           }

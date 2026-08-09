@@ -74,7 +74,13 @@ class HostedWorkspaceDeliveryStateView(APIView):
             return Response({"detail": "No hosted workspace for this account."},
                             status=http.HTTP_404_NOT_FOUND)
 
-        return Response(delivery_state_projection(workspace, staff=is_staff))
+        projection = delivery_state_projection(workspace, staff=is_staff)
+        # Owner signal for the customer UI. TRUE only when the caller actually OWNS this account — never via
+        # the staff read-bypass. The RemoteApp connect card activates only on ``is_owner`` true, so a staff
+        # viewer (who can read ANY account's state here) never binds the card to another customer's workspace.
+        # This is display-only defence-in-depth: the connect/mint endpoint is owner-only regardless.
+        projection["is_owner"] = account.user_id == getattr(request.user, "id", None)
+        return Response(projection)
 
 
 # Reasons that mean "you own this workspace but it is not deliverable yet" — safe to surface the stable code

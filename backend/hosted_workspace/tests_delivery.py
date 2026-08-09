@@ -311,6 +311,18 @@ class DeliveryApiTests(_Base):
         self.assertEqual(r.data["operator"]["delivery_host"], self.node.rdp_host)     # RDP transport
         self.assertEqual(r.data["operator"]["node_identity"], self.node.hostname)     # logical identity
 
+    def test_is_owner_true_for_owner(self):
+        r = self._get(self.owner, f"?account_id={self.account.id}")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.data["is_owner"])           # the customer UI activates only on this
+
+    def test_is_owner_false_for_staff_bypass(self):
+        # Staff can READ another user's state (bypass), but is_owner must be False so the customer
+        # RemoteApp card never binds to a workspace the caller does not actually own.
+        r = self._get(self.staff, f"?account_id={self.account.id}")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.data["is_owner"])
+
     def test_missing_account_id_400(self):
         r = self._get(self.owner)
         self.assertEqual(r.status_code, 400)
