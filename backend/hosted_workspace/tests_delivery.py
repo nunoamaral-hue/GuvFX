@@ -54,7 +54,8 @@ class _Base(TestCase):
         self.other = U.objects.create_user(username="other", email="other@example.com", password="x")
         self.staff = U.objects.create_user(
             username="staff", email="staff@example.com", password="x", is_staff=True)
-        self.node = TerminalNode.objects.create(hostname="mt5-node-1", status=TerminalNode.Status.ACTIVE)
+        self.node = TerminalNode.objects.create(
+            hostname="mt5-node-1", rdp_host="10.9.9.9", status=TerminalNode.Status.ACTIVE)
         self.account = TradingAccount.objects.create(
             user=self.owner, name="wd-acct", broker_name="Broker-Demo",
             account_number="700111", is_demo=True)
@@ -227,7 +228,9 @@ class DeliveryServerDerivationTests(_Base):
         plain = dec.update(ct) + dec.finalize()
         self.assertIn(_WINDOWS_PW.encode(), plain)               # inside the token…
         self.assertIn(b"||terminal64", plain)                    # …with the single-app RemoteApp alias
-        self.assertIn(self.node.hostname.encode(), plain)        # …and the server-derived host
+        # …and the server-derived delivery TRANSPORT is node.rdp_host, NOT the execution identity hostname.
+        self.assertIn(self.node.rdp_host.encode(), plain)
+        self.assertNotIn(self.node.hostname.encode(), plain)     # identity is never used as the RDP host
 
     def test_client_cannot_influence_derivation(self):
         """The seam takes only (user, workspace_id). Even if a caller passes a UUID object vs string, the
@@ -245,14 +248,18 @@ class DeliveryReadModelTests(_Base):
         flat = repr(proj)
         self.assertNotIn(self.prov.windows_username, flat)   # no Windows username
         self.assertNotIn(self.prov.runtime_root, flat)       # no runtime path
-        self.assertNotIn(self.node.hostname, flat)           # host is operator-only, not customer-facing
+        self.assertNotIn(self.node.hostname, flat)           # identity is operator-only, not customer-facing
+        self.assertNotIn(self.node.rdp_host, flat)           # transport host is operator-only too
         self.assertNotIn("operator", proj)
         self.assertIn("delivery_state", proj)
         self.assertIn("remoteapp_ready", proj)
 
     def test_staff_projection_adds_host_but_no_secret(self):
         proj = delivery_state_projection(self.workspace, staff=True)
-        self.assertEqual(proj["operator"]["delivery_host"], self.node.hostname)
+        # Operator sees BOTH: delivery_host is the RDP transport (rdp_host); node_identity is the logical
+        # execution-node name (hostname). They are deliberately distinct and must not be conflated.
+        self.assertEqual(proj["operator"]["delivery_host"], self.node.rdp_host)
+        self.assertEqual(proj["operator"]["node_identity"], self.node.hostname)
         flat = repr(proj)
         self.assertNotIn(self.prov.windows_username, flat)
         self.assertNotIn(self.prov.runtime_root, flat)
@@ -301,7 +308,8 @@ class DeliveryApiTests(_Base):
     def test_staff_read_bypass(self):
         r = self._get(self.staff, f"?account_id={self.account.id}")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.data["operator"]["delivery_host"], self.node.hostname)
+        self.assertEqual(r.data["operator"]["delivery_host"], self.node.rdp_host)     # RDP transport
+        self.assertEqual(r.data["operator"]["node_identity"], self.node.hostname)     # logical identity
 
     def test_missing_account_id_400(self):
         r = self._get(self.owner)

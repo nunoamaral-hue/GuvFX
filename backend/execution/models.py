@@ -43,6 +43,22 @@ class TerminalNode(models.Model):
         blank=True,
         help_text="Human-friendly label shown in admin surfaces.",
     )
+    # DELIVERY TRANSPORT ENDPOINT — the RDP/RemoteApp network address that the delivery
+    # guacd dials to reach THIS node (a hostname or IP). It is DELIBERATELY separate from
+    # ``hostname`` (the logical execution-node IDENTITY): identity must never be overloaded
+    # with a transport address. This field is consumed ONLY by Workspace Delivery to build
+    # the RemoteApp descriptor host; it is NEVER execution-routing identity, NEVER worker
+    # identity, and does NOT participate in ``resolve_hosted_route`` / node agreement. Blank
+    # => delivery fails closed (``DA_NODE_TRANSPORT_UNCONFIGURED``), never a silent fallback.
+    rdp_host = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text=(
+            "RDP/RemoteApp delivery transport endpoint (hostname/IP guacd reaches this node "
+            "on). Separate from `hostname` (logical node identity); delivery-only; blank fails closed."
+        ),
+    )
     status = models.CharField(
         max_length=16,
         choices=Status.choices,

@@ -37,8 +37,11 @@ def delivery_state_projection(workspace: HostedMt5Workspace, *, staff: bool = Fa
     if staff:
         node = workspace.workspace_node
         projection["operator"] = {
-            # Operator-only: the delivery host. Never customer-facing; never a credential.
-            "delivery_host": (node.hostname if node else ""),
+            # Operator-only, never customer-facing, never a credential. ``delivery_host`` is the RDP
+            # TRANSPORT endpoint (``node.rdp_host``) guacd dials; ``node_identity`` is the separate logical
+            # execution-node name (``node.hostname``). The two are deliberately distinct.
+            "delivery_host": (node.rdp_host if node else ""),
+            "node_identity": (node.hostname if node else ""),
             "supervision_state": workspace.supervision_state,
             "correlation_id": workspace.last_delivery_correlation_id or "",
         }

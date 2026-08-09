@@ -53,6 +53,7 @@ class DeliveryReason:
     WORKSPACE_MISSING = "DA_WORKSPACE_MISSING"         # no workspace with that uuid
     NOT_OWNER = "DA_NOT_OWNER"                         # workspace owned by another user (IDOR-safe)
     NODE_UNASSIGNED = "DA_NODE_UNASSIGNED"             # no workspace_node → cannot derive host
+    NODE_TRANSPORT_UNCONFIGURED = "DA_NODE_TRANSPORT_UNCONFIGURED"  # node has no rdp_host → no delivery transport
     IDENTITY_MISSING = "DA_IDENTITY_MISSING"           # no AccountProvisioning / no windows_username
     IDENTITY_ADMIN = "DA_IDENTITY_ADMIN"               # identity is admin — MUST be non-admin (hard fail)
     IDENTITY_NOT_PROVISIONED = "DA_IDENTITY_NOT_PROVISIONED"  # provisioning status not usable
@@ -130,6 +131,12 @@ def authorize_workspace_delivery(user, workspace_id) -> DeliveryAuthorization:
         node = workspace.workspace_node
         if node is None or not node.hostname:
             return _deny(DeliveryReason.NODE_UNASSIGNED, workspace_uuid=wuuid_str, workspace_pk=wpk)
+        # Delivery TRANSPORT endpoint. ``node.hostname`` is the logical execution-node IDENTITY and is
+        # NEVER the RDP address (guacd cannot necessarily reach a logical node name). The RemoteApp
+        # descriptor host is the DEDICATED ``node.rdp_host``. Fail closed on a missing transport rather than
+        # silently substituting the identity (which would send guacd to an unroutable/incorrect host).
+        if not node.rdp_host:
+            return _deny(DeliveryReason.NODE_TRANSPORT_UNCONFIGURED, workspace_uuid=wuuid_str, workspace_pk=wpk)
 
         from terminal_provisioning.models import AccountProvisioning
 
@@ -191,12 +198,12 @@ def _build_signed_descriptor(*, workspace, prov, node, base_url, secret_hex) -> 
         username=f"ws-{windows_username}",
         windows_username=windows_username,
         windows_password=decrypt_password(prov.password_enc),
-        host=node.hostname,
+        host=node.rdp_host,
         remote_app=REMOTEAPP_ALIAS,
         remote_app_dir=remote_app_dir,
         remote_app_args=REMOTEAPP_ARGS,
         conn_id=conn_id,
-    )
+    )  # ``host`` above is node.rdp_host (delivery transport), NEVER node.hostname (execution identity)
     data_b64 = sign_and_encrypt_json(payload, secret_hex=secret_hex)
     embed_url = build_guac_data_url(base_url=base_url, data_b64=data_b64, conn_id=conn_id)
 
