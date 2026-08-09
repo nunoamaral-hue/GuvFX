@@ -129,11 +129,25 @@ def _check_flag_posture() -> Check:
 
 
 def _check_host_certification() -> Check:
-    """The disposable-host RDS/RemoteApp certification is a Sponsor/host gate that no repository check can
-    satisfy. It is always BLOCKED here until an out-of-band certification record says otherwise."""
-    return Check("host.certification", "HOST", "RDS/RemoteApp host certification complete", BLOCKED,
-                 "disposable Windows/RDS host + RemoteApp publication + licensing not certified "
-                 "(see Hosted Workspace Host Certification Record)")
+    """Host (RDS/RemoteApp) certification status — **evidence-driven**, not a hard-coded permanent block
+    (ADR-0035 amendment). Reads the durable ``core.host_cert`` stage: only a recorded ``CERTIFIED`` stage
+    (backed by certification evidence) passes; enabling a feature flag never makes this green. The stage
+    advances NOT_STARTED -> IN_PROGRESS -> BLOCKED_ON_HUMAN -> CERTIFIED as the Customer-Zero / host
+    certification actually proceeds."""
+    from core.host_cert import BLOCKED_ON_HUMAN, CERTIFIED, IN_PROGRESS, host_cert_stage
+    stage = host_cert_stage()
+    title = "RDS/RemoteApp host certification complete"
+    if stage == CERTIFIED:
+        return Check("host.certification", "HOST", title, PASS,
+                     "host certification recorded CERTIFIED (durable config-driven evidence)")
+    if stage == BLOCKED_ON_HUMAN:
+        return Check("host.certification", "HOST", title, BLOCKED,
+                     "host certification BLOCKED_ON_HUMAN — a human-gated step is outstanding")
+    if stage == IN_PROGRESS:
+        return Check("host.certification", "HOST", title, BLOCKED,
+                     "host certification IN_PROGRESS — RDS/RemoteApp/licensing not yet certified")
+    return Check("host.certification", "HOST", title, BLOCKED,
+                 "host certification NOT_STARTED (no Customer-Zero/host certification recorded)")
 
 
 def _check_execution_authority() -> Check:
