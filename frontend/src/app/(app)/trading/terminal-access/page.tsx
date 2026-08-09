@@ -568,6 +568,18 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
   // error / 404 (dark, or no hosted workspace) => stay invisible + inactive.
   useEffect(() => {
     let cancelled = false;
+    let settled = false;
+    // Resolve the hosted question exactly ONCE, and always within a bounded time. This gates the legacy UI
+    // (bindings list, active-session card) via `hostedResolved` upstream, so a hung /accounts or
+    // /delivery-state request can never (a) stall a legacy user's session discovery indefinitely, nor
+    // (b) leave the legacy launch surface interactive forever for a hosted owner.
+    const settle = (active: boolean) => {
+      if (settled || cancelled) return;
+      settled = true;
+      setDetecting(false);
+      onActiveChange(active);
+    };
+    const timer = setTimeout(() => settle(false), 10000); // fail-open to "not hosted" if detection wedges
     (async () => {
       try {
         const accounts = await apiFetch<
@@ -577,6 +589,7 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
           (a, b) => Number(!!b.is_active) - Number(!!a.is_active)
         );
         for (const a of ordered) {
+          if (cancelled || settled) return;
           try {
             const state = await apiFetch<{ is_owner?: boolean }>(
               `/api/hosted-workspace/delivery-state/?account_id=${a.id}`,
@@ -588,22 +601,23 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
             // another customer's workspace (and connect/mint is owner-only regardless).
             if (state?.is_owner) {
               setAccount({ id: a.id, label: a.name || a.account_number || `Account ${a.id}` });
-              onActiveChange(true);
+              settle(true);
               return;
             }
           } catch {
             /* not this account — try the next */
           }
         }
-        if (!cancelled) onActiveChange(false);
+        settle(false);
       } catch {
-        if (!cancelled) onActiveChange(false);
+        settle(false);
       } finally {
-        if (!cancelled) setDetecting(false);
+        clearTimeout(timer);
       }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -869,6 +883,9 @@ export default function TerminalAccessPage() {
 
   // ── Launch session ──
   const handleLaunch = useCallback(async (bindingId: number) => {
+    // Defence-in-depth: a hosted owner must never launch the legacy full-desktop session, even if a stale
+    // bindings button were somehow clicked during the detection window.
+    if (hostedActiveRef.current) return;
     setLaunching(true);
     setLaunchBindingId(bindingId);
     setSessionError(null);
@@ -1184,9 +1201,10 @@ export default function TerminalAccessPage() {
         <StateNotice type="error" message={sessionError} />
       )}
 
-      {/* Legacy active-session card (full-desktop viewer) — NEVER shown to a hosted owner. The hosted
-          customer's MT5 opens only via the RemoteApp card above; the legacy desktop path is operator recovery. */}
-      {activeSession && !hostedActive && (
+      {/* Legacy active-session card (full-desktop viewer) — NEVER shown to a hosted owner, and not shown
+          until the hosted probe resolves (no pre-resolution flash/race). The hosted customer's MT5 opens
+          only via the RemoteApp card above; the legacy desktop path is operator recovery. */}
+      {activeSession && hostedResolved && !hostedActive && (
         <SessionStatusCard
           session={activeSession}
           launchDescriptor={launchDescriptor}
@@ -1200,8 +1218,9 @@ export default function TerminalAccessPage() {
         />
       )}
 
-      {/* ── Terminal bindings list (legacy launch path — hidden from the hosted customer) ── */}
-      {!hostedActive && (
+      {/* ── Terminal bindings list (legacy launch path) — hidden from the hosted customer AND during the
+          hosted probe, so the Launch button is never interactive before hosted-ownership is known. ── */}
+      {hostedResolved && !hostedActive && (
       <div style={{ ...glassCard, marginBottom: "1.5rem" }}>
         <div
           style={{
