@@ -19,6 +19,10 @@ class WorkspaceEvent(models.TextChoices):
     """The ``workspace.*`` event-type taxonomy (ADR-0034 §6). Values are the free-form ``event_type`` strings
     stored on OperationalEvent (a new type never needs a migration)."""
     CREATED = "workspace.created", "Workspace created"
+    # ADR-0034 Onboarding — the customer-journey provisioning events (authoritative-action driven).
+    REQUESTED = "workspace.requested", "Workspace requested"
+    ACCOUNT_DISCOVERED = "workspace.account_discovered", "Broker account discovered"
+    ACCOUNT_CONFIRMED = "workspace.account_confirmed", "Broker account confirmed"
     STARTED = "workspace.started", "Workspace started"
     WAITING_FOR_LOGIN = "workspace.waiting_for_login", "Workspace waiting for login"
     CONNECTED = "workspace.connected", "Workspace connected"
@@ -43,6 +47,10 @@ class WorkspaceEvent(models.TextChoices):
 # M2a state machine (ADR-0034 §3/§6); None = a supervision/edge fact that is not itself a lifecycle state.
 EVENT_META = {
     WorkspaceEvent.CREATED: (OE.Category.RUNTIME, OE.Severity.INFO, S.PROVISIONING),
+    # Onboarding-journey events — supervision/lifecycle facts (canonical None: not themselves a state).
+    WorkspaceEvent.REQUESTED: (OE.Category.RUNTIME, OE.Severity.INFO, S.PROVISIONING),
+    WorkspaceEvent.ACCOUNT_DISCOVERED: (OE.Category.CONNECTIVITY, OE.Severity.INFO, None),
+    WorkspaceEvent.ACCOUNT_CONFIRMED: (OE.Category.RUNTIME, OE.Severity.INFO, None),
     WorkspaceEvent.STARTED: (OE.Category.RUNTIME, OE.Severity.INFO, S.PROVISIONING),
     WorkspaceEvent.WAITING_FOR_LOGIN: (OE.Category.CONNECTIVITY, OE.Severity.INFO, S.WAITING_FOR_LOGIN),
     WorkspaceEvent.CONNECTED: (OE.Category.CONNECTIVITY, OE.Severity.INFO, S.CONNECTED),
@@ -118,3 +126,25 @@ def build_workspace_event(event, workspace_uuid, *, account_id=None, runtime_uui
         "customer_visible": False,  # workspace lifecycle telemetry is operator-facing by default
         "detail": payload,
     }
+
+
+def emit_workspace_event(event, *, workspace_uuid, account=None, correlation_id="", summary="",
+                         detail=None, source="hosted_workspace") -> bool:
+    """Build + record a ``workspace.*`` operational event via the ADR-0032 recorder — the ONE shared
+    build→record bridge (previously copy-pasted in persistence/hosted_execution). DARK / fail-open: a no-op
+    when operational events are off, and any error is swallowed so telemetry can never break the caller.
+    Secret-free (``build_workspace_event`` redacts). Idempotent per ``(workspace, event)`` via the dedup key,
+    so a replayed milestone (re-request / re-confirm) emits at most once."""
+    try:
+        from operational_events.events import record_event
+        account_id = getattr(account, "id", None) or getattr(account, "pk", None)
+        kwargs = build_workspace_event(event, workspace_uuid, account_id=account_id,
+                                       correlation_id=str(correlation_id or ""), summary=summary, detail=detail)
+        kwargs.pop("account_id", None)
+        metadata = kwargs.pop("detail", None)
+        dedup = f"{workspace_uuid}:{str(event)}"[:200]
+        dto = record_event(**kwargs, account=account, metadata=metadata, source=str(source or "hosted_workspace"),
+                           correlation_id=str(correlation_id or ""), dedup_key=dedup)
+        return dto is not None
+    except Exception:  # noqa: BLE001 — telemetry must never break the onboarding action
+        return False

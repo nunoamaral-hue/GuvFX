@@ -14,6 +14,25 @@
 
 ## Execution workstream log
 
+- **2026-08-09 — ADR-0034 Onboarding — integrated onto merged Workspace Delivery + owner-FK REMOVED (DARK). NOT deployed/armed. 🟢**
+  Workspace Delivery **PR #316 merged** to `main` (exact-head CI green after a real crash-telemetry ordering
+  fix in `deploy/beta-agent/agent.py` — `_note_crash` now claims→records→publishes so the `_crashed` flag is
+  never observable before its telemetry is written; integrity `manifest.json` regenerated). Onboarding **#318
+  rebased onto the merged main** and reconciled: (1) **`delivery_readiness` now reads the real
+  `HostedMt5Workspace.delivery_state`** — `CONNECTED`→READY, `AUTHORIZED`/`DISCONNECTED`→PREPARING, OFF→
+  NOT_AVAILABLE, flagged-but-undelivered→EXTERNAL_GATE (RDS host gate); delivery is read-model only and never
+  authorises an order. (2) **Node allocation assigns BOTH authorities** on the customer's single host —
+  `execution_node` (order routing) AND `workspace_node` (RemoteApp delivery, via the delivery writer) — two
+  explicit facts, never crossed. (3) **`owner` FK REMOVED** (simplification review §18): ownership is the
+  single immutable fact `trading_account.user`; entitlement, request-idempotency, the confirm owner-check,
+  and both staff projections now resolve ownership through the account — one source of truth, no bulk-update
+  path that could bypass the old coupling guard, consistent with the delivery authority. Migration `0006`
+  (owner) deleted; `makemigrations --check hosted_workspace` clean (graph `0001–0005`). Password-free product
+  invariant preserved (no password field/param/body anywhere). `hosted_workspace` **325 tests green**;
+  `execution`+`billing` **963 green**; 10-lens adversarial review at the integrated head. Both flags default
+  OFF; no order; no host action. Markers: `WORKSPACE_DELIVERY_REPOSITORY_ACCEPTED`,
+  `ONBOARDING_REPOSITORY_ACCEPTED`.
+
 - **2026-08-09 — ADR-0034 Workspace Delivery / RemoteApp — integrated onto capstone main (DARK). NOT deployed/armed. 🟢**
   PR #316 rebased onto current `main` (after Execution Engine capstone #315/#317). **Migration reconciliation:**
   #316's `hosted_workspace 0003/0004` (delivery) collided with main's `0003` (execution_enabled) + `0004`

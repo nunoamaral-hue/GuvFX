@@ -1,6 +1,20 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ ADR-0034 Workspace Delivery / RemoteApp — integrated onto capstone main, repository-complete (DARK) (2026-08-09)
+## ▶ ADR-0034 Onboarding — integrated onto merged Workspace Delivery, repository-complete (DARK) (2026-08-09)
+**Workspace Delivery #316 is MERGED** to `main`; **Onboarding #318 is rebased + integrated** onto it and
+merged-ready. The integration: `delivery_readiness` reads the real `delivery_state` (delivery is read-model
+only, never order authority); node allocation binds BOTH `execution_node` (routing) and `workspace_node`
+(delivery) on the one host as distinct facts; and the separate `owner` FK was **removed** — ownership is the
+single immutable `trading_account.user` (simpler + consistent with the delivery authority; migration `0006`
+deleted, graph `0001–0005` clean). Password-free invariant preserved. `hosted_workspace` 325 + `execution`/
+`billing` 963 tests green; 10-lens adversarial review at the integrated head. Both flags default OFF; no
+order, no host action. Markers: `WORKSPACE_DELIVERY_REPOSITORY_ACCEPTED`, `ONBOARDING_REPOSITORY_ACCEPTED`.
+**Bounded next action (Sponsor/Chief Architect):** choose the next Hosted Workspace subsystem to build (all
+four state-core/execution/delivery/onboarding boundaries are now repository-complete + DARK), OR authorise
+the host-certification gate (RDS/RemoteApp/licensing) that every remaining hosted path waits on. No
+host/production/arming action without an explicit Sponsor gate.
+
+## ▶ ADR-0034 Workspace Delivery / RemoteApp — MERGED to main (DARK) (2026-08-09)
 PR #316 **rebased onto current `main`** (after the Execution Engine capstone #315/#317) — one coherent
 subsystem. The migration collision (#316's `hosted_workspace 0003/0004` vs main's) is resolved: the delivery
 migration is regenerated as `0005_workspace_delivery_fields` on main's `0004`; `mt5 0009` dependency

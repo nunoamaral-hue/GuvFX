@@ -22,7 +22,8 @@ def _acct(login="700900"):
     node = TerminalNode.objects.create(hostname=f"node-{login}")
     return TradingAccount.objects.create(user=user, name="a", broker_name="B", account_number=login,
                                          is_demo=True, broker_server=srv,
-                                         readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node)
+                                         readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node,
+                                         workspace_confirmed_at=timezone.now())  # ADR-0034 confirm ACK
 
 
 def _ws(acct, **kw):

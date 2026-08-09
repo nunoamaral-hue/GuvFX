@@ -31,7 +31,8 @@ def _armed_account(*, provider=PERSISTENT_WORKSPACE, login="700900", server="IS6
     node = TerminalNode.objects.create(hostname=f"node-{login}{provider}") if with_node else None
     acct = TradingAccount.objects.create(user=user, name="a", broker_name="B", account_number=login,
                                          is_demo=is_demo, broker_server=srv, readiness_provider=provider,
-                                         terminal_node=node)
+                                         terminal_node=node,
+                                         workspace_confirmed_at=timezone.now())  # ADR-0034 confirm ACK
     if with_ws:
         HostedMt5Workspace.objects.create(
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,

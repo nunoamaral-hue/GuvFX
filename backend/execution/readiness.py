@@ -37,6 +37,7 @@ RW_WORKSPACE_MISSING = "workspace_missing"
 RW_WORKSPACE_NOT_READY = "workspace_not_execution_ready"
 RW_WORKSPACE_NOT_CONNECTED = "workspace_not_connected"
 RW_ACTIVE_ACCOUNT_MISMATCH = "active_account_mismatch"
+RW_NOT_CONFIRMED = "workspace_account_not_confirmed"  # ADR-0034 Onboarding — customer human-ACK gate
 RW_OBSERVATION_STALE = "workspace_observation_stale"
 # ── ADR-0034 Execution Engine arming reason codes (Decision D conditions 2 / 4 / 11) ──
 RW_EXECUTION_FEATURE_DISABLED = "workspace_execution_feature_disabled"  # condition 2 (subsystem-level flag)
@@ -144,6 +145,14 @@ class PersistentWorkspaceProvider:
             return ReadinessDecision(False, RW_WORKSPACE_NOT_CONNECTED, self.key)
         if ws.proj_account_match is not True:
             return ReadinessDecision(False, RW_ACTIVE_ACCOUNT_MISMATCH, self.key)
+        # ADR-0034 Onboarding — the customer must EXPLICITLY confirm the discovered broker account is theirs
+        # before it can ever arm (durable human ACK ``TradingAccount.workspace_confirmed_at``). This strictly
+        # NARROWS eligibility — a fresh, connected, matched workspace still cannot become execution-ready on
+        # observation alone; a human must have acknowledged it. Placed AFTER the match check so it is only
+        # reached once there is a real observed account to confirm (both reason codes stay reachable), and
+        # it is not the order-time authority — the live bridge gate remains that.
+        if getattr(account, "workspace_confirmed_at", None) is None:
+            return ReadinessDecision(False, RW_NOT_CONFIRMED, self.key)
         # Connected + matched but not canonically EXECUTION_READY (e.g. trading halted, or any non-ready
         # canonical state): not ready. ``canonical_execution_ready`` == (canonical_state == EXECUTION_READY),
         # which the M3a manager derives only when trade_allowed + fresh + the full conjunction held.

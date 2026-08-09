@@ -55,6 +55,13 @@ class Entitlements:
     # Default empty (a viewer sees no catalogues).
     visible_marketplace_catalogues: frozenset = frozenset()
 
+    # ADR-0034 Onboarding — durable capability: MAY this user use the Hosted Persistent MT5 Workspace
+    # journey. DEFAULT False (fail-closed; absent grant = denied). It is a Visibility/Access gate only —
+    # it NEVER grants order authority (that stays the layered arm + live bridge gate). Granted as DATA
+    # (a plan/tier or the beta cohort), never inferred from accidental state; no existing user is
+    # auto-opted-in. Combined at the admission predicate with the master flag + not-already-holding.
+    can_use_hosted_workspace: bool = False
+
     def to_dict(self) -> dict:
         # Keep this JSON-safe: the catalogue set is a frozenset (not JSON-serialisable) — emit it as a
         # sorted list so a caller can ``json.dumps(ent.to_dict())`` without a TypeError.
@@ -144,6 +151,11 @@ _PLAN_ENTITLEMENTS: dict[str, dict] = {
         "max_active_strategies": 50,
         "historical_data_tier": "standard",
         "is_beta": True,
+        # ADR-0034 Onboarding — the beta cohort is the Hosted Workspace pilot cohort, so it MAY use the
+        # onboarding journey (DATA grant). This is Visibility/Access only: it does NOT grant order authority
+        # (can_deploy_automation stays False above), and the journey itself stops at assignment-eligibility,
+        # which is strictly below arming and below the live order-time bridge gate.
+        "can_use_hosted_workspace": True,
     },
 }
 

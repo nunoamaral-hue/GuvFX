@@ -38,6 +38,15 @@ def hosted_mt5_active_account_polling_enabled() -> bool:
     return _flag("HOSTED_MT5_ACTIVE_ACCOUNT_POLLING_ENABLED")
 
 
+def hosted_workspace_onboarding_enabled() -> bool:
+    """ADR-0034 Onboarding — the SUBSYSTEM-LEVEL gate for the customer-facing Hosted Workspace onboarding /
+    provisioning journey (request → provision-intent → node bind → observe → discover → confirm → ready →
+    strategy-eligible). DEFAULT OFF. ANDed with the master ``HOSTED_PERSISTENT_MT5_ENABLED``: onboarding is
+    reachable only when BOTH are on. Never authorises an order; onboarding stops at assignment-eligibility,
+    which is strictly below arming (``execution_enabled``) and below the live order-time bridge gate."""
+    return _flag("HOSTED_WORKSPACE_ONBOARDING_ENABLED")
+
+
 def hosted_mt5_execution_enabled() -> bool:
     """ADR-0034 Execution Engine (Decision D, condition 2) — the SUBSYSTEM-LEVEL gate that must be on before
     ANY Hosted Workspace (Provider B) account may execute. DEFAULT OFF. This is distinct from — and ANDed
