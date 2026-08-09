@@ -612,7 +612,18 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
       }
       throw lastErr;
     };
-    (async () => {
+    // If an attempt cannot reach a DEFINITIVE answer (a persistent non-404 error/timeout on /accounts or on a
+    // delivery-state probe), we FAIL CLOSED (never resolve to legacy for a possibly-hosted owner) AND auto-
+    // retry the WHOLE detection every 15s. So a legacy user whose backend probe is transiently/partially
+    // degraded recovers automatically once a definitive answer arrives — no manual refresh, no permanent stall.
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleRetry = () => {
+      if (cancelled || settled) return;
+      setSlow(true); // show the neutral "preparing… please refresh if it persists" message meanwhile
+      retryTimer = setTimeout(() => { void attemptDetection(); }, 15000);
+    };
+    const attemptDetection = async () => {
+      if (cancelled || settled) return;
       try {
         let accounts: Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>;
         try {
@@ -620,7 +631,7 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
             apiFetch<Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>>(
               "/api/trading/accounts/", {}));
         } catch {
-          setSlow(true); // persistent failure -> fail closed (refresh prompt); never expose legacy
+          scheduleRetry(); // persistent failure -> fail closed + auto-retry; never expose legacy
           return;
         }
         if (cancelled || settled) return;
@@ -629,7 +640,7 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
         );
         // Resolve to "not hosted" ONLY if EVERY account gave a DEFINITIVE answer (200 not-owner, or a 404 =
         // dark / no workspace / not-owner). A persistent AMBIGUOUS probe (non-404 error/timeout that survived
-        // retries) means an account MIGHT be an owned workspace we could not confirm -> fail closed.
+        // retries) means an account MIGHT be an owned workspace we could not confirm -> fail closed + retry.
         let ambiguous = false;
         for (const a of ordered) {
           if (cancelled || settled) return;
@@ -651,17 +662,19 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
           }
         }
         if (cancelled || settled) return;
-        if (ambiguous) { setSlow(true); return; } // could not confirm every account after retries -> fail closed
+        if (ambiguous) { scheduleRetry(); return; } // could not confirm every account -> fail closed + auto-retry
         settle(false); // DEFINITIVE: accounts fetched, all accounts confirmed not-owned => not a hosted owner
       } catch {
-        setSlow(true); // unexpected -> fail closed (refresh prompt), never expose legacy
+        scheduleRetry(); // unexpected -> fail closed + auto-retry, never expose legacy
       } finally {
         clearTimeout(timer);
       }
-    })();
+    };
+    void attemptDetection();
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      clearTimeout(retryTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
