@@ -285,3 +285,23 @@ class HostedClaimEndpointPositiveControlTests(TestCase):
         self.assertEqual(rr.status_code, 403, rr.content)          # durable-keyed gate still enforced
         job.refresh_from_db()
         self.assertEqual(job.status, "RUNNING")
+
+    def test_complete_fails_closed_when_node_deleted_to_null(self):
+        # A SET_NULL node deletion mid-flight NULLs the RUNNING job's terminal_node while its durable
+        # hosted_workspace_uuid survives. The gate keys off the uuid (still fires), and a NULL node returns
+        # None from the node lookup → 403 (fail-closed, matching the claim seam) — so provenance is NOT forged
+        # for an un-routable job. Even the previously-entitled worker is refused.
+        node, job = self._armed_hosted_job("node-del", "701000")
+        WorkerIdentity.objects.create(
+            worker_id="ownerd", worker_secret_hash=WorkerIdentity.hash_secret("sod"),
+            status=WorkerIdentity.Status.ACTIVE, worker_permissions={"authorized_nodes": ["node-del"]})
+        client = APIClient()
+        rc = client.get(NEXT + "?worker_id=ownerd&job_types=CLOSE_TRADE",
+                        HTTP_X_WORKER_ID="ownerd", HTTP_X_WORKER_SECRET="sod")
+        self.assertEqual(rc.status_code, 200, rc.content)          # claimed while node ACTIVE → RUNNING
+        ExecutionJob.objects.filter(pk=job.pk).update(terminal_node=None)   # SET_NULL node deletion
+        rr = self._complete(client, job.id, "ownerd", "sod", status="SUCCESS", result={})
+        self.assertEqual(rr.status_code, 403, rr.content)          # un-routable NULL node → fail-closed
+        job.refresh_from_db()
+        self.assertEqual(job.status, "RUNNING")
+        self.assertFalse(HostedWorkspaceExecution.objects.filter(job=job, phase="FINISHED").exists())

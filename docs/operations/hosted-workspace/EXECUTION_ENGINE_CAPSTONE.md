@@ -254,3 +254,34 @@ Its round-3-fix adversarial review returned **0 surviving findings at any severi
 77/77; full `execution`+`hosted_workspace` 1132; `make check` green (backend 3327). The one item the audit
 noted as pre-existing and out of scope — STARTED-stranding for CLOSE/OPEN/PLACE_TEST orphan verbs that have no
 recovery path — is tracked, not a round-3 regression.
+
+### 7c. Round-4 + convergence
+
+A **round-4** convergence audit surfaced 2 residual divergences of prior fixes (both fixed, DARK, no order):
+
+- **Close-path identity re-verify pin (MEDIUM, test-only)** — `close_position` is the only looping
+  `order_send` path; its per-attempt `verify_mutation_identity` is correctly inside the `for _attempt` loop,
+  but had no loop-membership assertion (the opening paths got one in round 3). A structural test now pins the
+  re-verify inside the loop, so a "call it once" hoist above the loop fails the test. Production unchanged.
+- **Completion-gate predicate parity (LOW)** — the completion entitlement gate dropped the residual
+  `terminal_node_id is not None` term so its predicate now EXACTLY matches the FINISHED-provenance write
+  (`pin_subsystem_enabled()` ∧ `hosted_workspace_uuid`); a node deleted mid-flight (SET_NULL) now fails the
+  completion CLOSED (403) instead of skipping the gate. + tests (NULL-node refused; legacy-completer refused;
+  account-reclassification immunity).
+
+The combined **round-4-fix review + round-5 convergence sweep** returned **CLEAN (0 fix-defects) and CONVERGED
+(0 new in-boundary gaps)**. Verification: focused 36/36; full `execution`+`hosted_workspace` 1134; `make
+check` green (backend 3329).
+
+**CONVERGENCE:** after four audit rounds (find → refute → synthesize) and five adversarial reviews, the loop
+reached zero surviving in-boundary gaps. The Execution Engine subsystem is **repository-complete inside its
+boundary**; the only remaining step is the manual human-gated disposable-demo order (§4).
+
+**Pre-arming hardening notes (non-blocking; disclosed for honesty, do BEFORE arming):**
+1. `views.complete` honors the platform's standing staff/superuser broad-scope bypass on the hosted
+   completion node-entitlement gate (the same posture by which staff see all accounts). Read-model only, no
+   order authority. If desired before arming, require the worker-token entitlement on that path and stop
+   honoring the staff bypass there.
+2. STARTED-stranding for CLOSE_TRADE/OPEN_TRADE/PLACE_TEST_ORDER hosted orphans — these verbs have no
+   orphan-recovery path at all (a pre-existing, non-hosted execution-reliability gap); their hosted occupancy
+   would close only via a future recovery path for those verbs.

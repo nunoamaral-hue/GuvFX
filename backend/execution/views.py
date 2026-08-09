@@ -468,12 +468,12 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         if _wi is not None:
             from execution.hosted_pin import pin_subsystem_enabled
             # Key hosted-job detection off the DURABLE job stamp (``hosted_workspace_uuid``, set at creation
-            # and never mutated) — the SAME marker the FINISHED-provenance writer (``_hosted_context``) keys
-            # on — NOT the MUTABLE ``account.readiness_provider``. Otherwise a mid-flight account
-            # reclassification would skip this entitlement gate while provenance still records, letting an
-            # unentitled worker forge a FINISHED row. One mutation-immune definition for gate + write.
-            if (pin_subsystem_enabled() and job.terminal_node_id is not None
-                    and bool(job.hosted_workspace_uuid)):
+            # and never mutated) — the EXACT SAME predicate the FINISHED-provenance writer (``_hosted_context``)
+            # keys on — NOT the MUTABLE ``account.readiness_provider`` and NOT ``terminal_node_id`` (a SET_NULL
+            # FK: a node deleted mid-flight would otherwise NULL it and skip this gate while provenance still
+            # records). One mutation-immune definition for gate + write. A NULL node then fails CLOSED below
+            # (the node lookup returns None → 403), matching the claim seam's NULL-node fail-closed.
+            if pin_subsystem_enabled() and bool(job.hosted_workspace_uuid):
                 from execution.auth import LEGACY_WORKER_ID
                 from execution.hosted_routing import ER_WORKER_NOT_ENTITLED
                 from execution.models import TerminalNode
