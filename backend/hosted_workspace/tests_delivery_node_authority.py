@@ -44,9 +44,9 @@ class NodeAuthoritySeparationTests(TestCase):
     def setUp(self):
         self.owner = U.objects.create_user(username="o", email="o@x.invalid", password="x")
         self.delivery_node = TerminalNode.objects.create(
-            hostname="delivery-host-A", status=TerminalNode.Status.ACTIVE)
+            hostname="delivery-host-A", rdp_host="10.8.8.8", status=TerminalNode.Status.ACTIVE)
         self.execution_node = TerminalNode.objects.create(
-            hostname="execution-host-B", status=TerminalNode.Status.ACTIVE)
+            hostname="execution-host-B", rdp_host="10.7.7.7", status=TerminalNode.Status.ACTIVE)
         self.account = TradingAccount.objects.create(
             user=self.owner, name="a", broker_name="B", account_number="700111", is_demo=True,
             readiness_provider=PERSISTENT_WORKSPACE)
@@ -87,8 +87,11 @@ class NodeAuthoritySeparationTests(TestCase):
         with _delivery_env(), mock.patch.object(gj, "build_remoteapp_rdp_payload", _spy):
             auth = authorize_workspace_delivery(self.owner, self._wid())
         self.assertTrue(auth.authorized, auth.reason)
-        self.assertEqual(seen["host"], "delivery-host-A")        # workspace_node host …
-        self.assertNotEqual(seen["host"], "execution-host-B")    # … NOT the execution host
+        # The transport host is the workspace_node's rdp_host — NOT the execution_node's, and NEVER either
+        # node's logical hostname/identity.
+        self.assertEqual(seen["host"], self.delivery_node.rdp_host)        # 10.8.8.8 (workspace_node) …
+        self.assertNotEqual(seen["host"], self.execution_node.rdp_host)    # … NOT 10.7.7.7 (execution_node)
+        self.assertNotIn(seen["host"], ("delivery-host-A", "execution-host-B"))  # never a hostname/identity
 
     def test_delivery_works_when_execution_node_unset(self):
         # Delivery does not REQUIRE an execution binding — a workspace with a delivery host but NO execution

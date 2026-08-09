@@ -20,6 +20,7 @@ class TerminalNodeAdmin(admin.ModelAdmin):
     list_display = (
         "hostname",
         "display_name",
+        "rdp_host",          # delivery TRANSPORT endpoint (separate from hostname/identity)
         "status",
         "max_accounts",
         "active_accounts",
@@ -27,7 +28,7 @@ class TerminalNodeAdmin(admin.ModelAdmin):
         "created_at",
     )
     list_filter = ("status",)
-    search_fields = ("hostname", "display_name")
+    search_fields = ("hostname", "display_name", "rdp_host")
     readonly_fields = ("created_at", "updated_at")
 
 
