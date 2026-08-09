@@ -23,17 +23,21 @@ U = get_user_model()
 
 
 def _armed_account(*, provider=PERSISTENT_WORKSPACE, login="700900", server="IS6-Demo", is_demo=True,
-                   with_ws=True, execution_enabled=True):
+                   with_ws=True, execution_enabled=True, with_node=True, bind_node=True):
+    from execution.models import TerminalNode
     user = U.objects.create_user(username=f"u{login}{provider}{is_demo}", email=f"{login}{provider}@x.invalid",
                                  password="x")
     srv, _ = BrokerServer.objects.get_or_create(server_name=server)
+    node = TerminalNode.objects.create(hostname=f"node-{login}{provider}") if with_node else None
     acct = TradingAccount.objects.create(user=user, name="a", broker_name="B", account_number=login,
-                                         is_demo=is_demo, broker_server=srv, readiness_provider=provider)
+                                         is_demo=is_demo, broker_server=srv, readiness_provider=provider,
+                                         terminal_node=node)
     if with_ws:
         HostedMt5Workspace.objects.create(
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,
             proj_trade_allowed=True, proj_account_match=True, proj_execution_ready=True,
-            last_decision_at=timezone.now(), execution_enabled=execution_enabled)
+            last_decision_at=timezone.now(), execution_enabled=execution_enabled,
+            execution_node=(node if bind_node else None))
     return acct
 
 
@@ -121,8 +125,13 @@ class ClaimEntitlementTests(TestCase):
             self.terminal_node_id = terminal_node_id
             self.job_type = job_type
 
-    def _job(self, account, node_id=7):
-        return self._Job(account, node_id, ExecutionJob.JobType.PLACE_ORDER)
+    _SENTINEL = object()
+
+    def _job(self, account, node_id=_SENTINEL):
+        # Default: the job's node matches the account's authorised node (the capstone requires job node ==
+        # account node == bound node). Pass an explicit node_id (incl. None) to exercise the reject paths.
+        tnid = account.terminal_node_id if node_id is self._SENTINEL else node_id
+        return self._Job(account, tnid, ExecutionJob.JobType.PLACE_ORDER)
 
     def test_armed_hosted_job_node_aware_worker_ok(self):
         acct = _armed_account()

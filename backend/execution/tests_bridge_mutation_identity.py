@@ -225,3 +225,22 @@ class MutationEnforcementSourceTests(SimpleTestCase):
 
     def test_modify_position_guarded(self):
         self._assert_guarded("modify_position")
+
+    def test_close_reverify_is_inside_the_retry_loop(self):
+        # close_position is the ONLY looping order_send path (up to CLOSE_MAX_ATTEMPTS): the identity
+        # re-verify MUST sit INSIDE the `for _attempt` loop so it re-checks the live account before EVERY
+        # send. A "call it once" hoist out of the loop would still pass ``_assert_guarded`` (rfind finds the
+        # hoisted call before the FIRST send) yet re-verify identity only against the ORIGINAL account — so on
+        # a mid-retry account drift attempt 2 would close the WRONG/real account. This pins loop-membership so
+        # that hoist mutant fails (the crown-jewel analogue of the opening paths' pre-send count>=2 pin).
+        m = re.search(r"\ndef close_position\(", self.src)
+        rest = self.src[m.end():]
+        body = rest[: re.search(r"\ndef ", rest).start()]
+        loop = body.find("for _attempt")
+        self.assertGreater(loop, -1, "close_position: no `for _attempt` retry loop")
+        send = body.find("mt5.order_send(request)")
+        verify = body.rfind("verify_mutation_identity(", 0, send)
+        self.assertGreater(
+            verify, loop,
+            "close_position: verify_mutation_identity must be INSIDE the for-_attempt loop (re-checked before "
+            "every send) — a hoist above the loop re-verifies only the original account")

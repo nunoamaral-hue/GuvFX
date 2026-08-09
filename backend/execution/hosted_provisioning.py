@@ -31,6 +31,8 @@ ARM_OK = "armed"
 DISARM_OK = "disarmed"
 ARM_NO_WORKSPACE = R.RW_WORKSPACE_MISSING
 ARM_ROUTE_MISSING = "workspace_route_missing"
+ARM_NODE_UNBOUND = "workspace_execution_node_unbound"      # capstone: no durable workspace->node binding
+ARM_NODE_MISMATCH = "workspace_execution_node_mismatch"    # capstone: binding disagrees with account node
 
 
 def _hosted_flags_on() -> bool:
@@ -60,6 +62,12 @@ def _arm_preconditions(account) -> ArmResult:
         return ArmResult(False, "workspace_owner_mismatch")
     if getattr(account, "terminal_node_id", None) is None:      # non-NULL route (Decision C)
         return ArmResult(False, ARM_ROUTE_MISSING)
+    # Capstone (PART 2): the durable workspace->node binding must exist AND agree with the account's node —
+    # so the workspace, the account, and the (future) job all resolve to exactly ONE authorised node.
+    if getattr(ws, "execution_node_id", None) is None:
+        return ArmResult(False, ARM_NODE_UNBOUND)
+    if ws.execution_node_id != account.terminal_node_id:
+        return ArmResult(False, ARM_NODE_MISMATCH)
     if ws.proj_connected is not True:
         return ArmResult(False, R.RW_WORKSPACE_NOT_CONNECTED)
     if ws.proj_account_match is not True:
@@ -118,6 +126,54 @@ def disarm_hosted_workspace_execution(account, *, actor: str = "", request=None)
         ws.save(update_fields=["execution_enabled", "updated_at"])
     _audit(request, "HOSTED_EXECUTION_DISARMED", account, actor)
     return ArmResult(True, DISARM_OK)
+
+
+def assign_workspace_execution_node(account_or_ws, node, *, actor: str = "", request=None):
+    """PART 2/3 provisioning contract — durably bind a Hosted Workspace to its ONE authorised execution
+    TerminalNode. Server-side only; VERSIONED (``execution_binding_generation`` increments by one on each
+    (re)assignment). It NEVER arms execution. Reversible while DARK: reassign to a different node here, or
+    ``clear_workspace_execution_node`` to unbind; arming still additionally requires the binding to AGREE with
+    ``account.terminal_node`` (``_arm_preconditions``). Fail-closed on a falsy node. Audited. No credential."""
+    from django.db import transaction
+
+    from hosted_workspace.models import HostedMt5Workspace
+    ws = (account_or_ws if isinstance(account_or_ws, HostedMt5Workspace)
+          else getattr(account_or_ws, "hosted_workspace", None))
+    if ws is None or getattr(ws, "pk", None) is None or node is None or getattr(node, "pk", None) is None:
+        return None
+    # Row-lock the workspace and compute the version from the LOCKED value, so two concurrent (re)assignments
+    # serialise and the generation stays strictly monotonic (+1 each) — no Python-level lost update.
+    with transaction.atomic():
+        locked = HostedMt5Workspace.objects.select_for_update().get(pk=ws.pk)
+        if locked.execution_node_id == node.pk:
+            return locked  # idempotent — no redundant generation bump
+        locked.execution_node = node
+        locked.execution_binding_generation = int(locked.execution_binding_generation or 0) + 1
+        locked.save(update_fields=["execution_node", "execution_binding_generation", "updated_at"])
+    _audit(request, "HOSTED_EXECUTION_NODE_ASSIGNED", locked.trading_account, actor)
+    return locked
+
+
+def clear_workspace_execution_node(account_or_ws, *, actor: str = "", request=None):
+    """Reverse the binding while DARK — unbind the workspace from its execution node (``execution_node`` →
+    NULL, generation still increments so the change is versioned/auditable). After this the workspace is NOT
+    execution-routable (fail-closed). Idempotent; audited."""
+    from django.db import transaction
+
+    from hosted_workspace.models import HostedMt5Workspace
+    ws = (account_or_ws if isinstance(account_or_ws, HostedMt5Workspace)
+          else getattr(account_or_ws, "hosted_workspace", None))
+    if ws is None or getattr(ws, "pk", None) is None:
+        return ws
+    with transaction.atomic():
+        locked = HostedMt5Workspace.objects.select_for_update().get(pk=ws.pk)
+        if locked.execution_node_id is None:
+            return locked  # already unbound — no redundant generation bump
+        locked.execution_node = None
+        locked.execution_binding_generation = int(locked.execution_binding_generation or 0) + 1
+        locked.save(update_fields=["execution_node", "execution_binding_generation", "updated_at"])
+    _audit(request, "HOSTED_EXECUTION_NODE_CLEARED", locked.trading_account, actor)
+    return locked
 
 
 def _audit(request, event_type, account, actor) -> None:

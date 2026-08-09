@@ -22,13 +22,32 @@ from hosted_workspace.telemetry import (
     build_workspace_event,
 )
 
-# ADR-0034 §6 minimum event family (18).
+# ADR-0034 §6 minimum event family (19).
 _EXPECTED_EVENTS = {
     "CREATED", "STARTED", "WAITING_FOR_LOGIN", "CONNECTED", "DISCONNECTED", "ATTACH_SUCCEEDED",
     "ATTACH_FAILED", "ACCOUNT_CHANGED", "EXECUTION_READY", "EXECUTION_PAUSED", "EXECUTION_STARTED",
-    "EXECUTION_FINISHED", "RECOVERING", "RECOVERED", "REMOTEAPP_CONNECTED", "REMOTEAPP_DISCONNECTED",
-    "CRASHED", "RESTARTED",
+    "EXECUTION_FINISHED", "EXECUTION_AMBIGUOUS", "RECOVERING", "RECOVERED", "REMOTEAPP_CONNECTED",
+    "REMOTEAPP_DISCONNECTED", "CRASHED", "RESTARTED",
 }
+
+
+def _emitted_execution_event_values():
+    """DERIVE — from the SOURCE of the order-driven emit seams, not a hand-written mirror — the set of
+    ``workspace.execution_*`` event values they actually emit. Matches both string literals (event_value="…")
+    and ``WorkspaceEvent.EXECUTION_*`` enum references, so a NEW emit added in either form forces a taxonomy
+    update or fails the coverage test below. This is what makes the completeness check non-vacuous (RULE 11):
+    a value that drifts out of the enum is detected here, not silently dropped in production."""
+    import inspect
+    import re
+
+    from execution import hosted_execution, hosted_reconcile
+    values = set()
+    for mod in (hosted_execution, hosted_reconcile):
+        src = inspect.getsource(mod)
+        values.update(re.findall(r"workspace\.execution_[a-z_]+", src))          # string-literal emits
+        for name in re.findall(r"WorkspaceEvent\.(EXECUTION_[A-Z_]+)", src):     # enum-reference emits
+            values.add(str(getattr(WorkspaceEvent, name)))                        # raises if member absent
+    return values
 
 
 class TaxonomyTests(SimpleTestCase):
@@ -38,6 +57,21 @@ class TaxonomyTests(SimpleTestCase):
     def test_values_are_namespaced(self):
         for e in WorkspaceEvent:
             self.assertTrue(str(e).startswith("workspace."), e)
+
+    def test_taxonomy_covers_the_real_execution_emit_surface(self):
+        # Non-vacuous (RULE 11): the emitted values are DERIVED from the emit seams' source, so a future emit
+        # that drifts out of the enum fails HERE, not silently in production. Each must resolve to a
+        # WorkspaceEvent member AND route through build_workspace_event to a real (non-unknown) category.
+        emitted = _emitted_execution_event_values()
+        # sanity: the derivation actually found the known emits (guards against a broken/empty regex)
+        self.assertTrue({"workspace.execution_started", "workspace.execution_finished",
+                         "workspace.execution_ambiguous"} <= emitted, emitted)
+        values = {str(e) for e in WorkspaceEvent}
+        for value in emitted:
+            self.assertIn(value, values, f"emitted {value} is not in the WorkspaceEvent taxonomy")
+            kwargs = build_workspace_event(WorkspaceEvent(value), "ws-1")
+            self.assertEqual(kwargs["event_type"], value)
+            self.assertNotEqual(kwargs["event_type"], "workspace.unknown_event")  # not the fail-closed default
 
     def test_every_event_has_valid_meta(self):
         categories = set(OE.Category.values)

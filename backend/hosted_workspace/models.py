@@ -117,6 +117,19 @@ class HostedMt5Workspace(models.Model):
     # order-time gates) — never sufficient on its own, and NEVER the order authority.
     execution_enabled = models.BooleanField(default=False)
 
+    # --- ADR-0034 Execution Engine capstone (PART 2/3): durable workspace->node execution binding ---------
+    # The ONE authorised execution TerminalNode this workspace resolves to (Decision C). NULL ⇒ NOT
+    # execution-routable (fail-closed). Server-assigned only, via the provisioning contract
+    # (hosted_provisioning.assign_workspace_execution_node); never client-supplied, never set by a migration.
+    # ``execution_binding_generation`` versions the binding (increments by one on each (re)assignment) so a
+    # reassignment is explicit + auditable while DARK. SET_NULL so retiring a node never cascades a workspace.
+    # It must AGREE with the account's terminal_node (resolve_hosted_route enforces workspace==account==job
+    # node); it is routing/authority CONTEXT only — never the order-time gate (the live bridge remains sole).
+    execution_node = models.ForeignKey(
+        "execution.TerminalNode", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="bound_hosted_workspaces")
+    execution_binding_generation = models.PositiveIntegerField(default=0)
+
     _IMMUTABLE_BINDING = ("workspace_uuid", "trading_account_id")
 
     class Meta:

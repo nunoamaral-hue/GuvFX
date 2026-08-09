@@ -20,6 +20,63 @@
 
 ---
 
+# HANDOFF (2026-08-08) — ADR-0034 Execution Engine subsystem
+
+- **Merged.** PR #315 (Execution Engine incl. G12 provenance/telemetry/reconcile) → `main` `cc84117` (CI
+  green). The order-safety spine + provenance/observability are on main, DARK.
+- **Open — capstone.** PR **#317** (`feat/adr0034-execution-capstone`, commit range on branch head) adds the
+  durable workspace→node binding + provisioning contract + routing/claim enforcement + operator command +
+  contract/arming/failure-matrix/cert docs. execution+hosted_workspace tests green; `make check` green;
+  6-lens adversarial review 0 HIGH/0 MEDIUM (1 LOW fixed).
+- **Open — capstone completeness remediation (P1-P5, DARK).** A final in-boundary completeness audit found
+  the demo order was NOT actually reachable: **P1 (HIGH)** — the certified bridge only ever sent
+  `X-Worker-Token` → shared `legacy-worker` (no `authorized_nodes`), so a hosted node-bound job was
+  unclaimable. Fixed by giving the SAME bridge a HOSTED-mode modern-auth path (`X-Worker-Id`/`X-Worker-Secret`
+  from `GUVFX_WORKER_ID`/`GUVFX_WORKER_SECRET`; fail-closed at startup if missing; legacy mode unchanged).
+  **P2** RULE-11 positive control at the claim endpoint; **P3** structural single-path sweep (replaces a hand
+  list whose "no MetaTrader5 import" claim was false); **P4** provision grant-block test; **P5** 8 arm
+  reason-code + disarm assertions. A fresh 5-lens adversarial review returned **0 surviving HIGH/0 MEDIUM**
+  (one HIGH candidate calibrated to LOW); the 5 LOW survivors were then **closed as hardening**: (a) the
+  shared `legacy-worker` identity can never be node-aware — `provision_hosted_execution` refuses to grant it a
+  node AND `views.next_job` forces it non-node-aware at the claim path; (b) cross-node regression test
+  (node-A worker refused a node-B job); (c) import-surface positive control in the single-path sweep;
+  (d) the compound arm branch split into two single-disjunct tests. **Amber decision (flagged):** the
+  `next_job` guard touches the shared claim hot path — it is additive and behaviour-preserving (a no-op for
+  the legacy row's normal empty-perms state; only restricts a mis-provisioned shared row). Focused 56/56, full
+  `execution` 908/908, `make check` green. DARK/flags-OFF; no migration; no order placed. Pushed to #317.
+- **Open — capstone round-2/3 completeness (7 items, DARK).** A full-boundary audit (7 lenses) confirmed the
+  production code is behaviorally complete and closed 7 remaining items: completion endpoint provenance
+  positive control; a hosted completion-side node-**membership** entitlement gate in `views.complete` (Amber:
+  shared complete path, DARK-gated additive); `workspace.execution_ambiguous` added to the taxonomy + a
+  code-derived emit-surface test; idempotency docstring corrected; fail-safe raise-injection tests; readiness
+  split-disjunct + freshness future/None mutation tests. Two adversarial reviews returned 0 surviving
+  HIGH/MEDIUM; two self-introduced LOW defects (completion gate node-liveness bug; hand-written emit literal)
+  were corrected. Focused 90/90, full `execution`+`hosted_workspace` 1128, `make check` green (backend 3323).
+  A round-3 convergence audit is the final gate. DARK/flags-OFF; no migration; no order placed.
+- **CONVERGED — Execution Engine subsystem repository-complete (PR #317, head `cfb3121`).** Subsystem-led
+  loop-until-dry: 4 completeness-audit rounds + 5 adversarial reviews → **0 surviving in-boundary gaps**
+  (R3 closed orphan-recovery FINISHED provenance + durable-uuid completion gate + pre-send re-verify test
+  pin; R4 closed the close-path identity loop-membership pin + completion-gate NULL-node fail-closed; R5 dry).
+  Every fix-review caught + fixed self-introduced residuals. `make check` green (backend 3329); DARK/flags-OFF;
+  no migration; **no order placed**. Marker `EXECUTION_ENGINE_REPOSITORY_COMPLETE — HOST_CERT_PENDING` — only
+  the manual human-gated disposable-demo order remains (Nuno; Claude never trades). Two non-blocking pre-arming
+  notes in `EXECUTION_ENGINE_CAPSTONE.md` §7c. **Next repo-buildable subsystem = customer-facing Onboarding /
+  provisioning journey** (none exists; only the DARK operator `provision_hosted_execution` command).
+  Workspace Delivery (#316) stays PARKED on the Sponsor host RDS/SPLA decision.
+- **Verified fact vs assumption.** VERIFIED: repository-complete for the full subsystem boundary (binding,
+  routing, claim, worker contract, persistence, idempotency, retries, reconciliation, concurrency, telemetry,
+  API contract, cert harness, tests, mutation, review, docs); all flags OFF; no migration arms; legacy
+  Provider-A unchanged. ASSUMED/UNPROVEN: the empirical end-to-end demo trade (blocked on the human action).
+- **Exact stop / next action.** The ONLY remaining step is the **disposable-demo order**, which is a manual
+  human action — **Nuno places+closes it** (Claude never trades, even demo). Runbook:
+  `docs/operations/hosted-workspace/EXECUTION_ENGINE_CAPSTONE.md` §4. Marker:
+  `EXECUTION_ENGINE_REPOSITORY_COMPLETE — HOST_CERT_PENDING`.
+- **Parked, do not touch.** PR #316 (Workspace Delivery / RemoteApp) — separate subsystem; host RDS/SPLA is a
+  Sponsor decision; it rebases its `HostedMt5Workspace` migration onto the new main later.
+- **PM gate.** New live-order/credential/promotion authorizations remain Nuno's explicit gate.
+
+---
+
 # HANDOFF (2025-12-16)
 
 > Outgoing coder updates this at the end of **every** session.
