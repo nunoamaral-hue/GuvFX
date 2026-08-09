@@ -97,9 +97,16 @@ The per-user runtime must be readable/traversable only by `guvfx_u_<id>` (and SY
       conn id + stable `guvfx_u_<id>` identity); `record_remoteapp_disconnected` retained the session.
 - [ ] Drive/clipboard/printer redirection all denied (descriptor asserts this; verify on the wire).
 - [ ] A second user's descriptor for this workspace is refused (`DA_NOT_OWNER`) — owner binding holds live.
+- [ ] **Wrong-workspace attempt:** the owner requesting a foreign / random UUID is refused
+      (`DA_NOT_OWNER` / `DA_WORKSPACE_MISSING`) with NO descriptor minted — delivery is keyed on the
+      unguessable `workspace_uuid`, never an enumerable id.
+- [ ] **Concurrent opens:** two simultaneous browser opens for the same workspace converge on the SAME
+      persistent Windows session (stable conn id) — no parallel independent environment is created.
 - [ ] AppLocker denies any non-MT5 app inside the session.
 - [ ] NTFS-ACL: `guvfx_u_<id>` can read its own runtime; a different `guvfx_u_*` cannot (read-back proof).
 - [ ] No credential in any log, telemetry row, API response, or the returned descriptor.
+- [ ] **Production blast-radius baseline:** prod bridge PIDs / ports (`:8788`/`:8791`) / `GuvFXBetaAgent`
+      captured BEFORE and proven UNCHANGED AFTER; only the disposable host + disposable workspace are touched.
 
 ## 8. Rollback
 
