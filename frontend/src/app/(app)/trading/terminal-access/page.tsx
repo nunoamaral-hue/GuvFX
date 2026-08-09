@@ -744,10 +744,20 @@ export default function TerminalAccessPage() {
   // ── Notice state ──
   const [notice, setNotice] = useState<{ type: "info" | "warning" | "error"; message: string } | null>(null);
 
-  // ── ADR-0034 Hosted MT5 Workspace active? (portable RemoteApp is the customer path) ──
-  // When a hosted workspace is detected, the customer's MT5 opens via the RemoteApp card above; the legacy
-  // full-desktop launch is retained ONLY as a separate operator-recovery control (hidden from the customer).
+  // ── ADR-0034 Hosted MT5 Workspace active? (portable RemoteApp is the SOLE customer path) ──
+  // When an owned hosted workspace is detected, the customer's MT5 opens via the RemoteApp card above and the
+  // ENTIRE legacy customer experience (active-session iframe, auto-reconnect, terminal list, desktop launch)
+  // is suppressed — the legacy full-desktop path is retained ONLY as separate operator recovery, never shown
+  // to the hosted customer. ``hostedResolved`` gates the legacy bootstrap so the legacy session is never even
+  // discovered/reconnected for a hosted owner (fixes the full-desktop exposure defect).
   const [hostedActive, setHostedActive] = useState(false);
+  const [hostedResolved, setHostedResolved] = useState(false);
+  const hostedActiveRef = useRef(false);
+  const onHostedResolved = useCallback((active: boolean) => {
+    hostedActiveRef.current = active;
+    setHostedActive(active);
+    setHostedResolved(true);
+  }, []);
 
   // ── Polling interval for session status ──
   const [pollInterval, setPollInterval] = useState<ReturnType<typeof setInterval> | null>(null);
@@ -991,12 +1001,26 @@ export default function TerminalAccessPage() {
     activeSessionRef.current = activeSession;
   }, [activeSession]);
 
-  // ── Bootstrap on page load (TASK 3) ──
+  // ── Bootstrap prep on page load (harmless for hosted + legacy alike) ──
   useEffect(() => {
+    fetchBindings();
+    fetchCredStatus();
+    fetchTradingHealth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Legacy active-session discovery + auto-reconnect (LEGACY customers ONLY) ──
+  // Deferred until the hosted-workspace probe resolves. For a hosted owner this NEVER runs — the legacy
+  // Administrator/full-desktop session is not discovered, set, or reconnected; the RemoteApp card is the only
+  // customer experience. This is the fix for the full-desktop exposure defect (§10 of the corrective packet).
+  useEffect(() => {
+    if (!hostedResolved) return;      // wait until we know whether this is a hosted owner
+    if (hostedActive) {               // hosted owner -> suppress the entire legacy customer experience
+      setViewerState("Disconnected");
+      return;
+    }
     let cancelled = false;
     (async () => {
-      fetchBindings();
-      fetchCredStatus();
       const [th, session] = await Promise.all([fetchTradingHealth(), fetchActiveSession()]);
       if (cancelled) return;
       if (!session) {
@@ -1013,9 +1037,6 @@ export default function TerminalAccessPage() {
         setViewerState("Disconnected");
         return;
       }
-      // After a reload/navigation the live tunnel is almost always gone, even
-      // though the backend session is still active. Reconnect once if trading
-      // is healthy; otherwise present the Reconnect viewer button.
       setViewerState("Disconnected");
       if (tradingBucket(th) === "Healthy" && autoReconnectedRef.current !== session.id) {
         autoReconnectedRef.current = session.id;
@@ -1026,12 +1047,14 @@ export default function TerminalAccessPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [hostedResolved, hostedActive]);
 
   // ── Tab visibility change (TASK 4) ──
   useEffect(() => {
     const onVisibility = async () => {
       if (typeof document === "undefined") return;
+      // Hosted owner: the legacy viewer is never used, so never reconnect it on tab return.
+      if (hostedActiveRef.current) return;
       if (document.hidden) {
         wasHiddenRef.current = true;
         // Tunnel drops while hidden — reflect that the viewer is no longer live.
@@ -1090,7 +1113,7 @@ export default function TerminalAccessPage() {
       <StateNotice type="info" message="This session is restricted to MT5 interaction only." />
 
       {/* ── ADR-0034 Hosted MT5 Workspace — portable RemoteApp (customer path; invisible unless owned) ── */}
-      <HostedMt5RemoteApp onActiveChange={setHostedActive} />
+      <HostedMt5RemoteApp onActiveChange={onHostedResolved} />
 
       {/* ── MT5 Runtime Status card ── */}
       {!credLoading && credStatus && (
@@ -1161,7 +1184,9 @@ export default function TerminalAccessPage() {
         <StateNotice type="error" message={sessionError} />
       )}
 
-      {activeSession && (
+      {/* Legacy active-session card (full-desktop viewer) — NEVER shown to a hosted owner. The hosted
+          customer's MT5 opens only via the RemoteApp card above; the legacy desktop path is operator recovery. */}
+      {activeSession && !hostedActive && (
         <SessionStatusCard
           session={activeSession}
           launchDescriptor={launchDescriptor}
@@ -1175,7 +1200,8 @@ export default function TerminalAccessPage() {
         />
       )}
 
-      {/* ── Terminal bindings list ── */}
+      {/* ── Terminal bindings list (legacy launch path — hidden from the hosted customer) ── */}
+      {!hostedActive && (
       <div style={{ ...glassCard, marginBottom: "1.5rem" }}>
         <div
           style={{
@@ -1303,6 +1329,7 @@ export default function TerminalAccessPage() {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
