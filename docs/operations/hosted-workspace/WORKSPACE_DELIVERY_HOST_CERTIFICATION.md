@@ -96,6 +96,11 @@ The per-user runtime must be readable/traversable only by `guvfx_u_<id>` (and SY
 - [ ] Disconnect → reconnect lands on the **same persistent Windows session** (stable `mt5-workspace-<uuid>`
       conn id + stable `guvfx_u_<id>` identity); `record_remoteapp_disconnected` retained the session.
 - [ ] Drive/clipboard/printer redirection all denied (descriptor asserts this; verify on the wire).
+- [ ] **Audio:** confirm audio output is actually disabled on the wire. The RemoteApp payload sets
+      `disable-audio="true"` + `enable-audio-input="false"` (the keys guacd honours); prove the disable takes
+      effect on the *deployed* guacd, don't assume from the descriptor (RULE 11). NOTE: the shared base still
+      carries the legacy no-op `enable-audio="false"` inherited by the certified full-desktop payload —
+      correcting that (and re-certifying the dedicated path) is separate technical debt.
 - [ ] A second user's descriptor for this workspace is refused (`DA_NOT_OWNER`) — owner binding holds live.
 - [ ] **Wrong-workspace attempt:** the owner requesting a foreign / random UUID is refused
       (`DA_NOT_OWNER` / `DA_WORKSPACE_MISSING`) with NO descriptor minted — delivery is keyed on the

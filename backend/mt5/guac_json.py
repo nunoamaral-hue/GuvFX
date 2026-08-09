@@ -184,6 +184,14 @@ def build_remoteapp_rdp_payload(
         windows_username=windows_username, windows_password=windows_password)
     parameters["remote-app"] = normalize_remote_app(remote_app)
     parameters["enable-printing"] = "false"
+    # Effective audio lockdown for the RemoteApp session. The shared base carries ``enable-audio="false"``,
+    # but guacd's RDP handler has no such key — audio OUTPUT is controlled by ``disable-audio`` (and the
+    # microphone by ``enable-audio-input``, default off). Set the keys guacd actually honours so the "no
+    # audio" posture is real, not a silent no-op. Added on the RemoteApp payload ONLY — the shared base and
+    # the certified ``build_dedicated_rdp_payload`` output stay byte-for-byte unchanged. Host cert must still
+    # confirm the disable takes effect on the deployed guacd (RULE 11).
+    parameters["disable-audio"] = "true"          # server -> client audio output OFF (the effective key)
+    parameters["enable-audio-input"] = "false"    # microphone OFF (explicit; guacd default is already off)
     if remote_app_dir:
         parameters["remote-app-dir"] = remote_app_dir
     if remote_app_args:

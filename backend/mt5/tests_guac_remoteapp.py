@@ -43,9 +43,18 @@ class RemoteAppPayloadTests(SimpleTestCase):
         self.assertEqual(p["enable-drive"], "false")
         self.assertEqual(p["disable-copy"], "true")
         self.assertEqual(p["disable-paste"], "true")
-        self.assertEqual(p["enable-audio"], "false")
+        self.assertEqual(p["enable-audio"], "false")   # inherited legacy key (guacd ignores it — see below)
         # Printing is additionally disabled for the RemoteApp variant.
         self.assertEqual(p["enable-printing"], "false")
+
+    def test_remoteapp_audio_lockdown_uses_effective_guacd_keys(self):
+        # `enable-audio` is NOT a real guacd RDP key (it silently no-ops). The RemoteApp payload must carry
+        # the keys guacd actually honours so the "no audio" posture is real: disable-audio=true (output OFF)
+        # and enable-audio-input=false (mic OFF). Added on the RemoteApp payload only; host cert confirms the
+        # disable takes effect on the deployed guacd (RULE 11).
+        p = _remoteapp_params()
+        self.assertEqual(p["disable-audio"], "true")
+        self.assertEqual(p["enable-audio-input"], "false")
 
     def test_password_only_in_password_field_not_elsewhere(self):
         p = _remoteapp_params(windows_password="TOPSECRET")
