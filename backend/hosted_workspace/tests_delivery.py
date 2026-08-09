@@ -318,3 +318,113 @@ class DeliveryApiTests(_Base):
     def test_out_of_range_id_404(self):
         r = self._get(self.owner, f"?account_id={1 << 64}")
         self.assertEqual(r.status_code, 404)
+
+
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True, HOSTED_MT5_REMOTEAPP_ENABLED=True)
+class DeliveryConnectApiTests(_Base):
+    """POST /api/hosted-workspace/delivery-connect/ — owner-scoped RemoteApp descriptor mint.
+
+    Security bar: DARK-invisible; owner mints; non-owner AND staff both 404 (NO staff mint bypass — the
+    difference from the read endpoint); owned-but-not-deliverable is a 409 with a stable non-secret reason;
+    the Windows password never appears in the response; and minting records the attempt but touches NO
+    execution state (delivery-only)."""
+
+    def setUp(self):
+        super().setUp()
+        from rest_framework.test import APIRequestFactory
+        self.factory = APIRequestFactory()
+        # authorize_workspace_delivery reads GUAC_* from the environment (never settings) — set them so the
+        # mint can complete inside these override_settings-flagged tests.
+        p = mock.patch.dict(os.environ, {
+            "GUAC_BASE_URL": "https://guac.example.test/guacamole",
+            "GUAC_JSON_SECRET_KEY_HEX": _SECRET_HEX}, clear=False)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _post(self, user=None, body=None, omit_account=False):
+        from rest_framework.test import force_authenticate
+
+        from hosted_workspace.delivery_views import HostedWorkspaceDeliveryConnectView
+        payload = {} if omit_account else {"account_id": self.account.id}
+        if body is not None:
+            payload = body
+        req = self.factory.post("/api/hosted-workspace/delivery-connect/", payload, format="json")
+        if user is not None:
+            force_authenticate(req, user=user)
+        return HostedWorkspaceDeliveryConnectView.as_view()(req)
+
+    @override_settings(HOSTED_PERSISTENT_MT5_ENABLED=False, HOSTED_MT5_REMOTEAPP_ENABLED=False)
+    def test_dark_404_when_flags_off(self):
+        self.assertEqual(self._post(self.owner).status_code, 404)
+
+    @override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True, HOSTED_MT5_REMOTEAPP_ENABLED=False)
+    def test_delivery_flag_off_still_dark(self):
+        self.assertEqual(self._post(self.owner).status_code, 404)
+
+    def test_owner_mints_safe_descriptor(self):
+        r = self._post(self.owner)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(set(r.data), {"transport_type", "embed_url", "session_token", "expiry"})
+        self.assertEqual(r.data["transport_type"], "rdp_remoteapp")
+        self.assertEqual(r.data["session_token"], "")
+        self.assertTrue(r.data["embed_url"].startswith("https://guac.example.test/guacamole"))
+
+    def test_non_owner_404_idor(self):
+        self.assertEqual(self._post(self.other).status_code, 404)
+
+    def test_staff_gets_NO_mint_bypass(self):
+        # Staff have a READ bypass on the state endpoint, but must NOT be able to MINT another user's session.
+        self.assertEqual(self._post(self.staff).status_code, 404)
+
+    def test_missing_account_id_400(self):
+        self.assertEqual(self._post(self.owner, omit_account=True).status_code, 400)
+
+    def test_no_hosted_workspace_404(self):
+        self.workspace.delete()
+        self.assertEqual(self._post(self.owner).status_code, 404)
+
+    def test_owned_but_not_deliverable_returns_409_with_reason(self):
+        # Owner, but the node has no transport endpoint -> fail closed with the stable, non-secret reason.
+        self.node.rdp_host = ""
+        self.node.save(update_fields=["rdp_host"])
+        r = self._post(self.owner)
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.data["reason"], DeliveryReason.NODE_TRANSPORT_UNCONFIGURED)
+
+    def test_no_plaintext_password_in_response(self):
+        r = self._post(self.owner)
+        self.assertEqual(r.status_code, 200)
+        blob = repr(r.data)
+        self.assertNotIn(_WINDOWS_PW, blob)
+        self.assertNotIn(_WINDOWS_PW, r.data["embed_url"])
+
+    def test_mint_records_attempt_authorized(self):
+        self._post(self.owner)
+        self.workspace.refresh_from_db()
+        self.assertEqual(self.workspace.delivery_state, HostedMt5Workspace.DeliveryState.AUTHORIZED)
+
+    def test_mint_touches_no_execution(self):
+        # Delivery-only: minting a connection must never create/route an execution job.
+        from execution.models import ExecutionJob
+        before = ExecutionJob.objects.count()
+        r = self._post(self.owner)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(ExecutionJob.objects.count(), before)  # no execution side effect
+
+    def test_client_cannot_override_host_or_program(self):
+        # Even if the client sends host/username/program/args, they are ignored — the server derives them.
+        r = self._post(self.owner, body={
+            "account_id": self.account.id, "host": "1.2.3.4", "windows_username": "attacker",
+            "remote_app": "cmd", "remote_app_args": "/c calc"})
+        self.assertEqual(r.status_code, 200)
+        import base64
+        from urllib.parse import unquote
+        from mt5.guac_json import _key_bytes_from_hex
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        ct = base64.b64decode(unquote(r.data["embed_url"].split("?data=", 1)[1]))
+        dec = Cipher(algorithms.AES(_key_bytes_from_hex(_SECRET_HEX)), modes.CBC(b"\x00" * 16)).decryptor()
+        plain = dec.update(ct) + dec.finalize()
+        self.assertIn(self.node.rdp_host.encode(), plain)   # server host, not the client's 1.2.3.4
+        self.assertNotIn(b"1.2.3.4", plain)
+        self.assertIn(b"||terminal64", plain)               # server program, not the client's cmd
+        self.assertNotIn(b"attacker", plain)
