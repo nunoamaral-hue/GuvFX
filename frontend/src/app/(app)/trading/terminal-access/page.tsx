@@ -587,7 +587,13 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
     // Bounded fetch: reject after `ms` so a hung request (apiFetch has no timeout) cannot wedge detection.
     const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
       Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
-    const is404 = (e: unknown) => e instanceof Error && e.message.includes("404");
+    // apiFetch puts the numeric HTTP status on err.status / err.httpStatus (the message is the DRF detail
+    // string, e.g. "Not found." — it does NOT contain "404"). A delivery-state 404 (dark / no workspace /
+    // not-owner) is a DEFINITIVE not-owned answer; classify on the status code, never the message string.
+    const is404 = (e: unknown) => {
+      const s = e as { status?: number; httpStatus?: number } | null;
+      return s?.status === 404 || s?.httpStatus === 404;
+    };
     (async () => {
       try {
         // Accounts fetch with a few bounded retries so a TRANSIENT error/hang does not strand a legacy user
