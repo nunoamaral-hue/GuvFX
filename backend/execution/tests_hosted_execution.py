@@ -281,3 +281,53 @@ class FailSafeTests(TestCase):
         with mock.patch.object(job, "save", side_effect=RuntimeError("save boom")):
             key = HE.stamp_hosted_idempotency_key(job)         # computes key, save fails, no propagation
         self.assertTrue(key.startswith("HWX-"))
+
+
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True)
+class OrphanRecoveryProvenanceTests(TestCase):
+    """ADR-0034: the crash-after-send orphan-recovery paths (bulk `.update()`, bypassing `/complete`) must
+    still close the hosted STARTED->FINISHED occupancy — otherwise a recovered hosted job is stranded STARTED
+    forever in the append-only log. Both the MODIFY reclaim and the PLACE_ORDER reconcile paths are covered."""
+
+    def _orphan(self, job):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        ExecutionJob.objects.filter(pk=job.pk).update(
+            status=ExecutionJob.Status.RUNNING, lease_expires_at=timezone.now() - timedelta(seconds=10))
+
+    def test_modify_orphan_recovery_records_finished(self):
+        from django.utils import timezone
+
+        from execution.execution_health import reclaim_orphaned_modify_jobs
+        acct, _ = _account()
+        job = ExecutionJob.objects.create(
+            account=acct, job_type=ExecutionJob.JobType.MODIFY_POSITION,
+            payload={"expected_login": "700900", "expected_server": "IS6-Demo"})
+        self.assertTrue(job.hosted_workspace_uuid)              # stamped (MODIFY in IDENTITY_PIN_JOB_TYPES)
+        HE.record_hosted_dispatch(job)                          # STARTED occupancy
+        self._orphan(job)
+        self.assertEqual(reclaim_orphaned_modify_jobs(timezone.now()), 1)
+        row = HostedWorkspaceExecution.objects.get(job=job, phase="FINISHED")
+        self.assertEqual(row.outcome, "FAILED")   # outcome derived from the recovered terminal status
+
+    def test_place_order_orphan_recovery_records_finished(self):
+        from django.utils import timezone
+
+        from trading.models import Trade
+
+        from execution.execution_health import reconcile_orphaned_place_orders
+        acct, _ = _account()
+        job = ExecutionJob.objects.create(
+            account=acct, job_type=ExecutionJob.JobType.PLACE_ORDER,
+            payload={"plan_id": 7, "leg_index": 0, "expected_login": "700900"})
+        self.assertTrue(job.hosted_workspace_uuid)
+        HE.record_hosted_dispatch(job)                          # STARTED occupancy
+        self._orphan(job)
+        Trade.objects.create(account=acct, ticket=999001, comment="WAY7L0", volume=0.01,
+                             open_price=1.0, open_time=timezone.now())
+        reconcile_orphaned_place_orders(timezone.now())         # order landed → SUCCESS + FINISHED
+        job.refresh_from_db()
+        self.assertEqual(job.status, ExecutionJob.Status.SUCCESS)
+        row = HostedWorkspaceExecution.objects.get(job=job, phase="FINISHED")
+        self.assertEqual(row.outcome, "SUCCESS")   # outcome derived from the recovered terminal status

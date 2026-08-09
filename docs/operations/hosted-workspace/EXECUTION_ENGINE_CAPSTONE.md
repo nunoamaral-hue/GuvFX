@@ -233,3 +233,24 @@ Two adversarial reviews of the fixes (round-2 fixes + the completion gate) retur
 MEDIUM**; both self-introduced LOW defects (the completion gate's node-liveness bug + a hand-written
 emit-surface literal) were then corrected. Verification: focused 90/90; full `execution`+`hosted_workspace`
 1128; `make check` green (backend 3323).
+
+A **round-3** convergence audit then closed 4 further items (2 MEDIUM, 2 LOW), all DARK, no order:
+
+- **Orphan-recovery provenance (MEDIUM)** — the crash-after-send recovery paths
+  (`reconcile_orphaned_place_orders`, `reclaim_orphaned_modify_jobs`) now append the terminal FINISHED
+  `HostedWorkspaceExecution` row (flag-first, fail-safe, idempotent), so a recovered hosted job is no longer
+  stranded STARTED forever in the append-only occupancy log.
+- **Pre-send re-verify test (MEDIUM)** — the opening-path structural test now pins **both** binding
+  verifications (`count >= 2`) so deleting the pre-send TOCTOU re-read fails the test (it previously fell back
+  to the pre-flight call via `rfind`). Production code was already correct — this closes a test-authority gap
+  on the crown-jewel "live re-read before `order_send`" invariant.
+- **Durable-key completion gate (LOW)** — the completion entitlement gate keys hosted-detection off the
+  durable `job.hosted_workspace_uuid` (the same marker the provenance writer uses), not the mutable
+  `account.readiness_provider`, so a mid-flight reclassification cannot skip the gate while provenance records.
+- **Legacy-completer coverage (LOW)** — a completion-side regression test proves the shared `legacy-worker`
+  identity can never complete a hosted job even if mis-granted a node.
+
+Its round-3-fix adversarial review returned **0 surviving findings at any severity**. Verification: focused
+77/77; full `execution`+`hosted_workspace` 1132; `make check` green (backend 3327). The one item the audit
+noted as pre-existing and out of scope — STARTED-stranding for CLOSE/OPEN/PLACE_TEST orphan verbs that have no
+recovery path — is tracked, not a round-3 regression.

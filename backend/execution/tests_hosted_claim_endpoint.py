@@ -242,3 +242,46 @@ class HostedClaimEndpointPositiveControlTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, "SUCCESS")
         self.assertEqual(HostedWorkspaceExecution.objects.filter(job=job, phase="FINISHED").count(), 1)
+
+    def test_complete_refuses_shared_legacy_identity_even_if_granted(self):
+        # Completion-side mirror of the claim guard: even a mis-provisioned `legacy-worker` row carrying
+        # authorized_nodes is forced non-node-aware, so the shared identity can never complete a hosted job.
+        from execution.auth import LEGACY_WORKER_ID
+        node, job = self._armed_hosted_job("node-lg", "700888")
+        WorkerIdentity.objects.create(
+            worker_id=LEGACY_WORKER_ID, worker_secret_hash=WorkerIdentity.hash_secret("sl"),
+            status=WorkerIdentity.Status.ACTIVE, worker_permissions={"authorized_nodes": ["node-lg"]})
+        WorkerIdentity.objects.create(
+            worker_id="owner2", worker_secret_hash=WorkerIdentity.hash_secret("so2"),
+            status=WorkerIdentity.Status.ACTIVE, worker_permissions={"authorized_nodes": ["node-lg"]})
+        client = APIClient()
+        rc = client.get(NEXT + "?worker_id=owner2&job_types=CLOSE_TRADE",
+                        HTTP_X_WORKER_ID="owner2", HTTP_X_WORKER_SECRET="so2")
+        self.assertEqual(rc.status_code, 200, rc.content)          # entitled worker claims → RUNNING
+        rr = self._complete(client, job.id, LEGACY_WORKER_ID, "sl", status="SUCCESS", result={})
+        self.assertEqual(rr.status_code, 403, rr.content)          # legacy identity forced non-node-aware
+        job.refresh_from_db()
+        self.assertEqual(job.status, "RUNNING")
+
+    def test_complete_gate_survives_account_reclassification(self):
+        # The gate keys off the DURABLE job stamp (hosted_workspace_uuid), so reclassifying the account's
+        # readiness_provider mid-flight does NOT skip the entitlement check — an unentitled worker is still
+        # refused (the provenance write it guards keys off the same durable stamp).
+        node, job = self._armed_hosted_job("node-rc", "700999")
+        WorkerIdentity.objects.create(
+            worker_id="owner3", worker_secret_hash=WorkerIdentity.hash_secret("so3"),
+            status=WorkerIdentity.Status.ACTIVE, worker_permissions={"authorized_nodes": ["node-rc"]})
+        WorkerIdentity.objects.create(
+            worker_id="intr2", worker_secret_hash=WorkerIdentity.hash_secret("si2"),
+            status=WorkerIdentity.Status.ACTIVE, worker_permissions={})   # unentitled
+        client = APIClient()
+        rc = client.get(NEXT + "?worker_id=owner3&job_types=CLOSE_TRADE",
+                        HTTP_X_WORKER_ID="owner3", HTTP_X_WORKER_SECRET="so3")
+        self.assertEqual(rc.status_code, 200, rc.content)
+        acct = job.account
+        acct.readiness_provider = ""                               # reclassify OFF persistent_workspace
+        acct.save(update_fields=["readiness_provider"])
+        rr = self._complete(client, job.id, "intr2", "si2", status="SUCCESS", result={})
+        self.assertEqual(rr.status_code, 403, rr.content)          # durable-keyed gate still enforced
+        job.refresh_from_db()
+        self.assertEqual(job.status, "RUNNING")

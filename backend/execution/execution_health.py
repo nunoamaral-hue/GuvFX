@@ -123,8 +123,23 @@ def reclaim_orphaned_modify_jobs(now) -> int:
         error_message="orphaned: lease expired, worker gone",
     )
     if n:
+        _record_hosted_recovery_completion(ids)  # ADR-0034: close STARTED->FINISHED for hosted orphans
         logger.info("execution_health: reclaimed %s orphaned MODIFY jobs %s", n, ids[:20])
     return n
+
+
+def _record_hosted_recovery_completion(ids) -> None:
+    """ADR-0034 Execution Engine: a crash-after-send hosted job resolved by THIS recovery path (bulk
+    ``.update()``, bypassing ``/complete``) would otherwise be stranded STARTED forever in the append-only
+    ``HostedWorkspaceExecution`` occupancy log. Close it: append the terminal FINISHED provenance row for each
+    hosted (``hosted_workspace_uuid``-stamped) job among ``ids``. Flag-first (zero query while the subsystem
+    is dark), fail-safe + idempotent per (job, phase), and order-authority-free."""
+    from execution.hosted_pin import pin_subsystem_enabled
+    if not pin_subsystem_enabled():
+        return
+    from execution.hosted_execution import record_hosted_completion
+    for job in ExecutionJob.objects.filter(id__in=ids).exclude(hosted_workspace_uuid=""):
+        record_hosted_completion(job, correlation_id=str((job.payload or {}).get("correlation_id", "")))
 
 
 def _leg_comment(plan_id, leg_index):
@@ -169,6 +184,12 @@ def reconcile_orphaned_place_orders(now) -> dict:
                 result={"ok": True, "reconciled": True, "ticket": trade.ticket})
             if n:
                 reconciled += 1
+                # ADR-0034: close the hosted STARTED->FINISHED occupancy for this crash-recovered hosted job
+                # (fail-safe, flag-first no-op while dark / for non-hosted; idempotent per (job, phase) even
+                # if /complete also ran). Reflect the recovered terminal status for the outcome.
+                job.status = ExecutionJob.Status.SUCCESS
+                from execution.hosted_execution import record_hosted_completion
+                record_hosted_completion(job, correlation_id=str((job.payload or {}).get("correlation_id", "")))
                 # The order was fine all along → auto-resolve any earlier "possible missing order" alert.
                 AlertEvent.objects.filter(dedup_key=dedup_key, status=AlertEvent.Status.OPEN).update(
                     status=AlertEvent.Status.RESOLVED, resolved_at=now)

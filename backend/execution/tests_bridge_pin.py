@@ -128,10 +128,20 @@ class TOCTOUCloseSourceTests(SimpleTestCase):
         body = self._body(func_name)
         send = body.find("mt5.order_send(request)")
         self.assertGreater(send, -1, f"{func_name}: no order_send(request)")
+        # PIN the DOUBLE verify: an opening path must verify the binding at function ENTRY (pre-flight) AND
+        # RE-READ it immediately before order_send (the TOCTOU close). ``rfind`` below would silently fall
+        # back to the pre-flight call if the pre-send re-read were deleted — this count assertion kills that
+        # mutant (deleting the pre-send re-verify drops the count from 2 to 1 and fails here). This is the
+        # crown-jewel invariant: the live re-read is what makes evaluate_binding the SOLE order-time gate.
+        self.assertGreaterEqual(
+            body.count("verify_execution_binding("), 2,
+            f"{func_name}: missing the pre-send binding RE-VERIFY (need pre-flight + pre-send re-read)")
         pre = body.rfind("verify_execution_binding(", 0, send)
         self.assertGreater(pre, -1, f"{func_name}: no verify_execution_binding before order_send")
         between = body[pre:send]
-        # The re-verify RESULT must be enforced (a rejection returned) before the send.
+        # The re-verify RESULT must be enforced: a NEGATIVE guard (`if not …`) returning a rejection before
+        # the send (polarity — proves the send is skipped when the re-read fails, not merely called).
+        self.assertIn("if not ", between, f"{func_name}: pre-send verify result not guarded (polarity)")
         self.assertIn("binding_rejected", between, f"{func_name}: pre-send verify result not enforced")
         # No account-changing MT5 call may sit between the re-verify and the send.
         self.assertNotIn("mt5.login(", between)

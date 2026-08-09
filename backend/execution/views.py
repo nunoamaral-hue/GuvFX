@@ -466,9 +466,14 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         # bridge gate remains the sole order authority; this places/refuses no order.
         _wi = getattr(request, "_worker_identity", None)
         if _wi is not None:
-            from execution.hosted_pin import is_hosted_workspace_account, pin_subsystem_enabled
+            from execution.hosted_pin import pin_subsystem_enabled
+            # Key hosted-job detection off the DURABLE job stamp (``hosted_workspace_uuid``, set at creation
+            # and never mutated) — the SAME marker the FINISHED-provenance writer (``_hosted_context``) keys
+            # on — NOT the MUTABLE ``account.readiness_provider``. Otherwise a mid-flight account
+            # reclassification would skip this entitlement gate while provenance still records, letting an
+            # unentitled worker forge a FINISHED row. One mutation-immune definition for gate + write.
             if (pin_subsystem_enabled() and job.terminal_node_id is not None
-                    and is_hosted_workspace_account(job.account)):
+                    and bool(job.hosted_workspace_uuid)):
                 from execution.auth import LEGACY_WORKER_ID
                 from execution.hosted_routing import ER_WORKER_NOT_ENTITLED
                 from execution.models import TerminalNode
