@@ -1,5 +1,16 @@
 # Hosted Workspace Execution Engine — Host Certification Runbook (PREPARED, NOT RUN)
 
+> **SUPERSEDED (2026-08-09) — use `EXECUTION_ENGINE_CAPSTONE.md` §4 as the authoritative runbook.** This
+> document is the *pre-capstone* Provider-B version. Its "Hard gates before this runbook may run" are now
+> **stale**: Decision C (isolation topology) is resolved = **shared bridge in HOSTED mode + a node-aware
+> `WorkerIdentity`**, and the G2 observation runner + G5 provisioning seam are **merged DARK** (PR #315/#317).
+> The current disposable-demo procedure — DARK setup via `manage.py provision_hosted_execution`, the bridge's
+> own `GUVFX_WORKER_ID`/`GUVFX_WORKER_SECRET`, and Nuno's human-gated PLACE+CLOSE — lives in
+> `EXECUTION_ENGINE_CAPSTONE.md` §4 (setup 4a · before 4b · order 4c · verify 4d · rollback §5 · blast radius
+> §6). The safety rules below (Claude never trades even demo; credential-free; only the disposable env is
+> touched; production PIDs/ports/service untouched) remain in force verbatim. Retained here as the historical
+> pre-capstone artefact (RULE 5).
+
 - Status: **PREPARED — NOT AUTHORISED TO RUN.** Repository engineering for the DARK Provider-B Execution
   Engine is complete (ADR-0034 G1/G2/G3/G4/G5/G6/G9/G10 + Decisions C/D). This runbook is written for a
   *future* certification and must not be executed until a disposable DEMO workspace + Nuno's manual broker
