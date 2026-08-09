@@ -258,6 +258,49 @@ class CrashDetectionTests(SimpleTestCase):
         srv.stop()
         self.assertFalse(srv.crashed)
 
+    def test_crashed_flag_published_only_after_agent_crashed_written(self):
+        # Ordering contract (deterministic, no timing): the OBSERVABLE `crashed` flag must be published ONLY
+        # AFTER the AGENT_CRASHED lifecycle event is durably written — never before (the exact CI race, where
+        # a poller saw crashed=True while the record was still unwritten). Spy on `_emit` to capture the flag
+        # state at the instant AGENT_CRASHED is emitted: `crashed` must still be False there, while the
+        # single-emit dedup claim is already set.
+        f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False); f.close()
+        d = tempfile.mkdtemp()
+        srv = agent_mod.AgentServer(_server_cfg(f.name, log_dir=d), win=_FakeWin(),
+                                    enforce_integrity=False, env={})
+
+        class _FakeHttpd:
+            def serve_forever(self):
+                raise RuntimeError("boom")
+            def shutdown(self): pass
+            def server_close(self): pass
+
+        srv.make_server = lambda: _FakeHttpd()
+        captured = {}
+        real_emit = srv._emit
+
+        def _spy_emit(event, **fields):
+            if event == "AGENT_CRASHED":
+                captured["crashed_at_emit"] = srv._crashed
+                captured["recorded_at_emit"] = srv._crash_recorded
+            return real_emit(event, **fields)
+
+        srv._emit = _spy_emit
+        srv.start()
+        for _ in range(200):
+            if srv.crashed:
+                break
+            _time.sleep(0.01)
+        self.assertTrue(srv.crashed)
+        # At the moment AGENT_CRASHED was written the observable flag was NOT yet set (published only after);
+        # the dedup claim was already made.
+        self.assertIs(captured.get("crashed_at_emit"), False)
+        self.assertIs(captured.get("recorded_at_emit"), True)
+        # And once `crashed` is observable, the record is already durable on disk (no crashed-but-no-record).
+        events = [json.loads(x)["event"] for x in open(os.path.join(d, "agent_lifecycle.jsonl"),
+                                                        encoding="utf-8") if x.strip()]
+        self.assertIn("AGENT_CRASHED", events)
+
 
 # ────────────────────────── WS-B — readiness probe ──────────────────────────
 def _handshake(*, supervised=True, ops=None, proto_v=PROTOCOL_VERSION, version="beta-agent-1.0.0",

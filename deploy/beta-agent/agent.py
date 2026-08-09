@@ -371,7 +371,8 @@ class AgentServer:
         self._thread = None
         self._started_at = None
         self._stopping = False          # set True by stop(): a serve-thread exit while stopping is EXPECTED
-        self._crashed = False           # set True by the serve guard on an ABNORMAL serve-thread exit
+        self._crashed = False           # OBSERVABLE crash signal — published ONLY after the crash record is written
+        self._crash_recorded = False    # single-emit dedup claim (set BEFORE _emit; see _note_crash)
         self._lock_path = self._resolve_lifecycle_path("instance_lock_path", "agent_instance.lock", port=True)
         self._lifecycle_log = self._resolve_lifecycle_path("lifecycle_log_path", "agent_lifecycle.jsonl")
 
@@ -459,6 +460,7 @@ class AgentServer:
                        detail=f"advisory single-instance lock conflict; letting the exclusive bind arbitrate: {exc}")
         self._stopping = False
         self._crashed = False
+        self._crash_recorded = False
         try:
             self._httpd = self.make_server()      # exclusive bind — a second listener on :8791 FAILS here
         except OSError as exc:
@@ -491,12 +493,19 @@ class AgentServer:
             self._note_crash("serve_forever returned without a stop")
 
     def _note_crash(self, detail: str) -> None:
-        if self._stopping or self._crashed:
+        # Order matters: CLAIM (dedup) → RECORD (durable telemetry) → PUBLISH (observable flag). The
+        # ``_crash_recorded`` claim (same check-then-set the flag used to do) guarantees a single AGENT_CRASHED
+        # emit. ``_crashed`` — the flag ``main()``/monitors/tests observe — is published ONLY after ``_emit``
+        # has durably written the AGENT_CRASHED event (``append_event`` closes the file), so a crash is never
+        # observable before its telemetry exists. The previous order (flag first, emit second) let an observer
+        # see ``crashed`` while the crash record was still unwritten — a crashed-but-no-record window.
+        if self._stopping or self._crash_recorded:
             return
-        self._crashed = True
+        self._crash_recorded = True
         uptime = None if self._started_at is None else round(self._now() - self._started_at, 3)
         self._emit("AGENT_CRASHED", result="abnormal_exit", exit_classification="crash",
                    uptime_s=uptime, detail=detail)
+        self._crashed = True
 
     @property
     def crashed(self) -> bool:

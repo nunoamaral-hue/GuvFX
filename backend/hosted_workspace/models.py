@@ -47,6 +47,18 @@ class HostedMt5Workspace(models.Model):
         SUPERVISED = "SUPERVISED", "Supervised"
         UNSUPERVISED = "UNSUPERVISED", "Unsupervised"
 
+    class DeliveryState(models.TextChoices):
+        """ADR-0034 Workspace Delivery — lifecycle of the RemoteApp delivery seam for this workspace.
+        DISTINCT from the canonical execution lifecycle (``canonical_state``) and from the legacy attach
+        ``state``: this tracks ONLY whether a delivery descriptor was minted and whether the customer's
+        RemoteApp is currently connected to the persistent Windows session. Display/read-model only — it
+        never gates order execution (that remains ``evaluate_binding`` in the bridge)."""
+        NONE = "NONE", "Not delivered"              # no delivery descriptor ever minted
+        AUTHORIZED = "AUTHORIZED", "Authorized"      # a signed delivery descriptor was minted for the owner
+        CONNECTED = "CONNECTED", "Connected"         # RemoteApp reported connected to the persistent session
+        DISCONNECTED = "DISCONNECTED", "Disconnected"  # RemoteApp disconnected; persistent session retained
+        FAILED = "FAILED", "Failed"                  # authorization/derivation failed closed
+
     trading_account = models.OneToOneField(
         "trading.TradingAccount", on_delete=models.CASCADE, related_name="hosted_workspace")
     #: Immutable per-workspace identity (server-generated; never client-supplied).
@@ -74,6 +86,28 @@ class HostedMt5Workspace(models.Model):
     supervision_state = models.CharField(max_length=16, choices=SupervisionState.choices,
                                          default=SupervisionState.UNKNOWN)
     remoteapp_ready = models.BooleanField(default=False)
+
+    # --- ADR-0034 Workspace Delivery: RemoteApp delivery state (DARK, read-model only) --------------------
+    # The execution HOST this workspace's persistent Windows session / RemoteApp is delivered from. Server-
+    # assigned only; the delivery seam DERIVES the RDP host from this node (never from the client). Nullable:
+    # a workspace with no assigned node cannot be delivered (fail-closed). SET_NULL so retiring a node never
+    # cascades away workspaces. Written ONLY by ``delivery_persistence`` (the single delivery-state writer).
+    workspace_node = models.ForeignKey(
+        "execution.TerminalNode", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="hosted_workspaces")
+    delivery_state = models.CharField(max_length=16, choices=DeliveryState.choices,
+                                      default=DeliveryState.NONE)
+    delivery_reason = models.CharField(max_length=64, blank=True, default="")  # stable, secret-free code
+    # Monotonic per-workspace RemoteApp connect/disconnect event sequence LAST APPLIED (mirrors the M3c
+    # writer's ``observation_version``). Staleness key: a reordered/replayed connect/disconnect whose seq is
+    # ``<=`` this is rejected, so "last-actual" wins rather than "last-arrived", and telemetry dedups on it.
+    delivery_event_seq = models.PositiveBigIntegerField(default=0)
+    last_delivery_attempt = models.DateTimeField(null=True, blank=True)
+    last_delivery_success = models.DateTimeField(null=True, blank=True)
+    # Delivery-OWNED correlation of the last delivery action. DISTINCT from ``last_correlation_id`` (which the
+    # certified M3c single writer ``persist_workspace_decision`` owns for canonical decisions): the delivery
+    # writer must NEVER stamp the canonical field (single-writer boundary — ADR-0034 Workspace Delivery §N).
+    last_delivery_correlation_id = models.CharField(max_length=128, blank=True, default="")
 
     last_observed_at = models.DateTimeField(null=True, blank=True)
     last_switch_at = models.DateTimeField(null=True, blank=True)

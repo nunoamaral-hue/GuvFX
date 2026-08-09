@@ -280,6 +280,16 @@ class MT5Session(models.Model):
         on_delete=models.CASCADE,
         related_name="mt5_sessions",
     )
+    # ADR-0034 Workspace Delivery — OPTIONAL link to the Hosted Persistent MT5 Workspace this session
+    # delivers (null for every legacy/binding-driven session). Lets the delivery read model find "the
+    # current delivery session for this workspace" and lets a reconnect reuse the same row. Additive and
+    # nullable: zero behaviour change for existing sessions. SET_NULL so retiring a workspace never
+    # cascades away session history.
+    hosted_workspace = models.ForeignKey(
+        "hosted_workspace.HostedMt5Workspace",
+        null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="delivery_sessions",
+    )
     adapter_type = models.CharField(
         max_length=64,
         blank=True,

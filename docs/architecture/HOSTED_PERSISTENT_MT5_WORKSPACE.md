@@ -404,3 +404,74 @@ evidence source is part of that same host consumer topology.
 Tests: `execution/tests_hosted_execution.py` (provenance/telemetry/reconcile + retry-stance guard),
 `execution/tests_hosted_claim_endpoint.py` (the real `next_job` endpoint fails a hosted claim closed under
 the row lock, and is byte-for-byte dark while OFF). `make check` green.
+
+---
+
+## 9. Workspace Delivery — RemoteApp seam integrated onto the capstone (DARK, 2026-08-09)
+
+Workspace Delivery (originally PR #316, DARK) is the seam by which a user eventually opens THEIR OWN
+persistent MT5 as a Guacamole **RemoteApp** and reconnects to the SAME persistent Windows session. It was
+authored before the Execution Engine capstone and is now **rebased onto current `main`** (after #315/#317).
+It performs NO order, NO attach, NO host action; it consumes durable records and mints a signed descriptor.
+
+### 9.1 Two-node authority — the load-bearing integration invariant
+
+The capstone added `HostedMt5Workspace.execution_node` (order-routing host); delivery adds
+`HostedMt5Workspace.workspace_node` (RemoteApp delivery host). These are **two distinct durable facts for two
+distinct authorities — one fact per authority**, deliberately NOT collapsed:
+
+| Field | Authority | Read by | Reverse relation |
+|-------|-----------|---------|------------------|
+| `execution_node` | order routing / claim | `execution/hosted_routing.resolve_hosted_route`, `authorize_hosted_claim` | `TerminalNode.bound_hosted_workspaces` |
+| `workspace_node` | RemoteApp delivery | `hosted_workspace/delivery.authorize_workspace_delivery` | `TerminalNode.hosted_workspaces` |
+
+**Invariant (pinned by `tests_delivery_node_authority.py`):**
+- Delivery reads ONLY `workspace_node` and NEVER falls back to `execution_node` (`workspace_node` NULL +
+  `execution_node` set ⇒ `DA_NODE_UNASSIGNED`).
+- The RDP host is derived from `workspace_node`, even when a *different* `execution_node` exists.
+- **No execution decision reads `workspace_node` / `delivery_state` / `remoteapp_ready`; no delivery
+  authorisation grants execution.** A live RemoteApp (`delivery_state=CONNECTED` / `remoteapp_ready=True`) is
+  never sufficient to authorise an order — Provider-B readiness still fail-closes when unarmed.
+
+In the current single-host persistent model the two nodes typically resolve to the same physical host; keeping
+them separate is what PREVENTS a delivery-host reassignment from silently moving execution (and vice-versa).
+The order-time bridge gate (`evaluate_binding`) remains the sole order authority; `remoteapp_ready` /
+`delivery_state` are read-model only.
+
+### 9.2 Single-writer boundaries (distinct state families)
+
+`delivery_persistence` is the ONE writer of the delivery fields (`delivery_state` / `delivery_reason` /
+`delivery_event_seq` / `remoteapp_ready` / `last_delivery_attempt` / `last_delivery_success` /
+`workspace_node` / `last_delivery_correlation_id`), each write row-locked with its own `delivery_event_seq`
+staleness gate. It is **not** a second writer of the canonical Workspace state machine: it never touches
+`canonical_state` / `proj_*` / `observation_version` / `last_decision_at` (owned by
+`persistence.persist_workspace_decision`) or `execution_node` / `execution_enabled`. During the rebase the one
+accidental coupling found — the delivery writer stamping the M3c-owned `last_correlation_id` — was removed by
+giving delivery its own `last_delivery_correlation_id` (coupling removed, not synchronised). The state
+families stay distinct: RDP/Windows-session state (`delivery_state`), workspace canonical state
+(`canonical_state`), MT5-process/attach state (legacy `state`), and execution occupancy
+(`HostedWorkspaceExecution`) are separate.
+
+### 9.3 Delivery authority + credential secrecy
+
+`authorize_workspace_delivery` is owner-bound (strict equality, **no staff/superuser mint bypass**; staff keep
+only a READ-only bypass on the delivery-state API), keyed on the unguessable `workspace_uuid`, DARK-first
+(both `hosted_persistent_mt5_enabled()` + `hosted_mt5_remoteapp_enabled()` must be ON or it denies before any
+DB read), and fully server-derived (the client supplies only the workspace uuid). The Windows password is
+decrypted only into the AES-encrypted `guacamole-auth-json` token; it never appears in the returned 4-field
+descriptor, a log line (exceptions log TYPE only), telemetry, a persisted field, or a query string. The
+`DA_*` reason matrix fails closed on every ambiguity.
+
+### 9.4 Migration reconciliation
+
+`hosted_workspace 0005_workspace_delivery_fields` (regenerated on main's `0004`) adds the delivery columns;
+`mt5 0009_mt5session_hosted_workspace` adds the optional `MT5Session.hosted_workspace` FK (its dependency
+repointed to `hosted_workspace 0004`). Additive only; reverse drops the delivery columns (non-destructive,
+unused while DARK); no migration arms execution or opts an existing customer into delivery. (When the parked
+Onboarding PR #318 rebases, its `owner`-FK migration renumbers after `0005`.)
+
+### 9.5 Host change — separate Sponsor/production gate
+
+RDS install, RemoteApp publication, SPLA/RDS-CAL licensing, AppLocker/SRP single-app lockdown, and the
+per-runtime NTFS ACL are **host/production actions, not repository work** — see
+`docs/operations/hosted-workspace/WORKSPACE_DELIVERY_HOST_CERTIFICATION.md`. Nothing here is deployed or armed.
