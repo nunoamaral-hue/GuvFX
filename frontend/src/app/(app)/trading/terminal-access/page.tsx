@@ -584,22 +584,44 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
       onActiveChange(active);
     };
     const timer = setTimeout(() => { if (!settled && !cancelled) setSlow(true); }, 10000); // message only; no settle
+    // Bounded fetch: reject after `ms` so a hung request (apiFetch has no timeout) cannot wedge detection.
+    const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+      Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
+    const is404 = (e: unknown) => e instanceof Error && e.message.includes("404");
     (async () => {
       try {
-        const accounts = await apiFetch<
-          Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>
-        >("/api/trading/accounts/", {});
+        // Accounts fetch with a few bounded retries so a TRANSIENT error/hang does not strand a legacy user
+        // (whose legacy UI is gated on hostedResolved). A PERSISTENT failure never resolves -> fail closed
+        // (never expose the legacy full desktop to a possibly-hosted owner) with a "refresh" prompt.
+        let accounts:
+          | Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>
+          | null = null;
+        for (let attempt = 0; attempt < 3 && !cancelled && !settled; attempt++) {
+          try {
+            accounts = await withTimeout(
+              apiFetch<Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>>(
+                "/api/trading/accounts/", {}),
+              5000);
+            break;
+          } catch {
+            if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
+          }
+        }
         if (cancelled || settled) return;
+        if (accounts === null) { setSlow(true); return; } // persistent failure -> fail closed (refresh prompt)
         const ordered = [...accounts].sort(
           (a, b) => Number(!!b.is_active) - Number(!!a.is_active)
         );
+        // We may resolve to "not hosted" ONLY if EVERY account gave a DEFINITIVE answer (200 not-owner, or a
+        // 404 = dark / no workspace / not-owner). An AMBIGUOUS probe (500 / timeout / network) means an account
+        // MIGHT be an owned workspace we could not confirm — so we fail closed rather than expose legacy.
+        let ambiguous = false;
         for (const a of ordered) {
           if (cancelled || settled) return;
           try {
-            const state = await apiFetch<{ is_owner?: boolean }>(
-              `/api/hosted-workspace/delivery-state/?account_id=${a.id}`,
-              {}
-            );
+            const state = await withTimeout(
+              apiFetch<{ is_owner?: boolean }>(`/api/hosted-workspace/delivery-state/?account_id=${a.id}`, {}),
+              5000);
             if (cancelled || settled) return;
             // Activate ONLY for an account the caller actually owns. `is_owner` is false when the state
             // endpoint answered via its staff read-bypass, so a staff viewer never binds this card to
@@ -609,13 +631,16 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
               settle(true);
               return;
             }
-          } catch {
-            /* not this account — try the next */
+            // else: definitive not-owner for this account — keep looking.
+          } catch (e) {
+            if (!is404(e)) ambiguous = true; // 404 = definitive not-owned; anything else = ambiguous
           }
         }
-        settle(false); // DEFINITIVE: accounts fetched, none owned => not a hosted owner
+        if (cancelled || settled) return;
+        if (ambiguous) { setSlow(true); return; } // could not confirm every account -> fail closed
+        settle(false); // DEFINITIVE: accounts fetched, all accounts confirmed not-owned => not a hosted owner
       } catch {
-        /* accounts fetch failed => AMBIGUOUS => fail closed: do NOT resolve to legacy; card stays "preparing" */
+        setSlow(true); // unexpected -> fail closed (refresh prompt), never expose legacy
       } finally {
         clearTimeout(timer);
       }
