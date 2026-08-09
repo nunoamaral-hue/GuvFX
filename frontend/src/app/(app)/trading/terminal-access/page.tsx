@@ -563,28 +563,33 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
   const [notReady, setNotReady] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [epoch, setEpoch] = useState(0);
+  const [slow, setSlow] = useState(false);
 
   // Detect a hosted workspace among the signed-in user's OWN accounts. Any
   // error / 404 (dark, or no hosted workspace) => stay invisible + inactive.
   useEffect(() => {
     let cancelled = false;
     let settled = false;
-    // Resolve the hosted question exactly ONCE, and always within a bounded time. This gates the legacy UI
-    // (bindings list, active-session card) via `hostedResolved` upstream, so a hung /accounts or
-    // /delivery-state request can never (a) stall a legacy user's session discovery indefinitely, nor
-    // (b) leave the legacy launch surface interactive forever for a hosted owner.
+    // Resolve the hosted question exactly ONCE and ONLY on a DEFINITIVE answer: an owner is found (true), or
+    // the account list was fetched and none is an owned hosted workspace (false). We deliberately FAIL CLOSED
+    // on any AMBIGUOUS outcome (an accounts/delivery-state request that errors or hangs): we do NOT resolve to
+    // "not hosted", because that would expose the legacy full-desktop path to a possibly-hosted owner. While
+    // unresolved the card shows a neutral "preparing" state and the legacy UI stays suppressed (gated on
+    // `hostedResolved` = this having fired). A genuinely hung /accounts is a whole-app failure; the safe
+    // direction here is never a legacy desktop, only a "preparing" message.
     const settle = (active: boolean) => {
       if (settled || cancelled) return;
       settled = true;
       setDetecting(false);
       onActiveChange(active);
     };
-    const timer = setTimeout(() => settle(false), 10000); // fail-open to "not hosted" if detection wedges
+    const timer = setTimeout(() => { if (!settled && !cancelled) setSlow(true); }, 10000); // message only; no settle
     (async () => {
       try {
         const accounts = await apiFetch<
           Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>
         >("/api/trading/accounts/", {});
+        if (cancelled || settled) return;
         const ordered = [...accounts].sort(
           (a, b) => Number(!!b.is_active) - Number(!!a.is_active)
         );
@@ -595,7 +600,7 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
               `/api/hosted-workspace/delivery-state/?account_id=${a.id}`,
               {}
             );
-            if (cancelled) return;
+            if (cancelled || settled) return;
             // Activate ONLY for an account the caller actually owns. `is_owner` is false when the state
             // endpoint answered via its staff read-bypass, so a staff viewer never binds this card to
             // another customer's workspace (and connect/mint is owner-only regardless).
@@ -608,9 +613,9 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
             /* not this account — try the next */
           }
         }
-        settle(false);
+        settle(false); // DEFINITIVE: accounts fetched, none owned => not a hosted owner
       } catch {
-        settle(false);
+        /* accounts fetch failed => AMBIGUOUS => fail closed: do NOT resolve to legacy; card stays "preparing" */
       } finally {
         clearTimeout(timer);
       }
@@ -659,7 +664,21 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
     }
   }, [account]);
 
-  if (detecting || !account) return null; // invisible until a hosted workspace is confirmed
+  if (!account) {
+    // Still resolving hosted-ownership: show a neutral "preparing" message only if detection is slow (so a
+    // normal fast probe does not flash for a non-hosted user). Once resolved-not-hosted this renders nothing.
+    if (detecting && slow) {
+      return (
+        <div style={{ ...glassCard, marginBottom: "1rem" }}>
+          <div style={sectionHeader}>MT5 Terminal</div>
+          <p style={{ fontSize: "0.85rem", color: "#b7c5dd", margin: 0 }}>
+            Preparing your MT5 terminal… if this persists, please refresh.
+          </p>
+        </div>
+      );
+    }
+    return null; // invisible until a hosted workspace is confirmed (or fast-resolved as non-hosted)
+  }
 
   return (
     <div style={{ ...glassCard, marginBottom: "1rem" }}>
@@ -821,6 +840,9 @@ export default function TerminalAccessPage() {
 
   // ── Launch desktop link ──
   const handleDesktopLaunch = useCallback(async () => {
+    // Defence-in-depth: a hosted owner must never open the legacy full MT5 desktop, even if a stale button
+    // were somehow clicked during the detection window.
+    if (hostedActiveRef.current) return;
     setDesktopLaunching(true);
     setNotice(null);
     setDesktopUrl(null);
@@ -1162,10 +1184,15 @@ export default function TerminalAccessPage() {
               <DetailRow label="Verified" value={fmtDateTime(credStatus.last_verified_at)} />
             )}
           </div>
-          {/* Full-desktop launch is the legacy customer path. When a hosted MT5 workspace is active the
-              customer uses the portable MT5 RemoteApp card above; the full desktop is retained ONLY as a
-              separate operator-recovery control and is hidden from the hosted customer here. */}
-          {hostedActive ? (
+          {/* Full-desktop launch is the legacy customer path. It is shown ONLY once the hosted probe has
+              resolved AND the user is confirmed non-hosted — never during detection (so a hosted owner can
+              never open the full desktop in the pre-resolution window) and never for a hosted owner (whose
+              MT5 opens via the RemoteApp card above). Retained solely as operator recovery. */}
+          {!hostedResolved ? (
+            <div style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+              Preparing your MT5 terminal…
+            </div>
+          ) : hostedActive ? (
             <div style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
               Your MT5 terminal opens via the MT5 Terminal card above.
             </div>
