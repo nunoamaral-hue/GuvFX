@@ -538,6 +538,175 @@ function withCleanGuacAuth(descriptor: SafeLaunchDescriptor): SafeLaunchDescript
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// ADR-0034 Hosted MT5 Workspace — portable RemoteApp (the customer path)
+//
+// Owner-scoped and fully server-derived: the browser sends ONLY its own
+// account_id (intent). The backend mints the signed Guacamole RemoteApp
+// descriptor — host, Windows identity, RemoteApp program, args and the
+// credential are all resolved server-side; the Windows password rides only
+// inside the encrypted token and is never returned here. This opens the
+// portable MT5 RemoteApp (a single MT5 window), NOT a full desktop.
+//
+// DARK / bounded: the delivery-state probe 404s unless the delivery flags are
+// ON *and* the signed-in user owns a hosted workspace, so this whole card is
+// invisible (and reports inactive) for everyone else — the legacy flow below
+// is untouched.
+// ─────────────────────────────────────────────────────────────────────
+
+type HostedAccount = { id: number; label: string };
+
+function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boolean) => void }) {
+  const [account, setAccount] = useState<HostedAccount | null>(null);
+  const [detecting, setDetecting] = useState(true);
+  const [descriptor, setDescriptor] = useState<SafeLaunchDescriptor | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [notReady, setNotReady] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState(0);
+
+  // Detect a hosted workspace among the signed-in user's OWN accounts. Any
+  // error / 404 (dark, or no hosted workspace) => stay invisible + inactive.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const accounts = await apiFetch<
+          Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>
+        >("/api/trading/accounts/", {});
+        const ordered = [...accounts].sort(
+          (a, b) => Number(!!b.is_active) - Number(!!a.is_active)
+        );
+        for (const a of ordered) {
+          try {
+            const state = await apiFetch<{ is_owner?: boolean }>(
+              `/api/hosted-workspace/delivery-state/?account_id=${a.id}`,
+              {}
+            );
+            if (cancelled) return;
+            // Activate ONLY for an account the caller actually owns. `is_owner` is false when the state
+            // endpoint answered via its staff read-bypass, so a staff viewer never binds this card to
+            // another customer's workspace (and connect/mint is owner-only regardless).
+            if (state?.is_owner) {
+              setAccount({ id: a.id, label: a.name || a.account_number || `Account ${a.id}` });
+              onActiveChange(true);
+              return;
+            }
+          } catch {
+            /* not this account — try the next */
+          }
+        }
+        if (!cancelled) onActiveChange(false);
+      } catch {
+        if (!cancelled) onActiveChange(false);
+      } finally {
+        if (!cancelled) setDetecting(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const openTerminal = useCallback(async () => {
+    if (!account) return;
+    setConnecting(true);
+    setError(null);
+    setNotReady(null);
+    setDescriptor(null);
+    try {
+      const d = await apiFetch<{
+        transport_type: string;
+        embed_url: string;
+        session_token: string;
+        expiry: number | null;
+      }>("/api/hosted-workspace/delivery-connect/", {
+        method: "POST",
+        body: JSON.stringify({ account_id: account.id }),
+      });
+      const safe: SafeLaunchDescriptor = {
+        transport_type: d.transport_type,
+        embed_url: d.embed_url,
+        session_token: d.session_token ?? "",
+        expiry: d.expiry != null ? String(d.expiry) : null,
+      };
+      // Same origin-pinning + stale-session clear as the legacy viewer path.
+      setDescriptor(withCleanGuacAuth(safe));
+      setEpoch((e) => e + 1);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to open MT5 terminal.";
+      if (message.includes("409")) {
+        setNotReady("Your MT5 terminal is being prepared. Please try again shortly.");
+      } else {
+        setError(message);
+      }
+    } finally {
+      setConnecting(false);
+    }
+  }, [account]);
+
+  if (detecting || !account) return null; // invisible until a hosted workspace is confirmed
+
+  return (
+    <div style={{ ...glassCard, marginBottom: "1rem" }}>
+      <div style={sectionHeader}>MT5 Terminal</div>
+      <p
+        style={{
+          fontSize: "0.85rem",
+          color: "#b7c5dd",
+          marginTop: 0,
+          marginBottom: "1rem",
+          lineHeight: 1.6,
+        }}
+      >
+        Your persistent MT5 terminal for {account.label}. It opens as a single MT5 window — log in with
+        your broker credentials inside it.
+      </p>
+
+      {descriptor?.embed_url ? (
+        <div
+          style={{
+            borderRadius: 12,
+            border: "1px solid rgba(74,179,255,0.15)",
+            background: "rgba(0,0,0,0.3)",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "0.5rem 1rem",
+              background: "rgba(10,15,40,0.9)",
+              borderBottom: "1px solid rgba(74,179,255,0.1)",
+            }}
+          >
+            <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>MT5 Terminal (RemoteApp)</span>
+            <Badge color="green">Connected</Badge>
+          </div>
+          <iframe
+            key={`hosted-mt5-${epoch}`}
+            src={descriptor.embed_url}
+            title="MT5 Terminal"
+            style={{ width: "100%", height: "640px", border: "none", display: "block" }}
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+          />
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" as const }}>
+          <Button onClick={openTerminal} disabled={connecting}>
+            {connecting ? "Opening…" : "Open MT5 Terminal"}
+          </Button>
+          {notReady && <span style={{ fontSize: "0.8rem", color: "#fbbf24" }}>{notReady}</span>}
+          {error && <span style={{ fontSize: "0.8rem", color: "#f87171" }}>{error}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Main page component
 // ─────────────────────────────────────────────────────────────────────
 
@@ -574,6 +743,11 @@ export default function TerminalAccessPage() {
 
   // ── Notice state ──
   const [notice, setNotice] = useState<{ type: "info" | "warning" | "error"; message: string } | null>(null);
+
+  // ── ADR-0034 Hosted MT5 Workspace active? (portable RemoteApp is the customer path) ──
+  // When a hosted workspace is detected, the customer's MT5 opens via the RemoteApp card above; the legacy
+  // full-desktop launch is retained ONLY as a separate operator-recovery control (hidden from the customer).
+  const [hostedActive, setHostedActive] = useState(false);
 
   // ── Polling interval for session status ──
   const [pollInterval, setPollInterval] = useState<ReturnType<typeof setInterval> | null>(null);
@@ -915,6 +1089,9 @@ export default function TerminalAccessPage() {
       {/* ── Safety message ── */}
       <StateNotice type="info" message="This session is restricted to MT5 interaction only." />
 
+      {/* ── ADR-0034 Hosted MT5 Workspace — portable RemoteApp (customer path; invisible unless owned) ── */}
+      <HostedMt5RemoteApp onActiveChange={setHostedActive} />
+
       {/* ── MT5 Runtime Status card ── */}
       {!credLoading && credStatus && (
         <div style={{ ...glassCard, marginBottom: "1rem" }}>
@@ -945,19 +1122,28 @@ export default function TerminalAccessPage() {
               <DetailRow label="Verified" value={fmtDateTime(credStatus.last_verified_at)} />
             )}
           </div>
-          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
-            <Button
-              onClick={handleDesktopLaunch}
-              disabled={desktopLaunching || credStatus.last_status !== "SUCCESS"}
-            >
-              {desktopLaunching ? "Launching..." : "Launch MT5 Desktop"}
-            </Button>
-            {credStatus.last_status !== "SUCCESS" && (
-              <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
-                Validate credentials before launching.
-              </span>
-            )}
-          </div>
+          {/* Full-desktop launch is the legacy customer path. When a hosted MT5 workspace is active the
+              customer uses the portable MT5 RemoteApp card above; the full desktop is retained ONLY as a
+              separate operator-recovery control and is hidden from the hosted customer here. */}
+          {hostedActive ? (
+            <div style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+              Your MT5 terminal opens via the MT5 Terminal card above.
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+              <Button
+                onClick={handleDesktopLaunch}
+                disabled={desktopLaunching || credStatus.last_status !== "SUCCESS"}
+              >
+                {desktopLaunching ? "Launching..." : "Launch MT5 Desktop"}
+              </Button>
+              {credStatus.last_status !== "SUCCESS" && (
+                <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+                  Validate credentials before launching.
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
