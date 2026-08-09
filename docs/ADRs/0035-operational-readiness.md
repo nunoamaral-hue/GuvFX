@@ -79,6 +79,19 @@ nothing, contacts no host, and authorises nothing.
 Delete the additive modules/commands/route; there is no model, migration, or persisted state to unwind.
 The staff API defaults OFF, so nothing is exposed until an operator sets `OPERATIONAL_READINESS_API_ENABLED`.
 
+## Amendment (2026-08-09) — evidence-driven host-certification stage
+
+The original `preflight._check_host_certification` hard-coded a **permanent** `BLOCKED` (Sponsor) status.
+That was correct while host certification could not begin, but it can never turn green, so it would lie
+once certification actually proceeds. Corrected: `core/host_cert.py` exposes a durable, config-driven
+**stage** — `NOT_STARTED → IN_PROGRESS → BLOCKED_ON_HUMAN → CERTIFIED` — read from
+`HOSTED_HOST_CERT_STAGE` (settings-first-then-env; unrecognised values **fail safe to NOT_STARTED**, never
+CERTIFIED). The pre-flight `host.certification` check now reflects the stage: `BLOCKED` for
+`NOT_STARTED`/`IN_PROGRESS`/`BLOCKED_ON_HUMAN`, and `PASS` only for a recorded `CERTIFIED`. The load-bearing
+rule holds — a **feature flag never makes certification green**; only a recorded `CERTIFIED` stage (backed
+by durable certification evidence) does. When the Customer-Zero host certification completes, setting the
+stage to `CERTIFIED` clears the previously-permanent block and the pre-flight verdict can become `READY`.
+
 ## Revisit trigger
 
 The disposable-host certification proceeds (the pre-flight `host.certification` check + the health

@@ -254,6 +254,51 @@ class CommandTests(TestCase):
         self.assertIn(data["status"], ("PASS", "PARTIAL", "FAIL"))
 
 
+class HostCertStageTests(TestCase):
+    """ADR-0035 amendment: host-cert status is evidence-driven (a durable stage), NOT a hard-coded
+    permanent block — and never green off a feature flag."""
+
+    def test_stage_defaults_not_started_and_fails_safe(self):
+        from core.host_cert import NOT_STARTED, host_cert_stage, is_certified
+        self.assertEqual(host_cert_stage(), NOT_STARTED)
+        self.assertFalse(is_certified())
+        with override_settings(HOSTED_HOST_CERT_STAGE="banana"):   # unrecognised -> fail-safe NOT_STARTED
+            self.assertEqual(host_cert_stage(), NOT_STARTED)
+            self.assertFalse(is_certified())
+
+    def test_stage_recognises_valid_values(self):
+        from core.host_cert import CERTIFIED, IN_PROGRESS, host_cert_stage, is_certified
+        with override_settings(HOSTED_HOST_CERT_STAGE="in_progress"):
+            self.assertEqual(host_cert_stage(), IN_PROGRESS)
+        with override_settings(HOSTED_HOST_CERT_STAGE="CERTIFIED"):
+            self.assertEqual(host_cert_stage(), CERTIFIED)
+            self.assertTrue(is_certified())
+
+    def test_preflight_host_check_tracks_the_stage(self):
+        def _host(res):
+            return [c for c in res["checks"] if c["id"] == "host.certification"][0]["status"]
+        self.assertEqual(_host(run_preflight()), "BLOCKED")   # NOT_STARTED default
+        for stage, expected in (("IN_PROGRESS", "BLOCKED"), ("BLOCKED_ON_HUMAN", "BLOCKED"),
+                                ("CERTIFIED", "PASS")):
+            with override_settings(HOSTED_HOST_CERT_STAGE=stage):
+                self.assertEqual(_host(run_preflight()), expected, stage)
+
+    def test_certified_stage_clears_the_permanent_block(self):
+        # The load-bearing correction: with capacity present AND cert recorded CERTIFIED, the verdict is no
+        # longer the permanent BLOCKED_ON_SPONSOR — it becomes genuinely ready.
+        TerminalNode.objects.create(hostname="nz", status=TerminalNode.Status.ACTIVE, max_accounts=5)
+        with override_settings(HOSTED_HOST_CERT_STAGE="CERTIFIED"):
+            res = run_preflight()
+        self.assertIn(res["verdict"], ("READY", "READY_WITH_WARNINGS"))
+        self.assertTrue(res["ready"])
+
+    def test_flag_does_not_make_certification_green(self):
+        # Enabling every feature flag must NOT flip host cert to PASS — only a recorded CERTIFIED stage does.
+        with override_settings(**_ALL_ON):
+            host = [c for c in run_preflight()["checks"] if c["id"] == "host.certification"][0]
+        self.assertEqual(host["status"], "BLOCKED")
+
+
 class ReadinessApiTests(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
