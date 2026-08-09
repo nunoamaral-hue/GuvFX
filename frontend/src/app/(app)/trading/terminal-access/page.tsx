@@ -594,40 +594,48 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
       const s = e as { status?: number; httpStatus?: number } | null;
       return s?.status === 404 || s?.httpStatus === 404;
     };
+    // Bounded retry for BOTH probes: a definitive 404 is re-thrown immediately (never retried — it is an
+    // answer, not a failure); any other error/timeout is retried up to `attempts` times (1.5s backoff) so a
+    // TRANSIENT blip does not strand a legacy user, whose legacy UI is gated on hostedResolved. Only a
+    // PERSISTENT non-404 failure re-throws to the caller, which then fails closed (never expose legacy).
+    const fetchRetry = async <T,>(fn: () => Promise<T>, attempts = 3): Promise<T> => {
+      let lastErr: unknown;
+      for (let i = 0; i < attempts; i++) {
+        if (cancelled || settled) throw new Error("aborted");
+        try {
+          return await withTimeout(fn(), 5000);
+        } catch (e) {
+          if (is404(e)) throw e; // definitive answer — do not retry
+          lastErr = e;
+          if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1500));
+        }
+      }
+      throw lastErr;
+    };
     (async () => {
       try {
-        // Accounts fetch with a few bounded retries so a TRANSIENT error/hang does not strand a legacy user
-        // (whose legacy UI is gated on hostedResolved). A PERSISTENT failure never resolves -> fail closed
-        // (never expose the legacy full desktop to a possibly-hosted owner) with a "refresh" prompt.
-        let accounts:
-          | Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>
-          | null = null;
-        for (let attempt = 0; attempt < 3 && !cancelled && !settled; attempt++) {
-          try {
-            accounts = await withTimeout(
-              apiFetch<Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>>(
-                "/api/trading/accounts/", {}),
-              5000);
-            break;
-          } catch {
-            if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
-          }
+        let accounts: Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>;
+        try {
+          accounts = await fetchRetry(() =>
+            apiFetch<Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>>(
+              "/api/trading/accounts/", {}));
+        } catch {
+          setSlow(true); // persistent failure -> fail closed (refresh prompt); never expose legacy
+          return;
         }
         if (cancelled || settled) return;
-        if (accounts === null) { setSlow(true); return; } // persistent failure -> fail closed (refresh prompt)
         const ordered = [...accounts].sort(
           (a, b) => Number(!!b.is_active) - Number(!!a.is_active)
         );
-        // We may resolve to "not hosted" ONLY if EVERY account gave a DEFINITIVE answer (200 not-owner, or a
-        // 404 = dark / no workspace / not-owner). An AMBIGUOUS probe (500 / timeout / network) means an account
-        // MIGHT be an owned workspace we could not confirm — so we fail closed rather than expose legacy.
+        // Resolve to "not hosted" ONLY if EVERY account gave a DEFINITIVE answer (200 not-owner, or a 404 =
+        // dark / no workspace / not-owner). A persistent AMBIGUOUS probe (non-404 error/timeout that survived
+        // retries) means an account MIGHT be an owned workspace we could not confirm -> fail closed.
         let ambiguous = false;
         for (const a of ordered) {
           if (cancelled || settled) return;
           try {
-            const state = await withTimeout(
-              apiFetch<{ is_owner?: boolean }>(`/api/hosted-workspace/delivery-state/?account_id=${a.id}`, {}),
-              5000);
+            const state = await fetchRetry(() =>
+              apiFetch<{ is_owner?: boolean }>(`/api/hosted-workspace/delivery-state/?account_id=${a.id}`, {}));
             if (cancelled || settled) return;
             // Activate ONLY for an account the caller actually owns. `is_owner` is false when the state
             // endpoint answered via its staff read-bypass, so a staff viewer never binds this card to
@@ -639,11 +647,11 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
             }
             // else: definitive not-owner for this account — keep looking.
           } catch (e) {
-            if (!is404(e)) ambiguous = true; // 404 = definitive not-owned; anything else = ambiguous
+            if (!is404(e)) ambiguous = true; // 404 = definitive not-owned; persistent non-404 = ambiguous
           }
         }
         if (cancelled || settled) return;
-        if (ambiguous) { setSlow(true); return; } // could not confirm every account -> fail closed
+        if (ambiguous) { setSlow(true); return; } // could not confirm every account after retries -> fail closed
         settle(false); // DEFINITIVE: accounts fetched, all accounts confirmed not-owned => not a hosted owner
       } catch {
         setSlow(true); // unexpected -> fail closed (refresh prompt), never expose legacy
