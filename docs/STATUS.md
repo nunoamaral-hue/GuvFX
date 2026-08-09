@@ -14,6 +14,25 @@
 
 ## Execution workstream log
 
+- **2026-08-09 — ADR-0035 Operational Readiness — unified read-only health/preflight/rollback/evidence (additive). 🟢**
+  A **purely read-only** operational layer in `core/` that aggregates the existing per-subsystem health
+  sources (broker health WP3, operational events WP5, agent monitor, execution readiness, hosted-workspace
+  read models, reliability ComponentHealth) into ONE operator view — **no new model, no migration, no write
+  path, no host contact, nothing armed**. **`core/operational_health.py`**: 7-state vocabulary
+  (HEALTHY/DEGRADED/MAINTENANCE/OFFLINE/MISCONFIGURED/BLOCKED/AWAITING_SPONSOR) with the load-bearing **no
+  fake READY** rule — dark-by-design→AWAITING_SPONSOR, enabled-but-unobserved→DEGRADED(observed=false), a
+  raising probe fails OPEN to DEGRADED, overall rolls up the worst fault. **`core/preflight.py`**: the
+  authoritative read-only Hosted Workspace pre-flight (db/cache/active-node capacity/node-binding
+  integrity/delivery config/flags) that **fails closed** and is honest — host cert always BLOCKED, verdict
+  `BLOCKED_ON_SPONSOR` while dark. **`core/rollback_planner.py`**: flag-disable rollback PLAN that executes
+  nothing. **`core/operational_evidence.py`**: schema-conformant evidence manifest (status PARTIAL while the
+  host gate is the only blocker). 4 always-available read-only commands (`operational_health`,
+  `hosted_workspace_preflight`, `rollback_plan`, `collect_operational_evidence`) + a staff-only DARK API
+  `GET /api/operational-readiness/` (404 unless `OPERATIONAL_READINESS_API_ENABLED`). Docs: ADR-0035 +
+  `docs/operations/operational-readiness/` (README, production-readiness-checklist.json, disaster-recovery,
+  rollback-runbook). 27 focused tests green. Order authority stays the live bridge gate; nothing here
+  enables/arms/deploys.
+
 - **2026-08-09 — ADR-0034 Onboarding — integrated onto merged Workspace Delivery + owner-FK REMOVED (DARK). NOT deployed/armed. 🟢**
   Workspace Delivery **PR #316 merged** to `main` (exact-head CI green after a real crash-telemetry ordering
   fix in `deploy/beta-agent/agent.py` — `_note_crash` now claims→records→publishes so the `_crashed` flag is
