@@ -88,10 +88,10 @@ def record_delivery_attempt(workspace: HostedMt5Workspace, authorization, *,
         locked.delivery_state = target
         locked.delivery_reason = reason
         locked.last_delivery_attempt = now
-        locked.last_correlation_id = str(correlation_id or "")[:128]
+        locked.last_delivery_correlation_id = str(correlation_id or "")[:128]
         locked.save(update_fields=[
             "delivery_state", "delivery_reason", "last_delivery_attempt",
-            "last_correlation_id", "updated_at"])
+            "last_delivery_correlation_id", "updated_at"])
         return DeliveryWriteResult(
             delivery_state=str(locked.delivery_state), delivery_reason=str(locked.delivery_reason),
             remoteapp_ready=bool(locked.remoteapp_ready), telemetry_emitted=False)
@@ -140,9 +140,9 @@ def _record_remoteapp_transition(workspace, *, target, remoteapp_ready, stamp_su
         locked.delivery_state = target
         locked.remoteapp_ready = remoteapp_ready
         locked.delivery_event_seq = seq
-        locked.last_correlation_id = corr
+        locked.last_delivery_correlation_id = corr
         fields = ["delivery_state", "remoteapp_ready", "delivery_event_seq",
-                  "last_correlation_id", "updated_at"]
+                  "last_delivery_correlation_id", "updated_at"]
         if stamp_success:
             locked.last_delivery_success = now
             fields.append("last_delivery_success")

@@ -40,6 +40,6 @@ def delivery_state_projection(workspace: HostedMt5Workspace, *, staff: bool = Fa
             # Operator-only: the delivery host. Never customer-facing; never a credential.
             "delivery_host": (node.hostname if node else ""),
             "supervision_state": workspace.supervision_state,
-            "correlation_id": workspace.last_correlation_id or "",
+            "correlation_id": workspace.last_delivery_correlation_id or "",
         }
     return projection

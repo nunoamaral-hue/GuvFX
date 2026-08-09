@@ -104,6 +104,10 @@ class HostedMt5Workspace(models.Model):
     delivery_event_seq = models.PositiveBigIntegerField(default=0)
     last_delivery_attempt = models.DateTimeField(null=True, blank=True)
     last_delivery_success = models.DateTimeField(null=True, blank=True)
+    # Delivery-OWNED correlation of the last delivery action. DISTINCT from ``last_correlation_id`` (which the
+    # certified M3c single writer ``persist_workspace_decision`` owns for canonical decisions): the delivery
+    # writer must NEVER stamp the canonical field (single-writer boundary — ADR-0034 Workspace Delivery §N).
+    last_delivery_correlation_id = models.CharField(max_length=128, blank=True, default="")
 
     last_observed_at = models.DateTimeField(null=True, blank=True)
     last_switch_at = models.DateTimeField(null=True, blank=True)
