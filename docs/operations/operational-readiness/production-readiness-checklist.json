@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0.0",
+  "title": "GuvFX Operational Readiness — production readiness checklist (ADR-0035)",
+  "description": "Machine-readable readiness gates spanning the operational layer. Read-only; nothing here is auto-evaluated to PASS by the platform — statuses are set by the operator/Chief Architect as evidence lands. Sub-checks map to the live read-only pre-flight (python manage.py hosted_workspace_preflight).",
+  "note_on_status": "status vocabulary: PENDING | IN_PROGRESS | PASS | FAIL | N/A | BLOCKED. Dark-by-design and host-gated items are BLOCKED, never silently PASS.",
+  "gates": [
+    {"id": "OR-INFRA-1", "area": "INFRA", "requirement": "Primary database reachable", "preflight_check": "infra.database", "blocks_enable": true, "status": "PENDING"},
+    {"id": "OR-INFRA-2", "area": "INFRA", "requirement": "Shared cache (Redis) configured in the target env", "preflight_check": "infra.cache", "blocks_enable": false, "status": "PENDING"},
+    {"id": "OR-CAP-1", "area": "CAPACITY", "requirement": "At least one ACTIVE execution node with capacity", "preflight_check": "capacity.active_nodes", "blocks_enable": true, "status": "PENDING"},
+    {"id": "OR-INT-1", "area": "INTEGRITY", "requirement": "Every bound workspace agrees account.terminal_node == execution_node", "preflight_check": "integrity.node_binding", "blocks_enable": true, "status": "PENDING"},
+    {"id": "OR-DEL-1", "area": "DELIVERY", "requirement": "GUAC_BASE_URL + GUAC_JSON_SECRET_KEY_HEX present", "preflight_check": "delivery.guac_config", "blocks_enable": false, "status": "PENDING"},
+    {"id": "OR-HEALTH-1", "area": "OBSERVABILITY", "requirement": "operational_health rollup shows no unexpected FAULT subsystem", "preflight_check": "n/a (operational_health)", "blocks_enable": false, "status": "PENDING"},
+    {"id": "OR-RB-1", "area": "ROLLBACK", "requirement": "rollback_plan produces only non-destructive flag-disable steps", "preflight_check": "n/a (rollback_plan)", "blocks_enable": false, "status": "PENDING"},
+    {"id": "OR-EVID-1", "area": "EVIDENCE", "requirement": "collect_operational_evidence manifest captured and schema-valid", "preflight_check": "n/a (collect_operational_evidence)", "blocks_enable": false, "status": "PENDING"},
+    {"id": "OR-HOST-1", "area": "HOST", "requirement": "Disposable Windows/RDS host + RemoteApp publication + licensing certified", "preflight_check": "host.certification", "blocks_enable": true, "status": "BLOCKED", "gate_owner": "Sponsor", "reference": "Notion: Hosted Workspace — Host Certification Record"},
+    {"id": "OR-DEMO-1", "area": "EXECUTION", "requirement": "Disposable-demo execution trade proven (Nuno performs the trade)", "preflight_check": "n/a", "blocks_enable": true, "status": "BLOCKED", "gate_owner": "Sponsor/Nuno"},
+    {"id": "OR-FLAG-1", "area": "FLAGS", "requirement": "Sponsor authorises the flag-enablement sequence (all default OFF today)", "preflight_check": "flags.posture", "blocks_enable": true, "status": "BLOCKED", "gate_owner": "Sponsor"}
+  ],
+  "authority": "Order authority is always the live bridge gate; no readiness state authorises an order. Production enablement is a separate Sponsor gate — a green checklist is a recommendation, not approval."
+}

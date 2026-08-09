@@ -1,5 +1,17 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ ADR-0035 Operational Readiness — repository-complete (read-only, additive) (2026-08-09)
+A purely read-only operational layer in `core/` unifying the existing health sources into a 7-state rollup
+(`operational_health`), an authoritative fail-closed Hosted Workspace pre-flight (`hosted_workspace_preflight`),
+a flag-disable rollback PLAN that executes nothing (`rollback_plan`), and schema-conformant evidence
+collection (`collect_operational_evidence`), plus a staff-only DARK API `GET /api/operational-readiness/`.
+No model, no migration, no write path, no host contact, nothing armed. **No fake READY**: dark subsystems
+are AWAITING_SPONSOR and the pre-flight is honest that host certification is the standing external gate.
+27 focused tests green; ADR-0035 + `docs/operations/operational-readiness/` (README/checklist/DR/rollback).
+**Bounded next action (Chief Architect / Sponsor):** unchanged — the platform-wide open gate is the
+disposable Windows/RDS host certification (see the Notion Host Certification Record); Operational Readiness
+now gives the read-only console + pre-flight to run the moment that host arrives.
+
 ## ▶ ADR-0034 Onboarding — integrated onto merged Workspace Delivery, repository-complete (DARK) (2026-08-09)
 **Workspace Delivery #316 is MERGED** to `main`; **Onboarding #318 is rebased + integrated** onto it and
 merged-ready. The integration: `delivery_readiness` reads the real `delivery_state` (delivery is read-model
