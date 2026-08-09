@@ -14,6 +14,22 @@
 
 ## Execution workstream log
 
+- **2026-08-09 — ADR-0034 Workspace Delivery / RemoteApp — integrated onto capstone main (DARK). NOT deployed/armed. 🟢**
+  PR #316 rebased onto current `main` (after Execution Engine capstone #315/#317). **Migration reconciliation:**
+  #316's `hosted_workspace 0003/0004` (delivery) collided with main's `0003` (execution_enabled) + `0004`
+  (execution_binding); regenerated a single deterministic `0005_workspace_delivery_fields` on main's `0004`,
+  repointed `mt5 0009` dependency; additive/reversible; no migration arms execution or opts customers in.
+  **Two-node authority (documented + pinned):** `execution_node` (order routing, capstone) and `workspace_node`
+  (RemoteApp delivery, #316) are distinct durable facts — delivery reads ONLY `workspace_node`, execution ONLY
+  `execution_node`; a RemoteApp connection (`remoteapp_ready`/`delivery_state=CONNECTED`) NEVER authorises an
+  order (`tests_delivery_node_authority.py`). **Single-writer:** removed one accidental cross-write — the
+  delivery writer no longer stamps the M3c-owned `last_correlation_id` (delivery owns
+  `last_delivery_correlation_id`); it never touches `canonical_state`/`proj_*`/`execution_node`. Owner-bound
+  mint (no staff bypass), credential only inside the AES token, DARK-first, fail-closed `DA_*`. `execution`+
+  `hosted_workspace`+`mt5` **1200 tests green**; 8-lens adversarial review recorded on the PR. Architecture §9;
+  host change (RDS/RemoteApp/licensing/AppLocker/NTFS-ACL) is a separate Sponsor gate
+  (`WORKSPACE_DELIVERY_HOST_CERTIFICATION.md`). Both flags default OFF; no order; no host action.
+
 - **2026-08-08 — ADR-0034 Execution Engine CAPSTONE — workspace→node binding + routing/claim enforcement (DARK). NOT deployed/armed. 🟢**
   Branch `feat/adr0034-execution-capstone` off main `cc84117` (after #315 merged). Closes the produce→claim→
   execute routing capstone so a hosted workspace resolves to EXACTLY ONE authorised execution node.

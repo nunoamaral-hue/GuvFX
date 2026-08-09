@@ -1,5 +1,21 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ ADR-0034 Workspace Delivery / RemoteApp — integrated onto capstone main, repository-complete (DARK) (2026-08-09)
+PR #316 **rebased onto current `main`** (after the Execution Engine capstone #315/#317) — one coherent
+subsystem. The migration collision (#316's `hosted_workspace 0003/0004` vs main's) is resolved: the delivery
+migration is regenerated as `0005_workspace_delivery_fields` on main's `0004`; `mt5 0009` dependency
+repointed; graph linear + deterministic; fresh-DB migrate proven by the suite. **Two-node authority
+invariant** documented + pinned (`tests_delivery_node_authority.py`): `execution_node` (order routing) and
+`workspace_node` (RemoteApp delivery) are distinct durable facts — delivery reads only `workspace_node`,
+execution only `execution_node`, and a RemoteApp connection never grants execution. Single-writer boundary
+re-proved; one accidental cross-write (`last_correlation_id`) removed by giving delivery its own
+`last_delivery_correlation_id`. Owner-bound mint (no staff bypass), credential only inside the AES token,
+DARK-first, fail-closed `DA_*`. `execution`+`hosted_workspace`+`mt5` **1200 tests green**; adversarial review
+(8 lenses) recorded on the PR. Host change (RDS/RemoteApp/licensing/AppLocker/NTFS-ACL) stays a Sponsor gate —
+`docs/operations/hosted-workspace/WORKSPACE_DELIVERY_HOST_CERTIFICATION.md`. Architecture §9.
+**Bounded next action (Chief Architect):** review/merge the rebased #316; then rebase the parked Onboarding
+PR #318 (its `owner`-FK migration renumbers after `0005`). No host/production action without a Sponsor gate.
+
 ## ▶ ADR-0034 Execution Engine CAPSTONE — repository-complete (DARK); disposable-demo trade is Nuno's (2026-08-08)
 On branch `feat/adr0034-execution-capstone` (off main `cc84117`; #315 merged): the durable workspace→node
 binding + provisioning contract + routing/claim enforcement close the produce→claim→execute routing capstone
