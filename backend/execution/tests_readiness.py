@@ -109,7 +109,14 @@ class ProviderBTests(TestCase):
                     proj_execution_ready=True, last_decision_at=timezone.now(),
                     execution_enabled=True)  # ADR-0034 Execution Engine — the explicit per-workspace ARM
         base.update(kw)
-        return HostedMt5Workspace.objects.create(trading_account=self.acct, **base)
+        ws = HostedMt5Workspace.objects.create(trading_account=self.acct, **base)
+        # ADR-0034 Onboarding — a fully-ready account is one the customer has CONFIRMED. Stamp the durable
+        # ACK so the confirm precondition is satisfied for the ready-path tests (the unconfirmed negative
+        # test below clears it explicitly).
+        if self.acct.workspace_confirmed_at is None:
+            self.acct.workspace_confirmed_at = timezone.now()
+            self.acct.save(update_fields=["workspace_confirmed_at"])
+        return ws
 
     def test_ready_without_password_or_validated(self):
         self._ready_ws()
@@ -139,6 +146,24 @@ class ProviderBTests(TestCase):
         ws.save()
         self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
                          R.RW_OBSERVATION_STALE)
+
+    def test_unconfirmed_account_fails_closed(self):
+        # ADR-0034 Onboarding — connected + matched + fresh, but the customer has NOT confirmed the
+        # discovered broker account is theirs ⇒ never eligible. The human ACK is a hard precondition.
+        self._ready_ws()
+        self.acct.workspace_confirmed_at = None
+        self.acct.save(update_fields=["workspace_confirmed_at"])
+        self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                         R.RW_NOT_CONFIRMED)
+
+    def test_confirm_precondition_ordered_after_match(self):
+        # Reachability/order: an UNMATCHED unconfirmed workspace still reports the SPECIFIC mismatch (match is
+        # checked first), so RW_NOT_CONFIRMED is only ever reported once there is a real account to confirm.
+        self._ready_ws(proj_account_match=False)
+        self.acct.workspace_confirmed_at = None
+        self.acct.save(update_fields=["workspace_confirmed_at"])
+        self.assertEqual(R.PersistentWorkspaceProvider().evaluate(self.acct).reason_code,
+                         R.RW_ACTIVE_ACCOUNT_MISMATCH)
 
     def test_not_ready_trade_disjunct_only(self):
         # Mutation adequacy for the compound RW_WORKSPACE_NOT_READY (readiness.py:150) — disjunct 1 ONLY:

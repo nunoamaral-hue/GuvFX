@@ -34,7 +34,8 @@ def _account(*, login="700900", server="IS6-Demo", node=True, ws=True, armed=Tru
     tn = TerminalNode.objects.create(hostname=f"node-{login}") if node else None
     acct = TradingAccount.objects.create(
         user=user, name="a", broker_name="B", account_number=login, is_demo=True,
-        broker_server=srv, readiness_provider=PERSISTENT_WORKSPACE, terminal_node=tn)
+        broker_server=srv, readiness_provider=PERSISTENT_WORKSPACE, terminal_node=tn,
+        workspace_confirmed_at=timezone.now())  # ADR-0034 Onboarding — a ready account is a CONFIRMED account
     if ws:
         HostedMt5Workspace.objects.create(
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,

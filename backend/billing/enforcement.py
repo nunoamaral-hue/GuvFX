@@ -37,6 +37,7 @@ _ENFORCEABLE_CAPABILITIES = frozenset(
         "can_run_backtests",
         "can_assign_strategies",
         "can_deploy_automation",
+        "can_use_hosted_workspace",  # ADR-0034 Onboarding — MAY request/use a Hosted Workspace (Access gate)
     }
 )
 

@@ -83,7 +83,8 @@ class HostedClaimEndpointPositiveControlTests(TestCase):
         node = TerminalNode.objects.create(hostname="node-pos")   # defaults status=ACTIVE
         acct = TradingAccount.objects.create(
             user=user, name="A", account_number="700111", is_demo=True, broker_name="DemoBroker",
-            broker_server=server, readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node)
+            broker_server=server, readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node,
+            workspace_confirmed_at=timezone.now())  # ADR-0034 Onboarding — armed ⇒ confirmed
         HostedMt5Workspace.objects.create(
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,
             proj_trade_allowed=True, proj_account_match=True, proj_execution_ready=True,
@@ -116,7 +117,8 @@ class HostedClaimEndpointPositiveControlTests(TestCase):
         node = TerminalNode.objects.create(hostname="node-nn")
         acct = TradingAccount.objects.create(
             user=user, name="A", account_number="700222", is_demo=True, broker_name="DemoBroker",
-            broker_server=server, readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node)
+            broker_server=server, readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node,
+            workspace_confirmed_at=timezone.now())  # ADR-0034 Onboarding — armed ⇒ confirmed
         HostedMt5Workspace.objects.create(
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,
             proj_trade_allowed=True, proj_account_match=True, proj_execution_ready=True,
@@ -139,7 +141,8 @@ class HostedClaimEndpointPositiveControlTests(TestCase):
         node = TerminalNode.objects.create(hostname=node_hostname)
         acct = TradingAccount.objects.create(
             user=user, name="A", account_number=login, is_demo=True, broker_name="DemoBroker",
-            broker_server=server, readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node)
+            broker_server=server, readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node,
+            workspace_confirmed_at=timezone.now())  # ADR-0034 Onboarding — armed ⇒ confirmed
         HostedMt5Workspace.objects.create(
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,
             proj_trade_allowed=True, proj_account_match=True, proj_execution_ready=True,

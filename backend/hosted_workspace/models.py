@@ -21,6 +21,7 @@ the attach model is that GuvFX never receives, stores, or transports the broker 
 """
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 from hosted_workspace.state_machine import WorkspaceLifecycleState, WorkspaceReason
@@ -164,6 +165,12 @@ class HostedMt5Workspace(models.Model):
         related_name="bound_hosted_workspaces")
     execution_binding_generation = models.PositiveIntegerField(default=0)
 
+    # --- ADR-0034 Onboarding: owning user -------------------------------------------------------------
+    # There is NO separate ``owner`` FK. Ownership is the ONE immutable fact ``trading_account.user`` (the
+    # OneToOne workspace<->account binding is immutable, so the owner cannot drift). Both onboarding and the
+    # delivery authority derive the owner from ``trading_account.user`` — a single source of truth, no
+    # duplicated durable relationship to keep in sync (ADR-0034 §9 / Onboarding simplification review).
+
     _IMMUTABLE_BINDING = ("workspace_uuid", "trading_account_id")
 
     class Meta:
@@ -173,8 +180,9 @@ class HostedMt5Workspace(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        """Enforce the immutable workspace-uuid / owner binding after creation (mirrors
-        ``AccountRuntime.save``). The guard's extra fetch runs only when a bound field is touched."""
+        """Enforce the immutable workspace-uuid / trading-account binding after creation (mirrors
+        ``AccountRuntime.save``). The guard's extra fetch runs only when a bound field is touched. Ownership is
+        NOT a separate field — it is ``trading_account.user``, made immutable by this same binding guard."""
         if not self._state.adding:
             uf = kwargs.get("update_fields")
             touches_binding = uf is None or any(
