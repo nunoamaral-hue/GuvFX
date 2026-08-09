@@ -53,6 +53,16 @@
   HIGH/MEDIUM; two self-introduced LOW defects (completion gate node-liveness bug; hand-written emit literal)
   were corrected. Focused 90/90, full `execution`+`hosted_workspace` 1128, `make check` green (backend 3323).
   A round-3 convergence audit is the final gate. DARK/flags-OFF; no migration; no order placed.
+- **CONVERGED — Execution Engine subsystem repository-complete (PR #317, head `cfb3121`).** Subsystem-led
+  loop-until-dry: 4 completeness-audit rounds + 5 adversarial reviews → **0 surviving in-boundary gaps**
+  (R3 closed orphan-recovery FINISHED provenance + durable-uuid completion gate + pre-send re-verify test
+  pin; R4 closed the close-path identity loop-membership pin + completion-gate NULL-node fail-closed; R5 dry).
+  Every fix-review caught + fixed self-introduced residuals. `make check` green (backend 3329); DARK/flags-OFF;
+  no migration; **no order placed**. Marker `EXECUTION_ENGINE_REPOSITORY_COMPLETE — HOST_CERT_PENDING` — only
+  the manual human-gated disposable-demo order remains (Nuno; Claude never trades). Two non-blocking pre-arming
+  notes in `EXECUTION_ENGINE_CAPSTONE.md` §7c. **Next repo-buildable subsystem = customer-facing Onboarding /
+  provisioning journey** (none exists; only the DARK operator `provision_hosted_execution` command).
+  Workspace Delivery (#316) stays PARKED on the Sponsor host RDS/SPLA decision.
 - **Verified fact vs assumption.** VERIFIED: repository-complete for the full subsystem boundary (binding,
   routing, claim, worker contract, persistence, idempotency, retries, reconciliation, concurrency, telemetry,
   API contract, cert harness, tests, mutation, review, docs); all flags OFF; no migration arms; legacy
