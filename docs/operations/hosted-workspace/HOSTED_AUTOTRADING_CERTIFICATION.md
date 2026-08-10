@@ -132,8 +132,44 @@ read the session-3 runtime but was rejected. The hosted (session-3) observation 
 service** (a session-3 "certified bridge" using a singleton-safe guarded attach). This is a subsystem-level
 architecture decision, not an in-flight implementation choice → **STOP for CA**, no CZ mutation performed.
 
+## Stream 1B — CA ruling (Path A frozen architecture) + Customer Zero certification (2026-08-10)
+
+STOP-B accepted. The legacy :8788 bridge is NOT used. The **frozen Hosted Workspace observer**
+(`hosted_workspace/agent.py` + `agent_host.Mt5WorkspaceHost` guarded attach → `producer` → `consumer`,
+entry `manage.py certify_workspace_observation`) is the authoritative, session-bound reader.
+
+- **Observer deployment (Option i — no AppLocker weakening):** repo+venv relocated to
+  `C:\Program Files\GuvFXObserver\{repo,venv}` (a `%PROGRAMFILES%` path AppLocker allows for the hosted user;
+  proven empirically — the launcher's `user:guvfx_u_1` marker means the relocated python ran under Enforce).
+  Session-bound agent = launcher `run_observer.py` run by task **GuvFX_HostedObserver** (`guvfx_u_1`,
+  InteractiveToken, LeastPrivilege), which does a guarded attach, reads supervision, and exits. It never
+  launches MT5, never logs in, places no order, and carries no credentials.
+- **§7 identity gate (all matched):** target `C:\GuvFX\accounts\1\terminal\terminal64.exe`,
+  `disposable_authorised`, login `****2561` (=1302561), server `IS6Technologies-Demo`, `trade_mode=0` (DEMO),
+  `account_match=true`, `connected=true`, `ipc_available=true`, `process_running=true`, `fresh=true`,
+  singleton (`guvfx_u_1` sessions = 1).
+- **§10 observer safety (blast-radius):** the guarded attach spawned **no** new terminal, left the legacy
+  session-1 terminal untouched, kept `sessions=1`. It never launches (M1 `MT5_GUARDED_ATTACH=1` enforced).
+- **Negative → positive control (the decisive proof):**
+  - `AllowLiveTrading=0` → `trade_allowed=false` (negative control).
+  - `AllowLiveTrading=1` **alone** → `trade_allowed=false` (candidate insufficient).
+  - `AllowLiveTrading=1` **AND** `Enabled=1` → `trade_allowed=true`, `canonical_state=EXECUTION_READY`
+    (**positive control**). **Minimum effective config = both keys.**
+- **§16 restart (graceful, session-bound):** cross-session graceful close from session-0 SSH is impossible
+  ("can only be terminated forcefully"), so the close runs **inside session 3 as `guvfx_u_1`** via task
+  **GuvFX_HostedClose** (`taskkill /IM terminal64.exe` — a non-admin can only WM_CLOSE its *own* terminal, so
+  the legacy terminal is untouched). Relaunch via **GuvFX_HostedRelaunch** (`terminal64.exe /portable`).
+  **Session 3 persists across the terminal exit** (persistent-workspace behaviour), so no RDS logoff and no
+  Sponsor reconnect was needed. `accounts.dat` hash changes on each reconnect — the **expected broker-session
+  refresh** (login preserved), not a credential write. Backup: `common.ini.bak-preAT-20260810-183707`.
+- **§18 execution separation (post-flip, prod):** `HOSTED_MT5_EXECUTION_ENABLED` unset (DARK), ASN #7/#8
+  `AUTO_SHADOW`, **0 open positions**, **0 PLACE_ORDER jobs** (0 jobs of any type) in the 30 min around the
+  flip. AutoTrading ON is capability, not authority.
+
 ## Certification marker
 
-`HOSTED_AUTOTRADING_CONFIGURATION_CERTIFIED` — **WITHHELD** (Phase 4 empirical `trade_allowed==true` proof not
-yet produced; blocked on the reader above). Phase 1 config-mechanism proof and Phase 2 implementation are
-complete and green.
+**`HOSTED_AUTOTRADING_CONFIGURATION_CERTIFIED` — EMITTED (2026-08-10).** Hosted observation targets the
+correct runtime; `trade_allowed` observed false → config applied (`AllowLiveTrading=1` + `Enabled=1`) → MT5
+gracefully restarted in-session → broker reconnected → `trade_allowed` observed **true**; one session, one
+terminal; execution OFF; ASN #7/#8 AUTO_SHADOW; zero orders/positions. (Marker completes on PR #336 merge —
+implementation already writes both required keys; test now asserts `Enabled=1`.)

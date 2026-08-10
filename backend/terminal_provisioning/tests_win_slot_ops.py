@@ -141,6 +141,10 @@ class RuntimeCommonIniTests(SimpleTestCase):
             body = raw.decode("ascii")
             self.assertIn("[Experts]", body)
             self.assertIn("AllowLiveTrading=1", body)
+            # Enabled=1 is empirically REQUIRED (Stream 1B Customer-Zero host proof): AllowLiveTrading=1 ALONE
+            # left terminal_info().trade_allowed=false; only [Experts] AllowLiveTrading=1 AND Enabled=1 flipped
+            # it true. See HOSTED_AUTOTRADING_CERTIFICATION.md.
+            self.assertIn("Enabled=1", body)
             self.assertIn("Login=0", body)                     # account-INDEPENDENT
             self.assertNotIn("Password", body)                 # NO credentials
             self.assertIn(b"\r\n", raw)                        # CRLF, host line endings
