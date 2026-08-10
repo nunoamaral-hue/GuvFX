@@ -29,6 +29,7 @@
   "src/components/broker/ValidationHistoryTable.tsx",
   "src/components/broker/ValidationTimelinePanel.tsx",
   "src/components/marketplace/SignalCopyReadiness.tsx",
+  "src/components/onboarding/HostedWorkspaceJourney.tsx",
   "src/components/onboarding/OnboardingProgress.tsx",
   "src/components/onboarding/OnboardingShell.tsx",
   "src/components/onboarding/steps/AccountConnectionStep.tsx",
