@@ -1,5 +1,5 @@
 <#
-  TX-1A / TX-1B — GuvFX per-account Windows materialisation (idempotent).
+  TX-1A / TX-1B - GuvFX per-account Windows materialisation (idempotent).
 
   Creates a DEDICATED, NON-ADMINISTRATOR local Windows user (guvfx_u_<id>) and a
   DEDICATED MT5 runtime tree (C:\GuvFX\accounts\<id>\{terminal,profiles,logs,config,audit}).
@@ -40,7 +40,7 @@ try {
     return
   }
 
-  # ── Identity (non-admin) ──
+  # -- Identity (non-admin) --
   $existing = Get-LocalUser -Name $Username -ErrorAction SilentlyContinue
   if ($existing) {
     $result.user_existed = $true
@@ -61,7 +61,7 @@ try {
   $adminMembers = (Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
   $result.is_admin = [bool]($adminMembers -match ("\\" + [regex]::Escape($Username) + "$"))
 
-  # ── Runtime tree (isolated per account) ──
+  # -- Runtime tree (isolated per account) --
   foreach ($s in $Subdirs) {
     $p = Join-Path $RuntimeRoot $s
     if (Test-Path $p) { $result.dirs_existing += $p }

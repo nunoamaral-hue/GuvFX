@@ -49,6 +49,17 @@ def hosted_observation_scheduler_enabled() -> bool:
     return _flag("HOSTED_OBSERVATION_SCHEDULER_ENABLED")
 
 
+def hosted_slot_prep_enabled() -> bool:
+    """Beta Readiness Stream 4 — the gate for the host PROVISIONING engine (``prepare_hosted_slot``: create the
+    Windows identity + folders + NTFS ACL + golden runtime + RDP + RemoteApp-verify + AppLocker AuditOnly for a
+    hosted slot). DEFAULT OFF, and DISTINCT from the master ``HOSTED_PERSISTENT_MT5_ENABLED`` — two-level
+    darkness: while this is off, node allocation advances PROVISIONING→WAITING_FOR_LOGIN exactly as before (no
+    slot-prep gate); once on, allocation GATES that transition on a prepared slot. Even armed, the host-executor
+    is a pluggable seam that is ``None`` in the repository-only phase, so every host step fails closed and no
+    host is contacted. NEVER arms execution and NEVER performs a broker login (the engine stops before login)."""
+    return _flag("HOSTED_SLOT_PREP_ENABLED")
+
+
 def hosted_workspace_onboarding_enabled() -> bool:
     """ADR-0034 Onboarding — the SUBSYSTEM-LEVEL gate for the customer-facing Hosted Workspace onboarding /
     provisioning journey (request → provision-intent → node bind → observe → discover → confirm → ready →

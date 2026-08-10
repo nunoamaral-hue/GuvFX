@@ -190,6 +190,18 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
             hostname, reason = candidate.hostname, ALLOC_OK
 
     if needs_advance:
+        # Stream 4 GATE: when the host-provisioning engine is armed, advance PROVISIONING → WAITING_FOR_LOGIN
+        # ONLY once the customer's Windows slot actually exists on the host (identity+folders+ACL+runtime+RDP+
+        # RemoteApp+AppLocker prep). DARK by default: while HOSTED_SLOT_PREP_ENABLED is off this branch is not
+        # taken and allocation advances exactly as before (zero behaviour change / no regression). Armed but
+        # with the dark host-executor, prepare fails closed (host_executor_unavailable) and we do NOT advance —
+        # the workspace stays at PROVISIONING and is re-driven idempotently next cycle. See ADR-0036 (Stream 4).
+        from hosted_workspace.flags import hosted_slot_prep_enabled
+        if hosted_slot_prep_enabled():
+            from hosted_workspace.slot_preparation import prepare_hosted_slot
+            prep = prepare_hosted_slot(workspace, actor=actor, request=request)
+            if not prep.prepared:
+                return AllocResult(False, prep.reason, hostname)
         _advance_to_awaiting_login(workspace)
     return AllocResult(True, reason, hostname)
 
