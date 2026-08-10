@@ -1,5 +1,5 @@
 <#
-  TX-1D — populate a per-account dedicated VIEWER MT5 runtime (idempotent).
+  TX-1D - populate a per-account dedicated VIEWER MT5 runtime (idempotent).
 
   Builds a clean golden MT5 template once (binaries copied from the live
   account_001 instance, EXCLUDING that account's data/credentials), then copies
@@ -36,7 +36,7 @@ $result = [ordered]@{
 }
 
 try {
-  # ── 1. Ensure clean golden template (binaries only; exclude exec data/creds) ──
+  # -- 1. Ensure clean golden template (binaries only; exclude exec data/creds) --
   if (-not (Test-Path (Join-Path $GoldenRoot "terminal64.exe"))) {
     New-Item -ItemType Directory -Path $GoldenRoot -Force | Out-Null
     # robocopy: copy tree, EXCLUDE volatile/credential dirs+files of the exec instance
@@ -47,7 +47,7 @@ try {
     $result.golden_created = $true
   }
 
-  # ── 2. Populate per-account terminal\ from golden (idempotent) ──
+  # -- 2. Populate per-account terminal\ from golden (idempotent) --
   $marker = Join-Path $RuntimeRoot "runtime_version.json"
   $needCopy = $Force -or -not (Test-Path (Join-Path $TermDir "terminal64.exe"))
   if (-not $needCopy) {
@@ -59,7 +59,7 @@ try {
     $result.copied = $true
   }
 
-  # ── 3. VIEW-ONLY config: AutoTrading + Experts OFF, no creds, no EAs ──
+  # -- 3. VIEW-ONLY config: AutoTrading + Experts OFF, no creds, no EAs --
   New-Item -ItemType Directory -Path (Join-Path $TermDir "config") -Force | Out-Null
   $common = Join-Path $TermDir "config\common.ini"
   $cfg = @(
@@ -81,7 +81,7 @@ try {
   Remove-Item (Join-Path $TermDir "config\accounts.dat") -ErrorAction SilentlyContinue
   $result.terminal_exe = Test-Path (Join-Path $TermDir "terminal64.exe")
 
-  # ── 4. Version marker ──
+  # -- 4. Version marker --
   $meta = @{ build=$Build; account_id=$AccountId; view_only=$true; populated_at=(Get-Date).ToString("o") } | ConvertTo-Json -Compress
   Set-Content -Path $marker -Value $meta -Encoding ASCII
 

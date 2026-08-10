@@ -1,5 +1,5 @@
 <#
-  TX-1E — grant/revoke RDP logon for a dedicated viewer identity (reversible).
+  TX-1E - grant/revoke RDP logon for a dedicated viewer identity (reversible).
 
   Adds guvfx_u_<id> to the local "Remote Desktop Users" group so a dedicated RDP
   viewer session is possible. Scoped STRICTLY to guvfx_u_*; never grants admin.
@@ -7,7 +7,7 @@
   policy, and never touches Administrator.
 
   NOTE: without the RDS role (forbidden this phase), the host permits only the
-  standard 2 concurrent admin-mode sessions; this only authorises the identity —
+  standard 2 concurrent admin-mode sessions; this only authorises the identity -
   it does not change the concurrency ceiling.
 #>
 param(
