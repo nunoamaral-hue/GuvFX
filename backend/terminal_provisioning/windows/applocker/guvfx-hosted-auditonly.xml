@@ -1,0 +1,97 @@
+<!--
+  GuvFX Hosted Workspace - AppLocker candidate policy (AUDITONLY).
+
+  Purpose: confine the hosted RemoteApp customer (a guvfx_u_<id> non-admin user) to MetaTrader 5 only,
+  while preserving Administrator operator-recovery and not disturbing the legacy executor.
+
+  Posture: default-allow baseline + explicit DENY of shell/escape binaries scoped to the HOSTED USER SID.
+    - Administrators (S-1-5-32-544): Allow * in every collection  -> operator recovery preserved.
+    - Everyone (S-1-1-0): Allow %WINDIR%, %PROGRAMFILES%, %PROGRAMFILES(X86)% and the portable runtime
+      C:\GuvFX\accounts\*  -> MT5 (portable, outside Program Files) and all Windows/RDS/RemoteApp infra run.
+    - Hosted user ({{HOSTED_USER_SID}}): Deny the shell/escape binaries. Deny overrides Allow, so these
+      MUST be scoped to the hosted SID only - a Deny on Everyone would also lock Administrators out.
+
+  EnforcementMode="AuditOnly" everywhere: NOTHING is blocked; every would-be-block is logged (event 8003)
+  to Microsoft-Windows-AppLocker. This is a NON-BLOCKING candidate - the deny list is validated against a
+  real customer workload BEFORE any switch to Enabled/Enforce.
+
+  The Dll collection is deliberately NOT configured (left unrestricted) in this pass: DLL-level confinement
+  is a separate, heavier refinement. Exe/Msi/Script cover process-launch confinement, which is the goal.
+
+  {{HOSTED_USER_SID}} is substituted at deploy time by Set-GuvfxAppLocker.ps1 (resolves the guvfx_u_<id>
+  account SID on the host). Rule GUIDs are fixed so redeploys are idempotent.
+-->
+<AppLockerPolicy Version="1">
+  <RuleCollection Type="Exe" EnforcementMode="AuditOnly">
+    <FilePathRule Id="b1a00000-0000-0000-0000-000000000001" Name="(Admins) Allow all EXE" Description="Operator recovery" UserOrGroupSid="S-1-5-32-544" Action="Allow">
+      <Conditions><FilePathCondition Path="*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1a00000-0000-0000-0000-000000000002" Name="(Everyone) Windows dir EXE" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%WINDIR%\*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1a00000-0000-0000-0000-000000000003" Name="(Everyone) Program Files EXE" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%PROGRAMFILES%\*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1a00000-0000-0000-0000-000000000004" Name="(Everyone) GuvFX hosted runtime EXE" Description="Portable MT5 runtime" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="C:\GuvFX\accounts\*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-000000000010" Name="(Hosted) Deny cmd.exe" Description="Confine customer - no command shell" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\cmd.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-000000000011" Name="(Hosted) Deny powershell.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\powershell.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-000000000012" Name="(Hosted) Deny powershell_ise.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\powershell_ise.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-000000000013" Name="(Hosted) Deny pwsh.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\pwsh.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-000000000014" Name="(Hosted) Deny explorer.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\explorer.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-000000000015" Name="(Hosted) Deny regedit.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\regedit.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-000000000016" Name="(Hosted) Deny mmc.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\mmc.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-000000000017" Name="(Hosted) Deny taskmgr.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\taskmgr.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-000000000018" Name="(Hosted) Deny wscript.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\wscript.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-000000000019" Name="(Hosted) Deny cscript.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\cscript.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-00000000001a" Name="(Hosted) Deny mshta.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\mshta.exe" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b1d00000-0000-0000-0000-00000000001b" Name="(Hosted) Deny control.exe" Description="" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
+      <Conditions><FilePathCondition Path="*\control.exe" /></Conditions>
+    </FilePathRule>
+  </RuleCollection>
+  <RuleCollection Type="Msi" EnforcementMode="AuditOnly">
+    <FilePathRule Id="b2a00000-0000-0000-0000-000000000001" Name="(Admins) Allow all MSI" Description="Operator recovery" UserOrGroupSid="S-1-5-32-544" Action="Allow">
+      <Conditions><FilePathCondition Path="*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b2a00000-0000-0000-0000-000000000002" Name="(Everyone) Windows Installer cache MSI" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%WINDIR%\Installer\*" /></Conditions>
+    </FilePathRule>
+  </RuleCollection>
+  <RuleCollection Type="Script" EnforcementMode="AuditOnly">
+    <FilePathRule Id="b3a00000-0000-0000-0000-000000000001" Name="(Admins) Allow all scripts" Description="Operator recovery" UserOrGroupSid="S-1-5-32-544" Action="Allow">
+      <Conditions><FilePathCondition Path="*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b3a00000-0000-0000-0000-000000000002" Name="(Everyone) Windows dir scripts" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%WINDIR%\*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b3a00000-0000-0000-0000-000000000003" Name="(Everyone) Program Files scripts" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%PROGRAMFILES%\*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="b3a00000-0000-0000-0000-000000000004" Name="(Everyone) GuvFX runtime scripts" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="C:\GuvFX\accounts\*" /></Conditions>
+    </FilePathRule>
+  </RuleCollection>
+</AppLockerPolicy>
