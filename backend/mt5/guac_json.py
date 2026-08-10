@@ -192,6 +192,19 @@ def build_remoteapp_rdp_payload(
     # confirm the disable takes effect on the deployed guacd (RULE 11).
     parameters["disable-audio"] = "true"          # server -> client audio output OFF (the effective key)
     parameters["enable-audio-input"] = "false"    # microphone OFF (explicit; guacd default is already off)
+    # ADR-0034 Customer-Zero input completion (RemoteApp payload ONLY; the shared base and the certified
+    # ``build_dedicated_rdp_payload`` / legacy desktop path stay byte-for-byte unchanged):
+    #  - Clipboard: enable browser->MT5 PASTE only. Broker passwords may contain symbols and a customer should
+    #    not have to retype a complex password; the RemoteApp already isolates the customer to MT5 alone.
+    #    ``disable-paste`` gates client(browser)->server(MT5); ``disable-copy`` gates server(MT5)->client. We
+    #    turn paste ON and deliberately leave copy OFF (inherited "true") to minimise MT5->browser exposure.
+    #    This touches ONLY the clipboard channel — drive redirection, file transfer and printing stay disabled.
+    #  - Keyboard: pin ``server-layout`` so Guacamole (1.5.5) translates scancodes for the Customer-Zero UK
+    #    session; without it symbol keys (e.g. "#") mis-map from the Sponsor's Mac. en-gb-qwerty configures the
+    #    RDP session's keyboard layout, self-consistently with what guacd sends. (Host note: the guvfx_u_1
+    #    preload lists 0409/en-US first with 0809/en-GB also installed; server-layout sets the session layout.)
+    parameters["disable-paste"] = "false"         # client(browser) -> server(MT5) clipboard PASTE enabled
+    parameters["server-layout"] = "en-gb-qwerty"  # scancode translation for the UK-oriented CZ session
     if remote_app_dir:
         parameters["remote-app-dir"] = remote_app_dir
     if remote_app_args:
