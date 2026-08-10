@@ -22,6 +22,7 @@
   "src/app/(app)/charts/page.tsx",
   "src/app/(app)/dashboard/page.tsx",
   "src/app/(app)/layout.tsx",
+  "src/app/(app)/onboarding/hosted/page.tsx",
   "src/app/(app)/onboarding/page.tsx",
   "src/app/(app)/operations/accounts/[id]/page.tsx",
   "src/app/(app)/operations/accounts/page.tsx",
