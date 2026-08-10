@@ -29,3 +29,24 @@ inferred). Application code is unusually clean: 1 backend `TODO` (`strategies/ex
 **Highest-leverage sequence:** (1) DB backup + (12) NAS service-account → close the top data-loss SPOF; then
 (2)/(4) secret posture as an owned packet; (7) Administrator→dedicated-slot retirement (ADR-gated) is the
 largest architectural item gating true multi-tenant isolation. No secret values were read or printed.
+
+---
+
+## Beta UX Backlog (NOT certification blockers)
+
+Per the Chief Architect's Final Certification packet, the following are explicitly reclassified as **Beta UX
+backlog** — they do **not** block Customer Zero certification and are tracked as product polish for the
+post-certification Hosted Workspace UX workstream (see `HOSTED_WORKSPACE_UX_ROADMAP.md`). None affects the
+security/execution/isolation boundary.
+
+| Item | Category | Current state | Roadmap ref |
+|------|----------|---------------|-------------|
+| Mac native keyboard shortcuts (Cmd → Ctrl mapping, e.g. Cmd+V) | Beta UX | Right-click paste works; Cmd+V does not map to RDP Ctrl+V | R10 |
+| `#` / `@` / `£` and other special-char mapping on non-US client layouts | Beta UX | `server-layout` pinned `en-us-qwerty` (server layout); UK/Mac clients mismap symbols | R11 |
+| Clipboard polish (paste helper / clearer affordance; copy-out stays disabled) | Beta UX | browser→MT5 paste enabled; MT5→browser copy intentionally off | R9 |
+| Fullscreen MT5 | Beta UX | not implemented | R1 |
+| Expand/collapse + hide surrounding navigation | Beta UX | not implemented | R2, R5 |
+| Responsive / auto-resize MT5 sizing | Beta UX | `resize-method=display-update` set; resize-event wiring not done | R3, R4 |
+
+These were previously listed as MEDIUM/LOW debt (item #9); they are now formally owned by the UX roadmap and
+removed from the certification-blocking set.
