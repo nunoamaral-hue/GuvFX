@@ -104,6 +104,34 @@ sequence now includes `write_runtime_common_ini`, and idempotent re-materialise 
   provable — emitting the certification without the `trade_allowed==true` measurement would violate the
   packet's "emit ONLY when proven".
 
+## Supervision seam (Path A) — STOP CONDITION B (observation identity)
+
+CA chose Path A: add `/mt5/supervision` to the canonical bridge. Investigation of the **running** bridge
+found an observation-identity mismatch that blocks CZ certification via this seam:
+
+- Canonical bridge = `C:\GuvFX\mt5_signal_bridge.py` (pid 2016, **session 1**, launched by task
+  `GuvFX_SignalBridge` → `start_signal_bridge.bat`, watched by `GuvFX_BridgeWatchdog`; not a service).
+  Auth = `GUVFX_AGENT_TOKEN` (fail-closed). Routes: `/health`, `/mt5/order`, `/mt5/order_check`, … (no
+  `/mt5/supervision`). Attaches via `mt5.initialize(path=MT5_TERMINAL_PATH)`.
+- **`start_signal_bridge.bat` sets `MT5_TERMINAL_PATH=C:\Program Files\IS6 Technologies MT5 Terminal\
+  terminal64.exe`** — the **LEGACY** terminal (session 1). The bridge log confirms it drives `account_id=1`
+  (=1302561).
+- **Two terminals are both logged into 1302561:** legacy (session 1, what the bridge sees) and CZ hosted
+  (`C:\GuvFX\accounts\1\terminal`, session 3). So a `/mt5/supervision` endpoint on this bridge would report
+  the **legacy** terminal's `trade_allowed`, and the `account_login=1302561` check would **falsely pass**
+  while observing the wrong runtime — exactly the §11 trap.
+- **Root cause is structural:** MT5 IPC is per-session. CZ's hosted terminal is in session 3; the bridge is
+  in session 1. Reading CZ's session-3 `trade_allowed` requires an MT5 attach **in session 3** against the
+  live CZ runtime — which is the very attach Path (B) was rejected for (duplicate-IPC-ownership risk on the
+  certified session). Repointing the session-1 bridge's `MT5_TERMINAL_PATH` at `accounts\1` would make it try
+  to LAUNCH a second instance at CZ's data-dir (cross-session) → singleton violation, and would break the
+  legacy 1302561 path.
+
+**Consequence:** Path (A) on the *existing* bridge certifies the wrong terminal; Path (B) is the only way to
+read the session-3 runtime but was rejected. The hosted (session-3) observation path is a **missing supported
+service** (a session-3 "certified bridge" using a singleton-safe guarded attach). This is a subsystem-level
+architecture decision, not an in-flight implementation choice → **STOP for CA**, no CZ mutation performed.
+
 ## Certification marker
 
 `HOSTED_AUTOTRADING_CONFIGURATION_CERTIFIED` — **WITHHELD** (Phase 4 empirical `trade_allowed==true` proof not
