@@ -120,6 +120,62 @@ class RobocopyExitTests(SimpleTestCase):
             self.assertEqual(wso.classify_robocopy_exit(rc), "failed", rc)
 
 
+class RuntimeCommonIniTests(SimpleTestCase):
+    """HOSTED_AUTOTRADING — the per-runtime execution config (config\\common.ini, AllowLiveTrading=1) and its
+    REQUIRED tree-digest exclusion (or idempotent re-materialise's destination_digest_matches would fail)."""
+
+    def _ops(self, root):
+        return wso.RealSlotWindowsOps(golden_dir=root, slots_root=root)
+
+    def test_write_runtime_common_ini_enables_autotrading_and_carries_no_credentials(self):
+        if os.name == "nt":
+            self.skipTest("off-host filesystem assertion")
+        import tempfile, shutil
+        tmp = tempfile.mkdtemp()
+        try:
+            slot = os.path.join(tmp, "slot"); os.makedirs(slot)
+            self._ops(tmp).write_runtime_common_ini(slot)
+            path = os.path.join(slot, "config", "common.ini")
+            with open(path, "rb") as fh:
+                raw = fh.read()
+            body = raw.decode("ascii")
+            self.assertIn("[Experts]", body)
+            self.assertIn("AllowLiveTrading=1", body)
+            self.assertIn("Login=0", body)                     # account-INDEPENDENT
+            self.assertNotIn("Password", body)                 # NO credentials
+            self.assertIn(b"\r\n", raw)                        # CRLF, host line endings
+            # It must NEVER create accounts.dat (credentials come from the customer's own broker login).
+            self.assertFalse(os.path.exists(os.path.join(slot, "config", "accounts.dat")))
+            # Idempotent: a second write is a byte-identical overwrite.
+            self._ops(tmp).write_runtime_common_ini(slot)
+            with open(path, "rb") as fh:
+                self.assertEqual(fh.read(), raw)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_tree_digest_excludes_common_ini_but_not_other_files(self):
+        if os.name == "nt":
+            self.skipTest("off-host filesystem assertion")
+        import tempfile, shutil
+        tmp = tempfile.mkdtemp()
+        try:
+            slot = os.path.join(tmp, "slot"); os.makedirs(slot)
+            with open(os.path.join(slot, "terminal64.exe"), "wb") as fh:
+                fh.write(b"golden-exe")                          # a golden-like file so the tree isn't empty
+            ops = self._ops(tmp)
+            before = ops._tree_digest(slot)
+            ops.write_runtime_common_ini(slot)
+            self.assertEqual(before, ops._tree_digest(slot),
+                             "config/common.ini MUST be excluded from the tree digest, like OWNER_FILE")
+            # RULE 11 positive control: a DIFFERENT file in config/ DOES change the digest, so the exclusion
+            # is specific to common.ini and not a blanket 'ignore config/'.
+            with open(os.path.join(slot, "config", "other.ini"), "w") as fh:
+                fh.write("x")
+            self.assertNotEqual(before, ops._tree_digest(slot))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class SlotProcessSelectionTests(SimpleTestCase):
     SLOT = r"C:\GuvFX\beta\slots\2\terminal"
 

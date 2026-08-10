@@ -38,6 +38,31 @@ PORTABLE_FILE = ".guvfx_portable"
 GOLDEN_MANIFEST_FILE = ".guvfx_golden_manifest"
 RUNTIME_EXECUTABLE = "terminal64.exe"
 
+#: Per-runtime execution config. MT5 reads ``[Experts] AllowLiveTrading`` from ``config\common.ini`` at
+#: startup; ``AllowLiveTrading=1`` makes ``terminal_info().trade_allowed`` true once an account is connected —
+#: the precondition the hosted order path needs. It is written per-runtime AFTER ``copy_golden`` (the golden
+#: image MUST NOT contain it — ``install_pool.ps1`` ``Test-GoldenImage`` refuses a golden with
+#: ``config\common.ini``, RULE 10) and, exactly like ``OWNER_FILE``, is EXCLUDED from ``_tree_digest`` so the
+#: destination still matches the golden digest and idempotent re-materialise stays green. The file is a fixed
+#: GLOBAL terminal setting written into a fixed slot dir with ``Login=0`` and NO credentials — the customer's
+#: own interactive broker login later writes ``accounts.dat``/``Login``.
+RUNTIME_CONFIG_DIR = "config"
+RUNTIME_COMMON_INI = "common.ini"
+RUNTIME_COMMON_INI_BODY = (
+    "[Common]\r\n"
+    "Login=0\r\n"
+    "ProxyEnable=0\r\n"
+    "CertInstall=0\r\n"
+    "NewsEnable=0\r\n"
+    "\r\n"
+    "[Experts]\r\n"
+    "AllowLiveTrading=1\r\n"
+    "AllowDllImport=0\r\n"
+    "Enabled=1\r\n"
+    "Account=0\r\n"
+    "Profile=0\r\n"
+)
+
 #: [R:toolhelp-bitness-and-retry], [R:enumeration-by-directory-algorithm]
 #: ADR-0016 Option A: the slot's own process is opened at PROCESS_QUERY_LIMITED_INFORMATION | READ_CONTROL —
 #: exactly the access the launch-time ACE grants the service. LIMITED yields the image path; READ_CONTROL
@@ -443,6 +468,17 @@ class RealSlotWindowsOps(SlotWindowsOps):
         with open(os.path.join(slot_path, OWNER_FILE), "w", encoding="utf-8") as fh:
             fh.write(str(marker_raw))
 
+    def write_runtime_common_ini(self, slot_path: str) -> None:
+        """Assert the execution runtime's AutoTrading config (idempotent). Writes ``config\\common.ini`` with
+        a fixed ``[Experts] AllowLiveTrading=1`` block (ASCII, CRLF — matches the host's line endings). It
+        NEVER writes ``accounts.dat`` and carries NO credentials: a fixed global terminal setting on a fixed
+        slot directory, so it stays a legal Windows primitive. Re-running overwrites with the same bytes, so
+        the file is fully re-asserted on every materialise and is excluded from ``_tree_digest``."""
+        config_dir = os.path.join(slot_path, RUNTIME_CONFIG_DIR)
+        os.makedirs(config_dir, exist_ok=True)
+        with open(os.path.join(config_dir, RUNTIME_COMMON_INI), "w", encoding="ascii", newline="") as fh:
+            fh.write(RUNTIME_COMMON_INI_BODY)
+
     @staticmethod
     def _read_marker(path: str):
         try:
@@ -506,6 +542,11 @@ class RealSlotWindowsOps(SlotWindowsOps):
                 if dirpath == root and name == OWNER_FILE:
                     # The occupancy marker is written INTO the staged tree after the copy, so digesting it
                     # would guarantee the destination digest could never equal the golden one.
+                    continue
+                if dirpath == os.path.join(root, RUNTIME_CONFIG_DIR) and name == RUNTIME_COMMON_INI:
+                    # The per-runtime execution config (write_runtime_common_ini) is likewise written INTO the
+                    # staged tree after the copy; excluded for the SAME reason as OWNER_FILE, or the
+                    # destination digest could never equal the golden and idempotent re-materialise would fail.
                     continue
                 full = os.path.join(dirpath, name)
                 if self._is_reparse(full):
