@@ -108,6 +108,7 @@ class FakeWin:
     # writes
     def copy_golden(self, p): self.calls.append(("copy_golden", p)); self._exists = True
     def write_owner_tag(self, p, raw): self.calls.append(("write_owner_tag", p)); self._marker = raw
+    def write_runtime_common_ini(self, p): self.calls.append(("write_runtime_common_ini", p))
     def move_dir(self, a, b): self.calls.append(("move_dir", a, b)); self._exists = False
 
     def run_task(self, t):
@@ -221,7 +222,11 @@ class MaterialiseTests(SimpleTestCase):
         s, win = _store(), FakeWin(exists=False)
         out = _impls(win, s).materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
         self.assertTrue(out["path_containment_verified"])
-        self.assertEqual([c[0] for c in win.calls], ["copy_golden", "write_owner_tag"])
+        # HOSTED_AUTOTRADING: after copy_golden + write_owner_tag (both inside stage_copy) materialise asserts
+        # the per-runtime AutoTrading config (config\common.ini). It is LAST — after the integrity post-check —
+        # and is excluded from the tree digest so it cannot regress destination_digest_matches.
+        self.assertEqual([c[0] for c in win.calls],
+                         ["copy_golden", "write_owner_tag", "write_runtime_common_ini"])
         self.assertEqual(out["slot"], 1)
         self.assertEqual(out["generation"], 1)
 
@@ -235,6 +240,9 @@ class MaterialiseTests(SimpleTestCase):
         with self.assertRaises(AgentError) as ctx:
             _impls(win, s).materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
         self.assertEqual(ctx.exception.reason_code, "stage_copy_incomplete")
+        # HOSTED_AUTOTRADING: the AutoTrading config is asserted ONLY after the stage's integrity post-check
+        # passes. A failed/incomplete stage must NOT leave a config on an un-startable runtime.
+        self.assertNotIn("write_runtime_common_ini", [c[0] for c in win.calls])
 
     def test_repeat_materialise_is_already_completed_and_copies_nothing(self):
         s, win = _store(), FakeWin(exists=False)
@@ -243,7 +251,11 @@ class MaterialiseTests(SimpleTestCase):
         win.calls.clear()
         out = impls.materialise(canonical_dir="", runtime_uuid=RUUID, base="", context=_ctx(s))
         self.assertTrue(out["idempotent"])
-        self.assertEqual(win.calls, [])
+        # HOSTED_AUTOTRADING behaviour change: an idempotent re-materialise COPIES nothing (no copy_golden /
+        # write_owner_tag) but DOES re-assert the AutoTrading config — a safe overwrite of the same bytes,
+        # kept digest-neutral by the exclusion. So the config is guaranteed present on every drive of the step.
+        self.assertEqual([c[0] for c in win.calls], ["write_runtime_common_ini"])
+        self.assertNotIn("copy_golden", [c[0] for c in win.calls])
 
     def test_every_stage_is_recorded_with_evidence(self):
         s, win = _store(), FakeWin(exists=False)

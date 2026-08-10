@@ -141,5 +141,8 @@ class SlotWindowsOps:
     # writes (the entire mutating surface — four methods)
     def copy_golden(self, slot_path: str) -> None: raise NotImplementedError
     def write_owner_tag(self, slot_path: str, marker_raw: str) -> None: raise NotImplementedError
+    #: Per-runtime execution config (config\common.ini, [Experts] AllowLiveTrading=1). Written AFTER
+    #: copy_golden and excluded from the tree digest; account-independent, carries no credentials.
+    def write_runtime_common_ini(self, slot_path: str) -> None: raise NotImplementedError
     def run_task(self, task_name: str) -> bool: raise NotImplementedError
     def move_dir(self, src: str, dest: str) -> None: raise NotImplementedError

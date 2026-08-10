@@ -224,6 +224,11 @@ class PoolOpImplementations:
         att = self._record(slot, generation, res)
         if att["stage_status"] not in (COMPLETED, ALREADY_COMPLETED):
             raise AgentError(att["reason_code"] or "stage_copy_refused")
+        # Assert the per-runtime AutoTrading execution config AFTER the staged copy passed its integrity
+        # post-checks. config\common.ini is excluded from the tree digest (win_slot_ops._tree_digest), so this
+        # write cannot regress destination_digest_matches on an idempotent re-materialise. Account-independent,
+        # no credentials — a fixed terminal setting on a fixed slot dir. (HOSTED_AUTOTRADING packet.)
+        self.win.write_runtime_common_ini(si.slot_path)
         marker_raw = self._marker(si)
         return self._evidence(runtime_uuid=runtime_uuid, slot=slot, generation=generation, si=si,
                               marker_raw=marker_raw, path_ok=self._containment_verified(si),
