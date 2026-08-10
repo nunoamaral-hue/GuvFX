@@ -38,6 +38,17 @@ def hosted_mt5_active_account_polling_enabled() -> bool:
     return _flag("HOSTED_MT5_ACTIVE_ACCOUNT_POLLING_ENABLED")
 
 
+def hosted_observation_scheduler_enabled() -> bool:
+    """Beta Readiness Stream 2 (G2/G15) — the SCHEDULER-level gate for the periodic autonomous-provisioning
+    cycle (allocate pending workspace nodes + poll hosted observations). DEFAULT OFF, and DISTINCT from the
+    master ``HOSTED_PERSISTENT_MT5_ENABLED`` (which governs whether the cycle's drivers do any work) — two-
+    level darkness: the ``run_hosted_observations`` command is a dormant no-op until this flag is on, and even
+    then it only allocates/observes when the master flag is on. It NEVER arms execution or authorises an
+    order; it only advances PROVISIONING→WAITING_FOR_LOGIN and ingests observations through the certified
+    single writer. Kept independent so the scheduler can be enabled without touching delivery/execution gates."""
+    return _flag("HOSTED_OBSERVATION_SCHEDULER_ENABLED")
+
+
 def hosted_workspace_onboarding_enabled() -> bool:
     """ADR-0034 Onboarding — the SUBSYSTEM-LEVEL gate for the customer-facing Hosted Workspace onboarding /
     provisioning journey (request → provision-intent → node bind → observe → discover → confirm → ready →
