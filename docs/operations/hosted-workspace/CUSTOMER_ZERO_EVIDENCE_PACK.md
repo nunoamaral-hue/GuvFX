@@ -70,6 +70,33 @@ with the legacy terminal; see `LEGACY_RETIREMENT_PLAN.md` §3).
 - **Withheld (evidence not yet produced):** `CUSTOMER_ZERO_REMOTEAPP_ISOLATION_CERTIFIED` (needs behavioural
   escape `8004` evidence), `HOSTED_EXECUTION_CERTIFIED` (needs the Sponsor demo trade).
 
-## 9. Outstanding Sponsor gates
+## 9. Phase-8 final adversarial review (6 lenses, verify pass)
+
+- **HIGH #1 — AppLocker writable-allowed-path bypass (FIXED + re-verified).** The EXE Allow rule over the
+  user-writable runtime tree (`C:\GuvFX\accounts\*`) let a renamed Microsoft-signed shell (cmd.exe copied to
+  `…\x.exe`) run under Enforce, defeating the leaf-name deny list. **Fix:** replaced the path-Allow with a
+  MetaQuotes **publisher** Allow (`O=METAQUOTES LTD., …`). Re-verified on host: `terminal64.exe`→Allowed,
+  renamed-cmd-in-tree→**DeniedByDefault**, cmd.exe→Denied. Corrected policy re-Enforced (Exe/Msi/Script
+  Enabled); hosted MT5 unaffected. My earlier "structural confinement is in place" claim was **wrong** and is
+  corrected here.
+- **HIGH #2 — SURVIVING (requires Sponsor/CA decision). Customer Zero uses the LIVE account id=1 (1302561)
+  as the execution-cert subject.** Account #1 is actively traded by `ti_signals` (asn#8) + `wayond` (asn#7)
+  signal-copy via the legacy bridge. Running the execution-certification demo trade on that account couples
+  the hosted path to a live-trading account. The legacy-retirement plan §4 M4 (legacy logout of 1302561 is a
+  prerequisite) partially mitigates it, but the **cleaner path is a disposable/dedicated demo account for the
+  execution cert**. **Decision needed before the demo-trade gate.** Execution stays DARK meanwhile.
+- **MEDIUM (residuals to harden):** (a) deny list omits `%WINDIR%` LOLBINs (rundll32/regsvr32/msbuild/…),
+  which remain Everyone-allowed — not trivially reachable (no shell in-session) but the proper fix is a
+  stricter allow-model, not more name-denies; (b) the "escapes Denied" evidence is **decision-level**
+  (`Test-AppLockerPolicy`), not behavioural `8004` — honestly reflected (isolation marker withheld);
+  (c) "confine to MT5 only" wording is stronger than the current default-allow+deny model warrants.
+- **LOW (documented):** SINGLE_SESSION_INVARIANT.md's "MT5 holds a per-data-dir single-instance lock"
+  defense-in-depth claim is contradicted by the observed duplicate-terminals evidence — treat as unproven;
+  un-gated `record_delivery_attempt` could regress a seq-gated CONNECTED state; duplicate `.bak` gate-module
+  copies in the tree (tracked in TECH_DEBT_REGISTER #15).
+
+## 10. Outstanding Sponsor gates
+0. **CA decision on HIGH #2** — execution-cert subject: live account #1 (with legacy logged out) vs a
+   disposable demo account. **Blocks the demo-trade gate.**
 1. Behavioural escape test (customer attempts shells → `8004` blocks) → isolation marker.
 2. Tiny execution-certification demo trade → `HOSTED_EXECUTION_CERTIFIED`.
