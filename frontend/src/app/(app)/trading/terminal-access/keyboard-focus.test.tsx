@@ -108,9 +108,14 @@ describe("RemoteApp keyboard focus management", () => {
 
   it("attaches no key/telemetry handlers to the RemoteApp iframe (no keylogging surface)", async () => {
     const { iframe } = await renderConnected();
-    // React inline handlers surface as props on the fiber; assert none are keyboard-capturing.
-    for (const attr of ["onkeydown", "onkeyup", "onkeypress", "onbeforeinput", "oninput"]) {
-      expect(iframe.getAttribute(attr)).toBeNull();
+    // React does NOT reflect event handlers as DOM attributes (root delegation + __reactProps$ fiber storage),
+    // so getAttribute("onkeydown") is always null and would be a vacuous guard. Read the actual React props
+    // off the fiber so this test genuinely fails if a future edit adds a keyboard handler to the iframe.
+    const propsKey = Object.keys(iframe).find((k) => k.startsWith("__reactProps$"));
+    expect(propsKey, "React fiber props key not found on iframe").toBeTruthy();
+    const props = (iframe as unknown as Record<string, Record<string, unknown>>)[propsKey as string];
+    for (const handler of ["onKeyDown", "onKeyUp", "onKeyPress", "onKeyDownCapture", "onBeforeInput", "onInput"]) {
+      expect(props[handler], `iframe must not attach ${handler}`).toBeUndefined();
     }
   });
 });

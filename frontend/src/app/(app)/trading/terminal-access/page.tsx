@@ -573,7 +573,9 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const focusTerminal = useCallback(() => {
     try {
-      iframeRef.current?.focus();
+      // preventScroll: forwarding keyboard focus must never yank the page's scroll position (e.g. if the
+      // embedded client ever reloads its own document and re-fires onLoad while the user has scrolled away).
+      iframeRef.current?.focus({ preventScroll: true });
     } catch {
       /* focus may throw in exotic states; never fatal */
     }
