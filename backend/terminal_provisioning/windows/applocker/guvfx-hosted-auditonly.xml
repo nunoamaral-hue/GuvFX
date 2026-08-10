@@ -32,9 +32,19 @@
     <FilePathRule Id="b1a00000-0000-0000-0000-000000000003" Name="(Everyone) Program Files EXE" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions><FilePathCondition Path="%PROGRAMFILES%\*" /></Conditions>
     </FilePathRule>
-    <FilePathRule Id="b1a00000-0000-0000-0000-000000000004" Name="(Everyone) GuvFX hosted runtime EXE" Description="Portable MT5 runtime" UserOrGroupSid="S-1-1-0" Action="Allow">
-      <Conditions><FilePathCondition Path="C:\GuvFX\accounts\*" /></Conditions>
-    </FilePathRule>
+    <!-- SECURITY (2026-08-10): the portable runtime tree C:\GuvFX\accounts\* is WRITABLE by the hosted user
+         (portable MT5 must write config/logs/bases/MQL5). A bare path-Allow over a user-writable location is
+         the canonical AppLocker bypass: the user copies a Microsoft-signed shell (cmd.exe) to a renamed
+         file in the tree and the leaf-name Deny rules never match it. So the tree is Allowed ONLY for
+         MetaQuotes-signed binaries (MT5). A renamed non-MetaQuotes binary placed in the tree matches no
+         Allow rule and is denied by default. Defence-in-depth: the shell/escape Deny rules below remain. -->
+    <FilePublisherRule Id="b1a00000-0000-0000-0000-000000000005" Name="(Everyone) MetaQuotes-signed EXE" Description="MT5 portable binaries only" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions>
+        <FilePublisherCondition PublisherName="O=METAQUOTES LTD., S=LEMESOS, C=CY" ProductName="*" BinaryName="*">
+          <BinaryVersionRange LowSection="*" HighSection="*" />
+        </FilePublisherCondition>
+      </Conditions>
+    </FilePublisherRule>
     <FilePathRule Id="b1d00000-0000-0000-0000-000000000010" Name="(Hosted) Deny cmd.exe" Description="Confine customer - no command shell" UserOrGroupSid="{{HOSTED_USER_SID}}" Action="Deny">
       <Conditions><FilePathCondition Path="*\cmd.exe" /></Conditions>
     </FilePathRule>
