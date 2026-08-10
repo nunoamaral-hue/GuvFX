@@ -22,6 +22,15 @@ services:
     command: >-
       python manage.py run_wayond_listener --live --health-file /tmp/wayond_health
     restart: unless-stopped
+    env_file:
+      # Canonical Windows-agent authentication source (values NEVER committed — this file lives only
+      # in the prod secret store, e.g. /home/ubuntu/guvfx-prod/bridge-agent.env). It supplies
+      # GUVFX_WINDOWS_AGENT_TOKEN (+ aliases) so the auto-router margin-guard `order_check` authenticates.
+      # WITHOUT this, a recreated listener runs "healthy" (heartbeat OK) while every order_check returns
+      # HTTP 401 -> margin_unverifiable -> fail-closed -> no PLACE_ORDER job (the 2026-08-09 incident:
+      # the listener was started ad-hoc via `docker run` and lost the token that lived only in its
+      # runtime env). Carrying it via env_file makes every compose recreate deterministic.
+      - bridge-agent.env
     environment:
       # DB (same as backend)
       DB_NAME: ${DB_NAME}
