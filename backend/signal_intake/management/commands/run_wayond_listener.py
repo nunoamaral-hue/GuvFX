@@ -59,6 +59,18 @@ class Command(BaseCommand):
                 "to connect an aged authorised session.")
 
         # --- live path (lazy Telethon; not exercised by tests) -------------
+        # Fail-fast on the Windows-agent auth the auto-router margin guard needs. Without it every
+        # order_check returns HTTP 401 -> margin_unverifiable -> fail-closed -> no PLACE_ORDER job,
+        # while the heartbeat still reports healthy (the 2026-08-09 silent incident: a recreate
+        # dropped the token that lived only in the ad-hoc runtime env). A live listener with no agent
+        # token is a misconfiguration, not a healthy state — refuse to start (loud, visible crash).
+        if not any(os.environ.get(v) for v in (
+                "WINDOWS_AGENT_TOKEN", "GUVFX_WINDOWS_AGENT_TOKEN", "GUVFX_AGENT_TOKEN")):
+            raise CommandError(
+                "Live mode needs a Windows-agent token (WINDOWS_AGENT_TOKEN / "
+                "GUVFX_WINDOWS_AGENT_TOKEN / GUVFX_AGENT_TOKEN) so the margin-guard order_check "
+                "authenticates; absent -> every order_check 401s. Supply it via the canonical "
+                "secret env_file (e.g. bridge-agent.env), never on the CLI.")
         api_id = os.environ.get("TELEGRAM_API_ID")
         api_hash = os.environ.get("TELEGRAM_API_HASH")
         session = os.environ.get("TELEGRAM_STRING_SESSION")
