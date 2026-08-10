@@ -802,6 +802,12 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
             tabIndex={0}
             // Focus once the RemoteApp finishes loading so keystrokes reach MT5 without needing a first click.
             onLoad={focusTerminal}
+            // Delegate clipboard Permissions-Policy to the (same-origin) Guacamole client so browser->MT5
+            // PASTE works: Guacamole reads the local clipboard via the async Clipboard API, which is blocked in
+            // an iframe unless clipboard-read/-write are granted here. Pairs with the server-side
+            // disable-paste=false (browser->MT5 only); MT5->browser copy stays disabled server-side. This does
+            // NOT widen the sandbox or enable drive/file/printer.
+            allow="clipboard-read; clipboard-write"
             style={{ width: "100%", height: "640px", border: "none", display: "block" }}
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
           />

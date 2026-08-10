@@ -74,6 +74,8 @@ describe("RemoteApp keyboard focus management", () => {
     const { iframe, focusSpy } = await renderConnected();
     expect(iframe.getAttribute("tabindex")).toBe("0");
     expect(iframe.getAttribute("sandbox")).toBe("allow-same-origin allow-scripts allow-forms allow-popups");
+    // Clipboard Permissions-Policy so Guacamole can read the local clipboard for browser->MT5 paste.
+    expect(iframe.getAttribute("allow")).toBe("clipboard-read; clipboard-write");
     // onLoad focuses the iframe so the first keystroke reaches Guacamole without a click.
     fireEvent.load(iframe);
     expect(focusSpy).toHaveBeenCalled();
