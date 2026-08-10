@@ -37,15 +37,29 @@ class RemoteAppPayloadTests(SimpleTestCase):
         self.assertEqual(p["remote-app-dir"], r"C:\GuvFX\accounts\9\terminal")
         self.assertEqual(p["remote-app-args"], "/portable")
 
-    def test_inherits_every_dedicated_restriction(self):
+    def test_inherits_every_dedicated_restriction_except_paste(self):
         p = _remoteapp_params()
-        # No drive redirection, no clipboard copy/paste, no audio — inherited from the shared base.
+        # No drive redirection, no MT5->browser copy, no audio — inherited from the shared base.
         self.assertEqual(p["enable-drive"], "false")
-        self.assertEqual(p["disable-copy"], "true")
-        self.assertEqual(p["disable-paste"], "true")
-        self.assertEqual(p["enable-audio"], "false")   # inherited legacy key (guacd ignores it — see below)
+        self.assertEqual(p["disable-copy"], "true")     # MT5 -> browser copy stays OFF (minimise exposure)
+        self.assertEqual(p["enable-audio"], "false")    # inherited legacy key (guacd ignores it — see below)
         # Printing is additionally disabled for the RemoteApp variant.
         self.assertEqual(p["enable-printing"], "false")
+
+    def test_input_completion_paste_enabled_and_layout_pinned(self):
+        # ADR-0034 Customer-Zero input completion: browser->MT5 PASTE is enabled (broker passwords may contain
+        # symbols) and the keyboard layout is pinned so symbol keys map correctly. Clipboard enabling must NOT
+        # broaden the boundary — drive/file/printer stay disabled and copy-out stays off.
+        p = _remoteapp_params()
+        self.assertEqual(p["disable-paste"], "false")        # client(browser) -> server(MT5) paste ENABLED
+        self.assertEqual(p["disable-copy"], "true")          # server(MT5) -> client copy still OFF
+        self.assertEqual(p["server-layout"], "en-gb-qwerty") # explicit scancode translation
+        # Enabling paste must not enable drive redirection, file transfer, printing, or audio.
+        self.assertEqual(p["enable-drive"], "false")
+        self.assertEqual(p["enable-printing"], "false")
+        self.assertEqual(p["disable-audio"], "true")
+        self.assertNotIn("enable-sftp", p)                   # no file transfer channel
+        self.assertNotIn("enable-printing", {k: v for k, v in p.items() if v == "true"})
 
     def test_remoteapp_audio_lockdown_uses_effective_guacd_keys(self):
         # `enable-audio` is NOT a real guacd RDP key (it silently no-ops). The RemoteApp payload must carry
