@@ -1,4 +1,22 @@
-# Hosted Workspace — AppLocker Hardening (AuditOnly deployed; Enforce pending)
+# Hosted Workspace — AppLocker Hardening (ENFORCE active)
+
+> **Update 2026-08-10 — ENFORCE enabled after a clean AuditOnly review.** The Sponsor ran a full
+> customer MT5 session under AuditOnly; the hosted user generated **29 `8002` "allowed" events and
+> zero `8003` would-be-blocks** (RULE 11 positive control satisfied — the audit path provably captured
+> the hosted user's real activity, so "0 blocks" is a true clean result). Enforce was then enabled via
+> `Set-GuvfxAppLocker.ps1 -Mode Deploy -Enforce`: effective **Exe=Enabled / Msi=Enabled / Script=Enabled**.
+> Verified under Enforce: Administrator recovery intact (admin commands run); the hosted MT5 (`terminal64`,
+> portable) runs in an **Active** `guvfx_u_1` session with the broker **authorized** (`'1302561': authorized
+> on IS6Technologies-Demo`, terminal synchronized, trading enabled); session-3 processes are MT5 +
+> RemoteApp infra ONLY (no `explorer`/`cmd`/`powershell`); hosted `8004` blocks = 0 (no denied binary
+> attempted). Rollback to empty (`-Mode Rollback`) remains verified. **Behavioural escape-attempt
+> certification (actively invoking cmd/powershell/explorer/Run/file-dialog escapes as the customer and
+> confirming an `8004` block) is the one residual Sponsor step** — structurally the confinement is in place
+> (Enforce active, SID-scoped denies, no shell present in the session). Execution remains DARK.
+
+---
+
+# (original) Hosted Workspace — AppLocker Hardening (AuditOnly deployed; Enforce pending)
 
 Keeps four things distinct (RULE 5):
 

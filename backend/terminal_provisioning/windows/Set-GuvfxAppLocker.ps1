@@ -27,6 +27,7 @@
 param(
   [ValidateSet('Deploy','Verify','Rollback','Evidence')]
   [string]$Mode = 'Verify',
+  [switch]$Enforce,   # Deploy only: apply the SAME policy with EnforcementMode Enabled (Enforce) instead of AuditOnly.
   [string]$HostedUser = 'guvfx_u_1',
   [string]$TemplatePath = "$PSScriptRoot\applocker\guvfx-hosted-auditonly.xml",
   [string]$StateDir = 'C:\GuvFX\_applocker'
@@ -75,10 +76,11 @@ try {
 
     'Deploy' {
       Ensure-StateDir
-      # 1. Back up current effective policy + AppIDSvc state (for rollback).
-      (Get-AppLockerPolicy -Effective -Xml) | Out-File -FilePath $BaselinePolicy -Encoding ASCII
-      $svc0 = Svc-State
-      "status=$($svc0.status);start=$($svc0.start)" | Out-File -FilePath $BaselineSvc -Encoding ASCII
+      # 1. Back up current effective policy + AppIDSvc state (for rollback). Capture ONCE (guarded) so an
+      # Enforce redeploy preserves the ORIGINAL (pre-AppLocker, empty) rollback anchor rather than saving the
+      # AuditOnly state over it.
+      if (-not (Test-Path $BaselinePolicy)) { (Get-AppLockerPolicy -Effective -Xml) | Out-File -FilePath $BaselinePolicy -Encoding ASCII }
+      if (-not (Test-Path $BaselineSvc)) { $svc0 = Svc-State; "status=$($svc0.status);start=$($svc0.start)" | Out-File -FilePath $BaselineSvc -Encoding ASCII }
       # 2. Ensure AppIDSvc Automatic + Running. AppIDSvc (Application Identity) is a PROTECTED service:
       # Set-Service -StartupType is denied even to Administrators. Set the start type via the registry
       # (admins may write Services\*) and start it, falling back to sc.exe if the SCM start path is guarded.
@@ -95,12 +97,14 @@ try {
       if (-not (Test-Path $TemplatePath)) { throw "template not found: $TemplatePath" }
       $xml = Get-Content -Path $TemplatePath -Raw
       $xml = $xml.Replace('{{HOSTED_USER_SID}}', $sid)
+      $enforcing = $false
+      if ($Enforce) { $xml = $xml.Replace('EnforcementMode="AuditOnly"', 'EnforcementMode="Enabled"'); $enforcing = $true }
       $xml | Out-File -FilePath $AppliedPolicy -Encoding ASCII
-      # 5. Apply (replace local policy). AuditOnly -> nothing blocked.
+      # 5. Apply (replace local policy). AuditOnly -> nothing blocked; Enabled -> Enforce.
       Set-AppLockerPolicy -XmlPolicy $AppliedPolicy
       Start-Sleep -Seconds 2
       $svc1 = Svc-State
-      [ordered]@{ mode='Deploy'; hosted_user=$HostedUser; hosted_sid=$sid; appidsvc=$svc1;
+      [ordered]@{ mode='Deploy'; enforce=$enforcing; hosted_user=$HostedUser; hosted_sid=$sid; appidsvc=$svc1;
                   effective=(Effective-Summary); baseline_saved=$BaselinePolicy; applied=$AppliedPolicy;
                   ok=$true } | ConvertTo-Json -Compress -Depth 5
     }
