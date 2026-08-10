@@ -563,47 +563,118 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
   const [notReady, setNotReady] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [epoch, setEpoch] = useState(0);
+  const [slow, setSlow] = useState(false);
 
   // Detect a hosted workspace among the signed-in user's OWN accounts. Any
   // error / 404 (dark, or no hosted workspace) => stay invisible + inactive.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    let settled = false;
+    // Resolve the hosted question exactly ONCE and ONLY on a DEFINITIVE answer: an owner is found (true), or
+    // the account list was fetched and none is an owned hosted workspace (false). We deliberately FAIL CLOSED
+    // on any AMBIGUOUS outcome (an accounts/delivery-state request that errors or hangs): we do NOT resolve to
+    // "not hosted", because that would expose the legacy full-desktop path to a possibly-hosted owner. While
+    // unresolved the card shows a neutral "preparing" state and the legacy UI stays suppressed (gated on
+    // `hostedResolved` = this having fired). A genuinely hung /accounts is a whole-app failure; the safe
+    // direction here is never a legacy desktop, only a "preparing" message.
+    const settle = (active: boolean) => {
+      if (settled || cancelled) return;
+      settled = true;
+      setDetecting(false);
+      onActiveChange(active);
+    };
+    const timer = setTimeout(() => { if (!settled && !cancelled) setSlow(true); }, 10000); // message only; no settle
+    // Bounded fetch: reject after `ms` so a hung request (apiFetch has no timeout) cannot wedge detection.
+    const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+      Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
+    // apiFetch puts the numeric HTTP status on err.status / err.httpStatus (the message is the DRF detail
+    // string, e.g. "Not found." — it does NOT contain "404"). A delivery-state 404 (dark / no workspace /
+    // not-owner) is a DEFINITIVE not-owned answer; classify on the status code, never the message string.
+    const is404 = (e: unknown) => {
+      const s = e as { status?: number; httpStatus?: number } | null;
+      return s?.status === 404 || s?.httpStatus === 404;
+    };
+    // Bounded retry for BOTH probes: a definitive 404 is re-thrown immediately (never retried — it is an
+    // answer, not a failure); any other error/timeout is retried up to `attempts` times (1.5s backoff) so a
+    // TRANSIENT blip does not strand a legacy user, whose legacy UI is gated on hostedResolved. Only a
+    // PERSISTENT non-404 failure re-throws to the caller, which then fails closed (never expose legacy).
+    const fetchRetry = async <T,>(fn: () => Promise<T>, attempts = 3): Promise<T> => {
+      let lastErr: unknown;
+      for (let i = 0; i < attempts; i++) {
+        if (cancelled || settled) throw new Error("aborted");
+        try {
+          return await withTimeout(fn(), 5000);
+        } catch (e) {
+          if (is404(e)) throw e; // definitive answer — do not retry
+          lastErr = e;
+          if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1500));
+        }
+      }
+      throw lastErr;
+    };
+    // If an attempt cannot reach a DEFINITIVE answer (a persistent non-404 error/timeout on /accounts or on a
+    // delivery-state probe), we FAIL CLOSED (never resolve to legacy for a possibly-hosted owner) AND auto-
+    // retry the WHOLE detection every 15s. So a legacy user whose backend probe is transiently/partially
+    // degraded recovers automatically once a definitive answer arrives — no manual refresh, no permanent stall.
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleRetry = () => {
+      if (cancelled || settled) return;
+      setSlow(true); // show the neutral "preparing… please refresh if it persists" message meanwhile
+      retryTimer = setTimeout(() => { void attemptDetection(); }, 15000);
+    };
+    const attemptDetection = async () => {
+      if (cancelled || settled) return;
       try {
-        const accounts = await apiFetch<
-          Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>
-        >("/api/trading/accounts/", {});
+        let accounts: Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>;
+        try {
+          accounts = await fetchRetry(() =>
+            apiFetch<Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>>(
+              "/api/trading/accounts/", {}));
+        } catch {
+          scheduleRetry(); // persistent failure -> fail closed + auto-retry; never expose legacy
+          return;
+        }
+        if (cancelled || settled) return;
         const ordered = [...accounts].sort(
           (a, b) => Number(!!b.is_active) - Number(!!a.is_active)
         );
+        // Resolve to "not hosted" ONLY if EVERY account gave a DEFINITIVE answer (200 not-owner, or a 404 =
+        // dark / no workspace / not-owner). A persistent AMBIGUOUS probe (non-404 error/timeout that survived
+        // retries) means an account MIGHT be an owned workspace we could not confirm -> fail closed + retry.
+        let ambiguous = false;
         for (const a of ordered) {
+          if (cancelled || settled) return;
           try {
-            const state = await apiFetch<{ is_owner?: boolean }>(
-              `/api/hosted-workspace/delivery-state/?account_id=${a.id}`,
-              {}
-            );
-            if (cancelled) return;
+            const state = await fetchRetry(() =>
+              apiFetch<{ is_owner?: boolean }>(`/api/hosted-workspace/delivery-state/?account_id=${a.id}`, {}));
+            if (cancelled || settled) return;
             // Activate ONLY for an account the caller actually owns. `is_owner` is false when the state
             // endpoint answered via its staff read-bypass, so a staff viewer never binds this card to
             // another customer's workspace (and connect/mint is owner-only regardless).
             if (state?.is_owner) {
               setAccount({ id: a.id, label: a.name || a.account_number || `Account ${a.id}` });
-              onActiveChange(true);
+              settle(true);
               return;
             }
-          } catch {
-            /* not this account — try the next */
+            // else: definitive not-owner for this account — keep looking.
+          } catch (e) {
+            if (!is404(e)) ambiguous = true; // 404 = definitive not-owned; persistent non-404 = ambiguous
           }
         }
-        if (!cancelled) onActiveChange(false);
+        if (cancelled || settled) return;
+        if (ambiguous) { scheduleRetry(); return; } // could not confirm every account -> fail closed + auto-retry
+        settle(false); // DEFINITIVE: accounts fetched, all accounts confirmed not-owned => not a hosted owner
       } catch {
-        if (!cancelled) onActiveChange(false);
+        scheduleRetry(); // unexpected -> fail closed + auto-retry, never expose legacy
       } finally {
-        if (!cancelled) setDetecting(false);
+        clearTimeout(timer);
       }
-    })();
+    };
+    void attemptDetection();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
+      clearTimeout(retryTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -645,7 +716,21 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
     }
   }, [account]);
 
-  if (detecting || !account) return null; // invisible until a hosted workspace is confirmed
+  if (!account) {
+    // Still resolving hosted-ownership: show a neutral "preparing" message only if detection is slow (so a
+    // normal fast probe does not flash for a non-hosted user). Once resolved-not-hosted this renders nothing.
+    if (detecting && slow) {
+      return (
+        <div style={{ ...glassCard, marginBottom: "1rem" }}>
+          <div style={sectionHeader}>MT5 Terminal</div>
+          <p style={{ fontSize: "0.85rem", color: "#b7c5dd", margin: 0 }}>
+            Preparing your MT5 terminal… if this persists, please refresh.
+          </p>
+        </div>
+      );
+    }
+    return null; // invisible until a hosted workspace is confirmed (or fast-resolved as non-hosted)
+  }
 
   return (
     <div style={{ ...glassCard, marginBottom: "1rem" }}>
@@ -744,10 +829,20 @@ export default function TerminalAccessPage() {
   // ── Notice state ──
   const [notice, setNotice] = useState<{ type: "info" | "warning" | "error"; message: string } | null>(null);
 
-  // ── ADR-0034 Hosted MT5 Workspace active? (portable RemoteApp is the customer path) ──
-  // When a hosted workspace is detected, the customer's MT5 opens via the RemoteApp card above; the legacy
-  // full-desktop launch is retained ONLY as a separate operator-recovery control (hidden from the customer).
+  // ── ADR-0034 Hosted MT5 Workspace active? (portable RemoteApp is the SOLE customer path) ──
+  // When an owned hosted workspace is detected, the customer's MT5 opens via the RemoteApp card above and the
+  // ENTIRE legacy customer experience (active-session iframe, auto-reconnect, terminal list, desktop launch)
+  // is suppressed — the legacy full-desktop path is retained ONLY as separate operator recovery, never shown
+  // to the hosted customer. ``hostedResolved`` gates the legacy bootstrap so the legacy session is never even
+  // discovered/reconnected for a hosted owner (fixes the full-desktop exposure defect).
   const [hostedActive, setHostedActive] = useState(false);
+  const [hostedResolved, setHostedResolved] = useState(false);
+  const hostedActiveRef = useRef(false);
+  const onHostedResolved = useCallback((active: boolean) => {
+    hostedActiveRef.current = active;
+    setHostedActive(active);
+    setHostedResolved(true);
+  }, []);
 
   // ── Polling interval for session status ──
   const [pollInterval, setPollInterval] = useState<ReturnType<typeof setInterval> | null>(null);
@@ -797,6 +892,9 @@ export default function TerminalAccessPage() {
 
   // ── Launch desktop link ──
   const handleDesktopLaunch = useCallback(async () => {
+    // Defence-in-depth: a hosted owner must never open the legacy full MT5 desktop, even if a stale button
+    // were somehow clicked during the detection window.
+    if (hostedActiveRef.current) return;
     setDesktopLaunching(true);
     setNotice(null);
     setDesktopUrl(null);
@@ -859,6 +957,9 @@ export default function TerminalAccessPage() {
 
   // ── Launch session ──
   const handleLaunch = useCallback(async (bindingId: number) => {
+    // Defence-in-depth: a hosted owner must never launch the legacy full-desktop session, even if a stale
+    // bindings button were somehow clicked during the detection window.
+    if (hostedActiveRef.current) return;
     setLaunching(true);
     setLaunchBindingId(bindingId);
     setSessionError(null);
@@ -991,12 +1092,26 @@ export default function TerminalAccessPage() {
     activeSessionRef.current = activeSession;
   }, [activeSession]);
 
-  // ── Bootstrap on page load (TASK 3) ──
+  // ── Bootstrap prep on page load (harmless for hosted + legacy alike) ──
   useEffect(() => {
+    fetchBindings();
+    fetchCredStatus();
+    fetchTradingHealth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Legacy active-session discovery + auto-reconnect (LEGACY customers ONLY) ──
+  // Deferred until the hosted-workspace probe resolves. For a hosted owner this NEVER runs — the legacy
+  // Administrator/full-desktop session is not discovered, set, or reconnected; the RemoteApp card is the only
+  // customer experience. This is the fix for the full-desktop exposure defect (§10 of the corrective packet).
+  useEffect(() => {
+    if (!hostedResolved) return;      // wait until we know whether this is a hosted owner
+    if (hostedActive) {               // hosted owner -> suppress the entire legacy customer experience
+      setViewerState("Disconnected");
+      return;
+    }
     let cancelled = false;
     (async () => {
-      fetchBindings();
-      fetchCredStatus();
       const [th, session] = await Promise.all([fetchTradingHealth(), fetchActiveSession()]);
       if (cancelled) return;
       if (!session) {
@@ -1013,9 +1128,6 @@ export default function TerminalAccessPage() {
         setViewerState("Disconnected");
         return;
       }
-      // After a reload/navigation the live tunnel is almost always gone, even
-      // though the backend session is still active. Reconnect once if trading
-      // is healthy; otherwise present the Reconnect viewer button.
       setViewerState("Disconnected");
       if (tradingBucket(th) === "Healthy" && autoReconnectedRef.current !== session.id) {
         autoReconnectedRef.current = session.id;
@@ -1026,12 +1138,14 @@ export default function TerminalAccessPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [hostedResolved, hostedActive]);
 
   // ── Tab visibility change (TASK 4) ──
   useEffect(() => {
     const onVisibility = async () => {
       if (typeof document === "undefined") return;
+      // Hosted owner: the legacy viewer is never used, so never reconnect it on tab return.
+      if (hostedActiveRef.current) return;
       if (document.hidden) {
         wasHiddenRef.current = true;
         // Tunnel drops while hidden — reflect that the viewer is no longer live.
@@ -1090,7 +1204,7 @@ export default function TerminalAccessPage() {
       <StateNotice type="info" message="This session is restricted to MT5 interaction only." />
 
       {/* ── ADR-0034 Hosted MT5 Workspace — portable RemoteApp (customer path; invisible unless owned) ── */}
-      <HostedMt5RemoteApp onActiveChange={setHostedActive} />
+      <HostedMt5RemoteApp onActiveChange={onHostedResolved} />
 
       {/* ── MT5 Runtime Status card ── */}
       {!credLoading && credStatus && (
@@ -1122,10 +1236,15 @@ export default function TerminalAccessPage() {
               <DetailRow label="Verified" value={fmtDateTime(credStatus.last_verified_at)} />
             )}
           </div>
-          {/* Full-desktop launch is the legacy customer path. When a hosted MT5 workspace is active the
-              customer uses the portable MT5 RemoteApp card above; the full desktop is retained ONLY as a
-              separate operator-recovery control and is hidden from the hosted customer here. */}
-          {hostedActive ? (
+          {/* Full-desktop launch is the legacy customer path. It is shown ONLY once the hosted probe has
+              resolved AND the user is confirmed non-hosted — never during detection (so a hosted owner can
+              never open the full desktop in the pre-resolution window) and never for a hosted owner (whose
+              MT5 opens via the RemoteApp card above). Retained solely as operator recovery. */}
+          {!hostedResolved ? (
+            <div style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+              Preparing your MT5 terminal…
+            </div>
+          ) : hostedActive ? (
             <div style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
               Your MT5 terminal opens via the MT5 Terminal card above.
             </div>
@@ -1161,7 +1280,10 @@ export default function TerminalAccessPage() {
         <StateNotice type="error" message={sessionError} />
       )}
 
-      {activeSession && (
+      {/* Legacy active-session card (full-desktop viewer) — NEVER shown to a hosted owner, and not shown
+          until the hosted probe resolves (no pre-resolution flash/race). The hosted customer's MT5 opens
+          only via the RemoteApp card above; the legacy desktop path is operator recovery. */}
+      {activeSession && hostedResolved && !hostedActive && (
         <SessionStatusCard
           session={activeSession}
           launchDescriptor={launchDescriptor}
@@ -1175,7 +1297,9 @@ export default function TerminalAccessPage() {
         />
       )}
 
-      {/* ── Terminal bindings list ── */}
+      {/* ── Terminal bindings list (legacy launch path) — hidden from the hosted customer AND during the
+          hosted probe, so the Launch button is never interactive before hosted-ownership is known. ── */}
+      {hostedResolved && !hostedActive && (
       <div style={{ ...glassCard, marginBottom: "1.5rem" }}>
         <div
           style={{
@@ -1303,6 +1427,7 @@ export default function TerminalAccessPage() {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
