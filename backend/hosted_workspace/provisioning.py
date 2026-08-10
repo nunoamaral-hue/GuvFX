@@ -30,6 +30,7 @@ REQ_PASSWORD_FORBIDDEN = "broker_password_forbidden"
 REQ_CREATED = "created"
 REQ_EXISTS = "exists"
 ALLOC_NO_CAPACITY = "no_node_capacity"
+ALLOC_NODE_NOT_DELIVERABLE = "node_not_deliverable"   # G12: node has capacity but no durable rdp_host
 ALLOC_ALREADY = "already_bound"
 ALLOC_OK = "allocated"
 CONFIRM_NOT_OWNER = "not_owner"
@@ -75,6 +76,15 @@ def _node_has_capacity(node) -> bool:
     active = node.computed_active_accounts
     hosted = node.bound_hosted_workspaces.filter(trading_account__is_active=False).count()
     return (active + hosted) < node.max_accounts
+
+
+def _node_deliverable(node) -> bool:
+    """G12 — a node is DELIVERABLE only when it carries a durable ``rdp_host`` (the transport identity the
+    RemoteApp descriptor is minted from; distinct from ``hostname``). Binding a workspace to a node without
+    one would leave the ``workspace → node → rdp_host → RemoteApp`` chain incomplete and force a manual repair
+    before customer delivery, so allocation fails closed here and the provisioning driver simply retries once
+    the operator has set ``rdp_host``. Pre-existing bindings are never regressed (checked only for NEW binds)."""
+    return bool(str(getattr(node, "rdp_host", "") or "").strip())
 
 
 def request_hosted_workspace(user, *, expected_login, expected_server="", broker_name="", is_demo=True,
@@ -156,13 +166,21 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
             reason = ALLOC_ALREADY
         else:
             candidate = None
+            capacity_but_undeliverable = False   # G12: distinguish "no room" from "room but no rdp_host"
             for node in (TerminalNode.objects.select_for_update()
                          .filter(status=TerminalNode.Status.ACTIVE).order_by("id")):
-                if _node_has_capacity(node):   # counts hosted bindings, not just is_active legacy accounts
-                    candidate = node
-                    break
+                if not _node_has_capacity(node):   # counts hosted bindings, not just is_active legacy accounts
+                    continue
+                if not _node_deliverable(node):    # G12: no durable rdp_host → not deliverable, fail closed
+                    capacity_but_undeliverable = True
+                    continue
+                candidate = node
+                break
             if candidate is None:
-                return AllocResult(False, ALLOC_NO_CAPACITY)
+                # Fail closed. A distinct reason when a node had room but no rdp_host, so the driver/operator
+                # can tell "buy capacity" apart from "set rdp_host" (no manual delivery-time repair, G12).
+                return AllocResult(False,
+                                   ALLOC_NODE_NOT_DELIVERABLE if capacity_but_undeliverable else ALLOC_NO_CAPACITY)
             acct = ws.trading_account
             if acct.terminal_node_id != candidate.pk:
                 acct.terminal_node = candidate

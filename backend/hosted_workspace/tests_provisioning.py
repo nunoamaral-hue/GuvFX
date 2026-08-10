@@ -35,6 +35,9 @@ def _user(name="u1", *, entitled=True):
 
 
 def _node(hostname="node-a", **kw):
+    # G12: nodes are DELIVERABLE by default (a durable rdp_host); pass rdp_host="" to exercise the
+    # fail-closed "node has capacity but no rdp_host" allocation path.
+    kw.setdefault("rdp_host", "10.9.9.9")
     return TerminalNode.objects.create(hostname=hostname, status=TerminalNode.Status.ACTIVE, **kw)
 
 
