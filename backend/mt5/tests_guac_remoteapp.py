@@ -53,7 +53,7 @@ class RemoteAppPayloadTests(SimpleTestCase):
         p = _remoteapp_params()
         self.assertEqual(p["disable-paste"], "false")        # client(browser) -> server(MT5) paste ENABLED
         self.assertEqual(p["disable-copy"], "true")          # server(MT5) -> client copy still OFF
-        self.assertEqual(p["server-layout"], "en-gb-qwerty") # explicit scancode translation
+        self.assertEqual(p["server-layout"], "en-us-qwerty") # explicit scancode translation
         # Enabling paste must not enable drive redirection, file transfer, printing, or audio.
         self.assertEqual(p["enable-drive"], "false")
         self.assertEqual(p["enable-printing"], "false")

@@ -199,12 +199,16 @@ def build_remoteapp_rdp_payload(
     #    ``disable-paste`` gates client(browser)->server(MT5); ``disable-copy`` gates server(MT5)->client. We
     #    turn paste ON and deliberately leave copy OFF (inherited "true") to minimise MT5->browser exposure.
     #    This touches ONLY the clipboard channel — drive redirection, file transfer and printing stay disabled.
-    #  - Keyboard: pin ``server-layout`` so Guacamole (1.5.5) translates scancodes for the Customer-Zero UK
-    #    session; without it symbol keys (e.g. "#") mis-map from the Sponsor's Mac. en-gb-qwerty configures the
-    #    RDP session's keyboard layout, self-consistently with what guacd sends. (Host note: the guvfx_u_1
-    #    preload lists 0409/en-US first with 0809/en-GB also installed; server-layout sets the session layout.)
+    #  - Keyboard: pin ``server-layout`` to the SERVER's actual Windows layout so Guacamole (1.5.5) translates
+    #    the browser's key identity into the correct RDP scancode. Per Apache Guacamole, ``server-layout``
+    #    describes the SERVER-side keyboard, NOT the client's Mac. The Customer-Zero ``guvfx_u_1`` profile's
+    #    measured primary layout is 0409/en-US (HKU Preload; 0809/en-GB is also installed but not primary), so
+    #    the value must be ``en-us-qwerty`` to MATCH the server. This also holds whether or not the RDP
+    #    layout-override reconfigures the session, since it matches the profile default. (Prior en-gb-qwerty was
+    #    based on the client's UK location, which is the wrong layer.) One deterministic server layout for all
+    #    hosted identities — clients on any keyboard are translated by Guacamole.
     parameters["disable-paste"] = "false"         # client(browser) -> server(MT5) clipboard PASTE enabled
-    parameters["server-layout"] = "en-gb-qwerty"  # scancode translation for the UK-oriented CZ session
+    parameters["server-layout"] = "en-us-qwerty"  # match the server-side Windows layout (guvfx_u_1 primary 0409)
     if remote_app_dir:
         parameters["remote-app-dir"] = remote_app_dir
     if remote_app_args:
