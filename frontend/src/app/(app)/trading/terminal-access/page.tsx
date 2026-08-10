@@ -564,6 +564,22 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
   const [error, setError] = useState<string | null>(null);
   const [epoch, setEpoch] = useState(0);
   const [slow, setSlow] = useState(false);
+  // Keyboard-focus management for the embedded Guacamole RemoteApp. Guacamole's key handler listens on the
+  // iframe's OWN document, so keystrokes only reach MT5 while the iframe holds DOM focus (mouse works without
+  // focus, keyboard does not — the "mouse works / keyboard dead" symptom). We give the iframe an explicit ref
+  // and focus it (a) once it finishes loading and (b) whenever the user points/clicks anywhere on the terminal
+  // card. This never synthesises keys, never reads key events, never remounts the iframe, and never steals
+  // focus on a timer — it only forwards the user's own focus intent to where Guacamole is listening.
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const focusTerminal = useCallback(() => {
+    try {
+      // preventScroll: forwarding keyboard focus must never yank the page's scroll position (e.g. if the
+      // embedded client ever reloads its own document and re-fires onLoad while the user has scrolled away).
+      iframeRef.current?.focus({ preventScroll: true });
+    } catch {
+      /* focus may throw in exotic states; never fatal */
+    }
+  }, []);
 
   // Detect a hosted workspace among the signed-in user's OWN accounts. Any
   // error / 404 (dark, or no hosted workspace) => stay invisible + inactive.
@@ -749,7 +765,12 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
       </p>
 
       {descriptor?.embed_url ? (
+        // Forward the user's pointer intent to keyboard focus: a pointer-down anywhere on the terminal card
+        // focuses the iframe so the very next keystroke reaches Guacamole (guacd forwards mouse without focus,
+        // but keyboard needs the iframe focused). Capture phase so it runs even though the inner cross-frame
+        // content also consumes the event.
         <div
+          onPointerDownCapture={focusTerminal}
           style={{
             borderRadius: 12,
             border: "1px solid rgba(74,179,255,0.15)",
@@ -767,13 +788,20 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
               borderBottom: "1px solid rgba(74,179,255,0.1)",
             }}
           >
-            <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>MT5 Terminal (RemoteApp)</span>
+            <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+              MT5 Terminal (RemoteApp) — click inside MT5, then type
+            </span>
             <Badge color="green">Connected</Badge>
           </div>
           <iframe
+            ref={iframeRef}
             key={`hosted-mt5-${epoch}`}
             src={descriptor.embed_url}
             title="MT5 Terminal"
+            // iframes are focusable by default; make it explicit for keyboard robustness.
+            tabIndex={0}
+            // Focus once the RemoteApp finishes loading so keystrokes reach MT5 without needing a first click.
+            onLoad={focusTerminal}
             style={{ width: "100%", height: "640px", border: "none", display: "block" }}
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
           />
