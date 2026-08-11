@@ -101,7 +101,7 @@ class DescriptorUsesRdpHostTests(_Base):
         self.assertTrue(auth.authorized, auth.reason)
         plain = _decrypt_token(auth.descriptor["embed_url"])
         self.assertIn(_RDP_TRANSPORT.encode(), plain)          # transport IS in the token
-        self.assertIn(b"||terminal64", plain)                  # single-app RemoteApp alias, /portable
+        self.assertIn(b"||guvfx_mt5_", plain)                  # Stream 6 M2: per-account RemoteApp alias, /portable
 
     def test_B_hostname_is_never_the_transport(self):
         """B: the logical identity hostname must NOT appear as the descriptor host (no identity->transport)."""
