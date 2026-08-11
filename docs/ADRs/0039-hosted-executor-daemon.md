@@ -60,8 +60,9 @@ signed request into a host action, and it is deliberately incapable of arbitrary
 - **`lib/broker_cred_envelope.py`** — the Django-free envelope crypto, vendored byte-identical to the beta-agent
   copy (drift-guarded by a test).
 - **`winsw/*.xml` + `install_service.ps1`** — the single sanctioned installer (WinSW hash-pin, profile-aware XML
-  contract, ASCII-only staged XML, ParseFile-gate of the staged primitives, `sc config obj=` NT-SERVICE identity
-  + `SeServiceLogonRight`, install-only verify, rollback on failure), mirroring the beta agent.
+  contract, ASCII-only staged XML, ParseFile-gate of the staged primitives, `sc config obj=` identity
+  (**LocalSystem** by default — see [[0040-hosted-executor-privilege-model]]; NT-SERVICE virtual account still
+  selectable, then also granted `SeServiceLogonRight`), install-only verify, rollback on failure), mirroring the beta agent.
 
 ### Where the code lives, and how CI covers it
 

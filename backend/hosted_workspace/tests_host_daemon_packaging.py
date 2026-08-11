@@ -92,7 +92,9 @@ class WinSwContractTests(unittest.TestCase):
         self.assertIn("daemon.py", xml)
         self.assertIn("<startmode>Manual</startmode>", xml)
         self.assertIn('<onfailure action="none" />', xml)
-        self.assertIn("NT SERVICE\\GuvFXHostedExecutor", xml)
+        # ADR-0040 privilege model: the daemon runs as LocalSystem (the signed protocol + allow-listed primitives
+        # are the security boundary). WinSW ignores <serviceaccount>; the installer's `sc config obj=` is authoritative.
+        self.assertIn("<username>LocalSystem</username>", xml)
 
     def test_supervised_profile_invariants(self):
         xml = self._read("GuvFXHostedExecutor.supervised.xml")

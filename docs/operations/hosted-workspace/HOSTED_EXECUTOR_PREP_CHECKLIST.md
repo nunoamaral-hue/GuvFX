@@ -47,7 +47,7 @@ Set with PowerShell (handles JSON quotes cleanly — do **not** use `setx`, whic
 # optional (defaults already correct): HOSTED_EXECUTOR_EXPECTED_BIND_HOST=100.79.101.19, HOSTED_EXECUTOR_BIND_PORT=8790
 ```
 
-The WinSW service (`NT SERVICE\GuvFXHostedExecutor`) inherits Machine env at start. Do **not** set
+The WinSW service (`LocalSystem` per ADR-0040) inherits Machine env at start. Do **not** set
 `HOSTED_HOST_EXECUTOR_ENABLED` here — arming is the cert step, for one disposable slot only.
 
 ## 4. Backend environment variables (VPS Django container env-file)
@@ -131,7 +131,7 @@ the PROVISION step fails closed. That is the authoritative cross-side check.
 1. Merge #345 (pre-flight) on green; build the backend image from `main` + recreate the container (picks up the
    per-op timeout + your backend env). Golden-reference STOP-check unaffected (no listener/execution change).
 2. Stage the bundle (§7) if not already; `install_service.ps1 -InstallProfile Supervised` dry-run → review →
-   `-Apply` (install-only, service STOPPED, identity `NT SERVICE\GuvFXHostedExecutor`, rollback on any failure).
+   `-Apply` (install-only, service STOPPED, identity `LocalSystem` per ADR-0040, rollback on any failure).
 3. First-start gate: start the service; confirm `GET /hosted/health` from the backend over Tailscale; confirm
    exclusive bind + venv-python-under-WinSW.
 4. Select a disposable **non-CZ** slot; positively prove disposability (read-only).
