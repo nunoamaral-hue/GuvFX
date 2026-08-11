@@ -70,6 +70,9 @@ class FakeExecutor:
     def populate_runtime(self, runtime_root, rdp_host=None):
         return self._r("populate_runtime")
 
+    def apply_autotrading_config(self, runtime_root, rdp_host=None):
+        return self._r("apply_autotrading_config")
+
     def grant_rdp(self, username, rdp_host=None):
         return self._r("grant_rdp")
 
@@ -224,10 +227,10 @@ class FailureAndRollbackTests(TestCase):
         expect = {
             "materialise_identity": (SP.PREP_IDENTITY_FAILED, SP.ST_MATERIALISE),
             "populate_runtime": (SP.PREP_POPULATE_FAILED, SP.ST_POPULATE),
+            "apply_autotrading_config": (SP.PREP_AUTOTRADING_FAILED, SP.ST_AUTOTRADING),
             "grant_rdp": (SP.PREP_RDP_FAILED, SP.ST_RDP),
             "enforce_single_session": (SP.PREP_SESSION_FAILED, SP.ST_SESSION),
             "verify_remoteapp": (SP.PREP_REMOTEAPP_FAILED, SP.ST_REMOTEAPP),
-            "applocker_prepare": (SP.PREP_APPLOCKER_FAILED, SP.ST_APPLOCKER),
         }
         for step, (reason, stage) in expect.items():
             ws, _, _ = _bound_ws(uname=f"f_{step}")
@@ -255,6 +258,21 @@ class FailureAndRollbackTests(TestCase):
         # mark_materialized must NOT have run — status stays PENDING (state never got ahead of the host).
         prov = AccountProvisioning.objects.get(trading_account=acct)
         self.assertEqual(prov.status, AccountProvisioning.Status.PENDING)
+
+    def test_applocker_deferred_not_fatal(self):
+        # AppLocker prep is deferred (its policy model replaces, no -Merge) — a failed/absent step must NOT block
+        # a prepared slot (execution is DARK), and it is flagged deferred.
+        for ex in (FakeExecutor(fail=["applocker_prepare"]), FakeExecutor(drop=["applocker_prepare"])):
+            ws, _, _ = _bound_ws(uname=f"al{id(ex)}")
+            res = SP.prepare_hosted_slot(ws, executor=ex)
+            self.assertTrue(res.prepared, res.reason)
+            self.assertTrue(res.applocker_deferred)
+
+    def test_applocker_present_not_deferred(self):
+        ws, _, _ = _bound_ws()
+        res = SP.prepare_hosted_slot(ws, executor=FakeExecutor())
+        self.assertTrue(res.prepared)
+        self.assertFalse(res.applocker_deferred)
 
     def test_acl_not_protected_fails(self):
         ws, _, _ = _bound_ws()
@@ -337,6 +355,11 @@ class ReservedAccountSetTests(TestCase):
     @override_settings(HOSTED_SLOT_PREP_RESERVED_ACCOUNT_IDS="1, 2 5")
     def test_explicit_set_is_parsed(self):
         self.assertEqual(SP._reserved_account_ids(), {1, 2, 5})
+
+    @override_settings(HOSTED_SLOT_PREP_RESERVED_ACCOUNT_IDS="2 3")
+    def test_customer_zero_is_a_hard_floor(self):
+        # A non-empty override that omits 1 still protects Customer Zero (union with {1}).
+        self.assertEqual(SP._reserved_account_ids(), {1, 2, 3})
 
 
 class EngineScriptHygieneTests(TestCase):

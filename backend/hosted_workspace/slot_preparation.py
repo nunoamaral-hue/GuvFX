@@ -44,6 +44,7 @@ PREP_EXECUTOR_INCOMPLETE = "host_executor_incomplete"   # executor lacks a requi
 PREP_IDENTITY_FAILED = "identity_materialise_failed"
 PREP_ACL_FAILED = "workspace_acl_failed"         # apply or read-back verification failed → rolled back
 PREP_POPULATE_FAILED = "runtime_populate_failed"
+PREP_AUTOTRADING_FAILED = "autotrading_config_failed"
 PREP_RDP_FAILED = "rdp_grant_failed"
 PREP_SESSION_FAILED = "single_session_failed"
 PREP_REMOTEAPP_FAILED = "remoteapp_not_published"
@@ -58,6 +59,7 @@ ST_MATERIALISE = "materialise_identity_and_folders"
 ST_ACL = "apply_workspace_acl"
 ST_MARK = "mark_materialised"
 ST_POPULATE = "populate_runtime"
+ST_AUTOTRADING = "apply_autotrading_config"
 ST_RDP = "grant_rdp"
 ST_SESSION = "enforce_single_session"
 ST_REMOTEAPP = "verify_remoteapp"
@@ -74,6 +76,7 @@ class SlotPreparationResult:
     reason: str
     stage_reached: str
     observer_deferred: bool = False
+    applocker_deferred: bool = False
     detail: dict = field(default_factory=dict)   # small, non-secret (e.g. {"already": True})
 
 
@@ -95,16 +98,20 @@ def _reserved_account_ids() -> set[int]:
             out.add(int(tok))
         except ValueError:
             continue
-    # A non-empty but unparseable value (e.g. "none") is an operator error → fail SAFE by protecting CZ.
-    return out or {1}
+    # Customer Zero (account #1) is a HARD FLOOR: any non-empty override UNIONS with {1}, never removes it —
+    # so a garbled value ("none") or a typo ("1o 2" → {1,2}) still protects CZ. Only an explicit "" disables.
+    return out | {1}
 
 
-def resolve_host_executor():
-    """Return the signed host-executor the engine drives, or ``None``. In this repository-only phase there is
-    NO host bridge, so this returns ``None`` (fail-closed) — exactly the ``_dark_observe_fn`` pattern used by
-    the G15 observation scheduler. A later host-certification increment supplies a real executor here without
-    touching ``prepare_hosted_slot``'s control flow."""
-    return None
+def resolve_host_executor(account_id=None, rdp_host=""):
+    """Return the signed host-executor the engine drives, or ``None`` (DARK). Delegates to the Stream 5
+    ``SignedHostExecutor`` factory, which returns ``None`` unless ``HOSTED_HOST_EXECUTOR_ENABLED`` is on AND the
+    keyring / base_url / envelope key are configured — so in the repository-only / unarmed phase this is ``None``
+    and every host step fails closed, contacting no host (the ``_dark_observe_fn`` pattern)."""
+    if account_id is None:
+        return None
+    from hosted_workspace.host_executor import resolve_signed_host_executor
+    return resolve_signed_host_executor(account_id=account_id, rdp_host=rdp_host)
 
 
 def _ok(res) -> bool:
@@ -159,7 +166,7 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     runtime_root = prov.runtime_root
 
     # From here every step touches the host. Resolve the executor; DARK by default → fail closed.
-    ex = executor if executor is not None else resolve_host_executor()
+    ex = executor if executor is not None else resolve_host_executor(account_id=account_id, rdp_host=rdp_host)
     if ex is None:
         return SlotPreparationResult(False, PREP_NO_EXECUTOR, ST_MATERIALISE)
 
@@ -215,6 +222,17 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     if not _ok(res):
         return SlotPreparationResult(False, PREP_POPULATE_FAILED, ST_POPULATE)
 
+    # ---- Stage 5b: AutoTrading CAPABILITY config — write [Experts] AllowLiveTrading=1 Enabled=1 into the
+    #      runtime's common.ini (the empirically certified minimum). This is CAPABILITY ONLY: it authorises no
+    #      order. Execution stays gated independently (HOSTED_MT5_EXECUTION_ENABLED + the per-workspace arm + the
+    #      live order-time bridge, all DARK) and no broker is logged in — so the key is inert until a human-gated
+    #      arm. If the executor does not implement it (older host), the step is required and fails closed. --------
+    res = _call("apply_autotrading_config", ST_AUTOTRADING, runtime_root, rdp_host=rdp_host)
+    if res is None:
+        return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_AUTOTRADING)
+    if not _ok(res):
+        return SlotPreparationResult(False, PREP_AUTOTRADING_FAILED, ST_AUTOTRADING)
+
     # ---- Stage 6: RDP grant (hard-scoped to guvfx_u_*) ----------------------------------------------------
     res = _call("grant_rdp", ST_RDP, username, rdp_host=rdp_host)
     if res is None:
@@ -237,13 +255,15 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     if not _ok(res):
         return SlotPreparationResult(False, PREP_REMOTEAPP_FAILED, ST_REMOTEAPP)
 
-    # ---- Stage 9: AppLocker PREPARATION (AuditOnly) — NEVER -Enforce here (execution enablement is a distinct
-    #      Sponsor-gated op). Prepares the workspace's confinement scaffolding without blocking anything. ------
-    res = _call("applocker_prepare", ST_APPLOCKER, username, rdp_host=rdp_host)
-    if res is None:
-        return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_APPLOCKER)
-    if not _ok(res):
-        return SlotPreparationResult(False, PREP_APPLOCKER_FAILED, ST_APPLOCKER)
+    # ---- Stage 9: AppLocker PREPARATION (AuditOnly) — NEVER -Enforce here. DEFERRED / non-blocking: the current
+    #      policy model REPLACES the machine-wide policy (no -Merge), so running it on a host that carries an
+    #      ENFORCED Customer-Zero policy would wipe CZ's enforcement. Until the multi-tenant -Merge model lands it
+    #      must be enabled only on a host WITHOUT an enforced CZ policy (ADR-0037 / runbook). Execution is DARK, so
+    #      no confinement gap is exercised meanwhile. A missing/failed step therefore does NOT block prepared. ----
+    applocker_deferred = True
+    res = _call("applocker_prepare", ST_APPLOCKER, username, rdp_host=rdp_host, required=False)
+    if res is not None and _ok(res):
+        applocker_deferred = False
 
     # ---- Stage 10: observer registration — DEFERRED. The host observe bridge does not exist yet (G15's
     #      observe_fn is dark), so a missing register_observer method does NOT block prepared: the slot exists
@@ -253,6 +273,7 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     if res is not None and _ok(res):
         observer_deferred = False
 
-    logger.info("hosted slot prep: prepared account=%s node=%s observer_deferred=%s",
-                account_id, ws.execution_node_id, observer_deferred)
-    return SlotPreparationResult(True, PREP_OK, ST_DONE, observer_deferred=observer_deferred)
+    logger.info("hosted slot prep: prepared account=%s node=%s observer_deferred=%s applocker_deferred=%s",
+                account_id, ws.execution_node_id, observer_deferred, applocker_deferred)
+    return SlotPreparationResult(True, PREP_OK, ST_DONE, observer_deferred=observer_deferred,
+                                 applocker_deferred=applocker_deferred)
