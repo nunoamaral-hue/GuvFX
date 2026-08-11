@@ -188,3 +188,42 @@ lands (activating the `#316`-seam in `delivery_readiness`).
 
 PM owns lifecycle status. The **Amber** items (readiness confirm precondition, owner FK) proceed as
 additive-DARK. The **Red** items require explicit Sponsor approval and are NOT taken here.
+
+## Amendment (2026-08-11) — Hosted-capability / commercial-plan decoupling
+
+**Context.** During the Stream 9 autonomous-onboarding certification, an admitted Hosted Beta tester
+(`BetaTester` allowlist, active) who registered through the normal public flow and verified their email was
+routed to the legacy Broker Accounts form, not the hosted journey. Root cause: the Hosted Workspace
+capability `can_use_hosted_workspace` was granted **only** by the `beta` commercial plan
+(`billing/entitlements.py`), so a tester who self-selected any other commercial plan (e.g. `standard`) at
+registration was denied (`DENY_NOT_ENTITLED`) even though they were an admitted programme member. The Hosted
+Beta programme was thereby coupled to a single commercial-plan value — a plan the customer chooses for
+billing reasons, not for beta admission.
+
+**Decision.** Hosted Workspace capability becomes **independent of the commercial subscription**. A single
+predicate `hosted_workspace.entitlement.has_hosted_workspace_capability(user)` returns the **fail-closed OR**
+of two separate sources:
+
+- the durable **commercial** entitlement `can_use_hosted_workspace` (a plan may still grant it), **OR**
+- active membership of the **Hosted Beta programme** (the `BetaTester` admission allowlist,
+  `is_admitted_beta_tester`).
+
+The billing entitlement engine stays **commercial-only** (unchanged); `hosted_workspace` composes the two
+concerns. Both capability derivation sites move to the shared predicate: `hosted_workspace_admission`
+(entitlement.py) and the `CHECK_ENTITLED` gate in `strategy_assignment_eligibility` (eligibility.py), so
+admission and assignment-eligibility stay consistent.
+
+**Invariants preserved (no broadening; still fail-closed):**
+
+- Every caller still ANDs the two DARK flags (`HOSTED_PERSISTENT_MT5_ENABLED` +
+  `HOSTED_WORKSPACE_ONBOARDING_ENABLED`, default OFF) on top of the capability — capability alone never
+  admits, and the change is inert in production while dark.
+- The new source admits **only** the active, operator-controlled `BetaTester` set (empty by default; an
+  inactive row does not admit). Paid users not in the programme are unaffected.
+- The commercial plan is **never modified** to grant hosted access (the certification identity keeps its
+  `standard` plan). Access comes from the programme, not the plan.
+- Capability is Access/Visibility only — it grants **no** order authority (`can_deploy_automation` and the
+  live bridge gate are untouched). Customer-Zero/staff exclusion remains in the setup router.
+
+**Reversal.** Pure code predicate behind the same DARK flags; no migration. Reverting the OR (or removing the
+`BetaTester` source) restores plan-only capability. Unsetting either flag disables the whole path as before.

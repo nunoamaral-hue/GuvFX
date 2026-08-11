@@ -15,7 +15,7 @@ projection reports it as an external live gate. Pure/read-only: it changes nothi
 """
 from __future__ import annotations
 
-from hosted_workspace.entitlement import _entitlements
+from hosted_workspace.entitlement import has_hosted_workspace_capability
 from hosted_workspace.flags import hosted_persistent_mt5_enabled
 from hosted_workspace.onboarding_read_model import (
     NEXT_ASSIGN_STRATEGY,
@@ -64,7 +64,9 @@ def strategy_assignment_eligibility(account, *, user=None) -> dict:
         user = getattr(account, "user", None)
     confirmed = getattr(account, "workspace_confirmed_at", None) is not None
     subsystem_on = hosted_persistent_mt5_enabled()
-    entitled = bool(user is not None and _entitlements(user).can_use_hosted_workspace)
+    # ADR-0034 amendment: capability is commercial entitlement OR Hosted Beta programme membership (independent
+    # of the commercial plan). Same predicate as hosted_workspace_admission, so eligibility stays consistent.
+    entitled = has_hosted_workspace_capability(user)
 
     checks = [
         (CHECK_SUBSYSTEM_ENABLED, subsystem_on),

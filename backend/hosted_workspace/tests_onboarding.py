@@ -9,7 +9,7 @@ nothing is armed.
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
-from billing.models import UserSubscriptionState
+from billing.models import BetaTester, UserSubscriptionState
 from trading.models import BrokerServer, TradingAccount
 
 from hosted_workspace import entitlement as E
@@ -72,6 +72,94 @@ class AdmissionTests(TestCase):
         ok, reason = E.hosted_workspace_admission(None)
         self.assertFalse(ok)
         self.assertEqual(reason, E.DENY_NO_USER)
+
+
+def _std_user(name, *, plan="standard"):
+    """A user on a NON-hosted COMMERCIAL plan (default 'standard'). Distinct from ``_user(entitled=True)``,
+    which puts the user on the 'beta' plan (the commercial hosted-entitlement source)."""
+    u = U.objects.create_user(username=name, email=f"{name}@x.invalid", password="x")
+    UserSubscriptionState.objects.update_or_create(
+        user=u, defaults=dict(current_plan=plan, plan_status="active", viewer_mode=False))
+    return u
+
+
+def _admit(user, *, active=True):
+    """Enrol *user* into the Hosted Beta programme (the ``BetaTester`` admission allowlist)."""
+    return BetaTester.objects.create(email=user.email, is_active=active)
+
+
+class HostedCapabilityDecouplingTests(TestCase):
+    """ADR-0034 amendment — Hosted Workspace CAPABILITY is INDEPENDENT of the commercial subscription: a
+    fail-closed OR of (commercial entitlement) OR (active Hosted Beta programme membership). A tester keeps
+    their commercial plan and still gains hosted access; paid users NOT in the programme are never broadened in."""
+
+    # --- capability predicate (both sources, fail-closed) ---
+    def test_capability_commercial_source(self):
+        self.assertTrue(E.has_hosted_workspace_capability(_user(entitled=True)))          # beta plan
+
+    def test_capability_beta_programme_source_keeps_commercial_plan(self):
+        u = _std_user("cap_std"); _admit(u)
+        self.assertTrue(E.has_hosted_workspace_capability(u))
+        self.assertEqual(UserSubscriptionState.objects.get(user=u).current_plan, "standard")  # plan UNTOUCHED
+
+    def test_capability_neither_source_false(self):
+        self.assertFalse(E.has_hosted_workspace_capability(_std_user("cap_none")))
+
+    def test_capability_inactive_betatester_false(self):
+        u = _std_user("cap_inact"); _admit(u, active=False)      # inactive allowlist row => not admitted
+        self.assertFalse(E.has_hosted_workspace_capability(u))
+
+    def test_capability_no_user_false(self):
+        self.assertFalse(E.has_hosted_workspace_capability(None))
+
+    # --- admission composes flags AND capability ---
+    @override_settings(**_FLAGS_ON)
+    def test_admission_via_beta_programme_on_standard_plan(self):
+        # The exact certification-identity shape: standard commercial plan + active Hosted Beta membership.
+        u = _std_user("adm_std"); _admit(u)
+        ok, reason = E.hosted_workspace_admission(u)
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, E.ADMIT_OK)
+
+    @override_settings(**_FLAGS_ON)
+    def test_admission_commercial_source_without_beta_membership(self):
+        ok, reason = E.hosted_workspace_admission(_user(name="adm_beta", entitled=True))  # beta plan, no allowlist row
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, E.ADMIT_OK)
+
+    @override_settings(**_FLAGS_ON)
+    def test_admission_denied_paid_user_not_in_programme(self):
+        ok, reason = E.hosted_workspace_admission(_std_user("adm_paid", plan="advanced"))
+        self.assertFalse(ok)
+        self.assertEqual(reason, E.DENY_NOT_ENTITLED)
+
+    @override_settings(**_FLAGS_ON)
+    def test_beta_membership_does_not_bypass_dark_flags(self):
+        # Fail-closed: capability alone never admits — with onboarding OFF a Hosted Beta member is still denied.
+        with override_settings(HOSTED_WORKSPACE_ONBOARDING_ENABLED="0"):
+            u = _std_user("adm_dark"); _admit(u)
+            ok, reason = E.hosted_workspace_admission(u)
+            self.assertFalse(ok)
+            self.assertEqual(reason, E.DENY_ONBOARDING_DARK)
+
+    # --- eligibility projection honours the same OR (admission and eligibility stay consistent) ---
+    @override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1")
+    def test_eligibility_entitled_via_beta_programme(self):
+        from hosted_workspace.eligibility import CHECK_ENTITLED, strategy_assignment_eligibility
+        u = _std_user("elig_bt"); _admit(u)
+        proj = strategy_assignment_eligibility(_account(u), user=u)
+        entitled = next(c["ok"] for c in proj["checklist"] if c["key"] == CHECK_ENTITLED)
+        self.assertTrue(entitled)
+
+    @override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1")
+    def test_eligibility_not_entitled_paid_user_not_in_programme(self):
+        # Negative lock on the SAME predicate the amendment rewired into eligibility: a paid user who is NOT in
+        # the Hosted Beta programme must have CHECK_ENTITLED False (this fails if eligibility hardcodes True).
+        from hosted_workspace.eligibility import CHECK_ENTITLED, strategy_assignment_eligibility
+        u = _std_user("elig_paid", plan="advanced")     # paid, NOT admitted to the programme
+        proj = strategy_assignment_eligibility(_account(u), user=u)
+        entitled = next(c["ok"] for c in proj["checklist"] if c["key"] == CHECK_ENTITLED)
+        self.assertFalse(entitled)
 
 
 class OwnershipTests(TestCase):
