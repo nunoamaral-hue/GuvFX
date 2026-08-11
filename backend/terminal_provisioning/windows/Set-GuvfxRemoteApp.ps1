@@ -18,11 +18,14 @@
 #>
 param(
   [Parameter(Mandatory=$true)][ValidateSet("Ensure","Verify","Remove")][string]$Mode,
-  [Parameter(Mandatory=$true)][string]$TerminalRoot
+  [Parameter(Mandatory=$true)][string]$TerminalRoot,
+  # Stream 6 (M2): the server-derived per-account alias (guvfx_mt5_<id>); Customer Zero keeps legacy terminal64.
+  [string]$Alias = "terminal64"
 )
 $ErrorActionPreference = "Stop"
 $ACCOUNTS_BASE = "C:\GuvFX\accounts"
-$ALIAS = "terminal64"
+if ($Alias -notmatch '^(terminal64|guvfx_mt5_[1-9][0-9]*)$') { throw "refusing: alias must be server-derived (terminal64 | guvfx_mt5_<id>)" }
+$ALIAS = $Alias
 $TSROOT = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList"
 $APPKEY = "$TSROOT\Applications\$ALIAS"
 $result = [ordered]@{ alias=$ALIAS; mode=$Mode; exe=""; args="/portable"; published=$false; exact=$false; ok=$false; reason="" }
@@ -38,6 +41,8 @@ try {
   $result.exe = $exe
 
   if ($Mode -eq "Remove") {
+    # Defence in depth: never remove Customer Zero's published legacy alias through this per-account tool.
+    if ($ALIAS -eq "terminal64") { Fail "refusing: Customer Zero (terminal64) alias removal is forbidden here" }
     if (Test-Path $APPKEY) { Remove-Item -Path $APPKEY -Recurse -Force }
     $result.published = [bool](Test-Path $APPKEY)
     $result.ok = (-not $result.published); if (-not $result.ok) { Fail "remove did not clear the entry" }
@@ -63,10 +68,11 @@ try {
   $result.published = $true
   $pathOk = ($p.Path -ieq $exe)
   $argsOk = ($p.RequiredCommandLine -eq "/portable")
-  # Exactly one application published under the allow-list (no extra/desktop entries).
-  $count = @(Get-ChildItem -Path "$TSROOT\Applications" -ErrorAction SilentlyContinue).Count
-  $result.exact = ($pathOk -and $argsOk -and ($count -eq 1))
-  if (-not $result.exact) { Fail "published RemoteApp does not match exact path/args or is not the only app" }
+  # Per-account (M2): verify THIS alias resolves to THIS account's exact terminal64.exe + /portable. We do NOT
+  # assert a machine-wide single-app count any more (multiple per-account aliases legitimately coexist); a
+  # different account's alias points at ITS own tree, so cross-account program access is impossible by path.
+  $result.exact = ($pathOk -and $argsOk)
+  if (-not $result.exact) { Fail "published RemoteApp alias does not match this account's exact path/args" }
   $result.ok = $true
   $result | ConvertTo-Json -Compress
 }

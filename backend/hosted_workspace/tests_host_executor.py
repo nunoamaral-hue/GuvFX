@@ -239,11 +239,46 @@ class _clean_env:
                 os.environ[n] = v
 
 
+class RemoteAppAliasTests(SimpleTestCase):
+    """Stream 6 (M2): the per-account RemoteApp alias — the single server-derived source of truth."""
+
+    def test_customer_zero_keeps_legacy_alias(self):
+        self.assertEqual(D.remoteapp_alias(1), "terminal64")
+
+    def test_per_account_alias_is_deterministic_and_unique(self):
+        self.assertEqual(D.remoteapp_alias(2), "guvfx_mt5_2")
+        self.assertEqual(D.remoteapp_alias(100), "guvfx_mt5_100")
+        aliases = {D.remoteapp_alias(n) for n in (1, 2, 3, 10, 100)}
+        self.assertEqual(len(aliases), 5)                      # one unique alias per account
+
+    def test_bad_account_rejected(self):
+        for bad in (0, -1):
+            with self.assertRaises(P.HostProtocolError):
+                D.remoteapp_alias(bad)
+
+    def test_dispatch_derives_alias_server_side(self):
+        # ENSURE_REMOTEAPP for account 2 must carry the SERVER-derived guvfx_mt5_2 (never a caller value).
+        calls = []
+        D.dispatch(_req("ENSURE_REMOTEAPP", account_id=2), keyring=KR, now=T, nonce_burn=_burner(),
+                   run_primitive=lambda name, args: calls.append((name, args)) or {"ok": True}, reserved_ids="")
+        self.assertEqual(calls[0][0], "ensure_remoteapp")
+        self.assertEqual(calls[0][1]["alias"], "guvfx_mt5_2")
+        self.assertEqual(calls[0][1]["terminal_root"], r"C:\GuvFX\accounts\2\terminal")
+
+    def test_dispatch_applocker_maps_to_tenant_merge(self):
+        calls = []
+        D.dispatch(_req("APPLY_APPLOCKER_AUDIT", account_id=7), keyring=KR, now=T, nonce_burn=_burner(),
+                   run_primitive=lambda name, args: calls.append((name, args)) or {"ok": True}, reserved_ids="")
+        self.assertEqual(calls[0][0], "applocker_tenant_merge")
+        self.assertEqual(calls[0][1], {"username": "guvfx_u_7", "account_id": 7})
+
+
 class NewScriptHygieneTests(SimpleTestCase):
-    def test_stream5_scripts_are_ascii_only(self):
+    def test_host_scripts_are_ascii_only(self):
         import hosted_workspace
         base = os.path.join(os.path.dirname(os.path.dirname(hosted_workspace.__file__)),
                             "terminal_provisioning", "windows")
-        for name in ["Set-GuvfxAutoTradingConfig.ps1", "Set-GuvfxRemoteApp.ps1", "Set-GuvfxObserver.ps1"]:
+        for name in ["Set-GuvfxAutoTradingConfig.ps1", "Set-GuvfxRemoteApp.ps1", "Set-GuvfxObserver.ps1",
+                     "Set-GuvfxAppLockerTenant.ps1"]:
             data = open(os.path.join(base, name), "rb").read()
             self.assertEqual([i for i, b in enumerate(data) if b > 127], [], f"{name}: non-ASCII")

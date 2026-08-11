@@ -227,7 +227,7 @@ class DeliveryServerDerivationTests(_Base):
         dec = Cipher(algorithms.AES(key), modes.CBC(b"\x00" * 16)).decryptor()
         plain = dec.update(ct) + dec.finalize()
         self.assertIn(_WINDOWS_PW.encode(), plain)               # inside the token…
-        self.assertIn(b"||terminal64", plain)                    # …with the single-app RemoteApp alias
+        self.assertIn(b"||guvfx_mt5_", plain)                    # Stream 6 M2: …the per-account RemoteApp alias
         # …and the server-derived delivery TRANSPORT is node.rdp_host, NOT the execution identity hostname.
         self.assertIn(self.node.rdp_host.encode(), plain)
         self.assertNotIn(self.node.hostname.encode(), plain)     # identity is never used as the RDP host
@@ -438,5 +438,5 @@ class DeliveryConnectApiTests(_Base):
         plain = dec.update(ct) + dec.finalize()
         self.assertIn(self.node.rdp_host.encode(), plain)   # server host, not the client's 1.2.3.4
         self.assertNotIn(b"1.2.3.4", plain)
-        self.assertIn(b"||terminal64", plain)               # server program, not the client's cmd
+        self.assertIn(b"||guvfx_mt5_", plain)               # Stream 6 M2: server per-account program, not client cmd
         self.assertNotIn(b"attacker", plain)

@@ -34,12 +34,15 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hosted_workspace.flags import hosted_mt5_remoteapp_enabled, hosted_persistent_mt5_enabled
+from hosted_workspace.host_agent_dispatch import remoteapp_alias
 from hosted_workspace.models import HostedMt5Workspace
 
 logger = logging.getLogger("guvfx.hosted_workspace")
 
-# The RemoteApp program alias published on the host's RemoteApp allow-list (a HOST/deploy constant, never
-# per-user, never client-supplied). ``build_remoteapp_rdp_payload`` prefixes it with ``||`` for FreeRDP.
+# Stream 6 (M2): the RemoteApp program alias is now DERIVED PER ACCOUNT from ``trading_account.id`` via the
+# single source of truth ``host_agent_dispatch.remoteapp_alias`` (account #1 → the legacy ``terminal64`` for
+# Customer-Zero compatibility; every other account → ``guvfx_mt5_<id>``). Server-derived, never client-supplied;
+# ``build_remoteapp_rdp_payload`` prefixes it with ``||`` for FreeRDP. Kept as the CZ legacy reference for tests.
 REMOTEAPP_ALIAS = "terminal64"
 # The MT5 command line for a portable, view-managed launch (server constant).
 REMOTEAPP_ARGS = "/portable"
@@ -199,7 +202,7 @@ def _build_signed_descriptor(*, workspace, prov, node, base_url, secret_hex) -> 
         windows_username=windows_username,
         windows_password=decrypt_password(prov.password_enc),
         host=node.rdp_host,
-        remote_app=REMOTEAPP_ALIAS,
+        remote_app=remoteapp_alias(prov.trading_account_id),   # server-derived per-account; CZ → legacy terminal64
         remote_app_dir=remote_app_dir,
         remote_app_args=REMOTEAPP_ARGS,
         conn_id=conn_id,

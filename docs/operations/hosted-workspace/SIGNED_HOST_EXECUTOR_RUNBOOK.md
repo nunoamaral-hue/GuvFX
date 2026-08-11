@@ -85,22 +85,24 @@ No command / script / path / username is expressible on the wire. The host deriv
   dispatcher service. To clear a disposable slot, run the reviewed rollback/remove modes (`Set-GuvfxWorkspaceAcl
   -Rollback`, `Set-GuvfxRemoteApp -Remove`, `Set-GuvfxObserver -Remove`) — never a blanket delete.
 
-## Multi-tenant constraints (must hold before arming on the shared host)
+## Multi-tenant safety (RESOLVED by Stream 6 / ADR-0038 — now safe on the shared host)
 
-Two host artefacts are single-tenant-safe but **machine-global**, so they need the multi-tenant model before
-running on a host that already carries Customer Zero:
+The two machine-global hazards Stream 5 flagged are closed:
 
-- **AppLocker (`APPLY_APPLOCKER_AUDIT`)** — `Set-GuvfxAppLocker.ps1 -Deploy` REPLACES the machine-wide policy (no
-  `-Merge`). Running it on the host that runs Customer Zero **under Enforce would wipe CZ's enforcement.** The
-  orchestrator therefore treats AppLocker prep as **DEFERRED / non-blocking** (a prepared slot does not require
-  it; execution is DARK so no confinement gap is exercised). Enable `APPLY_APPLOCKER_AUDIT` **only** on a host
-  WITHOUT an enforced CZ policy, OR after the `-Merge` multi-tenant accumulation model lands (WP6B). The Phase 16
-  CZ STOP-check must confirm CZ AppLocker is byte-identical regardless.
-- **RemoteApp (`ENSURE_REMOTEAPP`)** — the alias `terminal64` lives under the machine-global HKLM `TSAppAllowList`,
-  so a SECOND hosted slot's publish would collide with the first (and the exact-count verify would trip). Safe for
-  the single disposable certification and does not affect CZ (whose descriptor path is separate); a per-account
-  alias (`terminal64_<id>`) + a matching per-account delivery descriptor is required before publishing >1 hosted
-  slot on one host. Do not change the alias without updating the delivery descriptor (CZ compatibility).
+- **AppLocker (`APPLY_APPLOCKER_AUDIT`)** now maps to the tenant applier `Set-GuvfxAppLockerTenant.ps1 -Mode Merge`
+  (host `Set-AppLockerPolicy -Merge`), driven by the deterministic compiler `hosted_workspace.applocker_policy`.
+  It ADDS only this account's SID-scoped deny fragment (account-tagged rule IDs) — it never replaces the
+  machine-wide policy and never touches Customer Zero or another tenant. Rollback (`REMOVE_APPLOCKER_TENANT`)
+  strips only this account's rules; removing Customer Zero is refused. The publisher-based posture is preserved
+  (no writable-path executable Allow; MetaQuotes + Administrator recovery intact). The orchestrator keeps
+  AppLocker DEFERRED (execution is DARK), but running it on the CZ host is now safe. The Phase 16 CZ STOP-check
+  must still confirm CZ AppLocker is byte-identical.
+- **RemoteApp (`ENSURE_REMOTEAPP`)** now publishes a deterministic **per-account** alias `guvfx_mt5_<id>` (Customer
+  Zero keeps legacy `terminal64`), derived server-side from `account_id` via the single source
+  `host_agent_dispatch.remoteapp_alias` — the delivery descriptor derives the SAME alias from `trading_account.id`,
+  so multiple per-account aliases coexist without collision and no browser can choose the program. Rollback is
+  `REMOVE_REMOTEAPP` (removes only this account's alias). Customer Zero's published `terminal64` is unchanged (its
+  migration to the canonical `guvfx_mt5_1` alias is a separate later step).
 
 ## Markers
 

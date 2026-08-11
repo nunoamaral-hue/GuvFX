@@ -30,6 +30,25 @@ from hosted_workspace.host_protocol import (
 ACCOUNTS_BASE = r"C:\GuvFX\accounts"
 _USERNAME_FMT = "guvfx_u_{}"
 
+# Customer Zero keeps its already-published legacy RemoteApp alias for compatibility; every other account gets a
+# deterministic per-account alias. This is the SINGLE SOURCE OF TRUTH for the alias — used both host-side (to
+# publish) and Django-side (the delivery descriptor imports it), so they can never drift. Server-derived only.
+_LEGACY_REMOTEAPP_ACCOUNTS = frozenset({1})
+_REMOTEAPP_ALIAS_RE = re.compile(r"^(terminal64|guvfx_mt5_[1-9][0-9]*)$")
+
+
+def remoteapp_alias(account_id) -> str:
+    """The deterministic, server-derived RemoteApp alias for an account. account #1 (Customer Zero) → the legacy
+    ``terminal64`` (compat with its currently-published RemoteApp); every other account → ``guvfx_mt5_<id>``.
+    Safe charset + bounded by construction; never caller-controlled."""
+    acct = int(account_id)
+    if acct <= 0:
+        raise HostProtocolError("account_id_out_of_range")
+    alias = "terminal64" if acct in _LEGACY_REMOTEAPP_ACCOUNTS else f"guvfx_mt5_{acct}"
+    if not _REMOTEAPP_ALIAS_RE.match(alias):   # defence: the derivation can only ever produce a safe alias
+        raise HostProtocolError("remoteapp_alias_malformed")
+    return alias
+
 # The reserved identities the host must NEVER provision — the SECOND enforcement layer (Django refuses too).
 # Default protects Customer Zero (account #1 / guvfx_u_1 / C:\GuvFX\accounts\1). A garbled host override falls
 # back SAFE to {1}. An explicit empty override ("") disables it (operator choice; used only in tests).
@@ -47,8 +66,10 @@ OP_PRIMITIVES = {
     "ENSURE_RDP_MEMBERSHIP":    {"primitive": "ensure_rdp_membership",    "params_allow": ()},
     "ENSURE_SINGLE_SESSION":    {"primitive": "ensure_single_session",    "params_allow": ()},
     "ENSURE_REMOTEAPP":         {"primitive": "ensure_remoteapp",         "params_allow": ()},
+    "REMOVE_REMOTEAPP":         {"primitive": "remove_remoteapp",         "params_allow": ()},
     "PREPARE_OBSERVER":         {"primitive": "prepare_observer",         "params_allow": ()},
-    "APPLY_APPLOCKER_AUDIT":    {"primitive": "applocker_audit",          "params_allow": ()},
+    "APPLY_APPLOCKER_AUDIT":    {"primitive": "applocker_tenant_merge",   "params_allow": ()},
+    "REMOVE_APPLOCKER_TENANT":  {"primitive": "applocker_tenant_remove",  "params_allow": ()},
     "VERIFY_SLOT":              {"primitive": "verify_slot",              "params_allow": ()},
 }
 assert set(OP_PRIMITIVES) == set(HOSTED_OPERATIONS), "OP_PRIMITIVES must cover exactly HOSTED_OPERATIONS"
@@ -91,6 +112,7 @@ def derive_slot(account_id: int) -> dict:
         "runtime_root": runtime_root,
         "terminal_root": rf"{runtime_root}\terminal",
         "acl_snapshot_path": rf"{runtime_root}\audit\acl_snapshot.sddl",
+        "remoteapp_alias": remoteapp_alias(acct),
     }
 
 
@@ -154,11 +176,19 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
                 "mode": "Apply" if op == "APPLY_WORKSPACE_ACL" else "Rollback"}
     if op == "APPLY_AUTOTRADING_CONFIG":
         return {"terminal_root": slot["terminal_root"]}
-    if op in ("ENSURE_RDP_MEMBERSHIP", "APPLY_APPLOCKER_AUDIT"):
+    if op in ("ENSURE_REMOTEAPP", "REMOVE_REMOTEAPP"):
+        # The alias is DERIVED server-side (never the caller's) — per-account for isolation, legacy for CZ.
+        return {"username": slot["username"], "terminal_root": slot["terminal_root"],
+                "alias": slot["remoteapp_alias"], "account_id": slot["account_id"]}
+    if op in ("APPLY_APPLOCKER_AUDIT", "REMOVE_APPLOCKER_TENANT"):
+        # Tenant-scoped AppLocker: the host resolves the SID from the username and tags rules with account_id, so
+        # a merge/remove touches ONLY this account's contribution (never the base or another tenant / CZ).
+        return {"username": slot["username"], "account_id": slot["account_id"]}
+    if op == "ENSURE_RDP_MEMBERSHIP":
         return {"username": slot["username"]}
     if op == "ENSURE_SINGLE_SESSION":
         return {}
-    return base                                                     # MATERIALISE/REMOTEAPP/OBSERVER/VERIFY_SLOT
+    return base                                                     # MATERIALISE / PREPARE_OBSERVER / VERIFY_SLOT
 
 
 _SECRET_KEYS = {"password", "pw", "secret", "payload"}

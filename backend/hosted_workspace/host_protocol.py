@@ -37,9 +37,11 @@ HOSTED_OPERATIONS = (
     "APPLY_AUTOTRADING_CONFIG",  # write [Experts] AllowLiveTrading=1 Enabled=1 (CAPABILITY only) to common.ini
     "ENSURE_RDP_MEMBERSHIP",     # add guvfx_u_<id> to Remote Desktop Users (scoped)
     "ENSURE_SINGLE_SESSION",     # fSingleSessionPerUser=1 (host-global, idempotent)
-    "ENSURE_REMOTEAPP",          # publish/verify terminal64 /portable RemoteApp for this identity
+    "ENSURE_REMOTEAPP",          # publish/verify the per-account RemoteApp alias (guvfx_mt5_<id>) /portable
+    "REMOVE_REMOTEAPP",          # tenant rollback: remove ONLY this account's RemoteApp alias
     "PREPARE_OBSERVER",          # register the read-only session-bound observer task
-    "APPLY_APPLOCKER_AUDIT",     # AppLocker AuditOnly deploy for this identity (NEVER -Enforce here)
+    "APPLY_APPLOCKER_AUDIT",     # AppLocker AuditOnly TENANT MERGE for this identity (additive; NEVER -Enforce)
+    "REMOVE_APPLOCKER_TENANT",   # tenant rollback: remove ONLY this account's AppLocker deny contribution
     "VERIFY_SLOT",               # read-only re-verification of the whole slot
 )
 # Operations that carry a sealed credential payload (the Windows account password). Additive.
