@@ -52,7 +52,14 @@ try {
   if ($Mode -eq "Ensure") {
     if (-not (Test-Path -LiteralPath $exe)) { Fail "terminal64.exe not present - materialise runtime first" }
     # FilterByName mode: only explicitly allow-listed apps are published (no full desktop).
-    New-Item -Path $TSROOT -Force | Out-Null
+    # CRITICAL (Stream 7D cert): `New-Item -Force` on an EXISTING registry key DELETES it and ALL its subkeys
+    # (recreates it empty). Applied to the TSAppAllowList / Applications CONTAINERS it erased every OTHER
+    # published alias -- it wiped Customer Zero's terminal64 when this per-account tool published a SECOND alias.
+    # Create the containers ONLY when absent; never -Force a shared parent. -Force the LEAF alias key only (its
+    # own values are (re)set below; that touches no sibling alias).
+    $APPSROOT = "$TSROOT\Applications"
+    if (-not (Test-Path $TSROOT))   { New-Item -Path $TSROOT   -Force | Out-Null }
+    if (-not (Test-Path $APPSROOT)) { New-Item -Path $APPSROOT -Force | Out-Null }
     New-ItemProperty -Path $TSROOT -Name "fDisabledAllowList" -Value 1 -PropertyType DWord -Force | Out-Null
     New-Item -Path $APPKEY -Force | Out-Null
     New-ItemProperty -Path $APPKEY -Name "Name" -Value $ALIAS -PropertyType String -Force | Out-Null
