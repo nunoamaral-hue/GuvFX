@@ -98,10 +98,15 @@ CONTRACT = {
 
 # The PowerShell one-liner used by the default ParseFile gate. Builds the AST WITHOUT executing (RULE 9) and
 # prints an explicit positive/negative marker so a bare exit-0 is never mistaken for a clean parse (RULE 11).
-_PARSE_PS = (
-    "$e=$null;$t=$null;"
-    "[void][System.Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$t,[ref]$e);"
-    "if($e -and $e.Count -gt 0){Write-Output 'PARSE_ERR';exit 1}else{Write-Output 'PARSE_OK';exit 0}")
+# The script path is INTERPOLATED (single-quoted, quotes doubled) into the command rather than passed as a
+# trailing argument, because ``powershell -Command "<cmd>" <path>`` does NOT populate $args from trailing args
+# (it appends them to the command). The path is a fixed reviewed .ps1 already confined to the scripts dir by
+# ``script_path`` before this runs, so interpolation introduces no injection surface.
+def _parse_ps_command(script_path: str) -> str:
+    ps_path = "'" + str(script_path).replace("'", "''") + "'"
+    return ("$e=$null;$t=$null;"
+            "[void][System.Management.Automation.Language.Parser]::ParseFile(" + ps_path + ",[ref]$t,[ref]$e);"
+            "if($e -and $e.Count -gt 0){Write-Output 'PARSE_ERR';exit 1}else{Write-Output 'PARSE_OK';exit 0}")
 
 
 class PrimitiveError(Exception):
@@ -121,7 +126,7 @@ def _default_run_subprocess(argv, *, input_bytes, timeout_s):
 def _default_parse_validator(powershell, script_path):
     """Real ParseFile gate: returns (ok, detail). ok only when the explicit ``PARSE_OK`` marker is printed."""
     argv = [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-Command", _PARSE_PS, script_path]
+            "-Command", _parse_ps_command(script_path)]
     try:
         proc = subprocess.run(argv, capture_output=True, timeout=60, shell=False, check=False)  # noqa: S603
     except Exception as exc:  # noqa: BLE001
