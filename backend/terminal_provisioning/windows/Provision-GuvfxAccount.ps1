@@ -49,7 +49,7 @@ try {
     if ([string]::IsNullOrWhiteSpace($pw)) { throw "no password supplied on stdin for new user" }
     $sec = ConvertTo-SecureString $pw -AsPlainText -Force
     New-LocalUser -Name $Username -Password $sec -FullName "GuvFX account $AccountId" `
-      -Description "GuvFX isolated MT5 identity (TX-1) for account $AccountId" `
+      -Description "GuvFX isolated MT5 identity acct $AccountId" `
       -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
     $pw = $null; $sec = $null
     $result.user_created = $true
