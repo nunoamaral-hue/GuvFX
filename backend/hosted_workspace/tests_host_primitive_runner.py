@@ -22,6 +22,30 @@ import primitive_runner as pr  # noqa: E402
 _WINDOWS_SCRIPTS = os.path.join(_REPO, "backend", "terminal_provisioning", "windows")
 
 
+class RemoteAppNonDestructiveTests(unittest.TestCase):
+    """Regression (Stream 7D Customer-Zero drift): ``Set-GuvfxRemoteApp.ps1 -Mode Ensure`` must create the SHARED
+    ``TSAppAllowList`` / ``Applications`` registry containers ONLY when absent. ``New-Item -Force`` on an existing
+    registry key deletes it and ALL its subkeys (recreates it empty) -- applied to a shared parent it wiped
+    Customer Zero's ``terminal64`` alias the moment a second per-account alias was published. The shared parents
+    must sit behind a ``Test-Path`` guard; only the LEAF alias key may be ``-Force``'d."""
+
+    def _script(self):
+        with open(os.path.join(_WINDOWS_SCRIPTS, "Set-GuvfxRemoteApp.ps1"), encoding="ascii") as fh:
+            return fh.read()
+
+    def test_shared_parents_are_guarded_not_force_recreated(self):
+        import re
+        s = self._script()
+        self.assertIn("if (-not (Test-Path $TSROOT))", s)
+        self.assertIn("if (-not (Test-Path $APPSROOT))", s)
+        for var in ("$TSROOT", "$APPSROOT"):
+            for m in re.finditer(r"New-Item\s+-Path\s+" + re.escape(var) + r"\s+-Force", s):
+                prefix = s[max(0, m.start() - 80):m.start()]
+                self.assertIn("Test-Path " + var, prefix,
+                              "New-Item -Path %s -Force must sit inside a Test-Path guard (else it wipes "
+                              "sibling RemoteApp aliases, incl. Customer Zero's terminal64)" % var)
+
+
 class FakeProc:
     def __init__(self, stdout=b'{"ok":true}', returncode=0):
         self.stdout = stdout
