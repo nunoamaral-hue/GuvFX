@@ -263,6 +263,19 @@ class ParseGateTests(unittest.TestCase):
         want = {s.script for s in pr.CONTRACT.values() if s.script}
         self.assertEqual(set(runner.required_scripts()), want)
 
+    def test_parse_command_interpolates_path_not_args(self):
+        # Regression: `powershell -Command "<cmd>" <path>` does NOT populate $args from trailing args (it
+        # appends them to the command), so the real ParseFile gate must EMBED the path in the command string.
+        # (The earlier $args[0] form parsed nothing and made the daemon refuse to start on the host.)
+        p = r"C:\GuvFX\hosted\scripts\Set-GuvfxRemoteApp.ps1"
+        cmd = pr._parse_ps_command(p)
+        self.assertNotIn("$args", cmd)
+        self.assertIn("ParseFile('" + p + "'", cmd)         # single-quoted, interpolated
+        self.assertIn("PARSE_OK", cmd)
+        self.assertIn("PARSE_ERR", cmd)
+        # single quotes in a path are doubled (PS escaping) so interpolation cannot break the string
+        self.assertIn("a''b", pr._parse_ps_command("a'b"))
+
 
 if __name__ == "__main__":
     unittest.main()
