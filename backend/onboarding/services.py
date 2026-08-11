@@ -181,6 +181,27 @@ def finalize_onboarding(user, request=None) -> UserOnboardingState:
     return state
 
 
+def _resolve_strategy_stage(user) -> dict:
+    """The post-provisioning STRATEGY portion of the setup ladder, shared by the legacy broker path and the
+    hosted WORKSPACE_READY hand-off. "Strategy selected" = any assignment on the user's account
+    (marketplace_assign creates one is_active=True, stage=TEST — NOT yet trading). "Trading enabled" = the
+    assignment is actually ARMED for execution (AUTO_DEMO + stage=LIVE + is_active), matching the authoritative
+    armed signal used by the signal-copy router; bare ``is_active`` (defaults True) would wrongly treat a
+    just-selected TEST assignment as complete."""
+    from strategies.models import StrategyAssignment
+    if not StrategyAssignment.objects.filter(account__user=user).exists():
+        return {"stage": "select_strategy", "next_route": "/strategies/marketplace"}
+    armed = StrategyAssignment.objects.filter(
+        account__user=user,
+        execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+        stage=StrategyAssignment.STAGE_LIVE,
+        is_active=True,
+    ).exists()
+    if not armed:
+        return {"stage": "enable_trading", "next_route": "/strategies"}
+    return {"stage": "complete", "next_route": "/dashboard"}
+
+
 def resolve_setup_stage(user) -> dict:
     """Intelligent post-onboarding SETUP ROUTER — returns the customer's current setup stage and the route
     that resumes it, computed from durable state (never from an operation's success). Onboarding completion
@@ -189,6 +210,7 @@ def resolve_setup_stage(user) -> dict:
 
     Ladder (first unmet stage wins):
       onboarding incomplete             -> /onboarding                (onboarding)
+      admitted HOSTED user, pre-ready   -> /onboarding/hosted         (hosted_workspace)   [ADR-0034; DARK-gated]
       no broker account                 -> /accounts                  (connect_broker)
       broker exists, runtime not RUNNING -> /accounts                  (provisioning)
       runtime ready, no strategy         -> /strategies/marketplace    (select_strategy)
@@ -197,11 +219,42 @@ def resolve_setup_stage(user) -> dict:
     """
     from trading.models import TradingAccount
     from terminal_provisioning.models import AccountRuntime, RuntimeState
-    from strategies.models import StrategyAssignment
 
     state = get_or_create_onboarding_state(user)
     if not state.onboarding_completed:
         return {"stage": "onboarding", "next_route": "/onboarding"}
+
+    # ADR-0034 Hosted Workspace pilot: an admitted hosted user's PRE-TRADE steps are owned by the hosted
+    # journey (/onboarding/hosted) — request workspace -> preparing -> open MT5 + broker login -> confirm
+    # account — so the LEGACY /accounts broker-credential form NEVER appears before the MT5 workspace exists.
+    # FAIL-CLOSED: hosted_workspace_admission() returns False unless BOTH DARK flags
+    # (HOSTED_PERSISTENT_MT5_ENABLED + HOSTED_WORKSPACE_ONBOARDING_ENABLED, default OFF) are on AND the durable
+    # can_use_hosted_workspace capability is held, so while dark this branch is INERT and legacy routing is
+    # byte-identical. Customer Zero / any staff account is explicitly excluded (matches mark_account_connected).
+    from hosted_workspace.entitlement import hosted_workspace_admission
+    admit_ok, _admit_reason = hosted_workspace_admission(user)
+    # Customer Zero / Nuno's estate is is_staff OR is_superuser (matches the estate-safety guard in
+    # _apply_beta_admission) — never divert his account into the hosted pilot journey.
+    if admit_ok and not (user.is_staff or user.is_superuser):
+        from hosted_workspace.models import HostedMt5Workspace
+        from hosted_workspace.onboarding_read_model import (
+            PHASE_WORKSPACE_READY, onboarding_journey_projection)
+        hws = (HostedMt5Workspace.objects.filter(trading_account__user=user)
+               .select_related("trading_account").first())
+        if hws is not None:
+            # Hosted user mid-journey: route by the journey phase; only WORKSPACE_READY (workspace live +
+            # broker connected + account confirmed) hands off to the strategy ladder — a hosted-ready user has
+            # no legacy AccountRuntime, so it must NEVER fall into the connect_broker/provisioning /accounts
+            # branches below.
+            if onboarding_journey_projection(hws, hws.trading_account)["phase"] != PHASE_WORKSPACE_READY:
+                return {"stage": "hosted_workspace", "next_route": "/onboarding/hosted"}   # preparing/login/confirm
+            return _resolve_strategy_stage(user)
+        # No hosted workspace yet. Take the hosted "request a workspace" path ONLY for a user who has NOT
+        # already connected a broker account the legacy way — never HIJACK a working legacy setup (existing
+        # broker account / running runtime / armed strategy) into the hosted journey. A legacy-configured
+        # user with no hosted workspace falls through to the legacy ladder below and resolves normally.
+        if not TradingAccount.objects.filter(user=user).exists():
+            return {"stage": "hosted_workspace", "next_route": "/onboarding/hosted"}       # request the workspace
 
     if not TradingAccount.objects.filter(user=user).exists():
         return {"stage": "connect_broker", "next_route": "/accounts"}
@@ -217,24 +270,7 @@ def resolve_setup_stage(user) -> dict:
     if not runtime_ready:
         return {"stage": "provisioning", "next_route": "/accounts"}
 
-    # "Strategy selected" = any assignment on the user's account (marketplace_assign creates one
-    # is_active=True, stage=TEST — NOT yet trading). "Trading enabled" = the assignment is actually ARMED
-    # for execution, matching the authoritative armed signal used by the signal-copy router
-    # (``_armed_assignments``): AUTO_DEMO + stage=LIVE + is_active. Using bare ``is_active`` would wrongly
-    # treat a just-selected TEST assignment as complete (``is_active`` defaults True).
-    assignments = StrategyAssignment.objects.filter(account__user=user)
-    if not assignments.exists():
-        return {"stage": "select_strategy", "next_route": "/strategies/marketplace"}
-    armed = StrategyAssignment.objects.filter(
-        account__user=user,
-        execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
-        stage=StrategyAssignment.STAGE_LIVE,
-        is_active=True,
-    ).exists()
-    if not armed:
-        return {"stage": "enable_trading", "next_route": "/strategies"}
-
-    return {"stage": "complete", "next_route": "/dashboard"}
+    return _resolve_strategy_stage(user)
 
 
 # ─────────────────────────────────────────────────────────────────────

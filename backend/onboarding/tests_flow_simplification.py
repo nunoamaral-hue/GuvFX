@@ -2,7 +2,7 @@
 (email + plan + risk); broker connection and strategy assignment are POST-onboarding PLATFORM setup, not
 prerequisites for ``onboarding_completed``. ``resolve_setup_stage`` is the intelligent resume router."""
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from billing.beta import grant_beta_entitlement
@@ -174,3 +174,126 @@ class DurableSetupStateTests(TestCase):
         st.refresh_from_db()
         self.assertFalse(st.account_connected)     # not falsely flipped
         self.assertTrue(st.onboarding_completed)   # completion untouched
+
+
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_WORKSPACE_ONBOARDING_ENABLED="1")
+class HostedWorkspaceRoutingTests(TestCase):
+    """Stream 9 routing finding (ADR-0034): an admitted hosted user must NOT be sent to the legacy /accounts
+    broker-credential form. With the DARK flags ON + the hosted entitlement, the setup router drives the hosted
+    journey (/onboarding/hosted) through every pre-trade phase and only hands off to strategy at WORKSPACE_READY.
+    Customer Zero / staff are excluded; non-entitled users are unaffected."""
+
+    def _hosted_user(self, uname):
+        u = U.objects.create_user(username=uname, email=uname + "@x.invalid", password="x")
+        grant_beta_entitlement(u)                       # can_use_hosted_workspace (beta plan)
+        _prep_min(u); services.finalize_onboarding(u)
+        return u
+
+    def _ws(self, user, *, state, node=False, matched=None, confirmed=False, reason=""):
+        from django.utils import timezone
+        from execution.models import TerminalNode
+        from hosted_workspace.models import HostedMt5Workspace
+        acct = TradingAccount.objects.create(
+            user=user, name="H", account_number="1302999", broker_name="IS6Technologies-Demo",
+            is_demo=True, is_active=False)
+        if confirmed:
+            acct.workspace_confirmed_at = timezone.now()
+            acct.save(update_fields=["workspace_confirmed_at"])
+        ws = HostedMt5Workspace.objects.create(
+            trading_account=acct, canonical_state=state, canonical_reason=reason, proj_account_match=matched)
+        if node:
+            tn = TerminalNode.objects.create(hostname="node-x", display_name="node-x",
+                                             rdp_host="10.0.0.9", status=TerminalNode.Status.ACTIVE,
+                                             max_accounts=5)
+            ws.execution_node = tn
+            ws.save(update_fields=["execution_node"])
+        return ws, acct
+
+    def test_fresh_hosted_user_routes_to_hosted_journey_not_accounts(self):
+        u = self._hosted_user("h1")                     # no workspace, no account
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["stage"], "hosted_workspace")
+        self.assertEqual(r["next_route"], "/onboarding/hosted")
+
+    def test_hosted_workspace_preparing_routes_to_hosted_journey(self):
+        from hosted_workspace.state_machine import WorkspaceLifecycleState as S
+        u = self._hosted_user("h2")
+        self._ws(u, state=S.PROVISIONING)               # requested, not yet bound -> PREPARING
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["next_route"], "/onboarding/hosted")
+
+    def test_hosted_workspace_unavailable_routes_to_hosted_journey_not_accounts(self):
+        from hosted_workspace.state_machine import WorkspaceLifecycleState as S
+        u = self._hosted_user("h3")
+        self._ws(u, state=S.SUSPENDED)                  # generic degraded -> WORKSPACE_UNAVAILABLE
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["next_route"], "/onboarding/hosted")
+        self.assertNotEqual(r["next_route"], "/accounts")
+
+    def test_hosted_workspace_ready_hands_off_to_strategy_not_accounts(self):
+        from hosted_workspace.state_machine import WorkspaceLifecycleState as S
+        u = self._hosted_user("h4")
+        self._ws(u, state=S.EXECUTION_READY, node=True, matched=True, confirmed=True)   # WORKSPACE_READY
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["stage"], "select_strategy")
+        self.assertEqual(r["next_route"], "/strategies/marketplace")
+        self.assertNotEqual(r["next_route"], "/accounts")
+
+    def test_staff_hosted_user_excluded_uses_legacy(self):
+        u = self._hosted_user("h5")
+        u.is_staff = True
+        u.save(update_fields=["is_staff"])
+        r = services.resolve_setup_stage(u)             # Customer-Zero/staff estate -> legacy connect_broker
+        self.assertEqual(r["stage"], "connect_broker")
+        self.assertEqual(r["next_route"], "/accounts")
+
+    def test_non_entitled_user_unaffected_even_with_flags_on(self):
+        u = U.objects.create_user(username="h6", email="h6@x.invalid", password="x")
+        _prep_min(u); services.finalize_onboarding(u)   # NO grant_beta_entitlement -> not admitted
+        _acct(u)                                        # legacy broker-linked, no runtime
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["stage"], "provisioning")
+        self.assertEqual(r["next_route"], "/accounts")
+
+    def test_entitled_legacy_user_not_hijacked_when_flags_on(self):
+        # Adversarial-review MEDIUM: a beta-entitled NON-staff user who already completed the LEGACY setup
+        # (broker account + RUNNING runtime + armed strategy) and owns NO hosted workspace must NOT be
+        # diverted to /onboarding/hosted when the pilot flags flip on — they resolve to /dashboard as before.
+        u = self._hosted_user("h7")
+        acct = TradingAccount.objects.create(
+            user=u, name="L", account_number="1302111", broker_name="IS6Technologies-Demo",
+            is_demo=True, is_active=False)
+        AccountRuntime.objects.create(
+            trading_account=acct, cohort=AccountRuntime.Cohort.BETA, state=RuntimeState.RUNNING)
+        strat = Strategy.objects.create(owner=u, name="L-WIM")
+        StrategyAssignment.objects.create(
+            strategy=strat, account=acct, signal_source="ti_signals",
+            execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+            stage=StrategyAssignment.STAGE_LIVE, is_active=True)   # armed
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["stage"], "complete")
+        self.assertEqual(r["next_route"], "/dashboard")
+
+    def test_superuser_estate_excluded_uses_legacy(self):
+        # Adversarial-review: the Customer-Zero/estate guard is is_staff OR is_superuser. A superuser with
+        # is_staff=False must still be excluded from the hosted pilot journey.
+        u = self._hosted_user("h8")
+        u.is_staff = False
+        u.is_superuser = True
+        u.save(update_fields=["is_staff", "is_superuser"])
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["stage"], "connect_broker")
+        self.assertEqual(r["next_route"], "/accounts")
+
+
+class HostedRoutingDarkTests(TestCase):
+    """Flags OFF (default): the hosted branch is INERT; routing is byte-identical to the legacy ladder even for
+    an entitled user."""
+
+    def test_flags_off_admitted_user_still_legacy_connect_broker(self):
+        u = U.objects.create_user(username="d1", email="d1@x.invalid", password="x")
+        grant_beta_entitlement(u)
+        _prep_min(u); services.finalize_onboarding(u)
+        r = services.resolve_setup_stage(u)             # dark flags -> hosted branch inert -> connect_broker
+        self.assertEqual(r["stage"], "connect_broker")
+        self.assertEqual(r["next_route"], "/accounts")
