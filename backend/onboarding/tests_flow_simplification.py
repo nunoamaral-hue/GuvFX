@@ -285,6 +285,69 @@ class HostedWorkspaceRoutingTests(TestCase):
         self.assertEqual(r["stage"], "connect_broker")
         self.assertEqual(r["next_route"], "/accounts")
 
+    # --- ADR-0034 amendment: capability decoupled from the commercial plan (Hosted Beta programme source) ---
+    def _betatester_std_user(self, uname, *, plan="standard"):
+        """A Hosted Beta tester on a NON-hosted COMMERCIAL plan — capability comes from BetaTester membership,
+        NOT from the plan (which is left unchanged)."""
+        from billing.models import BetaTester, UserSubscriptionState
+        u = U.objects.create_user(username=uname, email=uname + "@x.invalid", password="x")
+        UserSubscriptionState.objects.update_or_create(
+            user=u, defaults=dict(current_plan=plan, plan_status="active", viewer_mode=False))
+        BetaTester.objects.create(email=u.email, is_active=True)
+        _prep_min(u); services.finalize_onboarding(u)
+        return u
+
+    def test_standard_plan_betatester_routes_to_hosted_journey(self):
+        # The certification-identity shape: a Hosted Beta tester on the STANDARD commercial plan must reach the
+        # hosted journey — capability now comes from the programme, and the commercial plan is left unchanged.
+        from billing.models import UserSubscriptionState
+        u = self._betatester_std_user("bt1")
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["stage"], "hosted_workspace")
+        self.assertEqual(r["next_route"], "/onboarding/hosted")
+        self.assertEqual(UserSubscriptionState.objects.get(user=u).current_plan, "standard")  # plan UNTOUCHED
+
+    def test_staff_betatester_still_legacy(self):
+        u = self._betatester_std_user("bt2")
+        u.is_staff = True
+        u.save(update_fields=["is_staff"])
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["next_route"], "/accounts")
+
+    def test_superuser_betatester_still_legacy(self):
+        u = self._betatester_std_user("bt3")
+        u.is_superuser = True
+        u.save(update_fields=["is_superuser"])
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["next_route"], "/accounts")
+
+    def test_paid_user_without_programme_unaffected(self):
+        # No broadening (broker-linked case): a paid commercial user NOT in the Hosted Beta programme who
+        # already has a legacy account stays on the legacy ladder.
+        from billing.models import UserSubscriptionState
+        u = U.objects.create_user(username="bt4", email="bt4@x.invalid", password="x")
+        UserSubscriptionState.objects.update_or_create(
+            user=u, defaults=dict(current_plan="advanced", plan_status="active", viewer_mode=False))
+        _prep_min(u); services.finalize_onboarding(u)
+        _acct(u)                                        # legacy broker-linked, no runtime
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["stage"], "provisioning")
+        self.assertEqual(r["next_route"], "/accounts")
+
+    def test_paid_no_account_no_programme_routes_legacy_not_hosted(self):
+        # THE discriminating no-broadening lock: a paid/standard user NOT in the Hosted Beta programme, non-staff,
+        # with NO TradingAccount, under flags ON must route to the LEGACY connect_broker step — never the hosted
+        # journey. This is the exact cell that would flip to hosted_workspace if the capability predicate
+        # broadened (the with-account case above can't detect that — the no-hijack guard masks it).
+        from billing.models import UserSubscriptionState
+        u = U.objects.create_user(username="bt5", email="bt5@x.invalid", password="x")
+        UserSubscriptionState.objects.update_or_create(
+            user=u, defaults=dict(current_plan="advanced", plan_status="active", viewer_mode=False))
+        _prep_min(u); services.finalize_onboarding(u)   # NO account, NO BetaTester
+        r = services.resolve_setup_stage(u)
+        self.assertEqual(r["stage"], "connect_broker")
+        self.assertEqual(r["next_route"], "/accounts")
+
 
 class HostedRoutingDarkTests(TestCase):
     """Flags OFF (default): the hosted branch is INERT; routing is byte-identical to the legacy ladder even for
@@ -295,5 +358,18 @@ class HostedRoutingDarkTests(TestCase):
         grant_beta_entitlement(u)
         _prep_min(u); services.finalize_onboarding(u)
         r = services.resolve_setup_stage(u)             # dark flags -> hosted branch inert -> connect_broker
+        self.assertEqual(r["stage"], "connect_broker")
+        self.assertEqual(r["next_route"], "/accounts")
+
+    def test_flags_off_standard_plan_betatester_still_legacy(self):
+        # The decoupled capability source is ALSO inert while dark: a standard-plan Hosted Beta member routes
+        # to the legacy ladder unchanged when the pilot flags are OFF.
+        from billing.models import BetaTester, UserSubscriptionState
+        u = U.objects.create_user(username="d2", email="d2@x.invalid", password="x")
+        UserSubscriptionState.objects.update_or_create(
+            user=u, defaults=dict(current_plan="standard", plan_status="active", viewer_mode=False))
+        BetaTester.objects.create(email=u.email, is_active=True)
+        _prep_min(u); services.finalize_onboarding(u)
+        r = services.resolve_setup_stage(u)
         self.assertEqual(r["stage"], "connect_broker")
         self.assertEqual(r["next_route"], "/accounts")
