@@ -60,6 +60,15 @@ def hosted_slot_prep_enabled() -> bool:
     return _flag("HOSTED_SLOT_PREP_ENABLED")
 
 
+def hosted_host_executor_enabled() -> bool:
+    """Beta Readiness Stream 5 — the gate that ARMS the signed host-executor transport (the real backend↔host
+    provisioning channel behind ``prepare_hosted_slot``). DEFAULT OFF. Even on, the executor still requires a
+    configured keyring + base_url + envelope key or it stays dark (fail closed) — so this flag alone contacts no
+    host. It grants ONLY the narrow allow-listed provisioning operations (no shell, no arbitrary command/path);
+    it NEVER arms execution and NEVER performs a broker login. Arming is a Sponsor decision after host cert."""
+    return _flag("HOSTED_HOST_EXECUTOR_ENABLED")
+
+
 def hosted_workspace_onboarding_enabled() -> bool:
     """ADR-0034 Onboarding — the SUBSYSTEM-LEVEL gate for the customer-facing Hosted Workspace onboarding /
     provisioning journey (request → provision-intent → node bind → observe → discover → confirm → ready →
