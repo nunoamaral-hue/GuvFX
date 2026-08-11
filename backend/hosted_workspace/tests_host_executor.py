@@ -282,3 +282,46 @@ class NewScriptHygieneTests(SimpleTestCase):
                      "Set-GuvfxAppLockerTenant.ps1"]:
             data = open(os.path.join(base, name), "rb").read()
             self.assertEqual([i for i, b in enumerate(data) if b > 127], [], f"{name}: non-ASCII")
+
+
+class _FakeResp:
+    def __init__(self, body=b'{"ok": true}'):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self._body
+
+
+class HttpTransportTimeoutTests(SimpleTestCase):
+    """Stream 7D pre-flight: MATERIALISE_RUNTIME (~378MB golden copy) must get a read timeout longer than the
+    host's 600s primitive timeout so a slow copy is not falsely reported as host-unavailable; every other op
+    keeps the short default. There is no repost/retry loop, so a longer wait can never re-run the op."""
+
+    def _timeout_for(self, operation):
+        from unittest import mock
+        from hosted_workspace import host_executor as HE
+        seen = {}
+
+        def fake_urlopen(req, timeout=None):
+            seen["timeout"] = timeout
+            return _FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            HE._http_transport("http://host:8790", {"operation": operation})
+        return seen["timeout"]
+
+    def test_materialise_gets_long_timeout(self):
+        from hosted_workspace import host_executor as HE
+        self.assertEqual(self._timeout_for("MATERIALISE_RUNTIME"), HE._OP_HTTP_TIMEOUTS_S["MATERIALISE_RUNTIME"])
+        self.assertGreater(self._timeout_for("MATERIALISE_RUNTIME"), 600)
+
+    def test_other_ops_get_default_timeout(self):
+        from hosted_workspace import host_executor as HE
+        for op in ("APPLY_WORKSPACE_ACL", "PROVISION_IDENTITY", "VERIFY_SLOT", ""):
+            self.assertEqual(self._timeout_for(op), HE._DEFAULT_HTTP_TIMEOUT_S)
