@@ -198,13 +198,24 @@ def resolve_signed_host_executor(*, account_id, rdp_host=""):
         keyring=keyring, key_id=key_id, base_url=base_url, seal_password=_default_seal_password)
 
 
+# Per-operation HTTP read timeout (seconds). MATERIALISE_RUNTIME copies the ~378MB golden runtime and can far
+# exceed the default; the host daemon's own primitive timeout is 600s and it drains in-flight work on stop, so
+# the client must wait long enough for a single synchronous response rather than give up early (a false
+# host_unavailable that leaves the slot un-advanced). There is NO repost/retry loop here — exactly one POST per
+# step — so a longer wait can never re-run a materialise; it only avoids a premature client-side timeout.
+_DEFAULT_HTTP_TIMEOUT_S = 30
+_OP_HTTP_TIMEOUTS_S = {"MATERIALISE_RUNTIME": 660}   # > the host's 600s primitive timeout + margin
+
+
 def _http_transport(base_url: str, request: dict) -> dict:
     """POST a signed request to the host provisioning agent and return its JSON response. Kept minimal; the
-    executor treats ANY exception here as an ambiguous host-unavailable (fail closed)."""
+    executor treats ANY exception here as an ambiguous host-unavailable (fail closed). The read timeout is
+    per-operation so a long MATERIALISE_RUNTIME is not falsely reported as host-unavailable."""
     import json
     import urllib.request
     data = json.dumps(request).encode("utf-8")
+    timeout = _OP_HTTP_TIMEOUTS_S.get(str(request.get("operation") or ""), _DEFAULT_HTTP_TIMEOUT_S)
     req = urllib.request.Request(base_url.rstrip("/") + "/hosted/provision", data=data,
                                  headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as resp:   # noqa: S310 — host is a fixed Tailscale peer over TLS
+    with urllib.request.urlopen(req, timeout=timeout) as resp:   # noqa: S310 — host is a fixed Tailscale peer over TLS
         return json.loads(resp.read().decode("utf-8"))
