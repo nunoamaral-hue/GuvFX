@@ -14,9 +14,14 @@
 # service, does NOT touch Customer Zero / the beta agent (:8791) / the trade bridge (:8788) / port 3389. Dry-run
 # by default; pass -Apply to perform the install. The first manual start waits for explicit approval.
 #
-# IDENTITY (WinSW v2.12.0 installs LocalSystem regardless of <serviceaccount>): this installer ALWAYS assigns
-# NT SERVICE\GuvFXHostedExecutor AFTER install via `sc config obj=` + grants SeServiceLogonRight, then VERIFIES
-# SERVICE_START_NAME == the virtual account and ROLLS BACK otherwise. A bare `winsw install` is never sanctioned.
+# IDENTITY (WinSW v2.12.0 installs LocalSystem regardless of <serviceaccount>): this installer assigns the
+# identity AFTER install via `sc config obj=`, VERIFIES SERVICE_START_NAME, and ROLLS BACK otherwise. The DEFAULT
+# (Sponsor-approved, ADR-0040) identity is LocalSystem: the reviewed provisioning primitives require admin/SYSTEM
+# capability (create local user, NTFS ACL, RDP/RemoteApp), and the security boundary is the SIGNED protocol +
+# allow-listed primitives + Customer-Zero refusal, NOT the OS token. LocalSystem is a built-in that already holds
+# service-logon, so NO SeServiceLogonRight grant is needed. The least-privilege virtual account
+# `NT SERVICE\GuvFXHostedExecutor` remains SUPPORTED via -RunAsUser (it still gets the `sc config obj=` + LSA
+# SeServiceLogonRight grant). A bare `winsw install` is never sanctioned.
 #
 # SCRIPTS (RULE 9): every reviewed provisioning primitive under -ScriptsDir is ParseFile-validated here, before
 # first start. A parse failure is a hard refusal (the daemon also ParseFile-gates at startup - defence in depth).
@@ -31,7 +36,7 @@ param(
   [string]$StateDir    = "C:\GuvFX\hosted\executor-state",
   [string]$ScriptsDir  = "C:\GuvFX\hosted\scripts",
   [string]$Python      = "C:\GuvFX\hosted\executor-venv\Scripts\python.exe",  # dedicated venv; NOT the base
-  [string]$RunAsUser   = "NT SERVICE\GuvFXHostedExecutor",                    # virtual service account: no password
+  [string]$RunAsUser   = "LocalSystem",                                       # ADR-0040 default; built-in, no password, inherent service-logon
   [string]$SupervisedToken = "",
   [string]$WinSwSource = "C:\GuvFX\hosted\winsw-src\WinSW.NET4.exe",
   [string]$WinSwSha256 = "923111c7142b3dc783a3c722b19b8a21bcb78222d7a136ac33f0ca8a29f4cb66",  # WinSW v2.12.0 NET4
@@ -44,9 +49,10 @@ $ServiceXml = Join-Path $WinSwDir "$ServiceName.xml"
 $XmlSourceName = if ($InstallProfile -eq "Supervised") { "$ServiceName.supervised.xml" } else { "$ServiceName.xml" }
 $XmlSource  = Join-Path $ExecutorDir "winsw\$XmlSourceName"
 $PlaceholderToken = "__SET_AT_INSTALL__"
-if ($RunAsUser -ne "NT SERVICE\GuvFXHostedExecutor") {
-  throw "refusing: -RunAsUser '$RunAsUser' must be exactly 'NT SERVICE\GuvFXHostedExecutor' (least-privilege virtual account)"
+if ($RunAsUser -ne "LocalSystem" -and $RunAsUser -ne "NT SERVICE\GuvFXHostedExecutor") {
+  throw "refusing: -RunAsUser '$RunAsUser' must be exactly 'LocalSystem' (ADR-0040 default) or 'NT SERVICE\GuvFXHostedExecutor' (least-privilege virtual account)"
 }
+$IsLocalSystem = ($RunAsUser -eq "LocalSystem")
 
 # The reviewed provisioning primitives the daemon runs. Kept in sync with primitive_runner.CONTRACT.
 $RequiredScripts = @(
@@ -319,7 +325,8 @@ function Assign-HxIdentity {
   $scText = ($scOut | Out-String).Trim()
   Write-Host "evidence sc_config obj='$RunAsUser' exit=$scRc output=$scText"
   if ($scRc -ne 0 -or $scText -notmatch 'ChangeServiceConfig SUCCESS') { throw "sc config obj= failed (exit=$scRc): $scText - do NOT start" }
-  Grant-HxServiceLogonRight -ServiceSid $ServiceSid
+  # LocalSystem is a built-in that already holds SeServiceLogonRight; only a virtual/user account needs the grant.
+  if ($RunAsUser -ne "LocalSystem") { Grant-HxServiceLogonRight -ServiceSid $ServiceSid }
   return "$((Get-CimInstance Win32_Service -Filter "Name='$ServiceName'").StartName)"
 }
 function Restore-HxServiceFromSnapshot {
@@ -404,8 +411,8 @@ try {
     Write-HxInstallLog -InstStep INSTALL -Result ok
   }
 
-  # Assign the NT SERVICE virtual account + grant SeServiceLogonRight (the LocalSystem fix).
-  DoIt "assign identity: sc config obj= '$RunAsUser' + grant SeServiceLogonRight" {
+  # Assign the service identity (ADR-0040: LocalSystem by default; NT SERVICE virtual account still supported).
+  DoIt "assign identity: sc config obj= '$RunAsUser'" {
     $observed = Assign-HxIdentity -ServiceName $ServiceName -RunAsUser $RunAsUser -ServiceSid $ServiceSid
     if ($observed -ne $RunAsUser) { throw "identity assignment did not take: StartName='$observed' != '$RunAsUser' - do NOT start" }
     Write-HxInstallLog -InstStep IDENTITY -Result ok -Detail "start_name=$observed"
@@ -413,15 +420,17 @@ try {
 
   # Verify (no start) - profile-aware.
   if ($Apply) {
-    Step "VERIFY service configuration (STOPPED, NT SERVICE identity + SeServiceLogonRight, $InstallProfile startmode+recovery)"
+    Step "VERIFY service configuration (STOPPED, identity=$RunAsUser, $InstallProfile startmode+recovery)"
     $svc = Get-Service $ServiceName -ErrorAction Stop
     if ($svc.Status -ne "Stopped") { throw "service is $($svc.Status); expected Stopped (install-only)" }
     $ci = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
-    if ("$($ci.StartName)" -ne $RunAsUser) { throw "service identity is '$($ci.StartName)', expected exactly '$RunAsUser' - no LocalSystem fallback; do NOT start" }
+    if ("$($ci.StartName)" -ne $RunAsUser) { throw "service identity is '$($ci.StartName)', expected exactly '$RunAsUser' - do NOT start" }
     if ($ci.ProcessId -ne 0) { throw "service ProcessId is $($ci.ProcessId), expected 0 (not running) - do NOT start" }
     if ("$($ci.PathName)" -notmatch [regex]::Escape($ServiceExe)) { throw "service binary is '$($ci.PathName)', expected the WinSW wrapper $ServiceExe" }
-    $svcRights = Get-HxSidRights -ServiceSid $ServiceSid
-    if ($svcRights -notcontains 'SeServiceLogonRight') { throw "service account lacks SeServiceLogonRight; do NOT start" }
+    if ($RunAsUser -ne "LocalSystem") {
+      $svcRights = Get-HxSidRights -ServiceSid $ServiceSid
+      if ($svcRights -notcontains 'SeServiceLogonRight') { throw "service account lacks SeServiceLogonRight; do NOT start" }
+    }
     if ($InstallProfile -eq "Dark") {
       if ($ci.StartMode -notin @("Manual","Disabled")) { throw "DARK service StartMode is '$($ci.StartMode)', expected Manual - do NOT start" }
       Write-Host "ok   DARK service: identity=$($ci.StartName) startmode=$($ci.StartMode) state=$($svc.Status)"

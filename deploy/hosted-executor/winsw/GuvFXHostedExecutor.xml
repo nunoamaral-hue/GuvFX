@@ -18,10 +18,13 @@
   <arguments>-u C:\GuvFX\hosted\executor\daemon.py</arguments>
   <workingdirectory>C:\GuvFX\hosted\executor</workingdirectory>
 
-  <!-- Least privilege: dedicated virtual service account. allowservicelogon required. -->
+  <!-- Identity: LocalSystem (ADR-0040). WinSW v2.12 ignores <serviceaccount> and installs LocalSystem; the
+       sanctioned installer confirms it via `sc config obj= LocalSystem`. The reviewed provisioning primitives
+       need admin/SYSTEM capability; the security boundary is the SIGNED protocol + allow-listed primitives +
+       Customer-Zero refusal, not the OS token. The least-privilege NT SERVICE\GuvFXHostedExecutor account
+       remains selectable via the installer's -RunAsUser. -->
   <serviceaccount>
-    <username>NT SERVICE\GuvFXHostedExecutor</username>
-    <allowservicelogon>true</allowservicelogon>
+    <username>LocalSystem</username>
   </serviceaccount>
 
   <startmode>Manual</startmode>

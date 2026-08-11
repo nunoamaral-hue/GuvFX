@@ -30,7 +30,7 @@ to the child's stdin, never argv.
 | `envelope_open.py` | opens the sealed Windows password with the host private key (ADR-0027; AAD byte-identical to the seal side) |
 | `lib/broker_cred_envelope.py` | vendored Django-free envelope crypto (byte-identical to `deploy/beta-agent/`; drift-guarded in tests) |
 | `winsw/*.xml` | WinSW service configs (Dark install-only + Supervised target) |
-| `install_service.ps1` | the single sanctioned installer (WinSW hash-pin, XML contract, ParseFile-gate primitives, `sc config obj=` identity + `SeServiceLogonRight`, install-only verify, rollback) |
+| `install_service.ps1` | the single sanctioned installer (WinSW hash-pin, XML contract, ParseFile-gate primitives, `sc config obj=` identity — **LocalSystem** by default per ADR-0040; NT SERVICE virtual account still selectable via `-RunAsUser`, which then also grants `SeServiceLogonRight` — install-only verify, rollback) |
 | `stage-manifest.json` | authoritative source→host staging map (test-validated) |
 
 The runner's `host_protocol` + `host_agent_dispatch` are the **single source of truth in

@@ -45,8 +45,9 @@ it after.
 2. **ParseFile-validate** every staged `.ps1` on the target Windows PowerShell (RULE 9) — the installer does this
    too, and the daemon re-gates at startup.
 3. `install_service.ps1 -InstallProfile Supervised` (dry-run) → review the plan → `-Apply`. It hash-pins WinSW,
-   validates the XML contract, assigns `NT SERVICE\GuvFXHostedExecutor` + `SeServiceLogonRight`, verifies
-   install-only (STOPPED), and rolls back on any failure.
+   validates the XML contract, assigns `LocalSystem` (ADR-0040 privilege model; `-RunAsUser
+   "NT SERVICE\GuvFXHostedExecutor"` selects the least-privilege account, which then also gets
+   `SeServiceLogonRight`), verifies install-only (STOPPED), and rolls back on any failure.
 4. Provision the `HOSTED_EXECUTOR_*` secrets (above). Do **not** set `HOSTED_HOST_EXECUTOR_ENABLED` yet.
 5. **First-start gate** (Sponsor): start the service; confirm `GET /hosted/health` is `ok` from the backend over
    Tailscale, the log shows the exclusive bind, and the process is the venv python under WinSW.
