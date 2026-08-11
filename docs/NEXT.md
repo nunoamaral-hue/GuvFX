@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Beta Readiness Stream 7C — Hosted signed-executor DAEMON built (DARK, not deployed) (2026-08-11)
+The runnable host end of the Stream 5 signed transport now exists under `deploy/hosted-executor/` (ADR-0039):
+an authenticated `/hosted/provision` listener → `dispatch`, a real `run_primitive` (reviewed-`.ps1` allow-list +
+ParseFile gate + fixed-argv subprocess + password→stdin), a durable SQLite nonce store, host private-key
+envelope-open, and a WinSW installer — all mirroring the proven beta agent. `host_protocol`/`host_agent_dispatch`
+stay single-source in `backend/hosted_workspace/`; 72 daemon tests run under `make check`. Execution DARK,
+Customer Zero untouched, nothing deployed.
+**Bounded next action (Sponsor):** authorise the deployment + disposable-host certification packet
+(`docs/operations/hosted-workspace/HOSTED_EXECUTOR_DEPLOY_RUNBOOK.md`) — stage the bundle, provision the
+`HOSTED_EXECUTOR_*` machine secrets, install the reviewed service, and run the real `prepare_hosted_slot` on ONE
+disposable non-CZ slot with the CZ before/after STOP-check. First resolve the two stated residuals: the client
+30s read-timeout vs a long `MATERIALISE_RUNTIME` (poll-not-repost), and `VERIFY_SLOT` (unimplemented, off-path).
+
 ## ▶ ADR-0035 Operational Readiness — repository-complete (read-only, additive) (2026-08-09)
 A purely read-only operational layer in `core/` unifying the existing health sources into a 7-state rollup
 (`operational_health`), an authoritative fail-closed Hosted Workspace pre-flight (`hosted_workspace_preflight`),
