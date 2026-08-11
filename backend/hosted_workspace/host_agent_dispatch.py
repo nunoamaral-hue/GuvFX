@@ -129,11 +129,15 @@ def _validate_params(op: str, params: dict) -> dict:
 
 
 def dispatch(request: dict, *, keyring: dict, now: int, nonce_burn, run_primitive,
-             reserved_ids=None, envelope_open=None) -> dict:
+             reserved_ids=None, envelope_open=None, max_skew_seconds=None) -> dict:
     """Verify → confine → map → run → sign. Returns a signed response dict. Raises ``HostProtocolError`` on any
     validation/confinement failure (the caller returns it as a sanitised failure — never a secret, never a
-    traceback). ``run_primitive(primitive_name, args) -> {"ok": bool, ...}`` is the injected host runner."""
-    fields = verify_hosted_request(request, keyring=keyring, now=now, nonce_burn=nonce_burn)
+    traceback). ``run_primitive(primitive_name, args) -> {"ok": bool, ...}`` is the injected host runner.
+    ``max_skew_seconds`` (Stream 7C) is threaded to ``verify_hosted_request`` so an operator's configured skew
+    is actually enforced; ``None`` (the default) preserves the protocol default — no behaviour change for
+    existing callers."""
+    skew_kw = {} if max_skew_seconds is None else {"max_skew_seconds": int(max_skew_seconds)}
+    fields = verify_hosted_request(request, keyring=keyring, now=now, nonce_burn=nonce_burn, **skew_kw)
     op = fields["operation"]
     account_id = fields["account_id"]
     correlation_id = fields["correlation_id"]

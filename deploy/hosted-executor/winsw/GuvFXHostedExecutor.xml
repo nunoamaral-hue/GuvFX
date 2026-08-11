@@ -1,0 +1,41 @@
+<service>
+  <!-- DARK / install-only profile for the GuvFX hosted signed executor (Stream 7C). Manual start, no SCM
+       recovery, no supervision. This is the historical-parity profile: registering it changes nothing until
+       an operator starts it. The SUPERVISED profile (GuvFXHostedExecutor.supervised.xml) is the production
+       target. Applying either file is a Windows-host mutation and is Sponsor-gated: it is NOT applied by the
+       Stream 7C repository packet. Bind is the hosted-executor port only; the beta agent (:8791) and the
+       trade bridge (:8788) are never touched.
+
+       SECRETS ARE NOT IN THIS FILE. The HMAC keyring (HOSTED_EXECUTOR_KEYRING / _KEY_ID) and the envelope
+       private keyring (HOSTED_EXECUTOR_ENC_PRIVKEYS) are provisioned as MACHINE environment variables via the
+       approved Windows secret mechanism at deploy time; the WinSW child inherits them. The daemon refuses to
+       start if any is missing (fail closed). -->
+  <id>GuvFXHostedExecutor</id>
+  <name>GuvFX Hosted Signed Executor</name>
+  <description>GuvFX hosted signed provisioning executor - narrow, allow-listed, no-RCE host transport for prepare_hosted_slot. Install-only DARK profile.</description>
+
+  <executable>C:\GuvFX\hosted\executor-venv\Scripts\python.exe</executable>
+  <arguments>-u C:\GuvFX\hosted\executor\daemon.py</arguments>
+  <workingdirectory>C:\GuvFX\hosted\executor</workingdirectory>
+
+  <!-- Least privilege: dedicated virtual service account. allowservicelogon required. -->
+  <serviceaccount>
+    <username>NT SERVICE\GuvFXHostedExecutor</username>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+
+  <startmode>Manual</startmode>
+
+  <logpath>C:\GuvFX\hosted\executor-state\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <!-- Graceful stop: stoptimeout MUST exceed HOSTED_EXECUTOR_DRAIN_TIMEOUT_S (630s default) so a stop never
+       kills a MATERIALISE/ACL mid-flight (install-time assert). -->
+  <stoptimeout>660 sec</stoptimeout>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+
+  <onfailure action="none" />
+</service>

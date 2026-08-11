@@ -1,6 +1,13 @@
 # Signed Host Executor — architecture, operations & host-certification runbook (Stream 5)
 
 **Status:** repository-complete, **DARK**, unarmed. See ADR-0037.
+**Stream 7C update (2026-08-11):** the *runnable host daemon* that this runbook's "Deployment" step assumed —
+the authenticated listener serving `/hosted/provision`, the real `run_primitive` that ParseFile-gates + executes
+the reviewed `.ps1`, the durable nonce store, the envelope-open, and the WinSW installer — is now **built,
+reviewed, and tested** under `deploy/hosted-executor/` (ADR-0039), still DARK/not-deployed. The authoritative
+deployment + disposable-certification steps are in
+`docs/operations/hosted-workspace/HOSTED_EXECUTOR_DEPLOY_RUNBOOK.md`; the "Deployment" and "Disposable host
+certification" sections below remain the conceptual contract they satisfy.
 **Golden rule:** the shared prod agent (`100.79.101.19`, which also runs Customer Zero) must **never** be
 failure-injected. Customer Zero (`account #1` / `guvfx_u_1` / `C:\GuvFX\accounts\1`) must never be provisioned.
 

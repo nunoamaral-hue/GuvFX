@@ -14,6 +14,23 @@
 
 ## Execution workstream log
 
+- **2026-08-11 — Beta Readiness Stream 7C — Hosted signed-executor DAEMON built (the runnable host end). 🟢 DARK, not deployed.**
+  Stream 7B's live-host cert was BLOCKED because the runnable host end of the Stream 5 signed transport had never
+  been built (nothing served `/hosted/provision`; no real `run_primitive`; no nonce store / envelope-open /
+  installer). This stream builds it as a complete, reviewable repository deliverable under
+  `deploy/hosted-executor/` (Django-free bundle mirroring the proven beta agent): `daemon.py` (listener + drain +
+  crash→restart), `daemon_config.py` (RULE-3 own-keyring fail-closed + bind pin + forbidden ports),
+  `nonce_store.py` (durable single-use SQLite), `primitive_runner.py` (primitive→reviewed-`.ps1` allow-list,
+  ParseFile gate, fixed-argv subprocess, password→stdin, AppLocker `username→-HostedUser`, `-AccountId`/`-Mode`
+  injection), `envelope_open.py` (host private-key open, AAD byte-identical to the seal side), vendored
+  drift-guarded envelope crypto, WinSW Dark/Supervised configs + `install_service.ps1` (hash-pin, `sc config
+  obj=` identity, ParseFile-gate, rollback). `host_protocol`/`host_agent_dispatch` stay the single source of
+  truth in `backend/hosted_workspace/`; the installer stages them; 72 daemon tests run under `make check`.
+  Execution DARK (`HOSTED_HOST_EXECUTOR_ENABLED` unset), Customer Zero untouched, no host mutation. ADR-0039 +
+  `docs/operations/hosted-workspace/HOSTED_EXECUTOR_DEPLOY_RUNBOOK.md`. Deploy + disposable-host cert = a
+  separate Sponsor-gated packet. Residuals stated: `VERIFY_SLOT` unimplemented (not on the prepare path); client
+  30s read-timeout vs a long `MATERIALISE_RUNTIME` needs poll-not-repost before the live cert.
+
 - **2026-08-09 — ADR-0035 Operational Readiness — unified read-only health/preflight/rollback/evidence (additive). 🟢**
   A **purely read-only** operational layer in `core/` that aggregates the existing per-subsystem health
   sources (broker health WP3, operational events WP5, agent monitor, execution readiness, hosted-workspace

@@ -1,0 +1,37 @@
+{
+  "_comment": "Stream 7C - authoritative source->host staging map for the GuvFX hosted signed executor. The deployment packet (Sponsor-gated) copies these files to the host; install_service.ps1 then registers the service. A repository test (backend/hosted_workspace/tests_host_daemon_packaging.py) asserts every source path exists and that the daemon + backend single-source-of-truth modules are covered. NO secrets are staged here - HOSTED_EXECUTOR_* live only in the machine environment.",
+  "service": "GuvFXHostedExecutor",
+  "install_dirs": {
+    "executor_dir": "C:\\GuvFX\\hosted\\executor",
+    "lib_dir": "C:\\GuvFX\\hosted\\executor\\lib",
+    "hosted_workspace_dir": "C:\\GuvFX\\hosted\\executor\\lib\\hosted_workspace",
+    "scripts_dir": "C:\\GuvFX\\hosted\\scripts",
+    "winsw_dir": "C:\\GuvFX\\hosted\\executor-winsw",
+    "state_dir": "C:\\GuvFX\\hosted\\executor-state"
+  },
+  "stage": [
+    { "src": "deploy/hosted-executor/daemon.py",            "dest": "executor_dir" },
+    { "src": "deploy/hosted-executor/daemon_config.py",     "dest": "executor_dir" },
+    { "src": "deploy/hosted-executor/nonce_store.py",       "dest": "executor_dir" },
+    { "src": "deploy/hosted-executor/primitive_runner.py",  "dest": "executor_dir" },
+    { "src": "deploy/hosted-executor/envelope_open.py",     "dest": "executor_dir" },
+    { "src": "deploy/hosted-executor/winsw/GuvFXHostedExecutor.xml",            "dest": "winsw_dir_source" },
+    { "src": "deploy/hosted-executor/winsw/GuvFXHostedExecutor.supervised.xml", "dest": "winsw_dir_source" },
+    { "src": "deploy/hosted-executor/lib/broker_cred_envelope.py", "dest": "lib_dir" },
+    { "src": "backend/hosted_workspace/__init__.py",            "dest": "hosted_workspace_dir" },
+    { "src": "backend/hosted_workspace/host_protocol.py",       "dest": "hosted_workspace_dir" },
+    { "src": "backend/hosted_workspace/host_agent_dispatch.py", "dest": "hosted_workspace_dir" }
+  ],
+  "scripts_from": "backend/terminal_provisioning/windows",
+  "scripts": [
+    "Provision-GuvfxAccount.ps1",
+    "Set-GuvfxWorkspaceAcl.ps1",
+    "Populate-GuvfxViewerRuntime.ps1",
+    "Set-GuvfxAutoTradingConfig.ps1",
+    "Grant-GuvfxRdpAccess.ps1",
+    "Set-GuvfxSingleSession.ps1",
+    "Set-GuvfxRemoteApp.ps1",
+    "Set-GuvfxObserver.ps1",
+    "Set-GuvfxAppLockerTenant.ps1"
+  ]
+}

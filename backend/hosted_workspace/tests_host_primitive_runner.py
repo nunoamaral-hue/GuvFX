@@ -1,0 +1,268 @@
+"""Stream 7C - tests for the hosted executor's primitive runner (imports the deploy/hosted-executor bundle).
+
+Covers the security-critical mapping: the exact argument vector built for each primitive (incl. the AppLocker
+username->-HostedUser mismatch, injected -AccountId/-Mode, dropped keys), the password->stdin routing (never
+argv), the ParseFile startup gate (RULE 9/11 with positive+negative controls), the JSON verdict convention, and
+fail-closed handling of every malformed/unsafe input.
+"""
+import os
+import sys
+import unittest
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.abspath(os.path.join(_HERE, "..", ".."))
+_BUNDLE = os.path.join(_REPO, "deploy", "hosted-executor")
+_LIB = os.path.join(_BUNDLE, "lib")
+for _p in (_BUNDLE, _LIB):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import primitive_runner as pr  # noqa: E402
+
+_WINDOWS_SCRIPTS = os.path.join(_REPO, "backend", "terminal_provisioning", "windows")
+
+
+class FakeProc:
+    def __init__(self, stdout=b'{"ok":true}', returncode=0):
+        self.stdout = stdout
+        self.stderr = b""
+        self.returncode = returncode
+
+
+def _recording_runner(proc=None, **kw):
+    """A PrimitiveRunner whose subprocess is recorded, not executed. parse_validator always passes."""
+    calls = []
+
+    def fake_run(argv, *, input_bytes, timeout_s):
+        calls.append({"argv": list(argv), "input": input_bytes, "timeout": timeout_s})
+        return proc if proc is not None else FakeProc()
+
+    runner = pr.PrimitiveRunner(scripts_dir="/scripts", powershell="powershell",
+                                run_subprocess=fake_run, parse_validator=lambda p: (True, "ok"), **kw)
+    return runner, calls
+
+
+class ArgVectorTests(unittest.TestCase):
+    def _argv(self, primitive, args, proc=None):
+        runner, calls = _recording_runner(proc=proc)
+        result = runner.run(primitive, args)
+        self.assertEqual(len(calls), 1, f"expected exactly one subprocess for {primitive}")
+        return calls[0], result
+
+    def test_provision_injects_accountid_and_routes_password_to_stdin(self):
+        call, res = self._argv("provision_identity", {
+            "username": "guvfx_u_14", "runtime_root": r"C:\GuvFX\accounts\14",
+            "terminal_root": r"C:\GuvFX\accounts\14\terminal", "password": b"s3cr3t-pw"})
+        argv = call["argv"]
+        # fixed prefix
+        self.assertEqual(argv[:6], ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+        self.assertTrue(argv[6].endswith("Provision-GuvfxAccount.ps1"))
+        self.assertIn("-Username", argv)
+        self.assertEqual(argv[argv.index("-Username") + 1], "guvfx_u_14")
+        self.assertIn("-RuntimeRoot", argv)
+        self.assertIn("-AccountId", argv)                          # injected from username
+        self.assertEqual(argv[argv.index("-AccountId") + 1], "14")
+        self.assertNotIn("-TerminalRoot", argv)                    # dropped (no such param)
+        # PASSWORD: on stdin, first line; NEVER in argv or any log
+        self.assertEqual(call["input"], b"s3cr3t-pw\n")
+        self.assertNotIn("s3cr3t-pw", " ".join(argv))
+        self.assertNotIn(b"s3cr3t-pw", b" ".join(a.encode() for a in argv))
+
+    def test_applocker_maps_username_to_hosteduser_not_username(self):
+        call, _ = self._argv("applocker_tenant_merge", {"username": "guvfx_u_9", "account_id": 9})
+        argv = call["argv"]
+        self.assertTrue(argv[6].endswith("Set-GuvfxAppLockerTenant.ps1"))
+        self.assertIn("-HostedUser", argv)                          # the critical mismatch
+        self.assertEqual(argv[argv.index("-HostedUser") + 1], "guvfx_u_9")
+        self.assertNotIn("-Username", argv)
+        self.assertIn("-Mode", argv)
+        self.assertEqual(argv[argv.index("-Mode") + 1], "Merge")
+        self.assertEqual(argv[argv.index("-AccountId") + 1], "9")
+
+    def test_applocker_remove_uses_remove_mode(self):
+        call, _ = self._argv("applocker_tenant_remove", {"username": "guvfx_u_9", "account_id": 9})
+        self.assertEqual(call["argv"][call["argv"].index("-Mode") + 1], "Remove")
+
+    def test_single_session_injects_enforce_mode(self):
+        call, _ = self._argv("ensure_single_session", {})
+        argv = call["argv"]
+        self.assertTrue(argv[6].endswith("Set-GuvfxSingleSession.ps1"))
+        self.assertEqual(argv[argv.index("-Mode") + 1], "Enforce")   # else it only verifies
+
+    def test_remoteapp_ensure_drops_username_and_accountid(self):
+        call, _ = self._argv("ensure_remoteapp", {
+            "username": "guvfx_u_14", "terminal_root": r"C:\GuvFX\accounts\14\terminal",
+            "alias": "guvfx_mt5_14", "account_id": 14})
+        argv = call["argv"]
+        self.assertEqual(argv[argv.index("-Mode") + 1], "Ensure")
+        self.assertEqual(argv[argv.index("-Alias") + 1], "guvfx_mt5_14")
+        self.assertEqual(argv[argv.index("-TerminalRoot") + 1], r"C:\GuvFX\accounts\14\terminal")
+        self.assertNotIn("-Username", argv)
+        self.assertNotIn("-AccountId", argv)
+
+    def test_remoteapp_remove_uses_remove_mode(self):
+        call, _ = self._argv("remove_remoteapp", {
+            "username": "guvfx_u_14", "terminal_root": r"C:\GuvFX\accounts\14\terminal",
+            "alias": "guvfx_mt5_14", "account_id": 14})
+        self.assertEqual(call["argv"][call["argv"].index("-Mode") + 1], "Remove")
+
+    def test_workspace_acl_apply_passes_mode_and_snapshot(self):
+        call, _ = self._argv("apply_workspace_acl", {
+            "username": "guvfx_u_14", "runtime_root": r"C:\GuvFX\accounts\14",
+            "snapshot_path": r"C:\GuvFX\accounts\14\audit\acl_snapshot.sddl", "mode": "Apply"})
+        argv = call["argv"]
+        self.assertEqual(argv[argv.index("-Mode") + 1], "Apply")
+        self.assertEqual(argv[argv.index("-SnapshotPath") + 1], r"C:\GuvFX\accounts\14\audit\acl_snapshot.sddl")
+
+    def test_observer_injects_ensure_and_drops_terminal_root(self):
+        call, _ = self._argv("prepare_observer", {
+            "username": "guvfx_u_14", "runtime_root": r"C:\GuvFX\accounts\14",
+            "terminal_root": r"C:\GuvFX\accounts\14\terminal"})
+        argv = call["argv"]
+        self.assertEqual(argv[argv.index("-Mode") + 1], "Ensure")
+        self.assertNotIn("-TerminalRoot", argv)
+
+    def test_non_provision_gets_empty_stdin(self):
+        call, _ = self._argv("ensure_rdp_membership", {"username": "guvfx_u_14"})
+        self.assertEqual(call["input"], b"")
+
+    def test_never_uses_shell_string(self):
+        # The recorded argv is always a LIST (argument vector); shell interpolation is impossible.
+        call, _ = self._argv("ensure_rdp_membership", {"username": "guvfx_u_14"})
+        self.assertIsInstance(call["argv"], list)
+
+
+class GuardTests(unittest.TestCase):
+    def test_unknown_primitive_fails_closed(self):
+        runner, _ = _recording_runner()
+        self.assertEqual(runner.run("rm_rf_everything", {}), {"ok": False, "reason": "unknown_primitive"})
+
+    def test_verify_slot_unimplemented(self):
+        runner, _ = _recording_runner()
+        self.assertEqual(runner.run("verify_slot", {"username": "guvfx_u_2"})["reason"], "verify_slot_unimplemented")
+
+    def test_account_id_underivable_from_bad_username(self):
+        runner, _ = _recording_runner()
+        self.assertEqual(runner.run("provision_identity",
+                                    {"username": "administrator", "runtime_root": r"C:\x", "password": b"p"}),
+                         {"ok": False, "reason": "account_id_underivable"})
+
+    def test_dashed_value_refused(self):
+        runner, _ = _recording_runner()
+        self.assertEqual(runner.run("apply_autotrading_config", {"terminal_root": "-Force"}),
+                         {"ok": False, "reason": "param_value_dashed"})
+
+    def test_control_char_value_refused(self):
+        runner, _ = _recording_runner()
+        self.assertEqual(runner.run("apply_autotrading_config", {"terminal_root": "C:\\x\ninject"}),
+                         {"ok": False, "reason": "param_value_control_char"})
+
+    def test_non_scalar_value_refused(self):
+        runner, _ = _recording_runner()
+        self.assertEqual(runner.run("ensure_rdp_membership", {"username": ["guvfx_u_1"]})["reason"], "param_not_scalar")
+
+    def test_script_path_rejects_traversal(self):
+        # A fixed filename never contains a path separator; any that does is refused. Forward-slash is a
+        # separator on every OS (backslash only on Windows), so use it for a cross-platform assertion.
+        runner, _ = _recording_runner()
+        for bad in ("../evil.ps1", "sub/evil.ps1", "/etc/passwd"):
+            with self.assertRaises(pr.PrimitiveError):
+                runner.script_path(bad)
+
+    def test_args_not_dict(self):
+        runner, _ = _recording_runner()
+        self.assertEqual(runner.run("ensure_single_session", None), {"ok": False, "reason": "args_malformed"})
+
+
+class VerdictTests(unittest.TestCase):
+    def test_ok_true_and_zero_exit(self):
+        runner, _ = _recording_runner(proc=FakeProc(b'{"ok":true,"rows":[1,2]}', 0))
+        res = runner.run("apply_workspace_acl", {"username": "guvfx_u_2", "runtime_root": r"C:\GuvFX\accounts\2",
+                                                 "snapshot_path": r"C:\GuvFX\accounts\2\audit\s.sddl", "mode": "Apply"})
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["rows"], [1, 2])
+
+    def test_ok_true_but_nonzero_exit_is_not_ok(self):
+        runner, _ = _recording_runner(proc=FakeProc(b'{"ok":true}', 1))
+        self.assertFalse(runner.run("ensure_single_session", {})["ok"])
+
+    def test_failure_reason_surfaced_from_reason_key(self):
+        runner, _ = _recording_runner(proc=FakeProc(b'{"ok":false,"reason":"refusing: not hosted"}', 1))
+        res = runner.run("apply_autotrading_config", {"terminal_root": r"C:\GuvFX\accounts\2\terminal"})
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "refusing: not hosted")
+
+    def test_failure_reason_falls_back_to_error_key(self):
+        runner, _ = _recording_runner(proc=FakeProc(b'{"ok":false,"error":"boom"}', 1))
+        self.assertEqual(runner.run("ensure_rdp_membership", {"username": "guvfx_u_2"})["reason"], "boom")
+
+    def test_non_json_output_fails_closed(self):
+        runner, _ = _recording_runner(proc=FakeProc(b"not json at all", 0))
+        self.assertEqual(runner.run("ensure_single_session", {}), {"ok": False, "reason": "primitive_bad_output"})
+
+    def test_empty_output_fails_closed(self):
+        runner, _ = _recording_runner(proc=FakeProc(b"", 0))
+        self.assertEqual(runner.run("ensure_single_session", {}), {"ok": False, "reason": "primitive_no_output"})
+
+    def test_last_json_line_is_parsed(self):
+        runner, _ = _recording_runner(proc=FakeProc(b'WARNING: noise\n{"ok":true}', 0))
+        self.assertTrue(runner.run("ensure_single_session", {})["ok"])
+
+    def test_oversized_output_fails_closed(self):
+        runner, _ = _recording_runner(proc=FakeProc(b'{"ok":true}' + b"x" * 100, 0))
+        runner.max_output_bytes = 10
+        self.assertEqual(runner.run("ensure_single_session", {})["reason"], "primitive_output_too_large")
+
+    def test_timeout_fails_closed(self):
+        import subprocess
+
+        def timeout_run(argv, *, input_bytes, timeout_s):
+            raise subprocess.TimeoutExpired(argv, timeout_s)
+
+        runner = pr.PrimitiveRunner(scripts_dir="/scripts", run_subprocess=timeout_run,
+                                    parse_validator=lambda p: (True, "ok"))
+        self.assertEqual(runner.run("ensure_single_session", {}), {"ok": False, "reason": "primitive_timeout"})
+
+    def test_launch_failure_fails_closed(self):
+        def boom(argv, *, input_bytes, timeout_s):
+            raise OSError("no powershell")
+
+        runner = pr.PrimitiveRunner(scripts_dir="/scripts", run_subprocess=boom,
+                                    parse_validator=lambda p: (True, "ok"))
+        self.assertEqual(runner.run("ensure_single_session", {}), {"ok": False, "reason": "primitive_launch_failed"})
+
+
+class ParseGateTests(unittest.TestCase):
+    """RULE 9/11: the daemon must refuse to serve if any reviewed primitive fails to parse - with a positive
+    control (a known-good script the validator accepts) AND a negative control (a script it rejects)."""
+
+    def test_all_present_and_parse_ok(self):
+        runner = pr.PrimitiveRunner(scripts_dir=_WINDOWS_SCRIPTS, parse_validator=lambda p: (True, "PARSE_OK"))
+        runner.verify_scripts()   # positive control: real scripts exist and the validator accepts them
+
+    def test_one_script_fails_parse_raises(self):
+        bad = os.path.join(_WINDOWS_SCRIPTS, "Set-GuvfxRemoteApp.ps1")
+
+        def validator(path):
+            return (False, "PARSE_ERR") if path == bad else (True, "PARSE_OK")   # negative control
+
+        runner = pr.PrimitiveRunner(scripts_dir=_WINDOWS_SCRIPTS, parse_validator=validator)
+        with self.assertRaises(pr.PrimitiveError) as ctx:
+            runner.verify_scripts()
+        self.assertIn("parse_failed", ctx.exception.reason_code)
+
+    def test_missing_script_raises(self):
+        runner = pr.PrimitiveRunner(scripts_dir="/nonexistent-scripts-dir",
+                                    parse_validator=lambda p: (True, "ok"))
+        with self.assertRaises(pr.PrimitiveError) as ctx:
+            runner.verify_scripts()
+        self.assertIn("missing", ctx.exception.reason_code)
+
+    def test_required_scripts_cover_contract(self):
+        runner = pr.PrimitiveRunner(scripts_dir=_WINDOWS_SCRIPTS)
+        want = {s.script for s in pr.CONTRACT.values() if s.script}
+        self.assertEqual(set(runner.required_scripts()), want)
+
+
+if __name__ == "__main__":
+    unittest.main()
