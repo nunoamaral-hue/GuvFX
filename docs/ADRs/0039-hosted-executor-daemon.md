@@ -85,6 +85,14 @@ nonce durability, envelope round-trip + fail-closed, config RULE-3, the HTTP lis
 - **Customer Zero is untouched.** The daemon refuses account #1 (hard floor) in two layers, never binds a
   non-expected interface, and is not installed on any host by this packet.
 
+## Security review
+
+The definitive architecture + trust-boundary + threat-model security review (request lifecycle, trust
+boundaries, security properties with mechanism+evidence, failure analysis, threat model, code traceability, and
+a reviewer checklist) is `docs/operations/hosted-workspace/HOSTED_EXECUTOR_SECURITY_REVIEW.md`. It
+cross-references ADR-0036 (host provisioning engine), ADR-0037 (signed executor contract), and ADR-0038
+(multi-tenant isolation).
+
 ## Adversarial review (0 surviving HIGH/MEDIUM)
 
 A five-lens adversarial-verify review (injection, auth/crypto, confinement, network/DoS, fail-closed) surfaced
