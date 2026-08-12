@@ -143,6 +143,97 @@ class ValidationTests(SimpleTestCase):
         self.assertTrue(any(r.get("UserOrGroupSid") == "S-1-5-32-544" and r.get("Action") == "Allow" for r in exe))
 
 
+def _struct(xml):
+    """Structural fingerprint of a policy (ignores whitespace/comments/rule order) for drift comparison."""
+    root = ET.fromstring(xml)
+    out = []
+    for coll in root.findall("RuleCollection"):
+        rules = []
+        for r in coll:
+            conds = []
+            for c in r.findall("Conditions/FilePathCondition"):
+                conds.append(("path", c.get("Path")))
+            for c in r.findall("Conditions/FilePublisherCondition"):
+                conds.append(("pub", c.get("PublisherName"), c.get("ProductName"), c.get("BinaryName")))
+            rules.append((r.get("Id"), r.tag, r.get("UserOrGroupSid"), r.get("Action"), tuple(sorted(conds))))
+        out.append((coll.get("Type"), coll.get("EnforcementMode"), tuple(sorted(rules))))
+    return tuple(sorted(out))
+
+
+class AllowModelTests(SimpleTestCase):
+    """STREAM 10B — the canonical deny-by-default allow model (ADR-0042). These are the permanent regression
+    guards the packet requires: no broad Everyone Windows/Program Files allow, no future widening of the surface,
+    no interpreter/LOLBIN ever granted to a hosted tenant, and the committed templates match the generator."""
+
+    def test_generator_invariants_hold_both_modes(self):
+        for mode in ("AuditOnly", "Enabled"):
+            xml = A.generate_base_policy(mode)
+            self.assertTrue(A.assert_allow_model_invariants(xml))
+            self.assertTrue(A.assert_base_invariants(xml))
+            self.assertEqual(ET.fromstring(xml).find("RuleCollection").get("EnforcementMode"), mode)
+
+    def test_bad_enforcement_rejected(self):
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.generate_base_policy("Nonsense")
+
+    def test_no_broad_everyone_windows_or_pf_allow(self):
+        exe = [c for c in ET.fromstring(A.generate_base_policy()).findall("RuleCollection")
+               if c.get("Type") == "Exe"][0]
+        for r in exe:
+            if r.tag == "FilePathRule" and r.get("Action") == "Allow" and r.get("UserOrGroupSid") == A.EVERYONE_SID:
+                for cond in r.findall("Conditions/FilePathCondition"):
+                    p = (cond.get("Path") or "").upper().rstrip("\\")
+                    self.assertNotIn(p, ("%WINDIR%", "%WINDIR%\\*", "%PROGRAMFILES%", "%PROGRAMFILES%\\*",
+                                         "%SYSTEM32%\\*", "%OSDRIVE%\\*", "*"))
+
+    def test_reintroducing_broad_everyone_allow_is_caught(self):
+        root = ET.fromstring(A.generate_base_policy())
+        exe = [c for c in root.findall("RuleCollection") if c.get("Type") == "Exe"][0]
+        bad = ET.SubElement(exe, "FilePathRule", {"Id": "dead0000-0000-a11e-0000-000000000998",
+                            "Name": "widen", "Action": "Allow", "UserOrGroupSid": A.EVERYONE_SID})
+        ET.SubElement(ET.SubElement(bad, "Conditions"), "FilePathCondition", {"Path": r"%WINDIR%\*"})
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_forbidden_interpreter_allow_is_caught(self):
+        root = ET.fromstring(A.generate_base_policy())
+        exe = [c for c in root.findall("RuleCollection") if c.get("Type") == "Exe"][0]
+        bad = ET.SubElement(exe, "FilePathRule", {"Id": "dead0000-0000-a11e-0000-000000000999",
+                            "Name": "py", "Action": "Allow", "UserOrGroupSid": A.EVERYONE_SID})
+        ET.SubElement(ET.SubElement(bad, "Conditions"), "FilePathCondition", {"Path": r"%SYSTEM32%\python.exe"})
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_hosted_session_allow_contains_no_interpreter_or_lolbin(self):
+        forbidden = {f.lower() for f in A.FORBIDDEN_HOSTED_ALLOW}
+        for b in A.HOSTED_SESSION_ALLOW:
+            self.assertNotIn(b.lower(), forbidden, f"{b} is a forbidden primitive")
+
+    def test_system_and_virtual_account_sids_kept_windows_exec(self):
+        allowed = {r.get("UserOrGroupSid") for r in ET.fromstring(A.generate_base_policy()).find("RuleCollection")
+                   if r.get("Action") == "Allow"}
+        for sid, _ in A.SYSTEM_EXEC_SIDS:
+            self.assertIn(sid, allowed, f"missing Windows-exec allow for {sid}")
+
+    def test_missing_system_exec_allow_is_caught(self):
+        # removing a system/virtual-account allow (would break the OS/compositor) MUST fail the invariant.
+        root = ET.fromstring(A.generate_base_policy())
+        exe = [c for c in root.findall("RuleCollection") if c.get("Type") == "Exe"][0]
+        for r in list(exe):
+            if r.get("UserOrGroupSid") == "S-1-5-90-0":     # Window Manager Group
+                exe.remove(r)
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_committed_templates_match_generator(self):
+        base = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                            "terminal_provisioning", "windows", "applocker")
+        for mode, fname in (("AuditOnly", "guvfx-hosted-auditonly.xml"), ("Enabled", "guvfx-hosted-enforce.xml")):
+            committed = open(os.path.join(base, fname)).read()
+            self.assertEqual(_struct(committed), _struct(A.generate_base_policy(mode)),
+                             f"{fname} drifted from generate_base_policy('{mode}') - regenerate, do not hand-edit")
+
+
 class CapacityTests(SimpleTestCase):
     def test_no_collision_across_accounts(self):
         accounts = [2, 3, 10, 100]

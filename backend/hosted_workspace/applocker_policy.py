@@ -206,6 +206,157 @@ def _canonical(xml: str) -> str:
     return _tostr(root)
 
 
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════════
+# STREAM 10B — the canonical DENY-BY-DEFAULT allow model (ADR-0042). THE single source of truth for the hosted
+# AppLocker surface. Replaces the legacy broad "(Everyone) Allow %WINDIR%/%PROGRAMFILES%" model (which left ~49
+# %WINDIR% LOLBIN/interpreter primitives runnable by a hosted tenant — proven in STREAM 10 Phase A) with an
+# explicit minimal allow-list; everything not listed is denied by default.
+#
+# Machine-wide, tenant-agnostic: every hosted tenant is only a member of Everyone, so the effective hosted
+# surface is EXACTLY {MetaQuotes publisher} + {the curated RemoteApp/session infra below}. System, service and
+# the dynamic per-session virtual accounts keep unrestricted Windows execution via their well-known (group) SIDs,
+# so the OS / RDS / desktop compositor are unaffected. NO general-purpose interpreter is ever allowed to a hosted
+# tenant (ADR-0041: a tenant that can run python/cmd/rundll32 can forge the observation — so the observer ships
+# as a signed compiled EXE in STREAM 10C, NOT as tenant-run python).
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+ADMIN_SID = "S-1-5-32-544"
+EVERYONE_SID = "S-1-1-0"
+METAQUOTES_PUBLISHER_NAME = "O=METAQUOTES LTD., S=LEMESOS, C=CY"
+
+# Principals that KEEP unrestricted Windows execution (deny-by-default does NOT constrain them). The dynamic
+# per-session virtual accounts (DWM ``S-1-5-90-0-N``, Font Driver Host ``S-1-5-96-0-N``) are covered by their
+# GROUP SIDs ``S-1-5-90-0`` / ``S-1-5-96-0`` — so removing the broad Everyone allow does not break the compositor.
+SYSTEM_EXEC_SIDS = (
+    ("S-1-5-18", "Local System"), ("S-1-5-19", "Local Service"), ("S-1-5-20", "Network Service"),
+    ("S-1-5-6", "Service"), ("S-1-5-90-0", "Window Manager Group"), ("S-1-5-96-0", "Font Driver Host"),
+)
+_SYSTEM_ALSO_PF = frozenset({"S-1-5-18", "S-1-5-19", "S-1-5-20", "S-1-5-6"})   # also need Program Files
+
+# The ONLY additional binaries a hosted RemoteApp MT5 session legitimately spawns AS the tenant: RemoteApp/RDS
+# session infrastructure + the minimal interactive-session shell. All system-signed, NON-interpreter, NON-LOLBIN.
+# Curated from the STREAM 10 workload capture (contamination — browsers/telemetry/rundll32 from a prior full
+# desktop session — excluded). Validated by the AuditOnly soak; ANY addition requires re-certification.
+HOSTED_SESSION_ALLOW = (
+    "rdpinit.exe", "rdpshell.exe", "rdpclip.exe", "tstheme.exe",
+    "userinit.exe", "sihost.exe", "ctfmon.exe", "taskhostw.exe", "conhost.exe",
+    "shellappruntime.exe", "shellhost.exe", "wlrmdr.exe",
+)
+
+# Interpreters / compilers / LOLBINs that must NEVER be granted to a hosted tenant (a permanent regression guard;
+# each is an arbitrary-code-execution primitive that would defeat ADR-0041). NOT exhaustive of LOLBAS — the point
+# is deny-by-default (absence of an allow), and this list is the belt-and-suspenders CI assertion.
+FORBIDDEN_HOSTED_ALLOW = (
+    "python.exe", "pythonw.exe", "py.exe", "pyw.exe", "cmd.exe", "powershell.exe", "powershell_ise.exe",
+    "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe", "regsvcs.exe",
+    "regasm.exe", "installutil.exe", "msbuild.exe", "csc.exe", "vbc.exe", "jsc.exe", "ilasm.exe", "cmstp.exe",
+    "mavinject.exe", "bitsadmin.exe", "certutil.exe", "wmic.exe", "explorer.exe", "regedit.exe",
+)
+
+_ALLOW_ID_MARKER = "a11e"   # 'a11e' ~ "allow"; base allow-model rule-id namespace (distinct from tenant '4d54')
+
+
+def _win_allow(sid: str, name: str, path: str, ident: str) -> ET.Element:
+    r = ET.Element("FilePathRule",
+                   {"Id": ident, "Name": name, "Description": "", "UserOrGroupSid": sid, "Action": "Allow"})
+    c = ET.SubElement(r, "Conditions")
+    ET.SubElement(c, "FilePathCondition", {"Path": path})
+    return r
+
+
+def _publisher_allow(sid: str, name: str, publisher: str, ident: str) -> ET.Element:
+    r = ET.Element("FilePublisherRule",
+                   {"Id": ident, "Name": name, "Description": "MetaQuotes-signed MT5 portable binaries only",
+                    "UserOrGroupSid": sid, "Action": "Allow"})
+    c = ET.SubElement(r, "Conditions")
+    pc = ET.SubElement(c, "FilePublisherCondition",
+                       {"PublisherName": publisher, "ProductName": "*", "BinaryName": "*"})
+    ET.SubElement(pc, "BinaryVersionRange", {"LowSection": "*", "HighSection": "*"})
+    return r
+
+
+def generate_base_policy(enforcement: str = "AuditOnly") -> str:
+    """Generate the canonical deny-by-default allow-model base (Exe/Msi/Script), machine-wide + tenant-agnostic.
+    ``enforcement`` in {'AuditOnly','Enabled'}. Deterministic rule ids so redeploys are idempotent and the
+    committed template can be drift-checked against this generator."""
+    if enforcement not in ("AuditOnly", "Enabled"):
+        raise AppLockerPolicyError("bad_enforcement_mode")
+    root = ET.Element("AppLockerPolicy", {"Version": "1"})
+    seq = [0]
+
+    def rid(prefix: str) -> str:
+        seq[0] += 1
+        return f"{prefix}000000-0000-{_ALLOW_ID_MARKER}-0000-{seq[0]:012x}"
+
+    # ── Exe: deny-by-default; explicit minimal allow-list ──────────────────────────────────────────────────
+    exe = ET.SubElement(root, "RuleCollection", {"Type": "Exe", "EnforcementMode": enforcement})
+    exe.append(_win_allow(ADMIN_SID, "(Admins) Allow all EXE - operator recovery", "*", rid("b1")))
+    for sid, label in SYSTEM_EXEC_SIDS:
+        exe.append(_win_allow(sid, f"({label}) Windows EXE", "%WINDIR%\\*", rid("b1")))
+        if sid in _SYSTEM_ALSO_PF:
+            exe.append(_win_allow(sid, f"({label}) Program Files EXE", "%PROGRAMFILES%\\*", rid("b1")))
+    exe.append(_publisher_allow(EVERYONE_SID, "(Everyone) MetaQuotes-signed EXE (MT5)",
+                                METAQUOTES_PUBLISHER_NAME, rid("b1")))
+    for b in HOSTED_SESSION_ALLOW:
+        exe.append(_win_allow(EVERYONE_SID, f"(Hosted session) Allow {b}", f"%SYSTEM32%\\{b}", rid("b1")))
+
+    # ── Msi: admins + system installer cache only ──────────────────────────────────────────────────────────
+    msi = ET.SubElement(root, "RuleCollection", {"Type": "Msi", "EnforcementMode": enforcement})
+    msi.append(_win_allow(ADMIN_SID, "(Admins) Allow all MSI - operator recovery", "*", rid("b2")))
+    msi.append(_win_allow("S-1-5-18", "(System) Windows Installer cache MSI", "%WINDIR%\\Installer\\*", rid("b2")))
+
+    # ── Script: admins + system/service Windows only; hosted tenants get NO script allow (deny-by-default) ──
+    scr = ET.SubElement(root, "RuleCollection", {"Type": "Script", "EnforcementMode": enforcement})
+    scr.append(_win_allow(ADMIN_SID, "(Admins) Allow all scripts - operator recovery", "*", rid("b3")))
+    for sid, label in SYSTEM_EXEC_SIDS:
+        if sid in _SYSTEM_ALSO_PF:
+            scr.append(_win_allow(sid, f"({label}) Windows scripts", "%WINDIR%\\*", rid("b3")))
+    return _tostr(root)
+
+
+def _all_allow_paths(exe: ET.Element):
+    for r in exe:
+        if r.tag == "FilePathRule" and r.get("Action") == "Allow":
+            for cond in r.findall("Conditions/FilePathCondition"):
+                yield r, (cond.get("Path") or "")
+
+
+def assert_allow_model_invariants(xml: str) -> bool:
+    """Prove the deny-by-default allow model is intact (the permanent STREAM 10B regression guard). Raises on:
+    a broad ``(Everyone) Allow %WINDIR%\\*`` or ``%PROGRAMFILES%\\*`` EXE/Script rule (the surface re-widening the
+    model exists to remove); a missing system/service/virtual-account allow (would break the OS/compositor); or
+    ANY allow whose path names a forbidden interpreter/LOLBIN scoped to a non-admin/non-system principal."""
+    root = ET.fromstring(xml)
+    exe = _exe_collection(root)
+
+    # 1. no broad Everyone Windows / Program Files EXE allow (deny-by-default for hosted tenants).
+    everyone_broad = []
+    for r, path in _all_allow_paths(exe):
+        if r.get("UserOrGroupSid") == EVERYONE_SID:
+            p = path.upper().replace("/", "\\").rstrip("\\")
+            if p in ("%WINDIR%", "%WINDIR%\\*", "%PROGRAMFILES%", "%PROGRAMFILES%\\*",
+                     "%PROGRAMFILES(X86)%\\*", "%SYSTEM32%\\*", "%OSDRIVE%\\*", "*"):
+                everyone_broad.append(r.get("Id"))
+    if everyone_broad:
+        raise AppLockerPolicyError(f"broad_everyone_windows_allow:{sorted(everyone_broad)}")
+
+    # 2. every system/service/virtual-account principal keeps a Windows allow (OS + compositor must run).
+    allowed_sids = {r.get("UserOrGroupSid") for r, _ in _all_allow_paths(exe)}
+    missing = [sid for sid, _ in SYSTEM_EXEC_SIDS if sid not in allowed_sids]
+    if missing:
+        raise AppLockerPolicyError(f"missing_system_exec_allow:{missing}")
+
+    # 3. no forbidden interpreter/LOLBIN granted to a hosted tenant (Everyone). Admin/system allows are exempt.
+    lowered_forbidden = {f.lower() for f in FORBIDDEN_HOSTED_ALLOW}
+    for r, path in _all_allow_paths(exe):
+        if r.get("UserOrGroupSid") in (ADMIN_SID,) or r.get("UserOrGroupSid") in {s for s, _ in SYSTEM_EXEC_SIDS}:
+            continue
+        leaf = path.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+        if leaf in lowered_forbidden:
+            raise AppLockerPolicyError(f"forbidden_interpreter_allow:{path}")
+    return True
+
+
 def assert_base_invariants(xml: str) -> bool:
     """Prove the effective/base policy keeps the certified hardened posture: the MetaQuotes publisher Allow and
     the Administrator recovery Allow are present, and there is NO writable-tree executable path-Allow (the
