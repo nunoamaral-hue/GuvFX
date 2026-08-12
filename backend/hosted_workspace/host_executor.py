@@ -214,7 +214,13 @@ def resolve_signed_host_executor(*, account_id, rdp_host=""):
 # host_unavailable that leaves the slot un-advanced). There is NO repost/retry loop here — exactly one POST per
 # step — so a longer wait can never re-run a materialise; it only avoids a premature client-side timeout.
 _DEFAULT_HTTP_TIMEOUT_S = 30
-_OP_HTTP_TIMEOUTS_S = {"MATERIALISE_RUNTIME": 660}   # > the host's 600s primitive timeout + margin
+# OBSERVE_WORKSPACE is served SYNCHRONOUSLY: Invoke-GuvfxObserver.ps1 triggers the session-bound observer and
+# blocks polling for its result up to -TimeoutSeconds (default 60s) plus process-enumeration + a bounded
+# network-corroboration query, so the client must wait longer than that whole host budget or a legitimately
+# slow-but-successful observation is falsely reported host_unavailable and the slot never advances (the same
+# false-negative class as MATERIALISE_RUNTIME). 120s > the host's 60s wait + margin, and < the daemon's 600s
+# primitive timeout. There is NO repost/retry here — exactly one POST per cycle — so a longer wait cannot re-run.
+_OP_HTTP_TIMEOUTS_S = {"MATERIALISE_RUNTIME": 660, "OBSERVE_WORKSPACE": 120}
 
 
 def _http_transport(base_url: str, request: dict) -> dict:

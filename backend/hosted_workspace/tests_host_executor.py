@@ -279,7 +279,7 @@ class NewScriptHygieneTests(SimpleTestCase):
         base = os.path.join(os.path.dirname(os.path.dirname(hosted_workspace.__file__)),
                             "terminal_provisioning", "windows")
         for name in ["Set-GuvfxAutoTradingConfig.ps1", "Set-GuvfxRemoteApp.ps1", "Set-GuvfxObserver.ps1",
-                     "Set-GuvfxAppLockerTenant.ps1"]:
+                     "Invoke-GuvfxObserver.ps1", "Set-GuvfxAppLockerTenant.ps1"]:
             data = open(os.path.join(base, name), "rb").read()
             self.assertEqual([i for i, b in enumerate(data) if b > 127], [], f"{name}: non-ASCII")
 
@@ -320,6 +320,16 @@ class HttpTransportTimeoutTests(SimpleTestCase):
         from hosted_workspace import host_executor as HE
         self.assertEqual(self._timeout_for("MATERIALISE_RUNTIME"), HE._OP_HTTP_TIMEOUTS_S["MATERIALISE_RUNTIME"])
         self.assertGreater(self._timeout_for("MATERIALISE_RUNTIME"), 600)
+
+    def test_observe_workspace_client_timeout_exceeds_host_wait(self):
+        # STREAM 9E: the observe primitive blocks up to Invoke-GuvfxObserver.ps1's 60s wait (+ overhead); the
+        # client MUST wait longer than that whole host budget or a slow-but-valid observation is falsely reported
+        # host_unavailable and the slot never advances (same class as the CZ MATERIALISE timeout incident).
+        from hosted_workspace import host_executor as HE
+        t = self._timeout_for("OBSERVE_WORKSPACE")
+        self.assertEqual(t, HE._OP_HTTP_TIMEOUTS_S["OBSERVE_WORKSPACE"])
+        self.assertGreater(t, 60)          # > the ps1's default 60s bounded wait
+        self.assertLess(t, 600)            # < the daemon's 600s primitive timeout
 
     def test_other_ops_get_default_timeout(self):
         from hosted_workspace import host_executor as HE

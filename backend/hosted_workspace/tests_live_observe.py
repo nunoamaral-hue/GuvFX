@@ -5,6 +5,7 @@ real, matching host observation. Covers the A (harness), B/C (op wiring), D (res
 G (execution isolation) matrix rows that are unit-testable off-host; the live E/F state-machine progression is
 exercised against the certified consumer with a synthesised host snapshot.
 """
+import time
 from types import SimpleNamespace
 
 from django.test import TestCase, override_settings
@@ -12,6 +13,8 @@ from django.test import TestCase, override_settings
 from hosted_workspace import live_observe
 from hosted_workspace.host_agent_dispatch import OP_PRIMITIVES
 from hosted_workspace.host_protocol import CREDENTIALED_HOSTED_OPERATIONS, HOSTED_OPERATIONS
+from hosted_workspace.manager import _all_execution_conditions, derive_workspace_decision
+from hosted_workspace.state_machine import WorkspaceLifecycleState as S
 from terminal_provisioning.windows import run_observer
 
 
@@ -174,12 +177,45 @@ def _fake_workspace(*, state="WAITING_FOR_LOGIN", login="1302575", server="IS6Te
                            execution_node=SimpleNamespace(rdp_host=rdp_host))
 
 
-class BuildObservationFromHostTests(TestCase):
-    _CONNECTED = {"ok": True, "process_running": True, "attach_attempted": True, "attach_succeeded": True,
-                  "ipc_available": True, "terminal_connected": True, "trade_allowed": True,
-                  "observed_login": "1302575", "observed_server": "IS6Technologies-Demo",
-                  "observed_trade_mode": 0, "observed_at": 1_000_000.0}
+def _corr(*, account_id=18, network_active=True, collected_at=1_000_000.0, **over):
+    """A VALID LocalSystem corroboration block matching the server-derived identity of ``account_id`` (18 ->
+    guvfx_u_18, C:\\GuvFX\\accounts\\18). Override any field to build the fail-closed cases."""
+    d = {
+        "account_id": account_id,
+        "process_present": True,
+        "exe_path": rf"C:\GuvFX\accounts\{account_id}\terminal\terminal64.exe",
+        "owner_user": f"guvfx_u_{account_id}",
+        "session_id": 2,
+        "runtime_root": rf"C:\GuvFX\accounts\{account_id}",
+        "network_active": network_active,
+        "remote_endpoint_count": 1 if network_active else 0,
+        "collected_at": collected_at,
+    }
+    d.update(over)
+    return d
 
+
+def _connected_result(*, corr=None, collected_at=None, **over):
+    """A fully-positive tenant snapshot COMBINED with a valid LocalSystem corroboration block (the shape the host
+    now returns). Overrides apply to the tenant fields; pass ``corr=`` to substitute the corroboration block."""
+    tenant = {"ok": True, "process_running": True, "attach_attempted": True, "attach_succeeded": True,
+              "ipc_available": True, "terminal_connected": True, "trade_allowed": True,
+              "observed_login": "1302575", "observed_server": "IS6Technologies-Demo",
+              "observed_trade_mode": 0, "observed_at": 1_000_000.0}
+    tenant.update(over)
+    c = _corr() if corr is None else corr
+    if collected_at is not None:
+        c = dict(c, collected_at=collected_at)
+    tenant["corroboration"] = c
+    return tenant
+
+
+# now shortly after collected_at (age 10s < 60s limit) -> fresh; and far after -> stale.
+_FRESH_NOW = 1_000_010.0
+_STALE_NOW = 1_000_100.0
+
+
+class BuildObservationFromHostTests(TestCase):
     def test_non_ok_result_is_none(self):
         self.assertIsNone(live_observe.build_observation_from_host(_fake_workspace(), {"ok": False}))
 
@@ -187,30 +223,108 @@ class BuildObservationFromHostTests(TestCase):
         self.assertIsNone(live_observe.build_observation_from_host(_fake_workspace(), None))
 
     def test_connected_matching_yields_connected_matched_observation(self):
-        obs = live_observe.build_observation_from_host(_fake_workspace(), dict(self._CONNECTED))
+        obs = live_observe.build_observation_from_host(_fake_workspace(), _connected_result(), now=_FRESH_NOW)
         self.assertIsNotNone(obs)
         self.assertTrue(obs.connected)
         self.assertTrue(obs.account_match)
 
     def test_wrong_login_does_not_match(self):
-        r = dict(self._CONNECTED, observed_login="9999999")
-        obs = live_observe.build_observation_from_host(_fake_workspace(), r)
+        r = _connected_result(observed_login="9999999")
+        obs = live_observe.build_observation_from_host(_fake_workspace(), r, now=_FRESH_NOW)
         self.assertTrue(obs.connected)
-        self.assertFalse(obs.account_match)     # producer compares observed-vs-expected → no false match
+        self.assertFalse(obs.account_match)     # producer compares observed-vs-expected -> no false match
 
     def test_wrong_server_does_not_match(self):
-        r = dict(self._CONNECTED, observed_server="Some-Other-Server")
-        obs = live_observe.build_observation_from_host(_fake_workspace(), r)
+        r = _connected_result(observed_server="Some-Other-Server")
+        obs = live_observe.build_observation_from_host(_fake_workspace(), r, now=_FRESH_NOW)
         self.assertFalse(obs.account_match)
 
     def test_host_cannot_assert_identity_expected_comes_from_workspace(self):
         # Even if the host returns a login/server, the EXPECTED identity is the workspace's; a host that lies
         # about BOTH observed and (hypothetically) expected cannot force a match because expected is server-side.
         ws = _fake_workspace(login="1302575", server="IS6Technologies-Demo")
-        r = dict(self._CONNECTED, observed_login="1302575", observed_server="IS6Technologies-Demo")
-        self.assertTrue(live_observe.build_observation_from_host(ws, r).account_match)
-        r2 = dict(self._CONNECTED, observed_login="1302575", observed_server="Evil-Server")
-        self.assertFalse(live_observe.build_observation_from_host(ws, r2).account_match)
+        r = _connected_result(observed_login="1302575", observed_server="IS6Technologies-Demo")
+        self.assertTrue(live_observe.build_observation_from_host(ws, r, now=_FRESH_NOW).account_match)
+        r2 = _connected_result(observed_login="1302575", observed_server="Evil-Server")
+        self.assertFalse(live_observe.build_observation_from_host(ws, r2, now=_FRESH_NOW).account_match)
+
+
+class CorroborationAgreementTests(TestCase):
+    """STREAM 9E hardening: a tenant snapshot advances ONLY with a matching, agreeing LocalSystem corroboration.
+    Every mismatch / disagreement / forgery must fail closed to ``None`` (no ingest -> no advancement)."""
+
+    def _build(self, result, now=_FRESH_NOW, ws=None):
+        return live_observe.build_observation_from_host(ws or _fake_workspace(), result, now=now)
+
+    def test_missing_corroboration_is_none(self):
+        r = _connected_result()
+        r.pop("corroboration")
+        self.assertIsNone(self._build(r))     # a tenant-only snapshot can never advance
+
+    def test_non_dict_corroboration_is_none(self):
+        self.assertIsNone(self._build(_connected_result(corr="not-a-dict")))
+
+    def test_wrong_account_id_is_none(self):
+        # owner/runtime still match 18, but the corroboration's own account_id says 99 -> mismatch -> None.
+        self.assertIsNone(self._build(_connected_result(corr=dict(_corr(), account_id=99))))
+
+    def test_wrong_owner_is_none(self):
+        self.assertIsNone(self._build(_connected_result(corr=_corr(owner_user="guvfx_u_99"))))
+
+    def test_session_zero_is_none(self):
+        self.assertIsNone(self._build(_connected_result(corr=_corr(session_id=0))))
+
+    def test_process_absent_is_none(self):
+        self.assertIsNone(self._build(_connected_result(corr=_corr(process_present=False))))
+
+    def test_wrong_runtime_root_is_none(self):
+        self.assertIsNone(self._build(_connected_result(corr=_corr(runtime_root=r"C:\GuvFX\accounts\99"))))
+
+    def test_missing_collected_at_is_none(self):
+        self.assertIsNone(self._build(_connected_result(corr=_corr(collected_at=None))))
+
+    def test_forged_connected_without_network_is_none(self):
+        # THE core hardening: a tenant claims terminal_connected=true, but LocalSystem saw NO live external
+        # connection for that terminal -> disagreement -> no advancement (a forged 'connected' cannot pass).
+        self.assertIsNone(self._build(_connected_result(corr=_corr(network_active=False))))
+
+    def test_not_connected_with_valid_corroboration_builds_waiting_observation(self):
+        # A genuine 'still logging in' observation: tenant not connected, corroboration valid (no network yet).
+        # No disagreement (the network agreement rule only gates a 'connected' claim) -> a (non-connected)
+        # observation is produced so the manager can correctly hold WAITING_FOR_LOGIN.
+        r = _connected_result(terminal_connected=False, corr=_corr(network_active=False))
+        obs = self._build(r)
+        self.assertIsNotNone(obs)
+        self.assertFalse(obs.connected)
+
+
+class FreshnessExecutionReadyTests(TestCase):
+    """The single load-bearing safety lock: EXECUTION_READY is reachable for a FRESH, corroborated, connected,
+    matched, trade-allowed workspace, and is NOT reachable when the observation is stale. Freshness is anchored on
+    the LocalSystem ``collected_at`` vs the trusted clock, so neither staleness nor a forged tenant timestamp can
+    flip it. If a regression made a stale/forged observation execution-ready, one of these fails."""
+
+    def test_fresh_connected_matched_trade_allowed_is_execution_ready(self):
+        obs = live_observe.build_observation_from_host(
+            _fake_workspace(state="CONNECTED"), _connected_result(), now=_FRESH_NOW)
+        self.assertTrue(obs.fresh)
+        self.assertTrue(_all_execution_conditions(obs))
+        decision = derive_workspace_decision(obs)   # legal CONNECTED -> EXECUTION_READY
+        self.assertTrue(decision.execution_ready)
+        self.assertEqual(decision.next_state, S.EXECUTION_READY.value)
+
+    def test_stale_observation_is_not_execution_ready(self):
+        obs = live_observe.build_observation_from_host(
+            _fake_workspace(state="CONNECTED"), _connected_result(), now=_STALE_NOW)
+        self.assertFalse(obs.fresh)                       # collected 100s ago, limit 60s -> stale
+        self.assertFalse(_all_execution_conditions(obs))  # the fresh conjunct is required
+        self.assertFalse(derive_workspace_decision(obs).execution_ready)
+
+    def test_future_collected_at_beyond_tolerance_is_not_fresh(self):
+        # A corroboration timestamp implausibly in the future (beyond clock tolerance) is not fresh (fail closed).
+        obs = live_observe.build_observation_from_host(
+            _fake_workspace(state="CONNECTED"), _connected_result(), now=1_000_000.0 - 100)
+        self.assertFalse(obs.fresh)
 
 
 class LiveObserveFnGatingTests(TestCase):
@@ -247,18 +361,28 @@ class LiveObserveFnGatingTests(TestCase):
         finally:
             he.resolve_signed_host_executor = orig
 
-    @override_settings(HOSTED_MT5_OBSERVATION_ENABLED="1")
-    def test_valid_snapshot_is_consumed(self):
+    def _run_with_executor(self, result):
         import hosted_workspace.host_executor as he
         orig = he.resolve_signed_host_executor
-        he.resolve_signed_host_executor = lambda **k: LiveObserveFnGatingTests._Executor(
-            dict(BuildObservationFromHostTests._CONNECTED))
+        he.resolve_signed_host_executor = lambda **k: LiveObserveFnGatingTests._Executor(result)
         try:
-            obs = live_observe.live_observe_fn(_fake_workspace())
+            return live_observe.live_observe_fn(_fake_workspace())
         finally:
             he.resolve_signed_host_executor = orig
+
+    @override_settings(HOSTED_MT5_OBSERVATION_ENABLED="1")
+    def test_valid_corroborated_snapshot_is_consumed(self):
+        # collected_at ~= now so the observation is fresh under the real backend clock used by live_observe_fn.
+        obs = self._run_with_executor(_connected_result(collected_at=time.time()))
         self.assertIsNotNone(obs)
-        self.assertTrue(obs.connected and obs.account_match)
+        self.assertTrue(obs.connected and obs.account_match and obs.fresh)
+
+    @override_settings(HOSTED_MT5_OBSERVATION_ENABLED="1")
+    def test_forged_connected_without_corroboration_is_not_consumed(self):
+        # End-to-end: a fully-positive tenant snapshot whose LocalSystem corroboration shows NO live connection is
+        # refused by the transport mapper -> live_observe_fn yields None -> the workspace never advances.
+        obs = self._run_with_executor(_connected_result(corr=_corr(network_active=False), collected_at=time.time()))
+        self.assertIsNone(obs)
 
 
 # ── Resolver (D): dark by default; live only when the flag is on ──────────────────────────────────────────
@@ -272,3 +396,50 @@ class ResolverTests(TestCase):
     def test_resolver_live_when_flag_on(self):
         from hosted_workspace.management.commands.run_hosted_observations import resolve_observe_fn
         self.assertIs(resolve_observe_fn(), live_observe.live_observe_fn)
+
+
+# ── LocalSystem orchestrator guards (Invoke-GuvfxObserver.ps1) ────────────────────────────────────────────
+# The load-bearing isolation / replay / Customer-Zero / corroboration locks live in the PowerShell orchestrator,
+# which cannot be executed off-host. These STATIC assertions ensure a regression that DROPS one of the guards
+# fails a test rather than shipping silently (the review's "orchestrator locks have zero coverage" finding).
+class InvokeObserverGuardTests(TestCase):
+    def _script(self):
+        import hosted_workspace
+        import os
+        base = os.path.join(os.path.dirname(os.path.dirname(hosted_workspace.__file__)),
+                            "terminal_provisioning", "windows", "Invoke-GuvfxObserver.ps1")
+        with open(base, "r", encoding="ascii") as fh:
+            return fh.read()
+
+    def test_customer_zero_and_identity_locks_present(self):
+        s = self._script()
+        self.assertIn("$AccountId -eq 1", s)                 # Customer Zero refused
+        self.assertIn("username_mismatch", s)                # server-derived username enforced
+        self.assertIn("runtime_mismatch", s)
+        self.assertIn("terminal_root_mismatch", s)
+
+    def test_single_owned_session_terminal_proof_present(self):
+        s = self._script()
+        self.assertIn("GetOwner", s)                         # owner attribution
+        self.assertIn("$ownerUser -ne $expectedUser", s)     # must be owned by the expected tenant
+        self.assertIn("SessionId", s)                        # interactive session (>0)
+        self.assertIn("duplicate_terminal", s)               # more than one -> fail closed
+        self.assertIn("terminal_not_running", s)
+
+    def test_replay_and_task_trust_locks_present(self):
+        s = self._script()
+        self.assertIn("triggerAt", s)                        # delete-before-trigger + written-after freshness
+        self.assertIn("LastWriteTime", s)
+        self.assertIn("observer_task_action_untrusted", s)   # observer task action validated
+        self.assertIn("result_account_mismatch", s)
+
+    def test_localsystem_corroboration_present(self):
+        s = self._script()
+        self.assertIn("corroboration", s)
+        self.assertIn("Get-ExternalConnectionCount", s)      # independent live-connection evidence
+        self.assertIn("network_active", s)
+        self.assertIn("collected_at", s)
+        self.assertIn("Test-PublicIp", s)
+        # private / loopback / CGNAT ranges are excluded so only a genuine external link counts
+        for marker in ('"127."', '"10."', '"192.168."', r"100\.(6"):
+            self.assertIn(marker, s)

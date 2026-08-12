@@ -22,7 +22,8 @@
     { "src": "backend/hosted_workspace/__init__.py",            "dest": "hosted_workspace_dir" },
     { "src": "backend/hosted_workspace/host_protocol.py",       "dest": "hosted_workspace_dir" },
     { "src": "backend/hosted_workspace/host_agent_dispatch.py", "dest": "hosted_workspace_dir" },
-    { "src": "backend/terminal_provisioning/windows/run_observer.py", "dest": "observer_dir" }
+    { "src": "backend/terminal_provisioning/windows/run_observer.py", "dest": "observer_dir" },
+    { "src": "backend/terminal_provisioning/windows/observer_attach.py", "dest": "observer_dir" }
   ],
   "scripts_from": "backend/terminal_provisioning/windows",
   "scripts": [

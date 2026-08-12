@@ -47,9 +47,13 @@ try {
   # 9E LOAD-BEARING GATE: the reviewed observer harness itself MUST be present. This is the exact defect the
   # first beta run hit - the task was registered pointing at a run_observer.py that was never staged, so
   # PREPARE_OBSERVER must NEVER report success (or register a task) when the tooling is missing.
+  # Both the harness AND its self-contained guarded-attach sibling must be present - run_observer.py imports
+  # observer_attach (never the legacy bridge), so a missing attach module is the same dead-on-arrival staging
+  # gap the gate exists to catch. Report success (and register a task) ONLY when the full tooling is staged.
   $obsPy = Join-Path $ObserverDir "run_observer.py"
-  $result.tooling_present = [bool](Test-Path -LiteralPath $obsPy -PathType Leaf)
-  if (-not $result.tooling_present) { Fail "observer harness run_observer.py absent - staging incomplete" }
+  $attachPy = Join-Path $ObserverDir "observer_attach.py"
+  $result.tooling_present = [bool]((Test-Path -LiteralPath $obsPy -PathType Leaf) -and (Test-Path -LiteralPath $attachPy -PathType Leaf))
+  if (-not $result.tooling_present) { Fail "observer tooling (run_observer.py + observer_attach.py) absent - staging incomplete" }
   $acctId = ($Username -replace '^guvfx_u_','')
   $resultDir = Join-Path $full "_obs"
 

@@ -4,10 +4,12 @@ Attach -> observe -> write snapshot -> exit. This is the ONLY code that runs ins
 Windows session and touches the live MT5 terminal, and its responsibility is deliberately narrow: OBSERVE,
 NEVER ACT.
 
-It reuses the CERTIFIED M1 Guarded Attach primitive (``scripts.mt5_signal_bridge.guarded_initialize`` +
-``_terminal_process_running`` - the SAME primitive the certified observation chain / ``certify_workspace_
-observation`` bind to) so it NEVER launches MT5, NEVER calls ``mt5.login()``, NEVER authenticates, and NEVER
-places / modifies / closes an order. The read surface mirrors the certified ``agent_host`` adapter
+It reuses the CERTIFIED M1 Guarded Attach primitive via the self-contained ``observer_attach`` sibling
+(``observer_attach.guarded_initialize`` + ``_terminal_process_running`` - a faithful, parity-locked, stdlib-only
+copy of the certified helpers, DECOUPLED from the legacy ``scripts.mt5_signal_bridge`` so the observer stages as
+a self-contained asset and never drags the legacy signal-copy bridge into a tenant session) so it NEVER launches
+MT5, NEVER calls ``mt5.login()``, NEVER authenticates, and NEVER places / modifies / closes an order. The read
+surface mirrors the certified ``agent_host`` adapter
 (``terminal_info`` / ``account_info`` only). The certified producer -> observation -> decision -> persistence
 runs on the BACKEND (Django) from the snapshot this writes; this harness is deliberately Django-free so it
 stages as ONE reviewed, self-contained asset with no per-session framework bootstrap.
@@ -112,11 +114,16 @@ def observe(account_id, *, mt5=None, bridge=None):
             snap["process_reason"] = "mt5_unavailable"
             return snap
     if bridge is None:
+        # Self-contained M1 Guarded Attach - never launch/login. Resolve in BOTH contexts: the backend package
+        # (Django tests) and the flat host layout (run_observer.py staged next to observer_attach.py as tenant).
         try:
-            from scripts import mt5_signal_bridge as bridge  # M1 Guarded Attach (#305) - never launch/login
+            from terminal_provisioning.windows import observer_attach as bridge
         except Exception:
-            snap["attach_reason"] = "m1_bridge_unavailable"
-            return snap
+            try:
+                import observer_attach as bridge   # flat host context (sibling of this file)
+            except Exception:
+                snap["attach_reason"] = "attach_helper_unavailable"
+                return snap
 
     # 1. Locate: is the EXPECTED terminal (by its fixed per-account path) already running? Never launch.
     try:

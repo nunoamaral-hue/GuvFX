@@ -29,9 +29,51 @@ $snap = [ordered]@{
   process_running=$false; attach_attempted=$false; attach_succeeded=$false; ipc_available=$false;
   terminal_connected=$false; trade_allowed=$false;
   observed_login=$null; observed_server=$null; observed_trade_mode=$null; observed_at=$null;
-  attach_reason=""; process_reason=""; connection_reason=""; reason=""
+  attach_reason=""; process_reason=""; connection_reason=""; corroboration=$null; reason=""
 }
-function Emit([string]$why) { if ($why) { $snap.reason = $why }; ($snap | ConvertTo-Json -Compress); if (-not $snap.ok) { exit 1 } else { exit 0 } }
+function Emit([string]$why) { if ($why) { $snap.reason = $why }; ($snap | ConvertTo-Json -Compress -Depth 5); if (-not $snap.ok) { exit 1 } else { exit 0 } }
+
+# --- LocalSystem network corroboration -------------------------------------------------------------------------
+# The tenant snapshot's broker facts are tenant-attested (forgeable in-session). LocalSystem independently proves
+# the OBJECTIVE facts a tenant cannot forge: the proven terminal process/owner/session/path (above) plus a LIVE
+# external network connection owned by that exact terminal PID. A tenant that forges 'connected' without an
+# actual external link cannot satisfy this. Fail-closed: any query failure yields 0 (no corroboration), never a
+# false positive.
+function Test-PublicIp([string]$addr) {
+  if (-not $addr) { return $false }
+  $a = $addr.Trim()
+  if ($a -eq "" -or $a -eq "0.0.0.0" -or $a -eq "::" -or $a -eq "::1") { return $false }
+  if ($a.StartsWith("127.") -or $a.StartsWith("10.") -or $a.StartsWith("192.168.") -or $a.StartsWith("169.254.")) { return $false }
+  if ($a.StartsWith("fe80") -or $a.StartsWith("fc") -or $a.StartsWith("fd")) { return $false }
+  if ($a -match "^172\.(1[6-9]|2[0-9]|3[0-1])\.") { return $false }   # 172.16.0.0/12 private
+  if ($a -match "^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.") { return $false }   # 100.64.0.0/10 CGNAT/Tailscale
+  return $true
+}
+function Get-ExternalConnectionCount([int]$procId) {
+  $count = 0
+  try {
+    $conns = Get-NetTCPConnection -OwningProcess $procId -State Established -ErrorAction Stop
+    foreach ($c in @($conns)) { if (Test-PublicIp ([string]$c.RemoteAddress)) { $count++ } }
+    return $count
+  } catch {}
+  try {
+    $out = & netstat -ano
+    foreach ($line in @($out)) {
+      $t = "$line".Trim()
+      if ($t -notmatch "^TCP\s") { continue }
+      $parts = $t -split "\s+"
+      if ($parts.Count -lt 5) { continue }
+      if ($parts[3] -ne "ESTABLISHED") { continue }
+      if ($parts[4] -notmatch "^[0-9]+$") { continue }
+      if ([int]$parts[4] -ne $procId) { continue }
+      $remote = $parts[2]
+      if ($remote.StartsWith("[")) { $ip = $remote.Substring(1, $remote.IndexOf("]") - 1) }
+      else { $ip = $remote.Substring(0, $remote.LastIndexOf(":")) }
+      if (Test-PublicIp $ip) { $count++ }
+    }
+  } catch {}
+  return $count
+}
 
 try {
   # 1-5. Server-derived identity contract. Refuse anything that is not the exact derivation from AccountId.
@@ -118,6 +160,21 @@ try {
   $snap.process_reason     = "$($obj.process_reason)"
   $snap.connection_reason  = "$($obj.connection_reason)"
   $snap.ok = [bool]$obj.ok
+
+  # 15. LocalSystem corroboration - gathered from LocalSystem's OWN view of the proven terminal (never from the
+  #     tenant file). Combined with the tenant snapshot and agreed on the backend before any lifecycle advance.
+  $extCount = Get-ExternalConnectionCount ([int]$matched[0].ProcessId)
+  $snap.corroboration = [ordered]@{
+    account_id            = $AccountId
+    process_present       = $true
+    exe_path              = [System.IO.Path]::GetFullPath($expectedTermExe)
+    owner_user            = $expectedUser
+    session_id            = $sessionId
+    runtime_root          = [System.IO.Path]::GetFullPath($expectedRuntime)
+    network_active        = ($extCount -gt 0)
+    remote_endpoint_count = $extCount
+    collected_at          = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  }
   Emit ""
 }
 catch { $snap.ok = $false; Emit "observer_primitive_error" }
