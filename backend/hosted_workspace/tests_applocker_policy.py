@@ -409,6 +409,127 @@ class AllowModelTests(SimpleTestCase):
                 A.assert_allow_model_invariants(self._inject_exe_allow(A.EVERYONE_SID, rf"%SYSTEM32%\{lolbin}"))
 
 
+class WxIsolationTests(SimpleTestCase):
+    """STREAM 10D — the W^X (write-xor-execute) native-code-elimination guards (ADR-0043). TENANT-WRITABLE =>
+    NON-EXECUTABLE; TENANT-EXECUTABLE => NON-WRITABLE."""
+
+    SID = "S-1-5-21-11-22-33-1099"
+
+    def test_metaeditor_denied_via_exe_binaryname_pin(self):
+        exe = [c for c in ET.fromstring(A.generate_base_policy()).findall("RuleCollection")
+               if c.get("Type") == "Exe"][0]
+        mq = [r for r in exe if r.tag == "FilePublisherRule"]
+        self.assertTrue(mq)
+        for r in mq:
+            for c in r.findall("Conditions/FilePublisherCondition"):
+                self.assertNotEqual(c.get("BinaryName"), "*", "Exe MetaQuotes rule must be BinaryName-pinned")
+                self.assertIn(c.get("BinaryName").upper(), {b.upper() for b in A.HOSTED_METAQUOTES_EXE_BINARIES})
+
+    def test_unpinned_metaquotes_exe_publisher_is_caught(self):
+        root = ET.fromstring(A.generate_base_policy())
+        exe = [c for c in root.findall("RuleCollection") if c.get("Type") == "Exe"][0]
+        bad = ET.SubElement(exe, "FilePublisherRule", {"Id": "dead0000-0000-a11e-0000-00000000097f",
+                            "Name": "unpinned", "Action": "Allow", "UserOrGroupSid": A.EVERYONE_SID})
+        pc = ET.SubElement(ET.SubElement(bad, "Conditions"), "FilePublisherCondition",
+                           {"PublisherName": A.METAQUOTES_PUBLISHER_NAME, "ProductName": "*", "BinaryName": "*"})
+        ET.SubElement(pc, "BinaryVersionRange", {"LowSection": "*", "HighSection": "*"})
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "metaquotes_exe_not_binaryname_pinned"):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_wx_fragment_is_single_exe_deny_all_with_exec_allowlist_exceptions(self):
+        frag = A.tenant_wx_deny_fragment(7, self.SID)
+        self.assertTrue(A.assert_wx_deny_invariants(frag, 7, self.SID))
+        root = ET.fromstring(frag)
+        colls = root.findall("RuleCollection")
+        self.assertEqual([c.get("Type") for c in colls], ["Exe"])   # Exe only (Dll/Script closed by the base)
+        rule = list(colls[0])[0]
+        self.assertEqual(rule.get("Action"), "Deny")
+        self.assertEqual([c.get("Path") for c in rule.findall("Conditions/FilePathCondition")], ["*"])
+        exc = {c.get("Path").upper() for c in rule.findall("Exceptions/FilePathCondition")}
+        self.assertEqual(exc, {p.upper() for p in A.hosted_tenant_exec_allowlist(7)})
+
+    def test_wx_exec_allowlist_is_terminal64_plus_session_binaries(self):
+        al = [p.upper() for p in A.hosted_tenant_exec_allowlist(7)]
+        self.assertIn(r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\TERMINAL64.EXE", al)
+        for b in A.HOSTED_SESSION_ALLOW:
+            self.assertIn(f"%SYSTEM32%\\{b.upper()}", al)
+        self.assertNotIn(r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\METAEDITOR64.EXE", al)   # MetaEditor not runnable
+
+    def test_wx_extra_exception_is_caught(self):
+        root = ET.fromstring(A.tenant_wx_deny_fragment(7, self.SID))
+        rule = list([c for c in root.findall("RuleCollection")][0])[0]
+        ET.SubElement(rule.find("Exceptions"), "FilePathCondition", {"Path": r"%OSDRIVE%\Users\Public\*"})
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_exceptions_mismatch"):
+            A.assert_wx_deny_invariants(ET.tostring(root, encoding="unicode"), 7, self.SID)
+
+    def test_wx_missing_exception_is_caught(self):
+        root = ET.fromstring(A.tenant_wx_deny_fragment(7, self.SID))
+        exc = list([c for c in root.findall("RuleCollection")][0])[0].find("Exceptions")
+        exc.remove(list(exc)[0])
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_exceptions_mismatch"):
+            A.assert_wx_deny_invariants(ET.tostring(root, encoding="unicode"), 7, self.SID)
+
+    def _exec_denied(self, account, sid, target):
+        # Model AppLocker Deny(*)-with-exceptions: a path is DENIED unless it matches an exception (location-agnostic).
+        import fnmatch
+        rule = list([c for c in ET.fromstring(A.tenant_wx_deny_fragment(account, sid)).findall("RuleCollection")][0])[0]
+        exc = [c.get("Path").upper() for c in rule.findall("Exceptions/FilePathCondition")]
+        return not any(fnmatch.fnmatch(target.upper(), e) for e in exc)
+
+    def test_copied_terminal64_denied_from_any_location_legit_allowed(self):
+        rx = r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\TERMINAL64.EXE"
+        for loc in (r"%OSDRIVE%\USERS\PUBLIC\DOCUMENTS\TERMINAL64.EXE",   # the review's Public gap
+                    r"%OSDRIVE%\PROGRAMDATA\Z\TERMINAL64.EXE",            # ProgramData gap
+                    r"%OSDRIVE%\USERS\GUVFX_U_7.HOST\TERMINAL64.EXE",     # suffixed RDS profile
+                    r"D:\ANYWHERE\TERMINAL64.EXE",                        # another drive
+                    r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\CONFIG\TERMINAL64.EXE"):  # a writable subdir
+            self.assertTrue(self._exec_denied(7, self.SID, loc), loc)
+        self.assertFalse(self._exec_denied(7, self.SID, rx))              # legit RX terminal64 runs
+        self.assertFalse(self._exec_denied(7, self.SID, r"%SYSTEM32%\RDPSHELL.EXE"))   # session binary runs
+
+    def test_wx_no_writable_executable_intersection(self):
+        self.assertTrue(A.assert_wx_no_writable_executable_intersection(7))
+
+    def test_wx_per_tenant_sid_and_account_isolation(self):
+        f7 = A.tenant_wx_deny_fragment(7, "S-1-5-21-11-22-33-1007")
+        f9 = A.tenant_wx_deny_fragment(9, "S-1-5-21-11-22-33-1009")
+        self.assertEqual(A.tenant_account_ids(f7), {7})
+        self.assertEqual(A.tenant_account_ids(f9), {9})
+        ids7 = {r.get("Id") for c in ET.fromstring(f7).findall("RuleCollection") for r in c}
+        ids9 = {r.get("Id") for c in ET.fromstring(f9).findall("RuleCollection") for r in c}
+        self.assertFalse(ids7 & ids9)                    # no rule-id collision across accounts
+        self.assertIn(r"ACCOUNTS\7\TERMINAL", " ".join(A.hosted_tenant_exec_allowlist(7)).upper())  # 7's own path
+
+    def test_wx_deny_refuses_shared_principal(self):
+        for shared in ("S-1-1-0", "S-1-5-32-545", "S-1-5-32-544", "S-1-5-18"):
+            with self.assertRaises(A.AppLockerPolicyError):
+                A.tenant_wx_deny_fragment(7, shared)
+
+    def test_wx_single_list_couples_ntfs_and_applocker(self):
+        # Decision 2: ONE canonical constant drives BOTH NTFS (workspace_acl) and AppLocker. Same object identity.
+        from hosted_workspace import workspace_acl as W
+        self.assertIs(W.HOSTED_WRITABLE_SUBDIRS, A.HOSTED_WRITABLE_SUBDIRS)
+        self.assertIs(W.HOSTED_CODE_SUBDIRS, A.HOSTED_CODE_SUBDIRS)
+
+    def test_wx_fragment_grants_nothing(self):
+        root = ET.fromstring(A.tenant_wx_deny_fragment(7, self.SID))
+        self.assertFalse([r for c in root.findall("RuleCollection") for r in c if r.get("Action") == "Allow"])
+
+    def test_golden_mql_gate_default_matches_canonical_code_subdirs(self):
+        # Test-GuvfxGoldenMql.ps1's default -CodeSubdirs must equal HOSTED_CODE_SUBDIRS (the golden #import scanner
+        # must cover EVERY code dir the ACL locks — esp. MQL5\Include where .mqh headers live). Drift fails CI.
+        import json as _json
+        import re as _re
+        ps = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                          "terminal_provisioning", "windows", "Test-GuvfxGoldenMql.ps1")
+        txt = open(ps).read()
+        m = _re.search(r"\$CodeSubdirs\s*=\s*'(\[.*?\])'", txt)
+        self.assertIsNotNone(m, "could not find the -CodeSubdirs default in Test-GuvfxGoldenMql.ps1")
+        # The captured group is valid JSON already (\\ escapes one backslash); json.loads collapses it.
+        default = {p.lower() for p in _json.loads(m.group(1))}
+        self.assertEqual(default, {c.lower() for c in A.HOSTED_CODE_SUBDIRS})
+
+
 class CapacityTests(SimpleTestCase):
     def test_no_collision_across_accounts(self):
         accounts = [2, 3, 10, 100]

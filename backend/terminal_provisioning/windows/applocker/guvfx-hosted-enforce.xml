@@ -60,9 +60,9 @@
         <FilePathCondition Path="%WINDIR%\*" />
       </Conditions>
     </FilePathRule>
-    <FilePublisherRule Id="b1000000-0000-a11e-0000-00000000000c" Name="(Everyone) MetaQuotes-signed EXE (MT5)" Description="MetaQuotes-signed MT5 portable binaries only" UserOrGroupSid="S-1-1-0" Action="Allow">
+    <FilePublisherRule Id="b1000000-0000-a11e-0000-00000000000c" Name="(Everyone) MetaQuotes-signed EXE (TERMINAL64.EXE)" Description="Publisher-scoped Allow (signature-pinned)" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions>
-        <FilePublisherCondition PublisherName="O=METAQUOTES LTD., S=LEMESOS, C=CY" ProductName="*" BinaryName="*">
+        <FilePublisherCondition PublisherName="O=METAQUOTES LTD., S=LEMESOS, C=CY" ProductName="*" BinaryName="TERMINAL64.EXE">
           <BinaryVersionRange LowSection="*" HighSection="*" />
         </FilePublisherCondition>
       </Conditions>
@@ -173,14 +173,14 @@
         <FilePathCondition Path="*" />
       </Conditions>
     </FilePathRule>
-    <FilePublisherRule Id="b4000000-0000-a11e-0000-000000000021" Name="(Everyone) Microsoft-signed DLL (OS libraries)" Description="MetaQuotes-signed MT5 portable binaries only" UserOrGroupSid="S-1-1-0" Action="Allow">
+    <FilePublisherRule Id="b4000000-0000-a11e-0000-000000000021" Name="(Everyone) Microsoft-signed DLL (OS libraries)" Description="Publisher-scoped Allow (signature-pinned)" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions>
         <FilePublisherCondition PublisherName="O=MICROSOFT CORPORATION, L=REDMOND, S=WASHINGTON, C=US" ProductName="*" BinaryName="*">
           <BinaryVersionRange LowSection="*" HighSection="*" />
         </FilePublisherCondition>
       </Conditions>
     </FilePublisherRule>
-    <FilePublisherRule Id="b4000000-0000-a11e-0000-000000000022" Name="(Everyone) MetaQuotes-signed DLL (MT5)" Description="MetaQuotes-signed MT5 portable binaries only" UserOrGroupSid="S-1-1-0" Action="Allow">
+    <FilePublisherRule Id="b4000000-0000-a11e-0000-000000000022" Name="(Everyone) MetaQuotes-signed DLL (MT5)" Description="Publisher-scoped Allow (signature-pinned)" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions>
         <FilePublisherCondition PublisherName="O=METAQUOTES LTD., S=LEMESOS, C=CY" ProductName="*" BinaryName="*">
           <BinaryVersionRange LowSection="*" HighSection="*" />

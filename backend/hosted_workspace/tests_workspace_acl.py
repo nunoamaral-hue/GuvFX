@@ -124,3 +124,115 @@ class VerifyTests(SimpleTestCase):
             A.verify_workspace_acl(_rows(USER_SID), user_sid=USER_SID, protected=True)
         except A.AclSelfCheckError:  # pragma: no cover
             self.fail("self-control raised on a healthy classifier")
+
+
+# ── STREAM 10D — G5v2 (inverted / W^X) ACL contract tests (ADR-0043) ─────────────────────────────────────────
+def _v2_good_readback(user_sid, plan):
+    """A known-good W^X read-back: root {SYSTEM/Admins Full, user RX}; writable subdirs +user Modify; code dirs
+    + common.ini +user Deny-write."""
+    root = [
+        {"sid": A.SYSTEM_SID, "type": "Allow", "rights": "FullControl", "inherited": False},
+        {"sid": A.ADMINISTRATORS_SID, "type": "Allow", "rights": "FullControl", "inherited": False},
+        {"sid": user_sid, "type": "Allow", "rights": "ReadAndExecute", "inherited": False},
+    ]
+    dacls = {A.V2_ROOT: list(root)}
+    for rel in plan.writable_subdirs:
+        dacls[rel] = root + [{"sid": user_sid, "type": "Allow", "rights": "Modify", "inherited": False}]
+    for rel in plan.deny_write_paths:
+        dacls[rel] = root + [{"sid": user_sid, "type": "Deny", "rights": "Write, Delete", "inherited": False}]
+    return dacls
+
+
+class G5v2WxAclTests(SimpleTestCase):
+    SID = "S-1-5-21-9-9-9-1042"
+
+    def setUp(self):
+        self.plan = A.build_workspace_acl_plan_v2(r"C:\GuvFX\accounts\42", "guvfx_u_42")
+
+    def test_plan_carries_inverted_contract(self):
+        self.assertEqual(self.plan.user_root_right, "readexecute")
+        self.assertEqual(self.plan.writable_subdirs, A.HOSTED_WRITABLE_SUBDIRS)
+        self.assertIn(A.COMMON_INI_RELPATH, self.plan.deny_write_paths)
+        for code in A.HOSTED_CODE_SUBDIRS:
+            self.assertIn(code, self.plan.deny_write_paths)
+
+    def test_plan_refuses_foreign_and_mismatched_targets(self):
+        for root, user in ((r"C:\GuvFX\accounts\42", "guvfx_u_43"),      # id/tree mismatch
+                           (r"C:\Windows", "guvfx_u_42"),                 # out of base
+                           (r"C:\GuvFX\accounts\42\..\9", "guvfx_u_42"),  # traversal
+                           (r"C:\GuvFX\accounts\42", "Administrator")):   # not a hosted identity
+            with self.assertRaises(A.AclError):
+                A.build_workspace_acl_plan_v2(root, user)
+
+    def test_verify_accepts_known_good_wx_readback(self):
+        self.assertTrue(A.verify_workspace_acl_v2(_v2_good_readback(self.SID, self.plan),
+                                                  user_sid=self.SID, plan=self.plan).ok)
+
+    def test_verify_rejects_tenant_writable_root(self):
+        dacls = _v2_good_readback(self.SID, self.plan)
+        dacls[A.V2_ROOT].append({"sid": self.SID, "type": "Allow", "rights": "Modify", "inherited": False})
+        v = A.verify_workspace_acl_v2(dacls, user_sid=self.SID, plan=self.plan)
+        self.assertFalse(v.ok)
+        self.assertEqual(v.reason, A.V2_ROOT_NOT_RX_ONLY)
+
+    def test_verify_rejects_missing_deny_write_on_common_ini(self):
+        dacls = _v2_good_readback(self.SID, self.plan)
+        dacls[A.COMMON_INI_RELPATH] = [r for r in dacls[A.COMMON_INI_RELPATH] if r.get("type") != "Deny"]
+        v = A.verify_workspace_acl_v2(dacls, user_sid=self.SID, plan=self.plan)
+        self.assertFalse(v.ok)
+        self.assertEqual(v.reason, A.V2_CODE_NOT_DENIED)
+
+    def test_verify_rejects_writable_subdir_without_modify(self):
+        dacls = _v2_good_readback(self.SID, self.plan)
+        rel = self.plan.writable_subdirs[0]
+        dacls[rel] = [r for r in dacls[rel] if not (r.get("type") == "Allow" and r.get("sid") == self.SID)]
+        v = A.verify_workspace_acl_v2(dacls, user_sid=self.SID, plan=self.plan)
+        self.assertFalse(v.ok)
+        self.assertEqual(v.reason, A.V2_WRITABLE_NOT_MODIFY)
+
+    def test_verify_rejects_missing_path(self):
+        dacls = _v2_good_readback(self.SID, self.plan)
+        del dacls[self.plan.deny_write_paths[0]]
+        self.assertEqual(A.verify_workspace_acl_v2(dacls, user_sid=self.SID, plan=self.plan).reason,
+                         A.V2_MISSING_PATH)
+
+    def test_verify_rejects_extra_principal_at_root(self):
+        dacls = _v2_good_readback(self.SID, self.plan)
+        dacls[A.V2_ROOT].append({"sid": A.BUILTIN_USERS_SID, "type": "Allow", "rights": "ReadAndExecute",
+                                 "inherited": False})
+        self.assertFalse(A.verify_workspace_acl_v2(dacls, user_sid=self.SID, plan=self.plan).ok)
+
+    def test_self_control_runs_every_call(self):
+        # RULE 11: the verifier proves its detector live (pos + neg) before any verdict — a broken plan self-fails.
+        self.assertTrue(A.verify_workspace_acl_v2(_v2_good_readback(self.SID, self.plan),
+                                                  user_sid=self.SID, plan=self.plan).ok)
+
+    def test_verify_rejects_partial_deny_write_on_common_ini(self):
+        # A Deny covering only Delete (or only Write) leaves an effective write path via the inherited tenant
+        # Modify on config\ — the AllowDllImport ceiling stays flippable. It must NOT pass verification.
+        for partial in ("Delete", "Write", "AppendData"):
+            dacls = _v2_good_readback(self.SID, self.plan)
+            dacls[A.COMMON_INI_RELPATH] = [r for r in dacls[A.COMMON_INI_RELPATH] if r.get("type") != "Deny"]
+            dacls[A.COMMON_INI_RELPATH].append({"sid": self.SID, "type": "Deny", "rights": partial, "inherited": False})
+            v = A.verify_workspace_acl_v2(dacls, user_sid=self.SID, plan=self.plan)
+            self.assertFalse(v.ok, partial)
+            self.assertEqual(v.reason, A.V2_CODE_NOT_DENIED, partial)
+
+    def test_verify_rejects_foreign_allow_principal_on_code_dir(self):
+        dacls = _v2_good_readback(self.SID, self.plan)
+        rel = self.plan.deny_write_paths[0]
+        dacls[rel].append({"sid": A.BUILTIN_USERS_SID, "type": "Allow", "rights": "Modify", "inherited": True})
+        v = A.verify_workspace_acl_v2(dacls, user_sid=self.SID, plan=self.plan)
+        self.assertFalse(v.ok)
+        self.assertEqual(v.reason, A.V2_FOREIGN_PRINCIPAL)
+
+    def test_v1_certified_contract_left_untouched(self):
+        # G5v1 (the live certified path) must still build + verify exactly as before.
+        plan1 = A.build_workspace_acl_plan(r"C:\GuvFX\accounts\42", "guvfx_u_42")
+        self.assertEqual(plan1.user_min_right, "modify")
+        rows = [
+            {"sid": A.SYSTEM_SID, "type": "Allow", "rights": "FullControl", "inherited": False},
+            {"sid": A.ADMINISTRATORS_SID, "type": "Allow", "rights": "FullControl", "inherited": False},
+            {"sid": self.SID, "type": "Allow", "rights": "Modify", "inherited": False},
+        ]
+        self.assertTrue(A.verify_workspace_acl(rows, user_sid=self.SID).ok)

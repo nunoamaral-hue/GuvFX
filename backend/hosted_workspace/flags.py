@@ -118,3 +118,20 @@ def hosted_mt5_execution_enabled() -> bool:
     ``execution_enabled`` arm (condition 4): the master flag may be on for observation while execution stays
     dark. Never authorises an order by itself; the live order-time bridge gate remains authoritative."""
     return _flag("HOSTED_MT5_EXECUTION_ENABLED")
+
+
+def hosted_wx_isolation_enabled() -> bool:
+    """STREAM 10D (ADR-0043) — the gate for the Hosted Workspace W^X (write-xor-execute) native-code-elimination
+    model: the G5v2 inverted ACL (root Read+Execute; Modify only on the enumerated data subdirs; common.ini +
+    code dirs tenant-deny-write) + the per-tenant AppLocker writable-path execute-deny fragments + the MetaEditor
+    (BinaryName) pin. DEFAULT OFF. It is the repository gate for the canonical invariant
+    ``TENANT-WRITABLE => NON-EXECUTABLE`` / ``TENANT-EXECUTABLE => NON-WRITABLE``; while off, slot_preparation
+    uses the certified G5v1 ACL and emits no W^X denies (behaviour unchanged). It NEVER arms execution, NEVER
+    performs a broker login, and NEVER contacts a host on its own (the host-executor seam stays None -> fail
+    closed). DISTINCT from every execution/observation gate.
+
+    NO-FAKE-READY: turning this on tightens isolation, but ``HOSTED_REMOTEAPP_ISOLATION_CERTIFIED`` stays a
+    SEPARATE behavioural marker that may be emitted ONLY after the on-host W^X escape battery (portable-copy,
+    MetaEditor, common.ini mutation, #import, writable EXE/DLL/Script, restart persistence) passes on a
+    disposable hosted tenant with Customer Zero preserved (ADR-0043)."""
+    return _flag("HOSTED_WX_ISOLATION_ENABLED")

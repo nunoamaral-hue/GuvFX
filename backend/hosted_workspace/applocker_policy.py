@@ -269,6 +269,52 @@ FORBIDDEN_HOSTED_ALLOW = (
 
 _ALLOW_ID_MARKER = "a11e"   # 'a11e' ~ "allow"; base allow-model rule-id namespace (distinct from tenant '4d54')
 
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════════
+# STREAM 10D — the W^X (write-xor-execute) native-code-elimination model (ADR-0043). Canonical invariant:
+#     TENANT-WRITABLE  => NON-EXECUTABLE      TENANT-EXECUTABLE => NON-WRITABLE
+# No hosted tenant may have a location that is simultaneously writable and capable of executing code (Exe/Dll/
+# Script/copied signed terminal64/portable MT5). Closes the MQL5 `#import` native-code class + the portable-copy
+# vector V5 (a signed terminal64.exe relocated to any writable dir with a tenant `AllowDllImport=1` config).
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+# The ONLY MetaQuotes-signed EXE a hosted tenant may run (Decision 4). metaeditor64.exe (the MQL5 compiler) and
+# every other MetaQuotes tool are denied. SOAK-VERIFIED: the string must equal terminal64.exe's EMBEDDED signature
+# BinaryName (read from the host); a wrong value fails SAFE (terminal64 8003 in AuditOnly) before Enforce.
+HOSTED_METAQUOTES_EXE_BINARIES = ("TERMINAL64.EXE",)
+
+# ONE canonical source of truth (Decision 2). Accounts-tree DATA subdirs MT5 legitimately writes at runtime,
+# relative to C:\GuvFX\accounts\<id>. Each gets tenant NTFS Modify (G5v2) AND a tenant AppLocker execute-Deny
+# (W^X). SOAK-VERIFIED for COMPLETENESS (MT5 needs no unlisted writable path -> availability) and MINIMALITY
+# (no listed path is also a code-load dir). common.ini lives under terminal\config but is separately Deny-write.
+HOSTED_WRITABLE_SUBDIRS = (
+    r"terminal\config", r"terminal\bases", r"terminal\history", r"terminal\logs",
+    r"terminal\profiles", r"terminal\templates", r"terminal\tester",
+    r"terminal\MQL5\Files", r"terminal\MQL5\Logs", r"terminal\MQL5\Profiles",
+    r"terminal\MQL5\Presets", r"terminal\MQL5\Images",
+    r"_obs",   # the tenant observation handoff (observation.json) at the account root
+)
+
+# The MQL5 executable CODE dirs: NEVER tenant-writable (G5v2 root Read+Execute + explicit Deny-write) so the
+# golden EAs run but the tenant can plant no .ex5/.dll there. AppLocker cannot gate .ex5 (not a PE), so V2 is
+# closed by NTFS read-only + the vetted-empty golden gate, NOT by an AppLocker rule.
+HOSTED_CODE_SUBDIRS = (
+    r"terminal\MQL5\Experts", r"terminal\MQL5\Indicators", r"terminal\MQL5\Scripts",
+    r"terminal\MQL5\Services", r"terminal\MQL5\Libraries", r"terminal\MQL5\Include",
+)
+
+# POSITIVE execution model (Option A / ADR-0043 rev, Chief Architect 2026-08-12): the W^X guarantee is expressed
+# as an EXECUTABLE ALLOW SURFACE, not a writable-location blocklist. A hosted tenant may execute ONLY the RX
+# managed terminal64 + the approved %SYSTEM32% session binaries; a single per-tenant Deny(*) whose EXCEPTIONS are
+# exactly that surface makes the writable LOCATION irrelevant — C:\Users\Public, ProgramData, suffixed RDS
+# profiles, a copied portable MT5 runtime: none can run. Reuses HOSTED_SESSION_ALLOW (the canonical base
+# session-binary list) so there is NO second manually-maintained list; Dll/Script need no per-tenant deny (the
+# base is publisher-only / deny-by-default, so a planted DLL/script is already denied wherever it lands).
+_ACCOUNTS_BASE_APPLOCKER = r"%OSDRIVE%\GUVFX\ACCOUNTS"
+_WX_DENY_ALL = "*"          # deny ALL tenant execution, any drive/location ...
+_WX_DENY_SEQ = 0x1000       # ... except the exec-allow surface, carried as the Deny rule's Exceptions
+# Principals a per-tenant Deny must NEVER be scoped to (a Deny on a shared principal would break Admin/OS).
+_WX_FORBIDDEN_DENY_SIDS = frozenset({"S-1-1-0", "S-1-5-11", "S-1-5-32-544", "S-1-5-32-545", "S-1-5-18"})
+
 
 def _win_allow(sid: str, name: str, path: str, ident: str) -> ET.Element:
     r = ET.Element("FilePathRule",
@@ -278,13 +324,13 @@ def _win_allow(sid: str, name: str, path: str, ident: str) -> ET.Element:
     return r
 
 
-def _publisher_allow(sid: str, name: str, publisher: str, ident: str) -> ET.Element:
+def _publisher_allow(sid: str, name: str, publisher: str, ident: str, binary_name: str = "*") -> ET.Element:
     r = ET.Element("FilePublisherRule",
                    {"Id": ident, "Name": name, "Description": "Publisher-scoped Allow (signature-pinned)",
                     "UserOrGroupSid": sid, "Action": "Allow"})
     c = ET.SubElement(r, "Conditions")
     pc = ET.SubElement(c, "FilePublisherCondition",
-                       {"PublisherName": publisher, "ProductName": "*", "BinaryName": "*"})
+                       {"PublisherName": publisher, "ProductName": "*", "BinaryName": binary_name})
     ET.SubElement(pc, "BinaryVersionRange", {"LowSection": "*", "HighSection": "*"})
     return r
 
@@ -309,8 +355,13 @@ def generate_base_policy(enforcement: str = "AuditOnly") -> str:
         exe.append(_win_allow(sid, f"({label}) Windows EXE", "%WINDIR%\\*", rid("b1")))
         if sid in _SYSTEM_ALSO_PF:
             exe.append(_win_allow(sid, f"({label}) Program Files EXE", "%PROGRAMFILES%\\*", rid("b1")))
-    exe.append(_publisher_allow(EVERYONE_SID, "(Everyone) MetaQuotes-signed EXE (MT5)",
-                                METAQUOTES_PUBLISHER_NAME, rid("b1")))
+    # MetaEditor pin (STREAM 10D / ADR-0043 Decision 4): the tenant's MetaQuotes-signed Exe surface is pinned to
+    # terminal64.exe ONLY (BinaryName, NOT '*'), so metaeditor64.exe (the MQL5 compiler) is denied — no in-session
+    # authoring of a #import EA. FilePublisherRule BinaryName matches the EMBEDDED signature name, so a rename on
+    # disk cannot bypass. (The exact BinaryName string is SOAK-VERIFIED against terminal64.exe's real signature.)
+    for b in HOSTED_METAQUOTES_EXE_BINARIES:
+        exe.append(_publisher_allow(EVERYONE_SID, f"(Everyone) MetaQuotes-signed EXE ({b})",
+                                    METAQUOTES_PUBLISHER_NAME, rid("b1"), binary_name=b))
     for b in HOSTED_SESSION_ALLOW:
         exe.append(_win_allow(EVERYONE_SID, f"(Hosted session) Allow {b}", f"%SYSTEM32%\\{b}", rid("b1")))
 
@@ -470,6 +521,15 @@ def assert_allow_model_invariants(xml: str) -> bool:
                 leaf = _norm_path(path).rsplit("\\", 1)[-1].lower()
                 if leaf in lowered_forbidden:
                     raise AppLockerPolicyError(f"forbidden_interpreter_allow:{ctype}:{path}")
+            # STREAM 10D: the tenant Exe MetaQuotes publisher rule MUST be BinaryName-pinned (metaeditor64 denied);
+            # an unpinned '*' would re-admit the MQL5 compiler (authoring a #import EA). Dll stays BinaryName='*'.
+            if ctype == "Exe" and r.tag == "FilePublisherRule":
+                allowed_bins = {b.upper() for b in HOSTED_METAQUOTES_EXE_BINARIES}
+                for c in r.findall("Conditions/FilePublisherCondition"):
+                    if (c.get("PublisherName") or "").upper() == METAQUOTES_PUBLISHER_NAME.upper():
+                        if (c.get("BinaryName") or "").upper() not in allowed_bins:
+                            raise AppLockerPolicyError(
+                                f"metaquotes_exe_not_binaryname_pinned:{c.get('BinaryName')}")
 
     exe_allowed_sids = set()
     for coll in collections:
@@ -506,4 +566,88 @@ def assert_base_invariants(xml: str) -> bool:
         raise AppLockerPolicyError("missing_admin_recovery_allow")
     if bad:
         raise AppLockerPolicyError(f"writable_accounts_tree_exe_allow:{sorted(bad)}")
+    return True
+
+
+# ── STREAM 10D — per-tenant W^X POSITIVE execution allowlist (Option A, ADR-0043 rev) ───────────────────────
+def hosted_tenant_exec_allowlist(account_id) -> list:
+    """The ORDERED executable ALLOW SURFACE for one hosted account: the RX managed terminal64 + the approved
+    %SYSTEM32% session binaries (HOSTED_SESSION_ALLOW). These are the ONLY paths the per-tenant Deny(*) excepts,
+    so they are the ONLY things a tenant can execute — from anywhere else, execution is denied. Every path here is
+    a non-tenant-writable RX location (terminal\\ ROOT is RX under G5v2; %SYSTEM32% is OS-owned)."""
+    n = _account(account_id)
+    paths = [f"{_ACCOUNTS_BASE_APPLOCKER}\\{n}\\TERMINAL\\{b.upper()}" for b in HOSTED_METAQUOTES_EXE_BINARIES]
+    paths.extend(f"%SYSTEM32%\\{b.upper()}" for b in HOSTED_SESSION_ALLOW)
+    return paths
+
+
+def tenant_wx_deny_fragment(account_id, sid: str) -> str:
+    """A minimal ``AppLockerPolicy`` carrying ONE per-tenant Exe rule: ``Deny(*)`` scoped to ``sid`` with
+    EXCEPTIONS for the executable allow surface (terminal64 RX + session binaries). Deny-over-Allow makes the
+    tenant unable to execute ANYTHING outside the surface, from ANY location — the positive W^X model that closes
+    the copied-terminal64 / portable-copy class regardless of where the copy is planted (Public/ProgramData/
+    suffixed profile/other drive). NotConfigured so ``-Merge`` never changes enforcement mode. Reuses the '4d54'
+    tenant marker so the existing per-account remove_tenant / tenant_account_ids machinery strips it on release."""
+    n = _account(account_id)
+    s = str(sid or "").strip()
+    if not _SID_RE.match(s):
+        raise AppLockerPolicyError("malformed_sid")
+    if s in _WX_FORBIDDEN_DENY_SIDS:
+        raise AppLockerPolicyError("refusing_wx_deny_on_shared_principal")
+    root = ET.Element("AppLockerPolicy", {"Version": "1"})
+    coll = ET.SubElement(root, "RuleCollection", {"Type": "Exe", "EnforcementMode": "NotConfigured"})
+    rule = ET.SubElement(coll, "FilePathRule", {
+        "Id": tenant_rule_id(n, _WX_DENY_SEQ),
+        "Name": f"(Hosted acct {n} W^X) Deny all execution except the allow surface",
+        "Description": f"acct={n};wx=exec-allowlist", "UserOrGroupSid": s, "Action": "Deny"})
+    ET.SubElement(ET.SubElement(rule, "Conditions"), "FilePathCondition", {"Path": _WX_DENY_ALL})
+    exc = ET.SubElement(rule, "Exceptions")
+    for p in hosted_tenant_exec_allowlist(n):
+        ET.SubElement(exc, "FilePathCondition", {"Path": p})
+    return _tostr(root)
+
+
+def assert_wx_deny_invariants(fragment_xml: str, account_id, sid: str) -> bool:
+    """Prove a per-tenant W^X fragment is a single tenant Exe ``Deny(*)`` whose EXCEPTIONS are EXACTLY the
+    executable allow surface — no extra exception (a writable/foreign path exception would be a hole), none
+    missing (fail-safe: a missing one denies a legit binary, breaking loudly, never opening a hole); grants
+    nothing; correct SID. This is the machine-checked guarantee of ``TENANT-EXECUTABLE ⊆ {allow surface}``."""
+    n = _account(account_id)
+    s = str(sid or "").strip()
+    expected = {p.upper() for p in hosted_tenant_exec_allowlist(n)}
+    root = ET.fromstring(fragment_xml)
+    denies = []
+    for coll in root.findall("RuleCollection"):
+        for r in coll:
+            if (r.get("Action") or "").lower() == "allow":
+                raise AppLockerPolicyError(f"wx_fragment_contains_allow:{r.get('Id')}")
+            if (r.get("Action") or "").lower() == "deny" and coll.get("Type") == "Exe":
+                denies.append(r)
+    if len(denies) != 1:
+        raise AppLockerPolicyError(f"wx_expected_single_exe_deny:{len(denies)}")
+    rule = denies[0]
+    if rule.get("UserOrGroupSid") != s:
+        raise AppLockerPolicyError(f"wx_deny_wrong_sid:{rule.get('UserOrGroupSid')}")
+    deny_paths = {(c.get("Path") or "").upper() for c in rule.findall("Conditions/FilePathCondition")}
+    if deny_paths != {_WX_DENY_ALL}:
+        raise AppLockerPolicyError(f"wx_deny_not_deny_all:{sorted(deny_paths)}")
+    exceptions = {(c.get("Path") or "").upper() for c in rule.findall("Exceptions/FilePathCondition")}
+    if exceptions != expected:
+        raise AppLockerPolicyError(
+            f"wx_exceptions_mismatch:extra={sorted(exceptions - expected)};missing={sorted(expected - exceptions)}")
+    return True
+
+
+def assert_wx_no_writable_executable_intersection(account_id) -> bool:
+    """Prove the W^X invariant: NO path in the executable allow surface is under a tenant-WRITABLE location (the
+    accounts-tree data subdirs get NTFS Modify under G5v2). terminal64 lives at terminal\\ ROOT (RX, not a writable
+    subdir); the session binaries live in %SYSTEM32% (OS-owned). Raises on any overlap — the write-and-execute
+    intersection the model forbids. Derived from the canonical constants, so it holds independent of policy XML."""
+    n = _account(account_id)
+    writable_prefixes = [f"{_ACCOUNTS_BASE_APPLOCKER}\\{n}\\{sub}".upper() for sub in HOSTED_WRITABLE_SUBDIRS]
+    for execpath in hosted_tenant_exec_allowlist(n):
+        e = execpath.upper()
+        for w in writable_prefixes:
+            if e == w or e.startswith(w + "\\"):
+                raise AppLockerPolicyError(f"wx_writable_executable_intersection:{e}~{w}")
     return True
