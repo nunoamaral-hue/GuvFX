@@ -223,6 +223,13 @@ def _canonical(xml: str) -> str:
 ADMIN_SID = "S-1-5-32-544"
 EVERYONE_SID = "S-1-1-0"
 METAQUOTES_PUBLISHER_NAME = "O=METAQUOTES LTD., S=LEMESOS, C=CY"
+# Microsoft OS-component signer. Hosted tenants may load Microsoft-signed OS DLLs (a signature cannot be forged)
+# INSTEAD of a broad ``(Everyone) %WINDIR%\\*`` DLL path allow, which is bypassable via user-writable %WINDIR%
+# subdirectories (``%WINDIR%\\Temp``, ``System32\\spool\\drivers\\color``, ...) — STREAM 10B re-verify HIGH. A
+# Microsoft-signed DLL is trusted code, NOT an arbitrary-code primitive, so this publisher is allowed for the Dll
+# collection ONLY (a Microsoft-signed EXE such as rundll32 WOULD be a signed-LOLBIN ACE, so it is never allowed in
+# Exe/Msi/Script). SOAK-VERIFY the exact subject against the host's real DLL signatures before Enforce.
+MICROSOFT_WINDOWS_PUBLISHER_NAME = "O=MICROSOFT CORPORATION, L=REDMOND, S=WASHINGTON, C=US"
 
 # Principals that KEEP unrestricted Windows execution (deny-by-default does NOT constrain them). The dynamic
 # per-session virtual accounts (DWM ``S-1-5-90-0-N``, Font Driver Host ``S-1-5-96-0-N``) are covered by their
@@ -244,13 +251,20 @@ HOSTED_SESSION_ALLOW = (
 )
 
 # Interpreters / compilers / LOLBINs that must NEVER be granted to a hosted tenant (a permanent regression guard;
-# each is an arbitrary-code-execution primitive that would defeat ADR-0041). NOT exhaustive of LOLBAS — the point
-# is deny-by-default (absence of an allow), and this list is the belt-and-suspenders CI assertion.
+# each is an arbitrary-code-execution primitive that would defeat ADR-0041). This is the belt-and-suspenders CI
+# tripwire; the PRIMARY guard is now the positive allowlist in ``assert_allow_model_invariants`` (a tenant-reachable
+# Allow must be EXACTLY the MetaQuotes publisher or a curated %SYSTEM32%\<leaf>). The extra names below were added
+# after the STREAM 10B review flagged that a fixed blocklist could miss primitives like wsl/odbcconf/scriptrunner
+# added to HOSTED_SESSION_ALLOW; the frozen-set change-detector test on HOSTED_SESSION_ALLOW backs this up.
 FORBIDDEN_HOSTED_ALLOW = (
     "python.exe", "pythonw.exe", "py.exe", "pyw.exe", "cmd.exe", "powershell.exe", "powershell_ise.exe",
     "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe", "regsvcs.exe",
     "regasm.exe", "installutil.exe", "msbuild.exe", "csc.exe", "vbc.exe", "jsc.exe", "ilasm.exe", "cmstp.exe",
     "mavinject.exe", "bitsadmin.exe", "certutil.exe", "wmic.exe", "explorer.exe", "regedit.exe",
+    # STREAM 10B review additions (LOLBAS execution/proxy primitives + interpreters not in the original set):
+    "wsl.exe", "wslconfig.exe", "bash.exe", "odbcconf.exe", "scriptrunner.exe", "pcalua.exe", "forfiles.exe",
+    "presentationhost.exe", "msdt.exe", "hh.exe", "msiexec.exe", "mmc.exe", "taskmgr.exe", "control.exe",
+    "wt.exe", "verclsid.exe", "rasautou.exe", "diskshadow.exe", "wbemtest.exe", "dnscmd.exe",
 )
 
 _ALLOW_ID_MARKER = "a11e"   # 'a11e' ~ "allow"; base allow-model rule-id namespace (distinct from tenant '4d54')
@@ -266,7 +280,7 @@ def _win_allow(sid: str, name: str, path: str, ident: str) -> ET.Element:
 
 def _publisher_allow(sid: str, name: str, publisher: str, ident: str) -> ET.Element:
     r = ET.Element("FilePublisherRule",
-                   {"Id": ident, "Name": name, "Description": "MetaQuotes-signed MT5 portable binaries only",
+                   {"Id": ident, "Name": name, "Description": "Publisher-scoped Allow (signature-pinned)",
                     "UserOrGroupSid": sid, "Action": "Allow"})
     c = ET.SubElement(r, "Conditions")
     pc = ET.SubElement(c, "FilePublisherCondition",
@@ -311,49 +325,159 @@ def generate_base_policy(enforcement: str = "AuditOnly") -> str:
     for sid, label in SYSTEM_EXEC_SIDS:
         if sid in _SYSTEM_ALSO_PF:
             scr.append(_win_allow(sid, f"({label}) Windows scripts", "%WINDIR%\\*", rid("b3")))
+
+    # ── Dll: the load-bearing anti-sideload / anti-COM-hijack collection. POSITIVE, PUBLISHER-based allowlist ─
+    # (STREAM 10B review, ADR-0042, hardened by the re-verify HIGH). AppLocker's Exe rules check LAUNCHED IMAGES
+    # but NOT a DLL loaded INTO an already-allowed process; without a Dll collection a hosted tenant runs arbitrary
+    # NATIVE code via a DLL side-load (stage a signed terminal64.exe + plant a sibling dwmapi.dll) or an HKCU COM
+    # InprocServer32 hijack into sihost/taskhostw. A ``%WINDIR%\\*`` PATH allow does NOT close it: %WINDIR%\\Temp,
+    # \\Tasks, \\tracing, \\Registration\\CRMLog, System32\\{spool\\drivers\\color, FxsTmp, com\\dmp} and the
+    # SysWOW64 equivalents are USER-WRITABLE, so a planted DLL relocated there matches the wildcard. A hosted
+    # tenant's token reaches only Everyone, so the tenant DLL surface is PUBLISHER-ONLY: Microsoft-signed OS DLLs
+    # + MetaQuotes-signed MT5 DLLs. A planted unsigned/self-signed DLL matches NEITHER and is denied WHEREVER it is
+    # planted (accounts tree, %WINDIR%\\Temp, anywhere). Service daemons that load NON-Microsoft DLLs (e.g.
+    # python311.dll) run as the service SIDs and get %PROGRAMFILES%\\* (NOT tenant-reachable, NOT tenant-writable).
+    # SOAK-VERIFY the Microsoft subject + any non-publisher MT5/service DLL (8003 in AuditOnly) before Enforce.
+    dll = ET.SubElement(root, "RuleCollection", {"Type": "Dll", "EnforcementMode": enforcement})
+    dll.append(_win_allow(ADMIN_SID, "(Admins) Allow all DLL - operator recovery", "*", rid("b4")))
+    dll.append(_publisher_allow(EVERYONE_SID, "(Everyone) Microsoft-signed DLL (OS libraries)",
+                                MICROSOFT_WINDOWS_PUBLISHER_NAME, rid("b4")))
+    dll.append(_publisher_allow(EVERYONE_SID, "(Everyone) MetaQuotes-signed DLL (MT5)",
+                                METAQUOTES_PUBLISHER_NAME, rid("b4")))
+    for sid, label in SYSTEM_EXEC_SIDS:
+        if sid in _SYSTEM_ALSO_PF:
+            dll.append(_win_allow(sid, f"({label}) Program Files DLL - service daemons", "%PROGRAMFILES%\\*",
+                                  rid("b4")))
     return _tostr(root)
 
 
-def _all_allow_paths(exe: ET.Element):
-    for r in exe:
-        if r.tag == "FilePathRule" and r.get("Action") == "Allow":
-            for cond in r.findall("Conditions/FilePathCondition"):
-                yield r, (cond.get("Path") or "")
+# The principals a hosted (non-admin) tenant token does NOT carry — Administrators + the system/service/virtual
+# accounts. Their (broad, by-design) OS allows are exempt from the tenant-surface check. EVERY OTHER principal in
+# an Allow — Everyone, BUILTIN\Users, Authenticated Users, Interactive, a specific user SID, anything — is treated
+# as TENANT-REACHABLE and constrained to exactly the two certified forms. This closes the whole class the STREAM
+# 10B review found: an alias path (%WINDIR%\System32\*), a broad allow to a tenant-inclusive GROUP other than
+# Everyone, an unguarded publisher rule, a widening in the Msi/Script/Dll collection, and a fixed-blocklist bypass.
+_SYSTEM_SID_SET = frozenset(s for s, _ in SYSTEM_EXEC_SIDS)
+# Non-tenant-writable OS locations. A hosted tenant cannot WRITE under any of these, so allowing execution (system
+# principals) or DLL loads (Everyone, Dll collection) from them plants no attacker-controlled code.
+_OS_PATH_PREFIXES = ("%WINDIR%", "%SYSTEM32%", "%PROGRAMFILES%", "%PROGRAMFILES(X86)%",
+                     "%OSDRIVE%\\WINDOWS", "%OSDRIVE%\\PROGRAM FILES")
+
+
+def _norm_path(path: str) -> str:
+    return (path or "").upper().replace("/", "\\")
+
+
+def _is_os_path(path: str) -> bool:
+    p = _norm_path(path)
+    return p == "*" or any(p.startswith(pre) for pre in _OS_PATH_PREFIXES)
+
+
+def _path_conditions(r: ET.Element):
+    return [c.get("Path") or "" for c in r.findall("Conditions/FilePathCondition")]
+
+
+def _publisher_names(r: ET.Element):
+    return [c.get("PublisherName") or "" for c in r.findall("Conditions/FilePublisherCondition")]
+
+
+def _is_allow(r: ET.Element) -> bool:
+    return (r.get("Action") or "").lower() == "allow"     # case-insensitive: Action="allow" must not evade the guard
+
+
+def _assert_tenant_reachable_allow_ok(coll_type: str, r: ET.Element) -> None:
+    """A tenant-reachable Allow must be EXACTLY one certified form, else raise:
+      * MetaQuotes publisher rule (any collection) — portable MT5; a signature cannot be forged; OR
+      * Microsoft publisher rule (Dll ONLY) — OS DLLs; a signed DLL is trusted code, not an arbitrary-code
+        primitive (a Microsoft-signed EXE would be a signed-LOLBIN ACE, so MS publisher is NOT allowed in
+        Exe/Msi/Script); OR
+      * (Exe) a FilePathRule for exactly ``%SYSTEM32%\\<leaf>`` with leaf in HOSTED_SESSION_ALLOW (a specific,
+        non-tenant-writable FILE — never a wildcard, which spans user-writable subdirectories).
+    NO tenant-reachable PATH allow is permitted in Dll/Msi/Script — the Dll surface is publisher-only precisely
+    because a ``%WINDIR%\\*`` wildcard is bypassable via user-writable %WINDIR% subdirs (re-verify HIGH)."""
+    sid = r.get("UserOrGroupSid") or ""
+    if r.tag == "FilePublisherRule":
+        allowed = {METAQUOTES_PUBLISHER_NAME.upper()}
+        if coll_type == "Dll":
+            allowed.add(MICROSOFT_WINDOWS_PUBLISHER_NAME.upper())
+        pubs = [p.upper() for p in _publisher_names(r)]
+        if pubs and all(p in allowed for p in pubs):
+            return
+        raise AppLockerPolicyError(f"tenant_reachable_publisher_not_allowed:{coll_type}:{sid}:{pubs}")
+    if r.tag == "FilePathRule":
+        paths = _path_conditions(r)
+        if not paths:                                 # a path rule with NO condition would match nothing to bless,
+            raise AppLockerPolicyError(f"tenant_reachable_empty_path_rule:{coll_type}:{sid}")   # reject it explicitly
+        for path in paths:
+            p = _norm_path(path)
+            ok = coll_type == "Exe" and any(p == ("%SYSTEM32%\\" + b.upper()) for b in HOSTED_SESSION_ALLOW)
+            if not ok:
+                raise AppLockerPolicyError(f"tenant_reachable_broad_allow:{coll_type}:{sid}:{path}")
+        return
+    raise AppLockerPolicyError(f"tenant_reachable_unknown_rule:{coll_type}:{sid}:{r.tag}")
 
 
 def assert_allow_model_invariants(xml: str) -> bool:
-    """Prove the deny-by-default allow model is intact (the permanent STREAM 10B regression guard). Raises on:
-    a broad ``(Everyone) Allow %WINDIR%\\*`` or ``%PROGRAMFILES%\\*`` EXE/Script rule (the surface re-widening the
-    model exists to remove); a missing system/service/virtual-account allow (would break the OS/compositor); or
-    ANY allow whose path names a forbidden interpreter/LOLBIN scoped to a non-admin/non-system principal."""
+    """Prove the deny-by-default allow model is intact — the PERMANENT STREAM 10B regression guard, rewritten
+    (per the STREAM 10B adversarial review + re-verify) as a POSITIVE ALLOWLIST over EVERY rule collection rather
+    than a fixed blocklist over the Exe collection only. Raises unless:
+      1. the Exe AND Dll collections are present (Dll closes the DLL-sideload / COM-hijack native-code path);
+      2. ALL collections share ONE enforcement mode (no silently-NotConfigured collection);
+      3. every Allow reachable by a tenant-reachable principal (anything but Admin / system-service-virtual SIDs)
+         is exactly one certified form (MetaQuotes publisher; Microsoft publisher for Dll only; or the curated
+         %SYSTEM32%\\<leaf> Exe path);
+      4. no forbidden interpreter/LOLBIN leaf is granted to such a principal (belt-and-suspenders tripwire);
+      5. system/service allows stay confined to non-tenant-writable OS paths / Microsoft|MetaQuotes publishers;
+      6. every system/service/virtual-account principal keeps its Exe Windows allow (OS + compositor must run).
+    Collections are iterated as a LIST (not keyed by Type) so a DUPLICATE ``RuleCollection Type`` cannot hide a
+    widening from analysis."""
     root = ET.fromstring(xml)
-    exe = _exe_collection(root)
+    collections = list(root.findall("RuleCollection"))       # LIST — a duplicate Type must not shadow another
+    types_present = {c.get("Type") for c in collections}
+    for required in ("Exe", "Dll"):
+        if required not in types_present:
+            raise AppLockerPolicyError(f"missing_rule_collection:{required}")
+    modes = {c.get("EnforcementMode") for c in collections}
+    if len(modes) != 1:
+        raise AppLockerPolicyError(f"mixed_enforcement_modes:{sorted(m or '' for m in modes)}")
+    if not (modes <= {"AuditOnly", "Enabled"}):     # a uniform NotConfigured/absent mode disables all enforcement
+        raise AppLockerPolicyError(f"non_enforcing_mode:{sorted(m or '' for m in modes)}")
 
-    # 1. no broad Everyone Windows / Program Files EXE allow (deny-by-default for hosted tenants).
-    everyone_broad = []
-    for r, path in _all_allow_paths(exe):
-        if r.get("UserOrGroupSid") == EVERYONE_SID:
-            p = path.upper().replace("/", "\\").rstrip("\\")
-            if p in ("%WINDIR%", "%WINDIR%\\*", "%PROGRAMFILES%", "%PROGRAMFILES%\\*",
-                     "%PROGRAMFILES(X86)%\\*", "%SYSTEM32%\\*", "%OSDRIVE%\\*", "*"):
-                everyone_broad.append(r.get("Id"))
-    if everyone_broad:
-        raise AppLockerPolicyError(f"broad_everyone_windows_allow:{sorted(everyone_broad)}")
+    ms_mq = {MICROSOFT_WINDOWS_PUBLISHER_NAME.upper(), METAQUOTES_PUBLISHER_NAME.upper()}
+    lowered_forbidden = {f.lower() for f in FORBIDDEN_HOSTED_ALLOW}
+    for coll in collections:
+        ctype = coll.get("Type")
+        for r in coll:
+            if not _is_allow(r):
+                continue
+            sid = r.get("UserOrGroupSid") or ""
+            if sid == ADMIN_SID:
+                continue                                     # operator recovery — Allow * permitted
+            if sid in _SYSTEM_SID_SET:
+                # system/service/virtual principal (NOT tenant-reachable): OS paths only; a publisher rule (if
+                # any) must still be Microsoft/MetaQuotes — never a blanket third-party signer.
+                if r.tag == "FilePathRule":
+                    for path in _path_conditions(r):
+                        if not _is_os_path(path):
+                            raise AppLockerPolicyError(f"system_sid_non_os_allow:{ctype}:{sid}:{path}")
+                elif r.tag == "FilePublisherRule":
+                    pubs = [p.upper() for p in _publisher_names(r)]
+                    if not (pubs and all(p in ms_mq for p in pubs)):
+                        raise AppLockerPolicyError(f"system_sid_unexpected_publisher:{ctype}:{sid}:{pubs}")
+                continue
+            _assert_tenant_reachable_allow_ok(ctype, r)      # every other principal → certified forms only
+            for path in _path_conditions(r):
+                leaf = _norm_path(path).rsplit("\\", 1)[-1].lower()
+                if leaf in lowered_forbidden:
+                    raise AppLockerPolicyError(f"forbidden_interpreter_allow:{ctype}:{path}")
 
-    # 2. every system/service/virtual-account principal keeps a Windows allow (OS + compositor must run).
-    allowed_sids = {r.get("UserOrGroupSid") for r, _ in _all_allow_paths(exe)}
-    missing = [sid for sid, _ in SYSTEM_EXEC_SIDS if sid not in allowed_sids]
+    exe_allowed_sids = set()
+    for coll in collections:
+        if coll.get("Type") == "Exe":
+            exe_allowed_sids.update(r.get("UserOrGroupSid") for r in coll if _is_allow(r))
+    missing = [sid for sid, _ in SYSTEM_EXEC_SIDS if sid not in exe_allowed_sids]
     if missing:
         raise AppLockerPolicyError(f"missing_system_exec_allow:{missing}")
-
-    # 3. no forbidden interpreter/LOLBIN granted to a hosted tenant (Everyone). Admin/system allows are exempt.
-    lowered_forbidden = {f.lower() for f in FORBIDDEN_HOSTED_ALLOW}
-    for r, path in _all_allow_paths(exe):
-        if r.get("UserOrGroupSid") in (ADMIN_SID,) or r.get("UserOrGroupSid") in {s for s, _ in SYSTEM_EXEC_SIDS}:
-            continue
-        leaf = path.replace("/", "\\").rsplit("\\", 1)[-1].lower()
-        if leaf in lowered_forbidden:
-            raise AppLockerPolicyError(f"forbidden_interpreter_allow:{path}")
     return True
 
 
@@ -366,13 +490,16 @@ def assert_base_invariants(xml: str) -> bool:
     exe = _exe_collection(root)
     has_publisher = any(r.tag == "FilePublisherRule" and r.get("Action") == "Allow" for r in exe)
     has_admin = any(r.get("UserOrGroupSid") == "S-1-5-32-544" and r.get("Action") == "Allow" for r in exe)
+    # The writable-tree bypass (a renamed shell / planted DLL dropped in C:\GuvFX\accounts\*) must match NO Allow
+    # path rule in ANY collection — Exe or Dll — regardless of principal.
     bad = []
-    for r in exe:
-        if r.tag == "FilePathRule" and r.get("Action") == "Allow":
-            for cond in r.findall("Conditions/FilePathCondition"):
-                p = (cond.get("Path") or "").lower().replace("/", "\\")
-                if "guvfx\\accounts" in p:
-                    bad.append(r.get("Id"))
+    for coll in root.findall("RuleCollection"):
+        for r in coll:
+            if r.tag == "FilePathRule" and r.get("Action") == "Allow":
+                for cond in r.findall("Conditions/FilePathCondition"):
+                    p = (cond.get("Path") or "").lower().replace("/", "\\")
+                    if "guvfx\\accounts" in p:
+                        bad.append(r.get("Id"))
     if not has_publisher:
         raise AppLockerPolicyError("missing_metaquotes_publisher_allow")
     if not has_admin:

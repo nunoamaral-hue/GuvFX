@@ -144,7 +144,9 @@ class ValidationTests(SimpleTestCase):
 
 
 def _struct(xml):
-    """Structural fingerprint of a policy (ignores whitespace/comments/rule order) for drift comparison."""
+    """Structural fingerprint of a policy (ignores whitespace/comments/rule order) for drift comparison. Captures
+    path, publisher (name/product/binary + version range), file-hash conditions AND any Exceptions block — so a
+    hand-edit that only alters a version range or slips in an <Exceptions> element cannot pass the drift guard."""
     root = ET.fromstring(xml)
     out = []
     for coll in root.findall("RuleCollection"):
@@ -152,10 +154,20 @@ def _struct(xml):
         for r in coll:
             conds = []
             for c in r.findall("Conditions/FilePathCondition"):
-                conds.append(("path", c.get("Path")))
+                conds.append(("path", c.get("Path") or ""))
             for c in r.findall("Conditions/FilePublisherCondition"):
-                conds.append(("pub", c.get("PublisherName"), c.get("ProductName"), c.get("BinaryName")))
-            rules.append((r.get("Id"), r.tag, r.get("UserOrGroupSid"), r.get("Action"), tuple(sorted(conds))))
+                vr = c.find("BinaryVersionRange")
+                conds.append(("pub", c.get("PublisherName") or "", c.get("ProductName") or "",
+                              c.get("BinaryName") or "",
+                              (vr.get("LowSection") or "") if vr is not None else "",
+                              (vr.get("HighSection") or "") if vr is not None else ""))
+            for c in r.findall("Conditions/FileHashCondition/FileHash"):
+                conds.append(("hash", c.get("Type") or "", c.get("Data") or ""))
+            excs = []
+            for e in r.findall("Exceptions/*"):
+                excs.append((e.tag, tuple(sorted((k, v or "") for k, v in e.attrib.items()))))
+            rules.append((r.get("Id"), r.tag, r.get("UserOrGroupSid"), r.get("Action"),
+                          tuple(sorted(conds)), tuple(sorted(excs))))
         out.append((coll.get("Type"), coll.get("EnforcementMode"), tuple(sorted(rules))))
     return tuple(sorted(out))
 
@@ -232,6 +244,169 @@ class AllowModelTests(SimpleTestCase):
             committed = open(os.path.join(base, fname)).read()
             self.assertEqual(_struct(committed), _struct(A.generate_base_policy(mode)),
                              f"{fname} drifted from generate_base_policy('{mode}') - regenerate, do not hand-edit")
+
+    # ── STREAM 10B adversarial-review closures (positive-allowlist guard over EVERY collection) ──────────────
+
+    def test_dll_collection_present_and_required(self):
+        # The DLL-sideload / HKCU-COM-hijack native-code path (STREAM 10 allow-surface review, HIGH): the model
+        # MUST carry an enforced Dll collection; removing it MUST fail the invariant.
+        root = ET.fromstring(A.generate_base_policy())
+        self.assertIn("Dll", {c.get("Type") for c in root.findall("RuleCollection")})
+        for c in list(root):
+            if c.get("Type") == "Dll":
+                root.remove(c)
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_dll_everyone_allows_are_publisher_only(self):
+        # Re-verify HIGH: a tenant-reachable %WINDIR%\* DLL PATH allow is bypassable via user-writable %WINDIR%
+        # subdirs (Temp, System32\spool\drivers\color, ...). The tenant (Everyone) DLL surface must be PUBLISHER
+        # rules only (Microsoft OS signer + MetaQuotes) — a planted unsigned DLL then matches nothing, anywhere.
+        dll = [c for c in ET.fromstring(A.generate_base_policy()).findall("RuleCollection")
+               if c.get("Type") == "Dll"][0]
+        everyone = [r for r in dll if r.get("Action") == "Allow" and r.get("UserOrGroupSid") == A.EVERYONE_SID]
+        self.assertTrue(everyone)
+        for r in everyone:
+            self.assertEqual(r.tag, "FilePublisherRule", "Everyone DLL allow must be publisher-only, not a path")
+            pubs = {c.get("PublisherName") for c in r.findall("Conditions/FilePublisherCondition")}
+            self.assertTrue(pubs <= {A.MICROSOFT_WINDOWS_PUBLISHER_NAME, A.METAQUOTES_PUBLISHER_NAME}, pubs)
+
+    def test_tenant_windir_dll_path_allow_is_caught(self):
+        # The exact regression the re-verify caught: an Everyone %WINDIR%\* PATH allow in the Dll collection.
+        root = ET.fromstring(A.generate_base_policy())
+        dll = [c for c in root.findall("RuleCollection") if c.get("Type") == "Dll"][0]
+        bad = ET.SubElement(dll, "FilePathRule", {"Id": "dead0000-0000-a11e-0000-000000000992",
+                            "Name": "windir-dll", "Action": "Allow", "UserOrGroupSid": A.EVERYONE_SID})
+        ET.SubElement(ET.SubElement(bad, "Conditions"), "FilePathCondition", {"Path": r"%WINDIR%\*"})
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_microsoft_publisher_allowed_in_dll_but_not_exe(self):
+        # A Microsoft-signed DLL is trusted code (OK for Dll); a Microsoft-signed EXE is a signed-LOLBIN ACE
+        # (rundll32/regsvr32/...) so MS publisher must be REJECTED in the Exe collection.
+        def inject(ctype):
+            root = ET.fromstring(A.generate_base_policy())
+            coll = [c for c in root.findall("RuleCollection") if c.get("Type") == ctype][0]
+            bad = ET.SubElement(coll, "FilePublisherRule", {"Id": "dead0000-0000-a11e-0000-000000000991",
+                                "Name": "ms", "Action": "Allow", "UserOrGroupSid": A.EVERYONE_SID})
+            pc = ET.SubElement(ET.SubElement(bad, "Conditions"), "FilePublisherCondition",
+                               {"PublisherName": A.MICROSOFT_WINDOWS_PUBLISHER_NAME, "ProductName": "*",
+                                "BinaryName": "*"})
+            ET.SubElement(pc, "BinaryVersionRange", {"LowSection": "*", "HighSection": "*"})
+            return ET.tostring(root, encoding="unicode")
+        self.assertTrue(A.assert_allow_model_invariants(inject("Dll")))          # allowed in Dll
+        with self.assertRaises(A.AppLockerPolicyError):                          # rejected in Exe
+            A.assert_allow_model_invariants(inject("Exe"))
+
+    def test_duplicate_collection_type_does_not_hide_widening(self):
+        # A SECOND Exe collection carrying a broad Everyone allow must NOT be shadowed by a dict-by-Type analysis.
+        # The dupe's EnforcementMode MATCHES the generator default (AuditOnly) so the mixed-mode guard does NOT
+        # fire first — this test must exercise the LIST-iteration path, not raise for an unrelated reason.
+        root = ET.fromstring(A.generate_base_policy("AuditOnly"))
+        dupe = ET.SubElement(root, "RuleCollection", {"Type": "Exe", "EnforcementMode": "AuditOnly"})
+        bad = ET.SubElement(dupe, "FilePathRule", {"Id": "dead0000-0000-a11e-0000-000000000990",
+                            "Name": "widen", "Action": "Allow", "UserOrGroupSid": A.EVERYONE_SID})
+        ET.SubElement(ET.SubElement(bad, "Conditions"), "FilePathCondition", {"Path": r"%WINDIR%\*"})
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "tenant_reachable"):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_uniform_notconfigured_mode_is_caught(self):
+        # A policy with EVERY collection uniformly NotConfigured passes the mixed-mode check but enforces nothing.
+        root = ET.fromstring(A.generate_base_policy("Enabled"))
+        for c in root.findall("RuleCollection"):
+            c.set("EnforcementMode", "NotConfigured")
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "non_enforcing_mode"):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_tenant_path_rule_with_no_conditions_is_caught(self):
+        # A tenant-reachable FilePathRule with zero FilePathCondition children blesses nothing and must be rejected.
+        root = ET.fromstring(A.generate_base_policy())
+        exe = [c for c in root.findall("RuleCollection") if c.get("Type") == "Exe"][0]
+        bad = ET.SubElement(exe, "FilePathRule", {"Id": "dead0000-0000-a11e-0000-00000000098e",
+                            "Name": "empty", "Action": "Allow", "UserOrGroupSid": A.EVERYONE_SID})
+        ET.SubElement(bad, "Conditions")     # present but empty — no FilePathCondition
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "empty_path_rule"):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_mixed_enforcement_modes_is_caught(self):
+        root = ET.fromstring(A.generate_base_policy("Enabled"))
+        [c for c in root.findall("RuleCollection") if c.get("Type") == "Dll"][0].set("EnforcementMode",
+                                                                                     "NotConfigured")
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_lowercase_action_allow_is_not_evaded(self):
+        # Action="allow" (wrong case) must still be analyzed as an Allow, not skipped as non-Allow.
+        root = ET.fromstring(A.generate_base_policy())
+        exe = [c for c in root.findall("RuleCollection") if c.get("Type") == "Exe"][0]
+        bad = ET.SubElement(exe, "FilePathRule", {"Id": "dead0000-0000-a11e-0000-00000000098f",
+                            "Name": "widen", "Action": "allow", "UserOrGroupSid": A.EVERYONE_SID})
+        ET.SubElement(ET.SubElement(bad, "Conditions"), "FilePathCondition", {"Path": r"%WINDIR%\*"})
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def _inject_exe_allow(self, sid, path, tag="FilePathRule"):
+        root = ET.fromstring(A.generate_base_policy())
+        exe = [c for c in root.findall("RuleCollection") if c.get("Type") == "Exe"][0]
+        bad = ET.SubElement(exe, tag, {"Id": "dead0000-0000-a11e-0000-000000000997", "Name": "widen",
+                                       "Action": "Allow", "UserOrGroupSid": sid})
+        cond = ET.SubElement(bad, "Conditions")
+        if tag == "FilePathRule":
+            ET.SubElement(cond, "FilePathCondition", {"Path": path})
+        else:
+            pc = ET.SubElement(cond, "FilePublisherCondition",
+                               {"PublisherName": path, "ProductName": "*", "BinaryName": "*"})
+            ET.SubElement(pc, "BinaryVersionRange", {"LowSection": "*", "HighSection": "*"})
+        return ET.tostring(root, encoding="unicode")
+
+    def test_broad_allow_to_users_group_is_caught(self):            # GAP-1(b): tenant-inclusive group != Everyone
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(self._inject_exe_allow("S-1-5-32-545", r"%WINDIR%\*"))
+
+    def test_broad_allow_to_authenticated_users_is_caught(self):
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(self._inject_exe_allow("S-1-5-11", r"%PROGRAMFILES%\*"))
+
+    def test_system32_subdir_alias_to_everyone_is_caught(self):     # GAP-1(a): %WINDIR%\System32\* alias
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(self._inject_exe_allow(A.EVERYONE_SID, r"%WINDIR%\System32\*"))
+
+    def test_non_metaquotes_publisher_to_everyone_is_caught(self):  # GAP-2: publisher rules now inspected
+        with self.assertRaises(A.AppLockerPolicyError):
+            A.assert_allow_model_invariants(self._inject_exe_allow(
+                A.EVERYONE_SID, "O=MICROSOFT CORPORATION, L=REDMOND, S=WASHINGTON, C=US", tag="FilePublisherRule"))
+
+    def test_broad_allow_in_script_or_msi_collection_is_caught(self):   # GAP-4: all collections inspected
+        for ctype in ("Script", "Msi", "Dll"):
+            root = ET.fromstring(A.generate_base_policy())
+            coll = [c for c in root.findall("RuleCollection") if c.get("Type") == ctype][0]
+            bad = ET.SubElement(coll, "FilePathRule", {"Id": "dead0000-0000-a11e-0000-000000000993",
+                                "Name": "widen", "Action": "Allow", "UserOrGroupSid": A.EVERYONE_SID})
+            ET.SubElement(ET.SubElement(bad, "Conditions"), "FilePathCondition", {"Path": "*"})
+            with self.assertRaises(A.AppLockerPolicyError, msg=f"{ctype} widening not caught"):
+                A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_committed_templates_pass_invariants_on_file_contents(self):   # GAP-5: assert on the deployed artifact
+        base = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                            "terminal_provisioning", "windows", "applocker")
+        for fname in ("guvfx-hosted-auditonly.xml", "guvfx-hosted-enforce.xml"):
+            committed = open(os.path.join(base, fname)).read()
+            self.assertTrue(A.assert_allow_model_invariants(committed), fname)
+            self.assertTrue(A.assert_base_invariants(committed), fname)
+
+    def test_hosted_session_allow_is_frozen(self):   # GAP-3: any curated-list change is a visible, reviewed edit
+        self.assertEqual(set(A.HOSTED_SESSION_ALLOW), {
+            "rdpinit.exe", "rdpshell.exe", "rdpclip.exe", "tstheme.exe", "userinit.exe", "sihost.exe",
+            "ctfmon.exe", "taskhostw.exe", "conhost.exe", "shellappruntime.exe", "shellhost.exe", "wlrmdr.exe"},
+            "HOSTED_SESSION_ALLOW changed - update this expected set in the SAME commit and re-certify the soak")
+
+    def test_expanded_lolbin_in_session_allow_would_be_caught(self):
+        # A future primitive (wsl/odbcconf/scriptrunner) added to the session allow-list is caught by the
+        # forbidden-leaf tripwire the moment it appears as a %SYSTEM32%\<leaf> Everyone allow.
+        for lolbin in ("wsl.exe", "odbcconf.exe", "scriptrunner.exe"):
+            self.assertIn(lolbin, {f.lower() for f in A.FORBIDDEN_HOSTED_ALLOW})
+            with self.assertRaises(A.AppLockerPolicyError):
+                A.assert_allow_model_invariants(self._inject_exe_allow(A.EVERYONE_SID, rf"%SYSTEM32%\{lolbin}"))
 
 
 class CapacityTests(SimpleTestCase):

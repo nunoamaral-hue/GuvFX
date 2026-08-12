@@ -7,8 +7,9 @@
                      Automatic + Running; ensure the AppLocker event channels are enabled; resolve the
                      hosted user SID and substitute it into the template; apply the policy (AuditOnly).
     -Mode Verify   : print the effective policy collection modes + rule counts and AppIDSvc state.
-    -Mode Rollback : restore AppIDSvc to its captured baseline and CLEAR the local AppLocker policy
-                     (back to NotConfigured -- nothing enforced or audited).
+    -Mode Rollback : restore AppIDSvc to its captured baseline start type AND restore the ORIGINAL AppLocker
+                     policy captured at first Deploy (Set-AppLockerPolicy REPLACES, no -Merge -- so this returns
+                     the host to its EXACT pre-Deploy state; if no baseline exists, clears to NotConfigured).
     -Mode Evidence : dump the effective policy XML + AppLocker event-channel record counts (the
                      measurement path). AuditOnly logs event 8003 ("would have been blocked").
 
@@ -30,6 +31,7 @@ param(
   [switch]$Enforce,   # Deploy only: apply the SAME policy with EnforcementMode Enabled (Enforce) instead of AuditOnly.
   [string]$HostedUser = 'guvfx_u_1',
   [string]$TemplatePath = "$PSScriptRoot\applocker\guvfx-hosted-auditonly.xml",
+  [string]$EnforceTemplatePath = "$PSScriptRoot\applocker\guvfx-hosted-enforce.xml",
   [string]$StateDir = 'C:\GuvFX\_applocker'
 )
 $ErrorActionPreference = 'Stop'
@@ -53,6 +55,8 @@ function Svc-State {
   $m = (Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'").StartMode
   return @{ status = "$($s.Status)"; start = "$m" }
 }
+
+$applied = $false   # F3: set true once Set-AppLockerPolicy has run, so a later throw reports enforcement is LIVE.
 
 try {
   switch ($Mode) {
@@ -91,11 +95,14 @@ try {
         $l = Get-WinEvent -ListLog $ch -ErrorAction SilentlyContinue
         if ($l -and -not $l.IsEnabled) { & wevtutil.exe sl "$ch" /e:true | Out-Null }
       }
-      # 4. Load the template. The canonical STREAM 10B allow model is machine-wide (deny-by-default; NO per-user
-      # token) so no SID substitution is needed. The legacy template's {{HOSTED_USER_SID}} token, if present, is
-      # still resolved + substituted for backward compatibility.
-      if (-not (Test-Path $TemplatePath)) { throw "template not found: $TemplatePath" }
-      $xml = Get-Content -Path $TemplatePath -Raw
+      # 4. Load the template. For -Enforce, prefer the committed drift-checked Enforce artifact so WHAT IS TESTED
+      # IS WHAT DEPLOYS (F5); fall back to the AuditOnly template + mode-swap if the Enforce artifact is absent.
+      # The canonical STREAM 10B allow model is machine-wide (deny-by-default; NO per-user token) so no SID
+      # substitution is needed; the legacy {{HOSTED_USER_SID}} token, if present, is still resolved for back-compat.
+      $srcTemplate = $TemplatePath
+      if ($Enforce -and (Test-Path $EnforceTemplatePath)) { $srcTemplate = $EnforceTemplatePath }
+      if (-not (Test-Path $srcTemplate)) { throw "template not found: $srcTemplate" }
+      $xml = Get-Content -Path $srcTemplate -Raw
       $sid = ''
       if ($xml.Contains('{{HOSTED_USER_SID}}')) {
         $sid = (Get-LocalUser -Name $HostedUser).SID.Value
@@ -103,10 +110,16 @@ try {
         $xml = $xml.Replace('{{HOSTED_USER_SID}}', $sid)
       }
       $enforcing = $false
-      if ($Enforce) { $xml = $xml.Replace('EnforcementMode="AuditOnly"', 'EnforcementMode="Enabled"'); $enforcing = $true }
+      if ($Enforce) {
+        # If we loaded the committed Enforce artifact it is already Enabled (this replace is a harmless no-op); if
+        # we fell back to the AuditOnly template, this swaps every collection's mode to Enabled.
+        $xml = $xml.Replace('EnforcementMode="AuditOnly"', 'EnforcementMode="Enabled"')
+        $enforcing = $true
+      }
       $xml | Out-File -FilePath $AppliedPolicy -Encoding ASCII
       # 5. Apply (replace local policy). AuditOnly -> nothing blocked; Enabled -> Enforce.
       Set-AppLockerPolicy -XmlPolicy $AppliedPolicy
+      $applied = $true
       Start-Sleep -Seconds 2
       $svc1 = Svc-State
       [ordered]@{ mode='Deploy'; enforce=$enforcing; hosted_user=$HostedUser; hosted_sid=$sid; appidsvc=$svc1;
@@ -115,21 +128,40 @@ try {
     }
 
     'Rollback' {
-      # Clear the local AppLocker policy (NotConfigured everywhere) and restore AppIDSvc baseline.
-      $empty = Join-Path $env:TEMP 'guvfx-applocker-clear.xml'
-      '<AppLockerPolicy Version="1"></AppLockerPolicy>' | Out-File -FilePath $empty -Encoding ASCII
-      Set-AppLockerPolicy -XmlPolicy $empty
+      # F1: restore the ORIGINAL policy captured at first Deploy (Set-AppLockerPolicy REPLACES, no -Merge -> the
+      # effective policy returns to EXACTLY its pre-Deploy state, which may be non-empty on a host that already
+      # carried an AppLocker policy). Only if no baseline was ever captured do we clear to empty (NotConfigured).
+      if (Test-Path $BaselinePolicy) {
+        Set-AppLockerPolicy -XmlPolicy $BaselinePolicy
+        $applied = $true
+        $restoredPolicy = 'restored-baseline'
+      } else {
+        $empty = Join-Path $env:TEMP 'guvfx-applocker-clear.xml'
+        '<AppLockerPolicy Version="1"></AppLockerPolicy>' | Out-File -FilePath $empty -Encoding ASCII
+        Set-AppLockerPolicy -XmlPolicy $empty
+        $applied = $true
+        $restoredPolicy = 'cleared-empty-no-baseline'
+      }
+      # F2: restore AppIDSvc to its EXACT captured start type (Auto=2 / Manual=3 / Disabled=4), not only Manual.
       $restored = 'left-running'
       if (Test-Path $BaselineSvc) {
         $b = Get-Content $BaselineSvc -Raw
-        if ($b -match 'start=Manual') { Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\AppIDSvc' -Name Start -Value 3 -Type DWord; $restored='Manual' }
-        if ($b -match 'status=Stopped') { try { Stop-Service -Name AppIDSvc -Force } catch {}; $restored="$restored/Stopped" }
+        $startVal = 2
+        if ($b -match 'start=Manual')   { $startVal = 3 }
+        if ($b -match 'start=Disabled') { $startVal = 4 }
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\AppIDSvc' -Name Start -Value $startVal -Type DWord
+        $restored = "start=$startVal"
+        if ($b -match 'status=Stopped') { try { Stop-Service -Name AppIDSvc -Force } catch {}; $restored = "$restored/Stopped" }
       }
-      [ordered]@{ mode='Rollback'; effective=(Effective-Summary); appidsvc_restored=$restored; ok=$true } | ConvertTo-Json -Compress
+      [ordered]@{ mode='Rollback'; policy=$restoredPolicy; effective=(Effective-Summary); appidsvc_restored=$restored; ok=$true } | ConvertTo-Json -Compress
     }
   }
 }
 catch {
-  [ordered]@{ ok=$false; mode=$Mode; error=$_.Exception.Message } | ConvertTo-Json -Compress
+  # F3: if the policy was already applied before the failure (e.g. an -Enforce deploy that threw AFTER
+  # Set-AppLockerPolicy), enforcement is LIVE despite ok=false -- the operator must run -Mode Rollback.
+  $note = 'policy not applied'
+  if ($applied) { $note = 'policy WAS applied before failure - run -Mode Rollback' }
+  [ordered]@{ ok=$false; mode=$Mode; applied=$applied; error=$_.Exception.Message; note=$note } | ConvertTo-Json -Compress
   exit 1
 }

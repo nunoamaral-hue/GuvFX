@@ -1,4 +1,57 @@
-# Hosted Workspace — AppLocker Hardening (ENFORCE active)
+# Hosted Workspace — AppLocker Hardening
+
+> **Update 2026-08-12 — STREAM 10B: CANONICAL deny-by-default allow model (ADR-0042). SUPERSEDES the
+> default-allow + per-tenant-DENY posture below.** The 2026-08-10 Enforce model (next section) allowed
+> `(Everyone) %WINDIR%\*` + `%PROGRAMFILES%\*` and confined tenants with a 12-binary DENY list — which STREAM 10
+> Phase A proved leaves ~49 `%WINDIR%` LOLBIN/interpreter primitives runnable by a hosted tenant. The canonical
+> model inverts this: **deny-by-default with an explicit minimal allow-list**, generated from the single source of
+> truth `backend/hosted_workspace/applocker_policy.py::generate_base_policy` (drift-guarded in
+> `tests_applocker_policy.py`).
+>
+> - **Allow surface (Exe / Msi / Script / Dll):** Administrators `*`; system/service/virtual-account SIDs keep
+>   Windows execution; **Everyone gets ONLY** the MetaQuotes publisher (portable MT5) + a curated `%SYSTEM32%`
+>   session-infra list (Exe) + OS DLLs from `%WINDIR%` (Dll). No general-purpose interpreter, ever.
+> - **The `Dll` collection is now configured** (reversing the "intentionally NOT configured" decision recorded in
+>   the original section below), and is **publisher-based** for tenants. It is load-bearing: without it a tenant
+>   runs arbitrary **native** code via a DLL side-load (plant a sibling DLL next to a staged signed
+>   `terminal64.exe`) or an HKCU COM `InprocServer32` hijack into `sihost`/`taskhostw` — both invisible to the Exe
+>   `8003/8004` soak and both defeating ADR-0041. A `%WINDIR%\*` path allow does **not** close this (user-writable
+>   `%WINDIR%\Temp`, `System32\spool\drivers\color`, … let a planted DLL match the wildcard), so the tenant DLL
+>   surface is **Microsoft OS publisher + MetaQuotes publisher only** — a planted unsigned DLL matches neither and
+>   is denied anywhere. Service daemons (non-MS DLLs, e.g. `python311.dll`) run as the service SIDs with
+>   `%PROGRAMFILES%\*`.
+> - **Escape battery (`8004`) MUST include the DLL vectors:** (a) DLL side-load blocked (`8004` on `Dll`);
+>   (b) HKCU COM-hijack DLL load blocked; **(c) a planted DLL in a user-writable `%WINDIR%` subdir
+>   (`%WINDIR%\Temp`) blocked** — the specific re-verify HIGH. Not only cmd/powershell/explorer EXE launches. The
+>   AuditOnly Dll soak must first confirm the Microsoft publisher subject matches the host's real OS-DLL
+>   signatures (no legitimate `8003`), and enumerate the actual user-writable `%WINDIR%` subdirs on the host
+>   (`accesschk -w -u Users C:\Windows`) as the ground-truth target set for the plant tests (RULE 11).
+> - **LOAD-BEARING RESIDUAL — MQL5 `#import` (NOT closeable by AppLocker; blocks the isolation marker).** A tenant
+>   can run MetaEditor (MetaQuotes-signed), compile an MQL5 EA that `#import "kernel32.dll"`, and execute arbitrary
+>   NATIVE code inside MetaQuotes-signed `terminal64.exe` — `kernel32` is Microsoft-signed and mandatorily allowed,
+>   and AppLocker enforces at DLL-*load* not *function-call* granularity. The only control is MT5
+>   `[Experts] AllowDllImport=0`, today tenant-mutable (tenant has Modify on `common.ini`; the Options UI toggle
+>   persists there). Before `REMOTEAPP_ISOLATION_CERTIFIED`: (1) make `AllowDllImport=0` tenant-immutable (NTFS-deny
+>   tenant write to `config\common.ini`); (2) remove `metaeditor64.exe` from the tenant surface (pin the MetaQuotes
+>   Exe rule to `BinaryName=terminal64.exe`); (3) add an MQL-`#import` shellcode attempt to the `8004` battery; (4)
+>   behaviourally certify (RULE 11) that a tenant-set `AllowDllImport=1` does not persist and `#import` yields no
+>   native exec. See ADR-0042 "Load-bearing residual". This is a **separate workstream** (workspace ACL + MT5 launch
+>   config + host behavioural cert) — the AppLocker allow-model is necessary but NOT sufficient for isolation.
+> - **Rollout (staged, reversible):** CZ before-fingerprint → deploy AuditOnly → real-session soak (Exe + Dll) →
+>   validate `8003` → refine → deploy Enforce → `8004` escape battery (incl. DLL) → CZ after-fingerprint →
+>   rollback validation. Use `Set-GuvfxAppLocker.ps1 -Mode Deploy [-Enforce] -StateDir C:\GuvFX\_applocker_s10b`
+>   (dedicated state dir so the rollback baseline anchors the current live model). `-Mode Rollback` restores the
+>   exact captured baseline (no blind clear).
+> - **Residuals (documented):** `Appx` collection not configured (no non-admin sideload exploit found — a tracked
+>   soak item, not a silent gap); MetaQuotes publisher rule still `BinaryName=*`/version `*`–`*` (bounded to the
+>   unforgeable MetaQuotes corpus — pin from host signature metadata during the soak, before Enforce).
+> - **State:** repository-complete + `make check` GREEN + adversarial review closed (3 lenses); **host rollout
+>   pending**; execution remains DARK. Emits `REMOTEAPP_ISOLATION_CERTIFIED` only after Enforce + the DLL-inclusive
+>   `8004` battery pass with the CZ fingerprint preserved.
+
+---
+
+# (superseded 2026-08-12) Hosted Workspace — AppLocker Hardening (ENFORCE active)
 
 > **Update 2026-08-10 — ENFORCE enabled after a clean AuditOnly review.** The Sponsor ran a full
 > customer MT5 session under AuditOnly; the hosted user generated **29 `8002` "allowed" events and
