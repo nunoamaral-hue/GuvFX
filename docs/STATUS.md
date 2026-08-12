@@ -14,6 +14,27 @@
 
 ## Execution workstream log
 
+- **2026-08-12 — STREAM 9E — Live Hosted Workspace observation bridge + ADR-0041 trust model. 🟢 DARK, branch `feat/hosted-live-observation-bridge`, not merged/deployed.**
+  Built the live host observation bridge (backend → signed `OBSERVE_WORKSPACE` → per-account session-bound
+  observer → certified producer/manager/single-writer) that closes `WAITING_FOR_LOGIN → WORKSPACE_READY`. Two
+  adversarial reviews established a hard boundary: the observer runs AS the tenant (only context that reaches the
+  session-bound MT5 IPC), so login/IPC/`trade_allowed` are tenant-attested and forgeable **iff the tenant can
+  execute code in-session**; LocalSystem corroborates the OBJECTIVE facts (process/owner/session/runtime + a live
+  external connection) but physically **cannot** corroborate MT5 IPC state. **ADR-0041 (Sponsor-accepted)**
+  therefore defines observation as a **bounded workspace-readiness signal trusted ONLY after RemoteApp isolation
+  is behaviourally certified**, NOT an execution-authority signal (execution's order-time runtime-identity
+  validation is independent). Enforced in code by the trust anchor flag `HOSTED_REMOTEAPP_ISOLATION_CERTIFIED`
+  (default OFF, NO-FAKE-READY): `live_observe_fn` fail-closes (no observation, no advancement) unless it holds;
+  `resolve_observe_fn` requires BOTH the anchor and `HOSTED_MT5_OBSERVATION_ENABLED`. Dependency
+  `REMOTEAPP_ISOLATION_CERTIFIED → HOSTED_OBSERVATION → WORKSPACE_READY → AUTONOMOUS_ONBOARDING`. Also: LocalSystem
+  corroboration + tenant/LocalSystem agreement (a `terminal_connected` claim needs a live public endpoint — the
+  public/private classification runs in the tested backend, the PS primitive only enumerates); freshness anchored
+  on the LocalSystem `collected_at` vs the trusted clock; `OBSERVE_WORKSPACE` 120s client timeout; self-contained
+  `observer_attach.py` (parity-locked, decoupled from the legacy bridge; fixes the dead-on-arrival staging).
+  `make check` green; hosted_workspace suite green; execution DARK; Customer Zero untouched.
+  **Remaining gate:** arming observation for the live cert requires `REMOTEAPP_ISOLATION_CERTIFIED` — the
+  behavioural RemoteApp/AppLocker escape-attempt certification on the host (Sponsor/host-gated).
+
 - **2026-08-11 — Beta Readiness Stream 7C — Hosted signed-executor DAEMON built (the runnable host end). 🟢 DARK, not deployed.**
   Stream 7B's live-host cert was BLOCKED because the runnable host end of the Stream 5 signed transport had never
   been built (nothing served `/hosted/provision`; no real `run_primitive`; no nonce store / envelope-open /

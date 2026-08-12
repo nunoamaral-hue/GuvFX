@@ -71,6 +71,16 @@ class StageManifestTests(unittest.TestCase):
                      "backend/hosted_workspace/__init__.py"):
             self.assertIn(need, staged, f"{need} must be staged to the host (single source of truth)")
 
+    def test_observer_tooling_is_staged(self):
+        # STREAM 9E: the session-bound observer harness AND its self-contained guarded-attach sibling must both
+        # be in the manifest 'stage' list. Set-GuvfxObserver.ps1's load-bearing gate refuses PREPARE_OBSERVER
+        # unless both are present on the host, so dropping either manifest line is a dead-on-arrival regression
+        # (exactly the class the gate exists to catch) that must fail CI here, not only at host runtime.
+        staged = {e["src"] for e in self.manifest["stage"]}
+        for need in ("backend/terminal_provisioning/windows/run_observer.py",
+                     "backend/terminal_provisioning/windows/observer_attach.py"):
+            self.assertIn(need, staged, f"{need} must be staged to the host (observer dead-on-arrival gate)")
+
 
 class AsciiArtefactTests(unittest.TestCase):
     def test_installer_is_ascii(self):

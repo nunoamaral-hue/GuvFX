@@ -148,6 +148,16 @@ class SignedHostExecutor:
     def verify_slot(self, rdp_host=None) -> dict:
         return self._send("VERIFY_SLOT")
 
+    def observe(self, rdp_host=None) -> dict:
+        """9E READ-ONLY live observation: ask the host to trigger THIS account's session-bound observer task
+        (running as guvfx_u_<id>, guarded-attach to its already-running MT5) and return the resulting snapshot.
+        The account identity is bound server-side in the signed request (never a caller path/user/task); the
+        host derives the slot and refuses Customer Zero. Returns the sanitised, signed result dict (the
+        RawWorkspaceSnapshot fields) or a fail-closed ``{"ok": False, ...}`` on any transport/host failure.
+        This is the ONLY executor method that carries no confinement args because it supplies none — every
+        identity/path is host-derived from ``account_id``. It NEVER logs in, NEVER trades, NEVER mutates."""
+        return self._send("OBSERVE_WORKSPACE")
+
 
 # ── DARK factory ─────────────────────────────────────────────────────────────────────────────────────────
 def _default_seal_password(password_bytes, *, account_id, correlation_id, nonce):
@@ -204,7 +214,13 @@ def resolve_signed_host_executor(*, account_id, rdp_host=""):
 # host_unavailable that leaves the slot un-advanced). There is NO repost/retry loop here — exactly one POST per
 # step — so a longer wait can never re-run a materialise; it only avoids a premature client-side timeout.
 _DEFAULT_HTTP_TIMEOUT_S = 30
-_OP_HTTP_TIMEOUTS_S = {"MATERIALISE_RUNTIME": 660}   # > the host's 600s primitive timeout + margin
+# OBSERVE_WORKSPACE is served SYNCHRONOUSLY: Invoke-GuvfxObserver.ps1 triggers the session-bound observer and
+# blocks polling for its result up to -TimeoutSeconds (default 60s) plus process-enumeration + a bounded
+# network-corroboration query, so the client must wait longer than that whole host budget or a legitimately
+# slow-but-successful observation is falsely reported host_unavailable and the slot never advances (the same
+# false-negative class as MATERIALISE_RUNTIME). 120s > the host's 60s wait + margin, and < the daemon's 600s
+# primitive timeout. There is NO repost/retry here — exactly one POST per cycle — so a longer wait cannot re-run.
+_OP_HTTP_TIMEOUTS_S = {"MATERIALISE_RUNTIME": 660, "OBSERVE_WORKSPACE": 120}
 
 
 def _http_transport(base_url: str, request: dict) -> dict:

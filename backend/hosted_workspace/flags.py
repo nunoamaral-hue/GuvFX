@@ -69,6 +69,39 @@ def hosted_host_executor_enabled() -> bool:
     return _flag("HOSTED_HOST_EXECUTOR_ENABLED")
 
 
+def hosted_remoteapp_isolation_certified() -> bool:
+    """STREAM 9E trust-model prerequisite (ADR-0041) — asserts that the host's RemoteApp / AppLocker isolation
+    has been BEHAVIOURALLY certified, i.e. a hosted tenant CANNOT execute arbitrary code inside its own session.
+
+    This is the ROOT trust anchor for Hosted Workspace observation, not a convenience toggle. The observer runs
+    AS the tenant (the only context that can reach the session-bound MT5 IPC), so the login / IPC / trade_allowed
+    facts it reports are only as trustworthy as the tenant. LocalSystem corroborates the OBJECTIVE host facts
+    (process/owner/session/runtime/connectivity) but physically CANNOT corroborate MT5 IPC state. Therefore an
+    observation is trustworthy ONLY when the tenant cannot forge the handoff — which is exactly what RemoteApp
+    isolation guarantees. The certification dependency is: REMOTEAPP_ISOLATION_CERTIFIED -> HOSTED_OBSERVATION
+    -> WORKSPACE_READY -> AUTONOMOUS_ONBOARDING. DEFAULT OFF.
+
+    NO-FAKE-READY: this flag must be set ONLY after the behavioural escape-attempt certification actually passed
+    on the target host. Setting it without that certification re-opens the forgeable-handoff residual (a
+    code-executing tenant advancing its OWN account's readiness display). Execution integrity is NOT affected
+    either way — the certified order-time runtime-identity validation (Execution Engine) is independent."""
+    return _flag("HOSTED_REMOTEAPP_ISOLATION_CERTIFIED")
+
+
+def hosted_mt5_observation_enabled() -> bool:
+    """STREAM 9E — the gate that ARMS the live host observation transport: the real backend↔host read-only
+    ``OBSERVE_WORKSPACE`` channel that triggers the per-account session-bound observer and feeds its snapshot
+    through the certified producer→consumer→state-machine chain. DEFAULT OFF. Observation is CAPABILITY ONLY:
+    this flag NEVER arms execution, NEVER provisions a slot, NEVER opens onboarding, and NEVER changes broker
+    state — it only lets ``run_hosted_observations`` obtain a REAL snapshot instead of the dark placeholder.
+    Even on, the transport still requires the configured signed executor (``hosted_host_executor_enabled`` +
+    keyring/base_url), so this flag alone contacts no host (fail closed). Kept independent of every other gate.
+
+    TRUST-MODEL PREREQUISITE (ADR-0041): a live observation is only TRUSTED — and the driver only produces one —
+    when ``hosted_remoteapp_isolation_certified()`` also holds. See ``live_observe.live_observe_fn``."""
+    return _flag("HOSTED_MT5_OBSERVATION_ENABLED")
+
+
 def hosted_workspace_onboarding_enabled() -> bool:
     """ADR-0034 Onboarding — the SUBSYSTEM-LEVEL gate for the customer-facing Hosted Workspace onboarding /
     provisioning journey (request → provision-intent → node bind → observe → discover → confirm → ready →
