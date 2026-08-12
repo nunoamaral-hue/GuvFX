@@ -91,12 +91,17 @@ try {
         $l = Get-WinEvent -ListLog $ch -ErrorAction SilentlyContinue
         if ($l -and -not $l.IsEnabled) { & wevtutil.exe sl "$ch" /e:true | Out-Null }
       }
-      # 4. Resolve hosted user SID and substitute into the template.
-      $sid = (Get-LocalUser -Name $HostedUser).SID.Value
-      if ([string]::IsNullOrWhiteSpace($sid)) { throw "could not resolve SID for $HostedUser" }
+      # 4. Load the template. The canonical STREAM 10B allow model is machine-wide (deny-by-default; NO per-user
+      # token) so no SID substitution is needed. The legacy template's {{HOSTED_USER_SID}} token, if present, is
+      # still resolved + substituted for backward compatibility.
       if (-not (Test-Path $TemplatePath)) { throw "template not found: $TemplatePath" }
       $xml = Get-Content -Path $TemplatePath -Raw
-      $xml = $xml.Replace('{{HOSTED_USER_SID}}', $sid)
+      $sid = ''
+      if ($xml.Contains('{{HOSTED_USER_SID}}')) {
+        $sid = (Get-LocalUser -Name $HostedUser).SID.Value
+        if ([string]::IsNullOrWhiteSpace($sid)) { throw "could not resolve SID for $HostedUser" }
+        $xml = $xml.Replace('{{HOSTED_USER_SID}}', $sid)
+      }
       $enforcing = $false
       if ($Enforce) { $xml = $xml.Replace('EnforcementMode="AuditOnly"', 'EnforcementMode="Enabled"'); $enforcing = $true }
       $xml | Out-File -FilePath $AppliedPolicy -Encoding ASCII
