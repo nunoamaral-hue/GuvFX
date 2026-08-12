@@ -177,9 +177,12 @@ def _fake_workspace(*, state="WAITING_FOR_LOGIN", login="1302575", server="IS6Te
                            execution_node=SimpleNamespace(rdp_host=rdp_host))
 
 
-def _corr(*, account_id=18, network_active=True, collected_at=1_000_000.0, **over):
+def _corr(*, account_id=18, network_active=True, collected_at=1_000_000.0, remote_endpoints=None, **over):
     """A VALID LocalSystem corroboration block matching the server-derived identity of ``account_id`` (18 ->
-    guvfx_u_18, C:\\GuvFX\\accounts\\18). Override any field to build the fail-closed cases."""
+    guvfx_u_18, C:\\GuvFX\\accounts\\18). LocalSystem enumerates raw ``remote_endpoints``; the backend classifies
+    them into network_active. ``network_active=True`` -> one public endpoint; False -> none. Override any field."""
+    if remote_endpoints is None:
+        remote_endpoints = ["203.0.113.5"] if network_active else []
     d = {
         "account_id": account_id,
         "process_present": True,
@@ -187,8 +190,7 @@ def _corr(*, account_id=18, network_active=True, collected_at=1_000_000.0, **ove
         "owner_user": f"guvfx_u_{account_id}",
         "session_id": 2,
         "runtime_root": rf"C:\GuvFX\accounts\{account_id}",
-        "network_active": network_active,
-        "remote_endpoint_count": 1 if network_active else 0,
+        "remote_endpoints": remote_endpoints,
         "collected_at": collected_at,
     }
     d.update(over)
@@ -284,9 +286,21 @@ class CorroborationAgreementTests(TestCase):
         self.assertIsNone(self._build(_connected_result(corr=_corr(collected_at=None))))
 
     def test_forged_connected_without_network_is_none(self):
-        # THE core hardening: a tenant claims terminal_connected=true, but LocalSystem saw NO live external
-        # connection for that terminal -> disagreement -> no advancement (a forged 'connected' cannot pass).
+        # THE core hardening: a tenant claims terminal_connected=true, but LocalSystem enumerated NO endpoint for
+        # that terminal -> disagreement -> no advancement (a forged 'connected' cannot pass).
         self.assertIsNone(self._build(_connected_result(corr=_corr(network_active=False))))
+
+    def test_connected_with_only_private_endpoints_is_none(self):
+        # LocalSystem enumerated endpoints, but ALL are loopback/private (no genuine external link). The backend
+        # classifier decides network_active=false -> a tenant terminal_connected claim is refused.
+        r = _connected_result(corr=_corr(remote_endpoints=["127.0.0.1", "10.0.0.5", "192.168.1.9"]))
+        self.assertIsNone(self._build(r))
+
+    def test_connected_with_a_public_endpoint_advances(self):
+        # A genuine external link (a public remote endpoint) satisfies the agreement -> the observation is built.
+        obs = self._build(_connected_result(corr=_corr(remote_endpoints=["10.0.0.5", "203.0.113.20"])))
+        self.assertIsNotNone(obs)
+        self.assertTrue(obs.connected)
 
     def test_not_connected_with_valid_corroboration_builds_waiting_observation(self):
         # A genuine 'still logging in' observation: tenant not connected, corroboration valid (no network yet).
@@ -451,13 +465,13 @@ class InvokeObserverGuardTests(TestCase):
     def test_localsystem_corroboration_present(self):
         s = self._script()
         self.assertIn("corroboration", s)
-        self.assertIn("Get-ExternalConnectionCount", s)      # independent live-connection evidence
-        self.assertIn("network_active", s)
+        self.assertIn("Get-TerminalRemoteEndpoints", s)      # LocalSystem ENUMERATES endpoints (raw)
+        self.assertIn("remote_endpoints", s)
         self.assertIn("collected_at", s)
-        self.assertIn("Test-PublicIp", s)
-        # private / loopback / CGNAT ranges are excluded so only a genuine external link counts
-        for marker in ('"127."', '"10."', '"192.168."', r"100\.(6"):
-            self.assertIn(marker, s)
+        # The public/private CLASSIFICATION must NOT live in the .ps1 - it moved to the tested backend classifier
+        # (live_observe._is_public_ip), so a PowerShell edit can never silently change the load-bearing decision.
+        self.assertNotIn("Test-PublicIp", s)
+        self.assertNotIn("network_active", s)
 
     def test_netstat_fallback_parses_the_correct_fields(self):
         # RULE 11 (field-index regression guard): the netstat fallback must read STATE from column 4 and PID
@@ -469,52 +483,28 @@ class InvokeObserverGuardTests(TestCase):
         self.assertIn("$remote = $parts[2]", s)              # column 3 = REMOTE address (not local)
 
 
-# ── Network public-IP classification: RULE 11 positive + negative control ─────────────────────────────────
-# The PowerShell classifier (Test-PublicIp) is load-bearing: network_active is the sole agreement conjunct for a
-# tenant `terminal_connected` claim. PowerShell cannot execute in this CI (no pwsh), and the real classifier is
-# validated host-side by the daemon ParseFile gate + host certification. To satisfy RULE 11 off-host, this is a
-# faithful Python SPEC of the classification contract with explicit positive AND negative controls; a companion
-# static assertion ties each reserved range in the spec back to the .ps1 source so the two cannot silently drift.
-def _public_ip_spec(addr: str) -> bool:
-    """Test-only mirror of Invoke-GuvfxObserver.ps1 `Test-PublicIp`: True ONLY for a routable public remote
-    address. Kept deliberately in lock-step with the .ps1 (see test_spec_matches_ps_source)."""
-    if not addr:
-        return False
-    a = addr.strip()
-    if a in ("", "0.0.0.0", "::", "::1"):
-        return False
-    if a.startswith(("127.", "10.", "192.168.", "169.254.", "fe80", "fc", "fd")):
-        return False
-    import re
-    if re.match(r"^172\.(1[6-9]|2[0-9]|3[0-1])\.", a):        # 172.16.0.0/12
-        return False
-    if re.match(r"^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.", a):   # 100.64.0.0/10 CGNAT/Tailscale
-        return False
-    return True
-
-
-class NetworkClassificationSpecTests(TestCase):
-    def test_positive_control_public_ips_count(self):
-        # A genuine broker/public endpoint MUST classify as external (else a connected workspace would stall).
+# ── Network public-IP classification: RULE 11 positive + negative control on the REAL classifier ──────────
+# network_active is the sole LocalSystem agreement conjunct for a tenant `terminal_connected` claim. The
+# classification was deliberately moved OUT of PowerShell (which cannot run in CI) INTO the backend
+# (live_observe._is_public_ip), so these positive/negative controls exercise the ACTUAL production code path
+# that gates the agreement - not a mirror. The LocalSystem primitive only ENUMERATES raw endpoints.
+class NetworkClassificationTests(TestCase):
+    def test_positive_control_public_ips(self):
+        # A genuine broker/public endpoint MUST classify as public (else a connected workspace would stall).
         for ip in ("203.0.113.7", "8.8.8.8", "172.32.0.1", "172.15.0.1", "100.63.0.1", "100.128.0.1",
                    "2606:4700:4700::1111"):
-            self.assertTrue(_public_ip_spec(ip), ip)
+            self.assertTrue(live_observe._is_public_ip(ip), ip)
 
-    def test_negative_control_reserved_ips_do_not_count(self):
-        # Loopback / RFC1918 / link-local / CGNAT/Tailscale / IPv6 loopback+ULA MUST NOT count as external.
+    def test_negative_control_reserved_ips(self):
+        # Loopback / RFC1918 / link-local / CGNAT/Tailscale / IPv6 loopback+ULA / junk MUST NOT be public.
         for ip in ("127.0.0.1", "10.1.2.3", "192.168.1.5", "169.254.10.10", "172.16.0.1", "172.31.255.254",
-                   "100.64.0.1", "100.127.255.254", "::1", "::", "0.0.0.0", "fe80::1", "fc00::1", "fd12::1", ""):
-            self.assertFalse(_public_ip_spec(ip), ip)
+                   "100.64.0.1", "100.127.255.254", "::1", "::", "0.0.0.0", "fe80::1", "fc00::1", "fd12::1",
+                   "", None):
+            self.assertFalse(live_observe._is_public_ip(ip), ip)
 
-    def test_spec_matches_ps_source(self):
-        # Anti-divergence: every reserved prefix/range the spec rejects must be enforced in the real .ps1.
-        import hosted_workspace
-        import os
-        base = os.path.join(os.path.dirname(os.path.dirname(hosted_workspace.__file__)),
-                            "terminal_provisioning", "windows", "Invoke-GuvfxObserver.ps1")
-        with open(base, "r", encoding="ascii") as fh:
-            s = fh.read()
-        for token in ('"127."', '"10."', '"192.168."', '"169.254."', '"0.0.0.0"', '"::1"', '"::"',
-                      '"fe80"', '"fc"', '"fd"', r"^172\.(1[6-9]|2[0-9]|3[0-1])\.",
-                      r"^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\."):
-            self.assertIn(token, s, token)
+    def test_network_active_requires_a_public_endpoint(self):
+        self.assertTrue(live_observe._network_active({"remote_endpoints": ["10.0.0.1", "203.0.113.9"]}))
+        self.assertFalse(live_observe._network_active({"remote_endpoints": ["10.0.0.1", "192.168.1.2"]}))  # private only
+        self.assertFalse(live_observe._network_active({"remote_endpoints": []}))
+        self.assertFalse(live_observe._network_active({}))                                # missing key
+        self.assertFalse(live_observe._network_active({"remote_endpoints": "203.0.113.9"}))  # not a list

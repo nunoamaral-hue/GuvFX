@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 
 from hosted_workspace.flags import (
     hosted_mt5_observation_enabled,
@@ -112,6 +113,41 @@ def _norm_path(v):
     if s is None:
         return None
     return s.replace("/", "\\").rstrip("\\").lower()
+
+
+# The LOAD-BEARING public-vs-private classifier for network corroboration. It runs HERE (backend Python, tested
+# with RULE 11 positive AND negative controls on this real code path) rather than in PowerShell, so the
+# LocalSystem primitive only ENUMERATES the terminal's established remote endpoints and cannot silently drift a
+# classification the whole `connected` agreement hinges on.
+_PRIVATE_IP_PREFIXES = ("127.", "10.", "192.168.", "169.254.", "fe80", "fc", "fd")
+_RE_172_PRIVATE = re.compile(r"^172\.(1[6-9]|2[0-9]|3[0-1])\.")            # 172.16.0.0/12
+_RE_100_CGNAT = re.compile(r"^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.")  # 100.64.0.0/10 CGNAT/Tailscale
+
+
+def _is_public_ip(addr) -> bool:
+    """True ONLY for a routable PUBLIC remote address (a genuine external / broker-ward endpoint). Loopback,
+    RFC1918, link-local, CGNAT/Tailscale and IPv6 loopback/ULA are NOT public. Fail-closed: anything unparseable
+    is not public."""
+    s = _str_or_none(addr)
+    if s is None:
+        return False
+    a = s.strip()
+    if a in ("", "0.0.0.0", "::", "::1"):
+        return False
+    if a.startswith(_PRIVATE_IP_PREFIXES):
+        return False
+    if _RE_172_PRIVATE.match(a) or _RE_100_CGNAT.match(a):
+        return False
+    return True
+
+
+def _network_active(corr) -> bool:
+    """A live external connection is corroborated iff LocalSystem enumerated at least one PUBLIC remote endpoint
+    for the terminal PID. Fail-closed: a missing / non-list / empty / private-only endpoint set is not active."""
+    eps = corr.get("remote_endpoints") if isinstance(corr, dict) else None
+    if not isinstance(eps, (list, tuple)):
+        return False
+    return any(_is_public_ip(e) for e in eps)
 
 
 def _account_of(workspace):
@@ -178,10 +214,11 @@ def build_observation_from_host(workspace, result, *, now=None):
         return None
 
     # (3) Agreement: a tenant-attested ``terminal_connected`` is trusted ONLY if LocalSystem independently
-    # observed a live external network connection for that exact terminal process. A tenant that forges
-    # ``connected`` without a real connection is refused here (fail closed -> no advancement).
+    # enumerated a live external (public) connection for that exact terminal process. The public/private decision
+    # is made HERE (tested), from the LocalSystem-enumerated ``remote_endpoints``. A tenant that forges
+    # ``connected`` without a real external link is refused here (fail closed -> no advancement).
     tenant_connected = _is_true(result.get("terminal_connected"))
-    if tenant_connected and not _is_true(corr.get("network_active")):
+    if tenant_connected and not _network_active(corr):
         return None
 
     server = getattr(acct, "broker_server", None)
