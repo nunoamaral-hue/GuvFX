@@ -1,5 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ STREAM 9E — Live observation bridge + ADR-0041 trust model (DARK, branch, not merged) (2026-08-12)
+The live Hosted Workspace observation bridge is repository-complete on `feat/hosted-live-observation-bridge`
+(backend `OBSERVE_WORKSPACE` → session-bound observer → certified chain). **ADR-0041** (Sponsor-accepted):
+observation is a bounded readiness signal trusted ONLY after RemoteApp isolation is behaviourally certified,
+enforced by the fail-closed anchor `HOSTED_REMOTEAPP_ISOLATION_CERTIFIED` (default OFF). LocalSystem corroboration
+(process/owner/session/runtime + enumerated remote endpoints; public/private classified in the tested backend)
+is kept as defence-in-depth; execution integrity is independent (order-time runtime-identity validation). Two
+adversarial reviews + a final confirmatory pass; `make check` green; DARK; Customer Zero untouched.
+**Bounded next action (Sponsor/host-gated):** the observation certification is now blocked on its stated
+prerequisite — **`REMOTEAPP_ISOLATION_CERTIFIED`**, i.e. the behavioural RemoteApp/AppLocker escape-attempt
+certification on the host (incl. the documented `%WINDIR%` LOLBIN residuals). Once that is certified and the
+anchor set, drive workspace 5 / account 18 (demo 1302575 @ IS6Technologies-Demo) through the normal scheduler to
+`WORKSPACE_READY` and emit `AUTONOMOUS_ONBOARDING_CERTIFIED` + `FIRST_UNASSISTED_USER_CERTIFIED`.
+
 ## ▶ Beta Readiness Stream 7C — Hosted signed-executor DAEMON built (DARK, not deployed) (2026-08-11)
 The runnable host end of the Stream 5 signed transport now exists under `deploy/hosted-executor/` (ADR-0039):
 an authenticated `/hosted/provision` listener → `dispatch`, a real `run_primitive` (reviewed-`.ps1` allow-list +
