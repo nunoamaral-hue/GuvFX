@@ -86,6 +86,12 @@ CONTRACT = {
     "prepare_observer": PrimitiveSpec(
         script="Set-GuvfxObserver.ps1",
         argmap={"username": "-Username", "runtime_root": "-RuntimeRoot"}, fixed={"-Mode": "Ensure"}),
+    # 9E: trigger the account's session-bound observer task once + return its snapshot (read-only). The .ps1
+    # derives the task/output path from -AccountId + -Username; no caller path/task/output is ever accepted.
+    "observe_workspace": PrimitiveSpec(
+        script="Invoke-GuvfxObserver.ps1",
+        argmap={"username": "-Username", "runtime_root": "-RuntimeRoot", "terminal_root": "-TerminalRoot"},
+        inject_account_id=True),
     "applocker_tenant_merge": PrimitiveSpec(
         script="Set-GuvfxAppLockerTenant.ps1",
         argmap={"username": "-HostedUser", "account_id": "-AccountId"}, fixed={"-Mode": "Merge"}),

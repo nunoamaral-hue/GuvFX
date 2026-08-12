@@ -68,6 +68,7 @@ OP_PRIMITIVES = {
     "ENSURE_REMOTEAPP":         {"primitive": "ensure_remoteapp",         "params_allow": ()},
     "REMOVE_REMOTEAPP":         {"primitive": "remove_remoteapp",         "params_allow": ()},
     "PREPARE_OBSERVER":         {"primitive": "prepare_observer",         "params_allow": ()},
+    "OBSERVE_WORKSPACE":        {"primitive": "observe_workspace",        "params_allow": ()},
     "APPLY_APPLOCKER_AUDIT":    {"primitive": "applocker_tenant_merge",   "params_allow": ()},
     "REMOVE_APPLOCKER_TENANT":  {"primitive": "applocker_tenant_remove",  "params_allow": ()},
     "VERIFY_SLOT":              {"primitive": "verify_slot",              "params_allow": ()},
@@ -192,7 +193,7 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
         return {"username": slot["username"]}
     if op == "ENSURE_SINGLE_SESSION":
         return {}
-    return base                                                     # MATERIALISE / PREPARE_OBSERVER / VERIFY_SLOT
+    return base                                     # MATERIALISE / PREPARE_OBSERVER / OBSERVE_WORKSPACE / VERIFY_SLOT
 
 
 _SECRET_KEYS = {"password", "pw", "secret", "payload"}

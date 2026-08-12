@@ -148,6 +148,16 @@ class SignedHostExecutor:
     def verify_slot(self, rdp_host=None) -> dict:
         return self._send("VERIFY_SLOT")
 
+    def observe(self, rdp_host=None) -> dict:
+        """9E READ-ONLY live observation: ask the host to trigger THIS account's session-bound observer task
+        (running as guvfx_u_<id>, guarded-attach to its already-running MT5) and return the resulting snapshot.
+        The account identity is bound server-side in the signed request (never a caller path/user/task); the
+        host derives the slot and refuses Customer Zero. Returns the sanitised, signed result dict (the
+        RawWorkspaceSnapshot fields) or a fail-closed ``{"ok": False, ...}`` on any transport/host failure.
+        This is the ONLY executor method that carries no confinement args because it supplies none — every
+        identity/path is host-derived from ``account_id``. It NEVER logs in, NEVER trades, NEVER mutates."""
+        return self._send("OBSERVE_WORKSPACE")
+
 
 # ── DARK factory ─────────────────────────────────────────────────────────────────────────────────────────
 def _default_seal_password(password_bytes, *, account_id, correlation_id, nonce):

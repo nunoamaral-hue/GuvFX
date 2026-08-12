@@ -40,6 +40,7 @@ HOSTED_OPERATIONS = (
     "ENSURE_REMOTEAPP",          # publish/verify the per-account RemoteApp alias (guvfx_mt5_<id>) /portable
     "REMOVE_REMOTEAPP",          # tenant rollback: remove ONLY this account's RemoteApp alias
     "PREPARE_OBSERVER",          # register the read-only session-bound observer task
+    "OBSERVE_WORKSPACE",         # 9E: trigger the account's session-bound observer once + return its snapshot (RO)
     "APPLY_APPLOCKER_AUDIT",     # AppLocker AuditOnly TENANT MERGE for this identity (additive; NEVER -Enforce)
     "REMOVE_APPLOCKER_TENANT",   # tenant rollback: remove ONLY this account's AppLocker deny contribution
     "VERIFY_SLOT",               # read-only re-verification of the whole slot

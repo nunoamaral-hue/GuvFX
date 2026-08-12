@@ -34,7 +34,16 @@ def _dark_observe_fn(_workspace):
 
 
 def resolve_observe_fn():
-    """Return the observe_fn the cycle will use. Pluggable seam (see module docstring)."""
+    """Return the observe_fn the cycle will use (pluggable seam). STREAM 9E: when ``HOSTED_MT5_OBSERVATION_
+    ENABLED`` is on, the REAL live host observe transport (``live_observe.live_observe_fn`` — signed
+    ``OBSERVE_WORKSPACE`` → session-bound observer → certified producer); otherwise the fail-closed dark
+    placeholder (no host bridge, ingests nothing). The live fn is itself fail-closed on the same flag + the
+    separately-gated signed executor, so this stays DARK unless BOTH the observation flag and the host-executor
+    are armed and configured."""
+    from hosted_workspace.flags import hosted_mt5_observation_enabled
+    if hosted_mt5_observation_enabled():
+        from hosted_workspace.live_observe import live_observe_fn
+        return live_observe_fn
     return _dark_observe_fn
 
 

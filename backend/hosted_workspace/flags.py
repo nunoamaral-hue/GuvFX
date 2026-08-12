@@ -69,6 +69,17 @@ def hosted_host_executor_enabled() -> bool:
     return _flag("HOSTED_HOST_EXECUTOR_ENABLED")
 
 
+def hosted_mt5_observation_enabled() -> bool:
+    """STREAM 9E — the gate that ARMS the live host observation transport: the real backend↔host read-only
+    ``OBSERVE_WORKSPACE`` channel that triggers the per-account session-bound observer and feeds its snapshot
+    through the certified producer→consumer→state-machine chain. DEFAULT OFF. Observation is CAPABILITY ONLY:
+    this flag NEVER arms execution, NEVER provisions a slot, NEVER opens onboarding, and NEVER changes broker
+    state — it only lets ``run_hosted_observations`` obtain a REAL snapshot instead of the dark placeholder.
+    Even on, the transport still requires the configured signed executor (``hosted_host_executor_enabled`` +
+    keyring/base_url), so this flag alone contacts no host (fail closed). Kept independent of every other gate."""
+    return _flag("HOSTED_MT5_OBSERVATION_ENABLED")
+
+
 def hosted_workspace_onboarding_enabled() -> bool:
     """ADR-0034 Onboarding — the SUBSYSTEM-LEVEL gate for the customer-facing Hosted Workspace onboarding /
     provisioning journey (request → provision-intent → node bind → observe → discover → confirm → ready →

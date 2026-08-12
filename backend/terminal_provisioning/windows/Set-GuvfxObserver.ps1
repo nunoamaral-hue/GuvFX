@@ -22,7 +22,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $ACCOUNTS_BASE = "C:\GuvFX\accounts"
-$result = [ordered]@{ username=$Username; task=""; observer_dir=$ObserverDir; acl_ok=$false; task_present=$false; ok=$false; reason="" }
+$result = [ordered]@{ username=$Username; task=""; observer_dir=$ObserverDir; tooling_present=$false; result_dir_ok=$false; acl_ok=$false; task_present=$false; ok=$false; reason="" }
 
 function Fail([string]$why) { $result.ok=$false; $result.reason=$why; $result | ConvertTo-Json -Compress; exit 1 }
 
@@ -44,25 +44,38 @@ try {
   }
 
   if (-not (Test-Path -LiteralPath $ObserverDir)) { Fail "observer tooling dir absent - stage the reviewed observer first" }
+  # 9E LOAD-BEARING GATE: the reviewed observer harness itself MUST be present. This is the exact defect the
+  # first beta run hit - the task was registered pointing at a run_observer.py that was never staged, so
+  # PREPARE_OBSERVER must NEVER report success (or register a task) when the tooling is missing.
+  $obsPy = Join-Path $ObserverDir "run_observer.py"
+  $result.tooling_present = [bool](Test-Path -LiteralPath $obsPy -PathType Leaf)
+  if (-not $result.tooling_present) { Fail "observer harness run_observer.py absent - staging incomplete" }
+  $acctId = ($Username -replace '^guvfx_u_','')
+  $resultDir = Join-Path $full "_obs"
 
   if ($Mode -eq "Ensure") {
     # Grant ONLY ReadAndExecute to the identity on the observer tooling (never write). Additive icacls; the dir
     # is admin-owned and outside every slot tree, so the identity cannot modify the observer.
     & icacls $ObserverDir /grant ("{0}:(OI)(CI)RX" -f $Username) | Out-Null
+    # The per-account result dir (inside the tenant runtime) must exist and be WRITABLE by guvfx_u_<id> (the
+    # observer writes its snapshot there; the LocalSystem trigger reads it). It is confined to the tenant tree.
+    if (-not (Test-Path -LiteralPath $resultDir)) { New-Item -ItemType Directory -Path $resultDir -Force | Out-Null }
+    & icacls $resultDir /grant ("{0}:(OI)(CI)M" -f $Username) | Out-Null
     if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
-      $obsPy = Join-Path $ObserverDir "run_observer.py"
-      $action = New-ScheduledTaskAction -Execute "py" -Argument ('"{0}" --account {1}' -f $obsPy, ($Username -replace '^guvfx_u_',''))
+      $action = New-ScheduledTaskAction -Execute "py" -Argument ('"{0}" --account {1}' -f $obsPy, $acctId)
       $principal = New-ScheduledTaskPrincipal -UserId $Username -LogonType Interactive -RunLevel Limited
       $settings = New-ScheduledTaskSettings -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
       Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
     }
   }
 
-  # Verify: identity has RX on the observer dir + the on-demand task exists (exactly one).
+  # Verify: harness present + identity has RX on the observer dir + writable result dir + the on-demand task
+  # exists (exactly one). Any gap fails closed - PREPARE_OBSERVER cannot report success on partial staging.
   $rules = (Get-Acl -Path $ObserverDir).Access | Where-Object { $_.IdentityReference -like "*$Username" -and $_.FileSystemRights -match "ReadAndExecute|Read" }
   $result.acl_ok = [bool]$rules
+  $result.result_dir_ok = [bool](Test-Path -LiteralPath $resultDir -PathType Container)
   $result.task_present = [bool](Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)
-  if (-not ($result.acl_ok -and $result.task_present)) { Fail "observer preparation incomplete" }
+  if (-not ($result.tooling_present -and $result.acl_ok -and $result.result_dir_ok -and $result.task_present)) { Fail "observer preparation incomplete" }
   $result.ok = $true
   $result | ConvertTo-Json -Compress
 }

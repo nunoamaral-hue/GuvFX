@@ -6,6 +6,7 @@
     "lib_dir": "C:\\GuvFX\\hosted\\executor\\lib",
     "hosted_workspace_dir": "C:\\GuvFX\\hosted\\executor\\lib\\hosted_workspace",
     "scripts_dir": "C:\\GuvFX\\hosted\\scripts",
+    "observer_dir": "C:\\GuvFX\\observer",
     "winsw_dir": "C:\\GuvFX\\hosted\\executor-winsw",
     "state_dir": "C:\\GuvFX\\hosted\\executor-state"
   },
@@ -20,7 +21,8 @@
     { "src": "deploy/hosted-executor/lib/broker_cred_envelope.py", "dest": "lib_dir" },
     { "src": "backend/hosted_workspace/__init__.py",            "dest": "hosted_workspace_dir" },
     { "src": "backend/hosted_workspace/host_protocol.py",       "dest": "hosted_workspace_dir" },
-    { "src": "backend/hosted_workspace/host_agent_dispatch.py", "dest": "hosted_workspace_dir" }
+    { "src": "backend/hosted_workspace/host_agent_dispatch.py", "dest": "hosted_workspace_dir" },
+    { "src": "backend/terminal_provisioning/windows/run_observer.py", "dest": "observer_dir" }
   ],
   "scripts_from": "backend/terminal_provisioning/windows",
   "scripts": [
@@ -32,6 +34,7 @@
     "Set-GuvfxSingleSession.ps1",
     "Set-GuvfxRemoteApp.ps1",
     "Set-GuvfxObserver.ps1",
+    "Invoke-GuvfxObserver.ps1",
     "Set-GuvfxAppLockerTenant.ps1"
   ]
 }
