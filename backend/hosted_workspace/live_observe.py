@@ -36,13 +36,26 @@ genuinely fresh, corroborated, connected + matched + trade-allowed workspace can
 The expected identity (login/server) is read from the WORKSPACE's own ``trading_account`` (server-owned) and
 fed to the certified producer - NEVER taken from the host result - so a compromised/rogue host reply can never
 assert its own identity and force ``account_match`` (the producer compares observed-vs-expected).
+
+TRUST MODEL (ADR-0041). LocalSystem corroboration proves the OBJECTIVE host facts a tenant cannot forge
+(process/owner/session/runtime + a live external connection), but it CANNOT independently prove the MT5 IPC
+facts (login/server, attach/IPC, trade_allowed) - those exist only inside the tenant session, which is why the
+observer runs there. The tenant-written handoff is therefore forgeable IFF the tenant can execute arbitrary
+code in its own session. Accordingly, a Hosted Workspace observation is DEFINED as a BOUNDED workspace-readiness
+signal that is trusted ONLY after RemoteApp isolation has been behaviourally certified
+(``hosted_remoteapp_isolation_certified``, enforced in ``live_observe_fn``). It is NOT an execution-authority
+signal: execution has its own independent runtime-identity validation, so even if RemoteApp isolation were
+broken, observation integrity would break but EXECUTION integrity would not.
 """
 from __future__ import annotations
 
 import logging
 import math
 
-from hosted_workspace.flags import hosted_mt5_observation_enabled
+from hosted_workspace.flags import (
+    hosted_mt5_observation_enabled,
+    hosted_remoteapp_isolation_certified,
+)
 from hosted_workspace.producer import (
     DEFAULT_CLOCK_TOLERANCE_SECONDS,
     RawWorkspaceSnapshot,
@@ -212,9 +225,20 @@ def _node_rdp_host(workspace) -> str:
 
 
 def live_observe_fn(workspace):
-    """The production ``observe_fn``: ``workspace -> WorkspaceObservation | None``. Fail-closed. Gated on
-    ``HOSTED_MT5_OBSERVATION_ENABLED``; the signed executor is separately gated (host-executor flag + keyring/
-    base_url), so with the observation flag on but the executor unconfigured this still contacts no host."""
+    """The production ``observe_fn``: ``workspace -> WorkspaceObservation | None``. Fail-closed.
+
+    TRUST-MODEL PREREQUISITE (ADR-0041): a live observation is produced ONLY when RemoteApp isolation has been
+    behaviourally certified (``hosted_remoteapp_isolation_certified``). The observer runs inside the tenant
+    session, so its MT5 IPC facts (login/ipc/trade_allowed) are trustworthy ONLY if the tenant cannot execute
+    arbitrary code there. Without that certification this returns ``None`` (no observation ingested, no
+    advancement) - the observation channel stays DARK. This is the code enforcement of the dependency
+    REMOTEAPP_ISOLATION_CERTIFIED -> HOSTED_OBSERVATION -> WORKSPACE_READY. Execution is unaffected either way:
+    its runtime-identity validation is independent of observation.
+
+    Also gated on ``HOSTED_MT5_OBSERVATION_ENABLED``; the signed executor is separately gated (host-executor
+    flag + keyring/base_url), so with the flags on but the executor unconfigured this still contacts no host."""
+    if not hosted_remoteapp_isolation_certified():
+        return None   # trust anchor absent -> observation is not trustworthy -> produce nothing (fail closed)
     if not hosted_mt5_observation_enabled():
         return None
     if str(getattr(workspace, "canonical_state", "") or "") not in _OBSERVABLE_STATES:

@@ -34,14 +34,18 @@ def _dark_observe_fn(_workspace):
 
 
 def resolve_observe_fn():
-    """Return the observe_fn the cycle will use (pluggable seam). STREAM 9E: when ``HOSTED_MT5_OBSERVATION_
-    ENABLED`` is on, the REAL live host observe transport (``live_observe.live_observe_fn`` — signed
-    ``OBSERVE_WORKSPACE`` → session-bound observer → certified producer); otherwise the fail-closed dark
-    placeholder (no host bridge, ingests nothing). The live fn is itself fail-closed on the same flag + the
-    separately-gated signed executor, so this stays DARK unless BOTH the observation flag and the host-executor
-    are armed and configured."""
-    from hosted_workspace.flags import hosted_mt5_observation_enabled
-    if hosted_mt5_observation_enabled():
+    """Return the observe_fn the cycle will use (pluggable seam). STREAM 9E: the REAL live host observe transport
+    (``live_observe.live_observe_fn`` — signed ``OBSERVE_WORKSPACE`` → session-bound observer → certified
+    producer) is selected ONLY when BOTH the trust anchor ``HOSTED_REMOTEAPP_ISOLATION_CERTIFIED`` (ADR-0041:
+    observation is trustworthy only when a tenant cannot forge the handoff) AND ``HOSTED_MT5_OBSERVATION_ENABLED``
+    are on; otherwise the fail-closed dark placeholder (no host bridge, ingests nothing). ``live_observe_fn`` is
+    itself fail-closed on the SAME two gates + the separately-gated signed executor, so the darkness holds even
+    if this resolver were bypassed."""
+    from hosted_workspace.flags import (
+        hosted_mt5_observation_enabled,
+        hosted_remoteapp_isolation_certified,
+    )
+    if hosted_remoteapp_isolation_certified() and hosted_mt5_observation_enabled():
         from hosted_workspace.live_observe import live_observe_fn
         return live_observe_fn
     return _dark_observe_fn

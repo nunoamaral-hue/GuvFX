@@ -327,6 +327,7 @@ class FreshnessExecutionReadyTests(TestCase):
         self.assertFalse(obs.fresh)
 
 
+@override_settings(HOSTED_REMOTEAPP_ISOLATION_CERTIFIED="1")   # ADR-0041 trust anchor present for these cases
 class LiveObserveFnGatingTests(TestCase):
     class _Executor:
         def __init__(self, result):
@@ -337,6 +338,14 @@ class LiveObserveFnGatingTests(TestCase):
     @override_settings(HOSTED_MT5_OBSERVATION_ENABLED="0")
     def test_flag_off_returns_none(self):
         self.assertIsNone(live_observe.live_observe_fn(_fake_workspace()))
+
+    @override_settings(HOSTED_MT5_OBSERVATION_ENABLED="1", HOSTED_REMOTEAPP_ISOLATION_CERTIFIED="0")
+    def test_uncertified_isolation_returns_none_even_when_armed(self):
+        # ADR-0041 trust anchor: with the observation flag ON and a valid, fresh, corroborated snapshot
+        # available, an observation is STILL not produced while RemoteApp isolation is uncertified -> the
+        # channel stays DARK and nothing advances. This is the code enforcement of the certification dependency.
+        obs = self._run_with_executor(_connected_result(collected_at=time.time()))
+        self.assertIsNone(obs)
 
     @override_settings(HOSTED_MT5_OBSERVATION_ENABLED="1")
     def test_ineligible_state_short_circuits_no_host_contact(self):
@@ -392,10 +401,16 @@ class ResolverTests(TestCase):
         from hosted_workspace.management.commands.run_hosted_observations import _dark_observe_fn, resolve_observe_fn
         self.assertIs(resolve_observe_fn(), _dark_observe_fn)
 
-    @override_settings(HOSTED_MT5_OBSERVATION_ENABLED="1")
-    def test_resolver_live_when_flag_on(self):
+    @override_settings(HOSTED_MT5_OBSERVATION_ENABLED="1", HOSTED_REMOTEAPP_ISOLATION_CERTIFIED="1")
+    def test_resolver_live_when_both_gates_on(self):
         from hosted_workspace.management.commands.run_hosted_observations import resolve_observe_fn
         self.assertIs(resolve_observe_fn(), live_observe.live_observe_fn)
+
+    @override_settings(HOSTED_MT5_OBSERVATION_ENABLED="1", HOSTED_REMOTEAPP_ISOLATION_CERTIFIED="0")
+    def test_resolver_dark_when_isolation_uncertified(self):
+        # ADR-0041 trust anchor is required even with observation armed -> dark until RemoteApp isolation certified.
+        from hosted_workspace.management.commands.run_hosted_observations import _dark_observe_fn, resolve_observe_fn
+        self.assertIs(resolve_observe_fn(), _dark_observe_fn)
 
 
 # ── LocalSystem orchestrator guards (Invoke-GuvfxObserver.ps1) ────────────────────────────────────────────
@@ -443,3 +458,63 @@ class InvokeObserverGuardTests(TestCase):
         # private / loopback / CGNAT ranges are excluded so only a genuine external link counts
         for marker in ('"127."', '"10."', '"192.168."', r"100\.(6"):
             self.assertIn(marker, s)
+
+    def test_netstat_fallback_parses_the_correct_fields(self):
+        # RULE 11 (field-index regression guard): the netstat fallback must read STATE from column 4 and PID
+        # from column 5, and only count ESTABLISHED connections. A silent index shift (e.g. reading the LOCAL
+        # address, or the wrong PID) would weaken the corroboration; assert the exact indices are present.
+        s = self._script()
+        self.assertIn('$parts[3] -ne "ESTABLISHED"', s)      # column 4 = connection state
+        self.assertIn("[int]$parts[4] -ne $procId", s)       # column 5 = owning PID
+        self.assertIn("$remote = $parts[2]", s)              # column 3 = REMOTE address (not local)
+
+
+# ── Network public-IP classification: RULE 11 positive + negative control ─────────────────────────────────
+# The PowerShell classifier (Test-PublicIp) is load-bearing: network_active is the sole agreement conjunct for a
+# tenant `terminal_connected` claim. PowerShell cannot execute in this CI (no pwsh), and the real classifier is
+# validated host-side by the daemon ParseFile gate + host certification. To satisfy RULE 11 off-host, this is a
+# faithful Python SPEC of the classification contract with explicit positive AND negative controls; a companion
+# static assertion ties each reserved range in the spec back to the .ps1 source so the two cannot silently drift.
+def _public_ip_spec(addr: str) -> bool:
+    """Test-only mirror of Invoke-GuvfxObserver.ps1 `Test-PublicIp`: True ONLY for a routable public remote
+    address. Kept deliberately in lock-step with the .ps1 (see test_spec_matches_ps_source)."""
+    if not addr:
+        return False
+    a = addr.strip()
+    if a in ("", "0.0.0.0", "::", "::1"):
+        return False
+    if a.startswith(("127.", "10.", "192.168.", "169.254.", "fe80", "fc", "fd")):
+        return False
+    import re
+    if re.match(r"^172\.(1[6-9]|2[0-9]|3[0-1])\.", a):        # 172.16.0.0/12
+        return False
+    if re.match(r"^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.", a):   # 100.64.0.0/10 CGNAT/Tailscale
+        return False
+    return True
+
+
+class NetworkClassificationSpecTests(TestCase):
+    def test_positive_control_public_ips_count(self):
+        # A genuine broker/public endpoint MUST classify as external (else a connected workspace would stall).
+        for ip in ("203.0.113.7", "8.8.8.8", "172.32.0.1", "172.15.0.1", "100.63.0.1", "100.128.0.1",
+                   "2606:4700:4700::1111"):
+            self.assertTrue(_public_ip_spec(ip), ip)
+
+    def test_negative_control_reserved_ips_do_not_count(self):
+        # Loopback / RFC1918 / link-local / CGNAT/Tailscale / IPv6 loopback+ULA MUST NOT count as external.
+        for ip in ("127.0.0.1", "10.1.2.3", "192.168.1.5", "169.254.10.10", "172.16.0.1", "172.31.255.254",
+                   "100.64.0.1", "100.127.255.254", "::1", "::", "0.0.0.0", "fe80::1", "fc00::1", "fd12::1", ""):
+            self.assertFalse(_public_ip_spec(ip), ip)
+
+    def test_spec_matches_ps_source(self):
+        # Anti-divergence: every reserved prefix/range the spec rejects must be enforced in the real .ps1.
+        import hosted_workspace
+        import os
+        base = os.path.join(os.path.dirname(os.path.dirname(hosted_workspace.__file__)),
+                            "terminal_provisioning", "windows", "Invoke-GuvfxObserver.ps1")
+        with open(base, "r", encoding="ascii") as fh:
+            s = fh.read()
+        for token in ('"127."', '"10."', '"192.168."', '"169.254."', '"0.0.0.0"', '"::1"', '"::"',
+                      '"fe80"', '"fc"', '"fd"', r"^172\.(1[6-9]|2[0-9]|3[0-1])\.",
+                      r"^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\."):
+            self.assertIn(token, s, token)
