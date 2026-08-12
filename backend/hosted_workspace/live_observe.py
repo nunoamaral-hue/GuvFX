@@ -119,19 +119,24 @@ def _norm_path(v):
 # with RULE 11 positive AND negative controls on this real code path) rather than in PowerShell, so the
 # LocalSystem primitive only ENUMERATES the terminal's established remote endpoints and cannot silently drift a
 # classification the whole `connected` agreement hinges on.
-_PRIVATE_IP_PREFIXES = ("127.", "10.", "192.168.", "169.254.", "fe80", "fc", "fd")
+# IPv6 link-local is fe80::/10 (first hextet fe80-febf); ULA is fc00::/7 (fc/fd). IPv4 private/loopback/link-local
+# by prefix; 172.16/12 and 100.64/10 (CGNAT/Tailscale) by bounded regex.
+_PRIVATE_IP_PREFIXES = ("127.", "10.", "192.168.", "169.254.", "fe8", "fe9", "fea", "feb", "fc", "fd")
 _RE_172_PRIVATE = re.compile(r"^172\.(1[6-9]|2[0-9]|3[0-1])\.")            # 172.16.0.0/12
 _RE_100_CGNAT = re.compile(r"^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.")  # 100.64.0.0/10 CGNAT/Tailscale
 
 
 def _is_public_ip(addr) -> bool:
     """True ONLY for a routable PUBLIC remote address (a genuine external / broker-ward endpoint). Loopback,
-    RFC1918, link-local, CGNAT/Tailscale and IPv6 loopback/ULA are NOT public. Fail-closed: anything unparseable
-    is not public."""
+    RFC1918, link-local, CGNAT/Tailscale and IPv6 loopback/link-local/ULA are NOT public. Fail-closed: anything
+    unparseable is not public. Case-insensitive; an IPv4-mapped IPv6 (``::ffff:a.b.c.d``) is classified by its
+    embedded IPv4 so a mapped private address is not mistaken for public."""
     s = _str_or_none(addr)
     if s is None:
         return False
-    a = s.strip()
+    a = s.strip().lower()
+    if a.startswith("::ffff:"):
+        a = a[len("::ffff:"):]                 # IPv4-mapped IPv6 -> classify the embedded IPv4
     if a in ("", "0.0.0.0", "::", "::1"):
         return False
     if a.startswith(_PRIVATE_IP_PREFIXES):

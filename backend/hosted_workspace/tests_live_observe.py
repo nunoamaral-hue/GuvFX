@@ -499,8 +499,14 @@ class NetworkClassificationTests(TestCase):
         # Loopback / RFC1918 / link-local / CGNAT/Tailscale / IPv6 loopback+ULA / junk MUST NOT be public.
         for ip in ("127.0.0.1", "10.1.2.3", "192.168.1.5", "169.254.10.10", "172.16.0.1", "172.31.255.254",
                    "100.64.0.1", "100.127.255.254", "::1", "::", "0.0.0.0", "fe80::1", "fc00::1", "fd12::1",
+                   # full fe80::/10 link-local range, case-insensitive, and IPv4-mapped private:
+                   "fe90::1", "feab::1", "FE80::1", "FC00::1", "::ffff:10.0.0.1", "::ffff:192.168.1.1",
                    "", None):
             self.assertFalse(live_observe._is_public_ip(ip), ip)
+
+    def test_ipv4_mapped_public_is_public(self):
+        # An IPv4-mapped IPv6 wrapping a PUBLIC v4 address is still public (classified by the embedded v4).
+        self.assertTrue(live_observe._is_public_ip("::ffff:203.0.113.7"))
 
     def test_network_active_requires_a_public_endpoint(self):
         self.assertTrue(live_observe._network_active({"remote_endpoints": ["10.0.0.1", "203.0.113.9"]}))
