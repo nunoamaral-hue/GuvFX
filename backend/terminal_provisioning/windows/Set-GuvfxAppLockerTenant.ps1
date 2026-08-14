@@ -7,21 +7,31 @@
   (the '4d54' 3rd group marks a GuvFX tenant rule; the 1st group is the account id). This exactly mirrors
   hosted_workspace.applocker_policy (the authoritative Python model + tests).
 
-    -Mode Merge  : Set-AppLockerPolicy -Merge with N's fragment -> ADDS N's denies; touches no other rule.
-    -Mode Remove : get the effective policy, strip ONLY N's tenant rules, re-apply -> removes N's contribution
-                   without wiping the machine policy or any other tenant. REFUSES Customer Zero (account 1).
+    -Mode Merge   : Set-AppLockerPolicy -Merge with N's LEGACY shell-deny fragment -> ADDS N's denies; touches no
+                    other rule.
+    -Mode MergeWx : STREAM 10D / ADR-0043 W^X. Set-AppLockerPolicy -Merge with N's BACKEND-PRODUCED W^X fragment
+                    (a single Exe Deny(*) whose exceptions are the exec-allow surface). This script builds NO XML
+                    for W^X - it applies the exact fragment emitted by hosted_workspace.applocker_policy
+                    .tenant_wx_deny_fragment (the tested single source of truth), after validating it is one Exe
+                    Deny bound to THIS account's tenant SID + rule id. Deny-over-Allow then makes a copied signed
+                    terminal64 unrunnable from any writable location. Mirrors the NTFS applier Set-GuvfxWorkspaceAclV2.
+    -Mode Remove  : get the effective policy, strip ONLY N's tenant rules, re-apply -> removes N's contribution
+                    (legacy OR W^X - both carry the '4d54' account-tagged id) without wiping the machine policy or
+                    any other tenant. REFUSES Customer Zero (account 1).
 
   Never replaces the whole policy, never removes Customer Zero or another account's rules, never resets
-  TSAppAllowList. ASCII-only (RULE 9). Emits a single compact JSON object.
+  TSAppAllowList. ASCII-only (RULE 9); ParseFile()-validate before first host execution. Emits a compact JSON object.
 
   Usage:
-    powershell -NoProfile -File Set-GuvfxAppLockerTenant.ps1 -Mode Merge  -AccountId 14 -HostedUser guvfx_u_14
-    powershell -NoProfile -File Set-GuvfxAppLockerTenant.ps1 -Mode Remove -AccountId 14 -HostedUser guvfx_u_14
+    powershell -NoProfile -File Set-GuvfxAppLockerTenant.ps1 -Mode Merge   -AccountId 14 -HostedUser guvfx_u_14
+    powershell -NoProfile -File Set-GuvfxAppLockerTenant.ps1 -Mode MergeWx -AccountId 14 -HostedUser guvfx_u_14 -FragmentPath C:\GuvFX\accounts\14\audit\wx.xml
+    powershell -NoProfile -File Set-GuvfxAppLockerTenant.ps1 -Mode Remove  -AccountId 14 -HostedUser guvfx_u_14
 #>
 param(
-  [Parameter(Mandatory=$true)][ValidateSet("Merge","Remove")][string]$Mode,
+  [Parameter(Mandatory=$true)][ValidateSet("Merge","MergeWx","Remove")][string]$Mode,
   [Parameter(Mandatory=$true)][int]$AccountId,
-  [Parameter(Mandatory=$true)][string]$HostedUser
+  [Parameter(Mandatory=$true)][string]$HostedUser,
+  [string]$FragmentPath
 )
 $ErrorActionPreference = "Stop"
 $MARKER = "4d54"
@@ -54,6 +64,45 @@ try {
     $pol.Save($tmp)
     Set-AppLockerPolicy -XmlPolicy $tmp
     $result.removed = $removed; $result.ok = $true; $result.reason = "removed"
+    $result | ConvertTo-Json -Compress; return
+  }
+
+  if ($Mode -eq "MergeWx") {
+    # Apply the BACKEND-PRODUCED W^X fragment. This script builds NO XML for W^X; it validates and merges the
+    # exact fragment tenant_wx_deny_fragment emitted (single source of truth), so NTFS and AppLocker cannot drift.
+    if (-not ($FragmentPath -and (Test-Path -LiteralPath $FragmentPath))) { Fail "wx_fragment_absent" }
+    $sid = (Get-LocalUser -Name $HostedUser).SID.Value
+    if ([string]::IsNullOrWhiteSpace($sid)) { Fail "could not resolve SID for $HostedUser" }
+    if ($sid -eq "S-1-1-0" -or $sid -eq "S-1-5-32-544") { Fail "refusing: shared principal SID" }
+    [xml]$frag = Get-Content -LiteralPath $FragmentPath -Raw
+    # Exactly one Exe RuleCollection carrying exactly one rule of ANY type: the tenant W^X Deny. Enumerate ALL
+    # element children (not just FilePathRule) so a smuggled FilePublisherRule/FileHashRule Allow cannot slip in.
+    $colls = @($frag.AppLockerPolicy.RuleCollection)
+    if ($colls.Count -ne 1 -or $colls[0].Type -ne "Exe") { Fail "wx_fragment_not_single_exe_collection" }
+    $ruleNodes = @($colls[0].ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element })
+    if ($ruleNodes.Count -ne 1) { Fail "wx_fragment_not_single_rule" }
+    $deny = $ruleNodes[0]
+    if ($deny.LocalName -ne "FilePathRule" -or $deny.Action -ne "Deny") { Fail "wx_fragment_not_single_deny" }
+    if ($deny.UserOrGroupSid -ne $sid) { Fail "wx_fragment_sid_mismatch" }
+    if (-not (IsTenantRule $deny.Id $AccountId)) { Fail "wx_fragment_not_tenant_rule" }
+    # The Deny MUST be Deny(*) (deny ALL execution) ...
+    $denyPaths = @($deny.Conditions.FilePathCondition | ForEach-Object { $_.Path })
+    if ($denyPaths.Count -ne 1 -or $denyPaths[0] -ne "*") { Fail "wx_fragment_deny_not_deny_all" }
+    # ... and it MUST carry exceptions (the exec-allow surface). A Deny(*) with NO exceptions denies terminal64
+    # itself (a fail-closed outage); an exception of "*" would allow EVERYTHING (a fail-open). The EXACT exception
+    # set is validated at PRODUCE time by hosted_workspace.applocker_policy.assert_wx_deny_invariants (the trusted
+    # single source); the applier enforces the safety ENVELOPE here: non-empty, and no catastrophic "*" exception.
+    $exc = @($deny.Exceptions.FilePathCondition | ForEach-Object { $_.Path })
+    if ($exc.Count -lt 1) { Fail "wx_fragment_no_exceptions" }
+    if ($exc -contains "*") { Fail "wx_fragment_wildcard_exception" }
+    Set-AppLockerPolicy -Merge -XmlPolicy $FragmentPath
+    [xml]$eff = (Get-AppLockerPolicy -Effective -Xml)
+    $present = 0
+    foreach ($coll in @($eff.AppLockerPolicy.RuleCollection)) {
+      foreach ($rule in @($coll.ChildNodes)) { if ($rule.Id -and (IsTenantRule $rule.Id $AccountId)) { $present++ } }
+    }
+    if ($present -lt 1) { Fail "read-back did not confirm the W^X fragment merged" }
+    $result.merged = $present; $result.ok = $true; $result.reason = "merged_wx"
     $result | ConvertTo-Json -Compress; return
   }
 

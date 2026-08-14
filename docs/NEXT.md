@@ -1,5 +1,22 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ STREAM 10D — Hosted Workspace W^X native-code elimination / G5v2 (ADR-0043, DARK) (2026-08-12)
+Closes the ADR-0042 "load-bearing residual" (MQL5 `#import` native code inside signed `terminal64.exe`) + the
+portable-copy vector V5. Canonical invariant **TENANT-WRITABLE ⇒ NON-EXECUTABLE**. Repository FOUNDATION landed
+DARK behind `HOSTED_WX_ISOLATION_ENABLED` (default OFF): the pure testable brain — `applocker_policy` W^X
+(**positive execution allowlist**: a per-tenant-SID `Deny(*)` excepting only the RX `terminal64` + approved
+`%SYSTEM32%` session binaries, so a copied signed `terminal64` runs from nowhere — location-irrelevant; MetaEditor
+`BinaryName` pin) + `workspace_acl` **G5v2** inverted ACL (v1 kept untouched; foreign-principal-checked) + 83
+focused tests — plus host primitives `Set-GuvfxWorkspaceAclV2.ps1` and `Test-GuvfxGoldenMql.ps1`
+(ASCII/RULE-9) + ADR-0043.
+**Bounded next actions (repository, within the stream):** (1) wire `slot_preparation` to route to G5v2 + emit the
+per-tenant W^X deny fragment when the flag is on; (2) wire `Test-GuvfxGoldenMql` into the `install_pool`
+Test-GoldenImage gate. **Then the host behavioural cert (Sponsor/host-gated):** CZ before-fingerprint → apply
+G5v2 to a disposable tenant → normal-MT5 validation → W^X escape battery (portable-copy, MetaEditor, `common.ini`
+mutation, `#import`, writable EXE/DLL/Script, restart persistence) → rollback → CZ after → only then emit
+`REMOTEAPP_ISOLATION_CERTIFIED`.
+
+
 ## ▶ STREAM 9E — Live observation bridge + ADR-0041 trust model (DARK, branch, not merged) (2026-08-12)
 The live Hosted Workspace observation bridge is repository-complete on `feat/hosted-live-observation-bridge`
 (backend `OBSERVE_WORKSPACE` → session-bound observer → certified chain). **ADR-0041** (Sponsor-accepted):

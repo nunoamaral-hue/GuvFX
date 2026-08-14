@@ -26,7 +26,27 @@
 >   AuditOnly Dll soak must first confirm the Microsoft publisher subject matches the host's real OS-DLL
 >   signatures (no legitimate `8003`), and enumerate the actual user-writable `%WINDIR%` subdirs on the host
 >   (`accesschk -w -u Users C:\Windows`) as the ground-truth target set for the plant tests (RULE 11).
-> - **LOAD-BEARING RESIDUAL — MQL5 `#import` (NOT closeable by AppLocker; blocks the isolation marker).** A tenant
+> - **UPDATE 2026-08-12 — the MQL5 `#import` residual is being CLOSED by STREAM 10D / ADR-0043 (the W^X model):**
+>   G5v2 inverted ACL (root Read+Execute, Modify only on data subdirs, `common.ini`+code-dirs tenant Deny-write) +
+>   per-tenant AppLocker **positive execution allowlist** (a tenant-SID `Deny(*)` whose exceptions are exactly the
+>   RX `terminal64` + approved `%SYSTEM32%` session binaries — so a copied signed `terminal64` runs from *nowhere*,
+>   location-irrelevant) + MetaEditor `BinaryName` pin + vetted-empty golden. Repo foundation DARK behind
+>   `HOSTED_WX_ISOLATION_ENABLED`; `REMOTEAPP_ISOLATION_CERTIFIED` still WITHHELD pending the on-host W^X escape
+>   battery. See `docs/architecture/ADR-0043-HOSTED-WX-NATIVE-CODE-ELIMINATION.md`.
+>   - **RULE 5 — keep the layers distinct.** The **G5v2 ACL + per-tenant W^X `Deny(*)`** are the per-slot,
+>     provisioning half and ARE gated by `HOSTED_WX_ISOLATION_ENABLED`. The **MetaEditor `BinaryName` pin** is NOT
+>     gated by that flag — it ships in the **machine-wide BASE templates** (`generate_base_policy` +
+>     `guvfx-hosted-{auditonly,enforce}.xml`) as an ADR-0042-lineage deny-tightening (it only denies
+>     `metaeditor64`, opens nothing), so a base redeploy applies it independent of the flag. **RULE-11 pre-Enforce
+>     control:** an **Enabled**-mode base redeploy must first prove on-host that `terminal64.exe`'s embedded
+>     signature `BinaryName` equals the pinned literal (else it would deny `terminal64` itself and take MT5 down for
+>     every tenant incl. Customer Zero); until proven, exercise the pin in **AuditOnly only**.
+>   - **Application wiring (the W^X `Deny` is not inert):** `applocker_policy.compile_effective_wx_policy` composes
+>     `base + per-tenant Deny(*)` from the canonical source, and `Set-GuvfxAppLockerTenant.ps1 -Mode MergeWx`
+>     applies the backend-produced fragment host-side (validated to a single Exe `Deny` bound to the tenant SID).
+>     End-to-end application from `slot_preparation` is DARK behind the flag + host-executor seam, same as the NTFS
+>     G5v2 plan.
+> - **LOAD-BEARING RESIDUAL — MQL5 `#import` (NOT closeable by AppLocker alone; blocks the isolation marker).** A tenant
 >   can run MetaEditor (MetaQuotes-signed), compile an MQL5 EA that `#import "kernel32.dll"`, and execute arbitrary
 >   NATIVE code inside MetaQuotes-signed `terminal64.exe` — `kernel32` is Microsoft-signed and mandatorily allowed,
 >   and AppLocker enforces at DLL-*load* not *function-call* granularity. The only control is MT5

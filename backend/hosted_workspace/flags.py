@@ -118,3 +118,29 @@ def hosted_mt5_execution_enabled() -> bool:
     ``execution_enabled`` arm (condition 4): the master flag may be on for observation while execution stays
     dark. Never authorises an order by itself; the live order-time bridge gate remains authoritative."""
     return _flag("HOSTED_MT5_EXECUTION_ENABLED")
+
+
+def hosted_wx_isolation_enabled() -> bool:
+    """STREAM 10D (ADR-0043) — the gate for the PER-TENANT, SLOT-PROVISIONING half of the Hosted Workspace W^X
+    (write-xor-execute) native-code-elimination model: the G5v2 inverted ACL (root Read+Execute; Modify only on
+    the enumerated data subdirs; common.ini + code dirs tenant-deny-write) + the per-tenant AppLocker execute-Deny
+    fragments (the positive Deny(*)-with-exec-allowlist). DEFAULT OFF. It is the repository gate for the canonical
+    invariant ``TENANT-WRITABLE => NON-EXECUTABLE`` / ``TENANT-EXECUTABLE => NON-WRITABLE``; while off,
+    slot_preparation uses the certified G5v1 ACL and composes no per-tenant W^X denies (per-tenant behaviour
+    unchanged). It NEVER arms execution, NEVER performs a broker login, and NEVER contacts a host on its own (the
+    host-executor seam stays None -> fail closed). DISTINCT from every execution/observation gate.
+
+    NOT gated by this flag (deliberately): the MetaEditor ``BinaryName`` pin lives in the MACHINE-WIDE BASE allow
+    model (``applocker_policy.generate_base_policy`` + the committed ``guvfx-hosted-{auditonly,enforce}.xml``
+    templates), because it is a deny-by-default TIGHTENING consistent with ADR-0042 (it only DENIES metaeditor64
+    and every non-terminal64 MetaQuotes tool — it opens nothing). It therefore ships whenever the base policy is
+    (re)deployed via ``Set-GuvfxAppLocker.ps1``, independent of this flag. RULE-11 pre-Enforce control: an
+    Enabled-mode base redeploy must first prove on-host that terminal64.exe's EMBEDDED signature BinaryName equals
+    the pinned literal (a mismatch would deny terminal64 itself); until then the pin is exercised in AuditOnly only.
+    See ADR-0043 + docs/operations/hosted-workspace/APPLOCKER_HARDENING.md.
+
+    NO-FAKE-READY: turning this on tightens isolation, but ``HOSTED_REMOTEAPP_ISOLATION_CERTIFIED`` stays a
+    SEPARATE behavioural marker that may be emitted ONLY after the on-host W^X escape battery (portable-copy,
+    MetaEditor, common.ini mutation, #import, writable EXE/DLL/Script, signed-DLL COM-hijack, restart persistence)
+    passes on a disposable hosted tenant with Customer Zero preserved (ADR-0043)."""
+    return _flag("HOSTED_WX_ISOLATION_ENABLED")

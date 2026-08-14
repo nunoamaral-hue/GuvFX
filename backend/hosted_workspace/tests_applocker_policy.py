@@ -409,6 +409,205 @@ class AllowModelTests(SimpleTestCase):
                 A.assert_allow_model_invariants(self._inject_exe_allow(A.EVERYONE_SID, rf"%SYSTEM32%\{lolbin}"))
 
 
+class WxIsolationTests(SimpleTestCase):
+    """STREAM 10D — the W^X (write-xor-execute) native-code-elimination guards (ADR-0043). TENANT-WRITABLE =>
+    NON-EXECUTABLE; TENANT-EXECUTABLE => NON-WRITABLE."""
+
+    SID = "S-1-5-21-11-22-33-1099"
+
+    def test_metaeditor_denied_via_exe_binaryname_pin(self):
+        exe = [c for c in ET.fromstring(A.generate_base_policy()).findall("RuleCollection")
+               if c.get("Type") == "Exe"][0]
+        mq = [r for r in exe if r.tag == "FilePublisherRule"]
+        self.assertTrue(mq)
+        for r in mq:
+            for c in r.findall("Conditions/FilePublisherCondition"):
+                self.assertNotEqual(c.get("BinaryName"), "*", "Exe MetaQuotes rule must be BinaryName-pinned")
+                self.assertIn(c.get("BinaryName").upper(), {b.upper() for b in A.HOSTED_METAQUOTES_EXE_BINARIES})
+
+    def test_unpinned_metaquotes_exe_publisher_is_caught(self):
+        root = ET.fromstring(A.generate_base_policy())
+        exe = [c for c in root.findall("RuleCollection") if c.get("Type") == "Exe"][0]
+        bad = ET.SubElement(exe, "FilePublisherRule", {"Id": "dead0000-0000-a11e-0000-00000000097f",
+                            "Name": "unpinned", "Action": "Allow", "UserOrGroupSid": A.EVERYONE_SID})
+        pc = ET.SubElement(ET.SubElement(bad, "Conditions"), "FilePublisherCondition",
+                           {"PublisherName": A.METAQUOTES_PUBLISHER_NAME, "ProductName": "*", "BinaryName": "*"})
+        ET.SubElement(pc, "BinaryVersionRange", {"LowSection": "*", "HighSection": "*"})
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "metaquotes_exe_not_binaryname_pinned"):
+            A.assert_allow_model_invariants(ET.tostring(root, encoding="unicode"))
+
+    def test_wx_fragment_is_single_exe_deny_all_with_exec_allowlist_exceptions(self):
+        frag = A.tenant_wx_deny_fragment(7, self.SID)
+        self.assertTrue(A.assert_wx_deny_invariants(frag, 7, self.SID))
+        root = ET.fromstring(frag)
+        colls = root.findall("RuleCollection")
+        self.assertEqual([c.get("Type") for c in colls], ["Exe"])   # Exe only (Dll/Script closed by the base)
+        rule = list(colls[0])[0]
+        self.assertEqual(rule.get("Action"), "Deny")
+        self.assertEqual([c.get("Path") for c in rule.findall("Conditions/FilePathCondition")], ["*"])
+        exc = {c.get("Path").upper() for c in rule.findall("Exceptions/FilePathCondition")}
+        self.assertEqual(exc, {p.upper() for p in A.hosted_tenant_exec_allowlist(7)})
+
+    def test_wx_exec_allowlist_is_terminal64_plus_session_binaries(self):
+        al = [p.upper() for p in A.hosted_tenant_exec_allowlist(7)]
+        self.assertIn(r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\TERMINAL64.EXE", al)
+        for b in A.HOSTED_SESSION_ALLOW:
+            self.assertIn(f"%SYSTEM32%\\{b.upper()}", al)
+        self.assertNotIn(r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\METAEDITOR64.EXE", al)   # MetaEditor not runnable
+
+    def test_wx_extra_exception_is_caught(self):
+        root = ET.fromstring(A.tenant_wx_deny_fragment(7, self.SID))
+        rule = list([c for c in root.findall("RuleCollection")][0])[0]
+        ET.SubElement(rule.find("Exceptions"), "FilePathCondition", {"Path": r"%OSDRIVE%\Users\Public\*"})
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_exceptions_mismatch"):
+            A.assert_wx_deny_invariants(ET.tostring(root, encoding="unicode"), 7, self.SID)
+
+    def test_wx_missing_exception_is_caught(self):
+        root = ET.fromstring(A.tenant_wx_deny_fragment(7, self.SID))
+        exc = list([c for c in root.findall("RuleCollection")][0])[0].find("Exceptions")
+        exc.remove(list(exc)[0])
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_exceptions_mismatch"):
+            A.assert_wx_deny_invariants(ET.tostring(root, encoding="unicode"), 7, self.SID)
+
+    def _exec_denied(self, account, sid, target):
+        # Model AppLocker Deny(*)-with-exceptions: a path is DENIED unless it matches an exception (location-agnostic).
+        import fnmatch
+        rule = list([c for c in ET.fromstring(A.tenant_wx_deny_fragment(account, sid)).findall("RuleCollection")][0])[0]
+        exc = [c.get("Path").upper() for c in rule.findall("Exceptions/FilePathCondition")]
+        return not any(fnmatch.fnmatch(target.upper(), e) for e in exc)
+
+    def test_copied_terminal64_denied_from_any_location_legit_allowed(self):
+        rx = r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\TERMINAL64.EXE"
+        for loc in (r"%OSDRIVE%\USERS\PUBLIC\DOCUMENTS\TERMINAL64.EXE",   # the review's Public gap
+                    r"%OSDRIVE%\PROGRAMDATA\Z\TERMINAL64.EXE",            # ProgramData gap
+                    r"%OSDRIVE%\USERS\GUVFX_U_7.HOST\TERMINAL64.EXE",     # suffixed RDS profile
+                    r"D:\ANYWHERE\TERMINAL64.EXE",                        # another drive
+                    r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\CONFIG\TERMINAL64.EXE"):  # a writable subdir
+            self.assertTrue(self._exec_denied(7, self.SID, loc), loc)
+        self.assertFalse(self._exec_denied(7, self.SID, rx))              # legit RX terminal64 runs
+        self.assertFalse(self._exec_denied(7, self.SID, r"%SYSTEM32%\RDPSHELL.EXE"))   # session binary runs
+
+    def test_wx_no_writable_executable_intersection(self):
+        self.assertTrue(A.assert_wx_no_writable_executable_intersection(7))
+
+    def test_wx_per_tenant_sid_and_account_isolation(self):
+        f7 = A.tenant_wx_deny_fragment(7, "S-1-5-21-11-22-33-1007")
+        f9 = A.tenant_wx_deny_fragment(9, "S-1-5-21-11-22-33-1009")
+        self.assertEqual(A.tenant_account_ids(f7), {7})
+        self.assertEqual(A.tenant_account_ids(f9), {9})
+        ids7 = {r.get("Id") for c in ET.fromstring(f7).findall("RuleCollection") for r in c}
+        ids9 = {r.get("Id") for c in ET.fromstring(f9).findall("RuleCollection") for r in c}
+        self.assertFalse(ids7 & ids9)                    # no rule-id collision across accounts
+        self.assertIn(r"ACCOUNTS\7\TERMINAL", " ".join(A.hosted_tenant_exec_allowlist(7)).upper())  # 7's own path
+
+    def test_wx_deny_refuses_shared_principal(self):
+        for shared in ("S-1-1-0", "S-1-5-32-545", "S-1-5-32-544", "S-1-5-18"):
+            with self.assertRaises(A.AppLockerPolicyError):
+                A.tenant_wx_deny_fragment(7, shared)
+
+    def test_wx_single_list_couples_ntfs_and_applocker(self):
+        # Decision 2: ONE canonical constant drives BOTH NTFS (workspace_acl) and AppLocker. Same object identity.
+        from hosted_workspace import workspace_acl as W
+        self.assertIs(W.HOSTED_WRITABLE_SUBDIRS, A.HOSTED_WRITABLE_SUBDIRS)
+        self.assertIs(W.HOSTED_CODE_SUBDIRS, A.HOSTED_CODE_SUBDIRS)
+
+    def test_wx_fragment_grants_nothing(self):
+        root = ET.fromstring(A.tenant_wx_deny_fragment(7, self.SID))
+        self.assertFalse([r for c in root.findall("RuleCollection") for r in c if r.get("Action") == "Allow"])
+
+    def test_golden_mql_gate_default_matches_canonical_code_subdirs(self):
+        # Test-GuvfxGoldenMql.ps1's default -CodeSubdirs must equal HOSTED_CODE_SUBDIRS (the golden #import scanner
+        # must cover EVERY code dir the ACL locks — esp. MQL5\Include where .mqh headers live). Drift fails CI.
+        import json as _json
+        import re as _re
+        ps = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                          "terminal_provisioning", "windows", "Test-GuvfxGoldenMql.ps1")
+        txt = open(ps).read()
+        m = _re.search(r"\$CodeSubdirs\s*=\s*'(\[.*?\])'", txt)
+        self.assertIsNotNone(m, "could not find the -CodeSubdirs default in Test-GuvfxGoldenMql.ps1")
+        # The captured group is valid JSON already (\\ escapes one backslash); json.loads collapses it.
+        default = {p.lower() for p in _json.loads(m.group(1))}
+        self.assertEqual(default, {c.lower() for c in A.HOSTED_CODE_SUBDIRS})
+
+    # ── STREAM 10D review fix — the W^X Deny(*) must be COMPOSED into an effective policy, not inert ──────────
+    def _effective_deny_exceptions(self, eff_xml, account):
+        """The exception paths of the per-tenant W^X Deny(*) as it sits in a COMPOSED effective policy (proves the
+        composer actually placed the load-bearing rule — not just that the standalone fragment is well-formed)."""
+        root = ET.fromstring(eff_xml)
+        denies = [r for c in root.findall("RuleCollection") if c.get("Type") == "Exe"
+                  for r in c if (r.get("Action") or "").lower() == "deny" and A._is_tenant_rule(r.get("Id", ""), account)]
+        self.assertEqual(len(denies), 1, "composed effective policy must carry exactly one W^X Deny for the tenant")
+        self.assertEqual([c.get("Path") for c in denies[0].findall("Conditions/FilePathCondition")], ["*"])
+        return {c.get("Path").upper() for c in denies[0].findall("Exceptions/FilePathCondition")}
+
+    def test_wx_effective_policy_composes_and_denies_copied_terminal64(self):
+        # The V3/V5 closure is only real if the W^X Deny(*) enters an EFFECTIVE policy. Prove the composer does it:
+        # a copied SIGNED terminal64 (which would match the base MetaQuotes publisher Allow) is denied everywhere.
+        import fnmatch
+        base = A.generate_base_policy("Enabled")
+        eff = A.compile_effective_wx_policy(base, [(7, self.SID)])
+        exc = self._effective_deny_exceptions(eff, 7)
+        denied = lambda t: not any(fnmatch.fnmatch(t.upper(), e) for e in exc)
+        # the base MetaQuotes Exe publisher Allow is still present (so ABSENT the Deny, the copy WOULD run)
+        base_pubs = [r for c in ET.fromstring(eff).findall("RuleCollection") if c.get("Type") == "Exe"
+                     for r in c if r.tag == "FilePublisherRule" and (r.get("Action") or "") == "Allow"]
+        self.assertTrue(base_pubs, "base MetaQuotes publisher Allow must remain — proves the Deny is load-bearing")
+        for loc in (r"%OSDRIVE%\USERS\PUBLIC\TERMINAL64.EXE", r"%OSDRIVE%\PROGRAMDATA\Z\TERMINAL64.EXE",
+                    r"D:\X\TERMINAL64.EXE", r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\CONFIG\TERMINAL64.EXE"):
+            self.assertTrue(denied(loc), f"copied terminal64 must be denied from {loc}")
+        self.assertFalse(denied(r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\TERMINAL64.EXE"))   # legit RX runs
+        # composition must not break the base allow model, and the W^X Deny supersedes the legacy shell-deny:
+        self.assertTrue(A.assert_allow_model_invariants(eff))
+        self.assertTrue(denied(r"%SYSTEM32%\CMD.EXE"), "W^X Deny(*) must deny cmd.exe (supersedes legacy shell-deny)")
+
+    def test_wx_effective_composer_is_deterministic_dedup_idempotent(self):
+        base = A.generate_base_policy("Enabled")
+        a = A.compile_effective_wx_policy(base, [(7, self.SID), (7, self.SID), (3, "S-1-5-21-11-22-33-1003")])
+        b = A.compile_effective_wx_policy(base, [(3, "S-1-5-21-11-22-33-1003"), (7, self.SID)])
+        self.assertEqual(A._canonical(a), A._canonical(b))                       # order-independent + dedup
+        self.assertEqual(A.tenant_account_ids(a), {3, 7})
+        # merge_tenant_wx is idempotent and strips only the target account
+        m = A.merge_tenant_wx(a, 7, self.SID)
+        self.assertEqual(A._canonical(m), A._canonical(a))
+        removed, n = A.remove_tenant(m, 7)
+        self.assertEqual(A.tenant_account_ids(removed), {3})
+
+    def test_wx_deny_rules_single_definition_shared_by_fragment_and_composer(self):
+        # tenant_wx_deny_rules is the ONE definition; the standalone fragment and the composed policy carry the
+        # byte-identical rule (they cannot drift).
+        rule = A.tenant_wx_deny_rules(7, self.SID)[0]
+        frag_rule = list([c for c in ET.fromstring(A.tenant_wx_deny_fragment(7, self.SID)).findall("RuleCollection")][0])[0]
+        self.assertEqual(ET.tostring(rule, encoding="unicode"), ET.tostring(frag_rule, encoding="unicode"))
+
+    def test_wx_subdir_lists_are_disjoint(self):
+        # ADR-0043 MINIMALITY, previously prose-only: no writable subdir may nest a code dir (or vice-versa).
+        self.assertTrue(A.assert_wx_subdir_lists_disjoint())
+
+    def test_wx_subdir_overlap_would_be_caught(self):
+        real = A.HOSTED_WRITABLE_SUBDIRS
+        try:
+            A.HOSTED_WRITABLE_SUBDIRS = real + (r"terminal\MQL5\Experts\sub",)   # nested under a code dir
+            with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_writable_code_subdir_overlap"):
+                A.assert_wx_subdir_lists_disjoint()
+        finally:
+            A.HOSTED_WRITABLE_SUBDIRS = real
+
+    def test_golden_mql_gate_is_fail_closed(self):
+        # STREAM 10D review (rated HIGH): the golden gate must NOT emit a false "vetted_empty". Statically assert
+        # the .ps1 carries the RULE-11 fail-closed guards (CI has no PowerShell, so guard the source shape so a
+        # future edit that removes any of them trips CI). The runtime positive control itself proves the parser.
+        ps = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                          "terminal_provisioning", "windows", "Test-GuvfxGoldenMql.ps1")
+        txt = open(ps).read()
+        for token in ("positive_control_failed",           # RULE-11 runtime positive control aborts on failure
+                      "expected_code_dir_absent",          # coverage guard: a missing code dir is an offender
+                      "code_dir_unscannable",               # captured enumeration errors -> offender (no fail-open)
+                      "-ErrorVariable ev",                  # enumeration errors are captured, not swallowed
+                      "code_dir_is_reparse_point",          # reparse-point code dir rejected
+                      "poscontrol.mq5", 'poscontrol.ex5'):  # the seeded known-bad positive control inputs
+            self.assertIn(token, txt, f"golden gate missing fail-closed guard: {token}")
+
+
 class CapacityTests(SimpleTestCase):
     def test_no_collision_across_accounts(self):
         accounts = [2, 3, 10, 100]
