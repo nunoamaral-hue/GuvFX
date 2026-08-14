@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-08-14 — WAYOND BETA ENABLEMENT — multi-user path repo-complete + hardened. 🟢 DARK, merged main.**
+  Beta Product Enablement (Sponsor). Root cause "hosted not taking Wayond trades" = 2026-08-10 `AUTO_SHADOW`
+  quiesce (0 orders) + hosted plane has no order-send transport (host-cert-gated); AutoTrading/golden not the
+  cause. **#358 `6b597d9`** single customer-facing Wayond strategy on `ti_signals` (functional superset of
+  legacy `wayond`; legacy-feed card retired; no execution migration). **#359 `63211be`** multi-user tenant
+  isolation hardening (ADR-0020 amendment): Phase-2 adversarial verification → 6 cross-tenant findings (2 HIGH +
+  4 MED) all fixed + adversarially re-reviewed (CLOSED): fan-out configured-source never falls to unbound
+  catch-all; fan-out implies terminal-node enforcement (promotion + manual OPEN_TRADE); WIN-card resolution
+  account-scoped. All DARK (`MULTI_ACCOUNT_ROUTING_ENABLED` OFF); single-tenant byte-unchanged. Rollback/disable
+  + independent per-tenant suspension covered by existing tests. Deferred (infra/design): node-aware ingest;
+  per-user WIN delivery. Gates to arm = host cert + separate beta host + arming flags (Sponsor/infra).
+
 - **2026-08-14 — Host-level CO-RESIDENCY GUARD (ADR-0043 Addendum B). 🟢 DARK, branch `feat/hosted-wx-isolation`.**
   Sponsor-authorised fail-closed allocation guard: a **non-Customer-Zero** hosted workspace can never be bound to
   a `TerminalNode` serving Customer Zero. New `hosted_workspace/tenant_isolation.py`
