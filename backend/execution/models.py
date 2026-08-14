@@ -59,6 +59,25 @@ class TerminalNode(models.Model):
             "on). Separate from `hostname` (logical node identity); delivery-only; blank fails closed."
         ),
     )
+    # ORDER-EXECUTION TRANSPORT ENDPOINT (ADR-0034 Execution Engine — Closed-Beta co-residency).
+    # The base URL of THIS node's dedicated order bridge (an ``mt5_signal_bridge`` running
+    # ``MT5_REQUIRE_IDENTITY_PIN=1``) that the dispatch worker POSTs a HOSTED (Provider-B) order to.
+    # DELIBERATELY separate from BOTH ``hostname`` (execution IDENTITY) and ``rdp_host`` (DELIVERY
+    # transport): a hosted order for this node must NEVER share Customer Zero's global legacy bridge, and
+    # CZ's global bridge must never be pin-forced. Consumed ONLY by ``execution.order_transport`` and ONLY
+    # for a hosted job; a legacy / Provider-A / Customer-Zero job keeps the global ``AGENT_ORDER_BASE``,
+    # unchanged. Blank => a HOSTED job on this node FAILS CLOSED
+    # (``order_transport.OT_ENDPOINT_UNCONFIGURED``), never a silent fallback to the global bridge. Not
+    # identity, not delivery, and not worker-claim routing.
+    order_bridge_base_url = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=(
+            "Per-node HOSTED order-bridge base URL (pin-enforcing). Consumed only by order_transport for a "
+            "Provider-B job; blank fails a hosted order closed (never falls back to the global bridge)."
+        ),
+    )
     status = models.CharField(
         max_length=16,
         choices=Status.choices,

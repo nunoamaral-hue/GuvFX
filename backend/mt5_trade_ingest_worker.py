@@ -87,6 +87,32 @@ def apply_identity_pin(agent_payload: dict, payload: dict) -> dict:
     return agent_payload
 
 
+def resolve_order_base(job_id: int):
+    """Resolve the per-job ORDER-TRANSPORT (ADR-0034 Closed-Beta co-residency) — the base URL every
+    ``agent_order`` / ``agent_order_check`` / ``agent_modify`` / ``agent_close`` for this job must POST to.
+
+    A HOSTED (Provider-B) job routes to its authoritative node's OWN pin-enforcing bridge
+    (``TerminalNode.order_bridge_base_url``) and FAILS CLOSED (``ok=False``) if that node has no endpoint —
+    it is NEVER sent to Customer Zero's global bridge. A LEGACY / Provider-A / Customer-Zero job keeps the
+    global ``AGENT_ORDER_BASE``. Returns an ``execution.order_transport.OrderTransport``; the caller MUST
+    complete the job FAILED (no order) when ``ok`` is False.
+
+    DARK / zero-overhead: while the hosted subsystem flag is off, this returns the global bridge with NO
+    extra query and NO ExecutionJob load — the dispatch path is byte-for-byte the pre-seam behaviour."""
+    from execution.hosted_pin import pin_subsystem_enabled
+    from execution.order_transport import (
+        OT_LEGACY_GLOBAL, OrderTransport, resolve_order_transport)
+    if not pin_subsystem_enabled():
+        return OrderTransport(True, OT_LEGACY_GLOBAL, AGENT_ORDER_BASE, hosted=False)
+    try:
+        ej = (ExecutionJob.objects
+              .select_related("account", "account__broker_server", "terminal_node")
+              .get(id=job_id))
+    except ExecutionJob.DoesNotExist:
+        return OrderTransport(False, "order_transport_job_missing", "", hosted=True)
+    return resolve_order_transport(ej, global_base_url=AGENT_ORDER_BASE)
+
+
 # EXEC-E2b-R1: PLACE_ORDER_SHADOW polling is OPT-IN. Only a dedicated shadow
 # worker (MT5_SHADOW_WORKER set) makes the extra shadow claim each loop; the
 # normal ingest worker keeps its pre-E2b 3-claim sequence, so its request rate
@@ -164,9 +190,11 @@ def agent_get(kind: str, username: str):
         raw = r.read().decode("utf-8", "ignore")
         return json.loads(raw) if raw else {}
 
-def agent_order(payload: dict) -> dict:
-    """POST /mt5/order on the Windows agent (signal bridge port 8788)."""
-    url = f"{AGENT_ORDER_BASE}/mt5/order"
+def agent_order(payload: dict, order_base: str) -> dict:
+    """POST /mt5/order on the per-node order bridge. ``order_base`` is resolved by ``resolve_order_base``
+    from the job's AUTHORITATIVE execution node (the global bridge for a legacy job; the node's dedicated
+    pin-enforcing bridge for a hosted one) — never the module-global default (ADR-0034 co-residency)."""
+    url = f"{order_base}/mt5/order"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url, data=data, method="POST",
@@ -186,14 +214,15 @@ def agent_order(payload: dict) -> dict:
         return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
 
 
-def agent_order_check(payload: dict) -> dict:
-    """EXEC-E2b: POST /mt5/order_check on the bridge — SHADOW dry-run.
+def agent_order_check(payload: dict, order_base: str) -> dict:
+    """EXEC-E2b: POST /mt5/order_check on the per-node bridge — SHADOW dry-run.
 
     The bridge validates via mt5.order_check() and NEVER calls mt5.order_send().
     This is the ONLY bridge call the shadow path makes; it never touches
-    agent_order (the live /mt5/order → order_send endpoint).
+    agent_order (the live /mt5/order → order_send endpoint). ``order_base`` is the per-job resolved
+    transport (``resolve_order_base``), so a hosted shadow validates on its OWN node's bridge.
     """
-    url = f"{AGENT_ORDER_BASE}/mt5/order_check"
+    url = f"{order_base}/mt5/order_check"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url, data=data, method="POST",
@@ -213,10 +242,11 @@ def agent_order_check(payload: dict) -> dict:
         return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
 
 
-def agent_modify(payload: dict) -> dict:
-    """WS-B AUTO-BREAKEVEN: POST /mt5/modify-position on the bridge — move an OPEN position's
-    SL to breakeven. Risk-reducing SL/TP edit only (TRADE_ACTION_SLTP); never opens/closes."""
-    url = f"{AGENT_ORDER_BASE}/mt5/modify-position"
+def agent_modify(payload: dict, order_base: str) -> dict:
+    """WS-B AUTO-BREAKEVEN: POST /mt5/modify-position on the per-node bridge — move an OPEN position's
+    SL to breakeven. Risk-reducing SL/TP edit only (TRADE_ACTION_SLTP); never opens/closes. ``order_base``
+    is the per-job resolved transport (``resolve_order_base``)."""
+    url = f"{order_base}/mt5/modify-position"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url, data=data, method="POST",
@@ -236,10 +266,11 @@ def agent_modify(payload: dict) -> dict:
         return {"ok": False, "error": "agent_unreachable", "detail": str(e)}
 
 
-def agent_close(payload: dict) -> dict:
-    """WS-E: POST /mt5/close-position on the bridge — close an OPEN position by ticket. Risk-reducing
-    (flattens a position); demo-only enforced bridge-side."""
-    url = f"{AGENT_ORDER_BASE}/mt5/close-position"
+def agent_close(payload: dict, order_base: str) -> dict:
+    """WS-E: POST /mt5/close-position on the per-node bridge — close an OPEN position by ticket.
+    Risk-reducing (flattens a position); demo-only enforced bridge-side. ``order_base`` is the per-job
+    resolved transport (``resolve_order_base``)."""
+    url = f"{order_base}/mt5/close-position"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url, data=data, method="POST",
@@ -367,8 +398,20 @@ def handle_shadow_job(job: dict) -> dict:
     print(f"[SHADOW] Validating (NO order) job_id={job_id}: {symbol} {side} {lots}")
     log_stage("order_check_request", correlation_id, job_id=job_id,
               symbol=symbol, side=side, lots=str(lots))
+    # ADR-0034 co-residency: resolve the ORDER TRANSPORT for this (shadow) job from its authoritative
+    # node. A hosted shadow validates on its OWN node's bridge (fail-closed if none); a Customer-Zero /
+    # legacy AUTO_SHADOW job keeps the global bridge — byte-identical to the pre-seam behaviour.
+    _transport = resolve_order_base(job_id)
+    if not _transport.ok:
+        result = {"ok": False, "shadow": True, "order_send_called": False,
+                  "error": "order_transport_refused", "reason": _transport.reason_code}
+        complete_job(job_id, "FAILED", result,
+                     f"Shadow job {job_id}: order transport unresolved — {_transport.reason_code}")
+        print(f"[SHADOW] ORDER-TRANSPORT-REFUSED job_id={job_id}: {_transport.reason_code}")
+        _finalize_outcome(False, reason=_transport.reason_code)
+        return result
     t0 = time.monotonic()
-    check = agent_order_check(check_payload)  # bridge → mt5.order_check, never order_send
+    check = agent_order_check(check_payload, _transport.base_url)  # bridge → mt5.order_check, never order_send
     latency_ms = int((time.monotonic() - t0) * 1000)
     log_stage("order_check_response", correlation_id, job_id=job_id,
               ok=bool(check.get("ok")), retcode=check.get("retcode"),
@@ -844,7 +887,18 @@ def main():
                                  f"final-dispatch gate refused: {_dispatch.reason_code}")
                     continue
 
-                order_result = agent_order(agent_payload)
+                # ADR-0034 co-residency: resolve the ORDER TRANSPORT from THIS job's authoritative node.
+                # A hosted (Provider-B) order goes to its node's OWN pin-enforcing bridge and fails CLOSED
+                # if the node has none — never Customer Zero's global bridge. Legacy jobs keep the global.
+                _transport = resolve_order_base(job_id)
+                if not _transport.ok:
+                    print(f"[{label}] ORDER-TRANSPORT-REFUSED job_id={job_id}: {_transport.reason_code}")
+                    complete_job(job_id, "FAILED",
+                                 {"ok": False, "order_transport_refused": True,
+                                  "reason": _transport.reason_code},
+                                 f"order transport unresolved: {_transport.reason_code}")
+                    continue
+                order_result = agent_order(agent_payload, _transport.base_url)
 
                 if order_result.get("ok"):
                     print(f"[{label}] SUCCESS job_id={job_id}: order={order_result.get('order')}, price={order_result.get('price')}")
@@ -887,7 +941,15 @@ def main():
                 # MODIFY fails closed (identity_pin_required). No-op for legacy jobs.
                 apply_identity_pin(modify_payload, payload)
                 print(f"[BREAKEVEN] MODIFY_POSITION job_id={job_id}: ticket={ticket} sl={sl}")
-                modify_result = agent_modify(modify_payload)
+                _transport = resolve_order_base(job_id)
+                if not _transport.ok:
+                    print(f"[PROTECT] ORDER-TRANSPORT-REFUSED job_id={job_id}: {_transport.reason_code}")
+                    complete_job(job_id, "FAILED",
+                                 {"ok": False, "order_transport_refused": True,
+                                  "reason": _transport.reason_code},
+                                 f"order transport unresolved: {_transport.reason_code}")
+                    continue
+                modify_result = agent_modify(modify_payload, _transport.base_url)
                 if modify_result.get("ok"):
                     print(f"[PROTECT] SUCCESS job_id={job_id}: ticket={ticket} verified_sl={modify_result.get('verified_sl')}")
                     complete_job(job_id, "SUCCESS", modify_result, "")
@@ -931,7 +993,15 @@ def main():
                 # provider-close fails closed under MT5_REQUIRE_IDENTITY_PIN=1. No-op for legacy jobs.
                 close_payload = {"username": windows_username, "ticket": ticket}
                 apply_identity_pin(close_payload, payload)
-                close_result = agent_close(close_payload)
+                _transport = resolve_order_base(job_id)
+                if not _transport.ok:
+                    print(f"[CLOSE] ORDER-TRANSPORT-REFUSED job_id={job_id}: {_transport.reason_code}")
+                    complete_job(job_id, "FAILED",
+                                 {"ok": False, "order_transport_refused": True,
+                                  "reason": _transport.reason_code},
+                                 f"order transport unresolved: {_transport.reason_code}")
+                    continue
+                close_result = agent_close(close_payload, _transport.base_url)
                 if close_result.get("ok"):
                     print(f"[CLOSE] SUCCESS job_id={job_id}: ticket={ticket} close_price={close_result.get('close_price')}")
                     complete_job(job_id, "SUCCESS", close_result, "")
