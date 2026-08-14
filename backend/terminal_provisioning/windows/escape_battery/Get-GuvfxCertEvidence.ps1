@@ -123,7 +123,9 @@ try {
   }
   # Enforce cert PASSES only if: measurement proven, NO escape, full roster ran + blocked, no plant failure, ADI=0.
   $enforceReady = ($Mode -eq "Enforce")
-  $adiClean = ($state.allowdllimport -eq "0" -or $state.allowdllimport -eq "")
+  # Fail-closed: require the ceiling to be EXPLICITLY "0". An ABSENT/empty AllowDllImport key ("") is ambiguous and
+  # must NOT auto-pass (it may not carry the intended ceiling); a "0,1" (duplicate keys) is likewise not clean.
+  $adiClean = ($state.allowdllimport -eq "0")
   $overall = "FAIL"
   if (-not $measurementProven) { $overall = "MEASUREMENT_UNPROVEN" }
   elseif ($failEscaped.Count -gt 0) { $overall = "FAIL_ESCAPED" }

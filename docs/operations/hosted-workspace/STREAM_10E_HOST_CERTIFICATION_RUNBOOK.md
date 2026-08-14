@@ -173,7 +173,7 @@ The cert **PASSES** iff **all** hold (the evidence collector enforces this — i
 - `counts.inconclusive = 0` under Enforce (every attempted escape produced a decisive block/allow event on its exact
   path — a `writable_script` case that shows `INCONCLUSIVE` because the block keyed on the interpreter EXE rather than
   the script is confirmed by the operator from the interpreter `8004`);
-- `state.allowdllimport ∈ {"0",""}` (ceiling intact — else `FAIL_ALLOWDLLIMPORT`);
+- `state.allowdllimport = "0"` (ceiling EXPLICITLY set — an absent/empty key does NOT pass — else `FAIL_ALLOWDLLIMPORT`);
 - the operator cases 8 + PC (MT5 normal, `#import` no-exec) pass by operator observation;
 - case 9 restart fingerprint equals the pre-restart fingerprint (`fingerprint_sha256` match).
 
