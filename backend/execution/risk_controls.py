@@ -83,8 +83,20 @@ def _require_terminal_node() -> bool:
     """E3-NODE-ASSIGNMENT-ENFORCEMENT: opt-in (default OFF) so existing behaviour
     is preserved — prod accounts currently ride the legacy null-node claim route.
     Read per-call (not import-time) so tests and a deploy-time enable need no
-    reload. Enable at E3 only after every real account has an ACTIVE node."""
-    return os.getenv("RISK_REQUIRE_TERMINAL_NODE", "").strip().lower() in ("1", "true", "yes", "on")
+    reload. Enable at E3 only after every real account has an ACTIVE node.
+
+    ADR-0020 multi-user isolation: signal fan-out (``MULTI_ACCOUNT_ROUTING_ENABLED``) IMPLIES this
+    enforcement automatically — no second flag. When fan-out is on, a fanned account without a
+    DEDICATED ACTIVE terminal node would create a NULL-node ``PLACE_ORDER`` that the SHARED legacy
+    worker claims and executes on ANOTHER tenant's (the shared / Customer-Zero) terminal — a
+    cross-tenant money-path leak. So fan-out turns node enforcement on, reusing the same complete
+    check (un-noded / non-ACTIVE node → promotion rejected). Single-tenant path unchanged: both the
+    flag and fan-out default OFF."""
+    if os.getenv("RISK_REQUIRE_TERMINAL_NODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    # Function-level import: auto_router imports risk_controls, so a module-level import would cycle.
+    from execution.auto_router import _multi_account_routing_enabled
+    return _multi_account_routing_enabled()
 
 
 def node_assignment_block_reason(account) -> str | None:

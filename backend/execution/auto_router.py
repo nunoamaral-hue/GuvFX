@@ -152,11 +152,19 @@ def _resolve_target(assignment_mode, source=""):
             base.filter(signal_source=source, is_active=True).select_related("account")[:2]
         )
         return active[0] if len(active) == 1 else None
-    # Unbound legacy fallback. An unbound assignment can represent AT MOST ONE source
-    # unambiguously, so once MORE THAN ONE auto-source is enabled it must not serve any of them
-    # — otherwise a second, enabled-but-not-yet-bound source (e.g. ti_signals during a partial
-    # roll-out) would be misrouted onto the legacy Wayond assignment. Fail closed instead; bind
-    # each live source to its own assignment (signal_source) to run more than one.
+    # ADR-0020 multi-user isolation (fan-out ONLY): when signal fan-out is enabled, a CONFIGURED source
+    # (one that has a ``SignalSourceConfig`` row) must NEVER fall through to an UNBOUND legacy assignment.
+    # Otherwise one tenant's catch-all (``signal_source=""``) assignment could silently receive another
+    # tenant's configured source once that source becomes source-unclaimed (e.g. the bound tenant
+    # deletes/rebinds its assignment) — a cross-tenant routing leak the global claim state made possible.
+    # In fan-out mode each live source must bind its own assignment; a configured, source-unclaimed signal
+    # fails closed (routes to nothing). SINGLE-TENANT is unchanged: with fan-out OFF (default) the unbound
+    # legacy fallback still serves a single enabled source, preserving Nuno's route exactly.
+    if source and _multi_account_routing_enabled() and SignalSourceConfig.objects.filter(source=source).exists():
+        return None
+    # Unbound legacy fallback (UNCONFIGURED sources only, per the guard above). An unbound assignment
+    # can represent AT MOST ONE source unambiguously, so once MORE THAN ONE auto-source is enabled it
+    # must not serve any of them. Fail closed instead; bind each live source to its own assignment.
     if source and SignalSourceConfig.objects.filter(
         auto_demo_execution_enabled=True
     ).count() > 1:

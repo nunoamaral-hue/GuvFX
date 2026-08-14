@@ -75,8 +75,18 @@ def create_open_trade_job(params: OpenTradeParams) -> ExecutionJob:
     # WP1B/WP2 (ADR-0029): broker-validation execution gate at the authoritative funnel. Transparent while
     # BROKER_CONNECTIVITY_EXECUTION_GATE is OFF (existing behaviour unchanged); when ON, a non-validated or
     # ineligible account is refused here so no direct caller can bypass to a real order.
-    from execution.broker_gate import require_execution_gate
+    from execution.broker_gate import ExecutionGateRefused, require_execution_gate
     require_execution_gate(params.account, actor=str(params.created_by or ""), trigger="create_open_trade_job")
+
+    # ADR-0020 multi-user isolation (fail-closed): the manual open-trade funnel must NOT create a
+    # NULL-node OPEN_TRADE under signal fan-out — the shared legacy worker claims NULL-node jobs and
+    # would execute on ANOTHER tenant's terminal. Reuse the same node enforcement the promotion path
+    # uses (implied by MULTI_ACCOUNT_ROUTING_ENABLED; also honours RISK_REQUIRE_TERMINAL_NODE). No-op
+    # for the single-tenant path (both flags default OFF). Raised as the same gate the caller handles.
+    from execution.risk_controls import node_assignment_block_reason
+    node_block = node_assignment_block_reason(params.account)
+    if node_block:
+        raise ExecutionGateRefused(node_block)
 
     effective_risk_pct = resolve_risk_pct(params=params)
 
