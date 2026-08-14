@@ -303,10 +303,11 @@ class BetaMarketplaceView(APIView):
 
     # Marketplace items declare the catalogue they belong to (the view owns CONTENT; the entitlement layer
     # owns the visibility POLICY).
+    # Beta Product Enablement (Sponsor decision 2026-08-14): ONE customer-facing "Wayond" strategy,
+    # backed by the production ti_signals pipeline. The legacy `wayond`-feed card ("Wayond Auto Demo")
+    # is retired from the customer catalogue — do NOT expose separate 'Wayond' and 'ti_signals' cards.
+    # (Retiring the legacy-feed PROVIDER/assignment/config in prod is a separate, authorised prod-data step.)
     _MARKETPLACE_ITEMS = [
-        {"key": "wayond_auto_demo", "name": "Wayond Auto Demo",
-         "description": "Copies the Wayond demo signal feed.",
-         "catalogue": MarketplaceCatalogue.SIGNAL_COPY},
         {"key": "wayond_wim", "name": "Wayond WIM Strategy",
          "description": "Copies the TI Signals feed (WIM).",
          "catalogue": MarketplaceCatalogue.SIGNAL_COPY},
