@@ -1,5 +1,23 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ STREAM 10E — W^X host behavioural certification PACKAGE (repository deliverable, DARK) (2026-08-14)
+STREAM 10D **MERGED to `main` `83400fa` (PR #354)** after four converging adversarial passes → 0 HIGH/0 MEDIUM/0
+LOW. STREAM 10E authored the **complete on-host certification package as a repository deliverable — no host was
+contacted** (Sponsor packet 2026-08-14): the turnkey runbook
+[`STREAM_10E_HOST_CERTIFICATION_RUNBOOK.md`](operations/hosted-workspace/STREAM_10E_HOST_CERTIFICATION_RUNBOOK.md)
+(numbered checklist, complete un-shortened 8004 escape battery, evidence collection, pass/fail, rollback decision
+tree, CZ before/after, final cert checklist, disposable-host spec, operator-only manual actions) + the PowerShell
+payloads `backend/terminal_provisioning/windows/escape_battery/` (tenant attempt runner, admin evidence collector
+with a RULE-11 measurement positive control, before/after fingerprint) + the **reducible-half closure now SHIPPED**
+in `applocker_policy.tenant_wx_dll_deny_fragment` (per-tenant Dll `Deny(*)`, fail-closed on empty/wildcard/
+covers-writable exceptions) applied via `Set-GuvfxAppLockerTenant.ps1 -Mode MergeWx`.
+**Certification environment = a SEPARATE DISPOSABLE host; the Customer Zero prod host is the deployment
+environment only** — the escape battery is never run against CZ. **`REMOTEAPP_ISOLATION_CERTIFIED` stays WITHHELD**
+until the runbook's §10 checklist is genuinely met on the disposable host.
+**Operator (Nuno-only) manual actions before the cert can run:** provision the disposable host; enter the
+disposable **demo** broker credentials into MT5 (agents never enter credentials); authorize + perform the Enforce
+flip + escape-battery run; observe the two operator cases; later authorize the CZ production roll-out.
+
 ## ▶ STREAM 10D — Hosted Workspace W^X native-code elimination / G5v2 (ADR-0043, DARK) (2026-08-12)
 Closes the ADR-0042 "load-bearing residual" (MQL5 `#import` native code inside signed `terminal64.exe`) + the
 portable-copy vector V5. Canonical invariant **TENANT-WRITABLE ⇒ NON-EXECUTABLE**. Repository FOUNDATION landed
