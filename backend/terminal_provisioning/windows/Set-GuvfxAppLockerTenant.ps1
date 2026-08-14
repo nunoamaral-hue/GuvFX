@@ -75,10 +75,11 @@ try {
     if ([string]::IsNullOrWhiteSpace($sid)) { Fail "could not resolve SID for $HostedUser" }
     if ($sid -eq "S-1-1-0" -or $sid -eq "S-1-5-32-544") { Fail "refusing: shared principal SID" }
     [xml]$frag = Get-Content -LiteralPath $FragmentPath -Raw
-    # Exactly one Exe RuleCollection carrying exactly one rule of ANY type: the tenant W^X Deny. Enumerate ALL
+    # Exactly one Exe OR Dll RuleCollection carrying exactly one rule of ANY type: the tenant W^X Deny (Exe closes
+    # copied-terminal64/EXE execution; Dll closes the signed-DLL-from-writable load, STREAM 10E). Enumerate ALL
     # element children (not just FilePathRule) so a smuggled FilePublisherRule/FileHashRule Allow cannot slip in.
     $colls = @($frag.AppLockerPolicy.RuleCollection)
-    if ($colls.Count -ne 1 -or $colls[0].Type -ne "Exe") { Fail "wx_fragment_not_single_exe_collection" }
+    if ($colls.Count -ne 1 -or @("Exe","Dll") -notcontains $colls[0].Type) { Fail "wx_fragment_not_single_wx_collection" }
     $ruleNodes = @($colls[0].ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element })
     if ($ruleNodes.Count -ne 1) { Fail "wx_fragment_not_single_rule" }
     $deny = $ruleNodes[0]

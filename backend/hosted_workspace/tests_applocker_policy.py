@@ -607,6 +607,98 @@ class WxIsolationTests(SimpleTestCase):
                       "poscontrol.mq5", 'poscontrol.ex5'):  # the seeded known-bad positive control inputs
             self.assertIn(token, txt, f"golden gate missing fail-closed guard: {token}")
 
+    # ── STREAM 10E — per-tenant Dll W^X Deny (reducible half of the signed-DLL residual) ─────────────────────
+    # A representative host-soak-derived NON-writable RX set. NOTE it must NOT contain `...\TERMINAL\*` — that
+    # wildcard would cover the tenant-WRITABLE `terminal\MQL5\Files` and re-open the hole (the guard rejects it);
+    # MT5's own DLLs are excepted via the specific non-writable RX code dirs (Libraries, Include).
+    NW = (r"%SYSTEM32%\*", r"%WINDIR%\WinSxS\*", r"%PROGRAMFILES%\*",
+          r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\MQL5\Libraries\*")   # a NON-writable (RX) code dir where MT5 libs load
+
+    def test_wx_dll_deny_is_single_dll_deny_all_with_soak_exceptions(self):
+        frag = A.tenant_wx_dll_deny_fragment(7, self.SID, self.NW)
+        self.assertTrue(A.assert_wx_dll_deny_invariants(frag, 7, self.SID, self.NW))
+        root = ET.fromstring(frag)
+        colls = root.findall("RuleCollection")
+        self.assertEqual([c.get("Type") for c in colls], ["Dll"])     # Dll only
+        rule = list(colls[0])[0]
+        self.assertEqual(rule.get("Action"), "Deny")
+        self.assertEqual([c.get("Path") for c in rule.findall("Conditions/FilePathCondition")], ["*"])
+        exc = {c.get("Path").upper() for c in rule.findall("Exceptions/FilePathCondition")}
+        self.assertEqual(exc, {p.upper() for p in self.NW})
+
+    def test_wx_dll_deny_denies_signed_dll_from_writable_allows_os_dll(self):
+        # The reducible-half closure: a planted DLL in a tenant-writable location is NOT an exception -> denied
+        # (regardless of signature); an OS DLL under %SYSTEM32% IS excepted -> loads.
+        import fnmatch
+        rule = list(ET.fromstring(A.tenant_wx_dll_deny_fragment(7, self.SID, self.NW)).findall("RuleCollection")[0])[0]
+        exc = [c.get("Path").upper() for c in rule.findall("Exceptions/FilePathCondition")]
+        denied = lambda t: not any(fnmatch.fnmatch(t.upper(), e) for e in exc)
+        for planted in (r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\MQL5\FILES\EVIL.DLL",   # tenant-writable data dir
+                        r"%OSDRIVE%\USERS\PUBLIC\EVIL.DLL", r"%TEMP%\EVIL.DLL"):
+            self.assertTrue(denied(planted), f"signed DLL planted at {planted} must be denied")
+        self.assertFalse(denied(r"%SYSTEM32%\KERNEL32.DLL"))          # legit OS DLL still loads
+        self.assertFalse(denied(r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\MQL5\LIBRARIES\LIB.DLL"))  # MT5's RX-dir lib loads
+
+    def test_wx_dll_deny_empty_exceptions_refused(self):
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_dll_deny_requires_exceptions"):
+            A.tenant_wx_dll_deny_fragment(7, self.SID, [])            # would deny EVERY DLL incl. the OS
+
+    def test_wx_dll_deny_wildcard_exception_refused(self):
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_dll_exception_is_wildcard"):
+            A.tenant_wx_dll_deny_rules(7, self.SID, ["*"])            # would allow everything (fail-open)
+
+    def test_wx_dll_deny_exception_under_writable_tree_refused(self):
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_dll_exception_covers_writable"):
+            A.tenant_wx_dll_deny_rules(7, self.SID, [r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\MQL5\Files"])
+
+    def test_wx_dll_deny_exception_covering_writable_subdir_refused(self):
+        # A wildcard exception whose coverage CONTAINS a tenant-writable subdir (terminal\* covers terminal\MQL5\Files)
+        # must be rejected — the exact %WINDIR%-writable-subdir trap that keeps the base Dll rule publisher-only.
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_dll_exception_covers_writable"):
+            A.tenant_wx_dll_deny_rules(7, self.SID, [r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\*"])
+
+    def test_wx_dll_deny_rejects_LITERAL_drive_covers_writable(self):
+        # STREAM 10E review HIGH (RULE 11): the soak enumerates LITERAL C:\ paths; a literal-drive exception that
+        # covers a tenant-writable dir must be rejected EXACTLY like its %OSDRIVE% form (drive-canonical guard).
+        for bad in (r"C:\GuvFX\accounts\7\terminal\*",              # covers terminal\MQL5\Files (writable)
+                    r"C:\GuvFX\accounts\7\terminal\config",         # IS the writable common.ini dir
+                    r"C:\*", r"%SYSTEMDRIVE%\*",                     # whole OS drive
+                    r"%SYSTEMDRIVE%\GuvFX\accounts\7\terminal\*",    # %SYSTEMDRIVE% variant
+                    r"c:/guvfx/accounts/7/terminal/*"):             # forward-slash + case variant
+            with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_dll_exception_covers_writable", msg=bad):
+                A.tenant_wx_dll_deny_rules(7, self.SID, [bad])
+
+    def test_wx_dll_deny_accepts_legit_literal_drive_nonwritable(self):
+        # A genuinely non-writable literal-drive exception (OS + an RX code dir) must still be accepted.
+        good = [r"C:\Windows\System32\*", r"C:\GuvFX\accounts\7\terminal\MQL5\Libraries\*", r"%SYSTEM32%\*"]
+        self.assertTrue(A.assert_wx_dll_deny_invariants(A.tenant_wx_dll_deny_fragment(7, self.SID, good), 7, self.SID, good))
+
+    def test_wx_dll_assert_independently_rejects_covers_writable(self):
+        # assert must RE-DERIVE the closure (not just exceptions==expected): a fragment carrying a covers-writable
+        # exception fails assert even when the passed expected set contains the same (bad) exception.
+        frag = ET.fromstring(A.tenant_wx_dll_deny_fragment(7, self.SID, self.NW))
+        rule = list(frag.findall("RuleCollection")[0])[0]
+        ET.SubElement(rule.find("Exceptions"), "FilePathCondition", {"Path": r"C:\GuvFX\accounts\7\terminal\*"})
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_dll_exception_covers_writable"):
+            A.assert_wx_dll_deny_invariants(ET.tostring(frag, encoding="unicode"), 7, self.SID,
+                                            tuple(self.NW) + (r"C:\GuvFX\accounts\7\terminal\*",))
+
+    def test_wx_dll_deny_refuses_shared_principal(self):
+        for shared in ("S-1-1-0", "S-1-5-32-544", "S-1-5-18"):
+            with self.assertRaises(A.AppLockerPolicyError):
+                A.tenant_wx_dll_deny_fragment(7, shared, self.NW)
+
+    def test_wx_dll_deny_exception_mismatch_caught(self):
+        frag = A.tenant_wx_dll_deny_fragment(7, self.SID, self.NW)
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_dll_exceptions_mismatch"):
+            A.assert_wx_dll_deny_invariants(frag, 7, self.SID, tuple(self.NW) + (r"%TEMP%\*",))
+
+    def test_wx_dll_deny_composer_reuses_single_definition(self):
+        # tenant_wx_dll_deny_rules is the ONE definition; the fragment carries the byte-identical rule.
+        rule = A.tenant_wx_dll_deny_rules(7, self.SID, self.NW)[0]
+        frag_rule = list(ET.fromstring(A.tenant_wx_dll_deny_fragment(7, self.SID, self.NW)).findall("RuleCollection")[0])[0]
+        self.assertEqual(ET.tostring(rule, encoding="unicode"), ET.tostring(frag_rule, encoding="unicode"))
+
 
 class CapacityTests(SimpleTestCase):
     def test_no_collision_across_accounts(self):
@@ -625,3 +717,82 @@ class CapacityTests(SimpleTestCase):
         self.assertNotEqual(A.tenant_rule_id(14, 16), A.tenant_rule_id(15, 16))
         self.assertTrue(A._is_tenant_rule(A.tenant_rule_id(14, 16), 14))
         self.assertFalse(A._is_tenant_rule(A.tenant_rule_id(14, 16), 15))
+
+
+class Stream10eEscapeBatteryTests(SimpleTestCase):
+    """STREAM 10E — static guards over the host-certification package (CI has no PowerShell, so pin the scripts'
+    ASCII cleanliness + the required escape cases + fail-closed controls, and the runbook references). The real
+    behavioural proof runs on the disposable cert host per STREAM_10E_HOST_CERTIFICATION_RUNBOOK.md."""
+
+    WIN = os.path.join(os.path.dirname(os.path.dirname(__file__)), "terminal_provisioning", "windows")
+    DOCS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                        "docs", "operations", "hosted-workspace")
+
+    def _read_ascii(self, *parts):
+        # PowerShell artefacts MUST be ASCII (RULE 9) — opening as ASCII fails loudly on any non-ASCII byte.
+        p = os.path.join(*parts)
+        self.assertTrue(os.path.exists(p), f"missing artefact: {p}")
+        return open(p, encoding="ascii").read()
+
+    def _read(self, *parts):
+        # Docs (Markdown) may contain UTF-8 (em-dashes, arrows, box-drawing); read as UTF-8.
+        p = os.path.join(*parts)
+        self.assertTrue(os.path.exists(p), f"missing artefact: {p}")
+        return open(p, encoding="utf-8").read()
+
+    def test_escape_battery_scripts_exist_and_are_ascii(self):
+        for f in ("Invoke-GuvfxEscapeBattery.ps1", "Get-GuvfxCertEvidence.ps1", "Get-GuvfxIsolationFingerprint.ps1"):
+            txt = self._read_ascii(self.WIN, "escape_battery", f)   # RULE 9: fails if any non-ASCII byte present
+            self.assertTrue(txt.strip())
+
+    def test_escape_battery_covers_every_required_case(self):
+        txt = self._read(self.WIN, "escape_battery", "Invoke-GuvfxEscapeBattery.ps1")
+        for case in ("portable_copy_v5", "metaeditor", "writable_exe", "writable_script", "unsigned_dll_sideload",
+                     "signed_dll_comhijack_from_writable", "common_ini_mutation", "import_native_exec",
+                     "mt5_normal_positive_control"):
+            self.assertIn(case, txt, f"escape battery missing required case: {case}")
+        # it must NOT perform a broker login (credential boundary) and must clean up planted artefacts
+        self.assertIn("operator_required", txt)
+        self.assertIn("finally", txt)
+
+    def test_evidence_collector_is_fail_closed_rule11(self):
+        txt = self._read(self.WIN, "escape_battery", "Get-GuvfxCertEvidence.ps1")
+        for token in ("measurement_proven",            # RULE-11: channel must show a real allow before a negative is trusted
+                      "MEASUREMENT_UNPROVEN",           # fail-closed overall when the channel is dead
+                      "8004", "8007",                   # authoritative block events
+                      "FAIL_ESCAPED", "INCONCLUSIVE",   # an allow on an escape artefact / no decisive event both fail
+                      "allowdllimport",                 # ceiling checked
+                      "NO_BATTERY",                     # absent/empty attempts file = hard fail (not "0 escapes -> PASS")
+                      "REQUIRED_CASES", "INCOMPLETE_BATTERY", "missingRequired",   # full-roster completeness gate
+                      "PLANT_FAILED", "undecidedRequired",       # plant failure / not-decisively-blocked = hard fail
+                      "ToUpperInvariant"):              # exact full-path correlation (not a leaf substring)
+            self.assertIn(token, txt, f"evidence collector missing fail-closed control: {token}")
+        # the loose leaf-substring correlation must be GONE (it cross-attributed the golden terminal64 allow)
+        self.assertNotIn('-like "*$leaf*"', txt)
+
+    def test_escape_runner_uses_robust_com_trigger_and_no_orphan(self):
+        txt = self._read(self.WIN, "escape_battery", "Invoke-GuvfxEscapeBattery.ps1")
+        self.assertIn("GetTypeFromCLSID", txt)                    # deterministic CoCreateInstance load trigger
+        self.assertNotIn("BindToMoniker", txt)                    # the fragile class-moniker form is gone
+        # the HKCU CLSID key is registered for cleanup BEFORE it is created (no orphan if New-ItemProperty throws)
+        i_plant = txt.find('$planted += "REGKEY::HKCU:\\Software\\Classes\\CLSID')
+        i_newitem = txt.find("New-Item -Path $key -Force")
+        self.assertTrue(0 < i_plant < i_newitem, "reg key must be registered for cleanup before creation")
+
+    def test_fingerprint_hashes_isolation_state_for_before_after(self):
+        txt = self._read(self.WIN, "escape_battery", "Get-GuvfxIsolationFingerprint.ps1")
+        for token in ("effective_policy_sha256", "runtime_root_dacl_sha256", "allowdllimport",
+                      "terminal64_sha256", "fingerprint_sha256"):
+            self.assertIn(token, txt)
+
+    def test_runbook_exists_and_references_the_package(self):
+        rb = self._read(self.DOCS, "STREAM_10E_HOST_CERTIFICATION_RUNBOOK.md")
+        for ref in ("Invoke-GuvfxEscapeBattery.ps1", "Get-GuvfxCertEvidence.ps1", "Get-GuvfxIsolationFingerprint.ps1",
+                    "Set-GuvfxAppLockerTenant.ps1", "Set-GuvfxWorkspaceAclV2.ps1", "Test-GuvfxGoldenMql.ps1",
+                    "tenant_wx_dll_deny_fragment",                       # the reducible-half closure mechanism
+                    "disposable", "Customer Zero", "before/after", "ParseFile", "REMOTEAPP_ISOLATION_CERTIFIED",
+                    "signed_dll_comhijack_from_writable"):               # the hard precondition case
+            self.assertIn(ref, rb, f"runbook missing reference: {ref}")
+        # the runbook must forbid running the battery against the production host and must forbid weakening it
+        self.assertIn("never", rb.lower())
+        self.assertIn("disposable", rb.lower())

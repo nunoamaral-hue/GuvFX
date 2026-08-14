@@ -314,7 +314,12 @@ HOSTED_CODE_SUBDIRS = (
 # per-tenant Dll Deny(*)-with-non-writable-exceptions applied at STREAM 10E cert time (not built blind in-repo).
 _ACCOUNTS_BASE_APPLOCKER = r"%OSDRIVE%\GUVFX\ACCOUNTS"
 _WX_DENY_ALL = "*"          # deny ALL tenant execution, any drive/location ...
-_WX_DENY_SEQ = 0x1000       # ... except the exec-allow surface, carried as the Deny rule's Exceptions
+_WX_DENY_SEQ = 0x1000       # ... except the exec-allow surface, carried as the Exe Deny rule's Exceptions
+# STREAM 10E: the per-tenant Dll W^X Deny (the reducible half of the signed-DLL residual, ADR-0043). Symmetric to
+# the Exe Deny(*), it denies a tenant DLL LOAD from ANY writable location regardless of signature; its exceptions
+# are the NON-tenant-writable RX DLL-load directories, which are HOST-SOAK-DERIVED (the writable %WINDIR%/%SYSTEM32%
+# subdirs must be EXCLUDED, exactly as the base Dll rule is publisher-only) and passed in, never guessed in-repo.
+_WX_DLL_DENY_SEQ = 0x1001
 # Principals a per-tenant Deny must NEVER be scoped to (a Deny on a shared principal would break Admin/OS).
 _WX_FORBIDDEN_DENY_SIDS = frozenset({"S-1-1-0", "S-1-5-11", "S-1-5-32-544", "S-1-5-32-545", "S-1-5-18"})
 
@@ -420,6 +425,20 @@ _OS_PATH_PREFIXES = ("%WINDIR%", "%SYSTEM32%", "%PROGRAMFILES%", "%PROGRAMFILES(
 
 def _norm_path(path: str) -> str:
     return (path or "").upper().replace("/", "\\")
+
+
+def _canon_applocker_path(path: str) -> str:
+    """Canonicalise an AppLocker path for COMPARISON: upper, ``/`` -> ``\\``, and a leading literal OS drive
+    (``C:\\``) or ``%SYSTEMDRIVE%\\`` mapped to ``%OSDRIVE%\\``. AppLocker expands ``%OSDRIVE%`` / ``%SYSTEMDRIVE%``
+    to the OS drive (C: throughout this deployment — the accounts tree is ``C:\\GuvFX\\accounts\\<N>``), so
+    ``C:\\GUVFX\\...`` and ``%OSDRIVE%\\GUVFX\\...`` address the SAME file. Without this, a literal-drive exception
+    that covers a tenant-writable dir would slip the covers-writable guard (STREAM 10E review HIGH — the soak
+    enumerates literal ``C:\\`` paths)."""
+    p = _norm_path(path)
+    for lit in ("C:\\", "%SYSTEMDRIVE%\\"):
+        if p.startswith(lit):
+            return "%OSDRIVE%\\" + p[len(lit):]
+    return p
 
 
 def _is_os_path(path: str) -> bool:
@@ -673,6 +692,117 @@ def assert_wx_subdir_lists_disjoint() -> bool:
         for c in code:
             if w == c or w.startswith(c + "\\") or c.startswith(w + "\\"):
                 raise AppLockerPolicyError(f"wx_writable_code_subdir_overlap:{w}~{c}")
+    return True
+
+
+# ── STREAM 10E — per-tenant Dll W^X Deny (the REDUCIBLE half of the signed-DLL residual, ADR-0043) ──────────────
+# Symmetric to the Exe W^X Deny(*): a single per-tenant Dll `Deny(*)` whose EXCEPTIONS are the non-tenant-writable
+# RX DLL-load directories closes the "planted SIGNED DLL loaded from a tenant-writable location" vector for BOTH
+# publishers (the attacker must plant the DLL somewhere tenant-writable; nothing there is excepted, so the load is
+# denied regardless of signature). It does NOT — and cannot — close in-process USE of an already-resident signed OS
+# DLL (the irreducible half). The exception set is HOST-SOAK-DERIVED and PASSED IN: %WINDIR%/%SYSTEM32% contain
+# tenant-writable subdirs (%WINDIR%\Temp, System32\spool\drivers\color, ...) that MUST be excluded from the
+# exceptions or the writable-subdir hole re-opens — the same reason the base Dll rule is publisher-only. A blind
+# hardcoded set risks re-opening the hole (too broad) or a fail-closed MT5/OS outage (too narrow). This module
+# therefore ships the MECHANISM (built + tested) while the exact exception DATA is supplied by the STREAM 10E soak.
+def _assert_wx_dll_exceptions_ok(account_id, nonwritable_exec_dirs) -> list:
+    """Validate + return the non-writable Dll exception set (original strings) for a per-tenant Dll ``Deny(*)``.
+    Fail-closed, DRIVE-CANONICAL: rejects an empty set (would deny EVERY DLL incl. the OS), a ``*`` exception
+    (fail-open), a bare-drive coverage (``C:\\*`` / ``%OSDRIVE%\\*``), and any exception that is UNDER or COVERS a
+    tenant-writable subdir — comparing via ``_canon_applocker_path`` so a LITERAL ``C:\\...`` exception (the form the
+    soak enumerates) is caught exactly like its ``%OSDRIVE%`` equivalent. Shared by the builder AND the invariant
+    assert, so the closure is re-derived independently on the fragment's actual exceptions (STREAM 10E review HIGH)."""
+    n = _account(account_id)
+    exc = [str(p or "").strip() for p in (nonwritable_exec_dirs or []) if str(p or "").strip()]
+    if not exc:
+        raise AppLockerPolicyError("wx_dll_deny_requires_exceptions")   # empty => deny ALL DLLs => OS/MT5 outage
+    writable_prefixes = tuple(_canon_applocker_path(f"{_ACCOUNTS_BASE_APPLOCKER}\\{n}\\{sub}")
+                              for sub in HOSTED_WRITABLE_SUBDIRS)
+    for p in exc:
+        pu = _canon_applocker_path(p)
+        if pu == _WX_DENY_ALL:
+            raise AppLockerPolicyError("wx_dll_exception_is_wildcard")
+        # The exception's coverage prefix: strip a trailing wildcard segment so `...\TERMINAL\*` -> `...\TERMINAL`.
+        base = pu[:-2] if pu.endswith("\\*") else (pu[:-1].rstrip("\\") if pu.endswith("*") else pu)
+        if base in ("", "%OSDRIVE%"):   # a whole-OS-drive coverage prefix covers the entire accounts tree
+            raise AppLockerPolicyError(f"wx_dll_exception_covers_writable:{p}~whole_os_drive")
+        for w in writable_prefixes:
+            # Reject an exception UNDER a tenant-writable dir (pu subset of w) OR whose wildcard COVERS one (w subset
+            # of base) — either re-admits a DLL planted in that writable dir. `...\TERMINAL\*` covers `...\MQL5\Files`.
+            if pu == w or pu.startswith(w + "\\") or base == w or w.startswith(base + "\\"):
+                raise AppLockerPolicyError(f"wx_dll_exception_covers_writable:{p}~{w}")
+    return exc
+
+
+def tenant_wx_dll_deny_rules(account_id, sid: str, nonwritable_exec_dirs) -> list:
+    """The per-tenant Dll rule(s): a single ``Deny(*)`` scoped to ``sid`` whose ``Exceptions`` are exactly the
+    supplied non-tenant-writable RX DLL-load directories (host-soak-derived). Fail-closed: malformed/shared SID;
+    EMPTY exceptions REFUSED (a Dll ``Deny(*)`` with no exceptions denies EVERY DLL incl. the OS — a catastrophic
+    outage); a ``*`` exception REFUSED (would allow everything — a fail-open); an exception under the tenant
+    accounts-writable tree REFUSED (would re-admit a planted DLL). Detached elements (fragment + composer share it)."""
+    n = _account(account_id)
+    s = str(sid or "").strip()
+    if not _SID_RE.match(s):
+        raise AppLockerPolicyError("malformed_sid")
+    if s in _WX_FORBIDDEN_DENY_SIDS:
+        raise AppLockerPolicyError("refusing_wx_deny_on_shared_principal")
+    exc = _assert_wx_dll_exceptions_ok(n, nonwritable_exec_dirs)   # fail-closed: empty / wildcard / covers-writable
+    rule = ET.Element("FilePathRule", {
+        "Id": tenant_rule_id(n, _WX_DLL_DENY_SEQ),
+        "Name": f"(Hosted acct {n} W^X Dll) Deny all DLL loads except the non-writable RX locations",
+        "Description": f"acct={n};wx=dll-nonwritable", "UserOrGroupSid": s, "Action": "Deny"})
+    ET.SubElement(ET.SubElement(rule, "Conditions"), "FilePathCondition", {"Path": _WX_DENY_ALL})
+    ex = ET.SubElement(rule, "Exceptions")
+    for p in exc:
+        ET.SubElement(ex, "FilePathCondition", {"Path": p})
+    return [rule]
+
+
+def tenant_wx_dll_deny_fragment(account_id, sid: str, nonwritable_exec_dirs) -> str:
+    """A minimal ``AppLockerPolicy`` carrying ONLY account N's Dll ``Deny(*)`` (Type=Dll, NotConfigured so ``-Merge``
+    never changes the collection's enforcement mode). Applied host-side by ``Set-GuvfxAppLockerTenant.ps1 -Mode
+    MergeWx`` (which accepts an Exe OR Dll W^X fragment)."""
+    root = ET.Element("AppLockerPolicy", {"Version": "1"})
+    coll = ET.SubElement(root, "RuleCollection", {"Type": "Dll", "EnforcementMode": "NotConfigured"})
+    for r in tenant_wx_dll_deny_rules(account_id, sid, nonwritable_exec_dirs):
+        coll.append(r)
+    return _tostr(root)
+
+
+def assert_wx_dll_deny_invariants(fragment_xml: str, account_id, sid: str, nonwritable_exec_dirs) -> bool:
+    """Prove a per-tenant Dll W^X fragment is a single Dll ``Deny(*)`` whose EXCEPTIONS equal EXACTLY the supplied
+    non-writable exec dirs; grants nothing; correct SID; non-empty exceptions. Machine-checked closure of the
+    reducible half (ii) of the signed-DLL residual."""
+    n = _account(account_id)
+    s = str(sid or "").strip()
+    # drive-canonical expected set (so a literal-drive C:\ and its %OSDRIVE% form compare equal)
+    expected = {_canon_applocker_path(p) for p in (nonwritable_exec_dirs or []) if str(p or "").strip()}
+    if not expected:
+        raise AppLockerPolicyError("wx_dll_deny_requires_exceptions")
+    root = ET.fromstring(fragment_xml)
+    denies = []
+    for coll in root.findall("RuleCollection"):
+        for r in coll:
+            if (r.get("Action") or "").lower() == "allow":
+                raise AppLockerPolicyError(f"wx_dll_fragment_contains_allow:{r.get('Id')}")
+            if (r.get("Action") or "").lower() == "deny" and coll.get("Type") == "Dll":
+                denies.append(r)
+    if len(denies) != 1:
+        raise AppLockerPolicyError(f"wx_dll_expected_single_dll_deny:{len(denies)}")
+    rule = denies[0]
+    if rule.get("UserOrGroupSid") != s:
+        raise AppLockerPolicyError(f"wx_dll_deny_wrong_sid:{rule.get('UserOrGroupSid')}")
+    deny_paths = {(c.get("Path") or "").upper() for c in rule.findall("Conditions/FilePathCondition")}
+    if deny_paths != {_WX_DENY_ALL}:
+        raise AppLockerPolicyError(f"wx_dll_deny_not_deny_all:{sorted(deny_paths)}")
+    frag_exc = [c.get("Path") for c in rule.findall("Exceptions/FilePathCondition")]
+    # RE-RUN the covers-writable guard on the FRAGMENT's ACTUAL exceptions (independent re-derivation of the closure,
+    # not merely exceptions==expected) so a covers-writable exception fails assert even if it equals `expected`.
+    _assert_wx_dll_exceptions_ok(n, frag_exc)
+    exceptions = {_canon_applocker_path(p) for p in frag_exc}
+    if exceptions != expected:
+        raise AppLockerPolicyError(
+            f"wx_dll_exceptions_mismatch:extra={sorted(exceptions - expected)};missing={sorted(expected - exceptions)}")
     return True
 
 

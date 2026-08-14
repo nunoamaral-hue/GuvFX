@@ -114,7 +114,12 @@ behavioural certification (CZ before-fingerprint → apply G5v2 to a disposable 
 W^X escape battery [portable-copy, MetaEditor, `common.ini` mutation, `#import`, writable EXE/DLL/Script] →
 restart persistence → rollback → CZ after-fingerprint) demonstrates the invariant with Customer Zero preserved.
 The `HOSTED_WRITABLE_SUBDIRS` completeness (MT5 needs no unlisted writable path) + minimality (no writable path is
-a code-load dir) + the terminal64 embedded `BinaryName` are host-soak-verified (RULE 11).
+a code-load dir) + the terminal64 embedded `BinaryName` are host-soak-verified (RULE 11). **The full turnkey
+procedure — numbered checklist, complete 8004 escape battery, evidence collection, pass/fail criteria, rollback
+decision tree, CZ before/after, and the Nuno-only manual actions — is
+`docs/operations/hosted-workspace/STREAM_10E_HOST_CERTIFICATION_RUNBOOK.md`, and it runs on a SEPARATE DISPOSABLE
+host, never Customer Zero (Sponsor decision 2026-08-14). PowerShell payloads:
+`backend/terminal_provisioning/windows/escape_battery/`.**
 
 ## Consequences
 
@@ -144,13 +149,18 @@ distinct sub-cases that must NOT be conflated** (an earlier revision wrongly dec
   whose exceptions are exactly the non-tenant-writable RX DLL-load locations** (symmetric to the Exe W^X
   `Deny(*)`), which denies the planted load **regardless of publisher/signature**; plus the MetaQuotes `Dll`
   `BinaryName`/version pin (shrinks the MetaQuotes half). **This half is NOT accepted — it is a committed code
-  closure, deferred only for a RULE-11 data reason, not a fundamental one:** the exception set (the exact
-  non-writable OS + MT5 DLL-load directories) must be **host-soak-derived**, because `%WINDIR%`/`%SYSTEM32%`
-  contain tenant-writable subdirs (`%WINDIR%\Temp`, `System32\spool\drivers\color`, …) that must be excluded from
-  the exceptions or the writable-subdir hole re-opens — the identical reason the base `Dll` rule is publisher-only.
-  A **blind** hardcoded exception set risks either re-opening the hole (too broad) or a **fail-closed MT5 outage**
-  (too narrow — legitimate signed OS / side-by-side DLL loads denied), which is exactly the RULE-11 trap. It is
-  therefore built + applied at STREAM 10E cert time from the soak, **not guessed in-repo now**.
+  closure. The MECHANISM now SHIPS in-repo, built + tested (STREAM 10E):** `applocker_policy
+  .tenant_wx_dll_deny_fragment(account, sid, nonwritable_exec_dirs)` + `assert_wx_dll_deny_invariants`, applied
+  host-side by `Set-GuvfxAppLockerTenant.ps1 -Mode MergeWx` (which now accepts an Exe **or** Dll W^X fragment). It
+  fail-closes on an empty exception set (would deny every DLL incl. the OS), a `*` exception (fail-open), or an
+  exception that is **under or COVERS** a tenant-writable subdir (`...\TERMINAL\*` is rejected because it covers
+  `...\MQL5\Files`). Only the exact exception **DATA** is deferred, for a RULE-11 reason, not a fundamental one:
+  the exact non-writable OS + MT5 DLL-load directories must be **host-soak-derived**, because `%WINDIR%`/`%SYSTEM32%`
+  contain tenant-writable subdirs (`%WINDIR%\Temp`, `System32\spool\drivers\color`, …) that must be excluded or the
+  writable-subdir hole re-opens — the identical reason the base `Dll` rule is publisher-only. A **blind** hardcoded
+  set risks either re-opening the hole (too broad) or a **fail-closed MT5 outage** (too narrow), the RULE-11 trap.
+  The mechanism is therefore applied from the soak-derived data at STREAM 10E cert time — see
+  `docs/operations/hosted-workspace/STREAM_10E_HOST_CERTIFICATION_RUNBOOK.md` §5 — **not guessed in-repo now**.
 - **(i) IRREDUCIBLE — in-process *use* of a legitimately-signed, mandatorily-allowed OS DLL already resident in a
   non-writable path** (e.g. abusing a `kernel32` that must load for MT5/the OS to run). AppLocker gates DLL *loads*,
   not function *calls*; no repository control can distinguish legitimate signed-DLL use from abuse — only on-host
