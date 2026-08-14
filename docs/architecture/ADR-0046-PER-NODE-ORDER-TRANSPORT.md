@@ -9,6 +9,33 @@
   (supervised single-tenant beta + host co-residency amendment). Closes the order-transport gap that
   amendment left open.
 
+## Production-premise correction (Sponsor + Chief Architect, 2026-08-14, FINAL)
+
+**The original premise "Customer Zero is legacy / non-hosted → global bridge" is FALSE in production.**
+Customer Zero (account 1) was migrated to a **Provider-B persistent workspace** (`readiness_provider =
+persistent_workspace`, a `HostedMt5Workspace` on node 1) and `HOSTED_PERSISTENT_MT5_ENABLED = 1` is ON in
+prod. So `is_hosted_workspace_account(CZ)` is True and the resolver classifies **Customer Zero's own orders
+as HOSTED**. The corrected architecture keeps ZERO hosted→global fallback and is uniform:
+
+> **Provider-B execution → authoritative execution node → that node's EXPLICIT `order_bridge_base_url`.**
+
+- **Customer Zero** = Provider-B on node 1 → node 1's explicit endpoint = the **existing CZ `:8788` bridge**.
+  (Node 1's `order_bridge_base_url` records where CZ's bridge already is; it is metadata alignment, NOT a new
+  route, NOT a port change, NOT a global pin flip on CZ's bridge.)
+- **Each beta** = Provider-B on its OWN node N → node N's explicit endpoint = a dedicated pin-enforcing bridge
+  on its own port. A beta can NEVER resolve to CZ's `:8788`.
+- A Provider-B node with **no** explicit endpoint fails **closed** — never a global fallback.
+
+**Deployment ordering is load-bearing** (a first attempt deployed the new code with node 1's endpoint still
+blank, which would have fail-closed CZ's ExecutionJob path — caught by the Golden AFTER-check and rolled back
+with zero CZ impact). The corrected sequence is: Golden BEFORE + backup → **migrate schema while OLD code
+runs** → **populate node 1's `order_bridge_base_url` = the existing `:8788` URL (derived from the running
+config, read back, verified) BEFORE any code cutover** → pre-cutover assertions → recreate services on the new
+image → Golden AFTER. Rollback covers BOTH the runtime image AND node 1's metadata (its prior value is
+recorded before the write). The **primary Customer-Zero safety proof is a production-like fixture where
+Customer Zero itself is Provider-B** (`execution/tests_order_transport.py::ProductionPremiseProviderBRoutingTests`);
+the Provider-A/legacy fixtures are retained but are NOT the CZ safety proof.
+
 ## Context — the blocker
 
 The ADR-0044 amendment lets a supervised beta tenant co-reside with Customer Zero on ONE Windows VPS, each on

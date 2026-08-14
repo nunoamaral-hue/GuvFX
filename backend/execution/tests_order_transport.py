@@ -65,7 +65,10 @@ def _resolve(job, *, flag_on=True, hosted=False, classifier_error=None):
 
 
 class OrderTransportResolverTests(SimpleTestCase):
-    # (1) CZ legacy job still resolves to the existing global bridge — even though CZ's jobs are node-bound.
+    # NOTE (ADR-0046 production correction): these ``_Acct(1)`` non-hosted cases prove the PROVIDER-A /
+    # legacy path. In PRODUCTION Customer Zero is PROVIDER-B (hosted), so the Customer-Zero safety proof is
+    # ProductionPremiseProviderBRoutingTests, NOT these — do not read "acct 1" here as Customer Zero.
+    # (1) A Provider-A / legacy (non-hosted) job resolves to the global bridge — even when node-bound.
     def test_legacy_non_hosted_resolves_global(self):
         t = _resolve(_Job(_Acct(1), _Node(1)), flag_on=True, hosted=False)
         self.assertTrue(t.ok)
@@ -226,6 +229,83 @@ class ResolveOrderBaseHelperTests(TestCase):
         self.assertTrue(t.ok)
         self.assertTrue(t.hosted)
         self.assertEqual(t.base_url, NODE_A)
+
+
+class ProductionPremiseProviderBRoutingTests(TestCase):
+    """PRODUCTION TRUTH (ADR-0046 correction, 2026-08-14): **Customer Zero is a PROVIDER-B account**, not
+    legacy — it was migrated to a hosted persistent workspace on node 1, and ``HOSTED_PERSISTENT_MT5_ENABLED``
+    is ON in prod. The earlier ``_Acct(1)``/"legacy CZ" fixtures below prove the Provider-A path only; they
+    are NOT the safety proof for Customer Zero. THIS class is: it uses a real Provider-B account whose node
+    carries an EXPLICIT order endpoint, and proves the destination follows the authoritative execution NODE
+    (never the account id / email / physical host / global config). A Provider-B account on a node with NO
+    explicit endpoint fails CLOSED — it never falls back to any global bridge."""
+
+    def _provider_b_account(self, *, login, node):
+        from django.contrib.auth import get_user_model
+        from execution.readiness import PERSISTENT_WORKSPACE
+        from trading.models import TradingAccount
+        user = get_user_model().objects.create_user(
+            username="pb-%s" % login, email="pb-%s@x.invalid" % login, password="x")
+        return TradingAccount.objects.create(
+            user=user, name="a", broker_name="B", account_number=login, is_demo=True,
+            readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node)
+
+    def _job(self, acct, node):
+        from execution.models import ExecutionJob
+        return ExecutionJob.objects.create(
+            account=acct, terminal_node=node, job_type=ExecutionJob.JobType.CLOSE_TRADE, payload={"ticket": 1})
+
+    def _resolve(self, job_id):
+        import os
+        import mt5_trade_ingest_worker as worker
+        with mock.patch.dict(os.environ, {"HOSTED_PERSISTENT_MT5_ENABLED": "1"}, clear=False):
+            return worker.resolve_order_base(job_id)
+
+    # (1)+(10) Provider-B Customer Zero on node 1 resolves to node 1's EXPLICIT :8788 endpoint (byte-identical).
+    def test_customer_zero_provider_b_resolves_to_its_node_8788_bridge(self):
+        from execution.models import TerminalNode
+        CZ_BRIDGE = "http://100.79.101.19:8788"
+        node = TerminalNode.objects.create(
+            hostname="cz-node-1", rdp_host="100.79.101.19", order_bridge_base_url=CZ_BRIDGE)
+        job = self._job(self._provider_b_account(login="1302561", node=node), node)
+        t = self._resolve(job.id)
+        self.assertTrue(t.ok)
+        self.assertTrue(t.hosted)
+        self.assertEqual(t.base_url, CZ_BRIDGE)  # CZ routes to its OWN node's :8788 — never fail-closed
+
+    # (3)+(4) A Provider-B node with NO explicit endpoint fails closed — never any global bridge.
+    def test_provider_b_node_without_endpoint_fails_closed_never_global(self):
+        from execution.models import TerminalNode
+        node = TerminalNode.objects.create(hostname="pb-noendpoint", rdp_host="100.79.101.19")
+        job = self._job(self._provider_b_account(login="700111", node=node), node)
+        t = self._resolve(job.id)
+        self.assertFalse(t.ok)
+        self.assertEqual(t.reason_code, OT_ENDPOINT_UNCONFIGURED)
+        self.assertEqual(t.base_url, "")
+
+    # (5) Two Provider-B nodes on the SAME physical rdp_host resolve to DIFFERENT order bridges.
+    def test_two_provider_b_nodes_same_rdp_host_resolve_different_bridges(self):
+        from execution.models import TerminalNode
+        cz = TerminalNode.objects.create(hostname="cores-cz", rdp_host="100.79.101.19",
+                                         order_bridge_base_url="http://100.79.101.19:8788")
+        beta = TerminalNode.objects.create(hostname="cores-beta", rdp_host="100.79.101.19",
+                                           order_bridge_base_url="http://100.79.101.19:8790")
+        cz_t = self._resolve(self._job(self._provider_b_account(login="1302561", node=cz), cz).id)
+        beta_t = self._resolve(self._job(self._provider_b_account(login="900222", node=beta), beta).id)
+        self.assertEqual(cz_t.base_url, "http://100.79.101.19:8788")
+        self.assertEqual(beta_t.base_url, "http://100.79.101.19:8790")  # beta NEVER on CZ's :8788
+        self.assertNotEqual(cz_t.base_url, beta_t.base_url)
+
+    # (6) Destination follows execution-NODE authority, not the account id: two Provider-B accounts on the
+    # SAME node resolve to the SAME endpoint.
+    def test_destination_follows_node_authority_not_account_id(self):
+        from execution.models import TerminalNode
+        node = TerminalNode.objects.create(hostname="shared-node", rdp_host="10.0.0.9",
+                                           order_bridge_base_url="http://10.0.0.9:8790")
+        t1 = self._resolve(self._job(self._provider_b_account(login="111", node=node), node).id)
+        t2 = self._resolve(self._job(self._provider_b_account(login="222", node=node), node).id)
+        self.assertEqual(t1.base_url, "http://10.0.0.9:8790")
+        self.assertEqual(t2.base_url, t1.base_url)
 
 
 class WorkerOrderTransportWiringTests(SimpleTestCase):

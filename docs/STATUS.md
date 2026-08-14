@@ -14,6 +14,21 @@
 
 ## Execution workstream log
 
+- **2026-08-14 — ADR-0046 PRODUCTION-PREMISE CORRECTION (Customer Zero is Provider-B). 🟢 focused 21 green.**
+  The first DARK deploy of the order-transport seam (`3073642`) was **rolled back** (prod restored
+  byte-identical: CZ trades 523, column dropped, migration `[X]0029`, git `2543530`; **zero CZ impact** —
+  trades never moved, CZ's ExecutionJob path is dormant, CZ's live trading runs via the separate wayond
+  listener). Root cause: the seam's premise "Customer Zero is legacy/non-hosted → global" is **FALSE in
+  prod** — CZ (acct 1) is a **Provider-B** hosted workspace on node 1 with `HOSTED_PERSISTENT_MT5_ENABLED=1`,
+  so the resolver classified CZ's own orders as hosted → node 1 had a blank `order_bridge_base_url` →
+  fail-closed. Sponsor-approved corrective (Option A): the code is correct; the fix is **operational + test/
+  doc** — set node 1's `order_bridge_base_url` to the **existing `:8788` CZ bridge** (metadata alignment; no
+  new route, no port change, no global pin flip) so CZ resolves to `:8788` byte-identical, while each beta
+  node carries its own pinned bridge. Added `ProductionPremiseProviderBRoutingTests` (CZ-as-Provider-B is now
+  the PRIMARY safety proof) + reframed the Provider-A/legacy fixtures + corrected ADR-0046. Re-deploy uses a
+  **staged sequence**: migrate schema (old code running) → populate node 1 endpoint BEFORE code cutover →
+  pre-cutover assertions → recreate → Golden AFTER; rollback covers BOTH image AND node-1 metadata.
+
 - **2026-08-14 — PER-NODE ORDER-TRANSPORT seam (ADR-0046) — Closed-Beta co-residency blocker fixed. 🟢 DARK,
   focused + execution/hosted_workspace regression (1713) green, NOT committed.** The ADR-0044 host
   co-residency amendment isolated identity/runtime/ACL/RemoteApp but not the **order transport**: the worker
