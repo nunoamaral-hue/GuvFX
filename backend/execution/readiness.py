@@ -43,6 +43,7 @@ RW_OBSERVATION_STALE = "workspace_observation_stale"
 RW_EXECUTION_FEATURE_DISABLED = "workspace_execution_feature_disabled"  # condition 2 (subsystem-level flag)
 RW_EXECUTION_DISABLED = "workspace_execution_disabled"                  # condition 4 (per-workspace arm)
 RW_REAL_ACCOUNT_NOT_ENABLED = "real_account_not_enabled"               # condition 11 (demo-only, fail-closed)
+RW_SUPERVISED_BOUNDARY = "supervised_single_tenant_boundary"           # ADR-0044 (supervised posture only)
 
 # The last attach observation must be no older than this to gate eligibility (mirrors the runtime
 # heartbeat freshness). It is an ELIGIBILITY bound only — the authority is the live order-time gate.
@@ -76,6 +77,17 @@ def _hosted_mt5_execution_enabled() -> bool:
         from hosted_workspace.flags import hosted_mt5_execution_enabled
         return hosted_mt5_execution_enabled()
     except Exception:  # noqa: BLE001
+        return False
+
+
+def _execution_permitted_under_posture(ws) -> bool:
+    """ADR-0044 — the execution-side supervised-posture gate (import-local; fail-closed). True unless we are in
+    the supervised posture (cert off, supervised flag on) AND the bounded single-tenant carve-out does not
+    currently hold for ``ws``. See ``hosted_workspace.supervised_beta.execution_permitted_under_posture``."""
+    try:
+        from hosted_workspace.supervised_beta import execution_permitted_under_posture
+        return execution_permitted_under_posture(ws)
+    except Exception:  # noqa: BLE001 — absence/ambiguity of the subsystem is fail-closed
         return False
 
 
@@ -133,6 +145,13 @@ class PersistentWorkspaceProvider:
         ws = getattr(account, "hosted_workspace", None)
         if ws is None:
             return ReadinessDecision(False, RW_WORKSPACE_MISSING, self.key)
+        # ADR-0044 supervised posture: while the full isolation cert is NOT held and the supervised flag is on,
+        # execution is permitted ONLY while the bounded single-tenant carve-out holds for this workspace — so a
+        # second tenant landing on the host fails readiness closed at ORDER time (this gate is re-evaluated
+        # before every mutation), not merely at observation time. No-op when certified (co-residency allowed) or
+        # when the supervised flag is off (the observation trust anchor governs). Fail-closed.
+        if not _execution_permitted_under_posture(ws):
+            return ReadinessDecision(False, RW_SUPERVISED_BOUNDARY, self.key)
         if getattr(ws, "execution_enabled", False) is not True:  # condition 4 — explicit per-workspace ARM
             return ReadinessDecision(False, RW_EXECUTION_DISABLED, self.key)
         # Attach truth from the M3c CANONICAL projection (ADR-0034 M3c) — the fields the ONE certified,

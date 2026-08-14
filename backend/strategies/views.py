@@ -388,10 +388,23 @@ def _routable_sibling_exists(source, *, exclude_strategy=None, exclude_account=N
 
 
 def _account_execution_ready(account):
-    """(ready, reason) — TECHNICAL readiness for arming: the account's OWNED beta runtime is verified
-    up (runtime_ready), and — when broker login is required — the broker session is verified
-    (broker_connected). Fail-closed: no runtime / not ready → not ready. Lazy imports avoid an
-    app-load import cycle."""
+    """(ready, reason) — TECHNICAL readiness for arming, per the account's READINESS PROVIDER.
+
+    Provider B (``persistent_workspace`` — Hosted Workspace, ADR-0033/0034): a hosted account has NO legacy
+    ``AccountRuntime``; its readiness is the CERTIFIED persistent-workspace gate (``execution.readiness``:
+    hosted flags on, workspace present + armed + connected + matched + confirmed + trade_allowed + canonical
+    EXECUTION_READY + fresh observation). Delegating here means the ONE self-serve arm path works for a hosted
+    account instead of fail-closing on ``runtime_not_ready`` (the legacy model it does not have). Reason strings
+    are the readiness reason codes.
+
+    Provider A (default; every existing account): UNCHANGED — the owned beta runtime is verified up
+    (runtime_ready), and — when broker login is required — the broker session is verified (broker_connected).
+    Fail-closed. Lazy imports avoid an app-load import cycle."""
+    from execution import readiness as R
+    if str(getattr(account, "readiness_provider", "") or "") == R.PERSISTENT_WORKSPACE:
+        decision = R.evaluate_readiness(account)
+        return (bool(decision.eligible), "ready" if decision.eligible else decision.reason_code)
+
     from terminal_provisioning.beta_activation import broker_connected, runtime_ready
     from terminal_provisioning.models import AccountRuntime
     from terminal_provisioning.provisioner import _require_broker_login
@@ -504,10 +517,16 @@ def _signal_copy_readiness(user, account, source, template_name):
     """
     from trading.models import TradingAccount  # noqa: F401 — kept parallel to the arm path's imports
 
+    from execution import readiness as _R
+    is_hosted = str(getattr(account, "readiness_provider", "") or "") == _R.PERSISTENT_WORKSPACE
     is_demo = bool(account.is_demo)
     is_active = bool(account.is_active)
-    has_creds = bool((getattr(account, "password_enc", "") or "").strip())
-    ready, why = _account_execution_ready(account)  # runtime_ready (+ broker_connected if required)
+    # Provider A stores a broker password; Provider B (Hosted Workspace) NEVER does (the customer logs into MT5
+    # themselves) — so for hosted the "credentials" dimension is satisfied by the certified hosted-readiness
+    # gate (the ``runtime_ready`` item below), not a stored secret. Reflect that truthfully instead of a
+    # spurious "missing credentials" red on every hosted account.
+    has_creds = True if is_hosted else bool((getattr(account, "password_enc", "") or "").strip())
+    ready, why = _account_execution_ready(account)  # Provider A: runtime_ready(+broker); Provider B: hosted gate
     pilot = _arm_cohort_approved(user)
     disconnected = bool(getattr(account, "disconnected_at", None))
     # NEEDS-ATTENTION probes (validation KNOWN-BAD / health / pause / duplicate) — only meaningful for a
@@ -1306,7 +1325,13 @@ class StrategyViewSet(viewsets.ModelViewSet):
             return Response({"status": "account_not_ready",
                              "detail": "Account must be demo and active."},
                             status=status.HTTP_409_CONFLICT)
-        if not (account.password_enc or "").strip():
+        # Stored-credential gate — Provider A only. A Provider-B (Hosted Workspace) account NEVER stores a
+        # broker password (the customer logs into MT5 themselves; GuvFX holds only identifiers), so requiring
+        # ``password_enc`` here would wrongly 409 every hosted account. Its readiness is instead the certified
+        # persistent-workspace gate, enforced by ``_account_execution_ready`` below (ADR-0033/0044).
+        from execution import readiness as _R
+        _is_hosted = str(getattr(account, "readiness_provider", "") or "") == _R.PERSISTENT_WORKSPACE
+        if not _is_hosted and not (account.password_enc or "").strip():
             return Response({"status": "credentials_missing",
                              "detail": "Enter and validate MT5 credentials first."},
                             status=status.HTTP_409_CONFLICT)

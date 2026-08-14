@@ -14,6 +14,26 @@
 
 ## Execution workstream log
 
+- **2026-08-14 — SUPERVISED_SINGLE_TENANT_BETA + autonomous hosted arming (ADR-0044). 🟢 DARK, branch
+  `feat/supervised-single-tenant-beta`.** Sponsor-authorised interim posture so the FIRST end-to-end beta
+  journey can reach EXECUTION_READY **without** the full `REMOTEAPP_ISOLATION_CERTIFIED` behavioural cert —
+  bounded and fail-closed, emitting **no** cert marker. New `hosted_workspace/supervised_beta.py`
+  (`supervised_single_tenant_beta_active` — opens ONLY for a single non-CZ **demo** tenant alone on a dedicated
+  ACTIVE non-CZ node, single-tenancy checked at the **physical host / rdp_host** level) + flag
+  `SUPERVISED_SINGLE_TENANT_BETA_ENABLED` (default OFF). Composed as an **OR** with the cert at the
+  `live_observe` trust anchor AND at the Provider-B readiness/`_arm_preconditions` order gate
+  (`RW_SUPERVISED_BOUNDARY`), so a second tenant fails execution closed immediately. **Autonomous arming**
+  (Decision 2): `confirm_broker_account` activates the intent account (`is_active`); new `auto_arm_runner`
+  (wired into the `run_hosted_observations` cron cycle) arms `execution_enabled` via the certified
+  precondition-checked path — removing the per-user operator CLI; durable `auto_arm_suppressed` (mig 0006) so a
+  disarm is never silently reverted. **E1**: `_account_execution_ready` + the arm credentials gate + readiness
+  panel are Provider-B aware (Provider A byte-unchanged). Three genuine beta-blocking defects fixed (legacy-only
+  arm readiness; no autonomous arm; intent account never activated). 6-lens adversarial review → 0 HIGH / 4
+  MEDIUM, all fixed + re-tested. Tests: `tests_supervised_beta` + `tests_auto_arm` + `strategies/tests_hosted_arm`.
+  `make check` green. **Activation is a Sponsor/operational action** (flip `SUPERVISED_SINGLE_TENANT_BETA_ENABLED`
+  + hosted execution/observation flags on a provisioned non-CZ beta node); this does NOT replace the full cert,
+  which is still required before a 2nd tenant / co-residency with CZ / public launch (ADR-0044).
+
 - **2026-08-14 — WAYOND BETA ENABLEMENT — multi-user path repo-complete + hardened. 🟢 DARK, merged main.**
   Beta Product Enablement (Sponsor). Root cause "hosted not taking Wayond trades" = 2026-08-10 `AUTO_SHADOW`
   quiesce (0 orders) + hosted plane has no order-send transport (host-cert-gated); AutoTrading/golden not the

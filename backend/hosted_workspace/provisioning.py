@@ -67,16 +67,21 @@ def _mask(login: str) -> str:
 
 
 def _node_has_capacity(node) -> bool:
-    """True iff ``node`` can take one more occupant. Occupancy = live legacy accounts
-    (``computed_active_accounts``, ``is_active=True``) PLUS bound Hosted Workspaces — which are held on
-    INACTIVE intent accounts (``is_active=False``) and are therefore invisible to the legacy metric. Counting
-    only the legacy metric fail-OPENs (a hosted binding never increments it, so a node over-fills and every
-    customer piles onto node 1). The hosted term filters to ``is_active=False`` so a hosted account that is
-    also live is not double-counted. Must be called with the node row LOCKED so the count-then-bind can't
-    over-commit under concurrency."""
-    active = node.computed_active_accounts
-    hosted = node.bound_hosted_workspaces.filter(trading_account__is_active=False).count()
-    return (active + hosted) < node.max_accounts
+    """True iff ``node`` can take one more occupant. Occupancy = the count of DISTINCT occupant ACCOUNTS across
+    BOTH binding sources: a live legacy account via ``terminal_node`` (``is_active=True``), and a Hosted
+    Workspace via ``execution_node`` (regardless of the intent account's ``is_active``). Counting a UNION of
+    account ids (not the sum of two separately-filtered counts) is robust to (a) an activated hosted account —
+    ``is_active=True`` after confirmation (ADR-0044) — which the old ``is_active=False`` hosted filter would
+    have dropped, and (b) the ``terminal_node``/``execution_node`` desync (e.g. ``unassign_account`` clears
+    ``terminal_node`` while the workspace keeps ``execution_node``), which would otherwise make the account
+    escape BOTH terms and let the allocator over-fill the node. Must be called with the node row LOCKED so the
+    count-then-bind can't over-commit under concurrency."""
+    from trading.models import TradingAccount
+    occupants = set(
+        TradingAccount.objects.filter(terminal_node_id=node.pk, is_active=True).values_list("id", flat=True)
+    )
+    occupants |= set(node.bound_hosted_workspaces.values_list("trading_account_id", flat=True))
+    return len(occupants) < node.max_accounts
 
 
 def _node_deliverable(node) -> bool:
@@ -252,8 +257,14 @@ def _advance_to_awaiting_login(workspace) -> None:
 def confirm_broker_account(user, workspace, *, actor="", request=None) -> ConfirmResult:
     """Customer ACK 'yes, this is my broker account'. Owner-scoped + gated on a POSITIVE observed active-
     account match (the certified matcher's result, cached in ``proj_account_match``, on a CONNECTED/ready
-    workspace). Stamps ``TradingAccount.workspace_confirmed_at`` (the durable ACK). Idempotent; NEVER accepts
-    a password; the ACK is NOT execution authority — the live bridge gate remains the order authority."""
+    workspace). Stamps ``TradingAccount.workspace_confirmed_at`` (the durable ACK) and ACTIVATES the account
+    (``is_active=True``) — the customer-specific activation the autonomous journey must perform (ADR-0044
+    Decision 2): the Provider-B readiness gate and the arm preconditions both require ``is_active``, and the
+    intent account was created ``is_active=False`` (provisioning), so without activating here a confirmed,
+    connected, matched hosted account could never become execution-ready. Confirmation is the right point: it
+    is the human ACK on an already CONNECTED + matched workspace, and the node-occupancy metric explicitly
+    anticipates a live hosted account (no double-count). Idempotent; NEVER accepts a password; the ACK is NOT
+    execution authority — the live bridge gate remains the order authority, and arming stays a separate step."""
     ok, reason = hosted_workspace_admission(user)
     if not ok:
         return ConfirmResult(False, reason)
@@ -274,7 +285,13 @@ def confirm_broker_account(user, workspace, *, actor="", request=None) -> Confir
                 or ws.proj_account_match is not True):
             return ConfirmResult(False, CONFIRM_NO_MATCH)
         acct.workspace_confirmed_at = timezone.now()
-        acct.save(update_fields=["workspace_confirmed_at"])
+        # Activate the account atomically with the ACK (was is_active=False as an intent account). This is a
+        # customer-specific step of the autonomous journey; it is NOT arming (execution_enabled stays False).
+        fields = ["workspace_confirmed_at"]
+        if acct.is_active is not True:
+            acct.is_active = True
+            fields.append("is_active")
+        acct.save(update_fields=fields)
 
     _audit(request, "HOSTED_WORKSPACE_ACCOUNT_CONFIRMED", acct, actor)
     emit_workspace_event(WorkspaceEvent.ACCOUNT_CONFIRMED, workspace_uuid=ws.workspace_uuid, account=acct,
