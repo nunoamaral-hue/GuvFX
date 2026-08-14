@@ -202,10 +202,29 @@ class G5v2WxAclTests(SimpleTestCase):
                                  "inherited": False})
         self.assertFalse(A.verify_workspace_acl_v2(dacls, user_sid=self.SID, plan=self.plan).ok)
 
-    def test_self_control_runs_every_call(self):
-        # RULE 11: the verifier proves its detector live (pos + neg) before any verdict — a broken plan self-fails.
+    def test_self_control_passes_on_a_good_call_v2(self):
+        # RULE 11 happy path: the verifier proves its detector live (pos + neg) before any verdict.
         self.assertTrue(A.verify_workspace_acl_v2(_v2_good_readback(self.SID, self.plan),
                                                   user_sid=self.SID, plan=self.plan).ok)
+
+    def test_self_control_actually_fires_v2(self):
+        # STREAM 10D review fix — the REAL proof (not a tautology): if _classify_v2 were broken to ACCEPT a
+        # leaking DACL, the self-control's NEGATIVE probe must catch it so verify_workspace_acl_v2 RAISES. A test
+        # that only asserts a good read-back verifies .ok would still pass if the _self_check_v2 call were DELETED;
+        # this one fails unless the self-control genuinely runs on every call.
+        from unittest.mock import patch
+        import types
+        with patch.object(A, "_classify_v2", lambda *a, **k: types.SimpleNamespace(ok=True, reason="")):
+            with self.assertRaises(A.AclSelfCheckError):
+                A.verify_workspace_acl_v2(_v2_good_readback(self.SID, self.plan), user_sid=self.SID, plan=self.plan)
+
+    def test_self_control_actually_fires_v1(self):
+        # Same real proof for the G5v1 verifier: a broken _classify (accepts a leak) must be caught by _self_check.
+        from unittest.mock import patch
+        import types
+        with patch.object(A, "_classify", lambda *a, **k: types.SimpleNamespace(ok=True, reason="")):
+            with self.assertRaises(A.AclSelfCheckError):
+                A.verify_workspace_acl(_rows(self.SID), user_sid=self.SID)
 
     def test_verify_rejects_partial_deny_write_on_common_ini(self):
         # A Deny covering only Delete (or only Write) leaves an effective write path via the inherited tenant

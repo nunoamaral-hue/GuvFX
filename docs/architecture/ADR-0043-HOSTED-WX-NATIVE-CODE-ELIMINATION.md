@@ -48,11 +48,38 @@ NTFS ACL and the AppLocker policy — no duplicate manually-maintained list.
    **writable deny surface**.
 3. **MetaEditor denied.** The Exe MetaQuotes publisher rule is pinned `BinaryName=terminal64.exe` (embedded
    signature name — rename-proof); `metaeditor64.exe` and every other MetaQuotes tool are denied. No developer
-   exception in this stream.
+   exception in this stream. **This pin lives in the MACHINE-WIDE BASE allow model** (`generate_base_policy` + the
+   committed `guvfx-hosted-{auditonly,enforce}.xml`), NOT behind `HOSTED_WX_ISOLATION_ENABLED` — it is a
+   deny-by-default TIGHTENING (it only DENIES metaeditor64; it opens nothing) consistent with ADR-0042, so it
+   ships whenever the base policy is (re)deployed. **RULE-11 pre-Enforce control:** because the pinned literal
+   must equal `terminal64.exe`'s real embedded `BinaryName`, an **Enabled-mode base redeploy must first prove
+   on-host that they match** (else it would deny `terminal64.exe` itself and break MT5 for every tenant incl.
+   Customer Zero); until that positive control passes the pin is exercised in **AuditOnly only**. `flags.py`
+   documents the same boundary (the pin is deliberately NOT gated by the W^X flag).
 4. **Golden vetted-empty.** The golden's MQL5 code dirs ship **empty**; `Test-GoldenImage` fails on any
    unapproved EA/EX5/script/indicator or any source containing a `#import` to a non-approved library.
 5. **`AllowDllImport=0` tenant-immutable** (defence-in-depth behind W^X, not relied upon): written at launch
    **and** the Deny-write ACE on `common.ini` prevents the Options toggle / on-exit rewrite from flipping it.
+
+## Composition & application wiring (the W^X Deny is NOT inert)
+
+The per-tenant W^X `Deny(*)` is produced by ONE definition (`tenant_wx_deny_rules`) and reaches an effective
+policy through two symmetric callers, mirroring the NTFS side (`build_workspace_acl_plan_v2` +
+`Set-GuvfxWorkspaceAclV2.ps1`):
+
+- **Compose (backend, pure, tested):** `compile_effective_wx_policy(base, tenants)` = base + one per-tenant
+  `Deny(*)` (from the same `HOSTED_*` source). Under W^X this Deny **supersedes** the legacy shell-binary denies
+  (`cmd`/`powershell`/… are denied because they are not among the exec-allow exceptions), so the W^X composer
+  emits `base + Deny(*)`, not `tenant_deny_rules`. An end-to-end test composes the effective policy and asserts a
+  copied **signed** `terminal64` is denied from Public / ProgramData / another drive / a writable subdir while the
+  RX `terminal64` + session binaries run — with the base MetaQuotes publisher Allow still present, proving the
+  Deny is load-bearing.
+- **Apply (host):** `Set-GuvfxAppLockerTenant.ps1 -Mode MergeWx -FragmentPath …` merges the **backend-produced**
+  `tenant_wx_deny_fragment` (no XML built in PowerShell), after validating it is one Exe `Deny` bound to this
+  account's tenant SID + `4d54` rule id. `-Mode Remove` strips it (legacy or W^X — both carry the account-tagged id).
+
+End-to-end **application** from `slot_preparation` (calling the composer and pushing to the host applier) is gated
+behind `HOSTED_WX_ISOLATION_ENABLED` + the host-executor seam (both DARK) — exactly as the G5v2 NTFS plan is.
 
 ## Enforcement / regression guards (CI)
 
@@ -61,11 +88,19 @@ NTFS ACL and the AppLocker policy — no duplicate manually-maintained list.
   hole); grants nothing; correct SID.
 - `assert_wx_no_writable_executable_intersection` — no path in the executable allow surface is under a
   tenant-writable subdir (TENANT-EXECUTABLE ⇒ NON-WRITABLE).
+- `assert_wx_subdir_lists_disjoint` — machine-checks the MINIMALITY relationship (no `HOSTED_WRITABLE_SUBDIRS`
+  entry equals, contains, or is contained by a `HOSTED_CODE_SUBDIRS` entry), previously asserted only in prose.
 - `verify_workspace_acl_v2` also rejects any **foreign Allow principal** on a writable/code subdir (not just the
   tenant's own ACEs), and the host applier snapshots + restores **every** mutated path's ACL on rollback.
 - `assert_allow_model_invariants` now also requires the Exe MetaQuotes rule be `BinaryName`-pinned.
 - `verify_workspace_acl_v2` — RULE-11 positive/negative self-control; fail-closed on a tenant-writable root/code
-  dir, a missing path, or a missing Deny-write.
+  dir, a missing path, or a missing Deny-write. A test **monkeypatches the classifier** to prove the self-control
+  actually fires (a test that only checks a good read-back would pass even if the self-check call were deleted).
+- **Golden gate (`Test-GuvfxGoldenMql.ps1`) is fail-closed (RULE 11):** a missing code dir is an offender
+  (`expected_code_dir_absent`), enumeration errors are captured (`code_dir_unscannable`, never swallowed), a
+  reparse-point code dir is rejected, and a **runtime positive control** (a seeded `#import` source + stray `.ex5`
+  that the same detector must flag) runs before any clean `vetted_empty` is emitted. A Python static guard asserts
+  these guards remain in the script (CI has no PowerShell).
 - The canonical `HOSTED_WRITABLE_SUBDIRS`/`HOSTED_CODE_SUBDIRS` are imported by `workspace_acl` from
   `applocker_policy` (same objects — tested) so NTFS and AppLocker can never diverge.
 
@@ -99,8 +134,17 @@ location and force its load via an HKCU COM `InprocServer32` hijack against a te
 (`sihost`/`taskhostw`) — a **signed-downgrade / bring-your-own-vulnerable-DLL** primitive (a *higher bar* than the
 closed unsigned path: it needs a signed-but-vulnerable or signed-proxy DLL to reach attacker-controlled native
 code). The broad Microsoft OS-DLL rule cannot be safely `BinaryName`-pinned without breaking OS/MT5 updates.
-**Disposition (parallel to the ADR-0042 `%WINDIR%` LOLBIN residual):** recorded as an accepted **MEDIUM**
-residual; where feasible the MetaQuotes DLL rule should be `BinaryName`/version-pinned to the specific MT5 DLLs
-(soak-derived), and the on-host `8004` escape battery **must include a signed-DLL COM-hijack case** — a tenant
-COM-hijacking a signed DLL from a writable location — that must be shown blocked (or bounded to trusted-signer
-code with no native-exec) **before `REMOTEAPP_ISOLATION_CERTIFIED` is emitted**.
+**This residual is OUTSIDE the repository security boundary — it cannot be closed in code.** AppLocker gates DLL
+*loads* by signature, not in-process *use* of a legitimately-signed, **mandatorily-allowed** OS DLL — the SAME
+architectural limitation, in the same layer, as the `#import`-of-a-signed-OS-DLL class the Chief Architect already
+accepted (a signed `kernel32` must load for MT5 / the OS to run). No repository control can distinguish a
+legitimate signed-DLL load from an abusive one; only on-host **behaviour** can. It is therefore a
+**formally-justified residual accepted in the architecture** (the Sponsor's second acceptance path), parallel to
+the ADR-0042 `%WINDIR%` LOLBIN residual — NOT an unremediated repository defect.
+
+**Disposition (hard, not advisory):** where host signature metadata later permits, the MetaQuotes **Dll** rule
+should be `BinaryName`/version-pinned to the specific soak-derived MT5 DLLs (shrinking the residual to
+Microsoft-signed only; the MS OS-DLL breadth stays irreducible), guarded like the Exe pin. Independently, the
+on-host `8004` escape battery **must include a signed-DLL COM-hijack-from-a-writable-location case** — shown
+blocked, or bounded to trusted-signer code that reaches no attacker-controlled native execution — as a **hard
+precondition** gating `REMOTEAPP_ISOLATION_CERTIFIED`; it is never waived.

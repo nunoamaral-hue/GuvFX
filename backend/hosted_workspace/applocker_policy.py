@@ -581,22 +581,19 @@ def hosted_tenant_exec_allowlist(account_id) -> list:
     return paths
 
 
-def tenant_wx_deny_fragment(account_id, sid: str) -> str:
-    """A minimal ``AppLockerPolicy`` carrying ONE per-tenant Exe rule: ``Deny(*)`` scoped to ``sid`` with
-    EXCEPTIONS for the executable allow surface (terminal64 RX + session binaries). Deny-over-Allow makes the
-    tenant unable to execute ANYTHING outside the surface, from ANY location — the positive W^X model that closes
-    the copied-terminal64 / portable-copy class regardless of where the copy is planted (Public/ProgramData/
-    suffixed profile/other drive). NotConfigured so ``-Merge`` never changes enforcement mode. Reuses the '4d54'
-    tenant marker so the existing per-account remove_tenant / tenant_account_ids machinery strips it on release."""
+def tenant_wx_deny_rules(account_id, sid: str) -> list:
+    """The per-tenant W^X Exe rule(s): a single ``Deny(*)`` scoped to ``sid`` whose ``Exceptions`` are EXACTLY the
+    executable allow surface (terminal64 RX + session binaries). Returned as DETACHED ``FilePathRule`` elements so
+    that BOTH the standalone host fragment (``tenant_wx_deny_fragment``, applied via ``-Merge``) AND the
+    effective-policy composer (``compile_effective_wx_policy`` / ``merge_tenant_wx``) build from ONE definition —
+    the W^X Deny can never be defined in two places and drift. Fail-closed on a malformed/shared SID."""
     n = _account(account_id)
     s = str(sid or "").strip()
     if not _SID_RE.match(s):
         raise AppLockerPolicyError("malformed_sid")
     if s in _WX_FORBIDDEN_DENY_SIDS:
         raise AppLockerPolicyError("refusing_wx_deny_on_shared_principal")
-    root = ET.Element("AppLockerPolicy", {"Version": "1"})
-    coll = ET.SubElement(root, "RuleCollection", {"Type": "Exe", "EnforcementMode": "NotConfigured"})
-    rule = ET.SubElement(coll, "FilePathRule", {
+    rule = ET.Element("FilePathRule", {
         "Id": tenant_rule_id(n, _WX_DENY_SEQ),
         "Name": f"(Hosted acct {n} W^X) Deny all execution except the allow surface",
         "Description": f"acct={n};wx=exec-allowlist", "UserOrGroupSid": s, "Action": "Deny"})
@@ -604,7 +601,76 @@ def tenant_wx_deny_fragment(account_id, sid: str) -> str:
     exc = ET.SubElement(rule, "Exceptions")
     for p in hosted_tenant_exec_allowlist(n):
         ET.SubElement(exc, "FilePathCondition", {"Path": p})
+    return [rule]
+
+
+def tenant_wx_deny_fragment(account_id, sid: str) -> str:
+    """A minimal ``AppLockerPolicy`` carrying ONLY account N's W^X ``Deny(*)`` Exe rule — the fragment the host
+    ``Set-AppLockerPolicy -Merge`` adds to the machine policy. Deny-over-Allow makes the tenant unable to execute
+    ANYTHING outside the exec allow surface, from ANY location — the positive W^X model that closes the
+    copied-terminal64 / portable-copy class regardless of where the copy is planted (Public/ProgramData/suffixed
+    profile/other drive). ``NotConfigured`` so ``-Merge`` never changes the Exe collection's enforcement mode.
+    Reuses the '4d54' tenant marker so the existing per-account remove_tenant / tenant_account_ids machinery
+    strips it on release. Built from ``tenant_wx_deny_rules`` (the single rule definition)."""
+    root = ET.Element("AppLockerPolicy", {"Version": "1"})
+    coll = ET.SubElement(root, "RuleCollection", {"Type": "Exe", "EnforcementMode": "NotConfigured"})
+    for r in tenant_wx_deny_rules(account_id, sid):
+        coll.append(r)
     return _tostr(root)
+
+
+def compile_effective_wx_policy(base_xml: str, tenants) -> str:
+    """base + each tenant's W^X ``Deny(*)`` — the effective-policy composer for the W^X model, parallel to
+    ``compile_effective_policy`` (legacy shell-deny) and to ``workspace_acl.build_workspace_acl_plan_v2`` (NTFS).
+
+    THIS is the caller that makes the W^X Deny non-inert: without a composer the ``tenant_wx_deny_fragment`` never
+    enters an effective policy, and a copied SIGNED terminal64 at a writable path would match the base MetaQuotes
+    publisher Allow and run (V3/V5). Under W^X the single per-tenant ``Deny(*)`` SUPERSEDES the legacy shell-binary
+    denies (cmd/powershell/... are denied because they are NOT among the exec-allow-surface exceptions), so this
+    composes ``base + ONE Deny(*) per tenant`` — NOT ``tenant_deny_rules``. Deterministic, sorted by account,
+    idempotent. ``tenants`` = iterable of ``(account_id, sid)``. NOTE: end-to-end APPLICATION (calling this from
+    ``slot_preparation`` and pushing to the host applier's ``-Mode MergeWx``) is gated behind
+    ``HOSTED_WX_ISOLATION_ENABLED`` + the host-executor seam (both DARK) — exactly as the G5v2 NTFS plan is."""
+    root = ET.fromstring(base_xml)
+    exe = _exe_collection(root)
+    seen = set()
+    for account_id, sid in sorted(tenants, key=lambda t: int(t[0])):
+        n = _account(account_id)
+        if n in seen:
+            continue
+        seen.add(n)
+        for r in tenant_wx_deny_rules(n, sid):
+            exe.append(r)
+    return _tostr(root)
+
+
+def merge_tenant_wx(effective_xml: str, account_id, sid: str) -> str:
+    """Add (or idempotently replace) account N's W^X ``Deny(*)`` in an existing effective policy — models the host
+    ``-Merge`` for the W^X model. Strips any prior tenant-N rule first (idempotent re-merge), leaves the base and
+    every other tenant untouched."""
+    n = _account(account_id)
+    root = ET.fromstring(effective_xml)
+    exe = _exe_collection(root)
+    for rule in list(exe):
+        if _is_tenant_rule(rule.get("Id", ""), n):
+            exe.remove(rule)
+    for r in tenant_wx_deny_rules(n, sid):
+        exe.append(r)
+    return _tostr(root)
+
+
+def assert_wx_subdir_lists_disjoint() -> bool:
+    """Machine-check the ADR-0043 MINIMALITY relationship between the two canonical lists: NO
+    ``HOSTED_WRITABLE_SUBDIRS`` entry may equal, contain, or be contained by a ``HOSTED_CODE_SUBDIRS`` entry.
+    A writable dir that nested a code dir (or vice-versa) would re-open the W^X hole via NTFS Modify inheritance.
+    Previously asserted only in prose; now a CI-guarded invariant so a future list edit cannot silently violate it."""
+    writ = [w.upper().rstrip("\\") for w in HOSTED_WRITABLE_SUBDIRS]
+    code = [c.upper().rstrip("\\") for c in HOSTED_CODE_SUBDIRS]
+    for w in writ:
+        for c in code:
+            if w == c or w.startswith(c + "\\") or c.startswith(w + "\\"):
+                raise AppLockerPolicyError(f"wx_writable_code_subdir_overlap:{w}~{c}")
+    return True
 
 
 def assert_wx_deny_invariants(fragment_xml: str, account_id, sid: str) -> bool:

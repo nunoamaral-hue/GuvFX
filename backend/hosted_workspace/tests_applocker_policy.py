@@ -529,6 +529,84 @@ class WxIsolationTests(SimpleTestCase):
         default = {p.lower() for p in _json.loads(m.group(1))}
         self.assertEqual(default, {c.lower() for c in A.HOSTED_CODE_SUBDIRS})
 
+    # ── STREAM 10D review fix — the W^X Deny(*) must be COMPOSED into an effective policy, not inert ──────────
+    def _effective_deny_exceptions(self, eff_xml, account):
+        """The exception paths of the per-tenant W^X Deny(*) as it sits in a COMPOSED effective policy (proves the
+        composer actually placed the load-bearing rule — not just that the standalone fragment is well-formed)."""
+        root = ET.fromstring(eff_xml)
+        denies = [r for c in root.findall("RuleCollection") if c.get("Type") == "Exe"
+                  for r in c if (r.get("Action") or "").lower() == "deny" and A._is_tenant_rule(r.get("Id", ""), account)]
+        self.assertEqual(len(denies), 1, "composed effective policy must carry exactly one W^X Deny for the tenant")
+        self.assertEqual([c.get("Path") for c in denies[0].findall("Conditions/FilePathCondition")], ["*"])
+        return {c.get("Path").upper() for c in denies[0].findall("Exceptions/FilePathCondition")}
+
+    def test_wx_effective_policy_composes_and_denies_copied_terminal64(self):
+        # The V3/V5 closure is only real if the W^X Deny(*) enters an EFFECTIVE policy. Prove the composer does it:
+        # a copied SIGNED terminal64 (which would match the base MetaQuotes publisher Allow) is denied everywhere.
+        import fnmatch
+        base = A.generate_base_policy("Enabled")
+        eff = A.compile_effective_wx_policy(base, [(7, self.SID)])
+        exc = self._effective_deny_exceptions(eff, 7)
+        denied = lambda t: not any(fnmatch.fnmatch(t.upper(), e) for e in exc)
+        # the base MetaQuotes Exe publisher Allow is still present (so ABSENT the Deny, the copy WOULD run)
+        base_pubs = [r for c in ET.fromstring(eff).findall("RuleCollection") if c.get("Type") == "Exe"
+                     for r in c if r.tag == "FilePublisherRule" and (r.get("Action") or "") == "Allow"]
+        self.assertTrue(base_pubs, "base MetaQuotes publisher Allow must remain — proves the Deny is load-bearing")
+        for loc in (r"%OSDRIVE%\USERS\PUBLIC\TERMINAL64.EXE", r"%OSDRIVE%\PROGRAMDATA\Z\TERMINAL64.EXE",
+                    r"D:\X\TERMINAL64.EXE", r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\CONFIG\TERMINAL64.EXE"):
+            self.assertTrue(denied(loc), f"copied terminal64 must be denied from {loc}")
+        self.assertFalse(denied(r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\TERMINAL64.EXE"))   # legit RX runs
+        # composition must not break the base allow model, and the W^X Deny supersedes the legacy shell-deny:
+        self.assertTrue(A.assert_allow_model_invariants(eff))
+        self.assertTrue(denied(r"%SYSTEM32%\CMD.EXE"), "W^X Deny(*) must deny cmd.exe (supersedes legacy shell-deny)")
+
+    def test_wx_effective_composer_is_deterministic_dedup_idempotent(self):
+        base = A.generate_base_policy("Enabled")
+        a = A.compile_effective_wx_policy(base, [(7, self.SID), (7, self.SID), (3, "S-1-5-21-11-22-33-1003")])
+        b = A.compile_effective_wx_policy(base, [(3, "S-1-5-21-11-22-33-1003"), (7, self.SID)])
+        self.assertEqual(A._canonical(a), A._canonical(b))                       # order-independent + dedup
+        self.assertEqual(A.tenant_account_ids(a), {3, 7})
+        # merge_tenant_wx is idempotent and strips only the target account
+        m = A.merge_tenant_wx(a, 7, self.SID)
+        self.assertEqual(A._canonical(m), A._canonical(a))
+        removed, n = A.remove_tenant(m, 7)
+        self.assertEqual(A.tenant_account_ids(removed), {3})
+
+    def test_wx_deny_rules_single_definition_shared_by_fragment_and_composer(self):
+        # tenant_wx_deny_rules is the ONE definition; the standalone fragment and the composed policy carry the
+        # byte-identical rule (they cannot drift).
+        rule = A.tenant_wx_deny_rules(7, self.SID)[0]
+        frag_rule = list([c for c in ET.fromstring(A.tenant_wx_deny_fragment(7, self.SID)).findall("RuleCollection")][0])[0]
+        self.assertEqual(ET.tostring(rule, encoding="unicode"), ET.tostring(frag_rule, encoding="unicode"))
+
+    def test_wx_subdir_lists_are_disjoint(self):
+        # ADR-0043 MINIMALITY, previously prose-only: no writable subdir may nest a code dir (or vice-versa).
+        self.assertTrue(A.assert_wx_subdir_lists_disjoint())
+
+    def test_wx_subdir_overlap_would_be_caught(self):
+        real = A.HOSTED_WRITABLE_SUBDIRS
+        try:
+            A.HOSTED_WRITABLE_SUBDIRS = real + (r"terminal\MQL5\Experts\sub",)   # nested under a code dir
+            with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_writable_code_subdir_overlap"):
+                A.assert_wx_subdir_lists_disjoint()
+        finally:
+            A.HOSTED_WRITABLE_SUBDIRS = real
+
+    def test_golden_mql_gate_is_fail_closed(self):
+        # STREAM 10D review (rated HIGH): the golden gate must NOT emit a false "vetted_empty". Statically assert
+        # the .ps1 carries the RULE-11 fail-closed guards (CI has no PowerShell, so guard the source shape so a
+        # future edit that removes any of them trips CI). The runtime positive control itself proves the parser.
+        ps = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                          "terminal_provisioning", "windows", "Test-GuvfxGoldenMql.ps1")
+        txt = open(ps).read()
+        for token in ("positive_control_failed",           # RULE-11 runtime positive control aborts on failure
+                      "expected_code_dir_absent",          # coverage guard: a missing code dir is an offender
+                      "code_dir_unscannable",               # captured enumeration errors -> offender (no fail-open)
+                      "-ErrorVariable ev",                  # enumeration errors are captured, not swallowed
+                      "code_dir_is_reparse_point",          # reparse-point code dir rejected
+                      "poscontrol.mq5", 'poscontrol.ex5'):  # the seeded known-bad positive control inputs
+            self.assertIn(token, txt, f"golden gate missing fail-closed guard: {token}")
+
 
 class CapacityTests(SimpleTestCase):
     def test_no_collision_across_accounts(self):
