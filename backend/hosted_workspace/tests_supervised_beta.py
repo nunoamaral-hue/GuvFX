@@ -123,15 +123,26 @@ class SupervisedGateTests(TestCase):
         ws.trading_account = None
         self.assertFalse(SB.supervised_single_tenant_beta_active(ws))
 
-    def test_two_node_rows_sharing_rdp_host_break_single_tenant(self, _cz):
-        # Physical-host co-residency: two ACTIVE TerminalNode rows resolve to ONE box (same rdp_host). A second
-        # tenant on the OTHER node row must still close the gate (finding I1 — host, not node-pk, is the unit).
+    def test_beta_coresident_on_shared_host_own_node_is_single_tenant(self, _cz):
+        # ADR-0044 AMENDMENT (CLOSED TRUSTED BETA co-residency): two ACTIVE TerminalNode rows on ONE physical
+        # box (same rdp_host). A beta tenant ALONE on ITS OWN node IS single-tenant even though a DIFFERENT
+        # tenant shares the physical host via a DIFFERENT node — single-tenancy is per-TerminalNode, not per-host.
         node1 = _node(rdp="10.60.0.9", host="beta-a")
         node2 = _node(rdp="10.60.0.9", host="beta-b")
         acct1 = _acct(node1)
         ws1 = _ws(acct1, node1)
-        _ws(_acct(node2), node2)                       # SECOND tenant on the same physical host via node2
-        self.assertFalse(SB.supervised_single_tenant_beta_active(ws1))
+        _ws(_acct(node2), node2)                       # a DIFFERENT tenant on the SAME physical host via node2
+        self.assertTrue(SB.supervised_single_tenant_beta_active(ws1))
+
+    def test_beta_forbidden_on_customer_zero_own_node(self, _cz):
+        # CZ protection under co-residency: even on a shared host, a beta may NEVER bind to CZ's OWN node.
+        # forbidden_execution_node_ids (condition 6, checked unconditionally) rejects it regardless of the
+        # per-node single-tenant relaxation.
+        node_cz = _node(rdp="10.60.0.9", host="cz-node")
+        ws = _ws(_acct(node_cz), node_cz)
+        with mock.patch("hosted_workspace.tenant_isolation.forbidden_execution_node_ids",
+                        return_value={node_cz.id}):
+            self.assertFalse(SB.supervised_single_tenant_beta_active(ws))
 
     def test_blank_rdp_host_fails_closed(self, _cz):
         # Host identity unknown -> cannot prove single-tenant -> fail closed.

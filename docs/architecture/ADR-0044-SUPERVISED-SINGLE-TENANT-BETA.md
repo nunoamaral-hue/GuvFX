@@ -8,6 +8,51 @@
 - **Relates to / amends:** ADR-0041 (Hosted Workspace observation trust model), ADR-0043 (W^X native-code
   elimination + Addendum B co-residency guard), ADR-0033/0034 (persistent workspace + onboarding/execution).
 
+## Amendment 1 — CLOSED TRUSTED BETA host co-residency exception (Chief Architect, 2026-08-14, FINAL)
+
+**Decision (Option A approved).** The supervised single-tenant posture is amended so that **during the CLOSED
+TRUSTED BETA only**, a supervised beta user MAY be hosted on the SAME physical Windows VPS as Customer Zero.
+This supersedes the earlier interpretation that the supervised beta requires a physically separate host. The
+trust model differs from public launch (trusted users, supervised operation, DEMO-only, no hostile tenants, no
+public access); STREAM 10E behavioural certification remains mandatory before public launch.
+
+**The ONLY change (repository).** The supervised single-tenant predicate (`node_is_single_tenant_for`) is
+re-scoped from the **physical host (`rdp_host`)** to the **`TerminalNode`**: it now requires *one supervised
+beta tenant per isolated node*, not *one tenant per physical box*. Concretely, the pre-amendment rdp_host
+occupancy aggregation (the finding-I1 hardening) is removed; occupancy is counted on THIS node only. Nothing
+else is touched.
+
+**Explicitly retained — NOT relaxed:** G5/NTFS ACL isolation, W^X, AppLocker, RemoteApp isolation, separate
+Windows identities, separate MT5 runtimes, separate `TerminalNode`s, the co-residency guard, DEMO-only, and
+`AUTO_LIVE` disabled. **Customer Zero protection is intact by construction:** a beta may NEVER bind to Customer
+Zero's node — condition (6) (`forbidden_execution_node_ids`, checked unconditionally) still rejects it — so the
+beta always occupies its OWN isolated node, and Customer Zero keeps its node untouched.
+
+**Operational note.** For the beta to co-reside, the operator must NOT place Customer Zero's `rdp_host` in
+`HOSTED_BETA_FORBIDDEN_RDP_HOSTS` (that setting is the host-level exclusion; the node-level exclusion via CZ's
+own node remains regardless).
+
+**Expiry (permanent invariant).** This exception dissolves the instant STREAM 10E completes and
+`HOSTED_REMOTEAPP_ISOLATION_CERTIFIED` is set (the cert branch of the trust anchor then governs, with no
+single-tenant requirement). It **MUST NOT** survive into Public Launch. The `SUPERVISED_SINGLE_TENANT_BETA_ENABLED`
+flag remains default-OFF; this amendment does not arm anything.
+
+**Scope note (mechanism is broader than the framing).** A per-`TerminalNode` predicate cannot distinguish
+"the other node on this box holds Customer Zero" from "…holds another beta," so the mechanism also permits
+TWO supervised betas to share one physical host (each on its OWN isolated node) — not only beta↔Customer-Zero.
+This is the unavoidable consequence of the host→node re-scope and lands inside this ADR's already-accepted
+worst-case blast radius ("a beta tenant reaches only other disposable beta tenants on a throwaway host") under
+a CLOSED, supervised, DEMO-only, no-hostile-tenant beta. Customer Zero protection is unchanged (its node is
+always forbidden). This too expires with STREAM 10E. A residual to note: with the host-level backstop removed,
+Customer-Zero protection now rests SOLELY on condition (6) / `forbidden_execution_node_ids` containing CZ's
+node — true for a normally-running CZ live terminal; keep CZ's node bound (do not clear `account.terminal_node`
+while CZ's workspace binding is also absent).
+
+**Verification.** `hosted_workspace/tests_supervised_beta.py`:
+`test_beta_coresident_on_shared_host_own_node_is_single_tenant` (co-residency on own node → single-tenant),
+`test_beta_forbidden_on_customer_zero_own_node` (CZ's node still forbidden), and the unchanged same-node tests
+(a second tenant on the SAME node still closes the gate).
+
 ## Context
 
 The accepted beta architecture is node-based, with co-residency of hosted tenants made safe by the isolation
