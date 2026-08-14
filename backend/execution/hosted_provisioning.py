@@ -141,6 +141,14 @@ def assign_workspace_execution_node(account_or_ws, node, *, actor: str = "", req
           else getattr(account_or_ws, "hosted_workspace", None))
     if ws is None or getattr(ws, "pk", None) is None or node is None or getattr(node, "pk", None) is None:
         return None
+    # ADR-0043 Addendum B: fail-closed CO-RESIDENCY guard at the execution-node single writer. It protects the
+    # ``workspace.execution_node`` binding and raises BEFORE any generation bump / write, so a rejected binding
+    # leaves ``execution_node`` unchanged. The OTHER binding surface — ``account.terminal_node`` — is kept safe
+    # by the CALLERS, not here: the allocator pre-filters forbidden nodes out of candidate selection, and the
+    # ``provision_hosted_execution`` command pre-checks with ``assert_allocation_allowed`` before its own
+    # ``account.terminal_node`` write. No-op while HOSTED_TENANT_NODE_ISOLATION_ENABLED is OFF (returns early).
+    from hosted_workspace.tenant_isolation import assert_allocation_allowed
+    assert_allocation_allowed(getattr(ws, "trading_account_id", None), node)
     # Row-lock the workspace and compute the version from the LOCKED value, so two concurrent (re)assignments
     # serialise and the generation stays strictly monotonic (+1 each) — no Python-level lost update.
     with transaction.atomic():

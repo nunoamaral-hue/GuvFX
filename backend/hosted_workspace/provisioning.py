@@ -31,6 +31,7 @@ REQ_CREATED = "created"
 REQ_EXISTS = "exists"
 ALLOC_NO_CAPACITY = "no_node_capacity"
 ALLOC_NODE_NOT_DELIVERABLE = "node_not_deliverable"   # G12: node has capacity but no durable rdp_host
+ALLOC_CZ_NODE_FORBIDDEN = "cz_node_forbidden"         # ADR-0043 Addendum B: refuse a non-CZ tenant on a CZ node
 ALLOC_ALREADY = "already_bound"
 ALLOC_OK = "allocated"
 CONFIRM_NOT_OWNER = "not_owner"
@@ -156,19 +157,37 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
         ws = (HostedMt5Workspace.objects.select_for_update()
               .select_related("trading_account").get(pk=workspace.pk))
         already_bound = ws.execution_node_id is not None
+        # ADR-0043 Addendum B (DARK): host-level co-residency guard. A NON-Customer-Zero workspace must never be
+        # bound to a node that serves Customer Zero. OFF by default → ``_forbidden`` is empty → zero behaviour
+        # change. Computed once under the lock (read-only query). The authoritative fail-closed enforcement is
+        # in the single writer (``assign_workspace_execution_node``); here we skip forbidden candidates and
+        # surface a DISTINCT reason so the driver/operator learns "provision a non-CZ host" rather than a
+        # generic "no capacity". The single writer's raise is therefore never triggered from THIS path.
+        from hosted_workspace.flags import hosted_tenant_node_isolation_enabled
+        from hosted_workspace.tenant_isolation import forbidden_execution_node_ids, is_customer_zero_account
+        _guard_on = hosted_tenant_node_isolation_enabled() and not is_customer_zero_account(ws.trading_account_id)
+        _forbidden = forbidden_execution_node_ids() if _guard_on else set()
         # Whether we still need to drive PROVISIONING → WAITING_FOR_LOGIN. Guarded on canonical == PROVISIONING
         # so a RETRY converges a workspace left stuck at PROVISIONING (advance failed after a prior bind) yet
         # NEVER regresses a workspace that has already progressed (e.g. CONNECTED) back toward login.
         needs_advance = str(ws.canonical_state) == S.PROVISIONING
         if already_bound:
+            if _forbidden and ws.execution_node_id in _forbidden:
+                # A non-CZ workspace already sits on a Customer Zero node — a pre-existing co-residency
+                # violation. Surface it fail-closed rather than silently reporting "already_bound".
+                return AllocResult(False, ALLOC_CZ_NODE_FORBIDDEN)
             node = TerminalNode.objects.filter(pk=ws.execution_node_id).first()
             hostname = node.hostname if node else ""
             reason = ALLOC_ALREADY
         else:
             candidate = None
             capacity_but_undeliverable = False   # G12: distinguish "no room" from "room but no rdp_host"
+            forbidden_blocked = False            # a viable node was refused SOLELY for CZ co-residency
             for node in (TerminalNode.objects.select_for_update()
                          .filter(status=TerminalNode.Status.ACTIVE).order_by("id")):
+                if node.pk in _forbidden:          # Customer Zero node — never for a non-CZ tenant
+                    forbidden_blocked = True
+                    continue
                 if not _node_has_capacity(node):   # counts hosted bindings, not just is_active legacy accounts
                     continue
                 if not _node_deliverable(node):    # G12: no durable rdp_host → not deliverable, fail closed
@@ -177,10 +196,17 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
                 candidate = node
                 break
             if candidate is None:
-                # Fail closed. A distinct reason when a node had room but no rdp_host, so the driver/operator
-                # can tell "buy capacity" apart from "set rdp_host" (no manual delivery-time repair, G12).
+                # Fail closed. Prefer the CZ-forbidden reason when the ONLY blocker was a Customer Zero node
+                # (operator action = "provision a separate non-CZ host"), distinct from "buy capacity" /
+                # "set rdp_host" (G12).
+                if forbidden_blocked and not capacity_but_undeliverable:
+                    return AllocResult(False, ALLOC_CZ_NODE_FORBIDDEN)
                 return AllocResult(False,
                                    ALLOC_NODE_NOT_DELIVERABLE if capacity_but_undeliverable else ALLOC_NO_CAPACITY)
+            if _forbidden and candidate.pk in _forbidden:
+                # Defence in depth: the loop already skips forbidden nodes, so this is unreachable via normal
+                # flow. Fail closed rather than bind if a logic/TOCTOU error ever selected a Customer Zero node.
+                return AllocResult(False, ALLOC_CZ_NODE_FORBIDDEN)
             acct = ws.trading_account
             if acct.terminal_node_id != candidate.pk:
                 acct.terminal_node = candidate

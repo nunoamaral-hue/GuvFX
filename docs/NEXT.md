@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Host-level CO-RESIDENCY GUARD — beta ⟂ Customer Zero (ADR-0043 Addendum B, DARK) (2026-08-14)
+Sponsor-authorised allocation guard so a **non-Customer-Zero** hosted workspace can **never** be allocated to
+Customer Zero's node. New `hosted_workspace/tenant_isolation.py` + flag `HOSTED_TENANT_NODE_ISOLATION_ENABLED`
+(**default OFF → zero behaviour change**). Authoritative fail-closed enforcement at the execution-node single
+writer `assign_workspace_execution_node` (covers the allocator **and** the `provision_hosted_execution` command);
+the allocator additionally skips forbidden nodes with a distinct reason `ALLOC_CZ_NODE_FORBIDDEN`. **Finding it
+closed:** the old allocator picked the lowest-id ACTIVE deliverable node — Customer Zero is node id 1 — so beta
+users would have landed on CZ's live host *first*. Tests: `hosted_workspace/tests_tenant_isolation.py` (12).
+**ONE bounded next action → the Sponsor** (infra, not repo): provision a **separate beta-pool host** distinct from
+`100.79.101.19`, add its rdp_host to `HOSTED_BETA_FORBIDDEN_RDP_HOSTS`, flip the flag ON → a supervised beta can
+run isolated from Customer Zero *before* `REMOTEAPP_ISOLATION_CERTIFIED` (it does NOT replace that cert; see
+`docs/operations/BETA_READINESS_CHECKLIST.md` §1a).
+
 ## ▶ STREAM 10E — W^X host behavioural certification PACKAGE (repository deliverable, DARK) (2026-08-14)
 STREAM 10D **MERGED to `main` `83400fa` (PR #354)** after four converging adversarial passes → 0 HIGH/0 MEDIUM/0
 LOW. STREAM 10E authored the **complete on-host certification package as a repository deliverable — no host was

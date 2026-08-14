@@ -144,3 +144,17 @@ def hosted_wx_isolation_enabled() -> bool:
     MetaEditor, common.ini mutation, #import, writable EXE/DLL/Script, signed-DLL COM-hijack, restart persistence)
     passes on a disposable hosted tenant with Customer Zero preserved (ADR-0043)."""
     return _flag("HOSTED_WX_ISOLATION_ENABLED")
+
+
+def hosted_tenant_node_isolation_enabled() -> bool:
+    """ADR-0043 Addendum B — host-level CO-RESIDENCY guard (DARK, default OFF). When on, the node allocator
+    (``provisioning.allocate_workspace_node``) and the execution-node single writer
+    (``execution.hosted_provisioning.assign_workspace_execution_node``) fail closed rather than bind a
+    NON-Customer-Zero hosted workspace to a ``TerminalNode`` that serves Customer Zero (or an rdp_host listed
+    in ``settings.HOSTED_BETA_FORBIDDEN_RDP_HOSTS``). It is the COARSE-GRAINED complement to the in-host W^X
+    model (``HOSTED_WX_ISOLATION_ENABLED``): W^X isolates tenants that SHARE one host; this keeps beta tenants
+    off Customer Zero's PHYSICAL host entirely while ``HOSTED_REMOTEAPP_ISOLATION_CERTIFIED`` is still
+    outstanding, bounding the blast radius of any un-certified escape to disposable beta tenants on a throwaway
+    host. OFF = the allocator behaves exactly as before (zero behaviour change). It NEVER arms execution,
+    performs a broker login, or contacts a host. See ``hosted_workspace/tenant_isolation.py`` + ADR-0043."""
+    return _flag("HOSTED_TENANT_NODE_ISOLATION_ENABLED")

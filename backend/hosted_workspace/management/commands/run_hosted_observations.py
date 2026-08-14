@@ -109,6 +109,6 @@ class Command(BaseCommand):
             f"[run_hosted_observations] {now.isoformat()} "
             f"prov: enabled={p['enabled']} candidates={p['candidates']} allocated={p['allocated']} "
             f"already={p['already']} no_capacity={p['no_capacity']} not_deliverable={p['not_deliverable']} "
-            f"errors={p['errors']} | obs: enabled={o['enabled']} polled={o['polled']} "
+            f"cz_forbidden={p['cz_forbidden']} errors={p['errors']} | obs: enabled={o['enabled']} polled={o['polled']} "
             f"applied={o['applied']} unavailable={o['unavailable']} errors={o['errors']}"
         )
