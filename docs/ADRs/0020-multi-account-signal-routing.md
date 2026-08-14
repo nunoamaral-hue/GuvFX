@@ -106,3 +106,51 @@ migration on the beta VPS are Sponsor gates.**
 2. Confirm the plan-model migration may **merge to `main`** behind the default-OFF flag (no deploy, no
    enable), with the full Nuno-unchanged regression proof; OR require the ADR accepted first and the
    plan-model change held while the non-plan-model beta increments proceed.
+
+---
+
+## Amendment — Multi-user tenant isolation hardening (2026-08-14, Beta Product Enablement)
+
+A Phase-2 adversarial isolation verification of the fan-out path (run with `MULTI_ACCOUNT_ROUTING_ENABLED`
+assumed ON, the intended beta state) surfaced isolation gaps where **one tenant's activity could affect
+another**. All are closed in code, DARK (the flag defaults OFF; single-tenant behaviour is byte-unchanged).
+These are permanent invariants for the fan-out plane.
+
+**Fan-out invariants (enforced only when `MULTI_ACCOUNT_ROUTING_ENABLED` is ON):**
+
+1. **A configured source never routes to an unbound catch-all.** In fan-out mode, a source that has a
+   `SignalSourceConfig` row must be served ONLY by an assignment explicitly bound to it
+   (`signal_source == source`). It may never fall through to a legacy UNBOUND (`signal_source=""`)
+   assignment. This closes two cross-tenant coupling paths the global claim state allowed: (a) one tenant
+   deleting/rebinding its bound assignment re-routing the source onto another tenant's unbound catch-all;
+   (b) a tenant tagging a non-routable assignment suppressing another tenant's unbound delivery. The
+   unbound legacy fallback remains ONLY for genuinely UNCONFIGURED sources (the historical single-Wayond
+   route). Single-tenant (flag OFF) is unchanged. — `execution/auto_router._resolve_target`.
+
+2. **Fan-out implies terminal-node enforcement.** A fanned account MUST have a DEDICATED ACTIVE
+   `TerminalNode`. Otherwise its `PLACE_ORDER` is stamped `terminal_node=NULL`, which the shared legacy
+   worker claims (it serves NULL-node jobs) and would execute on ANOTHER tenant's (the shared /
+   Customer-Zero) terminal — a cross-tenant money-path leak. `MULTI_ACCOUNT_ROUTING_ENABLED` therefore
+   turns on the existing node enforcement automatically (reusing `risk_controls.node_assignment_block_reason`;
+   un-noded / non-ACTIVE node → promotion rejected), with no second flag required. Single-tenant unchanged
+   (both this and `RISK_REQUIRE_TERMINAL_NODE` default OFF). — `execution/risk_controls._require_terminal_node`.
+   The **same gate** is applied to the manual open-trade funnel (`execution/services.create_open_trade_job`),
+   so no order-creating path (fan-out promotion OR a direct/manual `OPEN_TRADE`) can produce a NULL-node job
+   under fan-out.
+
+3. **WIN-card plan/leg resolution is account-scoped.** Fanned-out plans share a `correlation_id`, so
+   resolving a notification card's plan by correlation ALONE could pull another tenant's plan and leak its
+   leg prices / total profit into the card. Resolution is scoped to the card's own account
+   (`current_trade.account`). — `execution/notifications/contracts.resolve_leg_evidence` /
+   `resolve_signal_linkage`.
+
+**Deferred (require infrastructure / a Sponsor design decision, not repo-fixable in isolation):**
+
+- **Node-aware trade ingestion / per-account deal attribution.** The standalone ingest worker
+  (`mt5_trade_ingest_worker`) uses a single global agent endpoint; per-node ingest (a dedicated
+  `WorkerIdentity` per tenant node, its own agent endpoint, and a deals-belong-to-account assertion) is a
+  **deployment/infra** change realised when the separate beta host exists. Tracked, not in this change.
+- **Per-user WIN-card / notification delivery.** The card broadcast is a single global stakeholder Telegram
+  channel with the account masked; whether beta users get their own per-user channel (vs the already
+  per-user in-app dashboard) is a **Sponsor design decision**. Notifications remain DARK
+  (`NOTIFICATION_DISPATCH_ENABLED` OFF) until decided.

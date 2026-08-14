@@ -23,7 +23,8 @@ from execution import auto_router
 from execution.auto_router import (
     _resolve_targets, effective_mode, MODE_AUTO_DEMO, MODE_MANUAL,
 )
-from execution.models import ExecutionControl, ExecutionJob, SignalExecutionPlan, SignalSourceConfig
+from execution.models import (
+    ExecutionControl, ExecutionJob, SignalExecutionPlan, SignalSourceConfig, TerminalNode)
 from execution.signal_planning import PlanRejected, plan_demo_execution
 from signal_intake.models import (
     AcquiredMessage, ParserProfile, PendingSignalApproval, SignalAuditEvent, SignalProvider,
@@ -67,9 +68,13 @@ class _FanoutBase(TestCase):
         ctrl.save()
 
     def _acct(self, user, number, *, is_demo=True, broker_server=None):
+        # ADR-0020 multi-user isolation: a fanned account requires a DEDICATED ACTIVE execution node —
+        # otherwise its PLACE_ORDER would be stamped NULL-node and claimed by the shared legacy worker
+        # (executing on another tenant's terminal). Give each fanned account its own node.
+        node = TerminalNode.objects.create(hostname=f"node-{number}", status=TerminalNode.Status.ACTIVE)
         return TradingAccount.objects.create(
             user=user, name=number, account_number=number, is_demo=is_demo,
-            is_active=True, broker_name="DemoBroker", broker_server=broker_server)
+            is_active=True, broker_name="DemoBroker", broker_server=broker_server, terminal_node=node)
 
     def _bind(self, user, acct, *, active=True, mode=DEMO):
         strat = Strategy.objects.create(owner=user, name=f"WIM {acct.account_number}")

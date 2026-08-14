@@ -42,20 +42,23 @@ class TelegramMessageEnvelope:
         return asdict(self)
 
 
-def resolve_signal_linkage(correlation_id: str) -> dict:
+def resolve_signal_linkage(correlation_id: str, account=None) -> dict:
     """Resolve the plan's signal/parser/execution linkage (read-only, blanks where absent).
 
     This lives on the EXECUTION side (it owns ``SignalExecutionPlan``) and hands intelligence a
     plain dict, so intelligence never imports execution (ADR-009). Keys match
     ``intelligence.canonical.LINKAGE_KEYS``.
+
+    ADR-0020 multi-user isolation: fanned-out plans share a ``correlation_id``, so resolving by
+    correlation ALONE could pull ANOTHER tenant's plan. When ``account`` is known (the card's own
+    trade account), scope to it so a card never carries a different tenant's linkage.
     """
     if not correlation_id:
         return {}
-    plan = (
-        SignalExecutionPlan.objects.filter(correlation_id=correlation_id)
-        .select_related("approval")
-        .first()
-    )
+    _plan_q = SignalExecutionPlan.objects.filter(correlation_id=correlation_id)
+    if account is not None:
+        _plan_q = _plan_q.filter(account=account)
+    plan = _plan_q.select_related("approval").first()
     if plan is None:
         return {}
     leg = plan.legs.order_by("leg_index").first()
@@ -130,11 +133,13 @@ def resolve_leg_evidence(correlation_id: str, current_trade=None) -> dict:
     """
     if not correlation_id:
         return {}
-    plan = (
-        SignalExecutionPlan.objects.filter(correlation_id=correlation_id)
-        .select_related("account")
-        .first()
-    )
+    # ADR-0020 multi-user isolation: fanned-out plans share a correlation_id, so resolving by
+    # correlation ALONE could pull ANOTHER tenant's plan and leak its leg prices / total profit into
+    # this card. Scope to the card's own account when known (``current_trade``).
+    _plan_q = SignalExecutionPlan.objects.filter(correlation_id=correlation_id)
+    if current_trade is not None and getattr(current_trade, "account_id", None) is not None:
+        _plan_q = _plan_q.filter(account_id=current_trade.account_id)
+    plan = _plan_q.select_related("account").first()
     if plan is None:
         return {}
     from trading.models import Trade
@@ -213,7 +218,7 @@ def _canonical_for(candidate):
         trade,
         correlation_id=cid,
         signal_source=candidate.signal_source or "",
-        linkage=resolve_signal_linkage(cid),
+        linkage=resolve_signal_linkage(cid, account=getattr(trade, "account", None)),
         leg_evidence=resolve_leg_evidence(cid, trade),
     )
 
