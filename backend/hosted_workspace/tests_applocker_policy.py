@@ -657,6 +657,32 @@ class WxIsolationTests(SimpleTestCase):
         with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_dll_exception_covers_writable"):
             A.tenant_wx_dll_deny_rules(7, self.SID, [r"%OSDRIVE%\GUVFX\ACCOUNTS\7\TERMINAL\*"])
 
+    def test_wx_dll_deny_rejects_LITERAL_drive_covers_writable(self):
+        # STREAM 10E review HIGH (RULE 11): the soak enumerates LITERAL C:\ paths; a literal-drive exception that
+        # covers a tenant-writable dir must be rejected EXACTLY like its %OSDRIVE% form (drive-canonical guard).
+        for bad in (r"C:\GuvFX\accounts\7\terminal\*",              # covers terminal\MQL5\Files (writable)
+                    r"C:\GuvFX\accounts\7\terminal\config",         # IS the writable common.ini dir
+                    r"C:\*", r"%SYSTEMDRIVE%\*",                     # whole OS drive
+                    r"%SYSTEMDRIVE%\GuvFX\accounts\7\terminal\*",    # %SYSTEMDRIVE% variant
+                    r"c:/guvfx/accounts/7/terminal/*"):             # forward-slash + case variant
+            with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_dll_exception_covers_writable", msg=bad):
+                A.tenant_wx_dll_deny_rules(7, self.SID, [bad])
+
+    def test_wx_dll_deny_accepts_legit_literal_drive_nonwritable(self):
+        # A genuinely non-writable literal-drive exception (OS + an RX code dir) must still be accepted.
+        good = [r"C:\Windows\System32\*", r"C:\GuvFX\accounts\7\terminal\MQL5\Libraries\*", r"%SYSTEM32%\*"]
+        self.assertTrue(A.assert_wx_dll_deny_invariants(A.tenant_wx_dll_deny_fragment(7, self.SID, good), 7, self.SID, good))
+
+    def test_wx_dll_assert_independently_rejects_covers_writable(self):
+        # assert must RE-DERIVE the closure (not just exceptions==expected): a fragment carrying a covers-writable
+        # exception fails assert even when the passed expected set contains the same (bad) exception.
+        frag = ET.fromstring(A.tenant_wx_dll_deny_fragment(7, self.SID, self.NW))
+        rule = list(frag.findall("RuleCollection")[0])[0]
+        ET.SubElement(rule.find("Exceptions"), "FilePathCondition", {"Path": r"C:\GuvFX\accounts\7\terminal\*"})
+        with self.assertRaisesRegex(A.AppLockerPolicyError, "wx_dll_exception_covers_writable"):
+            A.assert_wx_dll_deny_invariants(ET.tostring(frag, encoding="unicode"), 7, self.SID,
+                                            tuple(self.NW) + (r"C:\GuvFX\accounts\7\terminal\*",))
+
     def test_wx_dll_deny_refuses_shared_principal(self):
         for shared in ("S-1-1-0", "S-1-5-32-544", "S-1-5-18"):
             with self.assertRaises(A.AppLockerPolicyError):
@@ -735,8 +761,23 @@ class Stream10eEscapeBatteryTests(SimpleTestCase):
                       "MEASUREMENT_UNPROVEN",           # fail-closed overall when the channel is dead
                       "8004", "8007",                   # authoritative block events
                       "FAIL_ESCAPED", "INCONCLUSIVE",   # an allow on an escape artefact / no decisive event both fail
-                      "allowdllimport"):                # ceiling checked
+                      "allowdllimport",                 # ceiling checked
+                      "NO_BATTERY",                     # absent/empty attempts file = hard fail (not "0 escapes -> PASS")
+                      "REQUIRED_CASES", "INCOMPLETE_BATTERY", "missingRequired",   # full-roster completeness gate
+                      "PLANT_FAILED", "undecidedRequired",       # plant failure / not-decisively-blocked = hard fail
+                      "ToUpperInvariant"):              # exact full-path correlation (not a leaf substring)
             self.assertIn(token, txt, f"evidence collector missing fail-closed control: {token}")
+        # the loose leaf-substring correlation must be GONE (it cross-attributed the golden terminal64 allow)
+        self.assertNotIn('-like "*$leaf*"', txt)
+
+    def test_escape_runner_uses_robust_com_trigger_and_no_orphan(self):
+        txt = self._read(self.WIN, "escape_battery", "Invoke-GuvfxEscapeBattery.ps1")
+        self.assertIn("GetTypeFromCLSID", txt)                    # deterministic CoCreateInstance load trigger
+        self.assertNotIn("BindToMoniker", txt)                    # the fragile class-moniker form is gone
+        # the HKCU CLSID key is registered for cleanup BEFORE it is created (no orphan if New-ItemProperty throws)
+        i_plant = txt.find('$planted += "REGKEY::HKCU:\\Software\\Classes\\CLSID')
+        i_newitem = txt.find("New-Item -Path $key -Force")
+        self.assertTrue(0 < i_plant < i_newitem, "reg key must be registered for cleanup before creation")
 
     def test_fingerprint_hashes_isolation_state_for_before_after(self):
         txt = self._read(self.WIN, "escape_battery", "Get-GuvfxIsolationFingerprint.ps1")

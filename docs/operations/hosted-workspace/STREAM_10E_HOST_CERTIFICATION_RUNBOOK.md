@@ -163,15 +163,24 @@ Immediately verify the positive controls: the tenant MT5 still works (§11), Adm
 
 ## 7. Expected pass/fail criteria (authoritative — from `escape_evidence.json`)
 
-The cert **PASSES** iff **all** hold (the evidence collector enforces this):
+The cert **PASSES** iff **all** hold (the evidence collector enforces this — it will not emit `PASS` otherwise):
 - `measurement_proven = true` (≥1 `8002/8005` allow for the tenant SID — else `MEASUREMENT_UNPROVEN`, hard fail);
-- `counts.fail_escaped = 0` (no escape produced an allow event on an escape artefact);
-- `counts.inconclusive = 0` under Enforce (every attempted escape produced a decisive block/allow event);
-- `state.allowdllimport ∈ {"0",""}` (ceiling intact);
+- **the full battery actually ran and blocked (no silent shortening):** `missing_required = []` (every required case
+  present — else `INCOMPLETE_BATTERY`), `counts.no_artefact = 0` (no plant failure — else `PLANT_FAILED`), and every
+  required case is decisively `PASS_BLOCKED` (`undecided_required = []`). An un-run or absent `tenant_attempts.json`
+  is a hard fail (`*_NO_BATTERY`), so "zero escapes" can never masquerade as PASS;
+- `counts.fail_escaped = 0` (no escape produced an allow event on its exact artefact path);
+- `counts.inconclusive = 0` under Enforce (every attempted escape produced a decisive block/allow event on its exact
+  path — a `writable_script` case that shows `INCONCLUSIVE` because the block keyed on the interpreter EXE rather than
+  the script is confirmed by the operator from the interpreter `8004`);
+- `state.allowdllimport ∈ {"0",""}` (ceiling intact — else `FAIL_ALLOWDLLIMPORT`);
 - the operator cases 8 + PC (MT5 normal, `#import` no-exec) pass by operator observation;
 - case 9 restart fingerprint equals the pre-restart fingerprint (`fingerprint_sha256` match).
 
-Any `FAIL_ESCAPED`, `MEASUREMENT_UNPROVEN`, `INCONCLUSIVE`, or `FAIL_ALLOWDLLIMPORT` = **cert FAIL** → §8 decision tree.
+Any `FAIL_ESCAPED`, `MEASUREMENT_UNPROVEN`, `INCOMPLETE_BATTERY`, `PLANT_FAILED`, `INCONCLUSIVE`, `FAIL_ALLOWDLLIMPORT`,
+or a `*_NO_BATTERY` load error = **cert FAIL** → §8 decision tree. The evidence collector correlates each escape by
+its **exact full artefact path** (not a leaf substring), so a legitimate binary sharing a name — e.g. the golden RX
+`terminal64.exe` vs the copied-escape `terminal64.exe` in the WorkDir — can never be cross-attributed.
 
 ---
 

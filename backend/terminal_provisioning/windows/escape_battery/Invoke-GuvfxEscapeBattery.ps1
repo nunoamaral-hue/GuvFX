@@ -46,11 +46,12 @@ function New-Attempt([string]$case, [string]$action) {
   return [ordered]@{ case=$case; action=$action; tenant_result="not_attempted"; detail=""; artefact="" }
 }
 
-function Try-Launch([string]$case, [string]$action, [string]$path) {
+function Try-Launch([string]$case, [string]$action, [string]$path, [string[]]$argl = @()) {
   $a = New-Attempt $case $action
   $a.artefact = $path
   try {
-    $p = Start-Process -FilePath $path -PassThru -WindowStyle Hidden
+    $p = if ($argl.Count) { Start-Process -FilePath $path -ArgumentList $argl -PassThru -WindowStyle Hidden }
+         else { Start-Process -FilePath $path -PassThru -WindowStyle Hidden }
     Start-Sleep -Milliseconds 400
     if ($p -and -not $p.HasExited) { try { $p.Kill() } catch {} ; $a.tenant_result = "launched"; $a.detail = "process started (ESCAPE - expect admin 8004 block under Enforce)" }
     elseif ($p) { $a.tenant_result = "launched"; $a.detail = "process started then exited" }
@@ -71,7 +72,9 @@ try {
     $planted += $copyExe
     $cfgDir = Join-Path $WorkDir "config"; New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null
     "[Experts]`r`nAllowDllImport=1`r`n" | Out-File -FilePath (Join-Path $cfgDir "common.ini") -Encoding ASCII
-    $results += (Try-Launch "portable_copy_v5" "launch_copied_signed_terminal64" $copyExe)
+    # launch with /portable so the copy uses the adjacent AllowDllImport=1 config (faithful V5); AppLocker denies the
+    # copied EXE at launch regardless, which is the point of this case.
+    $results += (Try-Launch "portable_copy_v5" "launch_copied_signed_terminal64" $copyExe @("/portable"))
   } catch { $a = New-Attempt "portable_copy_v5" "launch_copied_signed_terminal64"; $a.tenant_result = "blocked"; $a.detail = "copy_or_launch_failed:$($_.Exception.Message)"; $results += $a }
 
   # --- Case metaeditor: launch metaeditor64.exe (BinaryName pin must deny it even though MetaQuotes-signed)
@@ -123,11 +126,12 @@ try {
     $a.artefact = $signedDll
     $clsid = "{{{0:D8}-0000-0000-0000-00000000c0de}}" -f $AccountId
     $key = "HKCU:\Software\Classes\CLSID\$clsid\InprocServer32"
+    $planted += "REGKEY::HKCU:\Software\Classes\CLSID\$clsid"   # register for cleanup BEFORE creating it (no orphan)
     New-Item -Path $key -Force | Out-Null
     New-ItemProperty -Path $key -Name "(default)" -Value $signedDll -PropertyType String -Force | Out-Null
-    $planted += "REGKEY::HKCU:\Software\Classes\CLSID\$clsid"
-    try { [void][Runtime.InteropServices.Marshal]::BindToMoniker("clsid:$($clsid.Trim('{}'))"); $a.tenant_result = "load_ok"; $a.detail = "signed DLL loaded from writable location (ESCAPE - expect Dll 8004 block)" }
-    catch { $a.tenant_result = "load_denied"; $a.detail = "bind failed: $($_.Exception.Message)" }
+    # Force the InprocServer32 LoadLibrary via CoCreateInstance (deterministic, unlike a class-moniker display name):
+    try { $null = [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]$clsid.Trim("{}"))); $a.tenant_result = "load_ok"; $a.detail = "signed DLL loaded from a writable location via COM (ESCAPE - expect Dll 8004 block)" }
+    catch { $a.tenant_result = "load_denied"; $a.detail = "CoCreateInstance failed: $($_.Exception.Message)" }
   } catch { $a.tenant_result = "error_ambiguous"; $a.detail = "$($_.Exception.Message)" }
   $results += $a
 

@@ -427,6 +427,20 @@ def _norm_path(path: str) -> str:
     return (path or "").upper().replace("/", "\\")
 
 
+def _canon_applocker_path(path: str) -> str:
+    """Canonicalise an AppLocker path for COMPARISON: upper, ``/`` -> ``\\``, and a leading literal OS drive
+    (``C:\\``) or ``%SYSTEMDRIVE%\\`` mapped to ``%OSDRIVE%\\``. AppLocker expands ``%OSDRIVE%`` / ``%SYSTEMDRIVE%``
+    to the OS drive (C: throughout this deployment — the accounts tree is ``C:\\GuvFX\\accounts\\<N>``), so
+    ``C:\\GUVFX\\...`` and ``%OSDRIVE%\\GUVFX\\...`` address the SAME file. Without this, a literal-drive exception
+    that covers a tenant-writable dir would slip the covers-writable guard (STREAM 10E review HIGH — the soak
+    enumerates literal ``C:\\`` paths)."""
+    p = _norm_path(path)
+    for lit in ("C:\\", "%SYSTEMDRIVE%\\"):
+        if p.startswith(lit):
+            return "%OSDRIVE%\\" + p[len(lit):]
+    return p
+
+
 def _is_os_path(path: str) -> bool:
     p = _norm_path(path)
     return p == "*" or any(p.startswith(pre) for pre in _OS_PATH_PREFIXES)
@@ -691,6 +705,35 @@ def assert_wx_subdir_lists_disjoint() -> bool:
 # exceptions or the writable-subdir hole re-opens — the same reason the base Dll rule is publisher-only. A blind
 # hardcoded set risks re-opening the hole (too broad) or a fail-closed MT5/OS outage (too narrow). This module
 # therefore ships the MECHANISM (built + tested) while the exact exception DATA is supplied by the STREAM 10E soak.
+def _assert_wx_dll_exceptions_ok(account_id, nonwritable_exec_dirs) -> list:
+    """Validate + return the non-writable Dll exception set (original strings) for a per-tenant Dll ``Deny(*)``.
+    Fail-closed, DRIVE-CANONICAL: rejects an empty set (would deny EVERY DLL incl. the OS), a ``*`` exception
+    (fail-open), a bare-drive coverage (``C:\\*`` / ``%OSDRIVE%\\*``), and any exception that is UNDER or COVERS a
+    tenant-writable subdir — comparing via ``_canon_applocker_path`` so a LITERAL ``C:\\...`` exception (the form the
+    soak enumerates) is caught exactly like its ``%OSDRIVE%`` equivalent. Shared by the builder AND the invariant
+    assert, so the closure is re-derived independently on the fragment's actual exceptions (STREAM 10E review HIGH)."""
+    n = _account(account_id)
+    exc = [str(p or "").strip() for p in (nonwritable_exec_dirs or []) if str(p or "").strip()]
+    if not exc:
+        raise AppLockerPolicyError("wx_dll_deny_requires_exceptions")   # empty => deny ALL DLLs => OS/MT5 outage
+    writable_prefixes = tuple(_canon_applocker_path(f"{_ACCOUNTS_BASE_APPLOCKER}\\{n}\\{sub}")
+                              for sub in HOSTED_WRITABLE_SUBDIRS)
+    for p in exc:
+        pu = _canon_applocker_path(p)
+        if pu == _WX_DENY_ALL:
+            raise AppLockerPolicyError("wx_dll_exception_is_wildcard")
+        # The exception's coverage prefix: strip a trailing wildcard segment so `...\TERMINAL\*` -> `...\TERMINAL`.
+        base = pu[:-2] if pu.endswith("\\*") else (pu[:-1].rstrip("\\") if pu.endswith("*") else pu)
+        if base in ("", "%OSDRIVE%"):   # a whole-OS-drive coverage prefix covers the entire accounts tree
+            raise AppLockerPolicyError(f"wx_dll_exception_covers_writable:{p}~whole_os_drive")
+        for w in writable_prefixes:
+            # Reject an exception UNDER a tenant-writable dir (pu subset of w) OR whose wildcard COVERS one (w subset
+            # of base) — either re-admits a DLL planted in that writable dir. `...\TERMINAL\*` covers `...\MQL5\Files`.
+            if pu == w or pu.startswith(w + "\\") or base == w or w.startswith(base + "\\"):
+                raise AppLockerPolicyError(f"wx_dll_exception_covers_writable:{p}~{w}")
+    return exc
+
+
 def tenant_wx_dll_deny_rules(account_id, sid: str, nonwritable_exec_dirs) -> list:
     """The per-tenant Dll rule(s): a single ``Deny(*)`` scoped to ``sid`` whose ``Exceptions`` are exactly the
     supplied non-tenant-writable RX DLL-load directories (host-soak-derived). Fail-closed: malformed/shared SID;
@@ -703,22 +746,7 @@ def tenant_wx_dll_deny_rules(account_id, sid: str, nonwritable_exec_dirs) -> lis
         raise AppLockerPolicyError("malformed_sid")
     if s in _WX_FORBIDDEN_DENY_SIDS:
         raise AppLockerPolicyError("refusing_wx_deny_on_shared_principal")
-    exc = [str(p or "").strip() for p in (nonwritable_exec_dirs or [])]
-    exc = [p for p in exc if p]
-    if not exc:
-        raise AppLockerPolicyError("wx_dll_deny_requires_exceptions")   # empty => deny ALL DLLs => OS/MT5 outage
-    writable_prefixes = tuple(f"{_ACCOUNTS_BASE_APPLOCKER}\\{n}\\{sub}".upper() for sub in HOSTED_WRITABLE_SUBDIRS)
-    for p in exc:
-        pu = _norm_path(p)
-        if pu == _WX_DENY_ALL:
-            raise AppLockerPolicyError("wx_dll_exception_is_wildcard")
-        # The exception's coverage prefix: strip a trailing wildcard segment so `...\TERMINAL\*` -> `...\TERMINAL`.
-        base = pu[:-2] if pu.endswith("\\*") else (pu[:-1].rstrip("\\") if pu.endswith("*") else pu)
-        for w in writable_prefixes:
-            # Reject an exception that is UNDER a tenant-writable dir (pu ⊆ w) OR whose wildcard COVERS one (w ⊆ base)
-            # — either re-admits a DLL planted in that writable dir. `...\TERMINAL\*` covers `...\TERMINAL\MQL5\Files`.
-            if pu == w or pu.startswith(w + "\\") or base == w or w.startswith(base + "\\"):
-                raise AppLockerPolicyError(f"wx_dll_exception_covers_writable:{p}~{w}")
+    exc = _assert_wx_dll_exceptions_ok(n, nonwritable_exec_dirs)   # fail-closed: empty / wildcard / covers-writable
     rule = ET.Element("FilePathRule", {
         "Id": tenant_rule_id(n, _WX_DLL_DENY_SEQ),
         "Name": f"(Hosted acct {n} W^X Dll) Deny all DLL loads except the non-writable RX locations",
@@ -747,7 +775,8 @@ def assert_wx_dll_deny_invariants(fragment_xml: str, account_id, sid: str, nonwr
     reducible half (ii) of the signed-DLL residual."""
     n = _account(account_id)
     s = str(sid or "").strip()
-    expected = {_norm_path(p) for p in (nonwritable_exec_dirs or []) if str(p or "").strip()}
+    # drive-canonical expected set (so a literal-drive C:\ and its %OSDRIVE% form compare equal)
+    expected = {_canon_applocker_path(p) for p in (nonwritable_exec_dirs or []) if str(p or "").strip()}
     if not expected:
         raise AppLockerPolicyError("wx_dll_deny_requires_exceptions")
     root = ET.fromstring(fragment_xml)
@@ -766,7 +795,11 @@ def assert_wx_dll_deny_invariants(fragment_xml: str, account_id, sid: str, nonwr
     deny_paths = {(c.get("Path") or "").upper() for c in rule.findall("Conditions/FilePathCondition")}
     if deny_paths != {_WX_DENY_ALL}:
         raise AppLockerPolicyError(f"wx_dll_deny_not_deny_all:{sorted(deny_paths)}")
-    exceptions = {_norm_path(c.get("Path")) for c in rule.findall("Exceptions/FilePathCondition")}
+    frag_exc = [c.get("Path") for c in rule.findall("Exceptions/FilePathCondition")]
+    # RE-RUN the covers-writable guard on the FRAGMENT's ACTUAL exceptions (independent re-derivation of the closure,
+    # not merely exceptions==expected) so a covers-writable exception fails assert even if it equals `expected`.
+    _assert_wx_dll_exceptions_ok(n, frag_exc)
+    exceptions = {_canon_applocker_path(p) for p in frag_exc}
     if exceptions != expected:
         raise AppLockerPolicyError(
             f"wx_dll_exceptions_mismatch:extra={sorted(exceptions - expected)};missing={sorted(expected - exceptions)}")
