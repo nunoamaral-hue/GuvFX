@@ -31,13 +31,14 @@ def run_workspace_provisioning(*, actor: str = SOURCE) -> dict:
     Never raises into the caller (fail-open per workspace: one workspace's failure does not stop the cycle)."""
     if not hosted_persistent_mt5_enabled():
         return {"enabled": False, "candidates": 0, "allocated": 0, "already": 0,
-                "no_capacity": 0, "not_deliverable": 0, "errors": 0}
+                "no_capacity": 0, "not_deliverable": 0, "cz_forbidden": 0, "errors": 0}
 
     from hosted_workspace.provisioning import (
         allocate_workspace_node, ALLOC_OK, ALLOC_ALREADY, ALLOC_NO_CAPACITY, ALLOC_NODE_NOT_DELIVERABLE,
+        ALLOC_CZ_NODE_FORBIDDEN,
     )
 
-    candidates = allocated = already = no_capacity = not_deliverable = errors = 0
+    candidates = allocated = already = no_capacity = not_deliverable = cz_forbidden = errors = 0
     # Candidates = workspaces still at PROVISIONING (allocate is idempotent + advances a bound-but-stuck one,
     # so we do NOT pre-filter on execution_node — a bind that succeeded but whose advance failed is re-driven).
     qs = HostedMt5Workspace.objects.filter(canonical_state=str(S.PROVISIONING)).iterator()
@@ -54,6 +55,11 @@ def run_workspace_provisioning(*, actor: str = SOURCE) -> dict:
                 no_capacity += 1
             elif res.reason == ALLOC_NODE_NOT_DELIVERABLE:
                 not_deliverable += 1
+            elif res.reason == ALLOC_CZ_NODE_FORBIDDEN:
+                # ADR-0043 Addendum B: fail-closed refusal to co-reside with Customer Zero. A distinct,
+                # NON-error signal — "provision a separate non-CZ host", not a system fault — so flipping the
+                # guard ON before a beta host exists reads as "waiting for host", not an error spike.
+                cz_forbidden += 1
             else:
                 errors += 1
         elif res.reason == ALLOC_ALREADY:
@@ -61,4 +67,5 @@ def run_workspace_provisioning(*, actor: str = SOURCE) -> dict:
         elif res.reason == ALLOC_OK:
             allocated += 1
     return {"enabled": True, "candidates": candidates, "allocated": allocated, "already": already,
-            "no_capacity": no_capacity, "not_deliverable": not_deliverable, "errors": errors}
+            "no_capacity": no_capacity, "not_deliverable": not_deliverable, "cz_forbidden": cz_forbidden,
+            "errors": errors}

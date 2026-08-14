@@ -176,3 +176,55 @@ behavioural "looks-blocked" result. The `8004` escape battery **must include a s
 writable-location case** and demonstrate it **blocked by that applied control** (belt-and-suspenders, not a
 substitute for the code closure). Sub-case **(i)** remains the accepted residual, bounded by the same battery to
 trusted-signer code reaching no attacker-controlled native execution. Neither is ever waived.
+
+## Addendum B — Host-level co-residency guard (coarse isolation complement) — adopted 2026-08-14
+
+**Context.** The W^X model above isolates tenants that **share one physical host** from each other, but its
+behavioural certification (`HOSTED_REMOTEAPP_ISOLATION_CERTIFIED`) is host + credential gated and still
+outstanding. Meanwhile the Sponsor wants to invite a small trusted beta. The question that forced this decision:
+*can beta users be isolated from Customer Zero while the in-host isolation cert completes?* The node model already
+binds each hosted workspace to exactly one `TerminalNode` (`execution_node` == `workspace_node` ==
+`account.terminal_node`), but the allocator (`allocate_workspace_node`) selected the first ACTIVE deliverable node
+by ascending id — and **Customer Zero is node id 1** — so a new beta workspace would have been allocated onto
+Customer Zero's live, money-bearing host *first*. Co-residency was the default, not the exception.
+
+**Decision.** Add a **coarse-grained, fail-closed, flag-gated** allocation guard, orthogonal to and composable
+with the in-host W^X controls: a **NON-Customer-Zero** hosted workspace may **never** be bound to a `TerminalNode`
+that (a) currently serves a Customer Zero account (derived live from the DB — no host address hardcoded), or (b)
+exposes an rdp_host listed in `settings.HOSTED_BETA_FORBIDDEN_RDP_HOSTS`. Customer Zero itself is unaffected (it
+may occupy its own node). "Who is Customer Zero" keeps its **single** definition — `RESERVED_CUSTOMER_ZERO` — so
+the AppLocker and allocation layers never diverge (security RULE 6).
+
+**Mechanism.**
+- `hosted_workspace/tenant_isolation.py` — `customer_zero_account_ids()`, `forbidden_execution_node_ids()`,
+  `assert_allocation_allowed()`, `CrossTenantCoResidencyError`. `forbidden_execution_node_ids()` derives the
+  Customer Zero node set from **both** `account.terminal_node` **and** the authoritative hosted-workspace
+  bindings (`execution_node` / `workspace_node`) — the two are kept equal only by the allocator, and
+  `account.terminal_node` can be cleared independently (e.g. `execution.views.unassign_account`) while the CZ
+  workspace keeps running — plus the explicit `HOSTED_BETA_FORBIDDEN_RDP_HOSTS` belt.
+- Flag `HOSTED_TENANT_NODE_ISOLATION_ENABLED` (`hosted_workspace/flags.py`), **default OFF → zero behaviour
+  change**. Flipping ON is always safe: it can only *refuse* a co-residency, never create one; with no separate
+  host present it fails **closed** (no allocation) rather than co-reside.
+- **The execution-node single writer** `assign_workspace_execution_node` enforces the guard on the
+  `workspace.execution_node` binding for every caller, raising **before** any generation bump / write. The
+  **other** binding surface — `account.terminal_node` — is kept safe by the callers: the allocator pre-filters
+  forbidden nodes out of candidate selection, and the `provision_hosted_execution` command **pre-checks** with
+  `assert_allocation_allowed` before its own `account.terminal_node` write (so a refusal persists nothing and
+  returns a clean error, not a traceback). The delivery single writer `assign_workspace_node` carries the same
+  guard for the RemoteApp session host.
+- The allocator additionally **skips** forbidden candidates and returns a **distinct** reason
+  `ALLOC_CZ_NODE_FORBIDDEN` (operator action = "provision a separate non-CZ host"), distinct from "no capacity" /
+  "no rdp_host"; the runner counts it as a distinct `cz_forbidden` outcome, not an error.
+
+**Relationship to the W^X model.** This is the **complement, not a replacement**: W^X reduces the risk *between
+tenants sharing a host*; the co-residency guard removes Customer Zero's live account from the shared-host blast
+radius entirely. Together they let a supervised beta run on a **separate physical host** (ideally the same
+disposable host provisioned for the STREAM 10E cert, promoted to the beta pool after it passes) with the
+un-certified-but-applied W^X controls only ever needing to hold *between disposable beta tenants*, never between a
+beta tenant and Customer Zero's money. It does **not** by itself emit `REMOTEAPP_ISOLATION_CERTIFIED`; that marker
+still requires the on-host escape battery.
+
+**Consequences / residual.** The guard assumes the beta pool is a **distinct host** from Customer Zero — that
+host is an infrastructure (Sponsor) action, not a repository one. If no non-CZ host exists and the flag is ON,
+hosted allocation fails closed (intended). Weak isolation (a separate *session* on Customer Zero's box) is
+explicitly **rejected** before cert: a code-execution escape there could still reach the live terminal.

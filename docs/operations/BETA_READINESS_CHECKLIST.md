@@ -20,6 +20,26 @@ enforced, not advisory.
 **All three are host + credential gated (packet stop conditions #4 Nuno credentials, #5 Sponsor host action).** No
 repository change advances them past WITHHELD — the evidence must come from the host session.
 
+### 1a. Interim isolation posture — supervised beta *before* full cert (ADR-0043 Addendum B)
+
+`HOSTED_REMOTEAPP_ISOLATION_CERTIFIED` is fundamentally a requirement for **co-residency** (multiple untrusted
+tenants sharing one host) and for **public** launch. A small, supervised, **trusted** beta can start earlier **iff
+beta users do not co-reside with Customer Zero's live terminal**, using a compensating control:
+
+- **Repo (DONE):** the host-level **co-residency guard** — `hosted_workspace/tenant_isolation.py` +
+  `HOSTED_TENANT_NODE_ISOLATION_ENABLED` (DARK). When ON, a non-Customer-Zero workspace can **never** be allocated
+  to Customer Zero's node; it fails closed (`ALLOC_CZ_NODE_FORBIDDEN`) rather than co-reside. Enforced at the
+  execution-node single writer, so the allocator **and** the `provision_hosted_execution` command are both covered.
+- **Infra (Sponsor):** a **separate physical host** for the beta pool (not `100.79.101.19`) — ideally the STREAM
+  10E disposable cert host, promoted to the beta pool after it passes. Add its rdp_host to
+  `HOSTED_BETA_FORBIDDEN_RDP_HOSTS` as belt-and-suspenders and flip `HOSTED_TENANT_NODE_ISOLATION_ENABLED` ON.
+- **What this buys:** the un-certified-but-applied W^X controls then only need to hold **between disposable beta
+  tenants on the throwaway host**, never between a beta tenant and Customer Zero's money.
+- **What it does NOT do:** it is **not** a substitute for `REMOTEAPP_ISOLATION_CERTIFIED`. Public launch, and any
+  plan to co-reside tenants on one host, still require the on-host escape-battery cert. Weak isolation (a separate
+  *session* on Customer Zero's box) is **rejected** — a code-execution escape there could still reach the live
+  terminal.
+
 ## 2. What is DONE and merged (DARK, flags OFF)
 
 - **Isolation:** ADR-0043 W^X (`TENANT-WRITABLE ⇒ NON-EXECUTABLE`) — per-tenant Exe `Deny(*)` positive allowlist,
@@ -77,6 +97,10 @@ Authoritative register: [`docs/KNOWN_ISSUES.md`](../KNOWN_ISSUES.md). Beta-relev
 
 ## 7. Nuno / Sponsor-only actions that unblock the whole chain
 
+0. **(Interim beta, optional — ADR-0043 Addendum B)** Provision a **separate beta-pool host** distinct from
+   Customer Zero, register it as a `TerminalNode`, add its rdp_host to `HOSTED_BETA_FORBIDDEN_RDP_HOSTS`, and flip
+   `HOSTED_TENANT_NODE_ISOLATION_ENABLED` ON. This isolates a supervised beta from Customer Zero *before* the full
+   cert; it does not replace it (see §1a).
 1. Provision (or approve) a **disposable certification host** mirroring production.
 2. Provide a **disposable demo broker account** + enter its credentials into MT5 (agents never enter credentials).
 3. Authorize + perform the **Enforce flip + escape-battery run** on the disposable host → yields the isolation evidence.

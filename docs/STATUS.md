@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-08-14 — Host-level CO-RESIDENCY GUARD (ADR-0043 Addendum B). 🟢 DARK, branch `feat/hosted-wx-isolation`.**
+  Sponsor-authorised fail-closed allocation guard: a **non-Customer-Zero** hosted workspace can never be bound to
+  a `TerminalNode` serving Customer Zero. New `hosted_workspace/tenant_isolation.py`
+  (`forbidden_execution_node_ids` = CZ-account-bound nodes ∪ `HOSTED_BETA_FORBIDDEN_RDP_HOSTS`;
+  `assert_allocation_allowed` raising `CrossTenantCoResidencyError`) + flag `HOSTED_TENANT_NODE_ISOLATION_ENABLED`
+  (**default OFF → zero behaviour change**). Enforced at the execution-node single writer
+  `assign_workspace_execution_node` (covers the allocator **and** the `provision_hosted_execution` command);
+  allocator also skips forbidden nodes with distinct reason `ALLOC_CZ_NODE_FORBIDDEN`. Closes the co-residency
+  default (old allocator picked lowest-id ACTIVE node = CZ node 1 first). Tests
+  `hosted_workspace/tests_tenant_isolation.py` (12). Complements — does NOT replace — `REMOTEAPP_ISOLATION_CERTIFIED`.
+  Separate beta-pool host = Sponsor/infra action (see `BETA_READINESS_CHECKLIST.md` §1a).
+
 - **2026-08-12 — STREAM 9E — Live Hosted Workspace observation bridge + ADR-0041 trust model. 🟢 DARK, branch `feat/hosted-live-observation-bridge`, not merged/deployed.**
   Built the live host observation bridge (backend → signed `OBSERVE_WORKSPACE` → per-account session-bound
   observer → certified producer/manager/single-writer) that closes `WAITING_FOR_LOGIN → WORKSPACE_READY`. Two

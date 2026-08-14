@@ -43,6 +43,17 @@ class Command(BaseCommand):
 
         if opts["node_hostname"]:
             node, _ = TerminalNode.objects.get_or_create(hostname=opts["node_hostname"])
+            # ADR-0043 Addendum B: refuse a forbidden Customer Zero co-residency BEFORE mutating anything. This
+            # command runs in autocommit and writes account.terminal_node below (line 47) BEFORE the guarded
+            # single writer runs — so without this pre-check a later refusal would leave the account durably
+            # recorded on the forbidden node. Pre-checking here keeps the "a rejected binding mutates nothing"
+            # contract true for BOTH binding surfaces, and yields a clean CommandError instead of a traceback.
+            from hosted_workspace.tenant_isolation import (
+                CrossTenantCoResidencyError, assert_allocation_allowed)
+            try:
+                assert_allocation_allowed(acct.pk, node)
+            except CrossTenantCoResidencyError as exc:
+                raise CommandError(str(exc))
             if acct.terminal_node_id != node.pk:
                 acct.terminal_node = node
                 acct.save(update_fields=["terminal_node"])

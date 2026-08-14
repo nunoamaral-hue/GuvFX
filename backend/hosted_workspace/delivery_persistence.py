@@ -68,6 +68,13 @@ def assign_workspace_node(workspace: HostedMt5Workspace, node) -> bool:
     side effect — clearing is an explicit operator action, not this helper's job)."""
     if node is None or getattr(node, "pk", None) is None:
         return False
+    # ADR-0043 Addendum B: the delivery host IS the interactive RemoteApp session host — a non-Customer-Zero
+    # tenant session on Customer Zero's box is co-residency too. Enforce the SAME fail-closed guard here as at
+    # the execution-node single writer, so the delivery binding can never independently place a beta tenant on
+    # Customer Zero's node. No-op while the flag is OFF; raises BEFORE any write. (Today the only caller is the
+    # allocator, which already vetted the node; this closes the path for any future direct caller.)
+    from hosted_workspace.tenant_isolation import assert_allocation_allowed
+    assert_allocation_allowed(getattr(workspace, "trading_account_id", None), node)
     if workspace.workspace_node_id == node.pk:
         return False
     workspace.workspace_node = node
