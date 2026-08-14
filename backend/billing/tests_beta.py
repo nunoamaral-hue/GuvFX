@@ -121,12 +121,14 @@ class BetaMarketplaceTests(TestCase):
         force_authenticate(req, user=user)
         return self.View.as_view()(req)
 
-    def test_beta_sees_two_wayond_strategies_not_activatable(self):
+    def test_beta_sees_single_wayond_strategy_not_activatable(self):
+        # Beta Product Enablement: ONE customer-facing Wayond strategy (ti_signals-backed); the legacy
+        # `wayond`-feed card is retired (no duplicate 'Wayond'/'ti_signals' cards).
         r = self._get(self.beta)
         self.assertTrue(r.data["entitled"])
         self.assertFalse(r.data["onboarding_open"])
         keys = {s["key"] for s in r.data["strategies"]}
-        self.assertEqual(keys, {"wayond_auto_demo", "wayond_wim"})
+        self.assertEqual(keys, {"wayond_wim"})
         for s in r.data["strategies"]:
             self.assertFalse(s["available"])          # truthful: not activatable
             self.assertFalse(s["provisioning_available"])
@@ -142,7 +144,7 @@ class BetaMarketplaceTests(TestCase):
                                 "plan_status": UserSubscriptionState.PlanStatus.ACTIVE, "viewer_mode": False})
         r = self._get(std)
         self.assertTrue(r.data["entitled"])
-        self.assertEqual({s["key"] for s in r.data["strategies"]}, {"wayond_auto_demo", "wayond_wim"})
+        self.assertEqual({s["key"] for s in r.data["strategies"]}, {"wayond_wim"})
         self.assertTrue(all(s["catalogue"] == "signal_copy" for s in r.data["strategies"]))
 
     def test_lapsed_customer_with_plan_sees_empty_marketplace(self):
@@ -164,7 +166,7 @@ class BetaMarketplaceTests(TestCase):
     def test_staff_sees_strategies(self):
         r = self._get(self.staff)
         self.assertTrue(r.data["entitled"])
-        self.assertEqual(len(r.data["strategies"]), 2)
+        self.assertEqual(len(r.data["strategies"]), 1)   # single customer-facing Wayond strategy
 
 
 class MarketplaceCatalogueEntitlementTests(TestCase):
