@@ -1,5 +1,22 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ WAYOND BETA ENABLEMENT — multi-user path repo-complete + hardened, DARK (2026-08-14)
+Beta Product Enablement (Sponsor). **Root cause "hosted not taking Wayond trades like before"** = the 2026-08-10
+`AUTO_SHADOW` quiesce (0 real orders) + the hosted plane has no order-send transport (host-cert-gated) —
+AutoTrading/golden is NOT the cause. **Merged (DARK):** #358 single customer-facing Wayond strategy on the
+`ti_signals` production pipeline (`ti_signals` is a functional superset of legacy `wayond`; no execution
+migration); #359 multi-user tenant isolation hardening (ADR-0020 amendment) — a Phase-2 adversarial verification
+found 6 cross-tenant findings (2 HIGH+4 MED), all fixed + re-reviewed: fan-out configured-source never falls to
+an unbound catch-all; fan-out implies terminal-node enforcement (no NULL-node PLACE_ORDER/OPEN_TRADE the shared
+worker would run on another tenant's terminal); WIN-card resolution account-scoped. The multi-user path
+(routing/assignment/isolation/risk/authority/dashboard/rollback) is now repo-complete + tested + DARK
+(`MULTI_ACCOUNT_ROUTING_ENABLED` OFF).
+**Deferred (infra/design):** node-aware ingest + per-account deal attribution (separate beta host); per-user
+WIN-card delivery (Sponsor notification-destination decision — in-app dashboard already per-user).
+**Gates to arm Wayond for beta (Sponsor/infra):** host cert `REMOTEAPP_ISOLATION_CERTIFIED` + separate beta host
++ flip `MULTI_ACCOUNT_ROUTING_ENABLED`/`BETA_SELF_SERVE_ARM_ENABLED` + populate `INTERNAL_PILOT_ARM_APPROVED_EMAILS`.
+When the beta host exists, enabling Wayond is an operational action, not an engineering stream.
+
 ## ▶ Host-level CO-RESIDENCY GUARD — beta ⟂ Customer Zero (ADR-0043 Addendum B, DARK) (2026-08-14)
 Sponsor-authorised allocation guard so a **non-Customer-Zero** hosted workspace can **never** be allocated to
 Customer Zero's node. New `hosted_workspace/tenant_isolation.py` + flag `HOSTED_TENANT_NODE_ISOLATION_ENABLED`
