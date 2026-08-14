@@ -307,8 +307,11 @@ HOSTED_CODE_SUBDIRS = (
 # managed terminal64 + the approved %SYSTEM32% session binaries; a single per-tenant Deny(*) whose EXCEPTIONS are
 # exactly that surface makes the writable LOCATION irrelevant — C:\Users\Public, ProgramData, suffixed RDS
 # profiles, a copied portable MT5 runtime: none can run. Reuses HOSTED_SESSION_ALLOW (the canonical base
-# session-binary list) so there is NO second manually-maintained list; Dll/Script need no per-tenant deny (the
-# base is publisher-only / deny-by-default, so a planted DLL/script is already denied wherever it lands).
+# session-binary list) so there is NO second manually-maintained list. Dll/Script need no per-tenant deny for the
+# UNSIGNED case (the base is publisher-only / deny-by-default, so an UNSIGNED planted DLL/script is already denied
+# wherever it lands). A SIGNED DLL planted in a tenant-writable location is a DIFFERENT case — it passes the
+# publisher Allow — and is the reducible half (ii) of the signed-DLL residual (ADR-0043), closed by a soak-derived
+# per-tenant Dll Deny(*)-with-non-writable-exceptions applied at STREAM 10E cert time (not built blind in-repo).
 _ACCOUNTS_BASE_APPLOCKER = r"%OSDRIVE%\GUVFX\ACCOUNTS"
 _WX_DENY_ALL = "*"          # deny ALL tenant execution, any drive/location ...
 _WX_DENY_SEQ = 0x1000       # ... except the exec-allow surface, carried as the Deny rule's Exceptions

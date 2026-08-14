@@ -43,9 +43,11 @@ NTFS ACL and the AppLocker policy — no duplicate manually-maintained list.
    executable allow surface** — the RX managed `terminal64` + the approved `%SYSTEM32%` session binaries
    (`HOSTED_SESSION_ALLOW`). Deny > Allow, so the tenant can execute **only** the allow surface; a copied signed
    `terminal64.exe` runs from **nowhere** (Public, ProgramData, `%TEMP%`, another drive, a writable subdir) — the
-   *location is irrelevant*. `Dll`/`Script` need no per-tenant deny: the base is publisher-only / deny-by-default,
-   so a planted DLL/script is already denied wherever it lands. Think **executable allow surface**, not
-   **writable deny surface**.
+   *location is irrelevant*. `Dll`/`Script` need no per-tenant deny **for the UNSIGNED case**: the base is
+   publisher-only / deny-by-default, so an **unsigned** planted DLL/script is already denied wherever it lands.
+   (A **signed** DLL planted in a tenant-writable location is a *different* case — it passes the publisher Allow —
+   and is the **reducible half (ii)** of the signed-DLL residual below, closed by a per-tenant `Dll` `Deny(*)` at
+   cert time.) Think **executable allow surface**, not **writable deny surface**.
 3. **MetaEditor denied.** The Exe MetaQuotes publisher rule is pinned `BinaryName=terminal64.exe` (embedded
    signature name — rename-proof); `metaeditor64.exe` and every other MetaQuotes tool are denied. No developer
    exception in this stream. **This pin lives in the MACHINE-WIDE BASE allow model** (`generate_base_policy` + the

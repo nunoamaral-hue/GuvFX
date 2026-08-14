@@ -75,25 +75,26 @@ try {
     if ([string]::IsNullOrWhiteSpace($sid)) { Fail "could not resolve SID for $HostedUser" }
     if ($sid -eq "S-1-1-0" -or $sid -eq "S-1-5-32-544") { Fail "refusing: shared principal SID" }
     [xml]$frag = Get-Content -LiteralPath $FragmentPath -Raw
-    # Exactly one Exe RuleCollection carrying exactly one rule: the tenant W^X Deny. Reject any smuggled rule.
+    # Exactly one Exe RuleCollection carrying exactly one rule of ANY type: the tenant W^X Deny. Enumerate ALL
+    # element children (not just FilePathRule) so a smuggled FilePublisherRule/FileHashRule Allow cannot slip in.
     $colls = @($frag.AppLockerPolicy.RuleCollection)
     if ($colls.Count -ne 1 -or $colls[0].Type -ne "Exe") { Fail "wx_fragment_not_single_exe_collection" }
-    $allRules = @($colls[0].FilePathRule)
-    if ($allRules.Count -ne 1) { Fail "wx_fragment_not_single_rule" }
-    $anyAllow = @($frag.AppLockerPolicy.RuleCollection.FilePathRule | Where-Object { $_.Action -eq "Allow" })
-    if ($anyAllow.Count -ne 0) { Fail "wx_fragment_grants_allow" }
-    $denies = @($allRules | Where-Object { $_.Action -eq "Deny" })
-    if ($denies.Count -ne 1) { Fail "wx_fragment_not_single_deny" }
-    $deny = $denies[0]
+    $ruleNodes = @($colls[0].ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element })
+    if ($ruleNodes.Count -ne 1) { Fail "wx_fragment_not_single_rule" }
+    $deny = $ruleNodes[0]
+    if ($deny.LocalName -ne "FilePathRule" -or $deny.Action -ne "Deny") { Fail "wx_fragment_not_single_deny" }
     if ($deny.UserOrGroupSid -ne $sid) { Fail "wx_fragment_sid_mismatch" }
     if (-not (IsTenantRule $deny.Id $AccountId)) { Fail "wx_fragment_not_tenant_rule" }
     # The Deny MUST be Deny(*) (deny ALL execution) ...
     $denyPaths = @($deny.Conditions.FilePathCondition | ForEach-Object { $_.Path })
     if ($denyPaths.Count -ne 1 -or $denyPaths[0] -ne "*") { Fail "wx_fragment_deny_not_deny_all" }
     # ... and it MUST carry exceptions (the exec-allow surface). A Deny(*) with NO exceptions denies terminal64
-    # itself (a fail-closed outage), so refuse it here too - the exception set is what makes the Deny safe.
+    # itself (a fail-closed outage); an exception of "*" would allow EVERYTHING (a fail-open). The EXACT exception
+    # set is validated at PRODUCE time by hosted_workspace.applocker_policy.assert_wx_deny_invariants (the trusted
+    # single source); the applier enforces the safety ENVELOPE here: non-empty, and no catastrophic "*" exception.
     $exc = @($deny.Exceptions.FilePathCondition | ForEach-Object { $_.Path })
     if ($exc.Count -lt 1) { Fail "wx_fragment_no_exceptions" }
+    if ($exc -contains "*") { Fail "wx_fragment_wildcard_exception" }
     Set-AppLockerPolicy -Merge -XmlPolicy $FragmentPath
     [xml]$eff = (Get-AppLockerPolicy -Effective -Xml)
     $present = 0
