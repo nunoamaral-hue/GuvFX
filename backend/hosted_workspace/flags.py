@@ -146,6 +146,25 @@ def hosted_wx_isolation_enabled() -> bool:
     return _flag("HOSTED_WX_ISOLATION_ENABLED")
 
 
+def supervised_single_tenant_beta_enabled() -> bool:
+    """ADR-0044 — the SUPERVISED_SINGLE_TENANT_BETA operational posture (DARK, default OFF).
+
+    An explicitly bounded interim gate (Sponsor decision 2026-08-14) that permits the FIRST end-to-end product
+    validation to advance a Hosted Workspace to EXECUTION_READY *without* ``HOSTED_REMOTEAPP_ISOLATION_CERTIFIED``
+    — but ONLY under the fail-closed boundary enforced in ``supervised_beta.supervised_single_tenant_beta_active``:
+    one non-Customer-Zero DEMO tenant, alone on a dedicated ACTIVE non-Customer-Zero node. It is NOT the full
+    behavioural certification and it emits NO certification marker: it is a coarse operational carve-out that
+    bounds the (still un-certified) forgeable-observation risk to a single supervised disposable tenant.
+
+    Same production code paths in both postures — only this gate differs — so when the full cert lands and
+    ``HOSTED_REMOTEAPP_ISOLATION_CERTIFIED`` is set, this flag is simply turned OFF and the posture dissolves
+    with no architectural change. NEVER arms execution by itself, performs no broker login, contacts no host.
+
+    NO-FAKE-READY: turning this on does NOT set or imply the isolation cert; the two are independent flags, and
+    ``live_observe.live_observe_fn`` reads them as an OR only after enforcing the single-tenant boundary."""
+    return _flag("SUPERVISED_SINGLE_TENANT_BETA_ENABLED")
+
+
 def hosted_tenant_node_isolation_enabled() -> bool:
     """ADR-0043 Addendum B — host-level CO-RESIDENCY guard (DARK, default OFF). When on, the node allocator
     (``provisioning.allocate_workspace_node``) and the execution-node single writer

@@ -60,6 +60,11 @@ def _arm_preconditions(account) -> ArmResult:
         return ArmResult(False, ARM_NO_WORKSPACE)
     if getattr(ws, "trading_account_id", None) != account.pk:   # owner-bound
         return ArmResult(False, "workspace_owner_mismatch")
+    # ADR-0044 supervised posture: while uncertified + the supervised flag is on, arming is permitted ONLY while
+    # the bounded single-tenant carve-out holds for this workspace (no-op when certified or when the flag is
+    # off). Fail-closed. Same predicate the order-time readiness gate applies, so arm and dispatch agree.
+    if not R._execution_permitted_under_posture(ws):
+        return ArmResult(False, R.RW_SUPERVISED_BOUNDARY)
     if getattr(account, "terminal_node_id", None) is None:      # non-NULL route (Decision C)
         return ArmResult(False, ARM_ROUTE_MISSING)
     # Capstone (PART 2): the durable workspace->node binding must exist AND agree with the account's node —
@@ -108,9 +113,17 @@ def arm_hosted_workspace_execution(account, *, actor: str = "", request=None) ->
     if not pre.ok:
         return pre
     ws = account.hosted_workspace
+    # An EXPLICIT arm clears any operator-disarm suppression (ADR-0044) — so a later auto-arm may resume it —
+    # and sets execution_enabled. Idempotent.
+    fields = []
     if ws.execution_enabled is not True:
         ws.execution_enabled = True
-        ws.save(update_fields=["execution_enabled", "updated_at"])
+        fields.append("execution_enabled")
+    if getattr(ws, "auto_arm_suppressed", False) is not False:
+        ws.auto_arm_suppressed = False
+        fields.append("auto_arm_suppressed")
+    if fields:
+        ws.save(update_fields=fields + ["updated_at"])
     _audit(request, "HOSTED_EXECUTION_ARMED", account, actor)
     return ArmResult(True, ARM_OK)
 
@@ -121,9 +134,18 @@ def disarm_hosted_workspace_execution(account, *, actor: str = "", request=None)
     ws = getattr(account, "hosted_workspace", None)
     if ws is None:
         return ArmResult(False, ARM_NO_WORKSPACE)
+    # Disarm is fail-safe AND durable against autonomous re-arm (ADR-0044): set the operator-intent suppression
+    # so ``auto_arm_runner`` never silently re-arms this workspace on the next cron cycle. Only an explicit arm
+    # clears it. Idempotent.
+    fields = []
     if ws.execution_enabled is not False:
         ws.execution_enabled = False
-        ws.save(update_fields=["execution_enabled", "updated_at"])
+        fields.append("execution_enabled")
+    if getattr(ws, "auto_arm_suppressed", False) is not True:
+        ws.auto_arm_suppressed = True
+        fields.append("auto_arm_suppressed")
+    if fields:
+        ws.save(update_fields=fields + ["updated_at"])
     _audit(request, "HOSTED_EXECUTION_DISARMED", account, actor)
     return ArmResult(True, DISARM_OK)
 

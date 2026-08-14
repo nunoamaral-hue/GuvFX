@@ -57,6 +57,7 @@ from hosted_workspace.flags import (
     hosted_mt5_observation_enabled,
     hosted_remoteapp_isolation_certified,
 )
+from hosted_workspace.supervised_beta import supervised_single_tenant_beta_active
 from hosted_workspace.producer import (
     DEFAULT_CLOCK_TOLERANCE_SECONDS,
     RawWorkspaceSnapshot,
@@ -269,18 +270,28 @@ def _node_rdp_host(workspace) -> str:
 def live_observe_fn(workspace):
     """The production ``observe_fn``: ``workspace -> WorkspaceObservation | None``. Fail-closed.
 
-    TRUST-MODEL PREREQUISITE (ADR-0041): a live observation is produced ONLY when RemoteApp isolation has been
-    behaviourally certified (``hosted_remoteapp_isolation_certified``). The observer runs inside the tenant
-    session, so its MT5 IPC facts (login/ipc/trade_allowed) are trustworthy ONLY if the tenant cannot execute
-    arbitrary code there. Without that certification this returns ``None`` (no observation ingested, no
-    advancement) - the observation channel stays DARK. This is the code enforcement of the dependency
-    REMOTEAPP_ISOLATION_CERTIFIED -> HOSTED_OBSERVATION -> WORKSPACE_READY. Execution is unaffected either way:
-    its runtime-identity validation is independent of observation.
+    TRUST-MODEL PREREQUISITE (ADR-0041 / ADR-0044): a live observation is produced ONLY when EITHER RemoteApp
+    isolation has been behaviourally certified (``hosted_remoteapp_isolation_certified``) OR the bounded
+    SUPERVISED_SINGLE_TENANT_BETA carve-out holds for THIS workspace
+    (``supervised_single_tenant_beta_active`` - a single non-CZ DEMO tenant alone on a dedicated non-CZ node,
+    fail-closed). The observer runs inside the tenant session, so its MT5 IPC facts (login/ipc/trade_allowed)
+    are trustworthy ONLY if the tenant cannot forge the handoff; the cert proves that, and the supervised
+    carve-out instead BOUNDS the un-certified risk to one supervised disposable tenant (it does NOT set or imply
+    the cert). With neither, this returns ``None`` (no observation ingested, no advancement) - the observation
+    channel stays DARK. This is the code enforcement of REMOTEAPP_ISOLATION_CERTIFIED -> HOSTED_OBSERVATION ->
+    WORKSPACE_READY (with the ADR-0044 supervised alternative). Execution is unaffected either way: its
+    runtime-identity validation is independent of observation.
 
     Also gated on ``HOSTED_MT5_OBSERVATION_ENABLED``; the signed executor is separately gated (host-executor
     flag + keyring/base_url), so with the flags on but the executor unconfigured this still contacts no host."""
-    if not hosted_remoteapp_isolation_certified():
-        return None   # trust anchor absent -> observation is not trustworthy -> produce nothing (fail closed)
+    # Trust anchor: the full behavioural cert, OR the bounded ADR-0044 SUPERVISED_SINGLE_TENANT_BETA carve-out
+    # (a single non-CZ DEMO tenant alone on a dedicated non-CZ node — evaluated per-workspace, fail-closed, in
+    # ``supervised_single_tenant_beta_active``). The supervised branch does NOT set or imply the cert marker; it
+    # only bounds the un-certified forgeable-observation risk to one supervised disposable tenant so the first
+    # end-to-end product validation can advance. If NEITHER holds, produce nothing (fail closed).
+    if not (hosted_remoteapp_isolation_certified()
+            or supervised_single_tenant_beta_active(workspace)):
+        return None
     if not hosted_mt5_observation_enabled():
         return None
     if str(getattr(workspace, "canonical_state", "") or "") not in _OBSERVABLE_STATES:

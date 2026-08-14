@@ -36,16 +36,19 @@ def _dark_observe_fn(_workspace):
 def resolve_observe_fn():
     """Return the observe_fn the cycle will use (pluggable seam). STREAM 9E: the REAL live host observe transport
     (``live_observe.live_observe_fn`` — signed ``OBSERVE_WORKSPACE`` → session-bound observer → certified
-    producer) is selected ONLY when BOTH the trust anchor ``HOSTED_REMOTEAPP_ISOLATION_CERTIFIED`` (ADR-0041:
-    observation is trustworthy only when a tenant cannot forge the handoff) AND ``HOSTED_MT5_OBSERVATION_ENABLED``
-    are on; otherwise the fail-closed dark placeholder (no host bridge, ingests nothing). ``live_observe_fn`` is
-    itself fail-closed on the SAME two gates + the separately-gated signed executor, so the darkness holds even
-    if this resolver were bypassed."""
+    producer) is selected when ``HOSTED_MT5_OBSERVATION_ENABLED`` is on AND EITHER the trust anchor
+    ``HOSTED_REMOTEAPP_ISOLATION_CERTIFIED`` (ADR-0041) OR the bounded ``SUPERVISED_SINGLE_TENANT_BETA_ENABLED``
+    posture (ADR-0044) is on; otherwise the fail-closed dark placeholder (no host bridge, ingests nothing).
+    ``live_observe_fn`` is itself fail-closed on the SAME gates PER WORKSPACE (the supervised branch additionally
+    enforces the single-non-CZ-demo-tenant boundary in ``supervised_single_tenant_beta_active``), so the darkness
+    — and the single-tenant bound — holds even if this resolver were bypassed."""
     from hosted_workspace.flags import (
         hosted_mt5_observation_enabled,
         hosted_remoteapp_isolation_certified,
+        supervised_single_tenant_beta_enabled,
     )
-    if hosted_remoteapp_isolation_certified() and hosted_mt5_observation_enabled():
+    if hosted_mt5_observation_enabled() and (
+            hosted_remoteapp_isolation_certified() or supervised_single_tenant_beta_enabled()):
         from hosted_workspace.live_observe import live_observe_fn
         return live_observe_fn
     return _dark_observe_fn
@@ -70,14 +73,18 @@ def release_singleton(key: int = _SINGLETON_LOCK_KEY) -> None:
 
 
 def run_cycle(*, observe_fn=None) -> dict:
-    """One provisioning+observation pass (NO flag gate, NO lock — the drivers self-gate on the master flag).
-    Exposed for tests. Returns a combined secret-free summary."""
+    """One provisioning + observation + auto-arm pass (NO flag gate, NO lock — the drivers self-gate on their
+    flags). Exposed for tests. Returns a combined secret-free summary. Ordered: allocate nodes → ingest
+    observations (advance canonical state, incl. → EXECUTION_READY) → auto-arm any EXECUTION_READY-but-unarmed
+    workspace (ADR-0044 Decision 2; DARK unless master + execution flags on; the arm re-proves all preconditions)."""
+    from hosted_workspace.auto_arm_runner import run_hosted_auto_arm
     from hosted_workspace.observation_runner import run_hosted_observations
     from hosted_workspace.provisioning_runner import run_workspace_provisioning
     prov = run_workspace_provisioning()
     obs = run_hosted_observations(observe_fn=observe_fn or resolve_observe_fn(),
                                   source="hosted_workspace.scheduler")
-    return {"provisioning": prov, "observation": obs}
+    arm = run_hosted_auto_arm()
+    return {"provisioning": prov, "observation": obs, "auto_arm": arm}
 
 
 class Command(BaseCommand):
@@ -104,11 +111,13 @@ class Command(BaseCommand):
         finally:
             release_singleton()
 
-        p, o = result["provisioning"], result["observation"]
+        p, o, a = result["provisioning"], result["observation"], result["auto_arm"]
         self.stdout.write(
             f"[run_hosted_observations] {now.isoformat()} "
             f"prov: enabled={p['enabled']} candidates={p['candidates']} allocated={p['allocated']} "
             f"already={p['already']} no_capacity={p['no_capacity']} not_deliverable={p['not_deliverable']} "
             f"cz_forbidden={p['cz_forbidden']} errors={p['errors']} | obs: enabled={o['enabled']} polled={o['polled']} "
-            f"applied={o['applied']} unavailable={o['unavailable']} errors={o['errors']}"
+            f"applied={o['applied']} unavailable={o['unavailable']} errors={o['errors']} | "
+            f"arm: enabled={a['enabled']} candidates={a['candidates']} armed={a['armed']} "
+            f"refused={a['refused']} errors={a['errors']}"
         )

@@ -152,6 +152,13 @@ class HostedMt5Workspace(models.Model):
     # order-time gates) — never sufficient on its own, and NEVER the order authority.
     execution_enabled = models.BooleanField(default=False)
 
+    # --- ADR-0044: durable operator-disarm intent (reversibility / "disarm still wins") -------------------
+    # Set True by ``disarm_hosted_workspace_execution`` and cleared ONLY by an explicit
+    # ``arm_hosted_workspace_execution``. The autonomous ``auto_arm_runner`` EXCLUDES suppressed workspaces, so a
+    # deliberate operator disarm is never silently reverted by the next cron cycle. Defaults False (a fresh
+    # workspace is auto-armable once it legitimately reaches EXECUTION_READY). Never the order authority.
+    auto_arm_suppressed = models.BooleanField(default=False)
+
     # --- ADR-0034 Execution Engine capstone (PART 2/3): durable workspace->node execution binding ---------
     # The ONE authorised execution TerminalNode this workspace resolves to (Decision C). NULL ⇒ NOT
     # execution-routable (fail-closed). Server-assigned only, via the provisioning contract

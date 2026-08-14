@@ -1,5 +1,22 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ SUPERVISED_SINGLE_TENANT_BETA + autonomous arming — DARK (ADR-0044, 2026-08-14)
+Sponsor-authorised bounded interim posture so the FIRST end-to-end beta journey can reach EXECUTION_READY
+**without** the full `REMOTEAPP_ISOLATION_CERTIFIED` cert — fail-closed, single non-CZ demo tenant alone on a
+dedicated ACTIVE non-CZ node (single-tenancy enforced at the physical-host/rdp_host level, at BOTH the
+observation trust anchor and the order/arm gate). Emits **no** cert marker. Plus autonomous customer-specific
+arming: `confirm_broker_account` activates the intent account, and `auto_arm_runner` (in the cron cycle) arms
+`execution_enabled` via the certified path — no per-user operator CLI. All DARK
+(`SUPERVISED_SINGLE_TENANT_BETA_ENABLED` + hosted execution/observation flags default OFF). 6-lens adversarial
+review → 0 HIGH / 4 MEDIUM all fixed. branch `feat/supervised-single-tenant-beta`, `make check` green.
+**ONE bounded next action → the Sponsor/operational** (needs the provisioned non-CZ beta node from the
+co-residency-guard action below): deploy `main`+this branch, then on the beta node flip
+`SUPERVISED_SINGLE_TENANT_BETA_ENABLED` + `HOSTED_WORKSPACE_ONBOARDING_ENABLED` + `HOSTED_OBSERVATION_SCHEDULER_ENABLED`
++ `HOSTED_MT5_OBSERVATION_ENABLED` + `HOSTED_MT5_EXECUTION_ENABLED` + `HOSTED_MT5_REMOTEAPP_ENABLED` +
+`HOSTED_SLOT_PREP_ENABLED` + `HOSTED_HOST_EXECUTOR_ENABLED` + `HOSTED_TENANT_NODE_ISOLATION_ENABLED`, populate
+`INTERNAL_PILOT_ARM_APPROVED_EMAILS`, keep global `signal_execution_mode=DEMO`. Full escape-battery cert still
+required before a 2nd tenant / co-residency with Customer Zero / public launch.
+
 ## ▶ WAYOND BETA ENABLEMENT — multi-user path repo-complete + hardened, DARK (2026-08-14)
 Beta Product Enablement (Sponsor). **Root cause "hosted not taking Wayond trades like before"** = the 2026-08-10
 `AUTO_SHADOW` quiesce (0 real orders) + the hosted plane has no order-send transport (host-cert-gated) —
