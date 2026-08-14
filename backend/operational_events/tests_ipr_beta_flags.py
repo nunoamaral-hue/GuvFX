@@ -1,6 +1,6 @@
 """IPR Area E — validation of the beta arming-flag inventory.
 
-Pure-stdlib checks (no DB). Fail closed on: the three BETA arming flags missing from the inventory; any
+Pure-stdlib checks (no DB). Fail closed on: any required BETA arming flag missing from the inventory; any
 missing a definition site / default; any not defaulting OFF (in the inventory AND in source); or a
 secret-like value in the file. Kept as a NEW file so the shared WP5.4 readiness test is not modified.
 """
@@ -14,13 +14,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FLAGS_JSON = REPO_ROOT / "docs" / "operations" / "broker-connectivity" / "feature-flags.json"
 
-REQUIRED_BETA_FLAGS = {"BETA_ONBOARDING_ENABLED", "BETA_RUNTIMES_ENABLED", "BETA_SELF_SERVE_ARM_ENABLED"}
+REQUIRED_BETA_FLAGS = {"BETA_ONBOARDING_ENABLED", "BETA_RUNTIMES_ENABLED", "BETA_SELF_SERVE_ARM_ENABLED",
+                       "BETA_ADMISSION_ARM_ENABLED"}
 
 # Each beta flag's accessor source file — asserted to carry an OFF (falsey) default.
 SOURCE_DEFAULT_OFF = {
     "BETA_ONBOARDING_ENABLED": REPO_ROOT / "backend" / "billing" / "beta.py",
     "BETA_RUNTIMES_ENABLED": REPO_ROOT / "backend" / "terminal_provisioning" / "beta_capacity.py",
     "BETA_SELF_SERVE_ARM_ENABLED": REPO_ROOT / "backend" / "strategies" / "views.py",
+    # ADR-0045 — beta-admission-derived arm authorization (accessor in strategies/views.py).
+    "BETA_ADMISSION_ARM_ENABLED": REPO_ROOT / "backend" / "strategies" / "views.py",
 }
 
 SECRET_PATTERNS = [
@@ -35,7 +38,7 @@ class BetaFlagInventoryTests(unittest.TestCase):
         self.section = self.doc.get("beta_arming_flags", {})
         self.flags = {f["name"]: f for f in self.section.get("flags", [])}
 
-    def test_all_three_present(self):
+    def test_all_beta_arming_flags_present(self):
         self.assertEqual(set(self.flags), REQUIRED_BETA_FLAGS)
 
     def test_section_declares_defaults_off(self):

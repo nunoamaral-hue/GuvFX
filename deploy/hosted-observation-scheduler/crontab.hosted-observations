@@ -1,0 +1,29 @@
+# BETA-READINESS — hosted-workspace autonomous provisioning/observation/auto-arm scheduler.
+#
+# Schedules `run_hosted_observations` to run every minute — the ONE cycle that drives a
+# self-requested Hosted Workspace forward without any per-user operator action:
+#   1. allocates a TerminalNode to any workspace still at PROVISIONING (-> WAITING_FOR_LOGIN),
+#   2. polls hosted observations through the certified single writer (advances the canonical
+#      state machine WAITING_FOR_LOGIN -> CONNECTED -> matched -> EXECUTION_READY), then
+#   3. auto-arms any EXECUTION_READY-but-unarmed workspace (ADR-0044 Decision 2).
+#
+# WHY THIS FILE EXISTS: the command shipped (Beta Readiness Stream 2 / ADR-0044) but had NO
+# deployable scheduler artefact, so a self-requested workspace sat at PROVISIONING forever —
+# an engineer had to run it by hand. That is a Beta Blocker (a fresh user's journey cannot
+# advance autonomously). This cron is the missing wire.
+#
+# SAFE AT CURRENT DEFAULTS — DARK. `run_hosted_observations` is a DORMANT no-op unless
+# HOSTED_OBSERVATION_SCHEDULER_ENABLED is on (it self-gates at handle()); and even then each
+# driver only does work while hosted_persistent_mt5_enabled() is on. It NEVER launches MT5,
+# never logs in, never places an order, and never arms execution by itself. It is a singleton
+# (Postgres advisory lock — a second concurrent cycle simply skips) and every step is
+# idempotent, so re-running each minute is harmless. Installing this cron therefore changes
+# NOTHING until the operator deliberately flips the flag.
+#
+# Managed by deploy/hosted-observation-scheduler/install_hosted_observation_cron.sh
+# (identified by the end-anchored marker below).
+# Install:  deploy/hosted-observation-scheduler/install_hosted_observation_cron.sh
+# Remove:   deploy/hosted-observation-scheduler/install_hosted_observation_cron.sh --remove
+#
+# One ordered pass per minute (allocate -> observe -> auto-arm in a single invocation):
+* * * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py run_hosted_observations >> /var/log/guvfx/hosted_observations.log 2>&1 # guvfx-hosted-observations

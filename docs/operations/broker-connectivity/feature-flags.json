@@ -182,6 +182,22 @@
         "risk": "RED",
         "sponsor_approval_required": true,
         "note": "Grants authority, does NOT open exposure by itself (NON_OPENING_EXEMPT). Master AUTO_DEMO levers + the execution gate still apply."
+      },
+      {
+        "name": "BETA_ADMISSION_ARM_ENABLED",
+        "owner": "Backend / strategies (ADR-0045, Beta Launch first-supervised-beta-user)",
+        "scope": "backend",
+        "layer": "runtime",
+        "default": "OFF",
+        "timing": "runtime",
+        "definition_site": "backend/strategies/views.py (_beta_admission_arm_enabled + _admitted_beta_arm_authorized; wired into _arm_cohort_approved)",
+        "resolution": "getattr(settings, ..., None) then os.getenv(..., ''); short-circuits on isinstance(val, bool). Fail-closed.",
+        "effect_when_enabled": "Adds a SECOND, additive arm-authorization source to _arm_cohort_approved: an admitted ACTIVE BetaTester who is NOT Customer Zero is arm-authorized without a per-user INTERNAL_PILOT_ARM_APPROVED_EMAILS entry (removes the redundant second per-user operator step — the autonomy Beta Blocker). Customer Zero excluded by construction via the canonical customer_zero_account_ids (RESERVED_CUSTOMER_ZERO). Does NOT bypass BETA_SELF_SERVE_ARM_ENABLED, the technical readiness gates, or the execution levers.",
+        "effect_when_disabled": "Byte-identical to the pre-ADR-0045 gate: arm authorization is the INTERNAL_PILOT_ARM_APPROVED_EMAILS allowlist only.",
+        "deploy_requirement": "None to toggle (read live).",
+        "risk": "RED",
+        "sponsor_approval_required": true,
+        "note": "Amber decision (changes the SOURCE of the CONTAIN-1 arm boundary for the beta cohort). Ships DARK; Sponsor ratification required before enabling. Additive + fail-closed; CZ never re-authorized."
       }
     ]
   },

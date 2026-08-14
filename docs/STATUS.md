@@ -14,6 +14,44 @@
 
 ## Execution workstream log
 
+- **2026-08-14 — FIRST SUPERVISED BETA USER autonomous journey — repository Beta Blockers fixed. 🟢 DARK,
+  make check green (3969 backend), NOT committed.** Sponsor made the FIRST supervised beta user (not Customer
+  Zero — CZ is now protected production/regression reference only) the acceptance subject; milestone = a
+  brand-new beta user completes the hosted Provider-B journey with NO engineer intervention. A four-trace
+  investigation of the fresh-user journey (register→onboard→allocate→observe→confirm→auto-arm→readiness→arm→
+  signal→demo order→dashboard) found the front/middle autonomous in code and surfaced **four repository Beta
+  Blockers**, all fixed (additive, DARK/flag-OFF, Customer-Zero-excluded, no Provider-A change, architecture
+  unchanged):
+  1. **Missing scheduler artefact** — `run_hosted_observations` (allocate node + advance observation state
+     machine + auto-arm) had no deployable cron, so a self-requested workspace sat at `PROVISIONING` forever.
+     Added `deploy/hosted-observation-scheduler/` (crontab + idempotent installer + README), mirroring
+     `monitor-scheduler`; DARK (command self-gates on `HOSTED_OBSERVATION_SCHEDULER_ENABLED`).
+  2. **Per-user arm allowlist** (ADR-0045) — an admitted beta user was blocked at "Enable Trading" by a
+     second, redundant per-user `INTERNAL_PILOT_ARM_APPROVED_EMAILS` gate. `strategies.views._arm_cohort_approved`
+     now grants to an admitted ACTIVE `BetaTester` who is NOT Customer Zero when `BETA_ADMISSION_ARM_ENABLED`
+     (new, default OFF) is on — additive, byte-identical when off, CZ excluded by the canonical
+     `customer_zero_account_ids`. **Amber decision — ships DARK, awaits Sponsor ratification before enable.**
+  3. **No end-to-end autonomous-journey proof** — added `hosted_workspace/tests_beta_journey_e2e.py`: one
+     ordered test driving the REAL production function at every stage (EXECUTION_READY reached via the real
+     `ingest_observation` state machine, real `evaluate_readiness`, real arm API, real signal→PLACE_ORDER→
+     `order_send`), faking only the host/broker boundary.
+  4. **Identity pin dropped at the dispatch transport** (highest-value find) — the backend injects the
+     Provider-B per-job pin (`expected_login`/`expected_server`) onto every hosted ExecutionJob
+     (`execution.hosted_pin`), but `mt5_trade_ingest_worker` stripped it building the `/mt5/order` body, so a
+     hosted PLACE/MODIFY/CLOSE fails CLOSED with `identity_pin_required` under `MT5_REQUIRE_IDENTITY_PIN=1`
+     (mandatory on a hosted bridge) — the first beta trade (and every breakeven/close) would silently fail.
+     Added `apply_identity_pin` helper + wired it into PLACE_ORDER/PLACE_TEST_ORDER/MODIFY_POSITION/CLOSE_TRADE
+     dispatch; no-op for legacy jobs. Tests: `execution/tests_worker_identity_pin.py` (helper + AST wiring
+     guard that fails if a call site is removed). **Repo fix; deploying it re-stages that worker on the node.**
+  Adversarial review (5-lens workflow, each finding refuted) → **0 HIGH / 1 MEDIUM** (e2e/unit tests guarded
+  the pin HELPER but not the dispatcher WIRING) — fixed with the AST wiring guard + corrected the overclaiming
+  comment. `make check` green (3969 backend + frontend lint + build). **Every stage of the fresh-user journey
+  advances by real code with zero engineer intervention. Remaining to a LIVE first-beta run = Infrastructure
+  (a separate disposable non-CZ host + its ACTIVE TerminalNode, the on-host observation/executor daemon, the
+  hosted RemoteApp publish) + Operational (flip the DARK flags incl. `BETA_ADMISSION_ARM_ENABLED` after
+  ratification; install the two crons; AUTO_DEMO) + Manual/Nuno (the demo broker login + confirm). NO repo
+  blockers remain.** Not committed/deployed; no prod mutation.
+
 - **2026-08-14 — PROD PARITY DEPLOY of `main` (5b99d07). 🟢 DEPLOYED, DARK, verified.** Sponsor-authorised
   full-parity deploy (repository parity, NOT activation). Prod was at `06f3aa2` (#351); this brought #352–#361
   (10 PRs: 9E/10B/10D/10E/co-residency/single-Wayond/isolation-hardening/supervised-beta), all DARK. Executed

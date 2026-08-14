@@ -14,6 +14,8 @@ No live order is placed; the arm master levers stay OFF (arming only creates aut
 """
 from __future__ import annotations
 
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
@@ -159,3 +161,100 @@ class ArmContainmentTests(TestCase):
                                     format="json")
             self.assertEqual(en.status_code, 403)
             self.assertEqual(en.json()["status"], "not_pilot_approved")
+
+
+@override_settings(**BASE)
+class ArmAdmissionAuthorizationTests(TestCase):
+    """ADR-0045 (Beta Launch, 2026-08-14) — beta-admission-derived ARM authorization.
+
+    Removes the redundant SECOND per-user operator step (a hand-added
+    ``INTERNAL_PILOT_ARM_APPROVED_EMAILS`` entry) that blocked an already-admitted beta user at "Enable
+    Trading" — the autonomy Beta Blocker. When ``BETA_ADMISSION_ARM_ENABLED`` is on, an admitted ACTIVE
+    ``BetaTester`` (NOT Customer Zero) is arm-authorized directly. Proven here: DARK by default; grants
+    only for an admitted active non-CZ tester when on; Customer Zero excluded by construction even when
+    on; the technical gates and the original email allowlist are untouched."""
+
+    def _armable(self, email):
+        user = _user(email)
+        acct = _acct(user)
+        _ready_runtime(acct)
+        acct.refresh_from_db()
+        return user, acct
+
+    def _arm(self, user, acct):
+        return _client(user).post(ARM_URL, {"marketplace_strategy_id": MP, "account_id": acct.id},
+                                  format="json")
+
+    def test_admitted_tester_refused_when_admission_arm_flag_off(self):
+        # DARK by default: admission alone does NOT confer arm authority — byte-identical to pre-ADR-0045.
+        BetaTester.objects.create(email="beta1@x.invalid", is_active=True)
+        user, acct = self._armable("beta1@x.invalid")
+        r = self._arm(user, acct)
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertEqual(r.json()["status"], "not_pilot_approved")
+        self.assertFalse(StrategyAssignment.objects.filter(account=acct).exists())
+
+    @override_settings(BETA_ADMISSION_ARM_ENABLED=True)
+    def test_admitted_active_tester_can_arm_when_flag_on(self):
+        BetaTester.objects.create(email="beta2@x.invalid", is_active=True)
+        user, acct = self._armable("beta2@x.invalid")
+        # Pin "this user is NOT Customer Zero" deterministically (the reserved id is a hardcoded {1} and
+        # Postgres does not reset the auto-id sequence between TestCases, so a test account can otherwise
+        # coincidentally land on pk=1). The genuine CZ-exclusion behaviour is proven in the test below.
+        with mock.patch("hosted_workspace.tenant_isolation.customer_zero_account_ids",
+                        return_value=frozenset()):
+            r = self._arm(user, acct)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["status"], "armed")
+        self.assertTrue(StrategyAssignment.objects.filter(
+            account=acct, execution_mode="AUTO_DEMO", stage="LIVE", is_active=True).exists())
+
+    @override_settings(BETA_ADMISSION_ARM_ENABLED=True)
+    def test_non_admitted_user_still_refused_when_flag_on(self):
+        # Not a BetaTester at all → the admission source cannot grant; still denied.
+        user, acct = self._armable("stranger@x.invalid")
+        r = self._arm(user, acct)
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertEqual(r.json()["status"], "not_pilot_approved")
+
+    @override_settings(BETA_ADMISSION_ARM_ENABLED=True)
+    def test_inactive_tester_refused_when_flag_on(self):
+        # An admitted-but-DEACTIVATED tester is not admitted → refused (revocation still bites).
+        BetaTester.objects.create(email="inactive@x.invalid", is_active=False)
+        user, acct = self._armable("inactive@x.invalid")
+        r = self._arm(user, acct)
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertEqual(r.json()["status"], "not_pilot_approved")
+
+    @override_settings(BETA_ADMISSION_ARM_ENABLED=True)
+    def test_customer_zero_excluded_even_when_admitted_and_flag_on(self):
+        # THE safety proof: CZ is an admitted BetaTester, but owning a reserved-CZ account excludes it
+        # from admission-derived arm authorization — CZ is NEVER re-authorized onto the arm path.
+        BetaTester.objects.create(email="cz@x.invalid", is_active=True)
+        user, acct = self._armable("cz@x.invalid")
+        with mock.patch("hosted_workspace.tenant_isolation.customer_zero_account_ids",
+                        return_value=frozenset({acct.id})):
+            r = self._arm(user, acct)
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertEqual(r.json()["status"], "not_pilot_approved")
+        self.assertFalse(StrategyAssignment.objects.filter(account=acct).exists())
+
+    @override_settings(BETA_ADMISSION_ARM_ENABLED=True)
+    def test_admitted_tester_still_gated_on_runtime_ready(self):
+        # Admission grants AUTHORIZATION, not a bypass of technical readiness — a not-ready runtime 409s.
+        BetaTester.objects.create(email="notready@x.invalid", is_active=True)
+        user = _user("notready@x.invalid")
+        acct = _acct(user)  # no runtime provisioned
+        with mock.patch("hosted_workspace.tenant_isolation.customer_zero_account_ids",
+                        return_value=frozenset()):  # pin non-CZ (see note above)
+            r = self._arm(user, acct)
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertEqual(r.json()["status"], "runtime_not_ready")
+
+    @override_settings(BETA_ADMISSION_ARM_ENABLED=True, INTERNAL_PILOT_ARM_APPROVED_EMAILS=APPROVED)
+    def test_email_allowlist_still_authorizes_independently(self):
+        # Source 1 (the original email allowlist) is unchanged: a non-BetaTester on it still arms.
+        user, acct = self._armable(APPROVED)
+        r = self._arm(user, acct)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["status"], "armed")
