@@ -17,10 +17,14 @@ and returns True ONLY when EVERY one of the boundary conditions the Sponsor set 
   5. the workspace is bound to an execution ``TerminalNode`` that is ACTIVE;
   6. that node is NOT a Customer-Zero / configured-forbidden node — derived LIVE from the DB via the same
      ``forbidden_execution_node_ids`` the co-residency guard uses (checked here UNCONDITIONALLY, independent of
-     ``HOSTED_TENANT_NODE_ISOLATION_ENABLED``, so the supervised posture can never land a tenant on CZ's host);
-  7. the node is SINGLE-TENANT for this account — no OTHER account occupies it, counting BOTH live legacy
-     accounts (``terminal_node``) and hosted-workspace bindings (``execution_node`` OR ``workspace_node``).
-     This is the load-bearing multi-tenant guard: the moment a second tenant shares the node the gate closes.
+     ``HOSTED_TENANT_NODE_ISOLATION_ENABLED``, so the supervised posture can never land a tenant on CZ's NODE —
+     this is what keeps Customer Zero protected under the ADR-0044 amendment's host co-residency);
+  7. the node is SINGLE-TENANT for this account — no OTHER account occupies THIS ``TerminalNode``, counting
+     BOTH live legacy accounts (``terminal_node``) and hosted-workspace bindings (``execution_node`` OR
+     ``workspace_node``). ADR-0044 AMENDMENT (Chief Architect, 2026-08-14 — CLOSED TRUSTED BETA only): the unit
+     is the NODE, NOT the physical host, so a beta tenant on its OWN isolated node may co-reside with Customer
+     Zero (on a DIFFERENT node) on the SAME box; the moment a SECOND tenant shares the SAME node the gate closes.
+     The exception expires when STREAM 10E lands and must not survive into Public Launch.
 
 Any ambiguity, missing relation, or exception -> False (fail-closed). This module performs NO host or broker
 action, arms nothing, and holds no secret; it is a pure, read-only predicate. When the full cert lands and
@@ -39,48 +43,49 @@ def _account_of(workspace):
 
 
 def node_is_single_tenant_for(node, account_id) -> bool:
-    """True iff the PHYSICAL HOST behind ``node`` currently serves EXACTLY this one account and no other tenant.
+    """True iff THIS execution ``TerminalNode`` currently serves EXACTLY this one account and no other tenant.
 
-    The trust unit is the physical host, addressed by ``rdp_host`` (the observer reaches the host via
-    ``execution_node.rdp_host``, and the co-residency guard already treats ``rdp_host`` as the host identity) —
-    NOT the ``TerminalNode`` row pk, because two node rows can share one ``rdp_host`` (no DB uniqueness). So we
-    gather EVERY ACTIVE node row sharing this node's ``rdp_host`` (case-insensitive) and count occupancy across
-    ALL of them. Occupancy sources: a live legacy account via ``terminal_node``, and any hosted workspace via
-    ``execution_node`` OR ``workspace_node`` (delivery). A single OTHER occupant on the host -> False.
+    ADR-0044 AMENDMENT (Chief Architect, 2026-08-14 — CLOSED TRUSTED BETA co-residency exception): the trust
+    unit is the ``TerminalNode`` (one supervised beta tenant per isolated node), NOT the physical host. During
+    the supervised beta a beta tenant MAY share a physical host (``rdp_host``) with Customer Zero, PROVIDED it
+    occupies its OWN isolated node. Customer Zero stays protected: the beta can never bind to CZ's node
+    (condition (6) / ``forbidden_execution_node_ids`` — checked unconditionally), and EVERY other isolation
+    mechanism is unchanged (separate Windows identity, MT5 runtime, NTFS/G5 ACL, W^X, AppLocker, RemoteApp).
+    This exception EXPIRES when STREAM 10E lands (``HOSTED_REMOTEAPP_ISOLATION_CERTIFIED``) and MUST NOT survive
+    into Public Launch. (Pre-amendment this aggregated occupancy across ALL node rows sharing ``rdp_host`` — the
+    physical-host requirement removed by the amendment; nothing else here changed.)
 
-    Fail-closed: a blank ``rdp_host`` (host identity unknown) or any error returns False."""
+    Occupancy sources on THIS node: a live legacy account via ``terminal_node``, and any hosted workspace via
+    ``execution_node`` OR ``workspace_node`` (delivery). A single OTHER occupant of THIS node -> False.
+
+    Fail-closed: a blank ``rdp_host`` (an execution node must carry a host identity to be deployable — this is
+    a node-validity guard, no longer a physical-host aggregation key) or any error returns False."""
     node_id = getattr(node, "pk", None)
     if node_id is None or account_id is None:
         return False
     try:
         from django.db.models import Q
 
-        from execution.models import TerminalNode
         from hosted_workspace.models import HostedMt5Workspace
         from trading.models import TradingAccount
 
         acct_id = int(account_id)
-        rdp = str(getattr(node, "rdp_host", "") or "").strip()
-        if not rdp:
-            return False  # host identity unknown -> cannot prove single-tenant -> fail closed
-        # Every ACTIVE node ROW that resolves to the SAME physical host (same rdp_host, case-insensitive).
-        host_node_ids = set(
-            TerminalNode.objects
-            .filter(rdp_host__iexact=rdp, status=TerminalNode.Status.ACTIVE)
-            .values_list("id", flat=True)
-        )
-        host_node_ids.add(node_id)  # include this node even if a status/read race dropped it
-        # (a) any OTHER live legacy account pinned to ANY node row of this host.
+        if not str(getattr(node, "rdp_host", "") or "").strip():
+            return False  # a valid execution node must have a host identity -> fail closed (defensive)
+        # ADR-0044 amendment: single-tenancy is scoped to THIS TerminalNode, not the physical host. CZ on a
+        # DIFFERENT node of the same box does NOT break this (CZ's own node is separately forbidden by (6)).
+        node_ids = {node_id}
+        # (a) any OTHER live legacy account pinned to THIS node.
         other_active = (TradingAccount.objects
-                        .filter(terminal_node_id__in=host_node_ids, is_active=True)
+                        .filter(terminal_node_id__in=node_ids, is_active=True)
                         .exclude(pk=acct_id)
                         .exists())
         if other_active:
             return False
-        # (b) any OTHER hosted workspace occupying ANY node row of this host in EITHER role.
+        # (b) any OTHER hosted workspace occupying THIS node in EITHER role (execution or delivery).
         other_hosted = (HostedMt5Workspace.objects
-                        .filter(Q(execution_node_id__in=host_node_ids)
-                                | Q(workspace_node_id__in=host_node_ids))
+                        .filter(Q(execution_node_id__in=node_ids)
+                                | Q(workspace_node_id__in=node_ids))
                         .exclude(trading_account_id=acct_id)
                         .exists())
         return not other_hosted
