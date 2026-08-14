@@ -417,16 +417,62 @@ def _account_execution_ready(account):
     return True, "ready"
 
 
+def _beta_admission_arm_enabled() -> bool:
+    """ADR-0045 — beta-admission-derived ARM authorization (Beta Launch, 2026-08-14). DEFAULT OFF,
+    fail-closed. When on, an admitted ACTIVE ``BetaTester`` who is NOT Customer Zero is arm-authorized
+    WITHOUT a separate per-user ``INTERNAL_PILOT_ARM_APPROVED_EMAILS`` entry — so the operator's single
+    per-user touch (``admit_beta_tester``) carries the whole autonomous journey, instead of a redundant
+    second per-user allowlist entry at "Enable Trading". Explicit Django setting wins, else env var."""
+    import os
+    val = getattr(settings, "BETA_ADMISSION_ARM_ENABLED", None)
+    if val is None:
+        val = os.getenv("BETA_ADMISSION_ARM_ENABLED", "")
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _admitted_beta_arm_authorized(user) -> bool:
+    """True iff ``user`` is an admitted ACTIVE ``BetaTester`` AND is NOT the Customer Zero identity.
+    FAIL-CLOSED: any error or ambiguity → False. Customer Zero is excluded via the ONE canonical
+    account-level definition (``tenant_isolation.customer_zero_account_ids`` = ``applocker_policy.
+    RESERVED_CUSTOMER_ZERO``, reused so the identity never diverges, security RULE 6): a user who owns a
+    reserved Customer-Zero account is never admission-arm-authorized here, even though Customer Zero is
+    itself an admitted ``BetaTester`` — which is exactly why CZ stays a protected production account and
+    is never re-authorized onto the self-serve arm path (Sponsor 2026-08-14)."""
+    try:
+        from billing.beta import is_admitted_beta_tester
+        if not is_admitted_beta_tester(user):
+            return False
+        from hosted_workspace.tenant_isolation import customer_zero_account_ids
+        from trading.models import TradingAccount
+        cz = customer_zero_account_ids()
+        if cz and TradingAccount.objects.filter(user=user, pk__in=cz).exists():
+            return False
+        return True
+    except Exception:  # unknown ⇒ fail closed (deny)
+        return False
+
+
 def _arm_cohort_approved(user) -> bool:
     """CONTAINMENT (Sponsor 2026-08-05) — fail-closed internal-pilot ARM approval.
 
-    Even while ``BETA_SELF_SERVE_ARM_ENABLED`` is ON globally, ONLY an explicitly-approved
-    internal-pilot identity may arm. Approval is a DEDICATED allowlist
-    (``INTERNAL_PILOT_ARM_APPROVED_EMAILS``; Django setting wins, else env var), **DEFAULT EMPTY = deny
-    everyone**. It is deliberately DISTINCT from the ``BetaTester`` onboarding-admission allowlist, so
-    Customer Zero — an admitted ``BetaTester`` — is NOT implicitly arm-approved. There is NO staff
-    bypass. Frontend visibility is never an authorisation boundary; this is the boundary. Supersedes the
-    ADR-0021 "no admission" note for the arm path specifically (documented in ADR-0029/0031 handoff).
+    Even while ``BETA_SELF_SERVE_ARM_ENABLED`` is ON globally, ONLY an approved identity may arm. Two
+    INDEPENDENT, additive authorization sources, evaluated in order (either grants; neither ⇒ deny):
+
+      1. the DEDICATED per-identity allowlist ``INTERNAL_PILOT_ARM_APPROVED_EMAILS`` (Django setting wins,
+         else env var), **DEFAULT EMPTY = deny everyone**, NO staff bypass — unchanged and still
+         authoritative (the original CONTAIN-1 boundary); and
+      2. (ADR-0045, Beta Launch 2026-08-14, DEFAULT OFF) beta-admission-derived authorization: when
+         ``BETA_ADMISSION_ARM_ENABLED`` is on, an admitted ACTIVE ``BetaTester`` who is NOT Customer Zero
+         is arm-authorized without a separate allowlist entry. This removes the redundant SECOND per-user
+         operator action (the Beta Blocker) so an admitted beta user's journey is autonomous. Customer
+         Zero is excluded by construction (``_admitted_beta_arm_authorized``), so it is never implicitly
+         arm-approved — preserving the original guarantee.
+
+    With ``BETA_ADMISSION_ARM_ENABLED`` OFF (default), behaviour is byte-identical to the pre-ADR-0045
+    email-allowlist-only gate. Frontend visibility is never an authorisation boundary; this is the
+    boundary. Supersedes the ADR-0021 "no admission" note for the arm path (ADR-0029/0031/0045 handoff).
     """
     import os
     email = (getattr(user, "email", "") or "").strip().lower()
@@ -436,7 +482,11 @@ def _arm_cohort_approved(user) -> bool:
     if raw is None:
         raw = os.getenv("INTERNAL_PILOT_ARM_APPROVED_EMAILS", "")
     approved = {e.strip().lower() for e in str(raw).split(",") if e.strip()}
-    return email in approved
+    if email in approved:
+        return True
+    if _beta_admission_arm_enabled() and _admitted_beta_arm_authorized(user):
+        return True
+    return False
 
 
 def _arm_extra_containment(account, source):

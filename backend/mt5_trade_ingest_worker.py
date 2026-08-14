@@ -64,6 +64,29 @@ def _env_truthy(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
+# ADR-0034 G3 / ADR-0045 — the Provider-B per-job identity pin. The backend injects these fields onto a
+# hosted account's ExecutionJob payload at save time (``execution.hosted_pin.inject_identity_pin``); a
+# hosted-execution bridge runs ``MT5_REQUIRE_IDENTITY_PIN=1`` (MANDATORY — mt5_signal_bridge enforces it),
+# so the bridge FAILS a hosted order CLOSED with ``identity_pin_required`` if ``expected_login`` /
+# ``expected_server`` are absent from the /mt5/order body. The dispatcher must therefore FORWARD them from
+# the job payload — the pin binds each hosted order to the tenant's OWN terminal. They are IDENTIFIERS
+# (login number + server name + demo flag), never secrets.
+_IDENTITY_PIN_KEYS = ("require_identity_pin", "expected_login", "expected_server", "is_demo")
+
+
+def apply_identity_pin(agent_payload: dict, payload: dict) -> dict:
+    """Forward the Provider-B per-job identity pin from the ExecutionJob ``payload`` onto the Windows-agent
+    order ``agent_payload`` (in place; returns it for convenience). A LEGACY (non-hosted) job carries none
+    of ``_IDENTITY_PIN_KEYS``, so this is a byte-for-byte no-op for it — additive, never weakening the
+    legacy path. Only PRESENT (non-None) keys are forwarded, so a partial pin is never fabricated."""
+    src = payload or {}
+    for key in _IDENTITY_PIN_KEYS:
+        val = src.get(key)
+        if val is not None:
+            agent_payload[key] = val
+    return agent_payload
+
+
 # EXEC-E2b-R1: PLACE_ORDER_SHADOW polling is OPT-IN. Only a dedicated shadow
 # worker (MT5_SHADOW_WORKER set) makes the extra shadow claim each loop; the
 # normal ingest worker keeps its pre-E2b 3-claim sequence, so its request rate
@@ -803,6 +826,9 @@ def main():
                         pass
                 if payload.get("signal_source"):
                     agent_payload["signal_source"] = payload["signal_source"]
+                # Forward the Provider-B per-job identity pin (ADR-0034 G3) — MANDATORY for a hosted order
+                # or the bridge fails it closed with identity_pin_required; a no-op for legacy jobs.
+                apply_identity_pin(agent_payload, payload)
 
                 # WP1B/WP2 FINAL-DISPATCH GATE (ADR-0029): re-evaluate the account's eligibility + broker
                 # health FRESH, immediately before the live order_send — never trusting the eligibility
@@ -856,6 +882,10 @@ def main():
                 }
                 if payload.get("tp") is not None:
                     modify_payload["tp"] = float(payload["tp"])
+                # Forward the Provider-B per-job identity pin — the bridge's verify_mutation_identity
+                # requires it under MT5_REQUIRE_IDENTITY_PIN=1, else a hosted breakeven/TP-protection
+                # MODIFY fails closed (identity_pin_required). No-op for legacy jobs.
+                apply_identity_pin(modify_payload, payload)
                 print(f"[BREAKEVEN] MODIFY_POSITION job_id={job_id}: ticket={ticket} sl={sl}")
                 modify_result = agent_modify(modify_payload)
                 if modify_result.get("ok"):
@@ -897,7 +927,11 @@ def main():
                                  "CLOSE_TRADE requires windows_username, ticket")
                     continue
                 print(f"[CLOSE] CLOSE_TRADE job_id={job_id}: ticket={ticket}")
-                close_result = agent_close({"username": windows_username, "ticket": ticket})
+                # Forward the Provider-B per-job identity pin (verify_mutation_identity) — else a hosted
+                # provider-close fails closed under MT5_REQUIRE_IDENTITY_PIN=1. No-op for legacy jobs.
+                close_payload = {"username": windows_username, "ticket": ticket}
+                apply_identity_pin(close_payload, payload)
+                close_result = agent_close(close_payload)
                 if close_result.get("ok"):
                     print(f"[CLOSE] SUCCESS job_id={job_id}: ticket={ticket} close_price={close_result.get('close_price')}")
                     complete_job(job_id, "SUCCESS", close_result, "")
