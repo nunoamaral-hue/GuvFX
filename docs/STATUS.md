@@ -14,8 +14,22 @@
 
 ## Execution workstream log
 
-- **2026-08-14 — SUPERVISED_SINGLE_TENANT_BETA + autonomous hosted arming (ADR-0044). 🟢 DARK, branch
-  `feat/supervised-single-tenant-beta`.** Sponsor-authorised interim posture so the FIRST end-to-end beta
+- **2026-08-14 — PROD PARITY DEPLOY of `main` (5b99d07). 🟢 DEPLOYED, DARK, verified.** Sponsor-authorised
+  full-parity deploy (repository parity, NOT activation). Prod was at `06f3aa2` (#351); this brought #352–#361
+  (10 PRs: 9E/10B/10D/10E/co-residency/single-Wayond/isolation-hardening/supervised-beta), all DARK. Executed
+  the proven pipeline: verified `pg_dump` (`backups/pre-ssb-deploy-20260814T150459Z.sql.gz`, 7.5 MB — first real
+  backup since 2026-02-19) + rollback image tags `rollback-preSSB-20260814T150459Z` (backend/frontend/listener)
+  + Golden STOP-check BEFORE → rsync (no-delete, `backend/.env` preserved) → build 3 images (backend + frontend
+  DARK + listener FROM the trading image = identical revision) → MIGRATE-FIRST (only `hosted_workspace.0006`,
+  additive nullable) → recreate backend/trade-ingest/shadow/frontend (compose) + swap listener (isolated
+  `docker run`, both env-files) → Golden STOP-check AFTER. **AFTER == BEFORE byte-identical:** asn#7 wayond /
+  asn#8 ti_signals AUTO_SHADOW active, ExecutionControl DEMO/auto-on/kill-off, CZ acct#1 trades 523→523 (0 new),
+  jobs 36083/848 unchanged, 1 CZ node. Backend+listener+frontend all report `5b99d07`; frontend flags False;
+  `SUPERVISED_SINGLE_TENANT_BETA_ENABLED` + hosted exec/onboarding OFF; 9 containers healthy, 0 unhealthy.
+  Rollback = re-run the three `rollback-preSSB` image tags. **STOPPED per Sponsor — no arming, no flag flips.**
+
+- **2026-08-14 — SUPERVISED_SINGLE_TENANT_BETA + autonomous hosted arming (ADR-0044). 🟢 DARK, MERGED main
+  5b99d07 (#361), DEPLOYED (parity deploy above).** (was: branch `feat/supervised-single-tenant-beta`). Sponsor-authorised interim posture so the FIRST end-to-end beta
   journey can reach EXECUTION_READY **without** the full `REMOTEAPP_ISOLATION_CERTIFIED` behavioural cert —
   bounded and fail-closed, emitting **no** cert marker. New `hosted_workspace/supervised_beta.py`
   (`supervised_single_tenant_beta_active` — opens ONLY for a single non-CZ **demo** tenant alone on a dedicated
