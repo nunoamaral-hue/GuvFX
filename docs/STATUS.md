@@ -14,6 +14,23 @@
 
 ## Execution workstream log
 
+- **2026-08-14 — PER-NODE ORDER-TRANSPORT seam (ADR-0046) — Closed-Beta co-residency blocker fixed. 🟢 DARK,
+  focused + execution/hosted_workspace regression (1713) green, NOT committed.** The ADR-0044 host
+  co-residency amendment isolated identity/runtime/ACL/RemoteApp but not the **order transport**: the worker
+  POSTs every order to ONE global bridge (`AGENT_ORDER_BASE`), so `MT5_REQUIRE_IDENTITY_PIN=1` (mandatory for
+  a hosted beta) on Customer Zero's shared `:8788` would fail-close CZ's un-pinned legacy orders. Sponsor
+  approved **Option A** (an authorised exception to the freeze for this blocker only). The smallest generic
+  seam: new additive `TerminalNode.order_bridge_base_url` (migration `0030`) + `execution.order_transport`
+  resolver + worker wiring so **order destination follows the job's authoritative node** — a hosted
+  (Provider-B) order routes to its node's OWN pin-enforcing bridge and **fails closed** if the node has no
+  endpoint (never CZ's global bridge); a legacy / Provider-A / Customer-Zero job keeps the global bridge,
+  **byte-identical**. Keyed on the canonical hosted classifier (`is_hosted_workspace_account`), never on node
+  binding (CZ's jobs are node-bound too). DARK: while `HOSTED_PERSISTENT_MT5_ENABLED` is off,
+  `resolve_order_base` short-circuits to the global bridge with no extra query. Identity pin still forwarded
+  on all four dispatch sites; transport selection only picks a URL. Tests: `execution/tests_order_transport.py`
+  (10-point bar + field roundtrip + 2 AST wiring guards). No hard-coded beta ids/emails; generic for every
+  future beta node. Full `make check` + adversarial review in progress.
+
 - **2026-08-14 — FIRST SUPERVISED BETA USER autonomous journey — repository Beta Blockers fixed. 🟢 DARK,
   make check green (3969 backend), NOT committed.** Sponsor made the FIRST supervised beta user (not Customer
   Zero — CZ is now protected production/regression reference only) the acceptance subject; milestone = a
