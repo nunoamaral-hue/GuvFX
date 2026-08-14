@@ -124,27 +124,43 @@ a code-load dir) + the terminal64 embedded `BinaryName` are host-soak-verified (
 - Out of scope for STREAM 10D (tracked elsewhere): MT5 Market-product network egress; OS-level 0-day local
   privilege escalation (host patch posture).
 
-### Accepted residual — signed-DLL side-load (MEDIUM, must be behaviourally certified)
+### Residual — signed-DLL side-load (split into a reducible half and an irreducible half)
 
 The `Dll` collection allows Everyone the **Microsoft** and **MetaQuotes** publishers with `BinaryName=*` /
 version `*`–`*` (unlike the Exe MetaQuotes rule, which is `BinaryName`-pinned to `terminal64.exe`). The per-tenant
-W^X `Deny(*)` is **Exe-only** and does not gate DLL loads. So while an **unsigned** planted DLL is fully denied
-(publisher-only), a tenant could copy a **genuinely signed** MS/MetaQuotes DLL of their choosing into a writable
-location and force its load via an HKCU COM `InprocServer32` hijack against a tenant-context host
-(`sihost`/`taskhostw`) — a **signed-downgrade / bring-your-own-vulnerable-DLL** primitive (a *higher bar* than the
-closed unsigned path: it needs a signed-but-vulnerable or signed-proxy DLL to reach attacker-controlled native
-code). The broad Microsoft OS-DLL rule cannot be safely `BinaryName`-pinned without breaking OS/MT5 updates.
-**This residual is OUTSIDE the repository security boundary — it cannot be closed in code.** AppLocker gates DLL
-*loads* by signature, not in-process *use* of a legitimately-signed, **mandatorily-allowed** OS DLL — the SAME
-architectural limitation, in the same layer, as the `#import`-of-a-signed-OS-DLL class the Chief Architect already
-accepted (a signed `kernel32` must load for MT5 / the OS to run). No repository control can distinguish a
-legitimate signed-DLL load from an abusive one; only on-host **behaviour** can. It is therefore a
-**formally-justified residual accepted in the architecture** (the Sponsor's second acceptance path), parallel to
-the ADR-0042 `%WINDIR%` LOLBIN residual — NOT an unremediated repository defect.
+W^X `Deny(*)` is currently **Exe-only** and does not gate DLL loads. So while an **unsigned** planted DLL is fully
+denied (publisher-only), a tenant could obtain a **genuinely signed** MS/MetaQuotes DLL (signed-but-vulnerable or
+signed-proxy) and force its load via an HKCU COM `InprocServer32` hijack against a tenant-context host
+(`sihost`/`taskhostw`) — a **signed-downgrade / bring-your-own-vulnerable-DLL** primitive. This residual is **two
+distinct sub-cases that must NOT be conflated** (an earlier revision wrongly declared the whole thing
+"un-closeable"):
 
-**Disposition (hard, not advisory):** where host signature metadata later permits, the MetaQuotes **Dll** rule
-should be `BinaryName`/version-pinned to the specific soak-derived MT5 DLLs (shrinking the residual to
-Microsoft-signed only; the MS OS-DLL breadth stays irreducible), guarded like the Exe pin. Independently, the
-on-host `8004` escape battery **must include a signed-DLL COM-hijack-from-a-writable-location case** — shown
-blocked, or bounded to trusted-signer code that reaches no attacker-controlled native execution — as a **hard
-precondition** gating `REMOTEAPP_ISOLATION_CERTIFIED`; it is never waived.
+- **(ii) REDUCIBLE — a planted signed DLL LOADED from a tenant-writable location.** This is a DLL *load*, which the
+  `Dll` collection **does** evaluate by path + exceptions; it currently passes only because the publisher rule is
+  `BinaryName=*` and **location-agnostic**. Because the attacker must plant the DLL somewhere **tenant-writable**,
+  it is closeable in code by the **same location technique already built for Exe**: a **per-tenant `Dll` `Deny(*)`
+  whose exceptions are exactly the non-tenant-writable RX DLL-load locations** (symmetric to the Exe W^X
+  `Deny(*)`), which denies the planted load **regardless of publisher/signature**; plus the MetaQuotes `Dll`
+  `BinaryName`/version pin (shrinks the MetaQuotes half). **This half is NOT accepted — it is a committed code
+  closure, deferred only for a RULE-11 data reason, not a fundamental one:** the exception set (the exact
+  non-writable OS + MT5 DLL-load directories) must be **host-soak-derived**, because `%WINDIR%`/`%SYSTEM32%`
+  contain tenant-writable subdirs (`%WINDIR%\Temp`, `System32\spool\drivers\color`, …) that must be excluded from
+  the exceptions or the writable-subdir hole re-opens — the identical reason the base `Dll` rule is publisher-only.
+  A **blind** hardcoded exception set risks either re-opening the hole (too broad) or a **fail-closed MT5 outage**
+  (too narrow — legitimate signed OS / side-by-side DLL loads denied), which is exactly the RULE-11 trap. It is
+  therefore built + applied at STREAM 10E cert time from the soak, **not guessed in-repo now**.
+- **(i) IRREDUCIBLE — in-process *use* of a legitimately-signed, mandatorily-allowed OS DLL already resident in a
+  non-writable path** (e.g. abusing a `kernel32` that must load for MT5/the OS to run). AppLocker gates DLL *loads*,
+  not function *calls*; no repository control can distinguish legitimate signed-DLL use from abuse — only on-host
+  **behaviour** can. This half is genuinely **OUTSIDE the repository security boundary**, the SAME architectural
+  limitation as the `#import`-of-a-signed-OS-DLL class the Chief Architect already accepted. It is a
+  **formally-justified residual accepted in the architecture** (the Sponsor's second acceptance path), parallel to
+  the ADR-0042 `%WINDIR%` LOLBIN residual.
+
+**Disposition (hard, not advisory) — the `8004` battery must not rubber-stamp:** before
+`REMOTEAPP_ISOLATION_CERTIFIED`, sub-case **(ii) must be REDUCED IN CODE** — the soak-derived per-tenant `Dll`
+`Deny(*)`-with-non-writable-exceptions + the MetaQuotes `Dll` `BinaryName`/version pin **applied**, not merely a
+behavioural "looks-blocked" result. The `8004` escape battery **must include a signed-DLL COM-hijack-from-a-
+writable-location case** and demonstrate it **blocked by that applied control** (belt-and-suspenders, not a
+substitute for the code closure). Sub-case **(i)** remains the accepted residual, bounded by the same battery to
+trusted-signer code reaching no attacker-controlled native execution. Neither is ever waived.

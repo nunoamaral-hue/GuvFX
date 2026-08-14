@@ -75,12 +75,25 @@ try {
     if ([string]::IsNullOrWhiteSpace($sid)) { Fail "could not resolve SID for $HostedUser" }
     if ($sid -eq "S-1-1-0" -or $sid -eq "S-1-5-32-544") { Fail "refusing: shared principal SID" }
     [xml]$frag = Get-Content -LiteralPath $FragmentPath -Raw
-    $denies = @($frag.AppLockerPolicy.RuleCollection.FilePathRule | Where-Object { $_.Action -eq "Deny" })
-    if ($denies.Count -ne 1) { Fail "wx_fragment_not_single_deny" }
-    if ($denies[0].UserOrGroupSid -ne $sid) { Fail "wx_fragment_sid_mismatch" }
-    if (-not (IsTenantRule $denies[0].Id $AccountId)) { Fail "wx_fragment_not_tenant_rule" }
+    # Exactly one Exe RuleCollection carrying exactly one rule: the tenant W^X Deny. Reject any smuggled rule.
+    $colls = @($frag.AppLockerPolicy.RuleCollection)
+    if ($colls.Count -ne 1 -or $colls[0].Type -ne "Exe") { Fail "wx_fragment_not_single_exe_collection" }
+    $allRules = @($colls[0].FilePathRule)
+    if ($allRules.Count -ne 1) { Fail "wx_fragment_not_single_rule" }
     $anyAllow = @($frag.AppLockerPolicy.RuleCollection.FilePathRule | Where-Object { $_.Action -eq "Allow" })
     if ($anyAllow.Count -ne 0) { Fail "wx_fragment_grants_allow" }
+    $denies = @($allRules | Where-Object { $_.Action -eq "Deny" })
+    if ($denies.Count -ne 1) { Fail "wx_fragment_not_single_deny" }
+    $deny = $denies[0]
+    if ($deny.UserOrGroupSid -ne $sid) { Fail "wx_fragment_sid_mismatch" }
+    if (-not (IsTenantRule $deny.Id $AccountId)) { Fail "wx_fragment_not_tenant_rule" }
+    # The Deny MUST be Deny(*) (deny ALL execution) ...
+    $denyPaths = @($deny.Conditions.FilePathCondition | ForEach-Object { $_.Path })
+    if ($denyPaths.Count -ne 1 -or $denyPaths[0] -ne "*") { Fail "wx_fragment_deny_not_deny_all" }
+    # ... and it MUST carry exceptions (the exec-allow surface). A Deny(*) with NO exceptions denies terminal64
+    # itself (a fail-closed outage), so refuse it here too - the exception set is what makes the Deny safe.
+    $exc = @($deny.Exceptions.FilePathCondition | ForEach-Object { $_.Path })
+    if ($exc.Count -lt 1) { Fail "wx_fragment_no_exceptions" }
     Set-AppLockerPolicy -Merge -XmlPolicy $FragmentPath
     [xml]$eff = (Get-AppLockerPolicy -Effective -Xml)
     $present = 0
