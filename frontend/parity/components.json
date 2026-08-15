@@ -6,6 +6,7 @@
   "src/components/LegalFooter.tsx",
   "src/components/OnboardingChecklist.tsx",
   "src/components/TokenAuthSection.tsx",
+  "src/components/accounts/HostedWorkspaceStatus.tsx",
   "src/components/admin/AdminShared.tsx",
   "src/components/admin/useAdminRole.ts",
   "src/components/backtests/BacktestDiagnostics.tsx",

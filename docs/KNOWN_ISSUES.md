@@ -590,3 +590,21 @@ Two intentional non-defects, recorded so the next reader does not mistake them f
    evidence source) are the execution-plane "make it real" step. The code is DARK-safe to build; **arming it
    requires explicit Sponsor authority and must never be armed on merge.** Until then a hosted mutation job is
    created + pinned but FAILS closed at the claim seam (`ER_ROUTE_MISSING`/`ER_WORKER_NOT_ENTITLED`) — safe.
+
+## 🟡 POST-BETA ENGINEERING (2026-08-15) — broker-connectivity flag bypasses the Hosted Workspace /accounts adaptation
+
+Identified by the "Hosted Workspace mental model" journey verification and recorded per Sponsor direction
+(document only; **do NOT fix during Closed Beta**).
+
+- **Coupling:** `frontend/src/app/(app)/accounts/page.tsx` gates the whole page with
+  `if (brokerConnectivityEnabled()) return <BrokerAccountsContent/>;` **before** the hosted-vs-traditional
+  detection inside `AccountsContent`. The context-aware Hosted Workspace status experience (the `hostedMode`
+  machine + `HostedWorkspaceStatus`) lives only in the flag-OFF `AccountsContent` branch.
+- **Impact if enabled:** turning `NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED` ON renders `<BrokerAccountsContent/>`
+  (the WP4 broker-connect-to-GuvFX journey) for **every** user, including Hosted Workspace customers — bypassing
+  the hosted status page entirely and dropping hosted customers back into the traditional broker-link model.
+- **Why it is not a beta defect:** the flag is OFF (DARK) throughout the Closed Beta, so the path is unreachable;
+  the hosted adaptation is correct and fail-closed for all live beta journeys.
+- **Post-beta remediation (deferred):** make `BrokerAccountsContent` itself hosted-aware (or move the hosted
+  detection above the flag gate) so the Hosted Workspace experience survives enabling broker connectivity.
+- **Status:** DOCUMENTED, POST-BETA — not fixed. A code comment marks the coupling at the gate site.

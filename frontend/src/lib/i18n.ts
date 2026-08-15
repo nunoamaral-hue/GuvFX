@@ -240,8 +240,8 @@ const dictionary: Dictionary = {
   },
   "dashboard.noAccountsLinked": { en: "No trading accounts linked", ja: "取引口座が連携されていません" },
   "dashboard.connectFirstAccount": {
-    en: "Connect your first broker account to start tracking performance and deploying strategies.",
-    ja: "最初のブローカー口座を連携して、パフォーマンスの追跡と戦略の展開を開始しましょう。",
+    en: "Set up your trading workspace to start tracking performance and deploying strategies.",
+    ja: "取引ワークスペースをセットアップして、パフォーマンスの追跡と戦略の展開を開始しましょう。",
   },
   "dashboard.accountsCount": { en: "account", ja: "口座" },
   "dashboard.accountsCountPlural": { en: "accounts", ja: "口座" },
@@ -263,6 +263,12 @@ const dictionary: Dictionary = {
   "accounts.subtitle": {
     en: "Link your broker / MT5 accounts so GuvFX can map strategies and trades.",
     ja: "ブローカー/MT5口座を連携し、GuvFXで戦略と取引を紐付けます。",
+  },
+  // Hosted Workspace customers manage a GuvFX-run MetaTrader workspace, not a manually-linked broker (P2).
+  "accounts.hostedTitle": { en: "Trading Workspace", ja: "取引ワークスペース" },
+  "accounts.hostedSubtitle": {
+    en: "Your managed MetaTrader workspace and its status. GuvFX runs it for you — you log in inside MetaTrader.",
+    ja: "GuvFXが運用する MetaTrader ワークスペースとその状態です。ログインは MetaTrader 内で行います。",
   },
 
   // -----------------------------------------------------------------------------
@@ -680,7 +686,7 @@ const dictionary: Dictionary = {
   "register.nextTitle": { en: "Next steps", ja: "次のステップ" },
   "register.nextPlan": { en: "Select plan", ja: "プランを選択" },
   "register.nextProfile": { en: "Complete profile", ja: "プロフィールを完成" },
-  "register.nextBroker": { en: "Connect broker", ja: "ブローカーを接続" },
+  "register.nextBroker": { en: "Open workspace", ja: "ワークスペースを開く" },
   "register.nextReview": { en: "Review setup", ja: "セットアップを確認" },
   "register.email": { en: "Email", ja: "メールアドレス" },
   "register.emailPlaceholder": { en: "Email", ja: "メールアドレス" },
@@ -1097,9 +1103,33 @@ const dictionary: Dictionary = {
     en: "Your account is ready. Enable trading to start copying.",
     ja: "口座の準備ができました。取引を有効化してコピーを開始してください。",
   },
-  "marketplace.readinessEnablingSoon": {
-    en: "You're ready — enabling opens shortly.",
-    ja: "準備完了です — まもなく有効化できます。",
+  "marketplace.navGoAccounts": {
+    en: "Go to Accounts",
+    ja: "口座へ移動",
+  },
+  "marketplace.navActivateAccount": {
+    en: "Continue setup",
+    ja: "セットアップを続ける",
+  },
+  "marketplace.navFinishWorkspace": {
+    en: "Continue setup",
+    ja: "セットアップを続ける",
+  },
+  "marketplace.navOpenWorkspace": {
+    en: "Continue",
+    ja: "続ける",
+  },
+  "marketplace.navViewStrategies": {
+    en: "View my strategies",
+    ja: "マイ戦略を見る",
+  },
+  "marketplace.readinessRetry": {
+    en: "Try again",
+    ja: "再試行",
+  },
+  "marketplace.assignNeedsSignIn": {
+    en: "Sign in to assign this strategy to your account.",
+    ja: "この戦略を口座に割り当てるにはサインインしてください。",
   },
   "marketplace.unauthMessage": {
     en: "You are not authenticated. Please log in again to assign marketplace templates.",

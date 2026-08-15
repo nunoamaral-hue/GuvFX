@@ -49,13 +49,23 @@ describe("SignalCopyReadiness (WS-D)", () => {
     expect(apiFetch).not.toHaveBeenCalled();
   });
 
-  it("renders the checklist + next action; no Enable button when the arm UI is not built", async () => {
+  it("renders the checklist + a nav next action (no live Enable button) when the arm UI is DARK", async () => {
     apiFetch.mockResolvedValue(READY);
     render(<SignalCopyReadiness {...props({ armUiEnabled: false })} />);
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
     expect(screen.getByText("Trading access enabled")).toBeInTheDocument();
     expect(screen.getByText(/ready\. Enable trading/i)).toBeInTheDocument();
+    // DARK build: no live arm control ever appears...
     expect(screen.queryByRole("button", { name: /Enable Trading/i })).toBeNull();
+    // ...but the card is never status-only — it offers a navigation next action (P0.2).
+    expect(screen.getByRole("link", { name: "Continue" })).toHaveAttribute("href", "/onboarding/hosted");
+  });
+
+  it("gives a navigation action for a denial that has no button path (single_tenant → Accounts)", async () => {
+    apiFetch.mockResolvedValue({ ...READY, can_arm: false, next_action: "single_tenant" });
+    render(<SignalCopyReadiness {...props({ armUiEnabled: true })} />);
+    const link = await screen.findByRole("link", { name: /go to accounts/i });
+    expect(link).toHaveAttribute("href", "/accounts");
   });
 
   it("enables the Enable-Trading button only when can_arm, and calls onArm on click", async () => {
@@ -82,10 +92,15 @@ describe("SignalCopyReadiness (WS-D)", () => {
     expect(onArm).not.toHaveBeenCalled();
   });
 
-  it("shows a neutral 'unavailable' (not a false 'not ready') when the status fetch fails", async () => {
+  it("shows a neutral 'unavailable' with a Retry action (never a false 'not ready' dead end) when the fetch fails", async () => {
     apiFetch.mockRejectedValue(new Error("boom"));
     render(<SignalCopyReadiness {...props({ armUiEnabled: true })} />);
     await waitFor(() =>
       expect(screen.getByText(/couldn't check your account status/i)).toBeInTheDocument());
+    // P0.2: the failed state offers a next action (retry), not just status text.
+    const retry = await screen.findByRole("button", { name: /try again/i });
+    const before = apiFetch.mock.calls.length;
+    fireEvent.click(retry);
+    await waitFor(() => expect(apiFetch.mock.calls.length).toBeGreaterThan(before));
   });
 });

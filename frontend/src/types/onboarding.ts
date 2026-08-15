@@ -49,7 +49,7 @@ export type OnboardingStepId =
  * Step 1: Create account       — handled by /register (not in this list)
  * Step 2: Select plan          — plan_selected
  * Step 3: Complete profile     — risk_accepted (+ optional email_verified, 2FA)
- * Step 4: Connect broker       — account_connected
+ * Step 4: Open workspace       — account_connected
  * Step 5: Get started          — strategy_assigned + readiness review
  */
 export type StepConfig = {

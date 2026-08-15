@@ -215,8 +215,8 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     category: "System-grade",
     accent: "green",
     style: "Telegram signal copy",
-    execution: "Automated · demo",
-    summary: "Automatically mirrors a curated Telegram signal provider into your demo account.",
+    execution: "Signal copy · demo",
+    summary: "When enabled, automatically mirrors a curated Telegram signal provider into your demo account.",
     timeframes: ["M15"],
     pairs: ["XAUUSD"],
     tags: ["Signal copy", "Demo"],
@@ -935,6 +935,15 @@ export default function StrategyMarketplacePage() {
                       </div>
                     );
                   })()
+                ) : authChecked && !isAuthed ? (
+                  // P0.2: a logged-out card carries its OWN next action (not just the page-top banner) — a
+                  // Sign-in link, never an inert disabled Assign sitting above an empty account dropdown.
+                  <div style={{ fontSize: "0.72rem", color: "#94a3b8" }}>
+                    <p style={{ margin: "0 0 6px" }}>{t(lang, "marketplace.assignNeedsSignIn")}</p>
+                    <Link href="/login?reason=unauthenticated" style={{ color: "#93c5fd", textDecoration: "none" }}>
+                      {t(lang, "marketplace.goToLogin")} →
+                    </Link>
+                  </div>
                 ) : authChecked && isAuthed && !loadingAccounts && accounts.length === 0 ? (
                   // BLOCKED (WS-G redesign): no account to assign into — shown ONLY once auth is resolved AND
                   // the accounts fetch has completed empty, so we never flash a false "no account" during the

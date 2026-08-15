@@ -8,8 +8,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useLang } from "@/components/AppShell";
 import { Card } from "@/components/ui/Card";
 import { Alert } from "@/components/ui/Alert";
@@ -17,6 +16,8 @@ import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import { brokerConnectivityEnabled } from "@/lib/flags";
 import { BrokerAccountsContent } from "@/components/broker/BrokerAccountsContent";
+import { HostedWorkspaceStatus } from "@/components/accounts/HostedWorkspaceStatus";
+import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
 import { t } from "@/lib/i18n";
 import type {
   StrategyAssignment,
@@ -338,6 +339,37 @@ function PostOnboardingSetupPanel() {
 function AccountsContent() {
   const lang = useLang();
 
+  // Product Consistency Pass (P0.1 / P1.3): the Accounts page ADAPTS to the customer's account model.
+  // A Hosted Workspace customer — one for whom the hosted journey is open — sees a read-only status
+  // experience and NEVER the manual broker form (they log in inside a managed MetaTrader, so they never
+  // hand GuvFX a broker server/login/password). A Traditional customer sees the manual MT5 connection.
+  // Detection is presentation-only via the EXISTING hosted-journey endpoint; it fails closed to Traditional
+  // on a 404 (feature dark / not entitled) or any transient error — the safe, pre-existing behaviour.
+  const [hostedMode, setHostedMode] = useState<"loading" | "hosted" | "traditional" | "unavailable">("loading");
+  const [hostedJourney, setHostedJourney] = useState<HostedJourney | null>(null);
+
+  const detectMode = useCallback(async () => {
+    setHostedMode("loading");
+    try {
+      const res = await fetchJourney();
+      if (res.ok) {
+        setHostedJourney(res.journey);
+        setHostedMode("hosted");
+      } else {
+        // A 404 is the EXPLICIT "not a hosted customer" signal (feature dark / not entitled) → Traditional.
+        setHostedMode("traditional");
+      }
+    } catch {
+      // A non-404 transient error must NOT default to the manual credential form — a Hosted Workspace
+      // customer must never be shown it. Hold a neutral 'unavailable' state (with retry) instead.
+      setHostedMode("unavailable");
+    }
+  }, []);
+
+  useEffect(() => {
+    void detectMode();
+  }, [detectMode]);
+
   const loadAccounts = async () => {
     setLoading(true);
     setError(null);
@@ -604,37 +636,61 @@ function AccountsContent() {
 
 return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+        {/* P2 (hosted terminology): a Hosted Workspace customer manages a managed MetaTrader workspace, not a
+            manually-linked broker — so the title/subtitle read hosted-consistent for them. A Traditional
+            customer (or before detection resolves) keeps the legacy "Broker Accounts / Link your broker" copy. */}
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>
-          {t(lang, "accounts.title")}
+          {t(lang, hostedMode === "hosted" ? "accounts.hostedTitle" : "accounts.title")}
         </h1>
         <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
-          {t(lang, "accounts.subtitle")}
+          {t(lang, hostedMode === "hosted" ? "accounts.hostedSubtitle" : "accounts.subtitle")}
         </p>
 
-        {/* Disambiguate the two broker-connection models so the customer knows which one this page's form is. */}
-        <div style={{ marginBottom: "1rem", padding: "0.85rem 1rem", borderRadius: 10,
-                      border: "1px solid rgba(74,179,255,0.15)", background: "rgba(74,179,255,0.05)" }}>
-          <p style={{ margin: 0, fontSize: "0.85rem", color: "#b7c5dd", lineHeight: 1.7 }}>
-            <strong style={{ color: "#e9f4ff" }}>Two ways to connect a broker.</strong>{" "}
-            <strong style={{ color: "#e9f4ff" }}>Hosted Workspace</strong> — we run MetaTrader for you; you log in
-            inside it and GuvFX never sees or stores your password.{" "}
-            <Link href="/onboarding/hosted" style={{ color: "#4ab3ff", textDecoration: "none" }}>
-              Set up a hosted workspace →
-            </Link>{" "}
-            <br />
-            <strong style={{ color: "#e9f4ff" }}>Connect your own broker (the form below)</strong> — enter your
-            existing MT5 login so GuvFX can trade the account you already have; those details are stored encrypted.
-          </p>
-        </div>
+        {/* Product Consistency Pass (P0.1 / P1.3): the page adapts to the customer's account model — a
+            Hosted Workspace customer gets a read-only status experience (never the manual broker form); a
+            Traditional customer gets the manual MT5 connection. The two mental models are never mixed. */}
+        {hostedMode === "loading" && (
+          <div style={{ marginBottom: "1rem", padding: "1.25rem", borderRadius: 10,
+                        border: "1px solid rgba(148,163,184,0.15)", color: "#94a3b8", fontSize: "0.9rem" }}>
+            Loading your workspace…
+          </div>
+        )}
 
-        {/* Customer Zero Flow Simplification (Option 2): post-onboarding broker-setup lifecycle panel. */}
-        <PostOnboardingSetupPanel />
+        {hostedMode === "hosted" && hostedJourney && (
+          <div style={{ marginBottom: "1rem" }}>
+            <HostedWorkspaceStatus journey={hostedJourney} accounts={accounts} />
+          </div>
+        )}
+
+        {/* Transient probe error: show neither the hosted panel nor the manual credential form (a hosted
+            customer must never see the form) — a neutral, retryable state instead. */}
+        {hostedMode === "unavailable" && (
+          <div style={{ marginBottom: "1rem", padding: "1.25rem", borderRadius: 10,
+                        border: "1px solid rgba(148,163,184,0.15)", background: "rgba(148,163,184,0.05)" }}>
+            <p style={{ margin: "0 0 0.7rem", fontSize: "0.9rem", color: "#b7c5dd" }}>
+              We couldn&apos;t load your workspace status right now.
+            </p>
+            <button
+              type="button"
+              onClick={() => void detectMode()}
+              style={{ padding: "0.4rem 1rem", borderRadius: 999, border: "1px solid rgba(148,163,184,0.35)",
+                       background: "rgba(148,163,184,0.12)", color: "#cbd5e1", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}
+            >
+              Try again
+            </button>
+          </div>
+        )}
+
+        {/* Traditional model only: the post-onboarding broker-setup lifecycle panel (encrypted MT5 login). */}
+        {hostedMode === "traditional" && <PostOnboardingSetupPanel />}
 
         {error && <Alert type="error">{error}</Alert>}
         {info && <Alert type="info">{info}</Alert>}
         {testMessage && <Alert type="info">{testMessage}</Alert>}
 
-        {/* New account form */}
+        {/* New account form — Traditional model ONLY. A Hosted Workspace customer never enters a broker
+            server / login / password here; they log in inside the managed MetaTrader terminal (P0.1). */}
+        {hostedMode === "traditional" && (
         <Card
           title={t(lang, "accounts.addTitle")}
           subtitle={t(lang, "accounts.addSubtitle")}
@@ -946,6 +1002,7 @@ return (
             </div>
           </form>
         </Card>
+        )}
 
         {/* Accounts list */}
         <Card title={t(lang, "accounts.linkedTitle")}>
@@ -1065,6 +1122,12 @@ export default function AccountsPage() {
   // byte-identically to before. This REVERSES the earlier ADR-0031 AREA C redirect (which sent /accounts →
   // /broker-accounts); /broker-accounts now permanently redirects HERE, so there is exactly one journey and
   // no redirect loop.
+  //
+  // POST-BETA ENGINEERING (documented, NOT fixed in Closed Beta — see docs/KNOWN_ISSUES.md): this flag gate
+  // runs BEFORE the hosted-vs-traditional detection inside AccountsContent. So enabling
+  // NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED renders <BrokerAccountsContent/> for EVERY user — including Hosted
+  // Workspace customers — bypassing the context-aware hosted status experience. The flag is OFF in the Closed
+  // Beta, so this is currently unreachable; making BrokerAccountsContent hosted-aware is a post-beta task.
   if (brokerConnectivityEnabled()) return <BrokerAccountsContent />;
   return <AccountsContent />;
 }

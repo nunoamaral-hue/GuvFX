@@ -53,6 +53,38 @@ const NEXT_KEY: Record<string, string> = {
   ready_enable: "marketplace.readinessNextReady",
 };
 
+// When prerequisites are incomplete, each next-action maps to a navigation button that takes the customer
+// to where they fix it — so a card is never a status-only dead end (states with no customer-navigable fix,
+// e.g. closed / pilot-access, keep the explanatory line only).
+const NEXT_NAV: Record<string, { href: string; labelKey: string }> = {
+  add_demo_account: { href: "/accounts", labelKey: "marketplace.navGoAccounts" },
+  activate_account: { href: "/accounts", labelKey: "marketplace.navActivateAccount" },
+  add_credentials: { href: "/onboarding/hosted", labelKey: "marketplace.navFinishWorkspace" },
+  preparing: { href: "/onboarding/hosted", labelKey: "marketplace.navFinishWorkspace" },
+  connecting: { href: "/onboarding/hosted", labelKey: "marketplace.navFinishWorkspace" },
+  attention_validation: { href: "/accounts", labelKey: "marketplace.navGoAccounts" },
+  attention_paused: { href: "/accounts", labelKey: "marketplace.navGoAccounts" },
+  attention_duplicate: { href: "/accounts", labelKey: "marketplace.navGoAccounts" },
+  // P0.2 — no readiness state may be status-only: give the remaining navigable denials a destination too.
+  single_tenant: { href: "/accounts", labelKey: "marketplace.navGoAccounts" },
+  trading_on: { href: "/strategies", labelKey: "marketplace.navViewStrategies" },
+  enable_to_resume: { href: "/strategies", labelKey: "marketplace.navViewStrategies" },
+};
+
+// Shared pill style for a navigation next-action (a Link that moves the customer to where they fix things).
+const navBtnStyle: React.CSSProperties = {
+  display: "inline-block",
+  alignSelf: "flex-start",
+  padding: "0.5rem 1.1rem",
+  borderRadius: 999,
+  background: "linear-gradient(135deg, #2979ff 0%, #3fe0ff 50%, #2979ff 100%)",
+  color: "#ffffff",
+  fontSize: "0.8rem",
+  fontWeight: 600,
+  textDecoration: "none",
+  boxShadow: "0 8px 24px rgba(37,99,235,0.4)",
+};
+
 const STATE_COLOR: Record<string, string> = {
   READY: "#22c55e",
   TRADING_ON: "#22c55e",
@@ -157,7 +189,21 @@ export function SignalCopyReadiness({
       {loading && !readiness ? (
         <p style={{ fontSize: "0.72rem", color: "#64748b", margin: 0 }}>{t(lang, "marketplace.readinessLoading")}</p>
       ) : failed ? (
-        <p style={{ fontSize: "0.72rem", color: "#94a3b8", margin: 0 }}>{t(lang, "marketplace.readinessUnavailable")}</p>
+        // P0.2: a failed status fetch is not a dead end — offer a retry so the customer has a next action.
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.45rem" }}>
+          <p style={{ fontSize: "0.72rem", color: "#94a3b8", margin: 0 }}>{t(lang, "marketplace.readinessUnavailable")}</p>
+          <button
+            type="button"
+            onClick={() => { if (selId > 0) void load(selId); }}
+            style={{
+              alignSelf: "flex-start", padding: "0.35rem 0.9rem", borderRadius: 999,
+              border: "1px solid rgba(148,163,184,0.35)", background: "rgba(148,163,184,0.12)",
+              color: "#cbd5e1", fontSize: "0.75rem", fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            {t(lang, "marketplace.readinessRetry")}
+          </button>
+        </div>
       ) : readiness ? (
         <>
           <div style={{ background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "0.5rem 0.65rem" }}>
@@ -176,21 +222,43 @@ export function SignalCopyReadiness({
           <p style={{ fontSize: "0.72rem", color: accentColor, margin: 0 }}>
             {t(lang, NEXT_KEY[readiness.next_action] || "marketplace.readinessNextReady")}
           </p>
-          {armUiEnabled && (
-            <Button
-              variant="primary"
-              onClick={() => (readiness.can_arm && selId > 0 ? onArm(selId) : undefined)}
-              disabled={!isAuthed || !readiness.can_arm || arming}
-            >
-              {arming ? t(lang, "marketplace.armWorking") : t(lang, "marketplace.armEnableTrading")}
+          {/* Item 5: the card always points at ONE next action, never status-only.
+              - can_arm + arm UI built → the operational Enable button.
+              - can_arm + arm UI dark → no control (the next-action line reads "…ready. Enable trading…");
+                a DARK build never surfaces a live arm path.
+              - incomplete with a customer-navigable fix → a navigation button to where they fix it.
+              - incomplete with no in-app fix (e.g. pilot access) → the goal button, disabled, under the
+                explanatory next-action line above. */}
+          {readiness.can_arm ? (
+            armUiEnabled ? (
+              // Complete + arm UI built → the operational Enable button.
+              <Button
+                variant="primary"
+                onClick={() => (selId > 0 ? onArm(selId) : undefined)}
+                disabled={!isAuthed || arming}
+              >
+                {arming ? t(lang, "marketplace.armWorking") : t(lang, "marketplace.armEnableTrading")}
+              </Button>
+            ) : (
+              // Complete + arm UI DARK → the self-serve arm control isn't built yet, but the card must still
+              // offer ONE next action (P0.2). Send the ready customer to their hosted workspace — a navigation
+              // Link, never a live arm control, so a DARK build never surfaces an arm path.
+              <Link href="/onboarding/hosted" style={navBtnStyle}>
+                {t(lang, "marketplace.navOpenWorkspace")}
+              </Link>
+            )
+          ) : NEXT_NAV[readiness.next_action] ? (
+            // Incomplete but customer-navigable → a navigation button to where they fix it.
+            <Link href={NEXT_NAV[readiness.next_action].href} style={navBtnStyle}>
+              {t(lang, NEXT_NAV[readiness.next_action].labelKey)}
+            </Link>
+          ) : (
+            // Incomplete with no in-app destination (e.g. pilot access / closed) → the goal button, disabled
+            // (never live — no onArm), under the explanatory next-action line above. Shown in BOTH flag states
+            // so the card is never status-only.
+            <Button variant="primary" onClick={() => undefined} disabled>
+              {t(lang, "marketplace.armEnableTrading")}
             </Button>
-          )}
-          {/* When the enable control isn't built yet, a "ready" account must not show an instruction with no
-              button. Surface a clear placeholder instead of a missing control. */}
-          {!armUiEnabled && readiness.can_arm && (
-            <p style={{ fontSize: "0.72rem", color: "#86efac", margin: 0 }}>
-              {t(lang, "marketplace.readinessEnablingSoon")}
-            </p>
           )}
         </>
       ) : null}

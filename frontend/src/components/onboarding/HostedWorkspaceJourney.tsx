@@ -73,9 +73,8 @@ export function HostedWorkspaceJourney() {
   const [journey, setJourney] = useState<HostedJourney | null>(null);
   const [load, setLoad] = useState<Load>("loading");
   const [busy, setBusy] = useState(false);
-  // Broker identity is declared LATER (deferred bind), at the "connect your broker" step — never at request.
+  // Broker identity is declared LATER (deferred bind), at the "open your workspace" step — never at request.
   const [form, setForm] = useState({ expected_login: "", expected_server: "" });
-  const [elapsed, setElapsed] = useState(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -105,14 +104,6 @@ export function HostedWorkspaceJourney() {
     const t = setInterval(() => { void refresh(); }, 5000);
     return () => clearInterval(t);
   }, [load, phase, view?.tone, refresh]);
-
-  // Elapsed-time counter for the provisioning progress phases, so the wait shows visible motion.
-  const tone = view?.tone;
-  useEffect(() => {
-    if (tone !== "progress") { setElapsed(0); return; }
-    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(t);
-  }, [tone]);
 
   async function onRequest() {
     if (busy) return;
@@ -200,7 +191,7 @@ export function HostedWorkspaceJourney() {
             <div role="status" aria-live="polite"
                  style={{ display: "flex", alignItems: "center", gap: 10, color: MUTED, fontSize: "0.85rem" }}>
               <Spinner />
-              <span>Working on it… ({elapsed}s) — this refreshes automatically.</span>
+              <span>Working on it — this page updates automatically.</span>
             </div>
           )}
 
@@ -261,9 +252,15 @@ export function HostedWorkspaceJourney() {
           )}
 
           {view.action?.kind === "support" && (
-            <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>
-              Please contact support and we&apos;ll get this sorted for you.
-            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.7rem" }}>
+              <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>
+                Our team can help get this sorted for you.
+              </p>
+              {/* Actionable next step — never a dead end. Opens the customer's mail client (no backend). */}
+              <a href="mailto:support@guvfx.com?subject=Hosted%20Workspace%20help" style={primaryLink}>
+                {view.action.label}
+              </a>
+            </div>
           )}
         </div>
       </div>

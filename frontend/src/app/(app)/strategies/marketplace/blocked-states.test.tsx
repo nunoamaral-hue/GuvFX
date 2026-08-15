@@ -6,9 +6,12 @@ import { render, screen, waitFor } from "@testing-library/react";
  * next action, and the dead affordances (Preview no-op, "Preview metrics unavailable" strip, empty
  * "Structure" filter) must be gone. Rendered in the DARK build with NO trading accounts. */
 const { apiFetch, state } = vi.hoisted(() => {
-  const state = { accountsPending: false };
+  const state = { accountsPending: false, unauth: false };
   const apiFetch = vi.fn(async (path: string) => {
-    if (path.startsWith("/api/auth/me")) return {};
+    if (path.startsWith("/api/auth/me")) {
+      if (state.unauth) throw Object.assign(new Error("unauthorized"), { status: 401 });
+      return {};
+    }
     if (path.startsWith("/api/trading/accounts")) {
       return state.accountsPending ? new Promise(() => {}) : [];       // pending vs. loaded-empty
     }
@@ -33,6 +36,7 @@ describe("marketplace blocked states + dead-affordance cleanup (WS-G)", () => {
   beforeEach(() => {
     apiFetch.mockClear();
     state.accountsPending = false;
+    state.unauth = false;
     const store: Record<string, string> = {};
     vi.stubGlobal("localStorage", {
       getItem: (k: string) => store[k] ?? null,
@@ -57,6 +61,14 @@ describe("marketplace blocked states + dead-affordance cleanup (WS-G)", () => {
     render(<Marketplace />);
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());   // effects ran; accounts fetch is pending
     expect(screen.queryByText(/You'll need a broker account first/i)).toBeNull();
+  });
+
+  it("a logged-out generic card carries its OWN sign-in next action (P0.2 — not just the page-top banner)", async () => {
+    state.unauth = true;
+    render(<Marketplace />);
+    await waitFor(() => expect(screen.getAllByText(/sign in to assign/i).length).toBeGreaterThan(0));
+    const signIn = screen.getAllByRole("link").find((l) => l.getAttribute("href") === "/login?reason=unauthenticated");
+    expect(signIn).toBeTruthy();
   });
 
   it("has no dead Preview affordance and no empty 'Structure' filter", async () => {

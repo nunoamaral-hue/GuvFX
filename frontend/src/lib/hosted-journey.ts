@@ -54,7 +54,7 @@ export interface JourneyView {
 export const STEPS = [
   "Request workspace",
   "Preparing workspace",
-  "Connect your broker",
+  "Open workspace",
   "Confirm your account",
   "Ready to trade",
 ] as const;
@@ -75,7 +75,7 @@ const PHASE_STEP: Record<JourneyPhase, number> = {
 const ACTION_FOR: Record<NextAction, JourneyAction | null> = {
   request_workspace: { kind: "request", label: "Request workspace" },
   wait: null,
-  open_mt5_and_log_in: { kind: "launch", label: "Open MT5 & log in" },
+  open_mt5_and_log_in: { kind: "launch", label: "Open MetaTrader & log in" },
   confirm_broker_account: { kind: "confirm", label: "Confirm my account" },
   assign_strategy: { kind: "assign", label: "Choose a strategy" },
   contact_support: { kind: "support", label: "Contact support" },
@@ -114,30 +114,30 @@ export function describeJourney(j: HostedJourney | null | undefined): JourneyVie
       return startView(j);
     case "WORKSPACE_REQUESTED":
       return view(stepIndex, "progress", "Preparing your workspace",
-        "Your private hosted MT5 workspace has been requested. Setup usually takes 2–3 minutes. "
-        + "You don't need to do anything — keep this tab open and we'll move you to the next step automatically.",
+        "Preparing your private MT5 workspace. This usually completes within a few minutes. "
+        + "Please keep this page open — we'll move you to the next step automatically.",
         null, canLaunch);
     case "WORKSPACE_PREPARING":
       return view(stepIndex, "progress", "Preparing your workspace",
-        "We're building your private, isolated MT5 workspace — this typically takes 2–3 minutes. Next you'll "
-        + "connect your broker. Keep this tab open; we'll move you on automatically when it's ready.",
+        "We're building your private, isolated MT5 workspace. This usually completes within a few minutes. "
+        + "Next you'll open your workspace and log in. Please keep this page open — we'll move you on automatically.",
         null, canLaunch);
     case "AWAITING_BROKER_LOGIN":
-      return view(stepIndex, "action", "Connect your broker",
-        "Enter your broker account number and server so we can match your workspace to the right account — "
-        + "that's all we use them for. Then open MetaTrader and log in there: your password is typed only "
-        + "inside MetaTrader, and GuvFX never receives or stores it.", action, canLaunch);
+      return view(stepIndex, "action", "Log in to your account",
+        "Enter your broker account number and server so we can point your workspace at the right account — "
+        + "that's all we use them for. Then open your hosted MetaTrader terminal and log in there: your "
+        + "password is typed only inside MetaTrader, and GuvFX never sees or stores it.", action, canLaunch);
     case "BROKER_CONNECTED":
       // Connected, but the active account isn't the one you told us yet → keep guiding the login.
       return view(stepIndex, "action", "Log in to your account",
-        loginHint(j) + " Open MT5 and make sure you're logged into that account.", action, canLaunch);
+        loginHint(j) + " Open MetaTrader and make sure you're logged into that account.", action, canLaunch);
     case "ACCOUNT_CONFIRMATION_REQUIRED":
       return view(stepIndex, "action", "Confirm your account",
         loginHint(j) + " If that's correct, confirm it to finish setting up your workspace.", action, canLaunch);
     case "ACCOUNT_BOUND":
       return view(stepIndex, "progress", "Finishing up",
-        "Your account is confirmed — this last step takes about a minute. Keep this tab open; we'll take you "
-        + "through automatically.", null, canLaunch);
+        "Your account is confirmed — we're finishing the last step. Please keep this page open; we'll take "
+        + "you through automatically.", null, canLaunch);
     case "WORKSPACE_READY":
       return view(stepIndex, "ready", "Your workspace is ready",
         "Your hosted MT5 workspace is connected and ready. Choose a strategy to get started.", action, canLaunch);
@@ -151,7 +151,7 @@ export function describeJourney(j: HostedJourney | null | undefined): JourneyVie
 function startView(j: HostedJourney): JourneyView {
   return {
     stepIndex: 0, tone: "action", title: "Set up your hosted workspace",
-    description: "Request a private hosted MT5 workspace. We'll prepare it and then you can connect your broker.",
+    description: "Request a private hosted MT5 workspace. We'll prepare it, then you'll open it and log in to MetaTrader.",
     action: ACTION_FOR[j.next_action] ?? ACTION_FOR.request_workspace, canLaunch: false,
   };
 }
@@ -159,7 +159,7 @@ function startView(j: HostedJourney): JourneyView {
 function startViewBlank(): JourneyView {
   return {
     stepIndex: 0, tone: "action", title: "Set up your hosted workspace",
-    description: "Request a private hosted MT5 workspace. We'll prepare it and then you can connect your broker.",
+    description: "Request a private hosted MT5 workspace. We'll prepare it, then you'll open it and log in to MetaTrader.",
     action: ACTION_FOR.request_workspace, canLaunch: false,
   };
 }

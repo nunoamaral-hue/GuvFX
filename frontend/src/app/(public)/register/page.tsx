@@ -13,7 +13,7 @@ const STEPS = [
   { num: 1, label: "Create account" },
   { num: 2, label: "Select plan" },
   { num: 3, label: "Complete profile" },
-  { num: 4, label: "Connect broker" },
+  { num: 4, label: "Open workspace" },
   { num: 5, label: "Get started" },
 ];
 

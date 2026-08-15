@@ -132,7 +132,7 @@ export function OnboardingShell() {
   const showReadiness = currentStepIndex === -1;
   const currentStep = showReadiness ? null : ONBOARDING_STEPS[currentStepIndex];
   // Canonical 5-step model (types/onboarding.ts): 1 Create account · 2 Select plan · 3 Complete profile ·
-  // 4 Connect broker · 5 Get started. The wizard here covers steps 2-3; the completion panel below is step 4.
+  // 4 Open workspace · 5 Get started. The wizard here covers steps 2-3; the completion panel below is step 4.
   const totalSteps = 5;
   const stepNumber = currentStep ? currentStep.stepNumber : 4;
 
@@ -196,25 +196,37 @@ export function OnboardingShell() {
           {showReadiness && !state.onboarding_completed && (
             <div>
               <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-                You&apos;re all set
+                Your GuvFX account is ready.
               </h2>
               <p style={{ color: "#b7c5dd", fontSize: "0.9rem", lineHeight: 1.6, marginBottom: "1.25rem" }}>
-                Your account is ready — let&apos;s connect your broker so you can start trading.
+                The next step is to set up your private trading workspace. We run MetaTrader for you — you log in
+                inside it, and we never see your password.
               </p>
-              <Button onClick={handleComplete} disabled={completing}>
-                {completing ? "Finishing…" : "Connect your broker"}
-              </Button>
-              {/* Make the hosted-workspace journey reachable (it otherwise has no inbound link). */}
+              {/* Primary path: open the hosted workspace journey (this is the beta's main flow). */}
+              <Link
+                href="/onboarding/hosted"
+                style={{
+                  display: "inline-block",
+                  padding: "0.55rem 1.35rem",
+                  borderRadius: 999,
+                  background: "linear-gradient(135deg, #2979ff 0%, #3fe0ff 50%, #2979ff 100%)",
+                  color: "#ffffff",
+                  fontSize: "0.9rem",
+                  fontWeight: 600,
+                  textDecoration: "none",
+                  boxShadow: "0 10px 30px rgba(37, 99, 235, 0.45)",
+                }}
+              >
+                Continue setup
+              </Link>
+              {/* Traditional path stays reachable for customers who manage their own broker account. */}
               <div style={{ marginTop: "1.25rem", paddingTop: "1rem", borderTop: "1px solid rgba(74,179,255,0.12)" }}>
-                <p style={{ color: "#94a3b8", fontSize: "0.85rem", lineHeight: 1.6, margin: "0 0 0.5rem" }}>
-                  Prefer a fully managed setup? With a{" "}
-                  <strong style={{ color: "#b7c5dd" }}>hosted workspace</strong> we run MetaTrader for you — you
-                  just log in inside it, and we never see your password.
+                <p style={{ color: "#94a3b8", fontSize: "0.85rem", lineHeight: 1.6, margin: "0 0 0.6rem" }}>
+                  Already trade with your own broker? You can connect an MT5 account you manage yourself instead.
                 </p>
-                <Link href="/onboarding/hosted"
-                      style={{ color: "#4ab3ff", fontSize: "0.85rem", fontWeight: 600, textDecoration: "none" }}>
-                  Set up your hosted workspace →
-                </Link>
+                <Button variant="secondary" onClick={handleComplete} disabled={completing} style={{ fontSize: "0.85rem" }}>
+                  {completing ? "Finishing…" : "Connect your own broker"}
+                </Button>
               </div>
             </div>
           )}

@@ -153,19 +153,24 @@ describe("marketplace signal-copy Enable Trading (arm)", () => {
     await waitFor(() => expect(screen.getByText("Trading access enabled")).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Enable Trading" })).toBeNull();
     expect(screen.queryByText("Arming (auto-demo) is a separate, gated step.")).toBeNull();
+    // P0.2: the DARK card is never status-only — it offers a navigation action (no live arm control).
+    expect(screen.getByRole("link", { name: "Continue" })).toBeTruthy();
     expect(arm).not.toHaveBeenCalled();
   });
 
-  it("gates the arm button on backend can_arm (disabled + next-action shown when not ready)", async () => {
+  it("guides to the fix when the account can't arm yet (Item 5: navigation, never a dead-end button)", async () => {
     state.canArm = false;         // backend readiness says the account can't arm yet
     state.nextAction = "preparing";
     render(<Marketplace />);
-    const btn = await screen.findByRole("button", { name: "Enable Trading" });
-    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    // Incomplete prerequisite → a navigation button to where the customer finishes setup, not a disabled
+    // Enable-Trading control. The explanatory next-action line still reads customer-safe.
+    const nav = await screen.findByRole("link", { name: "Continue setup" });
+    expect(nav).toHaveAttribute("href", "/onboarding/hosted");
     expect(
       screen.getByText("Your account is still getting ready to trade. Try again shortly."),
     ).toBeTruthy();
-    fireEvent.click(btn);
+    // No live arm path is surfaced.
+    expect(screen.queryByRole("button", { name: "Enable Trading" })).toBeNull();
     expect(arm).not.toHaveBeenCalled();
   });
 });

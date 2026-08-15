@@ -33,7 +33,7 @@ describe("HostedWorkspaceJourney", () => {
   it("renders the ready state with a live Launch link to the existing terminal", async () => {
     jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({ phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_READY" }) });
     render(<HostedWorkspaceJourney />);
-    const link = await screen.findByRole("link", { name: /open mt5/i });
+    const link = await screen.findByRole("link", { name: /open metatrader/i });
     expect(link).toHaveAttribute("href", "/trading/terminal-access");
     expect(link.className).not.toContain("pointer-events-none");
   });
@@ -52,6 +52,13 @@ describe("HostedWorkspaceJourney", () => {
     render(<HostedWorkspaceJourney />);
     expect(await screen.findByText(/isn't available yet/i)).toBeInTheDocument();
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
+  });
+
+  it("the workspace-unavailable state gives an actionable Contact support control — never a plain-text dead end", async () => {
+    jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({ phase: "WORKSPACE_UNAVAILABLE", next_action: "contact_support", delivery: "DELIVERY_NOT_AVAILABLE" }) });
+    render(<HostedWorkspaceJourney />);
+    const link = await screen.findByRole("link", { name: /contact support/i });
+    expect(link.getAttribute("href")).toMatch(/^mailto:/);
   });
 
   it("fails closed to a retryable error state when the load throws", async () => {
