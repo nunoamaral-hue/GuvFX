@@ -197,6 +197,23 @@ def closed_beta_open_access_enabled() -> bool:
     return _flag("CLOSED_BETA_OPEN_ACCESS_ENABLED")
 
 
+def hosted_order_bridge_auto_activate_enabled() -> bool:
+    """FINAL Closed-Beta stream (Sponsor 2026-08-15) — autonomous per-node ORDER-BRIDGE activation. DEFAULT OFF.
+
+    While OFF, ``prepare_hosted_slot`` behaves EXACTLY as before this stream: no bridge activation step, no
+    ``order_bridge_base_url`` write, no host contact for the bridge — byte-identical (a beta node's bridge then
+    stays a manual operational step). While ON, the materialise pipeline treats bridge activation as a REQUIRED,
+    fail-closed host primitive (``activate_order_bridge``) in the same family as ``materialise_runtime`` /
+    ``ensure_remoteapp``: it activates the node's dedicated pin-enforcing bridge, verifies its health, and
+    persists the node's ``order_bridge_base_url`` BEFORE advancing to WAITING_FOR_LOGIN — so a fresh customer
+    reaches a first DEMO trade with NO manual SSH/PowerShell/backend step. It grants NO order authority (the
+    per-job identity pin + the order-time bridge gate stay authoritative), never touches Customer Zero (the
+    reserved-account guard + the forbidden-node + never-overwrite-a-different-endpoint guards all fail closed),
+    and does not relax DEMO-only / AUTO_LIVE-off / node isolation / the supervised posture. See
+    ``hosted_workspace/slot_preparation.py`` (Stage 5c)."""
+    return _flag("HOSTED_ORDER_BRIDGE_AUTO_ACTIVATE_ENABLED")
+
+
 def hosted_tenant_node_isolation_enabled() -> bool:
     """ADR-0043 Addendum B — host-level CO-RESIDENCY guard (DARK, default OFF). When on, the node allocator
     (``provisioning.allocate_workspace_node``) and the execution-node single writer

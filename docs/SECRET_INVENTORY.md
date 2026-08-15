@@ -30,6 +30,7 @@ host, after the bridge-token rotation. "Last rotation" is recorded only where kn
 | **`GUVFX_WINDOWS_AGENT_TOKEN`**<br>alias: `WINDOWS_AGENT_TOKEN` | The value **clients send** to the `:8788` bridge in `X-GuvFX-Agent-Token`. **Must equal the bridge-side value above** or every call 401s. | **VPS:** `/home/ubuntu/guvfx-prod/bridge-agent.env` (`600`) | backend, trade-ingest worker, validate worker, shadow worker, wayond listener | Rotate **together with** the bridge-side value — they are one wire-level credential under two names | Nuno | **2026-07-22** |
 | **`MT5_WORKER_TOKEN`**<br>alias: `GUVFX_WORKER_TOKEN` | Worker→backend auth (`X-Worker-Token`): job polling, completion, `/api/reliability/heartbeat/` | **VPS:** `.env` + inline in `docker-compose.yml` ⚠ (see Gaps)<br>**Windows:** `C:\GuvFX\secrets\bridge.tokens.bat` | bridge (job polling), validate worker, trade-ingest worker, backend (validates) | Same shape as the agent token; bridge + all workers must be updated together | Nuno | not rotated |
 | **`MT5_SHADOW_WORKER_TOKEN`** | Distinct identity for the shadow (dry-run) worker so it can never be mistaken for the live worker | **VPS:** `.env` (`600`), interpolated by the shadow compose | shadow worker only | Recreate the shadow worker after change; no bridge restart needed | Nuno | not rotated |
+| **`GUVFX_AGENT_TOKEN` + `GUVFX_WORKER_TOKEN` — SHARED to the node 2 bridge (⚠ TEMPORARY Closed-Beta exception, 2026-08-15)** | The node 2 (Closed-Beta) pin-enforcing order bridge on `:8789` **reuses Customer Zero's inbound + worker tokens** by `call`-ing the same `C:\GuvFX\secrets\bridge.tokens.bat`. This is the Rule-3 substitution normally forbidden; accepted here as an **explicit, recorded, time-boxed** exception approved by the Sponsor (2026-08-15) solely to let Beta User #1 complete the end-to-end acceptance journey. Contained because order routing sends a beta order only to `:8789` and a CZ order only to `:8788`, and the per-job **identity pin** is the real per-tenant order authority. | same file, read-only (via `C:\GuvFX\node2\start_node2_bridge.bat`) | node 2 bridge `C:\GuvFX\node2\mt5_signal_bridge.py` + `node2_bridge_watchdog.ps1` | **Retire with the per-node inbound-token model (Post-Beta)** — see Gap 9 + `deploy/node2-order-bridge/README.md` | Nuno | n/a (shared value; no separate secret minted) |
 
 ## B. Application / platform secrets
 
@@ -86,6 +87,14 @@ host, after the bridge-token rotation. "Last rotation" is recorded only where kn
    **[SEC-CRYPTO-001](SEC-CRYPTO-001.md)** — authorised as its own packet, explicitly out of scope for B3P-2.
 8. **Cross-credential fallbacks remain in ~12 backend call sites** (see the post-incident review §7). WS1
    fixed the bridge, the validate worker and `sync_broker_instruments`; the rest are recorded, not done.
+9. **⚠ TEMPORARY Closed-Beta Rule-3 exception (2026-08-15) — the node 2 order bridge (`:8789`) shares Customer
+   Zero's `GUVFX_AGENT_TOKEN` + `GUVFX_WORKER_TOKEN`.** Sponsor-approved, time-boxed to the first supervised
+   beta user's acceptance journey; contained by node-keyed order routing (`:8789` vs `:8788`) + the per-job
+   identity pin (the real per-tenant order authority). **Post-Beta remediation:** implement the per-node
+   inbound-token model (a distinct token per `TerminalNode`, threaded through the dispatch worker), mint the
+   node 2 bridge its own `GUVFX_AGENT_TOKEN` + its own `GUVFX_WORKER_ID`/`SECRET`, split into its own rows,
+   and retire the shared value. Then deactivate + re-activate the bridge with the distinct secret. See
+   `deploy/node2-order-bridge/README.md`.
 
 ## Rotation ground rules (from the 2026-07-22 exercise)
 

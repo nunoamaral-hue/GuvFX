@@ -36,6 +36,7 @@
     "Set-GuvfxRemoteApp.ps1",
     "Set-GuvfxObserver.ps1",
     "Invoke-GuvfxObserver.ps1",
-    "Set-GuvfxAppLockerTenant.ps1"
+    "Set-GuvfxAppLockerTenant.ps1",
+    "Activate-GuvfxOrderBridge.ps1"
   ]
 }
