@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import type { OnboardingState } from "@/types/onboarding";
@@ -105,7 +106,7 @@ export function OnboardingShell() {
   if (loading && !state) {
     return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Getting Started</h1>
+        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>Getting Started</h1>
         <p style={{ color: "#94a3b8", fontSize: "0.9rem" }}>Loading your setup progress...</p>
       </div>
     );
@@ -115,7 +116,7 @@ export function OnboardingShell() {
   if (error && !state) {
     return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Getting Started</h1>
+        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>Getting Started</h1>
         <div style={{ ...glassCard, borderColor: "rgba(248, 113, 113, 0.3)" }}>
           <p style={{ color: "#f87171", fontSize: "0.9rem", margin: 0 }}>{error}</p>
         </div>
@@ -130,13 +131,14 @@ export function OnboardingShell() {
   // All wizard steps complete but onboarding_completed not yet set — show the completion hand-off panel
   const showReadiness = currentStepIndex === -1;
   const currentStep = showReadiness ? null : ONBOARDING_STEPS[currentStepIndex];
-  // Steps: register = 1, plan = 2, profile = 3.
-  const totalSteps = 3;
-  const stepNumber = currentStep ? currentStep.stepNumber : totalSteps;
+  // Canonical 5-step model (types/onboarding.ts): 1 Create account · 2 Select plan · 3 Complete profile ·
+  // 4 Connect broker · 5 Get started. The wizard here covers steps 2-3; the completion panel below is step 4.
+  const totalSteps = 5;
+  const stepNumber = currentStep ? currentStep.stepNumber : 4;
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-      <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Getting Started</h1>
+      <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>Getting Started</h1>
       <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1.5rem" }}>
         Step {stepNumber} of {totalSteps} — Complete the steps below to set up your GuvFX workspace.
       </p>
@@ -202,6 +204,18 @@ export function OnboardingShell() {
               <Button onClick={handleComplete} disabled={completing}>
                 {completing ? "Finishing…" : "Connect your broker"}
               </Button>
+              {/* Make the hosted-workspace journey reachable (it otherwise has no inbound link). */}
+              <div style={{ marginTop: "1.25rem", paddingTop: "1rem", borderTop: "1px solid rgba(74,179,255,0.12)" }}>
+                <p style={{ color: "#94a3b8", fontSize: "0.85rem", lineHeight: 1.6, margin: "0 0 0.5rem" }}>
+                  Prefer a fully managed setup? With a{" "}
+                  <strong style={{ color: "#b7c5dd" }}>hosted workspace</strong> we run MetaTrader for you — you
+                  just log in inside it, and we never see your password.
+                </p>
+                <Link href="/onboarding/hosted"
+                      style={{ color: "#4ab3ff", fontSize: "0.85rem", fontWeight: 600, textDecoration: "none" }}>
+                  Set up your hosted workspace →
+                </Link>
+              </div>
             </div>
           )}
         </div>

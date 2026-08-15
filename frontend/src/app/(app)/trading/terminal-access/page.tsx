@@ -564,6 +564,18 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
   const [error, setError] = useState<string | null>(null);
   const [epoch, setEpoch] = useState(0);
   const [slow, setSlow] = useState(false);
+  // First-launch guidance (PP5): the first time MT5 opens in a fresh workspace it downloads the broker's full
+  // instrument catalogue, which can take minutes. Show the one-time warning until this browser has opened it
+  // once (no first-launch flag exists on delivery-state, so we use a per-account localStorage marker).
+  const [hasLaunched, setHasLaunched] = useState(true);
+  const firstLaunchSessionRef = useRef(false);
+  useEffect(() => {
+    if (!account) return;
+    let launched = true;
+    try { launched = localStorage.getItem(`guvfx_mt5_launched_${account.id}`) === "1"; } catch { launched = false; }
+    setHasLaunched(launched);
+    firstLaunchSessionRef.current = !launched;
+  }, [account]);
   // Keyboard-focus management for the embedded Guacamole RemoteApp. Guacamole's key handler listens on the
   // iframe's OWN document, so keystrokes only reach MT5 while the iframe holds DOM focus (mouse works without
   // focus, keyboard does not — the "mouse works / keyboard dead" symptom). We give the iframe an explicit ref
@@ -720,10 +732,14 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
       // Same origin-pinning + stale-session clear as the legacy viewer path.
       setDescriptor(withCleanGuacAuth(safe));
       setEpoch((e) => e + 1);
+      try { localStorage.setItem(`guvfx_mt5_launched_${account.id}`, "1"); } catch { /* non-fatal */ }
+      setHasLaunched(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to open MT5 terminal.";
       if (message.includes("409")) {
-        setNotReady("Your MT5 terminal is being prepared. Please try again shortly.");
+        setNotReady("Your MT5 terminal is still preparing. The first launch downloads your broker's full "
+          + "instrument catalogue, which can take up to 5 minutes — keep this window open and it will open "
+          + "automatically when it's ready.");
       } else {
         setError(message);
       }
@@ -793,6 +809,14 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
             </span>
             <Badge color="green">Connected</Badge>
           </div>
+          {firstLaunchSessionRef.current && (
+            <div style={{ padding: "0.5rem 1rem", background: "rgba(74,179,255,0.05)",
+                          borderBottom: "1px solid rgba(74,179,255,0.1)", fontSize: "0.78rem", color: "#94a3b8",
+                          lineHeight: 1.5 }}>
+              First launch: MetaTrader is downloading your broker&apos;s instrument catalogue — this can take a few
+              minutes. It&apos;s ready to use once the chart list and symbols appear.
+            </div>
+          )}
           <iframe
             ref={iframeRef}
             key={`hosted-mt5-${epoch}`}
@@ -813,12 +837,32 @@ function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange: (active: boole
           />
         </div>
       ) : (
-        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" as const }}>
-          <Button onClick={openTerminal} disabled={connecting}>
-            {connecting ? "Opening…" : "Open MT5 Terminal"}
-          </Button>
-          {notReady && <span style={{ fontSize: "0.8rem", color: "#fbbf24" }}>{notReady}</span>}
-          {error && <span style={{ fontSize: "0.8rem", color: "#f87171" }}>{error}</span>}
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          {!hasLaunched && (
+            <div style={{ display: "flex", gap: "0.6rem", padding: "0.75rem 0.9rem", borderRadius: 10,
+                          border: "1px solid rgba(74,179,255,0.2)", background: "rgba(74,179,255,0.06)" }}>
+              <span aria-hidden style={{ fontSize: "0.95rem", lineHeight: 1.4 }}>ℹ️</span>
+              <p style={{ fontSize: "0.82rem", color: "#b7c5dd", margin: 0, lineHeight: 1.6 }}>
+                <strong style={{ color: "#e9f4ff" }}>First launch:</strong> the first time you open this terminal,
+                MetaTrader downloads your broker&apos;s full instrument catalogue. This can take up to 5 minutes —
+                keep this window open and don&apos;t close the tab. This only happens once; after that it opens in seconds.
+              </p>
+            </div>
+          )}
+          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" as const }}>
+            <Button onClick={openTerminal} disabled={connecting}>
+              {connecting ? "Opening…" : "Open MT5 Terminal"}
+            </Button>
+            {connecting && (
+              <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8rem", color: "#94a3b8" }}>
+                <span className="animate-spin" aria-hidden style={{ display: "inline-block", width: 14, height: 14,
+                      border: "2px solid rgba(74,179,255,0.25)", borderTopColor: "#4ab3ff", borderRadius: "50%" }} />
+                Preparing your MT5 terminal… the first launch can take up to 5 minutes. Keep this window open.
+              </span>
+            )}
+            {notReady && <span style={{ fontSize: "0.8rem", color: "#fbbf24", lineHeight: 1.5 }}>{notReady}</span>}
+            {error && <span style={{ fontSize: "0.8rem", color: "#f87171" }}>{error}</span>}
+          </div>
         </div>
       )}
     </div>

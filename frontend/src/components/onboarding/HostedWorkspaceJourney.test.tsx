@@ -38,11 +38,13 @@ describe("HostedWorkspaceJourney", () => {
     expect(link.className).not.toContain("pointer-events-none");
   });
 
-  it("gates the Launch link to 'preparing' when delivery is not ready", async () => {
+  it("gates the Launch to a non-clickable 'preparing' state when delivery is not ready", async () => {
     jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({ phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_PREPARING" }) });
-    render(<HostedWorkspaceJourney />);
-    const link = await screen.findByRole("link", { name: /preparing your terminal/i });
-    expect(link.className).toContain("pointer-events-none");
+    const { container } = render(<HostedWorkspaceJourney />);
+    // UX: the not-ready launch is an in-progress pill (spinner), never a live link into the terminal.
+    expect(await screen.findByText(/preparing your terminal/i)).toBeInTheDocument();
+    const hrefs = Array.from(container.querySelectorAll("a")).map((a) => a.getAttribute("href"));
+    expect(hrefs).not.toContain("/trading/terminal-access");
   });
 
   it("fails closed to a neutral 'not available' when the journey is dark (404)", async () => {
@@ -74,7 +76,8 @@ describe("HostedWorkspaceJourney", () => {
     jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({ phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_READY" }) });
     jm.bindExpectedAccount.mockResolvedValue(journey({ phase: "BROKER_CONNECTED", next_action: "open_mt5_and_log_in" }));
     const { container } = render(<HostedWorkspaceJourney />);
-    const input = await screen.findByPlaceholderText(/broker account number/i);
+    // UX: the account-number field now has a real <label> (a11y) — query by label, not placeholder.
+    const input = await screen.findByLabelText(/broker account number/i);
     expect(container.querySelector('input[type="password"]')).toBeNull();
     fireEvent.change(input, { target: { value: "700900" } });
     fireEvent.click(screen.getByRole("button", { name: /save my broker details/i }));

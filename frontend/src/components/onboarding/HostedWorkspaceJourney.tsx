@@ -3,10 +3,16 @@
 // Hosted Workspace customer journey (G18) — renders the deterministic journey state machine + wires actions.
 // Pure state logic lives in @/lib/hosted-journey (fully unit-tested); this component is the thin view + I/O.
 // It never touches execution: the furthest action is "Choose a strategy", strictly below arming/order-time.
+//
+// UX pass (onboarding improvements): re-skinned to the GuvFX dark-glass system (was a light Tailwind island
+// that inverted to invisible in dark mode), with live progress (spinner + elapsed timer + aria-live) so a
+// provisioning screen never looks frozen, labelled/dark broker inputs, and a "what happens next" that lands
+// on the Wayond card. No journey/execution behaviour changed — copy + presentation only.
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
+import { Button } from "@/components/ui/Button";
 import {
   bindExpectedAccount, confirmAccount, describeJourney, fetchJourney, requestWorkspace, STEPS,
   type HostedJourney, type JourneyView,
@@ -14,12 +20,62 @@ import {
 
 type Load = "loading" | "ready" | "unavailable" | "error";
 
+const glassCard: React.CSSProperties = {
+  borderRadius: 16,
+  border: "1px solid rgba(74, 179, 255, 0.12)",
+  background: "linear-gradient(135deg, rgba(10, 15, 40, 0.95) 0%, rgba(5, 8, 22, 0.98) 100%)",
+  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4), 0 0 60px rgba(30, 111, 255, 0.04)",
+  padding: "1.5rem",
+};
+
+const TITLE = "#e9f4ff";
+const BODY = "#b7c5dd";
+const MUTED = "#94a3b8";
+const ACCENT = "#4ab3ff";
+
+const primaryLink: React.CSSProperties = {
+  display: "inline-block",
+  padding: "0.55rem 1.25rem",
+  borderRadius: 999,
+  background: "linear-gradient(135deg, #2979ff 0%, #3fe0ff 50%, #2979ff 100%)",
+  color: "#ffffff",
+  fontSize: "0.9rem",
+  fontWeight: 600,
+  textDecoration: "none",
+  boxShadow: "0 10px 30px rgba(37, 99, 235, 0.45)",
+};
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  background: "rgba(255, 255, 255, 0.04)",
+  color: TITLE,
+  border: "1px solid rgba(74, 179, 255, 0.2)",
+  borderRadius: 8,
+  padding: "0.55rem 0.75rem",
+  fontSize: "0.9rem",
+  outline: "none",
+};
+
+function Spinner({ size = 16 }: { size?: number }) {
+  return (
+    <span
+      className="animate-spin"
+      aria-hidden
+      style={{
+        display: "inline-block", width: size, height: size,
+        border: "2px solid rgba(74, 179, 255, 0.25)", borderTopColor: ACCENT, borderRadius: "50%",
+      }}
+    />
+  );
+}
+
 export function HostedWorkspaceJourney() {
   const [journey, setJourney] = useState<HostedJourney | null>(null);
   const [load, setLoad] = useState<Load>("loading");
   const [busy, setBusy] = useState(false);
   // Broker identity is declared LATER (deferred bind), at the "connect your broker" step — never at request.
   const [form, setForm] = useState({ expected_login: "", expected_server: "" });
+  const [elapsed, setElapsed] = useState(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -49,6 +105,14 @@ export function HostedWorkspaceJourney() {
     const t = setInterval(() => { void refresh(); }, 5000);
     return () => clearInterval(t);
   }, [load, phase, view?.tone, refresh]);
+
+  // Elapsed-time counter for the provisioning progress phases, so the wait shows visible motion.
+  const tone = view?.tone;
+  useEffect(() => {
+    if (tone !== "progress") { setElapsed(0); return; }
+    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(t);
+  }, [tone]);
 
   async function onRequest() {
     if (busy) return;
@@ -93,21 +157,33 @@ export function HostedWorkspaceJourney() {
   }
 
   if (load === "loading") {
-    return <div className="p-6 text-sm text-gray-500">Loading your workspace…</div>;
+    return (
+      <div className="mx-auto max-w-xl p-6" style={{ display: "flex", alignItems: "center", gap: 10, color: MUTED, fontSize: "0.9rem" }}>
+        <Spinner /> Loading your workspace…
+      </div>
+    );
   }
   if (load === "unavailable") {
     return (
-      <div className="mx-auto max-w-lg p-6 text-center">
-        <h2 className="text-lg font-semibold">Hosted workspace</h2>
-        <p className="mt-2 text-sm text-gray-500">Your hosted trading workspace isn&apos;t available yet. We&apos;ll let you know when it&apos;s ready for you.</p>
+      <div className="mx-auto max-w-lg p-6">
+        <div style={glassCard}>
+          <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: TITLE, margin: 0 }}>Hosted workspace</h2>
+          <p style={{ marginTop: 8, fontSize: "0.9rem", color: BODY }}>
+            Your hosted trading workspace isn&apos;t available yet. We&apos;ll let you know the moment it&apos;s ready for you.
+          </p>
+        </div>
       </div>
     );
   }
   if (load === "error" || !view) {
     return (
-      <div className="mx-auto max-w-lg p-6 text-center">
-        <p className="text-sm text-gray-500">We couldn&apos;t load your workspace status.</p>
-        <button onClick={() => { setLoad("loading"); void refresh(); }} className="mt-3 rounded bg-gray-900 px-4 py-2 text-sm text-white">Try again</button>
+      <div className="mx-auto max-w-lg p-6">
+        <div style={{ ...glassCard, borderColor: "rgba(248, 113, 113, 0.3)" }}>
+          <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>We couldn&apos;t load your workspace status.</p>
+          <div style={{ marginTop: 12 }}>
+            <Button onClick={() => { setLoad("loading"); void refresh(); }}>Try again</Button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -115,46 +191,79 @@ export function HostedWorkspaceJourney() {
   return (
     <div className="mx-auto max-w-xl p-6">
       <Stepper current={view.stepIndex} />
-      <div className={`mt-6 rounded-lg border p-5 ${toneClass(view.tone)}`}>
-        <h2 className="text-lg font-semibold">{view.title}</h2>
-        <p className="mt-2 text-sm">{view.description}</p>
-        <div className="mt-4">
-          {view.action?.kind === "request" && (
-            <button onClick={onRequest} disabled={busy}
-                    className="w-full rounded bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-50">
-              {busy ? "Requesting…" : view.action.label}
-            </button>
+      <div style={{ ...glassCard, marginTop: "1.5rem" }}>
+        <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: TITLE, margin: 0 }}>{view.title}</h2>
+        <p style={{ marginTop: 8, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>{view.description}</p>
+        <div style={{ marginTop: 16 }}>
+          {/* Progress phases carry no action — show live motion + elapsed time so it never looks frozen. */}
+          {view.action === null && view.tone === "progress" && (
+            <div role="status" aria-live="polite"
+                 style={{ display: "flex", alignItems: "center", gap: 10, color: MUTED, fontSize: "0.85rem" }}>
+              <Spinner />
+              <span>Working on it… ({elapsed}s) — this refreshes automatically.</span>
+            </div>
           )}
+
+          {view.action?.kind === "request" && (
+            <Button onClick={onRequest} disabled={busy} style={{ width: "100%" }}>
+              {busy ? "Requesting…" : view.action.label}
+            </Button>
+          )}
+
           {view.action?.kind === "launch" && (
             <div className="space-y-4">
               {/* Deferred bind: the customer declares their broker account here, then opens MT5 to log in. */}
               <form onSubmit={onBind} className="space-y-3">
-                <input required value={form.expected_login} onChange={(e) => setForm({ ...form, expected_login: e.target.value })}
-                       placeholder="Broker account number" className="w-full rounded border px-3 py-2 text-sm" />
-                <input value={form.expected_server} onChange={(e) => setForm({ ...form, expected_server: e.target.value })}
-                       placeholder="Broker server" className="w-full rounded border px-3 py-2 text-sm" />
-                <button type="submit" disabled={busy || !form.expected_login.trim()}
-                        className="w-full rounded bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-50">
+                <div>
+                  <label htmlFor="hw-login" style={{ display: "block", fontSize: "0.8rem", color: BODY, marginBottom: 4 }}>
+                    Broker account number
+                  </label>
+                  <input id="hw-login" required value={form.expected_login}
+                         onChange={(e) => setForm({ ...form, expected_login: e.target.value })}
+                         placeholder="e.g. 1234567" style={inputStyle}
+                         onFocus={(e) => { e.currentTarget.style.borderColor = ACCENT; }}
+                         onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(74, 179, 255, 0.2)"; }} />
+                </div>
+                <div>
+                  <label htmlFor="hw-server" style={{ display: "block", fontSize: "0.8rem", color: BODY, marginBottom: 4 }}>
+                    Broker server
+                  </label>
+                  <input id="hw-server" value={form.expected_server}
+                         onChange={(e) => setForm({ ...form, expected_server: e.target.value })}
+                         placeholder="e.g. YourBroker-Demo" style={inputStyle}
+                         onFocus={(e) => { e.currentTarget.style.borderColor = ACCENT; }}
+                         onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(74, 179, 255, 0.2)"; }} />
+                </div>
+                <Button type="submit" disabled={busy || !form.expected_login.trim()} style={{ width: "100%" }}>
                   {busy ? "Saving…" : "Save my broker details"}
-                </button>
-                <p className="text-xs text-gray-400">We only need your broker account number and server — never your password.</p>
+                </Button>
+                <p style={{ fontSize: "0.8rem", color: MUTED, margin: 0 }}>
+                  Enter your password only inside MetaTrader — never here. GuvFX never receives or stores it.
+                </p>
               </form>
-              <Link href="/trading/terminal-access"
-                    className={`inline-block rounded px-4 py-2 text-sm text-white ${view.canLaunch ? "bg-gray-900" : "bg-gray-400 pointer-events-none"}`}>
-                {view.canLaunch ? view.action.label : "Preparing your terminal…"}
-              </Link>
+              {view.canLaunch ? (
+                <Link href="/trading/terminal-access" style={primaryLink}>{view.action.label}</Link>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0.55rem 0.9rem",
+                              borderRadius: 999, background: "rgba(255, 255, 255, 0.06)", color: MUTED, fontSize: "0.85rem" }}>
+                  <Spinner /> Preparing your terminal… this refreshes automatically.
+                </div>
+              )}
             </div>
           )}
+
           {view.action?.kind === "confirm" && (
-            <button onClick={onConfirm} disabled={busy} className="rounded bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-50">
-              {busy ? "Confirming…" : view.action.label}
-            </button>
+            <Button onClick={onConfirm} disabled={busy}>{busy ? "Confirming…" : view.action.label}</Button>
           )}
+
           {view.action?.kind === "assign" && (
-            <Link href="/strategies" className="inline-block rounded bg-gray-900 px-4 py-2 text-sm text-white">{view.action.label}</Link>
+            <Link href="/strategies/marketplace" style={primaryLink}>{view.action.label}</Link>
           )}
+
           {view.action?.kind === "support" && (
-            <p className="text-sm text-gray-500">Please contact support and we&apos;ll get this sorted for you.</p>
+            <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>
+              Please contact support and we&apos;ll get this sorted for you.
+            </p>
           )}
         </div>
       </div>
@@ -167,22 +276,17 @@ function Stepper({ current }: { current: number }) {
     <ol className="flex items-center gap-2 text-xs">
       {STEPS.map((label, i) => {
         const state = current < 0 ? "todo" : i < current ? "done" : i === current ? "current" : "todo";
+        const barColor = state === "done" ? "#86efac" : state === "current" ? ACCENT : "rgba(255, 255, 255, 0.1)";
         return (
           <li key={label} className="flex flex-1 flex-col items-center gap-1">
-            <span className={`h-2 w-full rounded ${state === "done" ? "bg-green-500" : state === "current" ? "bg-gray-900" : "bg-gray-200"}`} />
-            <span className={state === "current" ? "font-medium" : "text-gray-400"}>{label}</span>
+            <span className={state === "current" ? "h-2 w-full rounded animate-pulse" : "h-2 w-full rounded"}
+                  style={{ background: barColor }} />
+            <span style={{ color: state === "current" ? TITLE : MUTED, fontWeight: state === "current" ? 600 : 400 }}>
+              {label}
+            </span>
           </li>
         );
       })}
     </ol>
   );
-}
-
-function toneClass(tone: JourneyView["tone"]): string {
-  switch (tone) {
-    case "ready": return "border-green-300 bg-green-50";
-    case "error": return "border-amber-300 bg-amber-50";
-    case "action": return "border-gray-300 bg-white";
-    default: return "border-gray-200 bg-gray-50";
-  }
 }

@@ -161,13 +161,13 @@ export function SignalCopyReadiness({
       ) : readiness ? (
         <>
           <div style={{ background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "0.5rem 0.65rem" }}>
-            <div style={{ fontSize: "0.62rem", textTransform: "uppercase", letterSpacing: "0.04em", color: "#64748b", marginBottom: 6 }}>
+            <div style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.04em", color: "#94a3b8", marginBottom: 6 }}>
               {t(lang, "marketplace.readinessTitle")}
             </div>
             <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 3 }}>
               {readiness.checklist.map((c) => (
-                <li key={c.key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.74rem", color: c.ok ? "#cbd5e1" : "#94a3b8" }}>
-                  <span aria-hidden style={{ color: c.ok ? "#22c55e" : "#f59e0b", fontWeight: 700 }}>{c.ok ? "✓" : "○"}</span>
+                <li key={c.key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.74rem", color: c.ok ? "#e2e8f0" : "#94a3b8" }}>
+                  <span aria-hidden style={{ color: c.ok ? "#22c55e" : "#f59e0b", fontWeight: 700 }}>{c.ok ? "✓" : "✕"}</span>
                   <span>{t(lang, CHECK_LABEL[c.key] || c.key)}</span>
                 </li>
               ))}
@@ -184,6 +184,13 @@ export function SignalCopyReadiness({
             >
               {arming ? t(lang, "marketplace.armWorking") : t(lang, "marketplace.armEnableTrading")}
             </Button>
+          )}
+          {/* When the enable control isn't built yet, a "ready" account must not show an instruction with no
+              button. Surface a clear placeholder instead of a missing control. */}
+          {!armUiEnabled && readiness.can_arm && (
+            <p style={{ fontSize: "0.72rem", color: "#86efac", margin: 0 }}>
+              {t(lang, "marketplace.readinessEnablingSoon")}
+            </p>
           )}
         </>
       ) : null}

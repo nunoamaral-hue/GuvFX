@@ -834,7 +834,9 @@ export default function StrategyMarketplacePage() {
                     <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
                       {t(lang, "marketplace.executionLabel")}
                     </div>
-                    <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
+                    {/* For signal-copy cards this is a static method descriptor, not a live status — de-emphasise
+                        it so it never competes with the readiness pill/checklist below. */}
+                    <div style={{ fontSize: "0.8rem", fontWeight: 600, color: strategy.signalCopy ? "#94a3b8" : "#e2e8f0" }}>
                       {strategy.execution}
                     </div>
                   </div>
@@ -873,23 +875,28 @@ export default function StrategyMarketplacePage() {
                           : "#94a3b8";
                     return (
                       <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            padding: "0.5rem 0.75rem",
-                            borderRadius: 8,
-                            background: "rgba(0,0,0,0.25)",
-                          }}
-                        >
-                          <span style={{ fontSize: "0.7rem", color: "#64748b" }}>
-                            {t(lang, "marketplace.copyStatusLabel")}
-                          </span>
-                          <span style={{ fontSize: "0.8rem", fontWeight: 700, color: statusColor }}>
-                            {statusLabel}
-                          </span>
-                        </div>
+                        {/* The top status pill is authoritative only for the ARMED lifecycle (On / Off / needs
+                            attention). Before arming, the readiness panel below is the single source of truth,
+                            so we hide this pill to avoid a "Not set up" pill sitting above an all-ready checklist. */}
+                        {(armed || ambiguous) && (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              padding: "0.5rem 0.75rem",
+                              borderRadius: 8,
+                              background: "rgba(0,0,0,0.25)",
+                            }}
+                          >
+                            <span style={{ fontSize: "0.7rem", color: "#64748b" }}>
+                              {t(lang, "marketplace.copyStatusLabel")}
+                            </span>
+                            <span style={{ fontSize: "0.8rem", fontWeight: 700, color: statusColor }}>
+                              {statusLabel}
+                            </span>
+                          </div>
+                        )}
                         {armed ? (
                           // Armed → the Enable/Disable toggle (resume/pause the copy) — full width, no
                           // dead Preview affordance.

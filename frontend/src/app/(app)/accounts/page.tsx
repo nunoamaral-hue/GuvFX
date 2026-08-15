@@ -8,6 +8,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
 import { useLang } from "@/components/AppShell";
 import { Card } from "@/components/ui/Card";
@@ -603,12 +604,28 @@ function AccountsContent() {
 
 return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
+        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>
           {t(lang, "accounts.title")}
         </h1>
         <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
           {t(lang, "accounts.subtitle")}
         </p>
+
+        {/* Disambiguate the two broker-connection models so the customer knows which one this page's form is. */}
+        <div style={{ marginBottom: "1rem", padding: "0.85rem 1rem", borderRadius: 10,
+                      border: "1px solid rgba(74,179,255,0.15)", background: "rgba(74,179,255,0.05)" }}>
+          <p style={{ margin: 0, fontSize: "0.85rem", color: "#b7c5dd", lineHeight: 1.7 }}>
+            <strong style={{ color: "#e9f4ff" }}>Two ways to connect a broker.</strong>{" "}
+            <strong style={{ color: "#e9f4ff" }}>Hosted Workspace</strong> — we run MetaTrader for you; you log in
+            inside it and GuvFX never sees or stores your password.{" "}
+            <Link href="/onboarding/hosted" style={{ color: "#4ab3ff", textDecoration: "none" }}>
+              Set up a hosted workspace →
+            </Link>{" "}
+            <br />
+            <strong style={{ color: "#e9f4ff" }}>Connect your own broker (the form below)</strong> — enter your
+            existing MT5 login so GuvFX can trade the account you already have; those details are stored encrypted.
+          </p>
+        </div>
 
         {/* Customer Zero Flow Simplification (Option 2): post-onboarding broker-setup lifecycle panel. */}
         <PostOnboardingSetupPanel />

@@ -113,16 +113,20 @@ export function describeJourney(j: HostedJourney | null | undefined): JourneyVie
     case "NO_WORKSPACE":
       return startView(j);
     case "WORKSPACE_REQUESTED":
-      return view(stepIndex, "progress", "Workspace requested",
-        "Your hosted trading workspace has been requested. This usually takes a moment.", null, canLaunch);
+      return view(stepIndex, "progress", "Preparing your workspace",
+        "Your private hosted MT5 workspace has been requested. Setup usually takes 2–3 minutes. "
+        + "You don't need to do anything — keep this tab open and we'll move you to the next step automatically.",
+        null, canLaunch);
     case "WORKSPACE_PREPARING":
       return view(stepIndex, "progress", "Preparing your workspace",
-        "We're setting up your private hosted MT5 workspace. You'll be able to connect your broker shortly.",
+        "We're building your private, isolated MT5 workspace — this typically takes 2–3 minutes. Next you'll "
+        + "connect your broker. Keep this tab open; we'll move you on automatically when it's ready.",
         null, canLaunch);
     case "AWAITING_BROKER_LOGIN":
       return view(stepIndex, "action", "Connect your broker",
-        "Open your hosted MT5 terminal and log in with your broker credentials. Your login stays inside the "
-        + "terminal — we never see your password.", action, canLaunch);
+        "Enter your broker account number and server so we can match your workspace to the right account — "
+        + "that's all we use them for. Then open MetaTrader and log in there: your password is typed only "
+        + "inside MetaTrader, and GuvFX never receives or stores it.", action, canLaunch);
     case "BROKER_CONNECTED":
       // Connected, but the active account isn't the one you told us yet → keep guiding the login.
       return view(stepIndex, "action", "Log in to your account",
@@ -132,7 +136,8 @@ export function describeJourney(j: HostedJourney | null | undefined): JourneyVie
         loginHint(j) + " If that's correct, confirm it to finish setting up your workspace.", action, canLaunch);
     case "ACCOUNT_BOUND":
       return view(stepIndex, "progress", "Finishing up",
-        "Your account is confirmed. We're getting your workspace ready.", null, canLaunch);
+        "Your account is confirmed — this last step takes about a minute. Keep this tab open; we'll take you "
+        + "through automatically.", null, canLaunch);
     case "WORKSPACE_READY":
       return view(stepIndex, "ready", "Your workspace is ready",
         "Your hosted MT5 workspace is connected and ready. Choose a strategy to get started.", action, canLaunch);

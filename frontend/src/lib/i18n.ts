@@ -297,8 +297,8 @@ const dictionary: Dictionary = {
   "accounts.accountNumberPlaceholder": { en: "e.g. 123456", ja: "例: 123456" },
   "accounts.platformPassword": { en: "Platform password", ja: "プラットフォームパスワード" },
   "accounts.platformPasswordHelp": {
-    en: "This is the password for your broker's trading platform account (e.g. MetaTrader 5). It will be stored securely and used later to connect to your account.",
-    ja: "ブローカーの取引プラットフォーム（例: MetaTrader 5）のパスワードです。安全に保存され、口座への接続に使用されます。",
+    en: "This is your broker platform password (e.g. MetaTrader 5) for the traditional connection. It is encrypted and used only to connect the trading account you already have. Prefer not to share it? Use a hosted workspace instead — you log in inside MetaTrader and GuvFX never receives it.",
+    ja: "従来型接続で使うブローカーのプラットフォーム（例: MetaTrader 5）のパスワードです。暗号化され、お持ちの取引口座への接続にのみ使用されます。共有したくない場合は、ホスト型ワークスペースをご利用ください（MetaTrader 内でログインし、GuvFX がパスワードを受け取ることはありません）。",
   },
   "accounts.platformPasswordPlaceholder": {
     en: "Password used in MetaTrader / broker platform",
@@ -1096,6 +1096,10 @@ const dictionary: Dictionary = {
   "marketplace.readinessNextReady": {
     en: "Your account is ready. Enable trading to start copying.",
     ja: "口座の準備ができました。取引を有効化してコピーを開始してください。",
+  },
+  "marketplace.readinessEnablingSoon": {
+    en: "You're ready — enabling opens shortly.",
+    ja: "準備完了です — まもなく有効化できます。",
   },
   "marketplace.unauthMessage": {
     en: "You are not authenticated. Please log in again to assign marketplace templates.",
