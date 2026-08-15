@@ -190,6 +190,29 @@ class TradingAccount(models.Model):
             self.account_number = self.account_number.strip()
         if self.broker_name is not None:
             self.broker_name = self.broker_name.strip()
+        # Beta UX Correction part C — WRITE-ONCE broker identity for hosted (Provider-B) accounts. Once the
+        # identity is bound, ``account_number`` / ``broker_server`` are immutable: no PATCH, no re-pin, no
+        # owner-controlled rebinding can change which broker identity a hosted workspace is pinned to (that
+        # would silently defeat the order-time identity pin AND the CONNECTED→SUSPENDED account-switch
+        # detection). Enforced HERE, at the authoritative model layer, so it binds EVERY writer (the DRF
+        # serializer's full save included), not only the ``bind_broker_identity`` seam. It fires only on an
+        # UPDATE that actually touches an identity field of an ALREADY-BOUND hosted account, so: create is
+        # unaffected (no pk yet); the first bind (empty → declared) is allowed; non-identity saves (e.g.
+        # is_active on confirm) never query; and legacy / Provider-A accounts are wholly unaffected.
+        if self.pk is not None:
+            from execution.readiness import PERSISTENT_WORKSPACE
+            if str(getattr(self, "readiness_provider", "")) == PERSISTENT_WORKSPACE:
+                uf = kwargs.get("update_fields")
+                if uf is None or any(f in uf for f in ("account_number", "broker_server", "broker_server_id")):
+                    prior = (type(self).objects.filter(pk=self.pk)
+                             .values("account_number", "broker_server_id").first())
+                    if prior and str(prior["account_number"] or "").strip():
+                        if (str(self.account_number or "").strip() != str(prior["account_number"] or "").strip()
+                                or self.broker_server_id != prior["broker_server_id"]):
+                            from django.core.exceptions import ValidationError
+                            raise ValidationError(
+                                {"account_number":
+                                 "Hosted broker identity is write-once and cannot be changed once bound."})
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:

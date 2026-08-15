@@ -19,6 +19,7 @@ from billing.entitlements import resolve_entitlements
 from billing.models import UserSubscriptionState
 
 from hosted_workspace.flags import (
+    closed_beta_open_access_enabled,
     hosted_persistent_mt5_enabled,
     hosted_workspace_onboarding_enabled,
 )
@@ -50,6 +51,13 @@ def has_hosted_workspace_capability(user) -> bool:
     itself — every caller still ANDs the DARK subsystem/onboarding flags on top of it."""
     if user is None or getattr(user, "pk", None) is None:
         return False
+    # Source 3 (Beta UX Correction, Sponsor 2026-08-15) — GLOBAL Closed-Beta open access. The Closed Beta is
+    # controlled OPERATIONALLY by who is given access, not by an application-level per-email allowlist: while the
+    # flag is on, ANY authenticated user holds the capability WITHOUT a prior BetaTester admission or a commercial
+    # entitlement. DEFAULT OFF ⇒ byte-identical to before. Access/Visibility only — grants NO order authority (the
+    # subsystem/onboarding flags in hosted_workspace_admission and the live order-time bridge gate remain on top).
+    if closed_beta_open_access_enabled():
+        return True
     # Source 1 — commercial entitlement (billing stays commercial-only; this module composes the two concerns).
     if _entitlements(user).can_use_hosted_workspace:
         return True

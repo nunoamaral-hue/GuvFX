@@ -23,6 +23,7 @@ class WorkspaceEvent(models.TextChoices):
     REQUESTED = "workspace.requested", "Workspace requested"
     ACCOUNT_DISCOVERED = "workspace.account_discovered", "Broker account discovered"
     ACCOUNT_CONFIRMED = "workspace.account_confirmed", "Broker account confirmed"
+    IDENTITY_BOUND = "workspace.identity_bound", "Broker identity bound"
     STARTED = "workspace.started", "Workspace started"
     WAITING_FOR_LOGIN = "workspace.waiting_for_login", "Workspace waiting for login"
     CONNECTED = "workspace.connected", "Workspace connected"
@@ -51,6 +52,7 @@ EVENT_META = {
     WorkspaceEvent.REQUESTED: (OE.Category.RUNTIME, OE.Severity.INFO, S.PROVISIONING),
     WorkspaceEvent.ACCOUNT_DISCOVERED: (OE.Category.CONNECTIVITY, OE.Severity.INFO, None),
     WorkspaceEvent.ACCOUNT_CONFIRMED: (OE.Category.RUNTIME, OE.Severity.INFO, None),
+    WorkspaceEvent.IDENTITY_BOUND: (OE.Category.RUNTIME, OE.Severity.INFO, None),
     WorkspaceEvent.STARTED: (OE.Category.RUNTIME, OE.Severity.INFO, S.PROVISIONING),
     WorkspaceEvent.WAITING_FOR_LOGIN: (OE.Category.CONNECTIVITY, OE.Severity.INFO, S.WAITING_FOR_LOGIN),
     WorkspaceEvent.CONNECTED: (OE.Category.CONNECTIVITY, OE.Severity.INFO, S.CONNECTED),

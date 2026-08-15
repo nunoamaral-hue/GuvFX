@@ -8,7 +8,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import {
-  confirmAccount, describeJourney, fetchJourney, requestWorkspace, STEPS,
+  bindExpectedAccount, confirmAccount, describeJourney, fetchJourney, requestWorkspace, STEPS,
   type HostedJourney, type JourneyView,
 } from "@/lib/hosted-journey";
 
@@ -18,7 +18,8 @@ export function HostedWorkspaceJourney() {
   const [journey, setJourney] = useState<HostedJourney | null>(null);
   const [load, setLoad] = useState<Load>("loading");
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ expected_login: "", expected_server: "", broker_name: "" });
+  // Broker identity is declared LATER (deferred bind), at the "connect your broker" step — never at request.
+  const [form, setForm] = useState({ expected_login: "", expected_server: "" });
 
   const refresh = useCallback(async () => {
     try {
@@ -49,16 +50,30 @@ export function HostedWorkspaceJourney() {
     return () => clearInterval(t);
   }, [load, phase, view?.tone, refresh]);
 
-  async function onRequest(e: React.FormEvent) {
-    e.preventDefault();
-    if (!form.expected_login.trim() || busy) return;
+  async function onRequest() {
+    if (busy) return;
     setBusy(true);
     try {
-      const j = await requestWorkspace(form);
+      const j = await requestWorkspace();          // deferred bind — no broker details collected here
       setJourney(j);
       setLoad("ready");
     } catch {
       setLoad("error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onBind(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.expected_login.trim() || busy) return;
+    setBusy(true);
+    try {
+      const j = await bindExpectedAccount(form);   // declare the expected broker identity (write-once)
+      setJourney(j);
+      setLoad("ready");
+    } catch {
+      void refresh();  // e.g. 409 already-bound / conflict → just re-read the current state
     } finally {
       setBusy(false);
     }
@@ -105,25 +120,30 @@ export function HostedWorkspaceJourney() {
         <p className="mt-2 text-sm">{view.description}</p>
         <div className="mt-4">
           {view.action?.kind === "request" && (
-            <form onSubmit={onRequest} className="space-y-3">
-              <input required value={form.expected_login} onChange={(e) => setForm({ ...form, expected_login: e.target.value })}
-                     placeholder="Broker account number" className="w-full rounded border px-3 py-2 text-sm" />
-              <input value={form.expected_server} onChange={(e) => setForm({ ...form, expected_server: e.target.value })}
-                     placeholder="Broker server (optional)" className="w-full rounded border px-3 py-2 text-sm" />
-              <input value={form.broker_name} onChange={(e) => setForm({ ...form, broker_name: e.target.value })}
-                     placeholder="Broker name (optional)" className="w-full rounded border px-3 py-2 text-sm" />
-              <button type="submit" disabled={busy || !form.expected_login.trim()}
-                      className="w-full rounded bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-50">
-                {busy ? "Requesting…" : view.action.label}
-              </button>
-              <p className="text-xs text-gray-400">We only need your broker account details — never your password.</p>
-            </form>
+            <button onClick={onRequest} disabled={busy}
+                    className="w-full rounded bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-50">
+              {busy ? "Requesting…" : view.action.label}
+            </button>
           )}
           {view.action?.kind === "launch" && (
-            <Link href="/trading/terminal-access"
-                  className={`inline-block rounded px-4 py-2 text-sm text-white ${view.canLaunch ? "bg-gray-900" : "bg-gray-400 pointer-events-none"}`}>
-              {view.canLaunch ? view.action.label : "Preparing your terminal…"}
-            </Link>
+            <div className="space-y-4">
+              {/* Deferred bind: the customer declares their broker account here, then opens MT5 to log in. */}
+              <form onSubmit={onBind} className="space-y-3">
+                <input required value={form.expected_login} onChange={(e) => setForm({ ...form, expected_login: e.target.value })}
+                       placeholder="Broker account number" className="w-full rounded border px-3 py-2 text-sm" />
+                <input value={form.expected_server} onChange={(e) => setForm({ ...form, expected_server: e.target.value })}
+                       placeholder="Broker server" className="w-full rounded border px-3 py-2 text-sm" />
+                <button type="submit" disabled={busy || !form.expected_login.trim()}
+                        className="w-full rounded bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-50">
+                  {busy ? "Saving…" : "Save my broker details"}
+                </button>
+                <p className="text-xs text-gray-400">We only need your broker account number and server — never your password.</p>
+              </form>
+              <Link href="/trading/terminal-access"
+                    className={`inline-block rounded px-4 py-2 text-sm text-white ${view.canLaunch ? "bg-gray-900" : "bg-gray-400 pointer-events-none"}`}>
+                {view.canLaunch ? view.action.label : "Preparing your terminal…"}
+              </Link>
+            </div>
           )}
           {view.action?.kind === "confirm" && (
             <button onClick={onConfirm} disabled={busy} className="rounded bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-50">
