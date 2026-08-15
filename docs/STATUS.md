@@ -14,6 +14,25 @@
 
 ## Execution workstream log
 
+- **2026-08-16 — CLOSED-BETA UX POLISH deployed to prod (FRONTEND-ONLY, DARK). 🟢 make check green; Customer
+  Zero byte-identical (Golden BEFORE == AFTER).** Sponsor-approved Packets 4–7 UX bundle — hosted-consistent
+  journey copy ("Open MetaTrader" / "Log in to your account"), marketplace always presents one next action,
+  context-aware `/accounts` (read-only Hosted Workspace status vs traditional broker form; never mixed),
+  actionable Contact-support (mailto), Wayond "When enabled…" wording — committed `b4f2683` and
+  fast-forward-merged to `main` over `90f5451`. Deployed via the proven pipeline, **frontend container only**:
+  rsync `frontend/` → `docker build -t guvfx-prod-guvfx-frontend ./frontend` (DARK: `GIT_COMMIT=b4f2683`, and
+  **no** `NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED` / `NEXT_PUBLIC_OPERATIONS_ENABLED`) →
+  `docker compose up -d --force-recreate guvfx-frontend`. Rollback image
+  `guvfx-prod-guvfx-frontend:rollback-0dc5e8b` retained. **Verified:** `/build-info.json` gitCommit `b4f2683`,
+  both public flags `false` (DARK preserved, identical to prior prod `0dc5e8b`); all key routes 200 (internal
+  :3000 + Traefik TLS); zero console/frontend-log errors; live login renders. **Golden STOP-check
+  byte-identical** (`STRUCTURAL_SHA256=1b86b8eb…c2ae4`; CZ acct#1 trades 523→523; asn#7 wayond / asn#8
+  ti_signals both `AUTO_SHADOW`/`LIVE` on acct 1; ExecutionControl kill=false/`DEMO`/auto=true; hosted_ws
+  `NOT_PROVISIONED`; ej 36083 SUCCESS / 848 FAILED, 0 open). No backend / provisioning / execution / hosted-
+  executor / feature-flag / scheduler change; `support@guvfx.com` absent; `total_users=4`,
+  `total_trading_accounts=2` unchanged (no customer state created). **STOP** — next phase: Nuno's Acceptance
+  Journey #2 from REGISTER (Beta Operations Director mode).
+
 - **2026-08-14 — ADR-0046 PRODUCTION-PREMISE CORRECTION (Customer Zero is Provider-B). 🟢 focused 21 green.**
   The first DARK deploy of the order-transport seam (`3073642`) was **rolled back** (prod restored
   byte-identical: CZ trades 523, column dropped, migration `[X]0029`, git `2543530`; **zero CZ impact** —
