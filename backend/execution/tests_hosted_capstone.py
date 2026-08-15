@@ -285,8 +285,10 @@ class FailClosedBranchTests(TestCase):
         # Armed + node-bound + agree, but the account carries no bound login → the route cannot be safely
         # pinned → ER_BINDING_MISMATCH (fail closed rather than route an unpinnable order).
         acct = _account(login="700900")
-        acct.account_number = ""            # no bound broker login
-        acct.save(update_fields=["account_number"])
+        # Precondition: a hosted account with no bound broker login (the deferred-bind pre-declaration state).
+        # Set it via a bulk update — Model.save() is now write-once for a bound hosted identity, and that guard
+        # is not the unit under test here (resolve_hosted_route's empty-login fail-closed branch is).
+        TradingAccount.objects.filter(pk=acct.pk).update(account_number="")
         r = HR.resolve_hosted_route(TradingAccount.objects.get(pk=acct.pk))
         self.assertFalse(r.ok)
         self.assertEqual(r.reason_code, HR.ER_BINDING_MISMATCH)

@@ -80,6 +80,33 @@ class TradingAccountSerializer(serializers.ModelSerializer):
             err = classification_error(is_demo, broker_server)
             if err:
                 raise serializers.ValidationError({"is_demo": err})
+
+        # Beta UX Correction part C — a hosted (Provider-B) account's broker identity is WRITE-ONCE. Once bound,
+        # account_number / broker_server cannot be changed through the generic account API (the authoritative
+        # model-layer guard in TradingAccount.save enforces this too; rejecting here returns a clean 400 rather
+        # than a 500 and keeps the identity solely under the dedicated bind_broker_identity seam). This closes
+        # the re-pin path that would otherwise let an owner silently re-point a confirmed hosted workspace at a
+        # different broker account and defeat account-switch detection. Legacy / Provider-A accounts unaffected.
+        inst = self.instance
+        if inst is not None:
+            from execution.readiness import PERSISTENT_WORKSPACE
+            cur_login = str(getattr(inst, "account_number", "") or "").strip()
+            if str(getattr(inst, "readiness_provider", "")) == PERSISTENT_WORKSPACE:
+                # Hosted (Provider-B) identity AND classification are managed SOLELY by the dedicated
+                # bind_broker_identity seam (demo-only + pre-connected + audited) — INCLUDING the deferred
+                # pre-bind window (cur_login == ''). The generic account API must never FIRST-BIND or change
+                # them, or an owner could self-authorise an arbitrary/live identity here, skipping the seam's
+                # BIND_LIVE_FORBIDDEN / BIND_WRONG_STATE checks and the identity-bound audit + telemetry. The
+                # bind seam writes the model directly (not via this serializer), so it is unaffected.
+                if "account_number" in attrs and str(attrs.get("account_number") or "").strip() != cur_login:
+                    raise serializers.ValidationError(
+                        {"account_number": "Hosted broker identity is managed via the workspace bind step and cannot be set here."})
+                if "broker_server" in attrs and attrs.get("broker_server") != inst.broker_server:
+                    raise serializers.ValidationError(
+                        {"broker_server": "Hosted broker identity is managed via the workspace bind step and cannot be set here."})
+                if "is_demo" in attrs and bool(attrs.get("is_demo")) != bool(getattr(inst, "is_demo", False)):
+                    raise serializers.ValidationError(
+                        {"is_demo": "Hosted account classification is managed via the workspace bind step and cannot be changed here."})
         return attrs
 
     def create(self, validated_data):

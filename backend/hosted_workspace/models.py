@@ -280,3 +280,28 @@ class WorkspaceTransition(models.Model):
     def __str__(self):
         return (f"WorkspaceTransition(ws={self.workspace_id}, {self.from_state}->{self.to_state}, "
                 f"obs={self.observation_version}, dec={self.decision_version})")
+
+
+class ProvisioningStageTiming(models.Model):
+    """Beta UX Correction (Sponsor 2026-08-15) — append-only per-stage timing of a hosted-workspace provisioning
+    run, so the FIRST real run's total + per-stage durations can be measured (to decide the provisioning-page UX)
+    WITHOUT perturbing the certified single state writer or the operational-event stream. One row per COMPLETED
+    stage (unique per workspace+stage: first completion wins, so a retried cycle never double-counts). Carries NO
+    credential — only a stable stage label + the completion time. Recorded fail-open (a timing write never blocks
+    provisioning)."""
+    workspace = models.ForeignKey(
+        HostedMt5Workspace, on_delete=models.CASCADE, related_name="stage_timings")
+    stage = models.CharField(max_length=48)   # request_received / node_allocated / ST_* / waiting_for_login
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["workspace_id", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["workspace", "stage"], name="uniq_ws_stage_timing"),
+        ]
+        indexes = [
+            models.Index(fields=["workspace", "recorded_at"], name="hostedws_timing_ws_idx"),
+        ]
+
+    def __str__(self):
+        return f"ProvisioningStageTiming(ws={self.workspace_id}, {self.stage}@{self.recorded_at})"

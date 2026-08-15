@@ -17,15 +17,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from hosted_workspace.entitlement import hosted_workspace_admission
+from hosted_workspace.flags import hosted_deferred_identity_bind_enabled
 from hosted_workspace.models import HostedMt5Workspace
+from hosted_workspace.provisioning_timing import (
+    STAGE_NODE_ALLOCATED,
+    STAGE_REQUEST_RECEIVED,
+    STAGE_WAITING_FOR_LOGIN,
+    record_stage_timing,
+)
 from hosted_workspace.state_machine import WorkspaceLifecycleState as S
 from hosted_workspace.telemetry import WorkspaceEvent, emit_workspace_event
 
 # Stable, secret-free reason codes (in addition to the admission codes in entitlement.py).
 REQ_LOGIN_REQUIRED = "expected_login_required"
+REQ_IDENTITY_INVALID = "expected_identity_invalid"   # login/server too long or otherwise unstorable → clean 400
 REQ_PASSWORD_FORBIDDEN = "broker_password_forbidden"
 REQ_CREATED = "created"
 REQ_EXISTS = "exists"
@@ -38,6 +46,21 @@ CONFIRM_NOT_OWNER = "not_owner"
 CONFIRM_NO_MATCH = "no_discovered_match"
 CONFIRM_OK = "confirmed"
 CONFIRM_ALREADY = "already_confirmed"
+# Deferred broker-identity binding (Beta UX Correction, Sponsor 2026-08-15).
+BIND_OK = "bound"
+BIND_IDEMPOTENT = "already_bound_identical"
+BIND_NOT_OWNER = "not_owner"
+BIND_LOGIN_REQUIRED = "expected_login_required"
+BIND_NOT_HOSTED = "not_hosted_workspace"
+BIND_LIVE_FORBIDDEN = "live_identity_forbidden"          # Closed Beta is DEMO-only
+BIND_WRONG_STATE = "identity_bind_not_allowed_in_state"
+BIND_ALREADY = "identity_already_bound"                  # write-once: a DIFFERENT second bind fails closed
+BIND_IDENTITY_INVALID = "expected_identity_invalid"      # too long / duplicate / unstorable → clean 400, not 500
+
+# Field length ceilings (mirror TradingAccount.account_number / BrokerServer.server_name) — validated BEFORE the
+# DB write so an over-long identifier is a clean 4xx, never an uncaught Postgres DataError (HTTP 500).
+_MAX_LOGIN_LEN = 64
+_MAX_SERVER_LEN = 160
 
 
 @dataclass(frozen=True)
@@ -57,6 +80,12 @@ class AllocResult:
 
 @dataclass(frozen=True)
 class ConfirmResult:
+    ok: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class BindResult:
     ok: bool
     reason: str
 
@@ -104,8 +133,15 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
     if not ok:
         return RequestResult(False, reason)
     login = str(expected_login or "").strip()
-    if not login:
+    # DEFERRED IDENTITY BIND (Beta UX Correction): when the flag is ON the customer may request the workspace
+    # WITHOUT declaring a broker login/server up front — the intent account is created with an empty identity
+    # and provisioning stays broker-identity agnostic; the identity is declared later via bind_broker_identity.
+    # While the flag is OFF this is byte-identical to before (a login is mandatory at request).
+    if not login and not hosted_deferred_identity_bind_enabled():
         return RequestResult(False, REQ_LOGIN_REQUIRED)
+    # Bound-length validation BEFORE the DB write so an over-long identifier is a clean 400, not a 500.
+    if len(login) > _MAX_LOGIN_LEN or len(str(expected_server or "").strip()) > _MAX_SERVER_LEN:
+        return RequestResult(False, REQ_IDENTITY_INVALID)
 
     from django.contrib.auth import get_user_model
     from execution.readiness import PERSISTENT_WORKSPACE
@@ -139,6 +175,7 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
                          summary="hosted workspace requested",
                          detail={"expected_login_masked": _mask(login), "expected_server": srv_name},
                          source="hosted_workspace.onboarding")
+    record_stage_timing(workspace, STAGE_REQUEST_RECEIVED)   # UX timing (fail-open)
     return RequestResult(True, REQ_CREATED, workspace, True)
 
 
@@ -220,6 +257,9 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
             assign_delivery_node(ws, candidate)   # delivery host = same node (explicit 2nd authority, not a fallback)
             hostname, reason = candidate.hostname, ALLOC_OK
 
+    if reason == ALLOC_OK:
+        record_stage_timing(workspace, STAGE_NODE_ALLOCATED)   # UX timing (fail-open); only on a NEW bind
+
     if needs_advance:
         # Stream 4 GATE: when the host-provisioning engine is armed, advance PROVISIONING → WAITING_FOR_LOGIN
         # ONLY once the customer's Windows slot actually exists on the host (identity+folders+ACL+runtime+RDP+
@@ -234,6 +274,7 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
             if not prep.prepared:
                 return AllocResult(False, prep.reason, hostname)
         _advance_to_awaiting_login(workspace)
+        record_stage_timing(workspace, STAGE_WAITING_FOR_LOGIN)   # UX timing (fail-open)
     return AllocResult(True, reason, hostname)
 
 
@@ -298,6 +339,70 @@ def confirm_broker_account(user, workspace, *, actor="", request=None) -> Confir
                          summary="broker account confirmed by customer",
                          source="hosted_workspace.onboarding")
     return ConfirmResult(True, CONFIRM_OK)
+
+
+def bind_broker_identity(user, workspace, *, expected_login, expected_server="", actor="", request=None) -> BindResult:
+    """DEFERRED IDENTITY BIND (Beta UX Correction, Sponsor 2026-08-15). Declare the customer's expected broker
+    identity (login + server) AFTER the workspace is provisioned, from the trusted customer/API call arguments —
+    the authoritative, EXTERNAL declaration that every later gate compares the OBSERVED login against. Owner-
+    scoped (IDOR-safe); Provider-B hosted + DEMO only; allowed only while the identity is UNBOUND and the
+    workspace is still pre-connected (PROVISIONING / WAITING_FOR_LOGIN). WRITE-ONCE: an identical re-declaration
+    is idempotent; a DIFFERENT second bind fails closed (never overwrites). NEVER accepts a password, and NEVER
+    derives the expected identity from an observation (tenant-forgeable pre-cert, ADR-0041) — the observation
+    stays CONFIRMATION evidence only. Arms nothing and advances no state; it only writes the two durable identity
+    fields (``account_number`` / ``broker_server``) that the order-time pin and account-match already read, so
+    the pin is unchanged — only the MOMENT the identity becomes non-empty moves from request to here. An unbound
+    account has an empty expected identity, so no order can flow (account_match False → holds at WAITING_FOR_LOGIN,
+    never is_active, never armed; and the bridge fails closed ``identity_pin_required``)."""
+    login = str(expected_login or "").strip()
+    server_name = str(expected_server or "").strip()
+    if not login:
+        return BindResult(False, BIND_LOGIN_REQUIRED)
+    # Bound-length validation BEFORE the DB write so an over-long identifier is a clean 400, not a 500.
+    if len(login) > _MAX_LOGIN_LEN or len(server_name) > _MAX_SERVER_LEN:
+        return BindResult(False, BIND_IDENTITY_INVALID)
+
+    from execution.readiness import PERSISTENT_WORKSPACE
+    from trading.models import BrokerServer
+
+    with transaction.atomic():
+        # NB: only select_related the REQUIRED trading_account FK — NOT the nullable broker_server (Postgres
+        # cannot apply FOR UPDATE to the nullable side of an outer join). broker_server lazy-loads below.
+        ws = (HostedMt5Workspace.objects.select_for_update()
+              .select_related("trading_account").get(pk=workspace.pk))
+        acct = ws.trading_account
+        if acct.user_id != getattr(user, "pk", None):
+            return BindResult(False, BIND_NOT_OWNER)          # owner-scoped (trading_account.user), IDOR-safe
+        if str(getattr(acct, "readiness_provider", "")) != PERSISTENT_WORKSPACE:
+            return BindResult(False, BIND_NOT_HOSTED)         # Provider-B hosted accounts only
+        if acct.is_demo is not True:
+            return BindResult(False, BIND_LIVE_FORBIDDEN)     # Closed Beta is DEMO-only; never self-authorize live
+        if str(ws.canonical_state) not in (S.PROVISIONING, S.WAITING_FOR_LOGIN):
+            return BindResult(False, BIND_WRONG_STATE)        # only before the workspace connects
+        prior_login = str(acct.account_number or "").strip()
+        if prior_login:
+            # WRITE-ONCE. Idempotent iff the SAME (login, server) is re-declared; any difference fails closed.
+            prior_server = str(getattr(acct.broker_server, "server_name", "") or "").strip()
+            if prior_login == login and prior_server == server_name:
+                return BindResult(True, BIND_IDEMPOTENT)
+            return BindResult(False, BIND_ALREADY)
+        server = None
+        if server_name:
+            server, _ = BrokerServer.objects.get_or_create(server_name=server_name)
+        acct.account_number = login
+        acct.broker_server = server
+        try:
+            with transaction.atomic():   # nested savepoint: a duplicate-identity collision is a clean 4xx, not a 500
+                acct.save(update_fields=["account_number", "broker_server"])
+        except IntegrityError:
+            return BindResult(False, BIND_IDENTITY_INVALID)
+
+    _audit(request, "HOSTED_WORKSPACE_IDENTITY_BOUND", acct, actor)
+    emit_workspace_event(WorkspaceEvent.IDENTITY_BOUND, workspace_uuid=ws.workspace_uuid, account=acct,
+                         summary="broker identity declared by customer",
+                         detail={"expected_login_masked": _mask(login), "expected_server": server_name},
+                         source="hosted_workspace.onboarding")
+    return BindResult(True, BIND_OK)
 
 
 def _audit(request, event_type, account, actor) -> None:

@@ -165,6 +165,38 @@ def supervised_single_tenant_beta_enabled() -> bool:
     return _flag("SUPERVISED_SINGLE_TENANT_BETA_ENABLED")
 
 
+def hosted_deferred_identity_bind_enabled() -> bool:
+    """Beta UX Correction (Sponsor 2026-08-15) — the gate for DEFERRED broker-identity binding. DEFAULT OFF.
+
+    While OFF, ``request_hosted_workspace`` keeps requiring ``expected_login`` up front and the write-once
+    identity guard is inert — every path is byte-identical to the pre-change behaviour. While ON, the customer
+    may request a Hosted Workspace WITHOUT a broker login/server, the runtime materialises (already broker-
+    identity agnostic — it derives everything from ``account_id``) and reaches ``WAITING_FOR_LOGIN`` with the
+    broker identity still UNBOUND, and the identity is later set exactly once through the explicit, owner-scoped
+    ``provisioning.bind_broker_identity`` seam (an EXTERNAL declaration from the trusted customer/API — NEVER
+    copied from the forgeable observation). It NEVER relaxes the order-time identity pin: an unbound account has
+    an empty expected identity, so ``account_match`` is False (workspace holds at WAITING_FOR_LOGIN, account
+    stays ``is_active=False``, no ExecutionJob) and the bridge fails closed ``identity_pin_required`` — no order
+    can flow before the identity is bound AND the live login matches it. Independent of every execution gate."""
+    return _flag("HOSTED_DEFERRED_IDENTITY_BIND_ENABLED")
+
+
+def closed_beta_open_access_enabled() -> bool:
+    """Beta UX Correction (Sponsor 2026-08-15) — the GLOBAL Closed-Beta open-access gate. DEFAULT OFF.
+
+    The Closed Beta is controlled OPERATIONALLY by who is given access, NOT by an application-level per-email
+    allowlist. While OFF, Hosted Workspace access requires the pre-existing per-user sources (a commercial
+    entitlement OR a ``BetaTester`` admission row) — byte-identical to before. While ON, ANY authenticated user
+    gains the Hosted Workspace CAPABILITY and Wayond arm authorization WITHOUT a prior ``admit_beta_tester`` /
+    ``BetaTester`` / ``INTERNAL_PILOT_ARM_APPROVED_EMAILS`` entry — so a fresh unknown Closed-Beta registrant can
+    complete the journey. This is an ACCESS/VISIBILITY + arm-cohort gate ONLY: it grants NO order authority
+    (the live order-time bridge gate stays authoritative), it does NOT relax capacity limits, tenant/node
+    isolation, DEMO-only, AUTO_LIVE-off, or the supervised posture, and — load-bearing — it NEVER re-authorizes
+    Customer Zero: the CZ-owner exclusion in ``_admitted_beta_arm_authorized`` is applied on top of this gate,
+    so a user who owns a reserved Customer-Zero account is still never arm-authorized."""
+    return _flag("CLOSED_BETA_OPEN_ACCESS_ENABLED")
+
+
 def hosted_tenant_node_isolation_enabled() -> bool:
     """ADR-0043 Addendum B — host-level CO-RESIDENCY guard (DARK, default OFF). When on, the node allocator
     (``provisioning.allocate_workspace_node``) and the execution-node single writer

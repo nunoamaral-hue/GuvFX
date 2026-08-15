@@ -190,20 +190,29 @@ export async function fetchJourney(): Promise<JourneyLoad> {
   }
 }
 
-export interface RequestWorkspaceInput {
-  expected_login: string;
-  expected_server?: string;
-  broker_name?: string;
+export async function requestWorkspace(): Promise<HostedJourney> {
+  // DEFERRED IDENTITY BIND (Beta UX Correction): request the workspace with NO broker details at all — the
+  // customer declares their broker login/server LATER, at the "connect your broker" step, once the workspace
+  // has been provisioned. We collect nothing here (and never a password).
+  return apiFetch<HostedJourney>(`${BASE}/onboarding/request/`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
-export async function requestWorkspace(input: RequestWorkspaceInput): Promise<HostedJourney> {
-  // NEVER send a password — the backend also refuses one, but we don't even collect it.
-  return apiFetch<HostedJourney>(`${BASE}/onboarding/request/`, {
+export interface BindIdentityInput {
+  expected_login: string;
+  expected_server?: string;
+}
+
+export async function bindExpectedAccount(input: BindIdentityInput): Promise<HostedJourney> {
+  // Declare the EXPECTED broker identity (login + server) for the already-provisioned workspace. WRITE-ONCE,
+  // owner-scoped; the server verifies the live login against it. NEVER send a password.
+  return apiFetch<HostedJourney>(`${BASE}/onboarding/bind/`, {
     method: "POST",
     body: JSON.stringify({
       expected_login: input.expected_login.trim(),
       expected_server: (input.expected_server || "").trim(),
-      broker_name: (input.broker_name || "").trim(),
     }),
   });
 }

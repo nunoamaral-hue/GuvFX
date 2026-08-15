@@ -134,6 +134,9 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     from terminal_provisioning.models import AccountProvisioning
 
     from hosted_workspace.models import HostedMt5Workspace
+    from hosted_workspace.provisioning_timing import (
+        STAGE_ACL_COMPLETE, STAGE_IDENTITY_CREATED, STAGE_REMOTEAPP_PUBLISHED,
+        STAGE_RUNTIME_MATERIALISED, record_stage_timing)
     from hosted_workspace.workspace_acl import AclError, build_workspace_acl_plan, verify_workspace_acl
 
     ws = (HostedMt5Workspace.objects.select_related("trading_account").get(pk=workspace.pk))
@@ -189,6 +192,7 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
         return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_MATERIALISE)
     if not _ok(res):
         return SlotPreparationResult(False, PREP_IDENTITY_FAILED, ST_MATERIALISE)
+    record_stage_timing(ws, STAGE_IDENTITY_CREATED)   # UX timing (fail-open)
 
     # ---- Stage 3: per-user NTFS ACL (G5) — apply then SID-typed read-back verify; roll back on mismatch ----
     try:
@@ -210,6 +214,7 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
         _call("rollback_workspace_acl", ST_ACL, plan, rdp_host=rdp_host, required=False)
         logger.warning("hosted slot prep: ACL verify failed (%s) for account=%s", verdict.reason, account_id)
         return SlotPreparationResult(False, PREP_ACL_FAILED, ST_ACL, detail={"acl_reason": verdict.reason})
+    record_stage_timing(ws, STAGE_ACL_COMPLETE)   # UX timing (fail-open)
 
     # ---- Stage 4: mark PROVISIONED — ONLY after identity + ACL host read-back proofs (not operator word) ---
     with transaction.atomic():
@@ -221,6 +226,7 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
         return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_POPULATE)
     if not _ok(res):
         return SlotPreparationResult(False, PREP_POPULATE_FAILED, ST_POPULATE)
+    record_stage_timing(ws, STAGE_RUNTIME_MATERIALISED)   # UX timing (fail-open)
 
     # ---- Stage 5b: AutoTrading CAPABILITY config — write [Experts] AllowLiveTrading=1 Enabled=1 into the
     #      runtime's common.ini (the empirically certified minimum). This is CAPABILITY ONLY: it authorises no
@@ -254,6 +260,7 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
         return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_REMOTEAPP)
     if not _ok(res):
         return SlotPreparationResult(False, PREP_REMOTEAPP_FAILED, ST_REMOTEAPP)
+    record_stage_timing(ws, STAGE_REMOTEAPP_PUBLISHED)   # UX timing (fail-open)
 
     # ---- Stage 9: AppLocker PREPARATION (AuditOnly) — NEVER -Enforce here. DEFERRED / non-blocking: the current
     #      policy model REPLACES the machine-wide policy (no -Merge), so running it on a host that carries an

@@ -454,6 +454,21 @@ def _admitted_beta_arm_authorized(user) -> bool:
         return False
 
 
+def _owner_is_customer_zero(user) -> bool:
+    """True iff *user* owns a reserved Customer-Zero account — the SAME canonical definition used by
+    ``_admitted_beta_arm_authorized`` (``tenant_isolation.customer_zero_account_ids`` == ``applocker_policy.
+    RESERVED_CUSTOMER_ZERO``, security RULE 6 — one identity, never diverges). FAIL-CLOSED: any error or
+    ambiguity ⇒ True (treat as Customer Zero and DENY), so the Closed-Beta open-access arm branch can never
+    re-authorize a Customer-Zero owner onto the self-serve arm path."""
+    try:
+        from hosted_workspace.tenant_isolation import customer_zero_account_ids
+        from trading.models import TradingAccount
+        cz = customer_zero_account_ids()
+        return bool(cz and TradingAccount.objects.filter(user=user, pk__in=cz).exists())
+    except Exception:  # noqa: BLE001 — unknown ⇒ fail closed (treat as Customer Zero, deny)
+        return True
+
+
 def _arm_cohort_approved(user) -> bool:
     """CONTAINMENT (Sponsor 2026-08-05) — fail-closed internal-pilot ARM approval.
 
@@ -485,6 +500,16 @@ def _arm_cohort_approved(user) -> bool:
     if email in approved:
         return True
     if _beta_admission_arm_enabled() and _admitted_beta_arm_authorized(user):
+        return True
+    # 3. (Beta UX Correction, Sponsor 2026-08-15, DEFAULT OFF) GLOBAL Closed-Beta open access: while the flag is
+    # on, ANY authenticated non-Customer-Zero identity is arm-authorized WITHOUT a per-email allowlist entry or a
+    # BetaTester admission — the Closed Beta is controlled operationally by who is given access. DEFAULT OFF ⇒
+    # byte-identical to the pre-existing gate. The CZ-owner exclusion is re-applied here (fail-closed) so a user
+    # who owns a reserved Customer-Zero account is STILL never arm-approved. The global BETA_SELF_SERVE_ARM_ENABLED
+    # gate (the caller) and every downstream containment (demo+active, credentials, broker-health, single-tenant
+    # router) remain enforced on top; this grants NO order authority.
+    from hosted_workspace.flags import closed_beta_open_access_enabled
+    if closed_beta_open_access_enabled() and not _owner_is_customer_zero(user):
         return True
     return False
 

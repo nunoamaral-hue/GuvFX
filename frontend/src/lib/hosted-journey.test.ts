@@ -4,7 +4,7 @@ const apiMock = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock("@/lib/api", () => apiMock);
 
 import {
-  describeJourney, fetchJourney, requestWorkspace, confirmAccount, STEPS,
+  describeJourney, fetchJourney, requestWorkspace, bindExpectedAccount, confirmAccount, STEPS,
   type HostedJourney, type JourneyPhase, type NextAction,
 } from "@/lib/hosted-journey";
 
@@ -112,12 +112,23 @@ describe("journey API wrappers", () => {
     await expect(fetchJourney()).rejects.toThrow();
   });
 
-  it("requestWorkspace sends only broker identifiers (never a password)", async () => {
+  it("requestWorkspace posts NO broker identity (deferred bind) and never a password", async () => {
     apiMock.apiFetch.mockResolvedValue(journey());
-    await requestWorkspace({ expected_login: " 700900 ", expected_server: "IS6-Demo", broker_name: "IS6" });
-    const [, opts] = apiMock.apiFetch.mock.calls[0];
+    await requestWorkspace();
+    const [path, opts] = apiMock.apiFetch.mock.calls[0];
+    expect(path).toContain("/onboarding/request/");
     const body = JSON.parse((opts as RequestInit).body as string);
-    expect(body).toEqual({ expected_login: "700900", expected_server: "IS6-Demo", broker_name: "IS6" });
+    expect(body).toEqual({});
+    expect(JSON.stringify(body).toLowerCase()).not.toContain("password");
+  });
+
+  it("bindExpectedAccount posts trimmed login/server to /onboarding/bind/ (never a password)", async () => {
+    apiMock.apiFetch.mockResolvedValue(journey());
+    await bindExpectedAccount({ expected_login: " 700900 ", expected_server: " IS6-Demo " });
+    const [path, opts] = apiMock.apiFetch.mock.calls[0];
+    expect(path).toContain("/onboarding/bind/");
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(body).toEqual({ expected_login: "700900", expected_server: "IS6-Demo" });
     expect(JSON.stringify(body).toLowerCase()).not.toContain("password");
   });
 

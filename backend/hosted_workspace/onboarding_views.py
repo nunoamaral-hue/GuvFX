@@ -4,6 +4,7 @@ Three owner-scoped endpoints that let an ENTITLED customer drive their own Hoste
 
     GET  /api/hosted-workspace/onboarding/journey/   → the customer's journey projection + next action
     POST /api/hosted-workspace/onboarding/request/   → request a workspace (idempotent; broker IDENTIFIERS only)
+    POST /api/hosted-workspace/onboarding/bind/       → declare the expected broker identity (deferred bind; write-once)
     POST /api/hosted-workspace/onboarding/confirm/    → confirm the discovered broker account is theirs
 
 Every route is 404-invisible while the subsystem is DARK (either the master flag or the onboarding flag OFF)
@@ -132,9 +133,9 @@ class OnboardingRequestView(_OnboardingBase):
             broker_name=str(data.get("broker_name", "") or ""),
             is_demo=True, request=request)
         if not res.ok:
-            if res.reason == P.REQ_LOGIN_REQUIRED:
-                return Response({"detail": "expected_login is required.", "reason": res.reason},
-                                status=http.HTTP_400_BAD_REQUEST)
+            if res.reason in (P.REQ_LOGIN_REQUIRED, P.REQ_IDENTITY_INVALID):
+                return Response({"detail": "The broker account number / server is missing or invalid.",
+                                 "reason": res.reason}, status=http.HTTP_400_BAD_REQUEST)
             status = _ADMISSION_HTTP.get(res.reason, http.HTTP_403_FORBIDDEN)
             if status == http.HTTP_404_NOT_FOUND:
                 return _NOT_FOUND
@@ -166,6 +167,44 @@ class OnboardingConfirmView(_OnboardingBase):
                 return _NOT_FOUND                                  # owner-scoped resolve makes this unreachable
             # CONFIRM_NO_MATCH — connected/matched not yet observed: a conflict with current state.
             return Response({"detail": "This account cannot be confirmed yet.", "reason": res.reason},
+                            status=http.HTTP_409_CONFLICT)
+        ws.refresh_from_db()
+        body = {"status": res.reason, **_projection(request.user, ws, ws.trading_account)}
+        return Response(body, status=http.HTTP_200_OK)
+
+
+class OnboardingBindView(_OnboardingBase):
+    """POST to DECLARE the customer's expected broker identity (login + server) for their already-provisioned
+    workspace — the deferred-bind step (Beta UX Correction). Body: ``expected_login`` (required),
+    ``expected_server`` (optional). Owner-scoped; WRITE-ONCE (an identical re-declaration is idempotent, a
+    different second bind conflicts); rejects any password-bearing field. Sets no password, arms nothing,
+    advances no state — it only records the identity every later gate matches the observed login against."""
+
+    def post(self, request):
+        dark = self._dark()
+        if dark is not None:
+            return dark
+        data = request.data if isinstance(request.data, dict) else {}
+        # Defence in depth — the orchestrator has no password parameter; reject a secret-bearing body outright.
+        if _body_has_secret(data):
+            return Response({"detail": "A broker password must never be submitted.",
+                             "reason": P.REQ_PASSWORD_FORBIDDEN}, status=http.HTTP_400_BAD_REQUEST)
+        ws = _own_workspace(request.user)
+        if ws is None:
+            return _NOT_FOUND                                      # no workspace to bind against
+        res = P.bind_broker_identity(
+            request.user, ws,
+            expected_login=str(data.get("expected_login", "") or ""),
+            expected_server=str(data.get("expected_server", "") or ""),
+            request=request)
+        if not res.ok:
+            if res.reason in (P.BIND_LOGIN_REQUIRED, P.BIND_IDENTITY_INVALID):
+                return Response({"detail": "The broker account number / server is missing or invalid.",
+                                 "reason": res.reason}, status=http.HTTP_400_BAD_REQUEST)
+            if res.reason == P.BIND_NOT_OWNER:
+                return _NOT_FOUND                                  # owner-scoped resolve makes this unreachable
+            # BIND_ALREADY / BIND_NOT_HOSTED / BIND_LIVE_FORBIDDEN / BIND_WRONG_STATE — conflict with current state.
+            return Response({"detail": "This broker identity cannot be bound.", "reason": res.reason},
                             status=http.HTTP_409_CONFLICT)
         ws.refresh_from_db()
         body = {"status": res.reason, **_projection(request.user, ws, ws.trading_account)}

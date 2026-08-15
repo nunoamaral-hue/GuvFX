@@ -10,6 +10,7 @@ from hosted_workspace.delivery_views import (
     HostedWorkspaceDeliveryStateView,
 )
 from hosted_workspace.onboarding_views import (
+    OnboardingBindView,
     OnboardingConfirmView,
     OnboardingJourneyView,
     OnboardingOpsView,
@@ -28,6 +29,7 @@ urlpatterns = [
     # ADR-0034 Onboarding — DARK customer journey API (404-invisible unless master + onboarding flags ON).
     path("onboarding/journey/", OnboardingJourneyView.as_view(), name="onboarding-journey"),
     path("onboarding/request/", OnboardingRequestView.as_view(), name="onboarding-request"),
+    path("onboarding/bind/", OnboardingBindView.as_view(), name="onboarding-bind"),
     path("onboarding/confirm/", OnboardingConfirmView.as_view(), name="onboarding-confirm"),
     path("onboarding/ops/", OnboardingOpsView.as_view(), name="onboarding-ops"),
 ]
