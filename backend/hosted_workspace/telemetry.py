@@ -42,6 +42,9 @@ class WorkspaceEvent(models.TextChoices):
     REMOTEAPP_DISCONNECTED = "workspace.remoteapp_disconnected", "RemoteApp disconnected"
     CRASHED = "workspace.crashed", "Workspace crashed"
     RESTARTED = "workspace.restarted", "Workspace restarted"
+    # FINAL Closed-Beta stream — autonomous per-node order-bridge activation (materialise pipeline).
+    ORDER_BRIDGE_ACTIVATED = "workspace.order_bridge_activated", "Order bridge activated"
+    ORDER_BRIDGE_ACTIVATION_FAILED = "workspace.order_bridge_activation_failed", "Order bridge activation failed"
 
 
 # event -> (category, severity, canonical state it corresponds to | None). The state links each event to the
@@ -73,6 +76,9 @@ EVENT_META = {
     WorkspaceEvent.REMOTEAPP_DISCONNECTED: (OE.Category.CONNECTIVITY, OE.Severity.INFO, None),
     WorkspaceEvent.CRASHED: (OE.Category.RUNTIME, OE.Severity.CRITICAL, None),
     WorkspaceEvent.RESTARTED: (OE.Category.RUNTIME, OE.Severity.WARNING, None),
+    # Order-bridge activation is a supervision/edge fact of the EXECUTION plane, not itself a lifecycle state.
+    WorkspaceEvent.ORDER_BRIDGE_ACTIVATED: (OE.Category.EXECUTION, OE.Severity.INFO, None),
+    WorkspaceEvent.ORDER_BRIDGE_ACTIVATION_FAILED: (OE.Category.EXECUTION, OE.Severity.ERROR, None),
 }
 
 # Keys dropped entirely from any event detail (never telemetered), plus `login` which is masked.

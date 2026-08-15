@@ -100,6 +100,12 @@ CONTRACT = {
         argmap={"username": "-HostedUser", "account_id": "-AccountId"}, fixed={"-Mode": "Remove"}),
     # No reviewed read-only slot-verify .ps1 exists yet; VERIFY_SLOT fails closed rather than pretend success.
     "verify_slot": PrimitiveSpec(script=None),
+    # FINAL Closed-Beta stream: activate THIS node's dedicated pin-enforcing order bridge. Reviewed .ps1 takes
+    # -TerminalRoot + injected -AccountId (both server-derived); it REFUSES account 1, writes the node2 env,
+    # registers+starts the bridge + a port-specific watchdog, and health-checks :8789. Emits a JSON verdict.
+    "activate_order_bridge": PrimitiveSpec(
+        script="Activate-GuvfxOrderBridge.ps1",
+        argmap={"terminal_root": "-TerminalRoot"}, inject_account_id=True),
 }
 
 # The PowerShell one-liner used by the default ParseFile gate. Builds the AST WITHOUT executing (RULE 9) and

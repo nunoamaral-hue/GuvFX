@@ -148,6 +148,16 @@ class SignedHostExecutor:
     def verify_slot(self, rdp_host=None) -> dict:
         return self._send("VERIFY_SLOT")
 
+    def activate_order_bridge(self, runtime_root, rdp_host=None) -> dict:
+        """FINAL Closed-Beta stream: ask the host to activate THIS node's dedicated pin-enforcing order bridge
+        and health-check it. Confined on ``runtime_root`` (Django layer) + Customer-Zero refused in ``_send``;
+        the host re-derives the slot (terminal_root + account_id) from ``account_id`` and refuses CZ again.
+        Sends NO params — every identity/path is server-derived, like ``populate_runtime``. Returns the
+        sanitised signed result (``{"ok": bool, ...}``); the caller derives + persists the endpoint itself."""
+        if not self._confined(runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("ACTIVATE_ORDER_BRIDGE")
+
     def observe(self, rdp_host=None) -> dict:
         """9E READ-ONLY live observation: ask the host to trigger THIS account's session-bound observer task
         (running as guvfx_u_<id>, guarded-attach to its already-running MT5) and return the resulting snapshot.

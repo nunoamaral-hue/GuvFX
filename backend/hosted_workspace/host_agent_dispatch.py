@@ -72,6 +72,9 @@ OP_PRIMITIVES = {
     "APPLY_APPLOCKER_AUDIT":    {"primitive": "applocker_tenant_merge",   "params_allow": ()},
     "REMOVE_APPLOCKER_TENANT":  {"primitive": "applocker_tenant_remove",  "params_allow": ()},
     "VERIFY_SLOT":              {"primitive": "verify_slot",              "params_allow": ()},
+    # FINAL Closed-Beta stream: activate this node's dedicated pin-enforcing order bridge. Server-derived
+    # terminal_root (falls through to _build_args' base) + injected -AccountId; no caller params.
+    "ACTIVATE_ORDER_BRIDGE":    {"primitive": "activate_order_bridge",    "params_allow": ()},
 }
 assert set(OP_PRIMITIVES) == set(HOSTED_OPERATIONS), "OP_PRIMITIVES must cover exactly HOSTED_OPERATIONS"
 

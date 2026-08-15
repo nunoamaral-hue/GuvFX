@@ -21,6 +21,7 @@ STAGE_IDENTITY_CREATED = "identity_created"
 STAGE_RUNTIME_MATERIALISED = "runtime_materialised"
 STAGE_ACL_COMPLETE = "acl_complete"
 STAGE_REMOTEAPP_PUBLISHED = "remoteapp_published"
+STAGE_ORDER_BRIDGE_ACTIVATED = "order_bridge_activated"
 STAGE_WAITING_FOR_LOGIN = "waiting_for_login"
 
 

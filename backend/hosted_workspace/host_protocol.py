@@ -44,6 +44,7 @@ HOSTED_OPERATIONS = (
     "APPLY_APPLOCKER_AUDIT",     # AppLocker AuditOnly TENANT MERGE for this identity (additive; NEVER -Enforce)
     "REMOVE_APPLOCKER_TENANT",   # tenant rollback: remove ONLY this account's AppLocker deny contribution
     "VERIFY_SLOT",               # read-only re-verification of the whole slot
+    "ACTIVATE_ORDER_BRIDGE",     # start THIS node's dedicated pin-enforcing order bridge + health-check (server-derived slot)
 )
 # Operations that carry a sealed credential payload (the Windows account password). Additive.
 CREDENTIALED_HOSTED_OPERATIONS = ("PROVISION_IDENTITY",)

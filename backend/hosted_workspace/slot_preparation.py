@@ -49,6 +49,9 @@ PREP_RDP_FAILED = "rdp_grant_failed"
 PREP_SESSION_FAILED = "single_session_failed"
 PREP_REMOTEAPP_FAILED = "remoteapp_not_published"
 PREP_APPLOCKER_FAILED = "applocker_prepare_failed"
+PREP_BRIDGE_FAILED = "order_bridge_activation_failed"        # host activate/health-check failed → fail closed
+PREP_BRIDGE_ENDPOINT_CONFLICT = "order_bridge_endpoint_conflict"  # node already routes elsewhere (e.g. CZ :8788)
+PREP_BRIDGE_FORBIDDEN_NODE = "order_bridge_forbidden_node"   # Customer-Zero / forbidden execution node — refused
 PREP_HOST_ERROR = "host_step_error"              # executor raised — sanitised, never leaks detail
 PREP_OK = "prepared"
 
@@ -64,8 +67,33 @@ ST_RDP = "grant_rdp"
 ST_SESSION = "enforce_single_session"
 ST_REMOTEAPP = "verify_remoteapp"
 ST_APPLOCKER = "applocker_prepare"
+ST_BRIDGE = "activate_order_bridge"
 ST_OBSERVER = "register_observer"
 ST_DONE = "done"
+
+
+# The per-node order-bridge listen port. SINGLE SOURCE OF TRUTH: this constant, the node bridge launcher
+# (deploy/node2-order-bridge/start_node2_bridge.bat HTTP_SERVER_PORT) and the activation primitive
+# (Activate-GuvfxOrderBridge.ps1 $PORT) MUST all be 8789 — the Closed-Beta node bridge port, distinct from
+# Customer Zero's :8788 and the executor/agent :8790/:8791. It is deliberately NOT an operator knob: a
+# runtime-configurable port on the Django side (that the host does not honour) could persist a routing URL
+# pointing at a dead port — or, at 8788, at Customer Zero's un-pinned bridge — while the host still binds
+# 8789 and its /health passes (a divergent-source-of-truth defect). A static test asserts the three agree.
+ORDER_BRIDGE_PORT = 8789
+
+
+def _emit_bridge_event(ws, account, *, activated: bool) -> None:
+    """Fail-open telemetry for the order-bridge activation outcome. Never breaks provisioning, never carries the
+    endpoint/host (the node's persisted ``order_bridge_base_url`` is the record of truth)."""
+    try:
+        from hosted_workspace.telemetry import WorkspaceEvent, emit_workspace_event
+        ev = (WorkspaceEvent.ORDER_BRIDGE_ACTIVATED if activated
+              else WorkspaceEvent.ORDER_BRIDGE_ACTIVATION_FAILED)
+        emit_workspace_event(
+            ev, workspace_uuid=ws.workspace_uuid, account=account,
+            summary=("Order bridge activated" if activated else "Order bridge activation failed"))
+    except Exception:  # noqa: BLE001 — telemetry must never break provisioning
+        pass
 
 
 @dataclass(frozen=True)
@@ -135,8 +163,8 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
 
     from hosted_workspace.models import HostedMt5Workspace
     from hosted_workspace.provisioning_timing import (
-        STAGE_ACL_COMPLETE, STAGE_IDENTITY_CREATED, STAGE_REMOTEAPP_PUBLISHED,
-        STAGE_RUNTIME_MATERIALISED, record_stage_timing)
+        STAGE_ACL_COMPLETE, STAGE_IDENTITY_CREATED, STAGE_ORDER_BRIDGE_ACTIVATED,
+        STAGE_REMOTEAPP_PUBLISHED, STAGE_RUNTIME_MATERIALISED, record_stage_timing)
     from hosted_workspace.workspace_acl import AclError, build_workspace_acl_plan, verify_workspace_acl
 
     ws = (HostedMt5Workspace.objects.select_related("trading_account").get(pk=workspace.pk))
@@ -238,6 +266,42 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
         return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_AUTOTRADING)
     if not _ok(res):
         return SlotPreparationResult(False, PREP_AUTOTRADING_FAILED, ST_AUTOTRADING)
+
+    # ---- Stage 5c: autonomous per-node ORDER-BRIDGE activation (FINAL Closed-Beta stream) -----------------
+    #      When HOSTED_ORDER_BRIDGE_AUTO_ACTIVATE_ENABLED is on, activate THIS node's dedicated pin-enforcing
+    #      order bridge as a REQUIRED, fail-closed host step, then persist the node's order_bridge_base_url —
+    #      so the customer reaches WAITING_FOR_LOGIN with the order path already wired (no manual step). The
+    #      runtime is populated (Stage 5) so the tenant terminal path exists; the bridge attaches per-order at
+    #      trade time. Broker identity (deferred bind) is NOT needed: the per-job pin carries the server-derived
+    #      expected login/server. While the flag is off this whole stage is skipped — byte-identical to before
+    #      this stream. Customer Zero is protected FOUR independent ways: the reserved-account guard (Stage 0),
+    #      the forbidden-node guard, the never-overwrite-a-different-endpoint guard, and the host-side
+    #      reserved-identity refusal. This grants NO order authority (the order-time bridge gate stays live).
+    from hosted_workspace.flags import hosted_order_bridge_auto_activate_enabled
+    if hosted_order_bridge_auto_activate_enabled():
+        from hosted_workspace.tenant_isolation import forbidden_execution_node_ids
+        # Guard A: never activate/route a Customer-Zero / forbidden execution node (derived live from the DB).
+        if ws.execution_node_id in forbidden_execution_node_ids():
+            return SlotPreparationResult(False, PREP_BRIDGE_FORBIDDEN_NODE, ST_BRIDGE)
+        endpoint = "http://%s:%d" % (rdp_host, ORDER_BRIDGE_PORT)
+        # Guard B: never clobber a node already routing to a DIFFERENT endpoint (e.g. Customer Zero's :8788). A
+        # blank or already-equal value is idempotent; anything else is a conflict → fail closed, no activation.
+        cur = str(TerminalNode.objects.filter(pk=node.pk)
+                  .values_list("order_bridge_base_url", flat=True).first() or "").strip()
+        if cur and cur != endpoint:
+            return SlotPreparationResult(False, PREP_BRIDGE_ENDPOINT_CONFLICT, ST_BRIDGE)
+        res = _call("activate_order_bridge", ST_BRIDGE, runtime_root, rdp_host=rdp_host)
+        if res is None:
+            return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_BRIDGE)
+        if not _ok(res):
+            _emit_bridge_event(ws, account, activated=False)
+            return SlotPreparationResult(False, PREP_BRIDGE_FAILED, ST_BRIDGE)
+        # Persist the SERVER-DERIVED endpoint (never the host's asserted value). The filter re-checks the
+        # never-clobber invariant atomically, so a concurrent writer can never race the URL onto a CZ node.
+        TerminalNode.objects.filter(pk=node.pk, order_bridge_base_url__in=("", endpoint)).update(
+            order_bridge_base_url=endpoint)
+        _emit_bridge_event(ws, account, activated=True)
+        record_stage_timing(ws, STAGE_ORDER_BRIDGE_ACTIVATED)   # UX timing (fail-open)
 
     # ---- Stage 6: RDP grant (hard-scoped to guvfx_u_*) ----------------------------------------------------
     res = _call("grant_rdp", ST_RDP, username, rdp_host=rdp_host)
