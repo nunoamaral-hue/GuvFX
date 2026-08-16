@@ -14,6 +14,33 @@
 
 ## Execution workstream log
 
+- **2026-08-16 — BETA BLOCKER #1: Hosted delivery LIFECYCLE completed behind a new DARK flag
+  `HOSTED_DELIVERY_LIFECYCLE_ENABLED` (default OFF). 🟢 make check green; hosted_workspace 824/824; adversarial
+  review 0 HIGH / 0 MEDIUM (re-verified CLOSED); Customer Zero + flag-OFF byte-identical (re-affirmed).**
+  Root cause of the "Preparing your terminal…" stall (Acceptance Journey #2): `delivery_state` never reached
+  `CONNECTED` because (a) `record_remoteapp_connected` had **no production caller**, (b) the frontend launch
+  button waited on `CONNECTED` while `CONNECTED` waited on the customer's click (button⇄CONNECTED deadlock), and
+  (c) the session-bound observer was never prepared (`no_observer_task` — slot-prep Stage 10 was best-effort
+  deferred). Four flag-gated, fail-closed edges close it: **(1)** slot-prep Stage 10 makes `PREPARE_OBSERVER` a
+  REQUIRED, idempotent, stage-timed host step for every eligible non-CZ slot (fail-closed: holds at PROVISIONING
+  if the observer can't be prepared); **(2)** a new `DELIVERY_DELIVERABLE` read-model state + `workspace_delivery_ready`
+  predicate surface "Open MetaTrader" once the workspace is authoritatively openable — BEFORE `CONNECTED` — so the
+  customer's own click creates the session (breaks the deadlock; availability kept DISTINCT from connection);
+  **(3)** a `delivery_observe_runner` in the scheduler drives the single delivery-state writer
+  (`record_remoteapp_connected`/`_disconnected`) from the TRUSTED, tenant-unforgeable LocalSystem session signal
+  (`observe_remoteapp_session`) — transition-only, monotonic-seq, CZ-excluded; **(4)** the frontend shows a live
+  "Open MetaTrader" on DELIVERABLE, a "Trading account saved ✓" ack, and never an indefinite spinner when
+  openable. **Six adversarial-review findings remediated (0 HIGH/0 MEDIUM bar):** HIGH — DELIVERABLE now gated on
+  `canonical_state` past PROVISIONING (prep actually finished: Stage 8 RemoteApp verify + Stage 10 observer), so
+  "Open MetaTrader" never points at an unpublished/unobservable slot; MED — 60s freshness/anti-replay window on the
+  delivery corroboration (`observe_remoteapp_session`); MED — `record_delivery_attempt` never regresses a live
+  CONNECTED session (no duplicate `REMOTEAPP_CONNECTED`); MED — distinct `slot_prep_failed`/`observer_prep_failed`
+  provisioning counters (bad-rollout visibility); LOW — explicit CZ-refused guard on the DELIVERABLE projection.
+  +7 regression tests incl. RULE-11 freshness positive+negative control and "PROVISIONING never deliverable".
+  **NEVER redefines CONNECTED, never touches Customer Zero, never arms execution.** Committed on
+  `feat/bb1-delivery-lifecycle`; DARK (flag OFF) — repo-green, staged deploy to follow (DARK → CZ Golden BEFORE/AFTER
+  → deliberate arm → live proof through the normal customer path → support@ reset).
+
 - **2026-08-16 — CLOSED-BETA UX POLISH deployed to prod (FRONTEND-ONLY, DARK). 🟢 make check green; Customer
   Zero byte-identical (Golden BEFORE == AFTER).** Sponsor-approved Packets 4–7 UX bundle — hosted-consistent
   journey copy ("Open MetaTrader" / "Log in to your account"), marketplace always presents one next action,

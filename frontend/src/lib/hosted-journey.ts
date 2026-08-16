@@ -19,7 +19,8 @@ export type NextAction =
   | "assign_strategy" | "contact_support";
 
 export type DeliveryState =
-  | "DELIVERY_NOT_AVAILABLE" | "DELIVERY_PREPARING" | "DELIVERY_READY" | "DELIVERY_EXTERNAL_GATE";
+  | "DELIVERY_NOT_AVAILABLE" | "DELIVERY_PREPARING" | "DELIVERY_DELIVERABLE"
+  | "DELIVERY_READY" | "DELIVERY_EXTERNAL_GATE";
 
 export interface HostedJourney {
   phase: JourneyPhase;
@@ -107,7 +108,11 @@ export function describeJourney(j: HostedJourney | null | undefined): JourneyVie
   }
   const stepIndex = PHASE_STEP[j.phase];
   const action = ACTION_FOR[j.next_action] ?? null;
-  const canLaunch = j.delivery === "DELIVERY_READY";
+  // BB#1: the live "Open MetaTrader" launch is enabled as soon as delivery is DELIVERABLE (the authority proved
+  // the workspace openable) — the customer's click is what CREATES the session — as well as when it is READY
+  // (already CONNECTED, e.g. reconnect). Both mean "you can open it now"; the pill only shows for the truly
+  // not-yet-openable states (PREPARING / EXTERNAL_GATE / NOT_AVAILABLE).
+  const canLaunch = j.delivery === "DELIVERY_READY" || j.delivery === "DELIVERY_DELIVERABLE";
 
   switch (j.phase) {
     case "NO_WORKSPACE":

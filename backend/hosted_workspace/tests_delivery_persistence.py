@@ -70,6 +70,31 @@ class AttemptRecordingTests(_Base):
         self.assertEqual(self.ws.canonical_state, before_canon)  # M3c untouched
         self.assertEqual(self.ws.state, before_legacy)           # legacy attach untouched
 
+    def test_attempt_does_not_regress_a_live_connected_session(self):
+        # F3 (adversarial review): the observer's single writer owns CONNECTED. A re-authorize / reconnect attempt
+        # on an ALREADY-CONNECTED workspace (customer clicks Open/Reconnect again while their RemoteApp is up) must
+        # NOT downgrade delivery_state — else it flaps CONNECTED→AUTHORIZED and the observer re-fires a DUPLICATE
+        # REMOTEAPP_CONNECTED for one continuous session. Only the attempt bookkeeping is stamped.
+        self.ws.delivery_state = DS.CONNECTED
+        self.ws.remoteapp_ready = True
+        self.ws.save(update_fields=["delivery_state", "remoteapp_ready"])
+        res = DP.record_delivery_attempt(self.ws, _Auth(True, "DA_OK"), correlation_id="reconnect-1")
+        self.ws.refresh_from_db()
+        self.assertEqual(self.ws.delivery_state, DS.CONNECTED)          # NOT downgraded to AUTHORIZED
+        self.assertTrue(self.ws.remoteapp_ready)                       # connection state intact
+        self.assertEqual(self.ws.delivery_reason, "DA_OK")             # bookkeeping still stamped
+        self.assertEqual(self.ws.last_delivery_correlation_id, "reconnect-1")
+        self.assertIsNotNone(self.ws.last_delivery_attempt)
+        self.assertEqual(res.delivery_state, DS.CONNECTED)
+
+    def test_failed_attempt_also_does_not_regress_connected(self):
+        # Even a FAILED re-authorize (e.g. a transient mint error) must never tear down a live CONNECTED session.
+        self.ws.delivery_state = DS.CONNECTED
+        self.ws.save(update_fields=["delivery_state"])
+        DP.record_delivery_attempt(self.ws, _Auth(False, "DA_ERROR"))
+        self.ws.refresh_from_db()
+        self.assertEqual(self.ws.delivery_state, DS.CONNECTED)         # held — a failed attempt is not a teardown
+
 
 class RemoteAppTransitionTests(_Base):
     def test_connected_sets_ready_and_success_and_emits(self):

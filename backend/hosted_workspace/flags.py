@@ -226,3 +226,30 @@ def hosted_tenant_node_isolation_enabled() -> bool:
     host. OFF = the allocator behaves exactly as before (zero behaviour change). It NEVER arms execution,
     performs a broker login, or contacts a host. See ``hosted_workspace/tenant_isolation.py`` + ADR-0043."""
     return _flag("HOSTED_TENANT_NODE_ISOLATION_ENABLED")
+
+
+def hosted_delivery_lifecycle_enabled() -> bool:
+    """BETA BLOCKER #1 corrective (Sponsor 2026-08-16) — complete the Hosted delivery LIFECYCLE. DEFAULT OFF.
+
+    A single gate for the three additive, fail-closed lifecycle-completion edges that turn a provisioned-but-
+    stuck workspace into one whose customer can actually open MetaTrader. While OFF, every one of them is
+    byte-identical to before this corrective (no new host contact, no new delivery-state write, no new journey
+    projection value), so Customer Zero and every existing workspace are unchanged. While ON:
+
+    1. ``slot_preparation`` (Stage 10) promotes the observer registration from a best-effort DEFERRED step to a
+       REQUIRED, stage-timed host primitive (``register_observer`` → signed ``PREPARE_OBSERVER``), so a fresh
+       non-CZ hosted account receives its read-only session-bound observer AUTONOMOUSLY — no operator step.
+    2. ``onboarding_read_model.delivery_readiness`` emits a NEW ``DELIVERY_DELIVERABLE`` state (distinct from
+       ``CONNECTED``) once the delivery authority's preconditions hold, so the frontend can surface "Open
+       MetaTrader" as soon as the workspace is authoritatively deliverable — BREAKING the button⇄CONNECTED
+       circular dependency WITHOUT redefining CONNECTED (which stays "an actually established session").
+    3. ``delivery_observe_runner`` drives the existing single delivery-state writer's
+       ``record_remoteapp_connected`` / ``record_remoteapp_disconnected`` from the TRUSTED, tenant-unforgeable
+       LocalSystem host-observation corroboration (process present + owner match + interactive session>0),
+       never from RemoteApp publication alone and never from a client self-report.
+
+    Customer Zero is excluded FOUR ways (the reserved-account guard in slot prep, the CZ refusal in the signed
+    executor / host dispatch, the explicit non-CZ guard in the delivery-observe pass, and — as today — CZ's
+    ``observe`` returning fail-closed). Grants NO order authority: the per-job identity pin + the order-time
+    bridge gate stay authoritative, and delivery-state remains read-model-only (it can never place an order)."""
+    return _flag("HOSTED_DELIVERY_LIFECYCLE_ENABLED")

@@ -75,6 +75,9 @@ export function HostedWorkspaceJourney() {
   const [busy, setBusy] = useState(false);
   // Broker identity is declared LATER (deferred bind), at the "open your workspace" step — never at request.
   const [form, setForm] = useState({ expected_login: "", expected_server: "" });
+  // BB#1: immediate acknowledgement that the broker details saved (write-once), so the customer is never left
+  // wondering after "Save my broker details" — shown until the journey advances past the login step.
+  const [savedAck, setSavedAck] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -126,6 +129,7 @@ export function HostedWorkspaceJourney() {
     try {
       const j = await bindExpectedAccount(form);   // declare the expected broker identity (write-once)
       setJourney(j);
+      setSavedAck(true);   // BB#1: acknowledge the save immediately (persists across the login-step re-poll)
       setLoad("ready");
     } catch {
       void refresh();  // e.g. 409 already-bound / conflict → just re-read the current state
@@ -232,6 +236,11 @@ export function HostedWorkspaceJourney() {
                   Enter your password only inside MetaTrader — never here. GuvFX never receives or stores it.
                 </p>
               </form>
+              {savedAck && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.85rem", color: "#5fd39a" }}>
+                  <span aria-hidden>✓</span> Trading account saved.
+                </div>
+              )}
               {view.canLaunch ? (
                 <Link href="/trading/terminal-access" style={primaryLink}>{view.action.label}</Link>
               ) : (

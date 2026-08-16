@@ -313,3 +313,77 @@ def live_observe_fn(workspace):
         logger.warning("live_observe: transport error account=%s", acct_id)
         return None
     return build_observation_from_host(workspace, result)
+
+
+# ── BB#1 delivery-session signal ─────────────────────────────────────────────────────────────────────────
+# The DELIVERY concern (is the tenant's RemoteApp/RDP session ESTABLISHED) is distinct from the CANONICAL
+# observation (is the broker connected + account matched). It reuses the SAME trust gates + the SAME
+# tenant-unforgeable ``corroboration_matches`` — it adds NO new host-contact semantics, only a second reading of
+# the already-attested corroboration for the delivery single writer.
+DELIVERY_SESSION_UP = "CONNECTED"
+DELIVERY_SESSION_DOWN = "DISCONNECTED"
+
+
+def _delivery_corroboration_fresh(corr, now) -> bool:
+    """The LocalSystem-attested ``collected_at`` must be RECENT vs the backend wall clock: not older than the
+    freshness limit (stale/replay) and not implausibly in the future (clock skew / forgery). This mirrors the
+    freshness anchor the certified producer applies in ``build_observation_from_host`` (which the delivery signal
+    bypasses because it does not go through the producer). Fail-closed: a missing/non-numeric ``collected_at`` is
+    NOT fresh. Prevents a cached/replayed corroboration snapshot from driving or holding a delivery CONNECTED."""
+    collected = _num_or_none(corr.get("collected_at")) if isinstance(corr, dict) else None
+    if collected is None:
+        return False
+    return (now - _OBSERVATION_FRESHNESS_LIMIT_SECONDS) <= collected <= (now + DEFAULT_CLOCK_TOLERANCE_SECONDS)
+
+
+def observe_remoteapp_session(workspace, *, now=None):
+    """Return the TRUSTED delivery-session signal: ``"CONNECTED"`` when LocalSystem corroborates the tenant
+    terminal is up under the expected ``guvfx_u_<id>`` in an interactive session (>0); ``"DISCONNECTED"`` when
+    the observer AFFIRMATIVELY reports the process gone; else ``None`` (flag/gate off, ineligible state, executor
+    unresolved, transport error, ``ok:false`` incl. ``no_observer_task``, a STALE/replayed corroboration, or a
+    corroboration mismatch). FAIL CLOSED: an ambiguous/unavailable/stale cycle returns ``None`` so the caller
+    HOLDS delivery-state — it never flaps READY on a transient. It NEVER infers CONNECTED from RemoteApp
+    publication or a client self-report, only from a FRESH LocalSystem-attested session fact. Same trust anchor
+    (cert OR supervised carve-out, per-workspace) and same DARK gates as ``live_observe_fn``; contacts no host
+    until the executor is configured + armed. ``now`` is injectable for tests; production uses the wall clock."""
+    if not (hosted_remoteapp_isolation_certified() or supervised_single_tenant_beta_active(workspace)):
+        return None
+    if not hosted_mt5_observation_enabled():
+        return None
+    if str(getattr(workspace, "canonical_state", "") or "") not in _OBSERVABLE_STATES:
+        return None
+    acct = _account_of(workspace)
+    acct_id = getattr(acct, "id", None)
+    if acct is None or acct_id is None:
+        return None
+    try:
+        from hosted_workspace.host_executor import resolve_signed_host_executor
+        executor = resolve_signed_host_executor(account_id=int(acct_id), rdp_host=_node_rdp_host(workspace))
+    except Exception:  # noqa: BLE001 - resolver failure is ambiguous -> fail closed
+        return None
+    if executor is None:
+        return None
+    try:
+        result = executor.observe()
+    except Exception:  # noqa: BLE001
+        logger.warning("observe_remoteapp_session: transport error account=%s", acct_id)
+        return None
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None                                 # no_observer_task / host error → ambiguous, hold state
+    corr = result.get("corroboration")
+    # FRESHNESS anchor (adversarial-review MEDIUM fix): the delivery signal does not traverse the certified
+    # producer, so it must apply the SAME staleness/anti-replay guard here — else a well-formed but stale/cached/
+    # replayed daemon-signed corroboration would drive CONNECTED for a session that has actually exited.
+    if now is None:
+        from django.utils import timezone
+        now = timezone.now().timestamp()
+    if not _delivery_corroboration_fresh(corr, now):
+        return None                                 # stale / replayed / skewed → ambiguous, hold state
+    if corroboration_matches(corr, acct_id):
+        return DELIVERY_SESSION_UP                  # terminal up, expected identity, interactive session (>0)
+    # Not "up". Only an AFFIRMATIVE process-gone for THIS account (observer ran, LocalSystem says absent) is a
+    # trusted DISCONNECTED; a mismatch / malformed block is ambiguous → hold.
+    if (isinstance(corr, dict) and _int_or_none(corr.get("account_id")) == int(acct_id)
+            and corr.get("process_present") is False):
+        return DELIVERY_SESSION_DOWN
+    return None

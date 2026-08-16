@@ -86,19 +86,29 @@ def record_delivery_attempt(workspace: HostedMt5Workspace, authorization, *,
                             correlation_id: str = "") -> DeliveryWriteResult:
     """Record the outcome of one ``authorize_workspace_delivery`` on the OWNER's workspace. AUTHORIZED on
     success, FAILED otherwise; stamps ``last_delivery_attempt`` and the stable reason code. Emits no
-    telemetry (an attempt is not itself a RemoteApp connect/disconnect)."""
+    telemetry (an attempt is not itself a RemoteApp connect/disconnect).
+
+    NON-REGRESSIVE over a live session (adversarial-review MEDIUM fix): the observer is the authoritative owner
+    of CONNECTED. A re-authorize / re-mint of an ALREADY-CONNECTED workspace (e.g. the customer clicks
+    Open/Reconnect again while their RemoteApp is up) must NOT downgrade ``delivery_state`` off CONNECTED — doing
+    so would flap CONNECTED→AUTHORIZED and make the observer re-fire a DUPLICATE ``REMOTEAPP_CONNECTED`` (new
+    seq/dedup key) for one continuous session, plus a READY→DELIVERABLE→READY UI flap. When already CONNECTED we
+    stamp only the attempt bookkeeping (reason/timestamp/correlation) and leave the connection state intact."""
     reason = str(getattr(authorization, "reason", ""))[:64]
-    target = DS.AUTHORIZED if getattr(authorization, "authorized", False) else DS.FAILED
+    authorized = bool(getattr(authorization, "authorized", False))
     now = timezone.now()
     with transaction.atomic():
         locked = HostedMt5Workspace.objects.select_for_update().get(pk=workspace.pk)
-        locked.delivery_state = target
+        # A live CONNECTED session is owned by the observer's single writer; an attempt record never regresses it.
+        connected = str(locked.delivery_state) == str(DS.CONNECTED)
+        fields = ["delivery_reason", "last_delivery_attempt", "last_delivery_correlation_id", "updated_at"]
+        if not connected:
+            locked.delivery_state = DS.AUTHORIZED if authorized else DS.FAILED
+            fields.insert(0, "delivery_state")
         locked.delivery_reason = reason
         locked.last_delivery_attempt = now
         locked.last_delivery_correlation_id = str(correlation_id or "")[:128]
-        locked.save(update_fields=[
-            "delivery_state", "delivery_reason", "last_delivery_attempt",
-            "last_delivery_correlation_id", "updated_at"])
+        locked.save(update_fields=fields)
         return DeliveryWriteResult(
             delivery_state=str(locked.delivery_state), delivery_reason=str(locked.delivery_reason),
             remoteapp_ready=bool(locked.remoteapp_ready), telemetry_emitted=False)

@@ -8,7 +8,7 @@ readiness independently and NEVER exposes a credential, a full login (masked), a
 """
 from __future__ import annotations
 
-from hosted_workspace.flags import hosted_mt5_remoteapp_enabled
+from hosted_workspace.flags import hosted_delivery_lifecycle_enabled, hosted_mt5_remoteapp_enabled
 from hosted_workspace.state_machine import WorkspaceLifecycleState as S, WorkspaceReason
 
 # Customer-facing journey phases (ADR-0034 Onboarding PART G), stable identifiers.
@@ -35,11 +35,25 @@ NEXT_CONTACT_SUPPORT = "contact_support"
 # Sponsor/host change). When #316 lands, read HostedMt5Workspace.delivery_state here instead.
 DELIVERY_NOT_AVAILABLE = "DELIVERY_NOT_AVAILABLE"
 DELIVERY_PREPARING = "DELIVERY_PREPARING"
+DELIVERY_DELIVERABLE = "DELIVERY_DELIVERABLE"   # BB#1: authority proves it openable (availability, not CONNECTED)
 DELIVERY_READY = "DELIVERY_READY"
 DELIVERY_EXTERNAL_GATE = "DELIVERY_EXTERNAL_GATE"
 
 _CONNECTED_STATES = (S.CONNECTED, S.EXECUTION_READY, S.EXECUTING)
 _DEGRADED_STATES = (S.DISCONNECTED, S.RECOVERING, S.SUSPENDED, S.RETIRED)
+
+# BB#1 HIGH fix (Sponsor 2026-08-16, adversarial review): DELIVERABLE means "the slot is actually openable now",
+# so it is projected ONLY once slot preparation has FINISHED — i.e. the certified writer advanced the workspace
+# PAST PROVISIONING (to WAITING_FOR_LOGIN or a later connected/degraded state). That advance happens ONLY on a
+# ``prepare_hosted_slot`` ``prepared=True``, which itself requires Stage 8 RemoteApp verify AND (flag on) the
+# Stage 10 observer. While still at PROVISIONING the RemoteApp may be unpublished and no observer exists, so a
+# live "Open MetaTrader" would open a broken/unobservable session — those states must show the "preparing"
+# placeholder, never a launch. RETIRED (a teardown reachable straight from PROVISIONING) is never openable. A
+# POSITIVE allow-list keeps this fail-closed: an unknown/garbled canonical_state is not deliverable.
+_DELIVERABLE_ELIGIBLE_STATES = frozenset({
+    S.WAITING_FOR_LOGIN, S.CONNECTED, S.EXECUTION_READY, S.EXECUTING,
+    S.DISCONNECTED, S.RECOVERING, S.SUSPENDED,
+})
 
 
 def _mask(login: str) -> str:
@@ -59,6 +73,23 @@ def delivery_readiness(workspace) -> str:
     ds = str(getattr(workspace, "delivery_state", "") or "")
     if ds == "CONNECTED":
         return DELIVERY_READY               # RemoteApp actually connected to the persistent session
+    # BB#1 (Sponsor 2026-08-16): break the button⇄CONNECTED circular dependency. Once the delivery AUTHORITY
+    # proves the workspace deliverable (RemoteApp published + node transport + PROVISIONED identity + GUAC), it
+    # is DELIVERABLE — the frontend surfaces "Open MetaTrader" so the customer can make the very click that
+    # CREATES the session the trusted observer later turns into CONNECTED. This is AVAILABILITY, kept DISTINCT
+    # from READY(CONNECTED): it never asserts a session is up. Gated → OFF ⇒ byte-identical to before.
+    if hosted_delivery_lifecycle_enabled():
+        # HIGH-fix gate: only surface DELIVERABLE once prep has FINISHED (canonical past PROVISIONING — see
+        # _DELIVERABLE_ELIGIBLE_STATES) so "Open MetaTrader" never points at an unpublished/unobservable slot.
+        # CZ-refused (defence in depth): Customer Zero uses the legacy Terminal Access path, never this new
+        # DELIVERABLE surface, and every mutation-bearing delivery edge already excludes CZ.
+        from hosted_workspace.delivery import workspace_delivery_ready
+        from hosted_workspace.tenant_isolation import is_customer_zero_account
+        state = str(getattr(workspace, "canonical_state", "") or "")
+        if (state in _DELIVERABLE_ELIGIBLE_STATES
+                and not is_customer_zero_account(getattr(workspace, "trading_account_id", None))
+                and workspace_delivery_ready(workspace)):
+            return DELIVERY_DELIVERABLE
     if ds in ("AUTHORIZED", "DISCONNECTED"):
         return DELIVERY_PREPARING           # descriptor minted / reconnectable — delivery in progress
     # NONE / FAILED / unknown: not delivered. The real RemoteApp needs the host (RDS) — a Sponsor/host gate —

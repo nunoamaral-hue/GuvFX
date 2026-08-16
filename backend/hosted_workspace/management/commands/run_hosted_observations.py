@@ -78,13 +78,17 @@ def run_cycle(*, observe_fn=None) -> dict:
     observations (advance canonical state, incl. → EXECUTION_READY) → auto-arm any EXECUTION_READY-but-unarmed
     workspace (ADR-0044 Decision 2; DARK unless master + execution flags on; the arm re-proves all preconditions)."""
     from hosted_workspace.auto_arm_runner import run_hosted_auto_arm
+    from hosted_workspace.delivery_observe_runner import run_hosted_delivery_observe
     from hosted_workspace.observation_runner import run_hosted_observations
     from hosted_workspace.provisioning_runner import run_workspace_provisioning
     prov = run_workspace_provisioning()
     obs = run_hosted_observations(observe_fn=observe_fn or resolve_observe_fn(),
                                   source="hosted_workspace.scheduler")
+    # BB#1: the delivery-CONNECTED edge — drive the delivery single writer from the trusted session signal.
+    # DARK unless HOSTED_DELIVERY_LIFECYCLE_ENABLED; own transport gating; CZ-excluded; single-writer.
+    deliv = run_hosted_delivery_observe(source="hosted_workspace.scheduler")
     arm = run_hosted_auto_arm()
-    return {"provisioning": prov, "observation": obs, "auto_arm": arm}
+    return {"provisioning": prov, "observation": obs, "delivery": deliv, "auto_arm": arm}
 
 
 class Command(BaseCommand):
@@ -112,12 +116,17 @@ class Command(BaseCommand):
             release_singleton()
 
         p, o, a = result["provisioning"], result["observation"], result["auto_arm"]
+        d = result["delivery"]
         self.stdout.write(
             f"[run_hosted_observations] {now.isoformat()} "
             f"prov: enabled={p['enabled']} candidates={p['candidates']} allocated={p['allocated']} "
             f"already={p['already']} no_capacity={p['no_capacity']} not_deliverable={p['not_deliverable']} "
-            f"cz_forbidden={p['cz_forbidden']} errors={p['errors']} | obs: enabled={o['enabled']} polled={o['polled']} "
+            f"cz_forbidden={p['cz_forbidden']} slot_prep_failed={p['slot_prep_failed']} "
+            f"observer_prep_failed={p['observer_prep_failed']} errors={p['errors']} | "
+            f"obs: enabled={o['enabled']} polled={o['polled']} "
             f"applied={o['applied']} unavailable={o['unavailable']} errors={o['errors']} | "
+            f"deliv: enabled={d['enabled']} polled={d['polled']} connected={d['connected']} "
+            f"disconnected={d['disconnected']} held={d['held']} cz_skipped={d['cz_skipped']} errors={d['errors']} | "
             f"arm: enabled={a['enabled']} candidates={a['candidates']} armed={a['armed']} "
             f"refused={a['refused']} errors={a['errors']}"
         )

@@ -96,6 +96,42 @@ class ProvisioningDriverTests(TestCase):
         self.assertEqual(out["errors"], 1)               # error isolated
         self.assertEqual(out["allocated"], 1)            # the other still allocated
 
+    @override_settings(**dict(_FLAGS_ON, HOSTED_SLOT_PREP_ENABLED="1"))
+    def test_slot_prep_failure_is_counted_distinctly_not_as_error(self):
+        # F5b (adversarial review): with the host slot-prep engine armed but no host executor configured in tests,
+        # prepare fails closed (host_executor_unavailable). That is a slot-prep failure, bucketed DISTINCTLY as
+        # slot_prep_failed — NOT swallowed into the generic ``errors`` count — so a bad rollout is visible.
+        _node(max_accounts=5)
+        ws = _requested()
+        out = R.run_workspace_provisioning()
+        self.assertEqual(out["candidates"], 1)
+        self.assertEqual(out["allocated"], 0)                       # prep failed → never advanced
+        self.assertEqual(out["slot_prep_failed"], 1)
+        self.assertEqual(out["observer_prep_failed"], 0)           # not the observer edge
+        self.assertEqual(out["errors"], 0)                         # NOT hidden in the generic error bucket
+        ws.refresh_from_db()
+        self.assertEqual(str(ws.canonical_state), S.PROVISIONING)  # held, re-driven next cycle
+
+    @override_settings(**dict(_FLAGS_ON, HOSTED_SLOT_PREP_ENABLED="1"))
+    def test_observer_prep_failure_is_named_distinctly(self):
+        # F5b: the BB#1 REQUIRED observer edge is the specific deploy-coupling hazard — surface it BY NAME so an
+        # operator sees "observer prep is failing", not an undifferentiated error/slot-prep spike.
+        from hosted_workspace import slot_preparation as SP
+        _node(max_accounts=5)
+        ws = _requested()
+
+        def _observer_failed(workspace, **kw):
+            return SP.SlotPreparationResult(False, SP.PREP_OBSERVER_FAILED, SP.ST_OBSERVER)
+
+        # allocate imports prepare_hosted_slot from its source module at call time → patch it there.
+        with mock.patch.object(SP, "prepare_hosted_slot", side_effect=_observer_failed):
+            out = R.run_workspace_provisioning()
+        self.assertEqual(out["observer_prep_failed"], 1)
+        self.assertEqual(out["slot_prep_failed"], 1)               # an observer failure is also a slot-prep failure
+        self.assertEqual(out["errors"], 0)
+        ws.refresh_from_db()
+        self.assertEqual(str(ws.canonical_state), S.PROVISIONING)  # never advanced with no observer
+
 
 class AllocateDeliverabilityTests(TestCase):
     @override_settings(**_FLAGS_ON)

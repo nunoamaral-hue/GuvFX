@@ -52,8 +52,11 @@ describe("describeJourney — customer state machine", () => {
     expect(describeJourney(journey({ phase: "WORKSPACE_PREPARING", next_action: "wait" })).action).toBeNull();
   });
 
-  it("canLaunch is true only when delivery is READY", () => {
+  it("canLaunch is true when delivery is READY or DELIVERABLE (BB#1: openable before CONNECTED)", () => {
     expect(describeJourney(journey({ delivery: "DELIVERY_READY" })).canLaunch).toBe(true);
+    // BB#1: DELIVERABLE (authority proved it openable) enables the live launch BEFORE any CONNECTED — the
+    // customer's click is what creates the session. This breaks the button⇄CONNECTED deadlock.
+    expect(describeJourney(journey({ delivery: "DELIVERY_DELIVERABLE" })).canLaunch).toBe(true);
     expect(describeJourney(journey({ delivery: "DELIVERY_PREPARING" })).canLaunch).toBe(false);
     expect(describeJourney(journey({ delivery: "DELIVERY_NOT_AVAILABLE" })).canLaunch).toBe(false);
     expect(describeJourney(journey({ delivery: "DELIVERY_EXTERNAL_GATE" })).canLaunch).toBe(false);

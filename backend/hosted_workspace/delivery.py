@@ -97,6 +97,33 @@ def _coerce_workspace_uuid(workspace_id) -> Optional[uuid.UUID]:
         return None
 
 
+def workspace_delivery_ready(workspace) -> bool:
+    """BB#1 (Sponsor 2026-08-16): does the delivery AUTHORITY consider this workspace DELIVERABLE right now?
+
+    A read-model predicate (NO owner check, NO descriptor mint, NO credential decrypt) that mirrors the
+    precondition gates of :func:`authorize_workspace_delivery`: the persistent+remoteapp flags are on, a bound
+    node carries a real ``rdp_host`` transport, a ``PROVISIONED`` non-admin identity exists with a credential +
+    ``runtime_root``, and GUAC is configured. True ⇒ an owner ``DA_OK`` mint would succeed, so the frontend may
+    surface "Open MetaTrader" BEFORE any CONNECTED — breaking the button⇄CONNECTED deadlock. This is
+    AVAILABILITY, never CONNECTION: it proves the slot can be opened, never that a session is up. Fail-closed on
+    any missing precondition or error. (A static test asserts it agrees with the authority: DA_OK ⇔ True.)"""
+    try:
+        if not (hosted_persistent_mt5_enabled() and hosted_mt5_remoteapp_enabled()):
+            return False
+        node = getattr(workspace, "workspace_node", None)
+        if node is None or not getattr(node, "hostname", None) or not getattr(node, "rdp_host", None):
+            return False
+        from terminal_provisioning.models import AccountProvisioning
+        prov = AccountProvisioning.objects.filter(trading_account_id=workspace.trading_account_id).first()
+        if (prov is None or not prov.windows_username or prov.is_admin
+                or prov.status != AccountProvisioning.Status.PROVISIONED
+                or not prov.password_enc or not prov.runtime_root):
+            return False
+        return bool(os.getenv("GUAC_BASE_URL", "").strip() and os.getenv("GUAC_JSON_SECRET_KEY_HEX", "").strip())
+    except Exception:  # noqa: BLE001 — deliverability is fail-closed
+        return False
+
+
 def authorize_workspace_delivery(user, workspace_id) -> DeliveryAuthorization:
     """Decide whether ``user`` may deliver workspace ``workspace_id`` as a RemoteApp, and if so mint the
     signed descriptor. Owner-bound, fail-closed, server-derived. Performs NO state write (see

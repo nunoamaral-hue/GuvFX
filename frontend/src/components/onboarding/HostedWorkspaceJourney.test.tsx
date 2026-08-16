@@ -47,6 +47,15 @@ describe("HostedWorkspaceJourney", () => {
     expect(hrefs).not.toContain("/trading/terminal-access");
   });
 
+  it("BB#1: a DELIVERABLE workspace shows the live 'Open MetaTrader' link BEFORE any CONNECTED", async () => {
+    jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({
+      phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_DELIVERABLE" }) });
+    render(<HostedWorkspaceJourney />);
+    const link = await screen.findByRole("link", { name: /open metatrader/i });
+    expect(link).toHaveAttribute("href", "/trading/terminal-access");
+    expect(screen.queryByText(/preparing your terminal/i)).toBeNull();   // no misleading spinner when deliverable
+  });
+
   it("fails closed to a neutral 'not available' when the journey is dark (404)", async () => {
     jm.fetchJourney.mockResolvedValue({ ok: false, unavailable: true });
     render(<HostedWorkspaceJourney />);
@@ -92,6 +101,15 @@ describe("HostedWorkspaceJourney", () => {
     const arg = jm.bindExpectedAccount.mock.calls[0][0];
     expect(arg.expected_login).toBe("700900");
     expect(JSON.stringify(arg).toLowerCase()).not.toContain("password");
+  });
+
+  it("BB#1: acknowledges the saved broker details immediately (no silent wait)", async () => {
+    jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({ phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_DELIVERABLE" }) });
+    jm.bindExpectedAccount.mockResolvedValue(journey({ phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_DELIVERABLE" }));
+    render(<HostedWorkspaceJourney />);
+    fireEvent.change(await screen.findByLabelText(/broker account number/i), { target: { value: "700900" } });
+    fireEvent.click(screen.getByRole("button", { name: /save my broker details/i }));
+    expect(await screen.findByText(/trading account saved/i)).toBeInTheDocument();
   });
 
   it("never renders a legacy account-creation path or leaks internal identifiers", async () => {

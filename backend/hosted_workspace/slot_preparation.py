@@ -49,11 +49,24 @@ PREP_RDP_FAILED = "rdp_grant_failed"
 PREP_SESSION_FAILED = "single_session_failed"
 PREP_REMOTEAPP_FAILED = "remoteapp_not_published"
 PREP_APPLOCKER_FAILED = "applocker_prepare_failed"
+PREP_OBSERVER_FAILED = "observer_prepare_failed"   # BB#1: required observer prep (flag on) failed / not implemented
 PREP_BRIDGE_FAILED = "order_bridge_activation_failed"        # host activate/health-check failed → fail closed
 PREP_BRIDGE_ENDPOINT_CONFLICT = "order_bridge_endpoint_conflict"  # node already routes elsewhere (e.g. CZ :8788)
 PREP_BRIDGE_FORBIDDEN_NODE = "order_bridge_forbidden_node"   # Customer-Zero / forbidden execution node — refused
 PREP_HOST_ERROR = "host_step_error"              # executor raised — sanitised, never leaks detail
 PREP_OK = "prepared"
+
+# Every non-OK slot-preparation outcome, as one authoritative set (single source of truth). The provisioning
+# scheduler uses it to bucket a slot-prep failure DISTINCTLY from an unexpected allocation error, so a bad
+# rollout of a REQUIRED host step (notably the BB#1 observer edge) is visible in the summary, not swallowed into
+# the generic ``errors`` count (adversarial-review MEDIUM fix).
+PREP_FAILURE_REASONS = frozenset({
+    PREP_DARK, PREP_REFUSED_RESERVED, PREP_NOT_BOUND, PREP_NODE_UNCONFIGURED, PREP_NO_EXECUTOR,
+    PREP_EXECUTOR_INCOMPLETE, PREP_IDENTITY_FAILED, PREP_ACL_FAILED, PREP_POPULATE_FAILED,
+    PREP_AUTOTRADING_FAILED, PREP_RDP_FAILED, PREP_SESSION_FAILED, PREP_REMOTEAPP_FAILED,
+    PREP_APPLOCKER_FAILED, PREP_OBSERVER_FAILED, PREP_BRIDGE_FAILED, PREP_BRIDGE_ENDPOINT_CONFLICT,
+    PREP_BRIDGE_FORBIDDEN_NODE, PREP_HOST_ERROR,
+})
 
 # Stage labels (for stage_reached / audit — never carry a secret).
 ST_GUARD = "guard"
@@ -150,7 +163,8 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     """Idempotent, fail-closed. Returns ``prepared=True`` only when every non-deferred step read-back-verified;
     the caller then advances ``PROVISIONING → WAITING_FOR_LOGIN``. Never raises into the caller, never arms
     execution, never performs a broker login."""
-    from hosted_workspace.flags import hosted_persistent_mt5_enabled, hosted_slot_prep_enabled
+    from hosted_workspace.flags import (
+        hosted_delivery_lifecycle_enabled, hosted_persistent_mt5_enabled, hosted_slot_prep_enabled)
 
     # ---- Stage 0: fail-closed guards (no host contact) ----------------------------------------------------
     if not (hosted_persistent_mt5_enabled() and hosted_slot_prep_enabled()):
@@ -163,7 +177,7 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
 
     from hosted_workspace.models import HostedMt5Workspace
     from hosted_workspace.provisioning_timing import (
-        STAGE_ACL_COMPLETE, STAGE_IDENTITY_CREATED, STAGE_ORDER_BRIDGE_ACTIVATED,
+        STAGE_ACL_COMPLETE, STAGE_IDENTITY_CREATED, STAGE_OBSERVER_PREPARED, STAGE_ORDER_BRIDGE_ACTIVATED,
         STAGE_REMOTEAPP_PUBLISHED, STAGE_RUNTIME_MATERIALISED, record_stage_timing)
     from hosted_workspace.workspace_acl import AclError, build_workspace_acl_plan, verify_workspace_acl
 
@@ -336,13 +350,27 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     if res is not None and _ok(res):
         applocker_deferred = False
 
-    # ---- Stage 10: observer registration — DEFERRED. The host observe bridge does not exist yet (G15's
-    #      observe_fn is dark), so a missing register_observer method does NOT block prepared: the slot exists
-    #      and the customer can log in; autonomous state advance past WAITING_FOR_LOGIN awaits the bridge. -----
+    # ---- Stage 10: observer registration. BB#1 (Sponsor 2026-08-16): with the delivery-lifecycle flag ON the
+    #      read-only session-bound observer is a REQUIRED, idempotent, stage-timed host step — a fresh non-CZ
+    #      hosted account MUST receive its observer autonomously (the observe bridge now exists, so the historical
+    #      "deferred until a bridge lands" no longer holds; without it delivery can never reach a TRUSTED
+    #      CONNECTED and the customer stalls). The observer is read-only (guarded-attach; never launch/login/
+    #      trade) so this grants NO authority. While the flag is OFF this is EXACTLY the prior best-effort
+    #      DEFERRED step — byte-identical, so Customer Zero and every existing slot are unchanged. ---------------
     observer_deferred = True
-    res = _call("register_observer", ST_OBSERVER, username, runtime_root, rdp_host=rdp_host, required=False)
+    res = _call("register_observer", ST_OBSERVER, username, runtime_root, rdp_host=rdp_host)
     if res is not None and _ok(res):
         observer_deferred = False
+        if hosted_delivery_lifecycle_enabled():
+            record_stage_timing(ws, STAGE_OBSERVER_PREPARED)   # lifecycle timing (fail-open)
+    elif hosted_delivery_lifecycle_enabled():
+        # REQUIRED under the delivery-lifecycle flag and it did not read-back-verify → fail closed (never
+        # advance to WAITING_FOR_LOGIN with no observer). Missing method (older host) → EXECUTOR_INCOMPLETE;
+        # an ok:false / host error → OBSERVER_FAILED. Idempotency is the host primitive's contract (re-running
+        # register_observer for an already-registered slot returns ok:true).
+        if res is None:
+            return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_OBSERVER)
+        return SlotPreparationResult(False, PREP_OBSERVER_FAILED, ST_OBSERVER)
 
     logger.info("hosted slot prep: prepared account=%s node=%s observer_deferred=%s applocker_deferred=%s",
                 account_id, ws.execution_node_id, observer_deferred, applocker_deferred)
