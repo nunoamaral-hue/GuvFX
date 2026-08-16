@@ -14,6 +14,31 @@
 
 ## Execution workstream log
 
+- **2026-08-16 — AJ#3 POST-LOGIN PRODUCT CORRECTION: onboarding decoupled from EXECUTION_READY,
+  deployed to prod, support@ unblocked, Customer Zero byte-identical, execution gate unchanged. 🟢**
+  Product principle enacted — *customer onboarding ≠ execution readiness*. The onboarding read model
+  (`hosted_workspace/onboarding_read_model.py`) wrongly required canonical **EXECUTION_READY** before
+  declaring **WORKSPACE_READY**; because `EXECUTION_READY` depends on host-observed `trade_allowed`
+  (the terminal's AutoTrading state, which the backend cannot write), a CONNECTED + account-matched +
+  confirmed customer sat on an **indefinite "Finishing up"** (`PHASE_ACCOUNT_BOUND`) spinner — the AJ#3
+  acceptance blocker. Fix (**read-model only**, no state-machine / arming / order-gate change): onboarding
+  now completes at the operational workspace (CONNECTED + matched + confirmed → `WORKSPACE_READY`,
+  next=`assign_strategy`); `PHASE_ACCOUNT_BOUND` retired; `strategy_eligible` realigned to
+  `phase == WORKSPACE_READY`. **Dependency-verified safe:** `eligibility.py` already separates the tiers
+  (ASSIGNMENT-ELIGIBLE < ARMED < ORDER-AUTHORISED); `auto_arm_runner` + the ARMED tier read canonical
+  `EXECUTION_READY` **directly**, never the onboarding phase. Committed **`a69a832`** (FF to `main`,
+  pushed, `local == origin/main`). Deployed via proven pipeline: rollback tag
+  `guvfx-prod-guvfx-backend:rollback-preAJ3decouple` (image `61faf20f`); scp 2 files (host==local SHA256);
+  `docker build` backend `63ac3694`; `compose up -d --force-recreate --no-deps guvfx-backend`; **no
+  migration**; frontend untouched (existing FE already renders `WORKSPACE_READY`). **Live prod proof —
+  support@ (acct 22 / ws 9):** projection `ACCOUNT_BOUND → WORKSPACE_READY`, next `wait → assign_strategy`,
+  `strategy_eligible false → true`, while `canonical_state` stays **CONNECTED** (NOT EXECUTION_READY) and
+  `eligibility_state=ASSIGNMENT_ELIGIBLE`, `is_ARMED=false`, `execution_enabled=false` — **execution still
+  refuses to trade** (behaviour unchanged). **CZ byte-identical**: `STRUCTURAL_SHA256 163e5075…`
+  BEFORE==AFTER, trades 523. `make check` green (4080 tests). support@ **NOT purged** (out of packet scope).
+  Follow-ups (designed, not yet built): embed HostedMt5RemoteApp inside `/onboarding/hosted` (Defect 1,
+  Class-A feasible) + keep the confirm gate but surface it inline in onboarding (Defect 3).
+
 - **2026-08-16 — ACCEPTANCE JOURNEY #3 PREP: merged + deployed the AJ#3 waiting experience, purged support@
   again, Customer Zero byte-identical, platform clean & ready. 🟢** Merged `feat/aj3-waiting-experience` into
   `main` (fast-forward, no squash) → **`c5695de`** and pushed (`local main == origin/main`). Deployed DARK via
