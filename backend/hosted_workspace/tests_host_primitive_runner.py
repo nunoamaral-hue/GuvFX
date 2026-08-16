@@ -301,5 +301,110 @@ class ParseGateTests(unittest.TestCase):
         self.assertIn("a''b", pr._parse_ps_command("a'b"))
 
 
+class ObserverScheduledTaskCmdletTests(unittest.TestCase):
+    """AJ#3 corrective: ``Set-GuvfxObserver.ps1`` registered the observer task via ``New-ScheduledTaskSettings``
+    - which is NOT a real cmdlet (the real one is ``New-ScheduledTaskSettingsSet``). The call is syntactically
+    valid, so the ParseFile gate (RULE 9) accepts it, but at runtime it throws ``CommandNotFoundException``
+    (HResult 0x80131501) BEFORE ``Register-ScheduledTask`` runs; the primitive returned ok:false for EVERY
+    account and every hosted workspace stalled at PROVISIONING. ParseFile cannot catch a nonexistent-command
+    call - a static command-resolution check must (packet Phase 4 A/B)."""
+
+    def _observer(self):
+        with open(os.path.join(_WINDOWS_SCRIPTS, "Set-GuvfxObserver.ps1"), encoding="ascii") as fh:
+            return fh.read()
+
+    def _windows_ps1(self):
+        return [f for f in os.listdir(_WINDOWS_SCRIPTS) if f.endswith(".ps1")]
+
+    def test_observer_uses_the_real_settings_cmdlet(self):
+        self.assertIn("New-ScheduledTaskSettingsSet", self._observer())
+
+    def test_no_windows_primitive_calls_the_nonexistent_settings_cmdlet(self):
+        import re
+        # IGNORECASE because PowerShell resolves cmdlet names case-insensitively (a re-typo as
+        # `new-scheduledtasksettings` throws the same CommandNotFoundException). Comment lines are stripped so a
+        # doc comment naming the wrong cmdlet is not a false positive (repo _code() convention). latin-1 is
+        # total (never raises) and the cmdlet name is ASCII, so a non-ASCII byte elsewhere cannot break the scan.
+        bad = re.compile(r"New-ScheduledTaskSettings(?!Set)", re.IGNORECASE)   # the name NOT followed by 'Set'
+        offenders = []
+        for n in self._windows_ps1():
+            src = open(os.path.join(_WINDOWS_SCRIPTS, n), encoding="latin-1").read()
+            code = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
+            if bad.search(code):
+                offenders.append(n)
+        self.assertEqual(offenders, [], f"nonexistent cmdlet New-ScheduledTaskSettings used in {offenders}")
+
+    def test_observer_is_ascii_only(self):
+        raw = open(os.path.join(_WINDOWS_SCRIPTS, "Set-GuvfxObserver.ps1"), "rb").read()
+        self.assertEqual(sorted({b for b in raw if b > 127}), [], "Set-GuvfxObserver.ps1 has non-ASCII bytes")
+
+    def test_observer_catch_emits_structured_diagnostics_not_bare_error(self):
+        src = self._observer()
+        self.assertIn('$result.reason = "observer_prepare_exception"', src)
+        self.assertIn("$result.exception_type", src)
+        self.assertIn("$result.exception_hresult", src)
+        self.assertNotIn('$result.reason="error"', src)      # the old opaque collapse is gone
+
+    def test_observer_takes_no_secret_so_diagnostics_cannot_leak_one(self):
+        self.assertNotIn("$Password", self._observer())
+        self.assertIsNone(pr.CONTRACT["prepare_observer"].stdin_arg)   # no stdin secret for this primitive
+
+
+class FailureDiagnosticsTests(unittest.TestCase):
+    """Diagnostic hardening (packet Phase 3, tests D/E): the runner passes the script's structured exception
+    metadata through to the caller, and logs a SANITISED WARNING on any non-ok verdict - never the args."""
+
+    def test_structured_exception_fields_pass_through_to_caller(self):
+        runner, _ = _recording_runner(proc=FakeProc(
+            b'{"ok":false,"reason":"observer_prepare_exception",'
+            b'"exception_type":"CommandNotFoundException","exception_hresult":"0x80131501",'
+            b'"exception_message":"The term X is not recognized"}', 1))
+        res = runner.run("prepare_observer", {"username": "guvfx_u_2", "runtime_root": r"C:\GuvFX\accounts\2"})
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "observer_prepare_exception")
+        self.assertEqual(res["exception_type"], "CommandNotFoundException")
+        self.assertEqual(res["exception_hresult"], "0x80131501")
+
+    def test_run_logs_warning_on_failure_without_args(self):
+        runner, _ = _recording_runner(proc=FakeProc(
+            b'{"ok":false,"reason":"observer_prepare_exception",'
+            b'"exception_type":"CommandNotFoundException","exception_hresult":"0x80131501"}', 1))
+        with self.assertLogs("guvfx.hosted-executor", level="WARNING") as cm:
+            runner.run("prepare_observer", {"username": "guvfx_u_7", "runtime_root": r"C:\GuvFX\accounts\7"})
+        blob = "\n".join(cm.output)
+        self.assertIn("prepare_observer", blob)                 # primitive name
+        self.assertIn("observer_prepare_exception", blob)       # stable reason
+        self.assertIn("CommandNotFoundException", blob)         # exception type
+        self.assertIn("0x80131501", blob)                       # HResult
+        self.assertNotIn(r"C:\GuvFX\accounts\7", blob)          # NEVER the args / paths
+        self.assertNotIn("guvfx_u_7", blob)                     # NEVER the username value
+
+    def test_run_warning_redacts_unstructured_reason_from_legacy_scripts(self):
+        # Four older CONTRACT scripts emit ``$result.error = $_.Exception.Message``; _parse_result promotes
+        # that raw message into ``reason``. The WARNING log must NOT write such a message (it can carry an
+        # arg-derived path / username) - it is redacted to 'unstructured'. (Adversarial-review MEDIUM.)
+        runner, _ = _recording_runner(proc=FakeProc(
+            b'{"ok":false,"error":"the user guvfx_u_7 was not found at path is denied"}', 1))
+        with self.assertLogs("guvfx.hosted-executor", level="WARNING") as cm:
+            runner.run("materialise_runtime", {"username": "guvfx_u_7", "runtime_root": r"C:\GuvFX\accounts\7"})
+        blob = "\n".join(cm.output)
+        self.assertIn("reason=unstructured", blob)            # the raw message is redacted, not logged
+        self.assertNotIn("guvfx_u_7", blob)                   # the username inside the message never reaches the log
+        self.assertNotIn("was not found", blob)
+
+    def test_run_does_not_log_on_success(self):
+        runner, _ = _recording_runner(proc=FakeProc(b'{"ok":true}', 0))
+        with self.assertNoLogs("guvfx.hosted-executor", level="WARNING"):
+            runner.run("ensure_single_session", {})
+
+    def test_guard_refusals_are_also_logged_without_args(self):
+        runner, _ = _recording_runner()
+        with self.assertLogs("guvfx.hosted-executor", level="WARNING") as cm:
+            runner.run("rm_rf_everything", {"username": "guvfx_u_9"})
+        blob = "\n".join(cm.output)
+        self.assertIn("unknown_primitive", blob)
+        self.assertNotIn("guvfx_u_9", blob)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,12 +25,29 @@ exercised in CI on any platform without a real PowerShell.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess  # noqa: S404 - fixed argument vector only; never a shell string (see below)
 
+# Same channel the daemon configures (RotatingFileHandler, propagate off). Used ONLY for a sanitised
+# WARNING on a non-ok verdict - never the args, paths, usernames, or secrets.
+logger = logging.getLogger("guvfx.hosted-executor")
+
 _USERNAME_RE = re.compile(r"^guvfx_u_([1-9][0-9]*)$")
 _ALLOWED_SCALAR = (str, int, bool)
+
+# A stable, secret-free reason CODE: snake_case, optionally ":<filename-like token>". A raw PowerShell
+# exception message (spaces, quotes, path separators, drive letters) does NOT match. Four older CONTRACT
+# scripts promote ``$_.Exception.Message`` into ``error``, which ``_parse_result`` surfaces as ``reason`` -
+# so logging ``reason`` verbatim could write an arg-derived runtime path or username to the daemon log. Such
+# a reason is redacted to a marker before it is logged (the structured exception_type/HResult, when present,
+# are bounded by construction and still logged).
+_SAFE_REASON_RE = re.compile(r"^[a-z0-9_]+(?::[A-Za-z0-9_.\-]+)?$")
+
+
+def _safe_log_reason(reason) -> str:
+    return reason if isinstance(reason, str) and _SAFE_REASON_RE.match(reason) else "unstructured"
 
 
 class PrimitiveSpec:
@@ -274,7 +291,22 @@ class PrimitiveRunner:
 
     def run(self, primitive: str, args: dict) -> dict:
         """The injected ``run_primitive(primitive, args) -> {"ok": bool, ...}``. Never raises into dispatch -
-        every refusal/failure is a sanitised ``{"ok": False, "reason": ...}`` dict."""
+        every refusal/failure is a sanitised ``{"ok": False, "reason": ...}`` dict.
+
+        A non-ok verdict is logged at WARNING with ONLY the sanitised diagnostic fields - the primitive name,
+        the stable reason code, and any exception type/HResult the script itself surfaced. The args dict is
+        NEVER passed to the logger, so no path, username, or secret can reach the daemon log (the observability
+        gap that hid the AJ#3 ``New-ScheduledTaskSettings`` typo behind a bare ``reason="error"``)."""
+        result = self._run_inner(primitive, args)
+        if not (isinstance(result, dict) and result.get("ok")):
+            reason = result.get("reason") if isinstance(result, dict) else None
+            exc_type = result.get("exception_type") if isinstance(result, dict) else None
+            exc_hr = result.get("exception_hresult") if isinstance(result, dict) else None
+            logger.warning("primitive failed primitive=%s reason=%s exception_type=%s exception_hresult=%s",
+                           str(primitive), _safe_log_reason(reason), exc_type, exc_hr)
+        return result
+
+    def _run_inner(self, primitive: str, args: dict) -> dict:
         try:
             spec = CONTRACT.get(str(primitive))
             if spec is None:

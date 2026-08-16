@@ -68,7 +68,7 @@ try {
     if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
       $action = New-ScheduledTaskAction -Execute "py" -Argument ('"{0}" --account {1}' -f $obsPy, $acctId)
       $principal = New-ScheduledTaskPrincipal -UserId $Username -LogonType Interactive -RunLevel Limited
-      $settings = New-ScheduledTaskSettings -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
       Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
     }
   }
@@ -83,4 +83,22 @@ try {
   $result.ok = $true
   $result | ConvertTo-Json -Compress
 }
-catch { $result.ok=$false; $result.reason="error"; $result | ConvertTo-Json -Compress; exit 1 }
+catch {
+  # Diagnostic hardening (AJ#3): a terminating exception must be DIAGNOSABLE, not collapsed to "error".
+  # Emit a stable reason plus safe, machine-readable exception metadata. This primitive handles NO secret
+  # (no password/stdin arg), and username/runtime paths are non-secret derived identities, so surfacing the
+  # exception type/HResult/message here cannot leak a credential. The message is single-lined and capped.
+  $result.ok = $false
+  $result.reason = "observer_prepare_exception"
+  $ex = $_.Exception
+  if ($ex) {
+    $result.exception_type = $ex.GetType().Name
+    try { $result.exception_hresult = ("0x{0:X8}" -f $ex.HResult) } catch { }
+    $msg = ("" + $ex.Message) -replace "[\r\n]+", " "
+    $msg = $msg.Trim()
+    if ($msg.Length -gt 200) { $msg = $msg.Substring(0, 200) }
+    $result.exception_message = $msg
+  }
+  $result | ConvertTo-Json -Compress
+  exit 1
+}
