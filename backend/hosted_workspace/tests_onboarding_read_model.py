@@ -113,6 +113,24 @@ class JourneyPhaseTests(TestCase):
         p = RM.onboarding_journey_projection(ws, acct)
         self.assertEqual(p["phase"], RM.PHASE_WORKSPACE_UNAVAILABLE)
 
+    def test_identity_declared_true_once_login_recorded(self):
+        # The write-once bind records the expected login on trading_account.account_number, so a non-empty
+        # account number IS "identity declared" — the UI's single source of truth for form-vs-waiting.
+        ws, acct = _ws(_user(), node=True, state=S.WAITING_FOR_LOGIN, login="700900")
+        p = RM.onboarding_journey_projection(ws, acct)
+        self.assertTrue(p["identity_declared"])
+
+    def test_identity_declared_false_before_bind(self):
+        # Deferred bind: a provisioned workspace whose identity is not yet declared (empty account number).
+        # Determined purely from server state → deterministic across reloads/devices, no client session flag.
+        ws, acct = _ws(_user(), node=True, state=S.WAITING_FOR_LOGIN, login="")
+        p = RM.onboarding_journey_projection(ws, acct)
+        self.assertFalse(p["identity_declared"])
+
+    def test_identity_declared_false_when_no_workspace(self):
+        p = RM.onboarding_journey_projection(None, None)
+        self.assertFalse(p["identity_declared"])
+
 
 class CustomerSafeTests(TestCase):
     def test_login_is_masked_and_no_full_login_leaks(self):

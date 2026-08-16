@@ -11,7 +11,8 @@ import {
 function journey(over: Partial<HostedJourney> = {}): HostedJourney {
   return {
     phase: "WORKSPACE_READY", next_action: "assign_strategy", confirmed: true,
-    strategy_eligible: true, delivery: "DELIVERY_READY", active_login_masked: "***561", ...over,
+    strategy_eligible: true, delivery: "DELIVERY_READY", active_login_masked: "***561",
+    identity_declared: true, ...over,
   };
 }
 

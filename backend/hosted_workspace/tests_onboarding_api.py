@@ -91,6 +91,16 @@ class JourneyAndRequestTests(TestCase):
         self.assertEqual(r2.status_code, 200)
         self.assertEqual(r2.data["status"], "exists")
 
+    def test_journey_exposes_identity_declared(self):
+        # The onboarding journey RESPONSE carries the server-derived identity_declared (the frontend's single
+        # source of truth for whether the broker-declaration form is still needed): false with no recorded
+        # identity, true once the broker login is recorded — so a reload is deterministic, no client state.
+        r0 = self.client.get(JOURNEY)
+        self.assertIs(r0.data["identity_declared"], False)
+        self.client.post(REQUEST, {"expected_login": "700900"}, format="json")
+        r1 = self.client.get(JOURNEY)
+        self.assertIs(r1.data["identity_declared"], True)
+
     def test_request_non_entitled_forbidden(self):
         c = APIClient()
         c.force_authenticate(_user("poor", entitled=False))

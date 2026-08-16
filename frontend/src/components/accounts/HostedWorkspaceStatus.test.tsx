@@ -16,6 +16,7 @@ function journey(over: Partial<HostedJourney> = {}): HostedJourney {
     strategy_eligible: true,
     delivery: "DELIVERY_READY",
     active_login_masked: "***561",
+    identity_declared: true,
     ...over,
   };
 }

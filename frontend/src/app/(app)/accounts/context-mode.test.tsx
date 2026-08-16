@@ -36,6 +36,7 @@ import type { HostedJourney } from "@/lib/hosted-journey";
 const readyJourney: HostedJourney = {
   phase: "WORKSPACE_READY", next_action: "assign_strategy", confirmed: true,
   strategy_eligible: true, delivery: "DELIVERY_READY", active_login_masked: "***561",
+  identity_declared: true,
 };
 
 describe("Accounts page — context-aware model (P0.1 / P1.3)", () => {

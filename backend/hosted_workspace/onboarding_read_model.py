@@ -143,6 +143,14 @@ def onboarding_journey_projection(workspace, account, *, staff: bool = False) ->
         "strategy_eligible": bool(confirmed and state in (S.EXECUTION_READY, S.EXECUTING)),
         "delivery": delivery_readiness(workspace),
         "active_login_masked": _mask(getattr(workspace, "currently_attached_login", "")) if workspace else "",
+        # Additive, server-derived source of truth (Sponsor 2026-08-16): has the customer's EXPECTED broker
+        # identity already been recorded via the write-once deferred bind? The bind writes the login to
+        # ``trading_account.account_number`` (provisioning.bind_broker_identity), so a non-empty account number
+        # IS "identity declared". Read-only projection of EXISTING state — never a secret (the value is a
+        # boolean, never the login), never a lifecycle/provisioning change. The onboarding UI uses it as the
+        # single source of truth for whether to still show the broker-declaration form vs. the waiting experience,
+        # so a page reload is deterministic and never re-shows a form the customer already completed.
+        "identity_declared": bool(str(getattr(account, "account_number", "") or "").strip()),
     }
     if staff and workspace is not None:
         out["_staff"] = {
