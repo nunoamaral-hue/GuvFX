@@ -14,6 +14,25 @@
 
 ## Execution workstream log
 
+- **2026-08-16 — ACCEPTANCE JOURNEY #3 PREP: merged + deployed the AJ#3 waiting experience, purged support@
+  again, Customer Zero byte-identical, platform clean & ready. 🟢** Merged `feat/aj3-waiting-experience` into
+  `main` (fast-forward, no squash) → **`c5695de`** and pushed (`local main == origin/main`). Deployed DARK via
+  the proven pipeline: rollback tags `rollback-preAJ3-20260816T150403Z`; DB backup
+  `backups/preAJ3-20260816T150403Z.sql.gz`; rsync source; `docker build` backend `61faf20f` + frontend
+  `4c186f48` (`GIT_COMMIT=c5695de`, `NEXT_PUBLIC_*` UNSET = DARK); `compose up -d --force-recreate` backend +
+  frontend; **no migration**. Post-deploy green: backend CSRF 200; frontend build-info `gitCommit=c5695de`
+  (flags false); `identity_declared` live in `onboarding_read_model`; `HOSTED_DELIVERY_LIFECYCLE_ENABLED=True`;
+  scheduler + delivery + observer runners healthy. **support@ purge #3** (transactional, guardrailed): deleted
+  User 24 + TradingAccount 21 (+ `AccountProvisioning` 15 [PROTECT], `HostedMt5Workspace` 8 + 7 stage timings,
+  2 `ComponentHealth`, billing/onboarding state); `RecoveryAttempt`(33)/`AuditEvent`(7) SET_NULL (immutable
+  audit retained). Host: removed LocalUser `guvfx_u_21`, RemoteApp `guvfx_mt5_21`, tombstoned
+  `C:\GuvFX\accounts\21`; also cleared a prior-cycle **zombie** (`guvfx_u_19` disconnected session + orphaned
+  profile). **CZ byte-identical**: `STRUCTURAL_SHA256 5a9de34e…` BEFORE==AFTER, trades 523, workspace
+  WAITING_FOR_LOGIN/AUTHORIZED. Preserved: account 18, Node 2 (bridge task Running, `:8789`), beta slots 1–4,
+  shared `GuvFX_HostedObserver`, CZ + account-18 MT5 sessions. Platform ready: support@ absent (accounts
+  `[1,18]`), `/register` 200, `CLOSED_BETA_OPEN_ACCESS_ENABLED=1`, scheduler `candidates=0`. **STOP — AJ#3 to be
+  driven by Nuno from REGISTER via the public journey.**
+
 - **2026-08-16 — PRE-AJ3 PLATFORM RECONCILIATION (host residual cleanup + git/prod parity certification). 🟢
   All gates green; ready for Acceptance Journey #3.** Repository parity: the Claude UI `+840/-20` was the two
   BB#1 commits (`59f2840` impl + `a5e0157` docs) present on local `main` but not yet on `origin/main` — NOT an
