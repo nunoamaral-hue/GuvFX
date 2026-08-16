@@ -14,6 +14,36 @@
 
 ## Execution workstream log
 
+- **2026-08-16 — BETA EVE FINAL RECONCILIATION: AJ#4 onboarding-embed deployed, support@ purged (DB + host),
+  Customer Zero byte-identical, platform pristine for a fresh acceptance run. 🟢** One controlled reconciliation
+  before Nuno's fresh end-to-end acceptance journey. **Repo:** verified `feat/aj4-onboarding-embed` = the single
+  approved commit **`8fb3a93`** (no later approved commits); `make check` GREEN on the exact tree (backend 4080,
+  lint 0, build + ADR-0031 parity OK); FF-merged to `main` (`9540718 → 8fb3a93`) and pushed
+  (`local == origin == 8fb3a93` = **code SHA**). Provenance scan clean (no `aj4preview`/preview route, no `* 2.*`,
+  no mock/localhost/screenshot in FE source; `api.ts` → `https://api.guvfx.com`); one pre-existing unrelated
+  tracked wart `backend/trading/views.py.bak` left in place (backend, not shipping in a frontend-only deploy).
+  **Deploy (frontend-only, DARK):** rollback tag `guvfx-prod-guvfx-frontend:rollback-preAJ4-c5695de` (old img
+  `4c186f48`); DB backup `backups/preAJ4-20260816.sql.gz` (7.3M, gzip-OK, sha256 `d2ee2962…`); `git archive
+  8fb3a93 frontend` synced (tracked source only); `docker build` frontend **`b1154651`** (`GIT_COMMIT=8fb3a93`,
+  `NEXT_PUBLIC_API_BASE_URL=https://api.guvfx.com`, capability flags UNSET = DARK); `compose up -d
+  --force-recreate --no-deps guvfx-frontend`; **backend NOT recreated, no migration**. Verified build-info
+  `gitCommit=8fb3a93`, flags `false/false`, routes 200 (`/`, `/register`, `/onboarding/hosted`,
+  `/trading/terminal-access`, `/strategies/marketplace`, `/accounts`, `/build-info.json`); frontend restarts=0.
+  **support@ purge #4** (resolved dynamically by email = User 25 / TradingAccount 22 [#1302587] / Workspace 9):
+  transactional delete — AccountProvisioning#16 (PROTECT) first → account 22 cascade (135 rows: workspace 9 +
+  2 transitions + 9 stage timings + 2 ComponentHealth + 120 health snapshots) → user 25 cascade (subscription +
+  email token + onboarding state); RecoveryAttempt(38) + AuditEvent(8) SET_NULL/anonymised (immutable audit
+  retained). Post: support user/account/workspace = 0, accounts 1 + 18 present. **Host purge:** surgical removal
+  of `guvfx_u_22` — stopped/removed task `GuvFX_HostedObserver_22`, terminated `terminal64.exe pid=7492`
+  (guvfx_u_22 only), logged off session 6, removed RemoteApp `guvfx_mt5_22`, runtime `C:\GuvFX\accounts\22`,
+  LocalUser and profile. **Zombie scan:** 19/20/21 already clean; one orphan profile `C:\Users\guvfx_u_6`
+  (no LocalUser/dir/RemoteApp/task/session; unknown provenance, NOT a documented support@ residual) **left +
+  flagged** — do not delete unrelated artefacts. **CZ byte-identical:** `STRUCTURAL_SHA256 163e5075…`
+  BEFORE == AFTER (trades 523). Host preserved: `guvfx_u_1` (CZ, terminal64 7812), `guvfx_u_18` (11768), beta
+  runtimes 1–4 + `GuvFXBetaAgent`, shared `GuvFX_HostedObserver`, Node 2 bridge + watchdog Running,
+  :8788/:8789/:8790 listening. **Platform READY** for a fresh REGISTER-first acceptance journey (Nuno owns the
+  next action; support@ NOT recreated, no onboarding started).
+
 - **2026-08-16 — AJ#3 POST-LOGIN PRODUCT CORRECTION: onboarding decoupled from EXECUTION_READY,
   deployed to prod, support@ unblocked, Customer Zero byte-identical, execution gate unchanged. 🟢**
   Product principle enacted — *customer onboarding ≠ execution readiness*. The onboarding read model
