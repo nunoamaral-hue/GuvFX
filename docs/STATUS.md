@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-08-16 — PRE-AJ3 PLATFORM RECONCILIATION (host residual cleanup + git/prod parity certification). 🟢
+  All gates green; ready for Acceptance Journey #3.** Repository parity: the Claude UI `+840/-20` was the two
+  BB#1 commits (`59f2840` impl + `a5e0157` docs) present on local `main` but not yet on `origin/main` — NOT an
+  uncommitted working-tree diff; pushed `afa4067..a5e0157`, so **local main == origin/main == `a5e0157`** (clean
+  tree, no untracked source/config). Production parity: frontend `gitCommit=59f2840` (public flags DARK); the 10
+  BB#1 load-bearing backend files in the running container are **sha256 byte-identical** to `a5e0157` (10/10);
+  `HOSTED_DELIVERY_LIFECYCLE_ENABLED=True` verified inside the every-minute `run_hosted_observations` cron
+  execution context. Host residual cleanup (surgical, account-20 ONLY): terminated `guvfx_u_20` terminal64
+  (pid 12528) + logged off its session, removed RemoteApp `guvfx_mt5_20`, tombstoned `C:\GuvFX\accounts\20` →
+  `C:\GuvFX\_rollback\reset-acct20-20260816T094049Z`, removed the profile + LocalUser `guvfx_u_20`. **Verified
+  ABSENT** (user/runtime/profile/RemoteApp/session/terminal64); **preserved**: account 18 (user+runtime+RemoteApp
+  `guvfx_mt5_18`), CZ (`guvfx_u_1`, `terminal64`, `accounts\1`), `guvfx_b_slot1..4` + `guvfx_validation`,
+  `GuvFX_Node2Bridge` (Running) + watchdog + shared `GuvFX_HostedObserver` (Ready). CZ Golden BEFORE==AFTER
+  byte-identical (`STRUCTURAL_SHA256=1b86b8eb…`, trades 523→523); Node 1 `:8788` / Node 2 `:8789` preserved.
+  There was NO `GuvFX_HostedObserver_20` (confirms the observer was never prepped for acct 20 — the fixed bug).
+  Out-of-scope residual noted, untouched: a zombie `guvfx_u_19` disconnected session from the 2026-08-15 reset
+  (its LocalUser already gone). No CZ-host reboot.
+
 - **2026-08-16 — BETA BLOCKER #1: Hosted delivery LIFECYCLE completed behind a new DARK flag
   `HOSTED_DELIVERY_LIFECYCLE_ENABLED` (default OFF). 🟢 make check green; hosted_workspace 824/824; adversarial
   review 0 HIGH / 0 MEDIUM (re-verified CLOSED); Customer Zero + flag-OFF byte-identical (re-affirmed).**
