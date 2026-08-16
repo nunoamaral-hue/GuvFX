@@ -13,6 +13,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { HostedMt5RemoteApp } from "@/components/hosted/HostedMt5RemoteApp";
 import {
   bindExpectedAccount, confirmAccount, describeJourney, fetchJourney, requestWorkspace, STEPS,
   type HostedJourney, type JourneyView,
@@ -47,6 +48,21 @@ const primaryLink: React.CSSProperties = {
   fontWeight: 600,
   textDecoration: "none",
   boxShadow: "0 10px 30px rgba(37, 99, 235, 0.45)",
+};
+
+// AJ#4: de-emphasised secondary action (e.g. "Open MetaTrader" on the ready page) — clearly subordinate to the
+// single primary CTA so each step still reads as ONE obvious action.
+const secondaryButton: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "0.5rem 1.1rem",
+  borderRadius: 999,
+  background: "transparent",
+  color: ACCENT,
+  fontSize: "0.85rem",
+  fontWeight: 600,
+  border: "1px solid rgba(74, 179, 255, 0.4)",
+  cursor: "pointer",
 };
 
 const inputStyle: React.CSSProperties = {
@@ -125,19 +141,87 @@ function WaitingPanel({ slow }: { slow: boolean }) {
   );
 }
 
-function ReadyPanel() {
+// AJ#4: the "Open MetaTrader" step — MetaTrader is EMBEDDED right here in onboarding (the RemoteApp component,
+// reused verbatim), so the customer logs in without ever leaving the journey or discovering Terminal Access.
+// The onboarding page keeps polling in the background; when trusted observation confirms the account we move on
+// automatically. `showHeader` off for the wrong-account (BROKER_CONNECTED) case where the corrective header
+// above already speaks. Presentation only — the embed owns transport/auth/delivery.
+function EmbeddedMetaTraderStep({
+  showHeader = true, instruction, children,
+}: { showHeader?: boolean; instruction?: string; children: React.ReactNode }) {
+  return (
+    <div style={{ ...waitCard, padding: "1.15rem 1.2rem" }}>
+      {showHeader && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.95rem", fontWeight: 600, color: "#5fd39a" }}>
+            <span aria-hidden>✓</span> Broker account linked
+          </div>
+          <h3 style={{ margin: "10px 0 0", fontSize: "1.05rem", fontWeight: 700, color: TITLE }}>Open MetaTrader</h3>
+        </>
+      )}
+      <p style={{ marginTop: showHeader ? 8 : 0, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>
+        {instruction
+          ?? "Log in to MetaTrader below using your broker password — it's typed only inside MetaTrader, and "
+             + "GuvFX never sees it. As soon as you're logged in we'll detect your account and continue "
+             + "automatically. Please keep this page open."}
+      </p>
+      <div style={{ marginTop: 14 }}>{children}</div>
+    </div>
+  );
+}
+
+// AJ#4 (PP5): the manual confirmation is RETAINED as the explicit customer activation step — but identity is
+// already proven by trusted observation, so it reads "I confirm this is my trading account", not "prove who you
+// are". Rendered inside onboarding (never a detour to Broker Accounts). Heading is a real <h2> for a11y.
+function ConfirmAccountPanel({
+  maskedLogin, busy, onConfirm,
+}: { maskedLogin?: string; busy: boolean; onConfirm: () => void }) {
+  const acct = (maskedLogin || "").trim();
   return (
     <div style={{ ...waitCard, padding: "1.15rem 1.2rem", borderColor: "rgba(95, 211, 154, 0.28)",
                   background: "rgba(95, 211, 154, 0.05)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "1rem", fontWeight: 700, color: "#5fd39a" }}>
-        <span aria-hidden>✓</span> Your MetaTrader workspace is ready
-      </div>
+      <h2 style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "1rem", fontWeight: 700,
+                   color: "#5fd39a", margin: 0 }}>
+        <span aria-hidden>✓</span> Confirm your account
+      </h2>
       <p style={{ marginTop: 10, fontSize: "0.9rem", lineHeight: 1.65, color: BODY }}>
-        Everything has been prepared. You can now open MetaTrader and log in using your broker password.
+        {acct
+          ? `We detected account ${acct} logged in to your workspace. Your identity is already verified — just `
+            + "confirm this is your trading account to finish setting up your workspace."
+          : "We detected your account logged in to your workspace. Your identity is already verified — just "
+            + "confirm this is your trading account to finish setting up your workspace."}
       </p>
       <div style={{ marginTop: 16 }}>
-        <Link href="/trading/terminal-access" style={primaryLink}>Open MetaTrader</Link>
+        <Button onClick={onConfirm} disabled={busy}>
+          {busy ? "Confirming…" : "I confirm this is my trading account"}
+        </Button>
       </div>
+    </div>
+  );
+}
+
+// AJ#4 (PP7): the terminal Workspace Ready step. One primary action (Choose Strategy); a de-emphasised
+// secondary "Open MetaTrader" re-opens the SAME embedded terminal inline (no navigation) so the customer can
+// revisit MT5 without leaving onboarding or learning that Terminal Access exists.
+function WorkspaceReadyPanel({
+  onOpenTerminal, terminalOpen, children,
+}: { onOpenTerminal: () => void; terminalOpen: boolean; children?: React.ReactNode }) {
+  return (
+    <div style={{ ...waitCard, padding: "1.25rem 1.3rem", borderColor: "rgba(95, 211, 154, 0.28)",
+                  background: "rgba(95, 211, 154, 0.05)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "1.05rem", fontWeight: 700, color: "#5fd39a" }}>
+        <span aria-hidden>✓</span> Workspace Ready
+      </div>
+      <p style={{ marginTop: 10, fontSize: "0.9rem", lineHeight: 1.65, color: BODY }}>
+        Your hosted MetaTrader workspace is fully connected. You can now choose your first strategy.
+      </p>
+      <div style={{ marginTop: 18, display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" as const }}>
+        <Link href="/strategies/marketplace" style={primaryLink}>Choose Strategy</Link>
+        <button type="button" onClick={onOpenTerminal} style={secondaryButton}>
+          {terminalOpen ? "MetaTrader open below" : "Open MetaTrader"}
+        </button>
+      </div>
+      {terminalOpen && <div style={{ marginTop: 16 }}>{children}</div>}
     </div>
   );
 }
@@ -164,6 +248,8 @@ export function HostedWorkspaceJourney() {
   // AJ#3 UX: after the normal preparation window, flip to a "taking longer than expected" reassurance so the
   // customer is never staring at an endless spinner.
   const [slowWait, setSlowWait] = useState(false);
+  // AJ#4: on the terminal Workspace Ready step, the secondary "Open MetaTrader" re-opens the embedded MT5 inline.
+  const [showTerminalOnReady, setShowTerminalOnReady] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -292,108 +378,128 @@ export function HostedWorkspaceJourney() {
     );
   }
 
-  // AJ#3: the waiting/ready panel OWNS the page — no top stepper, no generic header, no form, no competing
-  // navigation — ONLY in the genuine waiting state: the customer has linked their account (identityDeclared) AND
-  // is still at AWAITING_BROKER_LOGIN. Later launch phases (e.g. BROKER_CONNECTED = wrong account logged in) keep
-  // the normal header so their corrective guidance ("switch to the account you told us") stays visible.
-  const owns = phase === "AWAITING_BROKER_LOGIN" && identityDeclared;
+  // AJ#4 — which bespoke panel owns the body at this step. The customer stays inside onboarding end-to-end:
+  //   AWAITING + linked + not-openable  → waiting takeover (one "remain on this page" message)
+  //   AWAITING + linked + openable      → EMBEDDED MetaTrader (one action: log in; we detect + continue)
+  //   BROKER_CONNECTED (wrong account)  → corrective header + EMBEDDED MetaTrader (log into the right account)
+  //   ACCOUNT_CONFIRMATION_REQUIRED     → Confirm panel (one action: I confirm this is my trading account)
+  //   WORKSPACE_READY                   → Ready panel (Choose Strategy; secondary re-opens MetaTrader inline)
+  // The onboarding poll keeps running through the AWAITING/CONNECTED steps (see the poll effect), so each of
+  // these transitions happens AUTOMATICALLY — the customer never navigates away or loses progress.
+  const waitingTakeover = phase === "AWAITING_BROKER_LOGIN" && identityDeclared && !view.canLaunch;
+  const embedStep = phase === "AWAITING_BROKER_LOGIN" && identityDeclared && view.canLaunch;
+  const brokerConnected = phase === "BROKER_CONNECTED";
+  const confirmStep = view.action?.kind === "confirm";
+  const readyStep = view.tone === "ready";
+
+  // Suppress the generic header wherever a bespoke panel carries its own heading; BROKER_CONNECTED keeps it so
+  // its corrective guidance ("make sure you're logged into that account") stays visible above the embed.
+  const showGenericHeader = !waitingTakeover && !embedStep && !confirmStep && !readyStep;
+  // Only the genuine waiting takeover hides the stepper; the embed / confirm / ready steps keep it for progress.
+  const showStepper = !waitingTakeover;
+
+  // DECLARE — enter broker details + save (deferred bind). The one launch sub-state that still has a real form:
+  // shown until the SERVER records the identity (write-once), after which the embed/waiting panels own the page.
+  const declareForm = (
+    <form onSubmit={onBind} className="space-y-3">
+      <div>
+        <label htmlFor="hw-login" style={{ display: "block", fontSize: "0.8rem", color: BODY, marginBottom: 4 }}>
+          Broker account number
+        </label>
+        <input id="hw-login" required value={form.expected_login}
+               onChange={(e) => setForm({ ...form, expected_login: e.target.value })}
+               placeholder="e.g. 1234567" style={inputStyle}
+               onFocus={(e) => { e.currentTarget.style.borderColor = ACCENT; }}
+               onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(74, 179, 255, 0.2)"; }} />
+      </div>
+      <div>
+        <label htmlFor="hw-server" style={{ display: "block", fontSize: "0.8rem", color: BODY, marginBottom: 4 }}>
+          Broker server
+        </label>
+        <input id="hw-server" value={form.expected_server}
+               onChange={(e) => setForm({ ...form, expected_server: e.target.value })}
+               placeholder="e.g. YourBroker-Demo" style={inputStyle}
+               onFocus={(e) => { e.currentTarget.style.borderColor = ACCENT; }}
+               onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(74, 179, 255, 0.2)"; }} />
+      </div>
+      <Button type="submit" disabled={busy || !form.expected_login.trim()} style={{ width: "100%" }}>
+        {busy ? "Saving…" : "Save my broker details"}
+      </Button>
+      <p style={{ fontSize: "0.8rem", color: MUTED, margin: 0 }}>
+        Enter your password only inside MetaTrader — never here. GuvFX never receives or stores it.
+      </p>
+    </form>
+  );
+
+  let body: React.ReactNode;
+  if (waitingTakeover) {
+    body = <WaitingPanel slow={slowWait} />;
+  } else if (embedStep) {
+    body = (
+      <EmbeddedMetaTraderStep>
+        <HostedMt5RemoteApp />
+      </EmbeddedMetaTraderStep>
+    );
+  } else if (brokerConnected) {
+    body = (
+      <EmbeddedMetaTraderStep
+        showHeader={false}
+        instruction="Open MetaTrader below and log into the account you told us — we'll continue automatically once it matches."
+      >
+        <HostedMt5RemoteApp />
+      </EmbeddedMetaTraderStep>
+    );
+  } else if (confirmStep) {
+    body = <ConfirmAccountPanel maskedLogin={journey?.active_login_masked} busy={busy} onConfirm={onConfirm} />;
+  } else if (readyStep) {
+    body = (
+      <WorkspaceReadyPanel onOpenTerminal={() => setShowTerminalOnReady(true)} terminalOpen={showTerminalOnReady}>
+        <HostedMt5RemoteApp />
+      </WorkspaceReadyPanel>
+    );
+  } else if (view.action === null && view.tone === "progress") {
+    // Progress phases carry no action — show live motion so it never looks frozen, with one "remain" message.
+    body = (
+      <div role="status" aria-live="polite"
+           style={{ display: "flex", alignItems: "center", gap: 10, color: MUTED, fontSize: "0.85rem" }}>
+        <Spinner />
+        <span>Working on it — this page updates automatically.</span>
+      </div>
+    );
+  } else if (view.action?.kind === "request") {
+    body = (
+      <Button onClick={onRequest} disabled={busy} style={{ width: "100%" }}>
+        {busy ? "Requesting…" : view.action.label}
+      </Button>
+    );
+  } else if (view.action?.kind === "launch") {
+    // The only remaining launch case is AWAITING_BROKER_LOGIN with the identity NOT yet declared → the form.
+    body = declareForm;
+  } else if (view.action?.kind === "support") {
+    body = (
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.7rem" }}>
+        <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>Our team can help get this sorted for you.</p>
+        {/* Actionable next step — never a dead end. Opens the customer's mail client (no backend). */}
+        <a href="mailto:support@guvfx.com?subject=Hosted%20Workspace%20help" style={primaryLink}>
+          {view.action.label}
+        </a>
+      </div>
+    );
+  } else {
+    body = null;
+  }
 
   return (
     <div className="mx-auto max-w-xl p-6">
-      {!owns && <Stepper current={view.stepIndex} />}
-      <div style={{ ...glassCard, marginTop: owns ? 0 : "1.5rem" }}>
-        {!owns && (
+      {showStepper && <Stepper current={view.stepIndex} />}
+      <div style={{ ...glassCard, marginTop: showStepper ? "1.5rem" : 0 }}>
+        {showGenericHeader && (
           <>
             <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: TITLE, margin: 0 }}>{view.title}</h2>
             <p style={{ marginTop: 8, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>{view.description}</p>
           </>
         )}
-        <div style={{ marginTop: owns ? 0 : 16 }}>
-          {/* Progress phases carry no action — show live motion + elapsed time so it never looks frozen. */}
-          {view.action === null && view.tone === "progress" && (
-            <div role="status" aria-live="polite"
-                 style={{ display: "flex", alignItems: "center", gap: 10, color: MUTED, fontSize: "0.85rem" }}>
-              <Spinner />
-              <span>Working on it — this page updates automatically.</span>
-            </div>
-          )}
-
-          {view.action?.kind === "request" && (
-            <Button onClick={onRequest} disabled={busy} style={{ width: "100%" }}>
-              {busy ? "Requesting…" : view.action.label}
-            </Button>
-          )}
-
-          {view.action?.kind === "launch" && (
-            phase === "AWAITING_BROKER_LOGIN" ? (
-            !identityDeclared ? (
-              // DECLARE — enter broker details + save. Shown until the SERVER records the identity (write-once):
-              // the one launch sub-state where the page is NOT owned by the waiting panel, because the customer
-              // still has a real action (deferred bind: declare, then open MT5).
-              <form onSubmit={onBind} className="space-y-3">
-                <div>
-                  <label htmlFor="hw-login" style={{ display: "block", fontSize: "0.8rem", color: BODY, marginBottom: 4 }}>
-                    Broker account number
-                  </label>
-                  <input id="hw-login" required value={form.expected_login}
-                         onChange={(e) => setForm({ ...form, expected_login: e.target.value })}
-                         placeholder="e.g. 1234567" style={inputStyle}
-                         onFocus={(e) => { e.currentTarget.style.borderColor = ACCENT; }}
-                         onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(74, 179, 255, 0.2)"; }} />
-                </div>
-                <div>
-                  <label htmlFor="hw-server" style={{ display: "block", fontSize: "0.8rem", color: BODY, marginBottom: 4 }}>
-                    Broker server
-                  </label>
-                  <input id="hw-server" value={form.expected_server}
-                         onChange={(e) => setForm({ ...form, expected_server: e.target.value })}
-                         placeholder="e.g. YourBroker-Demo" style={inputStyle}
-                         onFocus={(e) => { e.currentTarget.style.borderColor = ACCENT; }}
-                         onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(74, 179, 255, 0.2)"; }} />
-                </div>
-                <Button type="submit" disabled={busy || !form.expected_login.trim()} style={{ width: "100%" }}>
-                  {busy ? "Saving…" : "Save my broker details"}
-                </Button>
-                <p style={{ fontSize: "0.8rem", color: MUTED, margin: 0 }}>
-                  Enter your password only inside MetaTrader — never here. GuvFX never receives or stores it.
-                </p>
-              </form>
-            ) : view.canLaunch ? (
-              // READY — the workspace is openable. The waiting panel disappears; a single "Open MetaTrader" action.
-              <ReadyPanel />
-            ) : (
-              // WAITING — the page OWNS the customer: account linked, active preparation timeline, one instruction
-              // ("remain on this page"), automatic continuation. Swaps to a longer-wait reassurance after SLOW_WAIT_MS.
-              <WaitingPanel slow={slowWait} />
-            )
-            ) : (
-              // A LATER launch phase, identity already declared — e.g. BROKER_CONNECTED (the WRONG broker account
-              // is logged in). The corrective header above (view.title/description) stays visible; offer one action
-              // to open MetaTrader and switch to the account they told us. Never re-shows the declaration form.
-              <Link href="/trading/terminal-access" style={primaryLink}>{view.action.label}</Link>
-            )
-          )}
-
-          {view.action?.kind === "confirm" && (
-            <Button onClick={onConfirm} disabled={busy}>{busy ? "Confirming…" : view.action.label}</Button>
-          )}
-
-          {view.action?.kind === "assign" && (
-            <Link href="/strategies/marketplace" style={primaryLink}>{view.action.label}</Link>
-          )}
-
-          {view.action?.kind === "support" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.7rem" }}>
-              <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>
-                Our team can help get this sorted for you.
-              </p>
-              {/* Actionable next step — never a dead end. Opens the customer's mail client (no backend). */}
-              <a href="mailto:support@guvfx.com?subject=Hosted%20Workspace%20help" style={primaryLink}>
-                {view.action.label}
-              </a>
-            </div>
-          )}
-        </div>
+        <div style={{ marginTop: showGenericHeader ? 16 : 0 }}>{body}</div>
       </div>
     </div>
   );

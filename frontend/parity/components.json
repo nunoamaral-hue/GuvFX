@@ -29,6 +29,7 @@
   "src/components/broker/StatusBadge.tsx",
   "src/components/broker/ValidationHistoryTable.tsx",
   "src/components/broker/ValidationTimelinePanel.tsx",
+  "src/components/hosted/HostedMt5RemoteApp.tsx",
   "src/components/marketplace/SignalCopyReadiness.tsx",
   "src/components/onboarding/HostedWorkspaceJourney.tsx",
   "src/components/onboarding/OnboardingProgress.tsx",

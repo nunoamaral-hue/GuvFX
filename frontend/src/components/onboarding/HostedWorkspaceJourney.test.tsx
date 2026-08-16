@@ -13,6 +13,12 @@ vi.mock("@/lib/hosted-journey", async (importOriginal) => {
   return { ...actual, ...jm };
 });
 
+// AJ#4: the real RemoteApp component (network detection + Guacamole iframe) has its own tests; here we stub it
+// to a marker so the journey tests verify WHERE it is embedded and WHEN, not its internals.
+vi.mock("@/components/hosted/HostedMt5RemoteApp", () => ({
+  HostedMt5RemoteApp: () => <div data-testid="onboarding-mt5-embed">Embedded MetaTrader</div>,
+}));
+
 import { HostedWorkspaceJourney } from "@/components/onboarding/HostedWorkspaceJourney";
 import type { HostedJourney } from "@/lib/hosted-journey";
 
@@ -51,14 +57,17 @@ async function saveBrokerDetails(login = "700900") {
 }
 
 describe("HostedWorkspaceJourney", () => {
-  it("AJ#3: once linked + deliverable, the READY panel shows a SINGLE 'Open MetaTrader' action (no form)", async () => {
+  it("AJ#4: once linked + deliverable, MetaTrader is EMBEDDED inside onboarding (no navigation to Terminal Access)", async () => {
     declareFlow({ phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_READY" });
     render(<HostedWorkspaceJourney />);
     await saveBrokerDetails();
-    const link = await screen.findByRole("link", { name: /open metatrader/i });
-    expect(link).toHaveAttribute("href", "/trading/terminal-access");
-    expect(screen.getByText(/your metatrader workspace is ready/i)).toBeInTheDocument();
-    // the page is OWNED by a single action — the form + its Save button are gone.
+    // The MT5 terminal is embedded INLINE — the customer never leaves onboarding.
+    expect(await screen.findByTestId("onboarding-mt5-embed")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /open metatrader/i })).toBeInTheDocument();
+    // No link out to Terminal Access anywhere on the page.
+    const hrefs = Array.from(document.querySelectorAll("a")).map((a) => a.getAttribute("href"));
+    expect(hrefs).not.toContain("/trading/terminal-access");
+    // the page is OWNED by this step — the declaration form + its Save button are gone.
     expect(screen.queryByRole("button", { name: /save my broker details/i })).toBeNull();
   });
 
@@ -133,13 +142,12 @@ describe("HostedWorkspaceJourney", () => {
     }
   });
 
-  it("BB#1 + AJ#3: once linked, a DELIVERABLE workspace shows the READY panel (openable BEFORE CONNECTED)", async () => {
+  it("BB#1 + AJ#4: once linked, a DELIVERABLE workspace embeds MetaTrader (openable BEFORE CONNECTED)", async () => {
     declareFlow({ phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_DELIVERABLE" });
     render(<HostedWorkspaceJourney />);
     await saveBrokerDetails();
-    const link = await screen.findByRole("link", { name: /open metatrader/i });
-    expect(link).toHaveAttribute("href", "/trading/terminal-access");
-    expect(screen.queryByText(/setting up your secure metatrader workspace/i)).toBeNull();  // ready, not waiting
+    expect(await screen.findByTestId("onboarding-mt5-embed")).toBeInTheDocument();       // embedded inline
+    expect(screen.queryByText(/setting up your secure metatrader workspace/i)).toBeNull();  // openable, not waiting
   });
 
   it("AJ#3: identity_declared is the source of truth — an already-linked workspace shows the waiting panel on a fresh load, never the form", async () => {
@@ -154,16 +162,18 @@ describe("HostedWorkspaceJourney", () => {
     expect(screen.queryByLabelText(/broker account number/i)).toBeNull();   // the form never re-shows on reload
   });
 
-  it("AJ#3: a wrong-account (BROKER_CONNECTED) state keeps the corrective guidance visible — never the declaration form", async () => {
-    // The customer linked, then logged MetaTrader into the wrong broker account. The full-page waiting takeover
-    // must NOT swallow the corrective guidance; the form must never re-appear (identity already declared).
+  it("AJ#4: a wrong-account (BROKER_CONNECTED) state keeps the corrective guidance AND embeds MetaTrader inline", async () => {
+    // The customer linked, then logged MetaTrader into the wrong broker account. The corrective guidance stays
+    // visible AND the embedded terminal is right there so they fix it without leaving; the form never re-appears.
     jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({
       phase: "BROKER_CONNECTED", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_READY",
       active_login_masked: "***561", identity_declared: true }) });
     render(<HostedWorkspaceJourney />);
     expect(await screen.findByText(/make sure you're logged into that account/i)).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: /open metatrader/i });
-    expect(link).toHaveAttribute("href", "/trading/terminal-access");
+    expect(screen.getByTestId("onboarding-mt5-embed")).toBeInTheDocument();
+    // No navigation out to Terminal Access.
+    const hrefs = Array.from(document.querySelectorAll("a")).map((a) => a.getAttribute("href"));
+    expect(hrefs).not.toContain("/trading/terminal-access");
     expect(screen.queryByRole("button", { name: /save my broker details/i })).toBeNull();
     expect(screen.queryByLabelText(/broker account number/i)).toBeNull();
   });
@@ -234,5 +244,37 @@ describe("HostedWorkspaceJourney", () => {
     for (const bad of ["canonical", "provisioning", "execution_node", "rdp_host", "guvfx_u_", "auto_shadow"]) {
       expect(blob).not.toContain(bad);
     }
+  });
+
+  it("AJ#4: the confirm step is the retained activation ('I confirm this is my trading account') inside onboarding — then auto-advances to Ready with no spinner", async () => {
+    jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({
+      phase: "ACCOUNT_CONFIRMATION_REQUIRED", next_action: "confirm_broker_account", delivery: "DELIVERY_READY",
+      active_login_masked: "***561" }) });
+    jm.confirmAccount.mockResolvedValue(journey({ phase: "WORKSPACE_READY", next_action: "assign_strategy" }));
+    render(<HostedWorkspaceJourney />);
+    const confirmBtn = await screen.findByRole("button", { name: /i confirm this is my trading account/i });
+    expect(screen.getByRole("heading", { name: /confirm your account/i })).toBeInTheDocument();
+    // Identity already proven — the copy CONFIRMS ownership, it does not ask the customer to prove who they are.
+    expect(screen.getByText(/identity is already verified/i)).toBeInTheDocument();
+    // No detour: never a link to Broker Accounts or Terminal Access from the confirm step.
+    const hrefs = Array.from(document.querySelectorAll("a")).map((a) => a.getAttribute("href"));
+    expect(hrefs).not.toContain("/accounts");
+    expect(hrefs).not.toContain("/trading/terminal-access");
+    // Confirming transitions straight to Workspace Ready — the customer never sees another spinner.
+    fireEvent.click(confirmBtn);
+    await waitFor(() => expect(jm.confirmAccount).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/workspace ready/i)).toBeInTheDocument();
+  });
+
+  it("AJ#4: Workspace Ready offers Choose Strategy (primary) + a secondary Open MetaTrader that re-opens MT5 inline (no duplicate session by default)", async () => {
+    jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({
+      phase: "WORKSPACE_READY", next_action: "assign_strategy", delivery: "DELIVERY_READY" }) });
+    render(<HostedWorkspaceJourney />);
+    const choose = await screen.findByRole("link", { name: /choose strategy/i });
+    expect(choose).toHaveAttribute("href", "/strategies/marketplace");
+    // MT5 is NOT mounted on the ready page until the customer asks — no duplicate terminal session by default.
+    expect(screen.queryByTestId("onboarding-mt5-embed")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /open metatrader/i }));
+    expect(await screen.findByTestId("onboarding-mt5-embed")).toBeInTheDocument();  // re-opens inline, still in onboarding
   });
 });
