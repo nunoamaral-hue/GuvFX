@@ -79,10 +79,17 @@ class JourneyPhaseTests(TestCase):
         self.assertEqual(p["phase"], RM.PHASE_ACCOUNT_CONFIRMATION_REQUIRED)
         self.assertEqual(p["next_action"], RM.NEXT_CONFIRM_ACCOUNT)
 
-    def test_account_bound_connected_confirmed(self):
+    def test_onboarding_completes_at_connected_matched_confirmed_not_execution_ready(self):
+        # AJ#3 product correction: onboarding is COMPLETE when the workspace is OPERATIONAL — CONNECTED + account
+        # matched + confirmed — WITHOUT requiring canonical EXECUTION_READY (AutoTrading/arming). The retired
+        # ACCOUNT_BOUND "Finishing up" wait (which depended on host-observed trade_allowed and could hang
+        # indefinitely) is gone; the customer reaches WORKSPACE_READY and may choose a strategy.
         ws, acct = _ws(_user(), node=True, state=S.CONNECTED, connected=True, matched=True, confirmed=True)
         p = RM.onboarding_journey_projection(ws, acct)
-        self.assertEqual(p["phase"], RM.PHASE_ACCOUNT_BOUND)
+        self.assertEqual(p["phase"], RM.PHASE_WORKSPACE_READY)       # NOT ACCOUNT_BOUND
+        self.assertEqual(p["next_action"], RM.NEXT_ASSIGN_STRATEGY)
+        self.assertTrue(p["strategy_eligible"])                     # onboarding-complete signal (not arming)
+        self.assertNotEqual(p["phase"], RM.PHASE_ACCOUNT_BOUND)     # the indefinite "Finishing up" state is retired
 
     def test_workspace_ready(self):
         ws, acct = _ws(_user(), node=True, state=S.EXECUTION_READY, connected=True, matched=True, confirmed=True)

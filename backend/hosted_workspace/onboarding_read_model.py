@@ -124,15 +124,22 @@ def _phase_and_next(workspace, account):
         return PHASE_BROKER_CONNECTED, NEXT_OPEN_MT5_AND_LOGIN     # connected but active account not matched
     if not confirmed:
         return PHASE_ACCOUNT_CONFIRMATION_REQUIRED, NEXT_CONFIRM_ACCOUNT
-    if state in (S.EXECUTION_READY, S.EXECUTING):
-        return PHASE_WORKSPACE_READY, NEXT_ASSIGN_STRATEGY
-    return PHASE_ACCOUNT_BOUND, NEXT_WAIT
+    # AJ#3 product correction: ONBOARDING is COMPLETE once the workspace is OPERATIONAL — CONNECTED + account
+    # matched + confirmed. Execution readiness (AutoTrading → canonical EXECUTION_READY) and arming are STRICTLY
+    # HIGHER, separately-owned tiers (eligibility.py: ASSIGNMENT-ELIGIBLE < ARMED < ORDER-AUTHORISED) and must
+    # NEVER be an onboarding gate. The retired PHASE_ACCOUNT_BOUND used to wait here for EXECUTION_READY — which
+    # depends on obs.trade_allowed (a host-observed MT5 fact the backend can't write), so a confirmed customer
+    # could sit on an INDEFINITE "Finishing up" spinner. Assignment eligibility, arming and the order gate all
+    # read canonical EXECUTION_READY DIRECTLY and are unaffected by this customer-facing phase.
+    return PHASE_WORKSPACE_READY, NEXT_ASSIGN_STRATEGY
 
 
 def onboarding_journey_projection(workspace, account, *, staff: bool = False) -> dict:
-    """Customer-safe onboarding-journey projection. ``strategy_eligible`` here is the journey signal
-    (confirmed ∧ canonical EXECUTION_READY); the authoritative assignment-eligibility contract lives in the
-    strategy layer and is strictly below arming. Staff receive extra, still-secret-free operator context."""
+    """Customer-safe onboarding-journey projection. ``strategy_eligible`` is the journey signal that onboarding
+    is COMPLETE (phase WORKSPACE_READY = operational workspace: CONNECTED + matched + confirmed) so the customer
+    may proceed to choose a strategy — it does NOT require EXECUTION_READY/arming. The authoritative
+    assignment-eligibility contract lives in the strategy layer (eligibility.py: ASSIGNMENT-ELIGIBLE < ARMED <
+    ORDER-AUTHORISED) and is strictly below arming. Staff receive extra, still-secret-free operator context."""
     phase, next_action = _phase_and_next(workspace, account)
     confirmed = getattr(account, "workspace_confirmed_at", None) is not None
     state = str(getattr(workspace, "canonical_state", "") or "") if workspace is not None else ""
@@ -140,7 +147,7 @@ def onboarding_journey_projection(workspace, account, *, staff: bool = False) ->
         "phase": phase,
         "next_action": next_action,
         "confirmed": confirmed,
-        "strategy_eligible": bool(confirmed and state in (S.EXECUTION_READY, S.EXECUTING)),
+        "strategy_eligible": bool(phase == PHASE_WORKSPACE_READY),
         "delivery": delivery_readiness(workspace),
         "active_login_masked": _mask(getattr(workspace, "currently_attached_login", "")) if workspace else "",
         # Additive, server-derived source of truth (Sponsor 2026-08-16): has the customer's EXPECTED broker
