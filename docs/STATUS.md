@@ -37,9 +37,25 @@
   CONNECTED session (no duplicate `REMOTEAPP_CONNECTED`); MED — distinct `slot_prep_failed`/`observer_prep_failed`
   provisioning counters (bad-rollout visibility); LOW — explicit CZ-refused guard on the DELIVERABLE projection.
   +7 regression tests incl. RULE-11 freshness positive+negative control and "PROVISIONING never deliverable".
-  **NEVER redefines CONNECTED, never touches Customer Zero, never arms execution.** Committed on
-  `feat/bb1-delivery-lifecycle`; DARK (flag OFF) — repo-green, staged deploy to follow (DARK → CZ Golden BEFORE/AFTER
-  → deliberate arm → live proof through the normal customer path → support@ reset).
+  **NEVER redefines CONNECTED, never touches Customer Zero, never arms execution.** Committed `59f2840`
+  (`feat/bb1-delivery-lifecycle` → fast-forward-merged to `main`).
+  **DEPLOYED + ARMED to prod (2026-08-16).** Staged, per Sponsor decision: (1) DARK deploy of backend
+  (image `guvfx-prod-guvfx-backend`, rollback tag `rollback-preBB1`; no migration) + frontend
+  (`guvfx-prod-guvfx-frontend`, `gitCommit=59f2840`, public flags DARK, rollback `rollback-b4f2683`); (2) **CZ Golden
+  BEFORE == AFTER byte-identical** across the DARK deploy (`STRUCTURAL_SHA256=4a5ac22c…`); (3) **support@ reset
+  completely** (Sponsor decision "Reset support@, then fresh REGISTER"): transactional delete of `User(23)` +
+  `TradingAccount(20)` + `HostedMt5Workspace` + 8 stage-timings + transition + `AccountProvisioning`(guvfx_u_20) +
+  onboarding/billing state (AuditEvent/RecoveryAttempt de-linked via SET_NULL; verified DB backup
+  `preBB1reset-support-20260816T090619Z.sql.gz` taken first); (4) armed `HOSTED_DELIVERY_LIFECYCLE_ENABLED=1` in
+  `beta.env` (backup `beta.env.bak.preDeliveryLifecycle-20260816T090845Z`) + recreated backend. **Verified:** the
+  every-minute host cron `run_hosted_observations` now runs the full lifecycle (prov incl. `slot_prep_failed`/
+  `observer_prep_failed` counters + `deliv: enabled=True cz_skipped=1 held=1 errors=0`); Customer-Zero invariant
+  fields BYTE-IDENTICAL (CZ trades 523→523); support@ ABSENT (users 5→4, accounts 3→2); one preserved other user
+  (acct 18); Node 2 / observer + bridge automation / flags / CZ preserved. **Platform READY FOR ACCEPTANCE JOURNEY
+  #3** — a fresh REGISTER now flows provisioning → autonomous Stage-10 observer → DELIVERABLE → customer opens MT5 →
+  observation drives CONNECTED, with No SSH / No PowerShell / No operator PREPARE_OBSERVER / No manually written
+  CONNECTED. NOTE (out of scope, flagged to Sponsor): prod `docker-compose.yml` carries two backend secrets inline
+  (redacted) — recommend moving to an env_file + rotation.
 
 - **2026-08-16 — CLOSED-BETA UX POLISH deployed to prod (FRONTEND-ONLY, DARK). 🟢 make check green; Customer
   Zero byte-identical (Golden BEFORE == AFTER).** Sponsor-approved Packets 4–7 UX bundle — hosted-consistent
