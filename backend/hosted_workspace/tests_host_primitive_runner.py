@@ -349,6 +349,29 @@ class ObserverScheduledTaskCmdletTests(unittest.TestCase):
         self.assertNotIn("$Password", self._observer())
         self.assertIsNone(pr.CONTRACT["prepare_observer"].stdin_arg)   # no stdin secret for this primitive
 
+    def test_observer_task_launches_windowless_not_console(self):
+        # AJ#3 input blocker: the observer task launched `py` (the CONSOLE launcher), which drew a visible
+        # C:\Windows\py.EXE window INTO the tenant's own RemoteApp session and stole keyboard focus from the
+        # MT5 login dialog. It must launch WINDOWLESS (`pyw`) so no console/window/focus-steal is created.
+        src = self._observer()
+        self.assertIn('New-ScheduledTaskAction -Execute "pyw"', src)
+        self.assertNotIn('New-ScheduledTaskAction -Execute "py"', src)   # the console launcher is gone
+
+    def test_observe_runner_drift_check_still_allows_the_launcher(self):
+        # The observe-runner validates the observer task's action BEFORE triggering it; its launcher regex must
+        # accept the windowless `pyw` (else the corrected windowless task would be rejected as untrusted).
+        with open(os.path.join(_WINDOWS_SCRIPTS, "Invoke-GuvfxObserver.ps1"), encoding="ascii") as fh:
+            inv = fh.read()
+        self.assertIn(r"\bpy(w)?(\.exe)?$", inv)   # the alternative that covers both py and pyw
+
+    def test_run_observer_status_echo_is_null_safe_for_windowless(self):
+        # Under a windowless launcher (pyw/pythonw) sys.stdout may be None; the status echo must never raise
+        # (the authoritative output is the atomically-written snapshot). Direct sys.stdout.write() is gone.
+        with open(os.path.join(_WINDOWS_SCRIPTS, "run_observer.py"), encoding="ascii") as fh:
+            obs = fh.read()
+        self.assertIn("def _emit_status", obs)
+        self.assertNotIn("sys.stdout.write(", obs)
+
 
 class FailureDiagnosticsTests(unittest.TestCase):
     """Diagnostic hardening (packet Phase 3, tests D/E): the runner passes the script's structured exception

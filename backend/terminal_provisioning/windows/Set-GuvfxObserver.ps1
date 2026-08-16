@@ -66,7 +66,11 @@ try {
     if (-not (Test-Path -LiteralPath $resultDir)) { New-Item -ItemType Directory -Path $resultDir -Force | Out-Null }
     & icacls $resultDir /grant ("{0}:(OI)(CI)M" -f $Username) | Out-Null
     if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
-      $action = New-ScheduledTaskAction -Execute "py" -Argument ('"{0}" --account {1}' -f $obsPy, $acctId)
+      # Launch WINDOWLESS (pyw = the windowless Python launcher). The console launcher (py) drew a visible
+      # C:\Windows\py.EXE console into the tenant's own RemoteApp session and stole keyboard focus from the MT5
+      # login dialog (AJ#3 input blocker). pyw runs the same script with no console/window/focus-steal; the
+      # observe-runner drift-check (Invoke-GuvfxObserver.ps1) already allows pyw.
+      $action = New-ScheduledTaskAction -Execute "pyw" -Argument ('"{0}" --account {1}' -f $obsPy, $acctId)
       $principal = New-ScheduledTaskPrincipal -UserId $Username -LogonType Interactive -RunLevel Limited
       $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
       Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null

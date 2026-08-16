@@ -199,6 +199,19 @@ def atomic_write(path, data) -> None:
             pass
 
 
+def _emit_status(obj) -> None:
+    """Best-effort status echo to stdout. The observer now runs under a WINDOWLESS launcher (pyw/pythonw) so it
+    never draws a console into the tenant's RemoteApp session; there, ``sys.stdout`` may be ``None``. The real,
+    authoritative output is the atomically-written snapshot file (``atomic_write``), so a missing/closed console
+    must NEVER raise or change the exit code."""
+    try:
+        out = sys.stdout
+        if out is not None:
+            out.write(json.dumps(obj))
+    except Exception:
+        pass
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Session-bound Hosted Workspace observer (read-only).")
     parser.add_argument("--account", type=int, required=True)
@@ -206,12 +219,12 @@ def main(argv=None) -> int:
     account_id = args.account
     if account_id <= 0 or account_id in RESERVED_ACCOUNT_IDS:
         # Never observe / never create result paths for Customer Zero or an invalid id.
-        sys.stdout.write(json.dumps({"ok": False, "reason": "reserved_or_invalid_account"}))
+        _emit_status({"ok": False, "reason": "reserved_or_invalid_account"})
         return 2
     snap = observe(account_id)
     atomic_write(result_path(account_id), snap)
-    sys.stdout.write(json.dumps({"ok": bool(snap.get("ok")), "account_id": account_id,
-                                 "observation_id": snap.get("observation_id")}))
+    _emit_status({"ok": bool(snap.get("ok")), "account_id": account_id,
+                  "observation_id": snap.get("observation_id")})
     return 0
 
 
