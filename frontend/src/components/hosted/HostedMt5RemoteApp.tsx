@@ -92,6 +92,18 @@ export function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange?: (activ
     }
   }, []);
 
+  // AJ#4 keyboard hardening: when the browser tab/window regains focus, re-forward focus to the terminal so the
+  // very next keystroke reaches Guacamole. Guacamole's key handler listens on the iframe's document, and a tab
+  // switch leaves DOM focus on the parent — the classic "came back to the tab, keyboard is dead" symptom. This
+  // only fires on a genuine window-focus event (never on a timer, never on the 5s poll re-render), forwards the
+  // user's own return intent, never synthesises or reads keys, and never remounts the iframe.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onWinFocus = () => { if (iframeRef.current) focusTerminal(); };
+    window.addEventListener("focus", onWinFocus);
+    return () => window.removeEventListener("focus", onWinFocus);
+  }, [focusTerminal]);
+
   // Detect a hosted workspace among the signed-in user's OWN accounts. Any
   // error / 404 (dark, or no hosted workspace) => stay invisible + inactive.
   useEffect(() => {
@@ -331,7 +343,11 @@ export function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange?: (activ
             // disable-paste=false (browser->MT5 only); MT5->browser copy stays disabled server-side. This does
             // NOT widen the sandbox or enable drive/file/printer.
             allow="clipboard-read; clipboard-write"
-            style={{ width: "100%", height: "640px", border: "none", display: "block" }}
+            // AJ#4 polish: MT5 should feel like a normal desktop app. The RemoteApp desktop resizes to match the
+            // iframe (guac `resize-method=display-update`), so a taller/wider iframe gives MT5 a real larger
+            // desktop — crisp, not scaled. clamp() keeps a stable size that only changes on a genuine viewport
+            // resize (never on the 5s onboarding poll), so it does NOT churn display-update / drop keyboard focus.
+            style={{ width: "100%", height: "clamp(750px, 80vh, 900px)", border: "none", display: "block" }}
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
           />
         </div>

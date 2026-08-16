@@ -397,6 +397,11 @@ export function HostedWorkspaceJourney() {
   const showGenericHeader = !waitingTakeover && !embedStep && !confirmStep && !readyStep;
   // Only the genuine waiting takeover hides the stepper; the embed / confirm / ready steps keep it for progress.
   const showStepper = !waitingTakeover;
+  // AJ#4 polish: whenever the embedded MT5 terminal is on screen, widen the whole card to a desktop-sized area so
+  // MetaTrader feels like a normal desktop app (the RemoteApp desktop resizes to fill it — guac display-update).
+  // All other steps keep the compact reading width. Toggling this does not remount the embed (the width just
+  // animates); the embed already renders wide the first time it mounts, so there is no mid-login resize.
+  const wide = embedStep || brokerConnected || (readyStep && showTerminalOnReady);
 
   // DECLARE — enter broker details + save (deferred bind). The one launch sub-state that still has a real form:
   // shown until the SERVER records the identity (write-once), after which the embed/waiting panels own the page.
@@ -489,8 +494,11 @@ export function HostedWorkspaceJourney() {
     body = null;
   }
 
+  // Width switches instantly (no CSS transition): an animated width would continuously resize the iframe, and
+  // with guac `resize-method=display-update` a live terminal resizing mid-animation could churn the remote
+  // (black repaint / dropped keyboard focus). An instant switch = one clean display-update at mount.
   return (
-    <div className="mx-auto max-w-xl p-6">
+    <div className="mx-auto p-6" style={{ maxWidth: wide ? 1400 : 576 }}>
       {showStepper && <Stepper current={view.stepIndex} />}
       <div style={{ ...glassCard, marginTop: showStepper ? "1.5rem" : 0 }}>
         {showGenericHeader && (
