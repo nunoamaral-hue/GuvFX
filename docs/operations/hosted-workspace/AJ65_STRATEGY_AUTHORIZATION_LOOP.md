@@ -96,8 +96,29 @@ Full frontend suite: 211/211. Also fixed a pre-existing red inherited from AJ#6.
 `tests_host_primitive_runner.py` asserted `RESERVED_ACCOUNT_IDS = @(1)` while the deployed PS1 (and the
 account-18 SACRED invariant) is `@(1, 18)`. `make check`, lint (0 errors), build: green.
 
-## 6. Certification — pending (support@/account 24, current authorized state)
+## 6. Certification — PASS (2026-08-17, support@/account 24, current authorized state)
 
-_(to be completed at deploy: CZ Golden BEFORE/AFTER byte-identical; live journey shows CASE B "Enable this
-strategy" with no reciprocal loop; 0 StrategyAssignments / 0 ExecutionJobs / 0 orders; STOP before the
-customer-only Wayond arm click.)_
+Deployed frontend only: FF-merged to `main` (`cc7bde1` test fix → `dbe42bb` AJ#6.5), rebuilt image
+`dee99b7f` (rollback `guvfx-prod-guvfx-frontend:rollback-preAJ65` = `cf0536f41f99`), `NEXT_PUBLIC_BROKER_
+CONNECTIVITY_ENABLED` / `NEXT_PUBLIC_OPERATIONS_ENABLED` **stay DARK** (not passed — the fix does not depend
+on them). The served bundle contains the fix ("Enable this strategy", "finishing getting ready for automated
+trading").
+
+**Live journey (support@/account 24), current authorized baseline** (Nuno performed the ADR-0047 authorization
+himself at 15:10 after the AJ#6.4 stop; per his direction the CURRENT authorized+armed state is the acceptance
+baseline): `phase=WORKSPACE_READY`, `strategy_eligible=True`, `execution_ready=True`, `execution_authorized=True`,
+`execution_armed=True`, `can_enable_automated_trading=False`. Wayond readiness (`mp-010`): `state=READY`,
+`can_arm=True`, `armed=False`. → deterministic FE case: **owned=True, caseA=False, caseB=True → the card renders
+the live "Enable this strategy" arm control, NOT a `/onboarding/hosted` bounce.** The reciprocal loop is gone.
+
+**Safety invariants held:** Wayond arm = FALSE (active AUTO_DEMO/LIVE/ti_signals assignment = 0); ExecutionJobs = 0;
+Trades = 0. The customer-only Wayond arm click was **NOT** performed. **Customer Zero Golden byte-identical**
+(`b57182b4…`, AFTER==BEFORE); **account 18 untouched** (WAITING_FOR_LOGIN, `capability_recovery_count=0`).
+
+**Disclosed customer activity (not this packet's doing, not order-producing):** support@ (owner 27) also assigned a
+GENERIC strategy `London Session Box Breakout` (id=9, `exec_mode=MANUAL`, `stage=TEST`, `signal_source=''`) at 15:37
+via the normal (non-signal-copy) Assign flow — a surface AJ#6.5 does not touch. MANUAL/TEST does not auto-route, so
+it yields 0 jobs / 0 orders and does not arm Wayond; it is orthogonal to the loop fix and left as-is.
+
+**STOP:** the marketplace Wayond card now presents the un-clicked "Enable this strategy" control for support@.
+The customer-only strategy-arm click belongs to Nuno.

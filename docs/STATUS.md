@@ -14,6 +14,29 @@
 
 ## Execution workstream log
 
+- **2026-08-17 — AJ#6.5 FINAL STRATEGY-SELECTION / AUTHORIZATION LOOP: FIXED + DEPLOYED (frontend) + CERTIFIED on
+  support@/acct 24 · Customer Zero byte-identical · STOP for Nuno. 🟢** Fixed a P0 reciprocal navigation loop:
+  an EXECUTION_READY hosted customer bounced Marketplace(Wayond "Continue")→`/onboarding/hosted`→("Choose
+  Strategy")→Marketplace with no forward path. Root cause: `SignalCopyReadiness` linked to `/onboarding/hosted`
+  whenever `can_arm && !armUiEnabled` (`brokerConnectivityEnabled` is a build-time flag, OFF in prod) + via
+  `NEXT_NAV[preparing/connecting]`. **Option B**: once ONBOARDING-COMPLETE (`hostedComplete=strategy_eligible`,
+  the SAME threshold onboarding's "Choose Strategy" uses) the Wayond card OWNS the forward path and NEVER
+  bounces — CASE A (EXECUTION_READY, unauthorized → ADR-0047 "Enable automated trading"), CASE B (authorized →
+  live "Enable this strategy" arm), WAITING (not yet executable → reassurance, no bounce); actionable owned
+  states keep their live fix; generation guard + owned defence-in-depth. Separation preserved (capability ≠
+  authorization ≠ arm ≠ order); order-time gate untouched; side B unchanged. **Two Workflow adversarial rounds**
+  found + fixed a HIGH (threshold misalignment) and a MEDIUM (WAITING masked actionable states) → re-verified
+  **0 HIGH / 0 MEDIUM**. Also fixed a pre-existing red inherited from AJ#6.4 (`tests_host_primitive_runner.py`
+  asserted `RESERVED_ACCOUNT_IDS=@(1)` vs deployed `@(1,18)`). FF→main `cc7bde1→dbe42bb`; frontend rebuilt
+  (`dee99b7f`, rollback `rollback-preAJ65`), `NEXT_PUBLIC_*` DARK. **Cert:** support@ = `strategy_eligible=True`,
+  `execution_authorized=True`, Wayond `can_arm=True` → the card renders the live **"Enable this strategy"**
+  control, no `/onboarding/hosted` bounce; Wayond arm=FALSE, 0 ExecutionJobs, 0 orders; **CZ Golden
+  byte-identical** `b57182b4…`; account 18 untouched. (Nuno's current authorized+armed state is the accepted
+  acceptance baseline — he performed the ADR-0047 authorization himself at 15:10 after the AJ#6.4 stop; he also
+  assigned a GENERIC `London Session Box Breakout` in MANUAL/TEST — not Wayond, 0 orders.) Evidence:
+  `docs/operations/hosted-workspace/AJ65_STRATEGY_AUTHORIZATION_LOOP.md`. **STOP:** the un-clicked "Enable this
+  strategy" (Wayond arm) belongs to Nuno.
+
 - **2026-08-17 — AJ#6.4 LIVEUPDATE-SAFE RELAUNCH: DEPLOYED + SHAPE-3 RE-CERTIFICATION PASS on support@/acct 24 ·
   Customer Zero byte-identical · STOP for Nuno. 🟢** Fixed the AJ#6.3 defect (relaunch hit MetaTrader LiveUpdate).
   `Relaunch-GuvfxTerminal.ps1` now applies the certified Variant-A LiveUpdate containment (kill own updater +
