@@ -141,31 +141,50 @@ function WaitingPanel({ slow }: { slow: boolean }) {
   );
 }
 
-// AJ#4: the "Open MetaTrader" step — MetaTrader is EMBEDDED right here in onboarding (the RemoteApp component,
-// reused verbatim), so the customer logs in without ever leaving the journey or discovering Terminal Access.
-// The onboarding page keeps polling in the background; when trusted observation confirms the account we move on
-// automatically. `showHeader` off for the wrong-account (BROKER_CONNECTED) case where the corrective header
-// above already speaks. Presentation only — the embed owns transport/auth/delivery.
+// AJ#4/AJ#5: the "Open MetaTrader" step — MetaTrader is EMBEDDED right here in onboarding (the RemoteApp
+// component, reused verbatim), so the customer logs in without ever leaving the journey or discovering Terminal
+// Access. The onboarding page keeps polling in the background; trusted observation moves us on automatically.
+// AJ#5 (P4/P5): an intentional, clearly-bordered "You're using MetaTrader" frame + context-aware title/copy +
+// a live "Detecting your account…" status so the customer always knows exactly where they are and what's next.
+// Presentation only — the embed owns transport/auth/delivery.
 function EmbeddedMetaTraderStep({
-  showHeader = true, instruction, children,
-}: { showHeader?: boolean; instruction?: string; children: React.ReactNode }) {
+  linked = true, title = "Open MetaTrader", instruction, detecting = false, children,
+}: { linked?: boolean; title?: string; instruction?: string; detecting?: boolean; children: React.ReactNode }) {
   return (
-    <div style={{ ...waitCard, padding: "1.15rem 1.2rem" }}>
-      {showHeader && (
-        <>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.95rem", fontWeight: 600, color: "#5fd39a" }}>
-            <span aria-hidden>✓</span> Broker account linked
-          </div>
-          <h3 style={{ margin: "10px 0 0", fontSize: "1.05rem", fontWeight: 700, color: TITLE }}>Open MetaTrader</h3>
-        </>
+    <div style={{ ...waitCard, padding: "1.2rem 1.3rem" }}>
+      {linked && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.95rem", fontWeight: 600, color: "#5fd39a" }}>
+          <span aria-hidden>✓</span> Broker account linked
+        </div>
       )}
-      <p style={{ marginTop: showHeader ? 8 : 0, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>
+      <h3 style={{ margin: linked ? "10px 0 0" : 0, fontSize: "1.1rem", fontWeight: 700, color: TITLE }}>{title}</h3>
+      <p style={{ marginTop: 8, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>
         {instruction
           ?? "Log in to MetaTrader below using your broker password — it's typed only inside MetaTrader, and "
-             + "GuvFX never sees it. As soon as you're logged in we'll detect your account and continue "
-             + "automatically. Please keep this page open."}
+             + "GuvFX never sees it."}
       </p>
-      <div style={{ marginTop: 14 }}>{children}</div>
+      {/* AJ#5 P4: a distinct, intentional MetaTrader frame (accent border + glow) with an "You're using
+          MetaTrader" label, so the customer is never in doubt that the embedded surface IS MetaTrader. */}
+      <div style={{ marginTop: 14, borderRadius: 14, border: "1px solid rgba(74, 179, 255, 0.35)",
+                    boxShadow: "0 0 0 3px rgba(74, 179, 255, 0.06)", overflow: "hidden", background: "rgba(0,0,0,0.15)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                      padding: "0.5rem 0.95rem", background: "rgba(74, 179, 255, 0.08)",
+                      borderBottom: "1px solid rgba(74, 179, 255, 0.18)" }}>
+          <span style={{ fontSize: "0.82rem", fontWeight: 700, color: TITLE }}>You&apos;re using MetaTrader</span>
+          {detecting && (
+            <span role="status" aria-live="polite"
+                  style={{ display: "flex", alignItems: "center", gap: 7, fontSize: "0.78rem", color: ACCENT }}>
+              <Spinner size={12} /> Detecting your account…
+            </span>
+          )}
+        </div>
+        <div>{children}</div>
+      </div>
+      {detecting && (
+        <p style={{ marginTop: 10, fontSize: "0.82rem", lineHeight: 1.5, color: MUTED }}>
+          Keep this page open — we&apos;re detecting your account automatically and will continue the moment you&apos;re logged in.
+        </p>
+      )}
     </div>
   );
 }
@@ -182,14 +201,14 @@ function ConfirmAccountPanel({
                   background: "rgba(95, 211, 154, 0.05)" }}>
       <h2 style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "1rem", fontWeight: 700,
                    color: "#5fd39a", margin: 0 }}>
-        <span aria-hidden>✓</span> Confirm your account
+        <span aria-hidden>✓</span> Account detected
       </h2>
       <p style={{ marginTop: 10, fontSize: "0.9rem", lineHeight: 1.65, color: BODY }}>
         {acct
-          ? `We detected account ${acct} logged in to your workspace. Your identity is already verified — just `
-            + "confirm this is your trading account to finish setting up your workspace."
-          : "We detected your account logged in to your workspace. Your identity is already verified — just "
-            + "confirm this is your trading account to finish setting up your workspace."}
+          ? `We detected account ${acct} logged in to your MetaTrader workspace. Your identity is already `
+            + "verified — please confirm this is your trading account to finish."
+          : "We detected your account logged in to your MetaTrader workspace. Your identity is already verified "
+            + "— please confirm this is your trading account to finish."}
       </p>
       <div style={{ marginTop: 16 }}>
         <Button onClick={onConfirm} disabled={busy}>
@@ -392,9 +411,9 @@ export function HostedWorkspaceJourney() {
   const confirmStep = view.action?.kind === "confirm";
   const readyStep = view.tone === "ready";
 
-  // Suppress the generic header wherever a bespoke panel carries its own heading; BROKER_CONNECTED keeps it so
-  // its corrective guidance ("make sure you're logged into that account") stays visible above the embed.
-  const showGenericHeader = !waitingTakeover && !embedStep && !confirmStep && !readyStep;
+  // Suppress the generic header wherever a bespoke panel carries its own heading. AJ#5: BROKER_CONNECTED now
+  // carries its corrective title/copy inside the EmbeddedMetaTraderStep frame, so it is suppressed here too.
+  const showGenericHeader = !waitingTakeover && !embedStep && !brokerConnected && !confirmStep && !readyStep;
   // Only the genuine waiting takeover hides the stepper; the embed / confirm / ready steps keep it for progress.
   const showStepper = !waitingTakeover;
   // AJ#4 polish: whenever the embedded MT5 terminal is on screen, widen the whole card to a desktop-sized area so
@@ -441,15 +460,26 @@ export function HostedWorkspaceJourney() {
     body = <WaitingPanel slow={slowWait} />;
   } else if (embedStep) {
     body = (
-      <EmbeddedMetaTraderStep>
+      <EmbeddedMetaTraderStep
+        title="Log into your broker account"
+        instruction="Enter your broker password inside MetaTrader below — it's typed only inside MetaTrader, and GuvFX never sees it."
+        detecting
+      >
         <HostedMt5RemoteApp />
       </EmbeddedMetaTraderStep>
     );
   } else if (brokerConnected) {
+    const m = (journey?.active_login_masked || "").trim();
     body = (
       <EmbeddedMetaTraderStep
-        showHeader={false}
-        instruction="Open MetaTrader below and log into the account you told us — we'll continue automatically once it matches."
+        linked={false}
+        title="Log into the account you linked"
+        instruction={
+          (m ? `We found account ${m} logged in, but it isn't the account you linked. `
+             : "The account logged in isn't the one you linked. ")
+          + "Log into the account you told us inside MetaTrader below — we'll continue automatically once it matches."
+        }
+        detecting
       >
         <HostedMt5RemoteApp />
       </EmbeddedMetaTraderStep>

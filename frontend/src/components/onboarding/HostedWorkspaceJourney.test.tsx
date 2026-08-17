@@ -63,7 +63,10 @@ describe("HostedWorkspaceJourney", () => {
     await saveBrokerDetails();
     // The MT5 terminal is embedded INLINE — the customer never leaves onboarding.
     expect(await screen.findByTestId("onboarding-mt5-embed")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /open metatrader/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /log into your broker account/i })).toBeInTheDocument();
+    // AJ#5: the intentional "You're using MetaTrader" frame + live detection status.
+    expect(screen.getByText(/you're using metatrader/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/detecting your account/i).length).toBeGreaterThan(0);
     // No link out to Terminal Access anywhere on the page.
     const hrefs = Array.from(document.querySelectorAll("a")).map((a) => a.getAttribute("href"));
     expect(hrefs).not.toContain("/trading/terminal-access");
@@ -169,7 +172,7 @@ describe("HostedWorkspaceJourney", () => {
       phase: "BROKER_CONNECTED", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_READY",
       active_login_masked: "***561", identity_declared: true }) });
     render(<HostedWorkspaceJourney />);
-    expect(await screen.findByText(/make sure you're logged into that account/i)).toBeInTheDocument();
+    expect(await screen.findByText(/account you told us/i)).toBeInTheDocument();
     expect(screen.getByTestId("onboarding-mt5-embed")).toBeInTheDocument();
     // No navigation out to Terminal Access.
     const hrefs = Array.from(document.querySelectorAll("a")).map((a) => a.getAttribute("href"));
@@ -235,7 +238,7 @@ describe("HostedWorkspaceJourney", () => {
   it("never renders a legacy account-creation path or leaks internal identifiers", async () => {
     jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({ phase: "ACCOUNT_CONFIRMATION_REQUIRED", next_action: "confirm_broker_account", delivery: "DELIVERY_READY" }) });
     const { container } = render(<HostedWorkspaceJourney />);
-    await screen.findByRole("heading", { name: /confirm your account/i });
+    await screen.findByRole("heading", { name: /account detected/i });
     for (const rx of LEGACY) expect(screen.queryByText(rx)).toBeNull();
     // No link back into the legacy /accounts creation surface.
     const hrefs = Array.from(container.querySelectorAll("a")).map((a) => a.getAttribute("href"));
@@ -253,7 +256,7 @@ describe("HostedWorkspaceJourney", () => {
     jm.confirmAccount.mockResolvedValue(journey({ phase: "WORKSPACE_READY", next_action: "assign_strategy" }));
     render(<HostedWorkspaceJourney />);
     const confirmBtn = await screen.findByRole("button", { name: /i confirm this is my trading account/i });
-    expect(screen.getByRole("heading", { name: /confirm your account/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /account detected/i })).toBeInTheDocument();
     // Identity already proven — the copy CONFIRMS ownership, it does not ask the customer to prove who they are.
     expect(screen.getByText(/identity is already verified/i)).toBeInTheDocument();
     // No detour: never a link to Broker Accounts or Terminal Access from the confirm step.
