@@ -14,11 +14,15 @@ const { state, apiFetch, push, fetchJourney, authorizeExecution } = vi.hoisted((
     status: { armed: false, enabled: false } as Status,
     journey: { execution_authorized: false, can_enable_automated_trading: true } as Record<string, unknown> | null,
     armError: null as null | { httpStatus?: number; body?: { status?: string } },
+    journeyThrows: false,   // simulate a TRANSIENT (non-404) journey error that fetchJourney rethrows
     accounts: [{ id: 5, name: "Demo A", account_number: "1302587", is_demo: true, is_active: true }],
   };
   const push = vi.fn();
   const authorizeExecution = vi.fn(async () => ({}));
-  const fetchJourney = vi.fn(async () => (state.journey ? { ok: true, journey: state.journey } : { ok: false, unavailable: true }));
+  const fetchJourney = vi.fn(async () => {
+    if (state.journeyThrows) throw new Error("502");   // transient upstream error → rethrown by fetchJourney
+    return state.journey ? { ok: true, journey: state.journey } : { ok: false, unavailable: true };
+  });
   const apiFetch = vi.fn(async (path: string, opts?: RequestInit) => {
     if (path.startsWith("/api/auth/me")) return {};
     if (path.startsWith("/api/trading/accounts")) return state.accounts;
@@ -56,6 +60,7 @@ describe("Configure page — Wayond (automated)", () => {
     state.status = { armed: true, enabled: false, account_id: 5 };  // owned, not enabled
     state.journey = { execution_authorized: false, can_enable_automated_trading: true };
     state.armError = null;
+    state.journeyThrows = false;
   });
 
   it("shows the honest contract with managed rows and NO editable sizing/TP/SL controls", async () => {
@@ -174,6 +179,18 @@ describe("Configure page — Wayond (automated)", () => {
     for (const l of screen.queryAllByRole("link")) {
       expect(l.getAttribute("href")).not.toBe("/onboarding/hosted");
     }
+  });
+
+  it("a TRANSIENT journey error (thrown 5xx, not a 404) shows getting-ready — never the sticky 'contact support'", async () => {
+    // fetchJourney rethrows non-404 errors; the page must treat that as not-yet-loaded (getting-ready, which
+    // the poll retries) rather than a permanent 'needs attention', so a momentary blip self-heals.
+    state.journeyThrows = true;
+    state.status = { armed: true, enabled: false, account_id: 5 };
+    render(<ConfigurePage />);
+    await screen.findByText(/getting ready/i);
+    expect(screen.queryByRole("link", { name: /contact support/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Enable Strategy" })).toBeNull();
+    state.journeyThrows = false;   // reset for other tests
   });
 });
 

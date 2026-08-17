@@ -108,19 +108,6 @@ function ConfigureInner() {
     }
   }, [automated, mp]);
 
-  // AJ#7.2 — while the customer waits for the workspace to become ready-to-enable, refresh readiness in place.
-  // FAIL-SAFE: a transient fetch miss (null journey / thrown status) must NEVER downgrade a good UI — we only
-  // apply a fresh non-null result, so the page moves forward to "Ready to enable" and never flickers backward.
-  const pollReadiness = useCallback(async () => {
-    if (!automated || !mp) return;
-    const [jr, st] = await Promise.all([
-      fetchJourney().then((r) => (r.ok ? r.journey : null)).catch(() => null),
-      fetchSignalCopyStatus(mp).catch(() => null),
-    ]);
-    if (jr) { setJourney(jr); setJourneyUnavailable(false); }   // a fresh journey means it is reachable again
-    if (st) setStatus(st);
-  }, [automated, mp]);
-
   // Data load (accounts + signal-copy status + hosted journey)
   useEffect(() => {
     if (!authChecked) return;
@@ -131,17 +118,21 @@ function ConfigureInner() {
       const accountsP = apiFetch<TradingAccount[]>("/api/trading/accounts/")
         .catch(() => apiFetch<TradingAccount[]>("/api/trading/trading-accounts/").catch(() => [] as TradingAccount[]));
       const statusP = automated ? fetchSignalCopyStatus(mp).catch(() => ({ armed: false, enabled: false } as SignalCopyStatus)) : Promise.resolve(null);
-      // Keep the full load result so we can tell "still preparing" (ok, not-yet-ready) apart from
-      // "unavailable" (endpoint failed / not entitled) — the latter must never promise self-healing.
+      // Distinguish "genuinely unavailable" from "transient": fetchJourney returns {ok:false} ONLY for a 404
+      // (feature dark / not entitled) and RE-THROWS 5xx/network so callers can retry. So a 404 → sticky
+      // "needs attention", but a thrown (transient) error → journey null + NOT unavailable, i.e. the
+      // getting-ready state that the poll retries — never a sticky dead-end on a momentary blip.
       const journeyP = automated
-        ? fetchJourney().catch(() => ({ ok: false as const, unavailable: true }))
-        : Promise.resolve(null);
+        ? fetchJourney()
+            .then((r) => (r.ok ? { journey: r.journey, unavailable: false } : { journey: null, unavailable: true }))
+            .catch(() => ({ journey: null, unavailable: false }))
+        : Promise.resolve({ journey: null, unavailable: false });
       const [accs, st, jl] = await Promise.all([accountsP, statusP, journeyP]);
       if (cancelled) return;
       setAccounts(accs || []);
       setStatus(st);
-      setJourney(jl && "ok" in jl && jl.ok ? jl.journey : null);
-      setJourneyUnavailable(!!(jl && "ok" in jl && !jl.ok));
+      setJourney(jl.journey);
+      setJourneyUnavailable(jl.unavailable);
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -167,15 +158,31 @@ function ConfigureInner() {
   // here — that would be a false promise — so we surface an honest "needs attention" + support route instead.
   const workspaceUnavailable = journeyUnavailable || journey?.phase === "WORKSPACE_UNAVAILABLE";
 
-  // Poll ONLY while the customer is in the "getting ready" state (owned, not enabled, not yet enable-able) AND
-  // the workspace is actually progressing (not unavailable). Stops the moment it becomes Ready to enable
-  // (canEnable), gets enabled, goes unavailable, or the customer leaves — transitioning in place, no bounce.
-  const gettingReady = owned && !enabled && !canEnable && !ambiguous && !workspaceUnavailable;
+  // Poll ONLY while the customer is in the "getting ready" state: owned, has a resolvable account, not enabled,
+  // not yet enable-able, not ambiguous, and the workspace is actually progressing (not unavailable). Stops the
+  // moment it becomes Ready to enable, gets enabled, goes unavailable, or the customer leaves — in place.
+  const gettingReady = owned && !!account && !enabled && !canEnable && !ambiguous && !workspaceUnavailable;
   useEffect(() => {
-    if (!isAuthed || !automated || !gettingReady) return;
-    const id = setInterval(() => { void pollReadiness(); }, 5000);
-    return () => clearInterval(id);
-  }, [isAuthed, automated, gettingReady, pollReadiness]);
+    if (!isAuthed || !automated || !mp || !gettingReady) return;
+    // SINGLE-FLIGHT: schedule the next refresh only AFTER the current one resolves (recursive setTimeout, not
+    // setInterval) so two polls can never overlap and an out-of-order response can never revert a fresh state.
+    // FAIL-SAFE: only a fresh non-null result is applied, so a transient miss never downgrades a good UI.
+    // CANCELLABLE: an in-flight response is dropped once the effect tears down (ready / unmounted).
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      const [jr, st] = await Promise.all([
+        fetchJourney().then((r) => (r.ok ? r.journey : null)).catch(() => null),
+        fetchSignalCopyStatus(mp).catch(() => null),
+      ]);
+      if (cancelled) return;
+      if (jr) { setJourney(jr); setJourneyUnavailable(false); }   // a fresh journey means it is reachable again
+      if (st) setStatus(st);
+      if (!cancelled) timer = setTimeout(tick, 5000);
+    };
+    timer = setTimeout(tick, 5000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [isAuthed, automated, mp, gettingReady]);
 
   const doEnableConfirm = async () => {
     if (!resolvedAccountId) return;

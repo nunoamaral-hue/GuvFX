@@ -174,6 +174,17 @@ class GetStrategyTests(TestCase):
         self.assertIsNone(body["account_id"])
         self.assertIsNone(body["assignment_id"])
 
+    def test_status_strategy_id_never_leaks_another_users_strategy(self):
+        # AJ#7.2 invariant 4 (no cross-tenant leak): another user's owned Wayond must be invisible here — this
+        # user is NOT the owner, so status reports not-owned and NO strategy_id (never the other tenant's row).
+        other = _admitted("g1x")
+        other_acct = _demo_acct(other, "G1X")
+        _client(other).post(GET_URL, {"marketplace_strategy_id": MP, "account_id": other_acct.id}, format="json")
+        body = self.c.get(STATUS_URL, {"marketplace_strategy_id": MP}).json()   # self.user, owns nothing
+        self.assertFalse(body["armed"])
+        self.assertIsNone(body["strategy_id"])
+        self.assertIsNone(body["account_id"])
+
 
 @override_settings(**BASE)
 class GetStrategyCohortTests(TestCase):
