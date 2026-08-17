@@ -1530,6 +1530,13 @@ class StrategyViewSet(viewsets.ModelViewSet):
         template_name = tpl.get("name") or "Signal Copy"
         tpl_filters = (tpl.get("defaults") or {}).get("filters") or {}
         with transaction.atomic():
+            # AJ#7.1 (adversarial fix): serialize concurrent Gets/arms on this source with the SAME advisory
+            # lock the arm path uses, so the Strategy lookup-or-create below cannot race into two Strategy rows
+            # (Strategy has no (owner, name) DB uniqueness). Two rows would evade the (strategy, account)
+            # unique_together and leave two inactive assignments → an unrecoverable ambiguous "needs attention".
+            # The lock is per-source and released at transaction end; Get stays non-executing (is_active=False).
+            with connection.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)", [f"arm:{source}"])
             strategy = (Strategy.objects.filter(owner=request.user, name=template_name)
                         .order_by("-id").first())
             if strategy is None:

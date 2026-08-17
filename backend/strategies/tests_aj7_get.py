@@ -74,6 +74,19 @@ class GetStrategyTests(TestCase):
         # The auto-router can NEVER route it (requires is_active=True) — Get alone never trades.
         self.assertIsNone(_resolve_target(AM.AUTO_DEMO, SRC))
 
+    def test_get_serializes_with_advisory_lock(self):
+        # AJ#7.1 adversarial fix #5: Get must take the per-source advisory lock (as arm does) so two concurrent
+        # first-ever Gets cannot race into duplicate Strategy rows → duplicate inactive assignments → ambiguous.
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        with CaptureQueriesContext(connection) as ctx:
+            r = self._get()
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertTrue(
+            any("pg_advisory_xact_lock" in q["sql"] for q in ctx.captured_queries),
+            "signal_copy_get must acquire the per-source advisory lock to serialize concurrent Gets",
+        )
+
     def test_get_is_idempotent_and_never_creates_duplicates(self):
         first = self._get()
         self.assertEqual(first.status_code, 201)

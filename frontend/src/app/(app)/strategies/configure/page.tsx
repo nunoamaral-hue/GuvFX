@@ -399,8 +399,11 @@ function AutomatedConfig(props: {
           <ActionPanel
             tone="neutral"
             title="Your workspace is getting ready"
-            body="We're finishing setting up your trading workspace. You'll be able to enable this strategy as soon as it's ready."
-            action={<Link href="/onboarding/hosted"><Button variant="secondary">Open your workspace</Button></Link>}
+            body="We're finishing setting up your trading workspace. If you haven't already, open your MetaTrader terminal and log in — you'll be able to enable this strategy as soon as it's connected and ready."
+            /* AJ#7.1 (adversarial fix): the forward action opens the customer's MetaTrader terminal (a stable
+               page). It must NOT link back to /onboarding/hosted, which at WORKSPACE_READY bounces to the
+               marketplace → owned card → Configure, re-forming the AJ#6.5-class navigation loop. */
+            action={<Link href="/trading/terminal-access"><Button variant="secondary">Open MetaTrader</Button></Link>}
           />
         )}
       </div>

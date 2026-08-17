@@ -148,6 +148,14 @@ describe("Configure page — Wayond (automated)", () => {
     render(<ConfigurePage />);
     await screen.findByText(/getting ready/i);
     expect(screen.queryByRole("button", { name: "Enable Strategy" })).toBeNull();
+    // AJ#7.1 nav-loop guard (#12): the forward action opens the customer's MetaTrader terminal (stable page),
+    // and must NEVER link to /onboarding/hosted (which bounces to the marketplace → owned card → Configure).
+    const fwd = screen.getByRole("link", { name: /open metatrader/i });
+    expect(fwd).toHaveAttribute("href", "/trading/terminal-access");
+    expect(screen.queryByRole("link", { name: /open your workspace/i })).toBeNull();
+    for (const l of screen.queryAllByRole("link")) {
+      expect(l.getAttribute("href")).not.toBe("/onboarding/hosted");
+    }
   });
 });
 
