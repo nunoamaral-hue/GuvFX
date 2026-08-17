@@ -19,7 +19,7 @@ vi.mock("@/components/hosted/HostedMt5RemoteApp", () => ({
   HostedMt5RemoteApp: () => <div data-testid="onboarding-mt5-embed">Embedded MetaTrader</div>,
 }));
 
-import { HostedWorkspaceJourney } from "@/components/onboarding/HostedWorkspaceJourney";
+import { HostedWorkspaceJourney, deriveStageIndex } from "@/components/onboarding/HostedWorkspaceJourney";
 import type { HostedJourney } from "@/lib/hosted-journey";
 
 function journey(over: Partial<HostedJourney> = {}): HostedJourney {
@@ -58,7 +58,8 @@ async function saveBrokerDetails(login = "700900") {
 
 describe("HostedWorkspaceJourney", () => {
   it("AJ#4: once linked + deliverable, MetaTrader is EMBEDDED inside onboarding (no navigation to Terminal Access)", async () => {
-    declareFlow({ phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_READY" });
+    // no broker login observed yet (active_login_masked empty) → "Log into your broker account" copy.
+    declareFlow({ phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_READY", active_login_masked: "" });
     render(<HostedWorkspaceJourney />);
     await saveBrokerDetails();
     // The MT5 terminal is embedded INLINE — the customer never leaves onboarding.
@@ -67,6 +68,10 @@ describe("HostedWorkspaceJourney", () => {
     // AJ#5: the intentional "You're using MetaTrader" frame + live detection status.
     expect(screen.getByText(/you're using metatrader/i)).toBeInTheDocument();
     expect(screen.getAllByText(/detecting your account/i).length).toBeGreaterThan(0);
+    // AJ#5.1: the live-status wizard rail — completed + active + pending stages all visible.
+    expect(screen.getByRole("list", { name: /onboarding progress/i })).toBeInTheDocument();
+    expect(screen.getByText(/waiting for broker login/i)).toBeInTheDocument();
+    expect(screen.getByText(/workspace ready/i)).toBeInTheDocument();
     // No link out to Terminal Access anywhere on the page.
     const hrefs = Array.from(document.querySelectorAll("a")).map((a) => a.getAttribute("href"));
     expect(hrefs).not.toContain("/trading/terminal-access");
@@ -279,5 +284,27 @@ describe("HostedWorkspaceJourney", () => {
     expect(screen.queryByTestId("onboarding-mt5-embed")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /open metatrader/i }));
     expect(await screen.findByTestId("onboarding-mt5-embed")).toBeInTheDocument();  // re-opens inline, still in onboarding
+  });
+});
+
+describe("deriveStageIndex (AJ#5.1 live-status wizard — pure, genuine journey state only)", () => {
+  const j = (over: Partial<HostedJourney>): HostedJourney => ({
+    phase: "NO_WORKSPACE", next_action: "request_workspace", confirmed: false, strategy_eligible: false,
+    delivery: "DELIVERY_NOT_AVAILABLE", active_login_masked: "", identity_declared: false, ...over,
+  });
+  it("waits for broker login before any login is observed", () => {
+    expect(deriveStageIndex(j({ phase: "AWAITING_BROKER_LOGIN", active_login_masked: "" }))).toBe(1);
+  });
+  it("advances to detecting once a login is observed", () => {
+    expect(deriveStageIndex(j({ phase: "AWAITING_BROKER_LOGIN", active_login_masked: "***561" }))).toBe(2);
+    expect(deriveStageIndex(j({ phase: "BROKER_CONNECTED", active_login_masked: "***561" }))).toBe(2);
+  });
+  it("moves to confirmation, then all-done", () => {
+    expect(deriveStageIndex(j({ phase: "ACCOUNT_CONFIRMATION_REQUIRED" }))).toBe(4);
+    expect(deriveStageIndex(j({ phase: "WORKSPACE_READY" }))).toBe(6);
+  });
+  it("is null-safe and never invents progress for unknown/early states", () => {
+    expect(deriveStageIndex(null)).toBe(0);
+    expect(deriveStageIndex(j({ phase: "WORKSPACE_PREPARING" }))).toBe(0);
   });
 });

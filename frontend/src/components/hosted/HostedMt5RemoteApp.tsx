@@ -54,7 +54,13 @@ type HostedAccount = { id: number; label: string };
 // `onActiveChange` is OPTIONAL — Terminal Access uses it to suppress its legacy
 // customer experience once a hosted workspace is detected; the onboarding embed
 // doesn't need it (it already knows the customer is hosted).
-export function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange?: (active: boolean) => void }) {
+// AJ#5.1: `onConnected` is an OPTIONAL diagnostic hook fired once when the terminal descriptor is minted (the
+// terminal is launched). It carries no data and does no I/O — onboarding uses it only to record a local
+// "MT5 launched" timestamp for future timing investigations. Terminal Access omits it (no behaviour change).
+export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
+  onActiveChange?: (active: boolean) => void;
+  onConnected?: () => void;
+}) {
   const [account, setAccount] = useState<HostedAccount | null>(null);
   const [detecting, setDetecting] = useState(true);
   const [descriptor, setDescriptor] = useState<SafeLaunchDescriptor | null>(null);
@@ -97,6 +103,14 @@ export function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange?: (activ
   // switch leaves DOM focus on the parent — the classic "came back to the tab, keyboard is dead" symptom. This
   // only fires on a genuine window-focus event (never on a timer, never on the 5s poll re-render), forwards the
   // user's own return intent, never synthesises or reads keys, and never remounts the iframe.
+  //
+  // AJ#5.1 evidence calibration (Objective 3): guacd logs during acceptance testing show repeated RDP
+  // client creation, "Disconnected by other connection", and "User is not responding". THE EVIDENCE STRONGLY
+  // SUGGESTS that RDP session reconnection contributes to keyboard focus loss, BUT IT HAS NOT YET BEEN
+  // CONCLUSIVELY PROVEN TO BE THE SOLE CAUSE — a live, instrumented single-flow reproduction is still needed to
+  // isolate it from other possible contributors (e.g. remote-side RemoteApp modal-dialog focus routing). Keyboard
+  // *translation* itself shows no errors (server-layout=en-us-qwerty is correctly pinned). These focus handlers
+  // are a safe mitigation for the DOM-focus contributor, not a claimed complete fix.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onWinFocus = () => { if (iframeRef.current) focusTerminal(); };
@@ -243,6 +257,7 @@ export function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange?: (activ
       // Same origin-pinning + stale-session clear as the legacy viewer path.
       setDescriptor(withCleanGuacAuth(safe));
       setEpoch((e) => e + 1);
+      onConnected?.();   // AJ#5.1 diagnostic: record the "MT5 launched" moment (no data, no I/O)
       try { localStorage.setItem(`guvfx_mt5_launched_${account.id}`, "1"); } catch { /* non-fatal */ }
       setHasLaunched(true);
     } catch (err: unknown) {
@@ -257,7 +272,7 @@ export function HostedMt5RemoteApp({ onActiveChange }: { onActiveChange?: (activ
     } finally {
       setConnecting(false);
     }
-  }, [account]);
+  }, [account, onConnected]);
 
   if (!account) {
     // Still resolving hosted-ownership: show a neutral "preparing" message only if detection is slow (so a

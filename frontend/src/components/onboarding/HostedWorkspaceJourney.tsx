@@ -10,7 +10,7 @@
 // on the Wayond card. No journey/execution behaviour changed — copy + presentation only.
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { HostedMt5RemoteApp } from "@/components/hosted/HostedMt5RemoteApp";
@@ -141,30 +141,75 @@ function WaitingPanel({ slow }: { slow: boolean }) {
   );
 }
 
+// AJ#5.1 — LIVE STATUS wizard. The ordered customer-facing stages of the login→ready arc. Purely derived from
+// genuine journey state (phase + whether a broker login has been observed) — NO percentages, NO fake progress
+// bars, NO invented timings. The active stage is highlighted; completed stages stay visible with a ✓.
+const WIZARD_STAGES = [
+  "Broker account linked",
+  "Waiting for broker login",
+  "Detecting your account",
+  "Account detected",
+  "Confirm your account",
+  "Workspace ready",
+] as const;
+
+/** Index of the CURRENTLY ACTIVE stage (stages before it are done, after it are pending). 6 = every stage done.
+ *  Pure: derived only from the real journey — no timers, no guesses. */
+export function deriveStageIndex(j: HostedJourney | null | undefined): number {
+  const hasLogin = !!(j?.active_login_masked || "").trim();
+  switch (j?.phase) {
+    case "WORKSPACE_READY": return 6;                 // all six stages complete
+    case "ACCOUNT_CONFIRMATION_REQUIRED": return 4;   // "Confirm your account" active (detected is done)
+    case "BROKER_CONNECTED": return 2;                // detecting — a login is present but not yet the right one
+    case "AWAITING_BROKER_LOGIN": return hasLogin ? 2 : 1;  // detecting once a login appears, else waiting for it
+    default: return 0;                                // linked / earlier prep
+  }
+}
+
+// The persistent wizard rail. Completed steps keep a green ✓; the active step pulses in accent; pending steps
+// are muted ○. Presentation only.
+function LiveStatusPanel({ activeIndex }: { activeIndex: number }) {
+  return (
+    <ol aria-label="Onboarding progress" style={{ listStyle: "none", margin: 0, padding: 0,
+                                                   display: "flex", flexDirection: "column", gap: 9 }}>
+      {WIZARD_STAGES.map((label, i) => {
+        const status = i < activeIndex ? "done" : i === activeIndex ? "active" : "todo";
+        const color = status === "done" ? "#5fd39a" : status === "active" ? ACCENT : MUTED;
+        const marker = status === "done" ? "✓" : status === "active" ? "●" : "○";
+        return (
+          <li key={label} aria-current={status === "active" ? "step" : undefined}
+              style={{ display: "flex", alignItems: "center", gap: 10, fontSize: "0.85rem", color }}>
+            <span aria-hidden className={status === "active" ? "animate-pulse" : undefined}
+                  style={{ width: 14, textAlign: "center", fontSize: status === "active" ? "0.7rem" : undefined }}>{marker}</span>
+            <span style={status === "active" ? { fontWeight: 600 } : undefined}>{label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 // AJ#4/AJ#5: the "Open MetaTrader" step — MetaTrader is EMBEDDED right here in onboarding (the RemoteApp
 // component, reused verbatim), so the customer logs in without ever leaving the journey or discovering Terminal
 // Access. The onboarding page keeps polling in the background; trusted observation moves us on automatically.
-// AJ#5 (P4/P5): an intentional, clearly-bordered "You're using MetaTrader" frame + context-aware title/copy +
-// a live "Detecting your account…" status so the customer always knows exactly where they are and what's next.
-// Presentation only — the embed owns transport/auth/delivery.
+// AJ#5.1 (P1/P2/P5): the step now LEADS with the live status wizard, states plainly what GuvFX is doing / what
+// the customer should do / what happens next, and WRAPS the terminal inside the same panel (accent-bordered
+// "You're using MetaTrader" frame) so it reads as one guided step, never a separate app. Presentation only.
 function EmbeddedMetaTraderStep({
-  linked = true, title = "Open MetaTrader", instruction, detecting = false, children,
-}: { linked?: boolean; title?: string; instruction?: string; detecting?: boolean; children: React.ReactNode }) {
+  activeIndex, title = "Open MetaTrader", instruction, hint, detecting = false, children,
+}: { activeIndex: number; title?: string; instruction?: string; hint?: string; detecting?: boolean; children: React.ReactNode }) {
   return (
-    <div style={{ ...waitCard, padding: "1.2rem 1.3rem" }}>
-      {linked && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.95rem", fontWeight: 600, color: "#5fd39a" }}>
-          <span aria-hidden>✓</span> Broker account linked
-        </div>
-      )}
-      <h3 style={{ margin: linked ? "10px 0 0" : 0, fontSize: "1.1rem", fontWeight: 700, color: TITLE }}>{title}</h3>
+    <div style={{ ...waitCard, padding: "1.25rem 1.35rem" }}>
+      <LiveStatusPanel activeIndex={activeIndex} />
+      <div style={{ marginTop: 16, height: 1, background: "rgba(74, 179, 255, 0.12)" }} />
+      <h3 style={{ margin: "16px 0 0", fontSize: "1.1rem", fontWeight: 700, color: TITLE }}>{title}</h3>
       <p style={{ marginTop: 8, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>
         {instruction
           ?? "Log in to MetaTrader below using your broker password — it's typed only inside MetaTrader, and "
              + "GuvFX never sees it."}
       </p>
-      {/* AJ#5 P4: a distinct, intentional MetaTrader frame (accent border + glow) with an "You're using
-          MetaTrader" label, so the customer is never in doubt that the embedded surface IS MetaTrader. */}
+      {/* P4/P5: a distinct, intentional MetaTrader frame (accent border + glow) with a "You're using MetaTrader"
+          label wrapping the terminal, so it's unmistakably part of onboarding — not a separate app bolted on. */}
       <div style={{ marginTop: 14, borderRadius: 14, border: "1px solid rgba(74, 179, 255, 0.35)",
                     boxShadow: "0 0 0 3px rgba(74, 179, 255, 0.06)", overflow: "hidden", background: "rgba(0,0,0,0.15)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
@@ -180,10 +225,8 @@ function EmbeddedMetaTraderStep({
         </div>
         <div>{children}</div>
       </div>
-      {detecting && (
-        <p style={{ marginTop: 10, fontSize: "0.82rem", lineHeight: 1.5, color: MUTED }}>
-          Keep this page open — we&apos;re detecting your account automatically and will continue the moment you&apos;re logged in.
-        </p>
+      {hint && (
+        <p style={{ marginTop: 10, fontSize: "0.82rem", lineHeight: 1.5, color: MUTED }}>{hint}</p>
       )}
     </div>
   );
@@ -193,12 +236,14 @@ function EmbeddedMetaTraderStep({
 // already proven by trusted observation, so it reads "I confirm this is my trading account", not "prove who you
 // are". Rendered inside onboarding (never a detour to Broker Accounts). Heading is a real <h2> for a11y.
 function ConfirmAccountPanel({
-  maskedLogin, busy, onConfirm,
-}: { maskedLogin?: string; busy: boolean; onConfirm: () => void }) {
+  activeIndex, maskedLogin, busy, onConfirm,
+}: { activeIndex: number; maskedLogin?: string; busy: boolean; onConfirm: () => void }) {
   const acct = (maskedLogin || "").trim();
   return (
-    <div style={{ ...waitCard, padding: "1.15rem 1.2rem", borderColor: "rgba(95, 211, 154, 0.28)",
+    <div style={{ ...waitCard, padding: "1.25rem 1.35rem", borderColor: "rgba(95, 211, 154, 0.28)",
                   background: "rgba(95, 211, 154, 0.05)" }}>
+      <LiveStatusPanel activeIndex={activeIndex} />
+      <div style={{ margin: "16px 0", height: 1, background: "rgba(74, 179, 255, 0.12)" }} />
       <h2 style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "1rem", fontWeight: 700,
                    color: "#5fd39a", margin: 0 }}>
         <span aria-hidden>✓</span> Account detected
@@ -297,6 +342,30 @@ export function HostedWorkspaceJourney() {
   // Being server-derived, it is deterministic across reloads, devices and resumed sessions — once declared, the
   // declaration form is never shown again, with no reliance on a 409 in the normal flow.
   const identityDeclared = journey?.identity_declared === true;
+
+  // AJ#5.1 (Objective 4): lightweight, LOCAL diagnostic timing — records the wall-clock moment each onboarding
+  // milestone is first reached so a future investigation can answer "how long does each stage actually take?".
+  // Diagnostic ONLY: no telemetry, no analytics, no network, no backend — it writes to console.debug and to
+  // window.__guvfxOnboardingTimings for inspection, and nothing else. Never shown to the customer as progress.
+  const timingsRef = useRef<Record<string, string>>({});
+  const markTiming = useCallback((key: string) => {
+    if (timingsRef.current[key]) return;                    // first occurrence only
+    const iso = new Date().toISOString();
+    timingsRef.current[key] = iso;
+    try { console.debug(`[guvfx-onboarding-timing] ${key} @ ${iso}`); } catch { /* non-fatal */ }
+    try {
+      (window as unknown as { __guvfxOnboardingTimings?: Record<string, string> })
+        .__guvfxOnboardingTimings = { ...timingsRef.current };
+    } catch { /* window/storage unavailable — non-fatal */ }
+  }, []);
+  useEffect(() => {
+    const hasLogin = !!(journey?.active_login_masked || "").trim();
+    const canOpen = journey?.delivery === "DELIVERY_READY" || journey?.delivery === "DELIVERY_DELIVERABLE";
+    if (phase === "AWAITING_BROKER_LOGIN" && canOpen) markTiming("mt5_step_reached");
+    if (hasLogin || phase === "BROKER_CONNECTED") markTiming("broker_login_detected");
+    if (phase === "ACCOUNT_CONFIRMATION_REQUIRED") { markTiming("account_detected"); markTiming("confirmation_shown"); }
+    if (phase === "WORKSPACE_READY") markTiming("workspace_ready");
+  }, [phase, journey?.active_login_masked, journey?.delivery, markTiming]);
 
   useEffect(() => {
     if (load !== "ready") return;
@@ -421,6 +490,10 @@ export function HostedWorkspaceJourney() {
   // All other steps keep the compact reading width. Toggling this does not remount the embed (the width just
   // animates); the embed already renders wide the first time it mounts, so there is no mid-login resize.
   const wide = embedStep || brokerConnected || (readyStep && showTerminalOnReady);
+  // AJ#5.1: the live-status wizard's active stage + whether a broker login has been observed yet (drives the
+  // "waiting to log in" vs "checking your account" copy). Both are pure journey state.
+  const stageIndex = deriveStageIndex(journey);
+  const hasLoginSeen = !!(journey?.active_login_masked || "").trim();
 
   // DECLARE — enter broker details + save (deferred bind). The one launch sub-state that still has a real form:
   // shown until the SERVER records the identity (write-once), after which the embed/waiting panels own the page.
@@ -459,37 +532,49 @@ export function HostedWorkspaceJourney() {
   if (waitingTakeover) {
     body = <WaitingPanel slow={slowWait} />;
   } else if (embedStep) {
+    // Obj 2: state plainly what GuvFX is doing / what the customer does / what's next. Before a login is seen we
+    // ask them to log in; once observation reports a login we explain we're checking it matches what they linked.
     body = (
       <EmbeddedMetaTraderStep
-        title="Log into your broker account"
-        instruction="Enter your broker password inside MetaTrader below — it's typed only inside MetaTrader, and GuvFX never sees it."
+        activeIndex={stageIndex}
+        title={hasLoginSeen ? "Checking your account" : "Log into your broker account"}
+        instruction={
+          hasLoginSeen
+            ? "We're checking that the account you've logged into matches the broker account you linked earlier. "
+              + "You don't need to do anything else."
+            : "Log into your broker account inside MetaTrader below. Your password is entered only inside "
+              + "MetaTrader — GuvFX never sees it. As soon as you're logged in, we'll check it against the "
+              + "account you linked and move on."
+        }
+        hint="Leave this page open while we verify your account — we'll automatically move to the next step."
         detecting
       >
-        <HostedMt5RemoteApp />
+        <HostedMt5RemoteApp onConnected={() => markTiming("mt5_launched")} />
       </EmbeddedMetaTraderStep>
     );
   } else if (brokerConnected) {
     const m = (journey?.active_login_masked || "").trim();
     body = (
       <EmbeddedMetaTraderStep
-        linked={false}
+        activeIndex={stageIndex}
         title="Log into the account you linked"
         instruction={
-          (m ? `We found account ${m} logged in, but it isn't the account you linked. `
-             : "The account logged in isn't the one you linked. ")
-          + "Log into the account you told us inside MetaTrader below — we'll continue automatically once it matches."
+          "The account currently logged into MetaTrader " + (m ? `(${m}) ` : "")
+          + "isn't the one you linked. Log into the account you told us inside MetaTrader below — we're checking "
+          + "automatically and will continue as soon as it matches."
         }
+        hint="Leave this page open — we'll detect the correct account and move on automatically."
         detecting
       >
-        <HostedMt5RemoteApp />
+        <HostedMt5RemoteApp onConnected={() => markTiming("mt5_launched")} />
       </EmbeddedMetaTraderStep>
     );
   } else if (confirmStep) {
-    body = <ConfirmAccountPanel maskedLogin={journey?.active_login_masked} busy={busy} onConfirm={onConfirm} />;
+    body = <ConfirmAccountPanel activeIndex={stageIndex} maskedLogin={journey?.active_login_masked} busy={busy} onConfirm={onConfirm} />;
   } else if (readyStep) {
     body = (
       <WorkspaceReadyPanel onOpenTerminal={() => setShowTerminalOnReady(true)} terminalOpen={showTerminalOnReady}>
-        <HostedMt5RemoteApp />
+        <HostedMt5RemoteApp onConnected={() => markTiming("mt5_launched")} />
       </WorkspaceReadyPanel>
     );
   } else if (view.action === null && view.tone === "progress") {
