@@ -88,6 +88,13 @@ CONTRACT = {
     "apply_autotrading_config": PrimitiveSpec(
         script="Set-GuvfxAutoTradingConfig.ps1",
         argmap={"terminal_root": "-TerminalRoot"}),
+    # AJ#6.3: graceful in-session close+relaunch of THIS tenant's own terminal64 (post-login capability
+    # recovery). The .ps1 confines to guvfx_u_<id> + accounts\<id>\terminal, refuses Customer Zero, and only
+    # ever closes/launches the tenant's OWN terminal. -AccountId is passed explicitly (not injected) so the
+    # script derives its per-account task names + re-asserts the CZ refusal.
+    "relaunch_terminal": PrimitiveSpec(
+        script="Relaunch-GuvfxTerminal.ps1",
+        argmap={"username": "-Username", "terminal_root": "-TerminalRoot", "account_id": "-AccountId"}),
     "ensure_rdp_membership": PrimitiveSpec(
         script="Grant-GuvfxRdpAccess.ps1",
         argmap={"username": "-Username"}),

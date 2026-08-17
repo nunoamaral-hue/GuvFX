@@ -122,6 +122,14 @@ class SignedHostExecutor:
             return {"ok": False, "reason": "confinement_mismatch"}
         return self._send("APPLY_AUTOTRADING_CONFIG")
 
+    def relaunch_terminal(self, username, runtime_root, rdp_host=None) -> dict:
+        """AJ#6.3 — graceful in-session close+relaunch of THIS tenant's own MT5 (post-login AutoTrading
+        capability recovery). Server-derived confinement (identity + runtime root); Customer Zero is refused by
+        the reserved-id guard in ``_send``/``_confined``. Places no order, logs in nothing, changes no account."""
+        if not self._confined(username=username, runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("RELAUNCH_TERMINAL")
+
     def grant_rdp(self, username, rdp_host=None) -> dict:
         if not self._confined(username=username):
             return {"ok": False, "reason": "confinement_mismatch"}

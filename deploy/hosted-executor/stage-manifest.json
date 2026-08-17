@@ -37,6 +37,7 @@
     "Set-GuvfxObserver.ps1",
     "Invoke-GuvfxObserver.ps1",
     "Set-GuvfxAppLockerTenant.ps1",
-    "Activate-GuvfxOrderBridge.ps1"
+    "Activate-GuvfxOrderBridge.ps1",
+    "Relaunch-GuvfxTerminal.ps1"
   ]
 }

@@ -111,6 +111,25 @@ class DispatchTests(SimpleTestCase):
     def test_op_primitive_map_covers_all_ops(self):
         self.assertEqual(set(D.OP_PRIMITIVES), set(P.HOSTED_OPERATIONS))
 
+    def test_relaunch_terminal_maps_server_derived_and_refuses_cz(self):
+        # AJ#6.3: RELAUNCH_TERMINAL maps to the relaunch_terminal primitive with ONLY server-derived args
+        # (username / terminal_root / account_id) — never a caller path.
+        calls, resp = self._run("RELAUNCH_TERMINAL", account_id=24)
+        self.assertEqual(calls[0][0], "relaunch_terminal")
+        self.assertEqual(calls[0][1], {"username": "guvfx_u_24",
+                                       "terminal_root": r"C:\GuvFX\accounts\24\terminal", "account_id": 24})
+        self.assertTrue(P.verify_hosted_response(resp, correlation_id="c1", nonce=resp["nonce"], keyring=KR)["ok"])
+        # Customer Zero can NEVER be relaunched via this primitive (reserved-id guard, host-side layer).
+        with self.assertRaises(P.HostProtocolError) as cm:
+            self._run("RELAUNCH_TERMINAL", account_id=1, reserved_ids=None)
+        self.assertEqual(cm.exception.reason_code, "reserved_identity")
+
+    def test_relaunch_terminal_rejects_smuggled_params(self):
+        # Empty allow-list: no path/task/pid can ride on the wire.
+        with self.assertRaises(P.HostProtocolError) as cm:
+            self._run("RELAUNCH_TERMINAL", account_id=24, params={"terminal_root": r"C:\evil"})
+        self.assertEqual(cm.exception.reason_code, "params_not_allowed")
+
 
 def _signing_transport(result_by_op):
     """A fake host transport that verifies the request and returns a correctly-signed response for the op."""
@@ -135,6 +154,22 @@ def _executor(account_id=14, result_by_op=None):
 
 
 class SignedHostExecutorTests(SimpleTestCase):
+    def test_relaunch_terminal_confines_and_fails_closed_for_cz(self):
+        # AJ#6.3: the Django seam sends only the typed op; the host derives identity/paths. Happy path returns
+        # the signed host verdict; a foreign identity/runtime is refused BEFORE any transport call; and a
+        # Customer-Zero executor (reserved default) fails closed without contacting the host.
+        ex = _executor(account_id=24, result_by_op={"RELAUNCH_TERMINAL":
+                                                    {"ok": True, "closed": True, "relaunched": True}})
+        res = ex.relaunch_terminal(username="guvfx_u_24", runtime_root=r"C:\GuvFX\accounts\24")
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["relaunched"])
+        self.assertFalse(ex.relaunch_terminal(username="guvfx_u_1", runtime_root=r"C:\GuvFX\accounts\24")["ok"])
+        self.assertFalse(ex.relaunch_terminal(username="guvfx_u_24", runtime_root=r"C:\evil")["ok"])
+        cz = SignedHostExecutor(account_id=1, rdp_host="10.0.0.9", transport=_signing_transport({}),
+                                keyring=KR, key_id="k1", base_url="https://host.invalid",
+                                seal_password=_fake_seal, reserved_ids=None, clock=lambda: T)
+        self.assertFalse(cz.relaunch_terminal(username="guvfx_u_1", runtime_root=r"C:\GuvFX\accounts\1")["ok"])
+
     def test_apply_workspace_acl_maps_and_returns_readback(self):
         rows = [{"sid": "S-1-5-18", "type": "Allow", "rights": "FullControl", "inherited": False}]
         ex = _executor(result_by_op={"APPLY_WORKSPACE_ACL": {"ok": True, "rows": rows,

@@ -92,6 +92,18 @@ class ArgVectorTests(unittest.TestCase):
         self.assertNotIn("s3cr3t-pw", " ".join(argv))
         self.assertNotIn(b"s3cr3t-pw", b" ".join(a.encode() for a in argv))
 
+    def test_relaunch_terminal_maps_server_derived_args_no_stdin(self):
+        # AJ#6.3: relaunch_terminal -> Relaunch-GuvfxTerminal.ps1 with the three server-derived named args and
+        # NO stdin (it carries no secret).
+        call, _ = self._argv("relaunch_terminal", {
+            "username": "guvfx_u_24", "terminal_root": r"C:\GuvFX\accounts\24\terminal", "account_id": 24})
+        argv = call["argv"]
+        self.assertTrue(argv[6].endswith("Relaunch-GuvfxTerminal.ps1"))
+        self.assertEqual(argv[argv.index("-Username") + 1], "guvfx_u_24")
+        self.assertEqual(argv[argv.index("-TerminalRoot") + 1], r"C:\GuvFX\accounts\24\terminal")
+        self.assertEqual(argv[argv.index("-AccountId") + 1], "24")
+        self.assertEqual(call["input"], b"")
+
     def test_applocker_maps_username_to_hosteduser_not_username(self):
         call, _ = self._argv("applocker_tenant_merge", {"username": "guvfx_u_9", "account_id": 9})
         argv = call["argv"]
@@ -337,6 +349,26 @@ class ObserverScheduledTaskCmdletTests(unittest.TestCase):
     def test_observer_is_ascii_only(self):
         raw = open(os.path.join(_WINDOWS_SCRIPTS, "Set-GuvfxObserver.ps1"), "rb").read()
         self.assertEqual(sorted({b for b in raw if b > 127}), [], "Set-GuvfxObserver.ps1 has non-ASCII bytes")
+
+    def test_relaunch_terminal_script_is_ascii_confined_and_orderless(self):
+        # AJ#6.3: the relaunch primitive must be ASCII (RULE 9), refuse Customer Zero + confine to the tenant's
+        # own runtime, and NEVER log in / change account / place an order (capability recovery only).
+        path = os.path.join(_WINDOWS_SCRIPTS, "Relaunch-GuvfxTerminal.ps1")
+        raw = open(path, "rb").read()
+        self.assertEqual(sorted({b for b in raw if b > 127}), [], "Relaunch-GuvfxTerminal.ps1 has non-ASCII bytes")
+        src = raw.decode("ascii")
+        code = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
+        # Customer Zero refused + identity/path confinement present.
+        self.assertIn("RESERVED_ACCOUNT_IDS = @(1)", code)
+        self.assertIn("refusing_reserved_identity", code)
+        self.assertIn("refusing_username_mismatch", code)
+        self.assertIn("refusing_terminal_root_mismatch", code)
+        # It closes/launches ONLY the tenant's own terminal (per-account tasks run AS the tenant user).
+        self.assertIn("New-ScheduledTaskPrincipal -UserId $Username -LogonType Interactive", code)
+        self.assertIn("terminal64.exe", code)
+        # It NEVER logs in, changes account, or places an order.
+        for forbidden in ("mt5.login", "order_send", "OrderSend", "-Login", "-Password", "-Server"):
+            self.assertNotIn(forbidden, code, f"relaunch script must not reference {forbidden}")
 
     def test_observer_catch_emits_structured_diagnostics_not_bare_error(self):
         src = self._observer()

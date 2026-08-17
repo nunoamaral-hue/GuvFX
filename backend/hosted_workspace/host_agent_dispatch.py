@@ -75,6 +75,10 @@ OP_PRIMITIVES = {
     # FINAL Closed-Beta stream: activate this node's dedicated pin-enforcing order bridge. Server-derived
     # terminal_root (falls through to _build_args' base) + injected -AccountId; no caller params.
     "ACTIVATE_ORDER_BRIDGE":    {"primitive": "activate_order_bridge",    "params_allow": ()},
+    # AJ#6.3: graceful in-session close+relaunch of THIS tenant's OWN MT5 (post-login AutoTrading capability
+    # recovery). Server-derived identity/paths only; Customer Zero is refused (reserved) before this maps. It
+    # relaunches a terminal — it NEVER logs in, changes accounts, arms a strategy, or places an order.
+    "RELAUNCH_TERMINAL":        {"primitive": "relaunch_terminal",        "params_allow": ()},
 }
 assert set(OP_PRIMITIVES) == set(HOSTED_OPERATIONS), "OP_PRIMITIVES must cover exactly HOSTED_OPERATIONS"
 
@@ -184,6 +188,12 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
                 "mode": "Apply" if op == "APPLY_WORKSPACE_ACL" else "Rollback"}
     if op == "APPLY_AUTOTRADING_CONFIG":
         return {"terminal_root": slot["terminal_root"]}
+    if op == "RELAUNCH_TERMINAL":
+        # The host script confines to guvfx_u_<id> + accounts\<id>\terminal and closes/relaunches ONLY the
+        # tenant's own terminal64; account_id is passed so the .ps1 can derive its per-account task names +
+        # re-assert the CZ refusal as defence in depth.
+        return {"username": slot["username"], "terminal_root": slot["terminal_root"],
+                "account_id": slot["account_id"]}
     if op in ("ENSURE_REMOTEAPP", "REMOVE_REMOTEAPP"):
         # The alias is DERIVED server-side (never the caller's) — per-account for isolation, legacy for CZ.
         return {"username": slot["username"], "terminal_root": slot["terminal_root"],
