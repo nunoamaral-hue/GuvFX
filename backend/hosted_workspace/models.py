@@ -170,6 +170,17 @@ class HostedMt5Workspace(models.Model):
     # de-authorization. Never the order authority (the live bridge gate remains sole).
     execution_authorized_at = models.DateTimeField(null=True, blank=True, default=None)
 
+    # --- AJ#6.3 Shape-3: durable loop-safety for post-login MT5 automation-capability recovery ------------
+    # After a broker-login account-change, MT5 reverts [Experts] Enabled=1 -> 0 (AJ#6.2), so a CONNECTED +
+    # matched workspace can sit at trade_allowed=False. The capability-recovery edge re-asserts the certified
+    # config then gracefully relaunches THIS tenant's own terminal. These two fields make that STRICTLY bounded
+    # and loop-safe: ``capability_recovery_at`` stamps the last attempt and ``capability_recovery_count`` caps
+    # total attempts, so MT5 is NEVER repeatedly restarted. Once the observer re-proves trade_allowed=True the
+    # workspace leaves the stuck state and is no longer a candidate. Written ONLY by the recovery runner; never
+    # arms, never places an order.
+    capability_recovery_at = models.DateTimeField(null=True, blank=True, default=None)
+    capability_recovery_count = models.PositiveIntegerField(default=0)
+
     # --- ADR-0034 Execution Engine capstone (PART 2/3): durable workspace->node execution binding ---------
     # The ONE authorised execution TerminalNode this workspace resolves to (Decision C). NULL ⇒ NOT
     # execution-routable (fail-closed). Server-assigned only, via the provisioning contract

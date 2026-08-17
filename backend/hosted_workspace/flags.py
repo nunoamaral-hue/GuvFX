@@ -49,6 +49,18 @@ def hosted_observation_scheduler_enabled() -> bool:
     return _flag("HOSTED_OBSERVATION_SCHEDULER_ENABLED")
 
 
+def hosted_capability_recovery_enabled() -> bool:
+    """AJ#6.3 Shape-3 — the gate for the post-login MT5 automation-CAPABILITY recovery edge (re-assert
+    AllowLiveTrading=1 / Enabled=1 then gracefully relaunch THIS tenant's own terminal for a CONNECTED + matched
+    workspace stuck at trade_allowed=False). DEFAULT OFF, and DISTINCT from the master
+    ``HOSTED_PERSISTENT_MT5_ENABLED`` — two-level darkness: the recovery runner is a dormant no-op unless BOTH
+    are on. It is capability-only: it re-writes the certified common.ini keys and relaunches the tenant's own
+    MT5, bounded + loop-safe (never repeatedly restarts once recovered). It NEVER logs in, changes the broker
+    account, ARMS execution, or authorises/places an order — arming still requires the explicit customer
+    authorization (ADR-0047) and the live order-time bridge gate remains the sole order authority."""
+    return _flag("HOSTED_CAPABILITY_RECOVERY_ENABLED")
+
+
 def hosted_slot_prep_enabled() -> bool:
     """Beta Readiness Stream 4 — the gate for the host PROVISIONING engine (``prepare_hosted_slot``: create the
     Windows identity + folders + NTFS ACL + golden runtime + RDP + RemoteApp-verify + AppLocker AuditOnly for a

@@ -1,9 +1,17 @@
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 vi.mock("next/link", () => ({ default: ({ children, href }: any) => <a href={href}>{children}</a> }));
+
+// ADR-0047 — stub only the authorize call; keep the real describeJourney the component also imports.
+const { authorizeExecution } = vi.hoisted(() => ({ authorizeExecution: vi.fn(async () => ({})) }));
+vi.mock("@/lib/hosted-journey", async (importOriginal) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const actual = await importOriginal<any>();
+  return { ...actual, authorizeExecution };
+});
 
 import { HostedWorkspaceStatus } from "./HostedWorkspaceStatus";
 import type { HostedJourney } from "@/lib/hosted-journey";
@@ -66,5 +74,53 @@ describe("HostedWorkspaceStatus (P0.1)", () => {
     // broker-details field here) — it shows a status-oriented sentence that points at the CTA instead.
     expect(screen.queryByText(/enter your broker account number/i)).toBeNull();
     expect(screen.getByText(/continue setup to point it at your broker account/i)).toBeInTheDocument();
+  });
+
+  // ---- ADR-0047: explicit "Enable automated trading" authorization (capability != consent) ----------------
+  it("shows the explicit Enable-automated-trading control ONLY when the server says can_enable", async () => {
+    const onAuthorized = vi.fn();
+    const { container } = render(
+      <HostedWorkspaceStatus
+        journey={journey({ execution_ready: true, can_enable_automated_trading: true })}
+        accounts={[demoAccount]}
+        onAuthorized={onAuthorized}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /enable automated trading/i });
+    // Truthful resting state — capability is NOT presented as consent. ("Automated trading" appears as both
+    // the status-row label and the control heading, so assert at least one.)
+    expect(screen.getAllByText("Automated trading").length).toBeGreaterThan(0);
+    expect(screen.getByText("Ready — not yet enabled")).toBeInTheDocument();
+    // Copy states the distinction and uses NO internal terminology.
+    const blob = (container.textContent || "").toLowerCase();
+    expect(blob).toContain("ready for automated trading");
+    expect(blob).toContain("enable automated trading when you want");
+    expect(blob).not.toContain("execution_ready");
+    expect(blob).not.toContain("trade_allowed");
+    expect(blob).not.toContain("autotrading");
+    expect(blob).not.toContain("arming");
+    // Click authorizes, then re-reads authoritative state (never trusts the click).
+    fireEvent.click(btn);
+    await waitFor(() => expect(authorizeExecution).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onAuthorized).toHaveBeenCalledTimes(1));
+  });
+
+  it("armed → shows the enabled confirmation and NO enable button", () => {
+    render(
+      <HostedWorkspaceStatus
+        journey={journey({ execution_ready: true, execution_authorized: true, execution_armed: true })}
+        accounts={[demoAccount]}
+      />,
+    );
+    expect(screen.getByText(/automated trading is enabled/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /enable automated trading/i })).toBeNull();
+  });
+
+  it("ready but NOT yet enable-able → no automated-trading control at all (capability is not consent)", () => {
+    render(
+      <HostedWorkspaceStatus journey={journey({ execution_ready: true })} accounts={[demoAccount]} />,
+    );
+    expect(screen.queryByRole("button", { name: /enable automated trading/i })).toBeNull();
+    expect(screen.queryByText(/automated trading is enabled/i)).toBeNull();
   });
 });

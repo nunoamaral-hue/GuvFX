@@ -33,6 +33,14 @@ export interface HostedJourney {
    *  The single source of truth for whether the declaration form is still needed — deterministic across
    *  reloads/devices, so the form is never re-shown for an account that is already linked. */
   identity_declared: boolean;
+  /** ADR-0047 — the execution AUTHORIZATION tier (strictly ABOVE onboarding). Read-only, server-derived.
+   *  `can_enable_automated_trading` is the ONLY signal that shows the explicit "Enable automated trading"
+   *  control; `execution_armed` means the customer has already enabled it. Capability (the workspace being
+   *  ready) is NEVER presented as consent. Optional so an older payload degrades to "not enabled". */
+  execution_ready?: boolean;
+  execution_authorized?: boolean;
+  execution_armed?: boolean;
+  can_enable_automated_trading?: boolean;
 }
 
 // ---- Customer-facing view model --------------------------------------------------------------------------
@@ -233,4 +241,11 @@ export async function bindExpectedAccount(input: BindIdentityInput): Promise<Hos
 
 export async function confirmAccount(): Promise<HostedJourney> {
   return apiFetch<HostedJourney>(`${BASE}/onboarding/confirm/`, { method: "POST" });
+}
+
+/** ADR-0047 — the customer's EXPLICIT "Enable automated trading" authorization. The ONLY action that permits
+ * arming; owner-scoped server-side, valid only once the workspace is ready. Sends NO secret. Returns the
+ * refreshed journey so the caller re-reads authoritative state (never trusts an optimistic click). */
+export async function authorizeExecution(): Promise<HostedJourney> {
+  return apiFetch<HostedJourney>(`${BASE}/onboarding/authorize-execution/`, { method: "POST" });
 }

@@ -2,7 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
-import { describeJourney, type HostedJourney } from "@/lib/hosted-journey";
+import { authorizeExecution, describeJourney, type HostedJourney } from "@/lib/hosted-journey";
 
 /**
  * Hosted Workspace status panel (Product Consistency Pass — P0.1 / P1.3).
@@ -85,7 +85,13 @@ function maskNumber(n?: string | null): string {
   return s.length <= 3 ? s : "•••" + s.slice(-3);
 }
 
-export function HostedWorkspaceStatus({ journey, accounts }: { journey: HostedJourney; accounts: Acct[] }) {
+export function HostedWorkspaceStatus({ journey, accounts, onAuthorized }: {
+  journey: HostedJourney;
+  accounts: Acct[];
+  /** Called after the customer successfully enables automated trading, so the page re-reads authoritative
+   *  state. Defaults to a full reload (the accounts page re-fetches the journey). */
+  onAuthorized?: () => void;
+}) {
   const view = describeJourney(journey);
   const desc = STATUS_DESC[journey.phase] ?? view.description;
   const ws = WORKSPACE_STATUS[journey.phase] ?? { label: "In progress", color: "#38bdf8" };
@@ -116,6 +122,19 @@ export function HostedWorkspaceStatus({ journey, accounts }: { journey: HostedJo
     },
     { label: "Trading readiness", value: readinessValue, color: journey.strategy_eligible ? "#22c55e" : "#94a3b8" },
   ];
+
+  // ADR-0047 — the AUTOMATED-TRADING (authorization) tier, shown only once the workspace is ready. Capability
+  // (the workspace being ready) is NEVER presented as consent: "Ready — not yet enabled" is the honest resting
+  // state, and automated trading only begins after the customer explicitly clicks Enable.
+  const armed = journey.execution_armed === true;
+  const canEnable = journey.can_enable_automated_trading === true;
+  if (ready) {
+    rows.push({
+      label: "Automated trading",
+      value: armed ? "Enabled" : canEnable ? "Ready — not yet enabled" : "Preparing",
+      color: armed ? "#22c55e" : canEnable ? "#f59e0b" : "#38bdf8",
+    });
+  }
 
   // ONE clear next action, always. Ready → open the terminal; otherwise → continue the hosted journey.
   const primaryHref = ready ? "/trading/terminal-access" : "/onboarding/hosted";
@@ -150,9 +169,84 @@ export function HostedWorkspaceStatus({ journey, accounts }: { journey: HostedJo
         )}
       </div>
 
+      {(canEnable || armed) && (
+        <AutomatedTradingControl armed={armed} canEnable={canEnable} onAuthorized={onAuthorized} />
+      )}
+
       <p style={{ margin: "1rem 0 0", fontSize: "0.78rem", color: "#64748b", lineHeight: 1.5 }}>
         GuvFX runs MetaTrader for you — you log in inside it, and we never see or store your broker password.
       </p>
+    </div>
+  );
+}
+
+/**
+ * ADR-0047 — the customer's EXPLICIT "Enable automated trading" control. This is the ONLY thing that permits
+ * arming: a ready workspace is a CAPABILITY, never consent. The copy deliberately states the distinction and
+ * uses NO internal terminology (no "EXECUTION_READY", "AutoTrading", "trade_allowed", "arming"). On success we
+ * re-read authoritative state (default: reload) rather than trust the optimistic click.
+ */
+function AutomatedTradingControl({ armed, canEnable, onAuthorized }: {
+  armed: boolean;
+  canEnable: boolean;
+  onAuthorized?: () => void;
+}) {
+  const [pending, setPending] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  const enable = React.useCallback(async () => {
+    setPending(true);
+    setError("");
+    try {
+      await authorizeExecution();
+      // Never trust the click — re-read the server's authoritative state.
+      if (onAuthorized) onAuthorized();
+      else if (typeof window !== "undefined") window.location.reload();
+    } catch {
+      setError("We couldn't enable automated trading just now. Please try again in a moment.");
+      setPending(false);
+    }
+  }, [onAuthorized]);
+
+  const box: React.CSSProperties = {
+    marginTop: "1.1rem",
+    borderRadius: 10,
+    border: "1px solid rgba(74, 179, 255, 0.2)",
+    background: "rgba(37, 99, 235, 0.06)",
+    padding: "1rem 1.1rem",
+  };
+
+  if (armed) {
+    return (
+      <div style={box}>
+        <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#22c55e" }}>Automated trading is enabled</div>
+        <p style={{ margin: "0.35rem 0 0", fontSize: "0.85rem", color: "#b7c5dd", lineHeight: 1.6 }}>
+          GuvFX will execute the strategies you enable, within your safety limits. You can turn this off at any time.
+        </p>
+      </div>
+    );
+  }
+
+  if (!canEnable) return null;
+
+  return (
+    <div style={box}>
+      <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#e9f4ff" }}>Automated trading</div>
+      <p style={{ margin: "0.35rem 0 0.9rem", fontSize: "0.85rem", color: "#b7c5dd", lineHeight: 1.6 }}>
+        Your MetaTrader workspace is ready for automated trading. Enable automated trading when you want GuvFX
+        to begin executing your enabled strategies.
+      </p>
+      <button
+        type="button"
+        onClick={enable}
+        disabled={pending}
+        style={{ ...primaryBtn, border: "none", cursor: pending ? "default" : "pointer", opacity: pending ? 0.7 : 1 }}
+      >
+        {pending ? "Enabling…" : "Enable automated trading"}
+      </button>
+      {error && (
+        <p role="alert" style={{ margin: "0.6rem 0 0", fontSize: "0.8rem", color: "#f87171" }}>{error}</p>
+      )}
     </div>
   );
 }
