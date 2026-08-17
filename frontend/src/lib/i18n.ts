@@ -913,6 +913,55 @@ const dictionary: Dictionary = {
     en: "Assigning\u2026",
     ja: "割当中\u2026",
   },
+  // AJ#7 — "Get Strategy" acquisition journey (Get -> Configure -> Enable).
+  "marketplace.getStrategy": {
+    en: "Get Strategy",
+    ja: "戦略を追加",
+  },
+  "marketplace.getting": {
+    en: "Adding…",
+    ja: "追加中…",
+  },
+  "marketplace.getSelectAccountHint": {
+    en: "Choose the account to use this strategy on.",
+    ja: "この戦略を利用する口座を選択してください。",
+  },
+  "marketplace.getNeedsSignIn": {
+    en: "Sign in to get this strategy.",
+    ja: "この戦略を追加するにはサインインしてください。",
+  },
+  "marketplace.getNeedsAccount": {
+    en: "You'll need a broker account first. Add one to get this strategy.",
+    ja: "まずブローカー口座が必要です。この戦略を追加するには口座を追加してください。",
+  },
+  "marketplace.getFailed": {
+    en: "We couldn't add this strategy just now. Please try again.",
+    ja: "現在この戦略を追加できませんでした。もう一度お試しください。",
+  },
+  "marketplace.priceLabel": {
+    en: "Price",
+    ja: "価格",
+  },
+  "marketplace.configure": {
+    en: "Configure",
+    ja: "設定",
+  },
+  "marketplace.manage": {
+    en: "Manage",
+    ja: "管理",
+  },
+  "marketplace.stateOwned": {
+    en: "Added",
+    ja: "追加済み",
+  },
+  "marketplace.stateEnabled": {
+    en: "Enabled",
+    ja: "有効",
+  },
+  "marketplace.stateNeedsAttention": {
+    en: "Needs attention",
+    ja: "要確認",
+  },
   "marketplace.copyStatusLabel": {
     en: "Status",
     ja: "状態",

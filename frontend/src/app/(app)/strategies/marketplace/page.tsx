@@ -5,9 +5,13 @@ import { Button } from "@/components/ui/Button";
 import { t } from "@/lib/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
-import { brokerConnectivityEnabled } from "@/lib/flags";
-import { SignalCopyReadiness } from "@/components/marketplace/SignalCopyReadiness";
-import { fetchJourney, authorizeExecution, type HostedJourney } from "@/lib/hosted-journey";
+import {
+  priceFor,
+  priceLabel,
+  getStrategy,
+  fetchSignalCopyStatus,
+  type SignalCopyStatus,
+} from "@/lib/strategy-journey";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -29,29 +33,23 @@ type MarketplaceStrategy = {
   timeframes: string[];
   pairs: string[];
   tags?: string[];
-  // Signal-copy strategy (e.g. Wayond WIM): shows an enable/disable toggle that pauses/resumes
-  // its already-armed auto-demo assignment instead of the generic Assign flow.
+  // Signal-copy strategy (e.g. Wayond WIM): the ONLY beta strategy with an automated-execution path. "Get
+  // Strategy" acquires it (non-executing), then Configure → Enable turns on automated trading. Generic cards
+  // are research/templates and never auto-execute.
   signalCopy?: boolean;
 };
 
-type SignalCopyStatus = {
-  armed: boolean;
-  enabled: boolean;
-  ambiguous?: boolean;
-  loading?: boolean;
-};
+// Per-card owned/enabled state for signal-copy strategies (drives the "Get Strategy" vs "Configure" CTA and
+// the owned-state badge). `loading` while the first status fetch is in flight.
+type CardCopyState = SignalCopyStatus & { loading?: boolean };
 
 type TradingAccount = {
   id: number;
   name: string;
   broker_name?: string;
   account_number?: string;
-  // IPR Area D: both serialized by the backend — used to hint eligibility in the arm selector
-  // (arm rejects non-demo / inactive with `account_not_ready`; arm remains the authority).
   is_demo?: boolean;
   is_active?: boolean;
-  // IPR Area B (C6): canonical dedicated-runtime readiness — gates the arm affordance in the UI
-  // (the backend re-checks it authoritatively).
   runtime_ready?: boolean;
 };
 
@@ -106,6 +104,40 @@ const badgeStyle = (): React.CSSProperties => ({
   fontWeight: 600,
   whiteSpace: "nowrap",
 });
+
+// Owned-state chip on a signal-copy card. Customer vocabulary only.
+const ownedChip = (tone: "ready" | "action" | "attention"): React.CSSProperties => {
+  const m = {
+    ready: { bg: "rgba(34,197,94,0.14)", border: "rgba(34,197,94,0.35)", text: "#86efac" },
+    action: { bg: "rgba(59,130,246,0.14)", border: "rgba(59,130,246,0.35)", text: "#93c5fd" },
+    attention: { bg: "rgba(245,158,11,0.14)", border: "rgba(245,158,11,0.40)", text: "#fcd34d" },
+  }[tone];
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "0.15rem 0.5rem",
+    borderRadius: 999,
+    border: `1px solid ${m.border}`,
+    background: m.bg,
+    color: m.text,
+    fontSize: "0.72rem",
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+  };
+};
+
+const freeBadgeStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "0.15rem 0.55rem",
+  borderRadius: 999,
+  border: "1px solid rgba(34,197,94,0.35)",
+  background: "rgba(34,197,94,0.12)",
+  color: "#86efac",
+  fontSize: "0.72rem",
+  fontWeight: 700,
+  whiteSpace: "nowrap",
+};
 
 // ─────────────────────────────────────────────────────────────────────
 // Seeded Marketplace Strategies
@@ -216,7 +248,7 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     category: "System-grade",
     accent: "green",
     style: "Telegram signal copy",
-    execution: "Signal copy · demo",
+    execution: "Automated signal copy · demo",
     summary: "When enabled, automatically mirrors a curated Telegram signal provider into your demo account.",
     timeframes: ["M15"],
     pairs: ["XAUUSD"],
@@ -238,18 +270,11 @@ export default function StrategyMarketplacePage() {
   const [activeFilter, setActiveFilter] = useState<MarketCategory | "All">("All");
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(true);
-  const [assigning, setAssigning] = useState<Record<string, boolean>>({});
+  // Per-card busy state for the "Get Strategy" acquisition action.
+  const [getting, setGetting] = useState<Record<string, boolean>>({});
   const [selectedAccount, setSelectedAccount] = useState<Record<string, number | "">>({});
-  // Per-card enable/disable state for signal-copy strategies (e.g. Wayond WIM).
-  const [copyState, setCopyState] = useState<Record<string, SignalCopyStatus>>({});
-  const [copyBusy, setCopyBusy] = useState<Record<string, boolean>>({});
-  // IPR Area D: per-card busy state for the self-service Enable-Trading (arm) action.
-  const [armBusy, setArmBusy] = useState<Record<string, boolean>>({});
-  // AJ#6.5: the hosted-workspace journey (ADR-0047 authorization state), so the Wayond card can OWN the
-  // forward path (authorize → arm) instead of bouncing a ready customer back to /onboarding/hosted. Null =
-  // no hosted workspace / feature dark → the card keeps its legacy (non-hosted) behaviour.
-  const [hostedJourney, setHostedJourney] = useState<HostedJourney | null>(null);
-  const [authorizingExec, setAuthorizingExec] = useState(false);
+  // Per-card owned/enabled state for signal-copy strategies (switches the CTA to "Configure" once owned).
+  const [copyState, setCopyState] = useState<Record<string, CardCopyState>>({});
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [defaultAccountId, setDefaultAccountId] = useState<number | null>(null);
   const [alert, setAlert] = useState<string | null>(null);
@@ -312,7 +337,8 @@ export default function StrategyMarketplacePage() {
   }, [authChecked, isAuthed]);
 
   // ─────────────────────────────────────────────────────────────────────
-  // Fetch enable/disable status for signal-copy strategies (e.g. Wayond WIM)
+  // Fetch owned/enabled status for signal-copy strategies (e.g. Wayond WIM). Read-only; drives the CTA
+  // ("Get Strategy" vs "Configure") and the owned-state chip. Fail-soft: an error leaves a not-owned card.
   // ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!authChecked || !isAuthed) return;
@@ -320,43 +346,18 @@ export default function StrategyMarketplacePage() {
     if (copyCards.length === 0) return;
     copyCards.forEach(async (card) => {
       try {
-        const st = await apiFetch<SignalCopyStatus>(
-          `/api/strategies/strategies/signal-copy/status/?marketplace_strategy_id=${encodeURIComponent(card.id)}`
-        );
+        const st = await fetchSignalCopyStatus(card.id);
         setCopyState((prev) => ({ ...prev, [card.id]: { ...st, loading: false } }));
       } catch {
-        // Leave undefined → the card shows an unavailable state without breaking the grid.
         setCopyState((prev) => ({ ...prev, [card.id]: { armed: false, enabled: false, loading: false } }));
       }
     });
   }, [authChecked, isAuthed]);
 
-  // ─────────────────────────────────────────────────────────────────────
-  // AJ#6.5 — Hosted-workspace journey (ADR-0047 authorization state). Read-only; fail-closed: a 404
-  // (no hosted workspace / feature dark) or any error simply leaves the journey null, so the Wayond card
-  // keeps its legacy (non-hosted) behaviour. Never mutates; never blocks the grid.
-  // ─────────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!authChecked || !isAuthed) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await fetchJourney();
-        if (!cancelled) setHostedJourney(r.ok ? r.journey : null);
-      } catch {
-        if (!cancelled) setHostedJourney(null);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [authChecked, isAuthed]);
-
   // Load saved default account for marketplace dropdowns — but only one the CURRENT user owns.
   // localStorage is per-browser, not per-user: a default persisted by a previous session/user (e.g.
-  // account #1 on a shared machine) must never leak into this session. Applying an unowned id makes the
-  // read-only signal-copy readiness endpoint 404 ("We couldn't check your account status right now") and
-  // would aim Assign at a foreign account. So we wait for the owned-accounts list to load and apply the
-  // saved default only when it is actually owned; otherwise we ignore it and let each card pick its own
-  // owned account (the signal-copy panel auto-selects the first demo account; generic cards prompt).
+  // account #1 on a shared machine) must never leak into this session, so we wait for the owned-accounts
+  // list and apply the saved default only when it is actually owned.
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (loadingAccounts) return;                       // wait until we know what this user owns
@@ -403,220 +404,94 @@ export default function StrategyMarketplacePage() {
   }, [search, activeFilter]);
 
   // ─────────────────────────────────────────────────────────────────────
-  // Assign Handler
+  // Persist the last-used account (per browser) as the default for next time.
   // ─────────────────────────────────────────────────────────────────────
-  const handleAssign = async (strategyId: string) => {
-    const accountId = selectedAccount[strategyId];
-    if (!accountId) {
+  const persistDefaultAccount = (accountId: number) => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(LS_DEFAULT_ACCOUNT_KEY, String(accountId));
+    setDefaultAccountId(accountId);
+  };
+
+  const configureHref = (strategyId: string, accountId?: number | "") =>
+    accountId
+      ? `/strategies/configure?mp=${encodeURIComponent(strategyId)}&account=${accountId}`
+      : `/strategies/configure?mp=${encodeURIComponent(strategyId)}`;
+
+  // ─────────────────────────────────────────────────────────────────────
+  // GET STRATEGY — acquire the strategy for the chosen account WITHOUT enabling execution, then hand off to
+  // the Configure page. For signal-copy this creates the owned (non-executing, is_active=False) assignment
+  // via /signal-copy/get; for generic templates it uses the existing marketplace assign. Neither creates an
+  // order, arms, or authorizes execution — that is the deliberate, confirmed Enable step on Configure.
+  // ─────────────────────────────────────────────────────────────────────
+  const handleGet = async (strategy: MarketplaceStrategy) => {
+    const accountId = selectedAccount[strategy.id];
+    if (!accountId || typeof accountId !== "number") {
       setAlert(t(lang, "marketplace.alertSelectAccount"));
       setAlertType("error");
       return;
     }
 
-    setAssigning({ ...assigning, [strategyId]: true });
-
+    setGetting((g) => ({ ...g, [strategy.id]: true }));
     try {
-      await apiFetch("/api/strategies/strategies/marketplace/assign/", {
-        method: "POST",
-        body: JSON.stringify({
-          marketplace_strategy_id: strategyId,
-          account_id: accountId,
-        }),
-      });
-      setAlert(null); // Clear any previous errors
-      setAlert(t(lang, "marketplace.alertAssigned"));
-      setAlertType("success");
-
-      // Keep the selected account as the default for next time
-      if (typeof window !== "undefined") {
-        const v = selectedAccount[strategyId];
-        if (typeof v === "number" && v > 0) {
-          window.localStorage.setItem(LS_DEFAULT_ACCOUNT_KEY, String(v));
-          setDefaultAccountId(v);
-        }
+      if (strategy.signalCopy) {
+        await getStrategy(strategy.id, accountId);
+      } else {
+        await apiFetch("/api/strategies/strategies/marketplace/assign/", {
+          method: "POST",
+          body: JSON.stringify({ marketplace_strategy_id: strategy.id, account_id: accountId }),
+        });
       }
+      persistDefaultAccount(accountId);
+      // Hand off to Configure — never dump the customer straight into My Strategies.
+      router.push(configureHref(strategy.id, accountId));
     } catch (err) {
-      const e = err as { status?: number; message?: string };
-      const msg = (e?.message || "").trim();
-
-      // If backend returned an HTML 404 page (common when hitting wrong route),
-      // don't dump HTML into the UI.
-      const looksLikeHtml =
-        msg.toLowerCase().includes("<!doctype") ||
-        msg.toLowerCase().includes("<html") ||
-        msg.toLowerCase().includes("<body");
-
-      if (e?.status === 401 || msg.toLowerCase().includes("unauthorized")) {
-        setAlert(t(lang, "marketplace.alertSessionExpired"));
-        setAlertType("error");
-        setIsAuthed(false);
-        return;
-      }
-
-      // WS-I: a plan/entitlement denial (403) must show plain guidance, never the raw backend slug
-      // (e.g. ENTITLEMENT_RESTRICTED) that apiFetch surfaces as the error message.
-      if (e?.status === 403 || msg.toUpperCase().includes("ENTITLEMENT")) {
-        setAlert(t(lang, "marketplace.alertPlanRestricted"));
-        setAlertType("error");
-        return;
-      }
-
-      if (e?.status === 404 || msg.includes("404")) {
-        setAlert(t(lang, "marketplace.alertEndpointNotFound"));
-        setAlertType("error");
-        return;
-      }
-
-      if (looksLikeHtml) {
-        setAlert(t(lang, "marketplace.alertUnexpectedResponse"));
-        setAlertType("error");
-        return;
-      }
-
-      // WS-I: never dump a raw backend message/slug to the customer — fall back to generic safe copy.
-      setAlert(t(lang, "marketplace.alertAssignFailed"));
-      setAlertType("error");
+      handleGetError(err, strategy);
     } finally {
-      setAssigning({ ...assigning, [strategyId]: false });
+      setGetting((g) => ({ ...g, [strategy.id]: false }));
     }
   };
 
-  // ─────────────────────────────────────────────────────────────────────
-  // Signal-copy enable/disable — pauses/resumes an already-armed auto-demo assignment.
-  // Never arms (arming is a separate, gated step); a 409 means "not armed yet".
-  // ─────────────────────────────────────────────────────────────────────
-  const refreshCopyStatus = async (strategyId: string): Promise<SignalCopyStatus | null> => {
-    try {
-      const st = await apiFetch<SignalCopyStatus>(
-        `/api/strategies/strategies/signal-copy/status/?marketplace_strategy_id=${encodeURIComponent(strategyId)}`
-      );
-      setCopyState((prev) => ({ ...prev, [strategyId]: { ...st, loading: false } }));
-      return st;
-    } catch {
-      return null;
-    }
-  };
-
-  const handleSignalCopyToggle = async (strategyId: string, nextEnabled: boolean) => {
-    setCopyBusy((b) => ({ ...b, [strategyId]: true }));
-    try {
-      const res = await apiFetch<{ status: string; enabled: boolean }>(
-        "/api/strategies/strategies/signal-copy/toggle/",
-        { method: "POST", body: JSON.stringify({ marketplace_strategy_id: strategyId, enabled: nextEnabled }) }
-      );
-      setCopyState((prev) => ({
-        ...prev,
-        [strategyId]: { armed: true, enabled: res.enabled, loading: false },
-      }));
-      setAlert(nextEnabled ? t(lang, "marketplace.copyEnabled") : t(lang, "marketplace.copyDisabled"));
-      setAlertType("success");
-    } catch (err) {
-      const msg = ((err as { message?: string })?.message || "").toLowerCase();
-      if (msg.includes("unauthorized")) {
-        setAlert(t(lang, "marketplace.alertSessionExpired"));
-        setAlertType("error");
-        setIsAuthed(false);
-        return;
-      }
-      // WS-G: a still-armed ENABLE (resume) refused by the cohort gate is a PERMANENT denial — the
-      // safety-stop Disable stays allowed, but re-enabling needs approval. Say so plainly instead of
-      // the generic retriable "try again".
-      const slug = (err as { body?: { status?: string } })?.body?.status;
-      if (slug === "not_pilot_approved") {
-        setAlert(t(lang, "marketplace.armNotPilotApproved"));
-        setAlertType("error");
-        return;
-      }
-      // Refetch the authoritative status so the card reflects reality (armed / ambiguous /
-      // not-armed) instead of guessing from an opaque error.
-      const st = await refreshCopyStatus(strategyId);
-      setAlert(
-        st?.ambiguous
-          ? t(lang, "marketplace.copyAmbiguous")
-          : st && !st.armed
-            ? t(lang, "marketplace.copyNotArmed")
-            : t(lang, "marketplace.copyToggleFailed")
-      );
+  // Map Get failures to customer-safe copy (never a raw slug/detail/HTML). Session-expiry and account-not-
+  // ready get their own wording; everything else falls back to a generic retriable message.
+  const handleGetError = (err: unknown, strategy: MarketplaceStrategy) => {
+    const e = err as { status?: number; httpStatus?: number; body?: { status?: string }; message?: string };
+    const msg = (e?.message || "").toLowerCase();
+    const httpStatus = e?.status ?? e?.httpStatus;
+    if (httpStatus === 401 || msg.includes("unauthorized")) {
+      setAlert(t(lang, "marketplace.alertSessionExpired"));
       setAlertType("error");
-    } finally {
-      setCopyBusy((b) => ({ ...b, [strategyId]: false }));
+      setIsAuthed(false);
+      return;
     }
-  };
-
-  // IPR Area D — self-service Enable-Trading (arm). Creates the AUTO_DEMO signal-copy authority for the
-  // chosen account (backend `signal_copy_arm`, gated OFF by BETA_SELF_SERVE_ARM_ENABLED and fail-closed).
-  // On success we NEVER trust the optimistic click — we re-read the authoritative status so the card's
-  // ON state comes only from backend-confirmed `enabled`. Failures branch on the machine-readable
-  // `status` slug (not `detail`, which is identical for the two readiness reasons) into customer-safe
-  // wording — raw slugs / detail strings are never shown.
-  // AJ#6.5 — the ADR-0047 "Enable automated trading" authorization, owned by strategy selection (Option B).
-  // This is the customer's EXPLICIT consent for automated execution on their hosted workspace; it does NOT
-  // arm any strategy and creates no order (the strategy-arm is a separate, deliberate action). On success we
-  // re-read the authoritative journey (never trust the click), which advances the card to the arm step.
-  const handleAuthorizeExecution = async () => {
-    setAuthorizingExec(true);
-    try {
-      const journey = await authorizeExecution();
-      setHostedJourney(journey);
-      setAlert(t(lang, "marketplace.authorizeSuccess"));
-      setAlertType("success");
-    } catch (err) {
-      const e = err as { message?: string };
-      if ((e?.message || "").toLowerCase().includes("unauthorized")) {
-        setAlert(t(lang, "marketplace.alertSessionExpired"));
-        setAlertType("error");
-        setIsAuthed(false);
-        return;
-      }
-      setAlert(t(lang, "marketplace.authorizeFailed"));
+    if (httpStatus === 403 || msg.toUpperCase().includes("ENTITLEMENT")) {
+      setAlert(t(lang, strategy.signalCopy ? "marketplace.armNotPilotApproved" : "marketplace.alertPlanRestricted"));
       setAlertType("error");
-    } finally {
-      setAuthorizingExec(false);
+      return;
     }
-  };
-
-  const handleSignalCopyArm = async (strategyId: string, accountId: number) => {
-    setArmBusy((b) => ({ ...b, [strategyId]: true }));
-    try {
-      await apiFetch<{ status: string; enabled: boolean }>(
-        "/api/strategies/strategies/signal-copy/arm/",
-        { method: "POST", body: JSON.stringify({ marketplace_strategy_id: strategyId, account_id: accountId }) }
-      );
-      // Refresh-after-arm: authoritative armed/enabled/ambiguous, not the local optimistic state.
-      await refreshCopyStatus(strategyId);
-      setAlert(t(lang, "marketplace.armSuccess"));
-      setAlertType("success");
-    } catch (err) {
-      const e = err as { httpStatus?: number; body?: { status?: string }; message?: string };
-      if ((e?.message || "").toLowerCase().includes("unauthorized")) {
-        setAlert(t(lang, "marketplace.alertSessionExpired"));
-        setAlertType("error");
-        setIsAuthed(false);
-        return;
-      }
-      const slug = e?.body?.status;
-      const key =
-        slug === "arming_disabled" ? "marketplace.armDisabled"
-        // WS-G: permanent / attention denials must map to their OWN customer-safe copy, never the
-        // generic retriable "try again" — a default-deny cohort or a failed validation is not transient.
-        : slug === "not_pilot_approved" ? "marketplace.armNotPilotApproved"
-        : slug === "broker_validation_unhealthy" ? "marketplace.armValidationUnhealthy"
-        : slug === "runtime_paused" ? "marketplace.armPaused"
-        : slug === "duplicate_active_assignment" ? "marketplace.armDuplicate"
-        : slug === "account_not_ready" ? "marketplace.armAccountNotReady"
-        : slug === "credentials_missing" ? "marketplace.armCredentialsMissing"
-        : slug === "runtime_not_ready" ? "marketplace.armRuntimeNotReady"
-        : slug === "broker_not_connected" ? "marketplace.armBrokerNotConnected"
-        : slug === "source_single_tenant" ? "marketplace.armSingleTenant"
-        : e?.httpStatus === 404 ? "marketplace.armAccountNotFound"
-        : "marketplace.armFailed";
-      setAlert(t(lang, key));
+    const slug = e?.body?.status;
+    if (slug === "account_not_ready") {
+      setAlert(t(lang, "marketplace.armAccountNotReady"));
       setAlertType("error");
-    } finally {
-      setArmBusy((b) => ({ ...b, [strategyId]: false }));
+      return;
     }
+    if (slug === "not_pilot_approved") {
+      setAlert(t(lang, "marketplace.armNotPilotApproved"));
+      setAlertType("error");
+      return;
+    }
+    if (slug === "arming_disabled") {
+      setAlert(t(lang, "marketplace.armDisabled"));
+      setAlertType("error");
+      return;
+    }
+    if (httpStatus === 404) {
+      setAlert(t(lang, strategy.signalCopy ? "marketplace.armAccountNotFound" : "marketplace.alertEndpointNotFound"));
+      setAlertType("error");
+      return;
+    }
+    setAlert(t(lang, "marketplace.getFailed"));
+    setAlertType("error");
   };
-
 
   // ─────────────────────────────────────────────────────────────────────
   // Render
@@ -797,7 +672,13 @@ export default function StrategyMarketplacePage() {
             gap: "1.25rem",
           }}
         >
-          {filteredStrategies.map((strategy) => (
+          {filteredStrategies.map((strategy) => {
+            const st = copyState[strategy.id];
+            const owned = !!strategy.signalCopy && !!st?.armed;
+            const enabled = !!st?.enabled;
+            const ambiguous = !!st?.ambiguous;
+            const price = priceLabel(priceFor(strategy.id));
+            return (
             <div
               key={strategy.id}
               style={{
@@ -885,194 +766,108 @@ export default function StrategyMarketplacePage() {
                     <div style={{ fontSize: "0.65rem", color: "#64748b", marginBottom: "0.2rem" }}>
                       {t(lang, "marketplace.executionLabel")}
                     </div>
-                    {/* For signal-copy cards this is a static method descriptor, not a live status — de-emphasise
-                        it so it never competes with the readiness pill/checklist below. */}
                     <div style={{ fontSize: "0.8rem", fontWeight: 600, color: strategy.signalCopy ? "#94a3b8" : "#e2e8f0" }}>
                       {strategy.execution}
                     </div>
                   </div>
                 </div>
 
-                {/* Signal-copy strategies: enable/disable toggle instead of the Assign flow */}
-                {strategy.signalCopy ? (
-                  (() => {
-                    const st = copyState[strategy.id];
-                    const armed = !!st?.armed;
-                    const enabled = !!st?.enabled;
-                    const ambiguous = !!st?.ambiguous;
-                    const busy = !!copyBusy[strategy.id];
-                    const arming = !!armBusy[strategy.id];
-                    const selAcct = selectedAccount[strategy.id];
-                    // The self-service Enable-Trading (arm) button is surfaced ONLY when the broker-
-                    // connectivity journey is intentionally built (armUiEnabled) — independent of the
-                    // backend BETA_SELF_SERVE_ARM_ENABLED flag, so a DARK build never shows a live arm
-                    // control. The readiness PANEL (checklist + next action) always renders so the customer
-                    // understands where they are; can_arm from the backend gates the actual button.
-                    const armUiEnabled = brokerConnectivityEnabled();
-                    // ON/badge state comes ONLY from the backend-confirmed status — never from a click.
-                    const statusLabel = ambiguous
-                      ? t(lang, "marketplace.copyAmbiguousShort")
-                      : !armed
-                        ? t(lang, "marketplace.copyNotArmedShort")
-                        : enabled
-                          ? t(lang, "marketplace.copyOn")
-                          : t(lang, "marketplace.copyOff");
-                    const statusColor = ambiguous
-                      ? "#f59e0b"
-                      : !armed
-                        ? "#f59e0b"
-                        : enabled
-                          ? "#22c55e"
-                          : "#94a3b8";
-                    return (
-                      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                        {/* The top status pill is authoritative only for the ARMED lifecycle (On / Off / needs
-                            attention). Before arming, the readiness panel below is the single source of truth,
-                            so we hide this pill to avoid a "Not set up" pill sitting above an all-ready checklist. */}
-                        {(armed || ambiguous) && (
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              padding: "0.5rem 0.75rem",
-                              borderRadius: 8,
-                              background: "rgba(0,0,0,0.25)",
-                            }}
-                          >
-                            <span style={{ fontSize: "0.7rem", color: "#64748b" }}>
-                              {t(lang, "marketplace.copyStatusLabel")}
-                            </span>
-                            <span style={{ fontSize: "0.8rem", fontWeight: 700, color: statusColor }}>
-                              {statusLabel}
-                            </span>
-                          </div>
-                        )}
-                        {armed ? (
-                          // Armed → the Enable/Disable toggle (resume/pause the copy) — full width, no
-                          // dead Preview affordance.
-                          <Button
-                            variant={enabled ? "secondary" : "primary"}
-                            onClick={() => handleSignalCopyToggle(strategy.id, !enabled)}
-                            disabled={!isAuthed || busy}
-                          >
-                            {busy
-                              ? t(lang, "marketplace.copyWorking")
-                              : enabled
-                                ? t(lang, "marketplace.copyDisable")
-                                : t(lang, "marketplace.copyEnable")}
-                          </Button>
-                        ) : (
-                          // Not armed → WS-D: the readiness panel replaces the opaque "not armed" hint.
-                          // It ALWAYS renders (customer sees exactly what's needed via a ✓/✕ checklist +
-                          // one next action), backed by the read-only readiness endpoint. The Enable-
-                          // Trading button inside it appears only when the broker-connectivity journey is
-                          // built (armUiEnabled) AND the backend reports can_arm — so a DARK build shows
-                          // the guidance but never a live arm control.
-                          <SignalCopyReadiness
-                            lang={lang}
-                            marketplaceStrategyId={strategy.id}
-                            accounts={accounts}
-                            selectedAccountId={selAcct}
-                            onSelectAccount={(v) =>
-                              setSelectedAccount({ ...selectedAccount, [strategy.id]: v })
-                            }
-                            armUiEnabled={armUiEnabled}
-                            isAuthed={isAuthed}
-                            arming={arming}
-                            onArm={(id) => handleSignalCopyArm(strategy.id, id)}
-                            // AJ#6.5 — hosted-workspace context: lets the Wayond card OWN the forward path
-                            // (authorize → arm) instead of bouncing to /onboarding/hosted. `hostedComplete`
-                            // (strategy_eligible = journey phase WORKSPACE_READY) is the SAME onboarding-complete
-                            // threshold at which hosted onboarding's "Choose Strategy" sends the customer here,
-                            // so ownership covers the whole band (incl. CONNECTED-not-yet-EXECUTION_READY).
-                            hostedComplete={!!hostedJourney?.strategy_eligible}
-                            hostedAuthorized={!!hostedJourney?.execution_authorized}
-                            canEnableAutomatedTrading={!!hostedJourney?.can_enable_automated_trading}
-                            authorizing={authorizingExec}
-                            onAuthorize={handleAuthorizeExecution}
-                          />
-                        )}
-                      </div>
-                    );
-                  })()
-                ) : authChecked && !isAuthed ? (
-                  // P0.2: a logged-out card carries its OWN next action (not just the page-top banner) — a
-                  // Sign-in link, never an inert disabled Assign sitting above an empty account dropdown.
+                {/* Price + owned-state row (uniform across all cards — extensible for future paid pricing) */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.6rem" }}>
+                  <span style={{ fontSize: "0.7rem", color: "#64748b" }}>{t(lang, "marketplace.priceLabel")}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                    {owned && !ambiguous && (
+                      <span style={ownedChip(enabled ? "ready" : "action")}>
+                        {enabled ? t(lang, "marketplace.stateEnabled") : t(lang, "marketplace.stateOwned")}
+                      </span>
+                    )}
+                    {ambiguous && (
+                      <span style={ownedChip("attention")}>{t(lang, "marketplace.stateNeedsAttention")}</span>
+                    )}
+                    <span style={freeBadgeStyle}>{price}</span>
+                  </div>
+                </div>
+
+                {/* CTA */}
+                {authChecked && !isAuthed ? (
+                  // A logged-out card carries its OWN next action (a sign-in link), never an inert button.
                   <div style={{ fontSize: "0.72rem", color: "#94a3b8" }}>
-                    <p style={{ margin: "0 0 6px" }}>{t(lang, "marketplace.assignNeedsSignIn")}</p>
+                    <p style={{ margin: "0 0 6px" }}>{t(lang, "marketplace.getNeedsSignIn")}</p>
                     <Link href="/login?reason=unauthenticated" style={{ color: "#93c5fd", textDecoration: "none" }}>
                       {t(lang, "marketplace.goToLogin")} →
                     </Link>
                   </div>
+                ) : owned || ambiguous ? (
+                  // Already owned (signal-copy) → jump straight to Configure/Manage. Never guess-to-find.
+                  <Button variant="primary" onClick={() => router.push(configureHref(strategy.id))} disabled={!isAuthed}>
+                    {enabled || ambiguous ? t(lang, "marketplace.manage") : t(lang, "marketplace.configure")}
+                  </Button>
                 ) : authChecked && isAuthed && !loadingAccounts && accounts.length === 0 ? (
-                  // BLOCKED (WS-G redesign): no account to assign into — shown ONLY once auth is resolved AND
-                  // the accounts fetch has completed empty, so we never flash a false "no account" during the
-                  // pre-auth window or the fetch. Say exactly what's missing and the next action, instead of a
-                  // silently-disabled Assign button with no explanation.
+                  // No account to acquire into — say exactly what's missing and the next action.
                   <div style={{ fontSize: "0.72rem", color: "#94a3b8" }}>
-                    <p style={{ margin: "0 0 6px" }}>{t(lang, "marketplace.assignNeedsAccount")}</p>
+                    <p style={{ margin: "0 0 6px" }}>{t(lang, "marketplace.getNeedsAccount")}</p>
                     <Link href="/accounts" style={{ color: "#93c5fd", textDecoration: "none" }}>
                       {t(lang, "marketplace.readinessAddAccount")} →
                     </Link>
                   </div>
                 ) : (
-                // CTA — dropdown full-width, then a single Assign action (no dead Preview).
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                  <select
-                    value={selectedAccount[strategy.id] || ""}
-                    onChange={(e) => {
-                      const nextVal = e.target.value ? Number(e.target.value) : "";
-                      setSelectedAccount({
-                        ...selectedAccount,
-                        [strategy.id]: nextVal,
-                      });
+                  // Acquisition: account dropdown + a single "Get Strategy" action.
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    <select
+                      value={selectedAccount[strategy.id] || ""}
+                      onChange={(e) => {
+                        const nextVal = e.target.value ? Number(e.target.value) : "";
+                        setSelectedAccount({
+                          ...selectedAccount,
+                          [strategy.id]: nextVal,
+                        });
 
-                      if (typeof window !== "undefined") {
-                        if (nextVal === "") {
-                          window.localStorage.removeItem(LS_DEFAULT_ACCOUNT_KEY);
-                          setDefaultAccountId(null);
-                        } else {
-                          window.localStorage.setItem(LS_DEFAULT_ACCOUNT_KEY, String(nextVal));
-                          setDefaultAccountId(nextVal);
+                        if (typeof window !== "undefined") {
+                          if (nextVal === "") {
+                            window.localStorage.removeItem(LS_DEFAULT_ACCOUNT_KEY);
+                            setDefaultAccountId(null);
+                          } else {
+                            window.localStorage.setItem(LS_DEFAULT_ACCOUNT_KEY, String(nextVal));
+                            setDefaultAccountId(nextVal);
+                          }
                         }
-                      }
-                    }}
-                    disabled={loadingAccounts}
-                    style={{
-                      width: "100%",
-                      padding: "0.5rem",
-                      borderRadius: 8,
-                      border: "1px solid rgba(255,255,255,0.15)",
-                      background: "rgba(10,16,35,0.6)",
-                      color: "#e2e8f0",
-                      fontSize: "0.85rem",
-                    }}
-                  >
-                    <option value="">{t(lang, "marketplace.selectAccount")}</option>
-                    {accounts.map((acc) => (
-                      <option key={acc.id} value={acc.id}>
-                        {acc.name}
-                      </option>
-                    ))}
-                  </select>
-                  <Button
-                    variant="primary"
-                    onClick={() => handleAssign(strategy.id)}
-                    disabled={!isAuthed || !selectedAccount[strategy.id] || assigning[strategy.id]}
-                  >
-                    {assigning[strategy.id] ? t(lang, "marketplace.assigning") : t(lang, "marketplace.assign")}
-                  </Button>
-                  {!selectedAccount[strategy.id] && (
-                    <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
-                      {t(lang, "marketplace.assignSelectAccountHint")}
-                    </p>
-                  )}
-                </div>
+                      }}
+                      disabled={loadingAccounts}
+                      style={{
+                        width: "100%",
+                        padding: "0.5rem",
+                        borderRadius: 8,
+                        border: "1px solid rgba(255,255,255,0.15)",
+                        background: "rgba(10,16,35,0.6)",
+                        color: "#e2e8f0",
+                        fontSize: "0.85rem",
+                      }}
+                    >
+                      <option value="">{t(lang, "marketplace.selectAccount")}</option>
+                      {accounts.map((acc) => (
+                        <option key={acc.id} value={acc.id}>
+                          {acc.name}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      variant="primary"
+                      onClick={() => handleGet(strategy)}
+                      disabled={!isAuthed || !selectedAccount[strategy.id] || getting[strategy.id]}
+                    >
+                      {getting[strategy.id] ? t(lang, "marketplace.getting") : t(lang, "marketplace.getStrategy")}
+                    </Button>
+                    {!selectedAccount[strategy.id] && (
+                      <p style={{ fontSize: "0.68rem", color: "#64748b", margin: 0 }}>
+                        {t(lang, "marketplace.getSelectAccountHint")}
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Empty State */}

@@ -63,10 +63,11 @@ describe("marketplace blocked states + dead-affordance cleanup (WS-G)", () => {
     expect(screen.queryByText(/You'll need a broker account first/i)).toBeNull();
   });
 
-  it("a logged-out generic card carries its OWN sign-in next action (P0.2 — not just the page-top banner)", async () => {
+  it("a logged-out card carries its OWN sign-in next action (P0.2 — not just the page-top banner)", async () => {
     state.unauth = true;
     render(<Marketplace />);
-    await waitFor(() => expect(screen.getAllByText(/sign in to assign/i).length).toBeGreaterThan(0));
+    // AJ#7 — acquisition vocabulary is "get this strategy" (was "assign"); the card still carries its own action.
+    await waitFor(() => expect(screen.getAllByText(/sign in to get this strategy/i).length).toBeGreaterThan(0));
     const signIn = screen.getAllByRole("link").find((l) => l.getAttribute("href") === "/login?reason=unauthenticated");
     expect(signIn).toBeTruthy();
   });

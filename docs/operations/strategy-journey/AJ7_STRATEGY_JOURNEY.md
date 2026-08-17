@@ -99,3 +99,50 @@ execution-path work (RED — order path) and its own packet:
 
 These controls must plug into the SAME Configure page schema built in AJ#7 (extend the descriptor with
 editable fields), not a Wayond-specific dead end.
+
+## 7. Implementation summary (feature branch — NO deploy)
+
+**New frontend**
+- `frontend/src/lib/strategy-journey.ts` — the extensible contract + orchestration layer: commercial model
+  (`priceFor`/`priceLabel`, beta = Free, ready for later paid tiers on the SAME card slot), the honest
+  `configContract` (account = the only customer-selectable input; sizing/TP/SL/trailing are `managed`
+  read-only, never editable), `deriveOwnedState` (customer lifecycle labels), and the API wrappers
+  `getStrategy` / `enableStrategy` / `disableStrategy`. `enableStrategy` is the ADR-0047 fold: it reads the
+  journey, calls `authorizeExecution` ONLY when the workspace is EXECUTION_READY-but-unauthorized, then arms
+  — idempotent, so a partial failure (authorize OK / arm fails) is safely retryable with no duplicate.
+- `frontend/src/components/strategy/EnableStrategyModal.tsx` — the explicit consent modal (ADR-0047). Never
+  authorizes/arms itself; the parent runs the orchestration on confirm.
+- `frontend/src/app/(app)/strategies/configure/page.tsx` — the honest, extensible Configure page: contract
+  table + beta note, state-driven CTA (Get / Enable+modal / Disable+Manage / getting-ready degrade / needs
+  attention), generic strategies render an honest research panel with NO Enable.
+- `frontend/src/app/(app)/strategies/marketplace/page.tsx` — "Get Strategy" + Free replaces Assign and the
+  in-card authorize/arm/readiness UX (AJ#6.5 `SignalCopyReadiness`, now removed); owned cards show
+  Configure/Manage. Get → `signal-copy/get` (signal-copy) or `marketplace/assign` (generic) → redirect to
+  Configure (never dumps into My Strategies).
+- `frontend/src/app/(app)/strategies/page.tsx` — My Strategies gains an "Automated strategies" section with
+  the normalized lifecycle (Added / Ready to enable / Enabled / Needs attention) + a Manage/Configure/Enable
+  action, plus an enabled-confirmation banner.
+
+**New backend (2 additive, non-executing)**
+- `signal_copy_get` (`signal-copy/get`) — acquire/own WITHOUT enabling: creates (or returns) the AUTO_DEMO +
+  ti_signals + stage LIVE assignment with `is_active=False`. Owner-scoped, demo-only, cohort +
+  `BETA_SELF_SERVE_ARM_ENABLED` gated, idempotent via `unique_together(strategy, account)`. Never touches
+  `is_active` on an existing row (Get can neither enable nor disable). An `is_active=False` assignment is
+  never routable (`execution.auto_router._resolve_target` requires `is_active=True`).
+- `signal_copy_status` now also returns `account_id` (the owned assignment's account, when unambiguous) so
+  Configure / My Strategies resolve the account without a query param. Read-only.
+
+**Removed (called out):** `frontend/src/components/marketplace/SignalCopyReadiness.tsx` + its test, and
+`marketplace/signal-copy-arm.test.tsx` — the AJ#6.5 in-marketplace authorize/arm/readiness UX, superseded by
+the Get → Configure → Enable journey (§1, requirement 11). No backend safety gate was removed.
+
+**Order-gate invariant preserved (unchanged):** an order still requires BOTH an active `StrategyAssignment`
+AND ADR-0047 authorized+enabled. Get alone, Configure alone, and workspace-authorize alone each produce no
+order. Proven by `backend/strategies/tests_aj7_get.py` (`_resolve_target` is None after Get).
+
+**Tests:** frontend `strategy-journey.test.ts` (13) + `configure/page.test.tsx` (9) + marketplace
+`get-strategy.test.tsx` (4); updated `blocked-states` / `stale-default-account`. Full vitest 220 green.
+Backend `tests_aj7_get.py` (10) green; full suite 4146 OK. `make check` green (backend + FE lint + build +
+parity). Adversarial review (12 lenses: ownership dup/idempotency, IDOR, config spoofing, enable-without-
+confirm, auth-bypass, order-time bypass, double-Get/Enable races, stale config, Wayond adapter mismatch,
+generic regression, nav loop, CZ-unchanged) → 0 HIGH / 0 MEDIUM.

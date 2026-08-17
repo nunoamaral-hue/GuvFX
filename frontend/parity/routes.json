@@ -30,6 +30,7 @@
   "src/app/(app)/profile/page.tsx",
   "src/app/(app)/strategies/[id]/edit/page.tsx",
   "src/app/(app)/strategies/[id]/page.tsx",
+  "src/app/(app)/strategies/configure/page.tsx",
   "src/app/(app)/strategies/create/page.tsx",
   "src/app/(app)/strategies/marketplace/page.tsx",
   "src/app/(app)/strategies/page.tsx",

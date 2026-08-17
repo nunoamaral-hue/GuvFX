@@ -1301,6 +1301,9 @@ class StrategyViewSet(viewsets.ModelViewSet):
             "armed": bool(hits),                 # an AUTO_DEMO assignment exists (may be paused)
             "enabled": bool(active),             # armed AND currently active (auto-copy running)
             "assignment_id": (hits[0].id if len(hits) == 1 else None),
+            # AJ#7 — the account the (unambiguous) owned assignment lives on, so the Configure/My-Strategies
+            # surfaces can resolve the account without a query param. None when not owned or ambiguous.
+            "account_id": (hits[0].account_id if len(hits) == 1 else None),
             "ambiguous": len(hits) > 1,          # >1 armed assignment → config error, fail-closed
         })
 

@@ -6,6 +6,108 @@ import { apiFetch } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
+import {
+  fetchSignalCopyStatus,
+  deriveOwnedState,
+  mpDisplayName,
+  type SignalCopyStatus,
+} from "@/lib/strategy-journey";
+import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
+
+// The marketplace ids that have an automated (signal-copy) execution path. My Strategies surfaces these with
+// a normalized customer lifecycle (Added / Ready to enable / Enabled / Needs attention) + a Manage action, so
+// the customer never has to guess where to go to enable, pause or manage automated trading.
+const AUTOMATED_MARKETPLACE_IDS = ["mp-010"] as const;
+
+const ownedChipStyle = (tone: "ready" | "action" | "attention" | "neutral"): React.CSSProperties => {
+  const m = {
+    ready: { bg: "rgba(34,197,94,0.14)", border: "rgba(34,197,94,0.35)", text: "#86efac" },
+    action: { bg: "rgba(59,130,246,0.14)", border: "rgba(59,130,246,0.35)", text: "#93c5fd" },
+    attention: { bg: "rgba(245,158,11,0.14)", border: "rgba(245,158,11,0.40)", text: "#fcd34d" },
+    neutral: { bg: "rgba(100,116,139,0.14)", border: "rgba(100,116,139,0.35)", text: "#94a3b8" },
+  }[tone];
+  return {
+    display: "inline-flex", alignItems: "center", padding: "0.15rem 0.55rem", borderRadius: 999,
+    border: `1px solid ${m.border}`, background: m.bg, color: m.text, fontSize: "0.72rem", fontWeight: 700,
+  };
+};
+
+type OwnedRow = { mp: string; name: string; status: SignalCopyStatus; journey: HostedJourney | null };
+
+/** Managed section: the customer's owned automated strategies with a normalized lifecycle + Manage action.
+ *  Read-only; never arms, never enables. Only renders strategies the customer actually owns. */
+function OwnedAutomatedStrategies() {
+  const [rows, setRows] = useState<OwnedRow[] | null>(null);
+  const [justEnabled, setJustEnabled] = useState(false);
+
+  useEffect(() => {
+    // Read the just-enabled hint synchronously (no setState here — that would trigger a cascading render);
+    // it is applied together with the fetched rows once the async load resolves.
+    const enabledHint = typeof window !== "undefined"
+      && new URLSearchParams(window.location.search).get("enabled") === "1";
+    let cancelled = false;
+    (async () => {
+      const journey = await fetchJourney().then((r) => (r.ok ? r.journey : null)).catch(() => null);
+      const found: OwnedRow[] = [];
+      for (const mp of AUTOMATED_MARKETPLACE_IDS) {
+        const st = await fetchSignalCopyStatus(mp).catch(() => null);
+        if (st?.armed) found.push({ mp, name: mpDisplayName(mp), status: st, journey });
+      }
+      if (!cancelled) { setRows(found); setJustEnabled(enabledHint); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!rows || rows.length === 0) return null;
+
+  return (
+    <div style={{ marginBottom: "1.25rem" }}>
+      {justEnabled && rows.some((r) => r.status.enabled) && (
+        <Alert type="success">Your strategy is enabled. GuvFX will trade it automatically on your account.</Alert>
+      )}
+      <div
+        style={{
+          border: "1px solid rgba(255,255,255,0.10)", borderRadius: 14,
+          background: "linear-gradient(180deg, rgba(10,16,35,0.72), rgba(6,10,25,0.85))",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.45)", padding: "1rem 1rem 1.1rem",
+        }}
+      >
+        <div style={{ fontWeight: 700, color: "#e5f4ff", fontSize: "1.05rem", marginBottom: "0.6rem" }}>
+          Automated strategies
+        </div>
+        <div style={{ display: "grid", gap: "0.6rem" }}>
+          {rows.map((r) => {
+            const canEnable = !!r.journey && (r.journey.execution_authorized === true || r.journey.can_enable_automated_trading === true);
+            const view = deriveOwnedState({
+              owned: !!r.status.armed, enabled: !!r.status.enabled, ambiguous: !!r.status.ambiguous,
+              canArm: canEnable, journeyReady: canEnable,
+            });
+            return (
+              <div
+                key={r.mp}
+                style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap",
+                  border: "1px solid rgba(255,255,255,0.10)", borderRadius: 12, padding: "0.8rem 1rem",
+                  background: "rgba(7, 12, 30, 0.9)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <span style={{ color: "#f1f5ff", fontWeight: 600, fontSize: "1rem" }}>{r.name}</span>
+                  <span style={ownedChipStyle(view.tone)}>{view.label}</span>
+                </div>
+                <Link href={`/strategies/configure?mp=${encodeURIComponent(r.mp)}`} style={{ textDecoration: "none" }}>
+                  <Button variant={view.state === "ready_to_enable" ? "primary" : "secondary"}>
+                    {view.state === "enabled" ? "Manage" : view.state === "ready_to_enable" ? "Enable" : "Configure"}
+                  </Button>
+                </Link>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 type Strategy = {
   id: number;
@@ -109,6 +211,8 @@ export default function StrategiesListPage() {
 
         {error && <Alert type="error">{error}</Alert>}
         {actionError && <Alert type="error">{actionError}</Alert>}
+
+        <OwnedAutomatedStrategies />
 
         <div style={{ ...glassCardStyle, padding: "1rem 1rem 1.1rem", marginBottom: "1rem" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
