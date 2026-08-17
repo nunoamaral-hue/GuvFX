@@ -46,8 +46,12 @@ SOURCE = "hosted_workspace.capability_recovery"
 MAX_RECOVERY_ATTEMPTS = 3
 RECOVERY_COOLDOWN_S = 300
 
-# Customer Zero — never a candidate here (defence in depth; the signed executor + the .ps1 also refuse it).
-_RESERVED_ACCOUNT_IDS = frozenset({1})
+# Reserved / NEVER-touched identities — excluded from recovery candidacy so NEITHER apply_autotrading_config
+# (which rewrites common.ini) NOR relaunch_terminal is ever called for them. Customer Zero (account 1) and the
+# account-18 reference/control workspace are both SACRED (AJ#6.x acceptance invariant); account 18 is a demo
+# account, so the is_demo wall does NOT protect it — it must be reserved by explicit identity, symmetric with
+# Customer Zero. Defence in depth: the signed executor and the .ps1 also refuse these ids.
+_RESERVED_ACCOUNT_IDS = frozenset({1, 18})
 
 
 def _ok(res) -> bool:

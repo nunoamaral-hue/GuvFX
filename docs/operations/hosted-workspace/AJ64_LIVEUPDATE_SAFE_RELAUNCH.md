@@ -2,9 +2,9 @@
 
 **Status:** implemented + reviewed; DARK (behaviour reached only when `HOSTED_CAPABILITY_RECOVERY_ENABLED=1`,
 which remains OFF until this corrective is deployed and re-certified). **Surface:** one host artefact
-(`backend/terminal_provisioning/windows/Relaunch-GuvfxTerminal.ps1`) + its static test bar
-(`backend/hosted_workspace/tests_relaunch_liveupdate_safe.py`). No backend/dispatch/runner change (the primitive
-args are unchanged), no migration.
+(`Relaunch-GuvfxTerminal.ps1`) + its static test bar (`hosted_workspace/tests_relaunch_liveupdate_safe.py`) + a
+one-line safety change in `hosted_workspace/capability_recovery.py` (reserve account 18 — see §4a). No dispatch/
+runner change (the primitive args are unchanged), no migration.
 
 ## 1. The defect (AJ#6.3, proven in prod 2026-08-17)
 
@@ -25,12 +25,21 @@ when a terminal64 at the canonical `C:\GuvFX\accounts\<id>\terminal\terminal64.e
 fails closed (`relaunch_hit_liveupdate` / `trading_terminal_not_restored` / `containment_failed` /
 `containment_task_did_not_run`).
 
-**Containment runs as the tenant, not LocalSystem.** The orchestrator (the executor, LocalSystem) dispatches the
-purge/Deny through a per-account **tenant-principal scheduled task** (Limited token), exactly like the certified
-prior art — then reads only the task's exit code (`LastTaskResult`). The orchestrator itself performs **no**
-recursive delete or `Set-Acl` over any tenant-writable path; it only reads and registers tasks.
+**Containment runs as LocalSystem (AppLocker reality).** An early cut ran the purge/Deny as the *tenant* via a
+PowerShell scheduled task, to bound the blast radius by the tenant's Limited token. **The host proved that
+impossible:** the hosted tenant runs under **AppLocker deny-by-default**, which blocks the tenant from running
+`powershell.exe` (observed exit `0x800704EC` = `ERROR_ACCESS_DISABLED_BY_POLICY`) — and, crucially, blocks
+`cmd.exe`/`mklink`/any non-allowlisted tool, so a tenant **cannot create the directory junction** the confused-
+deputy exploit required. Containment therefore runs inline as the executor (LocalSystem, AppLocker-exempt), and
+the confused-deputy is closed at two layers: (1) AppLocker prevents the tenant creating a junction at all, and
+(2) defence-in-depth `Test-ChainReparseFree` rejects a reparse point anywhere on the ancestor chain (using
+`Get-Item -Force`, so a dangling junction is not missed), a reparse-safe purge deletes a junction child as a
+LINK (never recurses through it), and a re-check runs immediately before each `Set-Acl`. The tenant SID + REAL
+profile come from `Win32_UserAccount` + the `ProfileList` registry (no NTAccount hang; the profile is asserted
+under `C:\Users\<tenant>`). The only steps that run as the tenant are the AppLocker-allowed graceful close
+(`taskkill.exe /PID`) and relaunch (`terminal64.exe`), via per-account tenant tasks.
 
-## 3. Adversarial review (2 rounds, Workflow-driven)
+## 3. Adversarial review (3 rounds, Workflow-driven)
 
 **Round 1** (6-lens attack + verify) surfaced a **CONFIRMED HIGH confused-deputy**: an earlier inline design ran
 the purge/`Set-Acl` as LocalSystem over the tenant's staging paths with no reparse-point guard, so a
@@ -48,6 +57,22 @@ REFUTED** (leftover-pid detection is total; force-kill hits staging not the cano
 match excludes an updater from success; `$self`/scripts-dir is server-config, not tenant-influenced) and **1 was
 CONFIRMED MEDIUM** — see §4. Net after the fixes: **0 HIGH, 0 MEDIUM open** (the one MEDIUM is an accepted,
 mitigated architectural constraint, below).
+
+**Round 3** (re-review of the LocalSystem cut) confirmed the confused-deputy **CLOSED (NONE)** for the modelled
+tenant adversary, and surfaced one further **CONFIRMED HIGH** — see §4a — plus LOW hardening (dangling-junction
+check, profile assertion, ambiguity rejection) now applied. Net: **0 open HIGH/MEDIUM** (the close-before-relaunch
+MEDIUM is the accepted constraint below).
+
+## 4a. Account 18 reserved (Round-3 HIGH)
+
+The packet's SACRED invariant is "account 18 NEVER touched" — but recovery reserved only Customer Zero (account
+1). Account 18 is a *demo* control workspace on the same scheduler, so the `is_demo` wall does not protect it; a
+stuck account 18 would have been `apply_autotrading_config`'d + closed + relaunched by a benign recovery pass.
+**Fixed** by reserving account 18 by explicit identity, symmetric with Customer Zero: `capability_recovery.py`
+`_RESERVED_ACCOUNT_IDS = frozenset({1, 18})` (the primary guard — account 18 is never a candidate, so neither
+config-rewrite nor relaunch fires) and `Relaunch-GuvfxTerminal.ps1` `$RESERVED_ACCOUNT_IDS = @(1, 18)` (defence
+in depth). (Follow-up: thread a single server-derived reserved set through all four layers — dispatch/executor
+still default to `{1}`, which is correct for provisioning but not symmetric; recorded, not in scope here.)
 
 ## 4. Accepted architectural constraint (the one confirmed MEDIUM)
 
