@@ -173,6 +173,37 @@ class OnboardingConfirmView(_OnboardingBase):
         return Response(body, status=http.HTTP_200_OK)
 
 
+class OnboardingAuthorizeExecutionView(_OnboardingBase):
+    """POST — the customer's EXPLICIT "Enable automated trading" authorization (ADR-0047). The ONLY path that
+    may arm a hosted workspace. Owner-scoped; requires the account confirmed and the workspace observed
+    CONNECTED + matched AND canonically EXECUTION_READY; idempotent. No body required. Accepts no secret,
+    places no order — MT5 automation capability is not customer authorization, and the live bridge gate remains
+    the sole order authority."""
+
+    def post(self, request):
+        dark = self._dark()
+        if dark is not None:
+            return dark
+        ws = _own_workspace(request.user)
+        if ws is None:
+            return _NOT_FOUND
+        res = P.authorize_workspace_execution(request.user, ws, request=request)
+        if not res.ok:
+            if res.reason in _ADMISSION_HTTP:
+                status = _ADMISSION_HTTP[res.reason]
+                return _NOT_FOUND if status == http.HTTP_404_NOT_FOUND else Response(
+                    {"detail": "Not permitted.", "reason": res.reason}, status=status)
+            if res.reason == P.AUTHZ_NOT_OWNER:
+                return _NOT_FOUND                                  # owner-scoped resolve makes this unreachable
+            # AUTHZ_NOT_CONFIRMED / AUTHZ_NOT_READY — not yet in a state that can be authorized: a conflict.
+            return Response({"detail": "Automated trading cannot be enabled yet.", "reason": res.reason},
+                            status=http.HTTP_409_CONFLICT)
+        ws.refresh_from_db()
+        body = {"status": res.reason, "arm_reason": res.arm_reason,
+                **_projection(request.user, ws, ws.trading_account)}
+        return Response(body, status=http.HTTP_200_OK)
+
+
 class OnboardingBindView(_OnboardingBase):
     """POST to DECLARE the customer's expected broker identity (login + server) for their already-provisioned
     workspace — the deferred-bind step (Beta UX Correction). Body: ``expected_login`` (required),

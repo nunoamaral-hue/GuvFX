@@ -41,6 +41,7 @@ def _account(*, login="700900", server="IS6-Demo", node=True, ws=True, armed=Tru
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,
             proj_trade_allowed=True, proj_account_match=True, proj_execution_ready=True,
             last_decision_at=timezone.now(), execution_enabled=armed,
+            execution_authorized_at=timezone.now(),  # ADR-0047: a ready workspace is customer-authorized
             execution_node=(tn if bind else None))
     return acct
 

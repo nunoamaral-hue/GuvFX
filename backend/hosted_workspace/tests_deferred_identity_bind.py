@@ -16,6 +16,7 @@ from unittest import mock
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from execution.readiness import PERSISTENT_WORKSPACE, evaluate_readiness
@@ -467,7 +468,8 @@ class DeferredJourneyE2ETests(TestCase):
 
             # arm the workspace (the arm AUTHORISATION is proven separately in #15 without any per-email
             # allowlist); Provider-B readiness must then be organically eligible — no admission was ever created
-            HostedMt5Workspace.objects.filter(pk=ws.pk).update(execution_enabled=True)
+            HostedMt5Workspace.objects.filter(pk=ws.pk).update(
+                execution_enabled=True, execution_authorized_at=timezone.now())  # ADR-0047: armed ⇒ authorized
             decision = evaluate_readiness(acct)
             self.assertTrue(decision.eligible, decision.reason_code)
             self.assertEqual(decision.provider, PERSISTENT_WORKSPACE)

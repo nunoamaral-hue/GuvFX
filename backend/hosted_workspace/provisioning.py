@@ -46,6 +46,12 @@ CONFIRM_NOT_OWNER = "not_owner"
 CONFIRM_NO_MATCH = "no_discovered_match"
 CONFIRM_OK = "confirmed"
 CONFIRM_ALREADY = "already_confirmed"
+# ADR-0047: explicit customer authorization to execute ("Enable automated trading").
+AUTHZ_NOT_OWNER = "not_owner"
+AUTHZ_NOT_CONFIRMED = "account_not_confirmed"          # must have confirmed identity first
+AUTHZ_NOT_READY = "workspace_not_execution_ready"      # authorize only a connected+matched, EXECUTION_READY ws
+AUTHZ_OK = "authorized"
+AUTHZ_ALREADY = "already_authorized"
 # Deferred broker-identity binding (Beta UX Correction, Sponsor 2026-08-15).
 BIND_OK = "bound"
 BIND_IDEMPOTENT = "already_bound_identical"
@@ -88,6 +94,13 @@ class ConfirmResult:
 class BindResult:
     ok: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class AuthorizeResult:
+    ok: bool
+    reason: str
+    arm_reason: str = ""   # the arm outcome (armed / a precondition reason) once authorization is recorded
 
 
 def _mask(login: str) -> str:
@@ -339,6 +352,52 @@ def confirm_broker_account(user, workspace, *, actor="", request=None) -> Confir
                          summary="broker account confirmed by customer",
                          source="hosted_workspace.onboarding")
     return ConfirmResult(True, CONFIRM_OK)
+
+
+def authorize_workspace_execution(user, workspace, *, actor="", request=None) -> AuthorizeResult:
+    """ADR-0047 — the customer's EXPLICIT, durable "Enable automated trading" authorization. This is the ONLY
+    writer of ``HostedMt5Workspace.execution_authorized_at`` and the ONLY path by which a hosted workspace may
+    ever become armed. It records the authorization, then attempts the certified
+    ``arm_hosted_workspace_execution`` (which re-proves every precondition, incl. the now-satisfied authz).
+
+    Contract (supersedes ADR-0044 Decision 2): MT5 automation CAPABILITY (trade_allowed / EXECUTION_READY) is
+    NOT authorization. Reaching EXECUTION_READY alone can NEVER arm — both the arm preconditions and the order
+    gate fail closed on NULL authorization. Offered ONLY once the account is CONFIRMED (identity ACK) and the
+    workspace is observed CONNECTED + matched AND canonically EXECUTION_READY, so the customer authorizes a
+    genuinely ready workspace. Owner-scoped (IDOR-safe), idempotent, audited. NEVER accepts a secret; places no
+    order; the live bridge gate remains the sole order authority."""
+    ok, reason = hosted_workspace_admission(user)
+    if not ok:
+        return AuthorizeResult(False, reason)
+
+    from django.utils import timezone
+    from execution.hosted_provisioning import arm_hosted_workspace_execution
+
+    with transaction.atomic():
+        ws = (HostedMt5Workspace.objects.select_for_update()
+              .select_related("trading_account").get(pk=workspace.pk))
+        if ws.trading_account.user_id != getattr(user, "pk", None):
+            return AuthorizeResult(False, AUTHZ_NOT_OWNER)            # owner-scoped (trading_account.user), IDOR-safe
+        acct = ws.trading_account
+        if acct.workspace_confirmed_at is None:                       # identity ACK must precede authorization
+            return AuthorizeResult(False, AUTHZ_NOT_CONFIRMED)
+        # Authorize ONLY a workspace observed CONNECTED + matched AND canonically EXECUTION_READY. Capability
+        # precedes authorization; "reaching EXECUTION_READY" is never itself the arm — this explicit click is.
+        if (str(ws.canonical_state) != S.EXECUTION_READY
+                or ws.proj_connected is not True or ws.proj_account_match is not True):
+            return AuthorizeResult(False, AUTHZ_NOT_READY)
+        already = ws.execution_authorized_at is not None
+        if not already:
+            ws.execution_authorized_at = timezone.now()
+            ws.save(update_fields=["execution_authorized_at", "updated_at"])
+
+    # Attempt the certified arm OUTSIDE the authorization row-lock. It re-proves EVERY precondition (including
+    # the authorization just recorded) and is itself idempotent + audited; the durable authorization stands
+    # regardless of the arm outcome, so a transient not-ready just leaves the (now-authorized) auto_arm_runner
+    # to complete the arm on the next EXECUTION_READY cycle.
+    arm = arm_hosted_workspace_execution(acct, actor=actor, request=request)
+    _audit(request, "HOSTED_EXECUTION_AUTHORIZED", acct, actor)
+    return AuthorizeResult(True, AUTHZ_ALREADY if already else AUTHZ_OK, arm_reason=arm.reason_code)
 
 
 def bind_broker_identity(user, workspace, *, expected_login, expected_server="", actor="", request=None) -> BindResult:

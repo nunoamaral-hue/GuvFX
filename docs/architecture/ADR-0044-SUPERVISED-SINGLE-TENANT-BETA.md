@@ -103,6 +103,13 @@ change (the OR simply resolves via the cert).
 
 ### 2. Autonomous customer-specific arming (no per-user operator CLI)
 
+> **⚠️ SUPERSEDED by ADR-0047 (Sponsor 2026-08-17).** The *arming* half of this decision is withdrawn: MT5
+> automation capability (reaching `EXECUTION_READY`) is NOT customer authorization, so `auto_arm_runner` may no
+> longer set `execution_enabled=True` on its own. Arming now requires an EXPLICIT, durable customer
+> authorization (`execution_authorized_at`, set only by `authorize_workspace_execution`); the runner can only
+> *complete* an already-authorized arm. The non-arming customer-specific steps below (activation on confirm,
+> etc.) stand. See `docs/architecture/ADR-0047-EXPLICIT-CUSTOMER-EXECUTION-AUTHORIZATION.md`.
+
 The autonomous journey now performs, idempotently and fail-closed, every customer-specific step needed to make
 a hosted workspace executable:
 - **Activation:** `confirm_broker_account` (the customer's human ACK on a CONNECTED + matched workspace) sets

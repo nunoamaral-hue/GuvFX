@@ -33,6 +33,7 @@ ARM_NO_WORKSPACE = R.RW_WORKSPACE_MISSING
 ARM_ROUTE_MISSING = "workspace_route_missing"
 ARM_NODE_UNBOUND = "workspace_execution_node_unbound"      # capstone: no durable workspace->node binding
 ARM_NODE_MISMATCH = "workspace_execution_node_mismatch"    # capstone: binding disagrees with account node
+ARM_NOT_AUTHORIZED = "workspace_execution_not_authorized"  # ADR-0047: no explicit customer authorization
 
 
 def _hosted_flags_on() -> bool:
@@ -81,6 +82,14 @@ def _arm_preconditions(account) -> ArmResult:
         return ArmResult(False, R.RW_WORKSPACE_NOT_READY)
     if not R._observation_fresh(ws):                            # fresh observation
         return ArmResult(False, R.RW_OBSERVATION_STALE)
+    # ADR-0047 (checked LAST so the more-specific route/posture/connection reasons stay reachable): MT5
+    # automation CAPABILITY (trade_allowed / EXECUTION_READY) is NOT customer AUTHORIZATION. Arming — by the
+    # autonomous auto_arm_runner OR the operator command, this being their shared chokepoint — is refused
+    # unless the customer has EXPLICITLY authorized execution for THIS workspace (execution_authorized_at,
+    # written only by the owner-scoped authorize_workspace_execution). NULL ⇒ never armed merely because the
+    # workspace became otherwise-ready.
+    if getattr(ws, "execution_authorized_at", None) is None:
+        return ArmResult(False, ARM_NOT_AUTHORIZED)
     return ArmResult(True, ARM_OK)
 
 

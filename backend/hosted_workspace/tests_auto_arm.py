@@ -41,7 +41,8 @@ def _account(*, is_demo=True, with_node=True):
 def _ready_ws(acct, *, bind_node=True, **kw):
     base = dict(canonical_state=S.EXECUTION_READY, proj_connected=True, proj_trade_allowed=True,
                 proj_account_match=True, proj_execution_ready=True, last_decision_at=timezone.now(),
-                workspace_confirmed_at=timezone.now())
+                workspace_confirmed_at=timezone.now(),
+                execution_authorized_at=timezone.now())  # ADR-0047: a ready+armable ws is customer-authorized
     if bind_node and getattr(acct, "terminal_node_id", None):
         base["execution_node"] = acct.terminal_node
     base.update(kw)

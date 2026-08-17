@@ -249,16 +249,28 @@ class BetaProviderBAutonomousJourneyTests(TestCase):
         self.assertTrue(account.is_active)                            # activated by the confirm ACK
 
         # ================================================================================================
-        # STAGE 7 — Autonomous arming.
-        # REAL: auto_arm_runner.run_hosted_auto_arm — arms execution_enabled on the now-EXECUTION_READY
-        # workspace by calling the SAME certified arm action the operator CLI called (re-proving EVERY
-        # precondition). Removes the last per-customer operator step (ADR-0044 Decision 2).
+        # STAGE 7 — Authorization contract (ADR-0047, supersedes ADR-0044 Decision 2). Reaching EXECUTION_READY
+        # is CAPABILITY, not customer AUTHORIZATION: the autonomous runner must NOT arm an unauthorized
+        # workspace. Only the customer's EXPLICIT "Enable automated trading" (authorize_workspace_execution)
+        # may arm — and once it records the durable authorization, the same certified arm runs.
         # ================================================================================================
+        # 7a — a confirmed, EXECUTION_READY, but UNAUTHORIZED workspace is NOT an auto-arm candidate.
         summary = run_hosted_auto_arm()
         self.assertTrue(summary["enabled"])
-        self.assertEqual(summary["armed"], 1, summary)                # our workspace armed autonomously
-        self.assertEqual(summary["refused"], 0, summary)
+        self.assertEqual(summary["armed"], 0, summary)                # capability != authorization: NOT armed
+        self.assertEqual(summary["candidates"], 0, summary)           # unauthorized ⇒ not even a candidate
         ws = self._fresh(ws)
+        self.assertFalse(ws.execution_enabled)                        # stays UNARMED on reaching EXECUTION_READY
+        self.assertIsNone(ws.execution_authorized_at)
+
+        # 7b — the customer's EXPLICIT authorization ("Enable automated trading"): records the durable authz
+        # AND arms via the certified path (re-proving every precondition).
+        authz = P.authorize_workspace_execution(user, ws)
+        self.assertTrue(authz.ok, authz.reason)
+        self.assertEqual(authz.reason, P.AUTHZ_OK)
+        self.assertEqual(authz.arm_reason, "armed", authz)
+        ws = self._fresh(ws)
+        self.assertIsNotNone(ws.execution_authorized_at)             # durable customer authorization recorded
         self.assertTrue(ws.execution_enabled)                        # the durable arm boolean flipped
 
         # ================================================================================================

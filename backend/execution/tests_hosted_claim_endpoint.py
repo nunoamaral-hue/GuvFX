@@ -88,7 +88,8 @@ class HostedClaimEndpointPositiveControlTests(TestCase):
         HostedMt5Workspace.objects.create(
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,
             proj_trade_allowed=True, proj_account_match=True, proj_execution_ready=True,
-            last_decision_at=timezone.now(), execution_enabled=True, execution_node=node)
+            last_decision_at=timezone.now(), execution_enabled=True, execution_node=node,
+            execution_authorized_at=timezone.now())  # ADR-0047: a ready workspace is customer-authorized
         WorkerIdentity.objects.create(
             worker_id="nodeworker", worker_secret_hash=WorkerIdentity.hash_secret("s1"),
             status=WorkerIdentity.Status.ACTIVE, worker_permissions={"authorized_nodes": ["node-pos"]})
@@ -122,7 +123,8 @@ class HostedClaimEndpointPositiveControlTests(TestCase):
         HostedMt5Workspace.objects.create(
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,
             proj_trade_allowed=True, proj_account_match=True, proj_execution_ready=True,
-            last_decision_at=timezone.now(), execution_enabled=True, execution_node=node)
+            last_decision_at=timezone.now(), execution_enabled=True, execution_node=node,
+            execution_authorized_at=timezone.now())  # ADR-0047: a ready workspace is customer-authorized
         WorkerIdentity.objects.create(
             worker_id="plainworker", worker_secret_hash=WorkerIdentity.hash_secret("s2"),
             status=WorkerIdentity.Status.ACTIVE, worker_permissions={})  # no authorized_nodes
@@ -146,7 +148,8 @@ class HostedClaimEndpointPositiveControlTests(TestCase):
         HostedMt5Workspace.objects.create(
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,
             proj_trade_allowed=True, proj_account_match=True, proj_execution_ready=True,
-            last_decision_at=timezone.now(), execution_enabled=True, execution_node=node)
+            last_decision_at=timezone.now(), execution_enabled=True, execution_node=node,
+            execution_authorized_at=timezone.now())  # ADR-0047: a ready workspace is customer-authorized
         job = ExecutionJob.objects.create(
             account=acct, job_type=ExecutionJob.JobType.CLOSE_TRADE, status="PENDING", payload={},
             terminal_node=node)

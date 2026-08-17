@@ -10,6 +10,7 @@ from hosted_workspace.delivery_views import (
     HostedWorkspaceDeliveryStateView,
 )
 from hosted_workspace.onboarding_views import (
+    OnboardingAuthorizeExecutionView,
     OnboardingBindView,
     OnboardingConfirmView,
     OnboardingJourneyView,
@@ -31,5 +32,8 @@ urlpatterns = [
     path("onboarding/request/", OnboardingRequestView.as_view(), name="onboarding-request"),
     path("onboarding/bind/", OnboardingBindView.as_view(), name="onboarding-bind"),
     path("onboarding/confirm/", OnboardingConfirmView.as_view(), name="onboarding-confirm"),
+    # ADR-0047 — the customer's EXPLICIT "Enable automated trading" authorization (the only path that arms).
+    path("onboarding/authorize-execution/", OnboardingAuthorizeExecutionView.as_view(),
+         name="onboarding-authorize-execution"),
     path("onboarding/ops/", OnboardingOpsView.as_view(), name="onboarding-ops"),
 ]

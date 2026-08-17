@@ -41,7 +41,8 @@ def _account(*, provider=R.PERSISTENT_WORKSPACE, is_demo=True, with_node=True):
 
 def _ready_ws(acct, **kw):
     base = dict(canonical_state=S.EXECUTION_READY, proj_connected=True, proj_trade_allowed=True,
-                proj_account_match=True, proj_execution_ready=True, last_decision_at=timezone.now())
+                proj_account_match=True, proj_execution_ready=True, last_decision_at=timezone.now(),
+                execution_authorized_at=timezone.now())  # ADR-0047: a ready workspace is customer-authorized
     if getattr(acct, "terminal_node_id", None):
         base["execution_node"] = acct.terminal_node
     base.update(kw)

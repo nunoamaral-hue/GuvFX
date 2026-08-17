@@ -207,7 +207,8 @@ class ConfirmActivationTests(TestCase):
 def _exec_ready(acct, node, **kw):
     base = dict(canonical_state=S.EXECUTION_READY, proj_connected=True, proj_trade_allowed=True,
                 proj_account_match=True, proj_execution_ready=True, last_decision_at=timezone.now(),
-                execution_node=node, execution_enabled=True)
+                execution_node=node, execution_enabled=True,
+                execution_authorized_at=timezone.now())  # ADR-0047: a ready workspace is customer-authorized
     base.update(kw)
     acct.workspace_confirmed_at = timezone.now()
     acct.save(update_fields=["workspace_confirmed_at"])

@@ -107,7 +107,8 @@ class ProviderBTests(TestCase):
         base = dict(canonical_state=WorkspaceLifecycleState.EXECUTION_READY,
                     proj_connected=True, proj_trade_allowed=True, proj_account_match=True,
                     proj_execution_ready=True, last_decision_at=timezone.now(),
-                    execution_enabled=True)  # ADR-0034 Execution Engine — the explicit per-workspace ARM
+                    execution_enabled=True,  # ADR-0034 Execution Engine — the explicit per-workspace ARM
+                    execution_authorized_at=timezone.now())  # ADR-0047 — armed implies prior customer authz
         base.update(kw)
         ws = HostedMt5Workspace.objects.create(trading_account=self.acct, **base)
         # ADR-0034 Onboarding — a fully-ready account is one the customer has CONFIRMED. Stamp the durable

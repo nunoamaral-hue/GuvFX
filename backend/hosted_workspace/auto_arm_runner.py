@@ -1,10 +1,17 @@
-"""hosted_workspace.auto_arm_runner — ADR-0044 autonomous hosted-execution arming (DARK, demo-only).
+"""hosted_workspace.auto_arm_runner — hosted-execution arming completion driver (DARK, demo-only).
 
-Decision 2 (Sponsor 2026-08-14): a newly-onboarded beta user must reach an executable demo account WITHOUT any
-per-customer operator CLI. Previously ``execution_enabled`` could only be set by the operator command
-``provision_hosted_execution --arm`` — a customer-specific action, so a manual step in every onboarding. This
-thin, idempotent, retry-safe driver removes that step: once a workspace has legitimately reached canonical
-EXECUTION_READY, it calls the SAME certified ``arm_hosted_workspace_execution`` the operator command called.
+ADR-0047 (Sponsor 2026-08-17) SUPERSEDES ADR-0044 Decision 2: MT5 automation CAPABILITY (trade_allowed /
+EXECUTION_READY) is NOT customer AUTHORIZATION to trade. Reaching EXECUTION_READY must NEVER autonomously arm
+a workspace. Arming now requires an EXPLICIT, durable customer authorization (``execution_authorized_at``, set
+only by the customer's owner-scoped "Enable automated trading" action). This runner is therefore no longer an
+autonomous *arming* path — it can only COMPLETE an arm the customer has ALREADY authorized (e.g. re-apply it
+after a transient EXECUTION_READY flap), enforced both by its candidate filter below AND fail-closed inside
+``arm_hosted_workspace_execution``'s preconditions.
+
+Historical context (ADR-0044 Decision 2, 2026-08-14, now superseded): the intent was to remove the per-customer
+operator CLI step so onboarding reached an executable demo account autonomously. That autonomy is withdrawn for
+the arm: the customer's explicit click is the sole authorization. This idempotent, retry-safe driver still
+calls the SAME certified ``arm_hosted_workspace_execution`` the operator command calls.
 
 It is NOT a new arming path and it does NOT relax a single precondition: ``arm_hosted_workspace_execution``
 re-proves EVERY arm precondition (hosted flags on, Provider B, active, demo, workspace owner-bound, non-NULL
@@ -42,11 +49,17 @@ def run_hosted_auto_arm(*, actor: str = SOURCE) -> dict:
     from execution.hosted_provisioning import ARM_OK, arm_hosted_workspace_execution
 
     candidates = armed = already = refused = errors = 0
-    # Candidates = workspaces canonically EXECUTION_READY that are not yet armed AND not operator-suppressed. A
-    # workspace that later leaves EXECUTION_READY is simply not a candidate; and a DELIBERATELY disarmed one
-    # (auto_arm_suppressed=True, ADR-0044) is excluded so an operator disarm is never silently reverted here.
+    # Candidates = workspaces canonically EXECUTION_READY that are not yet armed, not operator-suppressed, AND
+    # have an EXPLICIT customer authorization (ADR-0047, execution_authorized_at NOT NULL). A workspace that
+    # later leaves EXECUTION_READY is simply not a candidate; a DELIBERATELY disarmed one (auto_arm_suppressed
+    # =True, ADR-0044) is excluded so an operator disarm is never silently reverted; and an UNAUTHORIZED one is
+    # excluded so reaching EXECUTION_READY can NEVER autonomously arm without the customer's explicit consent —
+    # this runner can now only COMPLETE an already-authorized arm, never manufacture one. (The same authz gate
+    # is also enforced fail-closed inside arm_hosted_workspace_execution's preconditions, so this filter is
+    # defense-in-depth, not the sole guard.)
     qs = (HostedMt5Workspace.objects
-          .filter(canonical_state=str(S.EXECUTION_READY), execution_enabled=False, auto_arm_suppressed=False)
+          .filter(canonical_state=str(S.EXECUTION_READY), execution_enabled=False, auto_arm_suppressed=False,
+                  execution_authorized_at__isnull=False)
           .select_related("trading_account")
           .iterator())
     for ws in qs:

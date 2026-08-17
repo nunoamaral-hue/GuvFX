@@ -42,6 +42,7 @@ RW_OBSERVATION_STALE = "workspace_observation_stale"
 # ── ADR-0034 Execution Engine arming reason codes (Decision D conditions 2 / 4 / 11) ──
 RW_EXECUTION_FEATURE_DISABLED = "workspace_execution_feature_disabled"  # condition 2 (subsystem-level flag)
 RW_EXECUTION_DISABLED = "workspace_execution_disabled"                  # condition 4 (per-workspace arm)
+RW_EXECUTION_NOT_AUTHORIZED = "workspace_execution_not_authorized"      # ADR-0047 — no explicit customer authz
 RW_REAL_ACCOUNT_NOT_ENABLED = "real_account_not_enabled"               # condition 11 (demo-only, fail-closed)
 RW_SUPERVISED_BOUNDARY = "supervised_single_tenant_boundary"           # ADR-0044 (supervised posture only)
 
@@ -172,6 +173,14 @@ class PersistentWorkspaceProvider:
         # it is not the order-time authority — the live bridge gate remains that.
         if getattr(account, "workspace_confirmed_at", None) is None:
             return ReadinessDecision(False, RW_NOT_CONFIRMED, self.key)
+        # ADR-0047 belt-and-braces: execution_enabled=True IMPLIES a prior explicit customer authorization (the
+        # now-gated arm cannot set it otherwise). This redundant term additionally fail-closes any row that was
+        # armed AUTONOMOUSLY before this correction (execution_enabled=True but execution_authorized_at NULL), so
+        # no such legacy row is ever order-eligible — with NO data migration. Placed AFTER connected/matched/
+        # confirmed so those more-specific reasons stay reachable; a genuinely armed legacy row passes all of
+        # them and is caught here. Capability is not authorization; the live bridge gate remains the authority.
+        if getattr(ws, "execution_authorized_at", None) is None:
+            return ReadinessDecision(False, RW_EXECUTION_NOT_AUTHORIZED, self.key)
         # Connected + matched but not canonically EXECUTION_READY (e.g. trading halted, or any non-ready
         # canonical state): not ready. ``canonical_execution_ready`` == (canonical_state == EXECUTION_READY),
         # which the M3a manager derives only when trade_allowed + fresh + the full conjunction held.

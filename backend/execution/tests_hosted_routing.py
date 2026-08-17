@@ -38,6 +38,7 @@ def _armed_account(*, provider=PERSISTENT_WORKSPACE, login="700900", server="IS6
             trading_account=acct, canonical_state=S.EXECUTION_READY, proj_connected=True,
             proj_trade_allowed=True, proj_account_match=True, proj_execution_ready=True,
             last_decision_at=timezone.now(), execution_enabled=execution_enabled,
+            execution_authorized_at=timezone.now(),  # ADR-0047: a ready workspace is customer-authorized
             execution_node=(node if bind_node else None))
     return acct
 

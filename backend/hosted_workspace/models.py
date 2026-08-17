@@ -159,6 +159,17 @@ class HostedMt5Workspace(models.Model):
     # workspace is auto-armable once it legitimately reaches EXECUTION_READY). Never the order authority.
     auto_arm_suppressed = models.BooleanField(default=False)
 
+    # --- ADR-0047: durable EXPLICIT customer authorization to execute (supersedes ADR-0044 Decision 2) ----
+    # The one durable record of the customer's OWN explicit "Enable automated trading" click. NULL ⇒ NOT
+    # authorized. It is a HARD precondition of arming (``_arm_preconditions``) — binding BOTH the autonomous
+    # ``auto_arm_runner`` and the operator command — and a belt-and-braces order-gate term (``readiness.py``),
+    # so a workspace can NEVER become armed/order-eligible merely because it reached EXECUTION_READY. MT5
+    # automation CAPABILITY (trade_allowed / EXECUTION_READY) is NOT authorization. Written ONLY by the
+    # owner-scoped ``authorize_workspace_execution`` (the customer endpoint); never by a migration, an
+    # observation/lifecycle event, or a convenience helper. Cleared to NULL only by an explicit customer
+    # de-authorization. Never the order authority (the live bridge gate remains sole).
+    execution_authorized_at = models.DateTimeField(null=True, blank=True, default=None)
+
     # --- ADR-0034 Execution Engine capstone (PART 2/3): durable workspace->node execution binding ---------
     # The ONE authorised execution TerminalNode this workspace resolves to (Decision C). NULL ⇒ NOT
     # execution-routable (fail-closed). Server-assigned only, via the provisioning contract

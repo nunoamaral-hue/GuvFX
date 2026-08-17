@@ -158,6 +158,17 @@ def onboarding_journey_projection(workspace, account, *, staff: bool = False) ->
         # single source of truth for whether to still show the broker-declaration form vs. the waiting experience,
         # so a page reload is deterministic and never re-shows a form the customer already completed.
         "identity_declared": bool(str(getattr(account, "account_number", "") or "").strip()),
+        # ADR-0047 — the execution AUTHORIZATION tier (strictly ABOVE onboarding completion). Truthful,
+        # read-only booleans so the UI can distinguish "ready — automated trading NOT yet enabled" from
+        # "enabled", and offer the explicit "Enable automated trading" control ONLY at EXECUTION_READY while
+        # unauthorized. None of these authorises an order; they mirror durable state, never mutate it.
+        "execution_ready": bool(state == S.EXECUTION_READY),
+        "execution_authorized": bool(getattr(workspace, "execution_authorized_at", None) is not None) if workspace else False,
+        "execution_armed": bool(getattr(workspace, "execution_enabled", False)) if workspace else False,
+        "can_enable_automated_trading": bool(
+            workspace is not None and state == S.EXECUTION_READY and confirmed
+            and getattr(workspace, "proj_account_match", None) is True
+            and getattr(workspace, "execution_authorized_at", None) is None),
     }
     if staff and workspace is not None:
         out["_staff"] = {
