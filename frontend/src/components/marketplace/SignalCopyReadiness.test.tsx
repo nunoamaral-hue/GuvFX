@@ -248,7 +248,7 @@ describe("SignalCopyReadiness (AJ#6.5 — hosted forward path, no reciprocal loo
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
     expect(noBounce()).toBeNull();
     // No live arm (arm UI dark) — a disabled goal button, and onArm is never called.
-    const btn = screen.getByRole("button", { name: /Enable Trading/i });
+    const btn = await screen.findByRole("button", { name: /Enable Trading/i });
     expect(btn).toBeDisabled();
     fireEvent.click(btn);
     expect(onArm).not.toHaveBeenCalled();
