@@ -142,8 +142,9 @@ describe("Configure page — Wayond (automated)", () => {
     expect(authorizeExecution).not.toHaveBeenCalled();
   });
 
-  it("workspace not ready → Enable degrades to a 'getting ready' state, never an Enable modal", async () => {
-    state.journey = null;                       // journey unavailable → cannot authorize yet
+  it("workspace preparing → Enable degrades to a 'getting ready' state, never an Enable modal", async () => {
+    // Journey loads OK but is not yet enable-able (still preparing) → the auto-updating getting-ready panel.
+    state.journey = { phase: "WORKSPACE_PREPARING", execution_authorized: false, can_enable_automated_trading: false };
     state.status = { armed: true, enabled: false, account_id: 5 };
     render(<ConfigurePage />);
     await screen.findByText(/getting ready/i);
@@ -153,6 +154,23 @@ describe("Configure page — Wayond (automated)", () => {
     const fwd = screen.getByRole("link", { name: /open metatrader/i });
     expect(fwd).toHaveAttribute("href", "/trading/terminal-access");
     expect(screen.queryByRole("link", { name: /open your workspace/i })).toBeNull();
+    for (const l of screen.queryAllByRole("link")) {
+      expect(l.getAttribute("href")).not.toBe("/onboarding/hosted");
+    }
+  });
+
+  it("workspace unavailable (journey fails to load) → honest 'needs attention' + Contact support, no false auto-update promise, no bounce", async () => {
+    // AJ#7.2 adversarial fix: a workspace that will NOT become ready on its own must NOT show the
+    // auto-updating getting-ready panel (a false "the Enable button will appear here" promise). It surfaces
+    // an honest attention state with a support route — and still never bounces to /onboarding/hosted.
+    state.journey = null;                       // fetchJourney → {ok:false} (unavailable / not entitled)
+    state.status = { armed: true, enabled: false, account_id: 5 };
+    render(<ConfigurePage />);
+    await screen.findByText(/needs attention/i);
+    expect(screen.getByRole("link", { name: /contact support/i })).toBeTruthy();
+    expect(screen.queryByText(/updates automatically/i)).toBeNull();   // no false self-heal promise
+    expect(screen.queryByText(/getting ready/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Enable Strategy" })).toBeNull();
     for (const l of screen.queryAllByRole("link")) {
       expect(l.getAttribute("href")).not.toBe("/onboarding/hosted");
     }

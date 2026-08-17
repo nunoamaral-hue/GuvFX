@@ -71,6 +71,9 @@ function ConfigureInner() {
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
   const [status, setStatus] = useState<SignalCopyStatus | null>(null);
   const [journey, setJourney] = useState<HostedJourney | null>(null);
+  // AJ#7.2 — the hosted journey could not be loaded at all (endpoint unavailable / not entitled). Distinct
+  // from "still preparing": here the workspace will NOT self-heal, so we must not promise auto-update.
+  const [journeyUnavailable, setJourneyUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -114,7 +117,7 @@ function ConfigureInner() {
       fetchJourney().then((r) => (r.ok ? r.journey : null)).catch(() => null),
       fetchSignalCopyStatus(mp).catch(() => null),
     ]);
-    if (jr) setJourney(jr);
+    if (jr) { setJourney(jr); setJourneyUnavailable(false); }   // a fresh journey means it is reachable again
     if (st) setStatus(st);
   }, [automated, mp]);
 
@@ -128,12 +131,17 @@ function ConfigureInner() {
       const accountsP = apiFetch<TradingAccount[]>("/api/trading/accounts/")
         .catch(() => apiFetch<TradingAccount[]>("/api/trading/trading-accounts/").catch(() => [] as TradingAccount[]));
       const statusP = automated ? fetchSignalCopyStatus(mp).catch(() => ({ armed: false, enabled: false } as SignalCopyStatus)) : Promise.resolve(null);
-      const journeyP = automated ? fetchJourney().then((r) => (r.ok ? r.journey : null)).catch(() => null) : Promise.resolve(null);
-      const [accs, st, jr] = await Promise.all([accountsP, statusP, journeyP]);
+      // Keep the full load result so we can tell "still preparing" (ok, not-yet-ready) apart from
+      // "unavailable" (endpoint failed / not entitled) — the latter must never promise self-healing.
+      const journeyP = automated
+        ? fetchJourney().catch(() => ({ ok: false as const, unavailable: true }))
+        : Promise.resolve(null);
+      const [accs, st, jl] = await Promise.all([accountsP, statusP, journeyP]);
       if (cancelled) return;
       setAccounts(accs || []);
       setStatus(st);
-      setJourney(jr);
+      setJourney(jl && "ok" in jl && jl.ok ? jl.journey : null);
+      setJourneyUnavailable(!!(jl && "ok" in jl && !jl.ok));
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -154,11 +162,15 @@ function ConfigureInner() {
   // (already authorized, or ready to be authorized on the explicit confirm). Otherwise Enable degrades to a
   // "getting ready" state — never an error, never a bounce.
   const canEnable = !!journey && (journey.execution_authorized === true || journey.can_enable_automated_trading === true);
+  // A workspace that will NOT become ready on its own: the journey couldn't load (not entitled / endpoint
+  // down) OR it reports the terminal error phase. We must NOT show the auto-updating "getting ready" panel
+  // here — that would be a false promise — so we surface an honest "needs attention" + support route instead.
+  const workspaceUnavailable = journeyUnavailable || journey?.phase === "WORKSPACE_UNAVAILABLE";
 
-  // Poll ONLY while the customer is in the "getting ready" state (owned, not enabled, not yet enable-able).
-  // Stops the moment it becomes Ready to enable (canEnable), gets enabled, or the customer leaves — the page
-  // transitions to the Enable action in place, with no navigation away and back.
-  const gettingReady = owned && !enabled && !canEnable && !ambiguous;
+  // Poll ONLY while the customer is in the "getting ready" state (owned, not enabled, not yet enable-able) AND
+  // the workspace is actually progressing (not unavailable). Stops the moment it becomes Ready to enable
+  // (canEnable), gets enabled, goes unavailable, or the customer leaves — transitioning in place, no bounce.
+  const gettingReady = owned && !enabled && !canEnable && !ambiguous && !workspaceUnavailable;
   useEffect(() => {
     if (!isAuthed || !automated || !gettingReady) return;
     const id = setInterval(() => { void pollReadiness(); }, 5000);
@@ -289,6 +301,7 @@ function ConfigureInner() {
           enabled={enabled}
           ambiguous={ambiguous}
           canEnable={canEnable}
+          workspaceUnavailable={workspaceUnavailable}
           busy={busy}
           onGet={doGet}
           onDisable={doDisable}
@@ -324,6 +337,7 @@ function AutomatedConfig(props: {
   enabled: boolean;
   ambiguous: boolean;
   canEnable: boolean;
+  workspaceUnavailable: boolean;
   busy: boolean;
   onGet: () => void;
   onDisable: () => void;
@@ -417,6 +431,16 @@ function AutomatedConfig(props: {
             title="Ready to enable"
             body={`${props.strategyName} is added to ${props.accountLabel}. Enable it to let GuvFX trade this strategy automatically on your account.`}
             action={<Button variant="primary" onClick={props.onOpenEnable} disabled={props.busy}>Enable Strategy</Button>}
+          />
+        ) : props.workspaceUnavailable ? (
+          /* AJ#7.2 (adversarial fix): the workspace will NOT become ready on its own (journey unavailable or a
+             terminal error). Do NOT show the auto-updating "getting ready" panel — that promises a self-heal
+             that never comes. Surface an honest attention state with a route to support. */
+          <ActionPanel
+            tone="attention"
+            title="This strategy needs attention"
+            body="We couldn't get your trading workspace ready for this strategy. This usually needs a hand from our team — please contact support and we'll sort it out."
+            action={<Link href="/support"><Button variant="secondary">Contact support</Button></Link>}
           />
         ) : (
           <ActionPanel

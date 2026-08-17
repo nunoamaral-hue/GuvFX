@@ -136,6 +136,9 @@ export default function StrategiesListPage() {
   // the backing Strategy row of an owned signal-copy product is hidden so the product renders exactly once.
   const [automatedRows, setAutomatedRows] = useState<OwnedRow[]>([]);
   const [justEnabled, setJustEnabled] = useState(false);
+  // Gate the generic list on the automated load so the backing row can never FLASH (with a misleading
+  // "Active" badge) before dedup applies.
+  const [automatedLoaded, setAutomatedLoaded] = useState(false);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -198,7 +201,7 @@ export default function StrategiesListPage() {
         const st = await fetchSignalCopyStatus(mp).catch(() => null);
         if (st?.armed) found.push({ mp, name: mpDisplayName(mp), status: st, journey });
       }
-      if (!cancelled) { setAutomatedRows(found); setJustEnabled(enabledHint); }
+      if (!cancelled) { setAutomatedRows(found); setJustEnabled(enabledHint); setAutomatedLoaded(true); }
     })();
     return () => { cancelled = true; };
   }, [accessToken]);
@@ -244,9 +247,9 @@ export default function StrategiesListPage() {
           </p>
         )}
 
-        {loading && <p>Loading strategies...</p>}
+        {(loading || (accessToken && !automatedLoaded)) && <p>Loading strategies...</p>}
 
-        {!loading && visibleStrategies.length === 0 && automatedRows.length === 0 && accessToken && !error && (
+        {!loading && automatedLoaded && visibleStrategies.length === 0 && automatedRows.length === 0 && accessToken && !error && (
           <p style={{ fontSize: "0.9rem" }}>
             No strategies found yet. Create one from the Builder then come back
             here.
@@ -261,7 +264,7 @@ export default function StrategiesListPage() {
             marginTop: "0.75rem",
           }}
         >
-          {visibleStrategies.map((strategy) => (
+          {automatedLoaded && visibleStrategies.map((strategy) => (
             <div
               key={strategy.id}
               style={{

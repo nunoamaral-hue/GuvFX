@@ -159,6 +159,21 @@ class GetStrategyTests(TestCase):
         self.assertEqual(body["strategy_id"], asn.strategy_id)
         self.assertIsNotNone(body["strategy_id"])
 
+    def test_status_strategy_id_is_none_when_ambiguous(self):
+        # AJ#7.2 SAFETY (fail-open): with >1 owned AUTO_DEMO/LIVE assignment (a config error), status must NOT
+        # resolve a single backing row — strategy_id/account_id/assignment_id are all None so My Strategies
+        # NEVER silently hides a genuine generic row. This pins the safety-critical `else None` branch that the
+        # positive test above cannot reach; dropping the `len == 1` guard makes this fail.
+        self._get()                                       # first owned assignment on self.acct
+        acct2 = _demo_acct(self.user, "G1B")
+        r2 = self._get(account_id=acct2.id)               # second owned assignment on a second demo account
+        self.assertEqual(r2.status_code, 201, r2.content)
+        body = self.c.get(STATUS_URL, {"marketplace_strategy_id": MP}).json()
+        self.assertTrue(body["ambiguous"])
+        self.assertIsNone(body["strategy_id"])
+        self.assertIsNone(body["account_id"])
+        self.assertIsNone(body["assignment_id"])
+
 
 @override_settings(**BASE)
 class GetStrategyCohortTests(TestCase):

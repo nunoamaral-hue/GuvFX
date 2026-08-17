@@ -11,8 +11,11 @@ const { state, apiFetch, push, fetchJourney, authorizeExecution } = vi.hoisted((
   const state = {
     search: "mp=mp-010&account=5",
     status: { armed: true, enabled: false, account_id: 5 } as Status,
-    journey: null as Record<string, unknown> | null,   // start NOT ready (getting ready)
+    // Start PREPARING (journey loads OK but is not yet enable-able) → the getting-ready + auto-update state.
+    // (A journey that fails to load is a DIFFERENT, "unavailable" state, covered in page.test.tsx.)
+    journey: { phase: "WORKSPACE_PREPARING", execution_authorized: false, can_enable_automated_trading: false } as Record<string, unknown> | null,
     accounts: [{ id: 5, name: "Demo A", account_number: "1302587", is_demo: true, is_active: true }],
+    rejectStatusOnce: false,   // simulate a transient signal-copy/status failure on the next poll only
   };
   const push = vi.fn();
   const authorizeExecution = vi.fn(async () => ({}));
@@ -20,7 +23,10 @@ const { state, apiFetch, push, fetchJourney, authorizeExecution } = vi.hoisted((
   const apiFetch = vi.fn(async (path: string) => {
     if (path.startsWith("/api/auth/me")) return {};
     if (path.startsWith("/api/trading/accounts")) return state.accounts;
-    if (path.includes("/signal-copy/status")) return { ...state.status };
+    if (path.includes("/signal-copy/status")) {
+      if (state.rejectStatusOnce) { state.rejectStatusOnce = false; throw new Error("transient"); }
+      return { ...state.status };
+    }
     return {};
   });
   return { state, apiFetch, push, fetchJourney, authorizeExecution };
@@ -47,7 +53,8 @@ describe("Configure page — Phase 5 self-updating readiness", () => {
     apiFetch.mockClear(); push.mockClear(); authorizeExecution.mockClear(); fetchJourney.mockClear();
     state.search = "mp=mp-010&account=5";
     state.status = { armed: true, enabled: false, account_id: 5 };  // owned, not enabled
-    state.journey = null;                                            // not ready yet → getting ready
+    state.journey = { phase: "WORKSPACE_PREPARING", execution_authorized: false, can_enable_automated_trading: false }; // preparing → getting ready
+    state.rejectStatusOnce = false;
   });
   afterEach(() => { vi.runOnlyPendingTimers(); vi.useRealTimers(); });
 
@@ -72,6 +79,21 @@ describe("Configure page — Phase 5 self-updating readiness", () => {
     const callsAfterReady = fetchJourney.mock.calls.length;
     await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
     expect(fetchJourney.mock.calls.length).toBe(callsAfterReady);
+  });
+
+  it("a transient status-fetch failure DURING getting-ready must not flip an owned strategy back to 'Get Strategy'", async () => {
+    // This is the fail-safe the diff's `if (st) setStatus(st)` guard exists for: a poll whose status fetch
+    // rejects yields st=null; applying it unconditionally would set status=null → owned=false → the panel
+    // would wrongly offer "Get Strategy" for an already-owned strategy. The guard must keep it truthful.
+    render(<ConfigurePage />);
+    await screen.findByText(/getting ready/i);
+    // Next poll's status fetch transiently fails while still in getting-ready.
+    state.rejectStatusOnce = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    // Still owned + getting-ready; NEVER downgraded to the acquisition CTA.
+    expect(screen.getByText(/getting ready/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Get Strategy" })).toBeNull();
+    expect(screen.queryByText(/Add this strategy/i)).toBeNull();
   });
 
   it("a transient fetch miss during polling never downgrades the UI back from ready", async () => {
