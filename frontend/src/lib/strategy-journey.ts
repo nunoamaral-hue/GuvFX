@@ -127,6 +127,9 @@ export type SignalCopyStatus = {
   assignment_id?: number | null;
   /** AJ#7 — the account the (unambiguous) owned assignment lives on; null when not owned or ambiguous. */
   account_id?: number | null;
+  /** AJ#7.2 — the backing Strategy row id; My Strategies hides it from the generic list so the product renders
+   *  once. Null when not owned or ambiguous. */
+  strategy_id?: number | null;
 };
 
 export async function fetchSignalCopyStatus(mpId: string): Promise<SignalCopyStatus> {

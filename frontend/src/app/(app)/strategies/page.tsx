@@ -35,30 +35,10 @@ const ownedChipStyle = (tone: "ready" | "action" | "attention" | "neutral"): Rea
 type OwnedRow = { mp: string; name: string; status: SignalCopyStatus; journey: HostedJourney | null };
 
 /** Managed section: the customer's owned automated strategies with a normalized lifecycle + Manage action.
- *  Read-only; never arms, never enables. Only renders strategies the customer actually owns. */
-function OwnedAutomatedStrategies() {
-  const [rows, setRows] = useState<OwnedRow[] | null>(null);
-  const [justEnabled, setJustEnabled] = useState(false);
-
-  useEffect(() => {
-    // Read the just-enabled hint synchronously (no setState here — that would trigger a cascading render);
-    // it is applied together with the fetched rows once the async load resolves.
-    const enabledHint = typeof window !== "undefined"
-      && new URLSearchParams(window.location.search).get("enabled") === "1";
-    let cancelled = false;
-    (async () => {
-      const journey = await fetchJourney().then((r) => (r.ok ? r.journey : null)).catch(() => null);
-      const found: OwnedRow[] = [];
-      for (const mp of AUTOMATED_MARKETPLACE_IDS) {
-        const st = await fetchSignalCopyStatus(mp).catch(() => null);
-        if (st?.armed) found.push({ mp, name: mpDisplayName(mp), status: st, journey });
-      }
-      if (!cancelled) { setRows(found); setJustEnabled(enabledHint); }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  if (!rows || rows.length === 0) return null;
+ *  AJ#7.2 — PRESENTATIONAL: the parent owns the fetch so it can DEDUPE the generic list (hide the backing
+ *  Strategy row so a signal-copy product renders ONCE). Renders nothing when the customer owns none. */
+function OwnedAutomatedStrategies({ rows, justEnabled }: { rows: OwnedRow[]; justEnabled: boolean }) {
+  if (rows.length === 0) return null;
 
   return (
     <div style={{ marginBottom: "1.25rem" }}>
@@ -152,6 +132,10 @@ export default function StrategiesListPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionBusyId, setActionBusyId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // AJ#7.2 — owned automated strategies (Wayond today), fetched HERE so the generic list below can DEDUPE:
+  // the backing Strategy row of an owned signal-copy product is hidden so the product renders exactly once.
+  const [automatedRows, setAutomatedRows] = useState<OwnedRow[]>([]);
+  const [justEnabled, setJustEnabled] = useState(false);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -200,6 +184,34 @@ export default function StrategiesListPage() {
     fetchStrategies();
   }, [accessToken]);
 
+  useEffect(() => {
+    if (!accessToken) return;
+    // Read the just-enabled hint synchronously; applied together with the rows once the load resolves so we
+    // never trigger a cascading render mid-fetch.
+    const enabledHint = typeof window !== "undefined"
+      && new URLSearchParams(window.location.search).get("enabled") === "1";
+    let cancelled = false;
+    (async () => {
+      const journey = await fetchJourney().then((r) => (r.ok ? r.journey : null)).catch(() => null);
+      const found: OwnedRow[] = [];
+      for (const mp of AUTOMATED_MARKETPLACE_IDS) {
+        const st = await fetchSignalCopyStatus(mp).catch(() => null);
+        if (st?.armed) found.push({ mp, name: mpDisplayName(mp), status: st, journey });
+      }
+      if (!cancelled) { setAutomatedRows(found); setJustEnabled(enabledHint); }
+    })();
+    return () => { cancelled = true; };
+  }, [accessToken]);
+
+  // Strategy ids backing an owned automated product — hidden from the generic list so a signal-copy product
+  // (e.g. Wayond WIM) is never shown twice (once managed, once as a bare "Wayond WIM Strategy" row).
+  const automatedStrategyIds = new Set(
+    automatedRows
+      .map((r) => r.status.strategy_id)
+      .filter((id): id is number => typeof id === "number"),
+  );
+  const visibleStrategies = strategies.filter((s) => !automatedStrategyIds.has(s.id));
+
   return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
@@ -212,7 +224,7 @@ export default function StrategiesListPage() {
         {error && <Alert type="error">{error}</Alert>}
         {actionError && <Alert type="error">{actionError}</Alert>}
 
-        <OwnedAutomatedStrategies />
+        <OwnedAutomatedStrategies rows={automatedRows} justEnabled={justEnabled} />
 
         <div style={{ ...glassCardStyle, padding: "1rem 1rem 1.1rem", marginBottom: "1rem" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -234,7 +246,7 @@ export default function StrategiesListPage() {
 
         {loading && <p>Loading strategies...</p>}
 
-        {!loading && strategies.length === 0 && accessToken && !error && (
+        {!loading && visibleStrategies.length === 0 && automatedRows.length === 0 && accessToken && !error && (
           <p style={{ fontSize: "0.9rem" }}>
             No strategies found yet. Create one from the Builder then come back
             here.
@@ -249,7 +261,7 @@ export default function StrategiesListPage() {
             marginTop: "0.75rem",
           }}
         >
-          {strategies.map((strategy) => (
+          {visibleStrategies.map((strategy) => (
             <div
               key={strategy.id}
               style={{

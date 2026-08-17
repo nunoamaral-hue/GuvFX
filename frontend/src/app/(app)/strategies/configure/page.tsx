@@ -105,6 +105,19 @@ function ConfigureInner() {
     }
   }, [automated, mp]);
 
+  // AJ#7.2 — while the customer waits for the workspace to become ready-to-enable, refresh readiness in place.
+  // FAIL-SAFE: a transient fetch miss (null journey / thrown status) must NEVER downgrade a good UI — we only
+  // apply a fresh non-null result, so the page moves forward to "Ready to enable" and never flickers backward.
+  const pollReadiness = useCallback(async () => {
+    if (!automated || !mp) return;
+    const [jr, st] = await Promise.all([
+      fetchJourney().then((r) => (r.ok ? r.journey : null)).catch(() => null),
+      fetchSignalCopyStatus(mp).catch(() => null),
+    ]);
+    if (jr) setJourney(jr);
+    if (st) setStatus(st);
+  }, [automated, mp]);
+
   // Data load (accounts + signal-copy status + hosted journey)
   useEffect(() => {
     if (!authChecked) return;
@@ -141,6 +154,16 @@ function ConfigureInner() {
   // (already authorized, or ready to be authorized on the explicit confirm). Otherwise Enable degrades to a
   // "getting ready" state — never an error, never a bounce.
   const canEnable = !!journey && (journey.execution_authorized === true || journey.can_enable_automated_trading === true);
+
+  // Poll ONLY while the customer is in the "getting ready" state (owned, not enabled, not yet enable-able).
+  // Stops the moment it becomes Ready to enable (canEnable), gets enabled, or the customer leaves — the page
+  // transitions to the Enable action in place, with no navigation away and back.
+  const gettingReady = owned && !enabled && !canEnable && !ambiguous;
+  useEffect(() => {
+    if (!isAuthed || !automated || !gettingReady) return;
+    const id = setInterval(() => { void pollReadiness(); }, 5000);
+    return () => clearInterval(id);
+  }, [isAuthed, automated, gettingReady, pollReadiness]);
 
   const doEnableConfirm = async () => {
     if (!resolvedAccountId) return;
@@ -404,6 +427,7 @@ function AutomatedConfig(props: {
                page). It must NOT link back to /onboarding/hosted, which at WORKSPACE_READY bounces to the
                marketplace → owned card → Configure, re-forming the AJ#6.5-class navigation loop. */
             action={<Link href="/trading/terminal-access"><Button variant="secondary">Open MetaTrader</Button></Link>}
+            footnote="This page updates automatically — you don't need to refresh. As soon as your workspace is ready, the Enable button will appear here."
           />
         )}
       </div>
@@ -440,9 +464,9 @@ function GenericConfig({ strategyName, accountLabel }: { strategyName: string; a
   );
 }
 
-function ActionPanel({ tone, title, body, action }: {
+function ActionPanel({ tone, title, body, action, footnote }: {
   tone: "ready" | "action" | "attention" | "neutral";
-  title: string; body: string; action: React.ReactNode;
+  title: string; body: string; action: React.ReactNode; footnote?: string;
 }) {
   const color = { ready: "#86efac", action: "#93c5fd", attention: "#fcd34d", neutral: "#c7d2e8" }[tone];
   return (
@@ -450,6 +474,9 @@ function ActionPanel({ tone, title, body, action }: {
       <h2 style={{ fontSize: "1.05rem", margin: "0 0 0.4rem", color }}>{title}</h2>
       <p style={{ color: "#94a3b8", fontSize: "0.86rem", lineHeight: 1.55, margin: "0 0 1rem" }}>{body}</p>
       {action}
+      {footnote && (
+        <p style={{ color: "#6d7a92", fontSize: "0.74rem", margin: "0.8rem 0 0" }}>{footnote}</p>
+      )}
     </div>
   );
 }

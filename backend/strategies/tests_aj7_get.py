@@ -148,6 +148,17 @@ class GetStrategyTests(TestCase):
         self.assertEqual(body["account_id"], self.acct.id)
         self.assertEqual(body["assignment_id"], got.json()["assignment_id"])
 
+    def test_status_reports_backing_strategy_id_for_dedup(self):
+        # AJ#7.2 — My Strategies dedupes the generic list by this id, so an owned signal-copy product renders
+        # once. It must be the backing Strategy of the unambiguous owned assignment.
+        got = self._get()
+        asn = StrategyAssignment.objects.get(id=got.json()["assignment_id"])
+        r = self.c.get(STATUS_URL, {"marketplace_strategy_id": MP})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["strategy_id"], asn.strategy_id)
+        self.assertIsNotNone(body["strategy_id"])
+
 
 @override_settings(**BASE)
 class GetStrategyCohortTests(TestCase):

@@ -1304,6 +1304,10 @@ class StrategyViewSet(viewsets.ModelViewSet):
             # AJ#7 — the account the (unambiguous) owned assignment lives on, so the Configure/My-Strategies
             # surfaces can resolve the account without a query param. None when not owned or ambiguous.
             "account_id": (hits[0].account_id if len(hits) == 1 else None),
+            # AJ#7.2 — the backing Strategy row of the (unambiguous) owned assignment. My Strategies uses this to
+            # DEDUPE: the generic Strategy list hides this row so a signal-copy product renders ONCE (the managed
+            # "Automated strategies" entry) instead of twice ("Wayond WIM" + "Wayond WIM Strategy - Active").
+            "strategy_id": (hits[0].strategy_id if len(hits) == 1 else None),
             "ambiguous": len(hits) > 1,          # >1 armed assignment → config error, fail-closed
         })
 
