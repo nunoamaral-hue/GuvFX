@@ -951,8 +951,8 @@ const dictionary: Dictionary = {
     ja: "管理",
   },
   "marketplace.stateOwned": {
-    en: "Added",
-    ja: "追加済み",
+    en: "Setup required",
+    ja: "設定が必要",
   },
   "marketplace.stateEnabled": {
     en: "Enabled",
