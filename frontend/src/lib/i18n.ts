@@ -975,6 +975,35 @@ const dictionary: Dictionary = {
     en: "Enabling…",
     ja: "有効化しています…",
   },
+  // AJ#6.5 — the Wayond card OWNS the forward path for a hosted-ready customer (Option B). The concepts stay
+  // distinct on the card: MT5 capability → customer authorization ("Enable automated trading", ADR-0047) →
+  // strategy arm ("Enable this strategy"). These NEVER bounce the customer back to onboarding.
+  "marketplace.enableAutomatedTrading": {
+    en: "Enable automated trading",
+    ja: "自動売買を有効化",
+  },
+  "marketplace.armEnableStrategy": {
+    en: "Enable this strategy",
+    ja: "この戦略を有効化",
+  },
+  "marketplace.authorizeHint": {
+    en: "Your workspace is ready. Enable automated trading to let GuvFX run the strategies you turn on.",
+    ja: "ワークスペースの準備が整いました。自動売買を有効にすると、有効化した戦略をGuvFXが実行します。",
+  },
+  // Onboarding-complete but the workspace is not yet ready to trade (e.g. AutoTrading not switched on, or the
+  // market is closed). The card OWNS this state (no bounce back to onboarding) and reassures the customer.
+  "marketplace.hostedPreparingHint": {
+    en: "Your workspace is finishing getting ready for automated trading. This usually completes shortly.",
+    ja: "ワークスペースは自動売買の準備を仕上げています。まもなく完了します。",
+  },
+  "marketplace.authorizeSuccess": {
+    en: "Automated trading enabled. You can now turn on this strategy.",
+    ja: "自動売買を有効にしました。この戦略を有効化できます。",
+  },
+  "marketplace.authorizeFailed": {
+    en: "We couldn't enable automated trading just now. Please try again in a moment.",
+    ja: "現在、自動売買を有効にできませんでした。しばらくしてから再度お試しください。",
+  },
   "marketplace.armSuccess": {
     en: "Trading enabled for this account.",
     ja: "このアカウントで取引を有効化しました。",

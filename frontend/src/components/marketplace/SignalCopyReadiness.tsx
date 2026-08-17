@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import { t, type Lang } from "@/lib/i18n";
@@ -105,6 +105,11 @@ export function SignalCopyReadiness({
   isAuthed,
   arming,
   onArm,
+  hostedComplete,
+  hostedAuthorized,
+  canEnableAutomatedTrading,
+  authorizing,
+  onAuthorize,
 }: {
   lang: Lang;
   marketplaceStrategyId: string;
@@ -115,6 +120,20 @@ export function SignalCopyReadiness({
   isAuthed: boolean;
   arming: boolean;
   onArm: (accountId: number) => void;
+  // AJ#6.5 — hosted-workspace context (from the hosted journey). `hostedComplete` is the ONBOARDING-COMPLETE
+  // signal (strategy_eligible = journey phase WORKSPACE_READY = connected+matched+confirmed) — deliberately the
+  // SAME threshold at which the hosted onboarding "Choose Strategy" button sends the customer here. Whenever it
+  // is true the Wayond card OWNS the forward path (Option B) and NEVER bounces back to /onboarding/hosted; the
+  // specific control is chosen by the execution tier:
+  //   canEnableAutomatedTrading → CASE A: the ADR-0047 "Enable automated trading" step (EXECUTION_READY, not authorized).
+  //   hostedAuthorized          → CASE B: the strategy-arm step directly (authorized).
+  //   neither                   → WAITING: onboarding-complete but not yet ready to trade → a reassurance, no bounce.
+  // All optional so non-hosted / legacy callers keep the existing behaviour unchanged.
+  hostedComplete?: boolean;
+  hostedAuthorized?: boolean;
+  canEnableAutomatedTrading?: boolean;
+  authorizing?: boolean;
+  onAuthorize?: () => void;
 }) {
   // Only demo accounts are eligible for the copy path (matches the backend's demo-only rule), so we never
   // offer an account the arm endpoint would reject.
@@ -132,7 +151,12 @@ export function SignalCopyReadiness({
     }
   }, [selectedAccountId, demoAccounts, onSelectAccount]);
 
+  // AJ#6.5 — the CASE A→B authorization re-fetch adds a second `load()` trigger that can straddle the
+  // authorize POST, so two readiness fetches may be in flight at once. Guard with a monotonic generation so
+  // only the LATEST fetch may commit state — an out-of-order earlier response can never strand the card.
+  const loadGen = useRef(0);
   const load = useCallback(async (accountId: number) => {
+    const gen = ++loadGen.current;
     setLoading(true);
     setFailed(false);
     try {
@@ -140,19 +164,31 @@ export function SignalCopyReadiness({
         "/api/strategies/strategies/signal-copy/readiness/?marketplace_strategy_id=" +
           encodeURIComponent(marketplaceStrategyId) + "&account_id=" + accountId,
       );
+      if (gen !== loadGen.current) return;   // a newer load started — discard this stale result
       setReadiness(data);
     } catch {
       // Read-only status fetch: on failure show a neutral "unavailable", never a false "not ready".
+      if (gen !== loadGen.current) return;
       setReadiness(null);
       setFailed(true);
     } finally {
-      setLoading(false);
+      if (gen === loadGen.current) setLoading(false);
     }
   }, [marketplaceStrategyId]);
 
   useEffect(() => {
     if (Number.isFinite(selId) && selId > 0) void load(selId);
   }, [selId, load]);
+
+  // AJ#6.5 — when the customer authorizes automated trading (CASE A → CASE B), re-read readiness so the
+  // hosted arm gate (can_arm) flips and the strategy-arm control replaces the authorize control. Skip the
+  // mount run (the selId effect above already fetched) so a change in authorization is the only trigger.
+  const authRefetchMounted = useRef(false);
+  useEffect(() => {
+    if (!authRefetchMounted.current) { authRefetchMounted.current = true; return; }
+    if (Number.isFinite(selId) && selId > 0) void load(selId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostedAuthorized]);
 
   if (demoAccounts.length === 0) {
     return (
@@ -166,6 +202,26 @@ export function SignalCopyReadiness({
   }
 
   const accentColor = readiness ? STATE_COLOR[readiness.state] || "#94a3b8" : "#94a3b8";
+
+  // AJ#6.5 — Option B: once the customer is ONBOARDING-COMPLETE (`hostedComplete` = strategy_eligible = the SAME
+  // threshold at which hosted onboarding's "Choose Strategy" sends them here) the Wayond card OWNS the forward
+  // path and NEVER bounces to /onboarding/hosted — closing the reciprocal loop across the WHOLE band, not only
+  // at EXECUTION_READY. The three cases are mutually exclusive (the read-model's can_enable_automated_trading is
+  // true only while execution is NOT yet authorized; execution_authorized only once it IS):
+  //   caseA       — EXECUTION_READY, not yet authorized → the ADR-0047 "Enable automated trading" step.
+  //   caseB       — authorized → the strategy-arm step directly.
+  //   caseWaiting — onboarding-complete but not yet ready to trade (e.g. AutoTrading off / market closed) → a
+  //                 reassurance, never a bounce.
+  const owned = !!hostedComplete;
+  const caseA = owned && !!canEnableAutomatedTrading;
+  const caseB = owned && !!hostedAuthorized;
+  const caseWaiting = owned && !caseA && !caseB;
+  // Within the owned band the ONLY thing to suppress is a bounce back to /onboarding/hosted (the loop). Every
+  // OTHER readiness next-action stays live — a needs-attention / inactive-account state maps to /accounts (a
+  // legitimate fix, not the loop), so masking it with "no action needed" would strand the customer. The
+  // reassurance therefore applies ONLY to the states whose legacy destination is the onboarding page itself.
+  const caseWaitingBounce =
+    caseWaiting && readiness != null && NEXT_NAV[readiness.next_action]?.href === "/onboarding/hosted";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
@@ -219,17 +275,60 @@ export function SignalCopyReadiness({
               ))}
             </ul>
           </div>
-          <p style={{ fontSize: "0.72rem", color: accentColor, margin: 0 }}>
-            {t(lang, NEXT_KEY[readiness.next_action] || "marketplace.readinessNextReady")}
+          <p style={{ fontSize: "0.72rem", color: caseA ? "#f59e0b" : caseWaitingBounce ? "#38bdf8" : accentColor, margin: 0 }}>
+            {caseA
+              ? t(lang, "marketplace.authorizeHint")
+              : caseWaitingBounce
+                ? t(lang, "marketplace.hostedPreparingHint")
+                : t(lang, NEXT_KEY[readiness.next_action] || "marketplace.readinessNextReady")}
           </p>
-          {/* Item 5: the card always points at ONE next action, never status-only.
-              - can_arm + arm UI built → the operational Enable button.
-              - can_arm + arm UI dark → no control (the next-action line reads "…ready. Enable trading…");
-                a DARK build never surfaces a live arm path.
-              - incomplete with a customer-navigable fix → a navigation button to where they fix it.
-              - incomplete with no in-app fix (e.g. pilot access) → the goal button, disabled, under the
-                explanatory next-action line above. */}
-          {readiness.can_arm ? (
+          {/* AJ#6.5 (Option B) — the Wayond card OWNS the ONE forward action for a hosted-ready customer and
+              NEVER bounces back to /onboarding/hosted (the reciprocal loop). The concepts stay distinct:
+              MT5 capability → customer authorization (Enable automated trading) → strategy arm (Enable this
+              strategy). Non-hosted / not-yet-ready customers keep the pre-AJ6.5 behaviour unchanged.
+              - caseA → the ADR-0047 authorization button (owned here per the product contract).
+              - caseB + can_arm → the live strategy-arm button (the backend already committed: can_arm folds
+                in the self-serve + ADR-0047 gates), regardless of the broker-connectivity build flag.
+              - caseB + !can_arm → the goal button disabled (a transient arm gate), never a bounce.
+              - otherwise → the legacy branches: arm button (armUiEnabled), a navigable fix, or a disabled goal. */}
+          {caseA ? (
+            // CASE A — MT5 capability ready, automated trading NOT yet authorized. Capability is never consent:
+            // the customer explicitly authorizes here (ADR-0047), and only then does the arm step appear.
+            <Button
+              variant="primary"
+              onClick={() => onAuthorize && onAuthorize()}
+              disabled={!isAuthed || !!authorizing}
+            >
+              {authorizing ? t(lang, "marketplace.armWorking") : t(lang, "marketplace.enableAutomatedTrading")}
+            </Button>
+          ) : caseB ? (
+            readiness.can_arm ? (
+              // CASE B — automated trading authorized → arm THIS strategy directly (the deliberate customer
+              // activation). Live because can_arm already means the backend will accept the arm.
+              <Button
+                variant="primary"
+                onClick={() => (selId > 0 ? onArm(selId) : undefined)}
+                disabled={!isAuthed || arming}
+              >
+                {arming ? t(lang, "marketplace.armWorking") : t(lang, "marketplace.armEnableStrategy")}
+              </Button>
+            ) : (
+              // Authorized + ready but a transient arm gate (e.g. NEEDS_ATTENTION) → the goal button disabled
+              // under the explanatory next-action line — NEVER a bounce to onboarding.
+              <Button variant="primary" onClick={() => undefined} disabled>
+                {t(lang, "marketplace.armEnableStrategy")}
+              </Button>
+            )
+          ) : caseWaitingBounce ? (
+            // WAITING — onboarding-complete but the workspace is not yet ready to trade (AutoTrading off, market
+            // closed, …), where the legacy destination would be the onboarding page. The card OWNS this state: a
+            // disabled "Enable automated trading" under the reassurance line — never a bounce (this is the band
+            // that reintroduced the loop). Owned states with a real fix elsewhere (e.g. an inactive account →
+            // /accounts) are NOT caseWaitingBounce, so they fall through to their live navigation below.
+            <Button variant="primary" onClick={() => undefined} disabled>
+              {t(lang, "marketplace.enableAutomatedTrading")}
+            </Button>
+          ) : readiness.can_arm ? (
             armUiEnabled ? (
               // Complete + arm UI built → the operational Enable button.
               <Button
@@ -239,10 +338,17 @@ export function SignalCopyReadiness({
               >
                 {arming ? t(lang, "marketplace.armWorking") : t(lang, "marketplace.armEnableTrading")}
               </Button>
+            ) : owned ? (
+              // AJ#6.5 defence-in-depth — an ONBOARDING-COMPLETE customer must NEVER be sent to /onboarding/hosted
+              // (the reciprocal loop), even in the multi-account edge where the SELECTED account is a different,
+              // ready demo (can_arm) whose legacy affordance is the workspace link. Show a disabled goal instead.
+              <Button variant="primary" onClick={() => undefined} disabled>
+                {t(lang, "marketplace.armEnableTrading")}
+              </Button>
             ) : (
-              // Complete + arm UI DARK → the self-serve arm control isn't built yet, but the card must still
-              // offer ONE next action (P0.2). Send the ready customer to their hosted workspace — a navigation
-              // Link, never a live arm control, so a DARK build never surfaces an arm path.
+              // Complete + arm UI DARK (non-hosted / legacy build) → the self-serve arm control isn't built,
+              // but the card must still offer ONE next action (P0.2). Send the ready customer to their hosted
+              // workspace — a navigation Link, never a live arm control.
               <Link href="/onboarding/hosted" style={navBtnStyle}>
                 {t(lang, "marketplace.navOpenWorkspace")}
               </Link>

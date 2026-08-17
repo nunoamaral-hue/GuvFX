@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { brokerConnectivityEnabled } from "@/lib/flags";
 import { SignalCopyReadiness } from "@/components/marketplace/SignalCopyReadiness";
+import { fetchJourney, authorizeExecution, type HostedJourney } from "@/lib/hosted-journey";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -244,6 +245,11 @@ export default function StrategyMarketplacePage() {
   const [copyBusy, setCopyBusy] = useState<Record<string, boolean>>({});
   // IPR Area D: per-card busy state for the self-service Enable-Trading (arm) action.
   const [armBusy, setArmBusy] = useState<Record<string, boolean>>({});
+  // AJ#6.5: the hosted-workspace journey (ADR-0047 authorization state), so the Wayond card can OWN the
+  // forward path (authorize → arm) instead of bouncing a ready customer back to /onboarding/hosted. Null =
+  // no hosted workspace / feature dark → the card keeps its legacy (non-hosted) behaviour.
+  const [hostedJourney, setHostedJourney] = useState<HostedJourney | null>(null);
+  const [authorizingExec, setAuthorizingExec] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [defaultAccountId, setDefaultAccountId] = useState<number | null>(null);
   const [alert, setAlert] = useState<string | null>(null);
@@ -323,6 +329,25 @@ export default function StrategyMarketplacePage() {
         setCopyState((prev) => ({ ...prev, [card.id]: { armed: false, enabled: false, loading: false } }));
       }
     });
+  }, [authChecked, isAuthed]);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // AJ#6.5 — Hosted-workspace journey (ADR-0047 authorization state). Read-only; fail-closed: a 404
+  // (no hosted workspace / feature dark) or any error simply leaves the journey null, so the Wayond card
+  // keeps its legacy (non-hosted) behaviour. Never mutates; never blocks the grid.
+  // ─────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!authChecked || !isAuthed) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetchJourney();
+        if (!cancelled) setHostedJourney(r.ok ? r.journey : null);
+      } catch {
+        if (!cancelled) setHostedJourney(null);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [authChecked, isAuthed]);
 
   // Load saved default account for marketplace dropdowns — but only one the CURRENT user owns.
@@ -524,6 +549,32 @@ export default function StrategyMarketplacePage() {
   // ON state comes only from backend-confirmed `enabled`. Failures branch on the machine-readable
   // `status` slug (not `detail`, which is identical for the two readiness reasons) into customer-safe
   // wording — raw slugs / detail strings are never shown.
+  // AJ#6.5 — the ADR-0047 "Enable automated trading" authorization, owned by strategy selection (Option B).
+  // This is the customer's EXPLICIT consent for automated execution on their hosted workspace; it does NOT
+  // arm any strategy and creates no order (the strategy-arm is a separate, deliberate action). On success we
+  // re-read the authoritative journey (never trust the click), which advances the card to the arm step.
+  const handleAuthorizeExecution = async () => {
+    setAuthorizingExec(true);
+    try {
+      const journey = await authorizeExecution();
+      setHostedJourney(journey);
+      setAlert(t(lang, "marketplace.authorizeSuccess"));
+      setAlertType("success");
+    } catch (err) {
+      const e = err as { message?: string };
+      if ((e?.message || "").toLowerCase().includes("unauthorized")) {
+        setAlert(t(lang, "marketplace.alertSessionExpired"));
+        setAlertType("error");
+        setIsAuthed(false);
+        return;
+      }
+      setAlert(t(lang, "marketplace.authorizeFailed"));
+      setAlertType("error");
+    } finally {
+      setAuthorizingExec(false);
+    }
+  };
+
   const handleSignalCopyArm = async (strategyId: string, accountId: number) => {
     setArmBusy((b) => ({ ...b, [strategyId]: true }));
     try {
@@ -930,6 +981,16 @@ export default function StrategyMarketplacePage() {
                             isAuthed={isAuthed}
                             arming={arming}
                             onArm={(id) => handleSignalCopyArm(strategy.id, id)}
+                            // AJ#6.5 — hosted-workspace context: lets the Wayond card OWN the forward path
+                            // (authorize → arm) instead of bouncing to /onboarding/hosted. `hostedComplete`
+                            // (strategy_eligible = journey phase WORKSPACE_READY) is the SAME onboarding-complete
+                            // threshold at which hosted onboarding's "Choose Strategy" sends the customer here,
+                            // so ownership covers the whole band (incl. CONNECTED-not-yet-EXECUTION_READY).
+                            hostedComplete={!!hostedJourney?.strategy_eligible}
+                            hostedAuthorized={!!hostedJourney?.execution_authorized}
+                            canEnableAutomatedTrading={!!hostedJourney?.can_enable_automated_trading}
+                            authorizing={authorizingExec}
+                            onAuthorize={handleAuthorizeExecution}
                           />
                         )}
                       </div>
