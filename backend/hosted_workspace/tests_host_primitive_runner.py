@@ -358,8 +358,10 @@ class ObserverScheduledTaskCmdletTests(unittest.TestCase):
         self.assertEqual(sorted({b for b in raw if b > 127}), [], "Relaunch-GuvfxTerminal.ps1 has non-ASCII bytes")
         src = raw.decode("ascii")
         code = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
-        # Customer Zero refused + identity/path confinement present.
-        self.assertIn("RESERVED_ACCOUNT_IDS = @(1)", code)
+        # Customer Zero (1) AND the account-18 control refused + identity/path confinement present. (AJ#6.4
+        # reserved account 18 by explicit identity, symmetric with Customer Zero; this assertion tracks the
+        # deployed host artefact.)
+        self.assertIn("RESERVED_ACCOUNT_IDS = @(1, 18)", code)
         self.assertIn("refusing_reserved_identity", code)
         self.assertIn("refusing_username_mismatch", code)
         self.assertIn("refusing_terminal_root_mismatch", code)
