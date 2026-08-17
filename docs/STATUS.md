@@ -14,6 +14,34 @@
 
 ## Execution workstream log
 
+- **2026-08-17 — FINAL BETA DEPLOYMENT + CLEAN ACCEPTANCE RESET: AJ#4/AJ#5/AJ#5.1 onboarding UX deployed to
+  prod (frontend-only, DARK), support@ purged #5 (DB + host), Customer Zero byte-identical, platform pristine
+  for Acceptance Journey #4. 🟢** Merged `feat/aj5-embedded-mt5-complete` → `main` **fast-forward-only** (no
+  squash, no merge commit): `e903354 → e7b6800`, 3 commits (`b90f106` AJ#4-width/keyboard-polish + `e102ce3`
+  AJ#5 embedded-MT5 framing/context-copy + `e7b6800` AJ#5.1 live wizard/timing/evidence), pushed, local==origin.
+  Pre-merge gate: `make check` GREEN (backend 4080, vitest 202, 0 lint errors, prod build compiled); forbidden-
+  content scan (localhost/preview/mock/debug/screenshots) clean. **Frontend-only deploy** (backend NOT rebuilt,
+  no migration): staged tracked source via `git archive e7b6800 frontend` → `docker build` (image
+  **`51df4fd3ab49`**, `GIT_COMMIT=e7b6800`; **the two `NEXT_PUBLIC_*` flag build-args omitted → flags stay
+  false/DARK**) → `docker compose up -d --force-recreate --no-deps guvfx-frontend`. Live build-info
+  `gitCommit=e7b6800`, flags both `false`; guvfx.com / /onboarding/hosted / api all `200`. Rollback anchor
+  image `rollback-preFINALBETA-e903354` (= b1154651). **Golden STOP-check byte-identical ×3**
+  (`STRUCTURAL_SHA256=9968715679037a7c…`): BEFORE == AFTER-deploy == POST-purge — CZ acct#1 identity + routing
+  (asn7 wayond + asn8 ti_signals AUTO_SHADOW) + ExecutionControl levers + node topology unchanged; trades 523.
+  **support@ purge #5** (resolved dynamically by email → User 26 / account 23 / workspace 10 / host id
+  guvfx_u_23): DB **atomic self-verifying** transaction — deleted the PROTECT-ing `AccountProvisioning` first,
+  then the User → 19 rows cascaded (TradingAccount, HostedMt5Workspace, WorkspaceTransition, 9
+  ProvisioningStageTiming, UserSubscriptionState, UserOnboardingState, EmailVerificationToken, 2
+  ComponentHealth); 7 `AuditEvent` **preserved** (user SET_NULL). Host: killed 13 guvfx_u_23 processes, logged
+  off session 7, removed `GuvFX_HostedObserver_23` task + `guvfx_mt5_23` RemoteApp + local user + profile.
+  **Verified:** support ABSENT (DB + host), no orphan workspace/provisioning/runtime/observer/session/process;
+  users 5→4, accounts 3→2 (ids `[1, 18]`); Node 2 bridge `Running`, hosted executor `:8790` listening, shared
+  observer `GuvFX_HostedObserver` Ready, beta slots `GuvFXBetaRuntime-1..4` Ready, `run_hosted_observations`
+  cron active; `/register` → `200`. Pre-mutation backup `preFINALBETA-support-20260817T064447Z.sql.gz`
+  (GZIP_OK). Preserved: CZ acct#1/`guvfx_u_1`, acct#18/`guvfx_u_18`, `guvfx_u_6` orphan (unchanged), Node 2 /
+  `:8788` / `:8789` / `:8790`. **Platform pristine — next action = Nuno performs Acceptance Journey #4 from
+  REGISTER.**
+
 - **2026-08-16 — BETA EVE FINAL RECONCILIATION: AJ#4 onboarding-embed deployed, support@ purged (DB + host),
   Customer Zero byte-identical, platform pristine for a fresh acceptance run. 🟢** One controlled reconciliation
   before Nuno's fresh end-to-end acceptance journey. **Repo:** verified `feat/aj4-onboarding-embed` = the single
