@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-08-17 — AJ#6.3 EXECUTION-AUTHORIZATION + SHAPE-3 RECOVERY: DEPLOYED (DARK) · Shape-3 cert FAIL (real
+  LiveUpdate defect found) · recovery DISARMED · Customer Zero byte-identical. 🟠** Merged
+  `feat/aj63-execution-authorization` → `main` FF (`53aa774`; ADR-0047 explicit-authorization, `RELAUNCH_TERMINAL`
+  primitive, Shape-3 `capability_recovery.py`, Enable-automated-trading UX). Deployed backend (migrations
+  `0008`+`0009`, additive) + frontend (`gitCommit=53aa774`, `NEXT_PUBLIC_*` DARK) + host `RELAUNCH_TERMINAL`
+  bundle (ParseFile 12/12, `py_compile` 0, executor re-listening `:8790`). **HARD GATE (ADR-0047 live) PASS**:
+  `AUTOARM_candidates=0`, nothing authorized/armed, reaching `EXECUTION_READY` cannot auto-arm.
+  **Shape-3 certification on support@/acct 24 = FAIL**: armed `HOSTED_CAPABILITY_RECOVERY_ENABLED`; the edge
+  fired (`rec_count=1`), `apply_autotrading_config` re-asserted `common.ini Enabled=1` ✓, but
+  `Relaunch-GuvfxTerminal.ps1` launched `terminal64.exe /portable` into a **pending MetaTrader LiveUpdate** →
+  the *updater* ran instead of the trading terminal, closing a healthy connected terminal and regressing
+  acct 24 to `terminal_not_running`. Loop-safety held (freshness gate stopped further attempts; no runaway).
+  **Disarmed** the flag (`beta.env` restored byte-identical to `beta.env.preAJ63.bak`; recovery DARK).
+  **Safety architecture held**: `execution_authorized_at=NULL`, `execution_enabled=False`, ARMED=False, 0
+  jobs/assignments/orders, `any_authorized=0`/`any_armed=0`; **CZ Golden byte-identical**
+  `STRUCTURAL_SHA256=b57182b4bc0295350bda810705267be85a3df682d60097ddd818629ba5609e61` (AFTER==BEFORE), acct 18
+  untouched. Rollback images `rollback-preAJ63` (backend `63ac3694`, frontend `51df4fd3`). **Enable automated
+  trading NOT clicked; no customer authorization occurred.** Full evidence:
+  `docs/operations/hosted-workspace/AJ63_SHAPE3_CERTIFICATION_RESULT.md`. **Fix required before re-arm:**
+  LiveUpdate-safe relaunch (see KNOWN_ISSUES + result doc §7). Follow-up: support@ RemoteApp reconnect to
+  restore acct 24's terminal.
+
 - **2026-08-17 — FINAL BETA DEPLOYMENT + CLEAN ACCEPTANCE RESET: AJ#4/AJ#5/AJ#5.1 onboarding UX deployed to
   prod (frontend-only, DARK), support@ purged #5 (DB + host), Customer Zero byte-identical, platform pristine
   for Acceptance Journey #4. 🟢** Merged `feat/aj5-embedded-mt5-complete` → `main` **fast-forward-only** (no

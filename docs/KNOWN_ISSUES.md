@@ -2,6 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🔴 P0 (found 2026-08-17, prod cert) — AJ#6.3 Shape-3 relaunch is NOT LiveUpdate-safe (regresses a connected terminal)
+
+`terminal_provisioning/windows/Relaunch-GuvfxTerminal.ps1` (host op `RELAUNCH_TERMINAL`, driven by
+`hosted_workspace/capability_recovery.py`) gracefully closes the tenant's running `terminal64.exe`, then
+relaunches `terminal64.exe /portable`. When the portable MT5 has a **pending MetaTrader LiveUpdate**, that
+launch starts the **updater** (`...\liveupdate\terminal64.exe /update`), not the trading terminal — so the
+recovery **closes a healthy, connected, algo-disabled terminal and does not bring it back**, regressing the
+workspace to `terminal_not_running`. Proven live on support@/acct 24 (2026-08-17): terminal log shows
+`Terminal exit code 0` → `LiveUpdate start ...\liveupdate\...\ /update` → updater exits; observer flips
+`applied=1→0`. Loop-safety limited blast radius (freshness gate stopped further attempts; `rec_count` capped at
+1). **Flag `HOSTED_CAPABILITY_RECOVERY_ENABLED` is now DARK** — do **not** re-arm until fixed. Repro: portable
+MT5 with a pending LiveUpdate, then invoke Shape-3 recovery. Fix: detect/complete/contain LiveUpdate before
+relaunch (prior art `apply_liveupdate_containment`); verify the reappeared process is the *trading* terminal
+(cmd line has no `\liveupdate\` / `/update`) and reaches `trade_allowed=True` before reporting success; emit
+`relaunch_hit_liveupdate` fail-closed otherwise. Full evidence:
+`docs/operations/hosted-workspace/AJ63_SHAPE3_CERTIFICATION_RESULT.md`.
+
 ## 🟡 TEST FLAKE (found 2026-08-06) — `reliability.tests_operations_summary` fails within ~10 min after UTC midnight
 
 `SignalExecutionBlockTests` (e.g. `test_stuck_pending_flips_all_accounted`, and the sibling tests indexing
