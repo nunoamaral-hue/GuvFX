@@ -1483,6 +1483,87 @@ class StrategyViewSet(viewsets.ModelViewSet):
             "created": created, "enabled": True,
         }, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=["post"], url_path="signal-copy/get")
+    def signal_copy_get(self, request):
+        """AJ#7 "Get Strategy" — ACQUIRE/OWN a signal-copy strategy for the customer's OWN demo account
+        WITHOUT enabling execution. Creates (or returns) the AUTO_DEMO + signal_source + stage=LIVE assignment
+        in a NON-EXECUTING state (``is_active=False``) — the owned/draft state. NOTHING trades from this: the
+        auto-router requires ``is_active=True`` AND ADR-0047 authorized+enabled; an inactive assignment is
+        inert. Enabling is the separate, explicit ``signal-copy/arm`` (behind the full readiness/ADR-0047 gate).
+
+        Gated by ACQUISITION prerequisites only (self-serve flag + approved cohort + ownership + demo/active) —
+        NOT execution readiness, because nothing executes yet. Idempotent: if an assignment already exists it is
+        returned UNCHANGED (Get never enables a disabled strategy nor disables an enabled one — acquisition only).
+        """
+        marketplace_strategy_id = request.data.get("marketplace_strategy_id")
+        account_id = request.data.get("account_id")
+
+        if not _beta_self_serve_arm_enabled():
+            return Response({"status": "arming_disabled",
+                             "detail": "Getting strategies isn't available for this environment yet."},
+                            status=status.HTTP_409_CONFLICT)
+        if not _arm_cohort_approved(request.user):
+            _audit_arm(request, account=None, reason_code="not_pilot_approved", approved=False)
+            return Response({"status": "not_pilot_approved",
+                             "detail": "Strategies aren't available for your account yet. Please contact support."},
+                            status=status.HTTP_403_FORBIDDEN)
+        tpl, source = self._signal_copy_source(marketplace_strategy_id)
+        if not tpl:
+            return Response({"detail": "Unknown marketplace_strategy_id"}, status=status.HTTP_400_BAD_REQUEST)
+        if not source:
+            return Response({"detail": "not a signal-copy strategy"}, status=status.HTTP_400_BAD_REQUEST)
+        if not account_id:
+            return Response({"detail": "account_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        acc_qs = TradingAccount.objects.filter(id=account_id)
+        if not request.user.is_staff:
+            acc_qs = acc_qs.filter(user=request.user)
+        account = acc_qs.first()
+        if not account:
+            return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
+        if not (account.is_demo and account.is_active):
+            return Response({"status": "account_not_ready", "detail": "Account must be demo and active."},
+                            status=status.HTTP_409_CONFLICT)
+
+        template_name = tpl.get("name") or "Signal Copy"
+        tpl_filters = (tpl.get("defaults") or {}).get("filters") or {}
+        with transaction.atomic():
+            strategy = (Strategy.objects.filter(owner=request.user, name=template_name)
+                        .order_by("-id").first())
+            if strategy is None:
+                strategy = Strategy.objects.create(owner=request.user, name=template_name, filters=tpl_filters)
+            elif tpl_filters and strategy.filters != tpl_filters:
+                strategy.filters = tpl_filters
+                strategy.save(update_fields=["filters", "updated_at"])
+            # Acquire disabled. get_or_create is idempotent on (strategy, account) (unique_together). On an
+            # existing row we normalise ONLY the copy binding and NEVER touch is_active — Get must not enable a
+            # disabled strategy nor disable an enabled one.
+            assignment, created = StrategyAssignment.objects.select_for_update().get_or_create(
+                strategy=strategy, account=account,
+                defaults=dict(
+                    execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO, signal_source=source,
+                    stage=StrategyAssignment.STAGE_LIVE, is_active=False))
+            if not created:
+                changed = []
+                if assignment.execution_mode != StrategyAssignment.ExecutionMode.AUTO_DEMO:
+                    assignment.execution_mode = StrategyAssignment.ExecutionMode.AUTO_DEMO
+                    changed.append("execution_mode")
+                if assignment.signal_source != source:
+                    assignment.signal_source = source
+                    changed.append("signal_source")
+                if assignment.stage != StrategyAssignment.STAGE_LIVE:
+                    assignment.stage = StrategyAssignment.STAGE_LIVE
+                    changed.append("stage")
+                if changed:
+                    changed.append("updated_at")
+                    assignment.save(update_fields=changed)
+        if created:
+            log_assignment_created(request, assignment)
+        return Response({
+            "status": "owned", "marketplace_strategy_id": marketplace_strategy_id,
+            "signal_source": source, "assignment_id": assignment.id, "account_id": account.id,
+            "created": created, "enabled": bool(assignment.is_active),
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
     @action(detail=False, methods=["post"], url_path="signal-copy/toggle")
     def signal_copy_toggle(self, request):
         marketplace_strategy_id = request.data.get("marketplace_strategy_id")
