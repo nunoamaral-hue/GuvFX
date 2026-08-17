@@ -14,6 +14,29 @@
 
 ## Execution workstream log
 
+- **2026-08-18 — AJ#7.2 WAYOND JOURNEY NORMALIZATION: BUILT + reviewed, NOT deployed — STOP for Sponsor. 🟡**
+  Objective A (code, no deploy): the customer's ONE Wayond product now renders EXACTLY ONCE. My Strategies
+  (`strategies/page.tsx`) lifts the automated status/journey fetch to the parent and DEDUPES the generic
+  Strategy list by hiding the backing row whose id == new `signal_copy_status.strategy_id` — so the misleading
+  second "Wayond WIM Strategy — Active" entry is gone; the managed section carries a customer-facing lifecycle
+  chip (Setup required / Ready to enable / Enabled / Needs attention) instead of `Strategy.is_active` "Active".
+  Generic strategies keep their honest user-controlled Active/Inactive toggle. Ambiguous ownership (no single
+  `strategy_id`) FAILS OPEN to visibility — nothing is silently hidden. Configure (`configure/page.tsx`) now
+  self-updates: while genuinely PREPARING it polls readiness and transitions "getting ready" → "Ready to enable"
+  in place (no nav away/back), with a fail-safe that never downgrades on a transient miss; a workspace that will
+  NOT self-heal (journey failed to load, or terminal `WORKSPACE_UNAVAILABLE`) shows an honest "needs attention"
+  + Contact support instead of a false auto-update promise. Enable flow UNCHANGED (modal + ADR-0047 consent, no
+  auth on load, no separate authorization pages). NO migration (reuses StrategyAssignment). Branch
+  `feat/aj72-wayond-normalize` (`d46e109`→`00cee1a`→`06f1ae9`), NOT pushed, NOT deployed. `make check` green
+  (backend 4148 OK, lint 0 errors, build OK); full vitest 230. Adversarial review (6 lenses × verify, Workflow)
+  → 0 HIGH; 3 MEDIUM found + all FIXED (false auto-update promise for unavailable workspaces; a tautological
+  fail-safe test; missing ambiguous-branch `strategy_id==None` coverage) + the LOW initial-load "Active" flash.
+  Objective B (READ-ONLY live cert of the Sponsor's now-enabled Wayond): verdict **A — WAYOND LIVE AND
+  LISTENING** (assignment routable, auto-router targets acct 25, order-time gate intact). Zero prod mutation
+  this packet: no signal, no execution job, no order; the enabled Wayond assignment (id 10), Customer Zero
+  (acct 1) and acct 18 untouched. CZ Golden unchanged by construction (no prod writes) — last verified
+  `b57182b4…`. **STOP: Sponsor review; NO DEPLOY authorized in this packet.**
+
 - **2026-08-17 — AJ#6.5 FINAL STRATEGY-SELECTION / AUTHORIZATION LOOP: FIXED + DEPLOYED (frontend) + CERTIFIED on
   support@/acct 24 · Customer Zero byte-identical · STOP for Nuno. 🟢** Fixed a P0 reciprocal navigation loop:
   an EXECUTION_READY hosted customer bounced Marketplace(Wayond "Continue")→`/onboarding/hosted`→("Choose

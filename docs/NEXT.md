@@ -1,5 +1,17 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ AJ#7.2 Wayond journey normalization — BUILT, STOP for Sponsor (2026-08-18)
+Branch `feat/aj72-wayond-normalize` (`06f1ae9`), NOT pushed / NOT deployed. My Strategies renders the owned
+Wayond product ONCE (dedup by new `signal_copy_status.strategy_id`); Configure self-updates while preparing
+and shows honest "needs attention"+support when the workspace can't self-heal; Enable flow unchanged
+(ADR-0047). `make check` green, vitest 230, adversarial review 0 HIGH / 0 MEDIUM (3 MEDIUM found+fixed). No
+migration, zero prod mutation. Live cert of the Sponsor's enabled Wayond = **A (LIVE AND LISTENING)**.
+**ONE bounded next action → the Sponsor:** review the acceptance evidence and, if approved, authorise the
+frontend-only DARK deploy (build-args API base only; broker-connectivity/operations stay unset) — then FF-merge
+`feat/aj72-wayond-normalize`→main and deploy per the AJ#7.1 mechanics (backend needs the additive
+`strategy_id` status key, so backend+frontend both ship). Do NOT touch the enabled Wayond assignment (id 10),
+Customer Zero (acct 1) or acct 18.
+
 ## ▶ SUPERVISED_SINGLE_TENANT_BETA + autonomous arming — DARK (ADR-0044, 2026-08-14)
 Sponsor-authorised bounded interim posture so the FIRST end-to-end beta journey can reach EXECUTION_READY
 **without** the full `REMOTEAPP_ISOLATION_CERTIFIED` cert — fail-closed, single non-CZ demo tenant alone on a
