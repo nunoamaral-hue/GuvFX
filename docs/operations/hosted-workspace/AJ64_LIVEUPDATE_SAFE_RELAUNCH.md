@@ -93,8 +93,21 @@ DOWN. This is:
 The close→relaunch order cannot be reversed (MT5 constraint); the residual is accepted and recorded here rather
 than papered over.
 
-## 5. Certification
+## 5. Certification — PASS (2026-08-17, support@/account 24)
 
-Behavioural proof (already-staged update → containment → trading terminal restored → `trade_allowed=True` →
-`EXECUTION_READY`, while unarmed/unauthorised) is the AJ#6.4 on-host certification on support@/account 24
-(Phases 11-18). Static safety is enforced by the 23-test bar and the host ParseFile/ASCII gate.
+Deployed: backend from `882bb37` (rollback img `rollback-preAJ64`=`ae265f78`), host `.ps1` staged byte-identical
+(`f7493d14…`, host ParseFile PASS). The corrected relaunch was invoked through the signed executor for account
+24: `contained=True, relaunched=True, ok=True`. On the host the **stuck LiveUpdate updater was killed, the
+staged build-6090 payload purged, WebInstall Deny-write applied, and the actual trading terminal restored** —
+pid 2560 at `C:\GuvFX\accounts\24\terminal\terminal64.exe` (NOT the updater); terminal log
+`13:33:59 MetaTrader 5 x64 build 5833 started ... C:\GuvFX\accounts\24\terminal`. The observer then advanced
+account 24 to **`EXECUTION_READY` / `trade_allowed=True`**.
+
+Safety held throughout, incl. across armed auto-arm cycles: `execution_authorized_at=NULL`,
+`execution_enabled=False`, ARMED=False, 0 assignments, 0 `ExecutionJob`, 0 orders; global authorized/armed=0.
+Loop-safety: recovery did NOT re-fire (`capability_recovery_count` stable at 1; no relaunch churn; host pids
+unchanged). The read-model reports `can_enable_automated_trading=True` → the UI shows the explicit **Enable
+automated trading** control (NOT clicked). **Customer Zero Golden byte-identical**
+(`b57182b4bc0295350bda810705267be85a3df682d60097ddd818629ba5609e61`, AFTER==BEFORE); **account 18 untouched**
+(WAITING_FOR_LOGIN, `capability_recovery_count=0`). `HOSTED_CAPABILITY_RECOVERY_ENABLED` remains **armed** (the
+edge is now LiveUpdate-safe and certified). Static safety is enforced by the 22-test bar + host ParseFile/ASCII.

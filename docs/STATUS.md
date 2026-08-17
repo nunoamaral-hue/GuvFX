@@ -14,6 +14,27 @@
 
 ## Execution workstream log
 
+- **2026-08-17 — AJ#6.4 LIVEUPDATE-SAFE RELAUNCH: DEPLOYED + SHAPE-3 RE-CERTIFICATION PASS on support@/acct 24 ·
+  Customer Zero byte-identical · STOP for Nuno. 🟢** Fixed the AJ#6.3 defect (relaunch hit MetaTrader LiveUpdate).
+  `Relaunch-GuvfxTerminal.ps1` now applies the certified Variant-A LiveUpdate containment (kill own updater +
+  purge `%APPDATA%\MetaQuotes\WebInstall`+`Terminal\<hash>\liveupdate` + Deny-write for the tenant SID) BEFORE
+  relaunch, and accepts success only for the canonical trading terminal (fail-closed otherwise). **Three
+  adversarial-review rounds** (Workflow) found + fixed a HIGH confused-deputy (an early tenant-PowerShell cut —
+  **the host proved the tenant is under AppLocker deny-by-default, which both blocks tenant PowerShell AND
+  prevents a tenant creating a junction**; containment moved to LocalSystem-inline with reparse-rejection) and a
+  HIGH SACRED-invariant gap (**account 18 was not reserved** — now `_RESERVED_ACCOUNT_IDS=frozenset({1,18})` +
+  `.ps1 @(1,18)`). Merged FF→main `1b08358→24f1d7c→882bb37`; backend rebuilt (rollback `rollback-preAJ64`), host
+  `.ps1` staged byte-identical `f7493d14…` (ParseFile PASS). **Certification (Phases 11-18):** the corrected
+  relaunch restored acct 24's REAL trading terminal (pid 2560, not the updater) → observer → **EXECUTION_READY /
+  trade_allowed=True**, while `execution_authorized_at=NULL` / `execution_enabled=False` / ARMED=False / 0
+  assignments / 0 jobs / 0 orders — held through re-armed auto-arm cycles (auto-arm candidates=0 every cycle).
+  Loop-safety: recovery did not re-fire (`rec_count=1`), no restart loop (host pids stable). UI read-model
+  `can_enable_automated_trading=True` (Enable control shown, **NOT clicked**). **CZ Golden byte-identical**
+  `b57182b4…` (AFTER==BEFORE); **account 18 untouched** (rec_count=0). `HOSTED_CAPABILITY_RECOVERY_ENABLED` stays
+  **armed** (now LiveUpdate-safe + certified). Full evidence:
+  `docs/operations/hosted-workspace/AJ64_LIVEUPDATE_SAFE_RELAUNCH.md`. **STOP:** MT5 technically ready; GuvFX not
+  authorised — Nuno alone clicks Enable automated trading.
+
 - **2026-08-17 — AJ#6.3 EXECUTION-AUTHORIZATION + SHAPE-3 RECOVERY: DEPLOYED (DARK) · Shape-3 cert FAIL (real
   LiveUpdate defect found) · recovery DISARMED · Customer Zero byte-identical. 🟠** Merged
   `feat/aj63-execution-authorization` → `main` FF (`53aa774`; ADR-0047 explicit-authorization, `RELAUNCH_TERMINAL`

@@ -2,19 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
-## 🟢 RESOLVED IN CODE (2026-08-17, AJ#6.4) — LiveUpdate-safe relaunch
+## 🟢 RESOLVED + CERTIFIED (2026-08-17, AJ#6.4) — LiveUpdate-safe relaunch
 
-The P0 below is **fixed** on `main` by AJ#6.4: `Relaunch-GuvfxTerminal.ps1` now applies the certified Variant-A
-LiveUpdate containment (kill own updater + purge `%APPDATA%\MetaQuotes\WebInstall` + `Terminal\<hash>\liveupdate`
-+ Deny-write for the tenant SID) **before** relaunch, **run as the tenant** (Limited token — closes a HIGH
-confused-deputy an adversarial review found in the first cut), and accepts success only for the canonical trading
-terminal (fail-closed otherwise). Two adversarial-review rounds: 0 open HIGH/MEDIUM. Residual accepted
-architectural constraint (MT5 portable singleton ⇒ close-before-relaunch ⇒ a persistent relaunch failure
-transiently downs a CONNECTED terminal — fail-closed, bounded to one occurrence, self-recovering, retried once).
-`HOSTED_CAPABILITY_RECOVERY_ENABLED` stays DARK until AJ#6.4 is deployed + re-certified on support@/account 24.
-See `docs/operations/hosted-workspace/AJ64_LIVEUPDATE_SAFE_RELAUNCH.md`.
+The P0 below is **fixed and certified in production** by AJ#6.4 (`882bb37`). `Relaunch-GuvfxTerminal.ps1` applies
+the certified Variant-A LiveUpdate containment (kill own updater + purge `%APPDATA%\MetaQuotes\WebInstall` +
+`Terminal\<hash>\liveupdate` + Deny-write for the tenant SID) **before** relaunch, and accepts success only for
+the canonical trading terminal (fail-closed). Host reality: the tenant is under **AppLocker deny-by-default**, so
+containment runs **LocalSystem-inline** (the tenant cannot run PowerShell and cannot create a junction) with
+defence-in-depth reparse-rejection. Three adversarial rounds; fixed a HIGH confused-deputy and a HIGH SACRED-gap
+(account 18 now reserved: `_RESERVED_ACCOUNT_IDS=frozenset({1,18})`). **Certified on support@/account 24:** stuck
+updater killed, staged build-6090 purged, real trading terminal restored → EXECUTION_READY / trade_allowed=True,
+while unauthorised + unarmed (0 jobs/assignments/orders) through armed cycles; CZ Golden byte-identical; account
+18 untouched. `HOSTED_CAPABILITY_RECOVERY_ENABLED` is **armed** (now LiveUpdate-safe). Residual accepted
+constraint: MT5 portable singleton ⇒ close-before-relaunch ⇒ a *persistent* relaunch failure transiently downs a
+CONNECTED terminal — fail-closed, bounded to one occurrence, self-recovering, retried once. See
+`docs/operations/hosted-workspace/AJ64_LIVEUPDATE_SAFE_RELAUNCH.md`.
 
-## 🔴 P0 (found 2026-08-17, prod cert) — AJ#6.3 Shape-3 relaunch is NOT LiveUpdate-safe (regresses a connected terminal) — FIXED by AJ#6.4 (above)
+## ✅ CLOSED (2026-08-17) — AJ#6.3 Shape-3 relaunch was NOT LiveUpdate-safe — FIXED + CERTIFIED by AJ#6.4 (above)
 
 `terminal_provisioning/windows/Relaunch-GuvfxTerminal.ps1` (host op `RELAUNCH_TERMINAL`, driven by
 `hosted_workspace/capability_recovery.py`) gracefully closes the tenant's running `terminal64.exe`, then
