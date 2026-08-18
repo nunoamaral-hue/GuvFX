@@ -40,6 +40,7 @@ REQ_EXISTS = "exists"
 ALLOC_NO_CAPACITY = "no_node_capacity"
 ALLOC_NODE_NOT_DELIVERABLE = "node_not_deliverable"   # G12: node has capacity but no durable rdp_host
 ALLOC_CZ_NODE_FORBIDDEN = "cz_node_forbidden"         # ADR-0043 Addendum B: refuse a non-CZ tenant on a CZ node
+ALLOC_NODE_NOT_EXECUTION_OPERATIONAL = "node_not_execution_operational"  # ADR-0048: no execution-commissioned node
 ALLOC_ALREADY = "already_bound"
 ALLOC_OK = "allocated"
 CONFIRM_NOT_OWNER = "not_owner"
@@ -218,10 +219,18 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
         # in the single writer (``assign_workspace_execution_node``); here we skip forbidden candidates and
         # surface a DISTINCT reason so the driver/operator learns "provision a non-CZ host" rather than a
         # generic "no capacity". The single writer's raise is therefore never triggered from THIS path.
-        from hosted_workspace.flags import hosted_tenant_node_isolation_enabled
+        from hosted_workspace.flags import (hosted_execution_path_gate_enabled,
+                                             hosted_tenant_node_isolation_enabled)
         from hosted_workspace.tenant_isolation import forbidden_execution_node_ids, is_customer_zero_account
         _guard_on = hosted_tenant_node_isolation_enabled() and not is_customer_zero_account(ws.trading_account_id)
         _forbidden = forbidden_execution_node_ids() if _guard_on else set()
+        # ADR-0048 (DARK, default OFF): when ON, a hosted automated-execution account may be allocated ONLY to
+        # an execution-COMMISSIONED node (its bridge + a dedicated node-aware order worker are proven), so a
+        # future beta customer can never land on a node that cannot claim its orders. OFF ⇒ zero behaviour
+        # change (the current journey commissions the node's worker after allocation; the read model stays
+        # honest via execution_path_state). Customer Zero uses the legacy path and is exempt.
+        _exec_gate_on = (hosted_execution_path_gate_enabled()
+                         and not is_customer_zero_account(ws.trading_account_id))
         # Whether we still need to drive PROVISIONING → WAITING_FOR_LOGIN. Guarded on canonical == PROVISIONING
         # so a RETRY converges a workspace left stuck at PROVISIONING (advance failed after a prior bind) yet
         # NEVER regresses a workspace that has already progressed (e.g. CONNECTED) back toward login.
@@ -238,6 +247,7 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
             candidate = None
             capacity_but_undeliverable = False   # G12: distinguish "no room" from "room but no rdp_host"
             forbidden_blocked = False            # a viable node was refused SOLELY for CZ co-residency
+            exec_not_operational = False         # ADR-0048: a viable node lacks a commissioned execution path
             for node in (TerminalNode.objects.select_for_update()
                          .filter(status=TerminalNode.Status.ACTIVE).order_by("id")):
                 if node.pk in _forbidden:          # Customer Zero node — never for a non-CZ tenant
@@ -248,14 +258,21 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
                 if not _node_deliverable(node):    # G12: no durable rdp_host → not deliverable, fail closed
                     capacity_but_undeliverable = True
                     continue
+                if _exec_gate_on:                  # ADR-0048: require a commissioned execution path
+                    from execution.node_execution import node_execution_operational
+                    if not node_execution_operational(node).operational:
+                        exec_not_operational = True
+                        continue
                 candidate = node
                 break
             if candidate is None:
                 # Fail closed. Prefer the CZ-forbidden reason when the ONLY blocker was a Customer Zero node
                 # (operator action = "provision a separate non-CZ host"), distinct from "buy capacity" /
-                # "set rdp_host" (G12).
-                if forbidden_blocked and not capacity_but_undeliverable:
+                # "set rdp_host" (G12) / "commission the node's execution path" (ADR-0048).
+                if forbidden_blocked and not capacity_but_undeliverable and not exec_not_operational:
                     return AllocResult(False, ALLOC_CZ_NODE_FORBIDDEN)
+                if exec_not_operational and not capacity_but_undeliverable:
+                    return AllocResult(False, ALLOC_NODE_NOT_EXECUTION_OPERATIONAL)
                 return AllocResult(False,
                                    ALLOC_NODE_NOT_DELIVERABLE if capacity_but_undeliverable else ALLOC_NO_CAPACITY)
             if _forbidden and candidate.pk in _forbidden:

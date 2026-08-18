@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-08-18 — ADR-0048 NODE COMMISSIONING + PROVISIONING GATE: BUILT (code/test only, DARK) — STOP for
+  Sponsor. 🟡** Closes the one gap disclosed in the prior return: `node_execution_operational()` existed but
+  was not integrated into the automatic hosted provisioning / node-commissioning lifecycle. Branch
+  `feat/node2-execpath-readiness` (extends `8a31d89`), NOT pushed / NOT deployed, NO prod mutation, NO
+  activation, NO order. New `execution/node_commission.py` + command `commission_execution_node` — a
+  **server-derived, deterministic, idempotent, DRY-RUN-by-default** node-commission that registers/reuses a
+  *dedicated node-aware* `WorkerIdentity` for **exactly one** node and verifies `node_execution_operational`;
+  identical for Node 2/3/4 (no account-specific code); refuses Customer Zero nodes, the legacy identity,
+  cross-node identity reuse, and — **hard ordering, enforced in code** — any node with un-reconciled stale
+  `PENDING PLACE_ORDER` jobs (`STALE_ORDERS_PRESENT`). Worker secret from `$GUVFX_NODE_WORKER_SECRET` only.
+  Provisioning insertion point = `hosted_workspace.provisioning.allocate_workspace_node` behind DARK
+  `HOSTED_EXECUTION_PATH_GATE_ENABLED` (default OFF): an automated hosted account (never CZ) may only bind an
+  execution-operational node, else fail-closed `ALLOC_NODE_NOT_EXECUTION_OPERATIONAL` (gate OFF = legacy
+  behaviour byte-identical). Stable read-model `execution_path_state(account)` → `{execution_path_ready,
+  execution_path_reason}` (bounded vocab: ready/no_worker/worker_stale/worker_revoked/bridge_unhealthy/
+  node_inactive/route_invalid/not_hosted/expected_dark/indeterminate). A commissioned node **authorizes NO
+  customer and places NO order** (ADR-0047 tier B + live bridge tier D unchanged). +19 tests
+  (`tests_node_commissioning.py`: future-beta E2E can't reproduce the missing-worker failure, CZ/legacy/
+  cross-node/stale isolation, allocation gate OFF/ON, read-model reasons). ADR-0048 + Node-2 runbook amended
+  to separate NODE COMMISSIONING from CUSTOMER EXECUTION AUTHORIZATION. Supersedes the "Follow-up eng: wire
+  `node_execution_operational` into allocation" line below.
+
 - **2026-08-18 — ADR-0048 EXECUTION-PATH READINESS + STALE PRE-ACTIVATION RECONCILER: BUILT (code/test only,
   DARK) — STOP for Sponsor. 🟡** Fixes the Node-2 root-cause CLASS from the P0 forensic: the platform
   conflated four readiness tiers and treated a node with `status=ACTIVE` as executable even with no worker to

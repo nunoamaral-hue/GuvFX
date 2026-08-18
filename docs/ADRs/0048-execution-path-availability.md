@@ -75,6 +75,47 @@ real dispatch evidence), deriving the new signal fail-closed from tier C — nev
 may remain a statement of customer *intent*, but the read model must not imply orders execute when
 the execution path is unavailable.
 
+## Node COMMISSIONING vs customer EXECUTION AUTHORIZATION (amendment, 2026-08-18)
+
+The forensic gap was not "one customer had no worker" — it was that **execution infrastructure was
+implicitly expected to appear as a side-effect of customer provisioning**. The correction makes the
+execution PATH a property the **node** must earn once, separately from any customer:
+
+* **NODE COMMISSIONING** (`execution.node_commission.commission_execution_node`, command
+  `commission_execution_node`) makes a `TerminalNode` fit for automated service: it registers/reuses a
+  **dedicated, node-aware** `WorkerIdentity` authorized for *exactly that node*, optionally records the
+  node's order-bridge URL, and verifies `node_execution_operational`. It is **server-derived and
+  identical for Node 2, 3, 4, …** (no account-specific code), **deterministic and idempotent**, and
+  **DRY-RUN by default**. A commissioned node **authorises NO customer and places NO order.** It
+  refuses Customer Zero nodes (`forbidden_execution_node_ids`), refuses the shared legacy identity,
+  refuses cross-node identity reuse, and — **hard ordering, enforced in code** — refuses to commission
+  a node that still has un-reconciled stale `PENDING PLACE_ORDER` jobs (`STALE_ORDERS_PRESENT`), so a
+  node can never become claimable *before* its historical orders are reconciled. The worker secret is
+  read from `$GUVFX_NODE_WORKER_SECRET` only (never a CLI arg, never logged).
+
+* **CUSTOMER EXECUTION AUTHORIZATION** (ADR-0047, tier B) is unchanged and remains per-customer: a
+  commissioned node does not enable, arm, or authorize any customer strategy. Order authorization
+  (tier D, the live bridge) is likewise untouched.
+
+**Provisioning integration (insertion point).** The single, safest insertion point is
+`hosted_workspace.provisioning.allocate_workspace_node` — the one place node selection happens
+(`request_hosted_workspace → allocate_workspace_node → prepare_hosted_slot → broker login → readiness`).
+Under a new DARK flag `HOSTED_EXECUTION_PATH_GATE_ENABLED` (default OFF), an **automated** hosted
+account (never Customer Zero) may only be allocated to a node for which `node_execution_operational`
+is TRUE; otherwise allocation **fails closed** with `ALLOC_NODE_NOT_EXECUTION_OPERATIONAL` and binds
+no node. With the flag OFF the legacy allocation is byte-for-byte unchanged. The gate is DARK because
+the current beta journey activates a node's bridge/worker *per slot inside* `prepare_hosted_slot`
+(i.e. after allocation); until nodes are commissioned up-front, `execution_path_state` keeps the
+read-model honest and the operator arms the gate once commissioning precedes allocation. Tier A
+(canonical `EXECUTION_READY`) is deliberately **not** overloaded — MT5 readiness, customer
+authorization, execution-path readiness and order authorization stay four distinct questions.
+
+**Read-model.** `execution.node_execution.execution_path_state(account)` exposes a stable internal
+`{execution_path_ready, execution_path_reason}` with a bounded reason vocabulary (`ready`, `no_worker`,
+`worker_stale`, `worker_revoked`, `bridge_unhealthy`, `node_inactive`, `route_invalid`, `not_hosted`,
+`expected_dark`, `indeterminate`) — the basis a future UX packet uses to distinguish "strategy enabled
+but execution temporarily unavailable" from genuinely live, without redesigning customer UX now.
+
 ## Invariants preserved
 
 * ADR-0047 (explicit customer authorization) and the live order-time gate (D) are **unchanged and

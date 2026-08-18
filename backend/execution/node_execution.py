@@ -411,3 +411,68 @@ def scan_execution_path_health() -> list[dict]:
     except Exception as exc:
         findings.append({"code": "SCAN_INDETERMINATE", "error": type(exc).__name__, "severity": "warning"})
     return findings
+
+
+# --------------------------------------------------------------------------------------------------
+# Normalised internal read-model state (ADR-0048 req 5) — a stable ``(ready, reason)`` an ops surface
+# or a FUTURE customer UX can consume to honestly distinguish "strategy enabled but execution
+# temporarily unavailable" from "genuinely live/executable". This NEVER lies (fail-closed) and NEVER
+# authorises an order.
+# --------------------------------------------------------------------------------------------------
+# Stable reason vocabulary (a superset of the packet's minimum): the read model must not surface an
+# unstable internal EP_* code to consumers.
+EXECUTION_PATH_REASONS = (
+    "ready", "no_worker", "worker_stale", "worker_revoked", "bridge_unhealthy",
+    "node_inactive", "route_invalid", "not_hosted", "expected_dark", "indeterminate",
+)
+
+
+def execution_path_state(account) -> dict:
+    """Return ``{"execution_path_ready": bool, "execution_path_reason": <stable reason>}`` for an
+    account. READ-ONLY, fail-closed, never an order authority. Maps the internal EP_* codes to the
+    stable ``EXECUTION_PATH_REASONS`` vocabulary and refines ``no_worker`` → ``worker_revoked`` when
+    the only node-aware worker for the account's node is REVOKED (an honest distinct cause)."""
+    try:
+        r = evaluate_execution_path_readiness(account)
+        reason = _normalise_reason(r.reason_code)
+        if reason == "no_worker":
+            node = getattr(account, "terminal_node", None)
+            if node is not None and _node_has_revoked_worker_only(node):
+                reason = "worker_revoked"
+        return {"execution_path_ready": bool(r.ready), "execution_path_reason": reason}
+    except Exception:
+        return {"execution_path_ready": False, "execution_path_reason": "indeterminate"}
+
+
+def _normalise_reason(ep_code: str) -> str:
+    if ep_code == "EP_READY":
+        return "ready"
+    if ep_code == "EP_NO_ELIGIBLE_WORKER":
+        return "no_worker"
+    if ep_code == "EP_WORKER_STALE":
+        return "worker_stale"
+    if ep_code in ("EP_BRIDGE_UNHEALTHY", "EP_BRIDGE_UNOBSERVED", "EP_BRIDGE_UNCONFIGURED"):
+        return "bridge_unhealthy"
+    if ep_code == "EP_NODE_NOT_ACTIVE":
+        return "node_inactive"
+    if ep_code == "EP_EXPECTED_DARK":
+        return "expected_dark"
+    if ep_code == "EP_NOT_HOSTED":
+        return "not_hosted"
+    if ep_code and (ep_code.startswith("EP_ROUTE") or ep_code in ("EP_NODE_UNBOUND", "EP_NODE_NO_HOSTNAME")):
+        return "route_invalid"
+    return "indeterminate"
+
+
+def _node_has_revoked_worker_only(node) -> bool:
+    from execution.auth import LEGACY_WORKER_ID
+    from execution.models import WorkerIdentity
+
+    hostname = getattr(node, "hostname", None)
+    if not hostname:
+        return False
+    for wi in WorkerIdentity.objects.exclude(worker_id=LEGACY_WORKER_ID):
+        nodes = (wi.worker_permissions or {}).get("authorized_nodes") or []
+        if hostname in nodes and wi.status == WorkerIdentity.Status.REVOKED:
+            return True
+    return False

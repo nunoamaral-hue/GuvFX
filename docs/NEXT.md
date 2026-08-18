@@ -5,14 +5,18 @@ Branch `feat/node2-execpath-readiness` (`fad465f`), NOT pushed / NOT deployed, D
 the Node-2 root-cause class: separates MT5 runtime / customer authorization / execution-path availability /
 order authorization (ADR-0048). New read-only concept-C surface + `WorkerIdentity.last_seen` (mig 0031) +
 `node_execution_operational` gate + `scan_execution_path_health`; stale reconciler cancels PENDING→FAILED +
-closes plans to release the exposure cascade (refuses CZ + acct 18). 31 tests + `make check` green. Live
+closes plans to release the exposure cascade (refuses CZ + acct 18). Now also integrated into provisioning:
+`execution/node_commission.py` + `commission_execution_node` command (dedicated node-aware worker + verify
+operational; refuses CZ/legacy/cross-node/stale) and DARK `HOSTED_EXECUTION_PATH_GATE_ENABLED` gating
+`allocate_workspace_node` to an execution-operational node (fail-closed). 50 tests + `make check` green. Live
 bridge gate + ADR-0047 unchanged.
 **ONE bounded next action → the Sponsor (Red / host-gated):** decide whether to (a) run the stale reconciler
 in prod for acct 25 (releases the current `account_exposure_exceeded` cascade — a live bug today; places no
-order), and/or (b) proceed with the full Node-2 activation + first-fill per
+order), then (b) COMMISSION node 2 (`commission_execution_node --apply`; infrastructure only — no customer,
+no order), and finally (c) AUTHORIZE the customer + start the live worker/bridge for the first-fill per
 `docs/operations/hosted-workspace/NODE2_EXECUTION_ACTIVATION_RUNBOOK.md` (arms live dispatch — fires the next
-real signal). Follow-up eng: wire `node_execution_operational` into `allocate_workspace_node`/`prepare_hosted_slot`
-as a hard commission gate; add the customer-facing EXECUTION-PATH tier (future UX packet).
+real signal). Follow-up eng (optional): arm `HOSTED_EXECUTION_PATH_GATE_ENABLED` once nodes are commissioned
+up-front; add the customer-facing EXECUTION-PATH tier (future UX packet).
 
 ## ▶ AJ#7.2.1 Wayond journey normalization — DEPLOYED to production (2026-08-18)
 FF-merged → main `4ddb211` (pushed, CI GREEN); backend `8d1177449218` + frontend `374a51d4d5b0` (DARK),

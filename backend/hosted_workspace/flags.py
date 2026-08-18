@@ -265,3 +265,17 @@ def hosted_delivery_lifecycle_enabled() -> bool:
     ``observe`` returning fail-closed). Grants NO order authority: the per-job identity pin + the order-time
     bridge gate stay authoritative, and delivery-state remains read-model-only (it can never place an order)."""
     return _flag("HOSTED_DELIVERY_LIFECYCLE_ENABLED")
+
+
+def hosted_execution_path_gate_enabled() -> bool:
+    """ADR-0048 — node EXECUTION-PATH allocation gate (DARK, default OFF). When OFF, node allocation
+    (``provisioning.allocate_workspace_node``) behaves EXACTLY as before — the current beta journey
+    allocates a node and commissions its execution path (bridge + dedicated worker) afterwards, and the
+    read model stays honest via ``node_execution.execution_path_state`` (execution_path_ready=false with a
+    reason until commissioned). When ON, allocation for a hosted automated-execution account REQUIRES an
+    execution-operational node (``node_execution.node_execution_operational``) and FAILS CLOSED
+    (``ALLOC_NODE_NOT_EXECUTION_OPERATIONAL``) if none exists — so once the operator has commissioned the
+    fleet's nodes, an automated customer can never be allocated to a node that cannot claim its orders.
+    Grants NO order authority and arms NO customer; the per-job pin + order-time bridge gate stay sole
+    authority (ADR-0048 keeps NODE COMMISSIONING and CUSTOMER EXECUTION AUTHORIZATION distinct)."""
+    return _flag("HOSTED_EXECUTION_PATH_GATE_ENABLED")
