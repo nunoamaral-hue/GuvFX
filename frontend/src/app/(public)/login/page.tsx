@@ -6,6 +6,9 @@ import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
 import { LanguageDropdown } from "@/components/LanguageDropdown";
 import { apiFetch } from "@/lib/api";
+import { customerSafeError } from "@/lib/customer-safe-error";
+
+type SetupStatus = { next_route?: string };
 
 /**
  * Validates returnTo parameter for safe redirect.
@@ -88,8 +91,17 @@ export default function LoginPage() {
 
       setSuccess(t(lang, "login.success"));
       
-      // Post-login redirect: use validated returnTo or default to /dashboard
-      const redirectPath = returnTo || "/dashboard";
+      // A deliberate returnTo wins. Otherwise resume the first incomplete durable setup stage so a
+      // returning customer never has to rediscover provisioning, marketplace, or enablement from Dashboard.
+      let redirectPath = returnTo || "/dashboard";
+      if (!returnTo) {
+        try {
+          const setup = await apiFetch<SetupStatus>("/api/onboarding/setup-status/");
+          if (setup?.next_route?.startsWith("/")) redirectPath = setup.next_route;
+        } catch {
+          // Login succeeded. Setup routing is an enhancement, so fail safely to Dashboard.
+        }
+      }
       
       // Small delay to show message, then redirect
       setTimeout(() => {
@@ -97,11 +109,7 @@ export default function LoginPage() {
       }, 700);
     } catch (err: unknown) {
       console.error(err);
-      const message =
-        err instanceof Error
-          ? err.message
-          : t(lang, "login.errorDefault");
-      setError(message);
+      setError(customerSafeError(err, t(lang, "login.errorDefault")));
     } finally {
       setLoading(false);
     }
@@ -120,9 +128,10 @@ export default function LoginPage() {
         fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
       }}
     >
-      <div style={{ flex: 1, display: "flex" }}>
+      <div className="login-layout" style={{ flex: 1, display: "flex", minWidth: 0 }}>
       {/* Left panel */}
       <div
+        className="login-hero"
         style={{
           flex: 1,
           display: "flex",
@@ -166,7 +175,7 @@ export default function LoginPage() {
             {t(lang, "login.subtitle")}
           </p>
 
-          <div style={{ marginTop: "2.5rem", display: "flex", gap: "1rem", alignItems: "center" }}>
+          <div className="login-actions" style={{ marginTop: "2.5rem", display: "flex", gap: "1rem", alignItems: "center" }}>
             <button
               style={{
                 padding: "0.9rem 2.4rem",
@@ -209,6 +218,7 @@ export default function LoginPage() {
 
       {/* Right panel */}
       <div
+        className="login-form-wrap"
         style={{
           flex: 1,
           borderLeft: "1px solid rgba(255,255,255,0.05)",
@@ -219,6 +229,7 @@ export default function LoginPage() {
         }}
       >
         <div
+          className="login-panel"
           id="login-panel"
           style={{
             width: "100%",
@@ -413,6 +424,21 @@ export default function LoginPage() {
       </div>
       </div>
       <LegalFooter lang={lang} />
+      <style>{`
+        @media (max-width: 760px) {
+          .login-layout { flex-direction: column; }
+          .login-hero { padding: 1.5rem 1rem !important; }
+          .login-hero h1 { font-size: 2.35rem !important; }
+          .login-actions { flex-wrap: wrap; gap: 0.65rem !important; margin-top: 1.25rem !important; }
+          .login-actions button { padding: 0.7rem 1.15rem !important; }
+          .login-form-wrap {
+            border-left: 0 !important;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            padding: 1.25rem 1rem 2rem !important;
+          }
+          .login-panel { max-width: none !important; padding: 1.25rem !important; box-sizing: border-box; }
+        }
+      `}</style>
     </div>
   );
 }

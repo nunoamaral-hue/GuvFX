@@ -6,6 +6,7 @@ import { apiFetch } from "@/lib/api";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
 import { LanguageDropdown } from "@/components/LanguageDropdown";
+import { customerSafeError } from "@/lib/customer-safe-error";
 
 type RegisterResponse = { id: number; email: string; username: string };
 
@@ -53,7 +54,7 @@ export default function RegisterPage() {
     const fn = firstName.trim();
     const ln = lastName.trim();
     if (!fn || !ln) {
-      setError("First name and last name are required.");
+      setError(lang === "ja" ? "姓と名を入力してください。" : "First name and last name are required.");
       return;
     }
     if (password.length < 8) {
@@ -72,7 +73,14 @@ export default function RegisterPage() {
       });
       router.push("/onboarding");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : t(lang, "register.errorDefault"));
+      setError(customerSafeError(err, t(lang, "register.errorDefault"), [
+        {
+          match: /(already exists|already registered|unique)/i,
+          message: lang === "ja"
+            ? "このメールアドレスまたはユーザー名は既に登録されています。ログインするか、別の情報を入力してください。"
+            : "That email address or username is already registered. Sign in or use different details.",
+        },
+      ]));
       setLoading(false);
     }
   };
@@ -80,7 +88,7 @@ export default function RegisterPage() {
   return (
     <div style={pageStyle}>
       {/* ── Top bar ── */}
-      <header style={topBarStyle}>
+      <header className="register-topbar" style={topBarStyle}>
         <div style={logoStyle} onClick={() => router.push("/")}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ab3ff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <polygon points="12 2 2 7 12 12 22 7 12 2" />
@@ -98,10 +106,10 @@ export default function RegisterPage() {
       </header>
 
       {/* ── Wizard ── */}
-      <main style={mainStyle}>
-        <div style={wizardStyle}>
+      <main className="register-main" style={mainStyle}>
+        <div className="register-wizard" style={wizardStyle}>
           {/* Left: Step rail */}
-          <aside style={railStyle}>
+          <aside className="register-rail" style={railStyle}>
             <div style={railHeaderStyle}>
               <span style={railLabelStyle}>Setup</span>
               <span style={railCountStyle}>1 / 5</span>
@@ -134,7 +142,7 @@ export default function RegisterPage() {
           </aside>
 
           {/* Right: Form surface */}
-          <section style={formSurfaceStyle}>
+          <section className="register-form" style={formSurfaceStyle}>
             {/* Step badge */}
             <span style={stepBadgeStyle}>Step 1 of 5</span>
 
@@ -152,7 +160,7 @@ export default function RegisterPage() {
                 <input id="email" type="email" required placeholder={t(lang, "register.emailPlaceholder")} value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} />
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem", marginBottom: "1.1rem" }}>
+              <div className="register-two-col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem", marginBottom: "1.1rem" }}>
                 <div>
                   <label htmlFor="firstName" style={labelStyle}>First name</label>
                   <input id="firstName" type="text" required placeholder="First name" value={firstName} onChange={(e) => setFirstName(e.target.value)} style={inputStyle} />
@@ -163,7 +171,7 @@ export default function RegisterPage() {
                 </div>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem", marginBottom: "1.1rem" }}>
+              <div className="register-two-col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem", marginBottom: "1.1rem" }}>
                 <div>
                   <label htmlFor="password" style={labelStyle}>{t(lang, "register.password")}</label>
                   <input id="password" type="password" required placeholder={t(lang, "register.passwordPlaceholder")} value={password} onChange={(e) => setPassword(e.target.value)} style={inputStyle} />
@@ -202,6 +210,16 @@ export default function RegisterPage() {
       </main>
 
       <LegalFooter lang={lang} />
+      <style>{`
+        @media (max-width: 720px) {
+          .register-topbar { padding: 0.75rem 1rem !important; gap: 0.75rem; }
+          .register-main { padding: 1rem !important; align-items: flex-start !important; min-width: 0; }
+          .register-wizard { display: block !important; min-height: 0 !important; min-width: 0; }
+          .register-rail { display: none !important; }
+          .register-form { padding: 1.35rem 1rem !important; min-width: 0; }
+          .register-two-col { grid-template-columns: minmax(0, 1fr) !important; gap: 0.75rem !important; }
+        }
+      `}</style>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
+import { customerSafeError } from "@/lib/customer-safe-error";
 
 type Props = {
   state: OnboardingState;
@@ -35,7 +36,7 @@ export function EmailVerificationStep({ state, onComplete }: Props) {
       await apiFetch("/api/onboarding/email/send-verification/", { method: "POST" });
       setTokenSent(true);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to send verification email.");
+      setError(customerSafeError(err, "We couldn't send the verification email. Please try again."));
     } finally {
       setSending(false);
     }
@@ -52,7 +53,11 @@ export function EmailVerificationStep({ state, onComplete }: Props) {
       });
       onComplete();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Verification failed.");
+      setError(customerSafeError(err, "We couldn't verify that code. Please try again.", [
+        { match: /expired/i, message: "That verification code has expired. Request a new code." },
+        { match: /already.*used|used/i, message: "That verification code has already been used. Request a new code." },
+        { match: /invalid/i, message: "That verification code isn't valid. Check it and try again." },
+      ]));
     } finally {
       setVerifying(false);
     }
@@ -92,7 +97,7 @@ export function EmailVerificationStep({ state, onComplete }: Props) {
               maxWidth: 400,
             }}
           />
-          <div style={{ display: "flex", gap: "0.5rem" }}>
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
             <Button onClick={handleVerify} disabled={verifying || !token.trim()}>
               {verifying ? "Verifying..." : "Verify"}
             </Button>
