@@ -43,7 +43,10 @@ def _stamp_worker_last_seen(worker_identity, *, min_interval_seconds: int = 30) 
 
     Throttled (skips the write if ``last_seen`` was updated within ``min_interval_seconds``) so a
     fast-polling worker does not amplify writes. Best-effort and fully swallowed: a liveness-stamp
-    failure must NEVER interfere with claiming a job. No-op for legacy/token callers (no identity).
+    failure must NEVER interfere with claiming a job. No-op when there is no resolved identity; note
+    the legacy X-Worker-Token path DOES resolve the shared ``legacy-worker`` identity, so its
+    ``last_seen`` is stamped — harmless, since that identity is force-emptied by
+    ``worker_authorized_nodes`` and is never an eligible claimant, so its ``last_seen`` is never read.
     """
     if worker_identity is None or getattr(worker_identity, "pk", None) is None:
         return

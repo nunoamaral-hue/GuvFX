@@ -193,3 +193,25 @@ class ExecutionPathReadinessTests(TestCase):
         r = evaluate_execution_path_readiness(acct)
         self.assertIsInstance(r.ready, bool)
         self.assertIsInstance(r.checks, dict)
+
+
+class BridgeHealthTests(TestCase):
+    def test_no_global_fallback_node_scoped_only(self):
+        # MEDIUM-1 fix: a healthy GLOBAL EXECUTION_PIPELINE row must NOT make a node with no OWN row
+        # read as healthy — that would infer this node's bridge health from a DIFFERENT bridge.
+        from reliability.models import Component, ComponentHealth, HealthStatus
+
+        from execution.node_execution import _bridge_health
+        node = _node("guvfx-beta-node-1")
+        ComponentHealth.objects.create(component=Component.EXECUTION_PIPELINE, terminal_node=None,
+                                       status=HealthStatus.OK)   # global row, healthy
+        self.assertEqual(_bridge_health(node), "UNOBSERVED")     # node has no own row ⇒ unobserved
+
+    def test_node_scoped_row_is_read(self):
+        from reliability.models import Component, ComponentHealth, HealthStatus
+
+        from execution.node_execution import _bridge_health
+        node = _node("guvfx-beta-node-1")
+        ComponentHealth.objects.create(component=Component.EXECUTION_PIPELINE, terminal_node=node,
+                                       status=HealthStatus.OK)
+        self.assertEqual(_bridge_health(node), "OK")

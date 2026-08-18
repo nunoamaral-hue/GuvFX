@@ -149,6 +149,9 @@ def _bridge_health(node) -> str:
     try:
         from reliability.models import ComponentHealth, Component, HealthStatus
 
+        # NODE-SCOPED ONLY: a per-node order bridge must have its OWN ComponentHealth row. We do NOT
+        # fall back to a global/legacy EXECUTION_PIPELINE row — that would infer THIS node's bridge
+        # health from a DIFFERENT bridge and could over-report. No node-scoped row ⇒ UNOBSERVED.
         row = (
             ComponentHealth.objects.filter(
                 component=Component.EXECUTION_PIPELINE, terminal_node_id=node.id
@@ -156,15 +159,6 @@ def _bridge_health(node) -> str:
             .order_by("-updated_at")
             .first()
         )
-        if row is None:
-            # Fall back to a global EXECUTION_PIPELINE row (probe_bridge is often global-scoped).
-            row = (
-                ComponentHealth.objects.filter(
-                    component=Component.EXECUTION_PIPELINE, terminal_node__isnull=True
-                )
-                .order_by("-updated_at")
-                .first()
-            )
         if row is None:
             return "UNOBSERVED"
         return "OK" if row.status == HealthStatus.OK else "DEGRADED"
@@ -268,15 +262,21 @@ def _evaluate(account, require_worker_liveness: bool) -> ExecutionPathReadiness:
                 ready=False, reason_code=probe.reason, checks=checks,
                 node_id=node_id, node_hostname=hostname)
 
-    # 4. Bridge health (observability — never HEALTHY when unobserved).
+    # 4. Bridge health (observability — never HEALTHY when unobserved). FAIL-CLOSED at runtime:
+    # DEGRADED ⇒ not ready; UNOBSERVED ⇒ not ready when liveness is required (an unknown bridge is
+    # not a proven-dispatchable bridge — mirrors the "unknown ⇒ not ready" contract). UNOBSERVED is
+    # RELAXED only at commission (require_worker_liveness=False), where a freshly-activated bridge may
+    # not have a health rollup yet.
     bridge = _bridge_health(node)
     checks["bridge_health"] = bridge
     if bridge == "DEGRADED":
         return ExecutionPathReadiness(
             ready=False, reason_code="EP_BRIDGE_UNHEALTHY", checks=checks,
             node_id=node_id, node_hostname=hostname)
-    # UNOBSERVED bridge health does not by itself fail the path (a freshly-commissioned bridge may
-    # have no rollup yet) — surface it, but the claimant/route checks above are the hard gates.
+    if bridge == "UNOBSERVED" and require_worker_liveness:
+        return ExecutionPathReadiness(
+            ready=False, reason_code="EP_BRIDGE_UNOBSERVED", checks=checks,
+            node_id=node_id, node_hostname=hostname)
 
     return ExecutionPathReadiness(
         ready=True, reason_code="EP_READY", checks=checks,

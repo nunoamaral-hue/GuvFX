@@ -98,11 +98,18 @@ def reconcile_stale_preactivation_orders(
         # A leg that was ever claimed/dispatched (RUNNING) or filled (SUCCESS) makes this NOT a clean
         # pre-activation-stale plan — never blind-cancel a possibly-live/filled order.
         any_active = any(j.status in (ExecutionJob.Status.RUNNING, ExecutionJob.Status.SUCCESS) for j in jobs)
-        all_unclaimed_pending = all(
-            j.status == ExecutionJob.Status.PENDING and not (j.worker_id or "").strip() and j.started_at is None
+        # EVERY leg must be a never-claimed PENDING *PLACE_ORDER* job. The cancel path only fails
+        # PLACE_ORDER jobs (below), so a plan with a non-PLACE_ORDER leg (e.g. a PLACE_ORDER_SHADOW
+        # leg in the AUTO_SHADOW regime) must be SKIPPED — otherwise it would be listed as a
+        # candidate, cancel zero jobs, and never close (its PROMOTED exposure would leak forever).
+        all_unclaimed_pending_place_order = all(
+            j.status == ExecutionJob.Status.PENDING
+            and j.job_type == ExecutionJob.JobType.PLACE_ORDER
+            and not (j.worker_id or "").strip()
+            and j.started_at is None
             for j in jobs
         )
-        if any_active or not all_unclaimed_pending:
+        if any_active or not all_unclaimed_pending_place_order:
             report["skipped"].append({
                 "plan_id": plan.id,
                 "reason": "active_or_partially_dispatched",
@@ -121,8 +128,23 @@ def reconcile_stale_preactivation_orders(
         })
         qualifying_plan_ids.append(plan.id)
 
-    if not apply or not qualifying_plan_ids:
+    if not apply:
         return report
+
+    # DEFENCE-IN-DEPTH (enforces the runbook's HARD ORDERING in code): never reconcile while the
+    # account's node has a LIVE eligible claimant — a worker could be mid-claim, and reconciling then
+    # could race an order that is being dispatched. The reconciler is meant to run BEFORE the node-2
+    # worker is activated; if one is already live, refuse and do nothing (fail-closed).
+    from trading.models import TradingAccount
+
+    account = TradingAccount.objects.filter(id=account_id).select_related("terminal_node").first()
+    node = getattr(account, "terminal_node", None) if account else None
+    if node is not None:
+        from execution.node_execution import eligible_order_claimant
+
+        if eligible_order_claimant(node).ok:
+            report["refused"] = "live_claimant_present"
+            return report
 
     # ---- APPLY: cancel PENDING jobs → FAILED (never racing a live claim), then close the plans. ----
     for plan_id in qualifying_plan_ids:
@@ -130,10 +152,11 @@ def reconcile_stale_preactivation_orders(
 
     # Reuse the existing, fail-closed close-monitor: with every leg now terminal-FAILED it transitions
     # each PROMOTED plan → CLOSED, which is what releases exposure + concurrency. Account-scoped so it
-    # never touches a bystander account's plans.
+    # never touches a bystander account's plans. ALWAYS run on apply (even with 0 newly-qualified this
+    # run) so a prior run that cancelled jobs but crashed before closing self-heals on re-run.
     from execution.close_monitor import resolve_completed_plans
 
-    closed = resolve_completed_plans(account_id=account_id, limit=max(limit, len(qualifying_plan_ids)))
+    closed = resolve_completed_plans(account_id=account_id, limit=max(limit, len(qualifying_plan_ids) + 1))
     report["plans_closed"] = closed.get("closed", 0)
     report["close_detail"] = closed
     return report

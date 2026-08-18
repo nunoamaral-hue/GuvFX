@@ -47,7 +47,7 @@ class StalePreactivationReconcileTests(TestCase):
     _seq = 0
 
     def _promoted_plan(self, account, *, symbol="XAUUSD", n_legs=3, lot_each="0.40",
-                       job_status=PENDING, worker_id=""):
+                       job_status=PENDING, worker_id="", job_type=PLACE_ORDER):
         type(self)._seq += 1
         mid = f"m-{type(self)._seq}"  # unique per plan: (source, chat_id, message_id, account) is UNIQUE
         appr = PendingSignalApproval.objects.create(
@@ -61,7 +61,7 @@ class StalePreactivationReconcileTests(TestCase):
         jobs = []
         for i in range(1, n_legs + 1):
             job = ExecutionJob.objects.create(
-                job_type=PLACE_ORDER, account=account, status=job_status,
+                job_type=job_type, account=account, status=job_status,
                 worker_id=worker_id, started_at=(timezone.now() if job_status != PENDING else None),
                 payload={"symbol": symbol, "side": "BUY", "lots": lot_each, "plan_id": plan.id,
                          "leg_index": i})
@@ -176,3 +176,33 @@ class StalePreactivationReconcileTests(TestCase):
         r = reconcile_stale_preactivation_orders(account_id=self.acct.id, older_than_seconds=1800, apply=True)
         self.assertEqual(r["scanned_promoted_plans"], 0)
         self.assertEqual(r["jobs_cancelled"], 0)
+
+    def test_skips_plan_whose_legs_are_not_place_order(self):
+        # MEDIUM-2 fix: a PROMOTED plan whose legs are PLACE_ORDER_SHADOW (not PLACE_ORDER) must be
+        # SKIPPED, never listed as a candidate — the cancel path only fails PLACE_ORDER, so listing it
+        # would cancel 0 and leak its exposure forever.
+        plan, jobs = self._promoted_plan(self.acct, job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW)
+        r = reconcile_stale_preactivation_orders(account_id=self.acct.id, older_than_seconds=0, apply=True)
+        self.assertEqual(len(r["candidates"]), 0)
+        self.assertEqual(r["jobs_cancelled"], 0)
+        self.assertTrue(any(s["plan_id"] == plan.id for s in r["skipped"]))
+        plan.refresh_from_db(); self.assertEqual(plan.status, PROMOTED)   # untouched
+
+    def test_refuses_apply_when_live_claimant_present(self):
+        # LOW-b fix: enforce reconcile-BEFORE-activation. If the account's node already has a live
+        # eligible order worker, --apply is refused and nothing is mutated.
+        from execution.models import TerminalNode, WorkerIdentity
+        node = TerminalNode.objects.create(hostname="guvfx-beta-node-1",
+                                           order_bridge_base_url="http://10.0.0.1:8789")
+        self.acct.terminal_node = node
+        self.acct.save(update_fields=["terminal_node"])
+        WorkerIdentity.objects.create(worker_id="w-live", worker_secret_hash="x",
+                                      worker_permissions={"authorized_nodes": ["guvfx-beta-node-1"]},
+                                      last_seen=timezone.now())
+        plan, jobs = self._promoted_plan(self.acct)
+        r = reconcile_stale_preactivation_orders(account_id=self.acct.id, older_than_seconds=0, apply=True)
+        self.assertEqual(r.get("refused"), "live_claimant_present")
+        self.assertEqual(r["jobs_cancelled"], 0)
+        for j in jobs:
+            j.refresh_from_db(); self.assertEqual(j.status, PENDING)      # untouched
+        plan.refresh_from_db(); self.assertEqual(plan.status, PROMOTED)
