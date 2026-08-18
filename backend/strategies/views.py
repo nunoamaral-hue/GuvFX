@@ -14,6 +14,7 @@ from django.db import connection, transaction
 from trading.models import TradingAccount
 
 from .models import (
+    AssignmentLegSizing,
     Strategy,
     StrategyAssignment,
     StrategyChangeLog,
@@ -1256,6 +1257,14 @@ class StrategyViewSet(viewsets.ModelViewSet):
                         account=account,
                         is_active=True,
                         stage=StrategyAssignment.STAGE_TEST,
+                    )
+                    # GFX-BETA-PHASE0 (Option B): a NEW acquisition owns its per-leg lot at the
+                    # conservative beta default (0.01). Existing assignments are NEVER backfilled —
+                    # they keep NO row and fall back to the source-global cap, so the certified
+                    # support@ sizing is unchanged. Idempotent (OneToOne + get_or_create).
+                    AssignmentLegSizing.objects.get_or_create(
+                        assignment=assignment,
+                        defaults={"lot_per_leg": AssignmentLegSizing.DEFAULT_LOT},
                     )
 
         except Exception:

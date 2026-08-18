@@ -166,6 +166,27 @@ def _signal_timestamp(approval, override):
 # ---------------------------------------------------------------------------
 
 
+def _customer_leg_size_override(assignment, cfg):
+    """Per-customer per-leg lot override for this assignment (GFX-BETA-PHASE0 activation, Option B).
+
+    Returns the customer's ``AssignmentLegSizing.lot_per_leg`` clamped to the source per-leg cap, or
+    ``None`` when the assignment has no override row — in which case planning keeps the EXACT
+    source-global sizing, so an existing assignment with no row (the certified support@ path) is
+    byte-for-byte unchanged. Fail-closed: any resolution error yields ``None`` (source-global sizing),
+    never a larger size. The clamp guarantees a customer can only ever REDUCE within the operator
+    per-leg cap, so every existing promotion/exposure/worker ceiling still admits it unchanged.
+    """
+    if assignment is None:
+        return None
+    try:
+        sizing = getattr(assignment, "leg_sizing", None)
+        if sizing is None:
+            return None
+        return min(sizing.lot_per_leg, cfg.max_lot_per_leg)
+    except Exception:  # pragma: no cover - defensive; never fail open to a larger size
+        return None
+
+
 def plan_demo_execution(
     approval: PendingSignalApproval,
     *,
@@ -174,6 +195,7 @@ def plan_demo_execution(
     now=None,
     signal_timestamp=None,
     total_lot=None,
+    assignment=None,
 ) -> SignalExecutionPlan:
     """Build a non-executable demo execution plan from an APPROVED signal.
 
@@ -272,11 +294,21 @@ def plan_demo_execution(
     # per-signal ceilings are PER-SOURCE (cfg), so ti_signals can size 0.40/leg while
     # wayond keeps the global 0.02/0.06 defaults — no global constant is touched.
     n = min(len(tps), MAX_PLAN_LEGS)
-    configured_total = total_lot if total_lot is not None else cfg.total_lot_target
+    # Per-customer per-leg sizing (Option B, GFX-BETA-PHASE0 activation). Precedence:
+    #   1. explicit total_lot (operator mgmt command) — honoured verbatim, still source-capped;
+    #   2. customer override row — each leg = the customer's lot, total = n × lot (source-capped);
+    #   3. no override — EXACT source-global sizing (support@ / no-row path byte-for-byte unchanged).
+    _cust_leg = _customer_leg_size_override(assignment, cfg)
+    if total_lot is not None:
+        configured_total, _max_per_leg = total_lot, cfg.max_lot_per_leg
+    elif _cust_leg is not None:
+        configured_total, _max_per_leg = min(_cust_leg * n, cfg.max_total_lot), _cust_leg
+    else:
+        configured_total, _max_per_leg = cfg.total_lot_target, cfg.max_lot_per_leg
     try:
         leg_lots, split_meta = split_volume(
             configured_total, n,
-            max_per_leg=cfg.max_lot_per_leg, max_total=cfg.max_total_lot,
+            max_per_leg=_max_per_leg, max_total=cfg.max_total_lot,
         )
     except VolumeSplitError as exc:
         return _hold(common, actor, "volume_split_invalid", detail=exc.message)

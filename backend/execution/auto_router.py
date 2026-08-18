@@ -333,6 +333,7 @@ def _plan_and_promote_one(approval, target, actor, signal_ts, promote_fn, label)
     try:
         plan = plan_demo_execution(
             approval, account=target.account, actor=actor, signal_timestamp=signal_ts,
+            assignment=target,  # per-customer per-leg lot sizing (Option B); no-override → source-global
         )
         if plan.status != SignalExecutionPlan.Status.PLANNED:
             return  # HELD/VOIDED (data/staleness) → no promotion, no job
