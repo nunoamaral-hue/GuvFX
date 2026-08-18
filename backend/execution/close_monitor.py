@@ -105,7 +105,7 @@ def process_closed_trades(*, limit: int = DEFAULT_LIMIT) -> dict:
     return counts
 
 
-def resolve_completed_plans(*, limit: int = DEFAULT_LIMIT) -> dict:
+def resolve_completed_plans(*, limit: int = DEFAULT_LIMIT, account_id: int | None = None) -> dict:
     """Free a plan's concurrency/exposure slot once ALL its positions have resolved.
 
     A PROMOTED plan holds a concurrency + exposure slot (it counts in the risk gate's
@@ -122,10 +122,13 @@ def resolve_completed_plans(*, limit: int = DEFAULT_LIMIT) -> dict:
 
     terminal = (ExecutionJob.Status.SUCCESS, ExecutionJob.Status.FAILED)
     counts = {"scanned": 0, "closed": 0, "still_open": 0}
-    plans = (
-        SignalExecutionPlan.objects.filter(status=SignalExecutionPlan.Status.PROMOTED)
-        .order_by("id")[:limit]
-    )
+    plan_qs = SignalExecutionPlan.objects.filter(status=SignalExecutionPlan.Status.PROMOTED)
+    # ADR-0048: optional account scope — lets the stale-pre-activation reconciler close ONLY the
+    # target account's now-fully-terminal plans (never a bystander account). Default None preserves
+    # the global scheduler behaviour exactly.
+    if account_id is not None:
+        plan_qs = plan_qs.filter(account_id=account_id)
+    plans = plan_qs.order_by("id")[:limit]
     for plan in plans:
         counts["scanned"] += 1
         legs = list(plan.legs.select_related("execution_job").order_by("leg_index"))

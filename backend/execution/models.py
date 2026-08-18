@@ -453,6 +453,11 @@ class WorkerIdentity(models.Model):
         default=Status.ACTIVE,
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    # ADR-0048 execution-path readiness: liveness signal for concept-C. Stamped in the claim seam
+    # (execution.views.next_job) each time this worker successfully polls for a job. NULL ⇒ never
+    # seen (registered but never started) ⇒ NOT alive (fail-closed). Additive/nullable/DARK-safe:
+    # nothing reads it unless the execution-path readiness surface is consulted.
+    last_seen = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         verbose_name = "Worker Identity"

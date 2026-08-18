@@ -38,6 +38,27 @@ from core.audit import (
 from core.observability import emit_metric, log_stage
 from billing.enforcement import require_entitlement
 
+def _stamp_worker_last_seen(worker_identity, *, min_interval_seconds: int = 30) -> None:
+    """ADR-0048: record that an authenticated worker polled, for the concept-C liveness signal.
+
+    Throttled (skips the write if ``last_seen`` was updated within ``min_interval_seconds``) so a
+    fast-polling worker does not amplify writes. Best-effort and fully swallowed: a liveness-stamp
+    failure must NEVER interfere with claiming a job. No-op for legacy/token callers (no identity).
+    """
+    if worker_identity is None or getattr(worker_identity, "pk", None) is None:
+        return
+    try:
+        from execution.models import WorkerIdentity
+
+        now = timezone.now()
+        last = getattr(worker_identity, "last_seen", None)
+        if last is not None and (now - last).total_seconds() < min_interval_seconds:
+            return
+        WorkerIdentity.objects.filter(pk=worker_identity.pk).update(last_seen=now)
+    except Exception:
+        pass
+
+
 class IsAuthenticatedOrWorkerToken(permissions.BasePermission):
     """
     Allow access if:
@@ -225,16 +246,19 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         # ------------------------------------------------------------------
         worker_identity = getattr(request, "_worker_identity", None)
         perms = (worker_identity.worker_permissions or {}) if worker_identity else {}
-        authorized_nodes = perms.get("authorized_nodes", [])
 
         # ADR-0034 capstone isolation invariant (defence-in-depth): the SHARED ``legacy-worker`` identity —
         # to which every legacy X-Worker-Token bridge resolves — must NEVER be treated as node-aware, or a
-        # shared/legacy bridge could claim a hosted (node-bound) job. Normally its row carries no
-        # ``authorized_nodes`` (this is a no-op); force it empty regardless so a mis-provisioned grant cannot
-        # make it node-aware. A dedicated per-node bridge uses its OWN worker_id and is unaffected.
-        from execution.auth import LEGACY_WORKER_ID
-        if worker_identity is not None and getattr(worker_identity, "worker_id", None) == LEGACY_WORKER_ID:
-            authorized_nodes = []
+        # shared/legacy bridge could claim a hosted (node-bound) job. A dedicated per-node bridge uses its
+        # OWN worker_id and is unaffected.
+        # ADR-0048: node-awareness is now derived by the SINGLE shared rule ``worker_authorized_nodes`` so the
+        # execution-path readiness surface (execution.node_execution) can never drift from the real claim
+        # behaviour. It encapsulates the legacy force-empty + ACTIVE-only + list-coercion rules.
+        from execution.node_execution import worker_authorized_nodes
+        authorized_nodes = worker_authorized_nodes(worker_identity)
+        # ADR-0048: liveness stamp — record that this authenticated worker polled (throttled). Feeds the
+        # concept-C "worker healthy/recently-seen" check. Best-effort; never blocks a claim.
+        _stamp_worker_last_seen(worker_identity)
 
         # EXEC-E2a endpoint guard: order-bearing SHADOW jobs are served ONLY to a
         # caller carrying an explicit ``shadow_worker`` worker-permission. Every
