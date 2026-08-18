@@ -185,9 +185,9 @@ class GetStrategyTests(TestCase):
         self.assertIsNone(body["strategy_id"])
         self.assertIsNone(body["account_id"])
 
-    def test_strategy_list_flags_backing_row_for_dedup(self):
-        # AJ#7.2 read-model dedup: the generic Strategy list marks the backing row of the unambiguous owned
-        # signal-copy product is_signal_copy_backed=True so My Strategies hides it WITHOUT a client-side race.
+    def test_strategy_list_flags_backing_row(self):
+        # AJ#7.2 badge honesty: the generic Strategy list marks the backing row of the owned signal-copy product
+        # is_signal_copy_backed=True so My Strategies renders it as "Automated", never the misleading "Active".
         got = self._get()
         backing_id = got.json()["assignment_id"] and StrategyAssignment.objects.get(
             id=got.json()["assignment_id"]).strategy_id
@@ -195,14 +195,17 @@ class GetStrategyTests(TestCase):
         by_id = {r["id"]: r for r in rows}
         self.assertTrue(by_id[backing_id]["is_signal_copy_backed"])
 
-    def test_strategy_list_flag_fails_open_when_ambiguous(self):
-        # >1 owned armed assignment → ambiguous → the backend must NOT flag the backing rows, so the list keeps
-        # them visible (mirrors signal_copy_status.strategy_id=None fail-open).
-        self._get()
+    def test_strategy_list_flags_backing_row_even_when_ambiguous(self):
+        # Owning the product on TWO demo accounts is ambiguous (a benign, normal acquisition, not a config
+        # error). DEDUP fails open there (strategy_id=None, asserted above), but the BADGE flag must STILL be set
+        # so the still-visible backing row renders honestly as "Automated" — never a misleading green "Active".
+        got = self._get()
+        backing_id = StrategyAssignment.objects.get(id=got.json()["assignment_id"]).strategy_id
         acct2 = _demo_acct(self.user, "G1B")
         self._get(account_id=acct2.id)
         rows = self.c.get("/api/strategies/strategies/").json()
-        self.assertTrue(all(not r["is_signal_copy_backed"] for r in rows))
+        by_id = {r["id"]: r for r in rows}
+        self.assertTrue(by_id[backing_id]["is_signal_copy_backed"])
 
 
 @override_settings(**BASE)

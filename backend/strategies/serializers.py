@@ -78,11 +78,12 @@ def validate_trendline_break_pocket_filters(filters: dict) -> dict:
 
 
 class StrategySerializer(serializers.ModelSerializer):
-    # AJ#7.2 — read-model dedup flag. True when this Strategy is the backing row of a signal-copy product the
-    # caller owns UNAMBIGUOUSLY (rendered in My Strategies' managed "Automated strategies" section), so the
-    # generic list can hide it WITHOUT a second client-side fetch or race. Mirrors signal_copy_status.strategy_id
-    # exactly (incl. fail-open: ambiguous ownership → not backed → the row stays visible). Populated only for the
-    # list action via serializer context; defaults False everywhere else.
+    # AJ#7.2 — badge-honesty flag. True when this Strategy BACKS a signal-copy product the caller owns (an
+    # automated product surfaced in My Strategies' managed "Automated strategies" section). My Strategies uses
+    # it to render such a row HONESTLY when it appears in the generic list — a neutral "Automated" badge, never
+    # the misleading green Strategy.is_active "Active". Count-INDEPENDENT (set even when ownership is ambiguous),
+    # so the honest badge always applies; DEDUP is a separate client-side concern (signal_copy_status.strategy_id,
+    # null when ambiguous → fail-open). Populated only for the list action via context; defaults False elsewhere.
     is_signal_copy_backed = serializers.SerializerMethodField()
 
     def get_is_signal_copy_backed(self, obj):

@@ -131,17 +131,19 @@ describe("My Strategies — signal-copy dedup", () => {
     expect(screen.queryByText("Active")).toBeNull();
   });
 
-  it("ambiguous ownership (server fails open — not flagged): nothing is deduped, product surfaces for attention", async () => {
-    // Ambiguous config → the backend does NOT flag the backing row (is_signal_copy_backed false), so the
-    // generic list is NOT silently hidden — the row stays visible for attention.
+  it("ambiguous ownership (owned on two demo accounts): dedup fails open to visibility, backing row rendered honestly as 'Automated', never 'Active'", async () => {
+    // Ambiguous (owned on >1 demo account, a benign flow) → status.strategy_id is null so dedup fails open and
+    // the backing row stays visible — but the server STILL flags it is_signal_copy_backed, so it renders as a
+    // neutral "Automated" badge, never the misleading green "Active" (invariant 3), even in this case.
     state.status = { armed: true, enabled: false, ambiguous: true, strategy_id: null };
     state.strategies = [
-      { id: 10, name: "Wayond WIM Strategy", is_active: true, is_signal_copy_backed: false },
+      { id: 10, name: "Wayond WIM Strategy", is_active: true, is_signal_copy_backed: true },
       { id: 3, name: "London Session Box", is_active: false, is_signal_copy_backed: false },
     ];
     render(<MyStrategies />);
     await waitFor(() => expect(screen.getByText("Needs attention")).toBeTruthy());
-    // With no resolvable strategy_id we do not hide the backing row (fail-open to visibility, not silence).
-    expect(screen.getByText("Wayond WIM Strategy")).toBeTruthy();
+    expect(screen.getByText("Wayond WIM Strategy")).toBeTruthy();   // fail-open to visibility
+    expect(screen.getByText("Automated")).toBeTruthy();             // honest badge, not the green "Active"
+    expect(screen.queryByText("Active")).toBeNull();
   });
 });
