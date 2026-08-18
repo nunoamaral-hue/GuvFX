@@ -61,6 +61,7 @@ def reconcile_stale_preactivation_orders(
 
     Returns a deterministic, machine-readable report of exactly what was (or would be) reconciled.
     """
+    account_id = int(account_id)   # defensive: the protected-account check must never miss on a str id
     if account_id in PROTECTED_ACCOUNT_IDS:
         raise ProtectedAccountError(
             f"account {account_id} is protected (Customer Zero / account 18) and is never reconciled")
@@ -132,19 +133,34 @@ def reconcile_stale_preactivation_orders(
         return report
 
     # DEFENCE-IN-DEPTH (enforces the runbook's HARD ORDERING in code): never reconcile while the
-    # account's node has a LIVE eligible claimant — a worker could be mid-claim, and reconciling then
-    # could race an order that is being dispatched. The reconciler is meant to run BEFORE the node-2
-    # worker is activated; if one is already live, refuse and do nothing (fail-closed).
+    # account's node has a claimant that could dispatch these jobs. The reconciler is meant to run
+    # BEFORE the node's order worker is registered; if one already exists, refuse and do nothing
+    # (fail-closed). We refuse on TWO conditions, not one:
+    #   (a) a LIVE eligible claimant (recently-seen worker) — it could be mid-claim; and
+    #   (b) ANY registered, ACTIVE, node-aware worker even if never-seen (last_seen NULL) — the claim
+    #       seam (worker_authorized_nodes/next_job) authorizes it on its very FIRST poll and stamps
+    #       last_seen only then, so a just-commissioned worker is invisible to the liveness check yet
+    #       fully claim-capable. Without (b) a register→first-poll TOCTOU could let it claim one leg
+    #       (→RUNNING, skipped by our PENDING-only lock) while we FAIL its siblings, stranding a live
+    #       partial fill. Using the SAME shared claim rule (worker_authorized_nodes) means this guard
+    #       can never drift from what the claim seam will actually authorize.
     from trading.models import TradingAccount
 
     account = TradingAccount.objects.filter(id=account_id).select_related("terminal_node").first()
     node = getattr(account, "terminal_node", None) if account else None
     if node is not None:
-        from execution.node_execution import eligible_order_claimant
+        from execution.models import WorkerIdentity
+        from execution.node_execution import eligible_order_claimant, worker_authorized_nodes
 
         if eligible_order_claimant(node).ok:
             report["refused"] = "live_claimant_present"
             return report
+        hostname = getattr(node, "hostname", None)
+        if hostname:
+            for w in WorkerIdentity.objects.filter(status=WorkerIdentity.Status.ACTIVE):
+                if hostname in worker_authorized_nodes(w):
+                    report["refused"] = "node_worker_registered"   # claimant provisioned; reconcile is now unsafe
+                    return report
 
     # ---- APPLY: cancel PENDING jobs → FAILED (never racing a live claim), then close the plans. ----
     for plan_id in qualifying_plan_ids:

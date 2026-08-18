@@ -41,6 +41,24 @@ class Command(BaseCommand):
         if acct is None:
             raise CommandError(f"account {opts['account_id']} not found")
 
+        # PRE-FLIGHT per-node isolation (mutates nothing — mirror of commission_execution_node's cross-node
+        # guard): a dedicated worker serves EXACTLY ONE node. If this call would grant a node to a worker
+        # already authorized for a DIFFERENT node, refuse BEFORE the binding block runs, so a rejected
+        # command mutates nothing and the claim/readiness seams can never honour a multi-node worker.
+        if opts["grant_worker"] and opts["node_hostname"]:
+            from execution.auth import LEGACY_WORKER_ID
+            if opts["grant_worker"] != LEGACY_WORKER_ID:
+                _wi = WorkerIdentity.objects.filter(worker_id=opts["grant_worker"]).first()
+                if _wi is not None:
+                    _other = [n for n in ((_wi.worker_permissions or {}).get("authorized_nodes") or [])
+                              if n and n != opts["node_hostname"]]
+                    if _other:
+                        raise CommandError(
+                            f"refusing to grant node '{opts['node_hostname']}' to worker "
+                            f"'{opts['grant_worker']}' — it is already authorized for {_other}; a dedicated "
+                            f"worker serves exactly one node (per-node isolation). Register a separate "
+                            f"dedicated WorkerIdentity for this node.")
+
         if opts["node_hostname"]:
             node, _ = TerminalNode.objects.get_or_create(hostname=opts["node_hostname"])
             # ADR-0043 Addendum B: refuse a forbidden Customer Zero co-residency BEFORE mutating anything. This

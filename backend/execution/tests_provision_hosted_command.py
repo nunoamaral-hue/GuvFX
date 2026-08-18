@@ -38,20 +38,39 @@ class ProvisionHostedCommandTests(TestCase):
 
     def test_grant_worker_appends_node_and_preserves_existing_perms(self):
         acct = _account()
+        # Worker starts with NO node (only an unrelated perm). Per-node isolation forbids granting a
+        # node to a worker already on a DIFFERENT node (see test_grant_worker_refuses_cross_node), so
+        # the "preserve existing perms" case is proven with an unrelated non-node permission.
         wi = WorkerIdentity.objects.create(
             worker_id="hosted-node-worker", worker_secret_hash="unused",
-            worker_permissions={"shadow_worker": False, "authorized_nodes": ["pre-existing-node"]})
+            worker_permissions={"shadow_worker": False, "authorized_nodes": []})
         self._run("--account-id", str(acct.pk), "--node-hostname", "node-A",
                   "--grant-worker", "hosted-node-worker")
         wi.refresh_from_db()
-        # correct node appended, existing node + unrelated perm both preserved
-        self.assertEqual(wi.worker_permissions["authorized_nodes"], ["pre-existing-node", "node-A"])
+        # correct node appended, unrelated perm preserved
+        self.assertEqual(wi.worker_permissions["authorized_nodes"], ["node-A"])
         self.assertIs(wi.worker_permissions["shadow_worker"], False)
         # and the account+workspace got bound to the node (generation stamped)
         acct.refresh_from_db()
         self.assertEqual(acct.terminal_node.hostname, "node-A")
         self.assertEqual(acct.hosted_workspace.execution_node.hostname, "node-A")
         self.assertGreaterEqual(acct.hosted_workspace.execution_binding_generation, 1)
+
+    def test_grant_worker_refuses_cross_node(self):
+        # Per-node isolation (adversarial MEDIUM fix): a dedicated worker serves exactly ONE node.
+        # Granting a SECOND, different node to a worker already authorized for node-A must fail closed
+        # and mutate nothing (pre-flight, before any binding).
+        acct = _account()
+        wi = WorkerIdentity.objects.create(
+            worker_id="node-a-worker", worker_secret_hash="unused",
+            worker_permissions={"authorized_nodes": ["node-A"]})
+        with self.assertRaises(CommandError):
+            self._run("--account-id", str(acct.pk), "--node-hostname", "node-B",
+                      "--grant-worker", "node-a-worker")
+        wi.refresh_from_db()
+        self.assertEqual(wi.worker_permissions["authorized_nodes"], ["node-A"])   # unchanged
+        acct.refresh_from_db()
+        self.assertIsNone(acct.terminal_node_id)          # rejected command mutated nothing
 
     def test_grant_worker_is_idempotent(self):
         acct = _account()

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 
+from django.db import transaction
 from django.utils import timezone
 
 # Env var carrying the dedicated node worker's secret (never a CLI arg; never logged).
@@ -113,34 +114,40 @@ def commission_execution_node(
         report["reason"] = "SECRET_REQUIRED"   # a NEW identity needs its secret (env only)
         return report
 
-    if bridge_url and (node.order_bridge_base_url or "").strip() != bridge_url.strip():
-        TerminalNode.objects.filter(pk=node.pk, order_bridge_base_url__in=("", bridge_url.strip())).update(
-            order_bridge_base_url=bridge_url.strip())
-        node.refresh_from_db()
+    # Atomic: the bridge-URL write and the worker create/update commit together or not at all, so a
+    # failure mid-way can never leave the node with a configured bridge but no worker (no partial
+    # commissioning), and the create-branch's unique-worker_id constraint still fails a concurrent
+    # double-run closed (loser raises IntegrityError, rolls back, no duplicate row / no over-grant).
+    with transaction.atomic():
+        if bridge_url and (node.order_bridge_base_url or "").strip() != bridge_url.strip():
+            TerminalNode.objects.filter(pk=node.pk,
+                                        order_bridge_base_url__in=("", bridge_url.strip())).update(
+                order_bridge_base_url=bridge_url.strip())
+            node.refresh_from_db()
 
-    if existing is None:
-        wi = WorkerIdentity.objects.create(
-            worker_id=worker_id, worker_secret_hash=WorkerIdentity.hash_secret(secret),
-            status=WorkerIdentity.Status.ACTIVE,
-            worker_permissions={"authorized_nodes": [node_hostname]})
-        _credential_event("CREATED", worker_id)
-    else:
-        wi = existing
-        perms = dict(wi.worker_permissions or {})
-        nodes = list(perms.get("authorized_nodes") or [])
-        if node_hostname not in nodes:
-            nodes.append(node_hostname)
-        perms["authorized_nodes"] = nodes
-        fields = ["worker_permissions", "status"]
-        wi.worker_permissions = perms
-        wi.status = WorkerIdentity.Status.ACTIVE   # re-activate a revoked identity on re-commission
-        if secret:  # optional rotation
-            new_hash = WorkerIdentity.hash_secret(secret)
-            if new_hash != wi.worker_secret_hash:
-                wi.worker_secret_hash = new_hash
-                fields.append("worker_secret_hash")
-                _credential_event("ROTATED", worker_id)
-        wi.save(update_fields=fields)
+        if existing is None:
+            wi = WorkerIdentity.objects.create(
+                worker_id=worker_id, worker_secret_hash=WorkerIdentity.hash_secret(secret),
+                status=WorkerIdentity.Status.ACTIVE,
+                worker_permissions={"authorized_nodes": [node_hostname]})
+            _credential_event("CREATED", worker_id)
+        else:
+            wi = existing
+            perms = dict(wi.worker_permissions or {})
+            nodes = list(perms.get("authorized_nodes") or [])
+            if node_hostname not in nodes:
+                nodes.append(node_hostname)
+            perms["authorized_nodes"] = nodes
+            fields = ["worker_permissions", "status"]
+            wi.worker_permissions = perms
+            wi.status = WorkerIdentity.Status.ACTIVE   # re-activate a revoked identity on re-commission
+            if secret:  # optional rotation
+                new_hash = WorkerIdentity.hash_secret(secret)
+                if new_hash != wi.worker_secret_hash:
+                    wi.worker_secret_hash = new_hash
+                    fields.append("worker_secret_hash")
+                    _credential_event("ROTATED", worker_id)
+            wi.save(update_fields=fields)
 
     report["applied"] = True
     op = node_execution_operational(node, require_worker_liveness=require_liveness)

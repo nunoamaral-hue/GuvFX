@@ -206,3 +206,25 @@ class StalePreactivationReconcileTests(TestCase):
         for j in jobs:
             j.refresh_from_db(); self.assertEqual(j.status, PENDING)      # untouched
         plan.refresh_from_db(); self.assertEqual(plan.status, PROMOTED)
+
+    def test_refuses_apply_when_registered_but_unseen_worker_present(self):
+        # Adversarial MEDIUM-1 fix: a JUST-COMMISSIONED node worker has last_seen=NULL, so it is NOT a
+        # "live" eligible claimant — yet the claim seam authorizes it to claim+dispatch on its very first
+        # poll. Reconciling while such a worker is registered would race a register→first-poll claim and
+        # could strand a cross-leg partial fill. So --apply must refuse as soon as ANY ACTIVE node-aware
+        # worker exists for the node, not only a recently-seen one. Enforces reconcile-BEFORE-commission.
+        from execution.models import TerminalNode, WorkerIdentity
+        node = TerminalNode.objects.create(hostname="guvfx-beta-node-1",
+                                           order_bridge_base_url="http://10.0.0.1:8789")
+        self.acct.terminal_node = node
+        self.acct.save(update_fields=["terminal_node"])
+        WorkerIdentity.objects.create(worker_id="w-fresh", worker_secret_hash="x",
+                                      worker_permissions={"authorized_nodes": ["guvfx-beta-node-1"]},
+                                      last_seen=None)  # registered, never polled — still claim-capable
+        plan, jobs = self._promoted_plan(self.acct)
+        r = reconcile_stale_preactivation_orders(account_id=self.acct.id, older_than_seconds=0, apply=True)
+        self.assertEqual(r.get("refused"), "node_worker_registered")
+        self.assertEqual(r["jobs_cancelled"], 0)
+        for j in jobs:
+            j.refresh_from_db(); self.assertEqual(j.status, PENDING)      # untouched
+        plan.refresh_from_db(); self.assertEqual(plan.status, PROMOTED)
