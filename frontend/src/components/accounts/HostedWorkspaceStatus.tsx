@@ -3,6 +3,8 @@
 import React from "react";
 import Link from "next/link";
 import { authorizeExecution, describeJourney, type HostedJourney } from "@/lib/hosted-journey";
+import { useLang } from "@/components/AppShell";
+import { t, type Lang } from "@/lib/i18n";
 
 /**
  * Hosted Workspace status panel (Product Consistency Pass — P0.1 / P1.3).
@@ -44,23 +46,23 @@ const primaryBtn: React.CSSProperties = {
 };
 
 // Customer-safe workspace status label per phase (no internal identifiers ever reach the customer).
-const WORKSPACE_STATUS: Record<string, { label: string; color: string }> = {
-  NO_WORKSPACE: { label: "Not set up yet", color: "#94a3b8" },
-  WORKSPACE_REQUESTED: { label: "Preparing", color: "#38bdf8" },
-  WORKSPACE_PREPARING: { label: "Preparing", color: "#38bdf8" },
-  AWAITING_BROKER_LOGIN: { label: "Waiting for you to log in", color: "#f59e0b" },
-  BROKER_CONNECTED: { label: "Waiting for you to log in", color: "#f59e0b" },
-  ACCOUNT_CONFIRMATION_REQUIRED: { label: "Confirm your account", color: "#f59e0b" },
-  ACCOUNT_BOUND: { label: "Finishing up", color: "#38bdf8" },
-  WORKSPACE_READY: { label: "Ready", color: "#22c55e" },
-  WORKSPACE_UNAVAILABLE: { label: "Needs attention", color: "#f87171" },
+const WORKSPACE_STATUS: Record<string, { key: string; color: string }> = {
+  NO_WORKSPACE: { key: "hostedStatus.notSetUp", color: "#94a3b8" },
+  WORKSPACE_REQUESTED: { key: "hostedStatus.preparing", color: "#38bdf8" },
+  WORKSPACE_PREPARING: { key: "hostedStatus.preparing", color: "#38bdf8" },
+  AWAITING_BROKER_LOGIN: { key: "hostedStatus.waitingLogin", color: "#f59e0b" },
+  BROKER_CONNECTED: { key: "hostedStatus.waitingLogin", color: "#f59e0b" },
+  ACCOUNT_CONFIRMATION_REQUIRED: { key: "hostedStatus.confirmAccount", color: "#f59e0b" },
+  ACCOUNT_BOUND: { key: "hostedStatus.finishing", color: "#38bdf8" },
+  WORKSPACE_READY: { key: "hostedStatus.ready", color: "#22c55e" },
+  WORKSPACE_UNAVAILABLE: { key: "hostedStatus.needsAttention", color: "#f87171" },
 };
 
-const DELIVERY_STATUS: Record<string, { label: string; color: string }> = {
-  DELIVERY_READY: { label: "Ready to open", color: "#22c55e" },
-  DELIVERY_PREPARING: { label: "Preparing", color: "#38bdf8" },
-  DELIVERY_NOT_AVAILABLE: { label: "Not ready yet", color: "#94a3b8" },
-  DELIVERY_EXTERNAL_GATE: { label: "Action needed", color: "#f59e0b" },
+const DELIVERY_STATUS: Record<string, { key: string; color: string }> = {
+  DELIVERY_READY: { key: "hostedStatus.readyToOpen", color: "#22c55e" },
+  DELIVERY_PREPARING: { key: "hostedStatus.preparing", color: "#38bdf8" },
+  DELIVERY_NOT_AVAILABLE: { key: "hostedStatus.notReady", color: "#94a3b8" },
+  DELIVERY_EXTERNAL_GATE: { key: "hostedStatus.actionNeeded", color: "#f59e0b" },
 };
 
 // Status-oriented copy for THIS read-only page. The interactive journey's own description is imperative
@@ -68,15 +70,15 @@ const DELIVERY_STATUS: Record<string, { label: string; color: string }> = {
 // cannot do here — the actual controls live in the hosted flow the primary CTA opens. So we describe the
 // state and point at that CTA, never instruct an action this page has no field/button for.
 const STATUS_DESC: Record<string, string> = {
-  NO_WORKSPACE: "You don't have a hosted workspace yet. Continue setup to get a managed MetaTrader terminal you log in to.",
-  WORKSPACE_REQUESTED: "We're preparing your private MetaTrader workspace. This usually completes within a few minutes.",
-  WORKSPACE_PREPARING: "We're building your private, isolated MetaTrader workspace. This usually completes within a few minutes.",
-  AWAITING_BROKER_LOGIN: "Your workspace is ready. Continue setup to point it at your broker account and log in — inside MetaTrader, never here.",
-  BROKER_CONNECTED: "Your workspace is open. Continue setup to finish logging in to the right account.",
-  ACCOUNT_CONFIRMATION_REQUIRED: "We found your broker account. Continue setup to confirm it and finish.",
-  ACCOUNT_BOUND: "Your account is confirmed — we're finishing the last step.",
-  WORKSPACE_READY: "Your hosted MT5 workspace is connected and ready. Choose a strategy to get started.",
-  WORKSPACE_UNAVAILABLE: "Your hosted workspace isn't available right now. Our team can help get it back.",
+  NO_WORKSPACE: "hostedStatus.desc.noWorkspace",
+  WORKSPACE_REQUESTED: "hostedStatus.desc.requested",
+  WORKSPACE_PREPARING: "hostedStatus.desc.preparing",
+  AWAITING_BROKER_LOGIN: "hostedStatus.desc.awaitingLogin",
+  BROKER_CONNECTED: "hostedStatus.desc.connected",
+  ACCOUNT_CONFIRMATION_REQUIRED: "hostedStatus.desc.confirm",
+  ACCOUNT_BOUND: "hostedStatus.desc.bound",
+  WORKSPACE_READY: "hostedStatus.desc.ready",
+  WORKSPACE_UNAVAILABLE: "hostedStatus.desc.unavailable",
 };
 
 function maskNumber(n?: string | null): string {
@@ -92,10 +94,11 @@ export function HostedWorkspaceStatus({ journey, accounts, onAuthorized }: {
    *  state. Defaults to a full reload (the accounts page re-fetches the journey). */
   onAuthorized?: () => void;
 }) {
+  const lang = useLang();
   const view = describeJourney(journey);
-  const desc = STATUS_DESC[journey.phase] ?? view.description;
-  const ws = WORKSPACE_STATUS[journey.phase] ?? { label: "In progress", color: "#38bdf8" };
-  const del = DELIVERY_STATUS[journey.delivery] ?? { label: "Preparing", color: "#38bdf8" };
+  const desc = STATUS_DESC[journey.phase] ? t(lang, STATUS_DESC[journey.phase]) : view.description;
+  const ws = WORKSPACE_STATUS[journey.phase] ?? { key: "hostedStatus.inProgress", color: "#38bdf8" };
+  const del = DELIVERY_STATUS[journey.delivery] ?? { key: "hostedStatus.preparing", color: "#38bdf8" };
   const active = accounts.find((a) => a.is_active) ?? accounts[0];
   const brokerDetected = (journey.active_login_masked || "").trim();
   const ready = journey.phase === "WORKSPACE_READY";
@@ -103,24 +106,24 @@ export function HostedWorkspaceStatus({ journey, accounts, onAuthorized }: {
   // "Trading readiness" is reported at the ASSIGNMENT tier (strategy_eligible), strictly below arming/order
   // authority — never implying it is safe to send an order.
   const readinessValue = journey.strategy_eligible
-    ? "Ready — choose a strategy"
+    ? t(lang, "hostedStatus.readyChoose")
     : ready
-      ? "Ready"
-      : "Setting up";
+      ? t(lang, "hostedStatus.ready")
+      : t(lang, "hostedStatus.settingUp");
 
   const rows: Array<{ label: string; value: string; color: string }> = [
-    { label: "Workspace status", value: ws.label, color: ws.color },
-    { label: "MetaTrader terminal", value: del.label, color: del.color },
-    { label: "Broker account", value: brokerDetected || "Not yet", color: brokerDetected ? "#e5f4ff" : "#94a3b8" },
-    { label: "Account type", value: active ? (active.is_demo === false ? "Live" : "Demo") : "—", color: "#e5f4ff" },
+    { label: t(lang, "hostedStatus.workspaceLabel"), value: t(lang, ws.key), color: ws.color },
+    { label: t(lang, "hostedStatus.terminalLabel"), value: t(lang, del.key), color: del.color },
+    { label: t(lang, "hostedStatus.brokerLabel"), value: brokerDetected || t(lang, "hostedStatus.notYet"), color: brokerDetected ? "#e5f4ff" : "#94a3b8" },
+    { label: t(lang, "hostedStatus.accountType"), value: active ? (active.is_demo === false ? t(lang, "hostedStatus.live") : t(lang, "hostedStatus.demo")) : "—", color: "#e5f4ff" },
     {
-      label: "Active account",
+      label: t(lang, "hostedStatus.activeAccount"),
       value: active
         ? (active.name || `#${active.id}`) + (maskNumber(active.account_number) ? ` · ${maskNumber(active.account_number)}` : "")
-        : "Not connected yet",
+        : t(lang, "hostedStatus.notConnected"),
       color: active ? "#e5f4ff" : "#94a3b8",
     },
-    { label: "Trading readiness", value: readinessValue, color: journey.strategy_eligible ? "#22c55e" : "#94a3b8" },
+    { label: t(lang, "hostedStatus.readiness"), value: readinessValue, color: journey.strategy_eligible ? "#22c55e" : "#94a3b8" },
   ];
 
   // ADR-0047 — the AUTOMATED-TRADING (authorization) tier, shown only once the workspace is ready. Capability
@@ -130,21 +133,21 @@ export function HostedWorkspaceStatus({ journey, accounts, onAuthorized }: {
   const canEnable = journey.can_enable_automated_trading === true;
   if (ready) {
     rows.push({
-      label: "Automated trading",
-      value: armed ? "Enabled" : canEnable ? "Ready — not yet enabled" : "Preparing",
+      label: t(lang, "hostedStatus.automated"),
+      value: armed ? t(lang, "hostedStatus.enabled") : canEnable ? t(lang, "hostedStatus.readyNotEnabled") : t(lang, "hostedStatus.preparing"),
       color: armed ? "#22c55e" : canEnable ? "#f59e0b" : "#38bdf8",
     });
   }
 
   // ONE clear next action, always. Ready → open the terminal; otherwise → continue the hosted journey.
   const primaryHref = ready ? "/trading/terminal-access" : "/onboarding/hosted";
-  const primaryLabel = ready ? "Open MetaTrader" : "Continue setup";
+  const primaryLabel = ready ? t(lang, "hostedStatus.openMetaTrader") : t(lang, "hostedStatus.continueSetup");
 
   return (
     <div style={glass}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-        <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: 0 }}>Hosted Workspace</h2>
-        <span style={{ fontSize: "0.8rem", fontWeight: 700, color: ws.color }}>{ws.label}</span>
+        <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: 0 }}>{t(lang, "hostedStatus.title")}</h2>
+        <span style={{ fontSize: "0.8rem", fontWeight: 700, color: ws.color }}>{t(lang, ws.key)}</span>
       </div>
       <p style={{ color: "#b7c5dd", fontSize: "0.9rem", lineHeight: 1.6, margin: "0.5rem 0 1.1rem" }}>{desc}</p>
 
@@ -164,17 +167,17 @@ export function HostedWorkspaceStatus({ journey, accounts, onAuthorized }: {
         <Link href={primaryHref} style={primaryBtn}>{primaryLabel}</Link>
         {ready && (
           <Link href="/strategies/marketplace" style={{ color: "#4ab3ff", fontSize: "0.85rem", fontWeight: 600, textDecoration: "none" }}>
-            Choose a strategy →
+            {t(lang, "hostedStatus.chooseStrategy")}
           </Link>
         )}
       </div>
 
       {(canEnable || armed) && (
-        <AutomatedTradingControl armed={armed} canEnable={canEnable} onAuthorized={onAuthorized} />
+        <AutomatedTradingControl armed={armed} canEnable={canEnable} onAuthorized={onAuthorized} lang={lang} />
       )}
 
       <p style={{ margin: "1rem 0 0", fontSize: "0.78rem", color: "#64748b", lineHeight: 1.5 }}>
-        GuvFX runs MetaTrader for you — you log in inside it, and we never see or store your broker password.
+        {t(lang, "hostedStatus.privacy")}
       </p>
     </div>
   );
@@ -186,10 +189,11 @@ export function HostedWorkspaceStatus({ journey, accounts, onAuthorized }: {
  * uses NO internal terminology (no "EXECUTION_READY", "AutoTrading", "trade_allowed", "arming"). On success we
  * re-read authoritative state (default: reload) rather than trust the optimistic click.
  */
-function AutomatedTradingControl({ armed, canEnable, onAuthorized }: {
+function AutomatedTradingControl({ armed, canEnable, onAuthorized, lang }: {
   armed: boolean;
   canEnable: boolean;
   onAuthorized?: () => void;
+  lang: Lang;
 }) {
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -203,10 +207,10 @@ function AutomatedTradingControl({ armed, canEnable, onAuthorized }: {
       if (onAuthorized) onAuthorized();
       else if (typeof window !== "undefined") window.location.reload();
     } catch {
-      setError("We couldn't enable automated trading just now. Please try again in a moment.");
+      setError(t(lang, "hostedStatus.enableError"));
       setPending(false);
     }
-  }, [onAuthorized]);
+  }, [lang, onAuthorized]);
 
   const box: React.CSSProperties = {
     marginTop: "1.1rem",
@@ -219,9 +223,9 @@ function AutomatedTradingControl({ armed, canEnable, onAuthorized }: {
   if (armed) {
     return (
       <div style={box}>
-        <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#22c55e" }}>Automated trading is enabled</div>
+        <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#22c55e" }}>{t(lang, "hostedStatus.automatedEnabled")}</div>
         <p style={{ margin: "0.35rem 0 0", fontSize: "0.85rem", color: "#b7c5dd", lineHeight: 1.6 }}>
-          GuvFX will execute the strategies you enable, within your safety limits. You can turn this off at any time.
+          {t(lang, "hostedStatus.automatedEnabledBody")}
         </p>
       </div>
     );
@@ -231,10 +235,9 @@ function AutomatedTradingControl({ armed, canEnable, onAuthorized }: {
 
   return (
     <div style={box}>
-      <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#e9f4ff" }}>Automated trading</div>
+      <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#e9f4ff" }}>{t(lang, "hostedStatus.automated")}</div>
       <p style={{ margin: "0.35rem 0 0.9rem", fontSize: "0.85rem", color: "#b7c5dd", lineHeight: 1.6 }}>
-        Your MetaTrader workspace is ready for automated trading. Enable automated trading when you want GuvFX
-        to begin executing your enabled strategies.
+        {t(lang, "hostedStatus.enableBody")}
       </p>
       <button
         type="button"
@@ -242,7 +245,7 @@ function AutomatedTradingControl({ armed, canEnable, onAuthorized }: {
         disabled={pending}
         style={{ ...primaryBtn, border: "none", cursor: pending ? "default" : "pointer", opacity: pending ? 0.7 : 1 }}
       >
-        {pending ? "Enabling…" : "Enable automated trading"}
+        {pending ? t(lang, "common.enabling") : t(lang, "hostedStatus.enable")}
       </button>
       {error && (
         <p role="alert" style={{ margin: "0.6rem 0 0", fontSize: "0.8rem", color: "#f87171" }}>{error}</p>

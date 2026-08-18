@@ -2,6 +2,8 @@
 
 import type { OnboardingState } from "@/types/onboarding";
 import { ONBOARDING_STEPS, isStepComplete } from "@/types/onboarding";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 type Props = {
   state: OnboardingState;
@@ -9,12 +11,14 @@ type Props = {
 };
 
 export function OnboardingProgress({ state, currentStepIndex }: Props) {
+  const lang = useLang();
+  const stepKeys = ["onboarding.step.plan", "onboarding.step.profile", "onboarding.step.workspace", "onboarding.step.start"];
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
       {/* Step 1 — always complete (user is authenticated) */}
       <StepRow
         stepNumber={1}
-        label="Create account"
+        label={t(lang, "onboarding.step.create")}
         status="complete"
       />
 
@@ -28,7 +32,7 @@ export function OnboardingProgress({ state, currentStepIndex }: Props) {
           <StepRow
             key={step.componentKey}
             stepNumber={step.stepNumber}
-            label={step.label}
+            label={t(lang, stepKeys[idx] || "onboarding.step.start")}
             status={complete ? "complete" : isCurrent ? "current" : isBlocked ? "blocked" : "pending"}
           />
         );

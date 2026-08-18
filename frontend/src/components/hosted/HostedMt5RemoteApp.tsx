@@ -27,6 +27,8 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import type { SafeLaunchDescriptor } from "@/types/mt5-interaction";
 import { withCleanGuacAuth } from "@/lib/guac-embed";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 const glassCard: React.CSSProperties = {
   borderRadius: 16,
@@ -61,6 +63,7 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
   onActiveChange?: (active: boolean) => void;
   onConnected?: () => void;
 }) {
+  const lang = useLang();
   const [account, setAccount] = useState<HostedAccount | null>(null);
   const [detecting, setDetecting] = useState(true);
   const [descriptor, setDescriptor] = useState<SafeLaunchDescriptor | null>(null);
@@ -261,18 +264,16 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
       try { localStorage.setItem(`guvfx_mt5_launched_${account.id}`, "1"); } catch { /* non-fatal */ }
       setHasLaunched(true);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Failed to open MT5 terminal.";
+      const message = err instanceof Error ? err.message : t(lang, "terminal.openError");
       if (message.includes("409")) {
-        setNotReady("Your MT5 terminal is still preparing. The first launch downloads your broker's full "
-          + "instrument catalogue, which can take up to 5 minutes — keep this window open and it will open "
-          + "automatically when it's ready.");
+        setNotReady(t(lang, "terminal.notReady"));
       } else {
-        setError(message);
+        setError(t(lang, "terminal.openError"));
       }
     } finally {
       setConnecting(false);
     }
-  }, [account, onConnected]);
+  }, [account, lang, onConnected]);
 
   if (!account) {
     // Still resolving hosted-ownership: show a neutral "preparing" message only if detection is slow (so a
@@ -280,9 +281,9 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
     if (detecting && slow) {
       return (
         <div style={{ ...glassCard, marginBottom: "1rem" }}>
-          <div style={sectionHeader}>MT5 Terminal</div>
+          <div style={sectionHeader}>{t(lang, "terminal.title")}</div>
           <p style={{ fontSize: "0.85rem", color: "#b7c5dd", margin: 0 }}>
-            Preparing your MT5 terminal… if this persists, please refresh.
+            {t(lang, "terminal.preparingRefresh")}
           </p>
         </div>
       );
@@ -292,7 +293,7 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
 
   return (
     <div style={{ ...glassCard, marginBottom: "1rem" }}>
-      <div style={sectionHeader}>MT5 Terminal</div>
+      <div style={sectionHeader}>{t(lang, "terminal.title")}</div>
       <p
         style={{
           fontSize: "0.85rem",
@@ -302,8 +303,7 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
           lineHeight: 1.6,
         }}
       >
-        Your persistent MT5 terminal for {account.label}. It opens as a single MT5 window — log in with
-        your broker credentials inside it.
+        {t(lang, "terminal.description", { account: account.label })}
       </p>
 
       {descriptor?.embed_url ? (
@@ -331,16 +331,15 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
             }}
           >
             <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
-              MT5 Terminal (RemoteApp) — click inside MT5, then type
+              {t(lang, "terminal.focusHint")}
             </span>
-            <Badge color="green">Connected</Badge>
+            <Badge color="green">{t(lang, "terminal.connected")}</Badge>
           </div>
           {firstLaunchSessionRef.current && (
             <div style={{ padding: "0.5rem 1rem", background: "rgba(74,179,255,0.05)",
                           borderBottom: "1px solid rgba(74,179,255,0.1)", fontSize: "0.78rem", color: "#94a3b8",
                           lineHeight: 1.5 }}>
-              First launch: MetaTrader is downloading your broker&apos;s instrument catalogue — this can take a few
-              minutes. It&apos;s ready to use once the chart list and symbols appear.
+              {t(lang, "terminal.firstLaunchShort")}
             </div>
           )}
           <iframe
@@ -373,21 +372,20 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
                           border: "1px solid rgba(74,179,255,0.2)", background: "rgba(74,179,255,0.06)" }}>
               <span aria-hidden style={{ fontSize: "0.95rem", lineHeight: 1.4 }}>ℹ️</span>
               <p style={{ fontSize: "0.82rem", color: "#b7c5dd", margin: 0, lineHeight: 1.6 }}>
-                <strong style={{ color: "#e9f4ff" }}>First launch:</strong> the first time you open this terminal,
-                MetaTrader downloads your broker&apos;s full instrument catalogue. This can take up to 5 minutes —
-                keep this window open and don&apos;t close the tab. This only happens once; after that it opens in seconds.
+                <strong style={{ color: "#e9f4ff" }}>{t(lang, "terminal.firstLaunchTitle")}</strong>{" "}
+                {t(lang, "terminal.firstLaunchBody")}
               </p>
             </div>
           )}
           <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" as const }}>
             <Button onClick={openTerminal} disabled={connecting}>
-              {connecting ? "Opening…" : "Open MT5 Terminal"}
+              {connecting ? t(lang, "terminal.opening") : t(lang, "terminal.open")}
             </Button>
             {connecting && (
               <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8rem", color: "#94a3b8" }}>
                 <span className="animate-spin" aria-hidden style={{ display: "inline-block", width: 14, height: 14,
                       border: "2px solid rgba(74,179,255,0.25)", borderTopColor: "#4ab3ff", borderRadius: "50%" }} />
-                Preparing your MT5 terminal… the first launch can take up to 5 minutes. Keep this window open.
+                {t(lang, "terminal.preparing")}
               </span>
             )}
             {notReady && <span style={{ fontSize: "0.8rem", color: "#fbbf24", lineHeight: 1.5 }}>{notReady}</span>}

@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 type Props = {
   state: OnboardingState;
@@ -33,6 +35,7 @@ const PLANS: PlanOption[] = [
 ];
 
 export function PlanSelectionStep({ state, onComplete }: Props) {
+  const lang = useLang();
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,9 +44,9 @@ export function PlanSelectionStep({ state, onComplete }: Props) {
     return (
       <div>
         <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-          Select Plan
+          {t(lang, "onboarding.selectPlan")}
         </h2>
-        <p style={{ color: "#86efac", fontSize: "0.9rem" }}>Your plan has been confirmed.</p>
+        <p style={{ color: "#86efac", fontSize: "0.9rem" }}>{t(lang, "onboarding.planConfirmed")}</p>
       </div>
     );
   }
@@ -66,8 +69,8 @@ export function PlanSelectionStep({ state, onComplete }: Props) {
       });
 
       onComplete();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to select plan.");
+    } catch {
+      setError(t(lang, "onboarding.planError"));
     } finally {
       setConfirming(false);
     }
@@ -76,10 +79,10 @@ export function PlanSelectionStep({ state, onComplete }: Props) {
   return (
     <div>
       <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-        Select Your Plan
+        {t(lang, "onboarding.selectPlan")}
       </h2>
       <p style={{ color: "#b7c5dd", fontSize: "0.9rem", marginBottom: "1.25rem", lineHeight: 1.6 }}>
-        Choose a plan to get started. You can change your plan later from the billing page.
+        {t(lang, "onboarding.planIntro")}
       </p>
 
       <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", marginBottom: "1.25rem" }}>
@@ -112,12 +115,12 @@ export function PlanSelectionStep({ state, onComplete }: Props) {
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" }}>
                   <span style={{ fontSize: "0.95rem", fontWeight: 600, color: "#e9f4ff" }}>
-                    {plan.label}
+                    {t(lang, plan.key === "standard" ? "onboarding.plan.standard" : "onboarding.plan.trial")}
                   </span>
-                  {plan.badge && <Badge color="blue">{plan.badge}</Badge>}
+                  {plan.badge && <Badge color="blue">{t(lang, "onboarding.recommended")}</Badge>}
                 </div>
                 <p style={{ margin: 0, fontSize: "0.82rem", color: "#8fa0b7", lineHeight: 1.4 }}>
-                  {plan.description}
+                  {t(lang, plan.key === "standard" ? "onboarding.plan.standardDesc" : "onboarding.plan.trialDesc")}
                 </p>
               </div>
               <div
@@ -139,7 +142,7 @@ export function PlanSelectionStep({ state, onComplete }: Props) {
       </div>
 
       <Button onClick={handleSelectAndConfirm} disabled={confirming || !selectedPlan}>
-        {confirming ? "Activating..." : "Activate Plan"}
+        {confirming ? t(lang, "onboarding.activating") : t(lang, "onboarding.activatePlan")}
       </Button>
 
       {error && (

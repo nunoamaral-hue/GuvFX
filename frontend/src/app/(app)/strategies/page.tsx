@@ -13,6 +13,8 @@ import {
   type SignalCopyStatus,
 } from "@/lib/strategy-journey";
 import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
+import { useLang } from "@/components/AppShell";
+import { formatDate, t, type Lang } from "@/lib/i18n";
 
 // The marketplace ids that have an automated (signal-copy) execution path. My Strategies surfaces these with
 // a normalized customer lifecycle (Added / Ready to enable / Enabled / Needs attention) + a Manage action, so
@@ -37,13 +39,23 @@ type OwnedRow = { mp: string; name: string; status: SignalCopyStatus; journey: H
 /** Managed section: the customer's owned automated strategies with a normalized lifecycle + Manage action.
  *  AJ#7.2 — PRESENTATIONAL: the parent owns the fetch so it can DEDUPE the generic list (hide the backing
  *  Strategy row so a signal-copy product renders ONCE). Renders nothing when the customer owns none. */
-function OwnedAutomatedStrategies({ rows, justEnabled }: { rows: OwnedRow[]; justEnabled: boolean }) {
+function ownedStateLabel(lang: Lang, state: string): string {
+  const keys: Record<string, string> = {
+    enabled: "hostedStatus.enabled",
+    ready_to_enable: "myStrategies.state.readyToEnable",
+    needs_attention: "myStrategies.state.needsAttention",
+    owned_setup_required: "myStrategies.state.setupRequired",
+  };
+  return keys[state] ? t(lang, keys[state]) : t(lang, "common.configure");
+}
+
+function OwnedAutomatedStrategies({ rows, justEnabled, lang }: { rows: OwnedRow[]; justEnabled: boolean; lang: Lang }) {
   if (rows.length === 0) return null;
 
   return (
     <div style={{ marginBottom: "1.25rem" }}>
       {justEnabled && rows.some((r) => r.status.enabled) && (
-        <Alert type="success">Your strategy is enabled. GuvFX will trade it automatically on your account.</Alert>
+        <Alert type="success">{t(lang, "myStrategies.enabledSuccess")}</Alert>
       )}
       <div
         style={{
@@ -53,7 +65,7 @@ function OwnedAutomatedStrategies({ rows, justEnabled }: { rows: OwnedRow[]; jus
         }}
       >
         <div style={{ fontWeight: 700, color: "#e5f4ff", fontSize: "1.05rem", marginBottom: "0.6rem" }}>
-          Automated strategies
+          {t(lang, "myStrategies.automated")}
         </div>
         <div style={{ display: "grid", gap: "0.6rem" }}>
           {rows.map((r) => {
@@ -73,11 +85,11 @@ function OwnedAutomatedStrategies({ rows, justEnabled }: { rows: OwnedRow[]; jus
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                   <span style={{ color: "#f1f5ff", fontWeight: 600, fontSize: "1rem" }}>{r.name}</span>
-                  <span style={ownedChipStyle(view.tone)}>{view.label}</span>
+                  <span style={ownedChipStyle(view.tone)}>{ownedStateLabel(lang, view.state)}</span>
                 </div>
                 <Link href={`/strategies/configure?mp=${encodeURIComponent(r.mp)}`} style={{ textDecoration: "none" }}>
                   <Button variant={view.state === "ready_to_enable" ? "primary" : "secondary"}>
-                    {view.state === "enabled" ? "Manage" : view.state === "ready_to_enable" ? "Enable" : "Configure"}
+                    {view.state === "enabled" ? t(lang, "common.manage") : view.state === "ready_to_enable" ? t(lang, "common.enable") : t(lang, "common.configure")}
                   </Button>
                 </Link>
               </div>
@@ -115,6 +127,7 @@ type Strategy = {
 };
 
 export default function StrategiesListPage() {
+  const lang = useLang();
   const glassCardStyle: React.CSSProperties = {
     border: "1px solid rgba(255,255,255,0.10)",
     borderRadius: 14,
@@ -177,16 +190,14 @@ export default function StrategiesListPage() {
         setStrategies(data);
       } catch (err: unknown) {
         console.error(err);
-        const message =
-          err instanceof Error ? err.message : "Failed to load strategies.";
-        setError(message);
+        setError(t(lang, "myStrategies.actionFailed"));
       } finally {
         setLoading(false);
       }
     };
 
     fetchStrategies();
-  }, [accessToken]);
+  }, [accessToken, lang]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -225,41 +236,40 @@ export default function StrategiesListPage() {
   return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
-          My Strategies
+          {t(lang, "myStrategies.title")}
         </h1>
         <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
-          View and analyze your strategies, then dive into AI-assisted insights.
+          {t(lang, "myStrategies.subtitle")}
         </p>
 
         {error && <Alert type="error">{error}</Alert>}
         {actionError && <Alert type="error">{actionError}</Alert>}
 
-        <OwnedAutomatedStrategies rows={automatedRows} justEnabled={justEnabled} />
+        <OwnedAutomatedStrategies rows={automatedRows} justEnabled={justEnabled} lang={lang} />
 
         <div style={{ ...glassCardStyle, padding: "1rem 1rem 1.1rem", marginBottom: "1rem" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 700, color: "#e5f4ff", fontSize: "1.05rem" }}>Strategies</div>
+            <div style={{ fontWeight: 700, color: "#e5f4ff", fontSize: "1.05rem" }}>{t(lang, "myStrategies.strategies")}</div>
             <Link href="/strategies/create" style={{ textDecoration: "none" }}>
-              <Button variant="primary">Create strategy</Button>
+              <Button variant="primary">{t(lang, "myStrategies.create")}</Button>
             </Link>
           </div>
           <div style={{ marginTop: 6, fontSize: "0.85rem", color: "#9ca3af" }}>
-            Manage your strategies and toggle them on/off.
+            {t(lang, "myStrategies.manageHelp")}
           </div>
         </div>
 
         {!accessToken && (
           <p style={{ fontStyle: "italic", fontSize: "0.9rem", color: "#9ca3af" }}>
-            Please log in to view your strategies.
+            {t(lang, "myStrategies.loginRequired")}
           </p>
         )}
 
-        {loading && <p>Loading strategies...</p>}
+        {loading && <p>{t(lang, "myStrategies.loading")}</p>}
 
         {!loading && visibleStrategies.length === 0 && automatedRows.length === 0 && !ownsSignalCopyProduct && accessToken && !error && (
           <p style={{ fontSize: "0.9rem" }}>
-            No strategies found yet. Create one from the Builder then come back
-            here.
+            {t(lang, "myStrategies.empty")}
           </p>
         )}
 
@@ -312,15 +322,15 @@ export default function StrategiesListPage() {
                     // A signal-copy backing row that hasn't yet moved to the managed section (or whose status
                     // fetch failed): render it HONESTLY as an automated product — never the misleading green
                     // "Active" badge, which reflects Strategy.is_active, not whether it is trading.
-                    <Badge color="blue">Automated</Badge>
+                    <Badge color="blue">{t(lang, "myStrategies.automatedBadge")}</Badge>
                   ) : (
                     <Badge color={strategy.is_active ? "green" : "gray"}>
-                      {strategy.is_active ? "Active" : "Inactive"}
+                      {strategy.is_active ? t(lang, "myStrategies.active") : t(lang, "myStrategies.inactive")}
                     </Badge>
                   )}
 
                   <select
-                    aria-label="Strategy actions"
+                    aria-label={t(lang, "myStrategies.actions")}
                     defaultValue=""
                     disabled={!accessToken || actionBusyId === strategy.id}
                     onChange={async (e) => {
@@ -352,7 +362,7 @@ export default function StrategiesListPage() {
 
                         if (action === "delete") {
                           const ok = window.confirm(
-                            `Delete strategy "${strategy.name}"? This cannot be undone.`
+                            t(lang, "myStrategies.deleteConfirm", { strategy: strategy.name })
                           );
                           if (!ok) return;
 
@@ -365,7 +375,7 @@ export default function StrategiesListPage() {
                       } catch (err: unknown) {
                         console.error(err);
                         const message =
-                          err instanceof Error ? err.message : "Action failed.";
+                          err instanceof Error ? t(lang, "myStrategies.actionFailed") : t(lang, "myStrategies.actionFailed");
                         setActionError(message);
                       } finally {
                         setActionBusyId(null);
@@ -381,9 +391,9 @@ export default function StrategiesListPage() {
                       outline: "none",
                     }}
                   >
-                    <option value="">Actions</option>
-                    <option value="toggle">{strategy.is_active ? "Deactivate" : "Activate"}</option>
-                    <option value="delete">Delete…</option>
+                    <option value="">{t(lang, "myStrategies.actionsPlaceholder")}</option>
+                    <option value="toggle">{strategy.is_active ? t(lang, "myStrategies.deactivate") : t(lang, "myStrategies.activate")}</option>
+                    <option value="delete">{t(lang, "myStrategies.delete")}</option>
                   </select>
                 </div>
               </div>
@@ -395,7 +405,7 @@ export default function StrategiesListPage() {
                 }}
               >
                 {strategy.description || (
-                  <span style={{ color: "#7c8ca4" }}>No description</span>
+                  <span style={{ color: "#7c8ca4" }}>{t(lang, "myStrategies.noDescription")}</span>
                 )}
               </p>
               <p
@@ -405,13 +415,13 @@ export default function StrategiesListPage() {
                   margin: 0,
                 }}
               >
-                <strong>Symbols:</strong> {strategy.symbol_universe || "—"}{" "}
+                <strong>{t(lang, "myStrategies.symbols")}:</strong> {strategy.symbol_universe || "—"}{" "}
                 &nbsp;|&nbsp;
-                <strong>Timeframe:</strong> {strategy.timeframe || "—"}
+                <strong>{t(lang, "myStrategies.timeframe")}:</strong> {strategy.timeframe || "—"}
                 {typeof strategy.filters?.template_slug === "string" && (
                   <>
                     &nbsp;|&nbsp;
-                    <strong>Engine:</strong>{" "}
+                    <strong>{t(lang, "myStrategies.engine")}:</strong>{" "}
                     {strategy.filters.template_slug === "trendline-break-pocket-ali"
                       ? "TBP"
                       : strategy.filters.template_slug ===
@@ -431,7 +441,7 @@ export default function StrategiesListPage() {
                   marginTop: "0.2rem",
                 }}
               >
-                Created: {new Date(strategy.created_at).toLocaleString()}
+                {t(lang, "myStrategies.created")}: {formatDate(lang, strategy.created_at, { hour: "2-digit", minute: "2-digit" })}
               </p>
               <div style={{ marginTop: "0.75rem" }}>
                 <Link
@@ -442,7 +452,7 @@ export default function StrategiesListPage() {
                     textDecoration: "none",
                   }}
                 >
-                  View details & AI suggestions →
+                  {t(lang, "myStrategies.viewDetails")}
                 </Link>
               </div>
             </div>
