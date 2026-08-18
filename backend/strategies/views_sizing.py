@@ -15,6 +15,20 @@ from .models import (StrategyAssignment, AssignmentLegSizing, AssignmentLegSizin
                      effective_lot_per_leg, set_assignment_lot_per_leg)
 
 
+def _source_cap_per_leg(asn):
+    """The operator per-leg lot ceiling for this assignment's signal source (a HARD limit a customer
+    can only reduce below). Fail-closed to the conservative global default for an unknown source."""
+    from execution.models import SignalSourceConfig
+    cap, _total = SignalSourceConfig.sizing_caps(getattr(asn, "signal_source", "") or "")
+    return cap
+
+
+try:
+    from execution.models import MAX_PLAN_LEGS
+except Exception:  # pragma: no cover - defensive import
+    MAX_PLAN_LEGS = 3
+
+
 class AssignmentLegSizingView(APIView):
     """GET/PUT /api/assignments/<pk>/leg-sizing/ — per-leg lot override for one strategy assignment.
 
@@ -36,6 +50,10 @@ class AssignmentLegSizingView(APIView):
 
     def _payload(self, asn):
         sizing = getattr(asn, "leg_sizing", None)
+        # The effective per-leg ceiling is the SMALLER of the model max and the operator/source cap —
+        # a customer setting may only ever REDUCE risk within the operator ceiling (P0-A Phase 6).
+        source_cap = _source_cap_per_leg(asn)
+        effective_max = min(AssignmentLegSizing.LOT_MAX, source_cap)
         return {
             "assignment_id": asn.id,
             "account_id": asn.account_id,
@@ -46,11 +64,15 @@ class AssignmentLegSizingView(APIView):
             "default_lot_per_leg": str(AssignmentLegSizing.DEFAULT_LOT),
             "min": str(AssignmentLegSizing.LOT_MIN),
             "step": str(AssignmentLegSizing.LOT_STEP),
-            "max": str(AssignmentLegSizing.LOT_MAX),
-            # Phase-0 truthfulness: this config does NOT affect live trading yet.
-            "applies_to_live_execution": False,
-            "note": "Applies to FUTURE signals only once multi-tenant routing is enabled (Phase 3); "
-                    "never modifies open positions or the global operator sizing.",
+            "max": str(effective_max),
+            "source_cap": str(source_cap),
+            "max_legs": MAX_PLAN_LEGS,   # beta Wayond opens up to this many TP positions per signal
+            # P0-A: this per-leg lot NOW drives live planning (a customer with a row sizes at their lot;
+            # no row keeps the source-global sizing). Future signals only — never open positions.
+            "applies_to_live_execution": True,
+            "note": "Sets the lot size for EACH position Wayond opens. A signal can open up to "
+                    f"{MAX_PLAN_LEGS} positions, so the maximum total per signal is {MAX_PLAN_LEGS}× this "
+                    "value. Applies to future signals only; never changes an open position.",
         }
 
     def get(self, request, pk):
@@ -63,8 +85,19 @@ class AssignmentLegSizingView(APIView):
         asn, err = self._get_owned_assignment(request, pk)
         if err:
             return err
+        # Enforce the operator/source per-leg cap on write: a customer may only REDUCE risk within the
+        # operator ceiling, never raise it (broker min/step/max are validated inside validate_lot).
         try:
-            set_assignment_lot_per_leg(asn, request.data.get("lot_per_leg"), user=request.user)
+            requested = AssignmentLegSizing.validate_lot(request.data.get("lot_per_leg"))
+        except DjangoValidationError as e:
+            return Response({"ok": False, "errors": e.message_dict}, status=status.HTTP_400_BAD_REQUEST)
+        cap = _source_cap_per_leg(asn)
+        if requested > cap:
+            return Response(
+                {"ok": False, "errors": {"lot_per_leg": [f"must be at most {cap} for this strategy"]}},
+                status=status.HTTP_400_BAD_REQUEST)
+        try:
+            set_assignment_lot_per_leg(asn, requested, user=request.user)
         except DjangoValidationError as e:
             return Response({"ok": False, "errors": e.message_dict}, status=status.HTTP_400_BAD_REQUEST)
         asn.refresh_from_db()

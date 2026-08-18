@@ -26,7 +26,7 @@ class LegSizingTests(TestCase):
         self.asn = StrategyAssignment.objects.create(
             strategy=self.strat, account=self.acct, signal_source="wayond")
         SignalSourceConfig.objects.create(
-            source="wayond", auto_demo_execution_enabled=True, max_lot_per_leg=Decimal("0.02"))
+            source="wayond", auto_demo_execution_enabled=True, max_lot_per_leg=Decimal("0.10"))
         self.factory = APIRequestFactory()
 
     def _get(self, user, pk=None):
@@ -42,13 +42,15 @@ class LegSizingTests(TestCase):
     # --- fallback + default ---
     def test_no_override_falls_back_to_source_global(self):
         r = self._get(self.owner)
-        self.assertEqual(r.data["lot_per_leg"], "0.02")  # source-global cap
+        self.assertEqual(r.data["lot_per_leg"], "0.10")  # source-global cap
         self.assertFalse(r.data["is_override"])
         self.assertEqual(r.data["default_lot_per_leg"], "0.01")
-        self.assertFalse(r.data["applies_to_live_execution"])  # truthful: NOT live
+        self.assertTrue(r.data["applies_to_live_execution"])  # activated: NOW drives live planning
+        self.assertEqual(r.data["source_cap"], "0.10")        # operator ceiling exposed
+        self.assertEqual(r.data["max_legs"], 3)               # UI derives max total = per_leg x max_legs
 
     def test_effective_resolver(self):
-        self.assertEqual(effective_lot_per_leg(self.asn), Decimal("0.02"))  # fallback
+        self.assertEqual(effective_lot_per_leg(self.asn), Decimal("0.10"))  # fallback
         AssignmentLegSizing.objects.create(assignment=self.asn, lot_per_leg=Decimal("0.01"))
         self.asn.refresh_from_db()
         self.assertEqual(effective_lot_per_leg(self.asn), Decimal("0.01"))  # override wins
@@ -108,7 +110,7 @@ class LegSizingTests(TestCase):
     def test_global_source_config_untouched(self):
         # Editing the override must NEVER mutate the shared operator sizing row.
         self._put(self.owner, "0.03")
-        self.assertEqual(SignalSourceConfig.objects.get(source="wayond").max_lot_per_leg, Decimal("0.02"))
+        self.assertEqual(SignalSourceConfig.objects.get(source="wayond").max_lot_per_leg, Decimal("0.10"))
 
     # --- review fixes: JSON-number body, garbage input, direct-ORM guard ---
     def test_json_number_body_accepted(self):
@@ -134,3 +136,14 @@ class LegSizingTests(TestCase):
         force_authenticate(req, user=self.owner)
         r = AssignmentLegSizingHistoryView.as_view()(req, pk=self.asn.id)
         self.assertEqual(r.data["history"][0]["changed_by"], "operator")  # masked, not s@x.invalid
+
+    # --- P0-A: source cap enforced on WRITE (customer may only reduce within operator ceiling) ---
+    def test_put_above_source_cap_rejected(self):
+        # wayond source cap is 0.10; a customer may not raise their per-leg lot above it.
+        r = self._put(self.owner, "0.20")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("lot_per_leg", r.data["errors"])
+        self.assertFalse(AssignmentLegSizing.objects.filter(assignment=self.asn).exists())
+
+    def test_put_at_source_cap_accepted(self):
+        self.assertEqual(self._put(self.owner, "0.10").status_code, 200)
