@@ -1,17 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ AJ#7.2 Wayond journey normalization — BUILT, STOP for Sponsor (2026-08-18)
-Branch `feat/aj72-wayond-normalize` (`bbd2780`), NOT pushed / NOT deployed. My Strategies renders the owned
-Wayond product ONCE (client-lockstep dedup by new `signal_copy_status.strategy_id`); honest "Automated" badge
-driven by the new read-only `Strategy.is_signal_copy_backed`; Configure self-updates while preparing and shows
-honest "needs attention"+support when the workspace can't self-heal; Enable flow unchanged (ADR-0047). `make
-check` green, vitest 236, adversarial review 9 rounds → converged 0 HIGH / 0 MEDIUM. No migration, zero prod
-mutation. Live cert of the Sponsor's enabled Wayond = **A (LIVE AND LISTENING)**.
-**ONE bounded next action → the Sponsor:** review the acceptance evidence and, if approved, authorise the
-frontend-only DARK deploy (build-args API base only; broker-connectivity/operations stay unset) — then FF-merge
-`feat/aj72-wayond-normalize`→main and deploy per the AJ#7.1 mechanics (backend needs the additive
-`strategy_id` status key, so backend+frontend both ship). Do NOT touch the enabled Wayond assignment (id 10),
-Customer Zero (acct 1) or acct 18.
+## ▶ AJ#7.2.1 Wayond journey normalization — DEPLOYED to production (2026-08-18)
+FF-merged → main `4ddb211` (pushed, CI GREEN); backend `8d1177449218` + frontend `374a51d4d5b0` (DARK),
+rollback tags `rollback-preAJ721`, pg backup `guvfx_preAJ721_20260818T052636Z.sql.gz`. **No migration.** Live
+read-model: acct 25 Wayond renders ONCE (dedup + `is_signal_copy_backed` "Automated" badge, chip Enabled+Manage,
+Configure truthful). Wayond execution UNCHANGED (asn 10 `updated_at` identical, 0 new jobs/trades); CZ + acct 18
+Golden AFTER==BEFORE byte-identical. **Live verdict = ENABLED AND LISTENING but ORDER EXECUTION BLOCKED** — 6
+`PLACE_ORDER` jobs for acct 25 stuck PENDING (node 2, unclaimed), 0 fills.
+
+**ONE bounded next action → the Sponsor (Red / host-gated):** the customer's Wayond is enabled and correctly
+promoting signals to orders, but the **Node-2 order bridge is not dispatching them** (`Activate-Node2Bridge.ps1`
+never run for support@). Decide whether to activate Node-2 execution for acct 25 — note this WILL immediately
+fire the 6 queued XAUUSD PLACE_ORDER jobs as live demo orders, so it is a deliberate execution-authority step,
+not part of this UX packet. Do NOT touch the enabled Wayond assignment (id 10), Customer Zero (acct 1) or acct 18
+without that explicit decision.
 
 ## ▶ SUPERVISED_SINGLE_TENANT_BETA + autonomous arming — DARK (ADR-0044, 2026-08-14)
 Sponsor-authorised bounded interim posture so the FIRST end-to-end beta journey can reach EXECUTION_READY

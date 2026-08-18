@@ -14,6 +14,27 @@
 
 ## Execution workstream log
 
+- **2026-08-18 — AJ#7.2.1 WAYOND JOURNEY NORMALIZATION: DEPLOYED to production (Sponsor-approved). 🟢**
+  FF-merged `feat/aj72-wayond-normalize` → main (`d46e109`→`4ddb211`, pushed; local==origin==GitHub); CI GREEN
+  on the exact merged SHA (governance/backend/frontend/market-data/research all success). **No migration.**
+  Backend image `8d1177449218` (recreated `guvfx-backend` only; `migrate --check`=0), frontend image
+  `374a51d4d5b0` (build-info gitCommit=`4ddb211`, flags DARK: broker-connectivity+operations `false`);
+  rollback tags `rollback-preAJ721` (backend `3af8cf847873`, frontend `b1f0c5d4ff2c`); pg backup
+  `guvfx_preAJ721_20260818T052636Z.sql.gz` (sha `1952ffc1…`). **Live read-model cert (acct 25 / support@,
+  read-only):** the customer's ONE Wayond product renders EXACTLY ONCE — `signal_copy_status.strategy_id=10`
+  dedups the generic row, `Strategy.is_signal_copy_backed=True` gives the honest "Automated" badge (never green
+  "Active"), chip = **Enabled + Manage**; Configure renders the truthful enabled state (no false "getting
+  ready", no `/onboarding/hosted` bounce); Customer Zero's own strategies unflagged/unhidden (staff-view
+  cross-tenant flag = documented LOW). **Live Wayond execution UNCHANGED:** assignment 10 `updated_at` identical
+  (`22:41:58`), workspace EXECUTION_READY/authorized/enabled/trade_allowed, router still targets acct 25,
+  provider `ti_signals` ARMED; **0 new jobs, 0 new trades** since deploy. **CZ + acct 18 structural Golden
+  AFTER==BEFORE byte-identical** (`80379700…` / `8c4dd6fb…`; acceptance graph `ea94029e…` also identical).
+  **Live verdict = ENABLED AND LISTENING, but ORDER EXECUTION BLOCKED:** since enablement 4 `ti_signals`
+  signals arrived → 2 promoted → **6 PLACE_ORDER jobs for acct 25 sit PENDING (node 2, worker_id empty), 0
+  fills** — the **pre-existing Node-2 order-bridge activation gap** (`Activate-Node2Bridge.ps1` never run for
+  support@), on the SACRED execution path, **out of scope** for this UX/read-model deploy and **not touched**.
+  Zero production customer mutation beyond the code deploy; no signal/job/order manufactured.
+
 - **2026-08-18 — AJ#7.2 WAYOND JOURNEY NORMALIZATION: BUILT + reviewed, NOT deployed — STOP for Sponsor. 🟡**
   Objective A (code, no deploy): the customer's ONE Wayond product now renders EXACTLY ONCE. My Strategies
   (`strategies/page.tsx`) lifts the automated status/journey fetch to the parent and DEDUPES the generic
