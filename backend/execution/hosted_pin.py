@@ -51,9 +51,11 @@ def identity_pin_for(account) -> dict:
     """Return the per-job identity-pin payload fragment for ``account`` (merge into the job payload).
 
     ``{}`` for a non-Provider-B account or a dark subsystem (legacy env-pin path unchanged). For a Provider-B
-    account, the mandatory pin the bridge enforces: ``require_identity_pin`` + server-derived
-    ``expected_login``/``expected_server`` + ``is_demo``. Fail-closed — a missing binding value yields an
-    empty expected with the pin STILL required, so the bridge refuses rather than trading unpinned.
+    account, the mandatory pin the bridge/worker enforce: ``require_identity_pin`` + server-derived
+    ``expected_login``/``expected_server`` + ``is_demo`` + the authoritative ``windows_username`` (the Windows
+    tenant identity the hosted worker runs the order under). Fail-closed — a missing binding value yields an
+    empty expected with the pin STILL required, so the worker/bridge refuse rather than trading unpinned or
+    under an unknown identity.
     """
     if not is_hosted_workspace_account(account):
         return {}
@@ -66,6 +68,10 @@ def identity_pin_for(account) -> dict:
         "expected_login": login,       # broker login (account number) — an identifier, never a secret
         "expected_server": server,     # broker server name — an identifier, never a secret
         "is_demo": bool(getattr(account, "is_demo", False)),
+        # ADR-0034 Option-A hosted execution identity: the authoritative per-account Windows tenant the
+        # order is dispatched under. Server-derived from the isolation system-of-record (never client-
+        # supplied); "" when unresolved → fails closed at the worker (``missing_payload_fields``).
+        "windows_username": hosted_windows_username_for(account),
     }
 
 
@@ -86,11 +92,18 @@ def inject_identity_pin(job) -> bool:
     payload = dict(getattr(job, "payload", None) or {})
     for key, value in pin.items():
         # The EXPECTED identity values (login/server/is_demo) respect an explicit caller-supplied value
-        # (setdefault); but ``require_identity_pin`` is the safety-critical ENABLE flag — it is FORCED on for
-        # a Provider-B mutation and can never be disabled by a payload, so a hosted order can never go
-        # unpinned even if a future caller mistakenly set it False.
+        # (setdefault). Two keys are safety-critical, server-AUTHORITATIVE, and therefore FORCED (never
+        # weakened by a payload):
+        #   • ``require_identity_pin`` — the ENABLE flag; a hosted order can never go unpinned.
+        #   • ``windows_username``     — the tenant identity. ``_order_payload`` pre-seeds it from the LEGACY
+        #     ``mt5_instance`` (None for a hosted account), so a plain setdefault would leave a null the
+        #     worker rejects; and a caller could otherwise spoof it. Forcing the server-derived value (or ""
+        #     when unresolved, which fails closed) is what makes a hosted PLACE_ORDER dispatchable AND
+        #     guarantees the identity is never customer-supplied.
         if key == "require_identity_pin":
             payload[key] = True
+        elif key == "windows_username":
+            payload[key] = value
         else:
             payload.setdefault(key, value)
     job.payload = payload
@@ -108,3 +121,35 @@ def hosted_workspace_uuid_for(account) -> str:
         return ""
     ws = getattr(account, "hosted_workspace", None)
     return str(getattr(ws, "workspace_uuid", "") or "") if ws is not None else ""
+
+
+def hosted_windows_username_for(account) -> str:
+    """The authoritative provisioned Windows tenant identity for a Provider-B ``account`` (ADR-0034 Option-A).
+
+    THE single server-side source of the per-account Windows identity: the per-account isolation
+    system-of-record ``terminal_provisioning.AccountProvisioning`` (OneToOne with the account, ``UNIQUE``
+    ``windows_username`` — so an account can never have more than one, ruling out an ambiguous identity by
+    construction). Read only when the profile is ``PROVISIONED`` (a ``PENDING``/``DISABLED``/``RETIRED``
+    runtime is NOT dispatchable). An identifier, never a secret; NEVER derived from client input, the
+    workspace's self-report, or a ``guvfx_u_<id>`` convention.
+
+    FAIL-CLOSED: empty string for a non-hosted account, a dark subsystem, no isolation profile, or a
+    not-``PROVISIONED`` profile — an empty result makes the hosted order refuse at the worker
+    (``missing_payload_fields``) rather than trade under an unknown identity.
+    """
+    if not is_hosted_workspace_account(account):
+        return ""
+    account_id = getattr(account, "id", None)
+    if account_id is None:
+        return ""
+    try:
+        from terminal_provisioning.models import AccountProvisioning
+    except Exception:  # noqa: BLE001 — absence of the provisioning app ⇒ no hosted identity (fail-closed)
+        return ""
+    uname = (AccountProvisioning.objects
+             .filter(trading_account_id=account_id,
+                     status=AccountProvisioning.Status.PROVISIONED,
+                     is_admin=False)   # a customer order must NEVER run under an administrator identity
+             .values_list("windows_username", flat=True)
+             .first())
+    return str(uname or "").strip()
