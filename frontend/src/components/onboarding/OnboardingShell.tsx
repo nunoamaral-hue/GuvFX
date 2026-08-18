@@ -147,9 +147,9 @@ export function OnboardingShell() {
       </p>
 
       <div
+        className="onboarding-shell-grid"
         style={{
           display: "grid",
-          gridTemplateColumns: "260px 1fr",
           gap: "1.25rem",
           alignItems: "start",
         }}
@@ -189,9 +189,9 @@ export function OnboardingShell() {
               {state.email_verified && state.risk_accepted && (
                 <div>
                   <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-                    Complete Profile
+                    {t(lang, "onboarding.profileTitle")}
                   </h2>
-                  <p style={{ color: "#86efac", fontSize: "0.9rem" }}>Profile setup is complete.</p>
+                  <p style={{ color: "#86efac", fontSize: "0.9rem" }}>{t(lang, "onboarding.profileComplete")}</p>
                 </div>
               )}
             </>
@@ -224,10 +224,10 @@ export function OnboardingShell() {
               {/* Traditional path stays reachable for customers who manage their own broker account. */}
               <div style={{ marginTop: "1.25rem", paddingTop: "1rem", borderTop: "1px solid rgba(74,179,255,0.12)" }}>
                 <p style={{ color: "#94a3b8", fontSize: "0.85rem", lineHeight: 1.6, margin: "0 0 0.6rem" }}>
-                  Already trade with your own broker? You can connect an MT5 account you manage yourself instead.
+                  {t(lang, "onboarding.selfManagedBody")}
                 </p>
                 <Button variant="secondary" onClick={handleComplete} disabled={completing} style={{ fontSize: "0.85rem" }}>
-                  {completing ? "Finishing…" : "Connect your own broker"}
+                  {completing ? t(lang, "onboarding.finishing") : t(lang, "onboarding.connectOwnBroker")}
                 </Button>
               </div>
             </div>

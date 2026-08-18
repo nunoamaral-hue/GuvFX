@@ -208,7 +208,7 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
             // endpoint answered via its staff read-bypass, so a staff viewer never binds this card to
             // another customer's workspace (and connect/mint is owner-only regardless).
             if (state?.is_owner) {
-              setAccount({ id: a.id, label: a.name || a.account_number || `Account ${a.id}` });
+              setAccount({ id: a.id, label: a.name || a.account_number || String(a.id) });
               settle(true);
               return;
             }
@@ -346,7 +346,7 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
             ref={iframeRef}
             key={`hosted-mt5-${epoch}`}
             src={descriptor.embed_url}
-            title="MT5 Terminal"
+            title={t(lang, "terminal.iframeTitle")}
             // iframes are focusable by default; make it explicit for keyboard robustness.
             tabIndex={0}
             // Focus once the RemoteApp finishes loading so keystrokes reach MT5 without needing a first click.

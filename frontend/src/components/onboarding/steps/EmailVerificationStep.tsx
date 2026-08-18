@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
 import { customerSafeError } from "@/lib/customer-safe-error";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 type Props = {
   state: OnboardingState;
@@ -12,6 +14,7 @@ type Props = {
 };
 
 export function EmailVerificationStep({ state, onComplete }: Props) {
+  const lang = useLang();
   const [sending, setSending] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [token, setToken] = useState("");
@@ -22,9 +25,9 @@ export function EmailVerificationStep({ state, onComplete }: Props) {
     return (
       <div>
         <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-          Email Verification
+          {t(lang, "onboarding.email.title")}
         </h2>
-        <p style={{ color: "#86efac", fontSize: "0.9rem" }}>Your email has been verified.</p>
+        <p style={{ color: "#86efac", fontSize: "0.9rem" }}>{t(lang, "onboarding.email.verified")}</p>
       </div>
     );
   }
@@ -36,7 +39,7 @@ export function EmailVerificationStep({ state, onComplete }: Props) {
       await apiFetch("/api/onboarding/email/send-verification/", { method: "POST" });
       setTokenSent(true);
     } catch (err: unknown) {
-      setError(customerSafeError(err, "We couldn't send the verification email. Please try again."));
+      setError(customerSafeError(err, t(lang, "onboarding.email.sendError")));
     } finally {
       setSending(false);
     }
@@ -53,10 +56,10 @@ export function EmailVerificationStep({ state, onComplete }: Props) {
       });
       onComplete();
     } catch (err: unknown) {
-      setError(customerSafeError(err, "We couldn't verify that code. Please try again.", [
-        { match: /expired/i, message: "That verification code has expired. Request a new code." },
-        { match: /already.*used|used/i, message: "That verification code has already been used. Request a new code." },
-        { match: /invalid/i, message: "That verification code isn't valid. Check it and try again." },
+      setError(customerSafeError(err, t(lang, "onboarding.email.verifyError"), [
+        { match: /expired/i, message: t(lang, "onboarding.email.expired") },
+        { match: /already.*used|used/i, message: t(lang, "onboarding.email.used") },
+        { match: /invalid/i, message: t(lang, "onboarding.email.invalid") },
       ]));
     } finally {
       setVerifying(false);
@@ -66,26 +69,26 @@ export function EmailVerificationStep({ state, onComplete }: Props) {
   return (
     <div>
       <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-        Verify Your Email
+        {t(lang, "onboarding.email.verifyTitle")}
       </h2>
       <p style={{ color: "#b7c5dd", fontSize: "0.9rem", marginBottom: "1.25rem", lineHeight: 1.6 }}>
-        We need to verify your email address to proceed. Click below to receive a verification code.
+        {t(lang, "onboarding.email.verifyBody")}
       </p>
 
       {!tokenSent ? (
         <Button onClick={handleSend} disabled={sending}>
-          {sending ? "Sending..." : "Send Verification Code"}
+          {sending ? t(lang, "onboarding.email.sending") : t(lang, "onboarding.email.sendCode")}
         </Button>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
           <p style={{ color: "#86efac", fontSize: "0.85rem" }}>
-            Verification code sent. Check your email and enter the code below.
+            {t(lang, "onboarding.email.sent")}
           </p>
           <input
             type="text"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="Enter verification code"
+            placeholder={t(lang, "onboarding.email.placeholder")}
             style={{
               padding: "0.6rem 0.85rem",
               borderRadius: 8,
@@ -99,10 +102,10 @@ export function EmailVerificationStep({ state, onComplete }: Props) {
           />
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
             <Button onClick={handleVerify} disabled={verifying || !token.trim()}>
-              {verifying ? "Verifying..." : "Verify"}
+              {verifying ? t(lang, "onboarding.email.verifying") : t(lang, "onboarding.email.verify")}
             </Button>
             <Button variant="secondary" onClick={handleSend} disabled={sending}>
-              {sending ? "Resending..." : "Resend Code"}
+              {sending ? t(lang, "onboarding.email.resending") : t(lang, "onboarding.email.resend")}
             </Button>
           </div>
         </div>

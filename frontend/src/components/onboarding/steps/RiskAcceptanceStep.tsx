@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
 import { customerSafeError } from "@/lib/customer-safe-error";
+import { useLang } from "@/components/AppShell";
+import { formatDate, t } from "@/lib/i18n";
 
 type Props = {
   state: OnboardingState;
@@ -12,6 +14,7 @@ type Props = {
 };
 
 export function RiskAcceptanceStep({ state, onComplete }: Props) {
+  const lang = useLang();
   const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -19,12 +22,12 @@ export function RiskAcceptanceStep({ state, onComplete }: Props) {
     return (
       <div>
         <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-          Risk Disclosure
+          {t(lang, "onboarding.risk.title")}
         </h2>
         <p style={{ color: "#86efac", fontSize: "0.9rem" }}>
-          Risk disclosure accepted{state.risk_accepted_at
-            ? ` on ${new Date(state.risk_accepted_at).toLocaleDateString()}`
-            : ""}.
+          {state.risk_accepted_at
+            ? t(lang, "onboarding.risk.acceptedOn", { date: formatDate(lang, state.risk_accepted_at) })
+            : t(lang, "onboarding.risk.accepted")}
         </p>
       </div>
     );
@@ -37,7 +40,7 @@ export function RiskAcceptanceStep({ state, onComplete }: Props) {
       await apiFetch("/api/onboarding/risk/accept/", { method: "POST" });
       onComplete();
     } catch (err: unknown) {
-      setError(customerSafeError(err, "We couldn't save your acceptance. Please try again."));
+      setError(customerSafeError(err, t(lang, "onboarding.risk.saveError")));
     } finally {
       setAccepting(false);
     }
@@ -46,7 +49,7 @@ export function RiskAcceptanceStep({ state, onComplete }: Props) {
   return (
     <div>
       <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-        Risk Disclosure
+        {t(lang, "onboarding.risk.title")}
       </h2>
       <div
         style={{
@@ -61,19 +64,15 @@ export function RiskAcceptanceStep({ state, onComplete }: Props) {
         }}
       >
         <p style={{ marginTop: 0 }}>
-          Trading in financial instruments carries a high level of risk and may not be suitable
-          for all investors. You should carefully consider your investment objectives, level of
-          experience, and risk appetite before making any trading decisions.
+          {t(lang, "onboarding.risk.bodyOne")}
         </p>
         <p style={{ marginBottom: 0 }}>
-          Past performance does not guarantee future results. GuvFX is a strategy management
-          platform and does not provide investment advice. You are solely responsible for all
-          trading decisions made through this platform.
+          {t(lang, "onboarding.risk.bodyTwo")}
         </p>
       </div>
 
       <Button onClick={handleAccept} disabled={accepting}>
-        {accepting ? "Processing..." : "I Understand and Accept the Risks"}
+        {accepting ? t(lang, "onboarding.risk.processing") : t(lang, "onboarding.risk.accept")}
       </Button>
 
       {error && (

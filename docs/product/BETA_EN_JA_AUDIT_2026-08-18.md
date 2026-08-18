@@ -12,10 +12,28 @@ and meaningful Japanese rendering for critical components. Locale-sensitive date
 selected language rather than the browser default. This is a P0 journey certification, not a claim that every
 customer route in the product is translated.
 
+## Beta-critical EN ↔ JA glossary
+
+| English product term | Japanese beta term | Usage note |
+|---|---|---|
+| Hosted Workspace | ホステッドワークスペース | The managed workspace product; do not alternate with generic hosting terminology. |
+| Hosted MT5 | ホステッドMT5 | The managed MT5 customer experience. Use `MetaTrader` when referring to the application itself. |
+| Marketplace | マーケットプレイス | Strategy discovery surface. |
+| Get Strategy | 戦略を追加 | Adds a strategy to the selected account; it does not enable automated trading. |
+| Configure | 設定 | Reviews the strategy contract and available customer actions. |
+| My Strategies | 利用中の戦略 | Customer-owned and enabled/disabled strategy list. |
+| Enable Strategy | 戦略を有効にする | Explicitly consents to automated trading for the named strategy and demo account. |
+| Disable Strategy | 戦略を停止する | Stops automated trading for the named strategy. |
+| Automated trading | 自動売買 | Use consistently for the customer-authorised trading state. |
+| Demo account | デモ口座 | State plainly that demo trading does not use real funds; avoid outcome guarantees. |
+| Needs attention | 確認が必要です | Actionable state that routes the customer to the next step or support. |
+| Trading account | 取引口座 | Broker/MT5 account. Reserve `アカウント` for the GuvFX user account. |
+
 ## Visual acceptance evidence
 
-All evidence was captured at 1440×1000 from a localhost preview using deterministic fixtures and intercepted
-local-preview API responses. No production customer account or production data was used.
+Desktop evidence was captured at 1440×1000. The post-rebase mobile acceptance evidence was captured at
+390×844 against the current production-mode frontend bundle using deterministic local API fixtures. No
+production customer account, production data, or trading-state mutation was used.
 
 | Customer state | English | Japanese |
 |---|---|---|
@@ -26,24 +44,33 @@ local-preview API responses. No production customer account or production data w
 | Enable Strategy confirmation | `evidence/en-ja/05-enable-confirmation-en.png` | `evidence/en-ja/05-enable-confirmation-ja.png` |
 | My Strategies | `evidence/en-ja/06-my-strategies-en.png` | `evidence/en-ja/06-my-strategies-ja.png` |
 | Needs attention | `evidence/en-ja/07-needs-attention-en.png` | `evidence/en-ja/07-needs-attention-ja.png` |
+| Wayond Configure — 390px | `evidence/en-ja/08-mobile-configure-en.png` | `evidence/en-ja/08-mobile-configure-ja.png` |
+| Enable consent — 390px | `evidence/en-ja/09-mobile-consent-en.png` | `evidence/en-ja/09-mobile-consent-ja.png` |
+| Risk consent — 390px | `evidence/en-ja/10-mobile-risk-consent-en.png` | `evidence/en-ja/10-mobile-risk-consent-ja.png` |
+
+The three mobile pairs were checked with a 390px viewport and each reported `scrollWidth === innerWidth`.
+The Japanese Configure, Enable consent, and risk-consent states contained no customer-facing English leakage;
+product names and standard identifiers such as GuvFX, Wayond, MT5, MetaTrader, XAUUSD, and M15 remain unchanged.
 
 ## Remaining backlog after P0
 
 - **P1:** billing/subscription, invoices/usage, profile/settings, analytics/charts, and remaining dashboard,
   account-detail, strategy-detail/create, and Terminal Access management fragments.
-- **P1:** a native Japanese reviewer should approve the glossary and consent/risk wording before a wider launch.
-- **P1:** add mobile-width EN/JA screenshots for the broader customer route matrix.
+- **P1:** obtain an independent native-Japanese reviewer sign-off before expanding beyond the closed beta; the
+  P0 editorial pass and beta-critical glossary are complete in this PR.
+- **P1:** extend mobile-width EN/JA evidence beyond the P0 journey to the broader customer route matrix.
 - **P2:** introduce a reviewed per-surface hard-coded-copy rule and consider splitting the dictionary by domain.
 
 ## Scope and collision gate
 
-- Baseline: `origin/main` at `4224486e8e1433327dd4065e86820efecbe8ebbe`.
+- Reconciled baseline: `origin/main` at `6cba7e6a01aa712e8f384fa571ff971cbaf3e2d6`.
 - Repository/authentication: `nunoamaral-hue/GuvFX`, authenticated as `nunoamaral-hue`.
-- Open PRs at the gate: #343 and #304, both hosted-workspace documentation only. Neither touches frontend i18n.
-- Recent merged work was reviewed through #366. The latest customer-journey change (#358) touched onboarding,
-  but is already merged into the audited baseline. Current execution/node work is outside this increment.
-- Collision result: clear for `frontend/src/lib/i18n.ts`, its contract tests, and this audit. No protected execution,
-  hosted provisioning, production data, flags, or infrastructure is touched.
+- Open PRs at the fresh gate: #367 (this stream), #343, and #304. The latter two are hosted-workspace
+  documentation only and neither touches frontend i18n.
+- Main advances since the original #367 base were reviewed through #368 plus `6cba7e6`. PR #368 added current
+  CX work; `6cba7e6` changed only authoritative hosted execution username handling and its backend tests.
+- Collision result: zero changed-path overlap with current main and the open PRs. The branch was rebased cleanly;
+  no protected execution, hosted provisioning, production data, flags, or infrastructure is touched.
 
 ## Architecture and supported locales
 

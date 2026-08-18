@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
 import { customerSafeError } from "@/lib/customer-safe-error";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 type Props = {
   state: OnboardingState;
@@ -13,6 +15,7 @@ type Props = {
 };
 
 export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
+  const lang = useLang();
   const [setting, setSetting] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [setupData, setSetupData] = useState<{ provisioning_uri: string; secret: string } | null>(null);
@@ -23,9 +26,9 @@ export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
     return (
       <div>
         <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-          Two-Factor Authentication
+          {t(lang, "onboarding.twoFactor.title")}
         </h2>
-        <p style={{ color: "#86efac", fontSize: "0.9rem" }}>2FA is enabled on your account.</p>
+        <p style={{ color: "#86efac", fontSize: "0.9rem" }}>{t(lang, "onboarding.twoFactor.enabled")}</p>
       </div>
     );
   }
@@ -40,7 +43,7 @@ export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
       );
       setSetupData(data);
     } catch (err: unknown) {
-      setError(customerSafeError(err, "We couldn't set up two-factor authentication. Please try again."));
+      setError(customerSafeError(err, t(lang, "onboarding.twoFactor.setupError")));
     } finally {
       setSetting(false);
     }
@@ -57,8 +60,8 @@ export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
       });
       onComplete();
     } catch (err: unknown) {
-      setError(customerSafeError(err, "That code isn't valid. Check it and try again.", [
-        { match: /invalid.*(otp|code)/i, message: "That code isn't valid. Check it and try again." },
+      setError(customerSafeError(err, t(lang, "onboarding.twoFactor.invalid"), [
+        { match: /invalid.*(otp|code)/i, message: t(lang, "onboarding.twoFactor.invalid") },
       ]));
     } finally {
       setVerifying(false);
@@ -68,26 +71,25 @@ export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
   return (
     <div>
       <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-        Two-Factor Authentication
+        {t(lang, "onboarding.twoFactor.title")}
       </h2>
       <p style={{ color: "#b7c5dd", fontSize: "0.9rem", marginBottom: "1.25rem", lineHeight: 1.6 }}>
-        Add an extra layer of security to your account with TOTP-based two-factor authentication.
-        This step is optional — you can skip it and enable it later.
+        {t(lang, "onboarding.twoFactor.body")}
       </p>
 
       {!setupData ? (
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
           <Button onClick={handleSetup} disabled={setting}>
-            {setting ? "Setting up..." : "Set Up 2FA"}
+            {setting ? t(lang, "onboarding.twoFactor.settingUp") : t(lang, "onboarding.twoFactor.setup")}
           </Button>
           <Button variant="secondary" onClick={onSkip}>
-            Skip for Now
+            {t(lang, "onboarding.twoFactor.skip")}
           </Button>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
           <p style={{ color: "#fbbf24", fontSize: "0.85rem", fontWeight: 600 }}>
-            Scan the QR code or enter the secret in your authenticator app:
+            {t(lang, "onboarding.twoFactor.scan")}
           </p>
           <div
             style={{
@@ -109,7 +111,7 @@ export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
               type="text"
               value={otp}
               onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-              placeholder="Enter 6-digit code"
+              placeholder={t(lang, "onboarding.twoFactor.placeholder")}
               maxLength={6}
               style={{
                 padding: "0.6rem 0.85rem",
@@ -125,7 +127,7 @@ export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
               }}
             />
             <Button onClick={handleVerify} disabled={verifying || otp.length !== 6}>
-              {verifying ? "Verifying..." : "Verify"}
+              {verifying ? t(lang, "onboarding.twoFactor.verifying") : t(lang, "onboarding.twoFactor.verify")}
             </Button>
           </div>
         </div>

@@ -56,6 +56,7 @@ export function EnableStrategyModal({
         style={{
           width: "100%",
           maxWidth: 460,
+          boxSizing: "border-box",
           border: "1px solid rgba(255,255,255,0.12)",
           borderRadius: 14,
           background: "linear-gradient(180deg, rgba(12,18,38,0.98), rgba(8,12,28,0.99))",
