@@ -52,9 +52,9 @@ const freeBadge: React.CSSProperties = {
   fontWeight: 700,
 };
 
-function accountLabelOf(a: TradingAccount | undefined, fallbackId: number | null): string {
+function accountLabelOf(a: TradingAccount | undefined, fallbackId: number | null, lang: Lang): string {
   if (a) return a.account_number ? `${a.name} (${a.account_number})` : a.name;
-  return fallbackId ? `Account #${fallbackId}` : "—";
+  return fallbackId ? t(lang, "configure.accountFallback", { id: fallbackId }) : "—";
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -157,7 +157,7 @@ function ConfigureInner() {
     () => accounts.find((a) => a.id === resolvedAccountId),
     [accounts, resolvedAccountId],
   );
-  const accountLabel = accountLabelOf(account, resolvedAccountId);
+  const accountLabel = accountLabelOf(account, resolvedAccountId, lang);
 
   const owned = !!status?.armed;
   const enabled = !!status?.enabled;
@@ -594,8 +594,13 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 export default function ConfigureStrategyPage() {
   return (
-    <Suspense fallback={<Shell><div style={cardStyle}><p style={{ color: "#94a3b8", margin: 0 }}>Loading…</p></div></Shell>}>
+    <Suspense fallback={<ConfigureFallback />}>
       <ConfigureInner />
     </Suspense>
   );
+}
+
+function ConfigureFallback() {
+  const lang = useLang();
+  return <Shell><div style={cardStyle}><p style={{ color: "#94a3b8", margin: 0 }}>{t(lang, "configure.loading")}</p></div></Shell>;
 }

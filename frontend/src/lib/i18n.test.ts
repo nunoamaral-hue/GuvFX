@@ -53,6 +53,17 @@ describe("English/Japanese translation contract", () => {
     }
     expect(missing).toEqual([]);
   });
+
+  it("keeps beta-critical Japanese terminology consistent", () => {
+    const entries = getDictionaryEntries();
+    expect(entries["nav.marketplace"].ja).toBe("マーケットプレイス");
+    expect(entries["nav.myStrategies"].ja).toBe("利用中の戦略");
+    expect(entries["myStrategies.title"].ja).toBe("利用中の戦略");
+    expect(entries["hostedStatus.title"].ja).toBe("ホステッドワークスペース");
+    expect(entries["configure.getStrategy"].ja).toBe("戦略を追加");
+    expect(entries["enableModal.confirm"].ja).toBe("戦略を有効にする");
+    expect(entries["configure.disable"].ja).toBe("戦略を停止する");
+  });
 });
 
 describe("locale-sensitive formatting", () => {
