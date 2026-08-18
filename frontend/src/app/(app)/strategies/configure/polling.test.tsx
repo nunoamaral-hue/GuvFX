@@ -13,7 +13,7 @@ const { state, apiFetch, push, fetchJourney, authorizeExecution } = vi.hoisted((
     status: { armed: true, enabled: false, account_id: 5 } as Status,
     // Start PREPARING (journey loads OK but is not yet enable-able) → the getting-ready + auto-update state.
     // (A journey that fails to load is a DIFFERENT, "unavailable" state, covered in page.test.tsx.)
-    journey: { phase: "WORKSPACE_PREPARING", execution_authorized: false, can_enable_automated_trading: false } as Record<string, unknown> | null,
+    journey: { phase: "WORKSPACE_PREPARING", next_action: "wait", execution_authorized: false, can_enable_automated_trading: false } as Record<string, unknown> | null,
     accounts: [{ id: 5, name: "Demo A", account_number: "1302587", is_demo: true, is_active: true }],
     rejectStatusOnce: false,   // simulate a transient signal-copy/status failure on the next poll only
   };
@@ -53,7 +53,7 @@ describe("Configure page — Phase 5 self-updating readiness", () => {
     apiFetch.mockClear(); push.mockClear(); authorizeExecution.mockClear(); fetchJourney.mockClear();
     state.search = "mp=mp-010&account=5";
     state.status = { armed: true, enabled: false, account_id: 5 };  // owned, not enabled
-    state.journey = { phase: "WORKSPACE_PREPARING", execution_authorized: false, can_enable_automated_trading: false }; // preparing → getting ready
+    state.journey = { phase: "WORKSPACE_PREPARING", next_action: "wait", execution_authorized: false, can_enable_automated_trading: false }; // preparing → getting ready
     state.rejectStatusOnce = false;
   });
   afterEach(() => { vi.runOnlyPendingTimers(); vi.useRealTimers(); });

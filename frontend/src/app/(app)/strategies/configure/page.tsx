@@ -157,6 +157,13 @@ function ConfigureInner() {
   // down) OR it reports the terminal error phase. We must NOT show the auto-updating "getting ready" panel
   // here — that would be a false promise — so we surface an honest "needs attention" + support route instead.
   const workspaceUnavailable = journeyUnavailable || journey?.phase === "WORKSPACE_UNAVAILABLE";
+  // Is the workspace advancing toward ready ON ITS OWN (no customer action needed)? The journey's next_action
+  // is "wait" only while it is autonomously preparing. ONLY then is the "updates automatically … the Enable
+  // button will appear here" promise honest. Other not-ready phases (NO_WORKSPACE, AWAITING_BROKER_LOGIN,
+  // ACCOUNT_CONFIRMATION_REQUIRED …) need the customer to complete a step — polling can never advance them, so
+  // we must send them to finish setup instead of promising a self-heal that never comes.
+  const journeyProgressing = journey?.next_action === "wait";
+  const needsSetup = !!journey && !journeyProgressing && !canEnable && !workspaceUnavailable;
 
   // Poll ONLY while the customer is in the "getting ready" state: owned, has a resolvable account, not enabled,
   // not yet enable-able, not ambiguous, and the workspace is actually progressing (not unavailable). Stops the
@@ -309,6 +316,8 @@ function ConfigureInner() {
           ambiguous={ambiguous}
           canEnable={canEnable}
           workspaceUnavailable={workspaceUnavailable}
+          preparing={journeyProgressing}
+          needsSetup={needsSetup}
           busy={busy}
           onGet={doGet}
           onDisable={doDisable}
@@ -345,6 +354,8 @@ function AutomatedConfig(props: {
   ambiguous: boolean;
   canEnable: boolean;
   workspaceUnavailable: boolean;
+  preparing: boolean;
+  needsSetup: boolean;
   busy: boolean;
   onGet: () => void;
   onDisable: () => void;
@@ -449,6 +460,17 @@ function AutomatedConfig(props: {
             body="We couldn't get your trading workspace ready for this strategy. This usually needs a hand from our team — please contact support and we'll sort it out."
             action={<Link href="/support"><Button variant="secondary">Contact support</Button></Link>}
           />
+        ) : props.needsSetup ? (
+          /* AJ#7.2 (adversarial fix): the workspace is at a phase that needs the CUSTOMER to complete a step
+             (request the workspace, log in, confirm the account). Polling can't advance it, so we must NOT
+             promise auto-update — we send them to finish setup. Safe from the AJ#6.5/7.1 loop: onboarding only
+             redirects at WORKSPACE_READY, which is the canEnable branch above, never a needs-setup phase. */
+          <ActionPanel
+            tone="action"
+            title="Finish setting up your workspace"
+            body={`${props.strategyName} is added to ${props.accountLabel}. Your workspace needs one more step before you can enable it — continue your setup and we'll bring you right back.`}
+            action={<Link href="/onboarding/hosted"><Button variant="primary">Continue setup</Button></Link>}
+          />
         ) : (
           <ActionPanel
             tone="neutral"
@@ -458,7 +480,12 @@ function AutomatedConfig(props: {
                page). It must NOT link back to /onboarding/hosted, which at WORKSPACE_READY bounces to the
                marketplace → owned card → Configure, re-forming the AJ#6.5-class navigation loop. */
             action={<Link href="/trading/terminal-access"><Button variant="secondary">Open MetaTrader</Button></Link>}
-            footnote="This page updates automatically — you don't need to refresh. As soon as your workspace is ready, the Enable button will appear here."
+            /* AJ#7.2 (adversarial fix): only promise auto-update when the workspace is genuinely preparing on
+               its own (next_action "wait"). When journey is still loading/transient (not preparing), we omit
+               the footnote so we never promise a self-heal we can't guarantee. */
+            footnote={props.preparing
+              ? "This page updates automatically — you don't need to refresh. As soon as your workspace is ready, the Enable button will appear here."
+              : undefined}
           />
         )}
       </div>

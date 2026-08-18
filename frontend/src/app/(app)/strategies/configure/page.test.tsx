@@ -149,7 +149,7 @@ describe("Configure page — Wayond (automated)", () => {
 
   it("workspace preparing → Enable degrades to a 'getting ready' state, never an Enable modal", async () => {
     // Journey loads OK but is not yet enable-able (still preparing) → the auto-updating getting-ready panel.
-    state.journey = { phase: "WORKSPACE_PREPARING", execution_authorized: false, can_enable_automated_trading: false };
+    state.journey = { phase: "WORKSPACE_PREPARING", next_action: "wait", execution_authorized: false, can_enable_automated_trading: false };
     state.status = { armed: true, enabled: false, account_id: 5 };
     render(<ConfigurePage />);
     await screen.findByText(/getting ready/i);
@@ -191,6 +191,19 @@ describe("Configure page — Wayond (automated)", () => {
     expect(screen.queryByRole("link", { name: /contact support/i })).toBeNull();
     expect(screen.queryByRole("button", { name: "Enable Strategy" })).toBeNull();
     state.journeyThrows = false;   // reset for other tests
+  });
+
+  it("a phase that needs a customer step (NO_WORKSPACE) → 'Continue setup', no false auto-update promise", async () => {
+    // AJ#7.2 adversarial fix: polling can't advance a phase that requires the customer to act, so the panel
+    // must NOT promise the Enable button will appear automatically — it sends them to finish setup instead.
+    state.journey = { phase: "NO_WORKSPACE", next_action: "request_workspace", execution_authorized: false, can_enable_automated_trading: false };
+    state.status = { armed: true, enabled: false, account_id: 5 };
+    render(<ConfigurePage />);
+    await screen.findByText(/finish setting up/i);
+    const cont = screen.getByRole("link", { name: /continue setup/i });
+    expect(cont).toHaveAttribute("href", "/onboarding/hosted");   // correct destination; loop-free (not READY)
+    expect(screen.queryByText(/updates automatically/i)).toBeNull();     // no false self-heal promise
+    expect(screen.queryByRole("button", { name: "Enable Strategy" })).toBeNull();
   });
 });
 
