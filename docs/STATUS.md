@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-08-18 — ADR-0048 EXECUTION-PATH READINESS + STALE PRE-ACTIVATION RECONCILER: BUILT (code/test only,
+  DARK) — STOP for Sponsor. 🟡** Fixes the Node-2 root-cause CLASS from the P0 forensic: the platform
+  conflated four readiness tiers and treated a node with `status=ACTIVE` as executable even with no worker to
+  claim its jobs. Branch `feat/node2-execpath-readiness` (`fad465f`), NOT pushed / NOT deployed, NO production
+  mutation, NO activation, NO order. New concept-C read-only surface `execution/node_execution.py`
+  (`worker_authorized_nodes` shared rule, `eligible_order_claimant`, `node_execution_operational` commission
+  gate, `scan_execution_path_health`) — composes existing route/claim/ComponentHealth pieces, fail-closed,
+  DARK-safe, NEVER an order authority (live bridge gate unchanged). `WorkerIdentity.last_seen` (additive
+  migration `0031`) stamped throttled in the claim seam; `views.next_job` now derives node-awareness from the
+  shared rule so readiness can't drift. Stale reconciler `execution/stale_reconcile.py` +
+  `manage.py reconcile_stale_preactivation_orders` cancels never-claimed PENDING PLACE_ORDER jobs → FAILED
+  (`select_for_update(skip_locked)`+compare-and-set; can't race a live claim; PENDING-only) then reuses
+  `resolve_completed_plans(account_id)` PROMOTED→CLOSED to release the `account_exposure_exceeded` cascade —
+  DRY-RUN default, refuses Customer Zero + acct 18, idempotent, audited, places no order. Terminal state =
+  FAILED (no new job state invented). Read-model 4th tier (EXECUTION-PATH/DISPATCH) = **doc only** (ADR-0048).
+  31 focused tests incl. exposure-cascade regression + node/worker isolation; **`make check` green (backend
+  4183 OK, lint 0 errors, build OK)**. ADR-0048 + Node-2 activation runbook + rollback authored. **SCOPE
+  NOTE:** `node_execution_operational` predicate + commission command exist and are tested, but are NOT yet
+  wired as a hard gate into the automatic `allocate_workspace_node`/`prepare_hosted_slot` path — that
+  integration is a documented follow-up. **STOP: Sponsor review; the live activation + first-fill remain
+  Nuno-gated (Red).**
+
 - **2026-08-18 — AJ#7.2.1 WAYOND JOURNEY NORMALIZATION: DEPLOYED to production (Sponsor-approved). 🟢**
   FF-merged `feat/aj72-wayond-normalize` → main (`d46e109`→`4ddb211`, pushed; local==origin==GitHub); CI GREEN
   on the exact merged SHA (governance/backend/frontend/market-data/research all success). **No migration.**
