@@ -157,12 +157,16 @@ function ConfigureInner() {
   // down) OR it reports the terminal error phase. We must NOT show the auto-updating "getting ready" panel
   // here — that would be a false promise — so we surface an honest "needs attention" + support route instead.
   const workspaceUnavailable = journeyUnavailable || journey?.phase === "WORKSPACE_UNAVAILABLE";
-  // Is the workspace advancing toward ready ON ITS OWN (no customer action needed)? The journey's next_action
-  // is "wait" only while it is autonomously preparing. ONLY then is the "updates automatically … the Enable
-  // button will appear here" promise honest. Other not-ready phases (NO_WORKSPACE, AWAITING_BROKER_LOGIN,
-  // ACCOUNT_CONFIRMATION_REQUIRED …) need the customer to complete a step — polling can never advance them, so
-  // we must send them to finish setup instead of promising a self-heal that never comes.
-  const journeyProgressing = journey?.next_action === "wait";
+  // Is the workspace advancing toward enable-able ON ITS OWN (no customer action needed)? Two autonomous cases:
+  //  • next_action "wait" — still preparing the workspace.
+  //  • phase WORKSPACE_READY — onboarding is COMPLETE (next_action becomes "assign_strategy"), but ADR-0047
+  //    execution-authorization (canEnable) rides a strictly-higher, host-observed EXECUTION_READY tier that
+  //    lags WORKSPACE_READY (AJ#3 decouple). That warm-up window is NOT a customer step — polling advances it.
+  // ONLY these are honestly "getting ready"; other not-ready phases (NO_WORKSPACE, AWAITING_BROKER_LOGIN,
+  // ACCOUNT_CONFIRMATION_REQUIRED …) need the customer to complete a step, so we send them to finish setup.
+  // CRITICAL: WORKSPACE_READY must be excluded from needsSetup — routing it to /onboarding/hosted re-forms the
+  // AJ#6.5/7.1 loop (onboarding at WORKSPACE_READY → "Choose Strategy" → marketplace → Configure → …).
+  const journeyProgressing = journey?.next_action === "wait" || journey?.phase === "WORKSPACE_READY";
   const needsSetup = !!journey && !journeyProgressing && !canEnable && !workspaceUnavailable;
 
   // Poll ONLY while the customer is in the "getting ready" state: owned, has a resolvable account, not enabled,

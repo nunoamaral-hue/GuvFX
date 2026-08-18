@@ -205,6 +205,23 @@ describe("Configure page — Wayond (automated)", () => {
     expect(screen.queryByText(/updates automatically/i)).toBeNull();     // no false self-heal promise
     expect(screen.queryByRole("button", { name: "Enable Strategy" })).toBeNull();
   });
+
+  it("WORKSPACE_READY warm-up (onboarding done, execution plane still warming) is getting-ready — NEVER a /onboarding/hosted loop", async () => {
+    // AJ#7.2 adversarial fix (HIGH): onboarding completes at WORKSPACE_READY (next_action 'assign_strategy')
+    // BEFORE canEnable (which needs the higher, host-observed EXECUTION_READY tier). This normal warm-up window
+    // must NOT be treated as "needs setup" — routing it to /onboarding/hosted re-forms the AJ#6.5/7.1 loop.
+    state.journey = { phase: "WORKSPACE_READY", next_action: "assign_strategy", execution_authorized: false, can_enable_automated_trading: false };
+    state.status = { armed: true, enabled: false, account_id: 5 };
+    render(<ConfigurePage />);
+    await screen.findByText(/getting ready/i);
+    expect(screen.queryByText(/finish setting up/i)).toBeNull();             // NOT the needs-setup panel
+    expect(screen.queryByRole("button", { name: "Enable Strategy" })).toBeNull();
+    // The forward action stays on the stable MetaTrader page — and NOTHING links to /onboarding/hosted.
+    expect(screen.getByRole("link", { name: /open metatrader/i })).toHaveAttribute("href", "/trading/terminal-access");
+    for (const l of screen.queryAllByRole("link")) {
+      expect(l.getAttribute("href")).not.toBe("/onboarding/hosted");
+    }
+  });
 });
 
 describe("Configure page — generic (research/template)", () => {

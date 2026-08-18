@@ -136,6 +136,10 @@ export default function StrategiesListPage() {
   // the backing Strategy row of an owned signal-copy product is hidden so the product renders exactly once.
   const [automatedRows, setAutomatedRows] = useState<OwnedRow[]>([]);
   const [justEnabled, setJustEnabled] = useState(false);
+  // Gate the generic list on the automated (dedup-source) load so the backing Wayond row can never FLASH with
+  // a misleading "Active" badge before dedup applies. A SAFETY TIMEOUT flips this true regardless, so a hung
+  // managed endpoint can never block the customer's genuine strategies indefinitely (worst case: brief flash).
+  const [automatedLoaded, setAutomatedLoaded] = useState(false);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -191,6 +195,9 @@ export default function StrategiesListPage() {
     const enabledHint = typeof window !== "undefined"
       && new URLSearchParams(window.location.search).get("enabled") === "1";
     let cancelled = false;
+    // Safety net: never let a stalled managed endpoint keep the generic list hidden. Whatever happens, the
+    // list renders within a few seconds (dedup then applies late at worst — a brief flash, not a block).
+    const safety = setTimeout(() => { if (!cancelled) setAutomatedLoaded(true); }, 3000);
     (async () => {
       const journey = await fetchJourney().then((r) => (r.ok ? r.journey : null)).catch(() => null);
       const found: OwnedRow[] = [];
@@ -198,9 +205,9 @@ export default function StrategiesListPage() {
         const st = await fetchSignalCopyStatus(mp).catch(() => null);
         if (st?.armed) found.push({ mp, name: mpDisplayName(mp), status: st, journey });
       }
-      if (!cancelled) { setAutomatedRows(found); setJustEnabled(enabledHint); }
+      if (!cancelled) { setAutomatedRows(found); setJustEnabled(enabledHint); setAutomatedLoaded(true); }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearTimeout(safety); };
   }, [accessToken]);
 
   // Strategy ids backing an owned automated product — hidden from the generic list so a signal-copy product
@@ -244,9 +251,9 @@ export default function StrategiesListPage() {
           </p>
         )}
 
-        {loading && <p>Loading strategies...</p>}
+        {(loading || (accessToken && !automatedLoaded)) && <p>Loading strategies...</p>}
 
-        {!loading && visibleStrategies.length === 0 && automatedRows.length === 0 && accessToken && !error && (
+        {!loading && automatedLoaded && visibleStrategies.length === 0 && automatedRows.length === 0 && accessToken && !error && (
           <p style={{ fontSize: "0.9rem" }}>
             No strategies found yet. Create one from the Builder then come back
             here.
@@ -261,7 +268,7 @@ export default function StrategiesListPage() {
             marginTop: "0.75rem",
           }}
         >
-          {visibleStrategies.map((strategy) => (
+          {automatedLoaded && visibleStrategies.map((strategy) => (
             <div
               key={strategy.id}
               style={{
