@@ -207,11 +207,19 @@ export default function StrategiesListPage() {
     return () => { cancelled = true; };
   }, [accessToken]);
 
-  // DEDUP is server-computed: the generic list hides any row the backend flags as backing an owned signal-copy
-  // product (Strategy.is_signal_copy_backed) — no second client fetch, no race, no flash. A customer who owns a
-  // signal-copy product always carries its backing (flagged) row in `strategies`, which also suppresses the
-  // "no strategies" empty state while the managed card is still loading.
-  const visibleStrategies = strategies.filter((s) => !s.is_signal_copy_backed);
+  // DEDUP (client, in LOCKSTEP with the managed card): hide a backing row from the generic list ONLY once the
+  // managed section actually renders it — both derive from the SAME status fetch (`automatedRows`). This keeps
+  // the product visible EXACTLY ONCE and, crucially, NEVER zero times: if the status fetch fails, automatedRows
+  // is empty → nothing is deduped → the backing row still shows in the generic list (once), so an owned/enabled
+  // product can never silently vanish.
+  const automatedStrategyIds = new Set(
+    automatedRows
+      .map((r) => r.status.strategy_id)
+      .filter((id): id is number => typeof id === "number"),
+  );
+  const visibleStrategies = strategies.filter((s) => !automatedStrategyIds.has(s.id));
+  // A backing row that IS still in the generic list (managed card not yet loaded, or its fetch failed) must not
+  // wear the misleading green "Active" badge (invariant 3). The server flag lets us render it honestly.
   const ownsSignalCopyProduct = strategies.some((s) => s.is_signal_copy_backed);
 
   return (
@@ -248,7 +256,7 @@ export default function StrategiesListPage() {
 
         {loading && <p>Loading strategies...</p>}
 
-        {!loading && visibleStrategies.length === 0 && !ownsSignalCopyProduct && automatedRows.length === 0 && accessToken && !error && (
+        {!loading && visibleStrategies.length === 0 && automatedRows.length === 0 && !ownsSignalCopyProduct && accessToken && !error && (
           <p style={{ fontSize: "0.9rem" }}>
             No strategies found yet. Create one from the Builder then come back
             here.
@@ -300,9 +308,16 @@ export default function StrategiesListPage() {
                   </span>
                 </h3>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <Badge color={strategy.is_active ? "green" : "gray"}>
-                    {strategy.is_active ? "Active" : "Inactive"}
-                  </Badge>
+                  {strategy.is_signal_copy_backed ? (
+                    // A signal-copy backing row that hasn't yet moved to the managed section (or whose status
+                    // fetch failed): render it HONESTLY as an automated product — never the misleading green
+                    // "Active" badge, which reflects Strategy.is_active, not whether it is trading.
+                    <Badge color="blue">Automated</Badge>
+                  ) : (
+                    <Badge color={strategy.is_active ? "green" : "gray"}>
+                      {strategy.is_active ? "Active" : "Inactive"}
+                    </Badge>
+                  )}
 
                   <select
                     aria-label="Strategy actions"

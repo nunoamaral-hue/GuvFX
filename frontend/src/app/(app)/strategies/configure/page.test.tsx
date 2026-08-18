@@ -15,6 +15,7 @@ const { state, apiFetch, push, fetchJourney, authorizeExecution } = vi.hoisted((
     journey: { execution_authorized: false, can_enable_automated_trading: true } as Record<string, unknown> | null,
     armError: null as null | { httpStatus?: number; body?: { status?: string } },
     journeyThrows: false,   // simulate a TRANSIENT (non-404) journey error that fetchJourney rethrows
+    statusThrows: false,    // simulate a signal-copy/status fetch failure
     accounts: [{ id: 5, name: "Demo A", account_number: "1302587", is_demo: true, is_active: true }],
   };
   const push = vi.fn();
@@ -26,7 +27,7 @@ const { state, apiFetch, push, fetchJourney, authorizeExecution } = vi.hoisted((
   const apiFetch = vi.fn(async (path: string, opts?: RequestInit) => {
     if (path.startsWith("/api/auth/me")) return {};
     if (path.startsWith("/api/trading/accounts")) return state.accounts;
-    if (path.includes("/signal-copy/status")) return { ...state.status };
+    if (path.includes("/signal-copy/status")) { if (state.statusThrows) throw new Error("500"); return { ...state.status }; }
     if (path.includes("/signal-copy/get")) { state.status = { armed: true, enabled: false, account_id: 5 }; return { status: "owned", assignment_id: 9, enabled: false }; }
     if (path.includes("/signal-copy/arm")) {
       if (state.armError) { throw Object.assign(new Error("nope"), state.armError); }
@@ -61,6 +62,7 @@ describe("Configure page — Wayond (automated)", () => {
     state.journey = { execution_authorized: false, can_enable_automated_trading: true };
     state.armError = null;
     state.journeyThrows = false;
+    state.statusThrows = false;
   });
 
   it("shows the honest contract with managed rows and NO editable sizing/TP/SL controls", async () => {
@@ -204,6 +206,15 @@ describe("Configure page — Wayond (automated)", () => {
     expect(cont).toHaveAttribute("href", "/onboarding/hosted");   // correct destination; loop-free (not READY)
     expect(screen.queryByText(/updates automatically/i)).toBeNull();     // no false self-heal promise
     expect(screen.queryByRole("button", { name: "Enable Strategy" })).toBeNull();
+  });
+
+  it("initial status fetch fails → a neutral 'checking' state (poll retries), NEVER 'Get Strategy' for a possibly-owned product", async () => {
+    // AJ#7.2 adversarial fix: a thrown status fetch must not be read as "not owned" (which would offer
+    // "Get Strategy" for a product they already own). Show a checking state; the poll self-heals.
+    state.statusThrows = true;
+    render(<ConfigurePage />);
+    await screen.findByText(/checking your strategy/i);
+    expect(screen.queryByRole("button", { name: "Get Strategy" })).toBeNull();
   });
 
   it("WORKSPACE_READY warm-up (onboarding done, execution plane still warming) is getting-ready — NEVER a /onboarding/hosted loop", async () => {

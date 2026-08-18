@@ -74,6 +74,10 @@ function ConfigureInner() {
   // AJ#7.2 — the hosted journey could not be loaded at all (endpoint unavailable / not entitled). Distinct
   // from "still preparing": here the workspace will NOT self-heal, so we must not promise auto-update.
   const [journeyUnavailable, setJourneyUnavailable] = useState(false);
+  // AJ#7.2 — the signal-copy status fetch failed (threw), so we can't yet tell whether the customer owns this
+  // product. Distinct from a real "not owned" (armed:false) result: on failure we must NOT show "Get Strategy"
+  // (they may already own it) — we show a "checking" state and let the poll retry and self-heal.
+  const [statusUnavailable, setStatusUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -100,10 +104,12 @@ function ConfigureInner() {
     if (!automated || !mp) return null;
     try {
       const st = await fetchSignalCopyStatus(mp);
-      setStatus(st);
+      setStatus(st); setStatusUnavailable(false);
       return st;
     } catch {
-      setStatus({ armed: false, enabled: false });
+      // A thrown status fetch is a TRANSIENT failure — do NOT assert "not owned" (which would offer
+      // "Get Strategy" for a product they may already own); mark it unavailable so the poll retries.
+      setStatusUnavailable(true);
       return null;
     }
   }, [automated, mp]);
@@ -117,7 +123,10 @@ function ConfigureInner() {
       setLoading(true);
       const accountsP = apiFetch<TradingAccount[]>("/api/trading/accounts/")
         .catch(() => apiFetch<TradingAccount[]>("/api/trading/trading-accounts/").catch(() => [] as TradingAccount[]));
-      const statusP = automated ? fetchSignalCopyStatus(mp).catch(() => ({ armed: false, enabled: false } as SignalCopyStatus)) : Promise.resolve(null);
+      // Track a THROWN status fetch as unavailable (transient) rather than collapsing it to "not owned".
+      const statusP = automated
+        ? fetchSignalCopyStatus(mp).then((st) => ({ st, failed: false })).catch(() => ({ st: null as SignalCopyStatus | null, failed: true }))
+        : Promise.resolve({ st: null as SignalCopyStatus | null, failed: false });
       // Distinguish "genuinely unavailable" from "transient": fetchJourney returns {ok:false} ONLY for a 404
       // (feature dark / not entitled) and RE-THROWS 5xx/network so callers can retry. So a 404 → sticky
       // "needs attention", but a thrown (transient) error → journey null + NOT unavailable, i.e. the
@@ -127,10 +136,11 @@ function ConfigureInner() {
             .then((r) => (r.ok ? { journey: r.journey, unavailable: false } : { journey: null, unavailable: true }))
             .catch(() => ({ journey: null, unavailable: false }))
         : Promise.resolve({ journey: null, unavailable: false });
-      const [accs, st, jl] = await Promise.all([accountsP, statusP, journeyP]);
+      const [accs, sl, jl] = await Promise.all([accountsP, statusP, journeyP]);
       if (cancelled) return;
       setAccounts(accs || []);
-      setStatus(st);
+      setStatus(sl.st);
+      setStatusUnavailable(sl.failed);
       setJourney(jl.journey);
       setJourneyUnavailable(jl.unavailable);
       setLoading(false);
@@ -174,7 +184,9 @@ function ConfigureInner() {
   // moment it becomes Ready to enable, gets enabled, goes unavailable, or the customer leaves — in place.
   const gettingReady = owned && !!account && !enabled && !canEnable && !ambiguous && !workspaceUnavailable;
   useEffect(() => {
-    if (!isAuthed || !automated || !mp || !gettingReady) return;
+    // Poll while getting-ready OR while the status is unavailable (transient fetch failure) — the latter so an
+    // owned product misread as "not owned" self-heals instead of stranding the customer on "Get Strategy".
+    if (!isAuthed || !automated || !mp || (!gettingReady && !statusUnavailable)) return;
     // SINGLE-FLIGHT: schedule the next refresh only AFTER the current one resolves (recursive setTimeout, not
     // setInterval) so two polls can never overlap and an out-of-order response can never revert a fresh state.
     // FAIL-SAFE: only a fresh non-null result is applied, so a transient miss never downgrades a good UI.
@@ -188,12 +200,12 @@ function ConfigureInner() {
       ]);
       if (cancelled) return;
       if (jr) { setJourney(jr); setJourneyUnavailable(false); }   // a fresh journey means it is reachable again
-      if (st) setStatus(st);
+      if (st) { setStatus(st); setStatusUnavailable(false); }     // a fresh status means it is reachable again
       if (!cancelled) timer = setTimeout(tick, 5000);
     };
     timer = setTimeout(tick, 5000);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [isAuthed, automated, mp, gettingReady]);
+  }, [isAuthed, automated, mp, gettingReady, statusUnavailable]);
 
   const doEnableConfirm = async () => {
     if (!resolvedAccountId) return;
@@ -322,6 +334,7 @@ function ConfigureInner() {
           workspaceUnavailable={workspaceUnavailable}
           preparing={journeyProgressing}
           needsSetup={needsSetup}
+          statusUnavailable={statusUnavailable}
           busy={busy}
           onGet={doGet}
           onDisable={doDisable}
@@ -360,6 +373,7 @@ function AutomatedConfig(props: {
   workspaceUnavailable: boolean;
   preparing: boolean;
   needsSetup: boolean;
+  statusUnavailable: boolean;
   busy: boolean;
   onGet: () => void;
   onDisable: () => void;
@@ -425,6 +439,16 @@ function AutomatedConfig(props: {
             title="Choose an account"
             body="Pick the account you want to use this strategy on from the marketplace."
             action={<Link href="/strategies/marketplace"><Button variant="primary">Back to marketplace</Button></Link>}
+          />
+        ) : props.statusUnavailable ? (
+          /* AJ#7.2 (adversarial fix): the status fetch failed, so we can't confirm ownership. NEVER offer
+             "Get Strategy" here — it would be wrong for a product the customer already owns. Show a neutral
+             "checking" state; the poll retries and self-heals into the correct panel. */
+          <ActionPanel
+            tone="neutral"
+            title="Checking your strategy…"
+            body="We're loading this strategy's status. This will update automatically in a moment — you don't need to refresh."
+            action={<Link href="/strategies"><Button variant="secondary">Go to My Strategies</Button></Link>}
           />
         ) : !props.owned ? (
           <ActionPanel

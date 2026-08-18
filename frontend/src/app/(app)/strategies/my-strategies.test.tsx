@@ -23,10 +23,14 @@ const { state, apiFetch, fetchJourney } = vi.hoisted(() => {
       ok: boolean;
       journey: { execution_authorized?: boolean; can_enable_automated_trading?: boolean } | null;
     },
+    statusThrows: false,
   };
   const apiFetch = vi.fn(async (path: string) => {
     if (path.startsWith("/api/auth/me")) return {};
-    if (path.includes("/signal-copy/status")) return { ...state.status };
+    if (path.includes("/signal-copy/status")) {
+      if (state.statusThrows) throw new Error("500");   // managed-card status fetch fails
+      return { ...state.status };
+    }
     if (path.startsWith("/api/strategies/strategies/")) return [...state.strategies];
     return {};
   });
@@ -60,6 +64,7 @@ describe("My Strategies — signal-copy dedup", () => {
       { id: 3, name: "London Session Box", is_active: false, is_signal_copy_backed: false },
     ];
     state.journey = { ok: true, journey: { execution_authorized: false, can_enable_automated_trading: false } };
+    state.statusThrows = false;
     setToken();
   });
 
@@ -113,6 +118,17 @@ describe("My Strategies — signal-copy dedup", () => {
     // Deduped out of the generic list → no "Active" badge anywhere, only the lifecycle chip.
     expect(screen.queryByText("Active")).toBeNull();
     expect(screen.getByText("Setup required")).toBeTruthy();
+  });
+
+  it("status fetch fails: the owned product NEVER vanishes — its backing row stays visible, rendered as a neutral 'Automated' badge (never the misleading green 'Active')", async () => {
+    // Dedup and the managed card share the SAME status fetch, so when it fails there is no dedup and the
+    // backing row remains in the generic list — visible ONCE, never zero times — and the server flag makes it
+    // render honestly (Automated), not with Strategy.is_active's green Active badge.
+    state.statusThrows = true;
+    render(<MyStrategies />);
+    await waitFor(() => expect(screen.getByText("Wayond WIM Strategy")).toBeTruthy());
+    expect(screen.getByText("Automated")).toBeTruthy();
+    expect(screen.queryByText("Active")).toBeNull();
   });
 
   it("ambiguous ownership (server fails open — not flagged): nothing is deduped, product surfaces for attention", async () => {
