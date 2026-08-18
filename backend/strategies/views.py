@@ -713,12 +713,13 @@ class StrategyViewSet(viewsets.ModelViewSet):
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
-        # Populate the backing set only for the list read model; other actions default the flag to False.
-        if getattr(self, "action", None) == "list":
-            try:
-                ctx["signal_copy_backed_ids"] = self._signal_copy_backing_ids(self.request)
-            except Exception:
-                ctx["signal_copy_backed_ids"] = set()   # fail open — never mislabel on a computation error
+        # Populate the backing set for EVERY action, so a single-object response (e.g. the toggle PATCH the
+        # generic list issues) carries a correct is_signal_copy_backed and the honest "Automated" badge never
+        # reverts to "Active" after an update. Cheap (a couple of scoped queries); fail-open on any error.
+        try:
+            ctx["signal_copy_backed_ids"] = self._signal_copy_backing_ids(self.request)
+        except Exception:
+            ctx["signal_copy_backed_ids"] = set()   # fail open — never mislabel on a computation error
         return ctx
 
     def perform_create(self, serializer):

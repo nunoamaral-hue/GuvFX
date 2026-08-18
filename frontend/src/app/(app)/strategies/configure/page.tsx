@@ -426,6 +426,17 @@ function AutomatedConfig(props: {
             body="Something about this strategy's setup needs a closer look. Please contact support and we'll sort it out."
             action={<Link href="/support"><Button variant="secondary">Contact support</Button></Link>}
           />
+        ) : props.statusUnavailable ? (
+          /* AJ#7.2 (adversarial fix): checked BEFORE the account branches. The owner path reaches Configure with
+             NO account param and relies on status.account_id to resolve the account — so a failed status fetch
+             leaves resolvedAccountId null and would otherwise fall into "Choose an account", masking this
+             checking state. The poll retries and self-heals into the correct panel. */
+          <ActionPanel
+            tone="neutral"
+            title="Checking your strategy…"
+            body="We're loading this strategy's status. This will update automatically in a moment — you don't need to refresh."
+            action={<Link href="/strategies"><Button variant="secondary">Go to My Strategies</Button></Link>}
+          />
         ) : props.accountMissing ? (
           <ActionPanel
             tone="attention"
@@ -439,16 +450,6 @@ function AutomatedConfig(props: {
             title="Choose an account"
             body="Pick the account you want to use this strategy on from the marketplace."
             action={<Link href="/strategies/marketplace"><Button variant="primary">Back to marketplace</Button></Link>}
-          />
-        ) : props.statusUnavailable ? (
-          /* AJ#7.2 (adversarial fix): the status fetch failed, so we can't confirm ownership. NEVER offer
-             "Get Strategy" here — it would be wrong for a product the customer already owns. Show a neutral
-             "checking" state; the poll retries and self-heals into the correct panel. */
-          <ActionPanel
-            tone="neutral"
-            title="Checking your strategy…"
-            body="We're loading this strategy's status. This will update automatically in a moment — you don't need to refresh."
-            action={<Link href="/strategies"><Button variant="secondary">Go to My Strategies</Button></Link>}
           />
         ) : !props.owned ? (
           <ActionPanel

@@ -341,7 +341,11 @@ export default function StrategiesListPage() {
                             }
                           );
                           setStrategies((prev) =>
-                            prev.map((s) => (s.id === strategy.id ? updated : s))
+                            prev.map((s) => (s.id === strategy.id
+                              // Preserve the signal-copy backing flag across the update so the honest
+                              // "Automated" badge can never revert to a misleading "Active" (invariant 3).
+                              ? { ...updated, is_signal_copy_backed: updated.is_signal_copy_backed ?? s.is_signal_copy_backed }
+                              : s))
                           );
                           return;
                         }

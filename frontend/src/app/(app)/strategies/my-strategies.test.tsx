@@ -1,6 +1,6 @@
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 /** AJ#7.2 — My Strategies dedup. A signal-copy product the customer owns (Wayond today) must render EXACTLY
  * ONCE, in the managed "Automated strategies" section, with a customer-facing lifecycle chip. Its backing
@@ -31,6 +31,9 @@ const { state, apiFetch, fetchJourney } = vi.hoisted(() => {
       if (state.statusThrows) throw new Error("500");   // managed-card status fetch fails
       return { ...state.status };
     }
+    // A per-row PATCH (the Actions toggle) — return the updated Strategy WITHOUT the flag, to prove the client
+    // preserves is_signal_copy_backed across the merge (the honest badge must not regress to "Active").
+    if (/\/api\/strategies\/strategies\/\d+\/$/.test(path)) return { id: 10, name: "Wayond WIM Strategy", is_active: false };
     if (path.startsWith("/api/strategies/strategies/")) return [...state.strategies];
     return {};
   });
@@ -128,6 +131,18 @@ describe("My Strategies — signal-copy dedup", () => {
     render(<MyStrategies />);
     await waitFor(() => expect(screen.getByText("Wayond WIM Strategy")).toBeTruthy());
     expect(screen.getByText("Automated")).toBeTruthy();
+    expect(screen.queryByText("Active")).toBeNull();
+  });
+
+  it("toggling a visible backing row via Actions keeps the honest 'Automated' badge (never reverts to green 'Active')", async () => {
+    // With status failed, the backing row is visible as "Automated". Toggling it PATCHes the Strategy and the
+    // response omits the flag — the client must preserve is_signal_copy_backed so the badge stays honest.
+    state.statusThrows = true;
+    render(<MyStrategies />);
+    await waitFor(() => expect(screen.getByText("Automated")).toBeTruthy());
+    const actions = screen.getAllByLabelText("Strategy actions")[0];   // the backing row (id 10) is first
+    fireEvent.change(actions, { target: { value: "toggle" } });
+    await waitFor(() => expect(screen.getByText("Automated")).toBeTruthy());
     expect(screen.queryByText("Active")).toBeNull();
   });
 

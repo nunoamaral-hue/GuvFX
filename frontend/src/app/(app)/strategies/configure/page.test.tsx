@@ -208,13 +208,16 @@ describe("Configure page — Wayond (automated)", () => {
     expect(screen.queryByRole("button", { name: "Enable Strategy" })).toBeNull();
   });
 
-  it("initial status fetch fails → a neutral 'checking' state (poll retries), NEVER 'Get Strategy' for a possibly-owned product", async () => {
-    // AJ#7.2 adversarial fix: a thrown status fetch must not be read as "not owned" (which would offer
-    // "Get Strategy" for a product they already own). Show a checking state; the poll self-heals.
+  it("initial status fetch fails on the OWNER path (no account param) → 'checking' state, NEVER 'Get Strategy' or 'Choose an account'", async () => {
+    // AJ#7.2 adversarial fix: the owner reaches Configure from My Strategies with NO account param and relies
+    // on status.account_id. A thrown status fetch leaves resolvedAccountId null; the checking state must win
+    // over both "Choose an account" and "Get Strategy". The poll self-heals once status loads.
+    state.search = "mp=mp-010";   // owner path — no account param
     state.statusThrows = true;
     render(<ConfigurePage />);
     await screen.findByText(/checking your strategy/i);
     expect(screen.queryByRole("button", { name: "Get Strategy" })).toBeNull();
+    expect(screen.queryByText(/choose an account/i)).toBeNull();
   });
 
   it("WORKSPACE_READY warm-up (onboarding done, execution plane still warming) is getting-ready — NEVER a /onboarding/hosted loop", async () => {
