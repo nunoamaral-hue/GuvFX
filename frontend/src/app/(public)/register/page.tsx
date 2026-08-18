@@ -10,13 +10,10 @@ import { customerSafeError } from "@/lib/customer-safe-error";
 
 type RegisterResponse = { id: number; email: string; username: string };
 
-const STEPS = [
-  { num: 1, label: "Create account" },
-  { num: 2, label: "Select plan" },
-  { num: 3, label: "Complete profile" },
-  { num: 4, label: "Open workspace" },
-  { num: 5, label: "Get started" },
-];
+const STEPS: Record<Lang, string[]> = {
+  en: ["Create account", "Select plan", "Complete profile", "Open workspace", "Get started"],
+  ja: ["アカウント作成", "プラン選択", "プロフィール設定", "ワークスペースを開く", "利用開始"],
+};
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -111,21 +108,22 @@ export default function RegisterPage() {
           {/* Left: Step rail */}
           <aside className="register-rail" style={railStyle}>
             <div style={railHeaderStyle}>
-              <span style={railLabelStyle}>Setup</span>
+              <span style={railLabelStyle}>{lang === "ja" ? "セットアップ" : "Setup"}</span>
               <span style={railCountStyle}>1 / 5</span>
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-              {STEPS.map((step) => {
-                const active = step.num === 1;
-                const future = step.num > 1;
+              {STEPS[lang].map((label, index) => {
+                const num = index + 1;
+                const active = num === 1;
+                const future = num > 1;
                 return (
-                  <div key={step.num} style={{ ...railItemStyle, ...(active ? railItemActiveStyle : {}), opacity: future ? 0.38 : 1 }}>
+                  <div key={num} style={{ ...railItemStyle, ...(active ? railItemActiveStyle : {}), opacity: future ? 0.38 : 1 }}>
                     <span style={{ ...railDotStyle, ...(active ? railDotActiveStyle : {}) }}>
-                      {step.num}
+                      {num}
                     </span>
                     <span style={{ fontSize: "0.8rem", fontWeight: active ? 600 : 400, color: active ? "#e9f4ff" : "#64748b" }}>
-                      {step.label}
+                      {label}
                     </span>
                   </div>
                 );
@@ -137,14 +135,14 @@ export default function RegisterPage() {
               <div style={railProgressTrackStyle}>
                 <div style={railProgressFillStyle} />
               </div>
-              <span style={railProgressTextStyle}>20% complete</span>
+              <span style={railProgressTextStyle}>{lang === "ja" ? "20% 完了" : "20% complete"}</span>
             </div>
           </aside>
 
           {/* Right: Form surface */}
           <section className="register-form" style={formSurfaceStyle}>
             {/* Step badge */}
-            <span style={stepBadgeStyle}>Step 1 of 5</span>
+            <span style={stepBadgeStyle}>{lang === "ja" ? "全5ステップ中 1" : "Step 1 of 5"}</span>
 
             {/* Title block */}
             <h1 style={titleStyle}>{t(lang, "register.createAccount")}</h1>
@@ -162,12 +160,12 @@ export default function RegisterPage() {
 
               <div className="register-two-col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem", marginBottom: "1.1rem" }}>
                 <div>
-                  <label htmlFor="firstName" style={labelStyle}>First name</label>
-                  <input id="firstName" type="text" required placeholder="First name" value={firstName} onChange={(e) => setFirstName(e.target.value)} style={inputStyle} />
+                  <label htmlFor="firstName" style={labelStyle}>{lang === "ja" ? "名" : "First name"}</label>
+                  <input id="firstName" type="text" required placeholder={lang === "ja" ? "名" : "First name"} value={firstName} onChange={(e) => setFirstName(e.target.value)} style={inputStyle} />
                 </div>
                 <div>
-                  <label htmlFor="lastName" style={labelStyle}>Last name</label>
-                  <input id="lastName" type="text" required placeholder="Last name" value={lastName} onChange={(e) => setLastName(e.target.value)} style={inputStyle} />
+                  <label htmlFor="lastName" style={labelStyle}>{lang === "ja" ? "姓" : "Last name"}</label>
+                  <input id="lastName" type="text" required placeholder={lang === "ja" ? "姓" : "Last name"} value={lastName} onChange={(e) => setLastName(e.target.value)} style={inputStyle} />
                 </div>
               </div>
 
