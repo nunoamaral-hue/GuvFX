@@ -5,6 +5,36 @@
 
 export type Lang = "en" | "ja";
 
+export const localeFor = (lang: Lang): "en-GB" | "ja-JP" =>
+  lang === "ja" ? "ja-JP" : "en-GB";
+
+export function formatDate(
+  lang: Lang,
+  value: string | number | Date,
+  options: Intl.DateTimeFormatOptions = {},
+): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(localeFor(lang), {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    ...options,
+  }).format(date);
+}
+
+export function formatNumber(
+  lang: Lang,
+  value: number,
+  options?: Intl.NumberFormatOptions,
+): string {
+  return new Intl.NumberFormat(localeFor(lang), options).format(value);
+}
+
+export function formatCurrency(lang: Lang, value: number, currency: string): string {
+  return formatNumber(lang, value, { style: "currency", currency });
+}
+
 const COOKIE_NAME = "guvfx_lang";
 const STORAGE_KEY = "guvfx_lang";
 
@@ -2581,6 +2611,322 @@ const dictionary: Dictionary = {
     en: "Profile",
     ja: "プロフィール",
   },
+
+  // -----------------------------------------------------------------------------
+  // Closed-beta critical journey
+  // -----------------------------------------------------------------------------
+  "enableModal.aria": { en: "Enable automated trading", ja: "自動売買を有効にする" },
+  "enableModal.title": { en: "Enable automated trading?", ja: "自動売買を有効にしますか？" },
+  "enableModal.body": {
+    en: "This will allow GuvFX to place trades automatically on {account} using {strategy}. Trades will follow the strategy's signals until you turn it off. You can pause it at any time from My Strategies.",
+    ja: "GuvFXが{account}で{strategy}のシグナルに従って自動的に取引します。自動売買は「マイ戦略」からいつでも停止できます。",
+  },
+  "enableModal.demoNote": {
+    en: "This is a demo account. No real money is at risk during the beta.",
+    ja: "これはデモ口座です。ベータ期間中に実際の資金が失われることはありません。",
+  },
+  "common.cancel": { en: "Cancel", ja: "キャンセル" },
+  "common.tryAgain": { en: "Try again", ja: "もう一度試す" },
+  "common.configure": { en: "Configure", ja: "設定" },
+  "common.manage": { en: "Manage", ja: "管理" },
+  "common.enable": { en: "Enable", ja: "有効にする" },
+  "common.enabling": { en: "Enabling…", ja: "有効化しています…" },
+  "enableModal.confirm": { en: "Enable Strategy", ja: "戦略を有効にする" },
+
+  "configure.row.account.label": { en: "Trading account", ja: "取引口座" },
+  "configure.row.account.help": { en: "The demo account this strategy will trade on.", ja: "この戦略を運用するデモ口座です。" },
+  "configure.row.strategy.label": { en: "Strategy", ja: "戦略" },
+  "configure.row.provider.label": { en: "Signal provider", ja: "シグナル提供元" },
+  "configure.row.instrument.label": { en: "Instrument", ja: "銘柄" },
+  "configure.row.timeframe.label": { en: "Timeframe", ja: "時間足" },
+  "configure.row.execution.label": { en: "Execution", ja: "取引方法" },
+  "configure.row.execution.value": { en: "Automatically mirrors the provider's signals into your account", ja: "提供元のシグナルに従い、口座で自動的に取引します" },
+  "configure.row.sizing.label": { en: "Position sizing", ja: "取引数量" },
+  "configure.row.sizing.value": { en: "Managed by GuvFX (beta)", ja: "GuvFXが管理（ベータ）" },
+  "configure.row.sizing.help": { en: "Trade size is set by GuvFX for the beta. Per-account sizing isn't available yet.", ja: "ベータ期間中の取引数量はGuvFXが設定します。口座ごとの設定はまだ利用できません。" },
+  "configure.row.takeprofit.label": { en: "Take-profit", ja: "利益確定" },
+  "configure.row.takeprofit.value": { en: "Follows the provider's targets", ja: "提供元の目標値に従います" },
+  "configure.row.takeprofit.help": { en: "Take-profit levels come from the signal provider and can't be customised yet.", ja: "利益確定値はシグナル提供元が設定します。現在は変更できません。" },
+  "configure.row.stoploss.label": { en: "Stop loss", ja: "損切り" },
+  "configure.row.stoploss.value": { en: "Set by the provider's signal", ja: "提供元のシグナルで設定" },
+  "configure.row.stoploss.help": { en: "The stop loss comes from the signal provider and can't be customised yet.", ja: "損切り値はシグナル提供元が設定します。現在は変更できません。" },
+  "configure.row.trailing.label": { en: "Trailing stop", ja: "トレーリングストップ" },
+  "configure.row.trailing.value": { en: "Not used by this strategy", ja: "この戦略では使用しません" },
+  "configure.row.trailing.help": { en: "This strategy doesn't use a trailing stop.", ja: "この戦略ではトレーリングストップを使用しません。" },
+
+  "myStrategies.title": { en: "My Strategies", ja: "マイ戦略" },
+  "myStrategies.subtitle": {
+    en: "View and manage your strategies and automated trading settings.",
+    ja: "戦略と自動売買の設定を確認・管理できます。",
+  },
+  "myStrategies.enabledSuccess": {
+    en: "Your strategy is enabled. GuvFX will trade it automatically on your account.",
+    ja: "戦略を有効にしました。GuvFXがこの口座で自動的に取引します。",
+  },
+  "myStrategies.automated": { en: "Automated strategies", ja: "自動売買戦略" },
+  "myStrategies.state.readyToEnable": { en: "Ready to enable", ja: "有効化できます" },
+  "myStrategies.state.setupRequired": { en: "Setup required", ja: "設定が必要です" },
+  "myStrategies.state.needsAttention": { en: "Needs attention", ja: "確認が必要です" },
+  "myStrategies.strategies": { en: "Strategies", ja: "戦略" },
+  "myStrategies.create": { en: "Create strategy", ja: "戦略を作成" },
+  "myStrategies.manageHelp": {
+    en: "Manage your strategies and turn them on or off.",
+    ja: "戦略の設定や有効・無効を管理できます。",
+  },
+  "myStrategies.loginRequired": {
+    en: "Please log in to view your strategies.",
+    ja: "戦略を表示するにはログインしてください。",
+  },
+  "myStrategies.loading": { en: "Loading strategies…", ja: "戦略を読み込んでいます…" },
+  "myStrategies.empty": {
+    en: "You don't have any strategies yet. Create one to get started.",
+    ja: "戦略はまだありません。まず戦略を作成してください。",
+  },
+  "myStrategies.automatedBadge": { en: "Automated", ja: "自動売買" },
+  "myStrategies.active": { en: "Active", ja: "有効" },
+  "myStrategies.inactive": { en: "Inactive", ja: "無効" },
+  "myStrategies.actions": { en: "Strategy actions", ja: "戦略の操作" },
+  "myStrategies.actionsPlaceholder": { en: "Actions", ja: "操作" },
+  "myStrategies.activate": { en: "Activate", ja: "有効にする" },
+  "myStrategies.deactivate": { en: "Deactivate", ja: "無効にする" },
+  "myStrategies.delete": { en: "Delete…", ja: "削除…" },
+  "myStrategies.deleteConfirm": {
+    en: "Delete strategy “{strategy}”? This cannot be undone.",
+    ja: "戦略「{strategy}」を削除しますか？この操作は取り消せません。",
+  },
+  "myStrategies.actionFailed": {
+    en: "We couldn't complete that action. Please try again.",
+    ja: "操作を完了できませんでした。もう一度お試しください。",
+  },
+  "myStrategies.noDescription": { en: "No description", ja: "説明はありません" },
+  "myStrategies.symbols": { en: "Symbols", ja: "銘柄" },
+  "myStrategies.timeframe": { en: "Timeframe", ja: "時間足" },
+  "myStrategies.engine": { en: "Engine", ja: "エンジン" },
+  "myStrategies.created": { en: "Created", ja: "作成日時" },
+  "myStrategies.viewDetails": {
+    en: "View details and AI suggestions →",
+    ja: "詳細とAIの提案を見る →",
+  },
+
+  "hostedStatus.title": { en: "Hosted Workspace", ja: "ホステッド・ワークスペース" },
+  "hostedStatus.notSetUp": { en: "Not set up yet", ja: "未設定" },
+  "hostedStatus.preparing": { en: "Preparing", ja: "準備中" },
+  "hostedStatus.waitingLogin": { en: "Waiting for you to log in", ja: "ログインをお待ちしています" },
+  "hostedStatus.confirmAccount": { en: "Confirm your account", ja: "口座を確認してください" },
+  "hostedStatus.finishing": { en: "Finishing up", ja: "最終確認中" },
+  "hostedStatus.ready": { en: "Ready", ja: "準備完了" },
+  "hostedStatus.needsAttention": { en: "Needs attention", ja: "確認が必要です" },
+  "hostedStatus.readyToOpen": { en: "Ready to open", ja: "起動できます" },
+  "hostedStatus.notReady": { en: "Not ready yet", ja: "まだ準備中です" },
+  "hostedStatus.actionNeeded": { en: "Action needed", ja: "操作が必要です" },
+  "hostedStatus.inProgress": { en: "In progress", ja: "処理中" },
+  "hostedStatus.workspaceLabel": { en: "Workspace status", ja: "ワークスペース" },
+  "hostedStatus.terminalLabel": { en: "MetaTrader terminal", ja: "MetaTraderターミナル" },
+  "hostedStatus.brokerLabel": { en: "Broker account", ja: "取引口座" },
+  "hostedStatus.accountType": { en: "Account type", ja: "口座種別" },
+  "hostedStatus.activeAccount": { en: "Active account", ja: "利用中の口座" },
+  "hostedStatus.readiness": { en: "Trading readiness", ja: "取引の準備状況" },
+  "hostedStatus.automated": { en: "Automated trading", ja: "自動売買" },
+  "hostedStatus.live": { en: "Live", ja: "ライブ" },
+  "hostedStatus.demo": { en: "Demo", ja: "デモ" },
+  "hostedStatus.notYet": { en: "Not yet", ja: "未接続" },
+  "hostedStatus.notConnected": { en: "Not connected yet", ja: "まだ接続されていません" },
+  "hostedStatus.settingUp": { en: "Setting up", ja: "設定中" },
+  "hostedStatus.readyChoose": { en: "Ready — choose a strategy", ja: "準備完了 — 戦略を選択してください" },
+  "hostedStatus.enabled": { en: "Enabled", ja: "有効" },
+  "hostedStatus.readyNotEnabled": { en: "Ready — not yet enabled", ja: "準備完了 — まだ有効ではありません" },
+  "hostedStatus.openMetaTrader": { en: "Open MetaTrader", ja: "MetaTraderを開く" },
+  "hostedStatus.continueSetup": { en: "Continue setup", ja: "設定を続ける" },
+  "hostedStatus.chooseStrategy": { en: "Choose a strategy →", ja: "戦略を選ぶ →" },
+  "hostedStatus.privacy": {
+    en: "GuvFX runs MetaTrader for you. You log in inside MetaTrader, and GuvFX never sees or stores your broker password.",
+    ja: "MetaTraderはGuvFXが運用します。ログインはMetaTrader内で行い、GuvFXがお客様の取引口座パスワードを閲覧・保存することはありません。",
+  },
+  "hostedStatus.automatedEnabled": { en: "Automated trading is enabled", ja: "自動売買は有効です" },
+  "hostedStatus.automatedEnabledBody": {
+    en: "GuvFX will run the strategies you enable within your safety limits. You can turn this off at any time.",
+    ja: "GuvFXは設定された安全上限の範囲内で、有効にした戦略を実行します。自動売買はいつでも停止できます。",
+  },
+  "hostedStatus.enableBody": {
+    en: "Your MetaTrader workspace is ready for automated trading. Enable automated trading when you want GuvFX to begin running your enabled strategies.",
+    ja: "MetaTraderワークスペースの準備ができました。GuvFXに有効な戦略の運用を開始させる場合は、自動売買を有効にしてください。",
+  },
+  "hostedStatus.enableError": {
+    en: "We couldn't enable automated trading just now. Please try again in a moment.",
+    ja: "自動売買を有効にできませんでした。しばらくしてからもう一度お試しください。",
+  },
+  "hostedStatus.enable": { en: "Enable automated trading", ja: "自動売買を有効にする" },
+  "hostedStatus.desc.noWorkspace": {
+    en: "You don't have a hosted workspace yet. Continue setup to get a managed MetaTrader terminal.",
+    ja: "ホステッド・ワークスペースはまだありません。設定を続けて、管理されたMetaTraderターミナルを準備してください。",
+  },
+  "hostedStatus.desc.requested": {
+    en: "We're preparing your private MetaTrader workspace. This usually takes a few minutes.",
+    ja: "お客様専用のMetaTraderワークスペースを準備しています。通常は数分で完了します。",
+  },
+  "hostedStatus.desc.preparing": {
+    en: "We're setting up your private MetaTrader workspace. This usually takes a few minutes.",
+    ja: "お客様専用のMetaTraderワークスペースを設定しています。通常は数分で完了します。",
+  },
+  "hostedStatus.desc.awaitingLogin": {
+    en: "Your workspace is ready. Continue setup to point it at your broker account and log in — inside MetaTrader, never here.",
+    ja: "ワークスペースの準備ができました。設定を続け、MetaTrader内で取引口座にログインしてください。",
+  },
+  "hostedStatus.desc.connected": {
+    en: "Your workspace is open. Continue setup to finish signing in to the correct account.",
+    ja: "ワークスペースを起動しました。設定を続けて、正しい口座へのログインを完了してください。",
+  },
+  "hostedStatus.desc.confirm": {
+    en: "We found your broker account. Continue setup to confirm it.",
+    ja: "取引口座が見つかりました。設定を続けて口座を確認してください。",
+  },
+  "hostedStatus.desc.bound": {
+    en: "Your account is confirmed. We're completing the final checks.",
+    ja: "口座を確認しました。最後の確認を行っています。",
+  },
+  "hostedStatus.desc.ready": {
+    en: "Your hosted MT5 workspace is connected and ready. Choose a strategy to get started.",
+    ja: "ホステッドMT5ワークスペースの接続が完了しました。戦略を選んで始めましょう。",
+  },
+  "hostedStatus.desc.unavailable": {
+    en: "Your hosted workspace isn't available right now. Our team can help restore it.",
+    ja: "現在、ホステッド・ワークスペースを利用できません。復旧についてサポートいたします。",
+  },
+
+  "configure.chooseTitle": { en: "Choose a strategy", ja: "戦略を選択" },
+  "configure.chooseBody": { en: "Pick a strategy from the marketplace to configure it.", ja: "マーケットプレイスから設定する戦略を選んでください。" },
+  "configure.browse": { en: "Browse strategies", ja: "戦略を見る" },
+  "configure.signIn": { en: "Please sign in to configure this strategy.", ja: "この戦略を設定するにはログインしてください。" },
+  "configure.goSignIn": { en: "Go to sign in", ja: "ログインへ" },
+  "configure.backMarketplace": { en: "← Back to marketplace", ja: "← マーケットプレイスに戻る" },
+  "configure.title": { en: "Configure {strategy}", ja: "{strategy}の設定" },
+  "configure.free": { en: "Free", ja: "無料" },
+  "configure.subtitle": { en: "Review the settings for this strategy, then enable it when you're ready.", ja: "戦略の設定を確認し、準備ができたら有効にしてください。" },
+  "configure.loading": { en: "Loading…", ja: "読み込んでいます…" },
+  "configure.settings": { en: "Strategy settings", ja: "戦略設定" },
+  "configure.managed": { en: "Managed", ja: "GuvFX管理" },
+  "configure.betaNote": { en: "For the beta, Wayond uses settings managed by GuvFX. Personalised sizing, take-profit and risk controls are coming soon.", ja: "ベータ期間中、WayondはGuvFXが管理する設定で運用されます。口座ごとの取引量、利益確定、リスク設定は今後対応予定です。" },
+  "configure.attentionTitle": { en: "This strategy needs attention", ja: "この戦略は確認が必要です" },
+  "configure.attentionBody": { en: "We couldn't get this strategy ready. Please contact support and we'll help resolve it.", ja: "この戦略の準備を完了できませんでした。サポートまでご連絡ください。" },
+  "configure.contactSupport": { en: "Contact support", ja: "サポートに連絡" },
+  "configure.checkingTitle": { en: "Checking your strategy…", ja: "戦略の状態を確認しています…" },
+  "configure.checkingBody": { en: "We're loading this strategy's status. It will update automatically in a moment.", ja: "戦略の状態を読み込んでいます。まもなく自動的に更新されます。" },
+  "configure.goMyStrategies": { en: "Go to My Strategies", ja: "マイ戦略へ" },
+  "configure.accountMissingTitle": { en: "We couldn't find that account", ja: "口座が見つかりません" },
+  "configure.accountMissingBody": { en: "The account for this strategy isn't available. Choose an account from the marketplace to continue.", ja: "この戦略に設定された口座を利用できません。マーケットプレイスから口座を選び直してください。" },
+  "configure.chooseAccount": { en: "Choose an account", ja: "口座を選択" },
+  "configure.chooseAccountBody": { en: "Pick the account you want to use this strategy on from the marketplace.", ja: "この戦略で使用する口座をマーケットプレイスから選んでください。" },
+  "configure.addTitle": { en: "Add this strategy", ja: "この戦略を追加" },
+  "configure.addBody": { en: "This strategy isn't added to {account} yet. Add it to continue.", ja: "この戦略はまだ{account}に追加されていません。続けるには戦略を追加してください。" },
+  "configure.adding": { en: "Adding…", ja: "追加しています…" },
+  "configure.getStrategy": { en: "Get Strategy", ja: "戦略を追加" },
+  "configure.enabledTitle": { en: "Automated trading is enabled", ja: "自動売買は有効です" },
+  "configure.enabledBody": { en: "{strategy} is running on {account}. It will place trades automatically until you pause it.", ja: "{strategy}は{account}で稼働中です。停止するまで自動的に取引します。" },
+  "configure.working": { en: "Working…", ja: "処理しています…" },
+  "configure.disable": { en: "Disable Strategy", ja: "戦略を停止" },
+  "configure.readyTitle": { en: "Ready to enable", ja: "有効化できます" },
+  "configure.readyBody": { en: "{strategy} is added to {account}. Enable it to let GuvFX trade this strategy automatically on your account.", ja: "{strategy}を{account}に追加しました。有効にすると、GuvFXがこの戦略で自動的に取引します。" },
+  "configure.finishTitle": { en: "Finish setting up your workspace", ja: "ワークスペースの設定を完了してください" },
+  "configure.finishBody": { en: "Your workspace needs one more step before you can enable this strategy. Continue setup to finish.", ja: "この戦略を有効にする前に、ワークスペースの設定をもう1段階完了する必要があります。" },
+  "configure.gettingReadyTitle": { en: "Your workspace is getting ready", ja: "ワークスペースを準備しています" },
+  "configure.gettingReadyBody": { en: "We're finishing your trading workspace. Open MetaTrader and log in if needed. You can enable this strategy as soon as it is ready.", ja: "取引ワークスペースの最終設定を行っています。必要に応じてMetaTraderを開いてログインしてください。準備ができ次第、この戦略を有効にできます。" },
+  "configure.autoUpdate": { en: "This page updates automatically. The Enable button will appear here when your workspace is ready.", ja: "このページは自動的に更新されます。ワークスペースの準備ができると、有効化ボタンが表示されます。" },
+  "configure.pauseSuccess": { en: "Automated trading paused for this account.", ja: "この口座の自動売買を停止しました。" },
+  "configure.pauseError": { en: "We couldn't pause the strategy just now. Please try again.", ja: "戦略を停止できませんでした。もう一度お試しください。" },
+  "configure.addSuccess": { en: "Strategy added. You can enable it below.", ja: "戦略を追加しました。下のボタンから有効にできます。" },
+  "configure.addAccountError": { en: "This account must be a demo account and active.", ja: "有効なデモ口座を選択してください。" },
+  "configure.addUnavailable": { en: "This strategy isn't available for your account yet. Please contact support.", ja: "この口座ではまだ戦略を利用できません。サポートまでご連絡ください。" },
+  "configure.addError": { en: "We couldn't add this strategy just now. Please try again.", ja: "戦略を追加できませんでした。もう一度お試しください。" },
+  "configure.enableError": { en: "We couldn't enable the strategy just now. Please try again.", ja: "戦略を有効にできませんでした。もう一度お試しください。" },
+  "configure.enablePreparing": { en: "Your account is still getting ready to trade. Please try again shortly.", ja: "口座の取引準備を続けています。しばらくしてからもう一度お試しください。" },
+  "hostedJourney.progressAria": { en: "Onboarding progress", ja: "設定の進行状況" },
+  "hostedJourney.brokerLinked": { en: "Broker account linked", ja: "取引口座を登録しました" },
+  "hostedJourney.waitingLogin": { en: "Waiting for broker login", ja: "取引口座へのログイン待ち" },
+  "hostedJourney.detecting": { en: "Detecting your account", ja: "口座を確認しています" },
+  "hostedJourney.accountDetected": { en: "Account detected", ja: "口座を確認しました" },
+  "hostedJourney.confirmAccount": { en: "Confirm your account", ja: "口座を確認" },
+  "hostedJourney.workspaceReady": { en: "Workspace ready", ja: "ワークスペースの準備完了" },
+  "hostedJourney.waitNormal": { en: "We've received your broker account information. We're setting up your secure MetaTrader workspace. Please remain on this page; we'll automatically continue when everything is ready.", ja: "取引口座の情報を受け付けました。安全なMetaTraderワークスペースを設定しています。このページを開いたままお待ちください。準備ができると自動的に次へ進みます。" },
+  "hostedJourney.waitSlow": { en: "This is taking a little longer than expected. Your workspace is still being prepared. Keep this page open. You can safely refresh or contact support if it does not complete after several more minutes.", ja: "通常より時間がかかっています。ワークスペースは引き続き準備中です。このページを開いたままお待ちください。数分たっても完了しない場合は、ページを更新するかサポートへご連絡ください。" },
+  "hostedJourney.workspaceRequested": { en: "Workspace requested", ja: "ワークスペースを受け付けました" },
+  "hostedJourney.settingUp": { en: "Setting up your secure MetaTrader workspace", ja: "安全なMetaTraderワークスペースを設定中" },
+  "hostedJourney.finalVerification": { en: "Final verification", ja: "最終確認" },
+  "hostedJourney.keepOpen": { en: "Keep this page open. The Open MetaTrader button will appear here automatically when your workspace is ready.", ja: "このページを開いたままお待ちください。準備ができると「MetaTraderを開く」ボタンが自動的に表示されます。" },
+  "hostedJourney.passwordLater": { en: "You'll enter your broker password later inside MetaTrader. We never ask for it here.", ja: "取引口座のパスワードは、後ほどMetaTrader内で入力します。この画面で入力を求めることはありません。" },
+  "hostedJourney.openMetaTrader": { en: "Open MetaTrader", ja: "MetaTraderを開く" },
+  "hostedJourney.loginInstruction": { en: "Log in below using your broker password. It is entered only inside MetaTrader and GuvFX never sees it.", ja: "下のMetaTraderで取引口座のパスワードを入力してログインしてください。パスワードをGuvFXが閲覧することはありません。" },
+  "hostedJourney.usingMetaTrader": { en: "You're using MetaTrader", ja: "MetaTraderを使用中" },
+  "hostedJourney.detectingAccount": { en: "Detecting your account…", ja: "口座を確認しています…" },
+  "hostedJourney.detectedBody": { en: "We detected account {account} in your MetaTrader workspace. Your identity is already verified — please confirm this is your trading account to finish.", ja: "MetaTraderワークスペースで口座{account}を確認しました。設定を完了するため、ご自身の取引口座であることを確認してください。" },
+  "hostedJourney.confirming": { en: "Confirming…", ja: "確認しています…" },
+  "hostedJourney.confirmButton": { en: "I confirm this is my trading account", ja: "自分の取引口座であることを確認する" },
+  "hostedJourney.readyBody": { en: "Your hosted MetaTrader workspace is fully connected. You can now choose your first strategy.", ja: "ホステッドMetaTraderワークスペースの接続が完了しました。最初の戦略を選択できます。" },
+  "hostedJourney.chooseStrategy": { en: "Choose Strategy", ja: "戦略を選ぶ" },
+  "hostedJourney.metaTraderOpen": { en: "MetaTrader open below", ja: "下にMetaTraderを表示中" },
+  "hostedJourney.loading": { en: "Loading your workspace…", ja: "ワークスペースを読み込んでいます…" },
+  "hostedJourney.unavailableTitle": { en: "Hosted workspace", ja: "ホステッド・ワークスペース" },
+  "hostedJourney.unavailableBody": { en: "Your hosted trading workspace isn't available yet. We'll let you know when it is ready.", ja: "ホステッド取引ワークスペースはまだ利用できません。準備ができ次第お知らせします。" },
+  "hostedJourney.loadError": { en: "We couldn't load your workspace status.", ja: "ワークスペースの状態を読み込めませんでした。" },
+  "hostedJourney.brokerNumber": { en: "Broker account number", ja: "取引口座番号" },
+  "hostedJourney.brokerServer": { en: "Broker server", ja: "ブローカーサーバー" },
+  "hostedJourney.saving": { en: "Saving…", ja: "保存しています…" },
+  "hostedJourney.saveDetails": { en: "Save my broker details", ja: "取引口座情報を保存" },
+  "hostedJourney.passwordSafety": { en: "Enter your password only inside MetaTrader. GuvFX never receives or stores it.", ja: "パスワードはMetaTrader内でのみ入力してください。GuvFXが受信・保存することはありません。" },
+  "hostedJourney.working": { en: "Working on it — this page updates automatically.", ja: "処理中です。このページは自動的に更新されます。" },
+  "hostedJourney.requesting": { en: "Requesting…", ja: "リクエストしています…" },
+  "hostedJourney.supportBody": { en: "Our team can help get this sorted for you.", ja: "サポートチームがお手伝いします。" },
+  "hostedJourney.checkingTitle": { en: "Checking your account", ja: "口座を確認しています" },
+  "hostedJourney.loginTitle": { en: "Log into your broker account", ja: "取引口座にログイン" },
+  "hostedJourney.checkingBody": { en: "We're checking that the account in MetaTrader matches the account you linked. You don't need to do anything else.", ja: "MetaTraderにログインした口座が、登録した口座と一致するか確認しています。そのままお待ちください。" },
+  "hostedJourney.loginBody": { en: "Log in inside MetaTrader. We'll verify your account and continue automatically.", ja: "MetaTrader内でログインしてください。口座を確認し、自動的に次へ進みます。" },
+  "hostedJourney.loginHint": { en: "Keep this page open while we verify your account.", ja: "口座の確認中は、このページを開いたままお待ちください。" },
+  "hostedJourney.correctTitle": { en: "Log into the account you linked", ja: "登録した口座にログインしてください" },
+  "hostedJourney.correctBody": { en: "The account currently open in MetaTrader is not the account you told us. Log in to the correct account and we'll continue automatically.", ja: "MetaTraderで現在開いている口座が、登録した口座と一致しません。正しい口座にログインすると、自動的に次へ進みます。" },
+  "hostedJourney.step.request": { en: "Request workspace", ja: "申込み" },
+  "hostedJourney.step.preparing": { en: "Preparing workspace", ja: "準備中" },
+  "hostedJourney.step.open": { en: "Open workspace", ja: "MetaTraderを開く" },
+  "hostedJourney.step.confirm": { en: "Confirm your account", ja: "口座確認" },
+  "hostedJourney.step.ready": { en: "Ready to trade", ja: "準備完了" },
+  "hostedJourney.startTitle": { en: "Set up your trading workspace", ja: "取引ワークスペースを設定" },
+  "hostedJourney.startBody": { en: "Request a private MetaTrader workspace to connect your broker account.", ja: "取引口座を接続するため、お客様専用のMetaTraderワークスペースを準備します。" },
+  "hostedJourney.requestWorkspace": { en: "Request workspace", ja: "ワークスペースを申し込む" },
+  "terminal.title": { en: "MT5 Terminal", ja: "MT5ターミナル" },
+  "terminal.preparingRefresh": { en: "Preparing your MT5 terminal. If this persists, please refresh.", ja: "MT5ターミナルを準備しています。時間がかかる場合はページを更新してください。" },
+  "terminal.description": { en: "Your persistent MT5 terminal for {account}. Log in with your broker credentials inside MetaTrader.", ja: "{account}専用のMT5ターミナルです。取引口座へのログインはMetaTrader内で行ってください。" },
+  "terminal.focusHint": { en: "MT5 Terminal (RemoteApp) — click inside MT5, then type", ja: "MT5ターミナル（RemoteApp）— MT5内をクリックしてから入力してください" },
+  "terminal.connected": { en: "Connected", ja: "接続済み" },
+  "terminal.firstLaunchShort": { en: "First launch: MetaTrader is downloading your broker's instrument catalogue. It is ready when the chart list and symbols appear.", ja: "初回起動：MetaTraderがブローカーの銘柄情報を取得しています。チャートと銘柄が表示されると利用できます。" },
+  "terminal.firstLaunchTitle": { en: "First launch:", ja: "初回起動：" },
+  "terminal.firstLaunchBody": { en: "The first time you open this terminal, MetaTrader downloads your broker's instrument catalogue. This can take up to 5 minutes. Keep this page open. Later launches usually take only a few seconds.", ja: "初回起動時は、MetaTraderがブローカーの銘柄情報を取得するため、最大5分ほどかかる場合があります。このページを開いたままお待ちください。次回以降は通常、数秒で起動します。" },
+  "terminal.opening": { en: "Opening…", ja: "開いています…" },
+  "terminal.open": { en: "Open MT5 Terminal", ja: "MT5ターミナルを開く" },
+  "terminal.preparing": { en: "Preparing your MT5 terminal. The first launch can take up to 5 minutes. Keep this page open.", ja: "MT5ターミナルを準備しています。初回は最大5分ほどかかる場合があります。このページを開いたままお待ちください。" },
+  "terminal.notReady": { en: "Your MT5 terminal is still preparing. Keep this page open and it will open automatically when ready.", ja: "MT5ターミナルはまだ準備中です。このページを開いたままお待ちください。準備ができると自動的に開きます。" },
+  "terminal.openError": { en: "We couldn't open the MT5 terminal. Please try again.", ja: "MT5ターミナルを開けませんでした。もう一度お試しください。" },
+  "onboarding.gettingStarted": { en: "Getting Started", ja: "はじめに" },
+  "onboarding.loadingProgress": { en: "Loading your setup progress…", ja: "設定状況を読み込んでいます…" },
+  "onboarding.loadError": { en: "We couldn't load your setup progress. Please try again.", ja: "設定状況を読み込めませんでした。もう一度お試しください。" },
+  "onboarding.finishRemaining": { en: "Please finish the remaining setup steps before continuing.", ja: "続ける前に、残りの設定を完了してください。" },
+  "onboarding.completeError": { en: "We couldn't complete setup. Please try again.", ja: "設定を完了できませんでした。もう一度お試しください。" },
+  "onboarding.stepSummary": { en: "Step {step} of {total} — Complete the steps below to set up your GuvFX workspace.", ja: "ステップ {step}/{total} — 以下の手順でGuvFXワークスペースを設定します。" },
+  "onboarding.selectPlan": { en: "Select Your Plan", ja: "プランを選択" },
+  "onboarding.planConfirmed": { en: "Your plan has been confirmed.", ja: "プランを確定しました。" },
+  "onboarding.planIntro": { en: "Choose a plan to get started. You can change it later from Billing.", ja: "利用するプランを選んでください。プランは後から請求設定で変更できます。" },
+  "onboarding.plan.standard": { en: "Standard", ja: "スタンダード" },
+  "onboarding.plan.standardDesc": { en: "Full platform access including backtests, strategy deployment, and live execution.", ja: "バックテスト、戦略の設定、ライブ運用を含むすべての機能を利用できます。" },
+  "onboarding.plan.trial": { en: "Starter Trial", ja: "スタータートライアル" },
+  "onboarding.plan.trialDesc": { en: "Limited access to explore the platform, backtests, and marketplace.", ja: "プラットフォーム、バックテスト、マーケットプレイスをお試しいただけます。" },
+  "onboarding.recommended": { en: "Recommended", ja: "おすすめ" },
+  "onboarding.activating": { en: "Activating…", ja: "有効化しています…" },
+  "onboarding.activatePlan": { en: "Activate Plan", ja: "このプランを選択" },
+  "onboarding.planError": { en: "We couldn't select that plan. Please try again.", ja: "プランを選択できませんでした。もう一度お試しください。" },
+  "onboarding.accountReady": { en: "Your GuvFX account is ready.", ja: "GuvFXアカウントの準備ができました。" },
+  "onboarding.accountReadyBody": { en: "Next, set up your private trading workspace. MetaTrader runs for you, and you log in inside it. GuvFX never sees your password.", ja: "次に、お客様専用の取引ワークスペースを設定します。MetaTrader内でログインするため、GuvFXがお客様のパスワードを閲覧することはありません。" },
+  "onboarding.step.create": { en: "Create account", ja: "アカウント作成" },
+  "onboarding.step.plan": { en: "Select plan", ja: "プラン選択" },
+  "onboarding.step.profile": { en: "Complete profile", ja: "プロフィール設定" },
+  "onboarding.step.workspace": { en: "Open workspace", ja: "ワークスペース設定" },
+  "onboarding.step.start": { en: "Get started", ja: "利用開始" },
 };
 
 // =============================================================================
@@ -2591,13 +2937,17 @@ const dictionary: Dictionary = {
  * Get a translated string by key.
  * Falls back to English if key not found, or returns key if neither exists.
  */
-export function t(lang: Lang, key: string): string {
+export function t(lang: Lang, key: string, values?: Record<string, string | number>): string {
   const entry = dictionary[key];
   if (!entry) {
     console.warn(`[i18n] Missing translation key: ${key}`);
     return key;
   }
-  return entry[lang] || entry.en || key;
+  const translated = entry[lang] || entry.en || key;
+  if (!values) return translated;
+  return translated.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (token, name: string) =>
+    Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : token
+  );
 }
 
 /**
@@ -2605,4 +2955,9 @@ export function t(lang: Lang, key: string): string {
  */
 export function getDictionaryKeys(): string[] {
   return Object.keys(dictionary);
+}
+
+/** Read-only parity data for contract tests and developer tooling. */
+export function getDictionaryEntries(): Readonly<Dictionary> {
+  return dictionary;
 }

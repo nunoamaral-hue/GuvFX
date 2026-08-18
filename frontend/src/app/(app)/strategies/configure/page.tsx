@@ -21,6 +21,8 @@ import {
   type SignalCopyStatus,
 } from "@/lib/strategy-journey";
 import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
+import { useLang } from "@/components/AppShell";
+import { t, type Lang } from "@/lib/i18n";
 
 type TradingAccount = {
   id: number;
@@ -57,6 +59,7 @@ function accountLabelOf(a: TradingAccount | undefined, fallbackId: number | null
 
 // ─────────────────────────────────────────────────────────────────────
 function ConfigureInner() {
+  const lang = useLang();
   const router = useRouter();
   const params = useSearchParams();
   const mp = params.get("mp") || "";
@@ -219,7 +222,13 @@ function ConfigureInner() {
       return;
     }
     // Partial/failed: keep the modal open, show the retryable message, backend state stays truthful.
-    setEnableError(res.message);
+    const preparingCodes = new Set([
+      "runtime_not_ready", "broker_not_connected", "workspace_execution_not_authorized",
+      "workspace_execution_disabled",
+    ]);
+    setEnableError(t(lang, res.code && preparingCodes.has(res.code)
+      ? "configure.enablePreparing"
+      : "configure.enableError"));
   };
 
   const doGet = async () => {
@@ -228,14 +237,14 @@ function ConfigureInner() {
     try {
       await getStrategy(mp, resolvedAccountId);
       await loadStatus();
-      setAlert({ msg: "Strategy added. You can enable it below.", type: "success" });
+      setAlert({ msg: t(lang, "configure.addSuccess"), type: "success" });
     } catch (e) {
       const err = e as { httpStatus?: number; body?: { status?: string } };
       const slug = err?.body?.status;
       setAlert({
-        msg: slug === "account_not_ready" ? "This account must be a demo account and active."
-          : slug === "not_pilot_approved" ? "This strategy isn't available for your account yet. Please contact support."
-          : "We couldn't add this strategy just now. Please try again.",
+        msg: slug === "account_not_ready" ? t(lang, "configure.addAccountError")
+          : slug === "not_pilot_approved" ? t(lang, "configure.addUnavailable")
+          : t(lang, "configure.addError"),
         type: "error",
       });
     } finally {
@@ -249,9 +258,9 @@ function ConfigureInner() {
     try {
       await disableStrategy(mp, resolvedAccountId);
       await loadStatus();
-      setAlert({ msg: "Automated trading paused for this account.", type: "info" });
+      setAlert({ msg: t(lang, "configure.pauseSuccess"), type: "info" });
     } catch {
-      setAlert({ msg: "We couldn't pause the strategy just now. Please try again.", type: "error" });
+      setAlert({ msg: t(lang, "configure.pauseError"), type: "error" });
     } finally {
       setBusy(false);
     }
@@ -262,12 +271,12 @@ function ConfigureInner() {
     return (
       <Shell>
         <div style={cardStyle}>
-          <h1 style={{ fontSize: "1.4rem", margin: "0 0 0.5rem" }}>Choose a strategy</h1>
+          <h1 style={{ fontSize: "1.4rem", margin: "0 0 0.5rem" }}>{t(lang, "configure.chooseTitle")}</h1>
           <p style={{ color: "#94a3b8", fontSize: "0.9rem" }}>
-            Pick a strategy from the marketplace to configure it.
+            {t(lang, "configure.chooseBody")}
           </p>
           <div style={{ marginTop: "1rem" }}>
-            <Link href="/strategies/marketplace"><Button variant="primary">Browse strategies</Button></Link>
+            <Link href="/strategies/marketplace"><Button variant="primary">{t(lang, "configure.browse")}</Button></Link>
           </div>
         </div>
       </Shell>
@@ -279,9 +288,9 @@ function ConfigureInner() {
       <Shell>
         <div style={cardStyle}>
           <h1 style={{ fontSize: "1.4rem", margin: "0 0 0.5rem" }}>{strategyName}</h1>
-          <p style={{ color: "#94a3b8", fontSize: "0.9rem" }}>Please sign in to configure this strategy.</p>
+          <p style={{ color: "#94a3b8", fontSize: "0.9rem" }}>{t(lang, "configure.signIn")}</p>
           <div style={{ marginTop: "1rem" }}>
-            <Link href="/login?reason=unauthenticated"><Button variant="primary">Go to sign in</Button></Link>
+            <Link href="/login?reason=unauthenticated"><Button variant="primary">{t(lang, "configure.goSignIn")}</Button></Link>
           </div>
         </div>
       </Shell>
@@ -293,14 +302,14 @@ function ConfigureInner() {
       {/* Header */}
       <div style={{ marginBottom: "1rem" }}>
         <Link href="/strategies/marketplace" style={{ fontSize: "0.8rem", color: "#7c9cff", textDecoration: "none" }}>
-          ← Back to marketplace
+          {t(lang, "configure.backMarketplace")}
         </Link>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap", marginTop: "0.4rem" }}>
-          <h1 style={{ fontSize: "1.8rem", margin: 0 }}>Configure {strategyName}</h1>
-          <span style={freeBadge}>{priceLabel(priceFor(mp))}</span>
+          <h1 style={{ fontSize: "1.8rem", margin: 0 }}>{t(lang, "configure.title", { strategy: strategyName })}</h1>
+          <span style={freeBadge}>{priceFor(mp).kind === "free" ? t(lang, "configure.free") : priceLabel(priceFor(mp))}</span>
         </div>
         <p style={{ fontSize: "0.85rem", color: "#94a3b8", margin: "0.4rem 0 0" }}>
-          Review the settings for this strategy, then enable it when you&rsquo;re ready.
+          {t(lang, "configure.subtitle")}
         </p>
       </div>
 
@@ -319,7 +328,7 @@ function ConfigureInner() {
       )}
 
       {loading ? (
-        <div style={cardStyle}><p style={{ color: "#94a3b8", margin: 0 }}>Loading…</p></div>
+        <div style={cardStyle}><p style={{ color: "#94a3b8", margin: 0 }}>{t(lang, "configure.loading")}</p></div>
       ) : automated ? (
         <AutomatedConfig
           mp={mp}
@@ -339,6 +348,7 @@ function ConfigureInner() {
           onGet={doGet}
           onDisable={doDisable}
           onOpenEnable={() => { setEnableError(null); setModalOpen(true); }}
+          lang={lang}
         />
       ) : (
         <GenericConfig strategyName={strategyName} accountLabel={account ? accountLabel : null} />
@@ -378,15 +388,25 @@ function AutomatedConfig(props: {
   onGet: () => void;
   onDisable: () => void;
   onOpenEnable: () => void;
+  lang: Lang;
 }) {
   const rows: ConfigRow[] = configContract(props.mp, props.accountLabel);
+  const localizeRow = (row: ConfigRow) => ({
+    label: t(props.lang, `configure.row.${row.key}.label`),
+    value: row.key === "execution" || row.kind === "managed"
+      ? t(props.lang, `configure.row.${row.key}.value`)
+      : row.value,
+    help: row.help ? t(props.lang, `configure.row.${row.key}.help`) : undefined,
+  });
   return (
     <div style={{ display: "grid", gap: "1rem" }}>
       {/* Honest contract */}
       <div style={cardStyle}>
-        <h2 style={{ fontSize: "1.05rem", margin: "0 0 0.75rem", color: "#e8f0ff" }}>Strategy settings</h2>
+        <h2 style={{ fontSize: "1.05rem", margin: "0 0 0.75rem", color: "#e8f0ff" }}>{t(props.lang, "configure.settings")}</h2>
         <div style={{ display: "grid", gap: "0.1rem" }}>
-          {rows.map((r) => (
+          {rows.map((r) => {
+            const copy = localizeRow(r);
+            return (
             <div
               key={r.key}
               style={{
@@ -394,26 +414,26 @@ function AutomatedConfig(props: {
                 padding: "0.6rem 0", borderBottom: "1px solid rgba(255,255,255,0.06)",
               }}
             >
-              <div style={{ color: "#8fa0b7", fontSize: "0.82rem" }}>{r.label}</div>
+              <div style={{ color: "#8fa0b7", fontSize: "0.82rem" }}>{copy.label}</div>
               <div>
                 <div style={{ color: "#e2e8f0", fontSize: "0.86rem", fontWeight: 600 }}>
-                  {r.value}
+                  {copy.value}
                   {r.kind === "managed" && (
                     <span style={{
                       marginLeft: 8, fontSize: "0.66rem", fontWeight: 700, color: "#94a3b8",
                       border: "1px solid rgba(148,163,184,0.35)", borderRadius: 999, padding: "0.05rem 0.4rem",
                     }}>
-                      Managed
+                      {t(props.lang, "configure.managed")}
                     </span>
                   )}
                 </div>
-                {r.help && <div style={{ color: "#6d7a92", fontSize: "0.74rem", marginTop: 2 }}>{r.help}</div>}
+                {copy.help && <div style={{ color: "#6d7a92", fontSize: "0.74rem", marginTop: 2 }}>{copy.help}</div>}
               </div>
             </div>
-          ))}
+          )})}
         </div>
         <p style={{ color: "#8fa0b7", fontSize: "0.78rem", lineHeight: 1.5, margin: "0.9rem 0 0" }}>
-          {BETA_CONFIG_NOTE}
+          {props.lang === "ja" ? t(props.lang, "configure.betaNote") : BETA_CONFIG_NOTE}
         </p>
       </div>
 
@@ -422,9 +442,9 @@ function AutomatedConfig(props: {
         {props.ambiguous ? (
           <ActionPanel
             tone="attention"
-            title="This strategy needs attention"
-            body="Something about this strategy's setup needs a closer look. Please contact support and we'll sort it out."
-            action={<Link href="/support"><Button variant="secondary">Contact support</Button></Link>}
+            title={t(props.lang, "configure.attentionTitle")}
+            body={t(props.lang, "configure.attentionBody")}
+            action={<Link href="/support"><Button variant="secondary">{t(props.lang, "configure.contactSupport")}</Button></Link>}
           />
         ) : props.statusUnavailable ? (
           /* AJ#7.2 (adversarial fix): checked BEFORE the account branches. The owner path reaches Configure with
@@ -433,51 +453,51 @@ function AutomatedConfig(props: {
              checking state. The poll retries and self-heals into the correct panel. */
           <ActionPanel
             tone="neutral"
-            title="Checking your strategy…"
-            body="We're loading this strategy's status. This will update automatically in a moment — you don't need to refresh."
-            action={<Link href="/strategies"><Button variant="secondary">Go to My Strategies</Button></Link>}
+            title={t(props.lang, "configure.checkingTitle")}
+            body={t(props.lang, "configure.checkingBody")}
+            action={<Link href="/strategies"><Button variant="secondary">{t(props.lang, "configure.goMyStrategies")}</Button></Link>}
           />
         ) : props.accountMissing ? (
           <ActionPanel
             tone="attention"
-            title="We couldn't find that account"
-            body="The account for this strategy isn't available. Choose an account from the marketplace to continue."
-            action={<Link href="/strategies/marketplace"><Button variant="secondary">Back to marketplace</Button></Link>}
+            title={t(props.lang, "configure.accountMissingTitle")}
+            body={t(props.lang, "configure.accountMissingBody")}
+            action={<Link href="/strategies/marketplace"><Button variant="secondary">{t(props.lang, "configure.backMarketplace").replace("← ", "")}</Button></Link>}
           />
         ) : !props.hasAccount ? (
           <ActionPanel
             tone="neutral"
-            title="Choose an account"
-            body="Pick the account you want to use this strategy on from the marketplace."
-            action={<Link href="/strategies/marketplace"><Button variant="primary">Back to marketplace</Button></Link>}
+            title={t(props.lang, "configure.chooseAccount")}
+            body={t(props.lang, "configure.chooseAccountBody")}
+            action={<Link href="/strategies/marketplace"><Button variant="primary">{t(props.lang, "configure.backMarketplace").replace("← ", "")}</Button></Link>}
           />
         ) : !props.owned ? (
           <ActionPanel
             tone="neutral"
-            title="Add this strategy"
-            body={`This strategy isn't added to ${props.accountLabel} yet. Add it to continue.`}
-            action={<Button variant="primary" onClick={props.onGet} disabled={props.busy}>{props.busy ? "Adding…" : "Get Strategy"}</Button>}
+            title={t(props.lang, "configure.addTitle")}
+            body={t(props.lang, "configure.addBody", { account: props.accountLabel })}
+            action={<Button variant="primary" onClick={props.onGet} disabled={props.busy}>{props.busy ? t(props.lang, "configure.adding") : t(props.lang, "configure.getStrategy")}</Button>}
           />
         ) : props.enabled ? (
           <ActionPanel
             tone="ready"
-            title="Automated trading is enabled"
-            body={`${props.strategyName} is running on ${props.accountLabel}. It will place trades automatically until you pause it.`}
+            title={t(props.lang, "configure.enabledTitle")}
+            body={t(props.lang, "configure.enabledBody", { strategy: props.strategyName, account: props.accountLabel })}
             action={
               <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
                 <Button variant="secondary" onClick={props.onDisable} disabled={props.busy}>
-                  {props.busy ? "Working…" : "Disable Strategy"}
+                  {props.busy ? t(props.lang, "configure.working") : t(props.lang, "configure.disable")}
                 </Button>
-                <Link href="/strategies"><Button variant="primary">Go to My Strategies</Button></Link>
+                <Link href="/strategies"><Button variant="primary">{t(props.lang, "configure.goMyStrategies")}</Button></Link>
               </div>
             }
           />
         ) : props.canEnable ? (
           <ActionPanel
             tone="action"
-            title="Ready to enable"
-            body={`${props.strategyName} is added to ${props.accountLabel}. Enable it to let GuvFX trade this strategy automatically on your account.`}
-            action={<Button variant="primary" onClick={props.onOpenEnable} disabled={props.busy}>Enable Strategy</Button>}
+            title={t(props.lang, "configure.readyTitle")}
+            body={t(props.lang, "configure.readyBody", { strategy: props.strategyName, account: props.accountLabel })}
+            action={<Button variant="primary" onClick={props.onOpenEnable} disabled={props.busy}>{t(props.lang, "enableModal.confirm")}</Button>}
           />
         ) : props.workspaceUnavailable ? (
           /* AJ#7.2 (adversarial fix): the workspace will NOT become ready on its own (journey unavailable or a
@@ -485,9 +505,9 @@ function AutomatedConfig(props: {
              that never comes. Surface an honest attention state with a route to support. */
           <ActionPanel
             tone="attention"
-            title="This strategy needs attention"
-            body="We couldn't get your trading workspace ready for this strategy. This usually needs a hand from our team — please contact support and we'll sort it out."
-            action={<Link href="/support"><Button variant="secondary">Contact support</Button></Link>}
+            title={t(props.lang, "configure.attentionTitle")}
+            body={t(props.lang, "configure.attentionBody")}
+            action={<Link href="/support"><Button variant="secondary">{t(props.lang, "configure.contactSupport")}</Button></Link>}
           />
         ) : props.needsSetup ? (
           /* AJ#7.2 (adversarial fix): the workspace is at a phase that needs the CUSTOMER to complete a step
@@ -496,24 +516,24 @@ function AutomatedConfig(props: {
              redirects at WORKSPACE_READY, which is the canEnable branch above, never a needs-setup phase. */
           <ActionPanel
             tone="action"
-            title="Finish setting up your workspace"
-            body={`${props.strategyName} is added to ${props.accountLabel}. Your workspace needs one more step before you can enable it — continue your setup and we'll bring you right back.`}
-            action={<Link href="/onboarding/hosted"><Button variant="primary">Continue setup</Button></Link>}
+            title={t(props.lang, "configure.finishTitle")}
+            body={t(props.lang, "configure.finishBody")}
+            action={<Link href="/onboarding/hosted"><Button variant="primary">{t(props.lang, "hostedStatus.continueSetup")}</Button></Link>}
           />
         ) : (
           <ActionPanel
             tone="neutral"
-            title="Your workspace is getting ready"
-            body="We're finishing setting up your trading workspace. If you haven't already, open your MetaTrader terminal and log in — you'll be able to enable this strategy as soon as it's connected and ready."
+            title={t(props.lang, "configure.gettingReadyTitle")}
+            body={t(props.lang, "configure.gettingReadyBody")}
             /* AJ#7.1 (adversarial fix): the forward action opens the customer's MetaTrader terminal (a stable
                page). It must NOT link back to /onboarding/hosted, which at WORKSPACE_READY bounces to the
                marketplace → owned card → Configure, re-forming the AJ#6.5-class navigation loop. */
-            action={<Link href="/trading/terminal-access"><Button variant="secondary">Open MetaTrader</Button></Link>}
+            action={<Link href="/trading/terminal-access"><Button variant="secondary">{t(props.lang, "hostedStatus.openMetaTrader")}</Button></Link>}
             /* AJ#7.2 (adversarial fix): only promise auto-update when the workspace is genuinely preparing on
                its own (next_action "wait"). When journey is still loading/transient (not preparing), we omit
                the footnote so we never promise a self-heal we can't guarantee. */
             footnote={props.preparing
-              ? "This page updates automatically — you don't need to refresh. As soon as your workspace is ready, the Enable button will appear here."
+              ? t(props.lang, "configure.autoUpdate")
               : undefined}
           />
         )}

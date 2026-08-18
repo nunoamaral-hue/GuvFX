@@ -263,3 +263,10 @@
 - **Recommended next packet:** WP6B multi-tenant isolation certification in a disposable environment
   (Sponsor-gated), and — for any Internal Pilot — close the broker-login host ACL gap + prove one demo
   VALIDATE_LOGIN on the host.
+# EN/JA beta parity stream (2026-08-18)
+
+The P0 closed-beta activation journey and EN/JA contract tests are on `feat/beta-en-ja-parity`, based on
+`4224486e8e1433327dd4065e86820efecbe8ebbe`. Configure, My Strategies, Hosted onboarding, the Hosted MT5
+viewer, Hosted Workspace account status, activation confirmation, core plan/onboarding copy, customer-safe
+errors, and locale helpers are localized. See `docs/product/BETA_EN_JA_AUDIT_2026-08-18.md` for the verified
+14-image acceptance matrix and the remaining P1/P2 backlog. Production was not touched.

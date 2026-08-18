@@ -641,3 +641,10 @@ Identified by the "Hosted Workspace mental model" journey verification and recor
 - **Post-beta remediation (deferred):** make `BrokerAccountsContent` itself hosted-aware (or move the hosted
   detection above the flag gate) so the Hosted Workspace experience survives enabling broker connectivity.
 - **Status:** DOCUMENTED, POST-BETA — not fixed. A code comment marks the coupling at the gate site.
+# EN/JA customer-surface parity (2026-08-18)
+
+The P0 activation journey now has practical EN/JA parity and visual evidence. P1 customer routes remain
+partially or wholly English: billing/subscription, profile/settings, analytics/charts, and residual account,
+dashboard, strategy-detail, and Terminal Access management copy outside the hosted ready-state. A native
+Japanese editorial pass and mobile-width visual certification also remain. Full scope and evidence are in
+`docs/product/BETA_EN_JA_AUDIT_2026-08-18.md`.

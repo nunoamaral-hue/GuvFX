@@ -45,6 +45,9 @@ type NavGroup = {
 
 const LangContext = createContext<Lang>("en");
 export const useLang = () => useContext(LangContext);
+export function LanguageProvider({ lang, children }: { lang: Lang; children: React.ReactNode }) {
+  return <LangContext.Provider value={lang}>{children}</LangContext.Provider>;
+}
 
 // =============================================================================
 // NAVIGATION CONFIGURATION

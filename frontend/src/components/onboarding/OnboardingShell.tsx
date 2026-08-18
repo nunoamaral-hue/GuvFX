@@ -12,6 +12,8 @@ import { EmailVerificationStep } from "./steps/EmailVerificationStep";
 import { TwoFactorStep } from "./steps/TwoFactorStep";
 import { RiskAcceptanceStep } from "./steps/RiskAcceptanceStep";
 import { PlanSelectionStep } from "./steps/PlanSelectionStep";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 // Customer Zero Flow Simplification (Option 2): the post-onboarding setup router response
 // (GET /api/onboarding/setup-status/ and the `setup` block returned by POST /api/onboarding/complete/).
@@ -36,6 +38,7 @@ const glassCard: React.CSSProperties = {
 // ─────────────────────────────────────────────────────────────────────
 
 export function OnboardingShell() {
+  const lang = useLang();
   const router = useRouter();
   const [state, setState] = useState<OnboardingState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -61,12 +64,12 @@ export function OnboardingShell() {
         }
         return;
       }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load onboarding state.");
+    } catch {
+      setError(t(lang, "onboarding.loadError"));
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, [router, lang]);
 
   useEffect(() => {
     fetchState();
@@ -94,20 +97,20 @@ export function OnboardingShell() {
         return;
       }
       setCompleting(false);
-      setError("Please finish the remaining setup steps before continuing.");
+      setError(t(lang, "onboarding.finishRemaining"));
       fetchState();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to complete onboarding.");
+    } catch {
+      setError(t(lang, "onboarding.completeError"));
       setCompleting(false);
     }
-  }, [router, fetchState]);
+  }, [router, fetchState, lang]);
 
   // ── Loading ──
   if (loading && !state) {
     return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>Getting Started</h1>
-        <p style={{ color: "#94a3b8", fontSize: "0.9rem" }}>Loading your setup progress...</p>
+        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>{t(lang, "onboarding.gettingStarted")}</h1>
+        <p style={{ color: "#94a3b8", fontSize: "0.9rem" }}>{t(lang, "onboarding.loadingProgress")}</p>
       </div>
     );
   }
@@ -116,7 +119,7 @@ export function OnboardingShell() {
   if (error && !state) {
     return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>Getting Started</h1>
+        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>{t(lang, "onboarding.gettingStarted")}</h1>
         <div style={{ ...glassCard, borderColor: "rgba(248, 113, 113, 0.3)" }}>
           <p style={{ color: "#f87171", fontSize: "0.9rem", margin: 0 }}>{error}</p>
         </div>
@@ -138,9 +141,9 @@ export function OnboardingShell() {
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-      <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>Getting Started</h1>
+      <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>{t(lang, "onboarding.gettingStarted")}</h1>
       <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1.5rem" }}>
-        Step {stepNumber} of {totalSteps} — Complete the steps below to set up your GuvFX workspace.
+        {t(lang, "onboarding.stepSummary", { step: stepNumber, total: totalSteps })}
       </p>
 
       <div
@@ -196,11 +199,10 @@ export function OnboardingShell() {
           {showReadiness && !state.onboarding_completed && (
             <div>
               <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-                Your GuvFX account is ready.
+                {t(lang, "onboarding.accountReady")}
               </h2>
               <p style={{ color: "#b7c5dd", fontSize: "0.9rem", lineHeight: 1.6, marginBottom: "1.25rem" }}>
-                The next step is to set up your private trading workspace. We run MetaTrader for you — you log in
-                inside it, and we never see your password.
+                {t(lang, "onboarding.accountReadyBody")}
               </p>
               {/* Primary path: open the hosted workspace journey (this is the beta's main flow). */}
               <Link
@@ -217,7 +219,7 @@ export function OnboardingShell() {
                   boxShadow: "0 10px 30px rgba(37, 99, 235, 0.45)",
                 }}
               >
-                Continue setup
+                {t(lang, "hostedStatus.continueSetup")}
               </Link>
               {/* Traditional path stays reachable for customers who manage their own broker account. */}
               <div style={{ marginTop: "1.25rem", paddingTop: "1rem", borderTop: "1px solid rgba(74,179,255,0.12)" }}>

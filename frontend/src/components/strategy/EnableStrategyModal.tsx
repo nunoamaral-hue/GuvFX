@@ -1,6 +1,8 @@
 "use client";
 
 import { Button } from "@/components/ui/Button";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 // AJ#7 — the Enable Strategy confirmation modal. This IS the customer's EXPLICIT consent for automated
 // execution (folding ADR-0047 workspace authorization into the single Enable action). It never authorizes
@@ -29,6 +31,7 @@ export function EnableStrategyModal({
   onConfirm,
   onCancel,
 }: EnableStrategyModalProps) {
+  const lang = useLang();
   if (!open) return null;
   return (
     <div
@@ -48,7 +51,7 @@ export function EnableStrategyModal({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Enable automated trading"
+        aria-label={t(lang, "enableModal.aria")}
         onClick={(e) => e.stopPropagation()}
         style={{
           width: "100%",
@@ -61,16 +64,13 @@ export function EnableStrategyModal({
         }}
       >
         <h2 style={{ fontSize: "1.2rem", fontWeight: 700, color: "#f1f5ff", margin: "0 0 0.5rem" }}>
-          Enable automated trading?
+          {t(lang, "enableModal.title")}
         </h2>
         <p style={{ fontSize: "0.9rem", color: "#c7d2e8", lineHeight: 1.55, margin: "0 0 0.75rem" }}>
-          This will allow GuvFX to place trades automatically on{" "}
-          <strong style={{ color: "#e8f0ff" }}>{accountLabel}</strong> using{" "}
-          <strong style={{ color: "#e8f0ff" }}>{strategyName}</strong>. Trades will follow the strategy&rsquo;s
-          signals until you turn it off. You can pause it at any time from My Strategies.
+          {t(lang, "enableModal.body", { account: accountLabel, strategy: strategyName })}
         </p>
         <p style={{ fontSize: "0.78rem", color: "#8fa0b7", lineHeight: 1.5, margin: "0 0 1rem" }}>
-          This account is a demo account — no real money is at risk during the beta.
+          {t(lang, "enableModal.demoNote")}
         </p>
 
         {error && (
@@ -93,10 +93,10 @@ export function EnableStrategyModal({
 
         <div style={{ display: "flex", gap: "0.6rem", justifyContent: "flex-end", flexWrap: "wrap" }}>
           <Button variant="secondary" onClick={onCancel} disabled={busy}>
-            Cancel
+            {t(lang, "common.cancel")}
           </Button>
           <Button variant="primary" onClick={onConfirm} disabled={busy}>
-            {busy ? "Enabling…" : error ? "Try again" : "Enable Strategy"}
+            {busy ? t(lang, "common.enabling") : error ? t(lang, "common.tryAgain") : t(lang, "enableModal.confirm")}
           </Button>
         </div>
       </div>

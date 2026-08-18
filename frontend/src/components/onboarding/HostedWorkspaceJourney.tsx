@@ -14,6 +14,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { HostedMt5RemoteApp } from "@/components/hosted/HostedMt5RemoteApp";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 import {
   bindExpectedAccount, confirmAccount, describeJourney, fetchJourney, requestWorkspace, STEPS,
   type HostedJourney, type JourneyView,
@@ -102,40 +104,33 @@ function PrepStep({ done, current, children }: { done?: boolean; current?: boole
 // competing buttons, one instruction ("remain on this page"), an active preparation timeline, and an automatic
 // hand-off to the single "Open MetaTrader" action when ready. Presentation only.
 function WaitingPanel({ slow }: { slow: boolean }) {
+  const lang = useLang();
   return (
     <div role="status" aria-live="polite" style={{ ...waitCard, padding: "1.15rem 1.2rem" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.95rem", fontWeight: 600, color: "#5fd39a" }}>
-        <span aria-hidden>✓</span> Broker account linked
+        <span aria-hidden>✓</span> {t(lang, "hostedJourney.brokerLinked")}
       </div>
       <p style={{ marginTop: 10, fontSize: "0.9rem", lineHeight: 1.65, color: BODY }}>
-        {slow
-          ? "This is taking a little longer than expected. Your workspace is still being prepared. Please remain on this "
-            + "page — we'll automatically continue as soon as everything is ready. If preparation still doesn't complete "
-            + "after several more minutes, you may safely refresh this page or contact support."
-          : "We've received your broker account information. We're now setting up your secure MetaTrader workspace and "
-            + "connecting it to your broker account. You don't need to do anything else right now — please remain on this "
-            + "page, and we'll automatically continue when everything is ready."}
+        {t(lang, slow ? "hostedJourney.waitSlow" : "hostedJourney.waitNormal")}
       </p>
       <div style={{ marginTop: 14, height: 1, background: "rgba(74, 179, 255, 0.12)" }} />
       <ul style={{ listStyle: "none", margin: "14px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 11 }}>
-        <PrepStep done>Workspace requested</PrepStep>
-        <PrepStep done>Broker account linked</PrepStep>
-        <PrepStep current>Setting up your secure MetaTrader workspace</PrepStep>
-        <PrepStep>Final verification</PrepStep>
+        <PrepStep done>{t(lang, "hostedJourney.workspaceRequested")}</PrepStep>
+        <PrepStep done>{t(lang, "hostedJourney.brokerLinked")}</PrepStep>
+        <PrepStep current>{t(lang, "hostedJourney.settingUp")}</PrepStep>
+        <PrepStep>{t(lang, "hostedJourney.finalVerification")}</PrepStep>
       </ul>
       {/* AJ#3 (Sponsor 2026-08-16): a final, explicit instruction — stay on THIS page; the single next action
           (Open MetaTrader) will appear HERE automatically the moment the workspace is ready. No navigation, no
           refresh, no second step to find. */}
       <p style={{ marginTop: 14, fontSize: "0.85rem", lineHeight: 1.55, color: BODY }}>
-        Please keep this page open — the{" "}
-        <strong style={{ color: TITLE, fontWeight: 600 }}>Open MetaTrader</strong> button will appear here
-        automatically as soon as your workspace is ready.
+        {t(lang, "hostedJourney.keepOpen")}
       </p>
       {/* The declare form (with its own password-safety note) is gone once the account is linked, so carry a
           short password reassurance INTO the waiting state — the customer never types a password here; it is
           entered later, only inside MetaTrader. */}
       <p style={{ marginTop: 10, fontSize: "0.8rem", lineHeight: 1.5, color: MUTED }}>
-        {"You'll enter your broker password later inside MetaTrader. We never ask for it here."}
+        {t(lang, "hostedJourney.passwordLater")}
       </p>
     </div>
   );
@@ -145,12 +140,12 @@ function WaitingPanel({ slow }: { slow: boolean }) {
 // genuine journey state (phase + whether a broker login has been observed) — NO percentages, NO fake progress
 // bars, NO invented timings. The active stage is highlighted; completed stages stay visible with a ✓.
 const WIZARD_STAGES = [
-  "Broker account linked",
-  "Waiting for broker login",
-  "Detecting your account",
-  "Account detected",
-  "Confirm your account",
-  "Workspace ready",
+  "hostedJourney.brokerLinked",
+  "hostedJourney.waitingLogin",
+  "hostedJourney.detecting",
+  "hostedJourney.accountDetected",
+  "hostedJourney.confirmAccount",
+  "hostedJourney.workspaceReady",
 ] as const;
 
 /** Index of the CURRENTLY ACTIVE stage (stages before it are done, after it are pending). 6 = every stage done.
@@ -169,8 +164,9 @@ export function deriveStageIndex(j: HostedJourney | null | undefined): number {
 // The persistent wizard rail. Completed steps keep a green ✓; the active step pulses in accent; pending steps
 // are muted ○. Presentation only.
 function LiveStatusPanel({ activeIndex }: { activeIndex: number }) {
+  const lang = useLang();
   return (
-    <ol aria-label="Onboarding progress" style={{ listStyle: "none", margin: 0, padding: 0,
+    <ol aria-label={t(lang, "hostedJourney.progressAria")} style={{ listStyle: "none", margin: 0, padding: 0,
                                                    display: "flex", flexDirection: "column", gap: 9 }}>
       {WIZARD_STAGES.map((label, i) => {
         const status = i < activeIndex ? "done" : i === activeIndex ? "active" : "todo";
@@ -181,7 +177,7 @@ function LiveStatusPanel({ activeIndex }: { activeIndex: number }) {
               style={{ display: "flex", alignItems: "center", gap: 10, fontSize: "0.85rem", color }}>
             <span aria-hidden className={status === "active" ? "animate-pulse" : undefined}
                   style={{ width: 14, textAlign: "center", fontSize: status === "active" ? "0.7rem" : undefined }}>{marker}</span>
-            <span style={status === "active" ? { fontWeight: 600 } : undefined}>{label}</span>
+            <span style={status === "active" ? { fontWeight: 600 } : undefined}>{t(lang, label)}</span>
           </li>
         );
       })}
@@ -198,6 +194,7 @@ function LiveStatusPanel({ activeIndex }: { activeIndex: number }) {
 function EmbeddedMetaTraderStep({
   activeIndex, title = "Open MetaTrader", instruction, hint, detecting = false, children,
 }: { activeIndex: number; title?: string; instruction?: string; hint?: string; detecting?: boolean; children: React.ReactNode }) {
+  const lang = useLang();
   return (
     <div style={{ ...waitCard, padding: "1.25rem 1.35rem" }}>
       <LiveStatusPanel activeIndex={activeIndex} />
@@ -205,8 +202,7 @@ function EmbeddedMetaTraderStep({
       <h3 style={{ margin: "16px 0 0", fontSize: "1.1rem", fontWeight: 700, color: TITLE }}>{title}</h3>
       <p style={{ marginTop: 8, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>
         {instruction
-          ?? "Log in to MetaTrader below using your broker password — it's typed only inside MetaTrader, and "
-             + "GuvFX never sees it."}
+          ?? t(lang, "hostedJourney.loginInstruction")}
       </p>
       {/* P4/P5: a distinct, intentional MetaTrader frame (accent border + glow) with a "You're using MetaTrader"
           label wrapping the terminal, so it's unmistakably part of onboarding — not a separate app bolted on. */}
@@ -215,11 +211,11 @@ function EmbeddedMetaTraderStep({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
                       padding: "0.5rem 0.95rem", background: "rgba(74, 179, 255, 0.08)",
                       borderBottom: "1px solid rgba(74, 179, 255, 0.18)" }}>
-          <span style={{ fontSize: "0.82rem", fontWeight: 700, color: TITLE }}>You&apos;re using MetaTrader</span>
+          <span style={{ fontSize: "0.82rem", fontWeight: 700, color: TITLE }}>{t(lang, "hostedJourney.usingMetaTrader")}</span>
           {detecting && (
             <span role="status" aria-live="polite"
                   style={{ display: "flex", alignItems: "center", gap: 7, fontSize: "0.78rem", color: ACCENT }}>
-              <Spinner size={12} /> Detecting your account…
+              <Spinner size={12} /> {t(lang, "hostedJourney.detectingAccount")}
             </span>
           )}
         </div>
@@ -239,6 +235,7 @@ function ConfirmAccountPanel({
   activeIndex, maskedLogin, busy, onConfirm,
 }: { activeIndex: number; maskedLogin?: string; busy: boolean; onConfirm: () => void }) {
   const acct = (maskedLogin || "").trim();
+  const lang = useLang();
   return (
     <div style={{ ...waitCard, padding: "1.25rem 1.35rem", borderColor: "rgba(95, 211, 154, 0.28)",
                   background: "rgba(95, 211, 154, 0.05)" }}>
@@ -246,18 +243,14 @@ function ConfirmAccountPanel({
       <div style={{ margin: "16px 0", height: 1, background: "rgba(74, 179, 255, 0.12)" }} />
       <h2 style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "1rem", fontWeight: 700,
                    color: "#5fd39a", margin: 0 }}>
-        <span aria-hidden>✓</span> Account detected
+        <span aria-hidden>✓</span> {t(lang, "hostedJourney.accountDetected")}
       </h2>
       <p style={{ marginTop: 10, fontSize: "0.9rem", lineHeight: 1.65, color: BODY }}>
-        {acct
-          ? `We detected account ${acct} logged in to your MetaTrader workspace. Your identity is already `
-            + "verified — please confirm this is your trading account to finish."
-          : "We detected your account logged in to your MetaTrader workspace. Your identity is already verified "
-            + "— please confirm this is your trading account to finish."}
+        {t(lang, "hostedJourney.detectedBody", { account: acct || "—" })}
       </p>
       <div style={{ marginTop: 16 }}>
         <Button onClick={onConfirm} disabled={busy}>
-          {busy ? "Confirming…" : "I confirm this is my trading account"}
+          {busy ? t(lang, "hostedJourney.confirming") : t(lang, "hostedJourney.confirmButton")}
         </Button>
       </div>
     </div>
@@ -270,19 +263,20 @@ function ConfirmAccountPanel({
 function WorkspaceReadyPanel({
   onOpenTerminal, terminalOpen, children,
 }: { onOpenTerminal: () => void; terminalOpen: boolean; children?: React.ReactNode }) {
+  const lang = useLang();
   return (
     <div style={{ ...waitCard, padding: "1.25rem 1.3rem", borderColor: "rgba(95, 211, 154, 0.28)",
                   background: "rgba(95, 211, 154, 0.05)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "1.05rem", fontWeight: 700, color: "#5fd39a" }}>
-        <span aria-hidden>✓</span> Workspace Ready
+        <span aria-hidden>✓</span> {t(lang, "hostedJourney.workspaceReady")}
       </div>
       <p style={{ marginTop: 10, fontSize: "0.9rem", lineHeight: 1.65, color: BODY }}>
-        Your hosted MetaTrader workspace is fully connected. You can now choose your first strategy.
+        {t(lang, "hostedJourney.readyBody")}
       </p>
       <div style={{ marginTop: 18, display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" as const }}>
-        <Link href="/strategies/marketplace" style={primaryLink}>Choose Strategy</Link>
+        <Link href="/strategies/marketplace" style={primaryLink}>{t(lang, "hostedJourney.chooseStrategy")}</Link>
         <button type="button" onClick={onOpenTerminal} style={secondaryButton}>
-          {terminalOpen ? "MetaTrader open below" : "Open MetaTrader"}
+          {terminalOpen ? t(lang, "hostedJourney.metaTraderOpen") : t(lang, "hostedJourney.openMetaTrader")}
         </button>
       </div>
       {terminalOpen && <div style={{ marginTop: 16 }}>{children}</div>}
@@ -304,6 +298,7 @@ function Spinner({ size = 16 }: { size?: number }) {
 }
 
 export function HostedWorkspaceJourney() {
+  const lang = useLang();
   const [journey, setJourney] = useState<HostedJourney | null>(null);
   const [load, setLoad] = useState<Load>("loading");
   const [busy, setBusy] = useState(false);
@@ -437,7 +432,7 @@ export function HostedWorkspaceJourney() {
   if (load === "loading") {
     return (
       <div className="mx-auto max-w-xl p-6" style={{ display: "flex", alignItems: "center", gap: 10, color: MUTED, fontSize: "0.9rem" }}>
-        <Spinner /> Loading your workspace…
+        <Spinner /> {t(lang, "hostedJourney.loading")}
       </div>
     );
   }
@@ -445,9 +440,9 @@ export function HostedWorkspaceJourney() {
     return (
       <div className="mx-auto max-w-lg p-6">
         <div style={glassCard}>
-          <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: TITLE, margin: 0 }}>Hosted workspace</h2>
+          <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: TITLE, margin: 0 }}>{t(lang, "hostedJourney.unavailableTitle")}</h2>
           <p style={{ marginTop: 8, fontSize: "0.9rem", color: BODY }}>
-            Your hosted trading workspace isn&apos;t available yet. We&apos;ll let you know the moment it&apos;s ready for you.
+            {t(lang, "hostedJourney.unavailableBody")}
           </p>
         </div>
       </div>
@@ -457,9 +452,9 @@ export function HostedWorkspaceJourney() {
     return (
       <div className="mx-auto max-w-lg p-6">
         <div style={{ ...glassCard, borderColor: "rgba(248, 113, 113, 0.3)" }}>
-          <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>We couldn&apos;t load your workspace status.</p>
+          <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>{t(lang, "hostedJourney.loadError")}</p>
           <div style={{ marginTop: 12 }}>
-            <Button onClick={() => { setLoad("loading"); void refresh(); }}>Try again</Button>
+            <Button onClick={() => { setLoad("loading"); void refresh(); }}>{t(lang, "common.tryAgain")}</Button>
           </div>
         </div>
       </div>
@@ -501,7 +496,7 @@ export function HostedWorkspaceJourney() {
     <form onSubmit={onBind} className="space-y-3">
       <div>
         <label htmlFor="hw-login" style={{ display: "block", fontSize: "0.8rem", color: BODY, marginBottom: 4 }}>
-          Broker account number
+          {t(lang, "hostedJourney.brokerNumber")}
         </label>
         <input id="hw-login" required value={form.expected_login}
                onChange={(e) => setForm({ ...form, expected_login: e.target.value })}
@@ -511,7 +506,7 @@ export function HostedWorkspaceJourney() {
       </div>
       <div>
         <label htmlFor="hw-server" style={{ display: "block", fontSize: "0.8rem", color: BODY, marginBottom: 4 }}>
-          Broker server
+          {t(lang, "hostedJourney.brokerServer")}
         </label>
         <input id="hw-server" value={form.expected_server}
                onChange={(e) => setForm({ ...form, expected_server: e.target.value })}
@@ -520,10 +515,10 @@ export function HostedWorkspaceJourney() {
                onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(74, 179, 255, 0.2)"; }} />
       </div>
       <Button type="submit" disabled={busy || !form.expected_login.trim()} style={{ width: "100%" }}>
-        {busy ? "Saving…" : "Save my broker details"}
+        {busy ? t(lang, "hostedJourney.saving") : t(lang, "hostedJourney.saveDetails")}
       </Button>
       <p style={{ fontSize: "0.8rem", color: MUTED, margin: 0 }}>
-        Enter your password only inside MetaTrader — never here. GuvFX never receives or stores it.
+        {t(lang, "hostedJourney.passwordSafety")}
       </p>
     </form>
   );
@@ -537,16 +532,13 @@ export function HostedWorkspaceJourney() {
     body = (
       <EmbeddedMetaTraderStep
         activeIndex={stageIndex}
-        title={hasLoginSeen ? "Checking your account" : "Log into your broker account"}
+        title={t(lang, hasLoginSeen ? "hostedJourney.checkingTitle" : "hostedJourney.loginTitle")}
         instruction={
           hasLoginSeen
-            ? "We're checking that the account you've logged into matches the broker account you linked earlier. "
-              + "You don't need to do anything else."
-            : "Log into your broker account inside MetaTrader below. Your password is entered only inside "
-              + "MetaTrader — GuvFX never sees it. As soon as you're logged in, we'll check it against the "
-              + "account you linked and move on."
+            ? t(lang, "hostedJourney.checkingBody")
+            : t(lang, "hostedJourney.loginBody")
         }
-        hint="Leave this page open while we verify your account — we'll automatically move to the next step."
+        hint={t(lang, "hostedJourney.loginHint")}
         detecting
       >
         <HostedMt5RemoteApp onConnected={() => markTiming("mt5_launched")} />
@@ -557,13 +549,9 @@ export function HostedWorkspaceJourney() {
     body = (
       <EmbeddedMetaTraderStep
         activeIndex={stageIndex}
-        title="Log into the account you linked"
-        instruction={
-          "The account currently logged into MetaTrader " + (m ? `(${m}) ` : "")
-          + "isn't the one you linked. Log into the account you told us inside MetaTrader below — we're checking "
-          + "automatically and will continue as soon as it matches."
-        }
-        hint="Leave this page open — we'll detect the correct account and move on automatically."
+        title={t(lang, "hostedJourney.correctTitle")}
+        instruction={`${t(lang, "hostedJourney.correctBody")}${m ? ` (${m})` : ""}`}
+        hint={t(lang, "hostedJourney.loginHint")}
         detecting
       >
         <HostedMt5RemoteApp onConnected={() => markTiming("mt5_launched")} />
@@ -583,13 +571,13 @@ export function HostedWorkspaceJourney() {
       <div role="status" aria-live="polite"
            style={{ display: "flex", alignItems: "center", gap: 10, color: MUTED, fontSize: "0.85rem" }}>
         <Spinner />
-        <span>Working on it — this page updates automatically.</span>
+        <span>{t(lang, "hostedJourney.working")}</span>
       </div>
     );
   } else if (view.action?.kind === "request") {
     body = (
       <Button onClick={onRequest} disabled={busy} style={{ width: "100%" }}>
-        {busy ? "Requesting…" : view.action.label}
+        {busy ? t(lang, "hostedJourney.requesting") : t(lang, "hostedJourney.requestWorkspace")}
       </Button>
     );
   } else if (view.action?.kind === "launch") {
@@ -598,7 +586,7 @@ export function HostedWorkspaceJourney() {
   } else if (view.action?.kind === "support") {
     body = (
       <div style={{ display: "flex", flexDirection: "column", gap: "0.7rem" }}>
-        <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>Our team can help get this sorted for you.</p>
+        <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>{t(lang, "hostedJourney.supportBody")}</p>
         {/* Actionable next step — never a dead end. Opens the customer's mail client (no backend). */}
         <a href="mailto:support@guvfx.com?subject=Hosted%20Workspace%20help" style={primaryLink}>
           {view.action.label}
@@ -618,8 +606,12 @@ export function HostedWorkspaceJourney() {
       <div style={{ ...glassCard, marginTop: showStepper ? "1.5rem" : 0 }}>
         {showGenericHeader && (
           <>
-            <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: TITLE, margin: 0 }}>{view.title}</h2>
-            <p style={{ marginTop: 8, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>{view.description}</p>
+            <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: TITLE, margin: 0 }}>
+              {phase === "NO_WORKSPACE" ? t(lang, "hostedJourney.startTitle") : view.title}
+            </h2>
+            <p style={{ marginTop: 8, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>
+              {phase === "NO_WORKSPACE" ? t(lang, "hostedJourney.startBody") : view.description}
+            </p>
           </>
         )}
         <div style={{ marginTop: showGenericHeader ? 16 : 0 }}>{body}</div>
@@ -629,6 +621,14 @@ export function HostedWorkspaceJourney() {
 }
 
 function Stepper({ current }: { current: number }) {
+  const lang = useLang();
+  const labels = [
+    "hostedJourney.step.request",
+    "hostedJourney.step.preparing",
+    "hostedJourney.step.open",
+    "hostedJourney.step.confirm",
+    "hostedJourney.step.ready",
+  ];
   return (
     <ol className="flex items-center gap-2 text-xs">
       {STEPS.map((label, i) => {
@@ -639,7 +639,7 @@ function Stepper({ current }: { current: number }) {
             <span className={state === "current" ? "h-2 w-full rounded animate-pulse" : "h-2 w-full rounded"}
                   style={{ background: barColor }} />
             <span style={{ color: state === "current" ? TITLE : MUTED, fontWeight: state === "current" ? 600 : 400 }}>
-              {label}
+              {t(lang, labels[i])}
             </span>
           </li>
         );
