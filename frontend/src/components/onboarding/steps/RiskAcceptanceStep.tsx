@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
+import { customerSafeError } from "@/lib/customer-safe-error";
 
 type Props = {
   state: OnboardingState;
@@ -36,7 +37,7 @@ export function RiskAcceptanceStep({ state, onComplete }: Props) {
       await apiFetch("/api/onboarding/risk/accept/", { method: "POST" });
       onComplete();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to accept risk disclosure.");
+      setError(customerSafeError(err, "We couldn't save your acceptance. Please try again."));
     } finally {
       setAccepting(false);
     }

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
+import { customerSafeError } from "@/lib/customer-safe-error";
 
 type Props = {
   state: OnboardingState;
@@ -39,7 +40,7 @@ export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
       );
       setSetupData(data);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to set up 2FA.");
+      setError(customerSafeError(err, "We couldn't set up two-factor authentication. Please try again."));
     } finally {
       setSetting(false);
     }
@@ -56,7 +57,9 @@ export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
       });
       onComplete();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Invalid code.");
+      setError(customerSafeError(err, "That code isn't valid. Check it and try again.", [
+        { match: /invalid.*(otp|code)/i, message: "That code isn't valid. Check it and try again." },
+      ]));
     } finally {
       setVerifying(false);
     }
@@ -73,7 +76,7 @@ export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
       </p>
 
       {!setupData ? (
-        <div style={{ display: "flex", gap: "0.5rem" }}>
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
           <Button onClick={handleSetup} disabled={setting}>
             {setting ? "Setting up..." : "Set Up 2FA"}
           </Button>
@@ -101,7 +104,7 @@ export function TwoFactorStep({ state, onComplete, onSkip }: Props) {
           >
             {setupData.secret}
           </div>
-          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
             <input
               type="text"
               value={otp}
