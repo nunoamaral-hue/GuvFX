@@ -188,12 +188,16 @@ class GetStrategyTests(TestCase):
     def test_strategy_list_flags_backing_row(self):
         # AJ#7.2 badge honesty: the generic Strategy list marks the backing row of the owned signal-copy product
         # is_signal_copy_backed=True so My Strategies renders it as "Automated", never the misleading "Active".
+        # A genuinely-generic strategy (created by the customer, not signal-copy) is NOT flagged.
+        from strategies.models import Strategy
+        generic = Strategy.objects.create(owner=self.user, name="My Manual EURUSD")
         got = self._get()
         backing_id = got.json()["assignment_id"] and StrategyAssignment.objects.get(
             id=got.json()["assignment_id"]).strategy_id
         rows = self.c.get("/api/strategies/strategies/").json()
         by_id = {r["id"]: r for r in rows}
         self.assertTrue(by_id[backing_id]["is_signal_copy_backed"])
+        self.assertFalse(by_id[generic.id]["is_signal_copy_backed"])   # generic row is never mislabelled
 
     def test_strategy_list_flags_backing_row_even_when_ambiguous(self):
         # Owning the product on TWO demo accounts is ambiguous (a benign, normal acquisition, not a config
