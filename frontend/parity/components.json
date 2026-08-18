@@ -49,6 +49,7 @@
   "src/components/operations/OpsSummary.tsx",
   "src/components/operations/OpsTimelineTable.tsx",
   "src/components/strategy/EnableStrategyModal.tsx",
+  "src/components/strategy/LotSizeControl.tsx",
   "src/components/ui/Alert.tsx",
   "src/components/ui/Badge.tsx",
   "src/components/ui/Button.tsx",

@@ -23,6 +23,7 @@ import {
 import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
 import { useLang } from "@/components/AppShell";
 import { t, type Lang } from "@/lib/i18n";
+import LotSizeControl from "@/components/strategy/LotSizeControl";
 
 type TradingAccount = {
   id: number;
@@ -337,6 +338,7 @@ function ConfigureInner() {
           accountMissing={resolvedAccountId != null && !account}
           hasAccount={!!resolvedAccountId}
           owned={owned}
+          assignmentId={status?.assignment_id ?? null}
           enabled={enabled}
           ambiguous={ambiguous}
           canEnable={canEnable}
@@ -377,6 +379,7 @@ function AutomatedConfig(props: {
   accountMissing: boolean;
   hasAccount: boolean;
   owned: boolean;
+  assignmentId: number | null;
   enabled: boolean;
   ambiguous: boolean;
   canEnable: boolean;
@@ -432,6 +435,8 @@ function AutomatedConfig(props: {
             </div>
           )})}
         </div>
+        {/* P0-A — customer-owned per-leg lot size (only for an owned assignment). */}
+        {props.owned && <LotSizeControl assignmentId={props.assignmentId} lang={props.lang} />}
         <p style={{ color: "#8fa0b7", fontSize: "0.78rem", lineHeight: 1.5, margin: "0.9rem 0 0" }}>
           {props.lang === "ja" ? t(props.lang, "configure.betaNote") : BETA_CONFIG_NOTE}
         </p>
