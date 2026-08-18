@@ -1,0 +1,68 @@
+# GuvFX Node-2 dispatch worker (Closed-Beta) — durable, supervised.
+#
+# WHAT IT IS
+#   The process that was missing at the end of Boundary B. It runs the SAME binary as the
+#   node-1 dispatch worker (`mt5_trade_ingest_worker.py`); ONLY the WorkerIdentity differs.
+#   It authenticates to the backend as `mt5-node2-order-1`, polls `/api/execution/jobs/next/`,
+#   claims PLACE_ORDER jobs for TerminalNode `guvfx-beta-node-1`, and POSTs each to the
+#   SERVER-DERIVED node-2 order bridge (`:8789`). It never accepts a caller-provided bridge URL.
+#
+# NODE CONFINEMENT (defence in depth)
+#   * Server-side (authoritative): `WorkerIdentity(mt5-node2-order-1).worker_permissions.authorized_nodes`
+#     is EXACTLY `["guvfx-beta-node-1"]` (commissioned in Boundary A). The `next_job` claim seam and the
+#     ADR-0048 readiness surface both derive node scope from `execution.node_execution.worker_authorized_nodes`,
+#     so this worker can NEVER claim a node-1 (Customer Zero) job even if mis-configured here.
+#   * This file never re-authorizes node 1, never uses `legacy-worker`, never reuses `mt5-trade-ingest-1`.
+#
+# SECURITY — NO SECRET LITERALS IN THIS FILE (RULE: no secrets in Git).
+#   All secrets come from host env-files (mode 600), never inline:
+#     - ./node2-dispatch-worker.env  : the worker identity + Django/DB secrets (see .env.template)
+#           MT5_WORKER_TOKEN MUST be the node-2 worker secret minted in Boundary A
+#           (host: /home/ubuntu/guvfx-prod/node2-worker-secret.env  -> GUVFX_NODE_WORKER_SECRET).
+#     - ./bridge-agent.env           : the shared inbound agent token (WINDOWS_AGENT_TOKEN) used to
+#           reach the `:8789` bridge. This MUST be the ROTATED token. NEVER deploy with the
+#           pre-rotation (compromised) value — see NODE2_MAINTENANCE_WINDOW_PACKET.md.
+#
+# LAUNCH — supported orchestration only (RULE 1: never a long-lived worker from an interactive SSH shell):
+#     docker compose -f docker-compose.node2-worker.yml up -d
+#   Retire:
+#     docker compose -f docker-compose.node2-worker.yml down
+#
+# This is a Closed-Beta shape that mirrors the node-1 worker. It retires with the per-node
+# inbound-token model (Post-Beta), when the node-2 worker gets its OWN agent token instead of the
+# shared-token exception.
+
+services:
+  guvfx-mt5-node2-order-worker:
+    image: guvfx-prod-guvfx-backend         # same image as backend + node-1 worker; no separate build
+    container_name: guvfx-mt5-node2-order-worker
+    command: ["python", "/app/mt5_trade_ingest_worker.py"]
+    env_file:
+      - ./bridge-agent.env                  # shared inbound agent token (ROTATED) + DB creds if present
+      - ./node2-dispatch-worker.env         # node-2 identity + Django/DB secrets (from the template)
+    environment:
+      # --- non-secret, node-2-specific overrides (highest precedence; safe to keep in Git) ---
+      MT5_WORKER_ID: mt5-node2-order-1                      # node-2 dedicated identity (authorized: guvfx-beta-node-1 only)
+      GUVFX_API_BASE: http://guvfx-backend:8000            # internal backend URL (same compose network)
+      GUVFX_API_HOST: api.guvfx.com
+      GUVFX_WINDOWS_AGENT_BASE_URL: http://100.79.101.19:8789   # node-2 bridge; per-JOB routing is still server-derived
+      DJANGO_SETTINGS_MODULE: guvfx_backend.settings
+      PYTHONPATH: /app
+      # Modern per-worker auth (X-Worker-Id + X-Worker-Secret) ONLY. This key is set here (highest
+      # precedence) to EMPTY so that no env-file value can ever re-enable the legacy X-Worker-Token
+      # path (which resolves to `legacy-worker`, force-emptied of node scope). Empty => falsey in the
+      # worker's `if os.getenv("GUVFX_USE_LEGACY_AUTH")` gate.
+      GUVFX_USE_LEGACY_AUTH: ""
+    restart: unless-stopped
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"                     # bounded logs
+        max-file: "5"
+    networks:
+      - guvfx-prod_default                  # same network the backend + node-1 worker use
+
+networks:
+  guvfx-prod_default:
+    external: true

@@ -82,3 +82,6 @@ wayond_staging.json
 # copies (e.g. "... 2"), or backups. Only the canonical .example template is committed.
 deploy/beta-provisioner/beta-provisioner.secret.env*
 !deploy/beta-provisioner/beta-provisioner.secret.env.example
+
+# Node-2 dispatch worker — filled env-file holds secrets, never commit (template is committed)
+deploy/node2-dispatch-worker/node2-dispatch-worker.env
