@@ -78,6 +78,16 @@ def validate_trendline_break_pocket_filters(filters: dict) -> dict:
 
 
 class StrategySerializer(serializers.ModelSerializer):
+    # AJ#7.2 — read-model dedup flag. True when this Strategy is the backing row of a signal-copy product the
+    # caller owns UNAMBIGUOUSLY (rendered in My Strategies' managed "Automated strategies" section), so the
+    # generic list can hide it WITHOUT a second client-side fetch or race. Mirrors signal_copy_status.strategy_id
+    # exactly (incl. fail-open: ambiguous ownership → not backed → the row stays visible). Populated only for the
+    # list action via serializer context; defaults False everywhere else.
+    is_signal_copy_backed = serializers.SerializerMethodField()
+
+    def get_is_signal_copy_backed(self, obj):
+        return obj.id in (self.context.get("signal_copy_backed_ids") or set())
+
     class Meta:
         model = Strategy
         fields = [
@@ -115,8 +125,9 @@ class StrategySerializer(serializers.ModelSerializer):
             "notes",
             "created_at",
             "updated_at",
+            "is_signal_copy_backed",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at", "is_signal_copy_backed"]
 
     def create(self, validated_data):
         owner = self.context["request"].user

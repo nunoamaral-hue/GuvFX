@@ -109,6 +109,9 @@ type Strategy = {
   auto_optimize_by_ai: boolean;
   filters: Record<string, unknown> | null;
   created_at: string;
+  /** AJ#7.2 — server-computed dedup flag: this row backs a signal-copy product the customer owns and is shown
+   *  in the managed "Automated strategies" section, so the generic list hides it (no client-side race). */
+  is_signal_copy_backed?: boolean;
 };
 
 export default function StrategiesListPage() {
@@ -132,14 +135,11 @@ export default function StrategiesListPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionBusyId, setActionBusyId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  // AJ#7.2 — owned automated strategies (Wayond today), fetched HERE so the generic list below can DEDUPE:
-  // the backing Strategy row of an owned signal-copy product is hidden so the product renders exactly once.
+  // AJ#7.2 — the customer's owned automated strategies (Wayond today), rendered in the managed section below.
+  // This fetch feeds ONLY the managed card; the generic-list DEDUP is server-computed (Strategy
+  // .is_signal_copy_backed), so the list never races this secondary fetch.
   const [automatedRows, setAutomatedRows] = useState<OwnedRow[]>([]);
   const [justEnabled, setJustEnabled] = useState(false);
-  // Gate the generic list on the automated (dedup-source) load so the backing Wayond row can never FLASH with
-  // a misleading "Active" badge before dedup applies. A SAFETY TIMEOUT flips this true regardless, so a hung
-  // managed endpoint can never block the customer's genuine strategies indefinitely (worst case: brief flash).
-  const [automatedLoaded, setAutomatedLoaded] = useState(false);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -195,9 +195,6 @@ export default function StrategiesListPage() {
     const enabledHint = typeof window !== "undefined"
       && new URLSearchParams(window.location.search).get("enabled") === "1";
     let cancelled = false;
-    // Safety net: never let a stalled managed endpoint keep the generic list hidden. Whatever happens, the
-    // list renders within a few seconds (dedup then applies late at worst — a brief flash, not a block).
-    const safety = setTimeout(() => { if (!cancelled) setAutomatedLoaded(true); }, 3000);
     (async () => {
       const journey = await fetchJourney().then((r) => (r.ok ? r.journey : null)).catch(() => null);
       const found: OwnedRow[] = [];
@@ -205,19 +202,17 @@ export default function StrategiesListPage() {
         const st = await fetchSignalCopyStatus(mp).catch(() => null);
         if (st?.armed) found.push({ mp, name: mpDisplayName(mp), status: st, journey });
       }
-      if (!cancelled) { setAutomatedRows(found); setJustEnabled(enabledHint); setAutomatedLoaded(true); }
+      if (!cancelled) { setAutomatedRows(found); setJustEnabled(enabledHint); }
     })();
-    return () => { cancelled = true; clearTimeout(safety); };
+    return () => { cancelled = true; };
   }, [accessToken]);
 
-  // Strategy ids backing an owned automated product — hidden from the generic list so a signal-copy product
-  // (e.g. Wayond WIM) is never shown twice (once managed, once as a bare "Wayond WIM Strategy" row).
-  const automatedStrategyIds = new Set(
-    automatedRows
-      .map((r) => r.status.strategy_id)
-      .filter((id): id is number => typeof id === "number"),
-  );
-  const visibleStrategies = strategies.filter((s) => !automatedStrategyIds.has(s.id));
+  // DEDUP is server-computed: the generic list hides any row the backend flags as backing an owned signal-copy
+  // product (Strategy.is_signal_copy_backed) — no second client fetch, no race, no flash. A customer who owns a
+  // signal-copy product always carries its backing (flagged) row in `strategies`, which also suppresses the
+  // "no strategies" empty state while the managed card is still loading.
+  const visibleStrategies = strategies.filter((s) => !s.is_signal_copy_backed);
+  const ownsSignalCopyProduct = strategies.some((s) => s.is_signal_copy_backed);
 
   return (
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
@@ -251,9 +246,9 @@ export default function StrategiesListPage() {
           </p>
         )}
 
-        {(loading || (accessToken && !automatedLoaded)) && <p>Loading strategies...</p>}
+        {loading && <p>Loading strategies...</p>}
 
-        {!loading && automatedLoaded && visibleStrategies.length === 0 && automatedRows.length === 0 && accessToken && !error && (
+        {!loading && visibleStrategies.length === 0 && !ownsSignalCopyProduct && automatedRows.length === 0 && accessToken && !error && (
           <p style={{ fontSize: "0.9rem" }}>
             No strategies found yet. Create one from the Builder then come back
             here.
@@ -268,7 +263,7 @@ export default function StrategiesListPage() {
             marginTop: "0.75rem",
           }}
         >
-          {automatedLoaded && visibleStrategies.map((strategy) => (
+          {visibleStrategies.map((strategy) => (
             <div
               key={strategy.id}
               style={{

@@ -693,6 +693,34 @@ class StrategyViewSet(viewsets.ModelViewSet):
             qs = qs.filter(owner=user)
         return qs
 
+    def _signal_copy_dedup_ids(self, request):
+        """AJ#7.2 — the set of Strategy ids My Strategies must DEDUPE from the generic list: the backing
+        Strategy of each signal-copy product the caller owns UNAMBIGUOUSLY. Mirrors signal_copy_status.strategy_id
+        (len(hits) == 1) for every distinct signal-copy source in the catalogue, so the read model dedups the
+        list server-side and the client never races a second fetch. Fail-OPEN: ambiguous (len != 1) → not added,
+        so the row stays visible; any error yields an empty set (nothing hidden)."""
+        ids = set()
+        seen = set()
+        for tpl in MARKETPLACE_STRATEGIES.values():
+            src = ((tpl.get("defaults") or {}).get("filters") or {}).get("signal_source") or ""
+            if not src or src in seen:
+                continue
+            seen.add(src)
+            hits = self._armed_assignments(request, src)
+            if len(hits) == 1:
+                ids.add(hits[0].strategy_id)
+        return ids
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        # Populate the dedup set only for the list read model; other actions default the flag to False.
+        if getattr(self, "action", None) == "list":
+            try:
+                ctx["signal_copy_backed_ids"] = self._signal_copy_dedup_ids(self.request)
+            except Exception:
+                ctx["signal_copy_backed_ids"] = set()   # fail open — never hide a row on a computation error
+        return ctx
+
     def perform_create(self, serializer):
         """Create strategy and log audit event."""
         instance = serializer.save()

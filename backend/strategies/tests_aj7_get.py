@@ -185,6 +185,25 @@ class GetStrategyTests(TestCase):
         self.assertIsNone(body["strategy_id"])
         self.assertIsNone(body["account_id"])
 
+    def test_strategy_list_flags_backing_row_for_dedup(self):
+        # AJ#7.2 read-model dedup: the generic Strategy list marks the backing row of the unambiguous owned
+        # signal-copy product is_signal_copy_backed=True so My Strategies hides it WITHOUT a client-side race.
+        got = self._get()
+        backing_id = got.json()["assignment_id"] and StrategyAssignment.objects.get(
+            id=got.json()["assignment_id"]).strategy_id
+        rows = self.c.get("/api/strategies/strategies/").json()
+        by_id = {r["id"]: r for r in rows}
+        self.assertTrue(by_id[backing_id]["is_signal_copy_backed"])
+
+    def test_strategy_list_flag_fails_open_when_ambiguous(self):
+        # >1 owned armed assignment → ambiguous → the backend must NOT flag the backing rows, so the list keeps
+        # them visible (mirrors signal_copy_status.strategy_id=None fail-open).
+        self._get()
+        acct2 = _demo_acct(self.user, "G1B")
+        self._get(account_id=acct2.id)
+        rows = self.c.get("/api/strategies/strategies/").json()
+        self.assertTrue(all(not r["is_signal_copy_backed"] for r in rows))
+
 
 @override_settings(**BASE)
 class GetStrategyCohortTests(TestCase):
