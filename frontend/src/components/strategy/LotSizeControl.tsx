@@ -44,7 +44,7 @@ export default function LotSizeControl({ assignmentId, lang }: { assignmentId: n
     if (assignmentId == null) { setUnavailable(true); setLoading(false); return; }
     setLoading(true);
     try {
-      const data = await apiFetch<Sizing & { ok: boolean }>(`/api/assignments/${assignmentId}/leg-sizing/`, { method: "GET" });
+      const data = await apiFetch<Sizing & { ok: boolean }>(`/api/strategies/assignments/${assignmentId}/leg-sizing/`, { method: "GET" });
       setSizing(data);
       setValue(data.lot_per_leg);
       setUnavailable(false);
@@ -63,7 +63,7 @@ export default function LotSizeControl({ assignmentId, lang }: { assignmentId: n
     setFeedback(null);
     try {
       const data = await apiFetch<Sizing & { ok: boolean; errors?: Record<string, string[]> }>(
-        `/api/assignments/${assignmentId}/leg-sizing/`,
+        `/api/strategies/assignments/${assignmentId}/leg-sizing/`,
         { method: "PUT", body: JSON.stringify({ lot_per_leg: value }) },
       );
       setSizing(data);

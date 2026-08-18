@@ -35,7 +35,7 @@ describe("LotSizeControl", () => {
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(screen.getByText("Saved")).toBeTruthy());
     const putCall = apiFetch.mock.calls.find((c) => (c[1] as RequestInit)?.method === "PUT");
-    expect(putCall?.[0]).toBe("/api/assignments/42/leg-sizing/");
+    expect(putCall?.[0]).toBe("/api/strategies/assignments/42/leg-sizing/");
     expect(JSON.parse((putCall?.[1] as RequestInit).body as string)).toEqual({ lot_per_leg: "0.02" });
   });
 
