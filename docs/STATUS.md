@@ -20,17 +20,24 @@
   Strategy list by hiding the backing row whose id == new `signal_copy_status.strategy_id` — so the misleading
   second "Wayond WIM Strategy — Active" entry is gone; the managed section carries a customer-facing lifecycle
   chip (Setup required / Ready to enable / Enabled / Needs attention) instead of `Strategy.is_active` "Active".
-  Generic strategies keep their honest user-controlled Active/Inactive toggle. Ambiguous ownership (no single
-  `strategy_id`) FAILS OPEN to visibility — nothing is silently hidden. Configure (`configure/page.tsx`) now
+  Generic strategies keep their honest user-controlled Active/Inactive toggle. Badge honesty is server-driven:
+  a new read-only `Strategy.is_signal_copy_backed` flag makes any still-visible backing row render as a neutral
+  "Automated" badge, never `Strategy.is_active`'s green "Active" — and the client preserves that flag across the
+  Actions toggle PATCH. Dedup runs CLIENT-side in lockstep with the managed card (both read the same status
+  fetch), so if the status fetch fails the product renders ONCE (backing row stays), never zero times. Ambiguous
+  ownership (no single `strategy_id`) FAILS OPEN to visibility — nothing is silently hidden. Configure
+  (`configure/page.tsx`) now
   self-updates: while genuinely PREPARING it polls readiness and transitions "getting ready" → "Ready to enable"
   in place (no nav away/back), with a fail-safe that never downgrades on a transient miss; a workspace that will
   NOT self-heal (journey failed to load, or terminal `WORKSPACE_UNAVAILABLE`) shows an honest "needs attention"
   + Contact support instead of a false auto-update promise. Enable flow UNCHANGED (modal + ADR-0047 consent, no
   auth on load, no separate authorization pages). NO migration (reuses StrategyAssignment). Branch
-  `feat/aj72-wayond-normalize` (`d46e109`→`00cee1a`→`06f1ae9`), NOT pushed, NOT deployed. `make check` green
-  (backend 4148 OK, lint 0 errors, build OK); full vitest 230. Adversarial review (6 lenses × verify, Workflow)
-  → 0 HIGH; 3 MEDIUM found + all FIXED (false auto-update promise for unavailable workspaces; a tautological
-  fail-safe test; missing ambiguous-branch `strategy_id==None` coverage) + the LOW initial-load "Active" flash.
+  `feat/aj72-wayond-normalize` (`d46e109`→…→`bbd2780`), NOT pushed, NOT deployed. `make check` green
+  (backend 4152 OK, lint 0 errors, build OK); full vitest 236. Adversarial review (6 lenses × adversarial
+  verify, Workflow) ran to convergence over 9 rounds → **0 HIGH / 0 MEDIUM**; every intermediate finding was
+  self-introduced by a prior round's fix and re-closed. The decisive architectural fix: dedup and the managed
+  card must stay in LOCKSTEP on the same client status fetch, so the product can never render zero times (an
+  earlier server-side dedup made it VANISH on a status failure). Residual LOW items documented + accepted.
   Objective B (READ-ONLY live cert of the Sponsor's now-enabled Wayond): verdict **A — WAYOND LIVE AND
   LISTENING** (assignment routable, auto-router targets acct 25, order-time gate intact). Zero prod mutation
   this packet: no signal, no execution job, no order; the enabled Wayond assignment (id 10), Customer Zero

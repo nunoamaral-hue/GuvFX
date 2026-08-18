@@ -1,11 +1,12 @@
 # NEXT — Priorities (keep this list short)
 
 ## ▶ AJ#7.2 Wayond journey normalization — BUILT, STOP for Sponsor (2026-08-18)
-Branch `feat/aj72-wayond-normalize` (`06f1ae9`), NOT pushed / NOT deployed. My Strategies renders the owned
-Wayond product ONCE (dedup by new `signal_copy_status.strategy_id`); Configure self-updates while preparing
-and shows honest "needs attention"+support when the workspace can't self-heal; Enable flow unchanged
-(ADR-0047). `make check` green, vitest 230, adversarial review 0 HIGH / 0 MEDIUM (3 MEDIUM found+fixed). No
-migration, zero prod mutation. Live cert of the Sponsor's enabled Wayond = **A (LIVE AND LISTENING)**.
+Branch `feat/aj72-wayond-normalize` (`bbd2780`), NOT pushed / NOT deployed. My Strategies renders the owned
+Wayond product ONCE (client-lockstep dedup by new `signal_copy_status.strategy_id`); honest "Automated" badge
+driven by the new read-only `Strategy.is_signal_copy_backed`; Configure self-updates while preparing and shows
+honest "needs attention"+support when the workspace can't self-heal; Enable flow unchanged (ADR-0047). `make
+check` green, vitest 236, adversarial review 9 rounds → converged 0 HIGH / 0 MEDIUM. No migration, zero prod
+mutation. Live cert of the Sponsor's enabled Wayond = **A (LIVE AND LISTENING)**.
 **ONE bounded next action → the Sponsor:** review the acceptance evidence and, if approved, authorise the
 frontend-only DARK deploy (build-args API base only; broker-connectivity/operations stay unset) — then FF-merge
 `feat/aj72-wayond-normalize`→main and deploy per the AJ#7.1 mechanics (backend needs the additive
