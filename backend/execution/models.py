@@ -1328,3 +1328,100 @@ class HostedWorkspaceExecution(models.Model):
 
     def __str__(self) -> str:
         return f"HostedWorkspaceExecution(job={self.job_id}, {self.phase}, ws={self.workspace_uuid})"
+
+
+class HostedExecutionEndpoint(models.Model):
+    """P0-B1 — the per-TENANT order-execution endpoint (one dedicated pin-enforcing bridge process per hosted
+    customer). It is the authoritative, SERVER-DERIVED routing target for a hosted PLACE/CLOSE/MODIFY job, and
+    is DELIBERATELY distinct from ``TerminalNode.order_bridge_base_url`` (which is node-global and, before this,
+    forced every account on a node to one bridge process pinned to ONE terminal — see the P0-B forensic).
+
+    One active endpoint belongs to exactly ONE hosted workspace/account. Every routing/identity field is
+    server-derived from the account's authoritative bindings (``AccountProvisioning`` windows_username,
+    ``HostedMt5Workspace`` uuid, the account's broker login/server/is_demo). The customer NEVER supplies the
+    host, port, windows_username, runtime path, login or workspace_uuid used for routing.
+
+    DARK: nothing reads this until ``HOSTED_PER_TENANT_TRANSPORT_ENABLED`` is on (see ``order_transport``);
+    while off, order routing is byte-identical to the per-node behaviour and support@ is untouched. The model
+    holds NO secret (login/server are broker identifiers, never a password).
+    """
+
+    class State(models.TextChoices):
+        # port+identity reserved and a bridge config generated, but the bridge is not yet proven healthy —
+        # NOT routable (a job must never reach a bridge we have not certified up + pin-matched).
+        ALLOCATED = "ALLOCATED", "Allocated"
+        # bridge process up, /health passed, identity-pin certified against THIS tenant — the ONLY routable state.
+        READY = "READY", "Ready"
+        # deprovisioned: execution disabled, bridge stopped, port reclaimable. NEVER routable again; a fresh
+        # provisioning re-activates the row (see the endpoint service). Kept for audit/liveness history.
+        RETIRED = "RETIRED", "Retired"
+
+    # ── ownership (server-authoritative; one endpoint per workspace) ──
+    workspace = models.OneToOneField(
+        "hosted_workspace.HostedMt5Workspace", on_delete=models.CASCADE, related_name="execution_endpoint",
+        help_text="The hosted workspace this endpoint executes for (1:1). CASCADE: purging the workspace "
+                  "removes its endpoint so a reclaimed port/identity can never be reused by a stale row.",
+    )
+    #: Denormalised for the HOT routing path (resolve by the job's account without a workspace join). Kept in
+    #: agreement with ``workspace.trading_account`` by the endpoint service; the resolver asserts they match.
+    trading_account = models.ForeignKey(
+        TradingAccount, on_delete=models.CASCADE, related_name="execution_endpoints",
+    )
+    terminal_node = models.ForeignKey(
+        TerminalNode, on_delete=models.PROTECT, related_name="execution_endpoints",
+        help_text="The execution node (host capacity unit) this endpoint's bridge runs under. PROTECT: a node "
+                  "with live endpoints cannot be deleted out from under them.",
+    )
+
+    # ── host-local addressing (server/operator-controlled; never client-supplied) ──
+    #: The execution host address the bridge listens on (the node's ``rdp_host``/execution host). Combined with
+    #: ``port`` it is unique among non-retired endpoints, so two tenants never collide on one host:port.
+    host = models.CharField(max_length=255)
+    port = models.PositiveIntegerField()
+    #: ``http://host:port`` — the RECORD OF TRUTH the order transport routes to. Derived; never client input.
+    base_url = models.CharField(max_length=255)
+
+    # ── authoritative identity snapshot the per-tenant bridge is configured from (all server-derived) ──
+    windows_username = models.CharField(max_length=64)
+    runtime_path = models.CharField(max_length=255)
+    expected_login = models.CharField(max_length=64, blank=True, default="")     # broker login (identifier)
+    # 160 matches BrokerServer.server_name (its source) so a valid server name is never truncated / DataError'd.
+    expected_server = models.CharField(max_length=160, blank=True, default="")   # broker server (identifier)
+    is_demo = models.BooleanField(default=True)
+    workspace_uuid = models.UUIDField()
+
+    # ── lifecycle + liveness ──
+    state = models.CharField(max_length=16, choices=State.choices, default=State.ALLOCATED, db_index=True)
+    last_reason = models.CharField(max_length=64, blank=True, default="")   # stable, secret-free code
+    last_health_ok = models.BooleanField(null=True, blank=True)
+    last_health_at = models.DateTimeField(null=True, blank=True)
+    activated_at = models.DateTimeField(null=True, blank=True)
+    retired_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # A host:port is owned by at most ONE live (non-retired) endpoint. Retired rows free the port for
+            # reuse. Enforced in the DB so a provisioning race can never double-allocate a port.
+            models.UniqueConstraint(
+                fields=["host", "port"],
+                condition=~models.Q(state="RETIRED"),
+                name="uniq_live_host_port_endpoint",
+            ),
+            # An account has at most ONE live endpoint (defence in depth beside the workspace 1:1).
+            models.UniqueConstraint(
+                fields=["trading_account"],
+                condition=~models.Q(state="RETIRED"),
+                name="uniq_live_account_endpoint",
+            ),
+        ]
+        indexes = [models.Index(fields=["trading_account", "state"])]
+
+    def __str__(self) -> str:
+        return f"HostedExecutionEndpoint(acct={self.trading_account_id}, {self.base_url}, {self.state})"
+
+    @property
+    def is_routable(self) -> bool:
+        """A job may be dispatched here ONLY when the endpoint is READY (bridge proven up + pin-certified)."""
+        return self.state == self.State.READY
