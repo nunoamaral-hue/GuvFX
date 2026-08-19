@@ -983,7 +983,7 @@ export default function TerminalAccessPage() {
       )}
 
       {!sessionLoading && sessionError && !activeSession && (
-        <StateNotice type="error" message={sessionError} />
+        <StateNotice type="error" message={localizeBackendCustomerText(lang, sessionError, "error")} />
       )}
 
       {/* Legacy active-session card (full-desktop viewer) — NEVER shown to a hosted owner, and not shown
@@ -1036,7 +1036,7 @@ export default function TerminalAccessPage() {
         {/* Error */}
         {!bindingsLoading && bindingsError && (
           <div style={{ fontSize: "0.9rem", color: "#f87171", textAlign: "center" as const, padding: "2rem 0" }}>
-            {bindingsError}
+            {localizeBackendCustomerText(lang, bindingsError, "error")}
           </div>
         )}
 

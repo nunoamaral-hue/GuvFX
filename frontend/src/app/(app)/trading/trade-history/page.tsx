@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { apiFetch } from "@/lib/api";
 import { localeFor, t } from "@/lib/i18n";
 import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
-import { localizeActiveBetaCopy, localizeBackendCustomerText } from "@/lib/active-beta-i18n";
+import { formatCustomerAccountDisplay, localizeActiveBetaCopy, localizeBackendCustomerText } from "@/lib/active-beta-i18n";
 import type { TradingAccount } from "@/types/strategies";
 
 const API_BASE = "https://api.guvfx.com";
@@ -949,7 +949,11 @@ export default function TradeHistoryPage() {
               )}
               {accounts.map((acc) => (
                 <option key={acc.id} value={acc.id}>
-                  {acc.name} ({acc.broker_name})
+                  {formatCustomerAccountDisplay(lang, {
+                    brokerName: acc.broker_name,
+                    name: acc.name,
+                    accountNumber: acc.account_number,
+                  })}
                 </option>
               ))}
             </select>

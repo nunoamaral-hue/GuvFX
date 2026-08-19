@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { LanguageProvider } from "@/components/AppShell";
 import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
 import {
+  formatCustomerAccountDisplay,
   getActiveBetaCatalogue,
   localizeBackendCustomerText,
   localizeControlledEnum,
@@ -17,7 +18,15 @@ const ACTIVE_ROUTE_EXPECTATIONS: Record<string, readonly string[]> = {
   "/backtests": ["Research Mode — results are simulated, not live execution", "Parameters"],
   "/trading/terminal-access": ["Active Session", "Reconnect viewer", "Session details"],
   "/trading/trade-history": ["Daily PnL & Win Rate (Observed)", "No daily data for this period."],
-  "/analytics/strategy-metrics": ["Strategy Metrics", "By Strategy", "No metrics yet."],
+  "/analytics/strategy-metrics": [
+    "Strategy Metrics",
+    "Performance by strategy for your connected trading account. Read-only and informational.",
+    "Trading account",
+    "Strategies",
+    "Trades",
+    "Enabled",
+    "No attributed trades yet",
+  ],
   "/analytics/strategy-lab": ["Strategy Lab", "Market State & Strategy Selection", "Trade Quality", "Research Knowledge Base"],
   "/charts": ["Market charts and visualisation.", "Open Terminal Access"],
   "/account/billing": ["Billing & Plans", "Subscription details", "Platform capabilities", "Change Plan"],
@@ -76,7 +85,25 @@ describe("active closed-beta EN/JA rendering", () => {
     expect(localizeBackendCustomerText("en", "Original API detail", "error")).toBe("Original API detail");
   });
 
-  it("switches EN to JA in place without changing account data or recreating MT5", async () => {
+  it("deduplicates generic workspace labels, preserves account numbers, and never needs an internal PK", () => {
+    expect(formatCustomerAccountDisplay("ja", {
+      brokerName: "Hosted Workspace",
+      name: "Hosted Workspace",
+      accountNumber: "1302575",
+    })).toBe("ホステッドワークスペース · 1302575");
+    expect(formatCustomerAccountDisplay("en", {
+      brokerName: "IS6 Technologies",
+      name: "IS6 Demo",
+      accountNumber: "1302561",
+    })).toBe("IS6 Technologies · IS6 Demo · 1302561");
+    expect(formatCustomerAccountDisplay("ja", {
+      brokerName: "IS6 Technologies",
+      name: "Wayond WIM",
+      accountNumber: "1302587",
+    })).toBe("IS6 Technologies · Wayond WIM · 1302587");
+  });
+
+  it("switches EN to JA to EN in place without changing account data or recreating MT5", async () => {
     const view = render(<Surface lang="en" />);
     const mainBefore = screen.getByRole("main");
     const iframeBefore = screen.getByTitle("MT5 Terminal");
@@ -89,6 +116,14 @@ describe("active closed-beta EN/JA rendering", () => {
     expect(screen.getByRole("main")).toBe(mainBefore);
     expect(screen.getByRole("main").getAttribute("data-account-id")).toBe("A-1302587");
     expect(screen.getByTitle("MT5ターミナル")).toBe(iframeBefore);
+    expect((iframeBefore as HTMLIFrameElement).src).toBe("https://viewer.invalid/session/immutable");
+
+    view.rerender(<Surface lang="en" />);
+    await waitFor(() => expect(document.documentElement.lang).toBe("en"));
+    expect(screen.getByText("Here's your edge today.")).toBeTruthy();
+    expect(screen.getByRole("main")).toBe(mainBefore);
+    expect(screen.getByRole("main").getAttribute("data-account-id")).toBe("A-1302587");
+    expect(screen.getByTitle("MT5 Terminal")).toBe(iframeBefore);
     expect((iframeBefore as HTMLIFrameElement).src).toBe("https://viewer.invalid/session/immutable");
   });
 

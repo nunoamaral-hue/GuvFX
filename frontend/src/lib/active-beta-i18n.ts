@@ -72,6 +72,15 @@ export const ACTIVE_BETA_JA: Readonly<Record<string, string>> = {
   "Bull": "強気",
   "Bear": "弱気",
   "Sideways": "横ばい",
+  "Bull market mood": "強気の市場状態",
+  "Sideways market mood": "横ばいの市場状態",
+  "Bear market mood": "弱気の市場状態",
+  "Buyers are currently in control and trend conditions remain supportive. Price has been holding upward structure rather than giving it back.": "買い手が優勢で、上昇トレンドを支える市場環境が続いています。価格は上昇基調を維持しています。",
+  "Market pressure is leaning upward. Momentum-based research may deserve attention, but confirmation still matters.": "市場の圧力は上向きです。モメンタムを使った調査に注目できますが、確認を重視してください。",
+  "Sellers are currently in control and downside pressure remains dominant. Price has been losing ground rather than recovering it.": "売り手が優勢で、下落圧力が続いています。価格は回復よりも下落する動きが目立ちます。",
+  "Market pressure is leaning downward. Defensive or downside research may deserve attention, but confirmation still matters.": "市場の圧力は下向きです。下落局面を想定した調査に注目できますが、確認を重視してください。",
+  "Buyers and sellers are balanced and price is spending more time inside established ranges than breaking away from them.": "買い手と売り手が拮抗し、価格は明確に抜けるよりも既存のレンジ内で推移する時間が長くなっています。",
+  "Buyers and sellers are roughly balanced — price is not showing a clear directional bias. Confirmation matters more than direction right now.": "買い手と売り手はおおむね拮抗し、価格に明確な方向性はありません。現時点では方向よりも確認を重視してください。",
   "Why this matters": "注目する理由",
   "Explains why the current market state deserves attention.": "現在の市場環境に注目する理由を説明します。",
   "Worth Researching": "調査候補",
@@ -155,8 +164,21 @@ export const ACTIVE_BETA_JA: Readonly<Record<string, string>> = {
   "Run a backtest": "バックテストを実行",
   "Trading Intelligence — research context from historical observations and strategy criteria. Not a prediction, signal, or recommendation to trade.": "過去の観測と戦略条件に基づく取引リサーチです。予測、シグナル、取引推奨ではありません。",
 
+  // Customer-owned account/workspace presentation. Real broker and strategy names remain unchanged.
+  "Hosted Workspace": "ホステッドワークスペース",
+  "Broker": "ブローカー",
+  "Trading account": "取引口座",
+
   // Analytics, charts and account chrome
   "Strategy Metrics": "戦略指標",
+  "Performance by strategy for your connected trading account. Read-only and informational.": "接続済みの取引口座について、戦略別の実績を表示します。読み取り専用の参考情報です。",
+  "Strategies": "戦略",
+  "Enabled": "有効",
+  "No attributed trades yet": "この戦略に紐づく取引はまだありません",
+  "Loading your strategy performance…": "戦略の実績を読み込んでいます…",
+  "No connected trading account yet. Once your hosted workspace is set up, your strategies and performance appear here.": "接続済みの取引口座はまだありません。ホステッドワークスペースの準備が完了すると、戦略と実績がここに表示されます。",
+  "Strategy metrics are temporarily unavailable. Please try again shortly.": "戦略指標を一時的に利用できません。しばらくしてからもう一度お試しください。",
+  "No strategies are assigned to this account yet. Enable a strategy from the Marketplace to see its performance here.": "この口座にはまだ戦略が設定されていません。マーケットプレイスで戦略を有効にすると、ここで実績を確認できます。",
   "Aggregated performance by strategy (derived from trade history).": "取引履歴から集計した戦略別の実績です。",
   "Controls": "操作",
   "Account ID": "口座ID",
@@ -640,6 +662,35 @@ export function localizeActiveBetaCopy(lang: Lang, value: string): string {
     if (match) return `${prefix}${pattern.ja(...match)}${suffix}`;
   }
   return value;
+}
+
+type CustomerAccountDisplay = {
+  name?: string | null;
+  brokerName?: string | null;
+  accountNumber?: string | null;
+};
+
+/**
+ * Formats customer-owned account identity without exposing an internal PK.
+ *
+ * Duplicate generic workspace labels collapse to one useful label, the
+ * broker-facing MT5 account number is retained, and unknown real broker names
+ * pass through unchanged as proper names.
+ */
+export function formatCustomerAccountDisplay(
+  lang: Lang,
+  account: CustomerAccountDisplay,
+  fallback = "Trading account",
+): string {
+  const number = String(account.accountNumber || "").trim();
+  const labels = [account.brokerName, account.name]
+    .map((value) => String(value || "").trim())
+    .filter((value, index, all) => value && all.findIndex((candidate) => candidate.toLocaleLowerCase() === value.toLocaleLowerCase()) === index)
+    .map((value) => localizeActiveBetaCopy(lang, value));
+
+  if (number && !labels.some((value) => value.includes(number))) labels.push(number);
+  if (labels.length) return labels.join(" · ");
+  return number || localizeActiveBetaCopy(lang, fallback);
 }
 
 export type ResearchFallbackKind = "warning" | "evidence" | "research" | "education" | "recommendation" | "account-stage" | "account-detail" | "error" | "success" | "notice";

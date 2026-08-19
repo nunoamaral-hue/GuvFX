@@ -415,7 +415,7 @@ export default function StrategyLabPage() {
           <label style={{ display: "block", fontSize: "0.78rem", color: "#94a3b8", marginBottom: 4 }}>Template</label>
           <select value={selectedTemplate} onChange={(e) => setSelectedTemplate(e.target.value)}
             style={{ padding: "0.45rem 0.7rem", background: "#0f172a", border: "1px solid #334155", borderRadius: 6, color: "#e5f4ff", fontSize: "0.85rem" }}>
-            {templates.map((t) => <option key={t.name} value={t.name}>{t.description.split(".")[0]}</option>)}
+            {templates.map((t) => <option key={t.name} value={t.name}>{lang === "ja" ? t.name : t.description.split(".")[0]}</option>)}
           </select>
         </div>
         <div>
