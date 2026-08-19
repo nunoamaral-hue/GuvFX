@@ -14,6 +14,20 @@
 
 ## Execution workstream log
 
+- **2026-08-19 - P1 CASH-FLOW-AWARE BALANCE BASELINE: PASS (main `ba5ee87`, PR #383). GREEN.** The Trade
+  History balance chart derived opening as `current_balance - total_trade_pnl` -- correct for a single
+  initial deposit (never counts a deposit as trading P&L) but it back-dated any MID-PERIOD deposit/withdrawal
+  into the opening baseline. Fix (backend-only): `_fetch_mt5_balance_ops` reads the account's OWN per-tenant
+  deal snapshot (deposits/withdrawals + credit) behind the #378 firewall, ticket-deduped, fail-closed;
+  `_compute_balance_series` grounds opening on real funding ONLY when `balance == net_funding + trading_pnl`
+  reconciles within a small FIXED tolerance, rendering later cash flows as dated steps (never P&L) -- else
+  fails closed to the previous reconstruction (never fabricates funding). Response adds net_funding /
+  trading_pnl / credit. Live: beta 1302575 + support@ ground on real $50k (support@ series byte-identical);
+  CZ 1302561 fails closed unchanged (funding older than the 90-day window). Isolation 404 intact. Deploy:
+  built from clean git guvfx-app/backend, recreated only guvfx-backend (ingest untouched); rollback
+  `guvfx-prod-guvfx-backend:rollback-preCASHFLOW`. Adversarial: R1 3 MEDIUM + 1 LOW fixed, R2 0/0. Remaining
+  P1: durable funding-operations ledger (so pre-window-funded accounts like CZ reconcile too).
+
 - **2026-08-19 - P0 BETA ANALYTICS RECONCILIATION: PASS (main `80cc327`, PR #382). GREEN.** (A) Trade History
   balance chart showed ~10k for a ~$50k hosted account: the MT5 balance fetch was gated on
   `account.mt5_instance` (None for hosted; identity on AccountProvisioning) -> synthetic 10000 fallback. Fix:
