@@ -5,6 +5,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 type Props = {
   state: OnboardingState;
@@ -31,57 +33,57 @@ type Tone = "progress" | "pending" | "failed";
  * ("finishing") message, not a green "ready" claim — the real completion signal is the step advancing
  * (``onComplete``), which only happens once the backend confirms the runtime is fully ready.
  */
-function friendlyForState(runtimeState: string): { title: string; body: string; tone: Tone } {
+function friendlyForState(runtimeState: string): { titleKey: string; bodyKey: string; tone: Tone } {
   switch (runtimeState) {
     case "RUNNING":
       return {
-        title: "Almost there — finishing setup…",
-        body: "Your terminal is up; we’re running the final readiness checks. This page advances on its own.",
+        titleKey: "onboarding.connection.finishingTitle",
+        bodyKey: "onboarding.connection.finishingBody",
         tone: "progress",
       };
     case "QUEUED":
     case "PROVISIONING":
       return {
-        title: "Setting up your dedicated trading terminal…",
-        body: "This usually takes a minute or two. Keep this page open — it updates automatically.",
+        titleKey: "onboarding.connection.settingUpTitle",
+        bodyKey: "onboarding.connection.settingUpBody",
         tone: "progress",
       };
     case "DEGRADED":
       return {
-        title: "Reconnecting your terminal…",
-        body: "Your terminal needs a moment to recover. We’re handling it automatically — no action needed.",
+        titleKey: "onboarding.connection.reconnectingTitle",
+        bodyKey: "onboarding.connection.reconnectingBody",
         tone: "progress",
       };
     case "BLOCKED":
       return {
-        title: "Your terminal is queued.",
-        body: "All setup slots are busy right now. Yours will start automatically as soon as one frees up.",
+        titleKey: "onboarding.connection.queuedTitle",
+        bodyKey: "onboarding.connection.queuedBody",
         tone: "pending",
       };
     case "STOPPED":
       return {
-        title: "Your terminal is paused.",
-        body: "It will resume automatically. If it stays paused, contact support.",
+        titleKey: "onboarding.connection.pausedTitle",
+        bodyKey: "onboarding.connection.pausedBody",
         tone: "pending",
       };
     case "FAILED":
     case "REMOVING":
     case "REMOVED":
       return {
-        title: "We hit a problem setting up your terminal.",
-        body: "Our team has been notified. Please try again shortly, or contact support if this persists.",
+        titleKey: "onboarding.connection.failedTitle",
+        bodyKey: "onboarding.connection.failedBody",
         tone: "failed",
       };
     case "NOT_CONFIGURED":
       return {
-        title: "Waiting to start setup…",
-        body: "Once your broker account is saved on the Broker Accounts page, we begin setting up your terminal automatically.",
+        titleKey: "onboarding.connection.waitingTitle",
+        bodyKey: "onboarding.connection.waitingBody",
         tone: "pending",
       };
     default:
       return {
-        title: "Setting up your dedicated trading terminal…",
-        body: "This usually takes a minute or two. Keep this page open — it updates automatically.",
+        titleKey: "onboarding.connection.settingUpTitle",
+        bodyKey: "onboarding.connection.settingUpBody",
         tone: "progress",
       };
   }
@@ -136,6 +138,7 @@ const PHASE_TONE: Record<string, Tone> = {
 };
 
 export function AccountConnectionStep({ state, onComplete }: Props) {
+  const lang = useLang();
   const [runtimeState, setRuntimeState] = useState<string>("NOT_CONFIGURED");
   const [lifecycle, setLifecycle] = useState<Lifecycle | null>(null);
   const [checking, setChecking] = useState(true);
@@ -197,9 +200,9 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
     return (
       <div>
         <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-          Account Connection
+          {t(lang, "onboarding.connection.title")}
         </h2>
-        <p style={{ color: "#86efac", fontSize: "0.9rem" }}>Your trading account is connected.</p>
+        <p style={{ color: "#86efac", fontSize: "0.9rem" }}>{t(lang, "onboarding.connection.connected")}</p>
       </div>
     );
   }
@@ -207,16 +210,19 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
   // The backend owns the explicit lifecycle phase + copy; fall back to the state-derived message only if
   // the lifecycle field is absent (older backend / first-load blip) so the panel stays stable.
   const fallback = friendlyForState(runtimeState);
-  const title = lifecycle ? lifecycle.label : fallback.title;
-  const body = lifecycle ? lifecycle.detail : fallback.body;
-  const tone: Tone = lifecycle ? (PHASE_TONE[lifecycle.phase] ?? "progress") : fallback.tone;
+  const knownLifecycle = lifecycle && Object.hasOwn(PHASE_TONE, lifecycle.phase) ? lifecycle : null;
+  const lifecycleTitleKey = `onboarding.connection.phase.${knownLifecycle?.phase ?? ""}.title`;
+  const lifecycleBodyKey = `onboarding.connection.phase.${knownLifecycle?.phase ?? ""}.body`;
+  const title = knownLifecycle ? t(lang, lifecycleTitleKey) : t(lang, fallback.titleKey);
+  const body = knownLifecycle ? t(lang, lifecycleBodyKey) : t(lang, fallback.bodyKey);
+  const tone: Tone = knownLifecycle ? PHASE_TONE[knownLifecycle.phase] : fallback.tone;
   const color = TONE_COLOR[tone];
   const showRetry = lifecycle ? lifecycle.retryable : tone === "failed";
 
   return (
     <div>
       <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-        Connecting your trading account
+        {t(lang, "onboarding.connection.connecting")}
       </h2>
 
       {lifecycle && lifecycle.steps && lifecycle.steps.length > 0 && (
@@ -231,7 +237,9 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
                 color: s.status === "pending" ? "#6b7a90" : "#b7c5dd", fontSize: "0.78rem" }}>
                 <span aria-hidden style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor,
                   display: "inline-block" }} />
-                {s.label}
+                {Object.hasOwn(PHASE_TONE, s.key)
+                  ? t(lang, `onboarding.connection.step.${s.key}`)
+                  : t(lang, "onboarding.connection.settingUpTitle")}
               </li>
             );
           })}
@@ -257,11 +265,11 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
 
       {tone === "pending" && (
         <p style={{ color: "#b7c5dd", fontSize: "0.85rem", lineHeight: 1.6 }}>
-          Haven’t added your account yet? Do it on the{" "}
+          {t(lang, "onboarding.connection.pendingPrefix")} {" "}
           <Link href="/accounts" style={{ color: "#4ab3ff", textDecoration: "none" }}>
-            Broker Accounts
+            {t(lang, "nav.brokerAccounts")}
           </Link>{" "}
-          page — setup starts automatically.
+          {t(lang, "onboarding.connection.pendingSuffix")}
         </p>
       )}
 
@@ -269,7 +277,7 @@ export function AccountConnectionStep({ state, onComplete }: Props) {
         // Re-checks the durable status (a real re-provision endpoint is a deferred follow-up — ADR-0021
         // addendum), so the label stays honest: this re-reads state, it does not re-attempt setup.
         <Button onClick={() => void poll()} disabled={checking}>
-          {checking ? "Checking…" : "Check again"}
+          {checking ? t(lang, "onboarding.connection.checking") : t(lang, "onboarding.connection.checkAgain")}
         </Button>
       )}
     </div>

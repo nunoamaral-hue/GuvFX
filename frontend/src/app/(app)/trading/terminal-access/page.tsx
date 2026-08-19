@@ -12,6 +12,8 @@ import type {
 } from "@/types/mt5-interaction";
 import { withCleanGuacAuth } from "@/lib/guac-embed";
 import { HostedMt5RemoteApp } from "@/components/hosted/HostedMt5RemoteApp";
+import { useLang } from "@/components/AppShell";
+import { t, type Lang } from "@/lib/i18n";
 
 // ─────────────────────────────────────────────────────────────────────
 // MT5 credential status type (from GET /api/mt5/status/)
@@ -128,21 +130,38 @@ const viewerColor: Record<ViewerState, "green" | "blue" | "yellow" | "gray" | "r
 
 // Binding availability is a separate axis from viewer/trading state.
 // Per PX-7A: never render the generic word "Unavailable" on a binding.
-const bindingActionLabel = (status: string): string => {
+const bindingActionLabel = (lang: Lang, status: string): string => {
   switch (status) {
     case "available":
-      return "Launch";
+      return t(lang, "terminalAccess.launch");
     case "launching":
     case "active":
-      return "In Use";
+      return t(lang, "terminalAccess.inUse");
     case "suspended":
-      return "Suspended";
+      return t(lang, "terminalAccess.suspended");
     case "maintenance":
-      return "Maintenance";
+      return t(lang, "terminalAccess.maintenance");
     case "locked":
-      return "Locked";
+      return t(lang, "terminalAccess.locked");
     default:
-      return "Busy";
+      return t(lang, "terminalAccess.busy");
+  }
+};
+
+const credentialStatusLabel = (lang: Lang, status: string | null): string => {
+  switch (status) {
+    case "SUCCESS":
+      return t(lang, "terminalAccess.credential.success");
+    case "FAILED":
+      return t(lang, "terminalAccess.credential.failed");
+    case "PENDING":
+      return t(lang, "terminalAccess.credential.pending");
+    case "NEVER":
+      return t(lang, "terminalAccess.credential.never");
+    case "TIMEOUT":
+      return t(lang, "terminalAccess.credential.timeout");
+    default:
+      return t(lang, "terminalAccess.credential.unknown");
   }
 };
 
@@ -151,6 +170,7 @@ const bindingActionLabel = (status: string): string => {
 // ─────────────────────────────────────────────────────────────────────
 
 function StatusHeader({ trading, viewer }: { trading: TradingBucket; viewer: ViewerState }) {
+  const lang = useLang();
   const pill: React.CSSProperties = {
     display: "flex",
     alignItems: "center",
@@ -163,12 +183,12 @@ function StatusHeader({ trading, viewer }: { trading: TradingBucket; viewer: Vie
   return (
     <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" as const, marginBottom: "1rem" }}>
       <div style={pill}>
-        <span style={{ ...labelStyle, marginBottom: 0 }}>Trading</span>
-        <Badge color={tradingColor[trading]}>{trading}</Badge>
+        <span style={{ ...labelStyle, marginBottom: 0 }}>{t(lang, "terminalAccess.trading")}</span>
+        <Badge color={tradingColor[trading]}>{t(lang, `terminalAccess.trading.${trading.toLowerCase()}`)}</Badge>
       </div>
       <div style={pill}>
-        <span style={{ ...labelStyle, marginBottom: 0 }}>Viewer</span>
-        <Badge color={viewerColor[viewer]}>{viewer}</Badge>
+        <span style={{ ...labelStyle, marginBottom: 0 }}>{t(lang, "terminalAccess.viewer")}</span>
+        <Badge color={viewerColor[viewer]}>{t(lang, `terminalAccess.viewer.${viewer.toLowerCase()}`)}</Badge>
       </div>
     </div>
   );
@@ -474,6 +494,7 @@ function ViewerPanel({
 // ─────────────────────────────────────────────────────────────────────
 
 export default function TerminalAccessPage() {
+  const lang = useLang();
   // ── Bindings list state ──
   const [bindings, setBindings] = useState<TerminalBinding[]>([]);
   const [bindingsLoading, setBindingsLoading] = useState(true);
@@ -864,7 +885,7 @@ export default function TerminalAccessPage() {
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-      <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Terminal Access</h1>
+      <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>{t(lang, "terminalAccess.title")}</h1>
       <p
         style={{
           fontSize: "0.9rem",
@@ -872,14 +893,14 @@ export default function TerminalAccessPage() {
           marginBottom: "1.5rem",
         }}
       >
-        Launch, monitor, and manage MT5 terminal sessions.
+        {t(lang, "terminalAccess.subtitle")}
       </p>
 
       {/* ── PX-7A: separated Trading vs Viewer status ── */}
       <StatusHeader trading={tradingBucket(trading)} viewer={viewerState} />
 
       {/* ── Safety message ── */}
-      <StateNotice type="info" message="This session is restricted to MT5 interaction only." />
+      <StateNotice type="info" message={t(lang, "terminalAccess.restricted")} />
 
       {/* ── ADR-0034 Hosted MT5 Workspace — portable RemoteApp (customer path; invisible unless owned) ── */}
       <HostedMt5RemoteApp onActiveChange={onHostedResolved} />
@@ -887,12 +908,12 @@ export default function TerminalAccessPage() {
       {/* ── MT5 Runtime Status card ── */}
       {!credLoading && credStatus && (
         <div style={{ ...glassCard, marginBottom: "1rem" }}>
-          <div style={sectionHeader}>MT5 Runtime Status</div>
+          <div style={sectionHeader}>{t(lang, "terminalAccess.runtimeStatus")}</div>
           <div style={{ display: "flex", flexWrap: "wrap" as const, gap: "1rem 2rem", alignItems: "center", marginBottom: "1rem" }}>
-            <DetailRow label="Login" value={credStatus.login} />
-            <DetailRow label="Server" value={credStatus.server} />
+            <DetailRow label={t(lang, "terminalAccess.login")} value={credStatus.login} />
+            <DetailRow label={t(lang, "terminalAccess.server")} value={credStatus.server} />
             <div style={{ minWidth: 180 }}>
-              <div style={labelStyle}>Status</div>
+              <div style={labelStyle}>{t(lang, "terminalAccess.status")}</div>
               <Badge
                 color={
                   credStatus.last_status === "SUCCESS"
@@ -904,14 +925,14 @@ export default function TerminalAccessPage() {
                         : "gray"
                 }
               >
-                {credStatus.last_status ?? "Unknown"}
+                {credentialStatusLabel(lang, credStatus.last_status)}
               </Badge>
             </div>
             {credStatus.last_error && (
-              <DetailRow label="Last Error" value={credStatus.last_error} />
+              <DetailRow label={t(lang, "terminalAccess.lastError")} value={t(lang, "terminalAccess.credentialError")} />
             )}
             {credStatus.last_verified_at && (
-              <DetailRow label="Verified" value={fmtDateTime(credStatus.last_verified_at)} />
+              <DetailRow label={t(lang, "terminalAccess.verified")} value={fmtDateTime(credStatus.last_verified_at)} />
             )}
           </div>
           {/* Full-desktop launch is the legacy customer path. It is shown ONLY once the hosted probe has
@@ -920,11 +941,11 @@ export default function TerminalAccessPage() {
               MT5 opens via the RemoteApp card above). Retained solely as operator recovery. */}
           {!hostedResolved ? (
             <div style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
-              Preparing your MT5 terminal…
+              {t(lang, "terminal.preparing")}
             </div>
           ) : hostedActive ? (
             <div style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
-              Your MT5 terminal opens via the MT5 Terminal card above.
+              {t(lang, "terminalAccess.opensAbove")}
             </div>
           ) : (
             <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
@@ -932,11 +953,11 @@ export default function TerminalAccessPage() {
                 onClick={handleDesktopLaunch}
                 disabled={desktopLaunching || credStatus.last_status !== "SUCCESS"}
               >
-                {desktopLaunching ? "Launching..." : "Launch MT5 Desktop"}
+                {desktopLaunching ? t(lang, "terminalAccess.launching") : t(lang, "terminalAccess.launchDesktop")}
               </Button>
               {credStatus.last_status !== "SUCCESS" && (
                 <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
-                  Validate credentials before launching.
+                  {t(lang, "terminalAccess.validateFirst")}
                 </span>
               )}
             </div>
@@ -950,7 +971,7 @@ export default function TerminalAccessPage() {
       {/* ── Active session card (shown when a session exists) ── */}
       {sessionLoading && (
         <div style={{ ...glassCard, marginBottom: "1rem" }}>
-          <div style={{ fontSize: "0.9rem", color: "#8fa0b7" }}>Loading session...</div>
+          <div style={{ fontSize: "0.9rem", color: "#8fa0b7" }}>{t(lang, "terminalAccess.loadingSession")}</div>
         </div>
       )}
 
@@ -987,21 +1008,21 @@ export default function TerminalAccessPage() {
             marginBottom: "1rem",
           }}
         >
-          <div style={sectionHeader}>Available Terminals</div>
+          <div style={sectionHeader}>{t(lang, "terminalAccess.availableTerminals")}</div>
           <Button
             variant="secondary"
             onClick={fetchBindings}
             disabled={bindingsLoading}
             style={{ fontSize: "0.8rem", padding: "0.35rem 0.8rem" }}
           >
-            {bindingsLoading ? "Loading..." : "Refresh"}
+            {bindingsLoading ? t(lang, "common.loading") : t(lang, "terminalAccess.refresh")}
           </Button>
         </div>
 
         {/* Loading */}
         {bindingsLoading && bindings.length === 0 && (
           <div style={{ fontSize: "0.9rem", color: "#8fa0b7", textAlign: "center" as const, padding: "2rem 0" }}>
-            Loading terminal bindings...
+            {t(lang, "terminalAccess.loadingTerminals")}
           </div>
         )}
 
@@ -1016,10 +1037,10 @@ export default function TerminalAccessPage() {
         {!bindingsLoading && !bindingsError && bindings.length === 0 && (
           <div style={{ textAlign: "center" as const, padding: "2rem 0" }}>
             <div style={{ fontSize: "0.9rem", color: "#8fa0b7", marginBottom: "0.25rem" }}>
-              No terminal bindings available.
+              {t(lang, "terminalAccess.noTerminals")}
             </div>
             <div style={{ fontSize: "0.8rem", color: "#64748b" }}>
-              You may not have active terminal authorizations, or no terminals are currently configured.
+              {t(lang, "terminalAccess.noTerminalsBody")}
             </div>
           </div>
         )}
@@ -1074,7 +1095,7 @@ export default function TerminalAccessPage() {
                       {humanize(binding.environment_type)}
                     </Badge>
                     {binding.supports_shared_view && (
-                      <Badge color="gray">Shared View</Badge>
+                      <Badge color="gray">{t(lang, "terminalAccess.sharedView")}</Badge>
                     )}
                   </div>
 
@@ -1086,7 +1107,7 @@ export default function TerminalAccessPage() {
                         disabled
                         style={{ fontSize: "0.8rem", padding: "0.35rem 0.8rem" }}
                       >
-                        Current session
+                        {t(lang, "terminalAccess.currentSession")}
                       </Button>
                     ) : (
                       <Button
@@ -1095,7 +1116,7 @@ export default function TerminalAccessPage() {
                         onClick={() => handleLaunch(binding.id)}
                         style={{ fontSize: "0.8rem", padding: "0.35rem 0.8rem" }}
                       >
-                        {isLaunching ? "Launching..." : bindingActionLabel(binding.status)}
+                        {isLaunching ? t(lang, "terminalAccess.launching") : bindingActionLabel(lang, binding.status)}
                       </Button>
                     )}
                   </div>

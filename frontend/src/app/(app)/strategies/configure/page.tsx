@@ -7,7 +7,6 @@ import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { EnableStrategyModal } from "@/components/strategy/EnableStrategyModal";
 import {
-  BETA_CONFIG_NOTE,
   configContract,
   disableStrategy,
   enableStrategy,
@@ -396,7 +395,7 @@ function AutomatedConfig(props: {
   const rows: ConfigRow[] = configContract(props.mp, props.accountLabel);
   const localizeRow = (row: ConfigRow) => ({
     label: t(props.lang, `configure.row.${row.key}.label`),
-    value: row.key === "execution" || row.kind === "managed"
+    value: row.key === "execution" || row.key === "sizing" || row.kind === "managed"
       ? t(props.lang, `configure.row.${row.key}.value`)
       : row.value,
     help: row.help ? t(props.lang, `configure.row.${row.key}.help`) : undefined,
@@ -421,7 +420,7 @@ function AutomatedConfig(props: {
               <div>
                 <div style={{ color: "#e2e8f0", fontSize: "0.86rem", fontWeight: 600 }}>
                   {copy.value}
-                  {r.kind === "managed" && (
+                  {r.kind === "managed" && r.key !== "sizing" && (
                     <span style={{
                       marginLeft: 8, fontSize: "0.66rem", fontWeight: 700, color: "#94a3b8",
                       border: "1px solid rgba(148,163,184,0.35)", borderRadius: 999, padding: "0.05rem 0.4rem",
@@ -438,7 +437,7 @@ function AutomatedConfig(props: {
         {/* P0-A — customer-owned per-leg lot size (only for an owned assignment). */}
         {props.owned && <LotSizeControl assignmentId={props.assignmentId} lang={props.lang} />}
         <p style={{ color: "#8fa0b7", fontSize: "0.78rem", lineHeight: 1.5, margin: "0.9rem 0 0" }}>
-          {props.lang === "ja" ? t(props.lang, "configure.betaNote") : BETA_CONFIG_NOTE}
+          {t(props.lang, "configure.betaNote")}
         </p>
       </div>
 
@@ -549,28 +548,27 @@ function AutomatedConfig(props: {
 
 // ── Generic (research/template) configuration — honest: NEVER implies automated execution ──
 function GenericConfig({ strategyName, accountLabel }: { strategyName: string; accountLabel: string | null }) {
+  const lang = useLang();
   return (
     <div style={cardStyle}>
       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.6rem" }}>
-        <h2 style={{ fontSize: "1.05rem", margin: 0, color: "#e8f0ff" }}>Research strategy</h2>
+        <h2 style={{ fontSize: "1.05rem", margin: 0, color: "#e8f0ff" }}>{t(lang, "configure.researchTitle")}</h2>
         <span style={{
           fontSize: "0.66rem", fontWeight: 700, color: "#94a3b8",
           border: "1px solid rgba(148,163,184,0.35)", borderRadius: 999, padding: "0.05rem 0.45rem",
         }}>
-          Template
+          {t(lang, "configure.template")}
         </span>
       </div>
       <p style={{ color: "#c7d2e8", fontSize: "0.9rem", lineHeight: 1.55, margin: "0 0 0.5rem" }}>
-        <strong>{strategyName}</strong> has been added to your strategies{accountLabel ? ` for ${accountLabel}` : ""}.
+        {t(lang, "configure.researchAdded", { strategy: strategyName, account: accountLabel ? ` ${accountLabel}` : "" })}
       </p>
       <p style={{ color: "#94a3b8", fontSize: "0.84rem", lineHeight: 1.55, margin: "0 0 1rem" }}>
-        This is a research template. It does <strong>not</strong> place trades automatically — open it to
-        review the rules, edit the settings and run a backtest. Automated trading is available on our
-        signal-copy strategies.
+        {t(lang, "configure.researchBody")}
       </p>
       <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
-        <Link href="/strategies"><Button variant="primary">Go to My Strategies</Button></Link>
-        <Link href="/strategies/marketplace"><Button variant="secondary">Browse more strategies</Button></Link>
+        <Link href="/strategies"><Button variant="primary">{t(lang, "configure.goMyStrategies")}</Button></Link>
+        <Link href="/strategies/marketplace"><Button variant="secondary">{t(lang, "configure.browseMore")}</Button></Link>
       </div>
     </div>
   );

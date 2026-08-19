@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { apiFetch } from "@/lib/api";
 import type { BrokerPartner } from "@/types/onboarding";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 /**
  * Broker Connection — informational panel shown above AccountConnectionStep.
@@ -15,6 +17,7 @@ import type { BrokerPartner } from "@/types/onboarding";
  * AccountConnectionStep below it handles the actual flag.
  */
 export function BrokerStep() {
+  const lang = useLang();
   const [brokers, setBrokers] = useState<BrokerPartner[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -25,13 +28,13 @@ export function BrokerStep() {
       try {
         const data = await apiFetch<BrokerPartner[]>("/api/onboarding/brokers/", {});
         setBrokers(data);
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load brokers.");
+      } catch {
+        setError(t(lang, "onboarding.broker.loadError"));
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [lang]);
 
   const handleReferral = async (broker: BrokerPartner) => {
     try {
@@ -51,15 +54,14 @@ export function BrokerStep() {
   return (
     <div>
       <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-        Connect a Broker Account
+        {t(lang, "onboarding.broker.title")}
       </h2>
       <p style={{ color: "#b7c5dd", fontSize: "0.9rem", marginBottom: "1.25rem", lineHeight: 1.6 }}>
-        To trade on GuvFX, you need a broker account with MT5 access.
-        You can connect an existing account or open one with a partner broker below.
+        {t(lang, "onboarding.broker.body")}
       </p>
 
       {loading && (
-        <p style={{ color: "#94a3b8", fontSize: "0.85rem" }}>Loading partner brokers...</p>
+        <p style={{ color: "#94a3b8", fontSize: "0.85rem" }}>{t(lang, "onboarding.broker.loading")}</p>
       )}
 
       {error && (
@@ -87,7 +89,7 @@ export function BrokerStep() {
                 </span>
                 <Badge color="blue">{broker.broker_code}</Badge>
                 {referralSent === broker.broker_code && (
-                  <Badge color="green">Referral Tracked</Badge>
+                  <Badge color="green">{t(lang, "onboarding.broker.referralTracked")}</Badge>
                 )}
               </div>
               {broker.referral_url && (
@@ -96,7 +98,7 @@ export function BrokerStep() {
                   onClick={() => handleReferral(broker)}
                   style={{ fontSize: "0.8rem", padding: "0.35rem 0.8rem" }}
                 >
-                  Open Account
+                  {t(lang, "onboarding.broker.openAccount")}
                 </Button>
               )}
             </div>
@@ -114,11 +116,11 @@ export function BrokerStep() {
         }}
       >
         <p style={{ color: "#b7c5dd", fontSize: "0.85rem", margin: 0 }}>
-          Already have a broker account?{" "}
+          {t(lang, "onboarding.broker.existingPrefix")} {" "}
           <Link href="/accounts" style={{ color: "#4ab3ff", textDecoration: "none" }}>
-            Connect it on the Accounts page
+            {t(lang, "onboarding.broker.accountsLink")}
           </Link>{" "}
-          then return here to confirm below.
+          {t(lang, "onboarding.broker.existingSuffix")}
         </p>
       </div>
     </div>

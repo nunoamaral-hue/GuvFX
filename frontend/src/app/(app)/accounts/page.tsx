@@ -135,8 +135,8 @@ const HelpIcon: React.FC<HelpIconProps> = ({ text }) => {
 // ─────────────────────────────────────────────────────────────────────
 // Customer Zero Flow Simplification (Option 2) — post-onboarding broker-setup panel.
 // Broker connection is now POST-onboarding platform setup and lives here. This compact panel polls the
-// backend-owned account lifecycle (GET /api/onboarding/account-status/) and renders exactly what the
-// backend reports; it never invents the phase or copy. It replicates the AccountConnectionStep lifecycle
+// backend-owned account lifecycle (GET /api/onboarding/account-status/) and maps its structured codes to
+// customer-safe catalogue copy. It replicates the AccountConnectionStep lifecycle
 // display (stepper dots + label/detail) WITHOUT that component's onboarding-advance side effects.
 // ─────────────────────────────────────────────────────────────────────
 
@@ -166,6 +166,7 @@ const SETUP_PHASE_TONE: Record<string, "progress" | "pending" | "failed"> = {
 
 
 function PostOnboardingSetupPanel() {
+  const lang = useLang();
   const router = useRouter();
   const [stage, setStage] = useState<string | null>(null);
   const [lifecycle, setLifecycle] = useState<Lifecycle | null>(null);
@@ -206,11 +207,10 @@ function PostOnboardingSetupPanel() {
     return (
       <Card style={{ borderColor: "rgba(74, 179, 255, 0.35)" }}>
         <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: "0 0 0.4rem" }}>
-          Connect your broker account
+          {t(lang, "accounts.setup.connectTitle")}
         </h2>
         <p style={{ color: "#b7c5dd", fontSize: "0.9rem", lineHeight: 1.6, margin: 0 }}>
-          GuvFX requires an MT5 broker account. Your credentials are encrypted, and setup and validation
-          happen automatically once you submit them below. Use a demo account during Trusted Beta.
+          {t(lang, "accounts.setup.connectBody")}
         </p>
       </Card>
     );
@@ -221,13 +221,13 @@ function PostOnboardingSetupPanel() {
     return (
       <Card style={{ borderColor: "rgba(34, 197, 94, 0.35)" }}>
         <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: "0 0 0.4rem" }}>
-          Your account is ready
+          {t(lang, "accounts.setup.readyTitle")}
         </h2>
         <p style={{ color: "#86efac", fontSize: "0.9rem", lineHeight: 1.6, margin: "0 0 1rem" }}>
-          Your broker connection is set up. Choose a strategy to continue.
+          {t(lang, "accounts.setup.readyBody")}
         </p>
         <Button type="button" onClick={() => router.push("/strategies/marketplace")}>
-          Choose a strategy
+          {t(lang, "accounts.setup.chooseStrategy")}
         </Button>
       </Card>
     );
@@ -242,12 +242,12 @@ function PostOnboardingSetupPanel() {
     return (
       <Card style={{ borderColor: failed ? "rgba(248, 113, 113, 0.35)" : "rgba(74, 179, 255, 0.35)" }}>
         <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: "0 0 0.4rem" }}>
-          {failed ? "We couldn't complete setup" : "Complete your broker connection"}
+          {failed ? t(lang, "accounts.setup.failedTitle") : t(lang, "accounts.setup.completeTitle")}
         </h2>
         <p style={{ color: "#b7c5dd", fontSize: "0.9rem", lineHeight: 1.6, margin: 0 }}>
           {failed
-            ? "Please re-enter your broker details in the form below to try again."
-            : "Re-enter your broker details in the form below to start setting up your dedicated terminal."}
+            ? t(lang, "accounts.setup.failedBody")
+            : t(lang, "accounts.setup.completeBody")}
         </p>
       </Card>
     );
@@ -255,12 +255,13 @@ function PostOnboardingSetupPanel() {
 
   // Provisioning is running → compact lifecycle stepper + label/detail (from account-status).
   if (!lifecycle) return null;
-  const tone = SETUP_PHASE_TONE[phase] ?? "progress";
+  const knownPhase = Object.hasOwn(SETUP_PHASE_TONE, phase) ? phase : null;
+  const tone = knownPhase ? SETUP_PHASE_TONE[knownPhase] : "progress";
   const color = SETUP_TONE_COLOR[tone];
   return (
     <Card style={{ borderColor: `${color}59` }}>
       <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: "#e9f4ff", margin: "0 0 0.6rem" }}>
-        Connecting your broker account
+        {t(lang, "accounts.setup.connectingTitle")}
       </h2>
 
       {lifecycle.steps && lifecycle.steps.length > 0 && (
@@ -304,7 +305,9 @@ function PostOnboardingSetupPanel() {
                     display: "inline-block",
                   }}
                 />
-                {s.label}
+                {Object.hasOwn(SETUP_PHASE_TONE, s.key)
+                  ? t(lang, `onboarding.connection.step.${s.key}`)
+                  : t(lang, "onboarding.connection.settingUpTitle")}
               </li>
             );
           })}
@@ -322,10 +325,14 @@ function PostOnboardingSetupPanel() {
         }}
       >
         <p style={{ color, fontSize: "0.95rem", fontWeight: 600, margin: "0 0 0.3rem" }}>
-          {lifecycle.label}
+          {knownPhase
+            ? t(lang, `onboarding.connection.phase.${knownPhase}.title`)
+            : t(lang, "accounts.setup.connectingTitle")}
         </p>
         <p style={{ color: "#b7c5dd", fontSize: "0.85rem", lineHeight: 1.6, margin: 0 }}>
-          {lifecycle.detail}
+          {knownPhase
+            ? t(lang, `onboarding.connection.phase.${knownPhase}.body`)
+            : t(lang, "onboarding.connection.settingUpBody")}
         </p>
       </div>
     </Card>
@@ -376,8 +383,8 @@ function AccountsContent() {
     try {
       const list = await apiFetch<any[]>("/api/trading/accounts/");
       setAccounts(Array.isArray(list) ? list : []);
-    } catch (err: any) {
-      setError(err?.message || t(lang, "accounts.failedToLoad"));
+    } catch {
+      setError(t(lang, "accounts.failedToLoad"));
       setAccounts([]);
     } finally {
       setLoading(false);
@@ -544,11 +551,11 @@ function AccountsContent() {
 
       if (!res.ok) {
         // WS-I: customer-safe — no "Windows agent"/"backend" runtime terminology in the shown error.
-        throw new Error("We couldn't verify your broker login. Please check your details and try again.");
+        throw new Error(t(lang, "accounts.verifyLoginError"));
       }
 
       if (!res.valid) {
-        throw new Error(res.reason || "Unable to add account. Login details are not valid.");
+        throw new Error(t(lang, "accounts.invalidLogin"));
       }
 
       // Refresh list so the UI updates
@@ -564,7 +571,7 @@ function AccountsContent() {
 
       setInfo(t(lang, "accounts.accountAdded"));
     } catch (err: any) {
-      setError(err?.message || t(lang, "accounts.failedToLoad"));
+      setError(err instanceof Error ? err.message : t(lang, "accounts.failedToLoad"));
     } finally {
       setCreating(false);
     }
@@ -587,11 +594,10 @@ function AccountsContent() {
      if (res.valid) {
        setTestMessage(t(lang, "accounts.testSuccess"));
      } else {
-       setTestMessage(`${t(lang, "accounts.testFailed")} ${res.reason || "invalid"}`);
+       setTestMessage(t(lang, "accounts.testFailed"));
      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Test failed.";
-      setError(msg);
+    } catch {
+      setError(t(lang, "accounts.testFailed"));
     } finally {
       setTestingId(null);
     }
@@ -610,8 +616,8 @@ function AccountsContent() {
       const list = await apiFetch<any[]>("/api/trading/accounts/");
       setAccounts(Array.isArray(list) ? list : []);
       setInfo(nextActive ? t(lang, "accounts.setActive") : t(lang, "accounts.setInactive"));
-    } catch (err: any) {
-      setError(err?.message || t(lang, "accounts.failedActiveStatus"));
+    } catch {
+      setError(t(lang, "accounts.failedActiveStatus"));
     }
   };
 
@@ -626,8 +632,8 @@ function AccountsContent() {
       // reload accounts
       const list = await apiFetch<any[]>("/api/trading/accounts/");
       setAccounts(Array.isArray(list) ? list : []);
-    } catch (err: any) {
-      setError(err?.message || "Failed to update active account");
+    } catch {
+      setError(t(lang, "accounts.failedActiveStatus"));
     }
   };
   void _toggleActive;
@@ -652,7 +658,7 @@ return (
         {hostedMode === "loading" && (
           <div style={{ marginBottom: "1rem", padding: "1.25rem", borderRadius: 10,
                         border: "1px solid rgba(148,163,184,0.15)", color: "#94a3b8", fontSize: "0.9rem" }}>
-            Loading your workspace…
+            {t(lang, "accounts.loadingWorkspace")}
           </div>
         )}
 
@@ -668,7 +674,7 @@ return (
           <div style={{ marginBottom: "1rem", padding: "1.25rem", borderRadius: 10,
                         border: "1px solid rgba(148,163,184,0.15)", background: "rgba(148,163,184,0.05)" }}>
             <p style={{ margin: "0 0 0.7rem", fontSize: "0.9rem", color: "#b7c5dd" }}>
-              We couldn&apos;t load your workspace status right now.
+              {t(lang, "accounts.workspaceUnavailable")}
             </p>
             <button
               type="button"
@@ -676,7 +682,7 @@ return (
               style={{ padding: "0.4rem 1rem", borderRadius: 999, border: "1px solid rgba(148,163,184,0.35)",
                        background: "rgba(148,163,184,0.12)", color: "#cbd5e1", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}
             >
-              Try again
+              {t(lang, "common.tryAgain")}
             </button>
           </div>
         )}
@@ -1041,6 +1047,7 @@ return (
                 }}
               >
                 <div
+                  className="account-summary-row"
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
@@ -1049,7 +1056,7 @@ return (
                   }}
                 >
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                       <div style={{ fontWeight: 700, color: "#e5f4ff", fontSize: "1rem" }}>
                         {acc.name}
                       </div>
@@ -1083,6 +1090,7 @@ return (
                   </div>
 
                   <div
+                    className="account-actions"
                     style={{
                       display: "flex",
                       flexDirection: "column",
@@ -1107,6 +1115,13 @@ return (
             ))}
 
           </div>
+          <style>{`
+            @media (max-width: 720px) {
+              .account-summary-row { flex-direction: column; align-items: stretch !important; }
+              .account-actions { align-items: stretch !important; }
+              .account-actions button { width: 100%; }
+            }
+          `}</style>
         </Card>
       </div>
   );

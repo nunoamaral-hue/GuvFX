@@ -20,6 +20,7 @@ vi.mock("@/components/hosted/HostedMt5RemoteApp", () => ({
 }));
 
 import { HostedWorkspaceJourney, deriveStageIndex } from "@/components/onboarding/HostedWorkspaceJourney";
+import { LanguageProvider } from "@/components/AppShell";
 import type { HostedJourney } from "@/lib/hosted-journey";
 
 function journey(over: Partial<HostedJourney> = {}): HostedJourney {
@@ -57,6 +58,20 @@ async function saveBrokerDetails(login = "700900") {
 }
 
 describe("HostedWorkspaceJourney", () => {
+  it("renders the production-observed preparing panel entirely in Japanese", async () => {
+    jm.fetchJourney.mockResolvedValue({ ok: true, journey: journey({
+      phase: "WORKSPACE_PREPARING", next_action: "wait", delivery: "DELIVERY_PREPARING",
+      identity_declared: true, strategy_eligible: false,
+    }) });
+    const { container } = render(
+      <LanguageProvider lang="ja"><HostedWorkspaceJourney /></LanguageProvider>,
+    );
+    expect(await screen.findByRole("heading", { name: "ワークスペースを準備しています" })).toBeInTheDocument();
+    expect(screen.getByText(/お客様専用の独立したMT5ワークスペースを構築しています/)).toBeInTheDocument();
+    expect(container.textContent).not.toContain("Preparing your workspace");
+    expect(container.textContent).not.toContain("We're building your private");
+  });
+
   it("AJ#4: once linked + deliverable, MetaTrader is EMBEDDED inside onboarding (no navigation to Terminal Access)", async () => {
     // no broker login observed yet (active_login_masked empty) → "Log into your broker account" copy.
     declareFlow({ phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in", delivery: "DELIVERY_READY", active_login_masked: "" });

@@ -49,15 +49,16 @@ export type ActionKind = "request" | "launch" | "confirm" | "assign" | "support"
 
 export interface JourneyAction {
   kind: ActionKind;
-  label: string;
+  labelKey: string;
 }
 
 export interface JourneyView {
   /** 0-based index into STEPS; -1 for the terminal error state. */
   stepIndex: number;
   tone: JourneyTone;
-  title: string;
-  description: string;
+  titleKey: string;
+  descriptionKey: string;
+  descriptionParams?: Record<string, string | number>;
   action: JourneyAction | null;
   /** true when the RemoteApp descriptor is deliverable now (drives the Launch button being live vs preparing). */
   canLaunch: boolean;
@@ -65,11 +66,11 @@ export interface JourneyView {
 
 /** The ordered customer stepper. Internal phases collapse onto these five. */
 export const STEPS = [
-  "Request workspace",
-  "Preparing workspace",
-  "Open workspace",
-  "Confirm your account",
-  "Ready to trade",
+  "hostedJourney.step.request",
+  "hostedJourney.step.preparing",
+  "hostedJourney.step.open",
+  "hostedJourney.step.confirm",
+  "hostedJourney.step.ready",
 ] as const;
 
 const PHASE_STEP: Record<JourneyPhase, number> = {
@@ -86,20 +87,20 @@ const PHASE_STEP: Record<JourneyPhase, number> = {
 
 // next_action → the primary button. `wait` yields no action (progress spinner only).
 const ACTION_FOR: Record<NextAction, JourneyAction | null> = {
-  request_workspace: { kind: "request", label: "Request workspace" },
+  request_workspace: { kind: "request", labelKey: "hostedJourney.requestWorkspace" },
   wait: null,
-  open_mt5_and_log_in: { kind: "launch", label: "Open MetaTrader & log in" },
-  confirm_broker_account: { kind: "confirm", label: "Confirm my account" },
-  assign_strategy: { kind: "assign", label: "Choose a strategy" },
-  contact_support: { kind: "support", label: "Contact support" },
+  open_mt5_and_log_in: { kind: "launch", labelKey: "hostedJourney.openAndLogin" },
+  confirm_broker_account: { kind: "confirm", labelKey: "hostedJourney.confirmButton" },
+  assign_strategy: { kind: "assign", labelKey: "hostedJourney.chooseStrategy" },
+  contact_support: { kind: "support", labelKey: "hostedJourney.contactSupport" },
 };
 
 const FALLBACK: JourneyView = {
   stepIndex: -1,
   tone: "error",
-  title: "Something needs attention",
-  description: "We couldn't read your workspace status. Please contact support so we can help.",
-  action: { kind: "support", label: "Contact support" },
+  titleKey: "hostedJourney.fallbackTitle",
+  descriptionKey: "hostedJourney.fallbackBody",
+  action: { kind: "support", labelKey: "hostedJourney.contactSupport" },
   canLaunch: false,
 };
 
@@ -130,65 +131,61 @@ export function describeJourney(j: HostedJourney | null | undefined): JourneyVie
     case "NO_WORKSPACE":
       return startView(j);
     case "WORKSPACE_REQUESTED":
-      return view(stepIndex, "progress", "Preparing your workspace",
-        "Preparing your private MT5 workspace. This usually completes within a few minutes. "
-        + "Please keep this page open — we'll move you to the next step automatically.",
+      return view(stepIndex, "progress", "hostedJourney.state.preparingTitle",
+        "hostedJourney.state.requestedBody",
         null, canLaunch);
     case "WORKSPACE_PREPARING":
-      return view(stepIndex, "progress", "Preparing your workspace",
-        "We're building your private, isolated MT5 workspace. This usually completes within a few minutes. "
-        + "Next you'll open your workspace and log in. Please keep this page open — we'll move you on automatically.",
+      return view(stepIndex, "progress", "hostedJourney.state.preparingTitle",
+        "hostedJourney.state.preparingBody",
         null, canLaunch);
     case "AWAITING_BROKER_LOGIN":
-      return view(stepIndex, "action", "Log in to your account",
-        "Enter your broker account number and server so we can point your workspace at the right account — "
-        + "that's all we use them for. Then open your hosted MetaTrader terminal and log in there: your "
-        + "password is typed only inside MetaTrader, and GuvFX never sees or stores it.", action, canLaunch);
+      return view(stepIndex, "action", "hostedJourney.state.loginTitle",
+        "hostedJourney.state.awaitingLoginBody", action, canLaunch);
     case "BROKER_CONNECTED":
       // Connected, but the active account isn't the one you told us yet → keep guiding the login.
-      return view(stepIndex, "action", "Log in to your account",
-        loginHint(j) + " Open MetaTrader and make sure you're logged into that account.", action, canLaunch);
+      return view(stepIndex, "action", "hostedJourney.state.loginTitle",
+        "hostedJourney.state.connectedBody", action, canLaunch, loginParams(j));
     case "ACCOUNT_CONFIRMATION_REQUIRED":
-      return view(stepIndex, "action", "Confirm your account",
-        loginHint(j) + " If that's correct, confirm it to finish setting up your workspace.", action, canLaunch);
+      return view(stepIndex, "action", "hostedJourney.state.confirmTitle",
+        "hostedJourney.state.confirmBody", action, canLaunch, loginParams(j));
     case "ACCOUNT_BOUND":
-      return view(stepIndex, "progress", "Finishing up",
-        "Your account is confirmed — we're finishing the last step. Please keep this page open; we'll take "
-        + "you through automatically.", null, canLaunch);
+      return view(stepIndex, "progress", "hostedJourney.state.finishingTitle",
+        "hostedJourney.state.finishingBody", null, canLaunch);
     case "WORKSPACE_READY":
-      return view(stepIndex, "ready", "Your workspace is ready",
-        "Your hosted MT5 workspace is connected and ready. Choose a strategy to get started.", action, canLaunch);
+      return view(stepIndex, "ready", "hostedJourney.state.readyTitle",
+        "hostedJourney.state.readyBody", action, canLaunch);
     case "WORKSPACE_UNAVAILABLE":
-      return view(stepIndex, "error", "Workspace unavailable",
-        "Your hosted workspace isn't available right now. Our team can get it back for you.", action, canLaunch);
+      return view(stepIndex, "error", "hostedJourney.state.unavailableTitle",
+        "hostedJourney.state.unavailableBody", action, canLaunch);
   }
   return FALLBACK;
 }
 
 function startView(j: HostedJourney): JourneyView {
   return {
-    stepIndex: 0, tone: "action", title: "Set up your hosted workspace",
-    description: "Request a private hosted MT5 workspace. We'll prepare it, then you'll open it and log in to MetaTrader.",
+    stepIndex: 0, tone: "action", titleKey: "hostedJourney.startTitle",
+    descriptionKey: "hostedJourney.startBody",
     action: ACTION_FOR[j.next_action] ?? ACTION_FOR.request_workspace, canLaunch: false,
   };
 }
 
 function startViewBlank(): JourneyView {
   return {
-    stepIndex: 0, tone: "action", title: "Set up your hosted workspace",
-    description: "Request a private hosted MT5 workspace. We'll prepare it, then you'll open it and log in to MetaTrader.",
+    stepIndex: 0, tone: "action", titleKey: "hostedJourney.startTitle",
+    descriptionKey: "hostedJourney.startBody",
     action: ACTION_FOR.request_workspace, canLaunch: false,
   };
 }
 
-function view(stepIndex: number, tone: JourneyTone, title: string, description: string,
-              action: JourneyAction | null, canLaunch: boolean): JourneyView {
-  return { stepIndex, tone, title, description, action, canLaunch };
+function view(stepIndex: number, tone: JourneyTone, titleKey: string, descriptionKey: string,
+              action: JourneyAction | null, canLaunch: boolean,
+              descriptionParams?: Record<string, string | number>): JourneyView {
+  return { stepIndex, tone, titleKey, descriptionKey, descriptionParams, action, canLaunch };
 }
 
-function loginHint(j: HostedJourney): string {
+function loginParams(j: HostedJourney): Record<string, string> {
   const m = (j.active_login_masked || "").trim();
-  return m ? `We found account ${m}.` : "We're checking your broker account.";
+  return { account: m || "—" };
 }
 
 // ---- Typed API wrappers ----------------------------------------------------------------------------------

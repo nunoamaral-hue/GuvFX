@@ -121,7 +121,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
             }}
           />
           <style>{`@keyframes authspin { to { transform: rotate(360deg); } }`}</style>
-          <span>Verifying session...</span>
+          <span>{t(detectLang(), "auth.verifyingSession")}</span>
         </div>
       </div>
     );
