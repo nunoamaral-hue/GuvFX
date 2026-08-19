@@ -4,6 +4,10 @@ services:
   guvfx-backend:
     env_file:
       - /home/ubuntu/guvfx-prod/customer-telegram.env
+    environment:
+      # Preserve the currently deployed signing secret from the protected env file;
+      # the base compose file's literal must not override it during recreation.
+      DJANGO_SECRET_KEY: !reset null
 
   guvfx-customer-notification-worker:
     image: guvfx-prod-guvfx-backend
