@@ -96,7 +96,9 @@ export function HostedWorkspaceStatus({ journey, accounts, onAuthorized }: {
 }) {
   const lang = useLang();
   const view = describeJourney(journey);
-  const desc = STATUS_DESC[journey.phase] ? t(lang, STATUS_DESC[journey.phase]) : view.description;
+  const desc = STATUS_DESC[journey.phase]
+    ? t(lang, STATUS_DESC[journey.phase])
+    : t(lang, view.descriptionKey, view.descriptionParams);
   const ws = WORKSPACE_STATUS[journey.phase] ?? { key: "hostedStatus.inProgress", color: "#38bdf8" };
   const del = DELIVERY_STATUS[journey.delivery] ?? { key: "hostedStatus.preparing", color: "#38bdf8" };
   const active = accounts.find((a) => a.is_active) ?? accounts[0];

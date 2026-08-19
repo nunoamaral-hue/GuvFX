@@ -192,14 +192,16 @@ function LiveStatusPanel({ activeIndex }: { activeIndex: number }) {
 // the customer should do / what happens next, and WRAPS the terminal inside the same panel (accent-bordered
 // "You're using MetaTrader" frame) so it reads as one guided step, never a separate app. Presentation only.
 function EmbeddedMetaTraderStep({
-  activeIndex, title = "Open MetaTrader", instruction, hint, detecting = false, children,
+  activeIndex, title, instruction, hint, detecting = false, children,
 }: { activeIndex: number; title?: string; instruction?: string; hint?: string; detecting?: boolean; children: React.ReactNode }) {
   const lang = useLang();
   return (
     <div style={{ ...waitCard, padding: "1.25rem 1.35rem" }}>
       <LiveStatusPanel activeIndex={activeIndex} />
       <div style={{ marginTop: 16, height: 1, background: "rgba(74, 179, 255, 0.12)" }} />
-      <h3 style={{ margin: "16px 0 0", fontSize: "1.1rem", fontWeight: 700, color: TITLE }}>{title}</h3>
+      <h3 style={{ margin: "16px 0 0", fontSize: "1.1rem", fontWeight: 700, color: TITLE }}>
+        {title ?? t(lang, "hostedJourney.openMetaTrader")}
+      </h3>
       <p style={{ marginTop: 8, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>
         {instruction
           ?? t(lang, "hostedJourney.loginInstruction")}
@@ -500,7 +502,7 @@ export function HostedWorkspaceJourney() {
         </label>
         <input id="hw-login" required value={form.expected_login}
                onChange={(e) => setForm({ ...form, expected_login: e.target.value })}
-               placeholder="e.g. 1234567" style={inputStyle}
+               placeholder={t(lang, "hostedJourney.brokerNumberPlaceholder")} style={inputStyle}
                onFocus={(e) => { e.currentTarget.style.borderColor = ACCENT; }}
                onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(74, 179, 255, 0.2)"; }} />
       </div>
@@ -510,7 +512,7 @@ export function HostedWorkspaceJourney() {
         </label>
         <input id="hw-server" value={form.expected_server}
                onChange={(e) => setForm({ ...form, expected_server: e.target.value })}
-               placeholder="e.g. YourBroker-Demo" style={inputStyle}
+               placeholder={t(lang, "hostedJourney.brokerServerPlaceholder")} style={inputStyle}
                onFocus={(e) => { e.currentTarget.style.borderColor = ACCENT; }}
                onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(74, 179, 255, 0.2)"; }} />
       </div>
@@ -589,7 +591,7 @@ export function HostedWorkspaceJourney() {
         <p style={{ fontSize: "0.9rem", color: BODY, margin: 0 }}>{t(lang, "hostedJourney.supportBody")}</p>
         {/* Actionable next step — never a dead end. Opens the customer's mail client (no backend). */}
         <a href="mailto:support@guvfx.com?subject=Hosted%20Workspace%20help" style={primaryLink}>
-          {view.action.label}
+          {t(lang, view.action.labelKey)}
         </a>
       </div>
     );
@@ -607,10 +609,10 @@ export function HostedWorkspaceJourney() {
         {showGenericHeader && (
           <>
             <h2 style={{ fontSize: "1.15rem", fontWeight: 600, color: TITLE, margin: 0 }}>
-              {phase === "NO_WORKSPACE" ? t(lang, "hostedJourney.startTitle") : view.title}
+              {t(lang, view.titleKey)}
             </h2>
             <p style={{ marginTop: 8, fontSize: "0.9rem", lineHeight: 1.6, color: BODY }}>
-              {phase === "NO_WORKSPACE" ? t(lang, "hostedJourney.startBody") : view.description}
+              {t(lang, view.descriptionKey, view.descriptionParams)}
             </p>
           </>
         )}
@@ -622,13 +624,6 @@ export function HostedWorkspaceJourney() {
 
 function Stepper({ current }: { current: number }) {
   const lang = useLang();
-  const labels = [
-    "hostedJourney.step.request",
-    "hostedJourney.step.preparing",
-    "hostedJourney.step.open",
-    "hostedJourney.step.confirm",
-    "hostedJourney.step.ready",
-  ];
   return (
     <ol className="flex items-center gap-2 text-xs">
       {STEPS.map((label, i) => {
@@ -639,7 +634,7 @@ function Stepper({ current }: { current: number }) {
             <span className={state === "current" ? "h-2 w-full rounded animate-pulse" : "h-2 w-full rounded"}
                   style={{ background: barColor }} />
             <span style={{ color: state === "current" ? TITLE : MUTED, fontWeight: state === "current" ? 600 : 400 }}>
-              {t(lang, labels[i])}
+              {t(lang, label)}
             </span>
           </li>
         );

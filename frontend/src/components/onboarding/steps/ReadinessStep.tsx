@@ -4,15 +4,18 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { apiFetch } from "@/lib/api";
 import type { ReadinessResponse } from "@/types/onboarding";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
-const CHECK_LABELS: Record<string, string> = {
-  has_active_account: "Active Trading Account",
-  has_live_assignment: "Live Strategy Assignment",
-  entitlement_valid: "Valid Entitlement",
-  terminal_node_valid: "Terminal Node Available",
+const CHECK_LABEL_KEYS: Record<string, string> = {
+  has_active_account: "onboarding.readiness.activeAccount",
+  has_live_assignment: "onboarding.readiness.liveAssignment",
+  entitlement_valid: "onboarding.readiness.validEntitlement",
+  terminal_node_valid: "onboarding.readiness.terminalAvailable",
 };
 
 export function ReadinessStep() {
+  const lang = useLang();
   const [readiness, setReadiness] = useState<ReadinessResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -23,8 +26,8 @@ export function ReadinessStep() {
     try {
       const data = await apiFetch<ReadinessResponse>("/api/onboarding/readiness/", {});
       setReadiness(data);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load readiness status.");
+    } catch {
+      setError(t(lang, "onboarding.readiness.loadError"));
     } finally {
       setLoading(false);
     }
@@ -37,15 +40,14 @@ export function ReadinessStep() {
   return (
     <div>
       <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-        Readiness Review
+        {t(lang, "onboarding.readiness.title")}
       </h2>
       <p style={{ color: "#b7c5dd", fontSize: "0.9rem", marginBottom: "1.25rem", lineHeight: 1.6 }}>
-        Review your platform readiness. All checks below must pass before your strategies can
-        execute in the live environment.
+        {t(lang, "onboarding.readiness.body")}
       </p>
 
       {loading && (
-        <p style={{ color: "#94a3b8", fontSize: "0.85rem" }}>Loading readiness status...</p>
+        <p style={{ color: "#94a3b8", fontSize: "0.85rem" }}>{t(lang, "onboarding.readiness.loading")}</p>
       )}
 
       {error && (
@@ -72,16 +74,16 @@ export function ReadinessStep() {
             }}
           >
             <span style={{ fontSize: "0.9rem", color: "#e9f4ff", fontWeight: 600 }}>
-              Onboarding
+              {t(lang, "onboarding.readiness.onboarding")}
             </span>
             <Badge color={readiness.onboarding_completed ? "green" : "yellow"}>
-              {readiness.onboarding_completed ? "Complete" : "Incomplete"}
+              {readiness.onboarding_completed ? t(lang, "onboarding.readiness.complete") : t(lang, "onboarding.readiness.incomplete")}
             </Badge>
           </div>
 
           {readiness.missing_steps.length > 0 && (
             <p style={{ color: "#fbbf24", fontSize: "0.82rem", marginBottom: "1rem" }}>
-              Missing steps: {readiness.missing_steps.join(", ")}
+              {t(lang, "onboarding.readiness.missing", { count: readiness.missing_steps.length })}
             </p>
           )}
 
@@ -101,10 +103,10 @@ export function ReadinessStep() {
                 }}
               >
                 <span style={{ fontSize: "0.85rem", color: "#b7c5dd" }}>
-                  {CHECK_LABELS[key] ?? key}
+                  {t(lang, CHECK_LABEL_KEYS[key] ?? "onboarding.readiness.additionalCheck")}
                 </span>
                 <Badge color={value ? "green" : "red"}>
-                  {value ? "Pass" : "Fail"}
+                  {value ? t(lang, "onboarding.readiness.pass") : t(lang, "onboarding.readiness.fail")}
                 </Badge>
               </div>
             ))}
@@ -131,8 +133,8 @@ export function ReadinessStep() {
               margin: 0,
             }}>
               {readiness.permitted
-                ? "Platform Ready — All gates passed"
-                : "Not Yet Ready — Complete remaining steps and checks"}
+                ? t(lang, "onboarding.readiness.ready")
+                : t(lang, "onboarding.readiness.notReady")}
             </p>
           </div>
         </>

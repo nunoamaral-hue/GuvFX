@@ -10,10 +10,7 @@ import { customerSafeError } from "@/lib/customer-safe-error";
 
 type RegisterResponse = { id: number; email: string; username: string };
 
-const STEPS: Record<Lang, string[]> = {
-  en: ["Create account", "Select plan", "Complete profile", "Open workspace", "Get started"],
-  ja: ["アカウント作成", "プラン選択", "プロフィール設定", "ワークスペースを開く", "利用開始"],
-};
+const STEP_KEYS = ["onboarding.step.create", "onboarding.step.plan", "onboarding.step.profile", "onboarding.step.workspace", "onboarding.step.start"];
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -51,7 +48,7 @@ export default function RegisterPage() {
     const fn = firstName.trim();
     const ln = lastName.trim();
     if (!fn || !ln) {
-      setError(lang === "ja" ? "姓と名を入力してください。" : "First name and last name are required.");
+      setError(t(lang, "register.nameRequired"));
       return;
     }
     if (password.length < 8) {
@@ -73,9 +70,7 @@ export default function RegisterPage() {
       setError(customerSafeError(err, t(lang, "register.errorDefault"), [
         {
           match: /(already exists|already registered|unique)/i,
-          message: lang === "ja"
-            ? "このメールアドレスまたはユーザー名は既に登録されています。ログインするか、別の情報を入力してください。"
-            : "That email address or username is already registered. Sign in or use different details.",
+          message: t(lang, "register.alreadyRegistered"),
         },
       ]));
       setLoading(false);
@@ -108,12 +103,12 @@ export default function RegisterPage() {
           {/* Left: Step rail */}
           <aside className="register-rail" style={railStyle}>
             <div style={railHeaderStyle}>
-              <span style={railLabelStyle}>{lang === "ja" ? "セットアップ" : "Setup"}</span>
+              <span style={railLabelStyle}>{t(lang, "register.setup")}</span>
               <span style={railCountStyle}>1 / 5</span>
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-              {STEPS[lang].map((label, index) => {
+              {STEP_KEYS.map((key, index) => {
                 const num = index + 1;
                 const active = num === 1;
                 const future = num > 1;
@@ -123,7 +118,7 @@ export default function RegisterPage() {
                       {num}
                     </span>
                     <span style={{ fontSize: "0.8rem", fontWeight: active ? 600 : 400, color: active ? "#e9f4ff" : "#64748b" }}>
-                      {label}
+                      {t(lang, key)}
                     </span>
                   </div>
                 );
@@ -135,14 +130,14 @@ export default function RegisterPage() {
               <div style={railProgressTrackStyle}>
                 <div style={railProgressFillStyle} />
               </div>
-              <span style={railProgressTextStyle}>{lang === "ja" ? "20% 完了" : "20% complete"}</span>
+              <span style={railProgressTextStyle}>{t(lang, "register.progress20")}</span>
             </div>
           </aside>
 
           {/* Right: Form surface */}
           <section className="register-form" style={formSurfaceStyle}>
             {/* Step badge */}
-            <span style={stepBadgeStyle}>{lang === "ja" ? "全5ステップ中 1" : "Step 1 of 5"}</span>
+            <span style={stepBadgeStyle}>{t(lang, "register.stepOneOfFive")}</span>
 
             {/* Title block */}
             <h1 style={titleStyle}>{t(lang, "register.createAccount")}</h1>
@@ -160,12 +155,12 @@ export default function RegisterPage() {
 
               <div className="register-two-col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem", marginBottom: "1.1rem" }}>
                 <div>
-                  <label htmlFor="firstName" style={labelStyle}>{lang === "ja" ? "名" : "First name"}</label>
-                  <input id="firstName" type="text" required placeholder={lang === "ja" ? "名" : "First name"} value={firstName} onChange={(e) => setFirstName(e.target.value)} style={inputStyle} />
+                  <label htmlFor="firstName" style={labelStyle}>{t(lang, "register.firstName")}</label>
+                  <input id="firstName" type="text" required placeholder={t(lang, "register.firstName")} value={firstName} onChange={(e) => setFirstName(e.target.value)} style={inputStyle} />
                 </div>
                 <div>
-                  <label htmlFor="lastName" style={labelStyle}>{lang === "ja" ? "姓" : "Last name"}</label>
-                  <input id="lastName" type="text" required placeholder={lang === "ja" ? "姓" : "Last name"} value={lastName} onChange={(e) => setLastName(e.target.value)} style={inputStyle} />
+                  <label htmlFor="lastName" style={labelStyle}>{t(lang, "register.lastName")}</label>
+                  <input id="lastName" type="text" required placeholder={t(lang, "register.lastName")} value={lastName} onChange={(e) => setLastName(e.target.value)} style={inputStyle} />
                 </div>
               </div>
 

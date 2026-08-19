@@ -65,17 +65,17 @@ describe("Configure page — Wayond (automated)", () => {
     state.statusThrows = false;
   });
 
-  it("shows the honest contract with managed rows and NO editable sizing/TP/SL controls", async () => {
+  it("shows customer-owned sizing copy while provider controls remain managed", async () => {
     render(<ConfigurePage />);
     await screen.findByText("Strategy settings");
     // Real, honest values — not editable inputs.
-    expect(screen.getByText("Managed by GuvFX (beta)")).toBeTruthy();
+    expect(screen.getByText("Set by you per position")).toBeTruthy();
     expect(screen.getByText("Follows the provider's targets")).toBeTruthy();
     expect(screen.getByText("Not used by this strategy")).toBeTruthy();
     // There is NOT a single free-text / numeric control anywhere on the page (no cosmetic knobs).
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("spinbutton")).toBeNull();
-    expect(screen.getByText(/advanced customisation|coming soon|GuvFX-managed settings/i)).toBeTruthy();
+    expect(screen.getByText(/you set lot size per position/i)).toBeTruthy();
   });
 
   it("Enable requires an explicit confirmation; merely rendering never arms or authorizes", async () => {

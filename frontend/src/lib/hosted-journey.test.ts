@@ -37,8 +37,8 @@ describe("describeJourney — customer state machine", () => {
     const v = describeJourney(journey({ phase, next_action }));
     expect(v.stepIndex).toBe(step);
     expect(v.tone).toBe(tone);
-    expect(v.title).toBeTruthy();
-    expect(v.description).toBeTruthy();
+    expect(v.titleKey).toBeTruthy();
+    expect(v.descriptionKey).toBeTruthy();
   });
 
   it("maps next_action to the correct primary action button", () => {
@@ -78,14 +78,14 @@ describe("describeJourney — customer state machine", () => {
 
   it("shows the masked login hint but never a full login", () => {
     const v = describeJourney(journey({ phase: "ACCOUNT_CONFIRMATION_REQUIRED", next_action: "confirm_broker_account", active_login_masked: "***561" }));
-    expect(v.description).toContain("***561");
-    expect(v.description).not.toContain("1302561");
+    expect(v.descriptionParams?.account).toBe("***561");
+    expect(JSON.stringify(v.descriptionParams)).not.toContain("1302561");
   });
 
   it("NEVER leaks internal identifiers in any customer copy", () => {
     for (const [phase, next_action] of cases) {
       const v = describeJourney(journey({ phase, next_action }));
-      const blob = `${v.title} ${v.description} ${v.action?.label ?? ""}`.toLowerCase();
+      const blob = `${v.titleKey} ${v.descriptionKey} ${JSON.stringify(v.descriptionParams ?? {})} ${v.action?.labelKey ?? ""}`.toLowerCase();
       for (const bad of LEAKS) expect(blob).not.toContain(bad.toLowerCase());
     }
   });

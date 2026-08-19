@@ -15,22 +15,16 @@ type Props = {
 
 type PlanOption = {
   key: string;
-  label: string;
-  description: string;
-  badge?: string;
+  recommended?: boolean;
 };
 
 const PLANS: PlanOption[] = [
   {
     key: "standard",
-    label: "Standard",
-    description: "Full platform access including backtests, strategy deployment, and live execution.",
-    badge: "Recommended",
+    recommended: true,
   },
   {
     key: "starter_trial",
-    label: "Starter Trial",
-    description: "Limited access to explore the platform. Backtests and marketplace only.",
   },
 ];
 
@@ -117,7 +111,7 @@ export function PlanSelectionStep({ state, onComplete }: Props) {
                   <span style={{ fontSize: "0.95rem", fontWeight: 600, color: "#e9f4ff" }}>
                     {t(lang, plan.key === "standard" ? "onboarding.plan.standard" : "onboarding.plan.trial")}
                   </span>
-                  {plan.badge && <Badge color="blue">{t(lang, "onboarding.recommended")}</Badge>}
+                  {plan.recommended && <Badge color="blue">{t(lang, "onboarding.recommended")}</Badge>}
                 </div>
                 <p style={{ margin: 0, fontSize: "0.82rem", color: "#8fa0b7", lineHeight: 1.4 }}>
                   {t(lang, plan.key === "standard" ? "onboarding.plan.standardDesc" : "onboarding.plan.trialDesc")}

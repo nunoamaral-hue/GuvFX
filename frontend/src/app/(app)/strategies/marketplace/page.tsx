@@ -27,9 +27,6 @@ type MarketplaceStrategy = {
   name: string;
   category: MarketCategory;
   accent: Accent;
-  style: string;
-  execution: string;
-  summary: string;
   timeframes: string[];
   pairs: string[];
   tags?: string[];
@@ -148,9 +145,6 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     name: "London Session Box Breakout",
     category: "Breakout",
     accent: "purple",
-    style: "Volatility Breakout",
-    execution: "Manual review required",
-    summary: "Example ruleset for Asian session range breakouts during London open. Review and test before use.",
     timeframes: ["M15", "M30"],
     pairs: ["GBPUSD", "EURUSD", "GBPJPY"],
     tags: ["Template"],
@@ -160,9 +154,6 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     name: "Trend EMA Crossover (HTF filter)",
     category: "Trend",
     accent: "blue",
-    style: "Trend Following",
-    execution: "Manual review required",
-    summary: "20/50 EMA cross on M15 with H4 trend alignment. Designed to be configured and tested by the user.",
     timeframes: ["M15", "H1"],
     pairs: ["EURUSD", "USDJPY", "AUDUSD"],
     tags: ["Template"],
@@ -172,9 +163,6 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     name: "Bollinger Mean Reversion",
     category: "Reversion",
     accent: "green",
-    style: "Mean Reversion",
-    execution: "Manual review required",
-    summary: "Enters on 2σ touches with RSI divergence. Example template — review and test before use.",
     timeframes: ["M5", "M15"],
     pairs: ["EURUSD", "GBPUSD", "USDCHF"],
     tags: ["Example"],
@@ -184,9 +172,6 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     name: "Head & Shoulders Reversal",
     category: "Patterns",
     accent: "yellow",
-    style: "Chart Patterns",
-    execution: "User-controlled execution",
-    summary: "Automated chart pattern recognition for H&S reversals with volume confirmation. Currently in beta — review and test before use.",
     timeframes: ["H1", "H4"],
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"],
     tags: ["Beta"],
@@ -196,9 +181,6 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     name: "Trendline Break Pocket",
     category: "System-grade",
     accent: "cyan",
-    style: "HTF Zone + Structure",
-    execution: "Automation-ready",
-    summary: "HTF zone + trendline break + structure shift. Fixed 2R model. Manual zones editable. Designed by Ali.",
     timeframes: ["H4"],
     pairs: ["EURUSD", "GBPUSD"],
     tags: ["Automation-ready", "Ali"],
@@ -208,9 +190,6 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     name: "Adaptive Liquidity Trap Scalper",
     category: "System-grade",
     accent: "purple",
-    style: "Liquidity / Mean reversion",
-    execution: "Automation-ready",
-    summary: "Range-regime liquidity sweep + displacement + confirmation. M5 execution with M15 regime filter.",
     timeframes: ["M5", "M15"],
     pairs: ["EURUSD", "GBPUSD"],
     tags: ["Automation-ready", "ALTS"],
@@ -220,9 +199,6 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     name: "Structural Continuation Engine",
     category: "System-grade",
     accent: "purple",
-    style: "Trend continuation",
-    execution: "Automation-ready",
-    summary: "H4 bias + H1 BOS + pullback + rejection continuation. H1 execution with H4 context.",
     timeframes: ["H1", "H4"],
     pairs: ["EURUSD", "GBPUSD"],
     tags: ["Automation-ready", "SCE"],
@@ -232,9 +208,6 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     name: "TBP V3 Hybrid Sleeve v1",
     category: "System-grade",
     accent: "cyan",
-    style: "HTF Zone + Macro Overlay",
-    execution: "Automation-ready",
-    summary: "CORE (TBP trendline break pocket) + SLEEVE (TC1 trend continuation on risk-on days). H4 execution.",
     timeframes: ["H4"],
     pairs: ["EURUSD", "GBPUSD"],
     tags: ["Automation-ready", "Hybrid"],
@@ -243,13 +216,10 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     id: "mp-010",
     // NOTE: `name` is an internal codename shown to customers — a product/marketing rename is
     // recommended (see product review WS-I) but deferred because the arm flow keys the created Strategy
-    // off this name; the `execution`/`summary` below are display-only and are made customer-safe here.
+    // off this name; its display copy resolves through the EN/JA catalogue.
     name: "Wayond WIM Strategy",
     category: "System-grade",
     accent: "green",
-    style: "Telegram signal copy",
-    execution: "Automated signal copy · demo",
-    summary: "When enabled, automatically mirrors a curated Telegram signal provider into your demo account.",
     timeframes: ["M15"],
     pairs: ["XAUUSD"],
     tags: ["Signal copy", "Demo"],
@@ -395,13 +365,13 @@ export default function StrategyMarketplacePage() {
       result = result.filter(
         (s) =>
           s.name.toLowerCase().includes(q) ||
-          s.summary.toLowerCase().includes(q) ||
+          t(lang, `marketplace.strategy.${s.id}.summary`).toLowerCase().includes(q) ||
           s.pairs.some((p) => p.toLowerCase().includes(q))
       );
     }
 
     return result;
-  }, [search, activeFilter]);
+  }, [search, activeFilter, lang]);
 
   // ─────────────────────────────────────────────────────────────────────
   // Persist the last-used account (per browser) as the default for next time.
@@ -677,7 +647,8 @@ export default function StrategyMarketplacePage() {
             const owned = !!strategy.signalCopy && !!st?.armed;
             const enabled = !!st?.enabled;
             const ambiguous = !!st?.ambiguous;
-            const price = priceLabel(priceFor(strategy.id));
+            const priceSpec = priceFor(strategy.id);
+            const price = priceSpec.kind === "free" ? t(lang, "configure.free") : priceLabel(priceSpec);
             return (
             <div
               key={strategy.id}
@@ -691,11 +662,11 @@ export default function StrategyMarketplacePage() {
               {/* ── Zone 1 — Header ── */}
               <div style={{ marginBottom: "0.75rem" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.6rem" }}>
-                  <span style={pillStyle(strategy.accent)}>{strategy.category}</span>
+                  <span style={pillStyle(strategy.accent)}>{t(lang, `marketplace.filter${strategy.category}`)}</span>
                   <div style={{ display: "flex", gap: "0.4rem" }}>
                     {strategy.tags?.map((tag) => (
                       <span key={tag} style={badgeStyle()}>
-                        {tag}
+                        {t(lang, `marketplace.tag.${tag.toLowerCase().replaceAll(" ", "-")}`)}
                       </span>
                     ))}
                   </div>
@@ -718,7 +689,7 @@ export default function StrategyMarketplacePage() {
                   overflow: "hidden",
                 }}
               >
-                {strategy.summary}
+                {t(lang, `marketplace.strategy.${strategy.id}.summary`)}
               </p>
 
               {/* Pairs + Timeframes */}
@@ -751,7 +722,7 @@ export default function StrategyMarketplacePage() {
                       {t(lang, "marketplace.styleLabel")}
                     </div>
                     <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#e2e8f0" }}>
-                      {strategy.style}
+                      {t(lang, `marketplace.strategy.${strategy.id}.style`)}
                     </div>
                   </div>
                   <div>
@@ -767,7 +738,7 @@ export default function StrategyMarketplacePage() {
                       {t(lang, "marketplace.executionLabel")}
                     </div>
                     <div style={{ fontSize: "0.8rem", fontWeight: 600, color: strategy.signalCopy ? "#94a3b8" : "#e2e8f0" }}>
-                      {strategy.execution}
+                      {t(lang, `marketplace.strategy.${strategy.id}.execution`)}
                     </div>
                   </div>
                 </div>

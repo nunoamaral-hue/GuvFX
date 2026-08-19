@@ -1,6 +1,7 @@
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { LanguageProvider } from "@/components/AppShell";
 
 /**
  * ADR-0034 Customer-Zero keyboard-input corrective (RemoteApp focus management).
@@ -53,14 +54,14 @@ function routeApi(url: string) {
 
 import TerminalAccessPage from "./page";
 
-async function renderConnected() {
+async function renderConnected(lang: "en" | "ja" = "en") {
   const focusSpy = vi.spyOn(HTMLIFrameElement.prototype, "focus").mockImplementation(() => {});
-  render(<TerminalAccessPage />);
+  render(<LanguageProvider lang={lang}><TerminalAccessPage /></LanguageProvider>);
   // Hosted detection resolves is_owner -> the RemoteApp card offers "Open MT5 Terminal".
-  const openBtn = await screen.findByRole("button", { name: /open mt5 terminal/i });
+  const openBtn = await screen.findByRole("button", { name: lang === "ja" ? "MT5ターミナルを開く" : /open mt5 terminal/i });
   focusSpy.mockClear();
   fireEvent.click(openBtn);
-  const iframe = (await screen.findByTitle("MT5 Terminal")) as HTMLIFrameElement;
+  const iframe = (await screen.findByTitle(lang === "ja" ? "MT5ターミナル" : "MT5 Terminal")) as HTMLIFrameElement;
   return { iframe, focusSpy };
 }
 
@@ -100,6 +101,49 @@ describe("RemoteApp keyboard focus management", () => {
     // Same node identity + same src => React did not remount it (no reconnect loop).
     expect(iframeAfter).toBe(iframe);
     expect(iframeAfter.getAttribute("src")).toBe(srcBefore);
+  });
+
+  it("maximizes and restores the same iframe without reconnecting the RemoteApp session", async () => {
+    const { iframe } = await renderConnected();
+    const srcBefore = iframe.getAttribute("src");
+    const connectCallsBefore = apiFetch.mock.calls.filter(([url]) => String(url).includes("delivery-connect")).length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Full Screen" }));
+    expect(screen.getByRole("button", { name: "Exit Full Screen" })).toBeInTheDocument();
+    expect(iframe.closest("[data-terminal-maximized='true']")).toBeTruthy();
+    expect(screen.getByTitle("MT5 Terminal")).toBe(iframe);
+    expect(iframe.getAttribute("src")).toBe(srcBefore);
+
+    fireEvent.click(screen.getByRole("button", { name: "Exit Full Screen" }));
+    expect(screen.getByRole("button", { name: "Full Screen" })).toBeInTheDocument();
+    expect(iframe.closest("[data-terminal-maximized='false']")).toBeTruthy();
+    expect(screen.getByTitle("MT5 Terminal")).toBe(iframe);
+    const connectCallsAfter = apiFetch.mock.calls.filter(([url]) => String(url).includes("delivery-connect")).length;
+    expect(connectCallsAfter).toBe(connectCallsBefore);
+  });
+
+  it("renders the full-screen controls in Japanese", async () => {
+    await renderConnected("ja");
+    fireEvent.click(screen.getByRole("button", { name: "全画面表示" }));
+    expect(screen.getByRole("button", { name: "全画面表示を終了" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Exit Full Screen" })).toBeNull();
+  });
+
+  it("keeps the exit control and same session available at the 390px beta viewport", async () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    try {
+      const { iframe } = await renderConnected("ja");
+      fireEvent.click(screen.getByRole("button", { name: "全画面表示" }));
+      const shell = iframe.closest("[data-terminal-maximized='true']") as HTMLElement;
+      expect(shell).toBeTruthy();
+      expect(shell.style.width).toBe("100vw");
+      expect(shell.style.height).toBe("100dvh");
+      expect(screen.getByRole("button", { name: "全画面表示を終了" })).toBeVisible();
+      expect(screen.getByTitle("MT5ターミナル")).toBe(iframe);
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
+    }
   });
 
   it("keeps the hosted owner on RemoteApp only — no legacy desktop / Available Terminals", async () => {

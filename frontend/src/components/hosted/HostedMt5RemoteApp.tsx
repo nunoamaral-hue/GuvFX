@@ -72,6 +72,9 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
   const [error, setError] = useState<string | null>(null);
   const [epoch, setEpoch] = useState(0);
   const [slow, setSlow] = useState(false);
+  const [maximized, setMaximized] = useState(false);
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const browserFullscreenRef = useRef(false);
   // First-launch guidance (PP5): the first time MT5 opens in a fresh workspace it downloads the broker's full
   // instrument catalogue, which can take minutes. Show the one-time warning until this browser has opened it
   // once (no first-launch flag exists on delivery-state, so we use a per-account localStorage marker).
@@ -100,6 +103,49 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
       /* focus may throw in exotic states; never fatal */
     }
   }, []);
+
+  // Full-screen is a presentation-only state around the SAME iframe. The descriptor, iframe key and src stay
+  // unchanged, so expanding/collapsing cannot mint a second Guacamole session or restart RemoteApp/MT5.
+  // Browser fullscreen is requested as progressive enhancement; denial leaves the in-app viewport-maximized
+  // fallback active. ESC from browser fullscreen collapses the in-app state as customers expect.
+  const enterFullScreen = useCallback(async () => {
+    setMaximized(true);
+    try {
+      await shellRef.current?.requestFullscreen?.();
+    } catch {
+      // Permission denied or unsupported: the in-app maximized fallback remains active.
+    }
+  }, []);
+
+  const exitFullScreen = useCallback(async () => {
+    setMaximized(false);
+    try {
+      if (document.fullscreenElement === shellRef.current) await document.exitFullscreen?.();
+    } catch {
+      // The in-app state is already restored; browser API failure is non-fatal.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onFullscreenChange = () => {
+      if (document.fullscreenElement === shellRef.current) {
+        browserFullscreenRef.current = true;
+      } else if (browserFullscreenRef.current) {
+        browserFullscreenRef.current = false;
+        setMaximized(false);
+      }
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
+  useEffect(() => {
+    if (!maximized || typeof document === "undefined") return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previous; };
+  }, [maximized]);
 
   // AJ#4 keyboard hardening: when the browser tab/window regains focus, re-forward focus to the terminal so the
   // very next keystroke reaches Guacamole. Guacamole's key handler listens on the iframe's document, and a tab
@@ -292,8 +338,20 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
   }
 
   return (
-    <div style={{ ...glassCard, marginBottom: "1rem" }}>
-      <div style={sectionHeader}>{t(lang, "terminal.title")}</div>
+    <div
+      ref={shellRef}
+      className="hosted-terminal-shell"
+      data-terminal-maximized={maximized ? "true" : "false"}
+      style={{
+        ...glassCard,
+        marginBottom: maximized ? 0 : "1rem",
+        ...(maximized ? {
+          position: "fixed" as const, inset: 0, zIndex: 1000, width: "100vw", height: "100dvh",
+          padding: 0, border: "none", borderRadius: 0, background: "#050816",
+        } : {}),
+      }}
+    >
+      <div style={{ ...sectionHeader, display: maximized ? "none" : undefined }}>{t(lang, "terminal.title")}</div>
       <p
         style={{
           fontSize: "0.85rem",
@@ -301,6 +359,7 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
           marginTop: 0,
           marginBottom: "1rem",
           lineHeight: 1.6,
+          display: maximized ? "none" : undefined,
         }}
       >
         {t(lang, "terminal.description", { account: account.label })}
@@ -314,13 +373,15 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
         <div
           onPointerDownCapture={focusTerminal}
           style={{
-            borderRadius: 12,
+            borderRadius: maximized ? 0 : 12,
             border: "1px solid rgba(74,179,255,0.15)",
             background: "rgba(0,0,0,0.3)",
             overflow: "hidden",
+            flex: maximized ? 1 : undefined,
           }}
         >
           <div
+            className="hosted-terminal-header"
             style={{
               display: "flex",
               alignItems: "center",
@@ -330,10 +391,24 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
               borderBottom: "1px solid rgba(74,179,255,0.1)",
             }}
           >
-            <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+            <span className="hosted-terminal-focus-hint" style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
               {t(lang, "terminal.focusHint")}
             </span>
-            <Badge color="green">{t(lang, "terminal.connected")}</Badge>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", flexShrink: 0 }}>
+              <Badge color="green">{t(lang, "terminal.connected")}</Badge>
+              <button
+                type="button"
+                onClick={maximized ? exitFullScreen : enterFullScreen}
+                aria-label={t(lang, maximized ? "terminal.exitFullScreen" : "terminal.fullScreen")}
+                style={{
+                  border: "1px solid rgba(74,179,255,0.35)", borderRadius: 8,
+                  background: "rgba(74,179,255,0.08)", color: "#dbeafe", cursor: "pointer",
+                  padding: "0.35rem 0.65rem", fontSize: "0.78rem", fontWeight: 600,
+                }}
+              >
+                {t(lang, maximized ? "terminal.exitFullScreen" : "terminal.fullScreen")}
+              </button>
+            </div>
           </div>
           {firstLaunchSessionRef.current && (
             <div style={{ padding: "0.5rem 1rem", background: "rgba(74,179,255,0.05)",
@@ -361,9 +436,20 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
             // iframe (guac `resize-method=display-update`), so a taller/wider iframe gives MT5 a real larger
             // desktop — crisp, not scaled. clamp() keeps a stable size that only changes on a genuine viewport
             // resize (never on the 5s onboarding poll), so it does NOT churn display-update / drop keyboard focus.
-            style={{ width: "100%", height: "clamp(750px, 80vh, 900px)", border: "none", display: "block" }}
+            style={{
+              width: "100%",
+              height: maximized ? "calc(100dvh - 48px)" : "clamp(750px, 80vh, 900px)",
+              border: "none", display: "block",
+            }}
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
           />
+          <style>{`
+            @media (max-width: 720px) {
+              .hosted-terminal-shell { min-width: 0; }
+              .hosted-terminal-header { padding: 0.45rem 0.6rem !important; }
+              .hosted-terminal-focus-hint { display: none; }
+            }
+          `}</style>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>

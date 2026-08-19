@@ -5,6 +5,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { OnboardingState } from "@/types/onboarding";
+import { useLang } from "@/components/AppShell";
+import { t } from "@/lib/i18n";
 
 type Props = {
   state: OnboardingState;
@@ -12,6 +14,7 @@ type Props = {
 };
 
 export function StrategyAssignmentStep({ state, onComplete }: Props) {
+  const lang = useLang();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -19,10 +22,10 @@ export function StrategyAssignmentStep({ state, onComplete }: Props) {
     return (
       <div>
         <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-          Strategy Assignment
+          {t(lang, "onboarding.strategy.title")}
         </h2>
         <p style={{ color: "#86efac", fontSize: "0.9rem" }}>
-          A strategy is assigned to your account.
+          {t(lang, "onboarding.strategy.assigned")}
         </p>
       </div>
     );
@@ -37,8 +40,8 @@ export function StrategyAssignmentStep({ state, onComplete }: Props) {
         body: JSON.stringify({ step: "strategy_assigned" }),
       });
       onComplete();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to confirm strategy assignment.");
+    } catch {
+      setError(t(lang, "onboarding.strategy.confirmError"));
     } finally {
       setConfirming(false);
     }
@@ -47,18 +50,18 @@ export function StrategyAssignmentStep({ state, onComplete }: Props) {
   return (
     <div>
       <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#e9f4ff", marginBottom: "0.5rem" }}>
-        Assign a Strategy
+        {t(lang, "onboarding.strategy.assignTitle")}
       </h2>
       <p style={{ color: "#b7c5dd", fontSize: "0.9rem", marginBottom: "1rem", lineHeight: 1.6 }}>
-        Create and assign a strategy to your trading account. Visit the{" "}
+        {t(lang, "onboarding.strategy.bodyPrefix")} {" "}
         <Link href="/strategies" style={{ color: "#4ab3ff", textDecoration: "none" }}>
-          Strategies
+          {t(lang, "nav.myStrategies")}
         </Link>{" "}
-        page to create a strategy and assign it to your account, then return here to confirm.
+        {t(lang, "onboarding.strategy.bodySuffix")}
       </p>
 
       <Button onClick={handleConfirm} disabled={confirming}>
-        {confirming ? "Confirming..." : "Confirm Strategy Assignment"}
+        {confirming ? t(lang, "onboarding.strategy.confirming") : t(lang, "onboarding.strategy.confirm")}
       </Button>
 
       {error && (
