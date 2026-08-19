@@ -99,7 +99,7 @@ All customer settings routes require the authenticated GuvFX owner:
 ## 7. Preferences model and API
 
 `CustomerNotificationPreference` has a master flag plus trade opened, trade
-closed, strategy changed, execution problem, and workspace ready flags. Every
+updated, trade closed, strategy changed, execution problem, and workspace ready flags. Every
 flag defaults ON. Language defaults to English. Preferences can only suppress
 messages; they have no dependency from, or effect on, execution state.
 
@@ -123,7 +123,8 @@ This prevents a fixed historical slice from starving newer durable events.
 | Customer event | Authoritative durable seam | Dedupe |
 |---|---|---|
 | Trade opened | created `trading.Trade` successful fill record | trade PK |
-| Trade closed | created `execution.TradeOutcomeRecord` | outcome PK |
+| Trade update / TP progress | created `execution.TradeOutcomeRecord` while durable plan legs remain open | outcome PK |
+| Trade closed | created `execution.TradeOutcomeRecord` when all durable plan legs are closed (or no leg plan exists) | outcome PK |
 | Strategy enabled/disabled | `core.AuditEvent` for the saved assignment transition | audit UUID |
 | Execution problem | customer-visible non-INFO `OperationalEvent` | account + class + hour |
 | Workspace ready | state-changing `WorkspaceTransition` to `EXECUTION_READY` | transition PK |
@@ -131,6 +132,11 @@ This prevents a fixed historical slice from starving newer durable events.
 Trade-open rendering uses the persisted trade volume. Plan/assignment data is
 read only to obtain strategy/SL/TP presentation fields. A signal, plan, pending
 job, or attempted order cannot generate a trade-opened message.
+Trade progress is derived only from the account-scoped durable leg-evidence
+contract already used by execution notifications. It reports closed/total legs,
+the current reached TP when proven, and summed realised PnL. The observer does not
+modify a plan, leg, outcome, job, or order; absent durable evidence means no
+manufactured TP progress.
 
 ## 10. Delivery-worker design
 
@@ -189,9 +195,11 @@ XAUUSD · 売り
 デモ口座 · 1302587
 ```
 
-The catalogue also includes connection confirmation, trade closed, strategy
+The catalogue also includes connection confirmation, trade update, trade closed, strategy
 enabled/disabled, three customer-safe execution-problem variants, and workspace
-ready in both languages. It never reads raw diagnostic fields.
+ready in both languages. Trade update/close messages include the server-derived
+full MT5 account number in that owner's verified private chat and an ISO UTC
+timestamp where available. It never reads raw diagnostic fields.
 
 ## 12. Frontend Settings UX
 
@@ -199,7 +207,8 @@ The Profile page now contains one Telegram notifications card. Disconnected user
 see a connection button only when the server reports an approved bot available.
 Connect opens the short-lived Telegram deep link and polls for confirmed binding.
 Connected users see display-only metadata, disconnect, the master preference, and
-five event toggles. Switching the GuvFX app language immediately persists the
+six event toggles. The card exposes disconnected, connecting, and connected states.
+Switching the GuvFX app language immediately persists the
 notification language without requiring an unrelated preference change. No numeric
 Telegram identifier or backend error is displayed.
 The shared frontend API base now supports `NEXT_PUBLIC_API_BASE` for safe local
@@ -244,19 +253,21 @@ Neither the outbox nor worker is imported by an execution claimant or bridge.
 
 ## 17. Focused tests
 
-The focused backend suite covers 57 tests, including all 20 mandatory adversarial
+The focused backend suite covers 63 tests, including all 28 mandatory adversarial
 cases plus webhook update filtering, settings data minimization, durable event
 mappings, actual per-trade volume, hourly outage dedupe, preference ownership,
 cross-user retrieval isolation, immutable attempt evidence, cursor advancement and
-rollback, retry exhaustion, and EN/JA catalogue behavior. The frontend suite covers
-disconnected and connected states, preferences, toggling, and EN/JA behavior.
+rollback, retry exhaustion, per-customer account-number isolation, unsupported-command
+execution non-authority, missing-binding no-fallback, durable multi-leg progress,
+and EN/JA catalogue behavior. The focused frontend suite has 6 tests covering
+disconnected, connecting, and connected states, preferences, toggling, and EN/JA behavior.
 
 ## 18. Full verification gate
 
 The final isolated-database `make check` completed with exit code 0:
 
-- backend: 4,299 tests passed (1 skipped)
-- frontend Vitest: 45 files / 263 tests passed
+- backend: 4,349 tests passed (1 skipped)
+- frontend Vitest: 46 files / 286 tests passed
 - frontend lint: 0 errors / 19 pre-existing warnings
 - frontend parity: 46 routes, 56 components, no junk, 5 allow-listed env vars
 - frontend production build: compiled, typechecked, and generated all 41 pages
@@ -276,21 +287,22 @@ app-language changes not immediately persisting the notification language, and a
 fixed-oldest-slice reconciler that could starve later durable events. The reconciler
 now advances a transactional per-source high-water cursor and rolls cursor progress
 back with a failed projection batch. The release hardening also made HTTP 429
-retryable, made configuration/worker readiness explicit, and expanded health metrics.
+retryable, made configuration/worker readiness explicit, expanded health metrics,
+added fail-closed customer/global routing regression proof, and corrected aggregate
+multi-leg outcomes to derive WIN/LOSS/BREAKEVEN from summed realised PnL rather than
+the latest leg alone.
 Any later finding above LOW blocks activation.
 
 ## 20. Collision report
 
-The stream began at `b9763a2e4d9b6cefc2a56f97ab4e8b2089ee35f6` and was refreshed onto current
-main `c21bfb3` on 2026-08-19. The intervening P0-A lot-sizing commits touched
-`backend/strategies/views.py`, `frontend/src/lib/i18n.ts`, and
-`frontend/parity/components.json`; their sizing behavior and entries were preserved
-alongside the separate notification additions, with no semantic collision. A final
-lot-sizing API-path hotfix touched only its own component and test. Open PRs
-#343 and #304 are documentation-only. #304 overlaps
-`docs/STATUS.md` and `docs/NEXT.md`; those two local Telegram deltas are intentionally
-excluded from this increment. This dedicated product document remains the authoritative
-handoff, so neither documentation stream is dropped or conflict-resolved here.
+The stream began at `b9763a2e4d9b6cefc2a56f97ab4e8b2089ee35f6`; draft PR #371 was based on
+`c21bfb3` and was rebased cleanly onto current main
+`de99004c8d42d2181f1492a8813e6d65ee649f8c` on 2026-08-19. PR #367 is merged.
+Subsequent main work (#373–#375) added per-tenant execution transport,
+provisioning integration, and launcher follow-up. Exact path overlap is limited to
+`frontend/src/app/(app)/layout.tsx` and `frontend/src/lib/i18n.ts`; both are additive
+and the newer main behavior is preserved. Open PRs #343 and #304 are documentation-only.
+No execution-plane path has entered #371, and no other stream's work was dropped.
 
 The only protected-area seam is two post-transition `core.audit.log_event` calls
 after signal-copy enable/disable saves. They do not alter assignment, routing,
@@ -312,6 +324,9 @@ Programme Director approval must precede all of these changes:
    dedupe, and worker-failure isolation;
 9. monitor queue age/failures and retain the feature flag as the immediate
    rollback control.
+10. pilot only with `beta.guvfx01@gmail.com` (or another disposable acceptance
+    customer): connect, confirm the private binding, use an existing durable safe
+    event, disconnect, and prove suppression. Do not manufacture a trade.
 
 ## 22. Bot/token/webhook decisions still required
 
@@ -347,7 +362,7 @@ team/household recipients, custom templates, and operator retry of ambiguous
 
 ## 24. Final readiness verdict
 
-**IMPLEMENTATION READY FOR PROGRAMME DIRECTOR REVIEW; PRODUCTION NOT READY.**
+**CUSTOMER_TELEGRAM_CODE_READY; PRODUCTION BLOCKED ON CONFIGURATION.**
 The code and deployment preparation remain DARK. Production readiness requires
 the decisions and controlled rollout in sections 21–22 plus exact-SHA green CI.
 

@@ -15,7 +15,7 @@
 
 ---
 
-## Customer Telegram notifications (DARK POC)
+## Customer Telegram notifications (CODE READY, DARK)
 
 This plane is not production-active. It must use a dedicated customer bot and must
 never reuse provider-ingestion or stakeholder Telegram credentials.
@@ -47,6 +47,14 @@ case it neither collects nor sends. The prepared, non-routed worker definition l
 `deploy/customer-notifications/docker-compose.customer-notifications.yml`; do not
 add it to a production compose stack before Programme Director approval.
 
+Production prerequisites are an approved GuvFX-owned customer bot and rotation owner,
+bot username/token, public HTTPS webhook URL and independent secret, database backup and
+migration approval, dedicated worker deployment, both feature-flag approvals, and alert/
+retention decisions. The first pilot is `beta.guvfx01@gmail.com` (or another disposable
+acceptance customer): connect, verify the private confirmation, observe an existing durable
+customer-safe event in EN/JA, disconnect, and prove future suppression. Never manufacture a
+trade and never use Customer Zero or the WIMs stakeholder destination.
+
 Operational interpretation:
 
 - `queue_depth` / `pending` includes `PENDING`, `RETRYING`, and deliberately non-reclaimed
@@ -63,6 +71,9 @@ Operational interpretation:
   authorization, or customer trading state.
 - Telegram is a best-effort convenience notification channel. The committed GuvFX
   business records and in-app state remain the system of record.
+- Trade progress is emitted only from account-scoped durable leg evidence. Messages may
+  show the owner's full MT5 account number only in that verified private chat; no chat ID
+  is shown in Settings, and missing bindings fail closed with no global/WIMs fallback.
 
 Full design and rollout gate: `docs/product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md`.
 

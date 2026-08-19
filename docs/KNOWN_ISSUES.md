@@ -2,9 +2,9 @@
 
 List active problems with reproduction steps and workarounds.
 
-## 🟡 DARK / DECISION-GATED (2026-08-18) — customer Telegram notifications are not production-active
+## 🟡 CODE READY / CONFIGURATION-GATED (2026-08-19) — customer Telegram notifications are not production-active
 
-The customer notification POC is implemented but intentionally inert. No approved dedicated customer bot,
+The customer notification release candidate is implemented and verified but intentionally inert. No approved dedicated customer bot,
 production bot token, webhook secret/registration, worker service activation, pilot identities, alert thresholds,
 or retention decision exists in this repository. `CUSTOMER_TELEGRAM_NOTIFICATIONS_ENABLED` defaults false, and
 an incomplete configuration returns unavailable/404 rather than falling back to provider or stakeholder Telegram
@@ -12,6 +12,10 @@ credentials. Both `CUSTOMER_TELEGRAM_NOTIFICATIONS_ENABLED` and
 `CUSTOMER_TELEGRAM_WORKER_ENABLED` default false. The at-most-once worker deliberately leaves a post-send/DB-failure row in `PROCESSING` for operator
 review instead of automatically retrying and risking a duplicate. Do not manually replay ambiguous rows. See
 `docs/product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md`.
+Durable TP/progress and aggregate final-outcome messages are implemented without modifying execution semantics;
+the verified private-chat payload may contain only that owner's full MT5 account number. The production pilot is
+`beta.guvfx01@gmail.com` (or another disposable acceptance customer) using an existing durable event—never
+Customer Zero, WIMs, or a manufactured trade.
 
 ## 🟢 RESOLVED + CERTIFIED (2026-08-17, AJ#6.4) — LiveUpdate-safe relaunch
 

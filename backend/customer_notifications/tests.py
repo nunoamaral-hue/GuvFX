@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from decimal import Decimal
 from io import StringIO
+import pathlib
 from unittest.mock import MagicMock, patch
 import urllib.error
 from urllib.parse import parse_qs, urlparse
@@ -28,6 +30,7 @@ from .event_sources import (
     collect_customer_notification_events,
     enqueue_execution_problem,
     enqueue_strategy_change,
+    enqueue_trade_outcome,
     enqueue_trade_opened,
     enqueue_workspace_ready,
 )
@@ -300,6 +303,23 @@ class PreferenceAndRoutingTests(CustomerTelegramTestBase):
         self.assertEqual(row.account_id, self.account_b.id)
         self.assertFalse(CustomerNotification.objects.filter(user=self.user_a, account=self.account_b).exists())
 
+    def test_a_and_b_events_deliver_only_to_their_verified_private_chats(self):
+        self.notification(user=self.user_a, account=self.account_a, dedupe="route-a")
+        self.notification(
+            user=self.user_b, account=self.account_b, dedupe="route-b",
+            payload={
+                "strategy": "Wayond WIM", "symbol": "XAUUSD", "side": "BUY",
+                "account_kind": "demo", "account_number": "20002",
+            },
+        )
+        client = FakeClient([TelegramAck("a"), TelegramAck("b")])
+        self.assertEqual(dispatch_customer_notifications(client=client)["delivered"], 2)
+        self.assertEqual([chat_id for chat_id, _ in client.calls], [111, 222])
+        self.assertIn("10001", client.calls[0][1])
+        self.assertNotIn("20002", client.calls[0][1])
+        self.assertIn("20002", client.calls[1][1])
+        self.assertNotIn("10001", client.calls[1][1])
+
     def test_explicit_cross_owner_enqueue_fails_closed(self):
         row = enqueue_customer_notification(
             user=self.user_a, account=self.account_b,
@@ -328,6 +348,15 @@ class PreferenceAndRoutingTests(CustomerTelegramTestBase):
         pref.save(update_fields=["telegram_enabled", "updated_at"])
         row = self.notification(dedupe="master-off")
         self.assertEqual(row.status, CustomerNotification.Status.SUPPRESSED)
+
+    @override_settings(TELEGRAM_CHAT_ID="stakeholder-global-chat")
+    def test_missing_binding_never_falls_back_to_stakeholder_or_global_chat(self):
+        disconnect_telegram(self.user_a)
+        row = self.notification(dedupe="no-global-fallback")
+        client = FakeClient()
+        self.assertEqual(row.status, CustomerNotification.Status.SUPPRESSED)
+        self.assertEqual(dispatch_customer_notifications(client=client)["claimed"], 0)
+        self.assertEqual(client.calls, [])
 
     def test_disconnect_before_delivery_suppresses_without_send(self):
         row = self.notification(dedupe="disconnect-before-send")
@@ -527,6 +556,52 @@ class DeliverySafetyTests(CustomerTelegramTestBase):
                     )
         self.assertTrue(Trade.objects.filter(pk=trade.pk).exists())
 
+    def test_unsupported_customer_command_cannot_mutate_execution(self):
+        from execution.models import ExecutionJob
+
+        raw = self.token_for(self.user_b)
+        before = list(ExecutionJob.objects.values_list("id", "status"))
+        client = APIClient()
+        response = client.post(
+            "/api/customer-notifications/telegram/webhook/",
+            {"message": {
+                "text": "/place_order XAUUSD BUY",
+                "chat": {"id": 222, "type": "private"},
+                "from": {"id": 222, "username": "attacker"},
+                "connection_token": raw,
+            }},
+            format="json", HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN="test-webhook-secret",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ignored"])
+        self.assertEqual(list(ExecutionJob.objects.values_list("id", "status")), before)
+        self.assertFalse(CustomerTelegramBinding.objects.filter(user=self.user_b).exists())
+
+    def test_customer_delivery_plane_has_no_wims_or_global_fallback(self):
+        root = pathlib.Path(__file__).parent
+        source = "\n".join(
+            (root / name).read_text()
+            for name in ("delivery.py", "services.py", "views.py")
+        )
+        for forbidden in (
+            'getattr(settings, "TELEGRAM_CHAT_ID"', "VALIDATION_AGENT_TELEGRAM",
+            "ConsumptionContract", "from wims", "import wims",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_delivery_worker_has_no_execution_authority_imports_or_mutators(self):
+        root = pathlib.Path(__file__).parent
+        delivery = (root / "delivery.py").read_text().lower()
+        command = (
+            root / "management" / "commands" / "run_customer_notification_worker.py"
+        ).read_text().lower()
+        for forbidden in (
+            "executionjob", "workeridentity", "place_order", "close_trade",
+            "modify_position", "order_transport", "next_job",
+        ):
+            self.assertNotIn(forbidden, delivery)
+            self.assertNotIn(forbidden, command)
+
     def test_payload_allowlist_removes_architecture_and_security_fields(self):
         row = self.notification(
             dedupe="sanitised",
@@ -692,6 +767,71 @@ class EventSourceMappingTests(CustomerTelegramTestBase):
         )
         row = enqueue_trade_opened(trade.pk)
         self.assertEqual(row.payload["volume"], "0.07")
+
+    def test_durable_leg_outcome_emits_customer_safe_tp_progress_then_final_close(self):
+        from execution.models import ProposedOrderLeg, SignalExecutionPlan, TradeOutcomeRecord
+        from signal_intake.models import PendingSignalApproval
+
+        now = timezone.now()
+        approval = PendingSignalApproval.objects.create(
+            source="ti_signals", message_id="customer-progress", symbol="XAUUSD",
+            direction="BUY", stop_loss="4300", take_profits=["4350", "4360", "4370"],
+            status=PendingSignalApproval.Status.APPROVED, correlation_id="customer-progress",
+        )
+        plan = SignalExecutionPlan.objects.create(
+            approval=approval, account=self.account_a, source="ti_signals",
+            message_id="customer-progress", symbol="XAUUSD", direction="BUY",
+            entry="4340", stop_loss="4300", is_demo=True,
+            signal_timestamp=now, correlation_id="customer-progress",
+            status=SignalExecutionPlan.Status.PROMOTED,
+        )
+        trades = []
+        for index, target in enumerate(("4350", "4360", "4370"), start=1):
+            ProposedOrderLeg.objects.create(
+                plan=plan, leg_index=index, take_profit=target, stop_loss="4300",
+                lot_size=Decimal("0.40"), status=ProposedOrderLeg.Status.PROMOTED,
+            )
+            trades.append(Trade.objects.create(
+                account=self.account_a, ticket=f"progress-{index}", symbol="XAUUSD",
+                side="BUY", volume=Decimal("0.40"), open_time=now,
+                open_price=Decimal("4340"), comment=f"WAY{plan.id}L{index}",
+            ))
+
+        first = trades[0]
+        first.close_time = now
+        first.close_ingested_at = now
+        first.close_price = Decimal("4350")
+        first.profit = Decimal("40")
+        first.save(update_fields=["close_time", "close_ingested_at", "close_price", "profit"])
+        first_outcome = TradeOutcomeRecord.objects.create(
+            trade=first, outcome=TradeOutcomeRecord.Outcome.WIN, net_pnl=Decimal("40"),
+            correlation_id="customer-progress", signal_source="ti_signals",
+        )
+        update = enqueue_trade_outcome(first_outcome.pk)
+        self.assertEqual(update.event_type, CustomerNotification.EventType.TRADE_UPDATED)
+        self.assertEqual(update.payload["progress_label"], "TP1")
+        self.assertEqual(update.payload["progress_closed"], 1)
+        self.assertEqual(update.payload["progress_total"], 3)
+        update_text = render_customer_message(update)
+        self.assertIn("TP1 reached", update_text)
+        self.assertIn("Demo account · 10001", update_text)
+        self.assertIn("UTC", update_text)
+
+        for index, trade in enumerate(trades[1:], start=2):
+            trade.close_time = now + timedelta(seconds=index)
+            trade.close_ingested_at = trade.close_time
+            trade.close_price = Decimal(str(4340 + index * 10))
+            trade.profit = Decimal("40")
+            trade.save(update_fields=["close_time", "close_ingested_at", "close_price", "profit"])
+        final_outcome = TradeOutcomeRecord.objects.create(
+            trade=trades[2], outcome=TradeOutcomeRecord.Outcome.WIN, net_pnl=Decimal("40"),
+            correlation_id="customer-progress", signal_source="ti_signals",
+        )
+        closed = enqueue_trade_outcome(final_outcome.pk)
+        self.assertEqual(closed.event_type, CustomerNotification.EventType.TRADE_CLOSED)
+        self.assertEqual(closed.payload["progress_closed"], 3)
+        self.assertEqual(closed.payload["result"], "120.00")
+        self.assertIn("Final result: +120.00", render_customer_message(closed))
 
     def test_reconciler_cursor_advances_across_bounded_batches_without_starvation(self):
         trades = [Trade.objects.create(

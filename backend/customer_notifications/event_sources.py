@@ -49,6 +49,42 @@ def _trade_context(trade) -> dict:
     return {"strategy": strategy, "stop_loss": stop_loss, "take_profit": take_profit}
 
 
+def _iso(value) -> str:
+    return value.isoformat() if value is not None else ""
+
+
+def _durable_leg_progress(outcome) -> dict:
+    """Project the existing account-scoped per-leg close evidence without mutating execution state."""
+    try:
+        from execution.notifications.contracts import resolve_leg_evidence
+
+        evidence = resolve_leg_evidence(outcome.correlation_id or "", outcome.trade)
+    except Exception:
+        return {}
+    progress = evidence.get("progress") if isinstance(evidence, dict) else None
+    legs = evidence.get("legs") if isinstance(evidence, dict) else None
+    if not isinstance(progress, dict) or not isinstance(legs, list) or not legs:
+        return {}
+    realised = Decimal("0")
+    has_realised = False
+    for leg in legs:
+        if not isinstance(leg, dict) or leg.get("status") != "CLOSED":
+            continue
+        try:
+            realised += Decimal(str(leg.get("profit") or "0"))
+            has_realised = True
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+    return {
+        "strategy": str(evidence.get("strategy_display_name") or "")[:160],
+        "progress_label": str(progress.get("label") or "")[:32],
+        "progress_closed": int(progress.get("closed") or 0),
+        "progress_total": int(progress.get("total") or 0),
+        "progress_final": bool(progress.get("final")),
+        "realised": str(realised) if has_realised else "",
+    }
+
+
 def enqueue_trade_opened(trade_id: int, *, raise_errors: bool = False):
     try:
         from trading.models import Trade
@@ -57,7 +93,7 @@ def enqueue_trade_opened(trade_id: int, *, raise_errors: bool = False):
         payload = {
             **_account_payload(trade.account), **context,
             "symbol": trade.symbol, "side": trade.side, "volume": trade.volume,
-            "entry": trade.open_price,
+            "entry": trade.open_price, "occurred_at": _iso(trade.open_time),
         }
         return enqueue_customer_notification(
             user=trade.account.user, account=trade.account,
@@ -72,32 +108,60 @@ def enqueue_trade_opened(trade_id: int, *, raise_errors: bool = False):
         return None
 
 
-def enqueue_trade_closed(outcome_id: int, *, raise_errors: bool = False):
+def enqueue_trade_outcome(outcome_id: int, *, raise_errors: bool = False):
     try:
         from execution.models import TradeOutcomeRecord
         outcome = TradeOutcomeRecord.objects.select_related("trade__account__user").get(pk=outcome_id)
         trade = outcome.trade
-        try:
-            net = Decimal(str(trade.profit or 0)) + Decimal(str(trade.commission or 0)) + Decimal(str(trade.swap or 0))
-            result = str(net)
-        except (InvalidOperation, TypeError, ValueError):
-            result = ""
+        progress = _durable_leg_progress(outcome)
+        event_type = (
+            CustomerNotification.EventType.TRADE_CLOSED
+            if not progress or progress["progress_final"]
+            else CustomerNotification.EventType.TRADE_UPDATED
+        )
+        context = _trade_context(trade)
+        if progress.get("strategy"):
+            context["strategy"] = progress["strategy"]
+        result = progress.get("realised") or str(outcome.net_pnl)
+        aggregate_outcome = outcome.outcome
+        if progress.get("realised"):
+            realised = Decimal(progress["realised"])
+            aggregate_outcome = (
+                TradeOutcomeRecord.Outcome.WIN if realised > 0
+                else TradeOutcomeRecord.Outcome.LOSS if realised < 0
+                else TradeOutcomeRecord.Outcome.BREAKEVEN
+            )
         payload = {
-            **_account_payload(trade.account), **_trade_context(trade),
-            "symbol": trade.symbol, "side": trade.side, "result": result,
+            **_account_payload(trade.account), **context,
+            "symbol": trade.symbol, "side": trade.side,
+            "result": result,
             "currency": trade.profit_currency or trade.account.account_currency or "USD",
+            "outcome": aggregate_outcome,
+            "progress_closed": progress.get("progress_closed", ""),
+            "progress_total": progress.get("progress_total", ""),
+            "occurred_at": _iso(trade.close_ingested_at or outcome.created_at),
         }
+        if event_type == CustomerNotification.EventType.TRADE_UPDATED:
+            payload["progress_label"] = (
+                progress.get("progress_label", "")
+                if outcome.outcome == TradeOutcomeRecord.Outcome.WIN else ""
+            )
         return enqueue_customer_notification(
             user=trade.account.user, account=trade.account,
-            event_type=CustomerNotification.EventType.TRADE_CLOSED,
+            event_type=event_type,
             source_object_type="execution.TradeOutcomeRecord", source_object_id=str(outcome.pk),
-            dedupe_key=f"customer-trade-closed:{outcome.pk}", payload=payload,
+            dedupe_key=f"customer-trade-outcome:{outcome.pk}", payload=payload,
             occurred_at=trade.close_ingested_at or outcome.created_at,
         )
     except Exception:
         if raise_errors:
             raise
         return None
+
+
+def enqueue_trade_closed(outcome_id: int, *, raise_errors: bool = False):
+    """Backward-compatible name for the durable trade-outcome projection."""
+    return enqueue_trade_outcome(outcome_id, raise_errors=raise_errors)
 
 
 def enqueue_strategy_change(audit_id, *, raise_errors: bool = False):
@@ -194,7 +258,7 @@ def enqueue_execution_problem(event_id: int, *, raise_errors: bool = False):
 
 def collect_customer_notification_events(*, limit: int = 1000) -> dict:
     """Backfill/reconcile durable facts independently from their originating services."""
-    counts = {"trade_opened": 0, "trade_closed": 0, "strategy_changed": 0,
+    counts = {"trade_opened": 0, "trade_updated": 0, "trade_closed": 0, "strategy_changed": 0,
               "execution_problem": 0, "workspace_ready": 0, "errors": 0}
     first_connected = CustomerTelegramBinding.objects.filter(is_active=True).order_by(
         "connected_at").values_list("connected_at", flat=True).first()
@@ -209,7 +273,7 @@ def collect_customer_notification_events(*, limit: int = 1000) -> dict:
 
     sources = [
         ("trade_opened", Trade.objects.filter(created_at__gte=first_connected), enqueue_trade_opened),
-        ("trade_closed", TradeOutcomeRecord.objects.filter(created_at__gte=first_connected), enqueue_trade_closed),
+        ("trade_outcomes", TradeOutcomeRecord.objects.filter(created_at__gte=first_connected), enqueue_trade_outcome),
         ("strategy_changed", AuditEvent.objects.filter(
             created_at__gte=first_connected,
             event_type__in=["SIGNAL_COPY_ARMED", "SIGNAL_COPY_ENABLED", "SIGNAL_COPY_DISABLED"],
@@ -236,8 +300,17 @@ def collect_customer_notification_events(*, limit: int = 1000) -> dict:
                     "id", "created_at",
                 )[:limit])
                 for object_id, created_at in objects:
-                    if handler(object_id, raise_errors=True) is not None:
-                        counts[key] += 1
+                    row = handler(object_id, raise_errors=True)
+                    if row is not None:
+                        if key == "trade_outcomes":
+                            outcome_key = (
+                                "trade_updated"
+                                if row.event_type == CustomerNotification.EventType.TRADE_UPDATED
+                                else "trade_closed"
+                            )
+                            counts[outcome_key] += 1
+                        else:
+                            counts[key] += 1
                     cursor.last_created_at = created_at
                     cursor.last_object_id = str(object_id)
                 if objects:

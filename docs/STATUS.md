@@ -45,6 +45,19 @@
   only→raise node-2 capacity→Phase-10 cert. (Pre-existing, unrelated: 4 frontend vitest tests fail on clean
   `de99004` — login ×3 / support ×1 — separate task.)
 
+- **2026-08-19 — CUSTOMER TELEGRAM NOTIFICATIONS: CODE READY, PRODUCTION BLOCKED ON CONFIGURATION. 🟡**
+  Draft PR #371 was rebased cleanly from `c21bfb3` onto current main `de99004c`; exact main overlap is limited
+  to additive Settings/i18n paths, with no execution-plane file in the PR. The isolated GuvFX-owned bot plane
+  routes only from authenticated owner/account to a verified private numeric `chat.id`; no WIMs/global fallback
+  and no command or execution authority. Durable account-scoped trade outcomes now produce TP/progress updates
+  and final aggregate WIN/LOSS/BREAKEVEN messages with the customer's full MT5 account number, realised PnL,
+  and timestamp; absent durable evidence is deferred. EN/JA Settings has disconnected/connecting/connected
+  states and six event toggles. Adversarial review: **0 HIGH / 0 MEDIUM**. Isolated `make check` green: backend
+  **4,349** (1 skipped), frontend **46 files / 286 tests**, lint **0 errors / 19 existing warnings**, parity and
+  41-page production build passed; migration drift and secret scan clean. DARK/default-OFF; no deploy, bot,
+  webhook, worker, migration, message, or trade. Next gate is Sponsor-owned bot/secrets/webhook/deploy approval,
+  then a no-manufactured-trade pilot with `beta.guvfx01@gmail.com`.
+
 - **2026-08-18 — ADR-0048 NODE COMMISSIONING + PROVISIONING GATE: BUILT (code/test only, DARK) — STOP for
   Sponsor. 🟡** Closes the one gap disclosed in the prior return: `node_execution_operational()` existed but
   was not integrated into the automatic hosted provisioning / node-commissioning lifecycle. Branch

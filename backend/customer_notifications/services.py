@@ -173,6 +173,7 @@ def disconnect_telegram(user) -> bool:
 
 _PREFERENCE_FIELD = {
     CustomerNotification.EventType.TRADE_OPENED: "trade_opened",
+    CustomerNotification.EventType.TRADE_UPDATED: "trade_updated",
     CustomerNotification.EventType.TRADE_CLOSED: "trade_closed",
     CustomerNotification.EventType.STRATEGY_ENABLED: "strategy_changed",
     CustomerNotification.EventType.STRATEGY_DISABLED: "strategy_changed",
@@ -184,10 +185,16 @@ _PAYLOAD_ALLOWLIST = {
     CustomerNotification.EventType.CONNECTION_CONFIRMED: set(),
     CustomerNotification.EventType.TRADE_OPENED: {
         "strategy", "symbol", "side", "volume", "entry", "stop_loss", "take_profit",
-        "account_kind", "account_number",
+        "account_kind", "account_number", "occurred_at",
+    },
+    CustomerNotification.EventType.TRADE_UPDATED: {
+        "strategy", "symbol", "side", "result", "currency", "outcome",
+        "progress_label", "progress_closed", "progress_total", "account_kind",
+        "account_number", "occurred_at",
     },
     CustomerNotification.EventType.TRADE_CLOSED: {
-        "strategy", "symbol", "side", "result", "currency", "account_kind", "account_number",
+        "strategy", "symbol", "side", "result", "currency", "outcome",
+        "progress_closed", "progress_total", "account_kind", "account_number", "occurred_at",
     },
     CustomerNotification.EventType.STRATEGY_ENABLED: {"strategy", "account_kind", "account_number"},
     CustomerNotification.EventType.STRATEGY_DISABLED: {"strategy", "account_kind", "account_number"},
@@ -281,6 +288,7 @@ def telegram_settings_for(user) -> dict:
         "preferences": {
             "telegram_enabled": pref.telegram_enabled,
             "trade_opened": pref.trade_opened,
+            "trade_updated": pref.trade_updated,
             "trade_closed": pref.trade_closed,
             "strategy_changed": pref.strategy_changed,
             "execution_problem": pref.execution_problem,

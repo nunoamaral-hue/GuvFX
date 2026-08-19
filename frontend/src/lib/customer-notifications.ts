@@ -3,6 +3,7 @@ import { apiFetch } from "@/lib/api";
 export type TelegramPreferences = {
   telegram_enabled: boolean;
   trade_opened: boolean;
+  trade_updated: boolean;
   trade_closed: boolean;
   strategy_changed: boolean;
   execution_problem: boolean;

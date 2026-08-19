@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useState, useCallback, createContext, useContext } from "react";
 import { apiFetch } from "@/lib/api";
+import { updateTelegramPreferences } from "@/lib/customer-notifications";
 import { operationsEnabled } from "@/lib/flags";
 import { type Lang, detectLang, setLang as persistLang, t } from "@/lib/i18n";
 import { LegalFooter } from "@/components/LegalFooter";
@@ -875,6 +876,9 @@ export function AppShell({ children }: AppShellProps) {
   const handleLangChange = useCallback((newLang: Lang) => {
     persistLang(newLang);
     setLangState(newLang);
+    // Authenticated app language is the source for future customer notifications.
+    // This is output-only and best-effort: a notification preference outage never blocks the UI.
+    void updateTelegramPreferences({ language: newLang }).catch(() => undefined);
   }, []);
 
   // Auth state (best-effort only)

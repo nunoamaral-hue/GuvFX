@@ -21,6 +21,7 @@ from .models import (
 
 _PREFERENCE_FIELD = {
     CustomerNotification.EventType.TRADE_OPENED: "trade_opened",
+    CustomerNotification.EventType.TRADE_UPDATED: "trade_updated",
     CustomerNotification.EventType.TRADE_CLOSED: "trade_closed",
     CustomerNotification.EventType.STRATEGY_ENABLED: "strategy_changed",
     CustomerNotification.EventType.STRATEGY_DISABLED: "strategy_changed",

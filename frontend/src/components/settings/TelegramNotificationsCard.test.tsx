@@ -19,6 +19,7 @@ const connected = (language: "en" | "ja" = "en") => ({
   preferences: {
     telegram_enabled: true,
     trade_opened: true,
+    trade_updated: true,
     trade_closed: true,
     strategy_changed: true,
     execution_problem: true,
@@ -39,6 +40,7 @@ describe("TelegramNotificationsCard", () => {
     render(<LanguageProvider lang="en"><TelegramNotificationsCard /></LanguageProvider>);
     expect(await screen.findByText("Connected")).toBeInTheDocument();
     expect(screen.getByText("Trade opened")).toBeInTheDocument();
+    expect(screen.getByText("Trade updates")).toBeInTheDocument();
     expect(screen.getByText("Trading needs attention")).toBeInTheDocument();
     expect(screen.queryByText(/chat.?id/i)).not.toBeInTheDocument();
   });
@@ -64,7 +66,7 @@ describe("TelegramNotificationsCard", () => {
     render(<LanguageProvider lang="en"><TelegramNotificationsCard /></LanguageProvider>);
     await screen.findByText("Connected");
     const boxes = screen.getAllByRole("checkbox");
-    fireEvent.click(boxes[2]); // Trade closed (master is index 0).
+    fireEvent.click(boxes[3]); // Trade closed (master is index 0).
     await waitFor(() => expect(api.updateTelegramPreferences).toHaveBeenCalledWith({
       trade_closed: false,
       language: "en",
@@ -76,5 +78,21 @@ describe("TelegramNotificationsCard", () => {
     render(<LanguageProvider lang="en"><TelegramNotificationsCard /></LanguageProvider>);
     expect(await screen.findByText("Not connected")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Connect Telegram" })).toBeEnabled();
+  });
+
+  it("shows the connecting state after opening the private-bot handshake", async () => {
+    api.getTelegramSettings.mockResolvedValue({ ...connected(), connected: false, display: { username: "", first_name: "" } });
+    api.createTelegramConnection.mockResolvedValue({
+      url: "https://t.me/GuvFXCustomerBot?start=opaque-token",
+      expires_at: "2026-08-19T13:00:00Z",
+    });
+    const open = vi.spyOn(window, "open").mockReturnValue({} as Window);
+    render(<LanguageProvider lang="en"><TelegramNotificationsCard /></LanguageProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Telegram" }));
+    expect(await screen.findByLabelText("Connecting…")).toBeInTheDocument();
+    expect(open).toHaveBeenCalledWith(
+      "https://t.me/GuvFXCustomerBot?start=opaque-token", "_blank", "noopener,noreferrer",
+    );
+    open.mockRestore();
   });
 });

@@ -56,7 +56,7 @@ class TelegramDisconnectView(APIView):
 class TelegramPreferencesView(APIView):
     permission_classes = [IsAuthenticated]
     _BOOL_FIELDS = {
-        "telegram_enabled", "trade_opened", "trade_closed", "strategy_changed",
+        "telegram_enabled", "trade_opened", "trade_updated", "trade_closed", "strategy_changed",
         "execution_problem", "workspace_ready",
     }
 

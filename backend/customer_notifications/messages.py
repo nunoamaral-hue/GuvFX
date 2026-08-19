@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from .models import CustomerNotification
@@ -34,6 +35,26 @@ def _money(value, currency: str) -> str:
         return ""
 
 
+def _timestamp(value) -> str:
+    text = _line(value)
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        return parsed.strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return text
+
+
+def _outcome(value, lang: str) -> str:
+    key = str(value or "").upper()
+    if lang == "ja":
+        return {"WIN": "利益", "LOSS": "損失", "BREAKEVEN": "損益なし"}.get(key, "")
+    return {"WIN": "Win", "LOSS": "Loss", "BREAKEVEN": "Breakeven"}.get(key, "")
+
+
 def render_customer_message(notification: CustomerNotification) -> str:
     """Render the allow-listed EN/JA catalogue. No raw diagnostic field is ever consulted."""
     lang = notification.language if notification.language in ("en", "ja") else "en"
@@ -62,17 +83,49 @@ def render_customer_message(notification: CustomerNotification) -> str:
             (("Entry", "entry"), ("Stop loss", "stop_loss"), ("Take profit", "take_profit"))
         )
         rows.extend(f"{label}: {_line(p.get(key))}" for label, key in labels if p.get(key) not in (None, ""))
+        occurred_at = _timestamp(p.get("occurred_at"))
+        if occurred_at:
+            rows.append(("時刻: " if lang == "ja" else "Time: ") + occurred_at)
         rows.extend(["", _account(p, lang)])
         return "\n".join(rows)
 
-    if event == CustomerNotification.EventType.TRADE_CLOSED:
+    if event in (
+        CustomerNotification.EventType.TRADE_UPDATED,
+        CustomerNotification.EventType.TRADE_CLOSED,
+    ):
+        is_update = event == CustomerNotification.EventType.TRADE_UPDATED
         result = _money(p.get("result"), _line(p.get("currency"), "USD"))
         rows = [
-            "GuvFXの取引が終了しました" if lang == "ja" else "GuvFX trade closed",
+            (
+                "GuvFXの取引状況" if is_update else "GuvFXの取引が終了しました"
+            ) if lang == "ja" else (
+                "GuvFX trade update" if is_update else "GuvFX trade closed"
+            ),
             "", strategy, f"{symbol} · {side}",
         ]
+        progress_label = _line(p.get("progress_label"))
+        if is_update and progress_label:
+            rows.append(f"{progress_label} 到達" if lang == "ja" else f"{progress_label} reached")
         if result:
-            rows.append(("損益: " if lang == "ja" else "Result: ") + result)
+            result_label = (
+                "現在の確定損益: " if is_update else "最終損益: "
+            ) if lang == "ja" else (
+                "Realised so far: " if is_update else "Final result: "
+            )
+            rows.append(result_label + result)
+        outcome = _outcome(p.get("outcome"), lang)
+        if outcome:
+            rows.append(("結果: " if lang == "ja" else "Outcome: ") + outcome)
+        closed = p.get("progress_closed")
+        total = p.get("progress_total")
+        if isinstance(closed, int) and isinstance(total, int) and total > 0:
+            rows.append(
+                f"{total}ポジション中{closed}ポジションを決済"
+                if lang == "ja" else f"{closed} of {total} trade legs closed"
+            )
+        occurred_at = _timestamp(p.get("occurred_at"))
+        if occurred_at:
+            rows.append(("時刻: " if lang == "ja" else "Time: ") + occurred_at)
         rows.extend(["", _account(p, lang)])
         return "\n".join(rows)
 

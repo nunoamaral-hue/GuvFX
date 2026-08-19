@@ -61,6 +61,7 @@ class CustomerNotificationPreference(models.Model):
     )
     telegram_enabled = models.BooleanField(default=True)
     trade_opened = models.BooleanField(default=True)
+    trade_updated = models.BooleanField(default=True)
     trade_closed = models.BooleanField(default=True)
     strategy_changed = models.BooleanField(default=True)
     execution_problem = models.BooleanField(default=True)
@@ -86,6 +87,7 @@ class CustomerNotification(models.Model):
     class EventType(models.TextChoices):
         CONNECTION_CONFIRMED = "CONNECTION_CONFIRMED", "Telegram connected"
         TRADE_OPENED = "TRADE_OPENED", "Trade opened"
+        TRADE_UPDATED = "TRADE_UPDATED", "Trade updated"
         TRADE_CLOSED = "TRADE_CLOSED", "Trade closed"
         STRATEGY_ENABLED = "STRATEGY_ENABLED", "Strategy enabled"
         STRATEGY_DISABLED = "STRATEGY_DISABLED", "Strategy disabled"

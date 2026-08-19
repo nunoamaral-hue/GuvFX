@@ -13,7 +13,7 @@ from trading.models import Trade
 from .event_sources import (
     enqueue_execution_problem,
     enqueue_strategy_change,
-    enqueue_trade_closed,
+    enqueue_trade_outcome,
     enqueue_trade_opened,
     enqueue_workspace_ready,
 )
@@ -36,10 +36,10 @@ def trade_opened_saved(sender, instance, created, **kwargs):
         _after_commit(enqueue_trade_opened, instance.pk)
 
 
-@receiver(post_save, sender=TradeOutcomeRecord, dispatch_uid="customer_notify_trade_closed")
+@receiver(post_save, sender=TradeOutcomeRecord, dispatch_uid="customer_notify_trade_outcome")
 def trade_outcome_saved(sender, instance, created, **kwargs):
     if created:
-        _after_commit(enqueue_trade_closed, instance.pk)
+        _after_commit(enqueue_trade_outcome, instance.pk)
 
 
 @receiver(post_save, sender=AuditEvent, dispatch_uid="customer_notify_strategy_change")

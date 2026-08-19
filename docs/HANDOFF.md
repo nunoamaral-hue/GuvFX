@@ -1,16 +1,19 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
-## 2026-08-18 — Customer Telegram notification POC (DARK, no deploy)
+## 2026-08-19 — Customer Telegram notifications code-ready (DARK, no deploy)
 
-- Customer-only Telegram notification plane is implemented on branch
-  `feat/customer-telegram-notifications`; it has not been merged, deployed, or activated.
+- Customer-only Telegram notification plane is updated in draft PR #371 on branch
+  `feat/customer-telegram-notifications`, rebased onto main `de99004c`; it has not been merged, deployed, or activated.
 - Identity is Telegram private numeric `chat.id` established only through an atomic, one-use `/start` token.
   Delivery is a separate durable outbox/worker with owner checks, bounded retries, dedupe, EN/JA messages, and
-  fail-open post-commit observers. Provider ingestion and all execution authority remain separate.
+  fail-open post-commit observers. Durable account-scoped TP progress and final aggregate outcomes include the
+  owner's MT5 account number, realised PnL, and timestamp. Provider/WIMs ingestion and all execution authority remain separate.
 - Production blockers: dedicated customer bot approval, secret ownership/rotation, webhook registration,
   worker activation, migration/deploy approval, pilot identities, and alert/retention decisions.
-- Verification is green: 4,299 backend tests; 45 frontend files / 263 tests; lint 0 errors (19 existing
+- Verification is green: 4,349 backend tests; 46 frontend files / 286 tests; lint 0 errors (19 existing
   warnings); parity and production build passed; no `customer_notifications` migration drift.
+- Adversarial bar: all 28 required cases covered, **0 HIGH / 0 MEDIUM**. Pilot is
+  `beta.guvfx01@gmail.com` using an existing durable safe event; never manufacture a trade.
 - Full review/evidence packet: [`docs/product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md`](product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md).
 - **STOP:** no production bot, webhook, worker, customer message, or execution change.
 

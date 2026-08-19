@@ -20,7 +20,7 @@ class Migration(migrations.Migration):
             name='CustomerNotification',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('event_type', models.CharField(choices=[('CONNECTION_CONFIRMED', 'Telegram connected'), ('TRADE_OPENED', 'Trade opened'), ('TRADE_CLOSED', 'Trade closed'), ('STRATEGY_ENABLED', 'Strategy enabled'), ('STRATEGY_DISABLED', 'Strategy disabled'), ('EXECUTION_PROBLEM', 'Trading needs attention'), ('WORKSPACE_READY', 'Workspace ready')], db_index=True, max_length=32)),
+                ('event_type', models.CharField(choices=[('CONNECTION_CONFIRMED', 'Telegram connected'), ('TRADE_OPENED', 'Trade opened'), ('TRADE_UPDATED', 'Trade updated'), ('TRADE_CLOSED', 'Trade closed'), ('STRATEGY_ENABLED', 'Strategy enabled'), ('STRATEGY_DISABLED', 'Strategy disabled'), ('EXECUTION_PROBLEM', 'Trading needs attention'), ('WORKSPACE_READY', 'Workspace ready')], db_index=True, max_length=32)),
                 ('source_object_type', models.CharField(max_length=80)),
                 ('source_object_id', models.CharField(max_length=80)),
                 ('dedupe_key', models.CharField(max_length=200, unique=True)),
@@ -59,6 +59,7 @@ class Migration(migrations.Migration):
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('telegram_enabled', models.BooleanField(default=True)),
                 ('trade_opened', models.BooleanField(default=True)),
+                ('trade_updated', models.BooleanField(default=True)),
                 ('trade_closed', models.BooleanField(default=True)),
                 ('strategy_changed', models.BooleanField(default=True)),
                 ('execution_problem', models.BooleanField(default=True)),

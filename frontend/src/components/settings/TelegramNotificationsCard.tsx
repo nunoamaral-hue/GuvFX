@@ -19,6 +19,7 @@ type BooleanPreference = Exclude<keyof TelegramPreferences, "language">;
 
 const preferenceRows: Array<{ field: BooleanPreference; label: string; detail: string }> = [
   { field: "trade_opened", label: "telegram.pref.tradeOpened", detail: "telegram.pref.tradeOpenedDetail" },
+  { field: "trade_updated", label: "telegram.pref.tradeUpdated", detail: "telegram.pref.tradeUpdatedDetail" },
   { field: "trade_closed", label: "telegram.pref.tradeClosed", detail: "telegram.pref.tradeClosedDetail" },
   { field: "strategy_changed", label: "telegram.pref.strategy", detail: "telegram.pref.strategyDetail" },
   { field: "execution_problem", label: "telegram.pref.problem", detail: "telegram.pref.problemDetail" },
@@ -117,6 +118,11 @@ export function TelegramNotificationsCard() {
   const connectedLabel = settings?.display.username
     ? `@${settings.display.username}`
     : settings?.display.first_name || "Telegram";
+  const stateLabel = settings?.connected
+    ? t(lang, "telegram.connected")
+    : waiting
+      ? t(lang, "telegram.connecting")
+      : t(lang, "telegram.notConnected");
 
   return (
     <Card
@@ -128,7 +134,7 @@ export function TelegramNotificationsCard() {
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.75rem" }}>
         <div>
           <span
-            aria-label={settings?.connected ? t(lang, "telegram.connected") : t(lang, "telegram.notConnected")}
+            aria-label={stateLabel}
             style={{
               display: "inline-flex", alignItems: "center", gap: 7, borderRadius: 999,
               padding: "0.3rem 0.7rem", fontSize: "0.82rem", fontWeight: 700,
@@ -138,7 +144,7 @@ export function TelegramNotificationsCard() {
             }}
           >
             <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: "50%", background: settings?.connected ? "#4ade80" : "#94a3b8" }} />
-            {settings?.connected ? t(lang, "telegram.connected") : t(lang, "telegram.notConnected")}
+            {stateLabel}
           </span>
           {settings?.connected && (
             <p style={{ margin: "0.45rem 0 0", color: "#a8b7cc", fontSize: "0.82rem" }}>

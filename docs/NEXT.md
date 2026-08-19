@@ -1,5 +1,14 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Customer Telegram notifications — CODE READY; configuration-gated (2026-08-19)
+Draft PR #371 is cleanly rebased onto main `de99004c`, DARK/default-OFF, with no execution-plane changes.
+Private numeric-chat binding, no WIMs/global fallback, durable TP/final-outcome messages, full owner MT5 account
+number, EN/JA Settings, at-most-once outbox, 28-case adversarial proof (**0 HIGH / 0 MEDIUM**), and isolated
+`make check` (4,349 backend; 286 frontend) are green. **ONE bounded next action → Sponsor/operations:** approve
+the GuvFX customer bot and ownership/rotation, provide bot username/token plus HTTPS webhook and secret, approve
+backup+migration and dedicated-worker deployment, then pilot `beta.guvfx01@gmail.com` with an existing durable
+safe event. Do not manufacture a trade; do not use Customer Zero or WIMs; keep both flags OFF until that gate.
+
 ## ▶ ADR-0048 Execution-path readiness + stale reconciler — BUILT, STOP for Sponsor (2026-08-18)
 Branch `feat/node2-execpath-readiness` (`fad465f`), NOT pushed / NOT deployed, DARK, no prod mutation. Fixes
 the Node-2 root-cause class: separates MT5 runtime / customer authorization / execution-path availability /
