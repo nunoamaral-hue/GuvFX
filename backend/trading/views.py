@@ -832,213 +832,75 @@ def _infer_source_stage(comment: str) -> str:
 
 
 def _upsert_trades(account: TradingAccount, deals: list) -> tuple[int, int, int, list]:
-    """
-    Upsert deals into Trade model.
-    Returns (inserted_count, updated_count, skipped_count, skip_reasons).
+    """Upsert an MT5 deal snapshot into POSITION-level Trade rows (one row per ``position_id``), via the
+    shared canonical builder ``trading.position_ingest.build_positions_from_deals`` — the SAME shape the
+    continuous ingest worker (``mt5_trade_ingest_worker.upsert_trades``) produces.
 
-    Handles MT5 deal snapshots from Windows agent:
-    - ticket: coerced to string
-    - time: Unix seconds -> used for BOTH open_time and close_time
-    - price: used for BOTH open_price and close_price
-    - type: 0=BUY, 1=SELL
-
-    Guarantees:
-    - ticket is always a string
-    - open_time is NEVER None
-    - close_time is NEVER None
-    - open_price is NEVER None (uses price field, defaults to 0)
-    - close_price is NEVER None (uses price field, defaults to 0)
-
-    Demo attribution:
-    - For SELL deals with empty comment and magic=1, copies comment from
-      recent matching BUY deal for attribution continuity.
-
-    Cutover:
-    - If account.ingest_cutover_time is set, deals older than cutover are skipped.
-
-    Source stage:
-    - Inferred from comment tag: GJ#### => TEST, GS#### => lookup job payload.
-    """
-    inserted = 0
-    updated = 0
-    skipped = 0
-    skip_reasons = []
-
-    # Read cutover once
+    This REPLACES a legacy per-DEAL writer (one Trade row per deal, close_time always set). Both writers must
+    agree on the position shape: the round-trip read model (``analytics.views_trade_history``) renders each
+    CLOSED position as one round-trip, so a per-deal writer would emit entry+exit legs as two rows and corrupt
+    round-trip counts / observed_stats. Cutover-filtered; idempotent (fills a close once its exit deal
+    appears; never blanks a real close). Returns ``(inserted, updated, skipped, skip_reasons)``."""
+    from trading.position_ingest import build_positions_from_deals
+    inserted = updated = skipped = 0
+    skip_reasons: list = []
     cutover = account.ingest_cutover_time
+    now = timezone.now()
 
-    for d in deals:
+    for p in build_positions_from_deals(deals):
         try:
-            # Extract ticket (required) - always coerce to string
-            ticket_raw = d.get("ticket") or d.get("position_ticket") or d.get("deal_id") or ""
-            ticket = str(ticket_raw).strip()
-            if not ticket:
+            ot = p["open_time"] or p["close_time"]
+            if cutover and ot and ot < cutover:
                 skipped += 1
                 if len(skip_reasons) < 3:
-                    skip_reasons.append("missing_ticket")
+                    skip_reasons.append(f"before_cutover:{p['position_id']}")
                 continue
-
-            symbol = (d.get("symbol") or "").strip()
-            side = _normalize_side(d)
-            vol = _to_decimal(d.get("volume") or d.get("lots") or "0")
-
-            # Timestamp handling: use "time" field (Unix seconds) as primary source
-            unix_time = _to_datetime(d.get("time"))
-
-            # open_time and close_time: both set to unix_time, fallback to now()
-            open_time = unix_time or timezone.now()
-            close_time = unix_time or timezone.now()
-
-            # Cutover check: skip deals older than the cutoff
-            if cutover and unix_time and unix_time < cutover:
-                skipped += 1
-                if len(skip_reasons) < 3:
-                    skip_reasons.append(f"before_cutover:{ticket}")
-                continue
-
-            # Price handling: use "price" field for BOTH open_price and close_price
-            # This ensures we never have 0 prices when actual price data exists
-            price_raw = d.get("price")
-            if price_raw is not None:
-                price = Decimal(str(price_raw))
-            else:
-                price = Decimal("0")
-
-            open_price = price
-            close_price = price
-
-            profit = _to_decimal(d.get("profit") or d.get("pnl") or "0")
-            commission = _to_decimal(d.get("commission") or "0")
-            swap = _to_decimal(d.get("swap") or "0")
-
-            magic = d.get("magic") if d.get("magic") is not None else d.get("magic_number")
-            try:
-                magic = int(magic) if magic is not None else None
-            except Exception:
-                magic = None
-
-            comment = str(d.get("comment") or "").strip()
-
-            # Normalize close tags to base GS/GJ format:
-            # - "MANUAL_CLOSE_GS0042" -> "GS0042"
-            # - "GS_CLOSE:GS0045" -> "GS0045"
-            manual_match = MANUAL_CLOSE_TAG_RE.match(comment)
-            if manual_match:
-                comment = manual_match.group(1)
-            else:
-                gs_close_match = GS_CLOSE_TAG_RE.match(comment)
-                if gs_close_match:
-                    comment = gs_close_match.group(1)
-
-            # Attribution: For deals with missing/bracket comments, try to copy
-            # from the nearest preceding opposite-side deal so close legs show correct strategy.
-            #
-            # Handles both directions:
-            # - SELL close (closes a long): find prior BUY tag
-            # - BUY close (closes a short): find prior SELL tag
-            #
-            # "Missing" includes:
-            # - Empty comment ""
-            # - Bracket-style MT5 auto-comments: "[sl 1.18450]", "[tp 1.19200]"
-            #
-            # Note: Close deals often have magic_number=0 even when the opening leg
-            # had magic_number=1, so we don't require magic match.
-            if _is_comment_missing_or_bracket(comment) and symbol:
-                attributed_tag = _find_prior_tag_for_close(
-                    account=account,
-                    symbol=symbol,
-                    close_time=open_time,  # The close deal's timestamp
-                    close_volume=vol,      # The close deal's volume for better matching
-                    close_side=side,       # SELL or BUY
-                )
-                if attributed_tag:
-                    comment = attributed_tag
-
-            # Infer source_stage from comment tag
-            source_stage = _infer_source_stage(comment)
-
+            source_stage = _infer_source_stage(p["comment"])
             obj, created = Trade.objects.get_or_create(
                 account=account,
-                ticket=ticket,
+                ticket=p["position_id"],
                 defaults={
-                    "symbol": symbol,
-                    "side": side,
-                    "volume": vol,
-                    "open_time": open_time,
-                    "close_time": close_time,
-                    "open_price": open_price,
-                    "close_price": close_price,
-                    "profit": profit,
-                    "commission": commission,
-                    "swap": swap,
-                    "magic_number": magic,
-                    "comment": comment,
+                    "symbol": p["symbol"],
+                    "side": p["side"] if p["side"] in ("BUY", "SELL") else "BUY",
+                    "volume": p["volume"],
+                    "open_time": p["open_time"] or p["close_time"] or now,
+                    "close_time": p["close_time"],
+                    "open_price": p["open_price"],
+                    "close_price": p["close_price"],
+                    "profit": p["profit"],
+                    "commission": p["commission"],
+                    "swap": p["swap"],
+                    "magic_number": p["magic"],
+                    "comment": p["comment"],
                     "opened_by": "EA",
                     "source_stage": source_stage,
+                    "close_ingested_at": now if p["close_time"] else None,
                 },
             )
             if created:
                 inserted += 1
                 continue
-
-            # Update existing trade if values changed
+            # Idempotent update: fill/refresh mutable fields; never overwrite a real value with None.
             changed = False
-
-            # Fix open_price if it was stored as 0 but we now have a price
-            if obj.open_price == Decimal("0") and open_price != Decimal("0"):
-                obj.open_price = open_price
-                changed = True
-
-            if obj.close_price != close_price:
-                obj.close_price = close_price
-                changed = True
-            if obj.close_time != close_time:
-                obj.close_time = close_time
-                changed = True
-            if obj.profit != profit:
-                obj.profit = profit
-                changed = True
-            if obj.commission != commission:
-                obj.commission = commission
-                changed = True
-            if obj.swap != swap:
-                obj.swap = swap
-                changed = True
-
-            # Also update comment if:
-            # 1. It was empty/bracket and we now have a valid tag (attribution fix), OR
-            # 2. It matches manual-close pattern and needs normalization
-            if _is_comment_missing_or_bracket(obj.comment) and comment and VALID_TAG_RE.match(comment):
-                # Replace missing/bracket comment with valid tag
-                obj.comment = comment
-                changed = True
-            elif obj.comment:
-                # Normalize existing close tags on update
-                existing_match = MANUAL_CLOSE_TAG_RE.match(obj.comment)
-                if existing_match:
-                    obj.comment = existing_match.group(1)
+            was_open = obj.close_time is None
+            for field, val in (
+                ("open_time", p["open_time"]), ("open_price", p["open_price"]),
+                ("close_time", p["close_time"]), ("close_price", p["close_price"]),
+                ("profit", p["profit"]), ("commission", p["commission"]), ("swap", p["swap"]),
+            ):
+                if val is not None and getattr(obj, field) != val:
+                    setattr(obj, field, val)
                     changed = True
-                else:
-                    gs_close_existing_match = GS_CLOSE_TAG_RE.match(obj.comment)
-                    if gs_close_existing_match:
-                        obj.comment = gs_close_existing_match.group(1)
-                        changed = True
-                    elif BRACKET_CLOSE_RE.match(obj.comment) and comment and VALID_TAG_RE.match(comment):
-                        # Replace bracket comment with valid tag
-                        obj.comment = comment
-                        changed = True
-
-            # Update source_stage if UNKNOWN and we now have a valid stage
+            if was_open and obj.close_time is not None and obj.close_ingested_at is None:
+                obj.close_ingested_at = now
+                changed = True
             if obj.source_stage == "UNKNOWN" and source_stage != "UNKNOWN":
                 obj.source_stage = source_stage
                 changed = True
-
             if changed:
                 obj.save()
                 updated += 1
-
         except Exception as e:
-            # Skip malformed deal rows to avoid 500 errors
             skipped += 1
             if len(skip_reasons) < 3:
                 skip_reasons.append(f"exception:{str(e)[:50]}")
