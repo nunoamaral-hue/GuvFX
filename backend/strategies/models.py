@@ -697,4 +697,21 @@ def set_assignment_lot_per_leg(assignment, value, user=None):
             sizing.save(update_fields=["lot_per_leg", "version", "updated_at"])
         AssignmentLegSizingHistory.objects.create(
             assignment=assignment, lot_per_leg=v, version=sizing.version, changed_by=user)
+        return sizing
+
+
+def seed_default_leg_sizing(assignment):
+    """Seed the conservative beta default (``0.01``/leg) for a BRAND-NEW assignment at acquisition.
+
+    This is the single authoritative new-customer default (``AssignmentLegSizing.DEFAULT_LOT``): a fresh
+    Wayond/signal-copy acquisition owns its per-leg lot at ``0.01`` from the moment the assignment is
+    created, so the customer starts safe-small rather than inheriting the ti_signals source cap (0.40).
+
+    Idempotent (OneToOne ``get_or_create``): if a row already exists it is returned UNCHANGED, so this can
+    never overwrite an explicit Configure value nor silently resize an established customer. It must be
+    called ONLY on an assignment that was just created — an existing no-row assignment (the certified
+    support@ path) must keep falling back to the source-global cap and is therefore never passed here.
+    Returns the ``AssignmentLegSizing``."""
+    sizing, _ = AssignmentLegSizing.objects.get_or_create(
+        assignment=assignment, defaults={"lot_per_leg": AssignmentLegSizing.DEFAULT_LOT})
     return sizing

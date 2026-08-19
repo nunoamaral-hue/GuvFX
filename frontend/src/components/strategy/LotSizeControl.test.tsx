@@ -50,6 +50,16 @@ describe("LotSizeControl", () => {
     await waitFor(() => expect(screen.getByText(/at most 0\.40/i)).toBeTruthy());
   });
 
+  it("renders the persisted backend value, not a hardcoded constant (P0-A)", async () => {
+    // Guard: if the backend ever returns the source-cap fallback (0.40, e.g. a pre-seed assignment),
+    // the control must display THAT persisted value — never assume the 0.01 default.
+    apiFetch.mockResolvedValueOnce({ ...sizing, lot_per_leg: "0.40", is_override: false });
+    render(<LotSizeControl assignmentId={42} lang="en" />);
+    const input = (await screen.findByLabelText("Lot size per trade")) as HTMLInputElement;
+    expect(input.value).toBe("0.40");
+    expect(input.value).not.toBe("0.01");
+  });
+
   it("renders nothing when there is no assignment", () => {
     const { container } = render(<LotSizeControl assignmentId={null} lang="en" />);
     expect(container.textContent).toBe("");
