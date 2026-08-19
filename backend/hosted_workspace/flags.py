@@ -279,3 +279,16 @@ def hosted_execution_path_gate_enabled() -> bool:
     Grants NO order authority and arms NO customer; the per-job pin + order-time bridge gate stay sole
     authority (ADR-0048 keeps NODE COMMISSIONING and CUSTOMER EXECUTION AUTHORIZATION distinct)."""
     return _flag("HOSTED_EXECUTION_PATH_GATE_ENABLED")
+
+
+def hosted_per_tenant_transport_enabled() -> bool:
+    """P0-B1 — per-TENANT order-execution transport (DARK, default OFF). When OFF, ``order_transport``
+    resolves a hosted job to its NODE's single ``order_bridge_base_url`` EXACTLY as before (byte-identical;
+    support@ untouched). When ON, a hosted job resolves to the account's own ``HostedExecutionEndpoint``
+    (a dedicated pin-enforcing bridge PROCESS on a unique host:port) and FAILS CLOSED if the account has no
+    READY endpoint — so two beta tenants on one node reach two DIFFERENT bridges/terminals and never cross.
+    Additive: grants NO order authority and arms NO customer; the per-job identity pin + order-time bridge
+    gate + ADR-0047 authorization remain the sole order authority. Independent of
+    ``HOSTED_PERSISTENT_MT5_ENABLED``/``HOSTED_EXECUTION_PATH_GATE_ENABLED`` so the transport can be proven
+    DARK without touching provisioning or execution-arming gates."""
+    return _flag("HOSTED_PER_TENANT_TRANSPORT_ENABLED")

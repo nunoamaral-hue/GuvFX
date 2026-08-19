@@ -35,6 +35,9 @@ OT_NODE_UNBOUND = "order_transport_node_unbound"                    # hosted job
 OT_NODE_MISMATCH = "order_transport_node_mismatch"                  # hosted job node != account node
 OT_ENDPOINT_UNCONFIGURED = "order_transport_endpoint_unconfigured"  # hosted node has no order-bridge URL
 OT_RESOLVE_ERROR = "order_transport_resolve_error"                  # any error while resolving a hosted route
+# ── P0-B1 per-tenant transport reason codes ──
+OT_ENDPOINT_NOT_READY = "order_transport_endpoint_not_ready"        # per-tenant endpoint exists but not READY
+OT_ENDPOINT_ACCOUNT_MISMATCH = "order_transport_endpoint_account_mismatch"  # endpoint owner != job account
 
 
 @dataclass(frozen=True)
@@ -84,8 +87,15 @@ def resolve_order_transport(job, *, global_base_url) -> OrderTransport:
         # ``inject_identity_pin``.)
         return OrderTransport(False, OT_RESOLVE_ERROR, "", hosted=True)
 
-    # HOSTED path — resolve STRICTLY from the authoritative node; never fall back to the global bridge.
+    # HOSTED path — resolve STRICTLY from an authoritative binding; never fall back to the global bridge.
     try:
+        # P0-B1: when per-tenant transport is on, route to the account's OWN endpoint (a dedicated bridge
+        # process on a unique host:port), NOT the node's single URL — so two tenants on one node reach two
+        # different bridges/terminals. DARK-safe: OFF ⇒ the exact per-node resolution below (unchanged).
+        from hosted_workspace.flags import hosted_per_tenant_transport_enabled
+        if hosted_per_tenant_transport_enabled():
+            return _resolve_per_tenant_endpoint(job, account)
+
         node_id = getattr(job, "terminal_node_id", None)
         if node_id is None:
             return OrderTransport(False, OT_NODE_UNBOUND, "", hosted=True)
@@ -99,3 +109,37 @@ def resolve_order_transport(job, *, global_base_url) -> OrderTransport:
         return OrderTransport(True, OT_NODE_OK, base, hosted=True)
     except Exception:  # noqa: BLE001 — any resolution error on the hosted path fails closed (never global)
         return OrderTransport(False, OT_RESOLVE_ERROR, "", hosted=True)
+
+
+def _resolve_per_tenant_endpoint(job, account) -> OrderTransport:
+    """P0-B1 — resolve a hosted job to its OWN account's per-tenant execution endpoint (fail-closed).
+
+    Invariant enforced here (the packet's PHASE-5 requirement): a job for Customer A can resolve ONLY
+    Customer A's endpoint. The lookup is keyed on the JOB'S account, the loaded row's owner is re-asserted
+    against that account (defence in depth), the endpoint MUST be READY, and — preserving the existing
+    node-agreement contract — the endpoint's node MUST equal the job's snapshotted node. Any failure refuses
+    the order; it is NEVER routed to the node URL or the global bridge, and NEVER to another tenant."""
+    from execution.models import HostedExecutionEndpoint
+
+    acct_id = getattr(job, "account_id", None) or getattr(account, "id", None)
+    if acct_id is None:
+        return OrderTransport(False, OT_ENDPOINT_ACCOUNT_MISMATCH, "", hosted=True)
+    ep = (HostedExecutionEndpoint.objects
+          .filter(trading_account_id=acct_id)
+          .exclude(state=HostedExecutionEndpoint.State.RETIRED)
+          .first())
+    if ep is None:
+        return OrderTransport(False, OT_ENDPOINT_UNCONFIGURED, "", hosted=True)
+    # Re-assert ownership against the loaded row (a future query/join change can never silently cross tenants).
+    if ep.trading_account_id != acct_id:
+        return OrderTransport(False, OT_ENDPOINT_ACCOUNT_MISMATCH, "", hosted=True)
+    # Preserve the node-agreement contract: the job's snapshotted node must match the endpoint's node.
+    node_id = getattr(job, "terminal_node_id", None)
+    if node_id is not None and ep.terminal_node_id != node_id:
+        return OrderTransport(False, OT_NODE_MISMATCH, "", hosted=True)
+    if ep.state != HostedExecutionEndpoint.State.READY:
+        return OrderTransport(False, OT_ENDPOINT_NOT_READY, "", hosted=True)
+    base = _clean(ep.base_url)
+    if not base:
+        return OrderTransport(False, OT_ENDPOINT_UNCONFIGURED, "", hosted=True)
+    return OrderTransport(True, OT_NODE_OK, base, hosted=True)
