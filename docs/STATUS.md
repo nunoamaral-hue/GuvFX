@@ -14,6 +14,17 @@
 
 ## Execution workstream log
 
+- **2026-08-19 - P0 BETA ANALYTICS RECONCILIATION: PASS (main `80cc327`, PR #382). GREEN.** (A) Trade History
+  balance chart showed ~10k for a ~$50k hosted account: the MT5 balance fetch was gated on
+  `account.mt5_instance` (None for hosted; identity on AccountProvisioning) -> synthetic 10000 fallback. Fix:
+  `_account_windows_username` resolves AccountProvisioning -> real balance grounds the auto-scaling chart
+  (live: source=last_used, balance 49994.55, chart ~50k). (B) /analytics/strategy-metrics hard-coded account
+  "13" -> HTTP 404, manual internal-ID entry, no Wayond WIM. Fix: backend includes assigned strategies (Wayond
+  WIM shown, "No attributed trades yet", no fabricated attribution, account_number returned); frontend
+  discovers owned accounts, auto-selects, labels by MT5 number (never DB PK), customer-safe states. Deploy:
+  backend `60aa74d7ea07` + frontend `fb1fa5d4b7a0` (rollback-preANALYTICS tags). Adversarial 0/0. Golden
+  unchanged; foreign-account 404; no execution/data change. i18n EN/JA = P1 (separate packet).
+
 - **2026-08-19 - P0 TRADE-SYNC FRESHNESS: PASS (main `4e39caa`, PR #380). GREEN.** Closed MT5 trades lagged
   ~1h in GuvFX for hosted accounts. Root cause (C): the periodic READ-ONLY position sync
   (`breakeven._ensure_position_sync`, run every ~30s by the tp-protection-watcher over PROMOTED plans) resolved
