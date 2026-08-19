@@ -130,6 +130,13 @@ CONTRACT = {
     "activate_order_bridge": PrimitiveSpec(
         script="Activate-GuvfxOrderBridge.ps1",
         argmap={"terminal_root": "-TerminalRoot"}, inject_account_id=True),
+    # P0-B1.1 multi-tenant: activate THIS tenant's OWN pin-enforcing order bridge on its per-tenant PORT.
+    # Reviewed .ps1 takes explicit -AccountId (refuses CZ) + -TerminalRoot (confined) + -Port (per-tenant
+    # 8800-8899, backend-allocated + host re-validated). One private bridge process/task/watchdog per tenant;
+    # port-targeted control only (never a blanket python kill).
+    "activate_tenant_bridge": PrimitiveSpec(
+        script="Activate-GuvfxTenantBridge.ps1",
+        argmap={"terminal_root": "-TerminalRoot", "account_id": "-AccountId", "port": "-Port"}),
 }
 
 # The PowerShell one-liner used by the default ParseFile gate. Builds the AST WITHOUT executing (RULE 9) and

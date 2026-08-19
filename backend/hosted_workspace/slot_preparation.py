@@ -291,31 +291,61 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     #      this stream. Customer Zero is protected FOUR independent ways: the reserved-account guard (Stage 0),
     #      the forbidden-node guard, the never-overwrite-a-different-endpoint guard, and the host-side
     #      reserved-identity refusal. This grants NO order authority (the order-time bridge gate stays live).
-    from hosted_workspace.flags import hosted_order_bridge_auto_activate_enabled
+    from hosted_workspace.flags import (hosted_order_bridge_auto_activate_enabled,
+                                         hosted_per_tenant_transport_enabled)
     if hosted_order_bridge_auto_activate_enabled():
         from hosted_workspace.tenant_isolation import forbidden_execution_node_ids
         # Guard A: never activate/route a Customer-Zero / forbidden execution node (derived live from the DB).
         if ws.execution_node_id in forbidden_execution_node_ids():
             return SlotPreparationResult(False, PREP_BRIDGE_FORBIDDEN_NODE, ST_BRIDGE)
-        endpoint = "http://%s:%d" % (rdp_host, ORDER_BRIDGE_PORT)
-        # Guard B: never clobber a node already routing to a DIFFERENT endpoint (e.g. Customer Zero's :8788). A
-        # blank or already-equal value is idempotent; anything else is a conflict → fail closed, no activation.
-        cur = str(TerminalNode.objects.filter(pk=node.pk)
-                  .values_list("order_bridge_base_url", flat=True).first() or "").strip()
-        if cur and cur != endpoint:
-            return SlotPreparationResult(False, PREP_BRIDGE_ENDPOINT_CONFLICT, ST_BRIDGE)
-        res = _call("activate_order_bridge", ST_BRIDGE, runtime_root, rdp_host=rdp_host)
-        if res is None:
-            return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_BRIDGE)
-        if not _ok(res):
-            _emit_bridge_event(ws, account, activated=False)
-            return SlotPreparationResult(False, PREP_BRIDGE_FAILED, ST_BRIDGE)
-        # Persist the SERVER-DERIVED endpoint (never the host's asserted value). The filter re-checks the
-        # never-clobber invariant atomically, so a concurrent writer can never race the URL onto a CZ node.
-        TerminalNode.objects.filter(pk=node.pk, order_bridge_base_url__in=("", endpoint)).update(
-            order_bridge_base_url=endpoint)
-        _emit_bridge_event(ws, account, activated=True)
-        record_stage_timing(ws, STAGE_ORDER_BRIDGE_ACTIVATED)   # UX timing (fail-open)
+
+        if hosted_per_tenant_transport_enabled():
+            # ---- P0-B1.1 PER-TENANT bridge: allocate THIS tenant's own endpoint (unique port) and activate its
+            # OWN pin-enforcing bridge on that port — so N tenants share one node/host, each with a private
+            # bridge/terminal. No node-global :8789 is written. Identity is server-derived (allocate_endpoint
+            # reads the PROVISIONED AccountProvisioning, set at Stage 4); a NEW tenant is an is_active=False
+            # intent account so no re-home guard trips. Fail-closed on any allocation/activation error.
+            from execution import endpoint_service
+            try:
+                alloc = endpoint_service.allocate_endpoint(ws, actor="slot_preparation")
+            except endpoint_service.EndpointError:
+                return SlotPreparationResult(False, PREP_BRIDGE_FAILED, ST_BRIDGE)
+            res = _call("activate_tenant_bridge", ST_BRIDGE, runtime_root, port=alloc.port, rdp_host=rdp_host)
+            if res is None:
+                return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_BRIDGE)
+            if not _ok(res):
+                _emit_bridge_event(ws, account, activated=False)
+                return SlotPreparationResult(False, PREP_BRIDGE_FAILED, ST_BRIDGE)
+            # Bridge proven up + health-checked host-side → the endpoint is now routable. Guarded like
+            # allocate_endpoint so a concurrent deprovision (endpoint retired mid-prep) fails closed with a
+            # sanitised result rather than a raw traceback (the endpoint stays non-READY → still unroutable).
+            try:
+                endpoint_service.mark_ready(ws, health_ok=True, actor="slot_preparation")
+            except endpoint_service.EndpointError:
+                return SlotPreparationResult(False, PREP_BRIDGE_FAILED, ST_BRIDGE)
+            _emit_bridge_event(ws, account, activated=True)
+            record_stage_timing(ws, STAGE_ORDER_BRIDGE_ACTIVATED)
+        else:
+            # ---- LEGACY per-node :8789 path — byte-identical to before P0-B1.1 when the per-tenant flag is off.
+            endpoint = "http://%s:%d" % (rdp_host, ORDER_BRIDGE_PORT)
+            # Guard B: never clobber a node already routing to a DIFFERENT endpoint (e.g. Customer Zero's
+            # :8788). A blank or already-equal value is idempotent; anything else is a conflict → fail closed.
+            cur = str(TerminalNode.objects.filter(pk=node.pk)
+                      .values_list("order_bridge_base_url", flat=True).first() or "").strip()
+            if cur and cur != endpoint:
+                return SlotPreparationResult(False, PREP_BRIDGE_ENDPOINT_CONFLICT, ST_BRIDGE)
+            res = _call("activate_order_bridge", ST_BRIDGE, runtime_root, rdp_host=rdp_host)
+            if res is None:
+                return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_BRIDGE)
+            if not _ok(res):
+                _emit_bridge_event(ws, account, activated=False)
+                return SlotPreparationResult(False, PREP_BRIDGE_FAILED, ST_BRIDGE)
+            # Persist the SERVER-DERIVED endpoint (never the host's asserted value). The filter re-checks the
+            # never-clobber invariant atomically, so a concurrent writer can never race the URL onto a CZ node.
+            TerminalNode.objects.filter(pk=node.pk, order_bridge_base_url__in=("", endpoint)).update(
+                order_bridge_base_url=endpoint)
+            _emit_bridge_event(ws, account, activated=True)
+            record_stage_timing(ws, STAGE_ORDER_BRIDGE_ACTIVATED)   # UX timing (fail-open)
 
     # ---- Stage 6: RDP grant (hard-scoped to guvfx_u_*) ----------------------------------------------------
     res = _call("grant_rdp", ST_RDP, username, rdp_host=rdp_host)

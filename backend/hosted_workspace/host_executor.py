@@ -166,6 +166,17 @@ class SignedHostExecutor:
             return {"ok": False, "reason": "confinement_mismatch"}
         return self._send("ACTIVATE_ORDER_BRIDGE")
 
+    def activate_tenant_bridge(self, runtime_root, port, rdp_host=None) -> dict:
+        """P0-B1.1 multi-tenant: ask the host to activate THIS tenant's OWN pin-enforcing order bridge on its
+        per-tenant ``port`` (from its ``HostedExecutionEndpoint``) and health-check it — the general per-customer
+        equivalent of ``activate_order_bridge``'s single node bridge. Confined on ``runtime_root`` + Customer-Zero
+        refused in ``_send``; the host re-derives the slot (terminal_root + account_id) and refuses CZ again. The
+        ``port`` is the sole caller-influenced value — server-derived on the backend, bound in the signature, and
+        range-validated host-side. Returns the sanitised signed result; the caller marks the endpoint READY."""
+        if not self._confined(runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("ACTIVATE_TENANT_BRIDGE", params={"port": int(port)})
+
     def observe(self, rdp_host=None) -> dict:
         """9E READ-ONLY live observation: ask the host to trigger THIS account's session-bound observer task
         (running as guvfx_u_<id>, guarded-attach to its already-running MT5) and return the resulting snapshot.
