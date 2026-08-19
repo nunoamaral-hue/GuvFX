@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-08-19 — P0 DATA-ISOLATION BREACH: RESOLVED + DEPLOYED + REPAIRED (BETA_DATA_ISOLATION_PASS). 🟢**
+  Beta customer acct28's Trade History showed an exact duplicate of support@'s 20 trades (0.40 vol, +545.60).
+  ROOT CAUSE: MT5 deals READ used a single global `AGENT_BASE` (node2-order-worker `=:8789`, support@'s bridge)
+  and `mt5_signal_bridge.fetch_deals_snapshot` ignores the username param (attaches to its own MT5_TERMINAL_PATH),
+  so acct28's ingest read support@'s (1302587) deals; `upsert_trades` wrote them under acct28 with no identity
+  check. FIX (main `53310c5`, PR #378, no migration): `execution/snapshot_transport.py` —
+  `resolve_account_snapshot_base` routes every customer MT5 read to the account's OWN endpoint bridge (fail-closed
+  via durable `readiness_provider`, never a global/sibling bridge) + `verify_snapshot_identity` (observed
+  login==account_number); bridge returns `account_login`/`account_server` + new `/mt5/snapshots/account`;
+  `confirm_broker_account` stamps `ingest_cutover_time`. Wired into ingest worker + SyncNowView + analytics
+  balance. Adversarial 0 HIGH/0 MEDIUM (1 fail-open HIGH fixed). DEPLOY: backend img `bac6a5e84828`; bridge sha
+  `819e62b0` to both host locations; 3 bridge tasks + backend + both ingest workers restarted. LIVE PROOF:
+  :8788→1302561/:8789→1302587/:8800→1302575 (firewall PASS), cross-read REFUSED. REPAIR (backups
+  `guvfx_preISOFIX`/`guvfx_preREPAIR`, rollback img `rollback-preISOFIX=a958bcf49047`): 20 contaminated acct28
+  rows deleted (+20 outcomes +24 notifications cascade), re-ingested acct28's OWN 3 trades (242767/8/70, 0.01,
+  net +5.69). support@ 20-trades/0.40 + CZ 523 UNCHANGED; Golden AFTER==BEFORE. **TELEGRAM_RELEASE_GATE=OPEN**
+  (data-isolation blocker cleared; actual Telegram activation remains the separate PM-paused packet).
+
 - **2026-08-19 — P0 BETA LAUNCH: SAFE DEFAULT LOT (0.01) + BETA CAPACITY (≥10 free): DEPLOYED, adversarial
   0 HIGH/0 MEDIUM. 🟢** MERGED main `eb14e12` (PR #376, exact-SHA CI green). Backend image `56a71fceeb41`
   built from guvfx-app@`eb14e12`, `guvfx-backend` recreated ONLY (node2-order-worker/tp-watcher/provisioner
