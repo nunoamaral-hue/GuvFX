@@ -75,6 +75,10 @@ OP_PRIMITIVES = {
     # FINAL Closed-Beta stream: activate this node's dedicated pin-enforcing order bridge. Server-derived
     # terminal_root (falls through to _build_args' base) + injected -AccountId; no caller params.
     "ACTIVATE_ORDER_BRIDGE":    {"primitive": "activate_order_bridge",    "params_allow": ()},
+    # P0-B1.1 multi-tenant: start THIS tenant's OWN pin-enforcing bridge on its per-tenant PORT. The port is the
+    # ONLY caller-influenced value (server-derived on the backend from HostedExecutionEndpoint, bound in the
+    # signature via params_digest, range-validated below); everything else (slot/terminal/account) is derived.
+    "ACTIVATE_TENANT_BRIDGE":   {"primitive": "activate_tenant_bridge",   "params_allow": ("port",)},
     # AJ#6.3: graceful in-session close+relaunch of THIS tenant's OWN MT5 (post-login AutoTrading capability
     # recovery). Server-derived identity/paths only; Customer Zero is refused (reserved) before this maps. It
     # relaunches a terminal — it NEVER logs in, changes accounts, arms a strategy, or places an order.
@@ -188,6 +192,19 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
                 "mode": "Apply" if op == "APPLY_WORKSPACE_ACL" else "Rollback"}
     if op == "APPLY_AUTOTRADING_CONFIG":
         return {"terminal_root": slot["terminal_root"]}
+    if op == "ACTIVATE_TENANT_BRIDGE":
+        # The per-tenant bridge PORT is the sole caller-influenced value (signed + params_allow-validated).
+        # Re-validate its RANGE here (defence in depth): must be a per-tenant port, never a reserved GuvFX port
+        # (8787 backtest / 8788 CZ / 8789 legacy node / 8791 validation). Everything else is server-derived from
+        # the account slot, and the host script re-asserts the CZ refusal.
+        try:
+            port = int((fields.get("params") or {})["port"])
+        except (KeyError, TypeError, ValueError):
+            raise HostProtocolError("params_malformed")
+        if not (8800 <= port <= 8899):
+            raise HostProtocolError("params_not_allowed")
+        return {"username": slot["username"], "terminal_root": slot["terminal_root"],
+                "account_id": slot["account_id"], "port": port}
     if op == "RELAUNCH_TERMINAL":
         # The host script confines to guvfx_u_<id> + accounts\<id>\terminal and closes/relaunches ONLY the
         # tenant's own terminal64; account_id is passed so the .ps1 can derive its per-account task names +
