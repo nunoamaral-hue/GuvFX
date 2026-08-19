@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-08-19 - P0 TRADE-SYNC FRESHNESS: PASS (main `4e39caa`, PR #380). GREEN.** Closed MT5 trades lagged
+  ~1h in GuvFX for hosted accounts. Root cause (C): the periodic READ-ONLY position sync
+  (`breakeven._ensure_position_sync`, run every ~30s by the tp-protection-watcher over PROMOTED plans) resolved
+  windows_username from `account.mt5_instance` = None for hosted per-tenant accounts (identity is on
+  AccountProvisioning) -> every hosted tenant silently skipped -> only the hourly order-triggered sync. Fix:
+  hosted-aware `_sync_windows_username` (AccountProvisioning, PROVISIONED + is_admin=False, flag-independent);
+  protection path unchanged (no execution-semantics change); + per-account freshness telemetry in
+  operations_summary. Deploy: tp-protection-watcher + backend on img `7340f2531b61` (workers unchanged; rollback
+  `rollback-preSYNCFIX=5e3beb0dbf40`). Adversarial 0 HIGH/0 MEDIUM. Live: 4 breakeven_sync fired (was 0), 3
+  tickets filled (+2.12/+3.93/+6.78), acct28 reconciled to -20.11 == MT5; Golden unchanged; isolation intact.
+  Steady-state ~5-35s (was ~1h). TELEGRAM_DATA_FRESHNESS_GATE=OPEN.
+
 - **2026-08-19 - P0 TRADE-DATA RECONCILIATION: PASS (main `ab10f0b`, PR #379, backend-only). GREEN.**
   After the isolation repair, the beta account's Trade History showed "No trade history yet" + Dashboard
   0/0W/0L despite 9 correct durable trades. Root cause = read-model, not isolation/ingest: `_build_round_trips`
