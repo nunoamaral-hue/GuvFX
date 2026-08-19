@@ -127,6 +127,110 @@ def _fetch_mt5_account_balance(account, windows_username: str) -> Optional[dict]
         logger.warning(f"Failed to fetch MT5 account balance: {e}")
         return None
 
+# MT5 deal types on a balance-operation deal (NOT a trade): a DEPOSIT/WITHDRAWAL is DEAL_TYPE_BALANCE(2)
+# with the signed cash amount in ``profit`` (deposit positive, withdrawal negative); broker bonus is
+# DEAL_TYPE_CREDIT(3). These carry no ``position_id`` so ``build_positions_from_deals`` skips them — they are
+# NEVER trades and never enter trading P&L. We read them ONLY to place external cash flows correctly on the
+# balance chart (a deposit must not look like trading profit, nor a withdrawal like a trading loss).
+DEAL_TYPE_BALANCE = 2
+DEAL_TYPE_CREDIT = 3
+
+
+def _fetch_mt5_balance_ops(account, windows_username: str) -> Optional[dict]:
+    """Fetch THIS account's OWN external cash-flow operations (deposits/withdrawals + any credit) from its
+    per-tenant bridge — for grounding the balance chart on real funding rather than assuming current balance
+    equals deposited capital.
+
+    Same isolation contract as ``_fetch_mt5_account_balance``: the destination is the account's OWN
+    HostedExecutionEndpoint (never the module-global agent), and the whole batch is bound to the bridge's
+    OBSERVED session identity (#378 firewall) — a mismatch returns None (no foreign funding is ever read).
+    Fail-closed: any resolution/identity/parse failure returns None and the caller keeps the existing
+    reconstruction (never a fabricated funding history).
+
+    Returns ``{"balance_ops": [{"time": aware-datetime|None, "amount": float}], "credit": float}`` or None.
+    """
+    from execution.snapshot_transport import resolve_account_snapshot_base, verify_snapshot_identity
+    from trading.position_ingest import deal_time_to_utc
+    global_base, token = _get_windows_agent_config()
+    if not token:
+        return None
+    st = resolve_account_snapshot_base(account, global_base_url=global_base)
+    if not st.ok:
+        logger.warning("MT5 balance-ops transport unresolved for account %s: %s",
+                       getattr(account, "id", None), st.reason_code)
+        return None
+    base = st.base_url
+    try:
+        url = f"{base}/mt5/snapshots/deals?username={urllib.parse.quote(windows_username)}"
+        req = urllib.request.Request(url, method="GET", headers={"X-GuvFX-Agent-Token": token})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = r.read().decode("utf-8", "ignore")
+            data = json.loads(raw) if raw else {}
+    except Exception as e:
+        logger.warning("Failed to fetch MT5 balance ops: %s", e)
+        return None
+    if not isinstance(data, dict):  # a top-level JSON array/scalar is not a valid snapshot -> fail closed
+        return None
+
+    # DOWNSTREAM FIREWALL: bind the batch to the observed session identity BEFORE reading any figure.
+    _inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    observed_login = data.get("account_login", _inner.get("account_login"))
+    observed_server = data.get("account_server", _inner.get("account_server"))
+    _idc = verify_snapshot_identity(account, observed_login, observed_server)
+    if not _idc.ok:
+        logger.warning("MT5 balance-ops identity firewall refused for account %s: %s",
+                       getattr(account, "id", None), _idc.reason_code)
+        return None
+
+    deals = data.get("deals") or _inner.get("deals") or []
+    if not isinstance(deals, list):
+        return None
+    balance_ops: List[Dict[str, Any]] = []
+    credit_total = 0.0
+    seen_tickets: set = set()  # dedup by unique MT5 deal ticket so a paginated/overlapping repeat of the
+    #                            SAME balance deal is not double-counted (would inflate net_funding).
+    for d in deals:
+        if not isinstance(d, dict):
+            continue
+        try:
+            dtype = int(d.get("type")) if d.get("type") is not None else None
+        except (TypeError, ValueError):
+            dtype = None
+        if dtype not in (DEAL_TYPE_BALANCE, DEAL_TYPE_CREDIT):
+            continue
+        ticket = d.get("ticket")
+        if ticket is not None:
+            key = str(ticket)
+            if key in seen_tickets:
+                continue
+            seen_tickets.add(key)
+        if dtype == DEAL_TYPE_BALANCE:
+            t = deal_time_to_utc(d)
+            if t is None:
+                # ISO fallback (some bridge shapes emit ``time_utc`` rather than unix ``time``). Force an
+                # aware UTC datetime — a naive value would raise TypeError when ordered against the aware
+                # trade close_times, so a naive/parse-failed timestamp is dropped (op treated as untimed).
+                raw_iso = d.get("time_utc")
+                if isinstance(raw_iso, str) and raw_iso:
+                    try:
+                        from datetime import datetime as _dt, timezone as _tz
+                        parsed = _dt.fromisoformat(raw_iso.replace("Z", "+00:00"))
+                        t = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=_tz.utc)
+                    except ValueError:
+                        t = None
+            try:
+                amount = float(d.get("profit")) if d.get("profit") is not None else 0.0
+            except (TypeError, ValueError):
+                amount = 0.0
+            balance_ops.append({"time": t, "amount": amount})
+        elif dtype == DEAL_TYPE_CREDIT:
+            try:
+                credit_total += float(d.get("profit")) if d.get("profit") is not None else 0.0
+            except (TypeError, ValueError):
+                pass
+    return {"balance_ops": balance_ops, "credit": round(credit_total, 2)}
+
+
 # Pattern to extract strategy_id from guvfx comment
 STRATEGY_ID_PATTERN = re.compile(r"guvfx:(?:sid|strategy_id)=(\d+)")
 
@@ -417,46 +521,48 @@ def _build_round_trip_row(
 def _compute_balance_series(
     round_trips: List[Dict[str, Any]],
     mt5_balance_current: Optional[float] = None,
+    balance_ops: Optional[List[Dict[str, Any]]] = None,
+    credit: float = 0.0,
 ) -> tuple[List[Dict[str, Any]], Dict[str, Any], float, str]:
     """
-    Compute cumulative balance series from completed round-trips (sorted by close_time ASC).
-    Also computes observed statistics.
+    Compute the cumulative balance series from completed round-trips (chronological) plus, when reliable,
+    the account's external cash flows. Also computes observed TRADING statistics.
+
+    Cash-flow-aware baseline (P1): the previous model set ``opening = current_balance - total_trade_pnl``.
+    That correctly recovers *net funding* and never counts a deposit as trading P&L, but it silently
+    back-dates ANY external cash flow into the opening baseline — so a mid-period deposit/withdrawal would
+    move the whole curve up/down from the very start instead of appearing as a step at its real time.
+
+    When ``balance_ops`` (authoritative deposits/withdrawals from the account's OWN per-tenant bridge) is
+    supplied AND the account self-reconciles — ``balance == net_funding + total_trade_pnl`` (no credit, and
+    the funding+trade history is complete within the snapshot window) — the opening is the funding in place
+    at the first trade and later cash flows are placed as their own steps (``net_pnl_money = 0``). This keeps
+    a single-initial-deposit account (the beta case) BYTE-IDENTICAL, while a mid-period deposit no longer
+    inflates the baseline. If it does NOT reconcile (funding older than the window, credit present, or a data
+    gap) we fail closed to the exact previous reconstruction — never a fabricated funding history.
 
     Args:
-        round_trips: List of round-trip dicts (sorted by close_time DESC from _build_round_trips)
-        mt5_balance_current: Current MT5 balance (optional). Used to derive opening balance.
+        round_trips: round-trip dicts (sorted by close_time DESC from ``_build_round_trips``).
+        mt5_balance_current: current MT5 *balance* (not equity) — used to derive/verify the opening.
+        balance_ops: optional ``[{"time": aware-datetime|None, "amount": float}]`` external cash flows.
+        credit: broker credit total; any non-zero credit forces the fail-closed reconstruction.
 
     Returns:
         (balance_series, observed_stats, opening_balance_used, opening_balance_source)
-        - balance_series: List of {index, trade_closed, net_pnl_money, balance_after_trade}
-        - observed_stats: Dict with win_rate, longest_loss_streak, max_drawdown_pct, net_pnl_total
-        - opening_balance_used: The starting balance used for calculations
-        - opening_balance_source: "last_used" if derived from MT5, "fallback_10000" otherwise
+        opening_balance_source: "reconciled_ledger" (cash-flow-aware), "last_used" (derived from balance),
+        or "fallback_10000" (no balance available).
     """
+    _empty_stats = {
+        "total_trades": 0, "wins": 0, "losses": 0, "win_rate_pct": 0.0,
+        "longest_loss_streak": 0, "max_drawdown_pct": 0.0, "net_pnl_total": 0.0,
+    }
     if not round_trips:
-        return [], {
-            "total_trades": 0,
-            "wins": 0,
-            "losses": 0,
-            "win_rate_pct": 0.0,
-            "longest_loss_streak": 0,
-            "max_drawdown_pct": 0.0,
-            "net_pnl_total": 0.0,
-        }, 10000.0, "fallback_10000"
+        return [], dict(_empty_stats), 10000.0, "fallback_10000"
 
     # Filter to only completed round-trips (must have close_time)
     completed_rt = [rt for rt in round_trips if rt.get("close_time")]
-
     if not completed_rt:
-        return [], {
-            "total_trades": 0,
-            "wins": 0,
-            "losses": 0,
-            "win_rate_pct": 0.0,
-            "longest_loss_streak": 0,
-            "max_drawdown_pct": 0.0,
-            "net_pnl_total": 0.0,
-        }, 10000.0, "fallback_10000"
+        return [], dict(_empty_stats), 10000.0, "fallback_10000"
 
     # Round-trips come sorted by close_time DESC, reverse for chronological order (ASC)
     sorted_rt = sorted(completed_rt, key=lambda r: r.get("close_time") or "")
@@ -464,56 +570,97 @@ def _compute_balance_series(
     # Calculate total PnL from all completed trades
     total_pnl = sum(float(rt.get("net_pnl_money", 0) or 0) for rt in sorted_rt)
 
-    # Determine opening balance:
-    # - If MT5 current balance available: opening = current - total_pnl ("last_used")
-    # - Otherwise: fallback to 10000 ("fallback_10000")
-    if mt5_balance_current is not None:
+    # ---- Decide opening balance + whether to place external cash flows in time -------------------------
+    mid_period_ops: List[Dict[str, Any]] = []
+    use_cashflow = False
+    if balance_ops and mt5_balance_current is not None and abs(float(credit or 0.0)) < 0.01:
+        net_funding = sum(float(op.get("amount", 0.0) or 0.0) for op in balance_ops)
+        # Self-consistency identity (no credit, balance excludes open-position float): a match proves we hold
+        # the COMPLETE funding+trade history and may place cash flows chronologically. The tolerance is a
+        # small FIXED band (float-summation drift is ~1e-7 even for thousands of trades) — it must NOT scale
+        # with balance, or a real missing/duplicate cash flow of several dollars would slip through on a
+        # large account. A genuine gap (dollars) or a duplicated deal (>= dollars) fails closed instead.
+        tol = max(0.05, len(sorted_rt) * 1e-4)
+        if abs(mt5_balance_current - (net_funding + total_pnl)) <= tol:
+            use_cashflow = True
+
+    if use_cashflow:
+        # The account "began trading" at the EARLIEST trade OPEN. Funding at/before that is opening capital;
+        # funding after it is a dated cash-flow step — even a deposit that lands while a position is still
+        # open (open < deposit < close) must be a step, never folded into the baseline.
+        def _rt_open(rt):
+            return rt.get("open_time") or rt.get("close_time")
+        open_times = [_rt_open(rt) for rt in sorted_rt if _rt_open(rt) is not None]
+        first_activity_time = min(open_times) if open_times else sorted_rt[0].get("close_time")
+
+        def _optime(op):
+            return op.get("time")
+        # Funding at/before trading began — plus any untimed op — is the account's opening capital.
+        opening_amt = sum(float(op.get("amount", 0.0) or 0.0) for op in balance_ops
+                          if _optime(op) is None or _optime(op) <= first_activity_time)
+        opening_balance_used = opening_amt
+        opening_balance_source = "reconciled_ledger"
+        mid_period_ops = [op for op in balance_ops
+                          if _optime(op) is not None and _optime(op) > first_activity_time]
+    elif mt5_balance_current is not None:
         opening_balance_used = mt5_balance_current - total_pnl
         opening_balance_source = "last_used"
     else:
         opening_balance_used = 10000.0
         opening_balance_source = "fallback_10000"
 
-    # Build balance series (balance AFTER each completed trade)
+    # ---- Merge trades + mid-period cash flows into one time-ordered event stream -----------------------
+    events: List[tuple] = [("trade", rt.get("close_time"), rt) for rt in sorted_rt]
+    events += [("funding", op.get("time"), op) for op in mid_period_ops]
+    events.sort(key=lambda e: e[1])
+
     balance_series = []
     balance = opening_balance_used
-    peak = balance
+    # Drawdown / win-rate are TRADING metrics — computed on the trade-only curve so a deposit never resets
+    # the drawdown peak and a withdrawal never manufactures a drawdown.
+    trading_balance = opening_balance_used
+    peak = trading_balance
     max_drawdown_pct = 0.0
     wins = 0
     losses = 0
     current_loss_streak = 0
     longest_loss_streak = 0
 
-    for i, rt in enumerate(sorted_rt):
-        pnl = float(rt.get("net_pnl_money", 0) or 0)
-        balance += pnl
-
-        # Track wins/losses
-        if pnl >= 0:
-            wins += 1
-            current_loss_streak = 0
-        else:
-            losses += 1
-            current_loss_streak += 1
-            longest_loss_streak = max(longest_loss_streak, current_loss_streak)
-
-        # Track drawdown from peak
-        if balance > peak:
-            peak = balance
-        if peak > 0:
-            dd = (peak - balance) / peak * 100
-            max_drawdown_pct = max(max_drawdown_pct, dd)
-
-        # Format trade_closed as ISO string
-        close_time = rt.get("close_time")
-        trade_closed = close_time.isoformat() if hasattr(close_time, "isoformat") else str(close_time) if close_time else None
-
-        balance_series.append({
-            "index": i,
-            "trade_closed": trade_closed,
-            "net_pnl_money": round(pnl, 2),
-            "balance_after_trade": round(balance, 2),
-        })
+    for i, (kind, when, obj) in enumerate(events):
+        if kind == "trade":
+            pnl = float(obj.get("net_pnl_money", 0) or 0)
+            balance += pnl
+            trading_balance += pnl
+            if pnl >= 0:
+                wins += 1
+                current_loss_streak = 0
+            else:
+                losses += 1
+                current_loss_streak += 1
+                longest_loss_streak = max(longest_loss_streak, current_loss_streak)
+            if trading_balance > peak:
+                peak = trading_balance
+            if peak > 0:
+                dd = (peak - trading_balance) / peak * 100
+                max_drawdown_pct = max(max_drawdown_pct, dd)
+            trade_closed = when.isoformat() if hasattr(when, "isoformat") else (str(when) if when else None)
+            balance_series.append({
+                "index": i,
+                "trade_closed": trade_closed,
+                "net_pnl_money": round(pnl, 2),
+                "balance_after_trade": round(balance, 2),
+            })
+        else:  # funding: an external deposit(+)/withdrawal(-) — a balance STEP, never trading P&L
+            amt = float(obj.get("amount", 0.0) or 0.0)
+            balance += amt
+            when_iso = when.isoformat() if hasattr(when, "isoformat") else (str(when) if when else None)
+            balance_series.append({
+                "index": i,
+                "trade_closed": when_iso,
+                "net_pnl_money": 0.0,
+                "balance_after_trade": round(balance, 2),
+                "funding_amount": round(amt, 2),
+            })
 
     total_trades = len(sorted_rt)
     win_rate_pct = (wins / total_trades * 100) if total_trades > 0 else 0.0
@@ -683,6 +830,8 @@ class TradeHistoryView(APIView):
             mt5_balance_current = None
             mt5_equity_current = None
             currency = "USD"  # Default currency
+            balance_ops: Optional[List[Dict[str, Any]]] = None
+            credit = 0.0
 
             try:
                 # TX-AC1F: ownership-filtered fetch (defense in depth — the upfront
@@ -701,6 +850,13 @@ class TradeHistoryView(APIView):
                         mt5_balance_current = account_info.get("balance")
                         mt5_equity_current = account_info.get("equity")
                         currency = account_info.get("currency", "USD") or "USD"
+                    # Authoritative external cash flows (deposits/withdrawals) for a cash-flow-aware baseline —
+                    # so deposits are not counted as trading profit nor withdrawals as loss. Fail-closed: None
+                    # on any failure, and _compute_balance_series keeps the previous reconstruction.
+                    ops_info = _fetch_mt5_balance_ops(account_obj, windows_username)
+                    if ops_info:
+                        balance_ops = ops_info.get("balance_ops") or []
+                        credit = float(ops_info.get("credit") or 0.0)
             except TradingAccount.DoesNotExist:
                 pass
             except Exception as e:
@@ -712,7 +868,16 @@ class TradeHistoryView(APIView):
             balance_series, observed_stats, opening_balance_used, opening_balance_source = _compute_balance_series(
                 round_trips=round_trips,
                 mt5_balance_current=mt5_balance_current,
+                balance_ops=balance_ops,
+                credit=credit,
             )
+
+            # Net funding (deposits − withdrawals) and realised trading P&L, surfaced as DISTINCT figures so
+            # external cash flow is never conflated with trading performance. net_funding is authoritative
+            # only when it reconciles (opening_balance_source == "reconciled_ledger"); otherwise null.
+            net_funding = None
+            if opening_balance_source == "reconciled_ledger" and balance_ops is not None:
+                net_funding = round(sum(float(op.get("amount", 0.0) or 0.0) for op in balance_ops), 2)
 
             return Response({
                 "account_id": int(account_id),
@@ -728,6 +893,11 @@ class TradeHistoryView(APIView):
                 "opening_balance_source": opening_balance_source,
                 "balance_series": balance_series,
                 "observed_stats": observed_stats,
+                # Cash-flow separation (funding vs trading P&L) — informational; deposits/withdrawals are
+                # NEVER part of trading_pnl.
+                "net_funding": net_funding,
+                "trading_pnl": observed_stats.get("net_pnl_total", 0.0),
+                "credit": round(credit, 2),
             })
 
         # -------------------------------------------------------------------------
