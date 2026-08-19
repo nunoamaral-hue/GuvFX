@@ -15,6 +15,76 @@
 
 ---
 
+## Customer Telegram notifications (RECONCILED RC, DARK)
+
+This plane is not production-active. It must use a dedicated customer bot and must
+never reuse provider-ingestion or stakeholder Telegram credentials.
+
+Required settings (secret values belong in the approved secret store, never Git):
+
+```text
+CUSTOMER_TELEGRAM_NOTIFICATIONS_ENABLED=false
+CUSTOMER_TELEGRAM_BOT_USERNAME=
+CUSTOMER_TELEGRAM_BOT_TOKEN=
+CUSTOMER_TELEGRAM_WEBHOOK_SECRET=
+CUSTOMER_TELEGRAM_WEBHOOK_URL=
+CUSTOMER_TELEGRAM_WORKER_ENABLED=false
+CUSTOMER_TELEGRAM_TOKEN_TTL_SECONDS=600
+CUSTOMER_NOTIFICATION_MAX_ATTEMPTS=5
+```
+
+Production stores these keys in `/home/ubuntu/guvfx-prod/customer-telegram.env` (`ubuntu:ubuntu`, `0600`).
+The dedicated worker receives only that file's Django/database runtime settings plus the keys above; it does
+not receive MT5, bridge, node, WorkerIdentity, execution, provider-Telegram, or WIMs credentials.
+
+Local verification while DARK:
+
+```bash
+python manage.py test customer_notifications --noinput
+python manage.py customer_notification_health
+python manage.py run_customer_notification_worker --once
+```
+
+The worker command records a secret-free `DARK` or `ACTIVE` heartbeat and reports `dark=True` when the feature is disabled and
+`worker_disabled=True` when its independent worker switch is disabled. In either
+case it neither collects nor sends. The isolated worker definition lives at
+`deploy/customer-notifications/docker-compose.customer-notifications.yml`; the approved DARK posture installs
+the definition but leaves the service stopped and both flags false.
+
+Production prerequisites are an approved GuvFX-owned customer bot and rotation owner,
+bot username/token, public HTTPS webhook URL and independent secret, database backup and
+migration approval, dedicated worker deployment, both feature-flag approvals, and alert/
+retention decisions. The first pilot is `beta.guvfx01@gmail.com` (or another disposable
+acceptance customer): connect, verify the private confirmation, observe an existing durable
+customer-safe event in EN/JA, disconnect, and prove future suppression. Never manufacture a
+trade and never use Customer Zero or the WIMs stakeholder destination.
+
+Operational interpretation:
+
+- `queue_depth` / `pending` includes `PENDING`, `RETRYING`, and deliberately non-reclaimed
+  `PROCESSING` rows.
+- Health also reports the oldest queued age, success/failure totals, ambiguous delivery count,
+  retry-exhaustion count, suppressed count, both enable flags, total/active binding counts, and worker heartbeat.
+- DARK accepts no heartbeat. ACTIVE thresholds: heartbeat >120s alerts; oldest pending >900s warns; any
+  definite failure/retry exhaustion alerts; ambiguity requires operator review and no replay.
+- A stale `PROCESSING` row may represent Telegram acknowledgement followed by a
+  database failure. Do not replay it manually; investigate using the immutable
+  attempt/outbox evidence and prefer message omission to duplication.
+- `FAILED` and oldest-pending age require an alert, but never an execution restart.
+- Set the worker flag false first, then disable the feature flag and stop only the
+  dedicated worker for rollback. Do not
+  change provider Telegram, Wayond listener, execution worker, node, bridge, MT5,
+  authorization, or customer trading state.
+- Telegram is a best-effort convenience notification channel. The committed GuvFX
+  business records and in-app state remain the system of record.
+- Trade progress is emitted only from account-scoped durable leg evidence. Messages may
+  show the owner's full MT5 account number only in that verified private chat; no chat ID
+  is shown in Settings, and missing bindings fail closed with no global/WIMs fallback.
+
+Full design and rollout gate: `docs/product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md`.
+Human-only bot, webhook, rotation, pilot, and rollback procedure:
+`docs/operations/customer-telegram/PRODUCTION_ACTIVATION_RUNBOOK.md`.
+
 ## Backend (Django)
 
 ### Setup

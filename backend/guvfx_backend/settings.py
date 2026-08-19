@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     "intelligence",  # Phase 7A — GuvFX Signal Intelligence Producer (produces; WIMS consumes)
     "signal_intake",  # EXEC-E0 — Wayond signal -> human PendingSignalApproval (shadow; no execution)
     "operational_events",  # WP5.1 — Operational Event Model (ADR-0032; owner-scoped ops read model, DARK)
+    "customer_notifications.apps.CustomerNotificationsConfig",  # Customer Telegram plane; DARK
 ]
 
 MIDDLEWARE = [
@@ -201,8 +202,23 @@ REST_FRAMEWORK = {
         "ip": "1000/min",
         "csrf": "60/min",
         "auth": "20/min",
+        "customer_telegram_webhook": "120/min",
     },
 }
+
+# Customer Telegram notifications are a separate security domain from provider intake
+# (TELEGRAM_API_*) and stakeholder/operations delivery (TELEGRAM_* and VALIDATION_AGENT_*).
+# The customer plane is inert unless explicitly enabled with a dedicated approved bot.
+CUSTOMER_TELEGRAM_NOTIFICATIONS_ENABLED: bool = env(
+    "CUSTOMER_TELEGRAM_NOTIFICATIONS_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+CUSTOMER_TELEGRAM_BOT_USERNAME: str = env("CUSTOMER_TELEGRAM_BOT_USERNAME", "")
+CUSTOMER_TELEGRAM_BOT_TOKEN: str = env("CUSTOMER_TELEGRAM_BOT_TOKEN", "")
+CUSTOMER_TELEGRAM_WEBHOOK_SECRET: str = env("CUSTOMER_TELEGRAM_WEBHOOK_SECRET", "")
+CUSTOMER_TELEGRAM_WEBHOOK_URL: str = env("CUSTOMER_TELEGRAM_WEBHOOK_URL", "")
+CUSTOMER_TELEGRAM_WORKER_ENABLED: bool = env(
+    "CUSTOMER_TELEGRAM_WORKER_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+CUSTOMER_TELEGRAM_TOKEN_TTL_SECONDS: int = int(env("CUSTOMER_TELEGRAM_TOKEN_TTL_SECONDS", "600"))
+CUSTOMER_NOTIFICATION_MAX_ATTEMPTS: int = int(env("CUSTOMER_NOTIFICATION_MAX_ATTEMPTS", "5"))
 
 # Cache configuration for rate limiting
 # Production: DatabaseCache (shared across gunicorn workers, uses existing Postgres)

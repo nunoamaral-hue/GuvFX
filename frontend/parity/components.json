@@ -48,6 +48,7 @@
   "src/components/operations/OpsFilters.tsx",
   "src/components/operations/OpsSummary.tsx",
   "src/components/operations/OpsTimelineTable.tsx",
+  "src/components/settings/TelegramNotificationsCard.tsx",
   "src/components/strategy/EnableStrategyModal.tsx",
   "src/components/strategy/LotSizeControl.tsx",
   "src/components/ui/Alert.tsx",

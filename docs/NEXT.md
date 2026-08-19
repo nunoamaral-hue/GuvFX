@@ -1,5 +1,14 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Customer Telegram notifications — RECONCILED RC; DARK install gate (2026-08-19)
+Draft PR #371 is reconciled onto main `cd05c03f`, DARK/default-OFF, with no execution-plane file changes.
+Private numeric-chat binding, no WIMs/global fallback, durable TP/final-outcome messages, full owner MT5 account
+number, EN/JA Settings, at-most-once outbox, secret-free heartbeat/binding monitoring, and adversarial proof
+(**0 HIGH / 0 MEDIUM**) survive the rebase; fresh Wayond acquisition still seeds 0.01/leg. Next: full gate,
+exact-head CI, merge, verified backup, additive migration, backend/frontend DARK deploy, and install the worker
+definition stopped. Then STOP. Bot creation, credentials, webhook, flags, worker start, messages, and pilot
+remain human-gated by the production activation runbook; never manufacture a trade.
+
 ## ▶ ADR-0048 Execution-path readiness + stale reconciler — BUILT, STOP for Sponsor (2026-08-18)
 Branch `feat/node2-execpath-readiness` (`fad465f`), NOT pushed / NOT deployed, DARK, no prod mutation. Fixes
 the Node-2 root-cause class: separates MT5 runtime / customer authorization / execution-path availability /

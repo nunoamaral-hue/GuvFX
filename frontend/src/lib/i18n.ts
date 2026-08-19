@@ -208,6 +208,47 @@ const dictionary: Dictionary = {
   "ui.langEnglish": { en: "English", ja: "English" },
   "ui.langJapanese": { en: "日本語", ja: "日本語" },
 
+  // Customer Telegram notifications
+  "telegram.title": { en: "Telegram notifications", ja: "Telegram通知" },
+  "telegram.subtitle": {
+    en: "Receive trading updates from GuvFX directly in Telegram.",
+    ja: "GuvFXの取引更新をTelegramで直接受け取れます。",
+  },
+  "telegram.connected": { en: "Connected", ja: "接続済み" },
+  "telegram.connecting": { en: "Connecting…", ja: "接続中…" },
+  "telegram.notConnected": { en: "Not connected", ja: "未接続" },
+  "telegram.connectedAs": { en: "Connected as", ja: "接続先:" },
+  "telegram.connect": { en: "Connect Telegram", ja: "Telegramを接続" },
+  "telegram.disconnect": { en: "Disconnect", ja: "接続を解除" },
+  "telegram.waiting": { en: "Waiting for Telegram…", ja: "Telegramでの操作を待っています…" },
+  "telegram.startPrompt": {
+    en: "Telegram has opened in a new window. Press Start there to finish connecting.",
+    ja: "新しいウィンドウでTelegramが開きました。Telegramで「開始」を押すと接続が完了します。",
+  },
+  "telegram.unavailable": {
+    en: "Telegram connection is not available yet.",
+    ja: "Telegram接続は現在ご利用いただけません。",
+  },
+  "telegram.error": {
+    en: "We couldn’t update Telegram notifications. Please try again.",
+    ja: "Telegram通知を更新できませんでした。もう一度お試しください。",
+  },
+  "telegram.preferences": { en: "Notification preferences", ja: "通知設定" },
+  "telegram.master": { en: "Telegram notifications", ja: "Telegram通知" },
+  "telegram.masterDetail": { en: "Turn all Telegram updates on or off.", ja: "すべてのTelegram通知をオンまたはオフにします。" },
+  "telegram.pref.tradeOpened": { en: "Trade opened", ja: "取引開始" },
+  "telegram.pref.tradeOpenedDetail": { en: "When a trade is successfully opened.", ja: "取引が正常に開始されたとき。" },
+  "telegram.pref.tradeUpdated": { en: "Trade updates", ja: "取引の進捗" },
+  "telegram.pref.tradeUpdatedDetail": { en: "When durable take-profit or trade progress is recorded.", ja: "テイクプロフィットまたは取引の進捗が確定したとき。" },
+  "telegram.pref.tradeClosed": { en: "Trade closed", ja: "取引終了" },
+  "telegram.pref.tradeClosedDetail": { en: "When a trade is closed with its final result.", ja: "取引が終了し、最終損益が確定したとき。" },
+  "telegram.pref.strategy": { en: "Strategy enabled or disabled", ja: "ストラテジーの有効化・無効化" },
+  "telegram.pref.strategyDetail": { en: "When automated trading is started or paused.", ja: "自動売買を開始または一時停止したとき。" },
+  "telegram.pref.problem": { en: "Trading needs attention", ja: "取引に確認が必要" },
+  "telegram.pref.problemDetail": { en: "Customer-safe updates when trading needs attention.", ja: "取引に確認が必要な場合の、お客様向けの安全な通知。" },
+  "telegram.pref.workspace": { en: "Workspace ready", ja: "ワークスペース準備完了" },
+  "telegram.pref.workspaceDetail": { en: "When your hosted trading workspace is ready.", ja: "ホスト型取引ワークスペースの準備が完了したとき。" },
+
   // -----------------------------------------------------------------------------
   // Dashboard - Page
   // -----------------------------------------------------------------------------

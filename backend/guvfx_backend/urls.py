@@ -45,6 +45,7 @@ urlpatterns = [
     path("api/onboarding/", include("onboarding.urls")),
     path("api/reliability/", include("reliability.urls")),  # RX-2 Reliability Core
     path("api/operations/", include("operational_events.urls")),  # WP5.1 Operational Event Model (ADR-0032)
+    path("api/customer-notifications/", include("customer_notifications.urls")),
     # ADR-0034 M3c Hosted Workspace read model — DARK (404 while HOSTED_PERSISTENT_MT5_ENABLED is off).
     path("api/hosted-workspace/", include("hosted_workspace.urls")),
     path("api/wims/", include("wims.urls")),

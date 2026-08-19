@@ -88,6 +88,15 @@ junk (backups/manual patches), not functional or template files.
 - Residual (documented, resolves on the next repo-built deploy — out of WP4.1 scope): the cosmetic
   `dashboard/page.tsx` VPS drift and the 12 VPS-only backup files. WP4.1 authorises no deployment.
 
+## 2026-08-18 amendment — configurable API base for local customer-notification verification
+
+`NEXT_PUBLIC_API_BASE` is an allow-listed build-time frontend setting consumed by the shared API client and
+authenticated app layout. Its production-safe default remains exactly `https://api.guvfx.com`; omitting the
+variable therefore preserves current production behavior. The override exists so customer-facing features such
+as the DARK Telegram notification POC can be exercised against an isolated local API without sending test
+requests to production. Production may set it only to the approved GuvFX API origin. This amendment adds no
+feature activation and authorises no deployment.
+
 ## WP4.2 — Broker Accounts (Broker Connections) frontend journey (2026-08-04)
 
 The first customer-facing Broker Connectivity UI, on the now-authoritative frontend. UI integration only

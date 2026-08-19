@@ -45,6 +45,24 @@
   only→raise node-2 capacity→Phase-10 cert. (Pre-existing, unrelated: 4 frontend vitest tests fail on clean
   `de99004` — login ×3 / support ×1 — separate task.)
 
+- **2026-08-19 — CUSTOMER TELEGRAM NOTIFICATIONS: RECONCILED RELEASE CANDIDATE, DARK INSTALL APPROVED. 🟡**
+  Draft PR #371 is reconciled onto current main `cd05c03f` after the P0 default-lot/capacity stream. Exact
+  overlap was `backend/strategies/views.py` and this status file; the 0.01 fresh-acquisition seeding at every
+  signal-copy seam survives, and no execution-plane file entered the PR. The isolated GuvFX-owned bot plane
+  routes only from authenticated owner/account to a verified private numeric `chat.id`; no WIMs/global fallback
+  and no command or execution authority. Durable account-scoped trade outcomes now produce TP/progress updates
+  and final aggregate WIN/LOSS/BREAKEVEN messages with the customer's full MT5 account number, realised PnL,
+  and timestamp; absent durable evidence is deferred. EN/JA Settings has disconnected/connecting/connected
+  states and six event toggles; DARK Settings shows explicit EN/JA unavailability and no Connect action.
+  Secret-free health includes binding counts and a durable dedicated-worker heartbeat. Adversarial review:
+  **0 HIGH / 0 MEDIUM**. Reconciled verification is green: `make check` backend **4,366** (1 skipped),
+  frontend **46 files / 288 tests**, lint **0 errors / 19 existing warnings**, parity and 41-page production
+  build; focused 92 backend contract/sizing and 7 Settings tests. Exact-head CI is required before merge.
+  `0001_initial` remains additive with no
+  app-local drift. DARK/default-OFF; no bot, credential, webhook, worker start, message, pilot, or trade.
+  Human activation/rotation procedure:
+  [`PRODUCTION_ACTIVATION_RUNBOOK.md`](operations/customer-telegram/PRODUCTION_ACTIVATION_RUNBOOK.md).
+
 - **2026-08-18 — ADR-0048 NODE COMMISSIONING + PROVISIONING GATE: BUILT (code/test only, DARK) — STOP for
   Sponsor. 🟡** Closes the one gap disclosed in the prior return: `node_execution_operational()` existed but
   was not integrated into the automatic hosted provisioning / node-commissioning lifecycle. Branch

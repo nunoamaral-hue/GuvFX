@@ -1,5 +1,27 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-08-19 — Customer Telegram reconciled RC (DARK install gate)
+
+- Customer-only Telegram notification plane is updated in draft PR #371 on branch
+  `agent/customer-telegram-notifications`, reconciled onto main `cd05c03f`; merge and DARK install are authorized
+  only after exact-head CI. The bot/credentials/webhook/messages/pilot remain separately human-gated.
+- Identity is Telegram private numeric `chat.id` established only through an atomic, one-use `/start` token.
+  Delivery is a separate durable outbox/worker with owner checks, bounded retries, dedupe, EN/JA messages, and
+  fail-open post-commit observers. Durable account-scoped TP progress and final aggregate outcomes include the
+  owner's MT5 account number, realised PnL, and timestamp. Provider/WIMs ingestion and all execution authority remain separate.
+- Monitoring adds secret-free binding counts and a durable heartbeat. DARK Settings has no actionable Connect
+  button. The dedicated worker definition must be installed stopped, with both flags explicitly false.
+- Reconciled verification is green: `make check` 4,366 backend tests (1 skipped), 46 frontend files / 288
+  tests, lint 0 errors / 19 existing warnings, parity and production build; focused 92 backend notification/
+  default-sizing tests and 7 Settings tests; no `customer_notifications` migration drift. Exact-head CI remains
+  mandatory before merge.
+- Adversarial bar: all 28 required cases covered, **0 HIGH / 0 MEDIUM**. Pilot is
+  `beta.guvfx01@gmail.com` using an existing durable safe event; never manufacture a trade.
+- Full review/evidence packet: [`docs/product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md`](product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md).
+- Human gate: [`docs/operations/customer-telegram/PRODUCTION_ACTIVATION_RUNBOOK.md`](operations/customer-telegram/PRODUCTION_ACTIVATION_RUNBOOK.md).
+- **STOP after DARK install:** no production bot creation, credential entry, webhook, worker start, flag ON,
+  customer message, pilot, manufactured trade, or execution change.
+
 > Concise pointer. **Notion is the source of truth** for the full programme
 > lifecycle (*GuvFX — Current State v0.52*); GitHub holds implementation, tests and
 > concise evidence. This file does not assert point-in-time PR status. Full state
