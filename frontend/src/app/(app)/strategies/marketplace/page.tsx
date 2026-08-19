@@ -14,6 +14,7 @@ import {
 } from "@/lib/strategy-journey";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -467,6 +468,7 @@ export default function StrategyMarketplacePage() {
   // Render
   // ─────────────────────────────────────────────────────────────────────
   return (
+    <LocalizedBetaSurface lang={lang}>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         {/* Header */}
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>{t(lang, "marketplace.title")}</h1>
@@ -849,5 +851,6 @@ export default function StrategyMarketplacePage() {
           </div>
         )}
       </div>
+    </LocalizedBetaSurface>
   );
 }

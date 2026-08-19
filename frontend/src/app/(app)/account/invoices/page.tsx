@@ -2,6 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { useLang } from "@/components/AppShell";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { localeFor } from "@/lib/i18n";
+import { localizeBackendCustomerText } from "@/lib/active-beta-i18n";
 import type { Invoice, InvoicesResponse } from "@/types/billing";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -11,15 +15,15 @@ import type { Invoice, InvoicesResponse } from "@/types/billing";
 const humanize = (s: string) =>
   s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-const fmtDate = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-US", {
+const fmtDate = (iso: string, lang: "en" | "ja") =>
+  new Date(iso).toLocaleDateString(localeFor(lang), {
     year: "numeric",
     month: "short",
     day: "numeric",
   });
 
-const fmtDateTime = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-US", {
+const fmtDateTime = (iso: string, lang: "en" | "ja") =>
+  new Date(iso).toLocaleDateString(localeFor(lang), {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -56,9 +60,11 @@ const glassCard: React.CSSProperties = {
 // ─────────────────────────────────────────────────────────────────────
 
 function InvoiceCard({ inv }: { inv: Invoice }) {
+  const lang = useLang();
   const color = statusColor[inv.status] ?? "#94a3b8";
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div
       style={{
         ...glassCard,
@@ -108,7 +114,7 @@ function InvoiceCard({ inv }: { inv: Invoice }) {
           Period
         </div>
         <div style={{ fontSize: "0.85rem", color: "#c2d5ff" }}>
-          {fmtDate(inv.period_start)} – {fmtDate(inv.period_end)}
+          {fmtDate(inv.period_start, lang)} – {fmtDate(inv.period_end, lang)}
         </div>
       </div>
 
@@ -124,7 +130,7 @@ function InvoiceCard({ inv }: { inv: Invoice }) {
           Issued
         </div>
         <div style={{ fontSize: "0.85rem", color: "#c2d5ff" }}>
-          {fmtDate(inv.issue_date)}
+          {fmtDate(inv.issue_date, lang)}
         </div>
       </div>
 
@@ -171,11 +177,12 @@ function InvoiceCard({ inv }: { inv: Invoice }) {
               marginTop: 2,
             }}
           >
-            Paid {fmtDateTime(inv.paid_at)}
+            Paid {fmtDateTime(inv.paid_at, lang)}
           </div>
         )}
       </div>
     </div>
+    </LocalizedBetaSurface>
   );
 }
 
@@ -184,6 +191,7 @@ function InvoiceCard({ inv }: { inv: Invoice }) {
 // ─────────────────────────────────────────────────────────────────────
 
 export default function InvoicesPage() {
+  const lang = useLang();
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -211,6 +219,7 @@ export default function InvoicesPage() {
   }, []);
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ maxWidth: 900, margin: "0 auto" }}>
       <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Invoices</h1>
       <p
@@ -247,7 +256,7 @@ export default function InvoicesPage() {
             fontSize: "0.9rem",
           }}
         >
-          <p style={{ margin: 0 }}>{error}</p>
+          <p style={{ margin: 0 }}>{localizeBackendCustomerText(lang, error, "error")}</p>
         </div>
       )}
 
@@ -274,5 +283,6 @@ export default function InvoicesPage() {
         </div>
       )}
     </div>
+    </LocalizedBetaSurface>
   );
 }

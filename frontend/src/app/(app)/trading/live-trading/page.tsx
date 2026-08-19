@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { apiFetch } from "@/lib/api";
 import { t } from "@/lib/i18n";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { localizeBackendCustomerText } from "@/lib/active-beta-i18n";
 import type { TradingAccount, StrategyAssignment } from "@/types/strategies";
 
 // =============================================================================
@@ -133,28 +135,31 @@ export default function LiveTradingPage() {
         if (response.ok) {
           setDemoTradeMessage({
             type: "success",
-            text: `Demo trade created (Job #${response.job_id}). ${response.daily_trades ? `${response.daily_trades.used}/${response.daily_trades.limit} daily trades used.` : ""}`,
+            text: lang === "ja"
+              ? `デモ取引を作成しました（ジョブ #${response.job_id}）。${response.daily_trades ? `本日の取引数: ${response.daily_trades.used}/${response.daily_trades.limit}。` : ""}`
+              : `Demo trade created (Job #${response.job_id}). ${response.daily_trades ? `${response.daily_trades.used}/${response.daily_trades.limit} daily trades used.` : ""}`,
           });
         } else {
           setDemoTradeMessage({
             type: "error",
-            text: response.message || response.error || "Failed to create demo trade",
+              text: localizeBackendCustomerText(lang, response.message || response.error || "Failed to create demo trade", "error"),
           });
         }
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : "Failed to create demo trade";
         setDemoTradeMessage({
           type: "error",
-          text: errorMessage,
+          text: localizeBackendCustomerText(lang, errorMessage, "error"),
         });
       } finally {
         setDemoTradeLoading(null);
       }
     },
-    []
+    [lang]
   );
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ maxWidth: 1000, margin: "0 auto" }}>
       {/* Header */}
       <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>
@@ -538,5 +543,6 @@ export default function LiveTradingPage() {
         </div>
       </Card>
     </div>
+    </LocalizedBetaSurface>
   );
 }

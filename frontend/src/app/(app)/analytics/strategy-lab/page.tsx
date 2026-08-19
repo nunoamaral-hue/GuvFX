@@ -5,6 +5,9 @@ import { apiFetch } from "@/lib/api";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { useLang } from "@/components/AppShell";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { localizeBackendCustomerText, localizeControlledEnum } from "@/lib/active-beta-i18n";
 
 // ─────────────────────────────────────────────────────────────────
 // Types
@@ -118,6 +121,7 @@ function dollar(n: number) { return (n >= 0 ? "$" : "-$") + Math.abs(n).toFixed(
 // ─────────────────────────────────────────────────────────────────
 
 export default function StrategyLabPage() {
+  const lang = useLang();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState("rsi_mean_reversion");
   const [symbol, setSymbol] = useState("EURUSD");
@@ -395,6 +399,7 @@ export default function StrategyLabPage() {
   }, [selectedTemplate, symbol, timeframe, templates]);
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ maxWidth: 1200, margin: "0 auto" }}>
       <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Strategy Lab</h1>
       <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "0.25rem" }}>
@@ -432,7 +437,7 @@ export default function StrategyLabPage() {
         </Button>
       </div>
 
-      {error && <div style={{ ...glass, borderColor: "rgba(248,113,113,0.3)", color: "#f87171", fontSize: "0.85rem" }}>{error}</div>}
+      {error && <div style={{ ...glass, borderColor: "rgba(248,113,113,0.3)", color: "#f87171", fontSize: "0.85rem" }}>{localizeBackendCustomerText(lang, error, "error")}</div>}
 
       {/* ── Market State + Strategy Selection (SI-1) ── */}
       {(marketState || strategySelection) && (
@@ -440,9 +445,9 @@ export default function StrategyLabPage() {
           <div style={secHeader}>Market State &amp; Strategy Selection <span style={{ textTransform: "none", color: "#64748b", fontWeight: 400 }}>— research guidance, not a signal</span></div>
           {marketState && (
             <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap", marginBottom: "0.75rem" }}>
-              <Badge color="blue">{marketState.current_state}</Badge>
-              <span style={{ fontSize: "0.78rem", color: "#94a3b8" }}>confidence: {marketState.confidence}</span>
-              <span style={{ fontSize: "0.74rem", color: "#64748b" }}>{marketState.supporting_evidence.slice(0, 3).join(" · ")}</span>
+              <Badge color="blue">{localizeControlledEnum(lang, "marketState", marketState.current_state)}</Badge>
+              <span style={{ fontSize: "0.78rem", color: "#94a3b8" }}>confidence: {localizeControlledEnum(lang, "confidence", marketState.confidence)}</span>
+              <span style={{ fontSize: "0.74rem", color: "#64748b" }}>{marketState.supporting_evidence.slice(0, 3).map((value) => localizeBackendCustomerText(lang, value, "evidence")).join(" · ")}</span>
             </div>
           )}
           {strategySelection && (
@@ -453,20 +458,20 @@ export default function StrategyLabPage() {
               <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", marginBottom: "0.7rem" }}>
                 {strategySelection.preferred_families.map((f, i) => (
                   <Badge key={i} color={f.suitability === "HIGH" ? "green" : f.suitability === "MEDIUM" ? "yellow" : "gray"}>
-                    {f.label} · {f.suitability}
+                    {localizeControlledEnum(lang, "strategyFamily", f.family)} · {localizeControlledEnum(lang, "suitability", f.suitability)}
                   </Badge>
                 ))}
               </div>
               <div style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.3rem" }}>Top candidates</div>
               {strategySelection.preferred_strategies.slice(0, 4).map((s, i) => (
                 <div key={i} style={{ fontSize: "0.8rem", color: "#b7c5dd", marginBottom: "0.2rem" }}>
-                  <span style={{ color: "#e9f4ff", fontWeight: 500 }}>{s.name}</span> ({s.family}, {s.suitability})
+                  <span style={{ color: "#e9f4ff", fontWeight: 500 }}>{s.name}</span> ({localizeControlledEnum(lang, "strategyFamily", s.family)}, {localizeControlledEnum(lang, "suitability", s.suitability)})
                   {s.kb_avg_quality != null ? ` · hist. quality ${s.kb_avg_quality} (n=${s.kb_observations})` : " · limited history"}
                 </div>
               ))}
               <div style={{ marginTop: "0.6rem", paddingTop: "0.5rem", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
                 {strategySelection.rationale.map((r, i) => (
-                  <div key={i} style={{ fontSize: "0.76rem", color: i === strategySelection.rationale.length - 1 ? "#475569" : "#8fa0b7", fontStyle: i === strategySelection.rationale.length - 1 ? "italic" : "normal", marginBottom: "0.15rem" }}>{r}</div>
+                  <div key={i} style={{ fontSize: "0.76rem", color: i === strategySelection.rationale.length - 1 ? "#475569" : "#8fa0b7", fontStyle: i === strategySelection.rationale.length - 1 ? "italic" : "normal", marginBottom: "0.15rem" }}>{localizeBackendCustomerText(lang, r, "research")}</div>
                 ))}
               </div>
             </>
@@ -483,7 +488,7 @@ export default function StrategyLabPage() {
               {featureContext.trade_quality.overall_score}
             </div>
             <Badge color={featureContext.trade_quality.overall_score >= 80 ? "green" : featureContext.trade_quality.overall_score >= 60 ? "yellow" : "red"}>
-              {featureContext.trade_quality.overall_label}
+              {localizeBackendCustomerText(lang, featureContext.trade_quality.overall_label, "research")}
             </Badge>
           </div>
           {/* bucket bars */}
@@ -506,7 +511,7 @@ export default function StrategyLabPage() {
           </div>
           <div style={{ fontSize: "0.7rem", color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.3rem" }}>What this means</div>
           {featureContext.trade_quality.what_this_means.map((m, i) => (
-            <div key={i} style={{ fontSize: "0.8rem", color: i === 0 ? "#b7c5dd" : "#8fa0b7", marginBottom: "0.15rem" }}>{i === 0 ? "" : "· "}{m}</div>
+            <div key={i} style={{ fontSize: "0.8rem", color: i === 0 ? "#b7c5dd" : "#8fa0b7", marginBottom: "0.15rem" }}>{i === 0 ? "" : "· "}{localizeBackendCustomerText(lang, m, "research")}</div>
           ))}
         </div>
       )}
@@ -517,13 +522,13 @@ export default function StrategyLabPage() {
           <div style={secHeader}>Market Context <span style={{ textTransform: "none", color: "#64748b", fontWeight: 400 }}>— normalised research features</span></div>
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
             <Badge color={featureContext.snapshot?.trend_state?.includes("up") ? "green" : featureContext.snapshot?.trend_state?.includes("down") ? "red" : "gray"}>
-              trend: {featureContext.snapshot?.trend_state || "—"}
+              trend: {featureContext.snapshot?.trend_state ? localizeControlledEnum(lang, "feature", featureContext.snapshot.trend_state) : "—"}
             </Badge>
             <Badge color={featureContext.snapshot?.volatility_state === "high" ? "yellow" : featureContext.snapshot?.volatility_state === "low" ? "gray" : "blue"}>
-              volatility: {featureContext.snapshot?.volatility_state || "—"} ({featureContext.volatility?.volatility_expansion})
+              volatility: {featureContext.snapshot?.volatility_state ? localizeControlledEnum(lang, "feature", featureContext.snapshot.volatility_state) : "—"} ({featureContext.volatility?.volatility_expansion ? localizeControlledEnum(lang, "feature", featureContext.volatility.volatility_expansion) : "—"})
             </Badge>
-            <Badge color="blue">breakout: {featureContext.snapshot?.breakout_state || "—"}</Badge>
-            <Badge color="gray">session: {featureContext.snapshot?.session_profile || "—"}</Badge>
+            <Badge color="blue">breakout: {featureContext.snapshot?.breakout_state ? localizeControlledEnum(lang, "feature", featureContext.snapshot.breakout_state) : "—"}</Badge>
+            <Badge color="gray">session: {featureContext.snapshot?.session_profile ? localizeControlledEnum(lang, "feature", featureContext.snapshot.session_profile) : "—"}</Badge>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.5rem", marginBottom: "0.75rem" }}>
             <div style={{ fontSize: "0.78rem", color: "#b7c5dd" }}>
@@ -545,10 +550,10 @@ export default function StrategyLabPage() {
           </div>
           {featureContext.normalisation?.position_size_warning && (
             <div style={{ fontSize: "0.78rem", color: "#fbbf24", padding: "0.5rem 0.7rem", borderRadius: 8, border: "1px solid rgba(251,191,36,0.25)", background: "rgba(251,191,36,0.06)" }}>
-              ⚠ {featureContext.normalisation?.warning_text}
+              ⚠ {localizeBackendCustomerText(lang, featureContext.normalisation?.warning_text, "warning")}
               {featureContext.normalisation?.position_size_warning_reasons?.length ? (
                 <div style={{ color: "#94a3b8", fontSize: "0.72rem", marginTop: "0.2rem" }}>
-                  {featureContext.normalisation.position_size_warning_reasons.join(" · ")}
+                  {featureContext.normalisation.position_size_warning_reasons.map((value) => localizeBackendCustomerText(lang, value, "warning")).join(" · ")}
                 </div>
               ) : null}
             </div>
@@ -563,10 +568,10 @@ export default function StrategyLabPage() {
                   {featureContext.news.impact} impact
                 </Badge>
                 <span style={{ fontSize: "0.85rem", color: "#e9f4ff", fontWeight: 500 }}>
-                  {featureContext.news.event_name || featureContext.news.event_type} ({featureContext.news.currency})
+                  {lang === "ja" ? "重要な経済イベント" : featureContext.news.event_name || featureContext.news.event_type} ({featureContext.news.currency})
                 </span>
                 <Badge color={featureContext.news.event_relevance === "HIGH" ? "green" : featureContext.news.event_relevance === "MEDIUM" ? "blue" : "gray"}>
-                  relevance: {featureContext.news.event_relevance}
+                  relevance: {localizeControlledEnum(lang, "feature", featureContext.news.event_relevance)}
                 </Badge>
                 <span style={{ fontSize: "0.78rem", color: "#94a3b8" }}>
                   {featureContext.news.is_upcoming
@@ -589,23 +594,23 @@ export default function StrategyLabPage() {
             <div>
               <span style={{ fontSize: "0.78rem", color: "#94a3b8" }}>Current: </span>
               <Badge color={regime.current_regime === "BULL" ? "green" : regime.current_regime === "BEAR" ? "red" : "gray"}>
-                {regime.current_regime}
+                {localizeControlledEnum(lang, "regime", regime.current_regime)}
               </Badge>
             </div>
             {["BULL", "SIDEWAYS", "BEAR"].map((r) => (
               <div key={r} style={{ fontSize: "0.82rem", color: "#b7c5dd" }}>
-                {r}: <span style={{ color: "#e5f4ff", fontWeight: 600 }}>{regime.regime_pct[r]}%</span>
+                {localizeControlledEnum(lang, "regime", r)}: <span style={{ color: "#e5f4ff", fontWeight: 600 }}>{regime.regime_pct[r]}%</span>
                 <span style={{ color: "#64748b", fontSize: "0.72rem" }}> (persist: {pct((regime.persistence[r] || 0) * 100)})</span>
               </div>
             ))}
           </div>
           <div style={secHeader}>Transition Matrix</div>
           <table style={{ width: "auto", borderCollapse: "collapse" }}>
-            <thead><tr><th style={th}>From \ To</th>{["BULL", "SIDEWAYS", "BEAR"].map((r) => <th key={r} style={th}>{r}</th>)}</tr></thead>
+            <thead><tr><th style={th}>From \ To</th>{["BULL", "SIDEWAYS", "BEAR"].map((r) => <th key={r} style={th}>{localizeControlledEnum(lang, "regime", r)}</th>)}</tr></thead>
             <tbody>
               {["BULL", "SIDEWAYS", "BEAR"].map((src) => (
                 <tr key={src}>
-                  <td style={{ ...td, fontWeight: 600 }}>{src}</td>
+                  <td style={{ ...td, fontWeight: 600 }}>{localizeControlledEnum(lang, "regime", src)}</td>
                   {["BULL", "SIDEWAYS", "BEAR"].map((dst) => {
                     const p = (regime.transition_matrix.probabilities[src]?.[dst] || 0) * 100;
                     return <td key={dst} style={{ ...numTd, color: p > 50 ? "#86efac" : p > 20 ? "#e5f4ff" : "#64748b" }}>{pct(p)}</td>;
@@ -623,7 +628,7 @@ export default function StrategyLabPage() {
           <div style={secHeader}>Regime Filter Comparison</div>
           <div style={{ marginBottom: "0.5rem" }}>
             <Badge color={comparison.filter_verdict === "improved" ? "green" : comparison.filter_verdict === "worsened" ? "red" : "gray"}>
-              {comparison.filter_verdict.toUpperCase()}
+              {localizeControlledEnum(lang, "feature", comparison.filter_verdict)}
             </Badge>
             <span style={{ fontSize: "0.82rem", color: "#b7c5dd", marginLeft: "0.5rem" }}>
               {comparison.improvement_pct > 0 ? "+" : ""}{comparison.improvement_pct.toFixed(1)}% improvement
@@ -650,7 +655,7 @@ export default function StrategyLabPage() {
           <div style={secHeader}>Parameter Optimisation</div>
           {optWarnings.map((w, i) => (
             <div key={i} style={{ fontSize: "0.78rem", color: "#fbbf24", marginBottom: "0.5rem", padding: "0.4rem 0.6rem", background: "rgba(251,191,36,0.06)", borderRadius: 6, border: "1px solid rgba(251,191,36,0.15)" }}>
-              {w}
+              {localizeBackendCustomerText(lang, w, "warning")}
             </div>
           ))}
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -733,14 +738,14 @@ export default function StrategyLabPage() {
               {recommendations.filter((r) => r.priority === "high").map((r, i) => (
                 <div key={`h-${i}`} style={{ padding: "0.6rem 0.75rem", marginBottom: "0.35rem", borderRadius: 8, border: "1px solid rgba(248,113,113,0.15)", background: "rgba(248,113,113,0.04)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" }}>
-                    <Badge color="red">{r.category}</Badge>
-                    <span style={{ fontSize: "0.85rem", color: "#e9f4ff", fontWeight: 500 }}>{r.title}</span>
+                    <Badge color="red">{localizeBackendCustomerText(lang, r.category, "recommendation")}</Badge>
+                    <span style={{ fontSize: "0.85rem", color: "#e9f4ff", fontWeight: 500 }}>{localizeBackendCustomerText(lang, r.title, "recommendation")}</span>
                   </div>
                   {r.evidence.slice(0, 2).map((e, j) => (
-                    <div key={j} style={{ fontSize: "0.75rem", color: "#94a3b8", marginLeft: "0.5rem" }}>{e}</div>
+                    <div key={j} style={{ fontSize: "0.75rem", color: "#94a3b8", marginLeft: "0.5rem" }}>{localizeBackendCustomerText(lang, e, "evidence")}</div>
                   ))}
                   {r.suggested_next_action && (
-                    <div style={{ fontSize: "0.75rem", color: "#4ab3ff", marginTop: "0.2rem" }}>→ {r.suggested_next_action}</div>
+                    <div style={{ fontSize: "0.75rem", color: "#4ab3ff", marginTop: "0.2rem" }}>→ {localizeBackendCustomerText(lang, r.suggested_next_action, "recommendation")}</div>
                   )}
                 </div>
               ))}
@@ -756,11 +761,11 @@ export default function StrategyLabPage() {
               {recommendations.filter((r) => r.priority === "medium").map((r, i) => (
                 <div key={`m-${i}`} style={{ padding: "0.5rem 0.75rem", marginBottom: "0.3rem", borderRadius: 8, border: "1px solid rgba(251,191,36,0.1)", background: "rgba(251,191,36,0.02)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.15rem" }}>
-                    <Badge color="yellow">{r.category}</Badge>
-                    <span style={{ fontSize: "0.82rem", color: "#e9f4ff" }}>{r.title}</span>
+                    <Badge color="yellow">{localizeBackendCustomerText(lang, r.category, "recommendation")}</Badge>
+                    <span style={{ fontSize: "0.82rem", color: "#e9f4ff" }}>{localizeBackendCustomerText(lang, r.title, "recommendation")}</span>
                   </div>
                   {r.suggested_next_action && (
-                    <div style={{ fontSize: "0.72rem", color: "#94a3b8" }}>→ {r.suggested_next_action}</div>
+                    <div style={{ fontSize: "0.72rem", color: "#94a3b8" }}>→ {localizeBackendCustomerText(lang, r.suggested_next_action, "recommendation")}</div>
                   )}
                 </div>
               ))}
@@ -775,7 +780,7 @@ export default function StrategyLabPage() {
               </div>
               {recommendations.filter((r) => r.priority === "low").map((r, i) => (
                 <div key={`l-${i}`} style={{ padding: "0.4rem 0.75rem", marginBottom: "0.25rem", borderRadius: 6, background: "rgba(255,255,255,0.01)" }}>
-                  <span style={{ fontSize: "0.78rem", color: "#8fa0b7" }}>{r.title}</span>
+                  <span style={{ fontSize: "0.78rem", color: "#8fa0b7" }}>{localizeBackendCustomerText(lang, r.title, "recommendation")}</span>
                 </div>
               ))}
             </div>
@@ -794,10 +799,10 @@ export default function StrategyLabPage() {
           </div>
 
           <div style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.3rem" }}>Trader summary</div>
-          <div style={{ fontSize: "0.88rem", color: "#e9f4ff", lineHeight: 1.5, marginBottom: "0.85rem" }}>{narrative.trader_summary}</div>
+          <div style={{ fontSize: "0.88rem", color: "#e9f4ff", lineHeight: 1.5, marginBottom: "0.85rem" }}>{localizeBackendCustomerText(lang, narrative.trader_summary, "research")}</div>
 
           <div style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.3rem" }}>Education note</div>
-          <div style={{ fontSize: "0.82rem", color: "#b7c5dd", lineHeight: 1.5, marginBottom: "0.85rem" }}>{narrative.education_note}</div>
+          <div style={{ fontSize: "0.82rem", color: "#b7c5dd", lineHeight: 1.5, marginBottom: "0.85rem" }}>{localizeBackendCustomerText(lang, narrative.education_note, "education")}</div>
 
           <div style={{ display: "flex", gap: "0.6rem", marginBottom: "0.5rem" }}>
             <button onClick={() => setShowAnalyst(!showAnalyst)} style={{ fontSize: "0.74rem", color: "#4ab3ff", background: "none", border: "1px solid rgba(74,179,255,0.3)", borderRadius: 6, padding: "0.3rem 0.7rem", cursor: "pointer" }}>
@@ -810,19 +815,19 @@ export default function StrategyLabPage() {
 
           {showAnalyst && (
             <div style={{ fontSize: "0.82rem", color: "#b7c5dd", lineHeight: 1.5, padding: "0.6rem 0.8rem", background: "rgba(74,179,255,0.03)", borderRadius: 8, marginBottom: "0.5rem" }}>
-              {narrative.analyst_note}
+              {localizeBackendCustomerText(lang, narrative.analyst_note, "research")}
             </div>
           )}
 
           {showJournal && (
             <div style={{ fontSize: "0.8rem", color: "#b7c5dd", lineHeight: 1.5, padding: "0.6rem 0.8rem", background: "rgba(74,179,255,0.03)", borderRadius: 8, marginBottom: "0.5rem" }}>
-              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#94a3b8" }}>Setup:</b> {narrative.journal_note.setup}</div>
-              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#94a3b8" }}>Context:</b> {narrative.journal_note.context}</div>
-              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#94a3b8" }}>Entry thesis:</b> {narrative.journal_note.entry_thesis}</div>
-              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#fca5a5" }}>Risk factors:</b> {narrative.journal_note.risk_factors.join("; ")}</div>
+              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#94a3b8" }}>Setup:</b> {localizeBackendCustomerText(lang, narrative.journal_note.setup, "research")}</div>
+              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#94a3b8" }}>Context:</b> {localizeBackendCustomerText(lang, narrative.journal_note.context, "research")}</div>
+              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#94a3b8" }}>Entry thesis:</b> {localizeBackendCustomerText(lang, narrative.journal_note.entry_thesis, "research")}</div>
+              <div style={{ marginBottom: "0.3rem" }}><b style={{ color: "#fca5a5" }}>Risk factors:</b> {narrative.journal_note.risk_factors.map((value) => localizeBackendCustomerText(lang, value, "warning")).join("; ")}</div>
               <div><b style={{ color: "#94a3b8" }}>Review after outcome:</b>
                 <ul style={{ margin: "0.2rem 0 0 1rem", padding: 0 }}>
-                  {narrative.journal_note.review_after_outcome.map((q, i) => <li key={i} style={{ marginBottom: "0.15rem" }}>{q}</li>)}
+                  {narrative.journal_note.review_after_outcome.map((q, i) => <li key={i} style={{ marginBottom: "0.15rem" }}>{localizeBackendCustomerText(lang, q, "education")}</li>)}
                 </ul>
               </div>
             </div>
@@ -840,26 +845,26 @@ export default function StrategyLabPage() {
           <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Trade Intelligence <span style={{ textTransform: "none", color: "#64748b", fontWeight: 400 }}>— structured rationale (research context, not advice)</span></span>
             <span style={{ fontSize: "0.68rem", color: "#64748b", fontWeight: 400, textTransform: "none" }}>
-              {tradeIntel.identity.direction} · {tradeIntel.identity.setup_type}
+              {lang === "ja" ? "調査対象" : tradeIntel.identity.direction} · {lang === "ja" ? "セットアップ" : tradeIntel.identity.setup_type}
               {tradeIntel.public_language_pass ? " · public-safe ✓" : " · sanitised ⚠"}
             </span>
           </div>
 
           <div style={{ fontSize: "0.86rem", color: "#e9f4ff", lineHeight: 1.5, marginBottom: "0.85rem" }}>
-            {tradeIntel.trade_thesis}
+            {localizeBackendCustomerText(lang, tradeIntel.trade_thesis, "research")}
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem", marginBottom: "0.85rem" }}>
             <div>
               <div style={{ fontSize: "0.72rem", color: "#86efac", fontWeight: 600, marginBottom: "0.3rem", textTransform: "uppercase" }}>Supporting factors</div>
               {tradeIntel.supporting_factors.map((f, i) => (
-                <div key={i} style={{ fontSize: "0.78rem", color: "#b7c5dd", marginBottom: "0.2rem" }}>+ {f}</div>
+                <div key={i} style={{ fontSize: "0.78rem", color: "#b7c5dd", marginBottom: "0.2rem" }}>+ {localizeBackendCustomerText(lang, f, "evidence")}</div>
               ))}
             </div>
             <div>
               <div style={{ fontSize: "0.72rem", color: "#fca5a5", fontWeight: 600, marginBottom: "0.3rem", textTransform: "uppercase" }}>Risk factors</div>
               {tradeIntel.risk_factors.map((f, i) => (
-                <div key={i} style={{ fontSize: "0.78rem", color: "#b7c5dd", marginBottom: "0.2rem" }}>− {f}</div>
+                <div key={i} style={{ fontSize: "0.78rem", color: "#b7c5dd", marginBottom: "0.2rem" }}>− {localizeBackendCustomerText(lang, f, "warning")}</div>
               ))}
             </div>
           </div>
@@ -868,7 +873,7 @@ export default function StrategyLabPage() {
             <div style={{ marginBottom: "0.7rem" }}>
               <div style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 600, marginBottom: "0.3rem", textTransform: "uppercase" }}>Decision notes</div>
               {tradeIntel.decision_notes.map((d, i) => (
-                <div key={i} style={{ fontSize: "0.78rem", color: "#8fa0b7", marginBottom: "0.2rem" }}>{d}</div>
+                <div key={i} style={{ fontSize: "0.78rem", color: "#8fa0b7", marginBottom: "0.2rem" }}>{localizeBackendCustomerText(lang, d, "research")}</div>
               ))}
             </div>
           )}
@@ -884,7 +889,7 @@ export default function StrategyLabPage() {
           )}
 
           <div style={{ fontSize: "0.78rem", color: "#8fa0b7", fontStyle: "italic", paddingTop: "0.6rem", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
-            {tradeIntel.audience_safe_summary}
+            {localizeBackendCustomerText(lang, tradeIntel.audience_safe_summary, "research")}
           </div>
         </div>
       )}
@@ -906,9 +911,9 @@ export default function StrategyLabPage() {
                 <div key={i} style={{ padding: "0.5rem 0.7rem", marginBottom: "0.35rem", borderRadius: 8, border: "1px solid rgba(74,179,255,0.1)", background: "rgba(74,179,255,0.03)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
                     <Badge color={ins.confidence === "high" ? "green" : ins.confidence === "medium" ? "yellow" : "gray"}>{ins.confidence} · n={ins.sample_count}</Badge>
-                    <span style={{ fontSize: "0.83rem", color: "#e9f4ff" }}>{ins.title}</span>
+                    <span style={{ fontSize: "0.83rem", color: "#e9f4ff" }}>{localizeBackendCustomerText(lang, ins.title, "research")}</span>
                   </div>
-                  <div style={{ fontSize: "0.7rem", color: "#64748b", marginTop: "0.2rem" }}>{ins.caution}</div>
+                  <div style={{ fontSize: "0.7rem", color: "#64748b", marginTop: "0.2rem" }}>{localizeBackendCustomerText(lang, ins.caution, "warning")}</div>
                 </div>
               ))}
             </div>
@@ -953,7 +958,7 @@ export default function StrategyLabPage() {
 
           {attribution.warnings.length > 0 && (
             <div style={{ fontSize: "0.7rem", color: "#fbbf24", marginTop: "0.6rem" }}>
-              {attribution.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+              {attribution.warnings.map((w, i) => <div key={i}>⚠ {localizeBackendCustomerText(lang, w, "warning")}</div>)}
             </div>
           )}
         </div>
@@ -996,7 +1001,7 @@ export default function StrategyLabPage() {
                       <td style={numTd}>{pct(e.avg_drawdown)}</td>
                       <td style={td}>
                         <Badge color={e.confidence === "high" ? "green" : e.confidence === "medium" ? "yellow" : "gray"}>
-                          {e.confidence.toUpperCase()} ({e.confidence_score})
+                          {localizeControlledEnum(lang, "confidence", e.confidence)} ({e.confidence_score})
                         </Badge>
                       </td>
                       <td style={numTd}>{pct(e.robustness_pct)}</td>
@@ -1086,5 +1091,6 @@ export default function StrategyLabPage() {
         historical data and may not perform similarly in live trading. Not financial advice. No automatic deployment.
       </div>
     </div>
+    </LocalizedBetaSurface>
   );
 }

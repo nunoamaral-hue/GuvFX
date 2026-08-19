@@ -8,6 +8,8 @@ import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { useLang } from "@/components/AppShell";
 import { t } from "@/lib/i18n";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { localizeBackendCustomerText } from "@/lib/active-beta-i18n";
 
 const FOREX_SYMBOLS = [
   // Majors
@@ -791,6 +793,7 @@ export default function CreateStrategyPage() {
   };
 
   return (
+    <LocalizedBetaSurface lang={lang}>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
           {t(lang, "createStrategy.title")}
@@ -828,7 +831,7 @@ export default function CreateStrategyPage() {
           </span>
         </div>
 
-        {error && <Alert type="error">{error}</Alert>}
+        {error && <Alert type="error">{localizeBackendCustomerText(lang, error, "error")}</Alert>}
         {info && <Alert type="info">{info}</Alert>}
 
         {!accessToken && (
@@ -4035,5 +4038,6 @@ export default function CreateStrategyPage() {
           </div>
         </form>
       </div>
+    </LocalizedBetaSurface>
   );
 }

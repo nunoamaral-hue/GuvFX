@@ -17,9 +17,11 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useLang } from "@/components/AppShell";
-import { t } from "@/lib/i18n";
+import { localeFor, t, type Lang } from "@/lib/i18n";
+import { localizeActiveBetaCopy, localizeBackendCustomerText, localizeControlledEnum } from "@/lib/active-beta-i18n";
 import { apiFetch } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
 
 // ─── Types ───
 type Strategy = { id: number; name: string; symbol_universe?: string; is_active?: boolean };
@@ -54,11 +56,11 @@ const actionLink: React.CSSProperties = { fontSize: "0.8rem", border: "1px solid
 const COMMON = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "USDCAD", "BTCUSD", ".US30Cash"];
 const LS_KEY = "guvfx.focus.symbol";
 
-function money(n: number | null | undefined, ccy = "") {
+function money(lang: Lang, n: number | null | undefined, ccy = "") {
   if (n == null) return "—";
-  return (n < 0 ? "-" : "") + (ccy ? ccy + " " : "$") + Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return (n < 0 ? "-" : "") + (ccy ? ccy + " " : "$") + Math.abs(n).toLocaleString(localeFor(lang), { maximumFractionDigits: 2 });
 }
-function nowClock() { return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+function nowClock(lang: Lang, date: Date) { return date.toLocaleTimeString(localeFor(lang), { hour: "2-digit", minute: "2-digit" }); }
 function greeting() { const h = new Date().getHours(); return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; }
 
 // ─── Phase 2: Human translation layer (market state → Market Mood) ───
@@ -156,6 +158,9 @@ function marketIdentity(sym: string): { name: string; glyph: string; bg: string 
   const m = (sym || "").toUpperCase().match(/^([A-Z]{3})([A-Z]{3})$/);
   if (m && CCY_FLAG[m[1]] && CCY_FLAG[m[2]]) return { name: `${m[1]} / ${m[2]}`, glyph: `${CCY_FLAG[m[1]]} ${CCY_FLAG[m[2]]}`, bg: MARKET_BG.fx };
   return { name: sym, glyph: "", bg: MARKET_BG.fx };
+}
+function marketName(lang: Lang, sym: string): string {
+  return localizeActiveBetaCopy(lang, marketIdentity(sym).name);
 }
 
 // ─── Layer 3: Simple mood (Bull / Sideways / Bear) — display mapping over existing state ───
@@ -278,7 +283,7 @@ export default function DashboardPage() {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [perf, setPerf] = useState<Perf | null>(null);
   const [normFlag, setNormFlag] = useState<string | null>(null);
-  const [syncedAt, setSyncedAt] = useState("");
+  const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   const [bootLoaded, setBootLoaded] = useState(false);
 
   // TB-4 (Trusted Beta) — the truthful per-account status machine (Awaiting → Validating → Runtime
@@ -298,7 +303,7 @@ export default function DashboardPage() {
   const [symbol, setSymbol] = useState("");
   const [selection, setSelection] = useState<Selection | null>(null);
   const [selLoading, setSelLoading] = useState(false);
-  const [selAt, setSelAt] = useState("");
+  const [selAt, setSelAt] = useState<Date | null>(null);
   const [prevSymbol, setPrevSymbol] = useState("");
 
   // Reset Market-Focus state the moment the selected market changes — done during render (React's
@@ -364,7 +369,7 @@ export default function DashboardPage() {
 
       const primary = (accts || []).find((a) => a.is_active) || (accts || [])[0];
       if (primary) {
-        apiFetch<Perf>(`/api/analytics/trade-history/?account_id=${primary.id}`, {}).then((p) => { setPerf(p); setSyncedAt(nowClock()); }).catch(() => setSyncedAt(nowClock()));
+        apiFetch<Perf>(`/api/analytics/trade-history/?account_id=${primary.id}`, {}).then((p) => { setPerf(p); setSyncedAt(new Date()); }).catch(() => setSyncedAt(new Date()));
         // Today's PnL from the existing daily aggregation endpoint (UTC day of close_time)
         apiFetch<{ series?: { date: string; net_pnl: number }[] }>(`/api/analytics/daily-pnl/?account_id=${primary.id}&days=1`, {})
           .then((d) => {
@@ -379,7 +384,7 @@ export default function DashboardPage() {
             .then((d) => { if (d?.totals) setStratPerf((prev) => ({ ...prev, [s.id]: d.totals! })); })
             .catch(() => { /* placeholders remain */ });
         });
-      } else setSyncedAt(nowClock());
+      } else setSyncedAt(new Date());
     })();
   }, []);
 
@@ -389,7 +394,7 @@ export default function DashboardPage() {
     try { window.localStorage.setItem(LS_KEY, symbol); } catch { /* ignore */ }
     // (loading/reset handled by the render-phase guard above when `symbol` changes)
     apiFetch<Selection>(`/api/backtests/strategy-selection/?symbol=${encodeURIComponent(symbol)}&timeframe=H1`, {})
-      .then((res) => { setSelection(res?.ok ? res : null); setSelAt(nowClock()); })
+      .then((res) => { setSelection(res?.ok ? res : null); setSelAt(new Date()); })
       .catch(() => setSelection(null))
       .finally(() => setSelLoading(false));
   }, [symbol]);
@@ -436,7 +441,7 @@ export default function DashboardPage() {
   const px = selection ? proxy(selection) : null;
   let risk = "Standard market risk applies.";
   if (ms?.current_state === "NEWS_SHOCK") risk = "A high-impact event is nearby — conditions can move quickly and setups are lower-quality right now.";
-  else if ((selection?.warnings || []).length) risk = selection!.warnings![0];
+  else if ((selection?.warnings || []).length) risk = localizeBackendCustomerText(lang, selection!.warnings![0], "warning");
   else if (top && (top.kb_observations || 0) < 3) risk = "Limited historical evidence for this pairing — treat as early context only.";
 
   // ── Key Events (from available news context; graceful empty state) ──
@@ -455,16 +460,17 @@ export default function DashboardPage() {
   }
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ maxWidth: 1180, margin: "0 auto" }}>
       {/* Header — greeting (dominant) + Account Status Summary card */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "1.25rem", marginBottom: "1.5rem" }}>
+      <div className="dashboard-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "1.25rem", marginBottom: "1.5rem" }}>
         <div>
-          <h1 style={{ fontSize: "1.9rem", margin: 0, color: "#f0f6ff", fontWeight: 650, letterSpacing: "-0.01em" }}>{greeting()}, {firstName || "Trader"} 👋</h1>
+          <h1 className="dashboard-greeting" style={{ fontSize: "1.9rem", margin: 0, color: "#f0f6ff", fontWeight: 650, letterSpacing: "-0.01em" }}>{lang === "ja" ? <>{localizeActiveBetaCopy(lang, greeting())}、<span className="dashboard-greeting-name">{firstName || "トレーダー"}さん 👋</span></> : `${greeting()}, ${firstName || "Trader"} 👋`}</h1>
           <p style={{ margin: "0.45rem 0 0", fontSize: "0.95rem", color: "#94a3b8", fontWeight: 400 }}>Here&apos;s your edge today.</p>
         </div>
 
         {/* Account Status Summary */}
-        <div style={{ borderRadius: 14, border: "1px solid rgba(255,255,255,0.09)", background: "rgba(10,15,35,0.6)", padding: "1.15rem 0.3rem", display: "flex", alignItems: "stretch" }}>
+        <div className="dashboard-account-summary" style={{ borderRadius: 14, border: "1px solid rgba(255,255,255,0.09)", background: "rgba(10,15,35,0.6)", padding: "1.15rem 0.3rem", display: "flex", alignItems: "stretch" }}>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 180 }}>
             <div style={microLabel}><i className="ti ti-heartbeat" aria-hidden="true" style={{ marginRight: 5 }} />Trading</div>
             {(() => {
@@ -478,7 +484,7 @@ export default function DashboardPage() {
                 : st === "DOWN" || (tradingHealth?.ok && tradingHealth?.can_trade === false) ? { text: "Unavailable", c: "#fca5a5", dot: "#f87171", known: true }
                 : { text: "Status unavailable", c: "#8b9bb4", dot: "#64748b", known: false };
               return (
-                <div title={(tradingHealth?.reasons || []).slice(0, 2).join(" · ") || undefined} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: view.known ? "0.95rem" : "0.85rem", fontWeight: view.known ? 600 : 500, color: view.c }}>
+                <div title={(tradingHealth?.reasons || []).length ? localizeBackendCustomerText(lang, tradingHealth?.reasons?.[0], "account-detail") : undefined} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: view.known ? "0.95rem" : "0.85rem", fontWeight: view.known ? 600 : 500, color: view.c }}>
                   <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 999, flexShrink: 0, background: view.dot }} />
                   {view.text}
                 </div>
@@ -490,25 +496,25 @@ export default function DashboardPage() {
               // account with no reliability snapshot (where the trading-health line above stays UNKNOWN).
               const stages = acctStatus.stages || [];
               const pending = stages.find((s) => s.state !== "HEALTHY" && s.state !== "RUNNING");
-              const label = acctStatus.overall === "HEALTHY" ? "Active" : (pending?.label || "Setting up");
+              const label = acctStatus.overall === "HEALTHY" ? "Active" : localizeBackendCustomerText(lang, pending?.label || "Setting up", "account-stage");
               const col = acctStatus.overall === "HEALTHY" ? "#86efac" : acctStatus.overall === "FAILED" ? "#fca5a5" : "#8b9bb4";
-              return <div style={{ fontSize: "0.73rem", color: col, marginTop: 2 }} title={pending?.detail || undefined}>Setup: {label}</div>;
+              return <div style={{ fontSize: "0.73rem", color: col, marginTop: 2 }} title={pending?.detail ? localizeBackendCustomerText(lang, pending.detail, "account-detail") : undefined}>Setup: {label}</div>;
             })()}
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 110 }}>
             <div style={microLabel}><i className="ti ti-wallet" aria-hidden="true" style={{ marginRight: 5 }} />Equity</div>
-            <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#f0f6ff" }}>{money(equityRef, perf?.currency)}</div>
+            <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#f0f6ff" }}>{money(lang, equityRef, perf?.currency)}</div>
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 120 }}>
             <div style={microLabel}><i className={`ti ti-trending-${dailyPnl != null && dailyPnl < 0 ? "down" : "up"}`} aria-hidden="true" style={{ marginRight: 5 }} />Daily PnL</div>
             <div style={{ fontSize: "0.95rem", fontWeight: 600, color: dailyPnl == null ? "#f0f6ff" : dailyPnl < 0 ? "#fca5a5" : "#86efac" }}>
-              {dailyPnl == null ? "—" : `${dailyPnl >= 0 ? "+" : "-"}${perf?.currency ? perf.currency + " " : "$"}${Math.abs(dailyPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              {dailyPnl == null ? "—" : `${dailyPnl >= 0 ? "+" : "-"}${perf?.currency ? perf.currency + " " : "$"}${Math.abs(dailyPnl).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
             </div>
           </div>
           <div style={{ padding: "0 1.5rem", display: "flex", flexDirection: "column", justifyContent: "space-between", minWidth: 130 }}>
             <div>
               <div style={microLabel}><i className="ti ti-clock" aria-hidden="true" style={{ marginRight: 5 }} />Updated</div>
-              <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#cbd5e1" }}>{syncedAt ? `as of ${syncedAt}` : "syncing…"}</div>
+              <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#cbd5e1" }}>{syncedAt ? `as of ${nowClock(lang, syncedAt)}` : "syncing…"}</div>
             </div>
             <Link href="/trading/terminal-access" style={{ color: "#4ab3ff", textDecoration: "none", fontSize: "0.7rem", marginTop: 6 }}>Terminal →</Link>
           </div>
@@ -529,17 +535,17 @@ export default function DashboardPage() {
               <i className={`ti ti-${trend.icon}`} aria-hidden="true" style={{ marginRight: 5 }} />{trend.label}
             </div>
             <div style={{ fontSize: "0.68rem", color: "#64748b", marginTop: 2, whiteSpace: "nowrap" }}>
-              {netPnl != null ? `Observed PnL: ${money(netPnl, perf?.currency)}${stats?.total_trades ? ` (${stats.total_trades} trades)` : ""}` : "No observed trades yet"}
+              {netPnl != null ? `Observed PnL: ${money(lang, netPnl, perf?.currency)}${stats?.total_trades ? ` (${stats.total_trades} trades)` : ""}` : "No observed trades yet"}
             </div>
           </div>
 
           {/* Secondary metrics — dense strip */}
           <div style={{ flex: 1, minWidth: 300, display: "flex", alignItems: "center", gap: "1.4rem", flexWrap: "wrap" }}>
-            <MetricTile label="Net PnL" value={<span style={{ color: netPnl == null ? "#f0f6ff" : netPnl < 0 ? "#fca5a5" : "#86efac" }}>{netPnl == null ? "—" : money(netPnl, perf?.currency)}</span>} sub={pctOfEquity != null ? `${pctOfEquity >= 0 ? "+" : ""}${pctOfEquity.toFixed(2)}% of equity` : undefined} />
+            <MetricTile label="Net PnL" value={<span style={{ color: netPnl == null ? "#f0f6ff" : netPnl < 0 ? "#fca5a5" : "#86efac" }}>{netPnl == null ? "—" : money(lang, netPnl, perf?.currency)}</span>} sub={pctOfEquity != null ? `${pctOfEquity >= 0 ? "+" : ""}${pctOfEquity.toFixed(2)}% of equity` : undefined} />
             <MetricTile label="Win Rate" value={stats ? `${stats.win_rate_pct}%` : "—"} sub={stats ? `${stats.wins ?? "—"}W / ${stats.losses ?? "—"}L` : undefined} subColor={wrLabel?.c} />
             <MetricTile label="Profit Factor" info="Gross profit ÷ gross loss across observed trades. Above 1.0 means winners outweigh losers." value={profitFactor == null ? "—" : profitFactor === Infinity ? "∞" : profitFactor.toFixed(2)} sub={pfLabel?.t} subColor={pfLabel?.c} />
             <MetricTile label="Max Drawdown" value={stats ? `${stats.max_drawdown_pct}%` : "—"} sub={ddLabel?.t} subColor={ddLabel?.c} />
-            <MetricTile label="Expectancy" info="Average result per trade. In R, it is the average expressed in units of your average losing trade. Not a prediction." value={expMoney == null ? "—" : expR != null ? `${expR >= 0 ? "+" : ""}${expR.toFixed(2)}R` : money(expMoney, perf?.currency)} sub={expLabel?.t} subColor={expLabel?.c} />
+            <MetricTile label="Expectancy" info="Average result per trade. In R, it is the average expressed in units of your average losing trade. Not a prediction." value={expMoney == null ? "—" : expR != null ? `${expR >= 0 ? "+" : ""}${expR.toFixed(2)}R` : money(lang, expMoney, perf?.currency)} sub={expLabel?.t} subColor={expLabel?.c} />
           </div>
 
           {/* Equity curve — compact context */}
@@ -556,26 +562,26 @@ export default function DashboardPage() {
       {/* Market Focus — HERO (What deserves attention? Why? Now what?) */}
       <div style={{ ...heroGlass, flex: "1 1 560px", minWidth: 320, display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: "0.8rem" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div className="dashboard-market-controls" style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={secHeader}><i className="ti ti-target" aria-hidden="true" style={{ marginRight: 6 }} />Market Focus</span>
             <select value={symbol} onChange={(e) => setSymbol(e.target.value)} style={selStyle} aria-label="Select market">
-              {options.map((s) => { const id = marketIdentity(s); return <option key={s} value={s}>{`${id.glyph ? id.glyph + "  " : ""}${id.name !== s ? `${id.name} — ${s}` : s}`}</option>; })}
+              {options.map((s) => { const id = marketIdentity(s); const name = marketName(lang, s); return <option key={s} value={s}>{`${id.glyph ? id.glyph + "  " : ""}${id.name !== s ? `${name} — ${s}` : s}`}</option>; })}
             </select>
             <span style={{ fontSize: "0.7rem", color: "#64748b" }}>Change market</span>
           </div>
-          <span style={{ fontSize: "0.7rem", color: "#64748b" }}>{selLoading ? "analysing…" : selAt ? `updated as of ${selAt}` : ""}</span>
+          <span style={{ fontSize: "0.7rem", color: "#64748b" }}>{selLoading ? "analysing…" : selAt ? `updated as of ${nowClock(lang, selAt)}` : ""}</span>
         </div>
 
-        {selLoading || !bootLoaded ? <div style={muted}>Analysing {marketIdentity(symbol).name}…</div>
-          : !selection ? <div style={muted}>Couldn&apos;t analyse {marketIdentity(symbol).name} right now. Try another market.</div>
+        {selLoading || !bootLoaded ? <div style={muted}>Analysing {marketName(lang, symbol)}…</div>
+          : !selection ? <div style={muted}>Couldn&apos;t analyse {marketName(lang, symbol)} right now. Try another market.</div>
           : <div style={{ display: "flex", flexWrap: "wrap", alignItems: "stretch" }}>
               {/* Zone 1 — Market identity (compact, fully used) */}
               <div style={{ width: 150, minWidth: 140, borderRadius: 12, border: "1px solid rgba(255,255,255,0.07)", background: marketIdentity(symbol).bg, padding: "0.7rem", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", gap: 4 }}>
                 {marketIdentity(symbol).glyph && <div style={{ fontSize: "1.3rem", lineHeight: 1 }} aria-hidden="true">{marketIdentity(symbol).glyph}</div>}
-                <div style={{ fontSize: "0.92rem", fontWeight: 650, color: "#f0f6ff", lineHeight: 1.25 }}>{marketIdentity(symbol).name}</div>
+                <div style={{ fontSize: "0.92rem", fontWeight: 650, color: "#f0f6ff", lineHeight: 1.25 }}>{marketName(lang, symbol)}</div>
                 {marketIdentity(symbol).name !== symbol && <div style={{ fontSize: "0.62rem", color: "#64748b", letterSpacing: "0.04em" }}>{symbol}</div>}
                 <div style={{ marginTop: 3 }}><MoodIcon mood={smood.label} size={36} /></div>
-                {selAt && <div style={{ fontSize: "0.6rem", color: "#64748b", marginTop: 2 }}>as of {selAt}</div>}
+                {selAt && <div style={{ fontSize: "0.6rem", color: "#64748b", marginTop: 2 }}>as of {nowClock(lang, selAt)}</div>}
               </div>
               {/* Zone 2 — Mood + Why this matters */}
               <div style={{ flex: "1 1 230px", minWidth: 210, margin: "0 0 0 1.1rem", paddingRight: "1.1rem", borderRight: "1px solid rgba(255,255,255,0.06)", display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 9 }}>
@@ -583,7 +589,7 @@ export default function DashboardPage() {
                   <div style={{ ...microLabel, display: "flex", alignItems: "center" }}><span style={{ marginRight: 5 }}><MoodIcon mood={smood.label} size={14} /></span>Market Mood<InfoDot text="Simple translation of current market conditions. It is not a trade instruction." /></div>
                   <div style={{ fontSize: "1.25rem", fontWeight: 700, color: smood.color, marginBottom: 2 }}>{smood.label}</div>
                   <div style={{ fontSize: "0.78rem", color: "#b7c5dd", marginBottom: 3 }}>{smood.desc}</div>
-                  {ms && <div style={{ fontSize: "0.64rem", color: "#64748b" }} title={moodDetail(ms.current_state, ctx)}>{ms.confidence} confidence · {stateHuman(ms.current_state)}</div>}
+                  {ms && <div style={{ fontSize: "0.64rem", color: "#64748b" }} title={lang === "ja" ? localizeControlledEnum(lang, "marketState", ms.current_state) : moodDetail(ms.current_state, ctx)}>{lang === "ja" ? `${localizeControlledEnum(lang, "confidence", ms.confidence)}の信頼度・${localizeControlledEnum(lang, "marketState", ms.current_state)}` : `${localizeControlledEnum(lang, "confidence", ms.confidence)} confidence · ${stateHuman(ms.current_state)}`}</div>}
                 </div>
                 <div style={{ borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: 9 }}>
                   <div style={microLabel}><i className="ti ti-checks" aria-hidden="true" style={{ marginRight: 5, color: "#94a3b8" }} />Why this matters<InfoDot text="Explains why the current market state deserves attention." /></div>
@@ -595,7 +601,7 @@ export default function DashboardPage() {
                 <div>
                   <div style={microLabel}><i className="ti ti-flask" aria-hidden="true" style={{ marginRight: 5, color: "#a78bfa" }} />Worth Researching<InfoDot text="Research direction only. Not a recommendation to trade." /></div>
                   {top ? <div style={{ fontSize: "0.84rem", color: "#e9f4ff", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <span><span style={{ fontWeight: 600 }}>{topFamily?.label || top.family}</span><span style={{ fontSize: "0.74rem", color: "#94a3b8" }}> · Focus: {top.name}</span></span>
+                    <span><span style={{ fontWeight: 600 }}>{localizeControlledEnum(lang, "strategyFamily", topFamily?.family || top.family)}</span><span style={{ fontSize: "0.74rem", color: "#94a3b8" }}> · Focus: {top.name}</span></span>
                     {px && <Badge color={px.color}>{px.label}</Badge>}
                   </div> : <div style={{ ...muted, fontSize: "0.78rem" }}>No clear strategy fit in this state — watching.</div>}
                 </div>
@@ -641,20 +647,20 @@ export default function DashboardPage() {
               </div>
               <span aria-hidden="true" style={{ width: 7 }} />
             </div>
-            {strategies.slice(0, 3).map((s, i) => {
+            {strategies.slice(0, 3).map((s) => {
               const h = health(s);
               const syms = (s.symbol_universe || "").replace(/[[\]'"]/g, "").split(/[,;\s]+/).filter(Boolean);
-              const mkts = syms.slice(0, 2).map((x) => marketIdentity(x).name).join(" · ") || "No markets assigned";
+              const mkts = syms.slice(0, 2).map((x) => marketName(lang, x)).join(" · ") || "No markets assigned";
               const stage = stageFor(s.id);
               const sp = stratPerf[s.id];
               return (
                 <Link key={s.id} href={`/strategies/${s.id}`} style={{ textDecoration: "none", display: "flex", alignItems: "center", gap: 12, padding: "0.55rem 0.1rem", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#e9f4ff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
-                    <div style={{ fontSize: "0.68rem", color: "#94a3b8", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mkts}{stage ? ` · ${stage}` : ""}</div>
+                    <div style={{ fontSize: "0.68rem", color: "#94a3b8", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mkts}{stage ? ` · ${localizeControlledEnum(lang, "status", stage)}` : ""}</div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, borderLeft: "1px solid rgba(255,255,255,0.05)", paddingLeft: 12 }}>
-                    <div style={{ minWidth: 52, textAlign: "right", fontSize: "0.76rem", fontWeight: 600, color: !sp || !sp.trades ? "#94a3b8" : sp.net_pnl < 0 ? "#fca5a5" : "#86efac" }}>{!sp || !sp.trades ? "—" : money(sp.net_pnl, perf?.currency)}</div>
+                    <div style={{ minWidth: 52, textAlign: "right", fontSize: "0.76rem", fontWeight: 600, color: !sp || !sp.trades ? "#94a3b8" : sp.net_pnl < 0 ? "#fca5a5" : "#86efac" }}>{!sp || !sp.trades ? "—" : money(lang, sp.net_pnl, perf?.currency)}</div>
                     <div style={{ minWidth: 52, textAlign: "right", fontSize: "0.76rem", fontWeight: 600, color: "#e9f4ff" }}>{!sp || !sp.trades ? "—" : `${sp.win_rate}%`}</div>
                     <div style={{ minWidth: 44, textAlign: "right" }}><Badge color={h.c}>{h.t}</Badge></div>
                   </div>
@@ -719,14 +725,14 @@ export default function DashboardPage() {
         </SectionCard>
 
         {/* Key Events — SELECTED market only */}
-        <SectionCard icon="calendar-event" title={`Key Events (${marketIdentity(symbol).name})`} info="External factors that may affect the selected market, from available market-context research." style={{ flex: "1 1 250px", minWidth: 250, display: "flex", flexDirection: "column" }}>
+        <SectionCard icon="calendar-event" title={`Key Events (${marketName(lang, symbol)})`} info="External factors that may affect the selected market, from available market-context research." style={{ flex: "1 1 250px", minWidth: 250, display: "flex", flexDirection: "column" }}>
           <div style={{ ...microLabel, marginBottom: 7 }}>Relevant to: {ccys.join(" · ")}</div>
           {hasEvent
             ? <div style={{ borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: 9, display: "flex", alignItems: "flex-start", gap: 10 }}>
-                <Badge color={ms?.current_state === "NEWS_SHOCK" ? "red" : "yellow"}>{(newsImpact || "HIGH") + " impact"}</Badge>
+                <Badge color={ms?.current_state === "NEWS_SHOCK" ? "red" : "yellow"}>{lang === "ja" ? `${localizeControlledEnum(lang, "confidence", newsImpact || "HIGH")}の影響` : `${newsImpact || "HIGH"} impact`}</Badge>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: "0.82rem", color: "#e9f4ff", fontWeight: 500 }}>{ms?.current_state === "NEWS_SHOCK" ? "High-impact event nearby" : "Elevated news context"}</div>
-                  {newsEvidence && <div style={{ fontSize: "0.74rem", color: "#94a3b8", marginTop: 2 }}>{newsEvidence}</div>}
+                  {newsEvidence && <div style={{ fontSize: "0.74rem", color: "#94a3b8", marginTop: 2 }}>{localizeBackendCustomerText(lang, newsEvidence, "evidence")}</div>}
                   <div style={{ fontSize: "0.68rem", color: "#64748b", marginTop: 5 }}>Conditions can move quickly around high-impact events — research context only.</div>
                 </div>
               </div>
@@ -741,7 +747,7 @@ export default function DashboardPage() {
         </SectionCard>
 
         {/* Research Evidence — SELECTED market only ("Why we like this idea") */}
-        <SectionCard icon="database" title={`Research Evidence (${marketIdentity(symbol).name})`} info="Why GuvFX considers the selected market worth researching." style={{ flex: "1 1 250px", minWidth: 250, display: "flex", flexDirection: "column" }}>
+        <SectionCard icon="database" title={`Research Evidence (${marketName(lang, symbol)})`} info="Why GuvFX considers the selected market worth researching." style={{ flex: "1 1 250px", minWidth: 250, display: "flex", flexDirection: "column" }}>
           {!selection ? <div style={muted}>Select a market to see its research evidence.</div>
             : <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <div style={{ ...microLabel }}>Why we like this idea</div>
@@ -788,5 +794,6 @@ export default function DashboardPage() {
 
       <div style={{ fontSize: "0.7rem", color: "#475569", padding: "0.7rem 0" }}>Trading Intelligence — research context from historical observations and strategy criteria. Not a prediction, signal, or recommendation to trade.</div>
     </div>
+    </LocalizedBetaSurface>
   );
 }

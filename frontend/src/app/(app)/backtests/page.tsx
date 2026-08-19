@@ -10,7 +10,9 @@ import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useLang } from "@/components/AppShell";
-import { t } from "@/lib/i18n";
+import { localeFor, t } from "@/lib/i18n";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { localizeBackendCustomerText } from "@/lib/active-beta-i18n";
 import { DrawdownSparkline, LossClusteringBadge } from "@/components/backtests";
 
 type EquityPoint = { timestamp?: string; equity: number } | number;
@@ -302,7 +304,7 @@ export default function BacktestsPage() {
       setInfo(
         t(lang, "backtests.processedRuns").replace("{count}", String(res.processed_runs))
       );
-      setLastProcessedAt(new Date(res.processed_at).toLocaleString());
+      setLastProcessedAt(res.processed_at);
 
       // Refresh all data after processing
       await fetchData();
@@ -326,6 +328,7 @@ export default function BacktestsPage() {
   };
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
       {/* Page header with disclaimers */}
       <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
@@ -348,7 +351,7 @@ export default function BacktestsPage() {
         {t(lang, "backtests.disclaimerLine1")}
       </p>
 
-      {error && <Alert type="error">{error}</Alert>}
+      {error && <Alert type="error">{localizeBackendCustomerText(lang, error, "error")}</Alert>}
       {info && <Alert type="info">{info}</Alert>}
 
       {/* Demo mode banner */}
@@ -408,7 +411,7 @@ export default function BacktestsPage() {
             {lastProcessedAt ? (
               <>
                 {t(lang, "backtests.lastProcessed")}{" "}
-                <span style={{ color: "#e5f4ff" }}>{lastProcessedAt}</span>
+                <span style={{ color: "#e5f4ff" }}>{new Date(lastProcessedAt).toLocaleString(localeFor(lang))}</span>
               </>
             ) : (
               t(lang, "backtests.pendingNotProcessed")
@@ -716,7 +719,7 @@ export default function BacktestsPage() {
                             &nbsp;|&nbsp;
                             <span style={labelStyle}>{t(lang, "backtests.lastRunLabel")}</span>
                             <span style={valueStyle}>
-                              {new Date(summary.last_run_created_at).toLocaleString()}
+                              {new Date(summary.last_run_created_at).toLocaleString(localeFor(lang))}
                             </span>
                           </>
                         )}
@@ -1154,5 +1157,6 @@ export default function BacktestsPage() {
         </div>
       )}
     </div>
+    </LocalizedBetaSurface>
   );
 }

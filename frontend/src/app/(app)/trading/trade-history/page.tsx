@@ -7,7 +7,9 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { apiFetch } from "@/lib/api";
-import { t } from "@/lib/i18n";
+import { localeFor, t } from "@/lib/i18n";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { localizeActiveBetaCopy, localizeBackendCustomerText } from "@/lib/active-beta-i18n";
 import type { TradingAccount } from "@/types/strategies";
 
 const API_BASE = "https://api.guvfx.com";
@@ -176,12 +178,13 @@ function BalanceTrajectoryChart({
   width?: number;
   height?: number;
 }) {
+  const lang = useLang();
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   if (!balanceSeries || balanceSeries.length === 0) {
     return (
       <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "#64748b" }}>
-        No balance data available
+        {localizeActiveBetaCopy(lang, "No balance data available")}
       </div>
     );
   }
@@ -331,7 +334,7 @@ function BalanceTrajectoryChart({
         fill="#64748b"
         fontSize="10"
       >
-        Trade sequence (#{1} → #{balanceSeries.length})
+        {localizeActiveBetaCopy(lang, "Trade sequence (#")}{1} → #{balanceSeries.length})
       </text>
 
       {/* Tooltip */}
@@ -365,7 +368,7 @@ function BalanceTrajectoryChart({
               fill="#94a3b8"
               fontSize="9"
             >
-              Closed: {tradeClosed}
+              {localizeActiveBetaCopy(lang, "Closed:")} {tradeClosed}
             </text>
             {/* Balance */}
             <text
@@ -375,7 +378,7 @@ function BalanceTrajectoryChart({
               fontSize="10"
               fontWeight="500"
             >
-              Balance: {hoveredPoint.data.balance_after_trade.toFixed(2)} {currency}
+              {localizeActiveBetaCopy(lang, "Balance:")} {hoveredPoint.data.balance_after_trade.toFixed(2)} {currency}
             </text>
             {/* PnL */}
             <text
@@ -384,7 +387,7 @@ function BalanceTrajectoryChart({
               fill={hoveredPoint.data.net_pnl_money >= 0 ? "#22c55e" : "#ef4444"}
               fontSize="10"
             >
-              PnL: {hoveredPoint.data.net_pnl_money >= 0 ? "+" : ""}{hoveredPoint.data.net_pnl_money.toFixed(2)} {currency}
+              {localizeActiveBetaCopy(lang, "PnL:")} {hoveredPoint.data.net_pnl_money >= 0 ? "+" : ""}{hoveredPoint.data.net_pnl_money.toFixed(2)} {currency}
             </text>
           </g>
         );
@@ -406,6 +409,7 @@ function OutcomeDistributionChart({
   width?: number;
   height?: number;
 }) {
+  const lang = useLang();
   const { wins, losses } = useMemo(() => {
     let w = 0;
     let l = 0;
@@ -463,7 +467,7 @@ function OutcomeDistributionChart({
         fill="#9ca3af"
         fontSize="9"
       >
-        Positive
+        {localizeActiveBetaCopy(lang, "Positive")}
       </text>
 
       {/* Loss bar */}
@@ -492,7 +496,7 @@ function OutcomeDistributionChart({
         fill="#9ca3af"
         fontSize="9"
       >
-        Negative
+        {localizeActiveBetaCopy(lang, "Negative")}
       </text>
     </svg>
   );
@@ -513,6 +517,7 @@ function DrawdownUnderwaterChart({
   width?: number;
   height?: number;
 }) {
+  const lang = useLang();
   const drawdownData = useMemo(() => {
     if (trades.length === 0) return [];
     let balance = initialBalance;
@@ -577,7 +582,7 @@ function DrawdownUnderwaterChart({
 
       {/* Label */}
       <text x={padding.left + chartWidth / 2} y={height - 4} textAnchor="middle" fill="#64748b" fontSize="9">
-        Underwater (observed)
+        {localizeActiveBetaCopy(lang, "Underwater (observed)")}
       </text>
     </svg>
   );
@@ -872,6 +877,7 @@ export default function TradeHistoryPage() {
   const hasData = trades.length > 0;
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
       {/* Header */}
       <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem", color: "#f0f6ff" }}>
@@ -987,7 +993,7 @@ export default function TradeHistoryPage() {
 
           {error && (
             <span style={{ color: "#f87171", fontSize: "0.85rem", marginTop: "1.25rem" }}>
-              {error}
+              {localizeBackendCustomerText(lang, error, "error")}
             </span>
           )}
         </div>
@@ -1147,7 +1153,7 @@ export default function TradeHistoryPage() {
                   {t(lang, "tradeHistory.statMT5Balance")}
                 </div>
                 <div style={{ fontSize: "1.1rem", color: "#60a5fa", fontWeight: 500 }}>
-                  {mt5BalanceCurrent.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
+                  {mt5BalanceCurrent.toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
                 </div>
               </div>
             )}
@@ -1165,7 +1171,7 @@ export default function TradeHistoryPage() {
                   }}
                 >
                   {stats.netPnlTotal >= 0 ? "+" : ""}
-                  {stats.netPnlTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
+                  {stats.netPnlTotal.toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
                 </div>
               </div>
             )}
@@ -1472,5 +1478,6 @@ export default function TradeHistoryPage() {
         </Card>
       )}
     </div>
+    </LocalizedBetaSurface>
   );
 }

@@ -13,7 +13,9 @@ import type {
 import { withCleanGuacAuth } from "@/lib/guac-embed";
 import { HostedMt5RemoteApp } from "@/components/hosted/HostedMt5RemoteApp";
 import { useLang } from "@/components/AppShell";
-import { t, type Lang } from "@/lib/i18n";
+import { localeFor, t, type Lang } from "@/lib/i18n";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { localizeActiveBetaCopy, localizeBackendCustomerText, localizeControlledEnum } from "@/lib/active-beta-i18n";
 
 // ─────────────────────────────────────────────────────────────────────
 // MT5 credential status type (from GET /api/mt5/status/)
@@ -35,8 +37,8 @@ type Mt5CredentialStatus = {
 const humanize = (s: string) =>
   s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-const fmtDateTime = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-US", {
+const fmtDateTime = (lang: Lang, iso: string) =>
+  new Date(iso).toLocaleDateString(localeFor(lang), {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -297,6 +299,7 @@ function SessionStatusCard({
   onReconnect: () => void;
   onViewerLoad: () => void;
 }) {
+  const lang = useLang();
   const isActive = session.state === "active" || session.state === "authorized";
   const isEnded = session.state === "ended";
   const mt5 = session.latest_mt5_session;
@@ -314,6 +317,7 @@ function SessionStatusCard({
   const connecting = viewerState === "Connecting";
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ ...glassCard, marginBottom: "1rem" }}>
       <div style={sectionHeader}>Active Session</div>
 
@@ -331,10 +335,10 @@ function SessionStatusCard({
           {session.terminal_label || session.terminal_identifier}
         </span>
         <Badge color={sessionStateColor[session.state] ?? "gray"}>
-          {humanize(session.state)}
+          {localizeControlledEnum(lang, "status", session.state)}
         </Badge>
         <Badge color={bindingStatusColor[session.environment_type] ?? "gray"}>
-          {humanize(session.environment_type)}
+          {localizeControlledEnum(lang, "status", session.environment_type)}
         </Badge>
       </div>
 
@@ -441,20 +445,21 @@ function SessionStatusCard({
         <div style={{ display: "flex", flexWrap: "wrap" as const, gap: "0.75rem 2rem", marginTop: "0.75rem" }}>
           <DetailRow label="Session ID" value={`#${session.id}`} />
           <DetailRow label="Account" value={session.terminal_identifier} />
-          <DetailRow label="Started" value={session.started_at ? fmtDateTime(session.started_at) : null} />
-          <DetailRow label="Expires" value={session.expires_at ? fmtDateTime(session.expires_at) : null} />
-          <DetailRow label="Last activity" value={session.last_activity_at ? fmtDateTime(session.last_activity_at) : null} />
-          {mt5 && <DetailRow label="Connected" value={mt5.connected_at ? fmtDateTime(mt5.connected_at) : null} />}
-          {isEnded && <DetailRow label="Ended" value={session.ended_at ? fmtDateTime(session.ended_at) : null} />}
+          <DetailRow label="Started" value={session.started_at ? fmtDateTime(lang, session.started_at) : null} />
+          <DetailRow label="Expires" value={session.expires_at ? fmtDateTime(lang, session.expires_at) : null} />
+          <DetailRow label="Last activity" value={session.last_activity_at ? fmtDateTime(lang, session.last_activity_at) : null} />
+          {mt5 && <DetailRow label="Connected" value={mt5.connected_at ? fmtDateTime(lang, mt5.connected_at) : null} />}
+          {isEnded && <DetailRow label="Ended" value={session.ended_at ? fmtDateTime(lang, session.ended_at) : null} />}
           {isEnded && session.terminated_reason && (
-            <DetailRow label="Termination reason" value={session.terminated_reason} />
+            <DetailRow label="Termination reason" value={localizeBackendCustomerText(lang, session.terminated_reason, "account-detail")} />
           )}
           {mt5 && mt5.state === "failed" && mt5.failure_reason && (
-            <DetailRow label="Failure reason" value={mt5.failure_reason} />
+            <DetailRow label="Failure reason" value={localizeBackendCustomerText(lang, mt5.failure_reason, "error")} />
           )}
         </div>
       </details>
     </div>
+    </LocalizedBetaSurface>
   );
 }
 
@@ -473,6 +478,7 @@ function ViewerPanel({
   body: string;
   onReconnect?: () => void;
 }) {
+  const lang = useLang();
   const toneColor =
     tone === "reconnecting" ? "#fcd34d" : tone === "error" ? "#fca5a5" : "#e9f4ff";
   return (
@@ -483,7 +489,7 @@ function ViewerPanel({
       <div style={{ fontSize: "0.85rem", color: "#b7c5dd", lineHeight: 1.6, marginBottom: onReconnect ? "1rem" : 0, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
         {body}
       </div>
-      {onReconnect && <Button onClick={onReconnect}>Reconnect viewer</Button>}
+      {onReconnect && <Button onClick={onReconnect}>{localizeActiveBetaCopy(lang, "Reconnect viewer")}</Button>}
     </div>
   );
 }
@@ -884,6 +890,7 @@ export default function TerminalAccessPage() {
   }, [pollInterval]);
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
       <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>{t(lang, "terminalAccess.title")}</h1>
       <p
@@ -932,7 +939,7 @@ export default function TerminalAccessPage() {
               <DetailRow label={t(lang, "terminalAccess.lastError")} value={t(lang, "terminalAccess.credentialError")} />
             )}
             {credStatus.last_verified_at && (
-              <DetailRow label={t(lang, "terminalAccess.verified")} value={fmtDateTime(credStatus.last_verified_at)} />
+              <DetailRow label={t(lang, "terminalAccess.verified")} value={fmtDateTime(lang, credStatus.last_verified_at)} />
             )}
           </div>
           {/* Full-desktop launch is the legacy customer path. It is shown ONLY once the hosted probe has
@@ -966,7 +973,7 @@ export default function TerminalAccessPage() {
       )}
 
       {/* ── State notices ── */}
-      {notice && <StateNotice type={notice.type} message={notice.message} />}
+      {notice && <StateNotice type={notice.type} message={localizeBackendCustomerText(lang, notice.message, notice.type === "info" ? "notice" : notice.type)} />}
 
       {/* ── Active session card (shown when a session exists) ── */}
       {sessionLoading && (
@@ -1128,5 +1135,6 @@ export default function TerminalAccessPage() {
       </div>
       )}
     </div>
+    </LocalizedBetaSurface>
   );
 }

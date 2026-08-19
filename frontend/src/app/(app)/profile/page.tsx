@@ -7,6 +7,9 @@ import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import { TelegramNotificationsCard } from "@/components/settings/TelegramNotificationsCard";
+import { useLang } from "@/components/AppShell";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { localizeBackendCustomerText } from "@/lib/active-beta-i18n";
 
 type MeResponse = {
   id: number;
@@ -21,6 +24,7 @@ type ChangePasswordResponse = {
 };
 
 export default function ProfilePage() {
+  const lang = useLang();
   const [accessToken, setAccessToken] = useState<string>("");
   const [me, setMe] = useState<MeResponse | null>(null);
   const [loadingMe, setLoadingMe] = useState(false);
@@ -127,13 +131,14 @@ export default function ProfilePage() {
   };
 
   return (
+    <LocalizedBetaSurface lang={lang}>
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
         <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Profile</h1>
         <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
           View your GuvFX account details and update your password.
         </p>
 
-        {error && <Alert type="error">{error}</Alert>}
+        {error && <Alert type="error">{localizeBackendCustomerText(lang, error, "error")}</Alert>}
 
         {/* Profile details */}
         <Card title="Account Details">
@@ -186,8 +191,8 @@ export default function ProfilePage() {
           title="Change Password"
           subtitle="Update your GuvFX account password. You’ll need your current password."
         >
-          {pwError && <Alert type="error">{pwError}</Alert>}
-          {pwSuccess && <Alert type="info">{pwSuccess}</Alert>}
+          {pwError && <Alert type="error">{localizeBackendCustomerText(lang, pwError, "error")}</Alert>}
+          {pwSuccess && <Alert type="info">{localizeBackendCustomerText(lang, pwSuccess, "success")}</Alert>}
 
           <form onSubmit={handleChangePassword}>
             <div
@@ -309,5 +314,6 @@ export default function ProfilePage() {
           </form>
         </Card>
       </div>
+    </LocalizedBetaSurface>
   );
 }
