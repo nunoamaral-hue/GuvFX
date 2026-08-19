@@ -133,9 +133,13 @@ def _resolve_per_tenant_endpoint(job, account) -> OrderTransport:
     # Re-assert ownership against the loaded row (a future query/join change can never silently cross tenants).
     if ep.trading_account_id != acct_id:
         return OrderTransport(False, OT_ENDPOINT_ACCOUNT_MISMATCH, "", hosted=True)
-    # Preserve the node-agreement contract: the job's snapshotted node must match the endpoint's node.
+    # Preserve the node-agreement contract AND the DARK per-node behaviour byte-for-byte: a node-unbound job
+    # is refused (the flag-OFF path returns OT_NODE_UNBOUND here), so enabling the flag can never make a
+    # deliberately node-unbound account executable via a stale endpoint.
     node_id = getattr(job, "terminal_node_id", None)
-    if node_id is not None and ep.terminal_node_id != node_id:
+    if node_id is None:
+        return OrderTransport(False, OT_NODE_UNBOUND, "", hosted=True)
+    if ep.terminal_node_id != node_id:
         return OrderTransport(False, OT_NODE_MISMATCH, "", hosted=True)
     if ep.state != HostedExecutionEndpoint.State.READY:
         return OrderTransport(False, OT_ENDPOINT_NOT_READY, "", hosted=True)

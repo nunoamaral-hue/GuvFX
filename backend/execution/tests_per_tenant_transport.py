@@ -34,13 +34,17 @@ BOTH_FLAGS = {"HOSTED_PERSISTENT_MT5_ENABLED": "1", "HOSTED_PER_TENANT_TRANSPORT
 DARK_TRANSPORT = {"HOSTED_PERSISTENT_MT5_ENABLED": "1", "HOSTED_PER_TENANT_TRANSPORT_ENABLED": "0"}
 
 
-def _make_tenant(login, windows_username, *, node, host="100.79.101.19", is_demo=True):
-    """Create a full hosted (Provider-B) tenant: user, account, workspace, PROVISIONED isolation profile."""
+def _make_tenant(login, windows_username, *, node, host="100.79.101.19", is_demo=True, is_active=False,
+                 broker_server=None):
+    """Create a full hosted (Provider-B) tenant: user, account, workspace, PROVISIONED isolation profile.
+    A NEW hosted tenant is an intent account (``is_active=False``) at endpoint-allocation time; live accounts
+    (support@/CZ) are ``is_active=True`` and must be seeded explicitly (the re-home guard). The hosted broker
+    identity is write-once, so ``broker_server`` is set at creation."""
     user = get_user_model().objects.create_user(
         username=f"t-{login}", email=f"t-{login}@x.invalid", password="x")
     acct = TradingAccount.objects.create(
-        user=user, name="a", broker_name="B", account_number=login, is_demo=is_demo,
-        readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node)
+        user=user, name="a", broker_name="B", account_number=login, is_demo=is_demo, is_active=is_active,
+        readiness_provider=PERSISTENT_WORKSPACE, terminal_node=node, broker_server=broker_server)
     ws = HostedMt5Workspace.objects.create(trading_account=acct, execution_node=node, workspace_node=node)
     AccountProvisioning.objects.create(
         trading_account=acct, windows_username=windows_username,
@@ -305,3 +309,85 @@ class BridgeConfigTests(SimpleTestCase):
             windows_username="guvfx\r\nset MT5_ALLOW_LIVE=1")   # injection attempt
         with self.assertRaises(ValueError):
             render_bridge_env(ep)
+
+
+class AdversarialFixTests(TestCase):
+    """Regressions for the P0-B1 adversarial-review findings (0 HIGH / 0 MEDIUM bar)."""
+
+    def setUp(self):
+        self.node = TerminalNode.objects.create(
+            hostname="beta-adv", rdp_host="100.79.101.19",
+            order_bridge_base_url="http://100.79.101.19:8789")
+
+    # MEDIUM-1: per-tenant ON, a node-UNBOUND job fails closed (matches the DARK per-node OT_NODE_UNBOUND),
+    # never routes to a stale endpoint.
+    def test_node_unbound_job_fails_closed_when_flag_on(self):
+        from execution.order_transport import OT_NODE_UNBOUND
+        acct, ws = _make_tenant("701", "guvfx_u_701", node=self.node)
+        svc.allocate_endpoint(ws)
+        svc.mark_ready(ws, health_ok=True)
+        job = ExecutionJob.objects.create(
+            account=acct, terminal_node=None, job_type=ExecutionJob.JobType.CLOSE_TRADE, payload={"ticket": 1})
+        with mock.patch.dict(os.environ, BOTH_FLAGS, clear=False):
+            t = resolve_order_transport(job, global_base_url=GLOBAL)
+        self.assertFalse(t.ok)
+        self.assertEqual(t.reason_code, OT_NODE_UNBOUND)
+        self.assertNotEqual(t.base_url, GLOBAL)
+
+    # MEDIUM-2: expected_server is derived from the bound BrokerServer.server_name (was always "").
+    def test_expected_server_derived_from_broker_server(self):
+        from trading.models import BrokerServer
+        bs = BrokerServer.objects.create(broker_display_name="IS6", server_name="GuvfxBeta-Demo")
+        acct, ws = _make_tenant("702", "guvfx_u_702", node=self.node, broker_server=bs)
+        svc.allocate_endpoint(ws)
+        ep = HostedExecutionEndpoint.objects.get(workspace=ws)
+        self.assertEqual(ep.expected_server, "GuvfxBeta-Demo")
+        self.assertEqual(ep.expected_login, "702")
+
+    # MEDIUM-4: a LIVE (is_active) account is never auto-re-homed onto a fresh port.
+    def test_live_account_auto_allocate_refused(self):
+        acct, ws = _make_tenant("703", "guvfx_u_703", node=self.node, is_active=True)
+        with self.assertRaises(svc.EndpointError) as cm:
+            svc.allocate_endpoint(ws)                       # no explicit_port
+        self.assertEqual(cm.exception.reason, svc.EP_LIVE_ACCOUNT_REQUIRES_EXPLICIT)
+        self.assertFalse(HostedExecutionEndpoint.objects.filter(workspace=ws).exists())
+
+    def test_live_account_explicit_seed_ok(self):
+        # support@-style: seed the EXISTING :8789 bridge explicitly — allowed, no fresh port minted.
+        acct, ws = _make_tenant("1302587", "guvfx_u_25", node=self.node, is_active=True)
+        res = svc.allocate_endpoint(ws, explicit_port=8789, explicit_base_url="http://100.79.101.19:8789")
+        self.assertEqual(res.port, 8789)
+        self.assertEqual(res.base_url, "http://100.79.101.19:8789")
+
+    def test_live_account_allow_rehome_flag_ok(self):
+        acct, ws = _make_tenant("704", "guvfx_u_704", node=self.node, is_active=True)
+        res = svc.allocate_endpoint(ws, allow_rehome=True)
+        self.assertIn(res.port, range(svc.PORT_RANGE_START, svc.PORT_RANGE_END + 1))
+
+    # LOW: an explicit_port already held by ANOTHER live endpoint is refused (never seed onto another bridge).
+    def test_explicit_port_collision_refused(self):
+        a1, w1 = _make_tenant("705", "guvfx_u_705", node=self.node)
+        svc.allocate_endpoint(w1)                            # gets 8800
+        p1 = HostedExecutionEndpoint.objects.get(workspace=w1).port
+        a2, w2 = _make_tenant("706", "guvfx_u_706", node=self.node)
+        with self.assertRaises(svc.EndpointError) as cm:
+            svc.allocate_endpoint(w2, explicit_port=p1, explicit_base_url=f"http://100.79.101.19:{p1}")
+        self.assertEqual(cm.exception.reason, svc.EP_PORT_IN_USE)
+
+    # MEDIUM-3: a lost port race (IntegrityError) is retried onto the next free port, not surfaced raw.
+    def test_alloc_race_retries_to_next_free_port(self):
+        a1, w1 = _make_tenant("707", "guvfx_u_707", node=self.node)
+        svc.allocate_endpoint(w1)                            # occupies 8800 for real
+        a2, w2 = _make_tenant("708", "guvfx_u_708", node=self.node)
+        # Force allocate_port to first hand back the already-taken 8800 (→ IntegrityError → retry), then let
+        # the real allocator run and pick the next free port.
+        real = svc.allocate_port
+        calls = {"n": 0}
+        def flaky(host, **kw):
+            calls["n"] += 1
+            return svc.PORT_RANGE_START if calls["n"] == 1 else real(host, **kw)
+        with mock.patch.object(svc, "allocate_port", side_effect=flaky):
+            res = svc.allocate_endpoint(w2)
+        self.assertTrue(res.ok)
+        self.assertNotEqual(res.port, svc.PORT_RANGE_START)  # retried off the colliding 8800
+        self.assertGreaterEqual(calls["n"], 2)               # proved a retry happened

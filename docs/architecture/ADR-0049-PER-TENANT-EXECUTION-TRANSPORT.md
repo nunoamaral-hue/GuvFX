@@ -60,6 +60,26 @@ many isolated tenants (NOT one host per customer, and NOT a bare "Node 3", which
 - ADR-0047 authorization, the order-time pin, and the node-commissioning gate remain the sole order
   authority; this ADR adds a *routing* isolation layer, it grants no execution authority.
 
+## Wire-up contract (for the future provisioning integrator)
+
+- **New hosted tenants** must be `is_active=False` intent accounts at endpoint-allocation time (they are —
+  a hosted intent account carries no live broker identity until confirmed). `allocate_endpoint` **refuses to
+  auto-mint a port for a live (`is_active`) account** (`EP_LIVE_ACCOUNT_REQUIRES_EXPLICIT`) so a live account
+  (support@/CZ) can never be silently re-homed onto a fresh portless bridge; seed those with `explicit_port`
+  (matching the existing per-node bridge) or `allow_rehome=True`.
+- **support@ / Customer Zero** are seeded EXPLICITLY at their existing bridge (`explicit_port=8788/8789`);
+  the seed reproduces the node's current `order_bridge_base_url` exactly (a test asserts this), so turning the
+  flag on does not move them.
+- An endpoint only becomes routable via `mark_ready(health_ok=True)`, which the per-tenant **bridge
+  supervisor** calls after it has stood the bridge up, hit `/health`, and verified the identity pin — this
+  service performs no probe itself.
+
+## Adversarial review
+
+Round 1 (4 skeptics vs 20 vectors): 0 HIGH, 4 MEDIUM (node-unbound fail-open; empty `expected_server` from a
+wrong field; fresh-host port-allocation race; live-account re-home), fixed in the follow-up commit. Round 2
+(re-verify): CLEAN — all four closed, core isolation invariants intact, only fail-closed LOW nits remaining.
+
 ## Consequences / still required before enablement (separately gated)
 
 - **Host multi-tenant isolation certification** (STREAM-10E escape battery, W^X G5v2, per-tenant NTFS/AppLocker

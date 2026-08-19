@@ -1385,7 +1385,8 @@ class HostedExecutionEndpoint(models.Model):
     windows_username = models.CharField(max_length=64)
     runtime_path = models.CharField(max_length=255)
     expected_login = models.CharField(max_length=64, blank=True, default="")     # broker login (identifier)
-    expected_server = models.CharField(max_length=128, blank=True, default="")   # broker server (identifier)
+    # 160 matches BrokerServer.server_name (its source) so a valid server name is never truncated / DataError'd.
+    expected_server = models.CharField(max_length=160, blank=True, default="")   # broker server (identifier)
     is_demo = models.BooleanField(default=True)
     workspace_uuid = models.UUIDField()
 
