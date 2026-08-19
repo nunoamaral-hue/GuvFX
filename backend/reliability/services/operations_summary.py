@@ -626,6 +626,44 @@ def _capacity_block(now):
     return {"status": worst, "total_free_slots": total_free, "nodes": nodes}
 
 
+_SYNC_FRESHNESS_WARN_S = 120   # WARNING when a hosted account's last successful trade sync is older than this
+
+
+def _sync_freshness_block(now):
+    """Per-hosted-account TRADE-SYNC freshness — the beta freshness SLA signal. For each account with a live
+    per-tenant execution endpoint, reports the age of its last SUCCESS ``SYNC_POSITIONS`` job and the count of
+    consecutive recent failures. WARNING when the last successful sync is older than 120s (closed trades would
+    then be stale in Trade History / Dashboard). Read-only; identifiers only, never account secrets."""
+    from execution.models import HostedExecutionEndpoint, ExecutionJob
+    accounts = []
+    worst = "HEALTHY"
+    ep_acct_ids = list(
+        HostedExecutionEndpoint.objects.exclude(state=HostedExecutionEndpoint.State.RETIRED)
+        .values_list("trading_account_id", flat=True).distinct())
+    for aid in ep_acct_ids:
+        base = ExecutionJob.objects.filter(account_id=aid, job_type=ExecutionJob.JobType.SYNC_POSITIONS)
+        last_ok = base.filter(status=ExecutionJob.Status.SUCCESS).order_by("-created_at").first()
+        age = _age_s(last_ok.created_at, now) if last_ok else None
+        # consecutive FAILED since the last SUCCESS (recent window)
+        consec_fail = 0
+        for j in base.order_by("-created_at")[:8]:
+            if j.status == ExecutionJob.Status.SUCCESS:
+                break
+            if j.status == ExecutionJob.Status.FAILED:
+                consec_fail += 1
+        stale = age is None or age > _SYNC_FRESHNESS_WARN_S
+        st = "WARNING" if stale else "HEALTHY"
+        if _RANK.get(st, 0) > _RANK.get(worst, 0):
+            worst = st
+        accounts.append({
+            "account_id": aid,
+            "last_successful_sync_age_s": None if age is None else round(age),
+            "consecutive_failures": consec_fail,
+            "status": st,
+        })
+    return {"status": worst, "warn_threshold_s": _SYNC_FRESHNESS_WARN_S, "accounts": accounts}
+
+
 def build_operations_summary() -> dict:
     """The full read-only operational summary for the status page (and alert enrichment)."""
     from reliability.models import ComponentHealth, Heartbeat, AlertEvent
@@ -735,6 +773,8 @@ def build_operations_summary() -> dict:
         states.append("WARNING")
     capacity = _capacity_block(now)
     states.append(capacity.get("status", "HEALTHY"))
+    sync_freshness = _sync_freshness_block(now)
+    states.append(sync_freshness.get("status", "HEALTHY"))
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -754,6 +794,7 @@ def build_operations_summary() -> dict:
         "signal_execution": signal_execution,
         "concurrency": concurrency,
         "capacity": capacity,
+        "sync_freshness": sync_freshness,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},
