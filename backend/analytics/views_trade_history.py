@@ -34,6 +34,29 @@ def _get_windows_agent_config() -> tuple[str, str]:
     return base, token
 
 
+def _account_windows_username(account) -> str:
+    """The account's Windows tenant identity for the per-tenant MT5 balance read — hosted-aware.
+
+    Legacy accounts carry it on ``mt5_instance``; HOSTED per-tenant accounts (the beta path) carry it on
+    ``AccountProvisioning`` (server-derived; they have NO ``mt5_instance``, which is why the balance was
+    previously never fetched and the chart fell back to a synthetic 10,000 opening balance). Only a fully
+    PROVISIONED, non-admin customer identity is used. Empty string when none exists (the caller then skips
+    the balance read — an honest "unavailable" state, never a foreign account)."""
+    inst = getattr(account, "mt5_instance", None)
+    wu = getattr(inst, "windows_username", "") if inst else ""
+    if wu:
+        return wu
+    try:
+        from terminal_provisioning.models import AccountProvisioning
+        prov = (AccountProvisioning.objects
+                .filter(trading_account_id=getattr(account, "id", None),
+                        status=AccountProvisioning.Status.PROVISIONED, is_admin=False)
+                .only("windows_username").first())
+        return (getattr(prov, "windows_username", "") or "") if prov else ""
+    except Exception:  # pragma: no cover - defensive; a resolution error must not break the page
+        return ""
+
+
 def _fetch_mt5_account_balance(account, windows_username: str) -> Optional[dict]:
     """
     Fetch THIS account's OWN MT5 balance/equity/currency from its per-tenant bridge.
@@ -669,14 +692,15 @@ class TradeHistoryView(APIView):
                 if not user.is_staff:
                     acc_q = acc_q.filter(user=user)
                 account_obj = acc_q.get()
-                if account_obj.mt5_instance and hasattr(account_obj.mt5_instance, "windows_username"):
-                    windows_username = getattr(account_obj.mt5_instance, "windows_username", "")
-                    if windows_username:
-                        account_info = _fetch_mt5_account_balance(account_obj, windows_username)
-                        if account_info:
-                            mt5_balance_current = account_info.get("balance")
-                            mt5_equity_current = account_info.get("equity")
-                            currency = account_info.get("currency", "USD") or "USD"
+                # Hosted-aware: resolve the tenant identity from mt5_instance OR AccountProvisioning, so a
+                # hosted account's REAL broker balance grounds the chart (no synthetic 10,000 fallback).
+                windows_username = _account_windows_username(account_obj)
+                if windows_username:
+                    account_info = _fetch_mt5_account_balance(account_obj, windows_username)
+                    if account_info:
+                        mt5_balance_current = account_info.get("balance")
+                        mt5_equity_current = account_info.get("equity")
+                        currency = account_info.get("currency", "USD") or "USD"
             except TradingAccount.DoesNotExist:
                 pass
             except Exception as e:
@@ -875,8 +899,37 @@ class StrategyMetricsView(APIView):
                 "win_rate_pct": round(win_rate, 2),
             })
 
-        out.sort(key=lambda x: x["net_pnl"], reverse=True)
-        return Response({"account_id": int(account_id), "strategies": out})
+        # Include the account's ASSIGNED strategies (StrategyAssignment) so an enabled strategy — e.g.
+        # Wayond WIM — is SHOWN even when its trades are not yet comment-attributable. Attribution is NEVER
+        # fabricated: an assigned strategy with no attributed trades is surfaced with 0 trades and
+        # has_attributed_trades=False ("No attributed trades yet"), while genuinely-attributed metrics are
+        # kept as computed. (Wayond's WAY### signal comments carry no guvfx:sid tag, so its trades currently
+        # fall in the "Unattributed" bucket — a persistence/attribution gap reported separately, out of scope.)
+        from strategies.models import StrategyAssignment
+        assigned_names = []
+        for asn in (StrategyAssignment.objects.filter(account_id=account_id, is_active=True)
+                    .select_related("strategy")):
+            sname = getattr(asn.strategy, "name", None)
+            if sname and sname not in assigned_names:
+                assigned_names.append(sname)
+        assigned_set = set(assigned_names)
+        existing = {r["strategy_name"] for r in out}
+        for r in out:
+            r["assigned"] = r["strategy_name"] in assigned_set
+            r["has_attributed_trades"] = r["trades"] > 0
+        for sname in assigned_names:
+            if sname not in existing:
+                out.append({"strategy_name": sname, "trades": 0, "net_pnl": 0.0, "wins": 0, "losses": 0,
+                            "win_rate_pct": 0.0, "assigned": True, "has_attributed_trades": False})
+
+        # Assigned strategies first (customer's live strategies up top), then by net P&L.
+        out.sort(key=lambda x: (not x.get("assigned", False), -x["net_pnl"]))
+        acct = acc_qs.first()
+        return Response({
+            "account_id": int(account_id),
+            "account_number": getattr(acct, "account_number", "") if acct else "",
+            "strategies": out,
+        })
 
 
 class StrategyHasTradesView(APIView):

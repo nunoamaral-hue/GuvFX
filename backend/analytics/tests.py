@@ -137,3 +137,106 @@ class LongOnlyRoundTripReadModelTests(APITestCase):
         r = c.get(reverse("trade-history"), {"account_id": acct2.id, "mode": "roundtrip", "stage": "ALL"}, secure=True)
         self.assertEqual(r.data["count"], 1)
         self.assertEqual(r.data["trades"][0]["direction"], "SELL")
+
+
+class HostedBalanceGroundingTests(APITestCase):
+    """DEFECT A — the balance trajectory must ground on the hosted account's REAL broker balance (resolved via
+    AccountProvisioning, since hosted accounts have no mt5_instance), NOT the synthetic 10,000 fallback."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from decimal import Decimal
+        from django.utils import timezone
+        from datetime import timedelta
+        from trading.models import Trade
+        from terminal_provisioning.models import AccountProvisioning
+        cls.user = User.objects.create_user(username="hb", email="hb@x.invalid", password="x")
+        cls.acct = TradingAccount.objects.create(user=cls.user, name="Hosted Workspace",
+                                                 account_number="1302575", broker_name="Hosted Workspace")
+        AccountProvisioning.objects.create(trading_account=cls.acct, windows_username="guvfx_u_28",
+                                           runtime_root=r"C:\GuvFX\accounts\28",
+                                           status=AccountProvisioning.Status.PROVISIONED)
+        base = timezone.now() - timedelta(hours=3)
+        for i, pnl in enumerate(["2.00", "-3.00", "5.00"]):
+            Trade.objects.create(account=cls.acct, ticket=f"H{i}", symbol="XAUUSD", side="BUY",
+                                 volume=Decimal("0.01"), open_time=base + timedelta(minutes=i),
+                                 close_time=base + timedelta(minutes=i + 5), open_price=Decimal("4431"),
+                                 close_price=Decimal("4432"), profit=Decimal(pnl))
+
+    def _get(self, balance):
+        with patch(_MOCK, return_value={"balance": balance, "equity": balance, "currency": "USD"}):
+            c = APIClient(); c.force_authenticate(user=self.user)
+            return c.get(reverse("trade-history"),
+                         {"account": self.acct.id, "mode": "roundtrip", "stage": "ALL"}, secure=True)
+
+    def test_50k_account_grounds_at_50k_not_10k(self):
+        r = self._get(50000.0)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["opening_balance_source"], "last_used")     # real MT5, not fallback_10000
+        self.assertNotEqual(r.data["opening_balance_source"], "fallback_10000")
+        # opening = current_balance - total_pnl (2-3+5 = 4) -> ~49996; every chart point sits near 50k
+        self.assertAlmostEqual(r.data["opening_balance_used"], 50000.0 - 4.0, places=1)
+        for p in r.data["balance_series"]:
+            self.assertGreater(p["balance_after_trade"], 49000)             # visually ~50k, never ~10k
+
+    def test_5k_account_grounds_at_5k(self):
+        r = self._get(5000.0)
+        self.assertEqual(r.data["opening_balance_source"], "last_used")
+        for p in r.data["balance_series"]:
+            self.assertLess(p["balance_after_trade"], 6000)
+            self.assertGreater(p["balance_after_trade"], 4000)              # ~5k, not 10k
+
+
+class StrategyMetricsAccountDiscoveryTests(APITestCase):
+    """DEFECT B — an ASSIGNED strategy (Wayond WIM) is shown even when its trades aren't comment-attributable;
+    ownership is enforced; the response carries the broker account number (frontend never needs the DB PK)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from decimal import Decimal
+        from django.utils import timezone
+        from datetime import timedelta
+        from trading.models import Trade
+        from strategies.models import Strategy, StrategyAssignment
+        cls.owner = User.objects.create_user(username="sm", email="sm@x.invalid", password="x")
+        cls.other = User.objects.create_user(username="smo", email="smo@x.invalid", password="x")
+        cls.acct = TradingAccount.objects.create(user=cls.owner, name="Hosted Workspace",
+                                                 account_number="1302575", broker_name="Hosted Workspace")
+        strat = Strategy.objects.create(owner=cls.owner, name="Wayond WIM Strategy")
+        StrategyAssignment.objects.create(strategy=strat, account=cls.acct, is_active=True,
+                                          signal_source="ti_signals",
+                                          execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+                                          stage=StrategyAssignment.STAGE_LIVE)
+        base = timezone.now() - timedelta(hours=2)
+        # Wayond trades: WAY### comments carry no guvfx:sid tag -> comment attribution = "Unattributed".
+        for i, pnl in enumerate(["2.12", "3.93"]):
+            Trade.objects.create(account=cls.acct, ticket=f"W{i}", symbol="XAUUSD", side="BUY",
+                                 volume=Decimal("0.01"), open_time=base + timedelta(minutes=i),
+                                 close_time=base + timedelta(minutes=i + 3), open_price=Decimal("4431"),
+                                 close_price=Decimal("4433"), profit=Decimal(pnl), comment=f"WAY266L{i+1}")
+
+    def _get(self, user, account_id):
+        c = APIClient(); c.force_authenticate(user=user)
+        return c.get(reverse("strategy-metrics"), {"account": account_id}, secure=True)
+
+    def test_assigned_wayond_wim_is_shown_with_empty_state(self):
+        r = self._get(self.owner, self.acct.id)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["account_number"], "1302575")             # broker number, for the customer UI
+        by_name = {s["strategy_name"]: s for s in r.data["strategies"]}
+        self.assertIn("Wayond WIM Strategy", by_name)                      # the assigned strategy APPEARS
+        wim = by_name["Wayond WIM Strategy"]
+        self.assertTrue(wim["assigned"])
+        self.assertFalse(wim["has_attributed_trades"])                    # no fabricated attribution
+        self.assertEqual(wim["trades"], 0)
+        # the trades themselves are honestly still under Unattributed (not fabricated onto Wayond)
+        self.assertIn("Unattributed", by_name)
+        self.assertEqual(by_name["Unattributed"]["trades"], 2)
+
+    def test_foreign_account_is_404(self):
+        r = self._get(self.other, self.acct.id)                           # not owner
+        self.assertEqual(r.status_code, 404)
+
+    def test_assigned_strategies_sorted_first(self):
+        r = self._get(self.owner, self.acct.id)
+        self.assertTrue(r.data["strategies"][0]["assigned"])              # customer's live strategy up top
