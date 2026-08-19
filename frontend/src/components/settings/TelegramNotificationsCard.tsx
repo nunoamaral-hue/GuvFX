@@ -152,8 +152,8 @@ export function TelegramNotificationsCard() {
             </p>
           )}
         </div>
-        {!loading && !settings?.connected && (
-          <Button onClick={connect} disabled={busy || !settings?.available}>
+        {!loading && !settings?.connected && settings?.available && (
+          <Button onClick={connect} disabled={busy}>
             {waiting ? t(lang, "telegram.waiting") : t(lang, "telegram.connect")}
           </Button>
         )}

@@ -5,6 +5,7 @@ from .models import (
     CustomerNotificationAttempt,
     CustomerNotificationPreference,
     CustomerNotificationProjectionCursor,
+    CustomerNotificationWorkerState,
     CustomerTelegramBinding,
     TelegramConnectionToken,
 )
@@ -39,6 +40,11 @@ class CustomerNotificationPreferenceAdmin(CustomerNotificationReadOnlyAdmin):
 @admin.register(CustomerNotificationProjectionCursor)
 class CustomerNotificationProjectionCursorAdmin(CustomerNotificationReadOnlyAdmin):
     list_display = ("source", "last_created_at", "last_object_id", "updated_at")
+
+
+@admin.register(CustomerNotificationWorkerState)
+class CustomerNotificationWorkerStateAdmin(CustomerNotificationReadOnlyAdmin):
+    list_display = ("key", "last_cycle_state", "last_heartbeat_at", "updated_at")
 
 
 @admin.register(CustomerNotification)

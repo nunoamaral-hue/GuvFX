@@ -80,6 +80,16 @@ describe("TelegramNotificationsCard", () => {
     expect(screen.getByRole("button", { name: "Connect Telegram" })).toBeEnabled();
   });
 
+  it("shows a dark unavailable state without an actionable connect control", async () => {
+    api.getTelegramSettings.mockResolvedValue({
+      ...connected(), available: false, connected: false,
+      display: { username: "", first_name: "" },
+    });
+    render(<LanguageProvider lang="en"><TelegramNotificationsCard /></LanguageProvider>);
+    expect(await screen.findByText("Telegram connection is not available yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect Telegram" })).not.toBeInTheDocument();
+  });
+
   it("shows the connecting state after opening the private-bot handshake", async () => {
     api.getTelegramSettings.mockResolvedValue({ ...connected(), connected: false, display: { username: "", first_name: "" } });
     api.createTelegramConnection.mockResolvedValue({

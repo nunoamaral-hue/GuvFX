@@ -1,19 +1,29 @@
-# Customer Telegram delivery is a dedicated, non-execution process. This file is preparation only:
-# do not add it to production compose until Programme Director approves the bot, webhook and secrets.
+# Customer Telegram delivery is a dedicated, non-execution process. Install this overlay dark;
+# keep the worker stopped until the separately approved activation procedure is complete.
 services:
+  guvfx-backend:
+    env_file:
+      - /home/ubuntu/guvfx-prod/customer-telegram.env
+
   guvfx-customer-notification-worker:
-    extends:
-      file: "${GUVFX_COMPOSE_BASE:-docker-compose.yml}"
-      service: guvfx-backend
+    image: guvfx-prod-guvfx-backend
     container_name: guvfx-customer-notification-worker
+    env_file:
+      - /home/ubuntu/guvfx-prod/customer-telegram.env
     restart: unless-stopped
     init: true
     stop_grace_period: 20s
     command: ["python", "manage.py", "run_customer_notification_worker"]
+    networks:
+      - default
     labels:
       - "traefik.enable=false"
     healthcheck:
-      test: ["CMD-SHELL", "python manage.py customer_notification_health --max-oldest 900"]
+      test: ["CMD-SHELL", "python manage.py customer_notification_health --max-oldest 900 --max-heartbeat 120"]
       interval: 60s
       timeout: 10s
       retries: 3
+
+networks:
+  default:
+    name: guvfx-prod_default

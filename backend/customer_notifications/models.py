@@ -81,6 +81,19 @@ class CustomerNotificationProjectionCursor(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
+class CustomerNotificationWorkerState(models.Model):
+    """Secret-free heartbeat for the dedicated notification worker."""
+
+    class State(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        DARK = "DARK", "Dark"
+
+    key = models.CharField(max_length=32, primary_key=True, default="delivery", editable=False)
+    last_heartbeat_at = models.DateTimeField(null=True, blank=True)
+    last_cycle_state = models.CharField(max_length=8, choices=State.choices, default=State.DARK)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class CustomerNotification(models.Model):
     """Durable, user/account-scoped asynchronous customer-notification outbox."""
 

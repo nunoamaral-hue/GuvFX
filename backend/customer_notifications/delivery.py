@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -16,8 +17,11 @@ from .models import (
     CustomerNotification,
     CustomerNotificationAttempt,
     CustomerNotificationPreference,
+    CustomerNotificationWorkerState,
     CustomerTelegramBinding,
 )
+
+logger = logging.getLogger(__name__)
 
 _PREFERENCE_FIELD = {
     CustomerNotification.EventType.TRADE_OPENED: "trade_opened",
@@ -220,6 +224,19 @@ def dispatch_customer_notifications(*, client=None, limit: int = 100) -> dict:
     return counts
 
 
+def record_worker_heartbeat(state: str) -> bool:
+    """Record liveness without ever making notification delivery depend on monitoring storage."""
+    try:
+        CustomerNotificationWorkerState.objects.update_or_create(
+            key="delivery",
+            defaults={"last_heartbeat_at": timezone.now(), "last_cycle_state": state},
+        )
+        return True
+    except Exception:
+        logger.exception("customer notification heartbeat write failed")
+        return False
+
+
 def queue_health() -> dict:
     now = timezone.now()
     base = CustomerNotification.objects
@@ -240,9 +257,17 @@ def queue_health() -> dict:
     exhausted = CustomerNotificationAttempt.objects.filter(
         error_code__startswith="retry_exhausted:",
     ).count()
+    worker = CustomerNotificationWorkerState.objects.filter(key="delivery").first()
+    heartbeat = worker.last_heartbeat_at if worker else None
+    heartbeat_age = max(0, int((now - heartbeat).total_seconds())) if heartbeat else None
     return {
         "feature_enabled": bool(getattr(settings, "CUSTOMER_TELEGRAM_NOTIFICATIONS_ENABLED", False)),
         "worker_enabled": bool(getattr(settings, "CUSTOMER_TELEGRAM_WORKER_ENABLED", False)),
+        "binding_count": CustomerTelegramBinding.objects.count(),
+        "active_binding_count": CustomerTelegramBinding.objects.filter(is_active=True).count(),
+        "worker_last_heartbeat_at": heartbeat.isoformat() if heartbeat else None,
+        "worker_heartbeat_age_seconds": heartbeat_age,
+        "worker_last_cycle_state": worker.last_cycle_state if worker else None,
         "queue_depth": queue_depth,
         "pending": queue_depth,
         "processing": base.filter(status=CustomerNotification.Status.PROCESSING).count(),

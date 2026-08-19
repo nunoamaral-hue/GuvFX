@@ -1,13 +1,13 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Customer Telegram notifications — CODE READY; configuration-gated (2026-08-19)
-Draft PR #371 is cleanly rebased onto main `de99004c`, DARK/default-OFF, with no execution-plane changes.
+## ▶ Customer Telegram notifications — RECONCILED RC; DARK install gate (2026-08-19)
+Draft PR #371 is reconciled onto main `cd05c03f`, DARK/default-OFF, with no execution-plane file changes.
 Private numeric-chat binding, no WIMs/global fallback, durable TP/final-outcome messages, full owner MT5 account
-number, EN/JA Settings, at-most-once outbox, 28-case adversarial proof (**0 HIGH / 0 MEDIUM**), and isolated
-`make check` (4,349 backend; 286 frontend) are green. **ONE bounded next action → Sponsor/operations:** approve
-the GuvFX customer bot and ownership/rotation, provide bot username/token plus HTTPS webhook and secret, approve
-backup+migration and dedicated-worker deployment, then pilot `beta.guvfx01@gmail.com` with an existing durable
-safe event. Do not manufacture a trade; do not use Customer Zero or WIMs; keep both flags OFF until that gate.
+number, EN/JA Settings, at-most-once outbox, secret-free heartbeat/binding monitoring, and adversarial proof
+(**0 HIGH / 0 MEDIUM**) survive the rebase; fresh Wayond acquisition still seeds 0.01/leg. Next: full gate,
+exact-head CI, merge, verified backup, additive migration, backend/frontend DARK deploy, and install the worker
+definition stopped. Then STOP. Bot creation, credentials, webhook, flags, worker start, messages, and pilot
+remain human-gated by the production activation runbook; never manufacture a trade.
 
 ## ▶ ADR-0048 Execution-path readiness + stale reconciler — BUILT, STOP for Sponsor (2026-08-18)
 Branch `feat/node2-execpath-readiness` (`fad465f`), NOT pushed / NOT deployed, DARK, no prod mutation. Fixes

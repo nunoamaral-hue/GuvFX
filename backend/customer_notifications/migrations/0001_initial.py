@@ -82,6 +82,15 @@ class Migration(migrations.Migration):
             ],
         ),
         migrations.CreateModel(
+            name='CustomerNotificationWorkerState',
+            fields=[
+                ('key', models.CharField(default='delivery', editable=False, max_length=32, primary_key=True, serialize=False)),
+                ('last_heartbeat_at', models.DateTimeField(blank=True, null=True)),
+                ('last_cycle_state', models.CharField(choices=[('ACTIVE', 'Active'), ('DARK', 'Dark')], default='DARK', max_length=8)),
+                ('updated_at', models.DateTimeField(auto_now=True)),
+            ],
+        ),
+        migrations.CreateModel(
             name='CustomerTelegramBinding',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),

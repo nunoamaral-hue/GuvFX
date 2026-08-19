@@ -4,7 +4,12 @@ import time
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from customer_notifications.delivery import dispatch_customer_notifications, queue_health
+from customer_notifications.delivery import (
+    dispatch_customer_notifications,
+    queue_health,
+    record_worker_heartbeat,
+)
+from customer_notifications.models import CustomerNotificationWorkerState
 from customer_notifications.event_sources import collect_customer_notification_events
 
 
@@ -30,6 +35,11 @@ class Command(BaseCommand):
         while not stopped:
             enabled = bool(getattr(settings, "CUSTOMER_TELEGRAM_NOTIFICATIONS_ENABLED", False))
             worker_enabled = bool(getattr(settings, "CUSTOMER_TELEGRAM_WORKER_ENABLED", False))
+            record_worker_heartbeat(
+                CustomerNotificationWorkerState.State.ACTIVE
+                if enabled and worker_enabled
+                else CustomerNotificationWorkerState.State.DARK
+            )
             if enabled and worker_enabled:
                 collected = collect_customer_notification_events(limit=limit)
                 delivered = dispatch_customer_notifications(limit=limit)

@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from django.contrib.auth import get_user_model
 from django.contrib import admin
-from django.core.management import call_command
+from django.core.management import call_command, CommandError
 from django.db import transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -25,6 +25,7 @@ from .delivery import (
     TelegramDeliveryError,
     dispatch_customer_notifications,
     queue_health,
+    record_worker_heartbeat,
 )
 from .event_sources import (
     collect_customer_notification_events,
@@ -40,6 +41,7 @@ from .models import (
     CustomerNotificationAttempt,
     CustomerNotificationPreference,
     CustomerNotificationProjectionCursor,
+    CustomerNotificationWorkerState,
     CustomerTelegramBinding,
     TelegramConnectionToken,
 )
@@ -138,6 +140,7 @@ class ConnectionIsolationTests(CustomerTelegramTestBase):
             CustomerTelegramBinding, TelegramConnectionToken,
             CustomerNotificationPreference, CustomerNotification,
             CustomerNotificationAttempt, CustomerNotificationProjectionCursor,
+            CustomerNotificationWorkerState,
         ):
             model_admin = admin.site._registry[model]
             self.assertFalse(model_admin.has_add_permission(request))
@@ -147,6 +150,48 @@ class ConnectionIsolationTests(CustomerTelegramTestBase):
         self.assertIn("telegram_user_id", admin.site._registry[CustomerTelegramBinding].exclude)
         self.assertIn("recipient_chat_id", admin.site._registry[CustomerNotificationAttempt].exclude)
         self.assertIn("token_digest", admin.site._registry[TelegramConnectionToken].exclude)
+
+    def test_health_exposes_counts_and_worker_liveness_without_recipient_ids(self):
+        self.bind(self.user_a, 111)
+        CustomerTelegramBinding.objects.filter(user=self.user_a).update(is_active=False)
+        self.bind(self.user_b, 222)
+        self.assertTrue(record_worker_heartbeat(CustomerNotificationWorkerState.State.ACTIVE))
+        health = queue_health()
+        self.assertEqual(health["binding_count"], 2)
+        self.assertEqual(health["active_binding_count"], 1)
+        self.assertEqual(health["worker_last_cycle_state"], "ACTIVE")
+        self.assertIsNotNone(health["worker_last_heartbeat_at"])
+        self.assertLessEqual(health["worker_heartbeat_age_seconds"], 1)
+        rendered = json.dumps(health)
+        self.assertNotIn("111", rendered)
+        self.assertNotIn("222", rendered)
+
+    @override_settings(
+        CUSTOMER_TELEGRAM_NOTIFICATIONS_ENABLED=True,
+        CUSTOMER_TELEGRAM_WORKER_ENABLED=True,
+    )
+    def test_health_command_requires_heartbeat_only_when_active(self):
+        with self.assertRaisesMessage(CommandError, "worker heartbeat is stale"):
+            call_command("customer_notification_health", "--max-heartbeat", "120")
+        record_worker_heartbeat(CustomerNotificationWorkerState.State.ACTIVE)
+        call_command("customer_notification_health", "--max-heartbeat", "120")
+
+    @patch("customer_notifications.management.commands.customer_telegram_webhook.urllib.request.urlopen")
+    def test_webhook_registration_tool_reads_settings_and_never_prints_secrets(self, urlopen):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"ok":true,"result":true}'
+        urlopen.return_value = response
+        output = StringIO()
+        call_command("customer_telegram_webhook", "--register", stdout=output)
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data)
+        self.assertEqual(body["url"], SETTINGS["CUSTOMER_TELEGRAM_WEBHOOK_URL"])
+        self.assertEqual(body["secret_token"], SETTINGS["CUSTOMER_TELEGRAM_WEBHOOK_SECRET"])
+        self.assertEqual(body["allowed_updates"], ["message"])
+        self.assertTrue(body["drop_pending_updates"])
+        rendered = output.getvalue()
+        self.assertNotIn(SETTINGS["CUSTOMER_TELEGRAM_BOT_TOKEN"], rendered)
+        self.assertNotIn(SETTINGS["CUSTOMER_TELEGRAM_WEBHOOK_SECRET"], rendered)
 
     def test_raw_token_is_not_stored_and_fits_telegram_limit(self):
         raw = self.token_for(self.user_a)

@@ -15,7 +15,7 @@
 
 ---
 
-## Customer Telegram notifications (CODE READY, DARK)
+## Customer Telegram notifications (RECONCILED RC, DARK)
 
 This plane is not production-active. It must use a dedicated customer bot and must
 never reuse provider-ingestion or stakeholder Telegram credentials.
@@ -33,6 +33,10 @@ CUSTOMER_TELEGRAM_TOKEN_TTL_SECONDS=600
 CUSTOMER_NOTIFICATION_MAX_ATTEMPTS=5
 ```
 
+Production stores these keys in `/home/ubuntu/guvfx-prod/customer-telegram.env` (`ubuntu:ubuntu`, `0600`).
+The dedicated worker receives only that file's Django/database runtime settings plus the keys above; it does
+not receive MT5, bridge, node, WorkerIdentity, execution, provider-Telegram, or WIMs credentials.
+
 Local verification while DARK:
 
 ```bash
@@ -41,11 +45,11 @@ python manage.py customer_notification_health
 python manage.py run_customer_notification_worker --once
 ```
 
-The worker command reports `dark=True` when the feature is disabled and
+The worker command records a secret-free `DARK` or `ACTIVE` heartbeat and reports `dark=True` when the feature is disabled and
 `worker_disabled=True` when its independent worker switch is disabled. In either
-case it neither collects nor sends. The prepared, non-routed worker definition lives at
-`deploy/customer-notifications/docker-compose.customer-notifications.yml`; do not
-add it to a production compose stack before Programme Director approval.
+case it neither collects nor sends. The isolated worker definition lives at
+`deploy/customer-notifications/docker-compose.customer-notifications.yml`; the approved DARK posture installs
+the definition but leaves the service stopped and both flags false.
 
 Production prerequisites are an approved GuvFX-owned customer bot and rotation owner,
 bot username/token, public HTTPS webhook URL and independent secret, database backup and
@@ -59,8 +63,10 @@ Operational interpretation:
 
 - `queue_depth` / `pending` includes `PENDING`, `RETRYING`, and deliberately non-reclaimed
   `PROCESSING` rows.
-- Health also reports the oldest queued age, success/failure totals, ambiguous
-  delivery count, retry-exhaustion count, suppressed count, and both enable flags.
+- Health also reports the oldest queued age, success/failure totals, ambiguous delivery count,
+  retry-exhaustion count, suppressed count, both enable flags, total/active binding counts, and worker heartbeat.
+- DARK accepts no heartbeat. ACTIVE thresholds: heartbeat >120s alerts; oldest pending >900s warns; any
+  definite failure/retry exhaustion alerts; ambiguity requires operator review and no replay.
 - A stale `PROCESSING` row may represent Telegram acknowledgement followed by a
   database failure. Do not replay it manually; investigate using the immutable
   attempt/outbox evidence and prefer message omission to duplication.
@@ -76,6 +82,8 @@ Operational interpretation:
   is shown in Settings, and missing bindings fail closed with no global/WIMs fallback.
 
 Full design and rollout gate: `docs/product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md`.
+Human-only bot, webhook, rotation, pilot, and rollback procedure:
+`docs/operations/customer-telegram/PRODUCTION_ACTIVATION_RUNBOOK.md`.
 
 ## Backend (Django)
 

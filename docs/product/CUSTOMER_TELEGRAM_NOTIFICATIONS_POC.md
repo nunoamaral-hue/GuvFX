@@ -1,6 +1,6 @@
 # Customer Telegram notifications — beta POC
 
-Status: **built, DARK, not deployed** (verified 2026-08-19). This document is the
+Status: **reconciled release candidate, DARK, activation human-gated** (verified 2026-08-19). This document is the
 Programme Director review packet. No production bot, webhook, worker, migration,
 or customer notification has been activated.
 
@@ -53,6 +53,7 @@ reuse, saves the binding, and consumes the token in one transaction.
 - `TelegramConnectionToken`
 - `CustomerNotificationPreference`
 - `CustomerNotificationProjectionCursor`
+- `CustomerNotificationWorkerState`
 - `CustomerNotification`
 - immutable `CustomerNotificationAttempt`
 - unique binding, token, dedupe, and attempt constraints plus queue/owner indexes
@@ -146,6 +147,9 @@ the cursor-backed durable-fact reconciler, then claims eligible outbox rows with
 compare-and-set. It revalidates binding, ownership, master preference, and event
 preference immediately before delivery. Known definite failures use bounded
 exponential retry (default maximum five attempts).
+The production worker service uses only the backend image plus a dedicated protected environment file with
+Django/database runtime settings and customer-notification keys. It does not receive or require MT5, bridge,
+node, WorkerIdentity, execution, provider-Telegram, or WIMs credentials.
 
 The design is deliberately **at most once**, not mathematically exactly once:
 after a send is claimed, `PROCESSING` is never automatically reclaimed. A network
@@ -154,7 +158,10 @@ then fails, the row remains `PROCESSING` for operator review rather than risking
 duplicate customer message. Queue health reports both enable flags, queue depth
 (including processing), oldest queued age, processing/retrying/suppressed totals,
 delivery success/failure totals, ambiguous delivery count, and retry exhaustion.
-Health never contains a chat ID, token, secret, payload, or customer identifier.
+Health also reports total/active binding counts and a durable worker heartbeat/state. It never contains a chat
+ID, token, secret, payload, or customer identifier. ACTIVE thresholds are heartbeat older than 120 seconds
+(alert), oldest pending older than 900 seconds (warning), any definite failure/retry exhaustion (alert), and
+any ambiguity (operator review, never replay). A heartbeat is not required while DARK.
 
 Telegram is a **best-effort convenience notification channel**. Committed GuvFX
 business records and the authenticated in-app experience remain the system of record.
