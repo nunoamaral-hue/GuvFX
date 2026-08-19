@@ -1,7 +1,12 @@
 "use client";
 
+import { useLang } from "@/components/AppShell";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+
 export default function UsagePage() {
+  const lang = useLang();
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ maxWidth: 900, margin: "0 auto" }}>
       <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Usage</h1>
       <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1.5rem" }}>
@@ -25,5 +30,6 @@ export default function UsagePage() {
         </p>
       </div>
     </div>
+    </LocalizedBetaSurface>
   );
 }

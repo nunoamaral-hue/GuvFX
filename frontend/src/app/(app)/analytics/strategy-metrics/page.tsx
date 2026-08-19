@@ -5,6 +5,8 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import type { TradingAccount } from "@/types/strategies";
+import { useLang } from "@/components/AppShell";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
 
 type StrategyMetric = {
   strategy_name: string;
@@ -34,6 +36,7 @@ function accountLabel(acc: TradingAccount): string {
 type UiState = "loading" | "no_accounts" | "no_strategies" | "unavailable" | "ready";
 
 export default function StrategyMetricsPage() {
+  const lang = useLang();
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [rows, setRows] = useState<StrategyMetric[]>([]);
@@ -90,15 +93,16 @@ export default function StrategyMetricsPage() {
   const selected = accounts.find((a) => String(a.id) === selectedAccountId);
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-      <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Strategy Metrics</h1>
-      <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
-        Performance by strategy for your connected trading account. Read-only and informational.
-      </p>
+    <LocalizedBetaSurface lang={lang}>
+      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+        <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>Strategy Metrics</h1>
+        <p style={{ fontSize: "0.9rem", color: "#b7c5dd", marginBottom: "1rem" }}>
+          Performance by strategy for your connected trading account. Read-only and informational.
+        </p>
 
-      {/* Account selector — broker account number, never an internal ID. Auto-selected when you have one. */}
-      {accounts.length > 0 && (
-        <Card title="Account">
+        {/* Account selector — broker account number, never an internal ID. Auto-selected when you have one. */}
+        {accounts.length > 0 && (
+          <Card title="Account">
           <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", padding: "0.75rem" }}>
             <label style={{ fontWeight: 600 }}>Trading account</label>
             {accounts.length === 1 ? (
@@ -133,11 +137,11 @@ export default function StrategyMetricsPage() {
               {state === "loading" ? "Loading…" : "Refresh"}
             </Button>
           </div>
-        </Card>
-      )}
+          </Card>
+        )}
 
-      <Card title={selected ? `Strategies · ${accountLabel(selected)}` : "Strategies"}>
-        <div style={{ overflowX: "auto" }}>
+        <Card title={selected ? `Strategies · ${accountLabel(selected)}` : "Strategies"}>
+          <div style={{ overflowX: "auto" }}>
           {state === "loading" && (
             <p style={{ padding: "1rem", opacity: 0.75 }}>Loading your strategy performance…</p>
           )}
@@ -203,8 +207,9 @@ export default function StrategyMetricsPage() {
               </tbody>
             </table>
           )}
-        </div>
-      </Card>
-    </div>
+          </div>
+        </Card>
+      </div>
+    </LocalizedBetaSurface>
   );
 }

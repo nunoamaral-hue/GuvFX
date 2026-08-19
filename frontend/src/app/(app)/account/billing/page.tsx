@@ -3,6 +3,10 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { ActionRequestModal } from "@/components/ActionRequestModal";
+import { useLang } from "@/components/AppShell";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { localeFor } from "@/lib/i18n";
+import { localizeBackendCustomerText } from "@/lib/active-beta-i18n";
 import type {
   Subscription,
   Entitlements,
@@ -16,15 +20,15 @@ import type {
 const humanize = (s: string) =>
   s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-const fmtDate = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-US", {
+const fmtDate = (iso: string, lang: "en" | "ja") =>
+  new Date(iso).toLocaleDateString(localeFor(lang), {
     year: "numeric",
     month: "short",
     day: "numeric",
   });
 
-const fmtDateTime = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-US", {
+const fmtDateTime = (iso: string, lang: "en" | "ja") =>
+  new Date(iso).toLocaleDateString(localeFor(lang), {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -190,6 +194,7 @@ function DetailRow({ label, value }: { label: string; value: string | null | und
 // ─────────────────────────────────────────────────────────────────────
 
 export default function BillingPage() {
+  const lang = useLang();
   const [modalOpen, setModalOpen] = useState(false);
   const [modalContext, setModalContext] = useState("");
 
@@ -231,6 +236,7 @@ export default function BillingPage() {
     subscription?.current_plan === planKey;
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
       <h1 style={{ fontSize: "2rem", marginBottom: "0.25rem" }}>
         Billing &amp; Plans
@@ -294,7 +300,7 @@ export default function BillingPage() {
                 marginTop: "0.15rem",
               }}
             >
-              {error}
+              {localizeBackendCustomerText(lang, error, "error")}
             </div>
           )}
 
@@ -393,7 +399,7 @@ export default function BillingPage() {
               value={
                 subscription.current_period_started_at &&
                 subscription.current_period_ends_at
-                  ? `${fmtDate(subscription.current_period_started_at)} – ${fmtDate(subscription.current_period_ends_at)}`
+                  ? `${fmtDate(subscription.current_period_started_at, lang)} – ${fmtDate(subscription.current_period_ends_at, lang)}`
                   : null
               }
             />
@@ -401,7 +407,7 @@ export default function BillingPage() {
               label="Trial started"
               value={
                 subscription.trial_started_at
-                  ? fmtDate(subscription.trial_started_at)
+                  ? fmtDate(subscription.trial_started_at, lang)
                   : null
               }
             />
@@ -409,7 +415,7 @@ export default function BillingPage() {
               label="Trial expires"
               value={
                 subscription.trial_expires_at
-                  ? fmtDate(subscription.trial_expires_at)
+                  ? fmtDate(subscription.trial_expires_at, lang)
                   : null
               }
             />
@@ -417,7 +423,7 @@ export default function BillingPage() {
               label="Next invoice"
               value={
                 subscription.next_invoice_date
-                  ? fmtDate(subscription.next_invoice_date)
+                  ? fmtDate(subscription.next_invoice_date, lang)
                   : null
               }
             />
@@ -425,7 +431,7 @@ export default function BillingPage() {
               label="Next payment due"
               value={
                 subscription.next_payment_due_date
-                  ? fmtDate(subscription.next_payment_due_date)
+                  ? fmtDate(subscription.next_payment_due_date, lang)
                   : null
               }
             />
@@ -433,7 +439,7 @@ export default function BillingPage() {
               label="Last invoice"
               value={
                 subscription.last_invoice_date
-                  ? fmtDate(subscription.last_invoice_date)
+                  ? fmtDate(subscription.last_invoice_date, lang)
                   : null
               }
             />
@@ -441,7 +447,7 @@ export default function BillingPage() {
               label="Last payment"
               value={
                 subscription.last_payment_at
-                  ? fmtDateTime(subscription.last_payment_at)
+                  ? fmtDateTime(subscription.last_payment_at, lang)
                   : null
               }
             />
@@ -449,7 +455,7 @@ export default function BillingPage() {
               label="Last plan change"
               value={
                 subscription.last_plan_change_at
-                  ? fmtDateTime(subscription.last_plan_change_at)
+                  ? fmtDateTime(subscription.last_plan_change_at, lang)
                   : null
               }
             />
@@ -947,5 +953,6 @@ export default function BillingPage() {
         confirmationBody="Your request will be recorded once account plan management is enabled."
       />
     </div>
+    </LocalizedBetaSurface>
   );
 }

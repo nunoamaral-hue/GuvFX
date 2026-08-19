@@ -8,7 +8,10 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Alert } from "@/components/ui/Alert";
-import { t, detectLang, type Lang } from "@/lib/i18n";
+import { localeFor, t } from "@/lib/i18n";
+import { useLang } from "@/components/AppShell";
+import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { localizeBackendCustomerText, localizeControlledEnum } from "@/lib/active-beta-i18n";
 import type { BacktestConfig } from "@/types/backtests";
 import type { EngineStatusResponse } from "@/types/strategies";
 
@@ -146,11 +149,11 @@ const checkIconStyle = (passed: boolean): CSSProperties => ({
 // =============================================================================
 
 export default function StrategyControlPage() {
+  const lang = useLang();
   const params = useParams();
   const strategyId = Number(params?.id);
   const router = useRouter();
 
-  const [lang, setLang] = useState<Lang>("en");
   const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [loadingStrategy, setLoadingStrategy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -158,11 +161,6 @@ export default function StrategyControlPage() {
   // Linked backtest configs
   const [linkedConfigs, setLinkedConfigs] = useState<BacktestConfig[]>([]);
   const [loadingConfigs, setLoadingConfigs] = useState(false);
-
-  // Detect language
-  useEffect(() => {
-    setLang(detectLang());
-  }, []);
 
   // Fetch strategy
   useEffect(() => {
@@ -297,9 +295,11 @@ export default function StrategyControlPage() {
   // Guard for invalid strategyId
   if (Number.isNaN(strategyId)) {
     return (
+      <LocalizedBetaSurface lang={lang}>
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
         <Alert type="error">Invalid strategy ID.</Alert>
       </div>
+      </LocalizedBetaSurface>
     );
   }
 
@@ -307,6 +307,7 @@ export default function StrategyControlPage() {
   const testReady = strategy ? isTestReady(strategy) : false;
 
   return (
+    <LocalizedBetaSurface lang={lang}>
     <div style={{ maxWidth: 900, margin: "0 auto" }}>
       {/* Header */}
       <div style={{ marginBottom: "1.5rem" }}>
@@ -345,7 +346,7 @@ export default function StrategyControlPage() {
         </p>
       </div>
 
-      {error && <Alert type="error">{error}</Alert>}
+      {error && <Alert type="error">{localizeBackendCustomerText(lang, error, "error")}</Alert>}
 
       {/* Live Status Badge */}
       {!liveStatusLoading && liveStatus && (
@@ -381,25 +382,21 @@ export default function StrategyControlPage() {
                   : "red"
             }
           >
-            {liveStatus.overall === "PASS"
-              ? "LIVE"
-              : liveStatus.overall === "DEGRADED"
-                ? "DEGRADED"
-                : "OFFLINE"}
+            {localizeControlledEnum(lang, "status", liveStatus.overall === "PASS" ? "LIVE" : liveStatus.overall)}
           </Badge>
           {engineStatus?.stage && (
             <Badge color={engineStatus.stage === "LIVE" ? "green" : "yellow"}>
-              {engineStatus.stage}
+              {localizeControlledEnum(lang, "status", engineStatus.stage)}
             </Badge>
           )}
           <span style={{ fontSize: "0.82rem", color: "#b7c5dd" }}>
             {liveStatus.checks
               .filter((c) => c.status !== "PASS")
-              .map((c) => c.detail)
-              .join(" · ") || "All systems operational"}
+              .map((c) => localizeBackendCustomerText(lang, c.detail, "account-detail"))
+              .join(" · ") || (lang === "ja" ? "すべて正常です" : "All systems operational")}
           </span>
           <span style={{ fontSize: "0.72rem", color: "#64748b", marginLeft: "auto" }}>
-            Checked {new Date(liveStatus.checked_at).toLocaleTimeString()}
+            Checked {new Date(liveStatus.checked_at).toLocaleTimeString(localeFor(lang))}
           </span>
         </div>
       )}
@@ -446,7 +443,7 @@ export default function StrategyControlPage() {
                       </span>
                       <Badge color="blue">{engineAbbr}</Badge>
                     </div>
-                    {rs.paused_until && <Badge color="red">PAUSED</Badge>}
+                    {rs.paused_until && <Badge color="red">{localizeControlledEnum(lang, "status", "PAUSED")}</Badge>}
                   </div>
 
                   {/* Metrics grid */}
@@ -500,7 +497,7 @@ export default function StrategyControlPage() {
                       <span style={{ color: "#7c8ca4" }}>Last eval: </span>
                       <span style={{ color: "#c9def7", fontSize: "0.78rem" }}>
                         {rs.last_eval_at
-                          ? new Date(rs.last_eval_at).toLocaleTimeString()
+                          ? new Date(rs.last_eval_at).toLocaleTimeString(localeFor(lang))
                           : "never"}
                       </span>
                     </div>
@@ -515,8 +512,8 @@ export default function StrategyControlPage() {
                         color: "#fbbf24",
                       }}
                     >
-                      Paused until {new Date(rs.paused_until).toLocaleString()}
-                      {rs.pause_reason && ` (${rs.pause_reason})`}
+                      Paused until {new Date(rs.paused_until).toLocaleString(localeFor(lang))}
+                      {rs.pause_reason && ` (${localizeBackendCustomerText(lang, rs.pause_reason, "account-detail")})`}
                     </div>
                   )}
                 </div>
@@ -585,7 +582,7 @@ export default function StrategyControlPage() {
                   />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: "0.8rem", color: "#f0f6ff" }}>
-                      {evt.event_type.replace(/_/g, " ")}
+                      {localizeControlledEnum(lang, "event", evt.event_type)}
                       {evt.reason_code && (
                         <span style={{ color: "#7c8ca4", marginLeft: 6 }}>
                           ({evt.reason_code})
@@ -596,7 +593,7 @@ export default function StrategyControlPage() {
                       {evt.symbol} &middot; {engineAbbr}
                       {evt.bar_close_time && ` \u00b7 bar ${evt.bar_close_time}`}
                       {" \u00b7 "}
-                      {new Date(evt.created_at).toLocaleString()}
+                      {new Date(evt.created_at).toLocaleString(localeFor(lang))}
                     </div>
                   </div>
                 </div>
@@ -790,7 +787,7 @@ export default function StrategyControlPage() {
             >
               {t(lang, "strategy.definition.createdLabel")}:{" "}
               <span style={{ color: "#c9def7" }}>
-                {new Date(strategy.created_at).toLocaleString()}
+                {new Date(strategy.created_at).toLocaleString(localeFor(lang))}
               </span>
             </p>
           </div>
@@ -1012,5 +1009,6 @@ export default function StrategyControlPage() {
         </div>
       </Card>
     </div>
+    </LocalizedBetaSurface>
   );
 }

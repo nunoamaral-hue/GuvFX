@@ -30,6 +30,7 @@
   "src/components/broker/ValidationHistoryTable.tsx",
   "src/components/broker/ValidationTimelinePanel.tsx",
   "src/components/hosted/HostedMt5RemoteApp.tsx",
+  "src/components/i18n/LocalizedBetaSurface.tsx",
   "src/components/onboarding/HostedWorkspaceJourney.tsx",
   "src/components/onboarding/OnboardingProgress.tsx",
   "src/components/onboarding/OnboardingShell.tsx",

@@ -570,8 +570,10 @@ function AccountsContent() {
       setBrokerSuggestions([]);
 
       setInfo(t(lang, "accounts.accountAdded"));
-    } catch (err: any) {
-      setError(err instanceof Error ? err.message : t(lang, "accounts.failedToLoad"));
+    } catch (err: unknown) {
+      setError(err instanceof Error && err.message === t(lang, "accounts.invalidLogin")
+        ? err.message
+        : t(lang, "accounts.failedToLoad"));
     } finally {
       setCreating(false);
     }

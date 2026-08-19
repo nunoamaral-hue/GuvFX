@@ -47,6 +47,9 @@ type NavGroup = {
 const LangContext = createContext<Lang>("en");
 export const useLang = () => useContext(LangContext);
 export function LanguageProvider({ lang, children }: { lang: Lang; children: React.ReactNode }) {
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
   return <LangContext.Provider value={lang}>{children}</LangContext.Provider>;
 }
 
@@ -949,7 +952,7 @@ export function AppShell({ children }: AppShellProps) {
   const activeHref = findActiveHref(pathname);
 
   return (
-    <LangContext.Provider value={lang}>
+    <LanguageProvider lang={lang}>
       {/* CSS for responsive behavior */}
       <style>{`
         /* Prevent horizontal overflow globally */
@@ -1332,6 +1335,6 @@ export function AppShell({ children }: AppShellProps) {
           lang={lang}
         />
       </div>
-    </LangContext.Provider>
+    </LanguageProvider>
   );
 }
