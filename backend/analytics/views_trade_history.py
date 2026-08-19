@@ -35,21 +35,31 @@ def _get_windows_agent_config() -> tuple[str, str]:
     return base, token
 
 
-def _fetch_mt5_account_balance(windows_username: str) -> Optional[dict]:
+def _fetch_mt5_account_balance(account, windows_username: str) -> Optional[dict]:
     """
-    Fetch MT5 account info (balance, equity, currency) from Windows Agent.
+    Fetch THIS account's OWN MT5 balance/equity/currency from its per-tenant bridge.
+
+    P0 DATA-ISOLATION: the destination is resolved from the account's OWN HostedExecutionEndpoint
+    (never the module-global agent, which co-resident is a sibling tenant's bridge), and the balance is
+    bound to the bridge's OBSERVED session identity — a mismatch returns None (no foreign balance is ever
+    shown). Fail-closed on any resolution/identity failure.
 
     Handles response shapes:
       - {"ok": true, "data": {"balance": ..., "equity": ..., "currency": ...}}
       - {"ok": true, "data": {"account": {"balance": ..., ...}}}
       - {"balance": ..., "equity": ..., "currency": ...}  (direct)
-
-    Returns dict with: balance, equity, currency (or None on error).
     """
-    base, token = _get_windows_agent_config()
-    if not base or not token:
-        logger.warning("Windows agent not configured, cannot fetch MT5 balance")
+    from execution.snapshot_transport import resolve_account_snapshot_base, verify_snapshot_identity
+    global_base, token = _get_windows_agent_config()
+    if not token:
+        logger.warning("Windows agent token not configured, cannot fetch MT5 balance")
         return None
+    st = resolve_account_snapshot_base(account, global_base_url=global_base)
+    if not st.ok:
+        logger.warning("MT5 balance read transport unresolved for account %s: %s",
+                       getattr(account, "id", None), st.reason_code)
+        return None
+    base = st.base_url
 
     try:
         url = f"{base}/mt5/snapshots/account?username={urllib.parse.quote(windows_username)}"
@@ -61,6 +71,19 @@ def _fetch_mt5_account_balance(windows_username: str) -> Optional[dict]:
         with urllib.request.urlopen(req, timeout=10) as r:
             raw = r.read().decode("utf-8", "ignore")
             data = json.loads(raw) if raw else {}
+
+            # DOWNSTREAM FIREWALL: verify the observed session identity is this account's before returning
+            # ANY financial figure (a mis-routed balance read that reached the wrong tenant is refused).
+            _inner_id = data.get("data") if isinstance(data.get("data"), dict) else {}
+            observed_login = (data.get("account_login") or _inner_id.get("account_login")
+                              or _inner_id.get("login") or data.get("login"))
+            observed_server = (data.get("account_server") or _inner_id.get("account_server")
+                               or _inner_id.get("server") or data.get("server"))
+            _idc = verify_snapshot_identity(account, observed_login, observed_server)
+            if not _idc.ok:
+                logger.warning("MT5 balance identity firewall refused for account %s: %s",
+                               getattr(account, "id", None), _idc.reason_code)
+                return None
 
             # Handle nested response shapes
             # Shape 1: {"ok": true, "data": {"account": {...}}}
@@ -635,7 +658,7 @@ class TradeHistoryView(APIView):
                 if account_obj.mt5_instance and hasattr(account_obj.mt5_instance, "windows_username"):
                     windows_username = getattr(account_obj.mt5_instance, "windows_username", "")
                     if windows_username:
-                        account_info = _fetch_mt5_account_balance(windows_username)
+                        account_info = _fetch_mt5_account_balance(account_obj, windows_username)
                         if account_info:
                             mt5_balance_current = account_info.get("balance")
                             mt5_equity_current = account_info.get("equity")

@@ -1089,16 +1089,29 @@ class SyncNowView(APIView):
             )
 
         # Get Windows agent config
-        agent_base = (os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
+        global_agent_base = (os.getenv("WINDOWS_AGENT_BASE") or os.getenv("GUVFX_AGENT_URL") or "").rstrip("/")
         agent_token = (os.getenv("WINDOWS_AGENT_TOKEN") or os.getenv("GUVFX_AGENT_TOKEN") or "").strip()
 
-        if not agent_base or not agent_token:
+        if not global_agent_base or not agent_token:
             return Response(
                 {"ok": False, "error": "agent_not_configured", "message": "Windows agent is not configured."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        # Call Windows agent to get deals
+        # P0 DATA-ISOLATION (UPSTREAM): this on-demand ingest PERSISTS trades, so it must read the account's
+        # OWN per-tenant bridge — never the global agent (which, co-resident, is a sibling tenant's bridge).
+        # Fail closed for a hosted account with no READY endpoint.
+        from execution.snapshot_transport import resolve_account_snapshot_base, verify_snapshot_identity
+        _st = resolve_account_snapshot_base(account, global_base_url=global_agent_base)
+        if not _st.ok:
+            return Response(
+                {"ok": False, "error": "snapshot_transport_unresolved", "reason_code": _st.reason_code,
+                 "message": "Your account's execution endpoint is not ready; please try again shortly."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        agent_base = _st.base_url
+
+        # Call the account's OWN bridge to get deals
         import urllib.parse
         url = f"{agent_base}/mt5/snapshots/deals?username={urllib.parse.quote(windows_username)}"
 
@@ -1141,6 +1154,20 @@ class SyncNowView(APIView):
         )
         if data.get("ok") is True and "data" in data and "deals" in data["data"]:
             deals = data["data"]["deals"]
+
+        # P0 DATA-ISOLATION (DOWNSTREAM FIREWALL): bind the whole batch to the bridge's OBSERVED session
+        # identity (login/server from account_info) and refuse to persist ANY row if it is not this account's.
+        _inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+        observed_login = data.get("account_login", _inner.get("account_login"))
+        observed_server = data.get("account_server", _inner.get("account_server"))
+        _idc = verify_snapshot_identity(account, observed_login, observed_server)
+        if not _idc.ok:
+            logger.warning("sync-now identity firewall refused: acct=%s reason=%s", account.id, _idc.reason_code)
+            return Response(
+                {"ok": False, "error": "identity_mismatch", "reason_code": _idc.reason_code,
+                 "message": "Sync could not verify this account's trading session; no data was changed."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         # Upsert trades
         inserted, updated, skipped, skip_reasons = _upsert_trades(account, deals)

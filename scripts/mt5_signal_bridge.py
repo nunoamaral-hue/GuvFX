@@ -1720,11 +1720,58 @@ def fetch_deals_snapshot(username: str) -> Dict[str, Any]:
                 "entry": d.entry,  # DEAL_ENTRY_* (0=IN/open,1=OUT/close,2=INOUT,3=OUT_BY) — lets the ingest worker split open vs close deals per position
             })
 
-        return {"ok": True, "deals": deal_list, "count": len(deal_list)}
-
+        # P0 DATA-ISOLATION (downstream firewall enabler): return the OBSERVED session identity — the login
+        # and server of the terminal these deals were actually read from (this same account_info session).
+        # The ingest worker binds the whole batch to this identity and refuses to persist if it does not match
+        # the account it is syncing, so a mis-routed read (wrong bridge / wrong tenant) can never contaminate.
+        return {
+            "ok": True,
+            "deals": deal_list,
+            "count": len(deal_list),
+            "account_login": str(getattr(account_info, "login", "") or ""),
+            "account_server": str(getattr(account_info, "server", "") or ""),
+        }
     except Exception as e:
         logger.exception(f"[deals] Exception: {e}")
         return {"ok": False, "error": "exception", "detail": str(e)}
+    finally:
+        mt5.shutdown()
+
+
+def fetch_account_snapshot(username: str) -> Dict[str, Any]:
+    """P0 DATA-ISOLATION — this tenant's OWN account snapshot (login/server/balance/equity/currency) for the
+    live balance read. Attaches to the bridge's OWN terminal (MT5_TERMINAL_PATH) and returns the OBSERVED
+    identity so the caller's identity firewall can bind the balance to this account (a mis-routed balance read
+    that reaches the wrong tenant's bridge is caught by observed_login != expected_login)."""
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return {"ok": False, "error": "mt5_not_installed"}
+
+    init_kwargs = {}
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+
+    if not guarded_initialize(mt5, init_kwargs):
+        return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
+
+    try:
+        account_info = mt5.account_info()
+        if account_info is None:
+            return {"ok": False, "error": "account_info_failed"}
+        return {
+            "ok": True,
+            "account_login": str(getattr(account_info, "login", "") or ""),
+            "account_server": str(getattr(account_info, "server", "") or ""),
+            "login": getattr(account_info, "login", None),
+            "server": getattr(account_info, "server", None),
+            "balance": getattr(account_info, "balance", None),
+            "equity": getattr(account_info, "equity", None),
+            "currency": getattr(account_info, "currency", None),
+        }
+    except Exception as e:
+        logger.exception(f"[account] Exception: {e}")
+        return {"ok": False, "error": "account_snapshot_error", "detail": str(e)}
     finally:
         mt5.shutdown()
 
@@ -2198,6 +2245,10 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
             elif path == "/mt5/snapshots/deals":
                 username = params.get("username", [""])[0]
                 result = fetch_deals_snapshot(username)
+                self._send_json_response(result, 200 if result.get("ok") else 400)
+            elif path == "/mt5/snapshots/account":
+                username = params.get("username", [""])[0]
+                result = fetch_account_snapshot(username)
                 self._send_json_response(result, 200 if result.get("ok") else 400)
             elif path == "/mt5/symbols":
                 result = self._handle_symbols_request()

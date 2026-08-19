@@ -183,8 +183,15 @@ def complete_job(job_id: int, status: str, result: dict, error_message: str = ""
     with urllib.request.urlopen(req, timeout=15) as r:
         return r.status, json.loads(r.read().decode("utf-8", "ignore") or "{}")
 
-def agent_get(kind: str, username: str):
-    url = f"{AGENT_BASE}/mt5/snapshots/{kind}?username={urllib.parse.quote(username)}"
+def agent_get(kind: str, username: str, base: str = None):
+    # P0 DATA-ISOLATION: the read destination is the ACCOUNT'S OWN per-tenant bridge, resolved by the caller
+    # (resolve_account_snapshot_base) — NOT the module-global AGENT_BASE. A missing base is a caller error
+    # and must NEVER silently fall back to the shared bridge (that is exactly the cross-tenant breach), so
+    # fail closed here rather than read another tenant's terminal.
+    read_base = (base or "").strip().rstrip("/")
+    if not read_base:
+        raise ValueError("agent_get: no per-tenant read base resolved (refusing global fallback)")
+    url = f"{read_base}/mt5/snapshots/{kind}?username={urllib.parse.quote(username)}"
     req = urllib.request.Request(url, method="GET", headers={"X-GuvFX-Agent-Token": AGENT_TOKEN})
     with urllib.request.urlopen(req, timeout=15) as r:
         raw = r.read().decode("utf-8", "ignore")
@@ -1028,6 +1035,20 @@ def main():
 
             account = TradingAccount.objects.get(id=account_id)
 
+            # P0 DATA-ISOLATION (UPSTREAM): resolve the deals-read destination from THIS account's OWN
+            # per-tenant endpoint bridge — never the module-global AGENT_BASE (which, for a worker serving
+            # more than one tenant, is a sibling tenant's bridge and returns THEIR deals). Fail closed: a
+            # hosted account with no READY endpoint refuses the sync rather than reading another terminal.
+            from execution.snapshot_transport import resolve_account_snapshot_base, verify_snapshot_identity
+            _st = resolve_account_snapshot_base(account, global_base_url=AGENT_BASE)
+            if not _st.ok:
+                complete_job(job_id, "FAILED",
+                             {"ok": False, "reason": "snapshot_transport_unresolved",
+                              "reason_code": _st.reason_code, "account_id": account_id},
+                             f"deals read transport unresolved: {_st.reason_code}")
+                continue
+            read_base = _st.base_url
+
             # Check if this is an auto-sync triggered by a PLACE_ORDER job
             is_auto_sync = payload.get("auto_sync", False)
             trigger_job_id = payload.get("trigger_job_id")
@@ -1048,8 +1069,9 @@ def main():
             retry_count = 0
             max_retries = AUTO_SYNC_MAX_RETRIES if (is_auto_sync and has_expected_key) else 1
 
+            deals_resp = {}
             while retry_count < max_retries:
-                deals_resp = agent_get("deals", windows_username)
+                deals_resp = agent_get("deals", windows_username, read_base)
                 # allow different response shapes
                 deals = deals_resp.get("deals") or (deals_resp.get("data") or {}).get("deals") or []
 
@@ -1067,6 +1089,30 @@ def main():
                             print(f"[SYNC] Expected trade order={expected_order} deal={expected_deal} tag={expected_tag} NOT FOUND after {max_retries} retries")
                 else:
                     break  # No expected key, single pass
+
+            # P0 DATA-ISOLATION (DOWNSTREAM FIREWALL): even a correctly-routed read must PROVE the MT5 session
+            # it reached is THIS account's. The bridge returns the terminal's observed login/server (read from
+            # account_info in the SAME session that produced the deals). Deals carry no per-deal login, so the
+            # WHOLE batch is bound to that one observed identity. On ANY mismatch / missing observation, persist
+            # ZERO rows and fail the sync (quarantine) — never silently reassign, never fall back.
+            _obs = deals_resp if isinstance(deals_resp, dict) else {}
+            _inner = _obs.get("data") if isinstance(_obs.get("data"), dict) else {}
+            observed_login = _obs.get("account_login", _inner.get("account_login"))
+            observed_server = _obs.get("account_server", _inner.get("account_server"))
+            _idc = verify_snapshot_identity(account, observed_login, observed_server)
+            if not _idc.ok:
+                # Redacted, safe operational evidence — never the raw counterpart login in the customer-facing
+                # failure (mask to last 4). This is the exact cross-tenant defence the breach lacked.
+                _masked_obs = ("****" + str(observed_login)[-4:]) if observed_login else "(none)"
+                complete_job(job_id, "FAILED",
+                             {"ok": False, "reason": "ingest_identity_mismatch",
+                              "reason_code": _idc.reason_code, "account_id": account_id,
+                              "observed_login_masked": _masked_obs, "deals_count": len(deals)},
+                             f"ingest identity firewall refused: {_idc.reason_code} "
+                             f"(persisted 0 rows; observed session is not this account's)")
+                print(f"[SYNC] IDENTITY FIREWALL job_id={job_id} acct={account_id}: {_idc.reason_code} "
+                      f"observed={_masked_obs} — persisted 0 rows")
+                continue
 
             inserted, updated = upsert_trades(account, deals)
 

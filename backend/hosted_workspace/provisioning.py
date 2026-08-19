@@ -369,6 +369,14 @@ def confirm_broker_account(user, workspace, *, actor="", request=None) -> Confir
         # Activate the account atomically with the ACK (was is_active=False as an intent account). This is a
         # customer-specific step of the autonomous journey; it is NOT arming (execution_enabled stays False).
         fields = ["workspace_confirmed_at"]
+        # P0 DATA-ISOLATION (cutover contract): confirmation is the server-derived, immutable milestone at
+        # which a hosted customer's OWN GuvFX-executed history begins. Stamp the ingest cutover here (once,
+        # never overwriting an operator-set value) so pre-customer broker history — e.g. a reused broker
+        # login's prior life, or any deal predating this customer — is NEVER auto-imported as GuvFX history.
+        # Deliberate historical broker import, if ever offered, is a separate, explicitly-classified path.
+        if getattr(acct, "ingest_cutover_time", None) is None:
+            acct.ingest_cutover_time = acct.workspace_confirmed_at
+            fields.append("ingest_cutover_time")
         if acct.is_active is not True:
             acct.is_active = True
             fields.append("is_active")
