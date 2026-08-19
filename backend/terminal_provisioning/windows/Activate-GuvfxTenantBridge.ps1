@@ -76,13 +76,20 @@ try {
   $envFile = Join-Path $tenantDir "bridge.env.bat"
   Set-Content -Path $envFile -Value $envOut -Encoding ASCII
 
-  # ---- 2) Per-tenant launcher: run the SHARED bridge binary with THIS tenant's env on THIS port. ASCII. ----
+  # ---- 2) Per-tenant launcher: run the SHARED bridge binary with THIS tenant's env on THIS port. ASCII.
+  #         Mirrors the certified start_node2_bridge.bat: the bridge's validate_config REQUIRES GUVFX_API_URL +
+  #         GUVFX_WORKER_TOKEN + GUVFX_AGENT_TOKEN (from the shared bridge.tokens.bat - the documented Closed-
+  #         Beta shared-token exception) BEFORE MT5_ACCOUNT_ID, or it exits 1 without binding the port. ----
+  $tokens = "C:\GuvFX\secrets\bridge.tokens.bat"
   $launcher = Join-Path $tenantDir "start_tenant_bridge.bat"
   $lines = @(
     "@echo off",
+    "set GUVFX_API_URL=https://api.guvfx.com",
+    ("call """ + $tokens + """"),
     ("call """ + $envFile + """"),
     ("set MT5_REQUIRE_IDENTITY_PIN=1"),
     ("set MT5_GUARDED_ATTACH=1"),
+    ("set POLL_INTERVAL_SECONDS=2"),
     ("set HTTP_SERVER_PORT=" + [string]$Port),
     ("python """ + $bin + """")
   )
