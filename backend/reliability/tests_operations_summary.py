@@ -79,6 +79,80 @@ class OperationsSummaryTests(TestCase):
         self.assertEqual(OperationsSummaryView.permission_classes, [IsAdminUser])
 
 
+class CapacityWarningTests(TestCase):
+    """P0-B Phase 6 — beta hosted-slot capacity early-warning (know BEFORE the last slot is consumed).
+
+    Occupancy is the SAME distinct-account count the allocator enforces, so the warning can never claim
+    room the allocator would refuse (or vice-versa).
+    """
+
+    def _node(self, hostname, max_accounts, occupants, *, status=None, rdp_host="10.0.0.9"):
+        from execution.models import TerminalNode
+        node = TerminalNode.objects.create(
+            hostname=hostname, status=status or TerminalNode.Status.ACTIVE,
+            rdp_host=rdp_host, max_accounts=max_accounts)
+        for i in range(occupants):
+            acct = TradingAccount.objects.create(
+                user=User.objects.create_user(
+                    username=f"{hostname}-{i}", email=f"{hostname}-{i}@x.invalid", password="x"),
+                name=f"{hostname}-{i}", account_number=f"{hostname}{i}", broker_name="DemoBroker",
+                is_demo=True, is_active=True)
+            acct.terminal_node = node
+            acct.save(update_fields=["terminal_node"])
+        return node
+
+    def _summary(self):
+        with mock.patch.dict("os.environ", {"GUVFX_WINDOWS_AGENT_BASE_URL": ""}, clear=False):
+            return ops.build_operations_summary()
+
+    def test_ten_free_slots_is_healthy(self):
+        self._node("node-ok", max_accounts=12, occupants=2)   # free = 10
+        cap = self._summary()["capacity"]
+        row = next(n for n in cap["nodes"] if n["node"] == "node-ok")
+        self.assertEqual((row["occupied"], row["max"], row["free"], row["status"]), (2, 12, 10, "HEALTHY"))
+        self.assertGreaterEqual(cap["total_free_slots"], 10)
+
+    def test_two_free_slots_warns(self):
+        self._node("node-warn", max_accounts=4, occupants=2)  # free = 2
+        row = next(n for n in self._summary()["capacity"]["nodes"] if n["node"] == "node-warn")
+        self.assertEqual((row["free"], row["status"]), (2, "WARNING"))
+
+    def test_zero_free_slots_is_critical_and_rolls_up_overall(self):
+        self._node("node-full", max_accounts=2, occupants=2)  # free = 0
+        s = self._summary()
+        row = next(n for n in s["capacity"]["nodes"] if n["node"] == "node-full")
+        self.assertEqual((row["free"], row["status"]), (0, "CRITICAL"))
+        self.assertEqual(s["capacity"]["status"], "CRITICAL")
+        self.assertEqual(s["overall"], "CRITICAL")             # capacity feeds the overall roll-up
+
+    def test_occupancy_matches_allocator_definition(self):
+        # The warning's count must equal the allocator's occupancy (union of distinct occupant accounts).
+        from hosted_workspace.provisioning import node_occupant_count, _node_has_capacity
+        node = self._node("node-x", max_accounts=3, occupants=2)
+        row = next(n for n in self._summary()["capacity"]["nodes"] if n["node"] == "node-x")
+        self.assertEqual(row["occupied"], node_occupant_count(node))
+        self.assertTrue(_node_has_capacity(node))              # 2 < 3 → still has room, consistent with free=1
+
+    def test_non_active_node_excluded_from_admission_capacity(self):
+        # A DRAINING node (the routine decommission workflow) has free slots the allocator will NEVER
+        # admit — it must NOT appear, must NOT add to total_free_slots, and must NOT flip overall red.
+        from execution.models import TerminalNode
+        self._node("node-draining", max_accounts=8, occupants=8,   # free=0 → would be CRITICAL if counted
+                   status=TerminalNode.Status.DRAINING)
+        cap = self._summary()["capacity"]
+        self.assertFalse(any(n["node"] == "node-draining" for n in cap["nodes"]))
+        self.assertEqual(cap["status"], "HEALTHY")             # no false CRITICAL from an ignored node
+        self.assertEqual(cap["total_free_slots"], 0)           # its 0 free never counted either way
+
+    def test_active_node_without_rdp_host_excluded(self):
+        # ACTIVE but no rdp_host → allocator fails closed (ALLOC_NODE_NOT_DELIVERABLE) → zero admission
+        # capacity → excluded, so its free slots never overstate total_free_slots.
+        self._node("node-nordp", max_accounts=10, occupants=0, rdp_host="")
+        cap = self._summary()["capacity"]
+        self.assertFalse(any(n["node"] == "node-nordp" for n in cap["nodes"]))
+        self.assertEqual(cap["total_free_slots"], 0)           # 10 undeliverable slots not counted
+
+
 class OperationsD1toD4Tests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="d", email="d@x.invalid", password="x", is_staff=True)

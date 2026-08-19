@@ -577,6 +577,55 @@ def _concurrency_block(now):
         return {"status": "UNKNOWN", "error": "unavailable"}
 
 
+_CAPACITY_WARN_FREE = 2      # WARNING when a node's free hosted slots fall to this or below
+_CAPACITY_CRITICAL_FREE = 0  # CRITICAL when a node has no free slots left
+
+
+def _capacity_block(now):
+    """Beta hosted-slot ADMISSION capacity per execution node — an operational EARLY-WARNING so the last
+    free slot is never consumed unnoticed (Sponsor: know BEFORE admission is exhausted).
+
+    It measures ONLY the allocator's admission pool: the nodes ``allocate_workspace_node`` would actually
+    consider for a NEW bind — its two UNCONDITIONAL candidate filters, ``status=ACTIVE`` AND deliverable (a
+    durable ``rdp_host``, ``_node_deliverable``). A DRAINING/OFFLINE/DISABLED node, or an ACTIVE node with
+    no ``rdp_host``, provides ZERO admission capacity and is excluded — so this warning can neither claim
+    free slots the allocator would refuse nor flip red for a node the allocator ignores (e.g. one being
+    drained for decommission). Per-node occupancy is the SAME distinct-account count the allocator enforces
+    (``node_occupant_count``). WARNING when a node's ``free <= 2``, CRITICAL at ``0``.
+
+    Scope note (honest limits): the allocator's WORKSPACE-specific / flag-gated refusals — Customer-Zero
+    co-residency (``HOSTED_TENANT_NODE_ISOLATION_ENABLED``) and the ADR-0048 execution gate — depend on the
+    incoming workspace and are deliberately NOT modelled in this node-level aggregate, so a Customer-Zero
+    node's free slots still appear here as node capacity. Read-only; operational monitoring, never a
+    customer notification."""
+    from execution.models import TerminalNode
+    from hosted_workspace.provisioning import node_occupant_count, _node_deliverable
+
+    nodes = []
+    worst = "HEALTHY"
+    total_free = 0
+    for node in TerminalNode.objects.filter(status=TerminalNode.Status.ACTIVE).order_by("id"):
+        if not _node_deliverable(node):
+            continue  # ACTIVE but no rdp_host → allocator fails closed → zero admission capacity
+        occupied = node_occupant_count(node)
+        maximum = int(getattr(node, "max_accounts", 0) or 0)
+        free = maximum - occupied
+        total_free += max(free, 0)
+        if free <= _CAPACITY_CRITICAL_FREE:
+            st = "CRITICAL"
+        elif free <= _CAPACITY_WARN_FREE:
+            st = "WARNING"
+        else:
+            st = "HEALTHY"
+        if _RANK.get(st, 0) > _RANK.get(worst, 0):
+            worst = st
+        nodes.append({
+            "node": node.hostname, "node_id": node.id,
+            "occupied": occupied, "max": maximum, "free": free, "status": st,
+        })
+    return {"status": worst, "total_free_slots": total_free, "nodes": nodes}
+
+
 def build_operations_summary() -> dict:
     """The full read-only operational summary for the status page (and alert enrichment)."""
     from reliability.models import ComponentHealth, Heartbeat, AlertEvent
@@ -684,6 +733,8 @@ def build_operations_summary() -> dict:
     concurrency = _concurrency_block(now)
     if concurrency.get("any_saturated"):
         states.append("WARNING")
+    capacity = _capacity_block(now)
+    states.append(capacity.get("status", "HEALTHY"))
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -702,6 +753,7 @@ def build_operations_summary() -> dict:
         "tp_protection": tp_protection,
         "signal_execution": signal_execution,
         "concurrency": concurrency,
+        "capacity": capacity,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},

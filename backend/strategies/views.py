@@ -14,12 +14,12 @@ from django.db import connection, transaction
 from trading.models import TradingAccount
 
 from .models import (
-    AssignmentLegSizing,
     Strategy,
     StrategyAssignment,
     StrategyChangeLog,
     StrategyRuntimeState,
     StrategyRuntimeEvent,
+    seed_default_leg_sizing,
 )
 from .serializers import (
     StrategySerializer,
@@ -1261,11 +1261,9 @@ class StrategyViewSet(viewsets.ModelViewSet):
                     # GFX-BETA-PHASE0 (Option B): a NEW acquisition owns its per-leg lot at the
                     # conservative beta default (0.01). Existing assignments are NEVER backfilled —
                     # they keep NO row and fall back to the source-global cap, so the certified
-                    # support@ sizing is unchanged. Idempotent (OneToOne + get_or_create).
-                    AssignmentLegSizing.objects.get_or_create(
-                        assignment=assignment,
-                        defaults={"lot_per_leg": AssignmentLegSizing.DEFAULT_LOT},
-                    )
+                    # support@ sizing is unchanged. Idempotent (OneToOne + get_or_create). [P0-A: now
+                    # via the shared seed_default_leg_sizing helper — identical behaviour.]
+                    seed_default_leg_sizing(assignment)
 
         except Exception:
             logger.exception("marketplace_assign failed for %s account=%s", marketplace_strategy_id, account_id)
@@ -1505,6 +1503,11 @@ class StrategyViewSet(viewsets.ModelViewSet):
                     defaults=dict(
                         execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO, signal_source=source,
                         stage=StrategyAssignment.STAGE_LIVE, is_active=True))
+                if created:
+                    # P0-A: arming that CREATES the assignment (customer armed without a prior Get) also
+                    # owns its per-leg lot at the 0.01 beta default. Created-only + idempotent, so an
+                    # existing assignment (already owned, possibly Configure-set) is never resized here.
+                    seed_default_leg_sizing(assignment)
                 if not created:
                     assignment.execution_mode = StrategyAssignment.ExecutionMode.AUTO_DEMO
                     assignment.signal_source = source
@@ -1594,6 +1597,11 @@ class StrategyViewSet(viewsets.ModelViewSet):
                 defaults=dict(
                     execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO, signal_source=source,
                     stage=StrategyAssignment.STAGE_LIVE, is_active=False))
+            if created:
+                # P0-A: a NEW signal-copy acquisition owns its per-leg lot at the conservative beta
+                # default (0.01) from acquisition — NOT the ti_signals source cap (0.40). Idempotent and
+                # created-only, so support@ / existing no-row assignments are never seeded or resized.
+                seed_default_leg_sizing(assignment)
             if not created:
                 changed = []
                 if assignment.execution_mode != StrategyAssignment.ExecutionMode.AUTO_DEMO:

@@ -119,12 +119,22 @@ def _node_has_capacity(node) -> bool:
     ``terminal_node`` while the workspace keeps ``execution_node``), which would otherwise make the account
     escape BOTH terms and let the allocator over-fill the node. Must be called with the node row LOCKED so the
     count-then-bind can't over-commit under concurrency."""
+    return node_occupant_count(node) < node.max_accounts
+
+
+def node_occupant_count(node) -> int:
+    """The number of DISTINCT occupant ACCOUNTS on ``node`` — the single authoritative occupancy count
+    used both by the allocator (``_node_has_capacity``) and by the operational capacity warning, so the
+    two can never disagree. Occupancy = the UNION of account ids across BOTH binding sources: a live
+    legacy account via ``terminal_node`` (``is_active=True``) and a Hosted Workspace via
+    ``execution_node`` (regardless of the intent account's ``is_active``). See ``_node_has_capacity`` for
+    why the union (not the sum of two filtered counts) is the robust definition."""
     from trading.models import TradingAccount
     occupants = set(
         TradingAccount.objects.filter(terminal_node_id=node.pk, is_active=True).values_list("id", flat=True)
     )
     occupants |= set(node.bound_hosted_workspaces.values_list("trading_account_id", flat=True))
-    return len(occupants) < node.max_accounts
+    return len(occupants)
 
 
 def _node_deliverable(node) -> bool:

@@ -14,6 +14,27 @@
 
 ## Execution workstream log
 
+- **2026-08-19 — P0 BETA LAUNCH: SAFE DEFAULT LOT (0.01) + BETA CAPACITY (≥10 free): CODE READY, adversarial
+  0 HIGH/0 MEDIUM. 🟢** Branch `feat/safe-default-lot-and-beta-capacity` (off `de99004`). **P0-A root cause:**
+  the signal-copy acquisition seams (`signal_copy_get`/`signal_copy_arm`, `strategies/views.py`) created the
+  AUTO_DEMO ti_signals assignment but seeded NO `AssignmentLegSizing` row, so a fresh Wayond customer both
+  displayed AND (via `signal_planning._customer_leg_size_override`) sized at the ti_signals **source cap
+  0.40** — only the classic `marketplace_assign` path seeded 0.01, which signal-copy bypasses. **Fix
+  (code-only, additive):** new `strategies.models.seed_default_leg_sizing()` (idempotent get_or_create @
+  `DEFAULT_LOT` 0.01), called on `created=True` in both seams (inside the existing atomic block) +
+  `marketplace_assign` consolidated onto it. Created-only + idempotent ⇒ support@ (asn10, no row → 0.40) and
+  Customer Zero **never** seeded/resized; NO migration, NO backfill. Frontend already renders the persisted
+  API value (LotSizeControl) — not a display bug; added a guard test. **P0-B:** node-2 occupants=2 (support@
+  acct25 + fresh customer acct28, already 0.01 v1) → will raise `max_accounts` 4→**12** (10 free) at deploy;
+  host headroom ample (8 cores/32GB, 25.9GB free, 399GB disk, port pool 99 free); NOT stress-certified for 10
+  simultaneous active traders (acceptable — admission ceiling only). New `operations_summary._capacity_block`
+  early-warning (per-node free; WARN≤2/CRIT 0) restricted to the allocator's admission pool (status=ACTIVE +
+  deliverable) after an adversarial MEDIUM fix. `_node_has_capacity` unchanged; extracted `node_occupant_count`
+  as the single occupancy source. Tests: strategies/reliability/hosted_workspace + execution suites green (+8
+  P0-A + 8 capacity), Django check clean, eslint 0 errors, `next build` OK. **NEXT:** PR→CI→deploy backend
+  only→raise node-2 capacity→Phase-10 cert. (Pre-existing, unrelated: 4 frontend vitest tests fail on clean
+  `de99004` — login ×3 / support ×1 — separate task.)
+
 - **2026-08-18 — ADR-0048 NODE COMMISSIONING + PROVISIONING GATE: BUILT (code/test only, DARK) — STOP for
   Sponsor. 🟡** Closes the one gap disclosed in the prior return: `node_execution_operational()` existed but
   was not integrated into the automatic hosted provisioning / node-commissioning lifecycle. Branch
