@@ -70,3 +70,70 @@ class TradeHistoryBalanceIDORTests(APITestCase):
         self.assertEqual(foreign.status_code, 404)
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(foreign.data, missing.data)
+
+
+class LongOnlyRoundTripReadModelTests(APITestCase):
+    """P0 read-model regression: each Trade row is a COMPLETE POSITION, so roundtrip mode must render each
+    CLOSED position as one round-trip. The prior FIFO BUY<->SELL pairing silently dropped every unpaired leg,
+    so a long-only (BUY-only) account rendered EMPTY despite correct durable data (the P0 symptom)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from decimal import Decimal
+        from django.utils import timezone
+        from datetime import timedelta
+        from trading.models import Trade
+        cls.owner = User.objects.create_user(username="rt_own", email="rt_own@test.local", password="x")
+        cls.acct = TradingAccount.objects.create(
+            user=cls.owner, name="Hosted Workspace", account_number="RT-1302575", broker_name="DemoBroker")
+        base = timezone.now() - timedelta(hours=5)
+        # 3 CLOSED long positions (all BUY — a long-only Wayond tenant) + 1 still-open position.
+        specs = [("T1", "0.27", True), ("T2", "1.62", True), ("T3", "3.80", True), ("T4", "0.00", False)]
+        for i, (tk, pnl, closed) in enumerate(specs):
+            Trade.objects.create(
+                account=cls.acct, ticket=tk, symbol="XAUUSD", side="BUY", volume=Decimal("0.01"),
+                open_time=base + timedelta(minutes=i), open_price=Decimal("4431.00"),
+                close_time=(base + timedelta(minutes=i + 5)) if closed else None,
+                close_price=Decimal("4432.00") if closed else None, profit=Decimal(pnl))
+
+    def _get(self):
+        c = APIClient(); c.force_authenticate(user=self.owner)
+        return c.get(reverse("trade-history"),
+                     {"account_id": self.acct.id, "mode": "roundtrip", "stage": "ALL"}, secure=True)
+
+    @patch(_MOCK, return_value=None)
+    def test_all_buy_closed_positions_each_render_as_a_round_trip(self, _m):
+        r = self._get()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["count"], 3)                      # 3 closed (the open one excluded)
+        tickets = sorted(rt["trade_numbers"] for rt in r.data["trades"])
+        self.assertEqual(tickets, ["T1", "T2", "T3"])             # NOT dropped as "orphan BUY legs"
+        # aggregate net P&L equals the sum of position profits, counted ONCE (never doubled)
+        net = sum(rt["net_pnl_money"] for rt in r.data["trades"])
+        self.assertAlmostEqual(net, 0.27 + 1.62 + 3.80, places=2)
+        # observed stats are populated (Dashboard "How am I doing" reads these)
+        self.assertEqual(r.data["observed_stats"]["wins"], 3)
+
+    @patch(_MOCK, return_value=None)
+    def test_open_position_excluded_until_closed(self, _m):
+        # The still-open position (T4, close_time=None) is not a completed round-trip.
+        r = self._get()
+        self.assertNotIn("T4", [rt["trade_numbers"] for rt in r.data["trades"]])
+
+    @patch(_MOCK, return_value=None)
+    def test_short_only_account_also_renders(self, _m):
+        # Symmetry: an all-SELL (short-only) account must render too (the old pairing dropped these as well).
+        from decimal import Decimal
+        from django.utils import timezone
+        from datetime import timedelta
+        from trading.models import Trade
+        acct2 = TradingAccount.objects.create(
+            user=self.owner, name="Short Acct", account_number="RT-SHORT", broker_name="DemoBroker")
+        base = timezone.now() - timedelta(hours=2)
+        Trade.objects.create(account=acct2, ticket="S1", symbol="EURUSD", side="SELL", volume=Decimal("0.01"),
+                             open_time=base, open_price=Decimal("1.10"), close_time=base + timedelta(minutes=3),
+                             close_price=Decimal("1.09"), profit=Decimal("5.00"))
+        c = APIClient(); c.force_authenticate(user=self.owner)
+        r = c.get(reverse("trade-history"), {"account_id": acct2.id, "mode": "roundtrip", "stage": "ALL"}, secure=True)
+        self.assertEqual(r.data["count"], 1)
+        self.assertEqual(r.data["trades"][0]["direction"], "SELL")

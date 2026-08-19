@@ -2,7 +2,6 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from typing import Optional, Dict, List, Any
-from collections import defaultdict
 from decimal import Decimal
 from django.db.models import Q
 from django.http import Http404
@@ -227,69 +226,84 @@ def _build_round_trips(
     sid_to_name: Dict[int, str],
 ) -> List[Dict[str, Any]]:
     """
-    Build round-trip rows from a list of trades (sorted by open_time ascending).
+    Build round-trip rows from a list of trades.
 
-    MODE 1 (FIFO pairing):
-    - All trades get a pairing key (demo job, strategy, or FIFO fallback)
-    - Pairs opposite-side trades with same key into round-trips:
-        Long:  BUY (open) → SELL (close)
-        Short: SELL (open) → BUY (close)
-    - Orphan legs are silently ignored (no unpaired rows)
+    Each ``Trade`` row is a COMPLETE POSITION — the ingest (``build_positions_from_deals``) stores one row
+    per MT5 position, matched by ``position_id``, carrying the authoritative open AND close price/profit.
+    A CLOSED position (``close_time`` set) therefore already IS a round-trip and is emitted directly.
 
-    Returns:
-        List of paired round-trip dicts
+    (Historical note — the P0 read-model defect this replaces: the previous FIFO BUY↔SELL "pairing" treated
+    each position as a single leg and silently dropped every unpaired leg. A long-only account — e.g. a
+    Wayond BUY-only tenant — has NO SELL legs, so all of its positions were dropped and Trade History /
+    Dashboard rendered empty despite correct durable data. Pairing two unrelated positions was also wrong
+    for mixed-side accounts. Emitting each closed position directly is the correct, generic behaviour.)
+
+    Still-open positions (no ``close_time``) are not completed round-trips and are omitted (this view is
+    "observed CLOSED trades"); their close fills in on a later sync.
     """
-    # FIFO queues per pairing key, per side
-    buy_queues: Dict[str, List[Trade]] = defaultdict(list)
-    sell_queues: Dict[str, List[Trade]] = defaultdict(list)
-
-    # Completed round-trips
-    round_trips: List[Dict[str, Any]] = []
-
-    # Sort trades by open_time ascending for FIFO pairing
-    sorted_trades = sorted(trades, key=lambda t: t.open_time)
-
-    for trade in sorted_trades:
-        key = _get_pairing_key(trade)
-        side = trade.side.upper() if trade.side else "BUY"
-
-        if side == "BUY":
-            # Check if there's an earlier SELL waiting (short close)
-            if sell_queues[key]:
-                open_trade = sell_queues[key].pop(0)
-                rt = _build_round_trip_row(
-                    open_trade=open_trade,
-                    close_trade=trade,
-                    direction="SELL",
-                    raw_labels=raw_labels,
-                    job_to_strategy=job_to_strategy,
-                    sid_to_name=sid_to_name,
-                )
-                round_trips.append(rt)
-            else:
-                # No matching SELL opener; this BUY is an opener for a long
-                buy_queues[key].append(trade)
-        elif side == "SELL":
-            # Check if there's an earlier BUY waiting (long close)
-            if buy_queues[key]:
-                open_trade = buy_queues[key].pop(0)
-                rt = _build_round_trip_row(
-                    open_trade=open_trade,
-                    close_trade=trade,
-                    direction="BUY",
-                    raw_labels=raw_labels,
-                    job_to_strategy=job_to_strategy,
-                    sid_to_name=sid_to_name,
-                )
-                round_trips.append(rt)
-            else:
-                # No matching BUY opener; this SELL is an opener for a short
-                sell_queues[key].append(trade)
-
-    # Sort round-trips by close_time descending (most recent first)
+    round_trips: List[Dict[str, Any]] = [
+        _position_round_trip_row(trade, raw_labels, job_to_strategy, sid_to_name)
+        for trade in trades
+        if trade.close_time is not None
+    ]
+    # Most recent first.
     round_trips.sort(key=lambda r: r["close_time"] or "", reverse=True)
-
     return round_trips
+
+
+def _position_round_trip_row(
+    trade: Trade,
+    raw_labels: Dict[str, str],
+    job_to_strategy: Dict[int, tuple],
+    sid_to_name: Dict[int, str],
+) -> Dict[str, Any]:
+    """Build ONE round-trip row from a single COMPLETE POSITION ``Trade`` (open + close + profit in one row).
+
+    P&L is counted ONCE (the position's own profit/commission/swap) — never doubled — so aggregate net P&L
+    equals the sum of position profits. Row shape is byte-compatible with the legacy paired row so the
+    frontend + ``_compute_balance_series`` are unchanged."""
+    raw = raw_labels.get(trade.ticket, "Unattributed")
+    if raw.startswith("job:"):
+        try:
+            job_id = int(raw[4:])
+        except ValueError:
+            job_id = None
+        strategy_name = "Unattributed"
+        if job_id is not None and job_id in job_to_strategy:
+            _, sname = job_to_strategy[job_id]
+            strategy_name = sname if sname else "Unattributed"
+    else:
+        sid = _sid_int(raw)
+        strategy_name = sid_to_name.get(sid, raw) if sid is not None else raw
+
+    net_pnl = ((trade.profit or Decimal("0"))
+               + (trade.commission or Decimal("0"))
+               + (trade.swap or Decimal("0")))
+    close_time = trade.close_time or trade.open_time
+    direction = (trade.side or "BUY").upper()
+    return {
+        "open_time": trade.open_time,
+        "close_time": close_time,
+        "symbol": trade.symbol,
+        "volume": str(trade.volume),
+        "open_price": str(trade.open_price) if trade.open_price is not None else None,
+        "close_price": str(trade.close_price) if trade.close_price is not None else (
+            str(trade.open_price) if trade.open_price is not None else None),
+        "net_pnl": str(net_pnl),
+        "net_pnl_money": float(net_pnl),
+        "legs": [trade.ticket],
+        "buy_ticket": trade.ticket,
+        "sell_ticket": trade.ticket,
+        "comment": trade.comment or "",
+        "strategy_name": strategy_name,
+        "trade_closed": close_time.isoformat() if close_time else None,
+        "trade_numbers": str(trade.ticket),
+        "direction": direction,
+        "buy_profit": str(trade.profit or Decimal("0")) if direction == "BUY" else "0",
+        "sell_profit": str(trade.profit or Decimal("0")) if direction == "SELL" else "0",
+        "total_commission": str(trade.commission or Decimal("0")),
+        "total_swap": str(trade.swap or Decimal("0")),
+    }
 
 
 def _build_round_trip_row(
