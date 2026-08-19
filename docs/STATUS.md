@@ -14,8 +14,18 @@
 
 ## Execution workstream log
 
-- **2026-08-19 — P0 BETA LAUNCH: SAFE DEFAULT LOT (0.01) + BETA CAPACITY (≥10 free): CODE READY, adversarial
-  0 HIGH/0 MEDIUM. 🟢** Branch `feat/safe-default-lot-and-beta-capacity` (off `de99004`). **P0-A root cause:**
+- **2026-08-19 — P0 BETA LAUNCH: SAFE DEFAULT LOT (0.01) + BETA CAPACITY (≥10 free): DEPLOYED, adversarial
+  0 HIGH/0 MEDIUM. 🟢** MERGED main `eb14e12` (PR #376, exact-SHA CI green). Backend image `56a71fceeb41`
+  built from guvfx-app@`eb14e12`, `guvfx-backend` recreated ONLY (node2-order-worker/tp-watcher/provisioner
+  NOT restarted — behaviour unchanged). NO migration. Rollback img `guvfx-prod-guvfx-backend:rollback-preP0LOT`
+  =`af44a27677ae`; backup `guvfx_preP0LOT_20260819T132149Z.sql.gz` (155MB/113tbl, sha `030667b556b22948`).
+  **CAPACITY:** node-2 `max_accounts` 4→**12** (occ 2 → **free 10**); node-1/CZ unchanged (10). Golden AFTER
+  ==BEFORE (CZ `64831f70`, sup@ `c471ad92`); support@ asn10 0 rows/0.40 unchanged; acct28 asn12 0.01 v1
+  unchanged; CZ asn7/8 0.02/0.40 unchanged; only 1 leg-sizing row total (no backfill); endpoints
+  :8788/:8789/:8800 READY + all 3 bridges HTTP 200 ok; 0 ExecutionJobs created by deploy. Overall ops health
+  is CRITICAL from 4 PRE-EXISTING execution-pipeline alerts (TP-protection plan#184/#103, exposure job#20667,
+  recovery breaker) — NOT this packet; capacity signal HEALTHY. Live fresh-customer=0.01 proof is Nuno-gated
+  (proven by regression suite on deployed SHA, not manufactured). **P0-A root cause:**
   the signal-copy acquisition seams (`signal_copy_get`/`signal_copy_arm`, `strategies/views.py`) created the
   AUTO_DEMO ti_signals assignment but seeded NO `AssignmentLegSizing` row, so a fresh Wayond customer both
   displayed AND (via `signal_planning._customer_leg_size_override`) sized at the ti_signals **source cap
