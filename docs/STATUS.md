@@ -14,6 +14,17 @@
 
 ## Execution workstream log
 
+- **2026-08-19 - P0 TRADE-DATA RECONCILIATION: PASS (main `ab10f0b`, PR #379, backend-only). GREEN.**
+  After the isolation repair, the beta account's Trade History showed "No trade history yet" + Dashboard
+  0/0W/0L despite 9 correct durable trades. Root cause = read-model, not isolation/ingest: `_build_round_trips`
+  FIFO-paired BUY<->SELL legs and dropped orphans, but each Trade row is a COMPLETE POSITION -> a long-only
+  (all-BUY) account had every position dropped -> count 0 (masked before by contaminated mixed-side support@
+  trades that paired). Fix: emit each closed position as one round-trip; unify both trade writers on position
+  rows via shared `trading/position_ingest.build_positions_from_deals` (live worker untouched). Adversarial 0
+  HIGH/0 MEDIUM. Deploy backend img `5e3beb0dbf40` (rollback `rollback-preRTFIX=bac6a5e84828`). Reconciled:
+  acct28 Trade History = 9 closed round-trips, net -23.77 == MT5 balance profit -23.77; 0 contamination;
+  Golden AFTER==BEFORE (CZ/support@ byte-identical); isolation intact (:8800->1302575 PASS, cross-read REFUSED).
+
 - **2026-08-19 — P0 DATA-ISOLATION BREACH: RESOLVED + DEPLOYED + REPAIRED (BETA_DATA_ISOLATION_PASS). 🟢**
   Beta customer acct28's Trade History showed an exact duplicate of support@'s 20 trades (0.40 vol, +545.60).
   ROOT CAUSE: MT5 deals READ used a single global `AGENT_BASE` (node2-order-worker `=:8789`, support@'s bridge)
