@@ -130,6 +130,35 @@ def _windows_username(account) -> str | None:
     return getattr(inst, "windows_username", None) if inst else None
 
 
+def _sync_windows_username(account) -> str | None:
+    """Windows identity for the READ-ONLY position sync (``_ensure_position_sync``) — hosted-aware.
+
+    Legacy accounts carry it on ``mt5_instance``; HOSTED per-tenant accounts (Provider-B) carry it on
+    ``AccountProvisioning.windows_username`` (server-derived at provisioning), and have NO ``mt5_instance``.
+    Resolving from provisioning here lets the periodic freshness sweep enqueue a sync for hosted tenants too
+    (previously they were silently skipped, so closed trades only ingested on the next hourly order-triggered
+    sync). Deliberately NOT used by the protection MODIFY path (``_windows_username`` at line ~207): this
+    widens the READ-ONLY ingest only — it places NO order and changes NO execution semantics. Fail-closed:
+    None when no durable identity exists (the caller then skips, never guesses)."""
+    wu = _windows_username(account)
+    if wu:
+        return wu
+    try:
+        from terminal_provisioning.models import AccountProvisioning
+        # Only a fully PROVISIONED, non-admin customer identity is a valid sync target — mirrors the canonical
+        # ``hosted_pin.hosted_windows_username_for`` guard (but durable / flag-independent). A PENDING/DISABLED
+        # profile resolves to None here so the sweep cleanly SKIPS it, rather than enqueuing syncs that would
+        # just FAIL against a not-ready terminal.
+        prov = AccountProvisioning.objects.filter(
+            trading_account_id=getattr(account, "id", None),
+            status=AccountProvisioning.Status.PROVISIONED,
+            is_admin=False,
+        ).only("windows_username").first()
+        return (getattr(prov, "windows_username", None) or None) if prov else None
+    except Exception:  # pragma: no cover - defensive; a resolution error must not break the sweep
+        return None
+
+
 def _ensure_position_sync(account_ids) -> int:
     """Enqueue one plain SYNC_POSITIONS per account that holds open plans, IF none is already
     pending/running for that account. This keeps position closes ingested promptly (every tick)
@@ -148,7 +177,9 @@ def _ensure_position_sync(account_ids) -> int:
                 continue
             from trading.models import TradingAccount
             account = TradingAccount.objects.filter(id=account_id).select_related("mt5_instance").first()
-            username = _windows_username(account) if account else None
+            # Hosted-aware: resolve from AccountProvisioning when there is no legacy mt5_instance, so the
+            # periodic freshness sync covers hosted per-tenant accounts (not just legacy/CZ). READ-ONLY.
+            username = _sync_windows_username(account) if account else None
             if not username:
                 continue
             ExecutionJob.objects.create(

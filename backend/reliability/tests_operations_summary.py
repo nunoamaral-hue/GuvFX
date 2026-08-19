@@ -543,3 +543,65 @@ class SignalExecutionBlockTests(TestCase):
         self.assertEqual(block["pending"], 1)
         self.assertEqual(block["pending_stuck"], 1)
         self.assertFalse(block["all_accounted"])
+
+
+class SyncFreshnessBlockTests(TestCase):
+    """P0 freshness SLA telemetry: per-hosted-account age since last successful trade sync (warn > 120s)."""
+
+    def _hosted_account_with_endpoint(self, aid_suffix):
+        from execution.models import TerminalNode, HostedExecutionEndpoint
+        from hosted_workspace.models import HostedMt5Workspace
+        node = TerminalNode.objects.create(hostname=f"n{aid_suffix}", rdp_host="100.79.101.19")
+        u = User.objects.create_user(username=f"sf{aid_suffix}", email=f"sf{aid_suffix}@x.invalid", password="x")
+        acct = TradingAccount.objects.create(user=u, name="Hosted", account_number=f"SF{aid_suffix}",
+                                             broker_name="DemoBroker", is_demo=True, terminal_node=node)
+        ws = HostedMt5Workspace.objects.create(trading_account=acct, execution_node=node, workspace_node=node)
+        HostedExecutionEndpoint.objects.create(
+            workspace=ws, trading_account=acct, terminal_node=node, host="100.79.101.19", port=8800 + aid_suffix,
+            base_url=f"http://100.79.101.19:{8800 + aid_suffix}", windows_username=f"guvfx_u_{aid_suffix}",
+            runtime_path="x", workspace_uuid=ws.workspace_uuid, state=HostedExecutionEndpoint.State.READY)
+        return acct
+
+    def _sync_job(self, acct, *, age_s, status):
+        from execution.models import ExecutionJob
+        from datetime import timedelta
+        j = ExecutionJob.objects.create(account=acct, job_type=ExecutionJob.JobType.SYNC_POSITIONS,
+                                        status=status, payload={"windows_username": "guvfx_u_x"})
+        ExecutionJob.objects.filter(id=j.id).update(created_at=timezone.now() - timedelta(seconds=age_s))
+        return j
+
+    def _summary(self):
+        with mock.patch.dict("os.environ", {"GUVFX_WINDOWS_AGENT_BASE_URL": ""}, clear=False):
+            return ops.build_operations_summary()
+
+    def test_fresh_sync_is_healthy(self):
+        from execution.models import ExecutionJob
+        a = self._hosted_account_with_endpoint(1)
+        self._sync_job(a, age_s=20, status=ExecutionJob.Status.SUCCESS)
+        row = next(r for r in self._summary()["sync_freshness"]["accounts"] if r["account_id"] == a.id)
+        self.assertEqual(row["status"], "HEALTHY")
+        self.assertLessEqual(row["last_successful_sync_age_s"], 30)
+
+    def test_stale_sync_warns(self):
+        from execution.models import ExecutionJob
+        a = self._hosted_account_with_endpoint(2)
+        self._sync_job(a, age_s=300, status=ExecutionJob.Status.SUCCESS)   # 5 min old > 120s
+        s = self._summary()
+        row = next(r for r in s["sync_freshness"]["accounts"] if r["account_id"] == a.id)
+        self.assertEqual(row["status"], "WARNING")
+        self.assertEqual(s["sync_freshness"]["status"], "WARNING")
+
+    def test_never_synced_warns(self):
+        a = self._hosted_account_with_endpoint(3)                          # endpoint but no SYNC job ever
+        row = next(r for r in self._summary()["sync_freshness"]["accounts"] if r["account_id"] == a.id)
+        self.assertEqual(row["status"], "WARNING")
+        self.assertIsNone(row["last_successful_sync_age_s"])
+
+    def test_consecutive_failures_counted(self):
+        from execution.models import ExecutionJob
+        a = self._hosted_account_with_endpoint(4)
+        self._sync_job(a, age_s=400, status=ExecutionJob.Status.SUCCESS)   # older success
+        self._sync_job(a, age_s=60, status=ExecutionJob.Status.FAILED)
+        self._sync_job(a, age_s=30, status=ExecutionJob.Status.FAILED)
+        row = next(r for r in self._summary()["sync_freshness"]["accounts"] if r["account_id"] == a.id)
+        self.assertEqual(row["consecutive_failures"], 2)
