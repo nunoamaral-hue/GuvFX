@@ -359,7 +359,9 @@ class GuardedAttachStructureTests(SimpleTestCase):
         self.assertNotIn("mt5.login(", self.guarded)
 
     def test_all_call_sites_route_through_guarded_initialize(self):
-        self.assertEqual(self.src.count("if not guarded_initialize(mt5, init_kwargs):"), 10)
+        # 11 sites: +1 for fetch_account_snapshot (P0 data-isolation — the per-tenant /mt5/snapshots/account
+        # read must attach through the SAME guarded path as every other MT5 attach, never a raw initialize).
+        self.assertEqual(self.src.count("if not guarded_initialize(mt5, init_kwargs):"), 11)
         # The only remaining raw mt5.initialize(**init_kwargs) calls are the two inside the wrapper.
         self.assertEqual(self.src.count("bool(mt5.initialize(**init_kwargs))"), 2)
         self.assertNotIn("if not mt5.initialize(**init_kwargs):", self.src)
