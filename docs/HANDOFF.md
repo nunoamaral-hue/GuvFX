@@ -1,5 +1,19 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-08-18 — Customer Telegram notification POC (DARK, no deploy)
+
+- Customer-only Telegram notification plane is implemented on branch
+  `feat/customer-telegram-notifications`; it has not been merged, deployed, or activated.
+- Identity is Telegram private numeric `chat.id` established only through an atomic, one-use `/start` token.
+  Delivery is a separate durable outbox/worker with owner checks, bounded retries, dedupe, EN/JA messages, and
+  fail-open post-commit observers. Provider ingestion and all execution authority remain separate.
+- Production blockers: dedicated customer bot approval, secret ownership/rotation, webhook registration,
+  worker activation, migration/deploy approval, pilot identities, and alert/retention decisions.
+- Verification is green: 4,299 backend tests; 45 frontend files / 263 tests; lint 0 errors (19 existing
+  warnings); parity and production build passed; no `customer_notifications` migration drift.
+- Full review/evidence packet: [`docs/product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md`](product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md).
+- **STOP:** no production bot, webhook, worker, customer message, or execution change.
+
 > Concise pointer. **Notion is the source of truth** for the full programme
 > lifecycle (*GuvFX — Current State v0.52*); GitHub holds implementation, tests and
 > concise evidence. This file does not assert point-in-time PR status. Full state

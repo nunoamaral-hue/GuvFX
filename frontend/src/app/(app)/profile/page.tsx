@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/Card";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
+import { TelegramNotificationsCard } from "@/components/settings/TelegramNotificationsCard";
 
 type MeResponse = {
   id: number;
@@ -177,6 +178,8 @@ export default function ProfilePage() {
         </Card>
 
         {/* Billing UI → /account/billing · Hosting UI → /account/hosting (hidden from nav) */}
+
+        <TelegramNotificationsCard />
 
         {/* Password change */}
         <Card

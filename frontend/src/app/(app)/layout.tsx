@@ -29,7 +29,7 @@ import { detectLang, t } from "@/lib/i18n";
 type AuthState = "checking" | "ok" | "error";
 type OnboardingGateState = "checking" | "complete" | "incomplete";
 
-const API_BASE = "https://api.guvfx.com";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "https://api.guvfx.com";
 
 function isLocalhostEnv(): boolean {
   if (typeof window === "undefined") return false;

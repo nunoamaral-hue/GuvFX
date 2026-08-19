@@ -1,0 +1,22 @@
+import json
+
+from django.core.management.base import BaseCommand, CommandError
+
+from customer_notifications.delivery import queue_health
+
+
+class Command(BaseCommand):
+    help = "Report customer-notification queue health without exposing recipient metadata."
+
+    def add_arguments(self, parser):
+        parser.add_argument("--max-oldest", type=int, default=None)
+
+    def handle(self, *args, **options):
+        health = queue_health()
+        self.stdout.write(json.dumps(health, sort_keys=True))
+        ceiling = options["max_oldest"]
+        if (
+            ceiling is not None and health["feature_enabled"] and health["worker_enabled"]
+            and health["oldest_pending_age_seconds"] > ceiling
+        ):
+            raise CommandError("customer notification queue is stale")

@@ -15,6 +15,57 @@
 
 ---
 
+## Customer Telegram notifications (DARK POC)
+
+This plane is not production-active. It must use a dedicated customer bot and must
+never reuse provider-ingestion or stakeholder Telegram credentials.
+
+Required settings (secret values belong in the approved secret store, never Git):
+
+```text
+CUSTOMER_TELEGRAM_NOTIFICATIONS_ENABLED=false
+CUSTOMER_TELEGRAM_BOT_USERNAME=
+CUSTOMER_TELEGRAM_BOT_TOKEN=
+CUSTOMER_TELEGRAM_WEBHOOK_SECRET=
+CUSTOMER_TELEGRAM_WEBHOOK_URL=
+CUSTOMER_TELEGRAM_WORKER_ENABLED=false
+CUSTOMER_TELEGRAM_TOKEN_TTL_SECONDS=600
+CUSTOMER_NOTIFICATION_MAX_ATTEMPTS=5
+```
+
+Local verification while DARK:
+
+```bash
+python manage.py test customer_notifications --noinput
+python manage.py customer_notification_health
+python manage.py run_customer_notification_worker --once
+```
+
+The worker command reports `dark=True` when the feature is disabled and
+`worker_disabled=True` when its independent worker switch is disabled. In either
+case it neither collects nor sends. The prepared, non-routed worker definition lives at
+`deploy/customer-notifications/docker-compose.customer-notifications.yml`; do not
+add it to a production compose stack before Programme Director approval.
+
+Operational interpretation:
+
+- `queue_depth` / `pending` includes `PENDING`, `RETRYING`, and deliberately non-reclaimed
+  `PROCESSING` rows.
+- Health also reports the oldest queued age, success/failure totals, ambiguous
+  delivery count, retry-exhaustion count, suppressed count, and both enable flags.
+- A stale `PROCESSING` row may represent Telegram acknowledgement followed by a
+  database failure. Do not replay it manually; investigate using the immutable
+  attempt/outbox evidence and prefer message omission to duplication.
+- `FAILED` and oldest-pending age require an alert, but never an execution restart.
+- Set the worker flag false first, then disable the feature flag and stop only the
+  dedicated worker for rollback. Do not
+  change provider Telegram, Wayond listener, execution worker, node, bridge, MT5,
+  authorization, or customer trading state.
+- Telegram is a best-effort convenience notification channel. The committed GuvFX
+  business records and in-app state remain the system of record.
+
+Full design and rollout gate: `docs/product/CUSTOMER_TELEGRAM_NOTIFICATIONS_POC.md`.
+
 ## Backend (Django)
 
 ### Setup

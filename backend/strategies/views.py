@@ -1656,6 +1656,14 @@ class StrategyViewSet(viewsets.ModelViewSet):
                     a.is_active = False
                     a.save(update_fields=["is_active", "updated_at"])
                     paused += 1
+                    # Customer-notification observation seam only. Audit logging is fail-open and runs
+                    # after the authoritative state transition; it grants no execution authority.
+                    from core.audit import log_event
+                    log_event(
+                        request, event_type="SIGNAL_COPY_DISABLED", entity_type="account",
+                        entity_id=a.account_id,
+                        metadata={"assignment_id": a.id, "outcome": "disabled"},
+                    )
             return Response({
                 "status": "disabled", "marketplace_strategy_id": marketplace_strategy_id,
                 "signal_source": source, "paused_count": paused, "enabled": False,
@@ -1692,9 +1700,17 @@ class StrategyViewSet(viewsets.ModelViewSet):
                  "detail": "Another account is already actively copying this source; multi-account "
                            "routing is not enabled."},
                 status=status.HTTP_409_CONFLICT)
-        if not assignment.is_active:
+        changed = not assignment.is_active
+        if changed:
             assignment.is_active = True
             assignment.save(update_fields=["is_active", "updated_at"])
+            # Customer-notification observation seam only; fail-open and strictly post-transition.
+            from core.audit import log_event
+            log_event(
+                request, event_type="SIGNAL_COPY_ENABLED", entity_type="account",
+                entity_id=assignment.account_id,
+                metadata={"assignment_id": assignment.id, "outcome": "enabled"},
+            )
         return Response({
             "status": "enabled", "marketplace_strategy_id": marketplace_strategy_id,
             "signal_source": source, "assignment_id": assignment.id, "enabled": True,

@@ -1,4 +1,4 @@
-const API_BASE = "https://api.guvfx.com";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "https://api.guvfx.com";
 
 function getCookie(name: string): string | null {
   if (typeof document === "undefined") return null;

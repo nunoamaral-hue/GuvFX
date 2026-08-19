@@ -1,0 +1,19 @@
+# Customer Telegram delivery is a dedicated, non-execution process. This file is preparation only:
+# do not add it to production compose until Programme Director approves the bot, webhook and secrets.
+services:
+  guvfx-customer-notification-worker:
+    extends:
+      file: "${GUVFX_COMPOSE_BASE:-docker-compose.yml}"
+      service: guvfx-backend
+    container_name: guvfx-customer-notification-worker
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    command: ["python", "manage.py", "run_customer_notification_worker"]
+    labels:
+      - "traefik.enable=false"
+    healthcheck:
+      test: ["CMD-SHELL", "python manage.py customer_notification_health --max-oldest 900"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
