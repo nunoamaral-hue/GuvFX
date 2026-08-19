@@ -7,6 +7,7 @@ import { apiFetch } from "@/lib/api";
 import type { TradingAccount } from "@/types/strategies";
 import { useLang } from "@/components/AppShell";
 import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
+import { formatCustomerAccountDisplay, localizeActiveBetaCopy } from "@/lib/active-beta-i18n";
 
 type StrategyMetric = {
   strategy_name: string;
@@ -25,12 +26,14 @@ type MetricsResponse = {
   strategies: StrategyMetric[];
 };
 
-// Broker-facing account label — never the internal DB PK. e.g. "Hosted Workspace — 1302575".
-function accountLabel(acc: TradingAccount): string {
-  const num = (acc.account_number || "").trim();
-  const name = (acc.name || "").trim();
-  if (name && num) return `${name} — ${num}`;
-  return num || name || "Trading account";
+// Broker-facing account label — never the internal DB PK. Duplicate generic
+// workspace names collapse to one useful customer label.
+function accountLabel(lang: "en" | "ja", acc: TradingAccount): string {
+  return formatCustomerAccountDisplay(lang, {
+    brokerName: acc.broker_name,
+    name: acc.name,
+    accountNumber: acc.account_number,
+  });
 }
 
 type UiState = "loading" | "no_accounts" | "no_strategies" | "unavailable" | "ready";
@@ -106,7 +109,7 @@ export default function StrategyMetricsPage() {
           <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", padding: "0.75rem" }}>
             <label style={{ fontWeight: 600 }}>Trading account</label>
             {accounts.length === 1 ? (
-              <span style={{ color: "#e5f4ff" }}>{accountLabel(accounts[0])}</span>
+              <span style={{ color: "#e5f4ff" }}>{accountLabel(lang, accounts[0])}</span>
             ) : (
               <select
                 value={selectedAccountId}
@@ -123,7 +126,7 @@ export default function StrategyMetricsPage() {
               >
                 {accounts.map((acc) => (
                   <option key={acc.id} value={acc.id}>
-                    {accountLabel(acc)}
+                    {accountLabel(lang, acc)}
                   </option>
                 ))}
               </select>
@@ -140,7 +143,7 @@ export default function StrategyMetricsPage() {
           </Card>
         )}
 
-        <Card title={selected ? `Strategies · ${accountLabel(selected)}` : "Strategies"}>
+        <Card title={selected ? `${localizeActiveBetaCopy(lang, "Strategies")} · ${accountLabel(lang, selected)}` : "Strategies"}>
           <div style={{ overflowX: "auto" }}>
           {state === "loading" && (
             <p style={{ padding: "1rem", opacity: 0.75 }}>Loading your strategy performance…</p>

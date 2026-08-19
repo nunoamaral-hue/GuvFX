@@ -18,14 +18,19 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useLang } from "@/components/AppShell";
 import { localeFor, t, type Lang } from "@/lib/i18n";
-import { localizeActiveBetaCopy, localizeBackendCustomerText, localizeControlledEnum } from "@/lib/active-beta-i18n";
+import {
+  formatCustomerAccountDisplay,
+  localizeActiveBetaCopy,
+  localizeBackendCustomerText,
+  localizeControlledEnum,
+} from "@/lib/active-beta-i18n";
 import { apiFetch } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
 
 // ─── Types ───
 type Strategy = { id: number; name: string; symbol_universe?: string; is_active?: boolean };
-type Account = { id: number; name: string; broker_name?: string; is_active?: boolean };
+type Account = { id: number; name: string; broker_name?: string; account_number?: string; is_active?: boolean };
 type Assignment = { strategy_id: number; account_id: number; stage?: string };
 type ObservedStats = { total_trades: number; win_rate_pct: number; max_drawdown_pct: number; net_pnl_total: number; longest_loss_streak?: number; wins?: number; losses?: number };
 type BalancePoint = { balance_after_trade: number; net_pnl_money?: number };
@@ -62,6 +67,10 @@ function money(lang: Lang, n: number | null | undefined, ccy = "") {
 }
 function nowClock(lang: Lang, date: Date) { return date.toLocaleTimeString(localeFor(lang), { hour: "2-digit", minute: "2-digit" }); }
 function greeting() { const h = new Date().getHours(); return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; }
+function observedPnlSummary(lang: Lang, value: string, trades?: number): string {
+  if (lang === "ja") return `観測損益: ${value}${trades ? `（${trades}件の取引）` : ""}`;
+  return `Observed PnL: ${value}${trades ? ` (${trades} trades)` : ""}`;
+}
 
 // ─── Phase 2: Human translation layer (market state → Market Mood) ───
 type Mood = { label: string; color: string; badge: "green" | "yellow" | "red" | "blue" | "gray"; icon: string };
@@ -107,15 +116,37 @@ function moodDetail(state: string | undefined, ctx?: MarketStateCtx): string {
 }
 
 // ─── Phase 5: Research confidence (observation count → human) ───
-type Conf = { label: string; color: "green" | "blue" | "yellow" | "gray"; note: string };
-function researchConfidence(n: number | undefined | null, avgQuality?: number | null): Conf {
+type ConfidenceLevel = "none" | "limited" | "moderate" | "stronger";
+type Conf = { level: ConfidenceLevel; label: string; color: "green" | "blue" | "yellow" | "gray"; note: string };
+function researchConfidence(lang: Lang, n: number | undefined | null, avgQuality?: number | null): Conf {
   const c = n || 0;
   const obs = `${c} similar historical observation${c === 1 ? "" : "s"}`;
   const q = avgQuality != null ? ` · average past quality ${avgQuality}%` : "";
-  if (c === 0) return { label: "No evidence yet", color: "gray", note: "No similar historical observations recorded for this setup yet." };
-  if (c <= 2) return { label: "Limited evidence", color: "yellow", note: `Based on ${obs}${q}. Treat as early/indicative only.` };
-  if (c <= 9) return { label: "Moderate confidence", color: "blue", note: `Based on ${obs}${q}.` };
-  return { label: "Stronger confidence", color: "green", note: `Based on ${obs}${q}.` };
+  const jaEvidence = `類似する過去の観測${c}件に基づきます${avgQuality != null ? `（過去データの平均品質 ${avgQuality}%）` : ""}。`;
+  if (c === 0) return {
+    level: "none",
+    label: lang === "ja" ? "根拠データなし" : "No evidence yet",
+    color: "gray",
+    note: lang === "ja" ? "類似する過去の観測データはまだありません。" : "No similar historical observations recorded for this setup yet.",
+  };
+  if (c <= 2) return {
+    level: "limited",
+    label: lang === "ja" ? "限定的な根拠" : "Limited evidence",
+    color: "yellow",
+    note: lang === "ja" ? `${jaEvidence} 初期的な参考情報として扱ってください。` : `Based on ${obs}${q}. Treat as early/indicative only.`,
+  };
+  if (c <= 9) return {
+    level: "moderate",
+    label: lang === "ja" ? "中程度の信頼度" : "Moderate confidence",
+    color: "blue",
+    note: lang === "ja" ? jaEvidence : `Based on ${obs}${q}.`,
+  };
+  return {
+    level: "stronger",
+    label: lang === "ja" ? "比較的高い信頼度" : "Stronger confidence",
+    color: "green",
+    note: lang === "ja" ? jaEvidence : `Based on ${obs}${q}.`,
+  };
 }
 
 // ─── Symbol → relevant currencies (Key Events context) ───
@@ -164,18 +195,45 @@ function marketName(lang: Lang, sym: string): string {
 }
 
 // ─── Layer 3: Simple mood (Bull / Sideways / Bear) — display mapping over existing state ───
-function simpleMood(state: string | undefined, ctx?: MarketStateCtx): { label: "Bull" | "Sideways" | "Bear"; color: string; badge: "green" | "blue" | "red"; desc: string; why: string } {
+type SimpleMoodKey = "Bull" | "Sideways" | "Bear";
+type SimpleMood = { key: SimpleMoodKey; label: string; color: string; badge: "green" | "blue" | "red"; desc: string; why: string };
+function simpleMood(state: string | undefined, ctx?: MarketStateCtx, lang: Lang = "en"): SimpleMood {
   const dir = ctx?.trend_state || "";
   const up = dir.includes("up"), down = dir.includes("down");
-  if ((state === "TREND_EXPANSION" && up) || state === "RISK_ON")
-    return { label: "Bull", color: "#86efac", badge: "green", desc: "Buyers are currently in control and trend conditions remain supportive. Price has been holding upward structure rather than giving it back.", why: "Market pressure is leaning upward. Momentum-based research may deserve attention, but confirmation still matters." };
-  if ((state === "TREND_EXPANSION" && down) || state === "RISK_OFF")
-    return { label: "Bear", color: "#fca5a5", badge: "red", desc: "Sellers are currently in control and downside pressure remains dominant. Price has been losing ground rather than recovering it.", why: "Market pressure is leaning downward. Defensive or downside research may deserve attention, but confirmation still matters." };
-  return { label: "Sideways", color: "#93c5fd", badge: "blue", desc: "Buyers and sellers are balanced and price is spending more time inside established ranges than breaking away from them.", why: "Buyers and sellers are roughly balanced — price is not showing a clear directional bias. Confirmation matters more than direction right now." };
+  let key: SimpleMoodKey = "Sideways";
+  if ((state === "TREND_EXPANSION" && up) || state === "RISK_ON") key = "Bull";
+  else if ((state === "TREND_EXPANSION" && down) || state === "RISK_OFF") key = "Bear";
+
+  const copy = {
+    Bull: {
+      color: "#86efac", badge: "green" as const,
+      desc: "Buyers are currently in control and trend conditions remain supportive. Price has been holding upward structure rather than giving it back.",
+      why: "Market pressure is leaning upward. Momentum-based research may deserve attention, but confirmation still matters.",
+    },
+    Bear: {
+      color: "#fca5a5", badge: "red" as const,
+      desc: "Sellers are currently in control and downside pressure remains dominant. Price has been losing ground rather than recovering it.",
+      why: "Market pressure is leaning downward. Defensive or downside research may deserve attention, but confirmation still matters.",
+    },
+    Sideways: {
+      color: "#93c5fd", badge: "blue" as const,
+      desc: "Buyers and sellers are balanced and price is spending more time inside established ranges than breaking away from them.",
+      why: "Buyers and sellers are roughly balanced — price is not showing a clear directional bias. Confirmation matters more than direction right now.",
+    },
+  }[key];
+
+  return {
+    key,
+    label: localizeActiveBetaCopy(lang, key),
+    color: copy.color,
+    badge: copy.badge,
+    desc: localizeActiveBetaCopy(lang, copy.desc),
+    why: localizeActiveBetaCopy(lang, copy.why),
+  };
 }
 
 // ─── GuvFX Mood Icons — proprietary inline SVG set (shared ring, wave motif varies) ───
-function MoodIcon({ mood, size = 40 }: { mood: "Bull" | "Sideways" | "Bear"; size?: number }) {
+function MoodIcon({ mood, lang, size = 40 }: { mood: SimpleMoodKey; lang: Lang; size?: number }) {
   // Muted institutional palette — intentionally softer than state text colors
   const c = mood === "Bull" ? "#5fc88f" : mood === "Bear" ? "#e07a6e" : "#d4a843";
   const motif =
@@ -183,7 +241,7 @@ function MoodIcon({ mood, size = 40 }: { mood: "Bull" | "Sideways" | "Bear"; siz
     : mood === "Bear" ? "M10 12.5 C14 12.5, 16 18, 20 21 C24 24, 26 26.5, 30 27.5"
     : "M9 20 C12 13.5, 16 13.5, 20 20 C24 26.5, 28 26.5, 31 20";
   return (
-    <svg width={size} height={size} viewBox="0 0 40 40" role="img" aria-label={`${mood} market mood`} style={{ display: "block" }}>
+    <svg width={size} height={size} viewBox="0 0 40 40" role="img" aria-label={localizeActiveBetaCopy(lang, `${mood} market mood`)} style={{ display: "block" }}>
       <circle cx="20" cy="20" r="17" fill="rgba(255,255,255,0.02)" stroke={c} strokeOpacity="0.4" strokeWidth="1.5" />
       <path d={motif} fill="none" stroke={c} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
@@ -356,12 +414,12 @@ export default function DashboardPage() {
             if (st === "NEWS_SHOCK") { category = "News Risk"; catColor = "red"; }
             else if (p.label === "Worth researching") { category = "Setup"; catColor = "green"; }
             else if (breakoutish) { category = "Breakout"; catColor = "yellow"; }
-            else if (sm.label === "Sideways") { category = "Range"; catColor = "blue"; }
+            else if (sm.key === "Sideways") { category = "Range"; catColor = "blue"; }
             else { category = "Watching"; catColor = "gray"; }
-            const note = st === "NEWS_SHOCK" ? "High-impact event nearby" : breakoutish ? "Volatility expanding" : sm.label !== "Sideways" ? "Trend conditions align" : "Range conditions dominant";
-            const rc = researchConfidence(topS?.kb_observations, topS?.kb_avg_quality);
-            const confWord = rc.label === "No evidence yet" ? "None" : rc.label.split(" ")[0];
-            const confLevel = rc.label === "Stronger confidence" ? 3 : rc.label === "Moderate confidence" ? 2 : rc.label === "Limited evidence" ? 1 : 0;
+            const note = st === "NEWS_SHOCK" ? "High-impact event nearby" : breakoutish ? "Volatility expanding" : sm.key !== "Sideways" ? "Trend conditions align" : "Range conditions dominant";
+            const rc = researchConfidence("en", topS?.kb_observations, topS?.kb_avg_quality);
+            const confWord = rc.level === "none" ? "None" : rc.label.split(" ")[0];
+            const confLevel = rc.level === "stronger" ? 3 : rc.level === "moderate" ? 2 : rc.level === "limited" ? 1 : 0;
             setRadarRows((prev) => (prev.some((x) => x.sym === rs) ? prev : [...prev, { sym: rs, category, catColor, note, conf: confWord, confLevel }]));
           })
           .catch(() => { /* radar row simply absent */ });
@@ -434,10 +492,10 @@ export default function DashboardPage() {
   // ── Derived: Market Focus ──
   const ms = selection?.market_state;
   const ctx = ms?.context;
-  const smood = simpleMood(ms?.current_state, ctx);
+  const smood = simpleMood(ms?.current_state, ctx, lang);
   const top = (selection?.preferred_strategies || [])[0];
   const topFamily = (selection?.preferred_families || [])[0];
-  const conf = researchConfidence(top?.kb_observations, top?.kb_avg_quality);
+  const conf = researchConfidence(lang, top?.kb_observations, top?.kb_avg_quality);
   const px = selection ? proxy(selection) : null;
   let risk = "Standard market risk applies.";
   if (ms?.current_state === "NEWS_SHOCK") risk = "A high-impact event is nearby — conditions can move quickly and setups are lower-quality right now.";
@@ -490,7 +548,15 @@ export default function DashboardPage() {
                 </div>
               );
             })()}
-            {primaryAcct && <div style={{ fontSize: "0.73rem", color: "#8b9bb4", marginTop: 4 }}>{primaryAcct.broker_name || "Broker"} · {primaryAcct.name}</div>}
+            {primaryAcct && (
+              <div style={{ fontSize: "0.73rem", color: "#8b9bb4", marginTop: 4 }}>
+                {formatCustomerAccountDisplay(lang, {
+                  brokerName: primaryAcct.broker_name,
+                  name: primaryAcct.name,
+                  accountNumber: primaryAcct.account_number,
+                })}
+              </div>
+            )}
             {acctStatus && (() => {
               // TB-4: the truthful onboarding→ready state for the primary account — works for a beta
               // account with no reliability snapshot (where the trading-health line above stays UNKNOWN).
@@ -535,7 +601,7 @@ export default function DashboardPage() {
               <i className={`ti ti-${trend.icon}`} aria-hidden="true" style={{ marginRight: 5 }} />{trend.label}
             </div>
             <div style={{ fontSize: "0.68rem", color: "#64748b", marginTop: 2, whiteSpace: "nowrap" }}>
-              {netPnl != null ? `Observed PnL: ${money(lang, netPnl, perf?.currency)}${stats?.total_trades ? ` (${stats.total_trades} trades)` : ""}` : "No observed trades yet"}
+              {netPnl != null ? observedPnlSummary(lang, money(lang, netPnl, perf?.currency), stats?.total_trades) : "No observed trades yet"}
             </div>
           </div>
 
@@ -580,13 +646,13 @@ export default function DashboardPage() {
                 {marketIdentity(symbol).glyph && <div style={{ fontSize: "1.3rem", lineHeight: 1 }} aria-hidden="true">{marketIdentity(symbol).glyph}</div>}
                 <div style={{ fontSize: "0.92rem", fontWeight: 650, color: "#f0f6ff", lineHeight: 1.25 }}>{marketName(lang, symbol)}</div>
                 {marketIdentity(symbol).name !== symbol && <div style={{ fontSize: "0.62rem", color: "#64748b", letterSpacing: "0.04em" }}>{symbol}</div>}
-                <div style={{ marginTop: 3 }}><MoodIcon mood={smood.label} size={36} /></div>
+                <div style={{ marginTop: 3 }}><MoodIcon mood={smood.key} lang={lang} size={36} /></div>
                 {selAt && <div style={{ fontSize: "0.6rem", color: "#64748b", marginTop: 2 }}>as of {nowClock(lang, selAt)}</div>}
               </div>
               {/* Zone 2 — Mood + Why this matters */}
               <div style={{ flex: "1 1 230px", minWidth: 210, margin: "0 0 0 1.1rem", paddingRight: "1.1rem", borderRight: "1px solid rgba(255,255,255,0.06)", display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 9 }}>
                 <div>
-                  <div style={{ ...microLabel, display: "flex", alignItems: "center" }}><span style={{ marginRight: 5 }}><MoodIcon mood={smood.label} size={14} /></span>Market Mood<InfoDot text="Simple translation of current market conditions. It is not a trade instruction." /></div>
+                  <div style={{ ...microLabel, display: "flex", alignItems: "center" }}><span style={{ marginRight: 5 }}><MoodIcon mood={smood.key} lang={lang} size={14} /></span>Market Mood<InfoDot text="Simple translation of current market conditions. It is not a trade instruction." /></div>
                   <div style={{ fontSize: "1.25rem", fontWeight: 700, color: smood.color, marginBottom: 2 }}>{smood.label}</div>
                   <div style={{ fontSize: "0.78rem", color: "#b7c5dd", marginBottom: 3 }}>{smood.desc}</div>
                   {ms && <div style={{ fontSize: "0.64rem", color: "#64748b" }} title={lang === "ja" ? localizeControlledEnum(lang, "marketState", ms.current_state) : moodDetail(ms.current_state, ctx)}>{lang === "ja" ? `${localizeControlledEnum(lang, "confidence", ms.confidence)}の信頼度・${localizeControlledEnum(lang, "marketState", ms.current_state)}` : `${localizeControlledEnum(lang, "confidence", ms.confidence)} confidence · ${stateHuman(ms.current_state)}`}</div>}
@@ -601,7 +667,7 @@ export default function DashboardPage() {
                 <div>
                   <div style={microLabel}><i className="ti ti-flask" aria-hidden="true" style={{ marginRight: 5, color: "#a78bfa" }} />Worth Researching<InfoDot text="Research direction only. Not a recommendation to trade." /></div>
                   {top ? <div style={{ fontSize: "0.84rem", color: "#e9f4ff", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <span><span style={{ fontWeight: 600 }}>{localizeControlledEnum(lang, "strategyFamily", topFamily?.family || top.family)}</span><span style={{ fontSize: "0.74rem", color: "#94a3b8" }}> · Focus: {top.name}</span></span>
+                    <span><span style={{ fontWeight: 600 }}>{localizeControlledEnum(lang, "strategyFamily", topFamily?.family || top.family)}</span><span style={{ fontSize: "0.74rem", color: "#94a3b8" }}>{lang === "ja" ? " · 注目: " : " · Focus: "}{top.name}</span></span>
                     {px && <Badge color={px.color}>{px.label}</Badge>}
                   </div> : <div style={{ ...muted, fontSize: "0.78rem" }}>No clear strategy fit in this state — watching.</div>}
                 </div>
