@@ -14,6 +14,23 @@
 
 ## Execution workstream log
 
+- **2026-08-20 - FINAL DOCUMENTATION-BETA PURGE: DOCUMENTATION_BETA_PURGED_PRELAUNCH_READY (prod ops, no code change).**
+  Removed the recreated disposable documentation customer `beta.guvfx01@gmail.com` (rediscovered: User33 /
+  TradingAccount29 / MT5 1302575 / HostedMt5Workspace16 / AccountProvisioning22 / HostedExecutionEndpoint5 :8800 /
+  guvfx_u_29 / CustomerTelegramBinding2). Phase-0..3 gates: identity unambiguous, MT5 1302575 unique to acct29,
+  Strategy13 customer-exclusive (0 other-user assignments), acct29 execution/trade state = 0, only PROTECT =
+  AccountProvisioning22. Anchors: pg backup `guvfx_preDOCPURGE33_20260820T135548Z.sql.gz` (sha256 da482b31b77befd9,
+  161MB uncompressed); Golden BEFORE CZ `354a06ec` / support@ `0f12487c` / topology `e79f4495`. Purge (guarded txn):
+  delete AccountProvisioning22 FIRST then User33.delete() = 174 rows; SET_NULL evidence preserved (AuditEvent 123734
+  unchanged/13->NULL, CustomerNotification 26 unchanged/2->NULL). Host: 5 tenant tasks disabled+unregistered, :8800
+  bridge + accounts\29 terminal torn down (via stopping the bridge/relaunch tasks - no manual PID kill), RemoteApp +
+  accounts\29 + tenants\29 removed, RDU + local user removed. Golden AFTER: CZ + support@ BYTE-IDENTICAL; node2
+  max_accounts=12 UNCHANGED, occ 2->1 (support@ only), free=11; ports :8788/:8789/:8790/:8791 intact; sacred terminals
+  (CZ 7812 / support@ 11780 / golden 3972) never restarted. Email FREE; 0 DB orphans. Residual benign orphan:
+  `C:\Users\guvfx_u_29` profile (ProfSvc hive Loaded; scheduled delete-on-next-reboot; reboot withheld to protect
+  sacred terminals - matches prior-cycle orphans). STOP: do NOT invite beta / create test customer / connect support@
+  Telegram - Programme Director owns final launch certification.
+
 - **2026-08-20 - TELEGRAM WEBHOOK DEADLOCK: FIX DEPLOYED + QUEUE CLEARED -> HUMAN_TELEGRAM_START_REQUIRED
   (backend PR #388, main `56a49af`, image `512544fbee46`).** The customer-bot webhook returned 400 for
   deterministic rejections (expired/invalid/consumed token, non-private, id mismatch, chat-already-bound);
