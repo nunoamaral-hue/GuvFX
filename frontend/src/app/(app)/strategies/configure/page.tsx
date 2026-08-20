@@ -23,6 +23,7 @@ import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
 import { useLang } from "@/components/AppShell";
 import { t, type Lang } from "@/lib/i18n";
 import LotSizeControl from "@/components/strategy/LotSizeControl";
+import { StrategyTelegramNotifications } from "@/components/strategy/StrategyTelegramNotifications";
 
 type TradingAccount = {
   id: number;
@@ -436,6 +437,9 @@ function AutomatedConfig(props: {
         </div>
         {/* P0-A — customer-owned per-leg lot size (only for an owned assignment). */}
         {props.owned && <LotSizeControl assignmentId={props.assignmentId} lang={props.lang} />}
+        {props.owned && (
+          <StrategyTelegramNotifications assignmentId={props.assignmentId} lang={props.lang} />
+        )}
         <p style={{ color: "#8fa0b7", fontSize: "0.78rem", lineHeight: 1.5, margin: "0.9rem 0 0" }}>
           {t(props.lang, "configure.betaNote")}
         </p>

@@ -11,13 +11,6 @@ def _line(value, fallback: str = "") -> str:
     return " ".join(text.replace("\x00", "").split())[:160]
 
 
-def _side(value, lang: str) -> str:
-    key = str(value or "").upper()
-    if lang == "ja":
-        return {"BUY": "買い", "SELL": "売り"}.get(key, _line(value))
-    return {"BUY": "Buy", "SELL": "Sell"}.get(key, _line(value))
-
-
 def _account(payload: dict, lang: str) -> str:
     kind = payload.get("account_kind", "demo")
     label = ("デモ口座" if kind == "demo" else "取引口座") if lang == "ja" else (
@@ -45,7 +38,9 @@ def _timestamp(value) -> str:
             return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         return parsed.strftime("%Y-%m-%d %H:%M")
     except ValueError:
-        return text
+        # Invalid metadata is never rendered verbatim; this is a final defence against
+        # using an allow-listed field as an arbitrary live-signal text channel.
+        return ""
 
 
 def _outcome(value, lang: str) -> str:
@@ -62,32 +57,11 @@ def render_customer_message(notification: CustomerNotification) -> str:
     event = notification.event_type
     strategy = _line(p.get("strategy"), "GuvFX")
     symbol = _line(p.get("symbol"))
-    side = _side(p.get("side"), lang)
 
     if event == CustomerNotification.EventType.CONNECTION_CONFIRMED:
         if lang == "ja":
-            return "Telegram通知を接続しました\n\nGuvFXの取引更新をこのチャットで受け取れます。通知設定はGuvFXでいつでも変更できます。"
-        return "Telegram notifications connected\n\nYou’ll receive GuvFX trading updates in this chat. You can change your notification settings in GuvFX at any time."
-
-    if event == CustomerNotification.EventType.TRADE_OPENED:
-        rows = [
-            "GuvFXの取引が開始されました" if lang == "ja" else "GuvFX trade opened",
-            "", strategy, f"{symbol} · {side}",
-        ]
-        volume = _line(p.get("volume"))
-        if volume:
-            rows.append(f"取引量: {volume}ロット" if lang == "ja" else f"{volume} lots")
-        labels = (
-            (("エントリー", "entry"), ("ストップロス", "stop_loss"), ("テイクプロフィット", "take_profit"))
-            if lang == "ja" else
-            (("Entry", "entry"), ("Stop loss", "stop_loss"), ("Take profit", "take_profit"))
-        )
-        rows.extend(f"{label}: {_line(p.get(key))}" for label, key in labels if p.get(key) not in (None, ""))
-        occurred_at = _timestamp(p.get("occurred_at"))
-        if occurred_at:
-            rows.append(("時刻: " if lang == "ja" else "Time: ") + occurred_at)
-        rows.extend(["", _account(p, lang)])
-        return "\n".join(rows)
+            return "Telegram通知を接続しました\n\nGuvFXの取引結果、進捗、口座情報をこのチャットで受け取れます。通知設定はGuvFXでいつでも変更できます。"
+        return "Telegram notifications connected\n\nYou’ll receive GuvFX trade results, progress and account updates in this chat. You can change notification preferences in GuvFX at any time."
 
     if event in (
         CustomerNotification.EventType.TRADE_UPDATED,
@@ -95,14 +69,12 @@ def render_customer_message(notification: CustomerNotification) -> str:
     ):
         is_update = event == CustomerNotification.EventType.TRADE_UPDATED
         result = _money(p.get("result"), _line(p.get("currency"), "USD"))
-        rows = [
-            (
-                "GuvFXの取引状況" if is_update else "GuvFXの取引が終了しました"
-            ) if lang == "ja" else (
-                "GuvFX trade update" if is_update else "GuvFX trade closed"
-            ),
-            "", strategy, f"{symbol} · {side}",
-        ]
+        outcome = _outcome(p.get("outcome"), lang)
+        if is_update:
+            title = "GuvFX・ストラテジー進捗" if lang == "ja" else "GuvFX · Strategy update"
+        else:
+            title = f"GuvFX・取引結果 — {outcome}" if lang == "ja" else f"GuvFX · Trade result — {outcome}"
+        rows = [title, "", strategy, symbol]
         progress_label = _line(p.get("progress_label"))
         if is_update and progress_label:
             rows.append(f"{progress_label} 到達" if lang == "ja" else f"{progress_label} reached")
@@ -113,8 +85,7 @@ def render_customer_message(notification: CustomerNotification) -> str:
                 "Realised so far: " if is_update else "Final result: "
             )
             rows.append(result_label + result)
-        outcome = _outcome(p.get("outcome"), lang)
-        if outcome:
+        if outcome and not is_update:
             rows.append(("結果: " if lang == "ja" else "Outcome: ") + outcome)
         closed = p.get("progress_closed")
         total = p.get("progress_total")
@@ -126,6 +97,9 @@ def render_customer_message(notification: CustomerNotification) -> str:
         occurred_at = _timestamp(p.get("occurred_at"))
         if occurred_at:
             rows.append(("時刻: " if lang == "ja" else "Time: ") + occurred_at)
+        volume = _line(p.get("volume"))
+        if volume and not is_update:
+            rows.append(("取引量: " if lang == "ja" else "Executed size: ") + f"{volume} lot")
         rows.extend(["", _account(p, lang)])
         return "\n".join(rows)
 
@@ -153,8 +127,9 @@ def render_customer_message(notification: CustomerNotification) -> str:
         return f"GuvFX needs your attention\n\n{body}\nContact support if the problem continues."
 
     if event == CustomerNotification.EventType.WORKSPACE_READY:
+        url = _line(p.get("continue_url"))
         if lang == "ja":
-            return f"取引ワークスペースの準備が完了しました\n\n{_account(p, lang)}\nGuvFXで次の手順を確認できます。"
-        return f"Your trading workspace is ready\n\n{_account(p, lang)}\nYou can review the next step in GuvFX."
+            return f"GuvFXワークスペースの準備ができました\n\nお客様専用のMT5ワークスペースで次のステップに進めます。\n\n設定を続ける → {url}"
+        return f"Your GuvFX workspace is ready\n\nYour private MT5 workspace is ready for the next step.\n\nContinue setup → {url}"
 
     raise ValueError("unsupported_customer_notification_event")

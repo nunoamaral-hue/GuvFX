@@ -66,6 +66,13 @@ class CustomerNotificationPreference(models.Model):
     strategy_changed = models.BooleanField(default=True)
     execution_problem = models.BooleanField(default=True)
     workspace_ready = models.BooleanField(default=True)
+    # Product-policy preferences. The legacy per-event fields above are retained so the
+    # closed-beta pilot evidence and its schema remain immutable; customer APIs no longer
+    # expose them. Live-entry delivery is prohibited independently of every preference.
+    winning_trades = models.BooleanField(default=True)
+    losing_trades = models.BooleanField(default=False)
+    tp_progress = models.BooleanField(default=True)
+    system_messages = models.BooleanField(default=True)
     language = models.CharField(max_length=2, choices=Language.choices, default=Language.EN)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -123,6 +130,10 @@ class CustomerNotification(models.Model):
         "trading.TradingAccount", null=True, blank=True, on_delete=models.SET_NULL,
         related_name="customer_notifications",
     )
+    strategy_assignment = models.ForeignKey(
+        "strategies.StrategyAssignment", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="customer_notifications",
+    )
     event_type = models.CharField(max_length=32, choices=EventType.choices, db_index=True)
     source_object_type = models.CharField(max_length=80)
     source_object_id = models.CharField(max_length=80)
@@ -146,6 +157,56 @@ class CustomerNotification(models.Model):
         indexes = [
             models.Index(fields=["status", "next_attempt_at"], name="cust_notify_queue_idx"),
             models.Index(fields=["user", "-created_at"], name="cust_notify_user_idx"),
+        ]
+
+
+class CustomerStrategyNotificationPreference(models.Model):
+    """Customer-owned Telegram intent for one strategy assignment; never execution state."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="strategy_notification_preferences",
+    )
+    assignment = models.OneToOneField(
+        "strategies.StrategyAssignment", on_delete=models.CASCADE,
+        related_name="customer_notification_preference",
+    )
+    enabled = models.BooleanField(default=False)
+    pending_enable = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "assignment"], name="cust_notify_user_assignment",
+            ),
+        ]
+
+
+class WorkspaceReadinessNotificationIntent(models.Model):
+    """Persistent, deduped one-shot request for a customer workspace-ready message."""
+
+    MILESTONE_READY = "workspace_ready"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="workspace_readiness_notification_intents",
+    )
+    workspace = models.ForeignKey(
+        "hosted_workspace.HostedMt5Workspace", on_delete=models.CASCADE,
+        related_name="customer_readiness_notification_intents",
+    )
+    milestone = models.CharField(max_length=32, default=MILESTONE_READY)
+    fulfilled_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "milestone"], name="cust_notify_workspace_milestone",
+            ),
         ]
 
 

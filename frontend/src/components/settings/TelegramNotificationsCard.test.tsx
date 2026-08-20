@@ -17,13 +17,10 @@ const connected = (language: "en" | "ja" = "en") => ({
   connected: true,
   display: { username: "guvfx_customer", first_name: "Customer" },
   preferences: {
-    telegram_enabled: true,
-    trade_opened: true,
-    trade_updated: true,
-    trade_closed: true,
-    strategy_changed: true,
-    execution_problem: true,
-    workspace_ready: true,
+    winning_trades: true,
+    losing_trades: false,
+    tp_progress: true,
+    system_messages: true,
     language,
   },
 });
@@ -39,9 +36,14 @@ describe("TelegramNotificationsCard", () => {
   it("renders the connected English preference contract without a chat id", async () => {
     render(<LanguageProvider lang="en"><TelegramNotificationsCard /></LanguageProvider>);
     expect(await screen.findByText("Connected")).toBeInTheDocument();
-    expect(screen.getByText("Trade opened")).toBeInTheDocument();
-    expect(screen.getByText("Trade updates")).toBeInTheDocument();
-    expect(screen.getByText("Trading needs attention")).toBeInTheDocument();
+    expect(screen.queryByText("Trade opened")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Notification preferences" }));
+    expect(screen.getByRole("dialog", { name: "Notification preferences" })).toBeInTheDocument();
+    expect(screen.getByText("Winning trades")).toBeInTheDocument();
+    expect(screen.getByText("Losing trades")).toBeInTheDocument();
+    expect(screen.getByText("Take-profit progress")).toBeInTheDocument();
+    expect(screen.getByText("System/account messages")).toBeInTheDocument();
+    expect(screen.queryByText(/trade opened/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/chat.?id/i)).not.toBeInTheDocument();
   });
 
@@ -49,9 +51,11 @@ describe("TelegramNotificationsCard", () => {
     api.getTelegramSettings.mockResolvedValue(connected("ja"));
     render(<LanguageProvider lang="ja"><TelegramNotificationsCard /></LanguageProvider>);
     expect(await screen.findByText("接続済み")).toBeInTheDocument();
-    expect(screen.getByText("取引開始")).toBeInTheDocument();
-    expect(screen.getByText("ストラテジーの有効化・無効化")).toBeInTheDocument();
-    expect(screen.getByText("ワークスペース準備完了")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "通知設定" }));
+    expect(screen.getByText("利益になった取引")).toBeInTheDocument();
+    expect(screen.getByText("損失になった取引")).toBeInTheDocument();
+    expect(screen.getByText("テイクプロフィットの進捗")).toBeInTheDocument();
+    expect(screen.queryByText("取引開始")).not.toBeInTheDocument();
   });
 
   it("persists the selected app language without requiring another preference change", async () => {
@@ -62,13 +66,13 @@ describe("TelegramNotificationsCard", () => {
     await waitFor(() => expect(api.updateTelegramPreferences).toHaveBeenCalledWith({ language: "ja" }));
   });
 
-  it("persists an individual preference without changing the master", async () => {
+  it("persists an individual preference from the modal", async () => {
     render(<LanguageProvider lang="en"><TelegramNotificationsCard /></LanguageProvider>);
     await screen.findByText("Connected");
-    const boxes = screen.getAllByRole("checkbox");
-    fireEvent.click(boxes[3]); // Trade closed (master is index 0).
+    fireEvent.click(screen.getByRole("button", { name: "Notification preferences" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Winning trades/ }));
     await waitFor(() => expect(api.updateTelegramPreferences).toHaveBeenCalledWith({
-      trade_closed: false,
+      winning_trades: false,
       language: "en",
     }));
   });

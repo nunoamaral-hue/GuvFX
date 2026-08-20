@@ -17,22 +17,19 @@ from .models import (
     CustomerNotification,
     CustomerNotificationAttempt,
     CustomerNotificationPreference,
+    CustomerStrategyNotificationPreference,
     CustomerNotificationWorkerState,
     CustomerTelegramBinding,
+    WorkspaceReadinessNotificationIntent,
+)
+from .services import (
+    _STRATEGY_RESULT_EVENTS,
+    _event_preference_enabled,
+    _safe_payload,
+    event_safety_decision,
 )
 
 logger = logging.getLogger(__name__)
-
-_PREFERENCE_FIELD = {
-    CustomerNotification.EventType.TRADE_OPENED: "trade_opened",
-    CustomerNotification.EventType.TRADE_UPDATED: "trade_updated",
-    CustomerNotification.EventType.TRADE_CLOSED: "trade_closed",
-    CustomerNotification.EventType.STRATEGY_ENABLED: "strategy_changed",
-    CustomerNotification.EventType.STRATEGY_DISABLED: "strategy_changed",
-    CustomerNotification.EventType.EXECUTION_PROBLEM: "execution_problem",
-    CustomerNotification.EventType.WORKSPACE_READY: "workspace_ready",
-}
-
 
 class TelegramDeliveryError(Exception):
     def __init__(self, code: str, *, retryable: bool = False, ambiguous: bool = False):
@@ -90,6 +87,54 @@ class CustomerTelegramBotClient:
             raise TelegramDeliveryError("telegram_response_ambiguous", ambiguous=True)
         return TelegramAck(message_id=str(message_id))
 
+    def send_photo(self, chat_id: int, png_bytes: bytes, caption: str) -> TelegramAck:
+        """Send a customer result card without sharing stakeholder transport or credentials."""
+        if not self._token:
+            raise TelegramDeliveryError("bot_token_missing", retryable=True)
+        boundary = "----GuvFXCustomerCardBoundary7pQ2"
+
+        def field(name: str, value: str) -> bytes:
+            return (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+                f"{value}\r\n"
+            ).encode("utf-8")
+
+        body = field("chat_id", str(chat_id)) + field("caption", caption) + field("protect_content", "true")
+        body += (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; "
+            f"filename=\"guvfx-result.png\"\r\nContent-Type: image/png\r\n\r\n"
+        ).encode("utf-8")
+        body += png_bytes + b"\r\n" + f"--{boundary}--\r\n".encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{self._token}/sendPhoto",
+            data=body,
+            method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as response:
+                payload = json.loads((response.read() or b"{}").decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise TelegramDeliveryError(
+                f"telegram_http_{exc.code}", retryable=(exc.code == 429 or exc.code >= 500),
+            ) from None
+        except (urllib.error.URLError, TimeoutError):
+            raise TelegramDeliveryError("telegram_network_ambiguous", ambiguous=True) from None
+        except (ValueError, UnicodeError):
+            raise TelegramDeliveryError("telegram_response_ambiguous", ambiguous=True) from None
+        if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
+            raise TelegramDeliveryError("telegram_response_ambiguous", ambiguous=True)
+        if not payload["ok"]:
+            code = int(payload.get("error_code") or 0)
+            raise TelegramDeliveryError(
+                f"telegram_rejected_{code or 'unknown'}", retryable=(code == 429 or code >= 500),
+            )
+        result = payload.get("result")
+        message_id = result.get("message_id") if isinstance(result, dict) else None
+        if message_id is None or isinstance(message_id, bool):
+            raise TelegramDeliveryError("telegram_response_ambiguous", ambiguous=True)
+        return TelegramAck(message_id=str(message_id))
+
 
 def _allowed_now(notification) -> tuple[bool, CustomerTelegramBinding | None, str]:
     if notification.user_id is None:
@@ -104,17 +149,45 @@ def _allowed_now(notification) -> tuple[bool, CustomerTelegramBinding | None, st
     pref = CustomerNotificationPreference.objects.filter(user_id=notification.user_id).first()
     if pref is None:
         return False, binding, "preferences_missing"
-    if notification.event_type == CustomerNotification.EventType.CONNECTION_CONFIRMED:
-        return True, binding, ""
-    if not pref.telegram_enabled:
-        return False, binding, "master_disabled"
-    field = _PREFERENCE_FIELD.get(notification.event_type)
-    if not field or not getattr(pref, field, False):
+    force = (
+        notification.event_type == CustomerNotification.EventType.CONNECTION_CONFIRMED
+        or (
+            notification.event_type == CustomerNotification.EventType.WORKSPACE_READY
+            and notification.source_object_type
+            == "customer_notifications.WorkspaceReadinessNotificationIntent"
+        )
+    )
+    safe, reason = event_safety_decision(notification.event_type, notification.payload, force=force)
+    if not safe:
+        return False, binding, reason
+    canonical_payload = _safe_payload(
+        notification.event_type,
+        notification.payload,
+        account=notification.account,
+        strategy_assignment=notification.strategy_assignment,
+    )
+    if notification.payload != canonical_payload:
+        return False, binding, "payload_not_canonical"
+    if not force and (
+        not pref.telegram_enabled
+        or not _event_preference_enabled(pref, notification.event_type, notification.payload)
+    ):
         return False, binding, "event_disabled"
     if notification.account_id:
         owner = notification.account.user_id if notification.account else None
         if owner != notification.user_id:
             return False, binding, "account_owner_mismatch"
+    if notification.event_type in _STRATEGY_RESULT_EVENTS:
+        if notification.strategy_assignment_id is None:
+            return False, binding, "strategy_assignment_required"
+        if notification.strategy_assignment.account_id != notification.account_id:
+            return False, binding, "strategy_assignment_mismatch"
+        if not CustomerStrategyNotificationPreference.objects.filter(
+            user_id=notification.user_id,
+            assignment_id=notification.strategy_assignment_id,
+            enabled=True,
+        ).exists():
+            return False, binding, "strategy_notifications_disabled"
     return True, binding, ""
 
 
@@ -156,7 +229,9 @@ def dispatch_customer_notifications(*, client=None, limit: int = 100) -> dict:
         if not claimed:
             continue
         counts["claimed"] += 1
-        notification = CustomerNotification.objects.select_related("account", "user").get(pk=notification_id)
+        notification = CustomerNotification.objects.select_related(
+            "account", "user", "strategy_assignment__strategy",
+        ).get(pk=notification_id)
         allowed, binding, reason = _allowed_now(notification)
         if not allowed:
             with transaction.atomic():
@@ -170,7 +245,22 @@ def dispatch_customer_notifications(*, client=None, limit: int = 100) -> dict:
 
         try:
             text = render_customer_message(notification)
-            ack = client.send_message(binding.telegram_chat_id, text)
+            if (
+                notification.event_type == CustomerNotification.EventType.TRADE_CLOSED
+                and hasattr(client, "send_photo")
+            ):
+                try:
+                    from .cards import render_customer_result_card
+                    png = render_customer_result_card(notification)
+                except Exception:
+                    png = None
+                ack = (
+                    client.send_photo(binding.telegram_chat_id, png, text)
+                    if png is not None
+                    else client.send_message(binding.telegram_chat_id, text)
+                )
+            else:
+                ack = client.send_message(binding.telegram_chat_id, text)
         except TelegramDeliveryError as exc:
             retry = exc.retryable and not exc.ambiguous and notification.attempts < max_attempts
             final_status = (CustomerNotification.Status.RETRYING if retry
@@ -218,6 +308,15 @@ def dispatch_customer_notifications(*, client=None, limit: int = 100) -> dict:
                 ])
                 _attempt(notification, CustomerNotificationAttempt.Result.DELIVERED,
                          binding=binding, provider_message_id=ack.message_id)
+                if (
+                    notification.event_type == CustomerNotification.EventType.WORKSPACE_READY
+                    and notification.source_object_type
+                    == "customer_notifications.WorkspaceReadinessNotificationIntent"
+                    and str(notification.source_object_id).isdigit()
+                ):
+                    WorkspaceReadinessNotificationIntent.objects.filter(
+                        pk=notification.source_object_id, fulfilled_at__isnull=True,
+                    ).update(fulfilled_at=notification.delivered_at, updated_at=timezone.now())
             counts["delivered"] += 1
         except Exception:
             counts["failed"] += 1

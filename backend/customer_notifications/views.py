@@ -16,7 +16,11 @@ from .services import (
     customer_telegram_available,
     disconnect_telegram,
     redeem_connection_token,
+    request_workspace_readiness_notification,
+    set_strategy_notification_preference,
+    strategy_notification_settings_for,
     telegram_settings_for,
+    workspace_readiness_settings_for,
 )
 
 
@@ -56,12 +60,14 @@ class TelegramDisconnectView(APIView):
 class TelegramPreferencesView(APIView):
     permission_classes = [IsAuthenticated]
     _BOOL_FIELDS = {
-        "telegram_enabled", "trade_opened", "trade_updated", "trade_closed", "strategy_changed",
-        "execution_problem", "workspace_ready",
+        "winning_trades", "losing_trades", "tp_progress", "system_messages",
     }
 
     def patch(self, request):
         pref, _ = CustomerNotificationPreference.objects.get_or_create(user=request.user)
+        unsupported = set(request.data) - self._BOOL_FIELDS - {"language"}
+        if unsupported:
+            return Response({"detail": "unsupported notification preference"}, status=400)
         changed = []
         for field in self._BOOL_FIELDS:
             if field in request.data:
@@ -77,6 +83,49 @@ class TelegramPreferencesView(APIView):
         if changed:
             pref.save(update_fields=[*changed, "updated_at"])
         return Response(telegram_settings_for(request.user))
+
+
+class StrategyNotificationPreferenceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _assignment(self, request, assignment_id):
+        from strategies.models import StrategyAssignment
+        return StrategyAssignment.objects.select_related("account", "strategy").filter(
+            pk=assignment_id, account__user=request.user,
+        ).first()
+
+    def get(self, request, assignment_id):
+        assignment = self._assignment(request, assignment_id)
+        if assignment is None:
+            return Response({"detail": "not_found"}, status=404)
+        return Response(strategy_notification_settings_for(request.user, assignment))
+
+    def patch(self, request, assignment_id):
+        assignment = self._assignment(request, assignment_id)
+        if assignment is None:
+            return Response({"detail": "not_found"}, status=404)
+        if set(request.data) != {"enabled"} or not isinstance(request.data.get("enabled"), bool):
+            return Response({"detail": "enabled must be boolean"}, status=400)
+        return Response(set_strategy_notification_preference(
+            request.user, assignment, enabled=request.data["enabled"],
+        ))
+
+
+class WorkspaceReadinessNotificationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(workspace_readiness_settings_for(request.user))
+
+    def post(self, request):
+        language = request.data.get("language", "en") if isinstance(request.data, dict) else "en"
+        try:
+            result = request_workspace_readiness_notification(request.user, language=language)
+        except ValueError:
+            return Response({"detail": "workspace_not_found"}, status=404)
+        except TelegramConnectionError as exc:
+            return Response({"detail": exc.code}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response(result, status=201)
 
 
 class TelegramWebhookView(APIView):

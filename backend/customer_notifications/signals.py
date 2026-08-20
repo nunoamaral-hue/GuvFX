@@ -8,15 +8,15 @@ from core.models import AuditEvent
 from execution.models import TradeOutcomeRecord
 from hosted_workspace.models import WorkspaceTransition
 from operational_events.models import OperationalEvent
-from trading.models import Trade
+from trading.models import TradingAccount
 
 from .event_sources import (
     enqueue_execution_problem,
     enqueue_strategy_change,
     enqueue_trade_outcome,
-    enqueue_trade_opened,
     enqueue_workspace_ready,
 )
+from .services import fulfill_pending_workspace_readiness
 
 
 def _after_commit(fn, pk):
@@ -28,12 +28,6 @@ def _after_commit(fn, pk):
             # robust callbacks cannot let notification observation escape into the source path.
             return None
     transaction.on_commit(callback, robust=True)
-
-
-@receiver(post_save, sender=Trade, dispatch_uid="customer_notify_trade_opened")
-def trade_opened_saved(sender, instance, created, **kwargs):
-    if created:
-        _after_commit(enqueue_trade_opened, instance.pk)
 
 
 @receiver(post_save, sender=TradeOutcomeRecord, dispatch_uid="customer_notify_trade_outcome")
@@ -54,6 +48,20 @@ def strategy_audit_saved(sender, instance, created, **kwargs):
 def workspace_transition_saved(sender, instance, created, **kwargs):
     if created and instance.state_changed and instance.to_state == "EXECUTION_READY":
         _after_commit(enqueue_workspace_ready, instance.pk)
+
+
+@receiver(post_save, sender=TradingAccount, dispatch_uid="customer_notify_workspace_confirmed")
+def workspace_account_confirmed(sender, instance, **kwargs):
+    """The customer-facing ready milestone may precede canonical EXECUTION_READY."""
+    if instance.workspace_confirmed_at is None:
+        return
+    try:
+        workspace_id = instance.hosted_workspace.id
+    except Exception:
+        return
+    transaction.on_commit(
+        lambda: fulfill_pending_workspace_readiness(workspace_id=workspace_id), robust=True,
+    )
 
 
 @receiver(post_save, sender=OperationalEvent, dispatch_uid="customer_notify_execution_problem")

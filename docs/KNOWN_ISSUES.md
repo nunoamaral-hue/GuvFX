@@ -2,7 +2,24 @@
 
 List active problems with reproduction steps and workarounds.
 
-## 🟡 DARK / HUMAN-GATED (2026-08-19) — customer Telegram notifications are not production-active
+## 🔴 P0 PRODUCT POLICY (2026-08-20) — deployed customer pilot can still send trade-open notifications
+
+The certified transport is live for the closed-beta pilot, but its deployed pre-policy revision observes and
+projects newly created trades. Historical evidence includes three delivered Japanese trade-open messages.
+This is no longer an accepted customer product behavior: customer Telegram is outcome/account-status only.
+
+The focused implementation on `feat/customer-telegram-policy-preferences` removes the Trade observer and
+reconciliation source and adds strict enqueue/delivery allow-lists. It is not deployed. There is no narrow
+existing production switch for only trade-open events, and this packet did not authorize disabling the whole
+pilot or mutating production. Workaround: do not broaden the pilot or rely on customer Telegram as
+product-policy compliant. Required closure: merge, separately deploy with the additive migration, and prove
+trade-open/raw/unknown delivery suppression on the deployed SHA. Historical pilot evidence must not be changed.
+
+## 🟡 HISTORICAL BASELINE (2026-08-19) — pre-activation customer Telegram gate
+
+This section records the pre-activation posture and is superseded by the current P0 above. The closed-beta
+transport was subsequently activated; its transport certification remains valid, but its deployed trade-open
+product behavior is now noncompliant. Do not use the historical DARK wording below as current production state.
 
 The customer notification release candidate is implemented and verified but intentionally inert. No approved dedicated customer bot,
 production bot token, webhook secret/registration, worker service activation, or completed pilot exists.

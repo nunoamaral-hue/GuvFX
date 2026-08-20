@@ -1,5 +1,24 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-08-20 — Customer Telegram product-policy candidate (no deployment)
+
+- Current branch `feat/customer-telegram-policy-preferences`, baseline main `5d8c534`. The certified dedicated
+  customer transport is preserved; only policy, presentation, preferences and customer UX change.
+- Customer trade-open delivery is removed from observers/reconciliation and prohibited by strict enqueue and
+  delivery allow-lists. Historical pilot rows remain unchanged. Unknown/malformed/raw events fail closed.
+- Defaults: winners ON; losses and breakeven OFF; signal-safe durable TP progress ON; optional system/account
+  messages ON. Connection confirmation remains essential. Language is snapshotted from GuvFX EN/JA.
+- Adds customer × StrategyAssignment preference/pending intent and one-shot workspace-readiness intent. Neither
+  path writes trading, execution, authorization, MT5, bridges, nodes, WorkerIdentity, CZ or support@ state.
+- Focused gates are green: 94 backend notification tests including the 26-case policy battery; 307 frontend
+  tests; full backend 4,460 (1 skip); lint 0 errors / 18 existing warnings; parity, 41-page production build,
+  secret scan and `make check` green. 390 px and localized card evidence is in
+  `docs/evidence/customer-telegram-product-policy/`. Exact-head CI remains pending.
+- Production remains on the pre-policy pilot revision with flags ON and historical trade-open capability.
+  No narrow production event switch exists; no production mutation was authorized or performed. Do not broaden
+  beta notification use. Merge does not authorize deployment.
+- Canonical detail: `docs/product/CUSTOMER_TELEGRAM_PRODUCT_POLICY.md`.
+
 ## 2026-08-19 — Customer Telegram reconciled RC (DARK install gate)
 
 - Customer-only Telegram notification plane is updated in draft PR #371 on branch

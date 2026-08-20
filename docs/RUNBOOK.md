@@ -15,10 +15,12 @@
 
 ---
 
-## Customer Telegram notifications (RECONCILED RC, DARK)
+## Customer Telegram notifications (closed-beta pilot active; product-policy update not deployed)
 
-This plane is not production-active. It must use a dedicated customer bot and must
-never reuse provider-ingestion or stakeholder Telegram credentials.
+Production currently runs the certified closed-beta pilot transport with both customer flags enabled.
+That deployed revision still contains the now-prohibited trade-open product path. Do not broaden beta use
+until `CUSTOMER_TELEGRAM_PRODUCT_POLICY.md` is merged, separately deployed, and verified. This plane must use
+a dedicated customer bot and must never reuse provider-ingestion or stakeholder Telegram credentials.
 
 Required settings (secret values belong in the approved secret store, never Git):
 
@@ -37,7 +39,7 @@ Production stores these keys in `/home/ubuntu/guvfx-prod/customer-telegram.env` 
 The dedicated worker receives only that file's Django/database runtime settings plus the keys above; it does
 not receive MT5, bridge, node, WorkerIdentity, execution, provider-Telegram, or WIMs credentials.
 
-Local verification while DARK:
+Local verification (use non-production settings and recipients only):
 
 ```bash
 python manage.py test customer_notifications --noinput
